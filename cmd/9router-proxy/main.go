@@ -39,12 +39,15 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 
-	// Strip double /v1 prefix (when base URL includes /v1, client sends /v1/v1/...)
+	// Strip /v1 prefix so routes register as /messages, /chat/completions, etc.
+	// Handles both /v1/messages and /v1/v1/messages (double prefix from base URL with /v1).
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			if len(req.URL.Path) > 7 && req.URL.Path[:7] == "/v1/v1/" {
-				req.URL.Path = req.URL.Path[3:] // /v1/v1/x → /v1/x
+			path := req.URL.Path
+			for len(path) > 3 && path[:4] == "/v1/" {
+				path = path[3:]
 			}
+			req.URL.Path = path
 			next.ServeHTTP(w, req)
 		})
 	})
@@ -63,7 +66,7 @@ func main() {
 		handlers.SetupRoutes(r, repo)
 
 		// Models listing stub
-		r.Get("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		r.Get("/models", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{"data":[]}`))
 		})

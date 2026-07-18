@@ -804,6 +804,6 @@ func SetupRoutes(r interface {
 }, repo *db.Repo) {
 	handler := NewChatHandler(repo)
 
-	r.Post("/v1/chat/completions", handler.HandleChatCompletions)
-	r.Post("/v1/messages", handler.HandleMessages)
+	r.Post("/chat/completions", handler.HandleChatCompletions)
+	r.Post("/messages", handler.HandleMessages)
 }
