@@ -166,6 +166,25 @@ see [`benchmark/RESULTS.md`](benchmark/RESULTS.md).
 bash benchmark/run_comparison.sh
 ```
 
+## TODO / Known Gaps
+
+Tracked items not yet implemented:
+
+- [ ] **Distribution via package managers** — add npm wrapper (`npm i -g 9router-go`,
+      prebuilt binaries per platform) and/or Homebrew formula for `brew install`.
+      Currently only Docker Hub + GitHub Releases binaries are available.
+- [ ] **Docker Hub publish** — `release.yml` pushes to `luqmanv1/9router-go`, but
+      GitHub Secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` must be set before
+      the first tagged release.
+- [ ] **Search & scrape provider dispatch** — `/v1/search` and `/v1/scrape` are
+      simple forward endpoints (provider selected via the `model` field, path
+      appended to the connection base URL). Unlike the 9Router JS reference, there
+      is **no multi-provider dispatch or response normalizer** (Tavily/Exa/Brave,
+      firecrawl/jina). Register a connection with the search/fetch base URL + key
+      to use them.
+- [ ] **Source directory name** — the binary is `9router-go` but the Go package
+      dir is still `cmd/9router-proxy/`. Cosmetic; only affects the build path.
+
 ## Credits
 
 - [9Router](https://github.com/decolua/9router) — Original Next.js LLM routing gateway + dashboard
