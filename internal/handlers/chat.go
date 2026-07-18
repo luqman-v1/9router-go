@@ -14,6 +14,7 @@ import (
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/rtk"
 	"9router/proxy/internal/translator"
 )
 
@@ -867,8 +868,11 @@ func (h *ChatHandler) tryForwardWithConnection(
 		return &upstreamError{StatusCode: http.StatusUnauthorized, Body: []byte(`{"error":{"message":"no API key found","type":"auth_error","code":401}}`)}
 	}
 
+	// RTK: compress tool_result content to save tokens
+	compressedBody, _ := rtk.CompressMessages(body)
+
 	start := time.Now()
-	fwdErr := h.forwardRequest(w, providerCfg, apiKey, body, isStream, translateResponse)
+	fwdErr := h.forwardRequest(w, providerCfg, apiKey, compressedBody, isStream, translateResponse)
 	latencyMs := time.Since(start).Milliseconds()
 
 	// Record provider health
