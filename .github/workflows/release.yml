@@ -36,6 +36,7 @@ jobs:
             9router-go-linux-arm64
             9router-go-darwin-arm64
             9router-go-windows-amd64.exe
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
