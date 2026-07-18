@@ -49,24 +49,6 @@ PORT=20128 ./9router-proxy
 curl http://localhost:20128/health
 ```
 
-## With 9Router Dashboard
-
-```bash
-# Terminal 1: Go proxy (handle LLM traffic)
-cd 9router-go && PORT=20128 ./9router-proxy
-
-# Terminal 2: 9Router dashboard (management UI)
-cd 9router && node_modules/.bin/next dev --port 20129
-```
-
-| Service | URL |
-|---------|-----|
-| Go Proxy (LLM API) | http://localhost:20128/v1 |
-| Dashboard | http://localhost:20129/dashboard |
-| Health Check | http://localhost:20128/health |
-
-Both share the same SQLite database (`~/.9router/db/data.sqlite`) with WAL mode.
-
 ## Environment Variables
 
 | Variable | Default | Description |
