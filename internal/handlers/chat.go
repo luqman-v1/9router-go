@@ -20,8 +20,9 @@ import (
 
 // ChatHandler handles /v1/chat/completions (OpenAI) and /v1/messages (Claude) endpoints.
 type ChatHandler struct {
-	Repo   *db.Repo
-	Client *http.Client
+	Repo       *db.Repo
+	Client     *http.Client
+	RTKEnabled bool
 }
 
 // NewChatHandler creates a ChatHandler with the given repository and a streaming-capable HTTP client.
@@ -868,8 +869,11 @@ func (h *ChatHandler) tryForwardWithConnection(
 		return &upstreamError{StatusCode: http.StatusUnauthorized, Body: []byte(`{"error":{"message":"no API key found","type":"auth_error","code":401}}`)}
 	}
 
-	// RTK: compress tool_result content to save tokens
-	compressedBody, _ := rtk.CompressMessages(body)
+	// RTK: compress tool_result content to save tokens (if enabled)
+	compressedBody := body
+	if h.RTKEnabled {
+		compressedBody, _ = rtk.CompressMessages(body)
+	}
 
 	start := time.Now()
 	fwdErr := h.forwardRequest(w, providerCfg, apiKey, compressedBody, isStream, translateResponse)
@@ -1067,8 +1071,11 @@ func writeJSONError(w http.ResponseWriter, status int, message string) {
 // Requires a db.Repo instance for API key middleware and handler initialization.
 func SetupRoutes(r interface {
 	Post(pattern string, handlerFn http.HandlerFunc)
-}, repo *db.Repo) {
+}, repo *db.Repo, rtkEnabled ...bool) {
 	handler := NewChatHandler(repo)
+	if len(rtkEnabled) > 0 {
+		handler.RTKEnabled = rtkEnabled[0]
+	}
 
 	r.Post("/chat/completions", handler.HandleChatCompletions)
 	r.Post("/messages", handler.HandleMessages)

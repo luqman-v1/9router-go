@@ -17,6 +17,7 @@ type Config struct {
 	InitialPassword string
 	APIKeySecret    string
 	MachineIDSalt   string
+	RTKEnabled      bool
 }
 
 // LoadConfig loads the configuration from environment variables and platform defaults.
@@ -69,6 +70,8 @@ func LoadConfig() *Config {
 		machineIDSalt = "endpoint-proxy-salt"
 	}
 
+	rtkEnabled := os.Getenv("RTK_ENABLED") != "false" // default on
+
 	return &Config{
 		Port:            port,
 		DatabasePath:    dbPath,
@@ -76,6 +79,7 @@ func LoadConfig() *Config {
 		InitialPassword: initialPassword,
 		APIKeySecret:    apiKeySecret,
 		MachineIDSalt:   machineIDSalt,
+		RTKEnabled:      rtkEnabled,
 	}
 }
 

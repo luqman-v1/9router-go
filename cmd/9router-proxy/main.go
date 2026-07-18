@@ -63,7 +63,7 @@ func main() {
 		r.Use(handlers.RequireApiKey(repo))
 
 		// Chat routes (OpenAI /v1/chat/completions and Claude /v1/messages)
-		handlers.SetupRoutes(r, repo)
+		handlers.SetupRoutes(r, repo, cfg.RTKEnabled)
 
 		// Models listing stub
 		r.Get("/models", func(w http.ResponseWriter, r *http.Request) {
