@@ -1,17 +1,40 @@
 # 9router-go
 
-High-performance Go proxy gateway for 9Router LLM routing.
+High-performance Go proxy gateway for [9Router](https://github.com/decolua/9router) LLM routing.
+
+> **9Router** is a local AI routing gateway + dashboard. This Go proxy replaces the Next.js `/v1/*` routes for high-throughput LLM traffic, while the [9Router dashboard](https://github.com/decolua/9router) handles management UI (providers, API keys, combos, usage tracking).
 
 ## Features
 
 - **32K+ RPS** peak throughput (Go vs Next.js ~500 RPS)
 - **42 MB** memory footprint
-- SQLite WAL mode (shared with Next.js dashboard)
+- SQLite WAL mode (shared with [9Router dashboard](https://github.com/decolua/9router))
 - OpenAI & Claude format support
 - SSE streaming with real-time translation
 - Combo fallback (multi-model retry)
 - API key auth middleware
 - CGO-free, cross-compile to any platform
+
+## Architecture
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   CLI Client    │────▶│   Go Proxy       │────▶│  Upstream LLM   │
+│  (Claude Code,  │     │  • Auth (SQLite) │     │  (OpenAI, etc.) │
+│   Codex, etc.)  │     │  • Model resolve │     │                 │
+└─────────────────┘     │  • Translation   │     └─────────────────┘
+                        │  • Combo fallback│
+                        │  • SSE streaming │
+                        └───────┬──────────┘
+                                │
+┌─────────────────┐     ┌───────▼──────────┐
+│   Dashboard     │────▶│  SQLite (WAL)    │
+│  [9Router](https://github.com/decolua/9router) │     └──────────────────┘
+│  • Providers    │
+│  • API Keys     │
+│  • Usage        │
+└─────────────────┘
+```
 
 ## Quick Start
 
@@ -19,12 +42,30 @@ High-performance Go proxy gateway for 9Router LLM routing.
 # Build
 go build -o 9router-proxy ./cmd/9router-proxy/
 
-# Run
+# Run (standalone, no dashboard needed)
 PORT=20128 ./9router-proxy
 
 # Health check
 curl http://localhost:20128/health
 ```
+
+## With 9Router Dashboard
+
+```bash
+# Terminal 1: Go proxy (handle LLM traffic)
+cd 9router-go && PORT=20128 ./9router-proxy
+
+# Terminal 2: 9Router dashboard (management UI)
+cd 9router && node_modules/.bin/next dev --port 20129
+```
+
+| Service | URL |
+|---------|-----|
+| Go Proxy (LLM API) | http://localhost:20128/v1 |
+| Dashboard | http://localhost:20129/dashboard |
+| Health Check | http://localhost:20128/health |
+
+Both share the same SQLite database (`~/.9router/db/data.sqlite`) with WAL mode.
 
 ## Environment Variables
 
@@ -35,7 +76,7 @@ curl http://localhost:20128/health
 
 ## Database
 
-Uses same SQLite DB as Next.js dashboard (`~/.9router/db/data.sqlite`) with WAL mode.
+Uses same SQLite DB as [9Router dashboard](https://github.com/decolua/9router) (`~/.9router/db/data.sqlite`) with WAL mode.
 
 Tables: `apiKeys`, `providerConnections`, `providerNodes`, `combos`, `modelAliases`
 
@@ -67,3 +108,7 @@ go test ./... -v
 ```bash
 bash benchmark/run_comparison.sh
 ```
+
+## Credits
+
+- [9Router](https://github.com/decolua/9router) — Original Next.js LLM routing gateway + dashboard
