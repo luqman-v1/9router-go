@@ -1,4 +1,4 @@
-BINARY_NAME := 9router-proxy
+BINARY_NAME := 9router-go
 PORT ?= 20128
 DATA_DIR ?= $(HOME)/.9router
 RTK ?= true

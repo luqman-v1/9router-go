@@ -1,0 +1,22 @@
+# Build artifacts
+/9router-proxy
+/9router-go
+/9router-proxy-*
+/9router-go-*
+
+# Test binaries
+*.test
+*.out
+
+# Logs
+*.log
+/tmp/*.log
+
+# Data directory
+.9router/
+data/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

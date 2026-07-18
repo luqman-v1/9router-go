@@ -1,0 +1,183 @@
+package handlers
+
+import (
+	"encoding/json"
+	"testing"
+
+	"9router/proxy/internal/db"
+)
+
+func TestNewChatHandler_DefaultsAllOff(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+
+	h := NewChatHandler(repo)
+	if h.Repo != repo {
+		t.Error("expected Repo to be set")
+	}
+	if h.Client == nil {
+		t.Error("expected Client to be initialized")
+	}
+	if h.TokenSaver == nil {
+		t.Fatal("expected non-nil TokenSaver config")
+	}
+	if h.TokenSaver.RTKEnabled() || h.TokenSaver.CavemanEnabled() || h.TokenSaver.PonytailEnabled() {
+		t.Error("expected all token savers off by default")
+	}
+}
+
+func TestNewChatHandler_WithConfig(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+
+	ts := NewTokenSaverConfig(true, true, false)
+	h := NewChatHandler(repo, ts)
+	if !h.TokenSaver.RTKEnabled() || !h.TokenSaver.CavemanEnabled() {
+		t.Error("expected RTK and Caveman enabled")
+	}
+	if h.TokenSaver.PonytailEnabled() {
+		t.Error("expected Ponytail disabled")
+	}
+}
+
+func TestNewChatHandler_NilConfigIsAllOff(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+
+	h := NewChatHandler(repo, nil)
+	if h.TokenSaver.RTKEnabled() {
+		t.Error("nil config should mean RTK off")
+	}
+}
+
+func TestResolveModelEntry_ValidProviderSlashModel(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	info := h.resolveModelEntry("deepseek/deepseek-chat")
+	if info == nil {
+		t.Fatal("expected non-nil ModelInfo")
+	}
+	if info.Provider != "deepseek" || info.Model != "deepseek-chat" {
+		t.Errorf("got %s/%s", info.Provider, info.Model)
+	}
+}
+
+func TestResolveModelEntry_NoSlashReturnsNil(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	if info := h.resolveModelEntry("no-slash-here"); info != nil {
+		t.Errorf("expected nil for entry without slash, got %+v", info)
+	}
+}
+
+func TestResolveModelEntry_AliasResolved(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// "ds" is an alias for "deepseek"
+	info := h.resolveModelEntry("ds/deepseek-chat")
+	if info == nil {
+		t.Fatal("expected non-nil ModelInfo for aliased provider")
+	}
+	if info.Provider != "deepseek" {
+		t.Errorf("expected provider 'deepseek' after alias resolution, got %s", info.Provider)
+	}
+}
+
+func TestResolvePrefixProvider_ResolvesConnection(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	nodeData := `{"prefix":"bn","apiType":"openai-compatible","baseUrl":"https://bn.example.com/v1/chat/completions"}`
+	_, err := database.Exec(`INSERT INTO providerNodes (id, type, name, data, createdAt, updatedAt) VALUES
+		('openai-compatible-chat-bn', 'openai-compatible', 'Bun Node', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, nodeData)
+	if err != nil {
+		t.Fatalf("seed providerNode: %v", err)
+	}
+
+	connData, _ := json.Marshal(map[string]interface{}{"apiKey": "sk-bn"})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-bn', 'openai-compatible-chat-bn', 'apikey', 'Bun', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(connData))
+	if err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	info := h.resolvePrefixProvider("bn", "claude-sonnet-4.5")
+	if info == nil {
+		t.Fatal("expected non-nil ModelInfo for prefix provider")
+	}
+	if info.Provider != "openai-compatible-chat-bn" {
+		t.Errorf("expected provider node id, got %s", info.Provider)
+	}
+	if info.ConnectionID != "conn-bn" {
+		t.Errorf("expected pinned connection id, got %s", info.ConnectionID)
+	}
+}
+
+func TestResolvePrefixProvider_UnknownPrefixReturnsNil(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	if info := h.resolvePrefixProvider("zzz-unknown", "model"); info != nil {
+		t.Errorf("expected nil for unknown prefix, got %+v", info)
+	}
+}
+
+func TestResolveModel_CommonProviderFallback(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// "deepseek-chat" has no slash/alias/combo, but deepseek has a seeded connection.
+	info, err := h.resolveModel("deepseek-chat")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info.Provider != "deepseek" || info.Model != "deepseek-chat" {
+		t.Errorf("expected deepseek/deepseek-chat via common-provider fallback, got %s/%s", info.Provider, info.Model)
+	}
+}
+
+func TestResolveModel_UnresolvableReturnsError(t *testing.T) {
+	// Use a DB with NO provider connections at all so the common-provider
+	// fallback loop finds nothing and resolution genuinely fails.
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	// Remove the seeded deepseek/groq connections so no fallback provider matches.
+	if _, err := database.Exec(`DELETE FROM providerConnections`); err != nil {
+		t.Fatalf("delete connections: %v", err)
+	}
+	// Also clear aliases/combos that could resolve the bare model.
+	if _, err := database.Exec(`DELETE FROM kv WHERE scope='modelAliases'`); err != nil {
+		t.Fatalf("delete aliases: %v", err)
+	}
+	if _, err := database.Exec(`DELETE FROM combos`); err != nil {
+		t.Fatalf("delete combos: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	_, err := h.resolveModel("gemini-unknown-model")
+	if err == nil {
+		t.Error("expected error for unresolvable model with no connections")
+	}
+}
+
