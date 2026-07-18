@@ -21,7 +21,7 @@ const (
 // CompressMessages compresses tool_result content in LLM request bodies in-place.
 // Returns modified body and true if any compression was applied.
 func CompressMessages(body []byte) ([]byte, bool) {
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body, false
 	}
@@ -34,14 +34,14 @@ func CompressMessages(body []byte) ([]byte, bool) {
 		return body, false
 	}
 
-	items, ok := itemsRaw.([]interface{})
+	items, ok := itemsRaw.([]any)
 	if !ok || len(items) == 0 {
 		return body, false
 	}
 
 	compressed := false
 	for _, item := range items {
-		msg, ok := item.(map[string]interface{})
+		msg, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -65,12 +65,12 @@ func CompressMessages(body []byte) ([]byte, bool) {
 		}
 
 		// Claude tool_result in content array
-		contentArr, ok := msg["content"].([]interface{})
+		contentArr, ok := msg["content"].([]any)
 		if !ok {
 			continue
 		}
 		for _, part := range contentArr {
-			block, ok := part.(map[string]interface{})
+			block, ok := part.(map[string]any)
 			if !ok {
 				continue
 			}

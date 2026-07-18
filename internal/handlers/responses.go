@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // HandleResponses forwards /v1/responses requests to upstream providers.
@@ -94,7 +95,7 @@ func (h *ChatHandler) handleResponsesSingleModel(w http.ResponseWriter, body []b
 	}
 
 	if isStream {
-		h.handleStreamResponse(w, resp.Body, false)
+		h.handleStreamResponse(w, resp.Body, false, time.Now(), &streamMetrics{})
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -146,7 +147,7 @@ func (h *ChatHandler) handleResponsesComboFallback(w http.ResponseWriter, body [
 		}
 
 		if isStream {
-			h.handleStreamResponse(w, resp.Body, false)
+			h.handleStreamResponse(w, resp.Body, false, time.Now(), &streamMetrics{})
 		} else {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)

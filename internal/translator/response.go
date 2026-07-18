@@ -35,6 +35,7 @@ type ToolCallState struct {
 type OpenAIUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+	CachedTokens     int `json:"cached_tokens"`
 }
 
 type OpenAIChunk struct {
@@ -105,23 +106,23 @@ func GetAndClearLastUsage() *OpenAIUsage {
 	return u
 }
 
-func stopThinkingBlock(state *StreamState, results *[]map[string]interface{}) {
+func stopThinkingBlock(state *StreamState, results *[]map[string]any) {
 	if !state.ThinkingBlockStarted {
 		return
 	}
-	*results = append(*results, map[string]interface{}{
+	*results = append(*results, map[string]any{
 		"type":  "content_block_stop",
 		"index": state.ThinkingBlockIndex,
 	})
 	state.ThinkingBlockStarted = false
 }
 
-func stopTextBlock(state *StreamState, results *[]map[string]interface{}) {
+func stopTextBlock(state *StreamState, results *[]map[string]any) {
 	if !state.TextBlockStarted || state.TextBlockClosed {
 		return
 	}
 	state.TextBlockClosed = true
-	*results = append(*results, map[string]interface{}{
+	*results = append(*results, map[string]any{
 		"type":  "content_block_stop",
 		"index": state.TextBlockIndex,
 	})
@@ -129,7 +130,7 @@ func stopTextBlock(state *StreamState, results *[]map[string]interface{}) {
 }
 
 func sanitizeToolArgs(toolName, argsJSON string) string {
-	var args map[string]interface{}
+	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return argsJSON
 	}
@@ -150,7 +151,7 @@ func sanitizeToolArgs(toolName, argsJSON string) string {
 	return string(sanitized)
 }
 
-func sanitizeReadArgs(args map[string]interface{}) {
+func sanitizeReadArgs(args map[string]any) {
 	if limitVal, ok := args["limit"]; ok {
 		switch v := limitVal.(type) {
 		case string:
@@ -230,7 +231,7 @@ func extractReasoningText(delta OpenAIDelta) string {
 	return ""
 }
 
-func formatSSE(event map[string]interface{}) string {
+func formatSSE(event map[string]any) string {
 	eventType, _ := event["type"].(string)
 	payload, _ := json.Marshal(event)
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(payload))
@@ -302,24 +303,27 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 		if chunk.Usage.CompletionTokens > 0 {
 			state.Usage.CompletionTokens = chunk.Usage.CompletionTokens
 		}
+		if chunk.Usage.CachedTokens > 0 {
+			state.Usage.CachedTokens = chunk.Usage.CachedTokens
+		}
 	}
 
-	var results []map[string]interface{}
+	var results []map[string]any
 
 	// 1. Message Start Event
 	if !state.MessageStartSent {
 		state.MessageStartSent = true
-		results = append(results, map[string]interface{}{
+		results = append(results, map[string]any{
 			"type": "message_start",
-			"message": map[string]interface{}{
+			"message": map[string]any{
 				"id":            state.MessageId,
 				"type":          "message",
 				"role":          "assistant",
 				"model":         state.Model,
-				"content":       []interface{}{},
+				"content":       []any{},
 				"stop_reason":   nil,
 				"stop_sequence": nil,
-				"usage": map[string]interface{}{
+				"usage": map[string]any{
 					"input_tokens":  0,
 					"output_tokens": 0,
 				},
@@ -351,20 +355,20 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 			state.ThinkingBlockIndex = state.NextBlockIndex
 			state.NextBlockIndex++
 			state.ThinkingBlockStarted = true
-			results = append(results, map[string]interface{}{
+			results = append(results, map[string]any{
 				"type":  "content_block_start",
 				"index": state.ThinkingBlockIndex,
-				"content_block": map[string]interface{}{
+				"content_block": map[string]any{
 					"type":     "thinking",
 					"thinking": "",
 				},
 			})
 		}
 
-		results = append(results, map[string]interface{}{
+		results = append(results, map[string]any{
 			"type":  "content_block_delta",
 			"index": state.ThinkingBlockIndex,
-			"delta": map[string]interface{}{
+			"delta": map[string]any{
 				"type":     "thinking_delta",
 				"thinking": reasoningContent,
 			},
@@ -380,20 +384,20 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 			state.NextBlockIndex++
 			state.TextBlockStarted = true
 			state.TextBlockClosed = false
-			results = append(results, map[string]interface{}{
+			results = append(results, map[string]any{
 				"type":  "content_block_start",
 				"index": state.TextBlockIndex,
-				"content_block": map[string]interface{}{
+				"content_block": map[string]any{
 					"type": "text",
 					"text": "",
 				},
 			})
 		}
 
-		results = append(results, map[string]interface{}{
+		results = append(results, map[string]any{
 			"type":  "content_block_delta",
 			"index": state.TextBlockIndex,
-			"delta": map[string]interface{}{
+			"delta": map[string]any{
 				"type": "text_delta",
 				"text": delta.Content,
 			},
@@ -428,14 +432,14 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 				BlockIndex: toolBlockIndex,
 			}
 
-			results = append(results, map[string]interface{}{
+			results = append(results, map[string]any{
 				"type":  "content_block_start",
 				"index": toolBlockIndex,
-				"content_block": map[string]interface{}{
+				"content_block": map[string]any{
 					"type":  "tool_use",
 					"id":    tc.ID,
 					"name":  toolName,
-					"input": map[string]interface{}{},
+					"input": map[string]any{},
 				},
 			})
 		}
@@ -455,16 +459,16 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 			buffered := state.ToolArgBuffers[idx]
 			sanitized := sanitizeToolArgs(toolInfo.Name, buffered)
 
-			results = append(results, map[string]interface{}{
+			results = append(results, map[string]any{
 				"type":  "content_block_delta",
 				"index": toolInfo.BlockIndex,
-				"delta": map[string]interface{}{
+				"delta": map[string]any{
 					"type":         "input_json_delta",
 					"partial_json": sanitized,
 				},
 			})
 
-			results = append(results, map[string]interface{}{
+			results = append(results, map[string]any{
 				"type":  "content_block_stop",
 				"index": toolInfo.BlockIndex,
 			})
@@ -483,7 +487,7 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 			claudeStop = "tool_use"
 		}
 
-		finalUsage := map[string]interface{}{
+		finalUsage := map[string]any{
 			"input_tokens":  0,
 			"output_tokens": 0,
 		}
@@ -492,16 +496,16 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 			finalUsage["output_tokens"] = state.Usage.CompletionTokens
 		}
 
-		results = append(results, map[string]interface{}{
+		results = append(results, map[string]any{
 			"type": "message_delta",
-			"delta": map[string]interface{}{
+			"delta": map[string]any{
 				"stop_reason":   claudeStop,
 				"stop_sequence": nil,
 			},
 			"usage": finalUsage,
 		})
 
-		results = append(results, map[string]interface{}{
+		results = append(results, map[string]any{
 			"type": "message_stop",
 		})
 

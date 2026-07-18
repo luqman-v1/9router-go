@@ -65,13 +65,13 @@ type OpenAIRequest struct {
 	Temperature *float64        `json:"temperature,omitempty"`
 	MaxTokens   *int            `json:"max_tokens,omitempty"`
 	Tools       []OpenAITool    `json:"tools,omitempty"`
-	ToolChoice  interface{}     `json:"tool_choice,omitempty"`
+	ToolChoice  any     `json:"tool_choice,omitempty"`
 	Stream      bool            `json:"stream,omitempty"`
 }
 
 type OpenAIMessage struct {
 	Role       string           `json:"role"`
-	Content    interface{}      `json:"content,omitempty"` // string or []OpenAIContentBlock
+	Content    any      `json:"content,omitempty"` // string or []OpenAIContentBlock
 	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"` // used for tool role messages
 }
@@ -149,7 +149,7 @@ func systemReminderText(content string) string {
 	return fmt.Sprintf("<instructions>\n%s\n</instructions>", text)
 }
 
-func collapseTextParts(parts []OpenAIContentBlock) interface{} {
+func collapseTextParts(parts []OpenAIContentBlock) any {
 	if len(parts) == 1 && parts[0].Type == "text" {
 		return parts[0].Text
 	}
@@ -345,7 +345,7 @@ func fixMissingToolResponsesOpenAI(messages []OpenAIMessage) []OpenAIMessage {
 	return result
 }
 
-func convertToolChoice(choiceRaw *json.RawMessage) interface{} {
+func convertToolChoice(choiceRaw *json.RawMessage) any {
 	if choiceRaw == nil {
 		return "auto"
 	}
@@ -363,9 +363,9 @@ func convertToolChoice(choiceRaw *json.RawMessage) interface{} {
 		case "any":
 			return "required"
 		case "tool":
-			return map[string]interface{}{
+			return map[string]any{
 				"type": "function",
-				"function": map[string]interface{}{
+				"function": map[string]any{
 					"name": choiceObj.Name,
 				},
 			}

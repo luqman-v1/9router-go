@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -16,7 +17,25 @@ import (
 	"9router/proxy/internal/handlers"
 )
 
+// statusWriter wraps http.ResponseWriter to capture the status code.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
 func main() {
+	// Setup log file
+	logFile, err := os.OpenFile("/tmp/9router-go.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		log.SetOutput(logFile)
+		defer logFile.Close()
+	}
+
 	// Load configuration from environment variables and platform defaults
 	cfg := config.LoadConfig()
 
@@ -35,7 +54,6 @@ func main() {
 
 	// Create chi router with standard middleware
 	r := chi.NewRouter()
-	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 
@@ -43,12 +61,15 @@ func main() {
 	// Handles both /v1/messages and /v1/v1/messages (double prefix from base URL with /v1).
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			start := time.Now()
 			path := req.URL.Path
 			for len(path) > 3 && path[:4] == "/v1/" {
 				path = path[3:]
 			}
 			req.URL.Path = path
-			next.ServeHTTP(w, req)
+			ww := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+			next.ServeHTTP(ww, req)
+			log.Printf("[request] %s %s %d %s", req.Method, path, ww.status, time.Since(start))
 		})
 	})
 

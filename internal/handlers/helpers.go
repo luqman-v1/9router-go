@@ -7,7 +7,7 @@ import (
 
 // updateModelInBody returns a copy of body with the "model" field set to modelName.
 func updateModelInBody(body []byte, modelName string) []byte {
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body
 	}

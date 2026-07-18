@@ -27,7 +27,7 @@ func (r *Repo) GetProxyPool(poolID string) (*ProxyPool, error) {
 		return nil, fmt.Errorf("proxy pool %s: %w", poolID, err)
 	}
 
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.Unmarshal([]byte(data), &raw); err != nil {
 		return nil, fmt.Errorf("parse pool data: %w", err)
 	}
@@ -39,7 +39,7 @@ func (r *Repo) GetProxyPool(poolID string) (*ProxyPool, error) {
 		Strategy: getString(raw, "strategy"),
 	}
 
-	if urls, ok := raw["urls"].([]interface{}); ok {
+	if urls, ok := raw["urls"].([]any); ok {
 		for _, u := range urls {
 			if s, ok := u.(string); ok {
 				pool.URLs = append(pool.URLs, s)
@@ -63,7 +63,7 @@ func (p *ProxyPool) NextURL() string {
 	return p.URLs[idx%uint64(len(p.URLs))]
 }
 
-func getString(m map[string]interface{}, key string) string {
+func getString(m map[string]any, key string) string {
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {
 			return s

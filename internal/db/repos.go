@@ -75,7 +75,7 @@ func (r *Repo) GetProviderConnectionByID(id string) (*models.ProviderConnection,
 // Sorts them by priority ASC (using a fallback value of 999999 for null priority to match JavaScript behavior).
 func (r *Repo) GetProviderConnections(provider string, activeOnly bool) ([]*models.ProviderConnection, error) {
 	var query string
-	var args []interface{}
+	var args []any
 
 	if provider != "" {
 		if activeOnly {
@@ -265,6 +265,14 @@ func (r *Repo) GetComboByName(name string) (*models.Combo, error) {
 	if err != nil {
 		return nil, err
 	}
+	combo.Strategy = "fallback" // default
+
+	// strategy column may exist in newer DBs
+	var strat string
+	if err := r.db.QueryRow("SELECT strategy FROM combos WHERE id = ?", combo.ID).Scan(&strat); err == nil && strat != "" {
+		combo.Strategy = strat
+	}
+
 	return &combo, nil
 }
 

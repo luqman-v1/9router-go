@@ -61,7 +61,8 @@ type Combo struct {
 	ID        string  `json:"id"`
 	Name      string  `json:"name"`
 	Kind      *string `json:"kind,omitempty"`
-	Models    string  `json:"models"` // JSON string representing model selection details
+	Models    string  `json:"models"`    // JSON string representing model selection details
+	Strategy  string  `json:"strategy"`  // routing strategy: "fallback", "round-robin", "capacity", "fusion"
 	CreatedAt string  `json:"createdAt"`
 	UpdatedAt string  `json:"updatedAt"`
 }

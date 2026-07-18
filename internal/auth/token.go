@@ -29,7 +29,7 @@ type ProviderSpecificData struct {
 
 // ParseTokenFromConnection extracts token info from connection.data JSON.
 func ParseTokenFromConnection(data string) (*TokenInfo, error) {
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.Unmarshal([]byte(data), &raw); err != nil {
 		return nil, fmt.Errorf("parse connection data: %w", err)
 	}
@@ -46,12 +46,12 @@ func ParseTokenFromConnection(data string) (*TokenInfo, error) {
 
 // ParseProviderSpecificData extracts OAuth config from connection.data JSON.
 func ParseProviderSpecificData(data string) (*ProviderSpecificData, error) {
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.Unmarshal([]byte(data), &raw); err != nil {
 		return nil, fmt.Errorf("parse connection data: %w", err)
 	}
 
-	psd, ok := raw["providerSpecificData"].(map[string]interface{})
+	psd, ok := raw["providerSpecificData"].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("no providerSpecificData found")
 	}
@@ -119,7 +119,7 @@ func RefreshToken(token *TokenInfo, psd *ProviderSpecificData) (*TokenInfo, erro
 		return nil, fmt.Errorf("refresh returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("parse refresh response: %w", err)
 	}
@@ -142,7 +142,7 @@ func RefreshToken(token *TokenInfo, psd *ProviderSpecificData) (*TokenInfo, erro
 	return newToken, nil
 }
 
-func getString(m map[string]interface{}, key string) string {
+func getString(m map[string]any, key string) string {
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
@@ -151,7 +151,7 @@ func getString(m map[string]interface{}, key string) string {
 	return ""
 }
 
-func getInt(m map[string]interface{}, key string) int {
+func getInt(m map[string]any, key string) int {
 	if v, ok := m[key]; ok {
 		switch n := v.(type) {
 		case float64:
