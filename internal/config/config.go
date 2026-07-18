@@ -48,8 +48,11 @@ func LoadConfig() *Config {
 	// Ensure the base data directory exists
 	_ = os.MkdirAll(dataDir, 0755)
 
-	// Database file is at DATA_DIR/db/data.sqlite
-	dbPath := filepath.Join(dataDir, "db", "data.sqlite")
+	// Database file: DB_PATH overrides default DATA_DIR/db/data.sqlite
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = filepath.Join(dataDir, "db", "data.sqlite")
+	}
 
 	initialPassword := os.Getenv("INITIAL_PASSWORD")
 	if initialPassword == "" {

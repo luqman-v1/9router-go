@@ -1,0 +1,17 @@
+services:
+  9router-proxy:
+    build: .
+    container_name: 9router-proxy
+    ports:
+      - "20128:20128"
+    volumes:
+      - 9router-data:/data
+    environment:
+      - PORT=20128
+      - DATA_DIR=/data
+      # Or use DB_PATH for custom SQLite location:
+      # - DB_PATH=/data/custom/data.sqlite
+    restart: unless-stopped
+
+volumes:
+  9router-data:

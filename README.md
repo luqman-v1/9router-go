@@ -54,13 +54,38 @@ curl http://localhost:20128/health
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `20128` | Server port |
-| `DATA_DIR` | `~/.9router/` | SQLite DB directory |
+| `DATA_DIR` | `~/.9router/` | Data directory (DB, JWT secret) |
+| `DB_PATH` | `DATA_DIR/db/data.sqlite` | Custom SQLite DB path (overrides DATA_DIR) |
 
 ## Database
 
 Uses same SQLite DB as [9Router dashboard](https://github.com/decolua/9router) (`~/.9router/db/data.sqlite`) with WAL mode.
 
 Tables: `apiKeys`, `providerConnections`, `providerNodes`, `combos`, `modelAliases`
+
+### Custom DB Location
+
+```bash
+# Use custom SQLite path
+DB_PATH=/mnt/shared/9router/data.sqlite PORT=20128 ./9router-proxy
+```
+
+## Docker
+
+```bash
+# Build & run
+docker compose up -d
+
+# Or manually
+docker build -t 9router-proxy .
+docker run -d -p 20128:20128 -v 9router-data:/data --name 9router-proxy 9router-proxy
+
+# With custom DB path
+docker run -d -p 20128:20128 \
+  -v /path/to/your/data.sqlite:/db/data.sqlite \
+  -e DB_PATH=/db/data.sqlite \
+  --name 9router-proxy 9router-proxy
+```
 
 ## API Endpoints
 
