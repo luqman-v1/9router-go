@@ -162,4 +162,7 @@ func SetupRoutes(r interface {
 	r.Post("/messages", handler.HandleMessages)
 	r.Post("/embeddings", handler.HandleEmbeddings)
 	r.Post("/responses", handler.HandleResponses)
+	r.Post("/images/generations", handler.HandleImages)
+	r.Post("/audio/speech", handler.HandleAudioSpeech)
+	r.Post("/audio/transcriptions", handler.HandleAudioTranscriptions)
 }

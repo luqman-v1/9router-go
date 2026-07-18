@@ -119,10 +119,15 @@ docker run -d -p 20128:20128 \
 ## API Endpoints
 
 ```
-POST /v1/chat/completions  # OpenAI format
-POST /v1/messages           # Claude format
-GET  /v1/models             # List models
-GET  /health                # Health check
+POST /v1/chat/completions      # OpenAI format
+POST /v1/messages              # Claude format
+POST /v1/embeddings            # Embeddings
+POST /v1/responses             # Responses API
+POST /v1/images/generations    # Image generation
+POST /v1/audio/speech          # Text-to-speech (TTS)
+POST /v1/audio/transcriptions  # Speech-to-text (STT)
+GET  /v1/models                 # List models
+GET  /health                    # Health check
 ```
 
 ## Cross-Compile
