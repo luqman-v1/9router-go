@@ -126,6 +126,8 @@ POST /v1/responses             # Responses API
 POST /v1/images/generations    # Image generation
 POST /v1/audio/speech          # Text-to-speech (TTS)
 POST /v1/audio/transcriptions  # Speech-to-text (STT)
+POST /v1/search                 # Web search (provider-selected)
+POST /v1/scrape                 # Web fetch (provider-selected)
 GET  /v1/models                 # List models
 GET  /health                    # Health check
 ```

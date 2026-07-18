@@ -165,4 +165,6 @@ func SetupRoutes(r interface {
 	r.Post("/images/generations", handler.HandleImages)
 	r.Post("/audio/speech", handler.HandleAudioSpeech)
 	r.Post("/audio/transcriptions", handler.HandleAudioTranscriptions)
+	r.Post("/search", handler.HandleSearch)
+	r.Post("/scrape", handler.HandleScrape)
 }
