@@ -1,7 +1,7 @@
 services:
-  9router-proxy:
+  9router-go:
     build: .
-    container_name: 9router-proxy
+    container_name: 9router-go
     ports:
       - "20128:20128"
     volumes:
@@ -9,6 +9,10 @@ services:
     environment:
       - PORT=20128
       - DATA_DIR=/data
+      # Token saver toggles (all default off except RTK):
+      # - RTK_ENABLED=true
+      # - CAVEMAN_ENABLED=false
+      # - PONYTAIL_ENABLED=false
       # Or use DB_PATH for custom SQLite location:
       # - DB_PATH=/data/custom/data.sqlite
     restart: unless-stopped
