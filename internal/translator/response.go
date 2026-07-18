@@ -75,6 +75,36 @@ var (
 	states   = make(map[string]*StreamState)
 )
 
+// GetStreamUsage returns the accumulated usage for a stream session and removes it.
+func GetStreamUsage(sessionKey string) *OpenAIUsage {
+	statesMu.Lock()
+	defer statesMu.Unlock()
+	if state, ok := states[sessionKey]; ok && state.Usage != nil {
+		usage := *state.Usage
+		return &usage
+	}
+	return nil
+}
+
+// GetLastStreamUsage returns usage from any completed stream session.
+// Called after handleStreamResponse to capture token counts.
+var lastUsage *OpenAIUsage
+var lastUsageMu sync.Mutex
+
+func SetLastUsage(u *OpenAIUsage) {
+	lastUsageMu.Lock()
+	defer lastUsageMu.Unlock()
+	lastUsage = u
+}
+
+func GetAndClearLastUsage() *OpenAIUsage {
+	lastUsageMu.Lock()
+	defer lastUsageMu.Unlock()
+	u := lastUsage
+	lastUsage = nil
+	return u
+}
+
 func stopThinkingBlock(state *StreamState, results *[]map[string]interface{}) {
 	if !state.ThinkingBlockStarted {
 		return
@@ -475,6 +505,10 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 			"type": "message_stop",
 		})
 
+		// Capture usage before cleanup
+		if state.Usage != nil {
+			SetLastUsage(state.Usage)
+		}
 		statesMu.Lock()
 		delete(states, stateKey)
 		statesMu.Unlock()

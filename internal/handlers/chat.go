@@ -772,7 +772,7 @@ func (h *ChatHandler) handleAccountFallback(
 		if err != nil {
 			return err
 		}
-		return h.tryForwardWithConnection(w, provider, model, connData, body, isStream, translateResponse)
+		return h.tryForwardWithConnection(w, provider, model, pinnedConnectionID, connData, body, isStream, translateResponse)
 	}
 
 	// Check if provider/model is healthy
@@ -816,7 +816,7 @@ func (h *ChatHandler) handleAccountFallback(
 			// means at least one account failed — continue to the next
 		}
 
-		lastErr = h.tryForwardWithConnection(w, provider, model, connData, body, isStream, translateResponse)
+		lastErr = h.tryForwardWithConnection(w, provider, model, connObj.ID, connData, body, isStream, translateResponse)
 		if lastErr == nil {
 			return nil // success
 		}
@@ -851,6 +851,7 @@ func (h *ChatHandler) tryForwardWithConnection(
 	w http.ResponseWriter,
 	provider string,
 	model string,
+	connectionID string,
 	connData *ConnectionData,
 	body []byte,
 	isStream bool,
@@ -883,12 +884,20 @@ func (h *ChatHandler) tryForwardWithConnection(
 		log.Printf("[health] failed to record health for %s/%s: %v", provider, model, healthErr)
 	}
 
-	// Log cost estimate on success (usage tracking placeholder)
+	// Log usage on success
 	if fwdErr == nil {
-		cost := pricing.EstimateCost(model, 0, 0) // token counts unknown at proxy level without response parsing
-		if cost > 0 {
-			log.Printf("[cost] %s/%s latency=%dms estimated_base_cost=$%.6f", provider, model, latencyMs, cost)
+		usage := translator.GetAndClearLastUsage()
+		if usage == nil {
+			usage = &translator.OpenAIUsage{}
 		}
+		logInfo := &UsageLogInfo{
+			Provider:     provider,
+			Model:        model,
+			ConnectionID: connectionID,
+			APIKey:       apiKey,
+			Endpoint:     "chat",
+		}
+		h.logUsage(logInfo, usage)
 	}
 
 	return fwdErr
