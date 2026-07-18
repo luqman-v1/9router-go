@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 env:
-  REGISTRY_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/9router-go
+  REGISTRY_IMAGE: luqmanv1/9router-go
 
 jobs:
   binaries:
