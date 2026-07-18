@@ -34,7 +34,7 @@ func (w *statusWriter) WriteHeader(code int) {
 
 func main() {
 	app := &cli.App{
-		Name:  "9router-proxy",
+		Name:  "9router-go",
 		Usage: "AI API proxy gateway with token saver features",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{

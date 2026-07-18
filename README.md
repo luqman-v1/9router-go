@@ -44,7 +44,7 @@ High-performance Go proxy gateway for [9Router](https://github.com/decolua/9rout
 
 ```bash
 # Build
-go build -o 9router-go ./cmd/9router-proxy/
+go build -o 9router-go ./cmd/9router-go/
 
 # Run (standalone, no dashboard needed)
 PORT=20128 ./9router-go
@@ -99,7 +99,7 @@ Tables: `apiKeys`, `providerConnections`, `providerNodes`, `combos`, `modelAlias
 
 ```bash
 # Use custom SQLite path
-DB_PATH=/mnt/shared/9router/data.sqlite PORT=20128 ./9router-proxy
+DB_PATH=/mnt/shared/9router/data.sqlite PORT=20128 ./9router-go
 ```
 
 ## Docker
@@ -138,9 +138,9 @@ GET  /health                    # Health check
 ## Cross-Compile
 
 ```bash
-GOOS=linux GOARCH=amd64 go build -o 9router-go-linux ./cmd/9router-proxy/
-GOOS=darwin GOARCH=arm64 go build -o 9router-go-mac ./cmd/9router-proxy/
-GOOS=windows GOARCH=amd64 go build -o 9router-go.exe ./cmd/9router-proxy/
+GOOS=linux GOARCH=amd64 go build -o 9router-go-linux ./cmd/9router-go/
+GOOS=darwin GOARCH=arm64 go build -o 9router-go-mac ./cmd/9router-go/
+GOOS=windows GOARCH=amd64 go build -o 9router-go.exe ./cmd/9router-go/
 ```
 
 ## Test
@@ -179,8 +179,6 @@ Tracked items not yet implemented:
       is **no multi-provider dispatch or response normalizer** (Tavily/Exa/Brave,
       firecrawl/jina). Register a connection with the search/fetch base URL + key
       to use them.
-- [ ] **Source directory name** — the binary is `9router-go` but the Go package
-      dir is still `cmd/9router-proxy/`. Cosmetic; only affects the build path.
 
 ## Credits
 

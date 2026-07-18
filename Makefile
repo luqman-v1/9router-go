@@ -9,7 +9,7 @@ PONYTAIL ?= false
 
 ## build — compile binary
 build:
-	go build -ldflags="-s -w" -o $(BINARY_NAME) ./cmd/9router-proxy/
+	go build -ldflags="-s -w" -o $(BINARY_NAME) ./cmd/9router-go/
 
 ## run — start proxy (PORT=20128)
 run: build
@@ -17,7 +17,7 @@ run: build
 
 ## dev — start with go run (auto-rebuild)
 dev:
-	PORT=$(PORT) DATA_DIR=$(DATA_DIR) go run ./cmd/9router-proxy/
+	PORT=$(PORT) DATA_DIR=$(DATA_DIR) go run ./cmd/9router-go/
 
 ## test — run all tests
 test:
@@ -37,10 +37,10 @@ bench: build
 
 ## cross — cross-compile Linux/macOS/Windows
 cross:
-	GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o $(BINARY_NAME)-linux-amd64 ./cmd/9router-proxy/
-	GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o $(BINARY_NAME)-linux-arm64 ./cmd/9router-proxy/
-	GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o $(BINARY_NAME)-darwin-arm64 ./cmd/9router-proxy/
-	GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o $(BINARY_NAME)-windows-amd64.exe ./cmd/9router-proxy/
+	GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o $(BINARY_NAME)-linux-amd64 ./cmd/9router-go/
+	GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o $(BINARY_NAME)-linux-arm64 ./cmd/9router-go/
+	GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o $(BINARY_NAME)-darwin-arm64 ./cmd/9router-go/
+	GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o $(BINARY_NAME)-windows-amd64.exe ./cmd/9router-go/
 	@ls -lh $(BINARY_NAME)-*
 
 ## docker — docker compose up

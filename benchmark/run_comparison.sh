@@ -114,7 +114,7 @@ echo "  Benchmark DB ready."
 # Step 3: Build & start Go proxy
 echo -e "${GREEN}[3/5] Building Go proxy...${NC}"
 cd "$GO_PROXY_DIR"
-go build -o /tmp/9router-bench-go "$GO_PROXY_DIR/cmd/9router-proxy/"
+go build -o /tmp/9router-bench-go "$GO_PROXY_DI./cmd/9router-go/"
 DATA_DIR="$BENCH_DB_DIR" PORT=$GO_PORT /tmp/9router-bench-go &
 GO_PID=$!
 sleep 1

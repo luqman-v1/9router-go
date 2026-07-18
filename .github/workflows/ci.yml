@@ -25,4 +25,4 @@ jobs:
         run: go test ./... -v
 
       - name: Build
-        run: go build -ldflags="-s -w" -o /tmp/9router-go ./cmd/9router-proxy/
+        run: go build -ldflags="-s -w" -o /tmp/9router-go ./cmd/9router-go/

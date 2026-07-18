@@ -1,7 +1,5 @@
 # Build artifacts
-/9router-proxy
 /9router-go
-/9router-proxy-*
 /9router-go-*
 
 # Test binaries
