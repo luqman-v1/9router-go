@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -1271,5 +1272,275 @@ func TestHandleChatCompletions_PrefixProvider(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200 OK, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Test handleAccountFallback — non-retryable 500 stops immediately, no lock created.
+func TestAccountFallback_NonRetryableError(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":{"message":"server error","type":"server_error"}}`))
+	}))
+	defer upstream.Close()
+
+	_, err := database.Exec(`UPDATE providerConnections SET isActive = 0 WHERE provider = 'deepseek'`)
+	if err != nil {
+		t.Fatalf("failed to deactivate connections: %v", err)
+	}
+
+	mockData, _ := json.Marshal(map[string]interface{}{
+		"apiKey":  "sk-bad-key",
+		"baseUrl": upstream.URL,
+	})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-500', 'deepseek', 'apikey', '500 Connection', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(mockData))
+	if err != nil {
+		t.Fatalf("failed to insert connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	reqBody := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hello"}],"stream":false}`
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+	handler.HandleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rec.Code)
+	}
+
+	// Verify no lock was created for 500 error
+	locked, err := repo.IsModelLocked("deepseek", "deepseek-chat")
+	if err != nil {
+		t.Fatalf("IsModelLocked failed: %v", err)
+	}
+	if locked {
+		t.Error("expected no model lock for non-retryable 500 error")
+	}
+}
+
+// Test handleAccountFallback — lock expiration: expired lock allows retry.
+func TestAccountFallback_LockExpiration(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	// Insert an expired lock (lockedUntil in the past)
+	expiredTime := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
+	lockData, _ := json.Marshal(db.ModelLock{
+		LockedUntil: expiredTime,
+		LastError:   "401 upstream error",
+		ErrorCode:   401,
+	})
+	_, err := database.Exec(`INSERT OR REPLACE INTO kv (scope, key, value) VALUES ('modelLock', 'DEEPSEEK/DEEPSEEK-CHAT', ?)`, string(lockData))
+	if err != nil {
+		t.Fatalf("failed to insert expired lock: %v", err)
+	}
+
+	// Verify lock is reported as expired
+	locked, err := db.NewRepo(database).IsModelLocked("deepseek", "deepseek-chat")
+	if err != nil {
+		t.Fatalf("IsModelLocked failed: %v", err)
+	}
+	if locked {
+		t.Error("expected expired lock to not be locked")
+	}
+
+	// Request should succeed since lock is expired
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"resp-ok","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`))
+	}))
+	defer upstream.Close()
+
+	mockData, _ := json.Marshal(map[string]interface{}{
+		"apiKey":  "sk-ok-key",
+		"baseUrl": upstream.URL,
+	})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-ok', 'deepseek', 'apikey', 'OK Connection', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(mockData))
+	if err != nil {
+		t.Fatalf("failed to insert connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	reqBody := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hello"}],"stream":false}`
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+	handler.HandleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d (lock should be expired)", rec.Code)
+	}
+}
+
+// Test handleAccountFallback — lock duration: 401 = 120s, 429 = 60s.
+func TestAccountFallback_LockDuration(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+
+	// Lock with 401
+	err := repo.LockModel("deepseek", "model-401", 120, "401 error", 401)
+	if err != nil {
+		t.Fatalf("LockModel failed: %v", err)
+	}
+	lock, err := repo.GetModelLock("deepseek", "model-401")
+	if err != nil {
+		t.Fatalf("GetModelLock failed: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("expected non-nil lock for 401")
+	}
+	if lock.ErrorCode != 401 {
+		t.Errorf("expected error code 401, got %d", lock.ErrorCode)
+	}
+
+	// Lock with 429
+	err = repo.LockModel("deepseek", "model-429", 60, "429 error", 429)
+	if err != nil {
+		t.Fatalf("LockModel failed: %v", err)
+	}
+	lock, err = repo.GetModelLock("deepseek", "model-429")
+	if err != nil {
+		t.Fatalf("GetModelLock failed: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("expected non-nil lock for 429")
+	}
+	if lock.ErrorCode != 429 {
+		t.Errorf("expected error code 429, got %d", lock.ErrorCode)
+	}
+
+	// UnlockModel should remove the lock
+	err = repo.UnlockModel("deepseek", "model-401")
+	if err != nil {
+		t.Fatalf("UnlockModel failed: %v", err)
+	}
+	locked, err := repo.IsModelLocked("deepseek", "model-401")
+	if err != nil {
+		t.Fatalf("IsModelLocked failed: %v", err)
+	}
+	if locked {
+		t.Error("expected model to be unlocked after UnlockModel")
+	}
+}
+
+// Test handleAccountFallback — all connections fail with retryable (429).
+func TestAccountFallback_AllExhaustedRetryable(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	}))
+	defer upstream.Close()
+
+	_, err := database.Exec(`UPDATE providerConnections SET isActive = 0 WHERE provider = 'deepseek'`)
+	if err != nil {
+		t.Fatalf("failed to deactivate: %v", err)
+	}
+
+	mockData, _ := json.Marshal(map[string]interface{}{
+		"apiKey":  "sk-key",
+		"baseUrl": upstream.URL,
+	})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-rl-1', 'deepseek', 'apikey', 'RL Conn 1', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(mockData))
+	if err != nil {
+		t.Fatalf("failed: %v", err)
+	}
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-rl-2', 'deepseek', 'apikey', 'RL Conn 2', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(mockData))
+	if err != nil {
+		t.Fatalf("failed: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	reqBody := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hello"}],"stream":false}`
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+	handler.HandleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", rec.Code)
+	}
+
+	// Model should be locked after exhausting all accounts with 429
+	locked, err := repo.IsModelLocked("deepseek", "deepseek-chat")
+	if err != nil {
+		t.Fatalf("IsModelLocked failed: %v", err)
+	}
+	if !locked {
+		t.Error("expected model lock after all accounts exhausted with 429")
+	}
+}
+
+// Test handleAccountFallback — pinned connection bypasses account fallback loop.
+func TestAccountFallback_PinnedConnection(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"resp-pinned","choices":[{"message":{"content":"pinned"}}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`))
+	}))
+	defer upstream.Close()
+
+	pinnedData, _ := json.Marshal(map[string]interface{}{
+		"apiKey":  "sk-pinned",
+		"baseUrl": upstream.URL,
+	})
+	_, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-pinned', 'deepseek', 'apikey', 'Pinned', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(pinnedData))
+	if err != nil {
+		t.Fatalf("failed: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	body := []byte(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hello"}]}`)
+	rec := httptest.NewRecorder()
+	err = handler.handleAccountFallback(rec, "deepseek", "deepseek-chat", "conn-pinned", body, false, false, "/v1/chat/completions")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+}
+
+// Test handleAccountFallback — pinned connection not found returns error immediately.
+func TestAccountFallback_PinnedConnection_NotFound(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	body := []byte(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hello"}]}`)
+	rec := httptest.NewRecorder()
+	err := handler.handleAccountFallback(rec, "deepseek", "deepseek-chat", "nonexistent-conn", body, false, false, "/v1/chat/completions")
+	if err == nil {
+		t.Fatal("expected error for nonexistent pinned connection, got nil")
 	}
 }

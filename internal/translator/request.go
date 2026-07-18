@@ -7,107 +7,6 @@ import (
 	"strings"
 )
 
-// Claude System Prompt block
-type ClaudeSystemBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-// Claude Message Content block
-type ClaudeContentBlock struct {
-	Type      string             `json:"type"`
-	Text      string             `json:"text,omitempty"`
-	Source    *ClaudeImageSource `json:"source,omitempty"`
-	ID        string             `json:"id,omitempty"`
-	Name      string             `json:"name,omitempty"`
-	Input     json.RawMessage    `json:"input,omitempty"`
-	ToolUseID string             `json:"tool_use_id,omitempty"`
-	Content   json.RawMessage    `json:"content,omitempty"`
-}
-
-type ClaudeImageSource struct {
-	Type      string `json:"type"`
-	MediaType string `json:"media_type"`
-	Data      string `json:"data"`
-}
-
-type ClaudeMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
-}
-
-type ClaudeTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"input_schema,omitempty"`
-}
-
-type ClaudeToolChoice struct {
-	Type string `json:"type"`
-	Name string `json:"name,omitempty"`
-}
-
-type ClaudeRequest struct {
-	Model       string           `json:"model"`
-	Messages    []ClaudeMessage  `json:"messages"`
-	System      json.RawMessage  `json:"system,omitempty"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	MaxTokens   *int             `json:"max_tokens,omitempty"`
-	Tools       []ClaudeTool     `json:"tools,omitempty"`
-	ToolChoice  *json.RawMessage `json:"tool_choice,omitempty"`
-	Stream      bool             `json:"stream,omitempty"`
-}
-
-// OpenAI structures
-type OpenAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
-	Tools       []OpenAITool    `json:"tools,omitempty"`
-	ToolChoice  any     `json:"tool_choice,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-}
-
-type OpenAIMessage struct {
-	Role       string           `json:"role"`
-	Content    any      `json:"content,omitempty"` // string or []OpenAIContentBlock
-	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"` // used for tool role messages
-}
-
-type OpenAIContentBlock struct {
-	Type     string          `json:"type"`
-	Text     string          `json:"text,omitempty"`
-	ImageUrl *OpenAIImageUrl `json:"image_url,omitempty"`
-}
-
-type OpenAIImageUrl struct {
-	URL string `json:"url"`
-}
-
-type OpenAIToolCall struct {
-	ID       string             `json:"id"`
-	Type     string             `json:"type"`
-	Function OpenAIFunctionCall `json:"function"`
-}
-
-type OpenAIFunctionCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
-type OpenAITool struct {
-	Type     string         `json:"type"`
-	Function OpenAIFunction `json:"function"`
-}
-
-type OpenAIFunction struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
-}
-
 var billingHeaderRegex = regexp.MustCompile(`(?i)^x-anthropic-billing-header:[^\n]*(?:\r?\n)?`)
 
 func stripAnthropicBillingHeader(text string) string {
@@ -119,13 +18,11 @@ func parseSystemPrompt(systemRaw json.RawMessage) string {
 		return ""
 	}
 
-	// Try to unmarshal as string first
 	var sysStr string
 	if err := json.Unmarshal(systemRaw, &sysStr); err == nil {
 		return stripAnthropicBillingHeader(sysStr)
 	}
 
-	// Try to unmarshal as system block array
 	var sysBlocks []ClaudeSystemBlock
 	if err := json.Unmarshal(systemRaw, &sysBlocks); err == nil {
 		var parts []string
@@ -157,7 +54,6 @@ func collapseTextParts(parts []OpenAIContentBlock) any {
 }
 
 func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
-	// If mid-conversation system prompt -> user role wrapped in <instructions>
 	if msg.Role == "system" {
 		var contentStr string
 		if err := json.Unmarshal(msg.Content, &contentStr); err == nil {
@@ -189,13 +85,11 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 		role = "assistant"
 	}
 
-	// Try parsing msg.Content as simple string
 	var simpleContent string
 	if err := json.Unmarshal(msg.Content, &simpleContent); err == nil {
 		return []OpenAIMessage{{Role: role, Content: simpleContent}}, nil
 	}
 
-	// Parse msg.Content as array of blocks
 	var blocks []ClaudeContentBlock
 	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
 		return nil, err
@@ -254,7 +148,6 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 	}
 
 	var results []OpenAIMessage
-
 	if len(toolResults) > 0 {
 		results = append(results, toolResults...)
 		if len(textParts) > 0 {
@@ -265,7 +158,6 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 		}
 		return results, nil
 	}
-
 	if len(toolCalls) > 0 {
 		msg := OpenAIMessage{
 			Role:      "assistant",
@@ -276,25 +168,21 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 		}
 		return []OpenAIMessage{msg}, nil
 	}
-
 	if len(textParts) > 0 {
 		return []OpenAIMessage{{
 			Role:    role,
 			Content: collapseTextParts(textParts),
 		}}, nil
 	}
-
 	if len(blocks) == 0 {
 		return []OpenAIMessage{{Role: role, Content: ""}}, nil
 	}
-
 	return nil, nil
 }
 
 func fixMissingToolResponsesOpenAI(messages []OpenAIMessage) []OpenAIMessage {
 	result := make([]OpenAIMessage, len(messages))
 	copy(result, messages)
-
 	for i := 0; i < len(result); i++ {
 		msg := result[i]
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
@@ -302,7 +190,6 @@ func fixMissingToolResponsesOpenAI(messages []OpenAIMessage) []OpenAIMessage {
 			for _, tc := range msg.ToolCalls {
 				toolCallIds = append(toolCallIds, tc.ID)
 			}
-
 			respondedIds := make(map[string]bool)
 			insertPosition := i + 1
 			for j := i + 1; j < len(result); j++ {
@@ -314,14 +201,12 @@ func fixMissingToolResponsesOpenAI(messages []OpenAIMessage) []OpenAIMessage {
 					break
 				}
 			}
-
 			var missingIds []string
 			for _, id := range toolCallIds {
 				if !respondedIds[id] {
 					missingIds = append(missingIds, id)
 				}
 			}
-
 			if len(missingIds) > 0 {
 				var missingResponses []OpenAIMessage
 				for _, id := range missingIds {
@@ -331,13 +216,11 @@ func fixMissingToolResponsesOpenAI(messages []OpenAIMessage) []OpenAIMessage {
 						Content:    "[No response received]",
 					})
 				}
-
 				temp := make([]OpenAIMessage, 0, len(result)+len(missingResponses))
 				temp = append(temp, result[:insertPosition]...)
 				temp = append(temp, missingResponses...)
 				temp = append(temp, result[insertPosition:]...)
 				result = temp
-
 				i = insertPosition + len(missingResponses) - 1
 			}
 		}
@@ -349,12 +232,10 @@ func convertToolChoice(choiceRaw *json.RawMessage) any {
 	if choiceRaw == nil {
 		return "auto"
 	}
-
 	var choiceStr string
 	if err := json.Unmarshal(*choiceRaw, &choiceStr); err == nil {
 		return choiceStr
 	}
-
 	var choiceObj ClaudeToolChoice
 	if err := json.Unmarshal(*choiceRaw, &choiceObj); err == nil {
 		switch choiceObj.Type {
@@ -371,7 +252,6 @@ func convertToolChoice(choiceRaw *json.RawMessage) any {
 			}
 		}
 	}
-
 	return "auto"
 }
 
@@ -388,7 +268,6 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 	oreq.MaxTokens = creq.MaxTokens
 	oreq.Stream = creq.Stream
 
-	// 1. System Prompt
 	sysContent := parseSystemPrompt(creq.System)
 	if sysContent != "" {
 		oreq.Messages = append(oreq.Messages, OpenAIMessage{
@@ -397,7 +276,6 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		})
 	}
 
-	// 2. Messages
 	for _, msg := range creq.Messages {
 		converted, err := convertClaudeMessage(msg)
 		if err != nil {
@@ -406,10 +284,8 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		oreq.Messages = append(oreq.Messages, converted...)
 	}
 
-	// 3. Fix missing tool responses
 	oreq.Messages = fixMissingToolResponsesOpenAI(oreq.Messages)
 
-	// 4. Tools
 	if len(creq.Tools) > 0 {
 		var otools []OpenAITool
 		for _, tool := range creq.Tools {
@@ -425,7 +301,6 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		oreq.Tools = otools
 	}
 
-	// 5. Tool choice
 	if creq.ToolChoice != nil {
 		oreq.ToolChoice = convertToolChoice(creq.ToolChoice)
 	}

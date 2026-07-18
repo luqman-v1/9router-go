@@ -180,3 +180,66 @@ func TestGetAuthenticatedApiKey(t *testing.T) {
 		t.Error("expected GetAuthenticatedApiKey to return nil when no key is injected")
 	}
 }
+
+func TestExtractApiKey(t *testing.T) {
+	tests := []struct {
+		name     string
+		req      *http.Request
+		expected string
+	}{
+		{
+			name:     "Bearer Authorization header",
+			req:      func() *http.Request { r := httptest.NewRequest("GET", "/", nil); r.Header.Set("Authorization", "Bearer test-key-123"); return r }(),
+			expected: "test-key-123",
+		},
+		{
+			name:     "lowercase bearer",
+			req:      func() *http.Request { r := httptest.NewRequest("GET", "/", nil); r.Header.Set("Authorization", "bearer test-key"); return r }(),
+			expected: "test-key",
+		},
+		{
+			name:     "query key param",
+			req:      httptest.NewRequest("GET", "/?key=query-key", nil),
+			expected: "query-key",
+		},
+		{
+			name:     "query api_key param",
+			req:      httptest.NewRequest("GET", "/?api_key=alt-key", nil),
+			expected: "alt-key",
+		},
+		{
+			name:     "query apiKey param",
+			req:      httptest.NewRequest("GET", "/?apiKey=camel-key", nil),
+			expected: "camel-key",
+		},
+		{
+			name:     "X-API-Key header fallback",
+			req:      func() *http.Request { r := httptest.NewRequest("GET", "/", nil); r.Header.Set("X-API-Key", "header-key"); return r }(),
+			expected: "header-key",
+		},
+		{
+			name:     "Bearer takes priority over query",
+			req:      func() *http.Request { r := httptest.NewRequest("GET", "/?key=query-key", nil); r.Header.Set("Authorization", "Bearer bearer-key"); return r }(),
+			expected: "bearer-key",
+		},
+		{
+			name:     "no auth returns empty",
+			req:      httptest.NewRequest("GET", "/", nil),
+			expected: "",
+		},
+		{
+			name:     "malformed auth with no space",
+			req:      func() *http.Request { r := httptest.NewRequest("GET", "/", nil); r.Header.Set("Authorization", "no-space"); return r }(),
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractApiKey(tt.req)
+			if got != tt.expected {
+				t.Errorf("extractApiKey() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
