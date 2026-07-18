@@ -728,13 +728,17 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 	}
 
 	// Translate OpenAI SSE to Claude SSE
-	sw := proxy.NewStreamWriter(w)
+	flusher, _ := w.(http.Flusher)
 	return proxy.ScanStream(upstream, func(chunk []byte) {
 		translated, err := translator.TranslateOpenAIToClaudeStream(chunk)
 		if err != nil || translated == nil {
 			return
 		}
-		sw.WriteChunk(translated)
+		// translated already has full SSE format (event: X\ndata: Y\n\n)
+		w.Write(translated)
+		if flusher != nil {
+			flusher.Flush()
+		}
 	})
 }
 
