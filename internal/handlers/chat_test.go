@@ -1529,8 +1529,6 @@ func TestAccountFallback_PinnedConnection(t *testing.T) {
 		t.Errorf("expected 200, got %d", rec.Code)
 	}
 }
-
-// Test handleAccountFallback — pinned connection not found returns error immediately.
 func TestAccountFallback_PinnedConnection_NotFound(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()

@@ -43,6 +43,8 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 			priority INTEGER,
 			isActive INTEGER DEFAULT 1,
 			data TEXT NOT NULL,
+			lastUsedAt TEXT,
+			consecutiveUseCount INTEGER DEFAULT 0,
 			createdAt TEXT NOT NULL,
 			updatedAt TEXT NOT NULL
 		);`,
@@ -587,5 +589,496 @@ func TestGetModelLock_Expired(t *testing.T) {
 	}
 	if locked {
 		t.Error("expected expired lock to be treated as unlocked")
+	}
+}
+
+// --- proxyPools tests ---
+
+func TestGetString(t *testing.T) {
+	m := map[string]any{
+		"name":     "pool-1",
+		"strategy": "round-robin",
+		"count":    3,
+		"active":   true,
+	}
+
+	if got := getString(m, "name"); got != "pool-1" {
+		t.Errorf("expected 'pool-1', got '%s'", got)
+	}
+	if got := getString(m, "strategy"); got != "round-robin" {
+		t.Errorf("expected 'round-robin', got '%s'", got)
+	}
+	if got := getString(m, "missing"); got != "" {
+		t.Errorf("expected '' for missing key, got '%s'", got)
+	}
+	if got := getString(m, "count"); got != "" {
+		t.Errorf("expected '' for non-string value, got '%s'", got)
+	}
+	if got := getString(m, "active"); got != "" {
+		t.Errorf("expected '' for bool value, got '%s'", got)
+	}
+}
+
+func TestNextURL_Empty(t *testing.T) {
+	pool := &ProxyPool{URLs: []string{}}
+	if got := pool.NextURL(); got != "" {
+		t.Errorf("expected '' for empty URLs, got '%s'", got)
+	}
+}
+
+func TestNextURL_SingleURL(t *testing.T) {
+	pool := &ProxyPool{URLs: []string{"http://proxy1:8080"}}
+	for i := 0; i < 3; i++ {
+		if got := pool.NextURL(); got != "http://proxy1:8080" {
+			t.Errorf("iteration %d: expected 'http://proxy1:8080', got '%s'", i, got)
+		}
+	}
+}
+
+func TestNextURL_RoundRobin(t *testing.T) {
+	pool := &ProxyPool{URLs: []string{"http://a:8080", "http://b:8080", "http://c:8080"}}
+
+	// atomic counter starts at 0, first AddUint64 returns 1: 1%3=1 -> b, 2%3=2 -> c, 3%3=0 -> a, 4%3=1 -> b
+	expected := []string{
+		"http://b:8080",
+		"http://c:8080",
+		"http://a:8080",
+		"http://b:8080",
+	}
+	for i, want := range expected {
+		if got := pool.NextURL(); got != want {
+			t.Errorf("iteration %d: expected '%s', got '%s'", i, want, got)
+		}
+	}
+}
+
+func TestGetProxyPool(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
+		id TEXT PRIMARY KEY,
+		data TEXT NOT NULL,
+		isActive INTEGER DEFAULT 1
+	);`)
+	if err != nil {
+		t.Fatalf("failed to create proxyPools table: %v", err)
+	}
+
+	_, err = db.Exec(`INSERT INTO proxyPools (id, data, isActive) VALUES (?, ?, ?)`,
+		"pool-1", `{"name":"Test Pool","strategy":"round-robin","urls":["http://p1:8080","http://p2:8080","http://p3:8080"]}`, 1,
+	)
+	if err != nil {
+		t.Fatalf("failed to insert proxy pool: %v", err)
+	}
+
+	repo := NewRepo(db)
+	pool, err := repo.GetProxyPool("pool-1")
+	if err != nil {
+		t.Fatalf("GetProxyPool failed: %v", err)
+	}
+	if pool == nil {
+		t.Fatal("expected non-nil pool")
+	}
+	if pool.ID != "pool-1" {
+		t.Errorf("expected ID 'pool-1', got '%s'", pool.ID)
+	}
+	if pool.Name != "Test Pool" {
+		t.Errorf("expected Name 'Test Pool', got '%s'", pool.Name)
+	}
+	if !pool.IsActive {
+		t.Error("expected IsActive true")
+	}
+	if pool.Strategy != "round-robin" {
+		t.Errorf("expected Strategy 'round-robin', got '%s'", pool.Strategy)
+	}
+	if len(pool.URLs) != 3 {
+		t.Fatalf("expected 3 URLs, got %d", len(pool.URLs))
+	}
+	if pool.URLs[0] != "http://p1:8080" || pool.URLs[1] != "http://p2:8080" || pool.URLs[2] != "http://p3:8080" {
+		t.Errorf("unexpected URLs: %v", pool.URLs)
+	}
+}
+
+func TestGetProxyPool_DefaultStrategy(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
+		id TEXT PRIMARY KEY,
+		data TEXT NOT NULL,
+		isActive INTEGER DEFAULT 1
+	);`)
+	if err != nil {
+		t.Fatalf("failed to create proxyPools table: %v", err)
+	}
+
+	// No strategy field -> should default to "round-robin"
+	_, err = db.Exec(`INSERT INTO proxyPools (id, data, isActive) VALUES (?, ?, ?)`,
+		"pool-2", `{"name":"No Strategy Pool","urls":["http://p1:8080"]}`, 1,
+	)
+	if err != nil {
+		t.Fatalf("failed to insert proxy pool: %v", err)
+	}
+
+	repo := NewRepo(db)
+	pool, err := repo.GetProxyPool("pool-2")
+	if err != nil {
+		t.Fatalf("GetProxyPool failed: %v", err)
+	}
+	if pool.Strategy != "round-robin" {
+		t.Errorf("expected default Strategy 'round-robin', got '%s'", pool.Strategy)
+	}
+}
+
+func TestGetProxyPool_Inactive(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
+		id TEXT PRIMARY KEY,
+		data TEXT NOT NULL,
+		isActive INTEGER DEFAULT 1
+	);`)
+	if err != nil {
+		t.Fatalf("failed to create proxyPools table: %v", err)
+	}
+
+	_, err = db.Exec(`INSERT INTO proxyPools (id, data, isActive) VALUES (?, ?, ?)`,
+		"pool-3", `{"name":"Inactive Pool","urls":["http://p1:8080"]}`, 0,
+	)
+	if err != nil {
+		t.Fatalf("failed to insert proxy pool: %v", err)
+	}
+
+	repo := NewRepo(db)
+	pool, err := repo.GetProxyPool("pool-3")
+	if err != nil {
+		t.Fatalf("GetProxyPool failed: %v", err)
+	}
+	if pool.IsActive {
+		t.Error("expected IsActive false for inactive pool")
+	}
+}
+
+func TestGetProxyPool_NotFound(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
+		id TEXT PRIMARY KEY,
+		data TEXT NOT NULL,
+		isActive INTEGER DEFAULT 1
+	);`)
+	if err != nil {
+		t.Fatalf("failed to create proxyPools table: %v", err)
+	}
+
+	repo := NewRepo(db)
+	pool, err := repo.GetProxyPool("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for non-existent pool")
+	}
+	if pool != nil {
+		t.Errorf("expected nil pool, got %+v", pool)
+	}
+}
+
+// --- usage tests ---
+
+func TestGetUsageDaily_Exists(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS usageDaily (
+		dateKey TEXT PRIMARY KEY,
+		data TEXT NOT NULL
+	);`)
+	if err != nil {
+		t.Fatalf("failed to create usageDaily table: %v", err)
+	}
+
+	_, err = db.Exec(`INSERT INTO usageDaily (dateKey, data) VALUES (?, ?)`,
+		"2026-07-18", `{"requests":10,"tokens":5000}`,
+	)
+	if err != nil {
+		t.Fatalf("failed to insert usage: %v", err)
+	}
+
+	repo := NewRepo(db)
+	data, err := repo.GetUsageDaily("2026-07-18")
+	if err != nil {
+		t.Fatalf("GetUsageDaily failed: %v", err)
+	}
+	if data != `{"requests":10,"tokens":5000}` {
+		t.Errorf("unexpected data: '%s'", data)
+	}
+}
+
+func TestGetUsageDaily_NotFound(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS usageDaily (
+		dateKey TEXT PRIMARY KEY,
+		data TEXT NOT NULL
+	);`)
+	if err != nil {
+		t.Fatalf("failed to create usageDaily table: %v", err)
+	}
+
+	repo := NewRepo(db)
+	_, err = repo.GetUsageDaily("2099-01-01")
+	if err == nil {
+		t.Error("expected error for non-existent dateKey")
+	}
+}
+
+func TestInsertUsageHistory(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS usageHistory (
+		timestamp TEXT,
+		provider TEXT,
+		model TEXT,
+		connectionId TEXT,
+		apiKey TEXT,
+		endpoint TEXT,
+		promptTokens INTEGER,
+		completionTokens INTEGER,
+		cost REAL,
+		status TEXT,
+		tokens TEXT,
+		meta TEXT
+	);`)
+	if err != nil {
+		t.Fatalf("failed to create usageHistory table: %v", err)
+	}
+
+	repo := NewRepo(db)
+	err = repo.InsertUsageHistory("openai", "gpt-4", "conn-1", "key-1", "/chat", 100, 50, 0.015, "success", 150, `{"reason":"test"}`, `{"response_time":200}`)
+	if err != nil {
+		t.Fatalf("InsertUsageHistory failed: %v", err)
+	}
+
+	// Verify by reading back
+	var provider, model, status, tokens string
+	var promptTokens int
+	err = db.QueryRow(`SELECT provider, model, promptTokens, status, tokens FROM usageHistory WHERE connectionId = ?`, "conn-1").Scan(&provider, &model, &promptTokens, &status, &tokens)
+	if err != nil {
+		t.Fatalf("failed to read back usageHistory: %v", err)
+	}
+	if provider != "openai" || model != "gpt-4" || promptTokens != 100 || status != "success" {
+		t.Errorf("unexpected row: provider=%s model=%s promptTokens=%d status=%s", provider, model, promptTokens, status)
+	}
+}
+
+func TestUpsertUsageDaily_Insert(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS usageDaily (
+		dateKey TEXT PRIMARY KEY,
+		data TEXT NOT NULL
+	);`)
+	if err != nil {
+		t.Fatalf("failed to create usageDaily table: %v", err)
+	}
+
+	repo := NewRepo(db)
+	err = repo.UpsertUsageDaily("2026-07-18", `{"requests":5}`)
+	if err != nil {
+		t.Fatalf("UpsertUsageDaily insert failed: %v", err)
+	}
+
+	data, err := repo.GetUsageDaily("2026-07-18")
+	if err != nil {
+		t.Fatalf("GetUsageDaily after insert failed: %v", err)
+	}
+	if data != `{"requests":5}` {
+		t.Errorf("unexpected data: '%s'", data)
+	}
+}
+
+func TestUpsertUsageDaily_Update(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS usageDaily (
+		dateKey TEXT PRIMARY KEY,
+		data TEXT NOT NULL
+	);`)
+	if err != nil {
+		t.Fatalf("failed to create usageDaily table: %v", err)
+	}
+
+	repo := NewRepo(db)
+
+	// Insert first
+	err = repo.UpsertUsageDaily("2026-07-18", `{"requests":5}`)
+	if err != nil {
+		t.Fatalf("first upsert failed: %v", err)
+	}
+
+	// Replace
+	err = repo.UpsertUsageDaily("2026-07-18", `{"requests":15,"tokens":1000}`)
+	if err != nil {
+		t.Fatalf("second upsert failed: %v", err)
+	}
+
+	data, err := repo.GetUsageDaily("2026-07-18")
+	if err != nil {
+		t.Fatalf("GetUsageDaily after update failed: %v", err)
+	}
+	if data != `{"requests":15,"tokens":1000}` {
+		t.Errorf("expected replaced data, got '%s'", data)
+	}
+}
+
+func TestInsertRequestDetail(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS requestDetails (
+		id TEXT PRIMARY KEY,
+		timestamp TEXT,
+		provider TEXT,
+		model TEXT,
+		connectionId TEXT,
+		status TEXT,
+		data TEXT
+	);`)
+	if err != nil {
+		t.Fatalf("failed to create requestDetails table: %v", err)
+	}
+
+	repo := NewRepo(db)
+	err = repo.InsertRequestDetail("req-1", "openai", "gpt-4", "conn-1", "success", `{"prompt":"hello"}`)
+	if err != nil {
+		t.Fatalf("InsertRequestDetail failed: %v", err)
+	}
+
+	// Verify
+	var provider, model, status, data string
+	err = db.QueryRow(`SELECT provider, model, status, data FROM requestDetails WHERE id = ?`, "req-1").Scan(&provider, &model, &status, &data)
+	if err != nil {
+		t.Fatalf("failed to read back requestDetail: %v", err)
+	}
+	if provider != "openai" || model != "gpt-4" || status != "success" || data != `{"prompt":"hello"}` {
+		t.Errorf("unexpected row: provider=%s model=%s status=%s data=%s", provider, model, status, data)
+	}
+}
+
+func TestInsertRequestDetail_Duplicate(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS requestDetails (
+		id TEXT PRIMARY KEY,
+		timestamp TEXT,
+		provider TEXT,
+		model TEXT,
+		connectionId TEXT,
+		status TEXT,
+		data TEXT
+	);`)
+	if err != nil {
+		t.Fatalf("failed to create requestDetails table: %v", err)
+	}
+
+	repo := NewRepo(db)
+
+	err = repo.InsertRequestDetail("req-1", "openai", "gpt-4", "conn-1", "success", `{"a":1}`)
+	if err != nil {
+		t.Fatalf("first insert failed: %v", err)
+	}
+
+	// INSERT OR IGNORE should not error on duplicate
+	err = repo.InsertRequestDetail("req-1", "anthropic", "claude-3", "conn-2", "error", `{"a":2}`)
+	if err != nil {
+		t.Fatalf("duplicate insert should not error: %v", err)
+	}
+
+	// Original row should remain
+	var provider string
+	err = db.QueryRow(`SELECT provider FROM requestDetails WHERE id = ?`, "req-1").Scan(&provider)
+	if err != nil {
+		t.Fatalf("failed to read back: %v", err)
+	}
+	if provider != "openai" {
+		t.Errorf("expected original provider 'openai', got '%s'", provider)
+	}
+}
+
+func TestUpdateConnectionLastUsed(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// providerConnections already created in setupTestDB
+	repo := NewRepo(db)
+
+	_, err := db.Exec(`INSERT INTO providerConnections (id, provider, authType, name, data, createdAt, updatedAt) VALUES
+		('conn-upd-1', 'openai', 'apikey', 'Test Conn', '{"key":"val"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z');`)
+	if err != nil {
+		t.Fatalf("failed to seed providerConnection: %v", err)
+	}
+
+	err = repo.UpdateConnectionLastUsed("conn-upd-1")
+	if err != nil {
+		t.Fatalf("UpdateConnectionLastUsed failed: %v", err)
+	}
+
+	// Verify lastUsedAt is set and consecutiveUseCount incremented
+	var lastUsedAt string
+	var consecutiveUseCount int
+	err = db.QueryRow(`SELECT lastUsedAt, consecutiveUseCount FROM providerConnections WHERE id = ?`, "conn-upd-1").Scan(&lastUsedAt, &consecutiveUseCount)
+	if err != nil {
+		t.Fatalf("failed to read back: %v", err)
+	}
+	if lastUsedAt == "" {
+		t.Error("expected lastUsedAt to be set")
+	}
+	if consecutiveUseCount != 1 {
+		t.Errorf("expected consecutiveUseCount 1, got %d", consecutiveUseCount)
+	}
+}
+
+func TestUpdateConnectionLastUsed_Increment(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := NewRepo(db)
+
+	_, err := db.Exec(`INSERT INTO providerConnections (id, provider, authType, name, data, createdAt, updatedAt) VALUES
+		('conn-upd-2', 'anthropic', 'apikey', 'Test Conn 2', '{}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z');`)
+	if err != nil {
+		t.Fatalf("failed to seed providerConnection: %v", err)
+	}
+
+	repo.UpdateConnectionLastUsed("conn-upd-2")
+	repo.UpdateConnectionLastUsed("conn-upd-2")
+	repo.UpdateConnectionLastUsed("conn-upd-2")
+
+	var consecutiveUseCount int
+	err = db.QueryRow(`SELECT consecutiveUseCount FROM providerConnections WHERE id = ?`, "conn-upd-2").Scan(&consecutiveUseCount)
+	if err != nil {
+		t.Fatalf("failed to read back: %v", err)
+	}
+	if consecutiveUseCount != 3 {
+		t.Errorf("expected consecutiveUseCount 3 after 3 calls, got %d", consecutiveUseCount)
+	}
+}
+
+func TestUpdateConnectionLastUsed_NonExistent(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := NewRepo(db)
+
+	// Update on non-existent ID should not error (UPDATE with no match is no-op)
+	err := repo.UpdateConnectionLastUsed("no-such-connection")
+	if err != nil {
+		t.Errorf("expected no error for non-existent connection, got %v", err)
 	}
 }

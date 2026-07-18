@@ -1,6 +1,9 @@
 BINARY_NAME := 9router-proxy
 PORT ?= 20128
 DATA_DIR ?= $(HOME)/.9router
+RTK ?= true
+CAVEMAN ?= false
+PONYTAIL ?= false
 
 .PHONY: build run dev test vet bench cross docker docker-build clean help
 
@@ -10,7 +13,7 @@ build:
 
 ## run — start proxy (PORT=20128)
 run: build
-	PORT=$(PORT) DATA_DIR=$(DATA_DIR) ./$(BINARY_NAME)
+	PORT=$(PORT) DATA_DIR=$(DATA_DIR) ./$(BINARY_NAME) --rtk=$(RTK) --caveman=$(CAVEMAN) --ponytail=$(PONYTAIL)
 
 ## dev — start with go run (auto-rebuild)
 dev:
@@ -59,3 +62,8 @@ help:
 	@echo ""
 	@echo "Custom:  make run PORT=3000"
 	@echo "         make run DATA_DIR=/path/to/data"
+	@echo ""
+	@echo "Token savers:  make run CAVEMAN=true PONYTAIL=true"
+	@echo "               make run RTK=false"
+	@echo "               make run CAVEMAN=true PONYTAIL=true PORT=3000"
+	@echo "               make run RTK=$(RTK) CAVEMAN=$(CAVEMAN) PONYTAIL=$(PONYTAIL)"

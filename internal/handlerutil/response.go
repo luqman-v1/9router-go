@@ -30,7 +30,7 @@ func WriteJSONError(w http.ResponseWriter, status int, message string) {
 // UpdateModelInBody returns a copy of body with the "model" field set to modelName.
 func UpdateModelInBody(body []byte, modelName string) []byte {
 	var m map[string]any
-	if err := json.Unmarshal(body, &m); err != nil {
+	if err := json.Unmarshal(body, &m); err != nil || m == nil {
 		return body
 	}
 	m["model"] = modelName
@@ -43,6 +43,9 @@ func UpdateModelInBody(body []byte, modelName string) []byte {
 
 // SetAuthHeader applies the provider's auth scheme to the request.
 func SetAuthHeader(req *http.Request, apiKey, authHeader, authScheme string) {
+	if authHeader == "" {
+		authHeader = "Authorization"
+	}
 	switch authScheme {
 	case "bearer":
 		req.Header.Set(authHeader, "Bearer "+apiKey)
