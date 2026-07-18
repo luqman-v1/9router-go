@@ -29,6 +29,23 @@ jobs:
       - name: Build all platforms
         run: make cross
 
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get previous tag (if any)
+          PREV_TAG=$(git tag --sort=-version:refname | grep '^v' | head -2 | tail -1)
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "${GITHUB_REF_NAME}" ]; then
+            # First release — list all commits
+            LOG=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            LOG=$(git log --pretty=format:"- %s (%h)" --no-merges ${PREV_TAG}..${GITHUB_REF_NAME})
+          fi
+          # Write to file (multiline safe)
+          echo "$LOG" > /tmp/changelog.md
+          echo "### Changes" >> /tmp/changelog.md
+          echo "" >> /tmp/changelog.md
+          cat /tmp/changelog.md
+
       - name: Upload binaries to release
         uses: softprops/action-gh-release@v2
         with:
@@ -37,6 +54,7 @@ jobs:
             9router-go-linux-arm64
             9router-go-darwin-arm64
             9router-go-windows-amd64.exe
+          body_path: /tmp/changelog.md
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
