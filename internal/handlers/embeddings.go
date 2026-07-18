@@ -6,13 +6,15 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 // HandleEmbeddings forwards /v1/embeddings requests to upstream providers.
 func (h *ChatHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "failed to read request body")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
 	defer r.Body.Close()
@@ -21,53 +23,53 @@ func (h *ChatHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(body, &reqBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	if reqBody.Model == "" {
-		writeJSONError(w, http.StatusBadRequest, "missing model")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
 	}
 
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	conn, connData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 	if err != nil {
-		writeJSONError(w, http.StatusNotFound, err.Error())
+		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
 	providerCfg, err := h.getProviderConfig(modelInfo.Provider, connData)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	apiKey := extractAPIKey(connData)
 	if apiKey == "" {
-		writeJSONError(w, http.StatusUnauthorized, "no API key found")
+		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
 		return
 	}
 
 	embeddingsURL := buildEmbeddingsURL(providerCfg.BaseURL)
-	finalBody := updateModelInBody(body, modelInfo.Model)
+	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
 
 	req, err := http.NewRequest("POST", embeddingsURL, strings.NewReader(string(finalBody)))
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
 		return
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	setAuthHeader(req, apiKey, providerCfg)
+	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 
 	resp, err := h.Client.Do(req)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
 		return
 	}
 	defer resp.Body.Close()

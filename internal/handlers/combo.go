@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
 )
 
@@ -47,9 +49,9 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 			continue
 		}
 
-		var providerCfg *ProviderConfig
+		var providerCfg *providers.ProviderConfig
 		var apiKey string
-		if cfg, ok := knownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
+		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
 			c := cfg
 			providerCfg = &c
 			apiKey = c.DefaultAPIKey
@@ -71,7 +73,7 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 
 		var upstreamBody map[string]any
 		if err := json.Unmarshal(body, &upstreamBody); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "failed to parse request body")
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to parse request body")
 			return
 		}
 		upstreamBody["model"] = modelInfo.Model
@@ -121,7 +123,7 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 		w.Write(lastErr.Body)
 		return
 	}
-	writeJSONError(w, http.StatusBadGateway, "all combo models failed: no valid entries")
+	handlerutil.WriteJSONError(w, http.StatusBadGateway, "all combo models failed: no valid entries")
 }
 
 // handleMessagesComboFallback iterates through combo models for the Claude endpoint.
@@ -136,9 +138,9 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 			continue
 		}
 
-		var providerCfg *ProviderConfig
+		var providerCfg *providers.ProviderConfig
 		var apiKey string
-		if cfg, ok := knownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
+		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
 			c := cfg
 			providerCfg = &c
 			apiKey = c.DefaultAPIKey
@@ -203,5 +205,5 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 		w.Write(lastErr.Body)
 		return
 	}
-	writeJSONError(w, http.StatusBadGateway, "all combo models failed: no valid entries")
+	handlerutil.WriteJSONError(w, http.StatusBadGateway, "all combo models failed: no valid entries")
 }

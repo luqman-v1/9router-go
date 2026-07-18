@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/translator"
 )
 
@@ -15,7 +16,7 @@ import (
 func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "failed to read request body")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
 	defer r.Body.Close()
@@ -25,18 +26,18 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		Stream bool   `json:"stream"`
 	}
 	if err := json.Unmarshal(body, &reqBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
 	if reqBody.Model == "" {
-		writeJSONError(w, http.StatusBadRequest, "missing model")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
 	}
 
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -52,14 +53,14 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 func (h *ChatHandler) handleSingleModel(w http.ResponseWriter, body []byte, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
 	var upstreamBody map[string]any
 	if err := json.Unmarshal(body, &upstreamBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "failed to parse request body")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to parse request body")
 		return
 	}
 	upstreamBody["model"] = modelInfo.Model
 
 	upstreamJSON, err := json.Marshal(upstreamBody)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "failed to marshal upstream request")
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal upstream request")
 		return
 	}
 
@@ -71,7 +72,7 @@ func (h *ChatHandler) handleSingleModel(w http.ResponseWriter, body []byte, mode
 			w.Write(ue.Body)
 			return
 		}
-		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", result))
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", result))
 	}
 }
 
@@ -80,7 +81,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("[error] component=messages err=\"read body: %v\"", err)
-		writeJSONError(w, http.StatusBadRequest, "failed to read request body")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
 	defer r.Body.Close()
@@ -91,33 +92,33 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.Unmarshal(body, &reqBody); err != nil {
 		log.Printf("[error] component=messages err=\"parse JSON: %v\"", err)
-		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
 	if reqBody.Model == "" {
-		writeJSONError(w, http.StatusBadRequest, "missing model")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
 	}
 
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
 		log.Printf("[error] component=messages err=\"resolve model: %v\" model=%s", err, reqBody.Model)
-		writeJSONError(w, http.StatusBadRequest, err.Error())
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	openaiBody, err := translator.TranslateClaudeToOpenAI(body)
 	if err != nil {
 		log.Printf("[error] component=messages err=\"translate: %v\"", err)
-		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("translation error: %v", err))
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, fmt.Sprintf("translation error: %v", err))
 		return
 	}
 
 	var translatedReq map[string]any
 	if err := json.Unmarshal(openaiBody, &translatedReq); err != nil {
 		log.Printf("[error] component=messages err=\"parse translated: %v\"", err)
-		writeJSONError(w, http.StatusInternalServerError, "failed to parse translated request")
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to parse translated request")
 		return
 	}
 	translatedReq["stream"] = reqBody.Stream
@@ -135,7 +136,7 @@ func (h *ChatHandler) handleMessagesSingleModel(w http.ResponseWriter, translate
 	translatedReq["model"] = modelInfo.Model
 	finalBody, err := json.Marshal(translatedReq)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "failed to marshal translated request")
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal translated request")
 		return
 	}
 
@@ -147,7 +148,7 @@ func (h *ChatHandler) handleMessagesSingleModel(w http.ResponseWriter, translate
 			w.Write(ue.Body)
 			return
 		}
-		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", result))
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", result))
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/providers"
 )
 
 // NewChatHandler creates a ChatHandler with the given repository and a streaming-capable HTTP client.
@@ -21,7 +22,7 @@ func NewChatHandler(repo *db.Repo) *ChatHandler {
 
 // resolveProviderAlias resolves a provider alias to its canonical ID.
 func resolveProviderAlias(alias string) string {
-	if canonical, ok := providerAliasMap[alias]; ok {
+	if canonical, ok := providers.ProviderAliasMap[alias]; ok {
 		return canonical
 	}
 	return alias
@@ -35,7 +36,7 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 	}
 	parts := strings.SplitN(entry, "/", 2)
 	provider := resolveProviderAlias(parts[0])
-	if _, ok := knownProviders[provider]; !ok {
+	if _, ok := providers.KnownProviders[provider]; !ok {
 		if info := h.resolvePrefixProvider(provider, parts[1]); info != nil {
 			return info
 		}
@@ -57,7 +58,7 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		model := parts[1]
 		provider := resolveProviderAlias(providerAlias)
 
-		if _, ok := knownProviders[provider]; !ok {
+		if _, ok := providers.KnownProviders[provider]; !ok {
 			if info := h.resolvePrefixProvider(provider, model); info != nil {
 				return info, nil
 			}
@@ -71,7 +72,7 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		if strings.Contains(aliasTarget, "/") {
 			parts := strings.SplitN(aliasTarget, "/", 2)
 			provider := resolveProviderAlias(parts[0])
-			if _, ok := knownProviders[provider]; !ok {
+			if _, ok := providers.KnownProviders[provider]; !ok {
 				if info := h.resolvePrefixProvider(provider, parts[1]); info != nil {
 					return info, nil
 				}
@@ -92,7 +93,7 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 			if strings.Contains(firstModel, "/") {
 				parts := strings.SplitN(firstModel, "/", 2)
 				provider := resolveProviderAlias(parts[0])
-				if _, ok := knownProviders[provider]; !ok {
+				if _, ok := providers.KnownProviders[provider]; !ok {
 					if info := h.resolvePrefixProvider(provider, parts[1]); info != nil {
 						info.ComboModels = modelStrings
 						info.Strategy = combo.Strategy

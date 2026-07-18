@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlerutil"
 )
 
 func setupChatTestDB(t *testing.T) (*sql.DB, func()) {
@@ -642,7 +643,7 @@ func TestHandleChatCompletions_AccountFallback_429(t *testing.T) {
 
 func TestWriteJSONError(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writeJSONError(rec, http.StatusBadRequest, "test error")
+	handlerutil.WriteJSONError(rec, http.StatusBadRequest, "test error")
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", rec.Code)

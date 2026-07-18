@@ -10,6 +10,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/rtk"
 	"9router/proxy/internal/translator"
+	"9router/proxy/internal/providers"
 )
 
 // handleAccountFallback attempts to forward a request with automatic account fallback.
@@ -73,7 +74,7 @@ func (h *ChatHandler) handleAccountFallback(
 			return nil
 		}
 
-		if ue, ok := lastErr.(*upstreamError); ok && retryableStatusCodes[ue.StatusCode] {
+		if ue, ok := lastErr.(*upstreamError); ok && providers.RetryableStatusCodes[ue.StatusCode] {
 			durationSec := 60
 			if ue.StatusCode == http.StatusUnauthorized {
 				durationSec = 120

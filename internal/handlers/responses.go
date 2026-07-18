@@ -7,13 +7,15 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 // HandleResponses forwards /v1/responses requests to upstream providers.
 func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "failed to read request body")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
 	defer r.Body.Close()
@@ -23,17 +25,17 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 		Stream bool   `json:"stream"`
 	}
 	if err := json.Unmarshal(body, &reqBody); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	if reqBody.Model == "" {
-		writeJSONError(w, http.StatusBadRequest, "missing model")
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
 	}
 
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -48,40 +50,40 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 func (h *ChatHandler) handleResponsesSingleModel(w http.ResponseWriter, body []byte, modelInfo *ModelInfo, isStream bool) {
 	conn, connData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 	if err != nil {
-		writeJSONError(w, http.StatusNotFound, err.Error())
+		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
 	providerCfg, err := h.getProviderConfig(modelInfo.Provider, connData)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	apiKey := extractAPIKey(connData)
 	if apiKey == "" {
-		writeJSONError(w, http.StatusUnauthorized, "no API key found")
+		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
 		return
 	}
 
-	finalBody := updateModelInBody(body, modelInfo.Model)
+	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
 	responsesURL := strings.TrimRight(providerCfg.BaseURL, "/") + "/responses"
 
 	req, err := http.NewRequest("POST", responsesURL, strings.NewReader(string(finalBody)))
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
 		return
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	setAuthHeader(req, apiKey, providerCfg)
+	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 	if isStream {
 		req.Header.Set("Accept", "text/event-stream")
 	}
 
 	resp, err := h.Client.Do(req)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
 		return
 	}
 	defer resp.Body.Close()
@@ -124,7 +126,7 @@ func (h *ChatHandler) handleResponsesComboFallback(w http.ResponseWriter, body [
 			continue
 		}
 
-		finalBody := updateModelInBody(body, modelInfo.Model)
+		finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
 		responsesURL := strings.TrimRight(providerCfg.BaseURL, "/") + "/responses"
 
 		req, err := http.NewRequest("POST", responsesURL, strings.NewReader(string(finalBody)))
@@ -132,7 +134,7 @@ func (h *ChatHandler) handleResponsesComboFallback(w http.ResponseWriter, body [
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
-		setAuthHeader(req, apiKey, providerCfg)
+		handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 		if isStream {
 			req.Header.Set("Accept", "text/event-stream")
 		}
@@ -158,5 +160,5 @@ func (h *ChatHandler) handleResponsesComboFallback(w http.ResponseWriter, body [
 		return
 	}
 
-	writeJSONError(w, http.StatusBadGateway, "all combo models failed")
+	handlerutil.WriteJSONError(w, http.StatusBadGateway, "all combo models failed")
 }

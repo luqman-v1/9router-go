@@ -8,6 +8,7 @@ import (
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/models"
+	"9router/proxy/internal/providers"
 )
 
 // getBestConnection retrieves the highest-priority active connection for a provider.
@@ -65,16 +66,16 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 }
 
 // getProviderConfig returns the upstream configuration for a provider.
-func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionData) (*ProviderConfig, error) {
+func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionData) (*providers.ProviderConfig, error) {
 	if connData.BaseURL != "" {
-		return &ProviderConfig{
+		return &providers.ProviderConfig{
 			BaseURL:    connData.BaseURL,
 			AuthHeader: "Authorization",
 			AuthScheme: "bearer",
 		}, nil
 	}
 
-	if cfg, ok := knownProviders[provider]; ok {
+	if cfg, ok := providers.KnownProviders[provider]; ok {
 		return &cfg, nil
 	}
 
@@ -91,14 +92,14 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 				baseURL = strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
 			}
 		}
-		return &ProviderConfig{
+		return &providers.ProviderConfig{
 			BaseURL:    baseURL,
 			AuthHeader: "Authorization",
 			AuthScheme: "bearer",
 		}, nil
 	}
 
-	return &ProviderConfig{
+	return &providers.ProviderConfig{
 		BaseURL:    fmt.Sprintf("https://%s.example.com/v1/chat/completions", provider),
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",

@@ -38,16 +38,6 @@ type ConnectionData struct {
 	BaseURL     string `json:"baseUrl,omitempty"`
 }
 
-// ProviderConfig describes how to reach an upstream provider.
-type ProviderConfig struct {
-	BaseURL       string
-	AuthHeader    string            // "Authorization" or "x-api-key"
-	AuthScheme    string            // "bearer" or "raw"
-	NoAuth        bool              // true = no API key required
-	DefaultAPIKey string            // fallback API key when none provided
-	StaticHeaders map[string]string // extra headers to set on every request
-}
-
 // UsageLogInfo holds request context needed to log a usage record.
 type UsageLogInfo struct {
 	Provider     string

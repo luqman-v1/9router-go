@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
@@ -14,7 +16,7 @@ import (
 // forwardRequest sends the request to the upstream provider and streams/pipes the response.
 func (h *ChatHandler) forwardRequest(
 	w http.ResponseWriter,
-	cfg *ProviderConfig,
+	cfg *providers.ProviderConfig,
 	apiKey string,
 	body []byte,
 	isStream bool,
@@ -134,7 +136,7 @@ func (h *ChatHandler) handleJSONResponse(w http.ResponseWriter, upstream io.Read
 		if err != nil {
 			errMsg = errMsg + ": " + err.Error()
 		}
-		writeJSONError(w, http.StatusBadGateway, errMsg)
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, errMsg)
 		return nil
 	}
 

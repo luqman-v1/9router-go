@@ -10,11 +10,12 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers"
+	"9router/proxy/internal/middleware"
 )
 
 // statusWriter wraps http.ResponseWriter to capture the status code.
@@ -54,8 +55,8 @@ func main() {
 
 	// Create chi router with standard middleware
 	r := chi.NewRouter()
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.RequestID)
+	r.Use(chiMiddleware.Recoverer)
+	r.Use(chiMiddleware.RequestID)
 
 	// Strip /v1 prefix so routes register as /messages, /chat/completions, etc.
 	// Handles both /v1/messages and /v1/v1/messages (double prefix from base URL with /v1).
@@ -81,7 +82,7 @@ func main() {
 
 	// API key-protected routes
 	r.Group(func(r chi.Router) {
-		r.Use(handlers.RequireApiKey(repo))
+		r.Use(middleware.RequireApiKey(repo))
 
 		// Chat routes (OpenAI /v1/chat/completions and Claude /v1/messages)
 		handlers.SetupRoutes(r, repo, cfg.RTKEnabled)
