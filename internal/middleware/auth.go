@@ -3,6 +3,8 @@ package middleware
 import (
 	"context"
 	"net/http"
+
+	"9router/proxy/internal/constants"
 	"strings"
 
 	"9router/proxy/internal/db"
@@ -23,7 +25,7 @@ func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			apiKeyString := ExtractApiKey(r)
 			if apiKeyString == "" {
-				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 				w.WriteHeader(http.StatusUnauthorized)
 				w.Write([]byte(`{"error": {"message": "Authentication required. Provide an API key via Authorization: Bearer <key> header or ?key=<key> query parameter.", "type": "invalid_request_error", "code": "unauthorized"}}`))
 				return
@@ -32,14 +34,14 @@ func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 			// Validate via SQLite repository and retrieve details
 			apiKeyObj, err := repo.GetApiKeyByKey(apiKeyString)
 			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 				w.WriteHeader(http.StatusInternalServerError)
 				w.Write([]byte(`{"error": {"message": "Internal server error validating API key", "type": "server_error", "code": "internal_error"}}`))
 				return
 			}
 
 			if apiKeyObj == nil || apiKeyObj.IsActive != 1 {
-				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 				w.WriteHeader(http.StatusUnauthorized)
 				w.Write([]byte(`{"error": {"message": "Invalid or inactive API key.", "type": "invalid_request_error", "code": "invalid_api_key"}}`))
 				return

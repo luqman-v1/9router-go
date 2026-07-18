@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"9router/proxy/internal/constants"
+
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
@@ -28,16 +30,16 @@ func (h *ChatHandler) forwardRequest(
 		return fmt.Errorf("failed to create upstream request: %w", err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
 
 	if !cfg.NoAuth {
 		switch cfg.AuthScheme {
 		case "bearer":
-			req.Header.Set(cfg.AuthHeader, "Bearer "+apiKey)
+			req.Header.Set(cfg.AuthHeader, constants.AuthPrefixBearer+apiKey)
 		case "raw":
 			req.Header.Set(cfg.AuthHeader, apiKey)
 		default:
-			req.Header.Set("Authorization", "Bearer "+apiKey)
+			req.Header.Set(constants.HeaderAuthorization, constants.AuthPrefixBearer+apiKey)
 		}
 	}
 
@@ -72,14 +74,14 @@ func (h *ChatHandler) forwardRequest(
 
 // handleStreamResponse pipes SSE chunks from upstream to the client.
 func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, metrics *streamMetrics) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set(constants.HeaderContentType, constants.ContentTypeEventStream)
+	w.Header().Set(constants.HeaderCacheControl, constants.CacheNoCache)
+	w.Header().Set(constants.HeaderConnection, constants.ConnKeepAlive)
 	w.WriteHeader(http.StatusOK)
 
 	if !translate {
 		flusher, _ := w.(http.Flusher)
-		buf := make([]byte, 4096)
+		buf := make([]byte, constants.StreamReadBuffer)
 		for {
 			n, err := upstream.Read(buf)
 			if n > 0 {

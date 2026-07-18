@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"9router/proxy/internal/constants"
+
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
@@ -90,7 +92,8 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 		if modelInfo.Provider == "mimo-free" {
 			fwdErr = h.MimoFreeChat(w, upstreamJSON, isStream, comboMetrics)
 		} else {
-			fwdErr = h.forwardRequest(w, providerCfg, apiKey, upstreamJSON, isStream, translateResponse, comboMetrics)
+			comboBody := h.applyTokenSavers(upstreamJSON)
+			fwdErr = h.forwardRequest(w, providerCfg, apiKey, comboBody, isStream, translateResponse, comboMetrics)
 		}
 		comboLatency := time.Since(comboStart).Milliseconds()
 		if fwdErr != nil {
@@ -118,7 +121,7 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 	}
 
 	if lastErr != nil {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		w.WriteHeader(lastErr.StatusCode)
 		w.Write(lastErr.Body)
 		return
@@ -173,7 +176,8 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 
 		comboStart := time.Now()
 		comboMetrics := &streamMetrics{}
-		fwdErr := h.forwardRequest(w, providerCfg, apiKey, upstreamJSON, isStream, true, comboMetrics)
+		comboBody := h.applyTokenSavers(upstreamJSON)
+		fwdErr := h.forwardRequest(w, providerCfg, apiKey, comboBody, isStream, true, comboMetrics)
 		comboLatency := time.Since(comboStart).Milliseconds()
 		if fwdErr != nil {
 			if ue, ok := fwdErr.(*upstreamError); ok {
@@ -200,7 +204,7 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 	}
 
 	if lastErr != nil {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		w.WriteHeader(lastErr.StatusCode)
 		w.Write(lastErr.Body)
 		return

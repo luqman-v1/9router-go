@@ -886,7 +886,7 @@ func TestSetupRoutes(t *testing.T) {
 
 	repo := db.NewRepo(database)
 	r := chi.NewRouter()
-	SetupRoutes(r, repo)
+	SetupRoutes(r, repo, nil)
 
 	// Verify POST /v1/chat/completions is registered
 	req := httptest.NewRequest("POST", "/chat/completions", nil)

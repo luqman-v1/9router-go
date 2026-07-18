@@ -6,6 +6,8 @@ import (
 	"log"
 	"strings"
 
+	"9router/proxy/internal/constants"
+
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -70,8 +72,8 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 	if connData.BaseURL != "" {
 		return &providers.ProviderConfig{
 			BaseURL:    connData.BaseURL,
-			AuthHeader: "Authorization",
-			AuthScheme: "bearer",
+			AuthHeader: constants.HeaderAuthorization,
+			AuthScheme: constants.AuthSchemeBearer,
 		}, nil
 	}
 
@@ -94,15 +96,15 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		}
 		return &providers.ProviderConfig{
 			BaseURL:    baseURL,
-			AuthHeader: "Authorization",
-			AuthScheme: "bearer",
+			AuthHeader: constants.HeaderAuthorization,
+			AuthScheme: constants.AuthSchemeBearer,
 		}, nil
 	}
 
 	return &providers.ProviderConfig{
 		BaseURL:    fmt.Sprintf("https://%s.example.com/v1/chat/completions", provider),
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		AuthHeader: constants.HeaderAuthorization,
+		AuthScheme: constants.AuthSchemeBearer,
 	}, nil
 }
 

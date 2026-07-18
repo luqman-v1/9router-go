@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+
+	"9router/proxy/internal/constants"
 )
 
 // Config holds the proxy gateway configuration.
@@ -18,6 +20,8 @@ type Config struct {
 	APIKeySecret    string
 	MachineIDSalt   string
 	RTKEnabled      bool
+	CavemanEnabled  bool
+	PonytailEnabled bool
 }
 
 // LoadConfig loads the configuration from environment variables and platform defaults.
@@ -47,7 +51,7 @@ func LoadConfig() *Config {
 	}
 
 	// Ensure the base data directory exists
-	_ = os.MkdirAll(dataDir, 0755)
+	_ = os.MkdirAll(dataDir, constants.FilePermDir)
 
 	// Database file: DB_PATH overrides default DATA_DIR/db/data.sqlite
 	dbPath := os.Getenv("DB_PATH")
@@ -71,6 +75,8 @@ func LoadConfig() *Config {
 	}
 
 	rtkEnabled := os.Getenv("RTK_ENABLED") != "false" // default on
+	cavemanEnabled := os.Getenv("CAVEMAN_ENABLED") == "true"
+	ponytailEnabled := os.Getenv("PONYTAIL_ENABLED") == "true"
 
 	return &Config{
 		Port:            port,
@@ -80,6 +86,8 @@ func LoadConfig() *Config {
 		APIKeySecret:    apiKeySecret,
 		MachineIDSalt:   machineIDSalt,
 		RTKEnabled:      rtkEnabled,
+		CavemanEnabled:  cavemanEnabled,
+		PonytailEnabled: ponytailEnabled,
 	}
 }
 
@@ -102,6 +110,6 @@ func loadJWTSecret(dataDir string) string {
 	}
 
 	generated := hex.EncodeToString(bytes)
-	_ = os.WriteFile(secretFile, []byte(generated), 0600)
+	_ = os.WriteFile(secretFile, []byte(generated), constants.FilePermKey)
 	return generated
 }

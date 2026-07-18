@@ -155,11 +155,8 @@ func (h *ChatHandler) handleMessagesSingleModel(w http.ResponseWriter, translate
 // SetupRoutes mounts the chat handler routes on the provided chi router.
 func SetupRoutes(r interface {
 	Post(pattern string, handlerFn http.HandlerFunc)
-}, repo *db.Repo, rtkEnabled ...bool) {
-	handler := NewChatHandler(repo)
-	if len(rtkEnabled) > 0 {
-		handler.RTKEnabled = rtkEnabled[0]
-	}
+}, repo *db.Repo, ts *TokenSaverConfig) {
+	handler := NewChatHandler(repo, ts)
 
 	r.Post("/chat/completions", handler.HandleChatCompletions)
 	r.Post("/messages", handler.HandleMessages)

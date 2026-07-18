@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"9router/proxy/internal/constants"
+
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -64,7 +66,7 @@ func (h *ChatHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 
 	resp, err := h.Client.Do(req)
@@ -74,7 +76,7 @@ func (h *ChatHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 

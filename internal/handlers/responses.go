@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/constants"
+
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -75,10 +77,10 @@ func (h *ChatHandler) handleResponsesSingleModel(w http.ResponseWriter, body []b
 		return
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 	if isStream {
-		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set(constants.HeaderAccept, constants.ContentTypeEventStream)
 	}
 
 	resp, err := h.Client.Do(req)
@@ -90,7 +92,7 @@ func (h *ChatHandler) handleResponsesSingleModel(w http.ResponseWriter, body []b
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		w.WriteHeader(resp.StatusCode)
 		w.Write(errBody)
 		return
@@ -99,7 +101,7 @@ func (h *ChatHandler) handleResponsesSingleModel(w http.ResponseWriter, body []b
 	if isStream {
 		h.handleStreamResponse(w, resp.Body, false, time.Now(), &streamMetrics{})
 	} else {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		w.WriteHeader(http.StatusOK)
 		io.Copy(w, resp.Body)
 	}
@@ -133,10 +135,10 @@ func (h *ChatHandler) handleResponsesComboFallback(w http.ResponseWriter, body [
 		if err != nil {
 			continue
 		}
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 		if isStream {
-			req.Header.Set("Accept", "text/event-stream")
+			req.Header.Set(constants.HeaderAccept, constants.ContentTypeEventStream)
 		}
 
 		resp, err := h.Client.Do(req)
@@ -151,7 +153,7 @@ func (h *ChatHandler) handleResponsesComboFallback(w http.ResponseWriter, body [
 		if isStream {
 			h.handleStreamResponse(w, resp.Body, false, time.Now(), &streamMetrics{})
 		} else {
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 			w.WriteHeader(http.StatusOK)
 			io.Copy(w, resp.Body)
 		}

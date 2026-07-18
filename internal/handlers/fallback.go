@@ -7,8 +7,9 @@ import (
 	"slices"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
-	"9router/proxy/internal/rtk"
+	"9router/proxy/internal/tokensaver"
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/providers"
 )
@@ -75,9 +76,9 @@ func (h *ChatHandler) handleAccountFallback(
 		}
 
 		if ue, ok := lastErr.(*upstreamError); ok && providers.RetryableStatusCodes[ue.StatusCode] {
-			durationSec := 60
+			durationSec := constants.DefaultLockDuration429
 			if ue.StatusCode == http.StatusUnauthorized {
-				durationSec = 120
+				durationSec = constants.DefaultLockDuration401
 			}
 			errMsg := fmt.Sprintf("%d upstream error", ue.StatusCode)
 			h.Repo.LockModel(provider, model, durationSec, errMsg, ue.StatusCode)
@@ -92,6 +93,21 @@ func (h *ChatHandler) handleAccountFallback(
 		return lastErr
 	}
 	return fmt.Errorf("no available connections for provider: %s", provider)
+}
+
+// applyTokenSavers runs RTK compression and prompt injection on the request body.
+func (h *ChatHandler) applyTokenSavers(body []byte) []byte {
+	out := body
+	if h.TokenSaver.RTKEnabled() {
+		out, _ = tokensaver.CompressMessages(out)
+	}
+	if h.TokenSaver.CavemanEnabled() {
+		out, _ = tokensaver.InjectSystemPrompt(out, tokensaver.CavemanPrompt)
+	}
+	if h.TokenSaver.PonytailEnabled() {
+		out, _ = tokensaver.InjectSystemPrompt(out, tokensaver.PonytailPrompt)
+	}
+	return out
 }
 
 // tryForwardWithConnection attempts a single upstream request using the given connection data.
@@ -117,14 +133,11 @@ func (h *ChatHandler) tryForwardWithConnection(
 		return &upstreamError{StatusCode: http.StatusUnauthorized, Body: []byte(`{"error":{"message":"no API key found","type":"auth_error","code":401}}`)}
 	}
 
-	compressedBody := body
-	if h.RTKEnabled {
-		compressedBody, _ = rtk.CompressMessages(body)
-	}
+	pipedBody := h.applyTokenSavers(body)
 
 	start := time.Now()
 	metrics := &streamMetrics{}
-	fwdErr := h.forwardRequest(w, providerCfg, apiKey, compressedBody, isStream, translateResponse, metrics)
+	fwdErr := h.forwardRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
 	latencyMs := time.Since(start).Milliseconds()
 
 	statusCode := http.StatusOK

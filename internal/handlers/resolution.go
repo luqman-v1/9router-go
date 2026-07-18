@@ -11,12 +11,18 @@ import (
 )
 
 // NewChatHandler creates a ChatHandler with the given repository and a streaming-capable HTTP client.
-func NewChatHandler(repo *db.Repo) *ChatHandler {
+// Pass a TokenSaverConfig to enable token saver features, or nil for all-off defaults.
+func NewChatHandler(repo *db.Repo, ts ...*TokenSaverConfig) *ChatHandler {
+	cfg := &TokenSaverConfig{}
+	if len(ts) > 0 && ts[0] != nil {
+		cfg = ts[0]
+	}
 	return &ChatHandler{
-		Repo: repo,
+		Repo:       repo,
 		Client: &http.Client{
 			Timeout: 0, // no timeout for streaming support
 		},
+		TokenSaver: cfg,
 	}
 }
 

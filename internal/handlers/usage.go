@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/translator"
 )
@@ -32,8 +33,8 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 	if metrics != nil {
 		ttftMs = metrics.ttft
 		respContent = metrics.responseBuf.String()
-		if len(respContent) > 10000 {
-			respContent = respContent[:10000] + "...[truncated]"
+		if len(respContent) > constants.MaxResponseContentLen {
+			respContent = respContent[:constants.MaxResponseContentLen] + "...[truncated]"
 		}
 	}
 	reqData, _ := json.Marshal(map[string]any{
@@ -64,13 +65,13 @@ func extractRequestMessages(body []byte) []map[string]string {
 	msgs := make([]map[string]string, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		content := extractContent(m.Content)
-		if len(content) > 500 {
-			content = content[:500] + "..."
+		if len(content) > constants.MaxMessageContentLen {
+			content = content[:constants.MaxMessageContentLen] + "..."
 		}
 		msgs = append(msgs, map[string]string{"role": m.Role, "content": content})
 	}
-	if len(msgs) > 20 {
-		msgs = msgs[len(msgs)-20:]
+	if len(msgs) > constants.MaxLoggedMessages {
+		msgs = msgs[len(msgs)-constants.MaxLoggedMessages:]
 	}
 	return msgs
 }

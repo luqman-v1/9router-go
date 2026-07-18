@@ -11,11 +11,11 @@ import (
 
 // ChatHandler handles /v1/chat/completions (OpenAI) and /v1/messages (Claude) endpoints.
 type ChatHandler struct {
-	Repo       *db.Repo
-	Client     *http.Client
-	RTKEnabled bool
-	rrMu       sync.Mutex
-	rrIdx      int // round-robin index
+	Repo        *db.Repo
+	Client      *http.Client
+	TokenSaver  *TokenSaverConfig
+	rrMu        sync.Mutex
+	rrIdx       int // round-robin index
 }
 
 // ModelInfo holds the resolved provider and model identifiers.

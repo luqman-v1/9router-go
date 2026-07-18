@@ -3,11 +3,13 @@ package handlerutil
 import (
 	"encoding/json"
 	"net/http"
+
+	"9router/proxy/internal/constants"
 )
 
 // WriteJSONError writes a standardized JSON error response.
 func WriteJSONError(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	w.WriteHeader(status)
 
 	errResp := map[string]any{

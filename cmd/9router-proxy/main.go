@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+
+	"9router/proxy/internal/constants"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/urfave/cli/v2"
 
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
@@ -30,11 +33,44 @@ func (w *statusWriter) WriteHeader(code int) {
 }
 
 func main() {
-	// Setup log file
-	logFile, err := os.OpenFile("/tmp/9router-go.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err == nil {
-		log.SetOutput(logFile)
-		defer logFile.Close()
+	app := &cli.App{
+		Name:  "9router-proxy",
+		Usage: "AI API proxy gateway with token saver features",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "rtk",
+				Value: os.Getenv("RTK_ENABLED") != "false",
+				Usage: "enable RTK input compression (env: RTK_ENABLED)",
+			},
+			&cli.BoolFlag{
+				Name:  "caveman",
+				Value: os.Getenv("CAVEMAN_ENABLED") == "true",
+				Usage: "enable Caveman terse output style (env: CAVEMAN_ENABLED)",
+			},
+			&cli.BoolFlag{
+				Name:  "ponytail",
+				Value: os.Getenv("PONYTAIL_ENABLED") == "true",
+				Usage: "enable Ponytail lazy dev code style (env: PONYTAIL_ENABLED)",
+			},
+		},
+		Action: runServer,
+	}
+
+	if err := app.Run(os.Args); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func runServer(cCtx *cli.Context) error {
+	// Logging: LOG_FILE env or stderr
+	if logPath := os.Getenv("LOG_FILE"); logPath != "" {
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			log.SetOutput(logFile)
+			defer logFile.Close()
+		} else {
+			log.Printf("[config] warning: cannot open LOG_FILE=%s, using stderr: %v", logPath, err)
+		}
 	}
 
 	// Load configuration from environment variables and platform defaults
@@ -42,16 +78,20 @@ func main() {
 
 	// Initialize global database connection
 	if err := db.InitGlobalDatabase(cfg.DatabasePath); err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		return fmt.Errorf("database init: %w", err)
 	}
 
 	conn, err := db.GetConnection()
 	if err != nil {
-		log.Fatalf("Failed to get database connection: %v", err)
+		return fmt.Errorf("database connect: %w", err)
 	}
 	defer conn.Close()
 
 	repo := db.NewRepo(conn)
+
+	// Token saver — CLI flags override env defaults
+	ts := handlers.NewTokenSaverConfig(cCtx.Bool("rtk"), cCtx.Bool("caveman"), cCtx.Bool("ponytail"))
+	log.Printf("[config] token savers — rtk=%v caveman=%v ponytail=%v", ts.RTKEnabled(), ts.CavemanEnabled(), ts.PonytailEnabled())
 
 	// Create chi router with standard middleware
 	r := chi.NewRouter()
@@ -59,7 +99,6 @@ func main() {
 	r.Use(chiMiddleware.RequestID)
 
 	// Strip /v1 prefix so routes register as /messages, /chat/completions, etc.
-	// Handles both /v1/messages and /v1/v1/messages (double prefix from base URL with /v1).
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			start := time.Now()
@@ -76,20 +115,16 @@ func main() {
 
 	// Health check endpoint (no auth required)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	// API key-protected routes
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireApiKey(repo))
-
-		// Chat routes (OpenAI /v1/chat/completions and Claude /v1/messages)
-		handlers.SetupRoutes(r, repo, cfg.RTKEnabled)
-
-		// Models listing stub
+		handlers.SetupRoutes(r, repo, ts)
 		r.Get("/models", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 			w.Write([]byte(`{"data":[]}`))
 		})
 	})
@@ -107,7 +142,10 @@ func main() {
 		}
 	}()
 
+	fmt.Fprintf(os.Stdout, "\n  🚀 9Router Go Proxy on %s\n\n", addr)
 	log.Printf("Server is ready to handle requests at %s", addr)
 	<-done
+	fmt.Fprintln(os.Stdout, "\n  Shutting down...")
 	log.Println("Server stopped gracefully")
+	return nil
 }
