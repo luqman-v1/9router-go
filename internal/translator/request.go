@@ -1,0 +1,434 @@
+package translator
+
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+// Claude System Prompt block
+type ClaudeSystemBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// Claude Message Content block
+type ClaudeContentBlock struct {
+	Type      string             `json:"type"`
+	Text      string             `json:"text,omitempty"`
+	Source    *ClaudeImageSource `json:"source,omitempty"`
+	ID        string             `json:"id,omitempty"`
+	Name      string             `json:"name,omitempty"`
+	Input     json.RawMessage    `json:"input,omitempty"`
+	ToolUseID string             `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage    `json:"content,omitempty"`
+}
+
+type ClaudeImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+type ClaudeMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+type ClaudeTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+}
+
+type ClaudeToolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
+}
+
+type ClaudeRequest struct {
+	Model       string           `json:"model"`
+	Messages    []ClaudeMessage  `json:"messages"`
+	System      json.RawMessage  `json:"system,omitempty"`
+	Temperature *float64         `json:"temperature,omitempty"`
+	MaxTokens   *int             `json:"max_tokens,omitempty"`
+	Tools       []ClaudeTool     `json:"tools,omitempty"`
+	ToolChoice  *json.RawMessage `json:"tool_choice,omitempty"`
+	Stream      bool             `json:"stream,omitempty"`
+}
+
+// OpenAI structures
+type OpenAIRequest struct {
+	Model       string          `json:"model"`
+	Messages    []OpenAIMessage `json:"messages"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	MaxTokens   *int            `json:"max_tokens,omitempty"`
+	Tools       []OpenAITool    `json:"tools,omitempty"`
+	ToolChoice  interface{}     `json:"tool_choice,omitempty"`
+	Stream      bool            `json:"stream,omitempty"`
+}
+
+type OpenAIMessage struct {
+	Role       string           `json:"role"`
+	Content    interface{}      `json:"content,omitempty"` // string or []OpenAIContentBlock
+	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"` // used for tool role messages
+}
+
+type OpenAIContentBlock struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageUrl *OpenAIImageUrl `json:"image_url,omitempty"`
+}
+
+type OpenAIImageUrl struct {
+	URL string `json:"url"`
+}
+
+type OpenAIToolCall struct {
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function OpenAIFunctionCall `json:"function"`
+}
+
+type OpenAIFunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type OpenAITool struct {
+	Type     string         `json:"type"`
+	Function OpenAIFunction `json:"function"`
+}
+
+type OpenAIFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+var billingHeaderRegex = regexp.MustCompile(`(?i)^x-anthropic-billing-header:[^\n]*(?:\r?\n)?`)
+
+func stripAnthropicBillingHeader(text string) string {
+	return billingHeaderRegex.ReplaceAllString(text, "")
+}
+
+func parseSystemPrompt(systemRaw json.RawMessage) string {
+	if len(systemRaw) == 0 {
+		return ""
+	}
+
+	// Try to unmarshal as string first
+	var sysStr string
+	if err := json.Unmarshal(systemRaw, &sysStr); err == nil {
+		return stripAnthropicBillingHeader(sysStr)
+	}
+
+	// Try to unmarshal as system block array
+	var sysBlocks []ClaudeSystemBlock
+	if err := json.Unmarshal(systemRaw, &sysBlocks); err == nil {
+		var parts []string
+		for _, block := range sysBlocks {
+			text := stripAnthropicBillingHeader(block.Text)
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+
+	return ""
+}
+
+func systemReminderText(content string) string {
+	text := strings.TrimSpace(content)
+	if text == "" {
+		return ""
+	}
+	return fmt.Sprintf("<instructions>\n%s\n</instructions>", text)
+}
+
+func collapseTextParts(parts []OpenAIContentBlock) interface{} {
+	if len(parts) == 1 && parts[0].Type == "text" {
+		return parts[0].Text
+	}
+	return parts
+}
+
+func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
+	// If mid-conversation system prompt -> user role wrapped in <instructions>
+	if msg.Role == "system" {
+		var contentStr string
+		if err := json.Unmarshal(msg.Content, &contentStr); err == nil {
+			rem := systemReminderText(contentStr)
+			if rem != "" {
+				return []OpenAIMessage{{Role: "user", Content: rem}}, nil
+			}
+			return nil, nil
+		}
+
+		var contentBlocks []ClaudeContentBlock
+		if err := json.Unmarshal(msg.Content, &contentBlocks); err == nil {
+			var textParts []string
+			for _, block := range contentBlocks {
+				if block.Type == "text" && block.Text != "" {
+					textParts = append(textParts, block.Text)
+				}
+			}
+			rem := systemReminderText(strings.Join(textParts, "\n"))
+			if rem != "" {
+				return []OpenAIMessage{{Role: "user", Content: rem}}, nil
+			}
+		}
+		return nil, nil
+	}
+
+	role := "user"
+	if msg.Role == "assistant" {
+		role = "assistant"
+	}
+
+	// Try parsing msg.Content as simple string
+	var simpleContent string
+	if err := json.Unmarshal(msg.Content, &simpleContent); err == nil {
+		return []OpenAIMessage{{Role: role, Content: simpleContent}}, nil
+	}
+
+	// Parse msg.Content as array of blocks
+	var blocks []ClaudeContentBlock
+	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+		return nil, err
+	}
+
+	var textParts []OpenAIContentBlock
+	var toolCalls []OpenAIToolCall
+	var toolResults []OpenAIMessage
+
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			textParts = append(textParts, OpenAIContentBlock{
+				Type: "text",
+				Text: block.Text,
+			})
+		case "image":
+			if block.Source != nil && block.Source.Type == "base64" {
+				url := fmt.Sprintf("data:%s;base64,%s", block.Source.MediaType, block.Source.Data)
+				textParts = append(textParts, OpenAIContentBlock{
+					Type:     "image_url",
+					ImageUrl: &OpenAIImageUrl{URL: url},
+				})
+			}
+		case "tool_use":
+			toolCalls = append(toolCalls, OpenAIToolCall{
+				ID:   block.ID,
+				Type: "function",
+				Function: OpenAIFunctionCall{
+					Name:      block.Name,
+					Arguments: string(block.Input),
+				},
+			})
+		case "tool_result":
+			var resultContent string
+			if err := json.Unmarshal(block.Content, &resultContent); err != nil {
+				var contentArr []ClaudeContentBlock
+				if err2 := json.Unmarshal(block.Content, &contentArr); err2 == nil {
+					var parts []string
+					for _, c := range contentArr {
+						if c.Type == "text" {
+							parts = append(parts, c.Text)
+						}
+					}
+					resultContent = strings.Join(parts, "\n")
+				} else {
+					resultContent = string(block.Content)
+				}
+			}
+			toolResults = append(toolResults, OpenAIMessage{
+				Role:       "tool",
+				ToolCallID: block.ToolUseID,
+				Content:    resultContent,
+			})
+		}
+	}
+
+	var results []OpenAIMessage
+
+	if len(toolResults) > 0 {
+		results = append(results, toolResults...)
+		if len(textParts) > 0 {
+			results = append(results, OpenAIMessage{
+				Role:    "user",
+				Content: collapseTextParts(textParts),
+			})
+		}
+		return results, nil
+	}
+
+	if len(toolCalls) > 0 {
+		msg := OpenAIMessage{
+			Role:      "assistant",
+			ToolCalls: toolCalls,
+		}
+		if len(textParts) > 0 {
+			msg.Content = collapseTextParts(textParts)
+		}
+		return []OpenAIMessage{msg}, nil
+	}
+
+	if len(textParts) > 0 {
+		return []OpenAIMessage{{
+			Role:    role,
+			Content: collapseTextParts(textParts),
+		}}, nil
+	}
+
+	if len(blocks) == 0 {
+		return []OpenAIMessage{{Role: role, Content: ""}}, nil
+	}
+
+	return nil, nil
+}
+
+func fixMissingToolResponsesOpenAI(messages []OpenAIMessage) []OpenAIMessage {
+	result := make([]OpenAIMessage, len(messages))
+	copy(result, messages)
+
+	for i := 0; i < len(result); i++ {
+		msg := result[i]
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			var toolCallIds []string
+			for _, tc := range msg.ToolCalls {
+				toolCallIds = append(toolCallIds, tc.ID)
+			}
+
+			respondedIds := make(map[string]bool)
+			insertPosition := i + 1
+			for j := i + 1; j < len(result); j++ {
+				nextMsg := result[j]
+				if nextMsg.Role == "tool" && nextMsg.ToolCallID != "" {
+					respondedIds[nextMsg.ToolCallID] = true
+					insertPosition = j + 1
+				} else {
+					break
+				}
+			}
+
+			var missingIds []string
+			for _, id := range toolCallIds {
+				if !respondedIds[id] {
+					missingIds = append(missingIds, id)
+				}
+			}
+
+			if len(missingIds) > 0 {
+				var missingResponses []OpenAIMessage
+				for _, id := range missingIds {
+					missingResponses = append(missingResponses, OpenAIMessage{
+						Role:       "tool",
+						ToolCallID: id,
+						Content:    "[No response received]",
+					})
+				}
+
+				temp := make([]OpenAIMessage, 0, len(result)+len(missingResponses))
+				temp = append(temp, result[:insertPosition]...)
+				temp = append(temp, missingResponses...)
+				temp = append(temp, result[insertPosition:]...)
+				result = temp
+
+				i = insertPosition + len(missingResponses) - 1
+			}
+		}
+	}
+	return result
+}
+
+func convertToolChoice(choiceRaw *json.RawMessage) interface{} {
+	if choiceRaw == nil {
+		return "auto"
+	}
+
+	var choiceStr string
+	if err := json.Unmarshal(*choiceRaw, &choiceStr); err == nil {
+		return choiceStr
+	}
+
+	var choiceObj ClaudeToolChoice
+	if err := json.Unmarshal(*choiceRaw, &choiceObj); err == nil {
+		switch choiceObj.Type {
+		case "auto":
+			return "auto"
+		case "any":
+			return "required"
+		case "tool":
+			return map[string]interface{}{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name": choiceObj.Name,
+				},
+			}
+		}
+	}
+
+	return "auto"
+}
+
+// TranslateClaudeToOpenAI converts a Claude request payload to an OpenAI request payload.
+func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
+	var creq ClaudeRequest
+	if err := json.Unmarshal(claudeBody, &creq); err != nil {
+		return nil, err
+	}
+
+	var oreq OpenAIRequest
+	oreq.Model = creq.Model
+	oreq.Temperature = creq.Temperature
+	oreq.MaxTokens = creq.MaxTokens
+	oreq.Stream = creq.Stream
+
+	// 1. System Prompt
+	sysContent := parseSystemPrompt(creq.System)
+	if sysContent != "" {
+		oreq.Messages = append(oreq.Messages, OpenAIMessage{
+			Role:    "system",
+			Content: sysContent,
+		})
+	}
+
+	// 2. Messages
+	for _, msg := range creq.Messages {
+		converted, err := convertClaudeMessage(msg)
+		if err != nil {
+			return nil, err
+		}
+		oreq.Messages = append(oreq.Messages, converted...)
+	}
+
+	// 3. Fix missing tool responses
+	oreq.Messages = fixMissingToolResponsesOpenAI(oreq.Messages)
+
+	// 4. Tools
+	if len(creq.Tools) > 0 {
+		var otools []OpenAITool
+		for _, tool := range creq.Tools {
+			otools = append(otools, OpenAITool{
+				Type: "function",
+				Function: OpenAIFunction{
+					Name:        tool.Name,
+					Description: tool.Description,
+					Parameters:  tool.InputSchema,
+				},
+			})
+		}
+		oreq.Tools = otools
+	}
+
+	// 5. Tool choice
+	if creq.ToolChoice != nil {
+		oreq.ToolChoice = convertToolChoice(creq.ToolChoice)
+	}
+
+	return json.Marshal(oreq)
+}
