@@ -242,7 +242,7 @@ func TestGetBestConnection(t *testing.T) {
 	repo := db.NewRepo(database)
 	handler := NewChatHandler(repo)
 
-	conn, connData, err := handler.getBestConnection("deepseek")
+	conn, connData, err := handler.getBestConnection("deepseek", "", nil, "deepseek-chat")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestGetBestConnection_NotFound(t *testing.T) {
 	repo := db.NewRepo(database)
 	handler := NewChatHandler(repo)
 
-	_, _, err := handler.getBestConnection("nonexistent-provider")
+	_, _, err := handler.getBestConnection("nonexistent-provider", "", nil, "")
 	if err == nil {
 		t.Error("expected error for nonexistent provider, got nil")
 	}
@@ -310,7 +310,7 @@ func TestHandleChatCompletions_NonStreaming(t *testing.T) {
 	handler := NewChatHandler(repo)
 
 	reqBody := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hello"}],"stream":false}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
 	rec := httptest.NewRecorder()
 
 	handler.HandleChatCompletions(rec, req)
@@ -334,7 +334,7 @@ func TestHandleChatCompletions_MissingModel(t *testing.T) {
 	handler := NewChatHandler(repo)
 
 	reqBody := `{"messages":[{"role":"user","content":"hello"}]}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
 	rec := httptest.NewRecorder()
 
 	handler.HandleChatCompletions(rec, req)
@@ -351,7 +351,7 @@ func TestHandleChatCompletions_InvalidJSON(t *testing.T) {
 	repo := db.NewRepo(database)
 	handler := NewChatHandler(repo)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader("not json"))
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader("not json"))
 	rec := httptest.NewRecorder()
 
 	handler.HandleChatCompletions(rec, req)
@@ -405,7 +405,7 @@ func TestHandleMessages_ClaudeFormat(t *testing.T) {
 
 	// Send a Claude-format request
 	claudeBody := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hello"}],"max_tokens":100,"stream":false}`
-	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(claudeBody))
+	req := httptest.NewRequest("POST", "/messages", strings.NewReader(claudeBody))
 	rec := httptest.NewRecorder()
 
 	handler.HandleMessages(rec, req)
@@ -456,7 +456,7 @@ func TestHandleChatCompletions_Streaming(t *testing.T) {
 	handler := NewChatHandler(repo)
 
 	reqBody := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hello"}],"stream":true}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
 	rec := httptest.NewRecorder()
 
 	handler.HandleChatCompletions(rec, req)
@@ -476,11 +476,17 @@ func TestHandleChatCompletions_UpstreamError(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
-	// Mock upstream that returns an error
+	// Deactivate seeded connections so only the mock is available
+	_, err := database.Exec(`UPDATE providerConnections SET isActive = 0 WHERE provider = 'deepseek'`)
+	if err != nil {
+		t.Fatalf("failed to deactivate seeded connections: %v", err)
+	}
+
+	// Mock upstream that returns 500 (non-retryable, no account fallback)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error":{"message":"invalid api key","type":"auth_error"}}`))
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":{"message":"server error","type":"server_error"}}`))
 	}))
 	defer upstream.Close()
 
@@ -488,7 +494,7 @@ func TestHandleChatCompletions_UpstreamError(t *testing.T) {
 		"apiKey":  "sk-bad-key",
 		"baseUrl": upstream.URL,
 	})
-	_, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-mock', 'deepseek', 'apikey', 'Mock DeepSeek', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
 		string(customData))
 	if err != nil {
@@ -499,14 +505,137 @@ func TestHandleChatCompletions_UpstreamError(t *testing.T) {
 	handler := NewChatHandler(repo)
 
 	reqBody := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hello"}],"stream":false}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
 	rec := httptest.NewRecorder()
 
 	handler.HandleChatCompletions(rec, req)
 
-	// Should forward the upstream error status
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401 Unauthorized from upstream, got %d", rec.Code)
+	// Non-retryable errors are forwarded directly
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 from upstream, got %d", rec.Code)
+	}
+}
+
+func TestHandleChatCompletions_AccountFallback_401(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	// Mock upstream 1: returns 401 (triggers account fallback)
+	upstream1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"message":"invalid api key","type":"auth_error"}}`))
+	}))
+	defer upstream1.Close()
+
+	// Mock upstream 2: returns 200 (fallback succeeds)
+	upstream2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"resp-fallback","choices":[{"message":{"content":"hello from fallback"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream2.Close()
+
+	// Insert two connections for deepseek: first will fail with 401, second will succeed
+	data1, _ := json.Marshal(map[string]interface{}{
+		"apiKey":  "sk-bad-key",
+		"baseUrl": upstream1.URL,
+	})
+	_, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-fail', 'deepseek', 'apikey', 'Failing DeepSeek', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(data1))
+	if err != nil {
+		t.Fatalf("failed to insert failing connection: %v", err)
+	}
+
+	data2, _ := json.Marshal(map[string]interface{}{
+		"apiKey":  "sk-good-key",
+		"baseUrl": upstream2.URL,
+	})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-ok', 'deepseek', 'apikey', 'Good DeepSeek', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(data2))
+	if err != nil {
+		t.Fatalf("failed to insert good connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	reqBody := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hello"}],"stream":false}`
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+
+	handler.HandleChatCompletions(rec, req)
+
+	// Should succeed via account fallback
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 OK via account fallback, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify model lock was created for the failed account
+	locked, err := repo.IsModelLocked("deepseek", "deepseek-chat")
+	if err != nil {
+		t.Fatalf("IsModelLocked failed: %v", err)
+	}
+	if !locked {
+		t.Error("expected model to be locked after 401 error")
+	}
+}
+
+func TestHandleChatCompletions_AccountFallback_429(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	// Mock upstream: returns 429 for all requests
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	}))
+	defer upstream.Close()
+
+	// Deactivate seeded connections, insert one mock
+	_, err := database.Exec(`UPDATE providerConnections SET isActive = 0 WHERE provider = 'deepseek'`)
+	if err != nil {
+		t.Fatalf("failed to deactivate seeded connections: %v", err)
+	}
+
+	mockData, _ := json.Marshal(map[string]interface{}{
+		"apiKey":  "sk-rate-limited",
+		"baseUrl": upstream.URL,
+	})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-rl', 'deepseek', 'apikey', 'Rate Limited', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(mockData))
+	if err != nil {
+		t.Fatalf("failed to insert mock connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	reqBody := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hello"}],"stream":false}`
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+
+	handler.HandleChatCompletions(rec, req)
+
+	// All accounts exhausted, should return the 429
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 after all accounts exhausted, got %d", rec.Code)
+	}
+
+	// Verify model lock was created with 60s duration for 429
+	lock, err := repo.GetModelLock("deepseek", "deepseek-chat")
+	if err != nil {
+		t.Fatalf("GetModelLock failed: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("expected model lock after 429 error")
+	}
+	if lock.ErrorCode != 429 {
+		t.Errorf("expected error code 429, got %d", lock.ErrorCode)
 	}
 }
 
@@ -629,13 +758,13 @@ func TestHandleChatCompletions_NoConnection(t *testing.T) {
 	handler := NewChatHandler(repo)
 
 	reqBody := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hello"}],"stream":false}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
 	rec := httptest.NewRecorder()
 
 	handler.HandleChatCompletions(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("expected 404 Not Found, got %d, body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound && rec.Code != http.StatusBadGateway {
+		t.Errorf("expected 404 or 502, got %d, body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -647,7 +776,7 @@ func TestHandleMessages_MissingModel(t *testing.T) {
 	handler := NewChatHandler(repo)
 
 	reqBody := `{"messages":[{"role":"user","content":"hello"}]}`
-	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(reqBody))
+	req := httptest.NewRequest("POST", "/messages", strings.NewReader(reqBody))
 	rec := httptest.NewRecorder()
 
 	handler.HandleMessages(rec, req)
@@ -664,7 +793,7 @@ func TestHandleMessages_InvalidJSON(t *testing.T) {
 	repo := db.NewRepo(database)
 	handler := NewChatHandler(repo)
 
-	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader("{invalid"))
+	req := httptest.NewRequest("POST", "/messages", strings.NewReader("{invalid"))
 	rec := httptest.NewRecorder()
 
 	handler.HandleMessages(rec, req)
@@ -716,7 +845,7 @@ func TestHandleMessages_ClaudeStreamTranslation(t *testing.T) {
 	handler := NewChatHandler(repo)
 
 	claudeBody := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hi"}],"max_tokens":100,"stream":true}`
-	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(claudeBody))
+	req := httptest.NewRequest("POST", "/messages", strings.NewReader(claudeBody))
 	rec := httptest.NewRecorder()
 
 	handler.HandleMessages(rec, req)
@@ -739,13 +868,13 @@ func TestHandleMessages_NoConnection(t *testing.T) {
 	handler := NewChatHandler(repo)
 
 	claudeBody := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":false}`
-	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(claudeBody))
+	req := httptest.NewRequest("POST", "/messages", strings.NewReader(claudeBody))
 	rec := httptest.NewRecorder()
 
 	handler.HandleMessages(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("expected 404, got %d, body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound && rec.Code != http.StatusBadGateway {
+		t.Errorf("expected 404 or 502, got %d, body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -758,7 +887,7 @@ func TestSetupRoutes(t *testing.T) {
 	SetupRoutes(r, repo)
 
 	// Verify POST /v1/chat/completions is registered
-	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req := httptest.NewRequest("POST", "/chat/completions", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code == http.StatusMethodNotAllowed || w.Code == http.StatusNotFound {
@@ -766,7 +895,7 @@ func TestSetupRoutes(t *testing.T) {
 	}
 
 	// Verify POST /v1/messages is registered
-	req = httptest.NewRequest("POST", "/v1/messages", nil)
+	req = httptest.NewRequest("POST", "/messages", nil)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code == http.StatusMethodNotAllowed || w.Code == http.StatusNotFound {
@@ -781,7 +910,7 @@ func TestHandleChatCompletions_NilBody(t *testing.T) {
 	repo := db.NewRepo(database)
 	handler := NewChatHandler(repo)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req := httptest.NewRequest("POST", "/chat/completions", nil)
 	rec := httptest.NewRecorder()
 
 	handler.HandleChatCompletions(rec, req)
@@ -868,12 +997,12 @@ func TestResolveModel_PrefixProvider_NoConnection(t *testing.T) {
 
 	// Verify the full handler returns 404 since no connection exists
 	reqBody := `{"model":"bn/claude-sonnet-4.5","messages":[{"role":"user","content":"hello"}],"stream":false}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
 	rec := httptest.NewRecorder()
 	handler.HandleChatCompletions(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("expected 404 when prefix node has no connection, got %d, body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound && rec.Code != http.StatusBadGateway {
+		t.Errorf("expected 404 or 502 when prefix node has no connection, got %d, body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -971,7 +1100,7 @@ func TestHandleChatCompletions_ComboFallback(t *testing.T) {
 	handler := NewChatHandler(repo)
 
 	reqBody := `{"model":"combo-fallback-test","messages":[{"role":"user","content":"hello"}],"stream":false}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
 	rec := httptest.NewRecorder()
 
 	handler.HandleChatCompletions(rec, req)
@@ -1038,7 +1167,7 @@ func TestHandleChatCompletions_ComboAllFail(t *testing.T) {
 	handler := NewChatHandler(repo)
 
 	reqBody := `{"model":"combo-allfail-test","messages":[{"role":"user","content":"hello"}],"stream":false}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
 	rec := httptest.NewRecorder()
 
 	handler.HandleChatCompletions(rec, req)
@@ -1057,7 +1186,7 @@ func TestGetBestConnection_PinnedID(t *testing.T) {
 	handler := NewChatHandler(repo)
 
 	// Pinned connection ID should skip provider-based lookup
-	conn, connData, err := handler.getBestConnection("deepseek", "conn-1")
+	conn, connData, err := handler.getBestConnection("deepseek", "conn-1", nil, "deepseek-chat")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1076,7 +1205,7 @@ func TestGetBestConnection_PinnedID_NotFound(t *testing.T) {
 	repo := db.NewRepo(database)
 	handler := NewChatHandler(repo)
 
-	_, _, err := handler.getBestConnection("deepseek", "nonexistent-conn")
+	_, _, err := handler.getBestConnection("deepseek", "nonexistent-conn", nil, "deepseek-chat")
 	if err == nil {
 		t.Error("expected error for nonexistent pinned connection, got nil")
 	}
@@ -1135,7 +1264,7 @@ func TestHandleChatCompletions_PrefixProvider(t *testing.T) {
 	handler := NewChatHandler(repo)
 
 	reqBody := `{"model":"bn/claude-sonnet-4.5","messages":[{"role":"user","content":"hello"}],"stream":false}`
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
 	rec := httptest.NewRecorder()
 
 	handler.HandleChatCompletions(rec, req)

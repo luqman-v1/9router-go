@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/models"
+	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
@@ -247,7 +250,7 @@ func (h *ChatHandler) resolvePrefixProvider(prefix string, model string) *ModelI
 	}
 
 	// Find the best active connection for this providerNode
-	conn, _, err := h.getBestConnection(node.ID)
+	conn, _, err := h.getBestConnection(node.ID, "", nil, model)
 	if err != nil || conn == nil {
 		return nil
 	}
@@ -262,17 +265,24 @@ func (h *ChatHandler) resolvePrefixProvider(prefix string, model string) *ModelI
 // getBestConnection retrieves the highest-priority active connection for a provider.
 // When connectionID is non-empty, it fetches that specific connection directly,
 // skipping the priority-based query.
-func (h *ChatHandler) getBestConnection(provider string, connectionID ...string) (*models.ProviderConnection, *ConnectionData, error) {
+// excludeIDs lists connection IDs to skip during priority-based lookup.
+// model is used for health checking; pass "" to skip the health check.
+func (h *ChatHandler) getBestConnection(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
+	// Check provider health before selecting a connection
+	if model != "" && !db.IsProviderHealthy(h.Repo.RawDB(), provider, model) {
+		log.Printf("[health] warning: provider %s/%s is unhealthy, proceeding anyway", provider, model)
+	}
+
 	var conn *models.ProviderConnection
 	var err error
 
-	if len(connectionID) > 0 && connectionID[0] != "" {
-		conn, err = h.Repo.GetProviderConnectionByID(connectionID[0])
+	if connectionID != "" {
+		conn, err = h.Repo.GetProviderConnectionByID(connectionID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to fetch connection %s: %w", connectionID[0], err)
+			return nil, nil, fmt.Errorf("failed to fetch connection %s: %w", connectionID, err)
 		}
 		if conn == nil {
-			return nil, nil, fmt.Errorf("connection %s not found", connectionID[0])
+			return nil, nil, fmt.Errorf("connection %s not found", connectionID)
 		}
 	} else {
 		connections, queryErr := h.Repo.GetProviderConnections(provider, true)
@@ -282,7 +292,23 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID ...string)
 		if len(connections) == 0 {
 			return nil, nil, fmt.Errorf("no active connections for provider: %s", provider)
 		}
-		conn = connections[0]
+
+		// Filter out excluded connection IDs
+		excludeSet := make(map[string]bool, len(excludeIDs))
+		for _, id := range excludeIDs {
+			excludeSet[id] = true
+		}
+
+		conn = nil
+		for _, c := range connections {
+			if !excludeSet[c.ID] {
+				conn = c
+				break
+			}
+		}
+		if conn == nil {
+			return nil, nil, fmt.Errorf("no available connections for provider: %s (all excluded)", provider)
+		}
 	}
 
 	var connData ConnectionData
@@ -349,6 +375,110 @@ func extractAPIKey(connData *ConnectionData) string {
 	return connData.AccessToken
 }
 
+// UsageLogInfo holds request context needed to log a usage record.
+type UsageLogInfo struct {
+	Provider     string
+	Model        string
+	ConnectionID string
+	APIKey       string
+	Endpoint     string
+}
+
+// logUsage persists a usage record and updates connection metadata.
+func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage) {
+	totalTokens := usage.PromptTokens + usage.CompletionTokens
+	cost := pricing.EstimateCost(info.Model, usage.PromptTokens, usage.CompletionTokens)
+	metaJSON := fmt.Sprintf(`{"provider":"%s","model":"%s","connectionId":"%s"}`, info.Provider, info.Model, info.ConnectionID)
+
+	if err := h.Repo.InsertUsageHistory(info.Provider, info.Model, info.ConnectionID, maskAPIKey(info.APIKey), info.Endpoint, usage.PromptTokens, usage.CompletionTokens, cost, "success", totalTokens, metaJSON); err != nil {
+		log.Printf("[usage] failed to insert usage history: %v", err)
+	}
+
+	if info.ConnectionID != "" {
+		if err := h.Repo.UpdateConnectionLastUsed(info.ConnectionID); err != nil {
+			log.Printf("[usage] failed to update connection lastUsed: %v", err)
+		}
+	}
+
+	h.upsertDailyUsage(info.Provider, info.Model, usage.PromptTokens, usage.CompletionTokens)
+}
+
+// upsertDailyUsage reads the existing daily aggregate, merges new tokens, and upserts.
+func (h *ChatHandler) upsertDailyUsage(provider, model string, promptTokens, completionTokens int) {
+	dateKey := time.Now().UTC().Format("2006-01-02")
+	existing, _ := h.Repo.GetUsageDaily(dateKey)
+
+	data := parseDailyData(existing)
+	data["totalPromptTokens"] = getJSONInt(data, "totalPromptTokens") + promptTokens
+	data["totalCompletionTokens"] = getJSONInt(data, "totalCompletionTokens") + completionTokens
+	data["totalRequests"] = getJSONInt(data, "totalRequests") + 1
+
+	providers := getJSONMap(data, "providers")
+	pd := getJSONMap(providers, provider)
+	pd["promptTokens"] = getJSONInt(pd, "promptTokens") + promptTokens
+	pd["completionTokens"] = getJSONInt(pd, "completionTokens") + completionTokens
+	pd["requests"] = getJSONInt(pd, "requests") + 1
+
+	models := getJSONMap(pd, "models")
+	md := getJSONMap(models, model)
+	md["promptTokens"] = getJSONInt(md, "promptTokens") + promptTokens
+	md["completionTokens"] = getJSONInt(md, "completionTokens") + completionTokens
+	md["requests"] = getJSONInt(md, "requests") + 1
+	models[model] = md
+	pd["models"] = models
+	providers[provider] = pd
+	data["providers"] = providers
+
+	dataJSON, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("[usage] failed to marshal daily usage: %v", err)
+		return
+	}
+	if err := h.Repo.UpsertUsageDaily(dateKey, string(dataJSON)); err != nil {
+		log.Printf("[usage] failed to upsert daily usage: %v", err)
+	}
+}
+
+// parseDailyData parses an existing daily JSON string into a mutable map.
+func parseDailyData(raw string) map[string]interface{} {
+	if raw == "" {
+		return make(map[string]interface{})
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil || m == nil {
+		return make(map[string]interface{})
+	}
+	return m
+}
+
+// getJSONInt extracts an int from a JSON map (stored as float64 after unmarshal).
+func getJSONInt(m map[string]interface{}, key string) int {
+	if v, ok := m[key]; ok {
+		if n, ok := v.(float64); ok {
+			return int(n)
+		}
+	}
+	return 0
+}
+
+// getJSONMap extracts or creates a nested map from a JSON map.
+func getJSONMap(m map[string]interface{}, key string) map[string]interface{} {
+	if v, ok := m[key]; ok {
+		if sub, ok := v.(map[string]interface{}); ok {
+			return sub
+		}
+	}
+	return make(map[string]interface{})
+}
+
+// maskAPIKey returns a masked version of an API key for storage.
+func maskAPIKey(key string) string {
+	if len(key) <= 8 {
+		return "***"
+	}
+	return key[:4] + "***" + key[len(key)-4:]
+}
+
 // HandleChatCompletions handles POST /v1/chat/completions (OpenAI format requests).
 func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -391,27 +521,10 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 }
 
 // handleSingleModel resolves a single ModelInfo and forwards the request upstream.
-// On non-200 upstream responses it writes the error to w.
+// On 401/429 upstream responses it locks the model and retries with the next available account.
+// On other non-200 responses it writes the error to w.
 func (h *ChatHandler) handleSingleModel(w http.ResponseWriter, body []byte, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
-	_, connData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID)
-	if err != nil {
-		writeJSONError(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	providerCfg, err := h.getProviderConfig(modelInfo.Provider, connData)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	apiKey := extractAPIKey(connData)
-	if apiKey == "" {
-		writeJSONError(w, http.StatusUnauthorized, "no API key found for connection")
-		return
-	}
-
-	// Build upstream body with the resolved model name
+	// Build upstream body once
 	var upstreamBody map[string]interface{}
 	if err := json.Unmarshal(body, &upstreamBody); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "failed to parse request body")
@@ -425,15 +538,16 @@ func (h *ChatHandler) handleSingleModel(w http.ResponseWriter, body []byte, mode
 		return
 	}
 
-	err = h.forwardRequest(w, providerCfg, apiKey, upstreamJSON, isStream, translateResponse)
-	if err != nil {
-		if ue, ok := err.(*upstreamError); ok {
+	result := h.handleAccountFallback(w, modelInfo.Provider, modelInfo.Model, modelInfo.ConnectionID, upstreamJSON, isStream, translateResponse)
+	if result != nil {
+		// Non-retryable error — write to client
+		if ue, ok := result.(*upstreamError); ok {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(ue.StatusCode)
 			w.Write(ue.Body)
 			return
 		}
-		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
+		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", result))
 	}
 }
 
@@ -449,7 +563,7 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 			continue
 		}
 
-		_, connData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID)
+		_, connData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 		if err != nil {
 			continue // no connection for this provider, try next
 		}
@@ -555,25 +669,8 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMessagesSingleModel forwards a translated Claude request for a single model.
+// On 401/429 upstream responses it locks the model and retries with the next available account.
 func (h *ChatHandler) handleMessagesSingleModel(w http.ResponseWriter, translatedReq map[string]interface{}, modelInfo *ModelInfo, isStream bool) {
-	_, connData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID)
-	if err != nil {
-		writeJSONError(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	providerCfg, err := h.getProviderConfig(modelInfo.Provider, connData)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	apiKey := extractAPIKey(connData)
-	if apiKey == "" {
-		writeJSONError(w, http.StatusUnauthorized, "no API key found for connection")
-		return
-	}
-
 	translatedReq["model"] = modelInfo.Model
 	finalBody, err := json.Marshal(translatedReq)
 	if err != nil {
@@ -581,15 +678,15 @@ func (h *ChatHandler) handleMessagesSingleModel(w http.ResponseWriter, translate
 		return
 	}
 
-	err = h.forwardRequest(w, providerCfg, apiKey, finalBody, isStream, true)
-	if err != nil {
-		if ue, ok := err.(*upstreamError); ok {
+	result := h.handleAccountFallback(w, modelInfo.Provider, modelInfo.Model, modelInfo.ConnectionID, finalBody, isStream, true)
+	if result != nil {
+		if ue, ok := result.(*upstreamError); ok {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(ue.StatusCode)
 			w.Write(ue.Body)
 			return
 		}
-		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
+		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", result))
 	}
 }
 
@@ -603,7 +700,7 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 			continue
 		}
 
-		_, connData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID)
+		_, connData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 		if err != nil {
 			continue
 		}
@@ -649,6 +746,162 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 		return
 	}
 	writeJSONError(w, http.StatusBadGateway, "all combo models failed: no valid entries")
+}
+
+// retryableStatusCodes are HTTP status codes that trigger account fallback.
+var retryableStatusCodes = map[int]bool{
+	http.StatusUnauthorized:     true, // 401
+	http.StatusTooManyRequests:  true, // 429
+}
+
+// handleAccountFallback attempts to forward a request with automatic account fallback.
+// On 401/429 upstream errors, it locks the provider/model and retries with the next available connection.
+// Returns nil on success (response already written to w), or the last error on failure.
+func (h *ChatHandler) handleAccountFallback(
+	w http.ResponseWriter,
+	provider string,
+	model string,
+	pinnedConnectionID string,
+	body []byte,
+	isStream bool,
+	translateResponse bool,
+) error {
+	// If a specific connection is pinned, try it once without fallback
+	if pinnedConnectionID != "" {
+		_, connData, err := h.getBestConnection(provider, pinnedConnectionID, nil, model)
+		if err != nil {
+			return err
+		}
+		return h.tryForwardWithConnection(w, provider, model, connData, body, isStream, translateResponse)
+	}
+
+	// Check if provider/model is healthy
+	if !db.IsProviderHealthy(h.Repo.RawDB(), provider, model) {
+		log.Printf("[health] provider %s/%s is unhealthy (consecutive errors >= 5), skipping", provider, model)
+	}
+
+	// Check if model is already locked
+	locked, _ := h.Repo.IsModelLocked(provider, model)
+
+	// Collect all active connections for this provider
+	allConns, err := h.Repo.GetProviderConnections(provider, true)
+	if err != nil || len(allConns) == 0 {
+		return fmt.Errorf("no active connections for provider: %s", provider)
+	}
+
+	var excludeIDs []string
+	var lastErr error
+
+	for _, conn := range allConns {
+		// Skip excluded connections
+		if containsID(excludeIDs, conn.ID) {
+			continue
+		}
+
+		connObj, connData, err := h.getBestConnection(provider, conn.ID, nil, model)
+		if err != nil || connObj == nil {
+			continue
+		}
+
+		apiKey := extractAPIKey(connData)
+		if apiKey == "" {
+			continue
+		}
+
+		_ = apiKey // used by tryForwardWithConnection via connData
+
+		// If the model is locked, skip this connection (it likely caused the lock)
+		if locked {
+			// Still try other connections if available, but the locked provider/model
+			// means at least one account failed — continue to the next
+		}
+
+		lastErr = h.tryForwardWithConnection(w, provider, model, connData, body, isStream, translateResponse)
+		if lastErr == nil {
+			return nil // success
+		}
+
+		// On retryable errors (401/429), lock the model and try next account
+		if ue, ok := lastErr.(*upstreamError); ok && retryableStatusCodes[ue.StatusCode] {
+			durationSec := 60
+			if ue.StatusCode == http.StatusUnauthorized {
+				durationSec = 120
+			}
+			errMsg := fmt.Sprintf("%d upstream error", ue.StatusCode)
+			h.Repo.LockModel(provider, model, durationSec, errMsg, ue.StatusCode)
+			excludeIDs = append(excludeIDs, conn.ID)
+			continue
+		}
+
+		// Non-retryable error — return immediately
+		return lastErr
+	}
+
+	// All connections exhausted
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("no available connections for provider: %s", provider)
+}
+
+// tryForwardWithConnection attempts a single upstream request using the given connection data.
+// It records provider health (status code + latency) after every attempt.
+// Returns nil on success (response written to w), or an error.
+func (h *ChatHandler) tryForwardWithConnection(
+	w http.ResponseWriter,
+	provider string,
+	model string,
+	connData *ConnectionData,
+	body []byte,
+	isStream bool,
+	translateResponse bool,
+) error {
+	providerCfg, err := h.getProviderConfig(provider, connData)
+	if err != nil {
+		return err
+	}
+
+	apiKey := extractAPIKey(connData)
+	if apiKey == "" {
+		return &upstreamError{StatusCode: http.StatusUnauthorized, Body: []byte(`{"error":{"message":"no API key found","type":"auth_error","code":401}}`)}
+	}
+
+	start := time.Now()
+	fwdErr := h.forwardRequest(w, providerCfg, apiKey, body, isStream, translateResponse)
+	latencyMs := time.Since(start).Milliseconds()
+
+	// Record provider health
+	statusCode := http.StatusOK
+	if fwdErr != nil {
+		if ue, ok := fwdErr.(*upstreamError); ok {
+			statusCode = ue.StatusCode
+		} else {
+			statusCode = http.StatusBadGateway
+		}
+	}
+	if healthErr := db.RecordProviderHealth(h.Repo.RawDB(), provider, model, statusCode, latencyMs); healthErr != nil {
+		log.Printf("[health] failed to record health for %s/%s: %v", provider, model, healthErr)
+	}
+
+	// Log cost estimate on success (usage tracking placeholder)
+	if fwdErr == nil {
+		cost := pricing.EstimateCost(model, 0, 0) // token counts unknown at proxy level without response parsing
+		if cost > 0 {
+			log.Printf("[cost] %s/%s latency=%dms estimated_base_cost=$%.6f", provider, model, latencyMs, cost)
+		}
+	}
+
+	return fwdErr
+}
+
+// containsID checks if a string slice contains a given ID.
+func containsID(ids []string, id string) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
 }
 
 // forwardRequest sends the request to the upstream provider and streams/pipes the response.

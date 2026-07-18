@@ -17,6 +17,11 @@ func NewRepo(db *sql.DB) *Repo {
 	return &Repo{db: db}
 }
 
+// RawDB returns the underlying *sql.DB connection for direct queries.
+func (r *Repo) RawDB() *sql.DB {
+	return r.db
+}
+
 // ValidateApiKey checks if the given API key exists and is active.
 func (r *Repo) ValidateApiKey(key string) (bool, error) {
 	var active int
