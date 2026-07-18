@@ -39,6 +39,16 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 
+	// Strip double /v1 prefix (when base URL includes /v1, client sends /v1/v1/...)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if len(req.URL.Path) > 7 && req.URL.Path[:7] == "/v1/v1/" {
+				req.URL.Path = req.URL.Path[3:] // /v1/v1/x → /v1/x
+			}
+			next.ServeHTTP(w, req)
+		})
+	})
+
 	// Health check endpoint (no auth required)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
