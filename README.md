@@ -170,12 +170,6 @@ bash benchmark/run_comparison.sh
 
 Tracked items not yet implemented:
 
-- [ ] **Distribution via package managers** — add npm wrapper (`npm i -g 9router-go`,
-      prebuilt binaries per platform) and/or Homebrew formula for `brew install`.
-      Currently only Docker Hub + GitHub Releases binaries are available.
-- [ ] **Docker Hub publish** — `release.yml` pushes to `luqmanv1/9router-go`, but
-      GitHub Secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` must be set before
-      the first tagged release.
 - [ ] **Search & scrape provider dispatch** — `/v1/search` and `/v1/scrape` are
       simple forward endpoints (provider selected via the `model` field, path
       appended to the connection base URL). Unlike the 9Router JS reference, there
