@@ -1059,4 +1059,8 @@ func SetupRoutes(r interface {
 
 	r.Post("/chat/completions", handler.HandleChatCompletions)
 	r.Post("/messages", handler.HandleMessages)
+	r.Post("/embeddings", handler.HandleEmbeddings)
+	r.Post("/responses", handler.HandleResponses)
 }
+
+// updateModelInBody replaces the "model" field in a JSON body.
