@@ -11,7 +11,7 @@ permissions:
   packages: write
 
 env:
-  REGISTRY_IMAGE: luqmanv1/9router-go
+  REGISTRY_IMAGE: luqmenul/9router-go
 
 jobs:
   binaries:
