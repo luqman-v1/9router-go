@@ -33,14 +33,14 @@ func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 
 			// Validate via SQLite repository and retrieve details
 			apiKeyObj, err := repo.GetApiKeyByKey(apiKeyString)
-			if err != nil {
+			if err != nil || apiKeyObj == nil {
 				w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`{"error": {"message": "Internal server error validating API key", "type": "server_error", "code": "internal_error"}}`))
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error": {"message": "Invalid API key.", "type": "invalid_request_error", "code": "invalid_api_key"}}`))
 				return
 			}
 
-			if apiKeyObj == nil || apiKeyObj.IsActive != 1 {
+			if apiKeyObj.IsActive != 1 {
 				w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 				w.WriteHeader(http.StatusUnauthorized)
 				w.Write([]byte(`{"error": {"message": "Invalid or inactive API key.", "type": "invalid_request_error", "code": "invalid_api_key"}}`))
