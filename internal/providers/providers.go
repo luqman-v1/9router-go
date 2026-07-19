@@ -1,6 +1,9 @@
 package providers
 
-import "net/http"
+import (
+	"net/http"
+	"os"
+)
 
 // ProviderConfig describes how to reach an upstream provider.
 type ProviderConfig struct {
@@ -82,7 +85,7 @@ var KnownProviders = map[string]ProviderConfig{
 		Format:     "gemini-native",
 	},
 	"github": {
-		BaseURL:    "https://models.inference.ai.azure.com/chat/completions",
+		BaseURL:    "https://api.githubcopilot.com/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
@@ -102,7 +105,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"cohere": {
-		BaseURL:    "https://api.cohere.com/v2/chat/completions",
+		BaseURL:    "https://api.cohere.ai/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
@@ -117,7 +120,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"cloudflare-ai": {
-		BaseURL:    "https://api.cloudflare.com/client/v4/ai/chat/completions",
+		BaseURL:    "https://api.cloudflare.com/client/v4/accounts/" + os.Getenv("CLOUDFLARE_ACCOUNT_ID") + "/ai/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
@@ -296,9 +299,28 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "raw",
 		StaticHeaders: map[string]string{
 			"anthropic-version": "2023-06-01",
+				"Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14",
+			},
 		},
-	},
-	"azure": {
+		"codex": {
+			BaseURL:    "https://chatgpt.com/backend-api/codex/responses",
+			AuthHeader: "Authorization",
+			AuthScheme: "bearer",
+			StaticHeaders: map[string]string{
+				"originator": "codex_cli_rs",
+			},
+		},
+		"grok-cli": {
+			BaseURL:    "https://cli-chat-proxy.grok.com",
+			AuthHeader: "Authorization",
+			AuthScheme: "bearer",
+		},
+		"kiro": {
+			BaseURL:    "https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
+			AuthHeader: "Authorization",
+			AuthScheme: "bearer",
+		},
+		"azure": {
 		BaseURL:    "",
 		AuthHeader: "api-key",
 		AuthScheme: "raw",
