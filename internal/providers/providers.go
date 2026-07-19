@@ -222,6 +222,16 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"glm": {
+		BaseURL:    "https://api.z.ai/api/coding/paas/v4/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"kimchi": {
+		BaseURL:    "https://llm.kimchi.dev/openai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"iflow": {
 		BaseURL:    "https://apis.iflow.cn/v1/chat/completions",
 		AuthHeader: "Authorization",
@@ -238,13 +248,48 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"minimax": {
+		BaseURL:    "https://api.minimax.io/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"kimi": {
+		BaseURL:    "https://api.kimi.com/coding/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"clinepass": {
+		BaseURL:    "https://api.cline.bot/api/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"perplexity-agent": {
+		BaseURL:    "https://api.perplexity.ai/v1/responses",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		Format:     "openai-responses",
+	},
+	"commandcode": {
+		BaseURL:    "https://api.commandcode.ai/alpha/generate",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"azure": {
+		BaseURL:    "",
+		AuthHeader: "api-key",
+		AuthScheme: "raw",
+	},
 }
 
 // ProviderAliasMap maps short aliases to canonical provider IDs.
 var ProviderAliasMap = map[string]string{
-	"aai": "assemblyai",
-	"ag": "antigravity",
-	"ark": "volcengine-ark",
+		"aai": "assemblyai",
+		"ag": "antigravity",
+		"ali": "alicode",
+		"alii": "alicode-intl",
+		"ant": "anthropic",
+		"ark": "volcengine-ark",
+		"az": "azure",
 	"bb": "blackbox",
 	"bfl": "black-forest-labs",
 	"bpm": "byteplus",
@@ -291,15 +336,7 @@ var ProviderAliasMap = map[string]string{
 	"runway": "runwayml",
 	"stability": "stability-ai",
 	"tg": "together",
-	"ant": "anthropic",
-	"cb": "cerebras",
-	"vercel": "vercel-ai-gateway",
-	"vn": "venice",
-	"vx": "vertex",
-	"vxp": "vertex-partner",
-	"xmtp": "xiaomi-tokenplan",
-	"ali": "alicode",
-	"alii": "alicode-intl",
+		"cb": "cerebras",
 	"cd": "codebuddy-cn",
 	"gl": "gitlab",
 	"glmcn": "glm-cn",
@@ -307,6 +344,10 @@ var ProviderAliasMap = map[string]string{
 	"ne": "nebius",
 	"qw": "qwen",
 	"vali": "volcengine-ark",
+		"km": "kimi",
+		"mm": "minimax",
+		"cp": "clinepass",
+		"pa": "perplexity-agent",
 }
 
 // RetryableStatusCodes are HTTP status codes that trigger account fallback.

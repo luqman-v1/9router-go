@@ -149,8 +149,12 @@ func (h *ChatHandler) tryForwardWithConnection(
 	switch provider {
 	case "kiro":
 		fwdErr = h.forwardKiroRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
-	case "codex":
+	case "codex", "perplexity-agent":
 		fwdErr = h.forwardCodexRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
+	case "azure":
+		fwdErr = h.forwardAzureRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
+	case "commandcode":
+		fwdErr = h.forwardCommandcodeRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
 	default:
 		if providerCfg.IsGeminiNative() {
 			fwdErr = h.forwardGeminiNativeRequest(w, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)

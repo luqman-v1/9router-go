@@ -96,7 +96,7 @@ func TestHandleKiroStream_ReasoningContent(t *testing.T) {
 		":event-type": "assistantResponseEvent",
 	}, payload2)
 
-	upstream := bytes.NewReader(append(append(frame, frame2...)))
+	upstream := bytes.NewReader(append(frame, frame2...))
 	rec := httptest.NewRecorder()
 	h, cleanup := setupHandlerForForward(t)
 	defer cleanup()

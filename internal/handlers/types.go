@@ -33,9 +33,10 @@ type ModelInfo struct {
 
 // ConnectionData holds parsed fields from the providerConnections.data JSON blob.
 type ConnectionData struct {
-	APIKey      string `json:"apiKey"`
-	AccessToken string `json:"accessToken"`
-	BaseURL     string `json:"baseUrl,omitempty"`
+	APIKey              string                 `json:"apiKey"`
+	AccessToken         string                 `json:"accessToken"`
+	BaseURL             string                 `json:"baseUrl,omitempty"`
+	ProviderSpecificData map[string]interface{} `json:"providerSpecificData,omitempty"`
 }
 
 // UsageLogInfo holds request context needed to log a usage record.
