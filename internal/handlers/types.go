@@ -1,12 +1,12 @@
 package handlers
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/proxy"
 )
 
 // ChatHandler handles /v1/chat/completions (OpenAI) and /v1/messages (Claude) endpoints.
@@ -54,13 +54,5 @@ type streamMetrics struct {
 	responseBuf strings.Builder  // accumulated response content
 }
 
-// upstreamError captures a non-200 upstream response so the caller can
-// retry with a different model (combo fallback) or write it to the client.
-type upstreamError struct {
-	StatusCode int
-	Body       []byte
-}
-
-func (e *upstreamError) Error() string {
-	return fmt.Sprintf("upstream returned %d", e.StatusCode)
-}
+// upstreamError is an alias for proxy.UpstreamError — retryable errors from upstream.
+type upstreamError = proxy.UpstreamError

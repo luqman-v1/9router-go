@@ -1,17 +1,13 @@
 package handlers
 
 import (
-	"bytes"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
 
-	"9router/proxy/internal/constants"
-
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
-	"9router/proxy/internal/proxy"
+	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
 
@@ -25,42 +21,11 @@ func (h *ChatHandler) forwardRequest(
 	translateResponse bool,
 	metrics *streamMetrics,
 ) error {
-	req, err := http.NewRequest(http.MethodPost, cfg.BaseURL, bytes.NewReader(body))
+	resp, err := internalproxy.ForwardOpenAI(h.Client, cfg, apiKey, body, isStream)
 	if err != nil {
-		return fmt.Errorf("failed to create upstream request: %w", err)
-	}
-
-	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
-
-	if !cfg.NoAuth {
-		switch cfg.AuthScheme {
-		case "bearer":
-			req.Header.Set(cfg.AuthHeader, constants.AuthPrefixBearer+apiKey)
-		case "raw":
-			req.Header.Set(cfg.AuthHeader, apiKey)
-		default:
-			req.Header.Set(constants.HeaderAuthorization, constants.AuthPrefixBearer+apiKey)
-		}
-	}
-
-	for k, v := range cfg.StaticHeaders {
-		req.Header.Set(k, v)
-	}
-
-	if isStream {
-		req.Header.Set("Accept", "text/event-stream")
-	}
-
-	resp, err := h.Client.Do(req)
-	if err != nil {
-		return fmt.Errorf("upstream request failed: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
-		return &upstreamError{StatusCode: resp.StatusCode, Body: errBody}
-	}
 
 	start := time.Now()
 	if metrics == nil {
@@ -74,14 +39,14 @@ func (h *ChatHandler) forwardRequest(
 
 // handleStreamResponse pipes SSE chunks from upstream to the client.
 func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, metrics *streamMetrics) error {
-	w.Header().Set(constants.HeaderContentType, constants.ContentTypeEventStream)
-	w.Header().Set(constants.HeaderCacheControl, constants.CacheNoCache)
-	w.Header().Set(constants.HeaderConnection, constants.ConnKeepAlive)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
 	if !translate {
 		flusher, _ := w.(http.Flusher)
-		buf := make([]byte, constants.StreamReadBuffer)
+		buf := make([]byte, 4096)
 		for {
 			n, err := upstream.Read(buf)
 			if n > 0 {
@@ -102,7 +67,7 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 	}
 
 	flusher, _ := w.(http.Flusher)
-	return proxy.ScanStream(upstream, func(chunk []byte) {
+	return internalproxy.ScanStream(upstream, func(chunk []byte) {
 		translated, err := translator.TranslateOpenAIToClaudeStream(chunk)
 		if err != nil || translated == nil {
 			return
@@ -122,7 +87,7 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 func (h *ChatHandler) handleJSONResponse(w http.ResponseWriter, upstream io.Reader, translate bool) error {
 	body, err := io.ReadAll(upstream)
 	if err != nil {
-		return fmt.Errorf("failed to read upstream response: %w", err)
+		return err
 	}
 
 	if !translate {

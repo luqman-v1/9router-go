@@ -109,31 +109,40 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	openaiBody, err := translator.TranslateClaudeToOpenAI(body)
-	if err != nil {
-		log.Printf("[error] component=messages err=\"translate: %v\"", err)
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, fmt.Sprintf("translation error: %v", err))
-		return
+	// Providers that accept Claude format natively (claude, anthropic) skip OpenAI translation
+	translateResponse := true
+	var workingBody map[string]any
+	if modelInfo.Provider == "claude" || modelInfo.Provider == "anthropic" {
+		translateResponse = false
+		if err := json.Unmarshal(body, &workingBody); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	} else {
+		openaiBody, err := translator.TranslateClaudeToOpenAI(body)
+		if err != nil {
+			log.Printf("[error] component=messages err=\"translate: %v\"", err)
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, fmt.Sprintf("translation error: %v", err))
+			return
+		}
+		if err := json.Unmarshal(openaiBody, &workingBody); err != nil {
+			log.Printf("[error] component=messages err=\"parse translated: %v\"", err)
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to parse translated request")
+			return
+		}
 	}
-
-	var translatedReq map[string]any
-	if err := json.Unmarshal(openaiBody, &translatedReq); err != nil {
-		log.Printf("[error] component=messages err=\"parse translated: %v\"", err)
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to parse translated request")
-		return
-	}
-	translatedReq["stream"] = reqBody.Stream
+	workingBody["stream"] = reqBody.Stream
 
 	if len(modelInfo.ComboModels) > 0 {
-		h.handleMessagesComboFallback(w, translatedReq, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream)
+		h.handleMessagesComboFallback(w, workingBody, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream)
 		return
 	}
 
-	h.handleMessagesSingleModel(w, translatedReq, modelInfo, reqBody.Stream)
+	h.handleMessagesSingleModel(w, workingBody, modelInfo, reqBody.Stream, translateResponse)
 }
 
 // handleMessagesSingleModel forwards a translated Claude request for a single model.
-func (h *ChatHandler) handleMessagesSingleModel(w http.ResponseWriter, translatedReq map[string]any, modelInfo *ModelInfo, isStream bool) {
+func (h *ChatHandler) handleMessagesSingleModel(w http.ResponseWriter, translatedReq map[string]any, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
 	translatedReq["model"] = modelInfo.Model
 	finalBody, err := json.Marshal(translatedReq)
 	if err != nil {
@@ -141,7 +150,7 @@ func (h *ChatHandler) handleMessagesSingleModel(w http.ResponseWriter, translate
 		return
 	}
 
-	result := h.handleAccountFallback(w, modelInfo.Provider, modelInfo.Model, modelInfo.ConnectionID, finalBody, isStream, true, "/v1/v1/messages")
+	result := h.handleAccountFallback(w, modelInfo.Provider, modelInfo.Model, modelInfo.ConnectionID, finalBody, isStream, translateResponse, "/v1/v1/messages")
 	if result != nil {
 		if ue, ok := result.(*upstreamError); ok {
 			w.Header().Set("Content-Type", "application/json")

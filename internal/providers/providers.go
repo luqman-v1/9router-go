@@ -275,6 +275,29 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"ollama-local": {
+		BaseURL:    "http://localhost:11434/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"minimax-cn": {
+		BaseURL:    "https://api.minimaxi.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"kimi-coding": {
+		BaseURL:    "https://api.kimi.com/coding/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"claude": {
+		BaseURL:    "https://api.anthropic.com/v1/messages",
+		AuthHeader: "x-api-key",
+		AuthScheme: "raw",
+		StaticHeaders: map[string]string{
+			"anthropic-version": "2023-06-01",
+		},
+	},
 	"azure": {
 		BaseURL:    "",
 		AuthHeader: "api-key",
