@@ -18,6 +18,7 @@ type ProviderConfig struct {
 	TTSURL        string            // override /audio/speech endpoint
 	STTURL        string            // override /audio/transcriptions endpoint
 	VideoURL      string            // override /videos/generations endpoint
+	VoicesURL     string            // override /audio/voices listing endpoint
 }
 
 // IsGeminiNative returns true if provider uses Gemini-native format.
@@ -331,6 +332,7 @@ var KnownProviders = map[string]ProviderConfig{
 			AuthHeader: "xi-api-key",
 			AuthScheme: "raw",
 			TTSURL:     "https://api.elevenlabs.io/v1/text-to-speech",
+			VoicesURL:  "https://api.elevenlabs.io/v1/voices",
 		},
 		"deepgram": {
 			BaseURL:    "https://api.deepgram.com",
