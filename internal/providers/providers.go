@@ -10,7 +10,11 @@ type ProviderConfig struct {
 	NoAuth        bool              // true = no API key required
 	DefaultAPIKey string            // fallback API key when none provided
 	StaticHeaders map[string]string // extra headers to set on every request
+	Format        string            // "" (OpenAI standard), "gemini-native"
 }
+
+// IsGeminiNative returns true if provider uses Gemini-native format.
+func (p *ProviderConfig) IsGeminiNative() bool { return p.Format == "gemini-native" }
 
 // KnownProviders maps provider IDs to their upstream configuration.
 var KnownProviders = map[string]ProviderConfig{
@@ -71,6 +75,11 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"antigravity": {
+		BaseURL:    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"github": {
 		BaseURL:    "https://models.inference.ai.azure.com/chat/completions",
 		AuthHeader: "Authorization",
@@ -118,6 +127,117 @@ var KnownProviders = map[string]ProviderConfig{
 		DefaultAPIKey: "mimo-dynamic",
 		NoAuth:        true,
 	},
+	"blackbox": {
+		BaseURL:    "https://api.blackbox.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"featherless": {
+		BaseURL:    "https://api.featherless.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"hyperbolic": {
+		BaseURL:    "https://api.hyperbolic.xyz/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"kilocode": {
+		BaseURL:    "https://api.kilo.ai/api/openrouter/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"nanobanana": {
+		BaseURL:    "https://api.nanobananaapi.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"opencode-go": {
+		BaseURL:    "https://opencode.ai/zen/go/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"venice": {
+		BaseURL:    "https://api.venice.ai/api/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"vercel-ai-gateway": {
+		BaseURL:    "https://ai-gateway.vercel.sh/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"volcengine-ark": {
+		BaseURL:    "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"xiaomi-mimo": {
+		BaseURL:    "https://api.xiaomimimo.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"xiaomi-tokenplan": {
+		BaseURL:    "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"chutes": {
+		BaseURL:    "https://llm.chutes.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"cline": {
+		BaseURL:    "https://api.cline.bot/api/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"alicode": {
+		BaseURL:    "https://coding.dashscope.aliyuncs.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"alicode-intl": {
+		BaseURL:    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"byteplus": {
+		BaseURL:    "https://ark.ap-southeast.bytepluses.com/api/coding/v3/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"codebuddy-cn": {
+		BaseURL:    "https://copilot.tencent.com/v2/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"gitlab": {
+		BaseURL:    "https://gitlab.com/api/v4/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"glm-cn": {
+		BaseURL:    "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"iflow": {
+		BaseURL:    "https://apis.iflow.cn/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+
+	"nebius": {
+		BaseURL:    "https://api.studio.nebius.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"qwen": {
+		BaseURL:    "https://portal.qwen.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 }
 
 // ProviderAliasMap maps short aliases to canonical provider IDs.
@@ -157,7 +277,6 @@ var ProviderAliasMap = map[string]string{
 	"kr": "kiro",
 	"mimo": "xiaomi-mimo",
 	"mmf": "mimo-free",
-	"nb": "nanobanana",
 	"nv": "nvidia",
 	"oa": "openai",
 	"oc": "opencode",
@@ -179,10 +298,19 @@ var ProviderAliasMap = map[string]string{
 	"vx": "vertex",
 	"vxp": "vertex-partner",
 	"xmtp": "xiaomi-tokenplan",
+	"ali": "alicode",
+	"alii": "alicode-intl",
+	"cd": "codebuddy-cn",
+	"gl": "gitlab",
+	"glmcn": "glm-cn",
+	"if": "iflow",
+	"ne": "nebius",
+	"qw": "qwen",
+	"vali": "volcengine-ark",
 }
 
 // RetryableStatusCodes are HTTP status codes that trigger account fallback.
 var RetryableStatusCodes = map[int]bool{
 	http.StatusUnauthorized:    true, // 401
 	http.StatusTooManyRequests: true, // 429
-}
+	}

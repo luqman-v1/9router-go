@@ -28,9 +28,21 @@ type ToolCallState struct {
 
 // OpenAIUsage tracks token counts.
 type OpenAIUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	CachedTokens     int `json:"cached_tokens"`
+	PromptTokens            int                      `json:"prompt_tokens"`
+	CompletionTokens        int                      `json:"completion_tokens"`
+	CachedTokens            int                      `json:"cached_tokens"`
+	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+type CompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
+}
+
+func (u *OpenAIUsage) ReasoningTokens() int {
+	if u != nil && u.CompletionTokensDetails != nil {
+		return u.CompletionTokensDetails.ReasoningTokens
+	}
+	return 0
 }
 
 // OpenAIChunk represents a single SSE chunk from an OpenAI-compatible stream.
@@ -105,6 +117,7 @@ type ClaudeSystemBlock struct {
 type ClaudeContentBlock struct {
 	Type      string             `json:"type"`
 	Text      string             `json:"text,omitempty"`
+	Thinking  string             `json:"thinking,omitempty"`
 	Source    *ClaudeImageSource `json:"source,omitempty"`
 	ID        string             `json:"id,omitempty"`
 	Name      string             `json:"name,omitempty"`
@@ -139,6 +152,12 @@ type ClaudeToolChoice struct {
 	Name string `json:"name,omitempty"`
 }
 
+// ClaudeThinking represents the thinking configuration in a Claude request.
+type ClaudeThinking struct {
+	Type    string `json:"type"`
+	Budget  int    `json:"budget_tokens"`
+}
+
 // ClaudeRequest is the full Claude /v1/messages request body.
 type ClaudeRequest struct {
 	Model       string           `json:"model"`
@@ -146,6 +165,7 @@ type ClaudeRequest struct {
 	System      json.RawMessage  `json:"system,omitempty"`
 	Temperature *float64         `json:"temperature,omitempty"`
 	MaxTokens   *int             `json:"max_tokens,omitempty"`
+	Thinking    *ClaudeThinking  `json:"thinking,omitempty"`
 	Tools       []ClaudeTool     `json:"tools,omitempty"`
 	ToolChoice  *json.RawMessage `json:"tool_choice,omitempty"`
 	Stream      bool             `json:"stream,omitempty"`
@@ -153,21 +173,23 @@ type ClaudeRequest struct {
 
 // OpenAIRequest is the translated OpenAI-compatible request body.
 type OpenAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
-	Tools       []OpenAITool    `json:"tools,omitempty"`
-	ToolChoice  any             `json:"tool_choice,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
+	Model           string          `json:"model"`
+	Messages        []OpenAIMessage `json:"messages"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	MaxTokens       *int            `json:"max_tokens,omitempty"`
+	Tools           []OpenAITool    `json:"tools,omitempty"`
+	ToolChoice      any             `json:"tool_choice,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	Stream          bool            `json:"stream,omitempty"`
 }
 
 // OpenAIMessage is a single message in OpenAI format.
 type OpenAIMessage struct {
-	Role       string           `json:"role"`
-	Content    any              `json:"content,omitempty"` // string or []OpenAIContentBlock
-	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"` // used for tool role messages
+	Role             string           `json:"role"`
+	Content          any              `json:"content,omitempty"` // string or []OpenAIContentBlock
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string           `json:"tool_call_id,omitempty"` // used for tool role messages
 }
 
 // OpenAIContentBlock holds one content block (text or image_url).

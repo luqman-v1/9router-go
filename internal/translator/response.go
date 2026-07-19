@@ -143,13 +143,16 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, error) {
 
 	// Usage
 	inputTokens, outputTokens := 0, 0
+	var details *CompletionTokensDetails
 	if resp.Usage != nil {
 		inputTokens = resp.Usage.PromptTokens
 		outputTokens = resp.Usage.CompletionTokens
+		details = resp.Usage.CompletionTokensDetails
 	}
 	SetLastUsage(&OpenAIUsage{
-		PromptTokens:     inputTokens,
-		CompletionTokens: outputTokens,
+		PromptTokens:            inputTokens,
+		CompletionTokens:        outputTokens,
+		CompletionTokensDetails: details,
 	})
 
 	result := map[string]any{
@@ -236,6 +239,9 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 		}
 		if chunk.Usage.CachedTokens > 0 {
 			state.Usage.CachedTokens = chunk.Usage.CachedTokens
+		}
+		if chunk.Usage.CompletionTokensDetails != nil {
+			state.Usage.CompletionTokensDetails = chunk.Usage.CompletionTokensDetails
 		}
 	}
 

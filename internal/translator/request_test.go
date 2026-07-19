@@ -234,3 +234,177 @@ func TestConvertClaudeMessage_EmptyBlocks(t *testing.T) {
 		t.Fatalf("expected 1 message, got %d", len(results))
 	}
 }
+
+// --- budgetToEffort ---
+
+func TestBudgetToEffort(t *testing.T) {
+	tests := []struct {
+		budget int
+		want   string
+	}{
+		{20000, "high"},
+		{30000, "high"},
+		{5000, "medium"},
+		{10000, "medium"},
+		{0, "low"},
+		{100, "low"},
+	}
+	for _, tt := range tests {
+		got := budgetToEffort(tt.budget)
+		if got != tt.want {
+			t.Errorf("budgetToEffort(%d) = %q, want %q", tt.budget, got, tt.want)
+		}
+	}
+}
+
+// --- Thinking block in ConvertClaudeMessage ---
+
+func TestConvertClaudeMessage_ThinkingBlock(t *testing.T) {
+	t.Run("thinking block with text and tool_use", func(t *testing.T) {
+		msg := ClaudeMessage{
+			Role: "assistant",
+			Content: json.RawMessage(`[
+				{"type":"thinking","thinking":"Let me reason step by step..."},
+				{"type":"text","text":"Final answer"},
+				{"type":"tool_use","id":"call_1","name":"Bash","input":{"cmd":"ls"}}
+			]`),
+		}
+		results, err := convertClaudeMessage(msg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(results))
+		}
+		if results[0].Role != "assistant" {
+			t.Errorf("expected role assistant, got %q", results[0].Role)
+		}
+		if results[0].ReasoningContent != "Let me reason step by step..." {
+			t.Errorf("expected reasoning_content %q, got %q", "Let me reason step by step...", results[0].ReasoningContent)
+		}
+		if results[0].Content != "Final answer" {
+			t.Errorf("expected content %q, got %v", "Final answer", results[0].Content)
+		}
+		if len(results[0].ToolCalls) != 1 {
+			t.Fatalf("expected 1 tool call, got %d", len(results[0].ToolCalls))
+		}
+	})
+
+	t.Run("thinking block without tool_use", func(t *testing.T) {
+		msg := ClaudeMessage{
+			Role: "assistant",
+			Content: json.RawMessage(`[
+				{"type":"thinking","thinking":"Thinking..."},
+				{"type":"text","text":"Hello"}
+			]`),
+		}
+		results, err := convertClaudeMessage(msg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(results))
+		}
+		if results[0].Role != "assistant" {
+			t.Errorf("expected role assistant, got %q", results[0].Role)
+		}
+		if results[0].Content != "Hello" {
+			t.Errorf("expected content %q, got %v", "Hello", results[0].Content)
+		}
+	})
+
+	t.Run("thinking block alone (no text, no tool_use)", func(t *testing.T) {
+		msg := ClaudeMessage{
+			Role: "assistant",
+			Content: json.RawMessage(`[
+				{"type":"thinking","thinking":"Just thinking..."}
+			]`),
+		}
+		results, err := convertClaudeMessage(msg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 0 {
+			t.Fatalf("expected 0 messages, got %d", len(results))
+		}
+	})
+}
+
+// --- TranslateClaudeToOpenAI with thinking config ---
+
+func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
+	t.Run("thinking config → high reasoning_effort", func(t *testing.T) {
+		claudeJSON := []byte(`{
+			"model": "claude-3-5-sonnet",
+			"messages": [{"role":"user","content":"hello"}],
+			"thinking": {"type": "enabled", "budget_tokens": 20000}
+		}`)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		if err != nil {
+			t.Fatalf("failed to translate: %v", err)
+		}
+		var oreq map[string]interface{}
+		if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
+			t.Fatalf("failed to parse: %v", err)
+		}
+		if oreq["reasoning_effort"] != "high" {
+			t.Errorf("expected reasoning_effort 'high', got %v", oreq["reasoning_effort"])
+		}
+	})
+
+	t.Run("thinking config → medium reasoning_effort", func(t *testing.T) {
+		claudeJSON := []byte(`{
+			"model": "claude-3-5-sonnet",
+			"messages": [{"role":"user","content":"hello"}],
+			"thinking": {"type": "enabled", "budget_tokens": 5000}
+		}`)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		if err != nil {
+			t.Fatalf("failed to translate: %v", err)
+		}
+		var oreq map[string]interface{}
+		if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
+			t.Fatalf("failed to parse: %v", err)
+		}
+		if oreq["reasoning_effort"] != "medium" {
+			t.Errorf("expected reasoning_effort 'medium', got %v", oreq["reasoning_effort"])
+		}
+	})
+
+	t.Run("thinking config → low reasoning_effort", func(t *testing.T) {
+		claudeJSON := []byte(`{
+			"model": "claude-3-5-sonnet",
+			"messages": [{"role":"user","content":"hello"}],
+			"thinking": {"type": "enabled", "budget_tokens": 100}
+		}`)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		if err != nil {
+			t.Fatalf("failed to translate: %v", err)
+		}
+		var oreq map[string]interface{}
+		if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
+			t.Fatalf("failed to parse: %v", err)
+		}
+		if oreq["reasoning_effort"] != "low" {
+			t.Errorf("expected reasoning_effort 'low', got %v", oreq["reasoning_effort"])
+		}
+	})
+
+	t.Run("no thinking config → no reasoning_effort", func(t *testing.T) {
+		claudeJSON := []byte(`{
+			"model": "claude-3-5-sonnet",
+			"messages": [{"role":"user","content":"hello"}]
+		}`)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		if err != nil {
+			t.Fatalf("failed to translate: %v", err)
+		}
+		var oreq map[string]interface{}
+		if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
+			t.Fatalf("failed to parse: %v", err)
+		}
+		if _, exists := oreq["reasoning_effort"]; exists {
+			t.Errorf("expected no reasoning_effort, got %v", oreq["reasoning_effort"])
+		}
+	})
+}

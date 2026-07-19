@@ -98,6 +98,7 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 	var textParts []OpenAIContentBlock
 	var toolCalls []OpenAIToolCall
 	var toolResults []OpenAIMessage
+	var reasoningContent string
 
 	for _, block := range blocks {
 		switch block.Type {
@@ -106,6 +107,10 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 				Type: "text",
 				Text: block.Text,
 			})
+		case "thinking":
+			if block.Thinking != "" {
+				reasoningContent += block.Thinking
+			}
 		case "image":
 			if block.Source != nil && block.Source.Type == "base64" {
 				url := fmt.Sprintf("data:%s;base64,%s", block.Source.MediaType, block.Source.Data)
@@ -160,7 +165,8 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 	}
 	if len(toolCalls) > 0 {
 		msg := OpenAIMessage{
-			Role:      "assistant",
+			Role:             "assistant",
+			ReasoningContent: reasoningContent,
 			ToolCalls: toolCalls,
 		}
 		if len(textParts) > 0 {
@@ -226,6 +232,17 @@ func fixMissingToolResponsesOpenAI(messages []OpenAIMessage) []OpenAIMessage {
 		}
 	}
 	return result
+}
+
+func budgetToEffort(budget int) string {
+	switch {
+	case budget >= 20000:
+		return "high"
+	case budget >= 5000:
+		return "medium"
+	default:
+		return "low"
+	}
 }
 
 func convertToolChoice(choiceRaw *json.RawMessage) any {
@@ -303,6 +320,11 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 
 	if creq.ToolChoice != nil {
 		oreq.ToolChoice = convertToolChoice(creq.ToolChoice)
+	}
+
+	// Claude thinking config → OpenAI reasoning_effort
+	if creq.Thinking != nil && creq.Thinking.Type == "enabled" {
+		oreq.ReasoningEffort = budgetToEffort(creq.Thinking.Budget)
 	}
 
 	return json.Marshal(oreq)

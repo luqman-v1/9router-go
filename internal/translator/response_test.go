@@ -279,3 +279,48 @@ func TestTranslateOpenAIToClaudeStream_Defaults(t *testing.T) {
 		t.Errorf("expected default model, got: %s", out)
 	}
 }
+
+// --- TranslateOpenAIToClaude with reasoning_tokens in usage details ---
+
+func TestTranslateOpenAIToClaude_CompletionTokensDetails(t *testing.T) {
+	t.Run("captures reasoning_tokens from non-stream response", func(t *testing.T) {
+		GetAndClearLastUsage()
+		input := []byte(`{"id":"chatcmpl-detail","model":"o3-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":99,"completion_tokens_details":{"reasoning_tokens":80}}}`)
+		_, err := TranslateOpenAIToClaude(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		u := GetAndClearLastUsage()
+		if u == nil {
+			t.Fatal("expected non-nil usage")
+		}
+		if u.PromptTokens != 10 {
+			t.Errorf("expected prompt_tokens 10, got %d", u.PromptTokens)
+		}
+		if u.CompletionTokens != 99 {
+			t.Errorf("expected completion_tokens 99, got %d", u.CompletionTokens)
+		}
+		if u.ReasoningTokens() != 80 {
+			t.Errorf("expected reasoning_tokens 80, got %d", u.ReasoningTokens())
+		}
+	})
+}
+
+func TestTranslateOpenAIToClaudeStream_CompletionTokensDetails(t *testing.T) {
+	t.Run("captures reasoning_tokens in stream usage", func(t *testing.T) {
+		GetAndClearLastUsage()
+		id := "stream-detail"
+		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"` + id + `","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`))
+		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"` + id + `","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":50,"completion_tokens_details":{"reasoning_tokens":40}}}`))
+		u := GetAndClearLastUsage()
+		if u == nil {
+			t.Fatal("expected non-nil usage")
+		}
+		if u.PromptTokens != 5 || u.CompletionTokens != 50 {
+			t.Errorf("token mismatch: %#v", u)
+		}
+		if u.ReasoningTokens() != 40 {
+			t.Errorf("expected reasoning_tokens 40, got %d", u.ReasoningTokens())
+		}
+	})
+}

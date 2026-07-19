@@ -133,11 +133,31 @@ func (h *ChatHandler) tryForwardWithConnection(
 		return &upstreamError{StatusCode: http.StatusUnauthorized, Body: []byte(`{"error":{"message":"no API key found","type":"auth_error","code":401}}`)}
 	}
 
+	/* OAuth token refresh for providers with refreshToken in connection data */
+	if connectionID != "" {
+		rekey, _, err := h.refreshOAuthTokenIfExpired(connectionID, apiKey)
+		if err == nil {
+			apiKey = rekey
+		}
+	}
+
 	pipedBody := h.applyTokenSavers(body)
 
 	start := time.Now()
 	metrics := &streamMetrics{}
-	fwdErr := h.forwardRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
+	var fwdErr error
+	switch provider {
+	case "kiro":
+		fwdErr = h.forwardKiroRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
+	case "codex":
+		fwdErr = h.forwardCodexRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
+	default:
+		if providerCfg.IsGeminiNative() {
+			fwdErr = h.forwardGeminiNativeRequest(w, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)
+		} else {
+			fwdErr = h.forwardRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
+		}
+	}
 	latencyMs := time.Since(start).Milliseconds()
 
 	statusCode := http.StatusOK

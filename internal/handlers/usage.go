@@ -44,7 +44,7 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 		"latency": map[string]int64{"ttft": ttftMs, "total": latencyMs},
 		"tokens": map[string]int{
 			"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens,
-			"cached_tokens": usage.CachedTokens, "reasoning_tokens": 0,
+			"cached_tokens": usage.CachedTokens, "reasoning_tokens": usage.ReasoningTokens(),
 		},
 		"request":  map[string]any{"messages": reqMsgs},
 		"response": map[string]any{"content": respContent},

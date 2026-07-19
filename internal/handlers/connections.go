@@ -101,11 +101,7 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		}, nil
 	}
 
-	return &providers.ProviderConfig{
-		BaseURL:    fmt.Sprintf("https://%s.example.com/v1/chat/completions", provider),
-		AuthHeader: constants.HeaderAuthorization,
-		AuthScheme: constants.AuthSchemeBearer,
-	}, nil
+	return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
 }
 
 // extractAPIKey gets the API key from a connection's data.
