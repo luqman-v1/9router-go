@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"9router/proxy/internal/models"
 )
@@ -54,6 +55,18 @@ func (r *Repo) GetApiKeyByKey(key string) (*models.APIKey, error) {
 
 // GetProviderConnectionByID retrieves a single provider connection by primary key.
 // Returns nil, nil when no row matches.
+
+// CreateProviderConnection inserts a new provider connection.
+func (r *Repo) CreateProviderConnection(id, provider, authType, name string, apiKey string) error {
+	data, _ := json.Marshal(map[string]string{"apiKey": apiKey})
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.db.Exec(
+		`INSERT INTO providerConnections (id, provider, authType, name, isActive, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
+		id, provider, authType, name, string(data), now, now,
+	)
+	return err
+}
+
 func (r *Repo) GetProviderConnectionByID(id string) (*models.ProviderConnection, error) {
 	var conn models.ProviderConnection
 	err := r.db.QueryRow(
