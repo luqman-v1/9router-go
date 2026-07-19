@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-
-	"9router/proxy/internal/constants"
 	"os"
 	"os/signal"
 	"syscall"
@@ -16,9 +14,11 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"9router/proxy/internal/config"
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/mitm"
 )
 
 // statusWriter wraps http.ResponseWriter to capture the status code.
@@ -53,6 +53,29 @@ func main() {
 				Usage: "enable Ponytail lazy dev code style (env: PONYTAIL_ENABLED)",
 			},
 		},
+		Commands: []*cli.Command{
+			{
+				Name:  "mitm",
+				Usage: "Manage MITM proxy for CLI tool traffic interception",
+				Subcommands: []*cli.Command{
+					{
+						Name:   "enable",
+						Usage:  "Start MITM proxy (DNS redirect + TLS intercept on :443)",
+						Action: mitmEnable,
+					},
+					{
+						Name:   "disable",
+						Usage:  "Stop MITM proxy and remove DNS entries",
+						Action: mitmDisable,
+					},
+					{
+						Name:   "status",
+						Usage:  "Show MITM proxy status",
+						Action: mitmStatus,
+					},
+				},
+			},
+		},
 		Action: runServer,
 	}
 
@@ -61,8 +84,57 @@ func main() {
 	}
 }
 
+func mitmEnable(cCtx *cli.Context) error {
+	dataDir := resolveDataDir()
+	mgr := mitm.NewManager(dataDir)
+	if err := mgr.Enable(); err != nil {
+		return fmt.Errorf("MITM enable failed: %w", err)
+	}
+	fmt.Println("MITM proxy enabled. Intercepted traffic on :443 → 9router proxy.")
+	return nil
+}
+
+func mitmDisable(_ *cli.Context) error {
+	homeDir, _ := os.UserHomeDir()
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		dataDir = homeDir + "/.9router"
+	}
+	mgr := mitm.NewManager(dataDir)
+	if err := mgr.Disable(); err != nil {
+		return fmt.Errorf("MITM disable failed: %w", err)
+	}
+	fmt.Println("MITM proxy disabled.")
+	return nil
+}
+
+func mitmStatus(_ *cli.Context) error {
+	homeDir, _ := os.UserHomeDir()
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		dataDir = homeDir + "/.9router"
+	}
+	mgr := mitm.NewManager(dataDir)
+	status := mgr.Status()
+	fmt.Printf("Running: %v\n", status["running"])
+	fmt.Printf("CA installed: %v\n", status["ca_installed"])
+	fmt.Printf("MITM dir: %v\n", status["mitm_dir"])
+	return nil
+}
+
+func resolveDataDir() string {
+	d := os.Getenv("DATA_DIR")
+	if d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".9router"
+	}
+	return home + "/.9router"
+}
+
 func runServer(cCtx *cli.Context) error {
-	// Logging: LOG_FILE env or stderr
 	if logPath := os.Getenv("LOG_FILE"); logPath != "" {
 		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err == nil {
@@ -73,10 +145,8 @@ func runServer(cCtx *cli.Context) error {
 		}
 	}
 
-	// Load configuration from environment variables and platform defaults
 	cfg := config.LoadConfig()
 
-	// Initialize global database connection
 	if err := db.InitGlobalDatabase(cfg.DatabasePath); err != nil {
 		return fmt.Errorf("database init: %w", err)
 	}
@@ -89,16 +159,13 @@ func runServer(cCtx *cli.Context) error {
 
 	repo := db.NewRepo(conn)
 
-	// Token saver — CLI flags override env defaults
 	ts := handlers.NewTokenSaverConfig(cCtx.Bool("rtk"), cCtx.Bool("caveman"), cCtx.Bool("ponytail"))
 	log.Printf("[config] token savers — rtk=%v caveman=%v ponytail=%v", ts.RTKEnabled(), ts.CavemanEnabled(), ts.PonytailEnabled())
 
-	// Create chi router with standard middleware
 	r := chi.NewRouter()
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(chiMiddleware.RequestID)
 
-	// Strip /v1 prefix so routes register as /messages, /chat/completions, etc.
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			start := time.Now()
@@ -113,13 +180,11 @@ func runServer(cCtx *cli.Context) error {
 		})
 	})
 
-	// Health check endpoint (no auth required)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// API key-protected routes
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireApiKey(repo))
 		handlers.SetupRoutes(r, repo, ts)
@@ -128,7 +193,6 @@ func runServer(cCtx *cli.Context) error {
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("9Router Go Proxy starting on port %d", cfg.Port)
 
-	// Graceful shutdown
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
 
