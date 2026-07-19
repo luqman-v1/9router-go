@@ -14,6 +14,10 @@ type ProviderConfig struct {
 	DefaultAPIKey string            // fallback API key when none provided
 	StaticHeaders map[string]string // extra headers to set on every request
 	Format        string            // "" (OpenAI standard), "gemini-native"
+	ImageURL      string            // override /images/generations endpoint
+	TTSURL        string            // override /audio/speech endpoint
+	STTURL        string            // override /audio/transcriptions endpoint
+	VideoURL      string            // override /videos/generations endpoint
 }
 
 // IsGeminiNative returns true if provider uses Gemini-native format.
@@ -103,6 +107,8 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://api.x.ai/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		ImageURL:   "https://api.x.ai/v1/images/generations",
+		VideoURL:   "https://api.x.ai/v1/videos",
 	},
 	"cohere": {
 		BaseURL:    "https://api.cohere.ai/v1/chat/completions",
@@ -319,6 +325,49 @@ var KnownProviders = map[string]ProviderConfig{
 			BaseURL:    "https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
 			AuthHeader: "Authorization",
 			AuthScheme: "bearer",
+		},
+		"elevenlabs": {
+			BaseURL:    "https://api.elevenlabs.io",
+			AuthHeader: "xi-api-key",
+			AuthScheme: "raw",
+			TTSURL:     "https://api.elevenlabs.io/v1/text-to-speech",
+		},
+		"deepgram": {
+			BaseURL:    "https://api.deepgram.com",
+			AuthHeader: "token",
+			AuthScheme: "raw",
+			STTURL:     "https://api.deepgram.com/v1/listen",
+		},
+		"assemblyai": {
+			BaseURL:    "https://api.assemblyai.com",
+			AuthHeader: "Authorization",
+			AuthScheme: "raw",
+			STTURL:     "https://api.assemblyai.com/v2/transcript",
+		},
+		"stability-ai": {
+			BaseURL:    "https://api.stability.ai",
+			AuthHeader: "Authorization",
+			AuthScheme: "bearer",
+			ImageURL:   "https://api.stability.ai/v2beta/stable-image/generate",
+		},
+		"black-forest-labs": {
+			BaseURL:    "https://api.bfl.ai",
+			AuthHeader: "Authorization",
+			AuthScheme: "bearer",
+			ImageURL:   "https://api.bfl.ai/v1",
+		},
+		"fal-ai": {
+			BaseURL:    "https://queue.fal.run",
+			AuthHeader: "Authorization",
+			AuthScheme: "bearer",
+			ImageURL:   "https://queue.fal.run",
+		},
+		"recraft": {
+			BaseURL:       "https://external.api.recraft.ai",
+			AuthHeader:    "Authorization",
+			AuthScheme:    "bearer",
+			DefaultAPIKey: "public",
+			ImageURL:      "https://external.api.recraft.ai/v1/images/generations",
 		},
 		"azure": {
 		BaseURL:    "",

@@ -15,14 +15,24 @@ import (
 	"9router/proxy/internal/providers"
 )
 
-// buildMultimodalURL derives a provider sub-endpoint URL from the provider's
-// base URL (which ends in /chat/completions). It swaps the suffix for the
-// given path, e.g. /images/generations.
-func buildMultimodalURL(baseURL, path string) string {
-	if strings.Contains(baseURL, "/chat/completions") {
-		return strings.Replace(baseURL, "/chat/completions", path, 1)
+// multimodalPath returns the sub-endpoint URL for a multimodal service.
+// It checks provider-specific sub-endpoint URLs first, then falls back to
+// swapping /chat/completions suffix in the base URL.
+func multimodalPath(cfg *providers.ProviderConfig, path string) string {
+	switch {
+	case path == "/images/generations" && cfg.ImageURL != "":
+		return cfg.ImageURL
+	case path == "/audio/speech" && cfg.TTSURL != "":
+		return cfg.TTSURL
+	case path == "/audio/transcriptions" && cfg.STTURL != "":
+		return cfg.STTURL
+	case strings.HasPrefix(path, "/videos") && cfg.VideoURL != "":
+		return cfg.VideoURL
 	}
-	return strings.TrimRight(baseURL, "/") + path
+	if strings.Contains(cfg.BaseURL, "/chat/completions") {
+		return strings.Replace(cfg.BaseURL, "/chat/completions", path, 1)
+	}
+	return strings.TrimRight(cfg.BaseURL, "/") + path
 }
 
 // modelsProviderCtx holds the resolved connection + config for a single-model forward.
@@ -94,7 +104,7 @@ func statusForModelErr(err error) int {
 // forwardMultimodal posts the request body to the given provider sub-path and
 // copies the upstream response (headers + body) back to the client unchanged.
 func (h *ChatHandler) forwardMultimodal(w http.ResponseWriter, _ *http.Request, ctx *modelsProviderCtx, path string, body []byte) {
-	url := buildMultimodalURL(ctx.providerCfg.BaseURL, path)
+	url := multimodalPath(ctx.providerCfg, path)
 	finalBody := handlerutil.UpdateModelInBody(body, ctx.modelInfo.Model)
 
 	req, err := http.NewRequest("POST", url, strings.NewReader(string(finalBody)))
@@ -188,7 +198,7 @@ func (h *ChatHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	url := buildMultimodalURL(ctx.providerCfg.BaseURL, "/audio/transcriptions")
+	url := multimodalPath(ctx.providerCfg, "/audio/transcriptions")
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
