@@ -9,14 +9,13 @@ import (
 
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/tokensaver"
 	"9router/proxy/internal/translator"
-	"9router/proxy/internal/providers"
 )
 
 // handleAccountFallback attempts to forward a request with automatic account fallback.
-// On 401/429 upstream errors, it locks the provider/model and retries with the next available connection.
-// Returns nil on success (response already written to w), or the last error on failure.
 func (h *ChatHandler) handleAccountFallback(
 	w http.ResponseWriter,
 	provider string,
@@ -40,7 +39,6 @@ func (h *ChatHandler) handleAccountFallback(
 	}
 
 	locked, _ := h.Repo.IsModelLocked(provider, model)
-
 	allConns, err := h.Repo.GetProviderConnections(provider, true)
 	if err != nil || len(allConns) == 0 {
 		return fmt.Errorf("no active connections for provider: %s", provider)
@@ -48,33 +46,24 @@ func (h *ChatHandler) handleAccountFallback(
 
 	var excludeIDs []string
 	var lastErr error
-
 	for _, conn := range allConns {
 		if slices.Contains(excludeIDs, conn.ID) {
 			continue
 		}
-
 		connObj, connData, err := h.getBestConnection(provider, conn.ID, nil, model)
 		if err != nil || connObj == nil {
 			continue
 		}
-
 		apiKey := extractAPIKey(connData)
 		if apiKey == "" {
 			continue
 		}
-
-		_ = apiKey // used by tryForwardWithConnection via connData
-
 		if locked {
-			// Still try other connections if available
 		}
-
 		lastErr = h.tryForwardWithConnection(w, provider, model, connObj.ID, connData, body, isStream, translateResponse, endpoint)
 		if lastErr == nil {
 			return nil
 		}
-
 		if ue, ok := lastErr.(*upstreamError); ok && providers.RetryableStatusCodes[ue.StatusCode] {
 			durationSec := constants.DefaultLockDuration429
 			if ue.StatusCode == http.StatusUnauthorized {
@@ -85,33 +74,15 @@ func (h *ChatHandler) handleAccountFallback(
 			excludeIDs = append(excludeIDs, conn.ID)
 			continue
 		}
-
 		return lastErr
 	}
-
 	if lastErr != nil {
 		return lastErr
 	}
 	return fmt.Errorf("no available connections for provider: %s", provider)
 }
 
-// applyTokenSavers runs RTK compression and prompt injection on the request body.
-func (h *ChatHandler) applyTokenSavers(body []byte) []byte {
-	out := body
-	if h.TokenSaver.RTKEnabled() {
-		out, _ = tokensaver.CompressMessages(out)
-	}
-	if h.TokenSaver.CavemanEnabled() {
-		out, _ = tokensaver.InjectSystemPrompt(out, tokensaver.CavemanPrompt)
-	}
-	if h.TokenSaver.PonytailEnabled() {
-		out, _ = tokensaver.InjectSystemPrompt(out, tokensaver.PonytailPrompt)
-	}
-	return out
-}
-
 // tryForwardWithConnection attempts a single upstream request using the given connection data.
-// It records provider health (status code + latency) after every attempt.
 func (h *ChatHandler) tryForwardWithConnection(
 	w http.ResponseWriter,
 	provider string,
@@ -133,7 +104,6 @@ func (h *ChatHandler) tryForwardWithConnection(
 		return &upstreamError{StatusCode: http.StatusUnauthorized, Body: []byte(`{"error":{"message":"no API key found","type":"auth_error","code":401}}`)}
 	}
 
-	/* OAuth token refresh for providers with refreshToken in connection data */
 	if connectionID != "" {
 		rekey, _, err := h.refreshOAuthTokenIfExpired(connectionID, apiKey)
 		if err == nil {
@@ -142,10 +112,10 @@ func (h *ChatHandler) tryForwardWithConnection(
 	}
 
 	pipedBody := h.applyTokenSavers(body)
-
 	start := time.Now()
 	metrics := &streamMetrics{}
 	var fwdErr error
+
 	switch provider {
 	case "kiro":
 		fwdErr = h.forwardKiroRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
@@ -162,14 +132,23 @@ func (h *ChatHandler) tryForwardWithConnection(
 	case "kimchi":
 		fwdErr = h.forwardKimchiRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
 	default:
-		if providerCfg.IsGeminiNative() {
+		// Try executor registry first — handles ~45 OpenAI-compat providers
+		if exec := executor.Get(provider); exec != nil {
+			fwdErr = exec(w, &executor.Request{
+				Client:   h.Client,
+				Config:   providerCfg,
+				APIKey:   apiKey,
+				Body:     pipedBody,
+				IsStream: isStream,
+			})
+		} else if providerCfg.IsGeminiNative() {
 			fwdErr = h.forwardGeminiNativeRequest(w, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)
 		} else {
 			fwdErr = h.forwardRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
 		}
 	}
-	latencyMs := time.Since(start).Milliseconds()
 
+	latencyMs := time.Since(start).Milliseconds()
 	statusCode := http.StatusOK
 	if fwdErr != nil {
 		if ue, ok := fwdErr.(*upstreamError); ok {
@@ -196,6 +175,20 @@ func (h *ChatHandler) tryForwardWithConnection(
 		}
 		h.logUsage(logInfo, usage, latencyMs, body, metrics)
 	}
-
 	return fwdErr
+}
+
+// applyTokenSavers runs RTK compression and prompt injection on the request body.
+func (h *ChatHandler) applyTokenSavers(body []byte) []byte {
+	out := body
+	if h.TokenSaver.RTKEnabled() {
+		out, _ = tokensaver.CompressMessages(out)
+	}
+	if h.TokenSaver.CavemanEnabled() {
+		out, _ = tokensaver.InjectSystemPrompt(out, tokensaver.CavemanPrompt)
+	}
+	if h.TokenSaver.PonytailEnabled() {
+		out, _ = tokensaver.InjectSystemPrompt(out, tokensaver.PonytailPrompt)
+	}
+	return out
 }

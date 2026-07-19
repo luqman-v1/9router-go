@@ -8,11 +8,13 @@ import (
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 )
 
 // NewChatHandler creates a ChatHandler with the given repository and a streaming-capable HTTP client.
 // Pass a TokenSaverConfig to enable token saver features, or nil for all-off defaults.
 func NewChatHandler(repo *db.Repo, ts ...*TokenSaverConfig) *ChatHandler {
+	executor.RegisterAll()
 	cfg := &TokenSaverConfig{}
 	if len(ts) > 0 && ts[0] != nil {
 		cfg = ts[0]
