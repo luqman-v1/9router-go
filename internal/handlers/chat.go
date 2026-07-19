@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
@@ -152,12 +153,73 @@ func (h *ChatHandler) handleMessagesSingleModel(w http.ResponseWriter, translate
 	}
 }
 
+// HandleHealth responds with a simple health check status.
+func (h *ChatHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// HandleVersion responds with the proxy version.
+func (h *ChatHandler) HandleVersion(w http.ResponseWriter, r *http.Request) {
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]string{"version": "9router-go/1.0.0"})
+}
+
+// HandleModels responds with the list of available model identifiers from the DB.
+func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
+	type modelObj struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
+	}
+
+	var data []modelObj
+	now := time.Now().Unix()
+
+	// Collect model aliases
+	aliases, err := h.Repo.GetModelAliases()
+	if err == nil {
+		for alias := range aliases {
+			data = append(data, modelObj{
+				ID:      alias,
+				Object:  "model",
+				Created: now,
+				OwnedBy: "system",
+			})
+		}
+	}
+
+	// Collect combo names
+	combos, err := h.Repo.GetCombos()
+	if err == nil {
+		for _, c := range combos {
+			data = append(data, modelObj{
+				ID:      c.Name,
+				Object:  "model",
+				Created: now,
+				OwnedBy: "system",
+			})
+		}
+	}
+
+	if data == nil {
+		data = []modelObj{}
+	}
+
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"object": "list",
+		"data":   data,
+	})
+}
+
 // SetupRoutes mounts the chat handler routes on the provided chi router.
 func SetupRoutes(r interface {
+	Get(pattern string, handlerFn http.HandlerFunc)
 	Post(pattern string, handlerFn http.HandlerFunc)
 }, repo *db.Repo, ts *TokenSaverConfig) {
 	handler := NewChatHandler(repo, ts)
 
+	r.Get("/version", handler.HandleVersion)
+	r.Get("/models", handler.HandleModels)
 	r.Post("/chat/completions", handler.HandleChatCompletions)
 	r.Post("/messages", handler.HandleMessages)
 	r.Post("/embeddings", handler.HandleEmbeddings)

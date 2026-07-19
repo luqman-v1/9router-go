@@ -27,6 +27,18 @@ func WriteJSONError(w http.ResponseWriter, status int, message string) {
 	w.Write(jsonBytes)
 }
 
+// WriteJSON writes a JSON response with the given status code and body.
+func WriteJSON(w http.ResponseWriter, status int, data any) {
+	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	w.WriteHeader(status)
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		w.Write([]byte(`{"error":{"message":"internal error","type":"invalid_request_error","code":500}}`))
+		return
+	}
+	w.Write(jsonBytes)
+}
+
 // UpdateModelInBody returns a copy of body with the "model" field set to modelName.
 func UpdateModelInBody(body []byte, modelName string) []byte {
 	var m map[string]any

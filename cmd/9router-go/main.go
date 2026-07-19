@@ -123,10 +123,6 @@ func runServer(cCtx *cli.Context) error {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireApiKey(repo))
 		handlers.SetupRoutes(r, repo, ts)
-		r.Get("/models", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-			w.Write([]byte(`{"data":[]}`))
-		})
 	})
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
