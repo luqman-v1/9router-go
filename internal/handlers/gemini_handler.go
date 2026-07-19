@@ -12,6 +12,7 @@ import (
 
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/proxy/oauth"
 	"9router/proxy/internal/translator"
 )
 
@@ -96,12 +97,41 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		return currentToken, projectID, nil
 	}
 
+	// Try per-provider OAuth refresher first
+	if refresher := oauth.Get(provider); refresher != nil {
+		log.Printf("[oauth] token expired for %s/%s, using custom refresher...", provider, projectID)
+		result, err := refresher(&oauth.Params{
+			Client:       h.Client,
+			Provider:     provider,
+			RefreshToken: oauthData.RefreshToken,
+			AccessToken:  currentToken,
+		})
+		if err != nil {
+			return currentToken, projectID, fmt.Errorf("OAuth refresh for %s: %w", provider, err)
+		}
+		update := oauth.BuildConnectionUpdate(result)
+		var existing map[string]interface{}
+		json.Unmarshal([]byte(rawData), &existing)
+		for k, v := range update {
+			existing[k] = v
+		}
+		if result.ProjectID != "" {
+			existing["projectId"] = result.ProjectID
+		}
+		mergedJSON, _ := json.Marshal(existing)
+		db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
+			string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
+		log.Printf("[oauth] token refreshed for %s/%s", provider, result.ProjectID)
+		return result.AccessToken, result.ProjectID, nil
+	}
+
+	// Fall back to standard OAuth2
 	cfg, ok := providers.KnownOAuthConfigs[provider]
 	if !ok {
 		return currentToken, projectID, nil
 	}
 
-	log.Printf("[oauth] token expired for %s/%s, refreshing...", provider, projectID)
+	log.Printf("[oauth] token expired for %s/%s, refreshing (standard)...", provider, projectID)
 	tokenResp, err := providers.RefreshToken(cfg, oauthData.RefreshToken)
 	if err != nil {
 		return currentToken, projectID, fmt.Errorf("OAuth refresh for %s: %w", provider, err)
