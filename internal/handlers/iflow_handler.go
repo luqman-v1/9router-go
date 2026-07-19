@@ -1,13 +1,11 @@
 package handlers
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -15,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 )
 
 // forwardIflowRequest handles iFlow API requests with HMAC-SHA256 signature auth.
@@ -50,32 +49,18 @@ func (h *ChatHandler) forwardIflowRequest(
 	mac.Write([]byte(payload))
 	signature := hex.EncodeToString(mac.Sum(nil))
 
-	// Build request
-	req, err := http.NewRequest(http.MethodPost, cfg.BaseURL, bytes.NewReader(reqBody))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+	// Forward via proxy
+	extraHeaders := map[string]string{
+		"User-Agent":       userAgent,
+		"session-id":       sessionID,
+		"x-iflow-timestamp": strconv.FormatInt(timestamp, 10),
+		"x-iflow-signature": signature,
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("session-id", sessionID)
-	req.Header.Set("x-iflow-timestamp", strconv.FormatInt(timestamp, 10))
-	req.Header.Set("x-iflow-signature", signature)
-
-	if isStream {
-		req.Header.Set("Accept", "text/event-stream")
-	}
-
-	// Send request
-	resp, err := h.Client.Do(req)
+	resp, err := proxy.ForwardIflow(h.Client, cfg, apiKey, reqBody, isStream, extraHeaders)
 	if err != nil {
-		return fmt.Errorf("upstream request failed: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
-		return &upstreamError{StatusCode: resp.StatusCode, Body: errBody}
-	}
 
 	start := time.Now()
 	if metrics == nil {

@@ -1,19 +1,15 @@
 package handlers
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"strings"
 
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 )
 
 // forwardGrokCLIRequest forwards a Chat Completions request to the Grok CLI Responses API.
-// Same responses SSE format as Codex (response.output_text.delta, response.completed, etc.)
-// but with Grok-specific headers and base URL.
 func (h *ChatHandler) forwardGrokCLIRequest(
 	w http.ResponseWriter,
 	cfg *providers.ProviderConfig,
@@ -35,7 +31,7 @@ func (h *ChatHandler) forwardGrokCLIRequest(
 		return fmt.Errorf("parse request: %w", err)
 	}
 
-	// 2. Build Responses API input from messages (same as codex)
+	// 2. Build Responses API input from messages
 	var messages []struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
@@ -43,7 +39,6 @@ func (h *ChatHandler) forwardGrokCLIRequest(
 	_ = json.Unmarshal(oreq.Messages, &messages)
 
 	var inputItems []map[string]interface{}
-
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
@@ -107,12 +102,11 @@ func (h *ChatHandler) forwardGrokCLIRequest(
 		"stream": true,
 		"store":  false,
 	}
-
 	if oreq.MaxTokens > 0 {
 		respReq["max_output_tokens"] = oreq.MaxTokens
 	}
 
-	// 4. Tools (simplified: function tools only)
+	// 4. Tools
 	if len(oreq.Tools) > 0 {
 		var tools []struct {
 			Type     string          `json:"type"`
@@ -149,30 +143,13 @@ func (h *ChatHandler) forwardGrokCLIRequest(
 		}
 	}
 
-	// 5. Build HTTP request
+	// 5. Forward via proxy
 	reqBody, _ := json.Marshal(respReq)
-	baseURL := strings.TrimRight(cfg.BaseURL, "/")
-
-	req, err := http.NewRequest("POST", baseURL, bytes.NewReader(reqBody))
+	resp, err := proxy.ForwardGrokCLI(h.Client, cfg, apiKey, reqBody, isStream)
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("x-grok-client-identifier", "grok-cli-go")
-	req.Header.Set("x-grok-client-version", "0.1.0")
-
-	resp, err := h.Client.Do(req)
-	if err != nil {
-		return fmt.Errorf("upstream request failed: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
-		return &upstreamError{StatusCode: resp.StatusCode, Body: errBody}
-	}
-
-	// 6. Handle stream response (same SSE format as codex)
 	return h.handleCodexStream(w, resp.Body)
 }

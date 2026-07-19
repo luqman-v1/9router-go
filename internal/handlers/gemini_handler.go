@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
 
@@ -45,55 +46,11 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		projectID = pid
 	}
 
-	// Translate OpenAI → Gemini native format
-	geminiBody, err := translator.TranslateOpenAIToGemini(body)
+	resp, err := proxy.ForwardGemini(h.Client, cfg, apiKey, string(body), isStream, projectID, modelName)
 	if err != nil {
-		return fmt.Errorf("translate to Gemini: %w", err)
-	}
-
-	// Wrap for antigravity if needed
-	sendBody := geminiBody
-	if projectID != "" {
-		wrapped, err := translator.WrapForAntigravity(geminiBody, projectID, modelName)
-		if err != nil {
-			return fmt.Errorf("wrap for antigravity: %w", err)
-		}
-		sendBody = wrapped
-	}
-
-	// Build URL
-	baseURL := strings.TrimRight(cfg.BaseURL, "/")
-	action := "generateContent"
-	if isStream {
-		action = "streamGenerateContent?alt=sse"
-	}
-
-	var requestURL string
-	if projectID != "" {
-		requestURL = fmt.Sprintf("%s/v1internal:%s", baseURL, action)
-	} else {
-		requestURL = fmt.Sprintf("%s/%s:%s", baseURL, modelName, action)
-	}
-
-	// Send request
-	req, err := http.NewRequest("POST", requestURL, bytes.NewReader(sendBody))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("User-Agent", "antigravity/ide/2.1.1 darwin/arm64")
-
-	resp, err := h.Client.Do(req)
-	if err != nil {
-		return fmt.Errorf("upstream request failed: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
-		return &upstreamError{StatusCode: resp.StatusCode, Body: errBody}
-	}
 
 	// Handle response — antigravity wraps response in {"response": {...}}
 	if projectID != "" {
@@ -111,133 +68,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	return h.handleGeminiNonStream(w, resp.Body)
 }
 
-// refreshAntigravityToken checks token expiry and refreshes via Google OAuth.
-// Returns (refreshedAccessToken, projectID, error).
-func (h *ChatHandler) refreshAntigravityToken(connectionID, currentToken string) (string, string, error) {
-	if connectionID == "" {
-		return currentToken, "", nil
-	}
-
-	db := h.Repo.RawDB()
-	row := db.QueryRow("SELECT data FROM providerConnections WHERE id = ?", connectionID)
-	var rawData string
-	if err := row.Scan(&rawData); err != nil {
-		return currentToken, "", fmt.Errorf("fetch connection: %w", err)
-	}
-
-	var connMap map[string]interface{}
-	if err := json.Unmarshal([]byte(rawData), &connMap); err != nil {
-		return currentToken, "", fmt.Errorf("parse connection data: %w", err)
-	}
-
-	oauthData := providers.ParseOAuthConnection(connMap)
-	projectID := ""
-	if oauthData != nil {
-		projectID = oauthData.ProjectID
-	}
-
-	if oauthData == nil || oauthData.RefreshToken == "" || !oauthData.IsExpired() {
-		return currentToken, projectID, nil
-	}
-
-	log.Printf("[gemini] OAuth token expired, refreshing via Google OAuth...")
-
-	cfg := providers.KnownOAuthConfigs["antigravity"]
-	tokenResp, err := providers.RefreshToken(cfg, oauthData.RefreshToken)
-	if err != nil {
-		return currentToken, projectID, fmt.Errorf("OAuth refresh: %w", err)
-	}
-
-	// Update DB
-	update := tokenResp.BuildConnectionUpdate()
-	var existing map[string]interface{}
-	json.Unmarshal([]byte(rawData), &existing)
-	for k, v := range update {
-		existing[k] = v
-	}
-	mergedJSON, _ := json.Marshal(existing)
-	db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
-		string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
-
-	log.Printf("[gemini] OAuth token refreshed successfully")
-	return tokenResp.AccessToken, projectID, nil
-}
-
-func (h *ChatHandler) handleGeminiStream(w http.ResponseWriter, upstream io.Reader, translateResponse bool, metrics *streamMetrics) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-
-	flusher, _ := w.(http.Flusher)
-	state := &translator.GeminiStreamState{}
-	buf := make([]byte, 64*1024)
-	for {
-		n, err := upstream.Read(buf)
-		if n > 0 {
-			data := buf[:n]
-			for _, line := range strings.Split(string(data), "\n\n") {
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				if strings.HasPrefix(line, "data: ") {
-					line = line[6:]
-				}
-				if line == "[DONE]" {
-					continue
-				}
-				out, tErr := translator.TranslateGeminiChunkToOpenAI([]byte(line), state)
-				if tErr != nil {
-					log.Printf("[gemini] translate chunk error: %v", tErr)
-					continue
-				}
-				if out != nil {
-					if metrics != nil && metrics.ttft == 0 {
-						metrics.ttft = time.Now().UnixMilli()
-					}
-					metrics.responseBuf.Write(out)
-					w.Write(out)
-					if flusher != nil {
-						flusher.Flush()
-					}
-				}
-			}
-		}
-		if err != nil {
-			break
-		}
-	}
-
-	if !translateResponse {
-		w.Write([]byte("data: [DONE]\n\n"))
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
-	if state.Usage != nil {
-		translator.SetLastUsage(state.Usage)
-	}
-	return nil
-}
-
-func (h *ChatHandler) handleGeminiNonStream(w http.ResponseWriter, upstream io.Reader) error {
-	geminiResp, err := io.ReadAll(upstream)
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
-	}
-	openaiResp, err := translator.TranslateGeminiResponseToOpenAI(geminiResp)
-	if err != nil {
-		return fmt.Errorf("translate Gemini response: %w", err)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(openaiResp)
-	return nil
-}
-
 // refreshOAuthTokenIfExpired checks and refreshes OAuth token for any provider with refreshToken.
-// Returns (refreshedAccessToken, projectID, error).
 func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken string) (string, string, error) {
 	if connectionID == "" {
 		return currentToken, "", nil
@@ -288,4 +119,118 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 
 	log.Printf("[oauth] token refreshed for %s/%s", provider, projectID)
 	return tokenResp.AccessToken, projectID, nil
+}
+
+// handleGeminiStream processes Gemini stream SSE chunks and translates to OpenAI format.
+// The stream drops the first SSE line (model metadata), then translates each content block SSE.
+func (h *ChatHandler) handleGeminiStream(w http.ResponseWriter, upstream io.Reader, translateResponse bool, metrics *streamMetrics) error {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, _ := w.(http.Flusher)
+	firstLine := true
+	geminiState := &translator.GeminiStreamState{}
+
+	return proxy.ScanStream(upstream, func(chunk []byte) {
+		if firstLine {
+			firstLine = false
+			return
+		}
+		chunkStr := strings.TrimSpace(string(chunk))
+		if chunkStr == "" || chunkStr == "data: [DONE]" {
+			return
+		}
+		if !strings.HasPrefix(chunkStr, "data: ") {
+			return
+		}
+
+		dataStr := strings.TrimPrefix(chunkStr, "data: ")
+
+		// Translate each Gemini SSE chunk to OpenAI SSE chunk
+		openaiChunk, err := translator.TranslateGeminiChunkToOpenAI([]byte(dataStr), geminiState)
+		if err != nil || openaiChunk == nil {
+			return
+		}
+
+		if metrics.ttft == 0 {
+			metrics.ttft = time.Since(time.Now()).Milliseconds()
+		}
+		metrics.responseBuf.Write(openaiChunk)
+		w.Write(openaiChunk)
+		w.Write([]byte("\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	})
+}
+
+// handleGeminiNonStream translates a Gemini non-stream response to OpenAI format.
+func (h *ChatHandler) handleGeminiNonStream(w http.ResponseWriter, upstream io.Reader) error {
+	body, err := io.ReadAll(upstream)
+	if err != nil {
+		return err
+	}
+
+	var geminiResp struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+				Role string `json:"role"`
+			} `json:"content"`
+			FinishReason string `json:"finishReason"`
+		} `json:"candidates"`
+		UsageMetadata *struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			TotalTokenCount      int `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
+	}
+	if err := json.Unmarshal(body, &geminiResp); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(body)
+		return nil
+	}
+
+	var choices []translator.OpenAIResponseChoice
+	for _, c := range geminiResp.Candidates {
+		text := ""
+		if len(c.Content.Parts) > 0 {
+			text = c.Content.Parts[0].Text
+		}
+		fr := "stop"
+		if c.FinishReason != "" && c.FinishReason != "STOP" {
+			fr = strings.ToLower(c.FinishReason)
+		}
+		choices = append(choices, translator.OpenAIResponseChoice{
+			Index: 0,
+			Message: translator.OpenAIRespMsg{
+				Role:    "assistant",
+				Content: text,
+			},
+			FinishReason: &fr,
+		})
+	}
+
+	usage := &translator.OpenAIUsage{}
+	if geminiResp.UsageMetadata != nil {
+		usage.PromptTokens = geminiResp.UsageMetadata.PromptTokenCount
+		usage.CompletionTokens = geminiResp.UsageMetadata.CandidatesTokenCount
+	}
+
+	resp := translator.OpenAIResponse{
+		ID:      "chatcmpl-" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		Model:   "gemini",
+		Choices: choices,
+		Usage:   usage,
+	}
+	openaiResp, _ := json.Marshal(resp)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(openaiResp)
+	return nil
 }
