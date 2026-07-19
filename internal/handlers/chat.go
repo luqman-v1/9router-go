@@ -43,6 +43,10 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	if len(modelInfo.ComboModels) > 0 {
+		if modelInfo.Strategy == "fusion" {
+			h.handleFusion(w, body, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, false)
+			return
+		}
 		h.handleComboFallback(w, body, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, false)
 		return
 	}
@@ -134,6 +138,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	workingBody["stream"] = reqBody.Stream
 
 	if len(modelInfo.ComboModels) > 0 {
+		if modelInfo.Strategy == "fusion" {
+			bodyJSON, _ := json.Marshal(workingBody)
+			h.handleFusion(w, bodyJSON, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, translateResponse)
+			return
+		}
 		h.handleMessagesComboFallback(w, workingBody, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream)
 		return
 	}
