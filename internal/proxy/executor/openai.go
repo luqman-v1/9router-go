@@ -21,17 +21,6 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	return jsonResponse(w, resp.Body, req.TranslateResp)
 }
 
-// ForwardCodex forwards to codex using Responses API format.
-func ForwardCodex(w http.ResponseWriter, req *Request) error {
-	// codex transforms body in the handler, body is already in Responses format
-	resp, err := proxy.ForwardCodex(req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	return codexStream(w, resp.Body)
-}
-
 // sseStream pipes SSE chunks to client with optional format translation.
 func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, ttft *int64, buf *stringBuilder) error {
 	// delegates to proxyhandlers
@@ -80,19 +69,6 @@ func jsonResponse(w http.ResponseWriter, upstream io.Reader, translate bool) err
 	w.WriteHeader(http.StatusOK)
 	w.Write(body)
 	return nil
-}
-
-// codexStream handles codex SSE format (response.output_text.delta, response.completed).
-func codexStream(w http.ResponseWriter, upstream io.Reader) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-
-	flusher, _ := w.(http.Flusher)
-	_, err := io.Copy(w, upstream)
-	if flusher != nil { flusher.Flush() }
-	return err
 }
 
 type stringBuilder struct { b []byte }

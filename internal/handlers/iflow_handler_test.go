@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"9router/proxy/internal/db"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 )
 
 func TestForwardIflowRequest_Stream(t *testing.T) {
@@ -39,7 +39,6 @@ func TestForwardIflowRequest_Stream(t *testing.T) {
 			t.Errorf("expected Accept header for streaming")
 		}
 
-		// Verify stream_options was injected
 		var body map[string]interface{}
 		json.NewDecoder(r.Body).Decode(&body)
 		if body["stream"] != true {
@@ -56,17 +55,18 @@ func TestForwardIflowRequest_Stream(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	database, cleanup := setupChatTestDB(t)
-	defer cleanup()
-	repo := db.NewRepo(database)
-	h := NewChatHandler(repo)
-
 	cfg := &providers.ProviderConfig{
 		BaseURL: srv.URL,
 	}
 	body := []byte(`{"model":"qwen3-coder-plus","messages":[{"role":"user","content":"hi"}]}`)
 	rec := httptest.NewRecorder()
-	err := h.forwardIflowRequest(rec, cfg, "test-api-key", body, true, false, nil)
+	err := executor.ForwardIflow(rec, &executor.Request{
+		Client:   srv.Client(),
+		Config:   cfg,
+		APIKey:   "test-api-key",
+		Body:     body,
+		IsStream: true,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,17 +93,18 @@ func TestForwardIflowRequest_NonStream(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	database, cleanup := setupChatTestDB(t)
-	defer cleanup()
-	repo := db.NewRepo(database)
-	h := NewChatHandler(repo)
-
 	cfg := &providers.ProviderConfig{
 		BaseURL: srv.URL,
 	}
 	body := []byte(`{"model":"qwen3-coder-plus","messages":[{"role":"user","content":"hi"}]}`)
 	rec := httptest.NewRecorder()
-	err := h.forwardIflowRequest(rec, cfg, "test-api-key", body, false, false, nil)
+	err := executor.ForwardIflow(rec, &executor.Request{
+		Client:   srv.Client(),
+		Config:   cfg,
+		APIKey:   "test-api-key",
+		Body:     body,
+		IsStream: false,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,17 +120,18 @@ func TestForwardIflowRequest_UpstreamError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	database, cleanup := setupChatTestDB(t)
-	defer cleanup()
-	repo := db.NewRepo(database)
-	h := NewChatHandler(repo)
-
 	cfg := &providers.ProviderConfig{
 		BaseURL: srv.URL,
 	}
 	body := []byte(`{"model":"x","messages":[]}`)
 	rec := httptest.NewRecorder()
-	err := h.forwardIflowRequest(rec, cfg, "bad-key", body, true, false, nil)
+	err := executor.ForwardIflow(rec, &executor.Request{
+		Client:   srv.Client(),
+		Config:   cfg,
+		APIKey:   "bad-key",
+		Body:     body,
+		IsStream: true,
+	})
 	if err == nil {
 		t.Fatal("expected error for 401")
 	}
@@ -147,7 +149,6 @@ func TestForwardIflowRequest_ForceStreamOptions(t *testing.T) {
 		var body map[string]interface{}
 		json.NewDecoder(r.Body).Decode(&body)
 
-		// Verify stream_options was forced even without it in body
 		so, ok := body["stream_options"].(map[string]interface{})
 		if !ok {
 			t.Fatal("expected stream_options in body")
@@ -162,21 +163,20 @@ func TestForwardIflowRequest_ForceStreamOptions(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	database, cleanup := setupChatTestDB(t)
-	defer cleanup()
-	repo := db.NewRepo(database)
-	h := NewChatHandler(repo)
-
 	cfg := &providers.ProviderConfig{
 		BaseURL: srv.URL,
 	}
 	body := []byte(`{"model":"x","messages":[],"stream_options":{"include_usage":true}}`)
 	rec := httptest.NewRecorder()
-	err := h.forwardIflowRequest(rec, cfg, "key", body, true, false, nil)
+	err := executor.ForwardIflow(rec, &executor.Request{
+		Client:   srv.Client(),
+		Config:   cfg,
+		APIKey:   "key",
+		Body:     body,
+		IsStream: true,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	// stream_options already present — should not be overwritten by force-stream test body
 	_ = rec
 }

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"9router/proxy/internal/db"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 )
 
 func TestForwardGrokCLIRequest_Success(t *testing.T) {
@@ -44,17 +44,18 @@ func TestForwardGrokCLIRequest_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	database, cleanup := setupChatTestDB(t)
-	defer cleanup()
-	repo := db.NewRepo(database)
-	h := NewChatHandler(repo)
-
 	cfg := &providers.ProviderConfig{
 		BaseURL: srv.URL,
 	}
 	body := []byte(`{"model":"grok-build","messages":[{"role":"user","content":"hi"}]}`)
 	rec := httptest.NewRecorder()
-	err := h.forwardGrokCLIRequest(rec, cfg, "test-key", body, true, false, nil)
+	err := executor.ForwardGrokCLI(rec, &executor.Request{
+		Client:   srv.Client(),
+		Config:   cfg,
+		APIKey:   "test-key",
+		Body:     body,
+		IsStream: true,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,17 +71,18 @@ func TestForwardGrokCLIRequest_UpstreamError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	database, cleanup := setupChatTestDB(t)
-	defer cleanup()
-	repo := db.NewRepo(database)
-	h := NewChatHandler(repo)
-
 	cfg := &providers.ProviderConfig{
 		BaseURL: srv.URL,
 	}
 	body := []byte(`{"model":"x","messages":[]}`)
 	rec := httptest.NewRecorder()
-	err := h.forwardGrokCLIRequest(rec, cfg, "bad-key", body, true, false, nil)
+	err := executor.ForwardGrokCLI(rec, &executor.Request{
+		Client:   srv.Client(),
+		Config:   cfg,
+		APIKey:   "bad-key",
+		Body:     body,
+		IsStream: true,
+	})
 	if err == nil {
 		t.Fatal("expected error for 401")
 	}

@@ -116,38 +116,18 @@ func (h *ChatHandler) tryForwardWithConnection(
 	metrics := &streamMetrics{}
 	var fwdErr error
 
-	switch provider {
-	case "kiro":
-		fwdErr = h.forwardKiroRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
-	case "codex", "perplexity-agent":
-		fwdErr = h.forwardCodexRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
-	case "azure":
-		fwdErr = h.forwardAzureRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
-	case "commandcode":
-		fwdErr = h.forwardCommandcodeRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
-	case "grok-cli":
-		fwdErr = h.forwardGrokCLIRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
-	case "iflow":
-		fwdErr = h.forwardIflowRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
-	case "kimchi":
-		fwdErr = h.forwardKimchiRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
-	default:
-		// Try executor registry first — handles ~45 OpenAI-compat providers
-		if exec := executor.Get(provider); exec != nil {
-			fwdErr = exec(w, &executor.Request{
-				Client:         h.Client,
-				Config:         providerCfg,
-				APIKey:         apiKey,
-				Body:           pipedBody,
-				IsStream:       isStream,
-				// Note: TranslateResp not passed — handler translates at a higher level
-				// for non-Claude providers; executor should passthrough SSE as-is.
-			})
-		} else if providerCfg.IsGeminiNative() {
-			fwdErr = h.forwardGeminiNativeRequest(w, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)
-		} else {
-			fwdErr = h.forwardRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
-		}
+	if exec := executor.Get(provider); exec != nil {
+		fwdErr = exec(w, &executor.Request{
+			Client:         h.Client,
+			Config:         providerCfg,
+			APIKey:         apiKey,
+			Body:           pipedBody,
+			IsStream:       isStream,
+		})
+	} else if providerCfg.IsGeminiNative() {
+		fwdErr = h.forwardGeminiNativeRequest(w, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)
+	} else {
+		fwdErr = h.forwardRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
 	}
 
 	latencyMs := time.Since(start).Milliseconds()
