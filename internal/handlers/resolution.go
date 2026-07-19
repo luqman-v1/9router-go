@@ -36,8 +36,25 @@ func resolveProviderAlias(alias string) string {
 
 // resolveModelEntry parses a single "provider/model" string into a ModelInfo
 // without combo or alias resolution (used when iterating combo entries).
+// If the entry has no "/" (i.e. it's a combo name), it resolves the combo
+// and returns its first concrete model with the combined model list.
 func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 	if !strings.Contains(entry, "/") {
+		// Entry might be a combo name (e.g. "free-tier") — resolve recursively.
+		combo, err := h.Repo.GetComboByName(entry)
+		if err == nil && combo != nil && combo.Models != "" {
+			var subModels []string
+			if err := json.Unmarshal([]byte(combo.Models), &subModels); err == nil && len(subModels) > 0 {
+				first := h.resolveModelEntry(subModels[0])
+				if first != nil {
+					// Preserve combo models list and strategy so the caller
+					// iterates through all nested entries.
+					first.ComboModels = subModels
+					first.Strategy = combo.Strategy
+					return first
+				}
+			}
+		}
 		return nil
 	}
 	parts := strings.SplitN(entry, "/", 2)

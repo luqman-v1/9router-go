@@ -74,8 +74,41 @@ func TestResolveModelEntry_NoSlashReturnsNil(t *testing.T) {
 	repo := db.NewRepo(database)
 	h := NewChatHandler(repo)
 
-	if info := h.resolveModelEntry("no-slash-here"); info != nil {
-		t.Errorf("expected nil for entry without slash, got %+v", info)
+	// Non-existent combo name returns nil.
+	if info := h.resolveModelEntry("no-such-combo-name"); info != nil {
+		t.Errorf("expected nil for non-existent combo, got %+v", info)
+	}
+}
+
+func TestResolveModelEntry_NestedCombo(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// Create inner combo: "inner-combo" → deepseek/deepseek-chat
+	innerModels, _ := json.Marshal([]string{"deepseek/deepseek-chat"})
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"inner", "inner-combo", "fallback", string(innerModels), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z")
+
+	// Create outer combo: "free-tier" → ["inner-combo", "deepseek/deepseek-chat"]
+	outerModels, _ := json.Marshal([]string{"inner-combo", "deepseek/deepseek-chat"})
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"outer", "free-tier", "fallback", string(outerModels), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z")
+
+	// resolveModelEntry("free-tier") should resolve via nested combo.
+	info := h.resolveModelEntry("free-tier")
+	if info == nil {
+		t.Fatal("expected non-nil for nested combo name")
+	}
+	if info.Provider != "deepseek" {
+		t.Errorf("expected provider 'deepseek', got %s", info.Provider)
+	}
+	if len(info.ComboModels) != 2 {
+		t.Errorf("expected 2 combo models, got %d", len(info.ComboModels))
+	}
+	if info.ComboModels[0] != "inner-combo" {
+		t.Errorf("expected first combo model 'inner-combo', got %s", info.ComboModels[0])
 	}
 }
 
