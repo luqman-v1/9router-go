@@ -155,6 +155,12 @@ func (h *ChatHandler) tryForwardWithConnection(
 		fwdErr = h.forwardAzureRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
 	case "commandcode":
 		fwdErr = h.forwardCommandcodeRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
+	case "grok-cli":
+		fwdErr = h.forwardGrokCLIRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
+	case "iflow":
+		fwdErr = h.forwardIflowRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
+	case "kimchi":
+		fwdErr = h.forwardKimchiRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
 	default:
 		if providerCfg.IsGeminiNative() {
 			fwdErr = h.forwardGeminiNativeRequest(w, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)
