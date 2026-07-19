@@ -135,11 +135,13 @@ func (h *ChatHandler) tryForwardWithConnection(
 		// Try executor registry first — handles ~45 OpenAI-compat providers
 		if exec := executor.Get(provider); exec != nil {
 			fwdErr = exec(w, &executor.Request{
-				Client:   h.Client,
-				Config:   providerCfg,
-				APIKey:   apiKey,
-				Body:     pipedBody,
-				IsStream: isStream,
+				Client:         h.Client,
+				Config:         providerCfg,
+				APIKey:         apiKey,
+				Body:           pipedBody,
+				IsStream:       isStream,
+				// Note: TranslateResp not passed — handler translates at a higher level
+				// for non-Claude providers; executor should passthrough SSE as-is.
 			})
 		} else if providerCfg.IsGeminiNative() {
 			fwdErr = h.forwardGeminiNativeRequest(w, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)

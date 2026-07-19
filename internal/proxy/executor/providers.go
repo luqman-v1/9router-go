@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -57,8 +58,17 @@ func ForwardAzure(w http.ResponseWriter, req *Request) error {
 	return sseStream(w, resp.Body, req.TranslateResp, time.Now(), nil, nil)
 }
 
-// ForwardCommandcode forwards to CommandCode.
+// ForwardCommandcode forwards to CommandCode with forced stream=true in body.
 func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
+	// Force stream=true — commandcode always uses NDJSON
+	var reqMap map[string]interface{}
+	if err := json.Unmarshal(req.Body, &reqMap); err == nil {
+		reqMap["stream"] = true
+		if body, err := json.Marshal(reqMap); err == nil {
+			req.Body = body
+		}
+	}
+
 	resp, err := proxy.ForwardCommandcode(req.Client, req.Config, req.APIKey, req.Body)
 	if err != nil {
 		return err
