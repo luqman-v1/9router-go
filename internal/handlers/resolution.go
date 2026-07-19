@@ -130,6 +130,14 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 					Strategy:    combo.Strategy,
 				}, nil
 			}
+			// First entry is not "provider/model" — it might be another combo name.
+			// Resolve recursively to find the concrete provider/model.
+			firstInfo := h.resolveModelEntry(firstModel)
+			if firstInfo != nil {
+				firstInfo.ComboModels = modelStrings
+				firstInfo.Strategy = combo.Strategy
+				return firstInfo, nil
+			}
 		}
 	}
 

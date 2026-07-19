@@ -188,6 +188,37 @@ func TestResolveModel_CommonProviderFallback(t *testing.T) {
 	}
 }
 
+func TestResolveModel_ComboWithNestedComboName(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// Inner combo: "inner-only" → deepseek/deepseek-chat
+	innerModels, _ := json.Marshal([]string{"deepseek/deepseek-chat"})
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"in1", "inner-only", "fallback", string(innerModels), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z")
+
+	// Outer combo: "combo-wombo" → ["inner-only", "deepseek/deepseek-chat"]
+	outerModels, _ := json.Marshal([]string{"inner-only", "deepseek/deepseek-chat"})
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"out1", "combo-wombo", "fallback", string(outerModels), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z")
+
+	info, err := h.resolveModel("combo-wombo")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if info.Provider != "deepseek" {
+		t.Errorf("expected provider 'deepseek', got %s", info.Provider)
+	}
+	if info.Model != "deepseek-chat" {
+		t.Errorf("expected model 'deepseek-chat', got %s", info.Model)
+	}
+	if len(info.ComboModels) != 2 {
+		t.Errorf("expected 2 combo models, got %d", len(info.ComboModels))
+	}
+}
+
 func TestResolveModel_UnresolvableReturnsError(t *testing.T) {
 	// Use a DB with NO provider connections at all so the common-provider
 	// fallback loop finds nothing and resolution genuinely fails.
