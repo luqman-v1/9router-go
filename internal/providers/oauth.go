@@ -51,6 +51,36 @@ var KnownOAuthConfigs = map[string]OAuthClientConfig{
 		ClientSecret: envOr("CODEX_OAUTH_CLIENT_SECRET", ""),
 		TokenURL:     "https://auth.openai.com/oauth/token",
 	},
+	"github": {
+		ClientID:     envOr("GITHUB_OAUTH_CLIENT_ID", "Iv1.b507a08c87ecfe98"),
+		ClientSecret: envOr("GITHUB_OAUTH_CLIENT_SECRET", ""),
+		TokenURL:     "https://github.com/login/oauth/access_token",
+	},
+	"iflow": {
+		ClientID:     envOr("IFLOW_OAUTH_CLIENT_ID", "10009311001"),
+		ClientSecret: envOr("IFLOW_OAUTH_CLIENT_SECRET", "4Z3YjXycVsQvyGF1etiNlIBB4RsqSDtW"),
+		TokenURL:     "https://iflow.cn/oauth/token",
+	},
+	"gemini-cli": {
+		ClientID:     envOr("GEMINI_CLI_OAUTH_CLIENT_ID", "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"),
+		ClientSecret: envOr("GEMINI_CLI_OAUTH_CLIENT_SECRET", "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"),
+		TokenURL:     "https://oauth2.googleapis.com/token",
+	},
+	"kimi-coding": {
+		ClientID:     envOr("KIMI_CODING_OAUTH_CLIENT_ID", ""),
+		ClientSecret: envOr("KIMI_CODING_OAUTH_CLIENT_SECRET", ""),
+		TokenURL:     "https://auth.kimi.com/api/oauth/token",
+	},
+	"qwen": {
+		ClientID:     envOr("QWEN_OAUTH_CLIENT_ID", "f0304373b74a44d2b584a3fb70ca9e56"),
+		ClientSecret: envOr("QWEN_OAUTH_CLIENT_SECRET", ""),
+		TokenURL:     "https://chat.qwen.ai/api/v1/oauth2/token",
+	},
+	"qoder": {
+		ClientID:     envOr("QODER_OAUTH_CLIENT_ID", ""),
+		ClientSecret: envOr("QODER_OAUTH_CLIENT_SECRET", ""),
+		TokenURL:     "https://center.qoder.sh/algo/api/v3/user/refresh_token",
+	},
 }
 
 func envOr(key, fallback string) string {
