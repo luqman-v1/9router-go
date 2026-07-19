@@ -391,6 +391,169 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 		FetchURL:   "https://api.firecrawl.com/v1/scrape",
 	},
+
+	"aws-polly": {
+		BaseURL:    "https://polly.us-east-1.amazonaws.com/v1/speech",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"brave-search": {
+		BaseURL:    "https://api.search.brave.com/res/v1/web/search",
+		AuthHeader: "X-Subscription-Token",
+		AuthScheme: "raw",
+	},
+	"cartesia": {
+		BaseURL:    "https://api.cartesia.ai/tts/bytes",
+		AuthHeader: "x-api-key",
+		AuthScheme: "raw",
+		TTSURL:     "https://api.cartesia.ai/tts/bytes",
+	},
+	"exa": {
+		BaseURL:    "https://api.exa.ai/search",
+		AuthHeader: "x-api-key",
+		AuthScheme: "raw",
+	},
+	"huggingface": {
+		BaseURL:    "https://api-inference.huggingface.co/models",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		ImageURL:   "https://api-inference.huggingface.co/models",
+	},
+	"inworld": {
+		BaseURL:    "https://api.inworld.ai/tts/v1/voice",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		TTSURL:     "https://api.inworld.ai/tts/v1/voice",
+	},
+	"jina-ai": {
+		BaseURL:    "https://api.jina.ai/v1/embeddings",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"linkup": {
+		BaseURL:    "https://api.linkup.so/v1/search",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"perplexity-web": {
+		BaseURL:    "https://www.perplexity.ai/rest/sse/perplexity_ask",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"playht": {
+		BaseURL:    "https://api.play.ht/api/v2/tts/stream",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		TTSURL:     "https://api.play.ht/api/v2/tts/stream",
+	},
+	"runwayml": {
+		BaseURL:    "https://api.dev.runwayml.com/v1",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		ImageURL:   "https://api.dev.runwayml.com/v1",
+	},
+	"searchapi": {
+		BaseURL:    "https://www.searchapi.io/api/v1/search",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"serper": {
+		BaseURL:    "https://google.serper.dev",
+		AuthHeader: "x-api-key",
+		AuthScheme: "raw",
+	},
+	"tavily": {
+		BaseURL:    "https://api.tavily.com/search",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"vertex": {
+		BaseURL:    "https://aiplatform.googleapis.com/v1",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"vertex-partner": {
+		BaseURL:    "https://aiplatform.googleapis.com/v1",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"voyage-ai": {
+		BaseURL:    "https://api.voyageai.com/v1/embeddings",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"youcom": {
+		BaseURL:    "https://ydc-index.io/v1/search",
+		AuthHeader: "x-api-key",
+		AuthScheme: "raw",
+	},
+	"qoder": {
+		BaseURL:    "https://api3.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"grok-web": {
+		BaseURL:    "https://grok.com/rest/app-chat/conversations/new",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	
+	"sdwebui": {
+		BaseURL:    "http://localhost:7860/sdapi/v1/txt2img",
+		NoAuth:     true,
+		ImageURL:   "http://localhost:7860/sdapi/v1/txt2img",
+	},
+	"searxng": {
+		BaseURL:    "http://localhost:4000/search",
+		NoAuth:     true,
+	},
+	"comfyui": {
+		BaseURL:    "http://localhost:8188",
+		NoAuth:     true,
+		ImageURL:   "http://localhost:8188",
+	},
+	"tortoise": {
+		BaseURL:    "http://localhost:5000/api/tts",
+		NoAuth:     true,
+		TTSURL:     "http://localhost:5000/api/tts",
+	},
+	"coqui": {
+		BaseURL:    "http://localhost:5002/api/tts",
+		NoAuth:     true,
+		TTSURL:     "http://localhost:5002/api/tts",
+	},
+	"edge-tts": {
+		BaseURL:    "",
+		NoAuth:     true,
+	},
+	"google-tts": {
+		BaseURL:    "",
+		NoAuth:     true,
+	},
+	"local-device": {
+		BaseURL:    "",
+		NoAuth:     true,
+	},
+	"topaz": {
+		BaseURL:    "https://api.topaz.sh",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"cursor": {
+		BaseURL:    "https://api2.cursor.sh",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"gemini-cli": {
+		BaseURL:    "https://cloudcode-pa.googleapis.com/v1internal",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+"google-pse": {
+		BaseURL:    "https://www.googleapis.com/customsearch/v1",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 }
 
 // ProviderAliasMap maps short aliases to canonical provider IDs.
