@@ -574,5 +574,6 @@ func SetupRoutes(r interface {
 	r.Get("/videos/{id}", handler.HandleVideoGet)
 	r.Post("/search", handler.HandleSearch)
 	r.Post("/scrape", handler.HandleScrape)
+	r.Post("/web/fetch", handler.HandleWebFetch)
 	r.Post("/api/chat", handler.HandleOllamaChat)
 }

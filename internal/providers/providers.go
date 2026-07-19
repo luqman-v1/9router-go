@@ -19,6 +19,8 @@ type ProviderConfig struct {
 	STTURL        string            // override /audio/transcriptions endpoint
 	VideoURL      string            // override /videos/generations endpoint
 	VoicesURL     string            // override /audio/voices listing endpoint
+	FetchURL      string            // override /web/fetch endpoint (Jina, Firecrawl, etc.)
+	FetchMethod   string            // HTTP method for fetch: GET or POST (default POST)
 }
 
 // IsGeminiNative returns true if provider uses Gemini-native format.
@@ -375,6 +377,19 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "",
 		AuthHeader: "api-key",
 		AuthScheme: "raw",
+	},
+	"jina-reader": {
+		BaseURL:     "https://r.jina.ai",
+		AuthHeader:  "Authorization",
+		AuthScheme:  "bearer",
+		FetchURL:    "https://r.jina.ai",
+		FetchMethod: "GET",
+	},
+	"firecrawl": {
+		BaseURL:    "https://api.firecrawl.com/v1",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		FetchURL:   "https://api.firecrawl.com/v1/scrape",
 	},
 }
 

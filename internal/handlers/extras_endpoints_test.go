@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/providers"
 )
 
 func TestHandleSearch_Success(t *testing.T) {
@@ -450,4 +452,125 @@ func setupFakeOpenAIUpstream(t *testing.T) *httptest.Server {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
 	}))
+}
+
+
+func TestHandleWebFetch_missingFields(t *testing.T) {
+	handler := NewChatHandler(nil)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"empty body", `{}`},
+		{"missing url", `{"model":"jina-reader/fetch"}`},
+		{"missing model", `{"url":"https://example.com"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/v1/web/fetch", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.HandleWebFetch(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d", rec.Code)
+			}
+		})
+	}
+}
+
+func TestHandleWebFetch_jinaReader(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "Bearer sk-test" {
+			t.Errorf("expected Bearer sk-test, got %q", auth)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"content":"# Title\nHello world"}`))
+	}))
+	defer upstream.Close()
+
+	jr := providers.KnownProviders["jina-reader"]
+	origFetch := jr.FetchURL
+	origBase := jr.BaseURL
+	jr.FetchURL = upstream.URL
+	jr.BaseURL = upstream.URL
+	providers.KnownProviders["jina-reader"] = jr
+	defer func() {
+		jr.FetchURL = origFetch
+		jr.BaseURL = origBase
+		providers.KnownProviders["jina-reader"] = jr
+	}()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+	seedFetchConn(t, database, "jina-reader", "conn-jina", "sk-test")
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	body := `{"model":"jina-reader/fetch","url":"https://example.com"}`
+	req := httptest.NewRequest("POST", "/v1/web/fetch", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleWebFetch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if resp["content"] == nil {
+		t.Errorf("expected content in response, got %v", resp)
+	}
+}
+
+func TestHandleWebFetch_firecrawl(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"success":true,"data":{"markdown":"# Title"}}`))
+	}))
+	defer upstream.Close()
+
+	fc := providers.KnownProviders["firecrawl"]
+	origFetch := fc.FetchURL
+	origBase := fc.BaseURL
+	fc.FetchURL = upstream.URL + "/scrape"
+	fc.BaseURL = upstream.URL
+	providers.KnownProviders["firecrawl"] = fc
+	defer func() {
+		fc.FetchURL = origFetch
+		fc.BaseURL = origBase
+		providers.KnownProviders["firecrawl"] = fc
+	}()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+	seedFetchConn(t, database, "firecrawl", "conn-fc", "sk-fc-test")
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	body := `{"model":"firecrawl/fetch","url":"https://example.com"}`
+	req := httptest.NewRequest("POST", "/v1/web/fetch", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleWebFetch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func seedFetchConn(t *testing.T, database *sql.DB, provider, id, apiKey string) {
+	t.Helper()
+	data, _ := json.Marshal(map[string]any{"apiKey": apiKey})
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		(?, ?, 'apikey', ?, 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, id, provider, provider+" Test", string(data)); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
 }
