@@ -35,16 +35,14 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		modelName = "gemini-3-flash"
 	}
 
-	// OAuth refresh for antigravity
+	// OAuth refresh for providers using Gemini-native format (antigravity, etc)
 	var projectID string
-	if strings.Contains(cfg.BaseURL, "cloudcode-pa") {
-		refreshedKey, pid, err := h.refreshAntigravityToken(connectionID, apiKey)
-		if err != nil {
-			log.Printf("[gemini] token refresh error: %v", err)
-		} else {
-			apiKey = refreshedKey
-			projectID = pid
-		}
+	refreshedKey, pid, err := h.refreshOAuthTokenIfExpired(connectionID, apiKey)
+	if err != nil {
+		log.Printf("[gemini] token refresh error: %v", err)
+	} else {
+		apiKey = refreshedKey
+		projectID = pid
 	}
 
 	// Translate OpenAI → Gemini native format
@@ -84,6 +82,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("User-Agent", "antigravity/ide/2.1.1 darwin/arm64")
 
 	resp, err := h.Client.Do(req)
 	if err != nil {
@@ -96,7 +95,16 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		return &upstreamError{StatusCode: resp.StatusCode, Body: errBody}
 	}
 
-	// Handle response
+	// Handle response — antigravity wraps response in {"response": {...}}
+	if projectID != "" {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		unwrapped := translator.UnwrapAntigravityResponse(raw)
+		if isStream {
+			return h.handleGeminiStream(w, io.NopCloser(bytes.NewReader(unwrapped)), translateResponse, metrics)
+		}
+		return h.handleGeminiNonStream(w, bytes.NewReader(unwrapped))
+	}
 	if isStream {
 		return h.handleGeminiStream(w, resp.Body, translateResponse, metrics)
 	}

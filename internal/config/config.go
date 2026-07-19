@@ -1,15 +1,43 @@
 package config
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"9router/proxy/internal/constants"
 )
+
+// loadDotenv reads key=value pairs from .env file and sets them as env vars.
+func loadDotenv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || k == "" {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		// envOr checks os.Getenv first, so existing env vars take precedence
+		if os.Getenv(k) == "" {
+			os.Setenv(k, v)
+		}
+	}
+}
 
 // Config holds the proxy gateway configuration.
 type Config struct {
@@ -26,6 +54,7 @@ type Config struct {
 
 // LoadConfig loads the configuration from environment variables and platform defaults.
 func LoadConfig() *Config {
+	loadDotenv(".env")
 	portStr := os.Getenv("PORT")
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port <= 0 {

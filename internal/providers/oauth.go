@@ -38,7 +38,7 @@ type OAuthTokenResponse struct {
 var KnownOAuthConfigs = map[string]OAuthClientConfig{
 	"antigravity": {
 		ClientID:     envOr("ANTIGRAVITY_OAUTH_CLIENT_ID", "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"),
-		ClientSecret: envOr("ANTIGRAVITY_OAUTH_CLIENT_SECRET", ""),
+		ClientSecret: envOr("ANTIGRAVITY_OAUTH_CLIENT_SECRET", "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"),
 		TokenURL:     "https://oauth2.googleapis.com/token",
 	},
 	"xai": {

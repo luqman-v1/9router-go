@@ -17,6 +17,9 @@ data/
 # Local overrides
 docker-compose.local.yml
 
+# Environment
+.env
+
 # Editor / OS
 .idea/
 .vscode/

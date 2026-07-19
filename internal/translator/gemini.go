@@ -596,3 +596,15 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 	}
 	return json.Marshal(wrapper)
 }
+
+// UnwrapAntigravityResponse extracts the inner Gemini response from antigravity envelope.
+func UnwrapAntigravityResponse(raw []byte) []byte {
+	var envelope struct {
+		Response json.RawMessage `json:"response"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Response) == 0 {
+		return raw // passthrough on failure
+	}
+	return []byte(envelope.Response)
+}
+

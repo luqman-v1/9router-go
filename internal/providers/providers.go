@@ -76,9 +76,10 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"antigravity": {
-		BaseURL:    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+		BaseURL:    "https://cloudcode-pa.googleapis.com",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		Format:     "gemini-native",
 	},
 	"github": {
 		BaseURL:    "https://models.inference.ai.azure.com/chat/completions",
