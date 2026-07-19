@@ -14,6 +14,9 @@
 .9router/
 data/
 
+# Local overrides
+docker-compose.local.yml
+
 # Editor / OS
 .idea/
 .vscode/
