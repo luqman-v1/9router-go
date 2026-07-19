@@ -122,7 +122,6 @@ func (h *ChatHandler) forwardMultimodal(w http.ResponseWriter, _ *http.Request, 
 	}
 	defer resp.Body.Close()
 
-	// Copy upstream response headers (Content-Type may be audio/* or image/*).
 	if ct := resp.Header.Get(constants.HeaderContentType); ct != "" {
 		w.Header().Set(constants.HeaderContentType, ct)
 	}
@@ -152,7 +151,6 @@ func (h *ChatHandler) HandleImages(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleAudioSpeech forwards /v1/audio/speech (TTS) requests upstream.
-// Response is typically audio/* and is passed through unchanged.
 func (h *ChatHandler) HandleAudioSpeech(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -170,11 +168,7 @@ func (h *ChatHandler) HandleAudioSpeech(w http.ResponseWriter, r *http.Request) 
 }
 
 // HandleAudioTranscriptions forwards /v1/audio/transcriptions (STT) requests upstream.
-// The upstream expects multipart/form-data, so the raw request body and
-// Content-Type (incl. multipart boundary) are forwarded as received.
 func (h *ChatHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.Request) {
-	// Transcriptions use multipart form — read model from the form BEFORE
-	// consuming the body stream (FormValue parses the multipart reader).
 	model := r.FormValue("model")
 	if model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
@@ -204,7 +198,6 @@ func (h *ChatHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.R
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
 		return
 	}
-	// Forward content-type as-is (multipart boundary from client).
 	if ct := r.Header.Get(constants.HeaderContentType); ct != "" {
 		req.Header.Set(constants.HeaderContentType, ct)
 	}
@@ -225,5 +218,126 @@ func (h *ChatHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.R
 
 	if resp.StatusCode == http.StatusOK {
 		h.Repo.UpdateConnectionLastUsed(ctx.conn.ID)
+	}
+}
+
+// ---- Video endpoints (xAI Grok Imagine) ----
+
+// HandleVideoGenerations creates an async video generation job.
+// POST /v1/videos/generations
+func (h *ChatHandler) HandleVideoGenerations(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	defer r.Body.Close()
+
+	_, ctx, err := h.resolveSingleModel(body)
+	if err != nil {
+		handlerutil.WriteJSONError(w, statusForModelErr(err), err.Error())
+		return
+	}
+	h.forwardMultimodal(w, r, ctx, "/videos/generations", body)
+}
+
+// HandleVideoEdits creates an async video edit job.
+// POST /v1/videos/edits
+func (h *ChatHandler) HandleVideoEdits(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	defer r.Body.Close()
+
+	_, ctx, err := h.resolveSingleModel(body)
+	if err != nil {
+		handlerutil.WriteJSONError(w, statusForModelErr(err), err.Error())
+		return
+	}
+	h.forwardMultimodal(w, r, ctx, "/videos/edits", body)
+}
+
+// HandleVideoExtensions creates an async video extension job.
+// POST /v1/videos/extensions
+func (h *ChatHandler) HandleVideoExtensions(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	defer r.Body.Close()
+
+	_, ctx, err := h.resolveSingleModel(body)
+	if err != nil {
+		handlerutil.WriteJSONError(w, statusForModelErr(err), err.Error())
+		return
+	}
+	h.forwardMultimodal(w, r, ctx, "/videos/extensions", body)
+}
+
+// HandleVideoGet polls async video job status by request ID.
+// GET /v1/videos/{id}
+func (h *ChatHandler) HandleVideoGet(w http.ResponseWriter, r *http.Request) {
+	requestID := r.PathValue("id")
+	if requestID == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing video request ID")
+		return
+	}
+
+	provider := r.URL.Query().Get("provider")
+	if provider == "" {
+		provider = "xai"
+	}
+	p := resolveProviderAlias(provider)
+
+	var videoURL string
+	if cfg, ok := providers.KnownProviders[p]; ok {
+		if cfg.VideoURL != "" {
+			videoURL = strings.TrimRight(cfg.VideoURL, "/") + "/" + requestID
+		}
+	}
+	if videoURL == "" {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, fmt.Sprintf("no video endpoint for provider: %s", provider))
+		return
+	}
+
+	conn, connData, err := h.getBestConnection(p, "", nil, "")
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, fmt.Sprintf("no connection for provider: %s", provider))
+		return
+	}
+	cfg, err := h.getProviderConfig(p, connData)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	apiKey := extractAPIKey(connData)
+	if apiKey == "" {
+		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
+		return
+	}
+
+	req, err := http.NewRequest("GET", videoURL, nil)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
+		return
+	}
+	handlerutil.SetAuthHeader(req, apiKey, cfg.AuthHeader, cfg.AuthScheme)
+
+	resp, err := h.Client.Do(req)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+
+	if resp.StatusCode == http.StatusOK {
+		h.Repo.UpdateConnectionLastUsed(conn.ID)
 	}
 }
