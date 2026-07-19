@@ -47,6 +47,128 @@ func stopTextBlock(state *StreamState, results *[]map[string]any) {
 	state.TextBlockStarted = false
 }
 
+// TranslateOpenAIToClaude converts a non-streaming OpenAI response to Claude message format.
+func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, error) {
+	trimmed := bytes.TrimSpace(openaiResp)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("empty response body")
+	}
+
+	var resp OpenAIResponse
+	if err := json.Unmarshal(trimmed, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse OpenAI response: %w", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in OpenAI response")
+	}
+
+	choice := resp.Choices[0]
+	msg := choice.Message
+
+	msgID := resp.ID
+	if msgID == "" {
+		msgID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	} else {
+		msgID = strings.Replace(msgID, "chatcmpl-", "", 1)
+		if msgID == "" || msgID == "chat" {
+			msgID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
+		}
+	}
+	modelName := resp.Model
+	if modelName == "" {
+		modelName = "claude-3-5-sonnet"
+	}
+
+	var contentBlocks []map[string]any
+
+	// Reasoning
+	reasoning := msg.ReasoningContent
+	if reasoning == "" {
+		reasoning = msg.Reasoning
+	}
+	if reasoning != "" {
+		contentBlocks = append(contentBlocks, map[string]any{
+			"type":     "thinking",
+			"thinking": reasoning,
+		})
+	}
+
+	// Text content
+	if msg.Content != "" {
+		contentBlocks = append(contentBlocks, map[string]any{
+			"type": "text",
+			"text": msg.Content,
+		})
+	}
+
+	// Tool calls
+	for _, tc := range msg.ToolCalls {
+		toolName := tc.ID
+		if tc.Function != nil && tc.Function.Name != "" {
+			toolName = tc.Function.Name
+		}
+		toolName, _ = strings.CutPrefix(toolName, "proxy_")
+		var input json.RawMessage
+		if tc.Function != nil && tc.Function.Arguments != "" {
+			sanitized := sanitizeToolArgs(toolName, tc.Function.Arguments)
+			input = json.RawMessage(sanitized)
+		} else {
+			input = json.RawMessage("{}")
+		}
+		contentBlocks = append(contentBlocks, map[string]any{
+			"type":  "tool_use",
+			"id":    tc.ID,
+			"name":  toolName,
+			"input": input,
+		})
+	}
+
+	if len(contentBlocks) == 0 {
+		contentBlocks = []map[string]any{}
+	}
+
+	// Stop reason
+	claudeStop := "end_turn"
+	if choice.FinishReason != nil {
+		switch *choice.FinishReason {
+		case "stop":
+			claudeStop = "end_turn"
+		case "length":
+			claudeStop = "max_tokens"
+		case "tool_calls":
+			claudeStop = "tool_use"
+		}
+	}
+
+	// Usage
+	inputTokens, outputTokens := 0, 0
+	if resp.Usage != nil {
+		inputTokens = resp.Usage.PromptTokens
+		outputTokens = resp.Usage.CompletionTokens
+	}
+	SetLastUsage(&OpenAIUsage{
+		PromptTokens:     inputTokens,
+		CompletionTokens: outputTokens,
+	})
+
+	result := map[string]any{
+		"id":            msgID,
+		"type":          "message",
+		"role":          "assistant",
+		"model":         modelName,
+		"content":       contentBlocks,
+		"stop_reason":   claudeStop,
+		"stop_sequence": nil,
+		"usage": map[string]any{
+			"input_tokens":  inputTokens,
+			"output_tokens": outputTokens,
+		},
+	}
+
+	return json.Marshal(result)
+}
+
 // TranslateOpenAIToClaudeStream converts a single OpenAI SSE chunk JSON payload to Claude SSE format.
 func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 	trimmed := bytes.TrimSpace(openaiChunk)
@@ -223,9 +345,7 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 			if tc.Function != nil && tc.Function.Name != "" {
 				toolName = tc.Function.Name
 			}
-			if strings.HasPrefix(toolName, "proxy_") {
-				toolName = strings.TrimPrefix(toolName, "proxy_")
-			}
+			toolName, _ = strings.CutPrefix(toolName, "proxy_")
 			state.ToolCalls[idx] = ToolCallState{
 				ID:         tc.ID,
 				Name:       toolName,

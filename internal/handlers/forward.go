@@ -132,7 +132,7 @@ func (h *ChatHandler) handleJSONResponse(w http.ResponseWriter, upstream io.Read
 		return nil
 	}
 
-	translated, err := translator.TranslateOpenAIToClaudeStream(body)
+	translated, err := translator.TranslateOpenAIToClaude(body)
 	if err != nil || translated == nil {
 		errMsg := "failed to translate upstream response to Claude format"
 		if err != nil {

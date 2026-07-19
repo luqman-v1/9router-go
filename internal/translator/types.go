@@ -48,6 +48,30 @@ type OpenAIChoice struct {
 	FinishReason *string     `json:"finish_reason"`
 }
 
+// OpenAIResponse represents a non-streaming OpenAI-compatible response.
+type OpenAIResponse struct {
+	ID      string              `json:"id"`
+	Model   string              `json:"model"`
+	Choices []OpenAIResponseChoice `json:"choices"`
+	Usage   *OpenAIUsage        `json:"usage"`
+}
+
+// OpenAIResponseChoice holds one choice from a non-streaming OpenAI response.
+type OpenAIResponseChoice struct {
+	Index        int              `json:"index"`
+	Message      OpenAIRespMsg    `json:"message"`
+	FinishReason *string          `json:"finish_reason"`
+}
+
+// OpenAIRespMsg holds the message in a non-streaming OpenAI response choice.
+type OpenAIRespMsg struct {
+	Role             string                 `json:"role"`
+	Content          string                 `json:"content"`
+	ReasoningContent string                 `json:"reasoning_content"`
+	Reasoning        string                 `json:"reasoning"`
+	ToolCalls        []OpenAIToolCallStream `json:"tool_calls"`
+}
+
 // OpenAIDelta holds the per-chunk delta in an OpenAI stream.
 type OpenAIDelta struct {
 	Role             string                 `json:"role"`
