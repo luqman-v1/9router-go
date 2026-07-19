@@ -222,7 +222,8 @@ func TestHandleJSONResponse_Translate(t *testing.T) {
 	h, cleanup := setupHandlerForForward(t)
 	defer cleanup()
 
-	upstream := strings.NewReader(`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n")
+	// Non-stream: handleJSONResponse calls TranslateOpenAIToClaude (expects raw JSON, not SSE).
+	upstream := strings.NewReader(`{"id":"chatcmpl-test","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
 	rec := httptest.NewRecorder()
 	if err := h.handleJSONResponse(rec, upstream, true); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -230,9 +231,13 @@ func TestHandleJSONResponse_Translate(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rec.Code)
 	}
-	// Translated output should be Claude SSE format containing content_block_delta.
-	if !strings.Contains(rec.Body.String(), "content_block_delta") {
-		t.Errorf("expected translated Claude SSE, got %s", rec.Body.String())
+	// Translated output should be Claude message JSON containing content blocks.
+	body := rec.Body.String()
+	if !strings.Contains(body, `"type":"message"`) {
+		t.Errorf("expected Claude message JSON, got %s", body)
+	}
+	if !strings.Contains(body, `"text":"hi"`) {
+		t.Errorf("expected text content, got %s", body)
 	}
 }
 

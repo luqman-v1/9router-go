@@ -85,6 +85,33 @@ func setupChatTestDB(t *testing.T) (*sql.DB, func()) {
 			createdAt TEXT NOT NULL,
 			updatedAt TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS usageHistory (
+			timestamp TEXT,
+			provider TEXT,
+			model TEXT,
+			connectionId TEXT,
+			apiKey TEXT,
+			endpoint TEXT,
+			promptTokens INTEGER,
+			completionTokens INTEGER,
+			cost REAL,
+			status TEXT,
+			tokens TEXT,
+			meta TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS usageDaily (
+			dateKey TEXT PRIMARY KEY,
+			data TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS requestDetails (
+			id TEXT PRIMARY KEY,
+			timestamp TEXT,
+			provider TEXT,
+			model TEXT,
+			connectionId TEXT,
+			status TEXT,
+			data TEXT
+		)`,
 	}
 
 	for _, query := range schemas {
