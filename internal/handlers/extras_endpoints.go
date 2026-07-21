@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
 )
 
 // resolveForwardModel resolves a model from a JSON body and looks up the
@@ -98,6 +99,13 @@ func (h *ChatHandler) HandleWebFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	if reqBody.URL == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing url")
+		return
+	}
+
+	// SSRF protection: block requests to private/internal addresses
+	if err := handlerutil.AssertPublicURL(reqBody.URL); err != nil {
+		log.Warn("fetch", "blocked URL", "url", reqBody.URL, "reason", err.Error())
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "blocked URL: "+err.Error())
 		return
 	}
 

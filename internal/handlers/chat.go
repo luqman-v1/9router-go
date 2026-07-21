@@ -40,6 +40,11 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Bypass synthetic requests (Claude Code naming, warmup, keepalive)
+	if handleBypassRequest(w, body, reqBody.Model, reqBody.Stream) {
+		return
+	}
+
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
