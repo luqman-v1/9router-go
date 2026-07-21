@@ -1,11 +1,11 @@
 # 9Router SQLite Database Schema
 
-Database shared antara Go proxy dan Next.js dashboard. Satu file SQLite — `9router.db`.
+Shared database between the Go proxy and the Next.js dashboard. Single SQLite file — `9router.db`.
 
 ## Schema Versioning
 
-Next.js pake `_meta` table buat tracking schema version (`SCHEMA_VERSION = 1`).
-Go gak punya migration — schema additive (new columns di-ignore sama query lama, new tables di-create pas startup).
+Next.js uses the `_meta` table to track the schema version (`SCHEMA_VERSION = 1`).
+Go has no migration system — schema is additive (new columns are ignored by old queries, new tables are created with `CREATE TABLE IF NOT EXISTS`).
 
 ## Tables Overview
 
@@ -113,24 +113,24 @@ erDiagram
 
 ---
 
-## Detail Table per Table
+## Per-Table Details
 
-### 1. `providerConnections` — Inti dari Proxy
+### 1. `providerConnections` — Core Proxy Table
 
-Table paling penting. Nyimpen semua koneksi ke upstream provider (API key, endpoint, dll).
+The most important table. Stores all upstream provider connections (API keys, endpoints, etc.).
 
 ```sql
 CREATE TABLE providerConnections (
-    id              TEXT PRIMARY KEY,            -- UUID, contoh: "conn-a1b2c3"
-    provider        TEXT NOT NULL,               -- Nama provider: "openai", "deepseek", dll
-    authType        TEXT NOT NULL,               -- "apikey" atau "oauth"
-    name            TEXT,                        -- Nama koneksi (opsional)
-    email           TEXT,                        -- Email akun (opsional)
-    priority        INTEGER,                     -- Prioritas (lower = preferred)
+    id              TEXT PRIMARY KEY,            -- UUID, e.g. "conn-a1b2c3"
+    provider        TEXT NOT NULL,               -- Provider name: "openai", "deepseek", etc
+    authType        TEXT NOT NULL,               -- "apikey" or "oauth"
+    name            TEXT,                        -- Connection display name (optional)
+    email           TEXT,                        -- Account email (optional)
+    priority        INTEGER,                     -- Priority (lower = preferred)
     isActive        INTEGER DEFAULT 1,           -- 1=active, 0=inactive
-    data            TEXT NOT NULL,               -- JSON blob — lihat di bawah
-    lastUsedAt      TEXT,                        -- ISO timestamp (Go only)
-    consecutiveUseCount INTEGER DEFAULT 0,       -- (Go only)
+    data            TEXT NOT NULL,               -- JSON blob — see below
+    lastUsedAt      TEXT,                        -- ISO timestamp (Go specific)
+    consecutiveUseCount INTEGER DEFAULT 0,       -- (Go specific)
     createdAt       TEXT NOT NULL,               -- ISO timestamp
     updatedAt       TEXT NOT NULL                -- ISO timestamp
 );
@@ -143,9 +143,9 @@ CREATE INDEX idx_pc_provider_active ON providerConnections(provider, isActive);
 CREATE INDEX idx_pc_priority ON providerConnections(provider, priority);
 ```
 
-#### `data` JSON Blob — Struktur Lengkap
+#### `data` JSON Blob — Full Structure
 
-Ini field yang paling dinamis — nyimpen semua data yang gak masuk column tetap.
+This is the most dynamic field — stores everything that doesn't fit into a fixed column.
 
 ```json
 {
@@ -181,26 +181,26 @@ Ini field yang paling dinamis — nyimpen semua data yang gak masuk column tetap
 }
 ```
 
-**Key fields yang penting:**
+**Key fields:**
 
-| Field | Type | Deskripsi |
-|-------|------|-----------|
-| `apiKey` | string | API key utama |
+| Field | Type | Description |
+|-------|------|-------------|
+| `apiKey` | string | Primary API key |
 | `accessToken` | string | OAuth access token |
 | `baseUrl` | string | Custom base URL override |
-| `backoffLevel` | int | Tingkat exponential backoff (0-15) |
+| `backoffLevel` | int | Exponential backoff level (0-15) |
 | `rateLimitedUntil` | ISO string | Account-level cooldown expiry |
-| `modelLock_<model>` | ISO string \| null | Per-connection model lock — **format sama antara Go & Next.js** |
+| `modelLock_<model>` | ISO string \| null | Per-connection model lock — **same format between Go & Next.js** |
 | `testStatus` | string | `"active"`, `"unavailable"`, etc |
 
 ---
 
-### 2. `kv` — Key-Value Store Serbaguna
+### 2. `kv` — Generic Key-Value Store
 
 ```sql
 CREATE TABLE kv (
     scope TEXT NOT NULL,      -- Namespace
-    key   TEXT NOT NULL,      -- Key dalam scope
+    key   TEXT NOT NULL,      -- Key within scope
     value TEXT NOT NULL,      -- JSON value
     PRIMARY KEY (scope, key)
 );
@@ -211,23 +211,27 @@ CREATE TABLE kv (
 CREATE INDEX idx_kv_scope ON kv(scope);
 ```
 
-**Scopes yang dipake:**
+**Used Scopes:**
 
-| Scope | Key Format | Value | Kegunaan |
-|-------|-----------|-------|----------|
-| `modelLock` | `PROVIDER/MODEL` | `{"lockedUntil":"...","lastError":"...","errorCode":429,"backoffLevel":2}` | **Legacy** global model lock (diganti per-connection) |
-| `providerHealth` | `provider/model` | `{"lastStatus":429,"lastLatencyMs":1234,"lastChecked":"...","consecutiveErrors":3,"consecutiveSuccesses":0}` | Health tracking untuk consecutive error counter |
-| `modelAliases` | alias name | `"openai/gpt-4o"` | Alias model name → provider/model |
+| Scope | Key Format | Value | Purpose |
+|-------|-----------|-------|---------|
+| `modelLock` | `PROVIDER/MODEL` | `{"lockedUntil":"...","lastError":"...","errorCode":429,"backoffLevel":2}` | **Legacy** global model lock (superseded by per-connection locks) |
+| `providerHealth` | `provider/model` | `{"lastStatus":429,"lastLatencyMs":1234,"lastChecked":"...","consecutiveErrors":3,"consecutiveSuccesses":0}` | Health tracking via consecutive error counter |
+| `modelAliases` | alias name | `"openai/gpt-4o"` | Model name alias → provider/model mapping |
+| `pricing` | provider name | JSON object with model pricing | Provider-specific pricing overrides |
+| `customModels` | `"providerAlias\|id\|type"` | JSON model definition | User-defined custom models per provider |
+| `mitmAlias` | tool name | JSON alias mapping | MITM proxy alias configurations |
+| `disabledModels` | provider alias | JSON array of disabled model IDs | Per-provider disabled model lists |
 
 ---
 
-### 3. `combos` — Model Routing Config
+### 3. `combos` — Model Routing Configuration
 
 ```sql
 CREATE TABLE combos (
     id         TEXT PRIMARY KEY,
-    name       TEXT UNIQUE NOT NULL,    -- Contoh: "free-tier", "pro-models"
-    kind       TEXT,                    -- Opsional
+    name       TEXT UNIQUE NOT NULL,    -- e.g. "free-tier", "pro-models"
+    kind       TEXT,                    -- Optional classifier
     models     TEXT NOT NULL,           -- JSON array: ["openai/gpt-4o", "anthropic/claude-sonnet-4"]
     createdAt  TEXT NOT NULL,
     updatedAt  TEXT NOT NULL
@@ -239,22 +243,22 @@ CREATE TABLE combos (
 CREATE INDEX idx_combo_name ON combos(name);
 ```
 
-> **Catatan:** Column `strategy` gak ada di schema asli. Go nge-handle dengan fallback:
-> 1. Default: `"fallback"`
-> 2. Coba `SELECT strategy FROM combos` — kalo column ada, pake value-nya
+> **Note:** The `strategy` column does not exist in the base schema. Go handles it gracefully:
+> 1. Default strategy: `"fallback"`
+> 2. Tries `SELECT strategy FROM combos` — if the column exists, uses that value
 >
-> Strategy bisa di-set per-combo lewat settings (Next.js) atau DB langsung.
+> Strategy can be set per-combo via settings (Next.js) or directly in the DB.
 
 ---
 
-### 4. `apiKeys` — Client Auth
+### 4. `apiKeys` — Client Authentication
 
 ```sql
 CREATE TABLE apiKeys (
     id        TEXT PRIMARY KEY,
-    key       TEXT UNIQUE NOT NULL,    -- API key client (bisa digenerate)
+    key       TEXT UNIQUE NOT NULL,    -- Client API key (generated)
     name      TEXT,
-    machineId TEXT,                    -- Opsional: bind ke machine tertentu
+    machineId TEXT,                    -- Optional: bind to a specific machine
     isActive  INTEGER DEFAULT 1,       -- 1=active, 0=disabled
     createdAt TEXT NOT NULL
 );
@@ -265,7 +269,7 @@ CREATE TABLE apiKeys (
 CREATE INDEX idx_ak_key ON apiKeys(key);
 ```
 
-Digunakan untuk validasi request masuk: `SELECT isActive FROM apiKeys WHERE key = ?`.
+Used for incoming request validation: `SELECT isActive FROM apiKeys WHERE key = ?`.
 
 ---
 
@@ -273,8 +277,8 @@ Digunakan untuk validasi request masuk: `SELECT isActive FROM apiKeys WHERE key 
 
 ```sql
 CREATE TABLE providerNodes (
-    id        TEXT PRIMARY KEY,        -- Nama provider: "openai", "deepseek", dll
-    type      TEXT,                    -- "root", "executor", dll
+    id        TEXT PRIMARY KEY,        -- Provider name: "openai", "deepseek", etc
+    type      TEXT,                    -- "root", "executor", etc
     name      TEXT,
     data      TEXT NOT NULL,           -- JSON: {"baseUrl":"...","authType":"bearer",...}
     createdAt TEXT NOT NULL,
@@ -287,20 +291,20 @@ CREATE TABLE providerNodes (
 CREATE INDEX idx_pn_type ON providerNodes(type);
 ```
 
-Digunakan sebagai fallback konfigurasi provider — kalau provider gak ada di `KnownProviders` (hardcoded di Go), bakal cek `providerNodes`.
+Acts as a fallback provider config — if a provider is not in `KnownProviders` (hardcoded in Go), it checks `providerNodes`.
 
 ---
 
-### 6. `settings` — Global Config
+### 6. `settings` — Global Configuration
 
 ```sql
 CREATE TABLE settings (
-    id   INTEGER PRIMARY KEY CHECK (id = 1),   -- Cuma 1 row
-    data TEXT NOT NULL                           -- JSON blob semua settings
+    id   INTEGER PRIMARY KEY CHECK (id = 1),   -- Only 1 row allowed
+    data TEXT NOT NULL                           -- JSON blob for all settings
 );
 ```
 
-Contoh isi `data`:
+Example `data` content:
 ```json
 {
   "comboStrategies": {
@@ -315,7 +319,7 @@ Contoh isi `data`:
 
 ---
 
-### 7. `usageHistory` — Log Pemakaian
+### 7. `usageHistory` — Usage Logs
 
 ```sql
 CREATE TABLE usageHistory (
@@ -329,8 +333,8 @@ CREATE TABLE usageHistory (
     promptTokens     INTEGER DEFAULT 0,
     completionTokens INTEGER DEFAULT 0,
     cost             REAL DEFAULT 0,
-    status           TEXT,                                 -- "success", "error", dll
-    tokens           TEXT,                                 -- JSON metadata pricing/raw
+    status           TEXT,                                 -- "success", "error", etc
+    tokens           TEXT,                                 -- JSON metadata (pricing/raw tokens)
     meta             TEXT                                  -- JSON extra metadata
 );
 ```
@@ -343,11 +347,12 @@ CREATE INDEX idx_uh_model ON usageHistory(model);
 CREATE INDEX idx_uh_conn ON usageHistory(connectionId);
 ```
 
-> **Catatan:** Go punya `id` column cuma di Next.js schema (AUTOINCREMENT). Go version pake `rowid` implicit.
+> **Note:** Go's test schema is missing the `id` column. Next.js version has `id INTEGER PRIMARY KEY AUTOINCREMENT`.
+> Go's production code relies on implicit `rowid`.
 
 ---
 
-### 8. `usageDaily` — Aggregasi Harian
+### 8. `usageDaily` — Daily Aggregation
 
 ```sql
 CREATE TABLE usageDaily (
@@ -358,7 +363,7 @@ CREATE TABLE usageDaily (
 
 ---
 
-### 9. `requestDetails` — Request/Response Log
+### 9. `requestDetails` — Request/Response Debug Log
 
 ```sql
 CREATE TABLE requestDetails (
@@ -380,7 +385,7 @@ CREATE INDEX idx_rd_model ON requestDetails(model);
 CREATE INDEX idx_rd_conn ON requestDetails(connectionId);
 ```
 
-Digunakan buat debugging — nyimpen raw request/response + timing.
+Used for debugging — stores raw request/response payloads with timing info.
 
 ---
 
@@ -390,8 +395,8 @@ Digunakan buat debugging — nyimpen raw request/response + timing.
 CREATE TABLE proxyPools (
     id         TEXT PRIMARY KEY,
     isActive   INTEGER DEFAULT 1,
-    testStatus TEXT,                 -- "active", "failed", dll
-    data       TEXT NOT NULL,        -- JSON: proxy credentials, URL, dll
+    testStatus TEXT,                 -- "active", "failed", etc
+    data       TEXT NOT NULL,        -- JSON: proxy credentials, URL, strategy
     createdAt  TEXT NOT NULL,
     updatedAt  TEXT NOT NULL
 );
@@ -414,11 +419,11 @@ CREATE TABLE _meta (
 );
 ```
 
-Next.js pake ini buat nge-track `SCHEMA_VERSION`. Go gak pake — schema additive.
+Next.js uses this to track `SCHEMA_VERSION` and migration state. Go does not use this table — schema changes are additive only.
 
 ---
 
-## Flow Data Antar Table
+## Data Flow Between Tables
 
 ```mermaid
 flowchart LR
@@ -426,38 +431,38 @@ flowchart LR
     Handler --> Combo["combos\nModel routing"]
     Combo --> Conn["providerConnections\nUpstream credentials"]
     Conn --> Node["providerNodes\nConfig fallback"]
-    
+
     Handler --> Health["kv.scope=providerHealth\nConsecutive errors"]
     Handler --> Lock["kv.scope=modelLock\nLegacy model locks"]
     Handler --> ConnLock["providerConnections.data\n.modelLock_gpt-4\nPer-connection locks"]
-    
+
     Handler --> Usage["usageHistory\nUsage logs"]
     Handler --> Daily["usageDaily\nDaily aggregation"]
     Handler --> ReqLog["requestDetails\nDebug log"]
-    
+
     Handler --> Settings["settings\nGlobal config\ncomboStrategies"]
 ```
 
-## Key Differences Go vs Next.js
+## Go vs Next.js Schema Differences
 
-| Aspek | Go | Next.js |
+| Aspect | Go | Next.js |
 |-------|-----|---------|
-| **`_meta` table** | ❌ Gak ada | ✅ Ada — tracking schema version, migration |
-| **providerConnections** | Punya `lastUsedAt`, `consecutiveUseCount` sebagai **real column** | Field yang sama disimpen di **JSON `data` blob** |
-| **providerConnections indexes** | ❌ Gak ada | ✅ `idx_pc_provider`, `idx_pc_provider_active`, `idx_pc_priority` |
-| **combos** | Default strategy "fallback", coba `SELECT strategy` optional | Strategy dari settings, gak ada column strategy |
-| **usageHistory** | ❌ Gak ada `id` column | ✅ `id INTEGER PRIMARY KEY AUTOINCREMENT` |
-| **usageHistory indexes** | ❌ Gak ada | ✅ 4 indexes (timestamp, provider, model, connectionId) |
+| **`_meta` table** | ❌ Not present | ✅ Schema versioning, migration tracking |
+| **providerConnections** | Has `lastUsedAt`, `consecutiveUseCount` as **real columns** | Same fields stored in **JSON `data` blob** |
+| **providerConnections indexes** | ❌ None | ✅ 3 indexes (provider, active, priority) |
+| **combos** | Default strategy `"fallback"`, optional `SELECT strategy` | Strategy from settings table, no strategy column |
+| **usageHistory** | ❌ No `id` column (relies on implicit `rowid`) | ✅ `id INTEGER PRIMARY KEY AUTOINCREMENT` |
+| **usageHistory indexes** | ❌ None | ✅ 4 indexes (timestamp, provider, model, connectionId) |
 | **requestDetails** | `data TEXT` (nullable) | `data TEXT NOT NULL` |
-| **requestDetails indexes** | ❌ Gak ada | ✅ 4 indexes |
-| **proxyPools** | Minimal: `id`, `data`, `isActive` | Full: `id`, `isActive`, `testStatus`, `data`, `createdAt`, `updatedAt` |
-| **kv indexes** | ❌ Cuma PK(scope,key) | ✅ Plus `idx_kv_scope` |
-| **kv scopes tambahan** | `modelLock`, `providerHealth`, `modelAliases` | Sama + `pricing`, `customModels`, `mitmAlias`, `disabledModels` |
-| **Schema migration** | ❌ Gak ada — `CREATE TABLE IF NOT EXISTS` doang | ✅ `_meta` table, auto-sync, versioning, backup |
-| **Index total** | **0** (cuma PK implicit) | **18 indexes** |
+| **requestDetails indexes** | ❌ None | ✅ 4 indexes |
+| **proxyPools** | Minimal: `id`, `data`, `isActive` | Full: with `testStatus`, `createdAt`, `updatedAt` |
+| **kv indexes** | ❌ PK(scope,key) only | ✅ Plus `idx_kv_scope` |
+| **kv extra scopes** | `modelLock`, `providerHealth`, `modelAliases` | Same + `pricing`, `customModels`, `mitmAlias`, `disabledModels` |
+| **Schema migration** | ❌ None — `CREATE TABLE IF NOT EXISTS` only | ✅ `_meta` table, auto-sync, versioning, backup |
+| **Total indexes** | **0** (implicit PK only) | **18 indexes** |
 
-> **Catatan:** Karena sharing DB, idealnya Go dan Next.js pake schema yang sama.
-> Saat ini ada beberapa **drift** — terutama `usageHistory.id` (Go gak punya column id,
-> jadinya INSERT dari Go bakal fail di Next.js schema yang expects AUTOINCREMENT).
-> Dan `providerConnections.lastUsedAt`/`consecutiveUseCount` — Go simpen di column,
-> Next.js di JSON blob. Kalo mereka sharing DB, data bisa gak konsisten.
+> **Note:** Since Go and Next.js share the same DB file, they should ideally use the same schema.
+> There are currently some **drifts** — especially `usageHistory.id` (Go has no `id` column,
+> so Go's INSERT would fail on a Next.js schema that expects `AUTOINCREMENT`).
+> And `providerConnections.lastUsedAt`/`consecutiveUseCount` — Go stores as real columns,
+> Next.js stores in the JSON `data` blob. Data could become inconsistent.
