@@ -50,13 +50,9 @@ func (h *ChatHandler) forwardRequest(
 
 // handleStreamResponse pipes SSE chunks from upstream to the client.
 func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, metrics *streamMetrics) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
+	flusher := internalproxy.WriteSSEHeaders(w)
 
 	if !translate {
-		flusher, _ := w.(http.Flusher)
 		buf := make([]byte, 4096)
 		for {
 			n, err := upstream.Read(buf)
@@ -77,7 +73,6 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 		return nil
 	}
 
-	flusher, _ := w.(http.Flusher)
 	return internalproxy.ScanStream(upstream, func(chunk []byte) {
 		translated, err := translator.TranslateOpenAIToClaudeStream(chunk)
 		if err != nil {

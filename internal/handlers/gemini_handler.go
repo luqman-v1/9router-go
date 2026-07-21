@@ -302,12 +302,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 // handleGeminiStream processes Gemini stream SSE chunks and translates to OpenAI format.
 // The stream drops the first SSE line (model metadata), then translates each content block SSE.
 func (h *ChatHandler) handleGeminiStream(w http.ResponseWriter, upstream io.Reader, translateResponse bool, metrics *streamMetrics) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-
-	flusher, _ := w.(http.Flusher)
+	flusher := proxy.WriteSSEHeaders(w)
 	geminiState := &translator.GeminiStreamState{}
 	start := time.Now()
 

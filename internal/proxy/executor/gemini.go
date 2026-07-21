@@ -38,11 +38,7 @@ func ForwardGemini(w http.ResponseWriter, req *Request) error {
 }
 
 func geminiStream(w http.ResponseWriter, upstream io.Reader) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
+	flusher := proxy.WriteSSEHeaders(w)
 	firstLine := true
 	state := &translator.GeminiStreamState{}
 	return proxy.ScanStream(upstream, func(chunk []byte) {

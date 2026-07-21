@@ -27,13 +27,9 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 
 // sseStream pipes SSE chunks to client with optional format translation.
 func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, ttft *int64, buf *stringBuilder) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
+	flusher := proxy.WriteSSEHeaders(w)
 
 	if !translate {
-		flusher, _ := w.(http.Flusher)
 		b := make([]byte, 4096)
 		for {
 			n, err := upstream.Read(b)
@@ -50,7 +46,6 @@ func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 		return nil
 	}
 
-	flusher, _ := w.(http.Flusher)
 	return proxy.ScanStream(upstream, func(chunk []byte) {
 		translated, err := translator.TranslateOpenAIToClaudeStream(chunk)
 		if err != nil {
