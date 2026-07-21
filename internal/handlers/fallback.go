@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -8,7 +9,6 @@ import (
 	"slices"
 	"time"
 
-	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
@@ -81,12 +81,21 @@ func (h *ChatHandler) handleAccountFallback(
 		}
 		var ue *upstreamError
 		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
-			durationSec := constants.DefaultLockDuration429
-			if ue.StatusCode == http.StatusUnauthorized {
-				durationSec = constants.DefaultLockDuration401
+			// Extract error text from upstream body for classification
+			errorText := extractErrorText(ue.Body)
+			// Get current backoff level from existing lock
+			currentBackoffLevel := 0
+			if existingLock, _ := h.Repo.GetModelLock(provider, model); existingLock != nil {
+				currentBackoffLevel = existingLock.BackoffLevel
 			}
-			errMsg := fmt.Sprintf("%d upstream error", ue.StatusCode)
-			h.Repo.LockModel(provider, model, durationSec, errMsg, ue.StatusCode)
+			// Classify error to get dynamic cooldown
+			classification := providers.ClassifyError(ue.StatusCode, errorText, currentBackoffLevel)
+			cooldownSec := int((classification.CooldownMs + 999) / 1000) // ceil to seconds
+			errMsg := errorText
+			if errMsg == "" {
+				errMsg = fmt.Sprintf("%d upstream error", ue.StatusCode)
+			}
+			h.Repo.LockModel(provider, model, cooldownSec, errMsg, ue.StatusCode, classification.NewBackoffLevel)
 			excludeIDs = append(excludeIDs, conn.ID)
 			continue
 		}
@@ -206,4 +215,18 @@ func (h *ChatHandler) applyTokenSavers(body []byte) []byte {
 		}
 	}
 	return out
+}
+
+// extractErrorText attempts to extract a human-readable error message from an upstream error JSON body.
+// Returns "" when the body isn't parseable or has no message field.
+func extractErrorText(body []byte) string {
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Error.Message != "" {
+		return parsed.Error.Message
+	}
+	return ""
 }

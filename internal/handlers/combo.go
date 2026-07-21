@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/db"
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
@@ -261,6 +262,16 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 			continue
 		}
 
+		// Skip unhealthy or locked models
+		if !db.IsProviderHealthy(h.Repo.RawDB(), modelInfo.Provider, modelInfo.Model) {
+			log.Printf("[combo] skip %s/%s: unhealthy (>=5 consecutive errors)", modelInfo.Provider, modelInfo.Model)
+			continue
+		}
+		if locked, _ := h.Repo.IsModelLocked(modelInfo.Provider, modelInfo.Model); locked {
+			log.Printf("[combo] skip %s/%s: model locked (cooldown active)", modelInfo.Provider, modelInfo.Model)
+			continue
+		}
+
 		var connID string
 		var connData *ConnectionData
 		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
@@ -298,6 +309,19 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 		if fwdErr != nil {
 			var ue *upstreamError
 			if errors.As(fwdErr, &ue) {
+				// Transient error: classify and wait before trying next model
+				if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
+					errorText := extractErrorText(ue.Body)
+					classification := providers.ClassifyError(ue.StatusCode, errorText, 0)
+					if classification.CooldownMs > 0 && classification.CooldownMs <= 5000 {
+						cooldown := time.Duration(classification.CooldownMs) * time.Millisecond
+						log.Printf("[combo] transient %d from %s, waiting %v before next", ue.StatusCode, modelInfo.Provider, cooldown)
+						time.Sleep(cooldown)
+					} else {
+						// Cooldown >5s (e.g. "no credentials"): fall through immediately
+						log.Printf("[combo] transient %d from %s, cooldown %dms >5s, skipping wait", ue.StatusCode, modelInfo.Provider, classification.CooldownMs)
+				}
+				}
 				lastErr = ue
 				continue
 			}
@@ -339,6 +363,16 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 			continue
 		}
 
+		// Skip unhealthy or locked models
+		if !db.IsProviderHealthy(h.Repo.RawDB(), modelInfo.Provider, modelInfo.Model) {
+			log.Printf("[combo] skip %s/%s: unhealthy (>=5 consecutive errors)", modelInfo.Provider, modelInfo.Model)
+			continue
+		}
+		if locked, _ := h.Repo.IsModelLocked(modelInfo.Provider, modelInfo.Model); locked {
+			log.Printf("[combo] skip %s/%s: model locked (cooldown active)", modelInfo.Provider, modelInfo.Model)
+			continue
+		}
+
 		var connID string
 		var connData *ConnectionData
 		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
@@ -370,6 +404,19 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 		if fwdErr != nil {
 			var ue *upstreamError
 			if errors.As(fwdErr, &ue) {
+				// Transient error: classify and wait before trying next model
+				if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
+					errorText := extractErrorText(ue.Body)
+					classification := providers.ClassifyError(ue.StatusCode, errorText, 0)
+					if classification.CooldownMs > 0 && classification.CooldownMs <= 5000 {
+						cooldown := time.Duration(classification.CooldownMs) * time.Millisecond
+						log.Printf("[combo] transient %d from %s, waiting %v before next", ue.StatusCode, modelInfo.Provider, cooldown)
+						time.Sleep(cooldown)
+					} else {
+						// Cooldown >5s (e.g. "no credentials"): fall through immediately
+						log.Printf("[combo] transient %d from %s, cooldown %dms >5s, skipping wait", ue.StatusCode, modelInfo.Provider, classification.CooldownMs)
+				}
+				}
 				lastErr = ue
 				continue
 			}

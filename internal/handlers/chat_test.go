@@ -1419,7 +1419,7 @@ func TestAccountFallback_LockDuration(t *testing.T) {
 	repo := db.NewRepo(database)
 
 	// Lock with 401
-	err := repo.LockModel("deepseek", "model-401", 120, "401 error", 401)
+	err := repo.LockModel("deepseek", "model-401", 120, "401 error", 401, 0)
 	if err != nil {
 		t.Fatalf("LockModel failed: %v", err)
 	}
@@ -1435,7 +1435,7 @@ func TestAccountFallback_LockDuration(t *testing.T) {
 	}
 
 	// Lock with 429
-	err = repo.LockModel("deepseek", "model-429", 60, "429 error", 429)
+	err = repo.LockModel("deepseek", "model-429", 60, "429 error", 429, 0)
 	if err != nil {
 		t.Fatalf("LockModel failed: %v", err)
 	}

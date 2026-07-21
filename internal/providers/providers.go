@@ -631,6 +631,9 @@ var ProviderAliasMap = map[string]string{
 
 // RetryableStatusCodes are HTTP status codes that trigger account fallback.
 var RetryableStatusCodes = map[int]bool{
-	http.StatusUnauthorized:    true, // 401
-	http.StatusTooManyRequests: true, // 429
-	}
+	http.StatusUnauthorized:          true, // 401
+	http.StatusTooManyRequests:       true, // 429
+	http.StatusBadGateway:            true, // 502
+	http.StatusServiceUnavailable:    true, // 503
+	http.StatusGatewayTimeout:        true, // 504
+}

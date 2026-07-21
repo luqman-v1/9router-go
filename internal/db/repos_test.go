@@ -445,7 +445,7 @@ func TestLockModel(t *testing.T) {
 	repo := NewRepo(db)
 
 	// Lock a model
-	err := repo.LockModel("deepseek", "deepseek-chat", 120, "401 Unauthorized", 401)
+	err := repo.LockModel("deepseek", "deepseek-chat", 120, "401 Unauthorized", 401, 0)
 	if err != nil {
 		t.Fatalf("LockModel failed: %v", err)
 	}
@@ -507,7 +507,7 @@ func TestUnlockModel(t *testing.T) {
 	repo := NewRepo(db)
 
 	// Lock then unlock
-	err := repo.LockModel("groq", "llama-3", 60, "429 Too Many Requests", 429)
+	err := repo.LockModel("groq", "llama-3", 60, "429 Too Many Requests", 429, 0)
 	if err != nil {
 		t.Fatalf("LockModel failed: %v", err)
 	}
@@ -538,13 +538,13 @@ func TestLockModel_Replace(t *testing.T) {
 	repo := NewRepo(db)
 
 	// Lock with 401
-	err := repo.LockModel("deepseek", "deepseek-chat", 120, "401 Unauthorized", 401)
+	err := repo.LockModel("deepseek", "deepseek-chat", 120, "401 Unauthorized", 401, 0)
 	if err != nil {
 		t.Fatalf("LockModel failed: %v", err)
 	}
 
 	// Replace with 429
-	err = repo.LockModel("deepseek", "deepseek-chat", 60, "429 Rate Limited", 429)
+	err = repo.LockModel("deepseek", "deepseek-chat", 60, "429 Rate Limited", 429, 0)
 	if err != nil {
 		t.Fatalf("LockModel replace failed: %v", err)
 	}
@@ -571,7 +571,7 @@ func TestGetModelLock_Expired(t *testing.T) {
 	repo := NewRepo(db)
 
 	// Insert a lock with 0 duration (already expired)
-	err := repo.LockModel("deepseek", "deepseek-chat", 0, "test", 401)
+	err := repo.LockModel("deepseek", "deepseek-chat", 0, "test", 401, 0)
 	if err != nil {
 		t.Fatalf("LockModel failed: %v", err)
 	}

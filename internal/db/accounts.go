@@ -10,20 +10,22 @@ import (
 
 // ModelLock represents a lock entry stored in the kv table.
 type ModelLock struct {
-	LockedUntil string `json:"lockedUntil"`
-	LastError   string `json:"lastError"`
-	ErrorCode   int    `json:"errorCode"`
+	LockedUntil  string `json:"lockedUntil"`
+	LastError    string `json:"lastError"`
+	ErrorCode    int    `json:"errorCode"`
+	BackoffLevel int    `json:"backoffLevel,omitempty"`
 }
 
 // LockModel inserts or replaces a model lock in the kv table.
 // The key is formatted as "PROVIDER/MODEL" (uppercase).
 // durationSec controls how long the lock lasts from now.
-func (r *Repo) LockModel(provider, model string, durationSec int, lastError string, errorCode int) error {
+func (r *Repo) LockModel(provider, model string, durationSec int, lastError string, errorCode int, backoffLevel int) error {
 	key := strings.ToUpper(provider + "/" + model)
 	lock := ModelLock{
-		LockedUntil: time.Now().UTC().Add(time.Duration(durationSec) * time.Second).Format(time.RFC3339),
-		LastError:   lastError,
-		ErrorCode:   errorCode,
+		LockedUntil:  time.Now().UTC().Add(time.Duration(durationSec) * time.Second).Format(time.RFC3339),
+		LastError:    lastError,
+		ErrorCode:    errorCode,
+		BackoffLevel: backoffLevel,
 	}
 	valueBytes, err := json.Marshal(lock)
 	if err != nil {
