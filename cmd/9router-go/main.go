@@ -180,9 +180,17 @@ func runServer(cCtx *cli.Context) error {
 				path = path[3:]
 			}
 			req.URL.Path = path
+			reqID := chiMiddleware.GetReqID(req.Context())
+			if reqID != "" {
+				w.Header().Set("X-Request-ID", reqID)
+			}
 			ww := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(ww, req)
-			log.Printf("[request] %s %s %d %s", req.Method, path, ww.status, time.Since(start))
+			if reqID != "" {
+				log.Printf("[request] id=%s %s %s %d %s", reqID, req.Method, path, ww.status, time.Since(start))
+			} else {
+				log.Printf("[request] %s %s %d %s", req.Method, path, ww.status, time.Since(start))
+			}
 		})
 	})
 

@@ -9,14 +9,19 @@ import (
 
 func TestWriteJSONError(t *testing.T) {
 	tests := []struct {
-		name    string
-		status  int
-		message string
+		name     string
+		status   int
+		message  string
+		wantType string
+		wantCode string
 	}{
-		{"bad request", http.StatusBadRequest, "invalid model"},
-		{"not found", http.StatusNotFound, "resource not found"},
-		{"internal error", http.StatusInternalServerError, "server error"},
-		{"empty message", http.StatusBadRequest, ""},
+		{"bad request", http.StatusBadRequest, "invalid model", "invalid_request_error", "bad_request"},
+		{"unauthorized", http.StatusUnauthorized, "bad key", "authentication_error", "invalid_api_key"},
+		{"not found", http.StatusNotFound, "resource not found", "invalid_request_error", "model_not_found"},
+		{"internal error", http.StatusInternalServerError, "server error", "server_error", "internal_server_error"},
+		{"rate limit", http.StatusTooManyRequests, "slow down", "rate_limit_error", "rate_limit_exceeded"},
+		{"empty message", http.StatusBadRequest, "", "invalid_request_error", "bad_request"},
+		{"unknown status", 999, "weird", "invalid_request_error", "999"},
 	}
 
 	for _, tt := range tests {
@@ -45,11 +50,11 @@ func TestWriteJSONError(t *testing.T) {
 			if errObj["message"] != tt.message {
 				t.Errorf("error.message = %q, want %q", errObj["message"], tt.message)
 			}
-			if errObj["type"] != "invalid_request_error" {
-				t.Errorf("error.type = %q, want %q", errObj["type"], "invalid_request_error")
+			if errObj["type"] != tt.wantType {
+				t.Errorf("error.type = %q, want %q", errObj["type"], tt.wantType)
 			}
-			if errObj["code"] != float64(tt.status) {
-				t.Errorf("error.code = %v, want %v", errObj["code"], tt.status)
+			if errObj["code"] != tt.wantCode {
+				t.Errorf("error.code = %v, want %v", errObj["code"], tt.wantCode)
 			}
 		})
 	}
