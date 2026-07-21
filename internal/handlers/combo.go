@@ -268,10 +268,7 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 			log.Printf("[combo] skip %s/%s: unhealthy (>=5 consecutive errors)", modelInfo.Provider, modelInfo.Model)
 			continue
 		}
-		if locked, _ := h.Repo.IsModelLocked(modelInfo.Provider, modelInfo.Model); locked {
-			log.Printf("[combo] skip %s/%s: model locked (cooldown active)", modelInfo.Provider, modelInfo.Model)
-			continue
-		}
+
 
 		var connID string
 		var connData *ConnectionData
@@ -397,10 +394,7 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 			log.Printf("[combo] skip %s/%s: unhealthy (>=5 consecutive errors)", modelInfo.Provider, modelInfo.Model)
 			continue
 		}
-		if locked, _ := h.Repo.IsModelLocked(modelInfo.Provider, modelInfo.Model); locked {
-			log.Printf("[combo] skip %s/%s: model locked (cooldown active)", modelInfo.Provider, modelInfo.Model)
-			continue
-		}
+
 
 		var connID string
 		var connData *ConnectionData

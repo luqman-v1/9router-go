@@ -655,16 +655,13 @@ func TestHandleChatCompletions_AccountFallback_429(t *testing.T) {
 		t.Errorf("expected 429 after all accounts exhausted, got %d", rec.Code)
 	}
 
-	// Verify model lock was created with 60s duration for 429
-	lock, err := repo.GetModelLock("deepseek", "deepseek-chat")
+	// Verify per-connection model lock was created for 429
+	locked, err := repo.IsConnectionModelLocked("conn-rl", "deepseek-chat")
 	if err != nil {
-		t.Fatalf("GetModelLock failed: %v", err)
+		t.Fatalf("IsConnectionModelLocked failed: %v", err)
 	}
-	if lock == nil {
-		t.Fatal("expected model lock after 429 error")
-	}
-	if lock.ErrorCode != 429 {
-		t.Errorf("expected error code 429, got %d", lock.ErrorCode)
+	if !locked {
+		t.Fatal("expected conn-rl per-connection lock after 429 error")
 	}
 }
 
@@ -1510,13 +1507,20 @@ func TestAccountFallback_AllExhaustedRetryable(t *testing.T) {
 		t.Errorf("expected 429, got %d", rec.Code)
 	}
 
-	// Model should be locked after exhausting all accounts with 429
-	locked, err := repo.IsModelLocked("deepseek", "deepseek-chat")
+	// Both connections should have per-connection locks
+	locked1, err := repo.IsConnectionModelLocked("conn-rl-1", "deepseek-chat")
 	if err != nil {
-		t.Fatalf("IsModelLocked failed: %v", err)
+		t.Fatalf("IsConnectionModelLocked failed: %v", err)
 	}
-	if !locked {
-		t.Error("expected model lock after all accounts exhausted with 429")
+	if !locked1 {
+		t.Error("expected conn-rl-1 per-connection lock after 429")
+	}
+	locked2, err := repo.IsConnectionModelLocked("conn-rl-2", "deepseek-chat")
+	if err != nil {
+		t.Fatalf("IsConnectionModelLocked failed: %v", err)
+	}
+	if !locked2 {
+		t.Error("expected conn-rl-2 per-connection lock after 429")
 	}
 }
 

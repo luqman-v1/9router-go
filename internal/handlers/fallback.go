@@ -42,7 +42,6 @@ func (h *ChatHandler) handleAccountFallback(
 		return fmt.Errorf("provider %s/%s is unhealthy", provider, model)
 	}
 
-	locked, _ := h.Repo.IsModelLocked(provider, model)
 	allConns, err := h.Repo.GetProviderConnections(provider, true)
 	if err != nil || len(allConns) == 0 {
 		if cfg, ok := providers.KnownProviders[provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
@@ -74,7 +73,6 @@ func (h *ChatHandler) handleAccountFallback(
 				continue
 			}
 		}
-		_ = locked // available for future use (model lock check)
 		log.Printf("[debug] fallback loop: conn.ID=%q, connObj.ID=%q", conn.ID, connObj.ID)
 		lastErr = h.tryForwardWithConnection(w, provider, model, connObj.ID, connData, body, isStream, translateResponse, endpoint)
 		if lastErr == nil {
@@ -84,11 +82,8 @@ func (h *ChatHandler) handleAccountFallback(
 		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
 			// Extract error text from upstream body for classification
 			errorText := extractErrorText(ue.Body)
-			// Get current backoff level from existing lock
-			currentBackoffLevel := 0
-			if existingLock, _ := h.Repo.GetModelLock(provider, model); existingLock != nil {
-				currentBackoffLevel = existingLock.BackoffLevel
-			}
+			// Get current backoff level from this connection
+			currentBackoffLevel := h.Repo.GetConnectionBackoffLevel(connObj.ID)
 			// Classify error to get dynamic cooldown
 			classification := providers.ClassifyError(ue.StatusCode, errorText, currentBackoffLevel)
 			cooldownSec := int((classification.CooldownMs + 999) / 1000) // ceil to seconds
@@ -96,7 +91,7 @@ func (h *ChatHandler) handleAccountFallback(
 			if errMsg == "" {
 				errMsg = fmt.Sprintf("%d upstream error", ue.StatusCode)
 			}
-			h.Repo.LockModel(provider, model, cooldownSec, errMsg, ue.StatusCode, classification.NewBackoffLevel)
+			h.Repo.LockConnectionModel(connObj.ID, model, cooldownSec, classification.NewBackoffLevel)
 			excludeIDs = append(excludeIDs, conn.ID)
 			continue
 		}

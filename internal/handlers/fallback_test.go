@@ -152,12 +152,12 @@ func TestHandleAccountFallback_RetryableLocksModel(t *testing.T) {
 		t.Fatal("expected error after exhausting connections")
 	}
 
-	locked, lerr := repo.IsModelLocked("deepseek", "deepseek-chat")
+	locked, lerr := repo.IsConnectionModelLocked("conn-429", "deepseek-chat")
 	if lerr != nil {
-		t.Fatalf("IsModelLocked failed: %v", lerr)
+		t.Fatalf("IsConnectionModelLocked failed: %v", lerr)
 	}
 	if !locked {
-		t.Error("expected model to be locked after 429 on all connections")
+		t.Error("expected conn-429 per-connection lock after 429 on all connections")
 	}
 }
 

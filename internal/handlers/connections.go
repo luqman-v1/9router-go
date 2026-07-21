@@ -47,10 +47,17 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 
 		conn = nil
 		for _, c := range connections {
-			if !excludeSet[c.ID] {
-				conn = c
-				break
+			if excludeSet[c.ID] {
+				continue
 			}
+			// Skip connections that have an active per-connection model lock
+			if model != "" {
+				if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, model); locked {
+					continue
+				}
+			}
+			conn = c
+			break
 		}
 		if conn == nil {
 			return nil, nil, fmt.Errorf("no available connections for provider: %s (all excluded)", provider)
