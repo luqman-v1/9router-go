@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,12 +13,13 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/dbtest"
+	"os"
 	"9router/proxy/internal/handlerutil"
 )
 
 func setupChatTestDB(t *testing.T) (*sql.DB, func()) {
 	t.Helper()
-
 	tmpFile, err := os.CreateTemp("", "test_chat_*.sqlite")
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
@@ -37,142 +37,50 @@ func setupChatTestDB(t *testing.T) (*sql.DB, func()) {
 		os.Remove(tmpFile.Name())
 	}
 
-	// Create tables matching the schema
-	schemas := []string{
-		`CREATE TABLE apiKeys (
-			id TEXT PRIMARY KEY,
-			key TEXT UNIQUE NOT NULL,
-			name TEXT,
-			machineId TEXT,
-			isActive INTEGER DEFAULT 1,
-			createdAt TEXT NOT NULL
-		)`,
-		`CREATE TABLE providerConnections (
-			id TEXT PRIMARY KEY,
-			provider TEXT NOT NULL,
-			authType TEXT NOT NULL,
-			name TEXT,
-			email TEXT,
-			priority INTEGER,
-			isActive INTEGER DEFAULT 1,
-			data TEXT NOT NULL,
-			createdAt TEXT NOT NULL,
-			updatedAt TEXT NOT NULL
-		)`,
-		`CREATE TABLE kv (
-			scope TEXT NOT NULL,
-			key TEXT NOT NULL,
-			value TEXT NOT NULL,
-			PRIMARY KEY (scope, key)
-		)`,
-		`CREATE TABLE combos (
-			id TEXT PRIMARY KEY,
-			name TEXT UNIQUE NOT NULL,
-			kind TEXT,
-			models TEXT NOT NULL,
-			createdAt TEXT NOT NULL,
-			updatedAt TEXT NOT NULL
-		)`,
-		`CREATE TABLE settings (
-			id INTEGER PRIMARY KEY CHECK (id = 1),
-			data TEXT NOT NULL
-		)`,
-		`CREATE TABLE providerNodes (
-			id TEXT PRIMARY KEY,
-			type TEXT,
-			name TEXT,
-			data TEXT NOT NULL,
-			createdAt TEXT NOT NULL,
-			updatedAt TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS usageHistory (
-			timestamp TEXT,
-			provider TEXT,
-			model TEXT,
-			connectionId TEXT,
-			apiKey TEXT,
-			endpoint TEXT,
-			promptTokens INTEGER,
-			completionTokens INTEGER,
-			cost REAL,
-			status TEXT,
-			tokens TEXT,
-			meta TEXT
-		)`,
-		`CREATE TABLE IF NOT EXISTS usageDaily (
-			dateKey TEXT PRIMARY KEY,
-			data TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS requestDetails (
-			id TEXT PRIMARY KEY,
-			timestamp TEXT,
-			provider TEXT,
-			model TEXT,
-			connectionId TEXT,
-			status TEXT,
-			data TEXT
-		)`,
+	if err := dbtest.CreateTables(database); err != nil {
+		cleanup()
+		t.Fatalf("CreateTables failed: %v", err)
 	}
 
-	for _, query := range schemas {
-		if _, err := database.Exec(query); err != nil {
-			cleanup()
-			t.Fatalf("failed to create table: %v", err)
-		}
-	}
-
-	// Seed API key
-	_, err = database.Exec(`INSERT INTO apiKeys (id, key, name, isActive, createdAt) VALUES
-		('1', 'test-api-key', 'Test Key', 1, '2026-07-18T00:00:00Z')`)
-	if err != nil {
+	// Seed API key (used by auth/resolve tests)
+	if _, err := database.Exec(`INSERT INTO apiKeys (id, key, name, isActive, createdAt) VALUES
+		('1', 'test-api-key', 'Test Key', 1, '2026-07-18T00:00:00Z')`); err != nil {
 		cleanup()
 		t.Fatalf("failed to seed apiKeys: %v", err)
 	}
 
-	// Seed provider connections
-	deepseekData, _ := json.Marshal(map[string]interface{}{
-		"apiKey": "sk-test-deepseek-key",
-	})
-	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+	// Seed provider connections (used by resolve/fallback tests)
+	deepseekData, _ := json.Marshal(map[string]interface{}{"apiKey": "sk-test-deepseek-key"})
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-1', 'deepseek', 'apikey', 'DeepSeek Test', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
-		string(deepseekData))
-	if err != nil {
+		string(deepseekData)); err != nil {
 		cleanup()
 		t.Fatalf("failed to seed providerConnections: %v", err)
 	}
 
-	groqData, _ := json.Marshal(map[string]interface{}{
-		"apiKey": "gsk-test-groq-key",
-	})
-	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+	groqData, _ := json.Marshal(map[string]interface{}{"apiKey": "gsk-test-groq-key"})
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-2', 'groq', 'apikey', 'Groq Test', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
-		string(groqData))
-	if err != nil {
+		string(groqData)); err != nil {
 		cleanup()
 		t.Fatalf("failed to seed groq connection: %v", err)
 	}
 
-	// Seed model alias
-	_, err = database.Exec(`INSERT INTO kv (scope, key, value) VALUES
-		('modelAliases', 'fast-model', '"deepseek/deepseek-chat"')`)
-	if err != nil {
+	// Seed model alias used by resolve tests
+	if _, err := database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('modelAliases', 'fast-model', '"deepseek/deepseek-chat"')`); err != nil {
 		cleanup()
 		t.Fatalf("failed to seed model alias: %v", err)
 	}
 
-	// Seed combo
-	comboModels, _ := json.Marshal([]string{"deepseek/deepseek-chat", "groq/qwen/qwen3-32b"})
-	_, err = database.Exec(`INSERT INTO combos (id, name, models, createdAt, updatedAt) VALUES
-		('combo-1', 'my-combo', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
-		string(comboModels))
-	if err != nil {
+	// Seed combo used by resolve tests
+	comboModels, _ := json.Marshal([]string{"deepseek/deepseek-chat"})
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES ('c1', 'my-combo', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(comboModels)); err != nil {
 		cleanup()
 		t.Fatalf("failed to seed combo: %v", err)
 	}
-
 	return database, cleanup
 }
-
 func TestResolveModel_ProviderSlashModel(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
