@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"bytes"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
@@ -26,7 +27,7 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 }
 
 // sseStream pipes SSE chunks to client with optional format translation.
-func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, ttft *int64, buf *stringBuilder) error {
+func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, ttft *int64, buf *bytes.Buffer) error {
 	flusher := proxy.WriteSSEHeaders(w)
 
 	if !translate {
@@ -94,6 +95,3 @@ func jsonResponse(w http.ResponseWriter, upstream io.Reader, translate bool) err
 	return nil
 }
 
-type stringBuilder struct { b []byte }
-func (s *stringBuilder) Write(p []byte) (int, error) { s.b = append(s.b, p...); return len(p), nil }
-func (s *stringBuilder) String() string { return string(s.b) }

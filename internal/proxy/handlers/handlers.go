@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"9router/proxy/internal/handlerutil"
+	"bytes"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
 
 // SSEStream pipes SSE chunks from upstream to client with optional translation.
-func SSEStream(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, ttft *int64, buf *stringBuilder) error {
+func SSEStream(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, ttft *int64, buf *bytes.Buffer) error {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -110,14 +111,3 @@ func JSONResponse(w http.ResponseWriter, upstream io.Reader, translate bool) err
 	return nil
 }
 
-// stringBuilder is a simple io.Writer for accumulating response bytes.
-type stringBuilder struct {
-	b []byte
-}
-
-func (s *stringBuilder) Write(p []byte) (int, error) {
-	s.b = append(s.b, p...)
-	return len(p), nil
-}
-
-func (s *stringBuilder) String() string { return string(s.b) }
