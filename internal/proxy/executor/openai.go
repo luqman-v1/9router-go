@@ -3,10 +3,12 @@ package executor
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/translator"
 )
 
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
@@ -24,7 +26,6 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 
 // sseStream pipes SSE chunks to client with optional format translation.
 func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, ttft *int64, buf *stringBuilder) error {
-	// delegates to proxyhandlers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -50,17 +51,47 @@ func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 
 	flusher, _ := w.(http.Flusher)
 	return proxy.ScanStream(upstream, func(chunk []byte) {
-		w.Write(chunk)
-		w.Write([]byte("\n\n"))
+		translated, err := translator.TranslateOpenAIToClaudeStream(chunk)
+		if err != nil {
+			log.Printf("[executor] TranslateOpenAIToClaudeStream error: %v", err)
+			return
+		}
+		if translated == nil {
+			return
+		}
+		if ttft != nil && *ttft == 0 {
+			*ttft = time.Since(startTime).Milliseconds()
+		}
+		if buf != nil { buf.Write(translated) }
+		w.Write(translated)
 		if flusher != nil { flusher.Flush() }
 	})
 }
 
-// jsonResponse writes the upstream JSON response.
-// TODO: When translate==true, call Claude translation.
+// jsonResponse writes the upstream JSON response with optional translation.
 func jsonResponse(w http.ResponseWriter, upstream io.Reader, translate bool) error {
 	body, err := io.ReadAll(upstream)
 	if err != nil { return fmt.Errorf("read upstream response: %w", err) }
+
+	if translate {
+		translated, usage, err := translator.TranslateOpenAIToClaude(body)
+		if err == nil && usage != nil {
+			translator.SetLastUsage(usage)
+		}
+		if err != nil || translated == nil {
+			log.Printf("[executor] TranslateOpenAIToClaude error: %v", err)
+			// Fall back to original response
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write(body)
+			return nil
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(translated)
+		return nil
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(body)

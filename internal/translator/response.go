@@ -187,6 +187,12 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 		return nil, nil
 	}
 
+	// SSE scanner (proxy.ScanStream) already strips "data:" prefix.
+	// Handle [DONE] marker BEFORE checking for "data:" prefix.
+	if string(trimmed) == "[DONE]" {
+		return []byte("data: [DONE]\n\n"), nil
+	}
+
 	var isDone bool
 	var dataPart []byte
 	if bytes.HasPrefix(trimmed, []byte("data:")) {

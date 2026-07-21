@@ -145,6 +145,7 @@ func (h *ChatHandler) tryForwardWithConnection(
 			APIKey:         apiKey,
 			Body:           pipedBody,
 			IsStream:       isStream,
+			TranslateResp:  translateResponse,
 		})
 	} else if providerCfg.IsGeminiNative() {
 		fwdErr = h.forwardGeminiNativeRequest(w, provider, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)
