@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"9router/proxy/internal/db"
@@ -229,4 +230,69 @@ func extractErrorText(body []byte) string {
 		return parsed.Error.Message
 	}
 	return ""
+}
+
+// extractRetryAfter extracts a retryAfter ISO timestamp from an upstream error JSON body.
+// Checks common field names: retryAfter, retry_after, resetsAt, resets_at.
+// Returns "" when not found or not parseable.
+func extractRetryAfter(body []byte) string {
+	var parsed struct {
+		RetryAfter string `json:"retryAfter"`
+		RetryAlt   string `json:"retry_after"`
+		ResetsAt   string `json:"resetsAt"`
+		ResetsAlt  string `json:"resets_at"`
+		Error      struct {
+			RetryAfter string `json:"retryAfter"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ""
+	}
+	if parsed.RetryAfter != "" {
+		return parsed.RetryAfter
+	}
+	if parsed.RetryAlt != "" {
+		return parsed.RetryAlt
+	}
+	if parsed.ResetsAt != "" {
+		return parsed.ResetsAt
+	}
+	if parsed.ResetsAlt != "" {
+		return parsed.ResetsAlt
+	}
+	if parsed.Error.RetryAfter != "" {
+		return parsed.Error.RetryAfter
+	}
+	return ""
+}
+
+// formatRetryAfter formats an ISO timestamp into a human-readable "reset after Xm Ys" string.
+// Returns "" when the timestamp is empty, unparseable, or in the past.
+func formatRetryAfter(isoTimestamp string) string {
+	if isoTimestamp == "" {
+		return ""
+	}
+	parsed, err := time.Parse(time.RFC3339, isoTimestamp)
+	if err != nil {
+		return ""
+	}
+	diffMs := time.Until(parsed)
+	if diffMs <= 0 {
+		return "reset after 0s"
+	}
+	totalSec := int((diffMs + 999) / 1000) // ceil
+	h := totalSec / 3600
+	m := (totalSec % 3600) / 60
+	s := totalSec % 60
+	var parts []string
+	if h > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", h))
+	}
+	if m > 0 {
+		parts = append(parts, fmt.Sprintf("%dm", m))
+	}
+	if s > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%ds", s))
+	}
+	return "reset after " + strings.Join(parts, " ")
 }

@@ -243,6 +243,7 @@ func keysString(m map[string]bool) string {
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
 func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int) {
 	var lastErr *upstreamError
+	var earliestRetryAfter string
 
 	// Auto-capability-switch: float models that satisfy the request's required capabilities to the front.
 	models := comboModels
@@ -322,6 +323,12 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 						log.Printf("[combo] transient %d from %s, cooldown %dms >5s, skipping wait", ue.StatusCode, modelInfo.Provider, classification.CooldownMs)
 				}
 				}
+				// Track earliest retryAfter across combo models
+				if ra := extractRetryAfter(ue.Body); ra != "" {
+					if earliestRetryAfter == "" || ra < earliestRetryAfter {
+						earliestRetryAfter = ra
+					}
+				}
 				lastErr = ue
 				continue
 			}
@@ -335,6 +342,27 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 
 	if lastErr != nil {
 		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		if earliestRetryAfter != "" {
+			retryAfterSec := int((time.Until(mustParseTime(earliestRetryAfter)) + 999) / 1000000000)
+			if retryAfterSec < 1 {
+				retryAfterSec = 1
+			}
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+			retryHuman := formatRetryAfter(earliestRetryAfter)
+			var errBody map[string]any
+			if err := json.Unmarshal(lastErr.Body, &errBody); err == nil {
+				if errObj, ok := errBody["error"].(map[string]any); ok {
+					if msg, _ := errObj["message"].(string); msg != "" {
+						errObj["message"] = msg + " (" + retryHuman + ")"
+						updated, _ := json.Marshal(errBody)
+						w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+						w.WriteHeader(lastErr.StatusCode)
+						w.Write(updated)
+						return
+					}
+				}
+			}
+		}
 		w.WriteHeader(lastErr.StatusCode)
 		w.Write(lastErr.Body)
 		return
@@ -346,6 +374,7 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
 func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int) {
 	var lastErr *upstreamError
+	var earliestRetryAfter string
 
 	// Auto-capability-switch: convert body to JSON for detection
 	bodyJSON, _ := json.Marshal(translatedReq)
@@ -417,6 +446,12 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 						log.Printf("[combo] transient %d from %s, cooldown %dms >5s, skipping wait", ue.StatusCode, modelInfo.Provider, classification.CooldownMs)
 				}
 				}
+				// Track earliest retryAfter across combo models
+				if ra := extractRetryAfter(ue.Body); ra != "" {
+					if earliestRetryAfter == "" || ra < earliestRetryAfter {
+						earliestRetryAfter = ra
+					}
+				}
 				lastErr = ue
 				continue
 			}
@@ -430,6 +465,27 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 
 	if lastErr != nil {
 		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		if earliestRetryAfter != "" {
+			retryAfterSec := int((time.Until(mustParseTime(earliestRetryAfter)) + 999) / 1000000000)
+			if retryAfterSec < 1 {
+				retryAfterSec = 1
+			}
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+			retryHuman := formatRetryAfter(earliestRetryAfter)
+			var errBody map[string]any
+			if err := json.Unmarshal(lastErr.Body, &errBody); err == nil {
+				if errObj, ok := errBody["error"].(map[string]any); ok {
+					if msg, _ := errObj["message"].(string); msg != "" {
+						errObj["message"] = msg + " (" + retryHuman + ")"
+						updated, _ := json.Marshal(errBody)
+						w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+						w.WriteHeader(lastErr.StatusCode)
+						w.Write(updated)
+						return
+					}
+				}
+			}
+		}
 		w.WriteHeader(lastErr.StatusCode)
 		w.Write(lastErr.Body)
 		return
@@ -437,6 +493,15 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 	handlerutil.WriteJSONError(w, http.StatusBadGateway, "all combo models failed: no valid entries")
 }
 
+
+// mustParseTime parses an RFC3339 timestamp. Returns zero time on error.
+func mustParseTime(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
 // ---- Fusion (parallel fan-out + judge synthesis) ----
 
 // fusionResult holds a single panel model's response.
