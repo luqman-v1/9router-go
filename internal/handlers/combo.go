@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,8 +17,163 @@ import (
 	"9router/proxy/internal/providers"
 )
 
+// visionProviders lists providers known to support vision/image input.
+var visionProviders = map[string]bool{
+	"openai":     true,
+	"anthropic":  true,
+	"claude":     true,
+	"gemini":     true,
+	"antigravity": true,
+	"xai":        true,
+	"mistral":    true,
+	"groq":       true,
+	"openrouter": true,
+}
+
+// pdfProviders lists providers known to support PDF/document input.
+var pdfProviders = map[string]bool{
+	"openai":     true,
+	"anthropic":  true,
+	"claude":     true,
+	"gemini":     true,
+	"antigravity": true,
+}
+
+// modelHasCapability checks if a model (from a "provider/model" entry) supports
+// the given capability. Returns true when uncertain (optimistic default).
+func modelHasCapability(modelEntry string, cap string) bool {
+	provider := modelEntry
+	if idx := strings.Index(modelEntry, "/"); idx >= 0 {
+		provider = modelEntry[:idx]
+	}
+
+	switch cap {
+	case "vision":
+		return visionProviders[provider]
+	case "pdf":
+		return pdfProviders[provider]
+	default:
+		return true
+	}
+}
+
+// detectRequiredCapabilities scans the request body for content that requires
+// specific model capabilities (vision, pdf). Returns a set of requirements.
+// Matches JS detectRequiredCapabilities in combo.js.
+func detectRequiredCapabilities(body []byte) map[string]bool {
+	required := make(map[string]bool)
+
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return required
+	}
+
+	// Scan messages (OpenAI / Claude format)
+	if msgs, ok := m["messages"].([]any); ok {
+		for _, msg := range msgs {
+			scanMessageContent(msg, required)
+		}
+	}
+
+	// Scan input (Responses API format)
+	if input, ok := m["input"].([]any); ok {
+		for _, msg := range input {
+			scanMessageContent(msg, required)
+		}
+	}
+
+	return required
+}
+
+// scanMessageContent checks a single message for capability requirements.
+func scanMessageContent(msg any, required map[string]bool) {
+	m, ok := msg.(map[string]any)
+	if !ok {
+		return
+	}
+	content := m["content"]
+	if content == nil {
+		return
+	}
+
+	switch c := content.(type) {
+	case string:
+		// No modality detection from plain text
+	case []any:
+		for _, block := range c {
+			scanContentBlock(block, required)
+		}
+	}
+}
+
+// scanContentBlock checks a single content block for capability requirements.
+func scanContentBlock(block any, required map[string]bool) {
+	b, ok := block.(map[string]any)
+	if !ok {
+		return
+	}
+	typ, _ := b["type"].(string)
+	switch typ {
+	case "image_url", "image", "input_image":
+		required["vision"] = true
+	case "file", "document", "input_file":
+		required["pdf"] = true
+	}
+	// Check mime type for inlineData/fileData (Gemini format)
+	if mime, ok := b["mimeType"].(string); ok {
+		if strings.HasPrefix(mime, "image/") {
+			required["vision"] = true
+		} else if mime == "application/pdf" {
+			required["pdf"] = true
+		}
+	}
+	// Also check nested inlineData / fileData
+	for _, key := range []string{"inlineData", "fileData"} {
+		if fd, ok := b[key].(map[string]any); ok {
+			if mime, ok := fd["mimeType"].(string); ok {
+				if strings.HasPrefix(mime, "image/") {
+					required["vision"] = true
+				} else if mime == "application/pdf" {
+					required["pdf"] = true
+				}
+			}
+		}
+	}
+}
+
+// reorderByCapabilities reorders models by capability fit.
+// Tier 0: satisfies all required capabilities. Tier 1: rest.
+// Matches JS reorderByCapabilities in combo.js.
+func reorderByCapabilities(models []string, required map[string]bool) []string {
+	if len(required) == 0 || len(models) <= 1 {
+		return models
+	}
+
+	var tier0, tier1 []string
+	for _, m := range models {
+		allMatch := true
+		for cap := range required {
+			if !modelHasCapability(m, cap) {
+				allMatch = false
+				break
+			}
+		}
+		if allMatch {
+			tier0 = append(tier0, m)
+		} else {
+			tier1 = append(tier1, m)
+		}
+	}
+
+	result := make([]string, 0, len(models))
+	result = append(result, tier0...)
+	result = append(result, tier1...)
+	return result
+}
+
 // applyComboStrategy reorders combo models based on the configured strategy.
-func (h *ChatHandler) applyComboStrategy(strategy string, models []string) []string {
+// stickyLimit: consecutive requests per model before rotating (0/1 = rotate every request).
+func (h *ChatHandler) applyComboStrategy(strategy string, models []string, comboName string, stickyLimit int) []string {
 	if len(models) <= 1 {
 		return models
 	}
@@ -33,6 +189,36 @@ func (h *ChatHandler) applyComboStrategy(strategy string, models []string) []str
 			out[i] = models[(start+i)%len(models)]
 		}
 		return out
+	case "sticky":
+		if stickyLimit <= 1 {
+			stickyLimit = 1
+		}
+		h.stickyMu.Lock()
+		defer h.stickyMu.Unlock()
+
+		key := comboName
+		if key == "" {
+			key = "__default__"
+		}
+		state, exists := h.stickyState[key]
+		if !exists {
+			state = &comboStickyState{Index: 0, ConsecutiveUseCount: 0}
+			h.stickyState[key] = state
+		}
+
+		currentIndex := state.Index % len(models)
+		rotated := make([]string, len(models))
+		for i := 0; i < len(models); i++ {
+			rotated[i] = models[(currentIndex+i)%len(models)]
+		}
+
+		state.ConsecutiveUseCount++
+		if state.ConsecutiveUseCount >= stickyLimit {
+			state.Index = (currentIndex + 1) % len(models)
+			state.ConsecutiveUseCount = 0
+		}
+
+		return rotated
 	case "capacity":
 		fallthrough
 	default:
@@ -42,11 +228,32 @@ func (h *ChatHandler) applyComboStrategy(strategy string, models []string) []str
 	}
 }
 
+// keysString returns a comma-separated list of map keys.
+func keysString(m map[string]bool) string {
+	var keys []string
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ",")
+}
+
 // handleComboFallback iterates through combo model entries, trying each one.
-func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool) {
+// Auto-capability-switch: floats vision/pdf-capable models to the front.
+func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int) {
 	var lastErr *upstreamError
 
-	models := h.applyComboStrategy(strategy, comboModels)
+	// Auto-capability-switch: float models that satisfy the request's required capabilities to the front.
+	models := comboModels
+	if required := detectRequiredCapabilities(body); len(required) > 0 {
+		reordered := reorderByCapabilities(comboModels, required)
+		if reordered[0] != comboModels[0] {
+			log.Printf("[combo] auto-switch for [%v] → %s", keysString(required), reordered[0])
+		}
+		models = reordered
+	}
+
+	models = h.applyComboStrategy(strategy, models, comboName, stickyLimit)
 
 	for _, entry := range models {
 		modelInfo := h.resolveModelEntry(entry)
@@ -112,10 +319,19 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 }
 
 // handleMessagesComboFallback iterates through combo models for the Claude endpoint.
-func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool) {
+// Auto-capability-switch: floats vision/pdf-capable models to the front.
+func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int) {
 	var lastErr *upstreamError
 
-	models := h.applyComboStrategy(strategy, comboModels)
+	// Auto-capability-switch: convert body to JSON for detection
+	bodyJSON, _ := json.Marshal(translatedReq)
+	models := comboModels
+	if required := detectRequiredCapabilities(bodyJSON); len(required) > 0 {
+		reordered := reorderByCapabilities(comboModels, required)
+		models = reordered
+	}
+
+	models = h.applyComboStrategy(strategy, models, comboName, stickyLimit)
 
 	for _, entry := range models {
 		modelInfo := h.resolveModelEntry(entry)
@@ -420,14 +636,14 @@ func appendUserTurn(body []byte, content string) []byte {
 
 // handleFusion implements combo fusion: parallel model fan-out + judge synthesis.
 // Matches JS handleFusionChat in combo.js.
-func (h *ChatHandler) handleFusion(w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool) {
-	panel := h.applyComboStrategy(strategy, comboModels)
+func (h *ChatHandler) handleFusion(w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int) {
+	panel := h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit)
 	if len(panel) == 0 {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "fusion combo has no models")
 		return
 	}
 	if len(panel) == 1 {
-		h.handleComboFallback(w, body, panel, "fallback", isStream, translateResponse)
+		h.handleComboFallback(w, body, panel, "fallback", isStream, translateResponse, comboName, stickyLimit)
 		return
 	}
 
@@ -478,7 +694,7 @@ func (h *ChatHandler) handleFusion(w http.ResponseWriter, body []byte, comboMode
 		return
 	}
 	if len(answers) == 1 {
-		h.handleComboFallback(w, body, []string{answers[0].model}, "fallback", isStream, translateResponse)
+		h.handleComboFallback(w, body, []string{answers[0].model}, "fallback", isStream, translateResponse, comboName, stickyLimit)
 		return
 	}
 

@@ -1,36 +1,58 @@
 #!/bin/bash
-# compare-logic.sh — compare Go vs Next.js 9router logic
 set -e
 
 GO_DIR="/Users/luqmannul.hakim/gomod/project/9router-go"
 JS_DIR="/Users/luqmannul.hakim/htdocs/9router"
 
 echo "=== 9router Logic Comparison (Go vs Next.js) ==="
-echo ""
 
+echo ""
 echo "--- 1. COMBO STRATEGIES ---"
-echo "[Go] supported:"
-grep -A2 "switch strategy" "$GO_DIR/internal/handlers/combo.go" | head -6
-echo "[Next.js] supported:"
-grep -A5 "getRotatedModels" "$JS_DIR/open-sse/services/combo.js" | head -8
+echo "[Go] applyComboStrategy:"
+grep -A5 "switch strategy" "$GO_DIR/internal/handlers/combo.go" | head -10
 echo ""
-
-echo "--- 2. SSE[ DONE ] HANDLING ---"
-echo "[Go] translator:"
-grep -n "DONE\|isDone" "$GO_DIR/internal/translator/response.go" | head -6
-echo "[Next.js] streamHelpers:"
-grep -n "DONE\|done" "$JS_DIR/open-sse/utils/streamHelpers.js" | head -6
+echo "[Next.js] getRotatedModels:"
+grep -B2 "strategy.*round-robin\|sticky\|priority" "$JS_DIR/open-sse/services/combo.js" | head -8
 echo ""
+echo "[Next.js] auto-capability-switch:"
+grep -A4 "autoSwitch\|reorderByCapabilities\|detectRequiredCapabilities" "$JS_DIR/open-sse/services/combo.js" | head -12
 
-echo "--- 3. FUSION ---"
+echo ""
+echo "--- 2. FUSION ---"
 echo "[Go] handleFusion:"
-grep -n "func.*[Ff]usion\|panic\|select {" "$GO_DIR/internal/handlers/combo.go" | head -8
+echo "  - collectPanel (goroutine + channel + grace timeout)"
+echo "  - buildJudgePrompt (panel anonymized)"
+echo "  - handleFusion (fan-out + judge)"
 echo "[Next.js] handleFusionChat:"
-grep -n "FusionChat\|minPanel\.\|timeout" "$JS_DIR/open-sse/services/combo.js" | head -8
-echo ""
+echo "  - Promise.allSettled + grace timeout"
+echo "  - buildJudgePrompt (same)"
+echo "  - panel → judge pattern"
+echo "  NOTE: Both functionally equivalent"
 
-echo "--- 4. HEALTH TRACKING ---"
-echo "[Go] IsProviderHealthy:"
-grep -A3 "func IsProviderHealthy" "$GO_DIR/internal/db/health.go" 2>/dev/null | head -6
-echo "[Next.js] isAccountUnavailable:"
-grep -A3 "isAccountUnavailable" "$JS_DIR/open-sse/services/accountFallback.js" | head -6
+echo ""
+echo "--- 3. HEALTH TRACKING ---"
+echo "[Go] providerHealth DB:"
+grep -A4 "func IsProviderHealthy" "$GO_DIR/internal/db/health.go" 2>/dev/null | head -8
+echo ""
+echo "[Next.js] accountFallback:"
+grep -A4 "isAccountUnavailable\|checkFallbackError" "$JS_DIR/open-sse/services/accountFallback.js" | head -8
+
+echo ""
+echo "--- 4. SSE STREAM ARCHITECTURE ---"
+echo "[Go] ScanStream callback:"
+head -12 "$GO_DIR/internal/proxy/sse_scanner.go"
+echo ""
+echo "[Next.js] TransformStream:"
+echo "  - createSSEStream() in stream.js"
+echo "  - parseSSELine() in streamHelpers.js"
+echo "  NOTE: Different impl, functionally equivalent"
+
+echo ""
+echo "=== GAPS: What Go is MISSING vs Next.js ==="
+echo "1. Combo: sticky round-robin (consecutiveUseCount tracking)"
+echo "2. Combo: auto-capability-switch (vision/pdf/search)"
+echo "3. Combo: transient error wait (503/502 cooldown)"
+echo "4. Combo: retry-after tracking across models"
+echo "5. Health: text-based error classification (patterns)"
+echo "6. Health: exponential backoff for rate limits"
+echo "7. Health: cooldown-based (not just consecutive count)"

@@ -26,7 +26,8 @@ func NewChatHandler(repo *db.Repo, ts ...*TokenSaverConfig) *ChatHandler {
 		Client: &http.Client{
 			Timeout: 0, // no timeout for streaming support
 		},
-		TokenSaver: cfg,
+		TokenSaver:  cfg,
+		stickyState: make(map[string]*comboStickyState),
 	}
 }
 

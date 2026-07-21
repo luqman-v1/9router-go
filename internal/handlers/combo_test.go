@@ -12,7 +12,7 @@ import (
 func TestApplyComboStrategy_capacity(t *testing.T) {
 	h := NewChatHandler(nil)
 	models := []string{"gpt-4", "claude-3", "gemini-pro"}
-	got := h.applyComboStrategy("capacity", models)
+	got := h.applyComboStrategy("capacity", models, "", 1)
 	if !reflect.DeepEqual(got, models) {
 		t.Errorf("capacity: got %v, want %v", got, models)
 	}
@@ -24,11 +24,11 @@ func TestApplyComboStrategy_capacity(t *testing.T) {
 func TestApplyComboStrategy_roundRobin(t *testing.T) {
 	h := NewChatHandler(nil)
 	models := []string{"a", "b", "c"}
-	first := h.applyComboStrategy("round-robin", models)
+	first := h.applyComboStrategy("round-robin", models, "", 1)
 	if !reflect.DeepEqual(first, models) {
 		t.Errorf("first call: got %v, want %v", first, models)
 	}
-	second := h.applyComboStrategy("round-robin", models)
+	second := h.applyComboStrategy("round-robin", models, "", 1)
 	want := []string{"b", "c", "a"}
 	if !reflect.DeepEqual(second, want) {
 		t.Errorf("second call: got %v, want %v", second, want)
@@ -38,7 +38,7 @@ func TestApplyComboStrategy_roundRobin(t *testing.T) {
 func TestApplyComboStrategy_fallback(t *testing.T) {
 	h := NewChatHandler(nil)
 	models := []string{"gpt-4", "claude-3", "gemini-pro"}
-	got := h.applyComboStrategy("fallback", models)
+	got := h.applyComboStrategy("fallback", models, "", 1)
 	if !reflect.DeepEqual(got, models) {
 		t.Errorf("fallback: got %v, want %v", got, models)
 	}
@@ -51,19 +51,19 @@ func TestApplyComboStrategy_singleModel(t *testing.T) {
 	h := NewChatHandler(nil)
 	models := []string{"gpt-4"}
 	t.Run("capacity", func(t *testing.T) {
-		got := h.applyComboStrategy("capacity", models)
+		got := h.applyComboStrategy("capacity", models, "", 1)
 		if !reflect.DeepEqual(got, models) {
 			t.Errorf("got %v, want %v", got, models)
 		}
 	})
 	t.Run("round-robin", func(t *testing.T) {
-		got := h.applyComboStrategy("round-robin", models)
+		got := h.applyComboStrategy("round-robin", models, "", 1)
 		if !reflect.DeepEqual(got, models) {
 			t.Errorf("got %v, want %v", got, models)
 		}
 	})
 	t.Run("fallback", func(t *testing.T) {
-		got := h.applyComboStrategy("fallback", models)
+		got := h.applyComboStrategy("fallback", models, "", 1)
 		if !reflect.DeepEqual(got, models) {
 			t.Errorf("got %v, want %v", got, models)
 		}
@@ -73,13 +73,13 @@ func TestApplyComboStrategy_singleModel(t *testing.T) {
 func TestApplyComboStrategy_empty(t *testing.T) {
 	h := NewChatHandler(nil)
 	t.Run("capacity", func(t *testing.T) {
-		got := h.applyComboStrategy("capacity", nil)
+		got := h.applyComboStrategy("capacity", nil, "", 1)
 		if got != nil {
 			t.Errorf("got %v, want nil", got)
 		}
 	})
 	t.Run("round-robin", func(t *testing.T) {
-		got := h.applyComboStrategy("round-robin", nil)
+		got := h.applyComboStrategy("round-robin", nil, "", 1)
 		if got != nil {
 			t.Errorf("got %v, want nil", got)
 		}

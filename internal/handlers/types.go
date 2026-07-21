@@ -9,13 +9,21 @@ import (
 	"9router/proxy/internal/proxy"
 )
 
+// comboStickyState tracks round-robin rotation with sticky limit per combo.
+type comboStickyState struct {
+	Index              int
+	ConsecutiveUseCount int
+}
+
 // ChatHandler handles /v1/chat/completions (OpenAI) and /v1/messages (Claude) endpoints.
 type ChatHandler struct {
 	Repo        *db.Repo
 	Client      *http.Client
 	TokenSaver  *TokenSaverConfig
 	rrMu        sync.Mutex
-	rrIdx       int // round-robin index
+	rrIdx       int // round-robin index (legacy, replaced by sticky where combo has stickyLimit)
+	stickyMu    sync.Mutex
+	stickyState map[string]*comboStickyState // key: comboName
 }
 
 // ModelInfo holds the resolved provider and model identifiers.
@@ -28,7 +36,8 @@ type ModelInfo struct {
 	Model        string
 	ConnectionID string   // optional — set when the resolver already found a connection
 	ComboModels  []string // non-empty when resolved from a combo; each entry is "provider/model"
-	Strategy     string   // combo routing strategy: "fallback", "round-robin", "capacity", "fusion"
+	Strategy     string   // combo routing strategy: "fallback", "round-robin", "sticky", "fusion"
+	StickyLimit  int      // sticky round-robin: consecutive requests per model before rotating (default 1)
 }
 
 // ConnectionData holds parsed fields from the providerConnections.data JSON blob.
