@@ -5,7 +5,7 @@ package proxyhandlers
 import (
 	"fmt"
 	"io"
-	"log"
+	"9router/proxy/internal/log"
 	"net/http"
 	"time"
 
@@ -55,7 +55,7 @@ func SSEStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 		translated, err := translator.TranslateOpenAIToClaudeStream(chunk)
 		if err != nil || translated == nil {
 			if err != nil {
-				log.Printf("[sse] translate error: %v", err)
+				log.Error("sse", "translate error", "error", err)
 			}
 			return
 		}
@@ -66,7 +66,7 @@ func SSEStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 			buf.Write(translated)
 		}
 		if _, werr := w.Write(translated); werr != nil {
-			log.Printf("[sse] write translated chunk: %v", werr)
+			log.Error("sse", "write chunk error", "error", werr)
 		}
 		if flusher != nil {
 			flusher.Flush()

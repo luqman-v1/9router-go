@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
-	"net/http"
+	"9router/proxy/internal/log"
+		"net/http"
 	"strings"
 	"time"
 
@@ -74,7 +74,7 @@ func (h *ChatHandler) HandleOAuthImport(w http.ResponseWriter, r *http.Request) 
 
 	data, err := json.Marshal(dataFields)
 	if err != nil {
-		log.Printf("[oauth] failed to marshal import data for %s: %v", provider, err)
+		log.Error("oauth", "marshal import data failed", "provider", provider, "error", err)
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to process connection data")
 		return
 	}
@@ -167,7 +167,7 @@ func (h *ChatHandler) HandleOAuthKiroSocialExchange(w http.ResponseWriter, r *ht
 
 	var tokenData map[string]any
 	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenData); err != nil {
-		log.Printf("[oauth] failed to decode token response: %v", err)
+		log.Error("oauth", "decode token response failed", "error", err)
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to decode token response")
 		return
 	}
@@ -185,14 +185,14 @@ func (h *ChatHandler) HandleOAuthKiroSocialExchange(w http.ResponseWriter, r *ht
 		}
 		data, err := json.Marshal(dataMap)
 		if err != nil {
-			log.Printf("[oauth] failed to marshal Kiro social data: %v", err)
+			log.Error("oauth", "marshal Kiro social data failed", "error", err)
 		} else {
 			now := currentTimestamp()
 			if _, err := h.Repo.RawDB().Exec(
 				`INSERT INTO providerConnections (id, provider, authType, name, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'oauth', ?, 1, ?, ?, ?)`,
 				connID, "kiro", "Kiro Social", string(data), now, now,
 			); err != nil {
-				log.Printf("[oauth] failed to save Kiro social connection: %v", err)
+				log.Error("oauth", "save Kiro social connection failed", "error", err)
 			}
 		}
 		tokenData["id"] = connID
@@ -234,7 +234,7 @@ func (h *ChatHandler) HandleOAuthCodexBulkImport(w http.ResponseWriter, r *http.
 		connID := fmt.Sprintf("codex-bulk-%d", len(t.AccessToken)%10000)
 		data, err := json.Marshal(map[string]string{"accessToken": t.AccessToken})
 		if err != nil {
-			log.Printf("[oauth] failed to marshal Codex bulk import data: %v", err)
+			log.Error("oauth", "marshal Codex bulk import failed", "error", err)
 			continue
 		}
 		now := currentTimestamp()

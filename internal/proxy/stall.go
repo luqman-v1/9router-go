@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"io"
-	"log"
+	"9router/proxy/internal/log"
 	"sync"
 	"time"
 )
@@ -34,7 +34,7 @@ func NewStallReader(rc io.ReadCloser, timeout time.Duration, label string) io.Re
 		timeout: timeout,
 	}
 	s.timer = time.AfterFunc(timeout, func() {
-		log.Printf("[stream] stall detected for %s: no data for %v", label, timeout)
+		log.Warn("stream", "stall detected", "label", label, "timeout", timeout)
 		s.once.Do(func() { rc.Close() })
 	})
 	return s

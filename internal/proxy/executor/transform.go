@@ -3,7 +3,7 @@ package executor
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"9router/proxy/internal/log"
 	"strings"
 )
 
@@ -94,7 +94,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		Content json.RawMessage `json:"content"`
 	}
 	if err := json.Unmarshal(oreq.Messages, &messages); err != nil {
-		log.Printf("[buildResponsesBody] unmarshal messages: %v", err)
+		log.Warn("executor", "unmarshal messages", "error", err)
 	}
 
 	var inputItems []map[string]interface{}
@@ -147,7 +147,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			text := ExtractSimpleText(msg.Content)
 			var toolCallID string
 			if err := json.Unmarshal(msg.Content, &toolCallID); err != nil {
-				log.Printf("[buildResponsesBody] unmarshal tool_call_id: %v", err)
+				log.Warn("executor", "unmarshal tool call id", "error", err)
 			}
 			inputItems = append(inputItems, map[string]interface{}{
 				"type":    "function_call_output",
@@ -192,7 +192,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 						Parameters  json.RawMessage `json:"parameters"`
 					}
 					if err := json.Unmarshal(t.Function, &fn); err != nil {
-						log.Printf("[buildResponsesBody] unmarshal tool function: %v", err)
+						log.Warn("executor", "unmarshal tool function", "error", err)
 					}
 					tool["name"] = fn.Name
 					if fn.Description != "" {

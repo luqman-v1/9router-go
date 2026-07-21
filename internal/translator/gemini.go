@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
-	"strings"
+	"9router/proxy/internal/log"
+		"strings"
 	"time"
 )
 
@@ -672,11 +672,11 @@ func UnwrapAntigravityResponse(raw []byte) []byte {
 		Response json.RawMessage `json:"response"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		log.Printf("unmarshal antigravity envelope failed: %v", err)
+		log.Warn("translator", "unmarshal envelope failed", "error", err)
 		return raw // passthrough on failure
 	}
 	if len(envelope.Response) == 0 {
-		log.Printf("antigravity envelope has empty response field")
+		log.Warn("translator", "empty envelope response")
 		return raw // passthrough on failure
 	}
 	return []byte(envelope.Response)

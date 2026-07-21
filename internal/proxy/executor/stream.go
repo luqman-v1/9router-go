@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"9router/proxy/internal/log"
 	"net/http"
 	"strings"
 	"time"
@@ -201,7 +201,7 @@ type kiroStreamState struct {
 func writeSSE(w io.Writer, data interface{}) {
 	b, err := json.Marshal(data)
 	if err != nil {
-		log.Printf("[executor] writeSSE marshal error: %v", err)
+		log.Error("executor", "writeSSE marshal error", "error", err)
 		return
 	}
 	w.Write([]byte(fmt.Sprintf("data: %s\n\n", string(b))))
@@ -226,7 +226,7 @@ func handleKiroStream(w http.ResponseWriter, upstream io.Reader) error {
 	for {
 		frame, err := esr.ReadFrame()
 		if err != nil {
-			log.Printf("[kiro] eventstream error: %v", err)
+			log.Error("executor", "kiro eventstream error", "error", err)
 			readErr = err
 			break
 		}
@@ -608,12 +608,12 @@ func ProcessCommandcodeEvent(event map[string]interface{}, eventType string, sta
 			if len(usage) > 0 {
 				var parsed map[string]interface{}
 				if err := json.Unmarshal([]byte(chunk), &parsed); err != nil {
-					log.Printf("[commandcode] unmarshal chunk for usage: %v", err)
+					log.Warn("executor", "commandcode unmarshal chunk", "error", err)
 				} else {
 					parsed["usage"] = usage
 					b, marshalErr := json.Marshal(parsed)
 					if marshalErr != nil {
-						log.Printf("[commandcode] marshal chunk with usage: %v", marshalErr)
+						log.Warn("executor", "commandcode marshal chunk", "error", marshalErr)
 					} else {
 						chunk = string(b)
 					}

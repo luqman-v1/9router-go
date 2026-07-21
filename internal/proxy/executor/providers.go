@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"9router/proxy/internal/log"
 	"net/http"
 	"os"
 	"strconv"
@@ -142,7 +142,7 @@ func ForwardAzure(w http.ResponseWriter, req *Request) error {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(req.Body, &oreq); err != nil {
-		log.Printf("[azure] unmarshal request body for model: %v", err)
+		log.Warn("executor", "azure unmarshal body", "error", err)
 	}
 	modelName := oreq.Model
 	if modelName == "" {
@@ -202,7 +202,7 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(req.Body, &oreq); err != nil {
-		log.Printf("[commandcode] unmarshal request body for model: %v", err)
+		log.Warn("executor", "commandcode unmarshal body", "error", err)
 	}
 
 	// Force stream=true — commandcode always uses NDJSON
@@ -289,7 +289,7 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(body, &reqObj); err != nil {
-		log.Printf("[opencode-go] unmarshal body for model: %v", err)
+		log.Warn("executor", "opencode unmarshal body", "error", err)
 	}
 
 	if opencodeGoMessagesModels[reqObj.Model] {

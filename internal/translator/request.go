@@ -3,8 +3,8 @@ package translator
 import (
 	"encoding/json"
 	"fmt"
-	"log"
-	"regexp"
+	"9router/proxy/internal/log"
+		"regexp"
 	"strings"
 )
 
@@ -36,7 +36,7 @@ func parseSystemPrompt(systemRaw json.RawMessage) string {
 		return strings.Join(parts, "\n")
 	}
 
-	log.Printf("[translator] parseSystemPrompt: both string and block unmarshal failed")
+	log.Warn("translator", "parse system prompt failed")
 	return ""
 }
 
@@ -271,7 +271,7 @@ func convertToolChoice(choiceRaw *json.RawMessage) any {
 			}
 		}
 	}
-	log.Printf("[translator] convertToolChoice: both string and object unmarshal failed for %s", string(*choiceRaw))
+	log.Warn("translator", "convert tool choice failed", "raw", string(*choiceRaw))
 	return "auto"
 }
 

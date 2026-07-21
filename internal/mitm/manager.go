@@ -2,8 +2,8 @@ package mitm
 
 import (
 	"fmt"
-	"log"
-	"os"
+	"9router/proxy/internal/log"
+		"os"
 	"path/filepath"
 )
 
@@ -26,13 +26,13 @@ func (m *Manager) Enable() error {
 	}
 
 	// 1. Install DNS entries (redirect domains to localhost)
-	log.Printf("[mitm] adding DNS entries...")
+	log.Info("mitm", "adding DNS entries")
 	if err := AddHostsEntries(); err != nil {
 		return fmt.Errorf("DNS entries: %w (try: sudo %s)", err, os.Args[0])
 	}
 
 	// 2. Ensure CA cert exists
-	log.Printf("[mitm] ensuring root CA...")
+	log.Info("mitm", "ensuring root CA")
 	server, err := NewServer(m.baseDir)
 	if err != nil {
 		RemoveHostsEntries()
@@ -40,14 +40,14 @@ func (m *Manager) Enable() error {
 	}
 
 	// 3. Start TLS server
-	log.Printf("[mitm] starting TLS proxy on :443...")
+	log.Info("mitm", "starting TLS proxy")
 	if err := server.Start(); err != nil {
 		RemoveHostsEntries()
 		return fmt.Errorf("server start: %w", err)
 	}
 
 	m.server = server
-	log.Printf("[mitm] MITM proxy enabled — intercepting %d domains", len(AllDomains()))
+	log.Info("mitm", "MITM proxy enabled", "domains", len(AllDomains()))
 	return nil
 }
 
@@ -63,7 +63,7 @@ func (m *Manager) Disable() error {
 	}
 
 	// Note: root CA cert stays installed (removing would break existing TLS sessions)
-	log.Printf("[mitm] MITM proxy disabled")
+	log.Info("mitm", "MITM proxy disabled")
 	return nil
 }
 
@@ -105,7 +105,7 @@ func ConfigFilePath(baseDir string) string {
 func LogDir(baseDir string) string {
 	d := filepath.Join(MITMDir(baseDir), "logs")
 	if err := os.MkdirAll(d, 0700); err != nil {
-		log.Printf("[mitm] warning: could not create log dir %s: %v", d, err)
+		log.Warn("mitm", "create log dir failed", "dir", d, "error", err)
 	}
 	return d
 }

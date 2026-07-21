@@ -3,7 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"9router/proxy/internal/log"
 	"strings"
 
 	"9router/proxy/internal/constants"
@@ -17,7 +17,7 @@ import (
 // When connectionID is non-empty, it fetches that specific connection directly.
 func (h *ChatHandler) getBestConnection(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
 	if model != "" && !db.IsProviderHealthy(h.Repo.RawDB(), provider, model) {
-		log.Printf("[health] warning: provider %s/%s is unhealthy, proceeding anyway", provider, model)
+		log.Warn("health", "unhealthy provider", "provider", provider, "model", model)
 	}
 
 	var conn *models.ProviderConnection

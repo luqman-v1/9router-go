@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"log"
+	"9router/proxy/internal/log"
 	"net/http"
 	"strings"
 	"time"
@@ -23,12 +23,12 @@ var lcaMetadata = map[string]any{
 func fetchAntigravityProjectID(client *http.Client, accessToken string) string {
 	payload, err := json.Marshal(map[string]any{"metadata": lcaMetadata})
 	if err != nil {
-		log.Printf("[antigravity_project] failed to marshal loadCodeAssist payload: %v", err)
+		log.Error("antigravity", "loadCodeAssist marshal failed", "error", err)
 		return ""
 	}
 	req, err := http.NewRequest("POST", loadCodeAssistURL, bytes.NewReader(payload))
 	if err != nil {
-		log.Printf("[antigravity_project] failed to create loadCodeAssist request: %v", err)
+		log.Error("antigravity", "loadCodeAssist request failed", "error", err)
 		return ""
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -38,30 +38,30 @@ func fetchAntigravityProjectID(client *http.Client, accessToken string) string {
 	
 	clientMetadata, err := json.Marshal(lcaMetadata)
 	if err != nil {
-		log.Printf("[antigravity_project] failed to marshal client metadata: %v", err)
+		log.Error("antigravity", "marshal metadata failed", "error", err)
 		return ""
 	}
 	req.Header.Set("Client-Metadata", string(clientMetadata))
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[antigravity_project] HTTP error on loadCodeAssist: %v", err)
+		log.Error("antigravity", "loadCodeAssist HTTP error", "error", err)
 		return ""
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("[antigravity_project] failed to read loadCodeAssist body: %v", err)
+		log.Error("antigravity", "loadCodeAssist read failed", "error", err)
 		return ""
 	}
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[antigravity_project] loadCodeAssist returned %d: %s", resp.StatusCode, string(body))
+		log.Warn("antigravity", "loadCodeAssist returned", "status", resp.StatusCode)
 	}
 
 	var data map[string]any
 	if err := json.Unmarshal(body, &data); err != nil {
-		log.Printf("[antigravity_project] JSON unmarshal error: %v", err)
+		log.Error("antigravity", "unmarshal error", "error", err)
 		return ""
 	}
 
@@ -95,13 +95,13 @@ func onboardAntigravityUser(client *http.Client, accessToken, tierID string) str
 			"metadata": lcaMetadata,
 		})
 		if err != nil {
-			log.Printf("[antigravity_project] failed to marshal onboardUser payload: %v", err)
+			log.Error("antigravity", "onboardUser marshal failed", "error", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
 		req, err := http.NewRequest("POST", onboardUserURL, bytes.NewReader(payload))
 		if err != nil {
-			log.Printf("[antigravity_project] failed to create onboardUser request: %v", err)
+			log.Error("antigravity", "onboardUser request failed", "error", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -112,7 +112,7 @@ func onboardAntigravityUser(client *http.Client, accessToken, tierID string) str
 		
 		clientMetadata, err := json.Marshal(lcaMetadata)
 		if err != nil {
-			log.Printf("[antigravity_project] failed to marshal client metadata: %v", err)
+			log.Error("antigravity", "marshal metadata failed", "error", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -120,7 +120,7 @@ func onboardAntigravityUser(client *http.Client, accessToken, tierID string) str
 
 		resp, err := client.Do(req)
 		if err != nil {
-			log.Printf("[antigravity_project] HTTP error on onboardUser attempt %d: %v", attempt, err)
+			log.Error("antigravity", "onboardUser HTTP error", "attempt", attempt, "error", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -128,18 +128,18 @@ func onboardAntigravityUser(client *http.Client, accessToken, tierID string) str
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			log.Printf("[antigravity_project] failed to read onboardUser body: %v", err)
+			log.Error("antigravity", "onboardUser read failed", "error", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			log.Printf("[antigravity_project] onboardUser returned %d: %s", resp.StatusCode, string(body))
+			log.Warn("antigravity", "onboardUser returned", "status", resp.StatusCode)
 		}
 
 		var data map[string]any
 		if err := json.Unmarshal(body, &data); err != nil {
-			log.Printf("[antigravity_project] failed to unmarshal onboardUser response: %v", err)
+			log.Error("antigravity", "onboardUser unmarshal failed", "error", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}

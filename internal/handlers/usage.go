@@ -3,8 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
-	"log"
-	"strings"
+	"9router/proxy/internal/log"
+		"strings"
 	"time"
 
 	"9router/proxy/internal/constants"
@@ -18,11 +18,11 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 	cost := pricing.EstimateCost(info.Model, usage.PromptTokens, usage.CompletionTokens)
 	metaJSON := fmt.Sprintf(`{"provider":"%s","model":"%s","connectionId":"%s"}`, info.Provider, info.Model, info.ConnectionID)
 
-	log.Printf("[usage] provider=%s model=%s prompt=%d completion=%d cached=%d cost=%.4f", info.Provider, info.Model, usage.PromptTokens, usage.CompletionTokens, usage.CachedTokens, cost)
+	log.Info("usage", "logged", "provider", info.Provider, "model", info.Model, "prompt", usage.PromptTokens, "completion", usage.CompletionTokens, "cached", usage.CachedTokens, "cost", cost)
 
 	tokensJSON := fmt.Sprintf(`{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d,"cached_tokens":%d,"cache_creation_input_tokens":0}`, usage.PromptTokens, usage.CompletionTokens, totalTokens, usage.CachedTokens)
 	if err := h.Repo.InsertUsageHistory(info.Provider, info.Model, info.ConnectionID, maskAPIKey(info.APIKey), info.Endpoint, usage.PromptTokens, usage.CompletionTokens, cost, "success", totalTokens, metaJSON, tokensJSON); err != nil {
-		log.Printf("[error] component=usage err=\"insert: %v\"", err)
+		log.Error("usage", "insert failed", "error", err)
 	}
 
 	now := time.Now().UTC()
@@ -50,11 +50,11 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 		"response": map[string]any{"content": respContent},
 	})
 	if err != nil {
-		log.Printf("[usage] failed to marshal request detail data: %v", err)
+		log.Error("usage", "marshal request detail failed", "error", err)
 		return
 	}
 	if err := h.Repo.InsertRequestDetail(reqID, info.Provider, info.Model, info.ConnectionID, "success", string(reqData)); err != nil {
-		log.Printf("[error] component=request-detail err=\"insert: %v\"", err)
+		log.Error("usage", "insert request detail failed", "error", err)
 	}
 
 	h.upsertDailyUsage(info.Provider, info.Model, info.Endpoint, info.ConnectionID, usage.PromptTokens, usage.CompletionTokens, usage.CachedTokens, cost)
@@ -205,11 +205,11 @@ func (h *ChatHandler) upsertDailyUsage(provider, model, endpoint, connectionID s
 
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
-		log.Printf("[usage] failed to marshal daily usage: %v", err)
+		log.Error("usage", "marshal daily usage failed", "error", err)
 		return
 	}
 	if err := h.Repo.UpsertUsageDaily(dateKey, string(dataJSON)); err != nil {
-		log.Printf("[usage] failed to upsert daily usage: %v", err)
+		log.Error("usage", "upsert daily usage failed", "error", err)
 	}
 }
 

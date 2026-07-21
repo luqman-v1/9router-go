@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
-	"net/http"
+	"9router/proxy/internal/log"
+		"net/http"
 	"strings"
 	"time"
 
@@ -90,7 +90,7 @@ func (h *ChatHandler) handleSingleModel(w http.ResponseWriter, body []byte, mode
 func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Printf("[error] component=messages err=\"read body: %v\"", err)
+		log.Error("chat", "read body failed", "error", err)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
@@ -101,7 +101,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		Stream bool   `json:"stream"`
 	}
 	if err := json.Unmarshal(body, &reqBody); err != nil {
-		log.Printf("[error] component=messages err=\"parse JSON: %v\"", err)
+		log.Error("chat", "parse JSON failed", "error", err)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -113,7 +113,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
-		log.Printf("[error] component=messages err=\"resolve model: %v\" model=%s", err, reqBody.Model)
+		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -129,12 +129,12 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	} else {
 		openaiBody, err := translator.TranslateClaudeToOpenAI(body)
 		if err != nil {
-			log.Printf("[error] component=messages err=\"translate: %v\"", err)
+			log.Error("chat", "translate failed", "error", err)
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, fmt.Sprintf("translation error: %v", err))
 			return
 		}
 		if err := json.Unmarshal(openaiBody, &workingBody); err != nil {
-			log.Printf("[error] component=messages err=\"parse translated: %v\"", err)
+			log.Error("chat", "parse translated failed", "error", err)
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to parse translated request")
 			return
 		}
@@ -533,7 +533,7 @@ func (h *ChatHandler) HandleResponsesCompact(w http.ResponseWriter, r *http.Requ
 	m["_compact"] = true
 	body, err = json.Marshal(m)
 	if err != nil {
-		log.Printf("[chat] failed to marshal compact request body: %v", err)
+		log.Error("chat", "marshal compact body failed", "error", err)
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to process request")
 		return
 	}

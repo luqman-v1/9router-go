@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"9router/proxy/internal/log"
 	"net/http"
 	"strings"
 	"time"
@@ -70,15 +70,15 @@ func geminiStream(w http.ResponseWriter, upstream io.Reader, translateResponse b
 		openaiChunk, err := translator.TranslateGeminiChunkToOpenAI([]byte(dataStr), state)
 		if err != nil || openaiChunk == nil {
 			if err != nil {
-				log.Printf("[gemini_stream] translate error: %v", err)
+				log.Error("gemini", "translate error", "error", err)
 			}
 			return
 		}
 		if _, werr := w.Write(openaiChunk); werr != nil {
-			log.Printf("[gemini_stream] write chunk: %v", werr)
+			log.Error("gemini", "write chunk error", "error", werr)
 		}
 		if _, werr := w.Write([]byte("\n\n")); werr != nil {
-			log.Printf("[gemini_stream] write separator: %v", werr)
+			log.Error("gemini", "write separator error", "error", werr)
 		}
 		if flusher != nil {
 			flusher.Flush()

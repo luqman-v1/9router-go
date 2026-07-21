@@ -2,7 +2,7 @@ package middleware
 
 import (
 	"context"
-	"log"
+	"9router/proxy/internal/log"
 	"net/http"
 	"strings"
 
@@ -32,7 +32,7 @@ func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 			// Validate via SQLite repository and retrieve details
 			apiKeyObj, err := repo.GetApiKeyByKey(apiKeyString)
 			if err != nil {
-				log.Printf("[auth] DB error looking up API key: %v", err)
+				log.Error("auth", "DB lookup error", "error", err)
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, "Internal server error")
 				return
 			}

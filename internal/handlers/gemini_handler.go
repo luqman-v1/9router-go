@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"9router/proxy/internal/log"
 	"net/http"
 	"strings"
 	"time"
@@ -33,7 +33,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(body, &reqMeta); err != nil {
-		log.Printf("[gemini] failed to parse model from request body: %v", err)
+		log.Warn("gemini", "parse model failed", "error", err)
 	}
 	modelName := reqMeta.Model
 	if modelName == "" {
@@ -44,7 +44,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	var projectID string
 	refreshedKey, pid, err := h.refreshOAuthTokenIfExpired(connectionID, apiKey)
 	if err != nil {
-		log.Printf("[gemini] WARNING: token refresh error for connection %s: %v (continuing with existing/stale token)", connectionID, err)
+		log.Warn("gemini", "token refresh error", "conn", connectionID, "error", err)
 	} else {
 		apiKey = refreshedKey
 		projectID = pid
@@ -55,12 +55,12 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 			projectID = pid
 			go func() {
 				if _, err := h.Repo.RawDB().Exec("UPDATE providerConnections SET data = json_set(data, '$.projectId', ?) WHERE id = ?", pid, connectionID); err != nil {
-					log.Printf("[gemini] failed to update projectId for connection %s: %v", connectionID, err)
+					log.Warn("gemini", "update projectId failed", "conn", connectionID, "error", err)
 				}
 			}()
 		} else {
 			// Access token might be invalid/expired, force refresh OAuth token and retry
-			log.Printf("[gemini] fetchAntigravityProjectID failed with current token, force refreshing OAuth token for connection %s...", connectionID)
+			log.Info("gemini", "force refresh OAuth token", "conn", connectionID)
 			refreshedKey, pid2, err2 := h.forceRefreshOAuthToken(connectionID)
 			if err2 == nil && refreshedKey != "" {
 				apiKey = refreshedKey
@@ -70,7 +70,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 					projectID = pid
 					go func() {
 					if _, err := h.Repo.RawDB().Exec("UPDATE providerConnections SET data = json_set(data, '$.projectId', ?) WHERE id = ?", pid, connectionID); err != nil {
-						log.Printf("[gemini] failed to update projectId for connection %s: %v", connectionID, err)
+						log.Warn("gemini", "update projectId failed", "conn", connectionID, "error", err)
 					}
 				}()
 				}
@@ -80,7 +80,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 
 	if projectID == "" {
 		// Fallback to OpenAI compatibility endpoint if project ID is missing
-		log.Printf("[gemini] projectID missing for %s, falling back to OpenAI format", provider)
+		log.Info("gemini", "no projectID, fallback to OpenAI", "provider", provider)
 		return h.forwardRequest(w, cfg, apiKey, body, isStream, translateResponse, metrics)
 	}
 
@@ -96,7 +96,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		raw, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			log.Printf("[gemini] failed to read non-stream response body: %v", err)
+			log.Error("gemini", "read response body failed", "error", err)
 			return fmt.Errorf("read gemini response body: %w", err)
 		}
 		unwrapped := translator.UnwrapAntigravityResponse(raw)
@@ -143,7 +143,7 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 
 	// Try per-provider OAuth refresher first
 	if refresher := oauth.Get(provider); refresher != nil {
-		log.Printf("[oauth] token expired for %s/%s, using custom refresher...", provider, projectID)
+		log.Info("oauth", "token expired, custom refresh", "provider", provider, "project", projectID)
 		result, err := refresher(&oauth.Params{
 			Client:       h.Client,
 			Provider:     provider,
@@ -156,7 +156,7 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		update := oauth.BuildConnectionUpdate(result)
 		var existing map[string]interface{}
 		if err := json.Unmarshal([]byte(rawData), &existing); err != nil {
-			log.Printf("[oauth] failed to unmarshal existing connection data for %s: %v", connectionID, err)
+			log.Error("oauth", "unmarshal connection data failed", "conn", connectionID, "error", err)
 			existing = make(map[string]interface{})
 		}
 		for k, v := range update {
@@ -167,12 +167,12 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		}
 		mergedJSON, err := json.Marshal(existing)
 		if err != nil {
-			log.Printf("[oauth] failed to marshal updated connection data for %s: %v", connectionID, err)
+			log.Error("oauth", "marshal connection data failed", "conn", connectionID, "error", err)
 		} else {
 			db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 				string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
 		}
-		log.Printf("[oauth] token refreshed for %s/%s", provider, result.ProjectID)
+		log.Info("oauth", "token refreshed", "provider", provider, "project", result.ProjectID)
 		return result.AccessToken, result.ProjectID, nil
 	}
 
@@ -182,7 +182,7 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		return currentToken, projectID, nil
 	}
 
-	log.Printf("[oauth] token expired for %s/%s, refreshing (standard)...", provider, projectID)
+	log.Info("oauth", "token expired, standard refresh", "provider", provider, "project", projectID)
 	tokenResp, err := providers.RefreshToken(cfg, oauthData.RefreshToken)
 	if err != nil {
 		return currentToken, projectID, fmt.Errorf("OAuth refresh for %s: %w", provider, err)
@@ -191,7 +191,7 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 	update := tokenResp.BuildConnectionUpdate()
 	var existing map[string]interface{}
 	if err := json.Unmarshal([]byte(rawData), &existing); err != nil {
-		log.Printf("[oauth] failed to unmarshal existing connection data for %s: %v", connectionID, err)
+		log.Error("oauth", "unmarshal connection data failed", "conn", connectionID, "error", err)
 		existing = make(map[string]interface{})
 	}
 	for k, v := range update {
@@ -199,13 +199,13 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 	}
 	mergedJSON, err := json.Marshal(existing)
 	if err != nil {
-		log.Printf("[oauth] failed to marshal updated connection data for %s: %v", connectionID, err)
+		log.Error("oauth", "marshal connection data failed", "conn", connectionID, "error", err)
 	} else {
 		db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 			string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
 	}
 
-	log.Printf("[oauth] token refreshed for %s/%s", provider, projectID)
+	log.Info("oauth", "token refreshed", "provider", provider, "project", projectID)
 	return tokenResp.AccessToken, projectID, nil
 }
 
@@ -235,7 +235,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 
 	// Try per-provider OAuth refresher first
 	if refresher := oauth.Get(provider); refresher != nil {
-		log.Printf("[oauth] force refreshing token for %s...", provider)
+		log.Info("oauth", "force refresh", "provider", provider)
 		result, err := refresher(&oauth.Params{
 			Client:       h.Client,
 			Provider:     provider,
@@ -244,7 +244,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 		if err == nil && result != nil {
 			var existing map[string]interface{}
 			if err := json.Unmarshal([]byte(rawData), &existing); err != nil {
-				log.Printf("[oauth] failed to unmarshal connection data for %s: %v", connectionID, err)
+				log.Error("oauth", "unmarshal conn data failed", "conn", connectionID, "error", err)
 				existing = make(map[string]interface{})
 			}
 			existing["accessToken"] = result.AccessToken
@@ -254,7 +254,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 			existing["expiresAt"] = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).Format(time.RFC3339)
 			mergedJSON, err := json.Marshal(existing)
 			if err != nil {
-				log.Printf("[oauth] failed to marshal connection data for %s: %v", connectionID, err)
+				log.Error("oauth", "marshal conn data failed", "conn", connectionID, "error", err)
 			} else {
 				db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 					string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
@@ -269,7 +269,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 		return "", "", fmt.Errorf("no OAuth config for %s", provider)
 	}
 
-	log.Printf("[oauth] force refreshing token for %s (standard)...", provider)
+	log.Info("oauth", "force refresh (standard)", "provider", provider)
 	tokenResp, err := providers.RefreshToken(cfg, oauthData.RefreshToken)
 	if err != nil {
 		return "", "", fmt.Errorf("OAuth refresh for %s: %w", provider, err)
@@ -278,7 +278,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 	update := tokenResp.BuildConnectionUpdate()
 	var existing map[string]interface{}
 	if err := json.Unmarshal([]byte(rawData), &existing); err != nil {
-		log.Printf("[oauth] failed to unmarshal connection data for %s: %v", connectionID, err)
+		log.Error("oauth", "unmarshal conn data failed", "conn", connectionID, "error", err)
 		existing = make(map[string]interface{})
 	}
 	for k, v := range update {
@@ -286,7 +286,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 	}
 	mergedJSON, err := json.Marshal(existing)
 	if err != nil {
-		log.Printf("[oauth] failed to marshal connection data for %s: %v", connectionID, err)
+		log.Error("oauth", "marshal conn data failed", "conn", connectionID, "error", err)
 	} else {
 		db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 			string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
@@ -318,7 +318,7 @@ func (h *ChatHandler) handleGeminiStream(w http.ResponseWriter, upstream io.Read
 		// Translate each Gemini SSE chunk to OpenAI SSE chunk
 		openaiChunk, err := translator.TranslateGeminiChunkToOpenAI(unwrapped, geminiState)
 		if err != nil {
-			log.Printf("[gemini_stream_error] TranslateGeminiChunkToOpenAI error: %v", err)
+			log.Error("gemini", "chunk translate error", "error", err)
 			return
 		}
 		if openaiChunk == nil {
@@ -334,7 +334,7 @@ func (h *ChatHandler) handleGeminiStream(w http.ResponseWriter, upstream io.Read
 			// Translate OpenAI → Claude (Anthropic) format
 			claudeChunk, tErr := translator.TranslateOpenAIToClaudeStream(openaiChunk)
 			if tErr != nil {
-				log.Printf("[gemini_claude_stream_error] TranslateOpenAIToClaudeStream error: %v | openaiChunk: %s", tErr, string(openaiChunk))
+				log.Error("gemini", "claude translate error", "error", tErr)
 				return
 			}
 			if claudeChunk == nil {

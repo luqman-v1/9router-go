@@ -8,8 +8,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-	"log"
-	"net"
+	"9router/proxy/internal/log"
+		"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -103,7 +103,7 @@ func (s *Server) Start() error {
 
 	go s.acceptLoop()
 
-	log.Printf("[mitm] TLS proxy listening on :443")
+	log.Info("mitm", "TLS proxy listening")
 	return nil
 }
 
@@ -114,7 +114,7 @@ func (s *Server) acceptLoop() {
 			if !s.running {
 				return
 			}
-			log.Printf("[mitm] accept error: %v", err)
+			log.Error("mitm", "accept error", "error", err)
 			continue
 		}
 		go s.handleConn(conn)

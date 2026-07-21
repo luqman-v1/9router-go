@@ -3,7 +3,7 @@ package executor
 import (
 	"fmt"
 	"io"
-	"log"
+	"9router/proxy/internal/log"
 	"net/http"
 	"time"
 
@@ -42,7 +42,7 @@ func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 	return proxy.ScanStream(upstream, func(chunk []byte) {
 		translated, err := translator.TranslateOpenAIToClaudeStream(chunk)
 		if err != nil {
-			log.Printf("[executor] TranslateOpenAIToClaudeStream error: %v", err)
+			log.Error("executor", "translate error", "error", err)
 			return
 		}
 		if translated == nil {
@@ -68,7 +68,7 @@ func jsonResponse(w http.ResponseWriter, upstream io.Reader, translate bool) err
 			translator.SetLastUsage(usage)
 		}
 		if err != nil || translated == nil {
-			log.Printf("[executor] TranslateOpenAIToClaude error: %v", err)
+			log.Error("executor", "json translate error", "error", err)
 			// Fall back to original response
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)

@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
-	"math/rand"
+	"9router/proxy/internal/log"
+		"math/rand"
 	"net/http"
 	"os"
 	"strings"
@@ -206,7 +206,7 @@ func injectMimoMarker(body []byte) []byte {
 
 	patched, err := json.Marshal(req)
 	if err != nil {
-		log.Printf("[mimo] failed to marshal patched request with marker: %v", err)
+		log.Error("mimo", "marshal patched request failed", "error", err)
 		return body
 	}
 	return patched

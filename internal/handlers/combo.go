@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"9router/proxy/internal/log"
 	"net/http"
 	"sort"
 	"strings"
@@ -250,7 +250,7 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 	if required := detectRequiredCapabilities(body); len(required) > 0 {
 		reordered := reorderByCapabilities(comboModels, required)
 		if reordered[0] != comboModels[0] {
-			log.Printf("[combo] auto-switch for [%v] → %s", keysString(required), reordered[0])
+			log.Info("combo", "auto-switch", "caps", keysString(required), "model", reordered[0])
 		}
 		models = reordered
 	}
@@ -265,7 +265,7 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 
 		// Skip unhealthy or locked models
 		if !db.IsProviderHealthy(h.Repo.RawDB(), modelInfo.Provider, modelInfo.Model) {
-			log.Printf("[combo] skip %s/%s: unhealthy (>=5 consecutive errors)", modelInfo.Provider, modelInfo.Model)
+			log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
 			continue
 		}
 
@@ -313,11 +313,11 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 					classification := providers.ClassifyError(ue.StatusCode, errorText, 0)
 					if classification.CooldownMs > 0 && classification.CooldownMs <= 5000 {
 						cooldown := time.Duration(classification.CooldownMs) * time.Millisecond
-						log.Printf("[combo] transient %d from %s, waiting %v before next", ue.StatusCode, modelInfo.Provider, cooldown)
+						log.Info("combo", "transient wait", "status", ue.StatusCode, "provider", modelInfo.Provider, "duration", cooldown)
 						time.Sleep(cooldown)
 					} else {
 						// Cooldown >5s (e.g. "no credentials"): fall through immediately
-						log.Printf("[combo] transient %d from %s, cooldown %dms >5s, skipping wait", ue.StatusCode, modelInfo.Provider, classification.CooldownMs)
+						log.Info("combo", "transient skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "cooldownMs", classification.CooldownMs)
 				}
 				}
 				// Track earliest retryAfter across combo models
@@ -391,7 +391,7 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 
 		// Skip unhealthy or locked models
 		if !db.IsProviderHealthy(h.Repo.RawDB(), modelInfo.Provider, modelInfo.Model) {
-			log.Printf("[combo] skip %s/%s: unhealthy (>=5 consecutive errors)", modelInfo.Provider, modelInfo.Model)
+			log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
 			continue
 		}
 
@@ -433,11 +433,11 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 					classification := providers.ClassifyError(ue.StatusCode, errorText, 0)
 					if classification.CooldownMs > 0 && classification.CooldownMs <= 5000 {
 						cooldown := time.Duration(classification.CooldownMs) * time.Millisecond
-						log.Printf("[combo] transient %d from %s, waiting %v before next", ue.StatusCode, modelInfo.Provider, cooldown)
+						log.Info("combo", "transient wait", "status", ue.StatusCode, "provider", modelInfo.Provider, "duration", cooldown)
 						time.Sleep(cooldown)
 					} else {
 						// Cooldown >5s (e.g. "no credentials"): fall through immediately
-						log.Printf("[combo] transient %d from %s, cooldown %dms >5s, skipping wait", ue.StatusCode, modelInfo.Provider, classification.CooldownMs)
+						log.Info("combo", "transient skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "cooldownMs", classification.CooldownMs)
 				}
 				}
 				// Track earliest retryAfter across combo models
@@ -734,7 +734,7 @@ func appendUserTurn(body []byte, content string) []byte {
 
 	b, err := json.Marshal(m)
 	if err != nil {
-		log.Printf("[combo] failed to marshal appendUserTurn body: %v", err)
+		log.Error("combo", "marshal appendUserTurn failed", "error", err)
 		return body
 	}
 	return b
@@ -809,7 +809,7 @@ func (h *ChatHandler) handleFusion(w http.ResponseWriter, body []byte, comboMode
 
 	var ub map[string]any
 	if err := json.Unmarshal(judgeBody, &ub); err != nil {
-		log.Printf("[fusion] failed to unmarshal judge body: %v", err)
+		log.Error("fusion", "unmarshal judge body failed", "error", err)
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to parse judge request")
 		return
 	}
@@ -821,7 +821,7 @@ func (h *ChatHandler) handleFusion(w http.ResponseWriter, body []byte, comboMode
 	}
 	judgeJSON, err := json.Marshal(ub)
 	if err != nil {
-		log.Printf("[fusion] failed to marshal judge request body: %v", err)
+		log.Error("combo", "marshal judge body failed", "error", err)
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal judge request")
 		return
 	}

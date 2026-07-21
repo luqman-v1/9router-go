@@ -3,7 +3,7 @@ package handlers
 import (
 	"fmt"
 	"io"
-	"log"
+	"9router/proxy/internal/log"
 	"net/http"
 	"strings"
 	"time"
@@ -38,7 +38,7 @@ func (h *ChatHandler) forwardRequest(
 		contentType := resp.Header.Get("Content-Type")
 		if !strings.HasPrefix(strings.ToLower(contentType), "text/event-stream") {
 			// Upstream returned non-streaming response (e.g. JSON error with 200 OK)
-			log.Printf("[stream_warning] upstream returned non-stream Content-Type: %s for stream request", contentType)
+			log.Warn("stream", "non-stream response", "contentType", contentType)
 			return h.handleJSONResponse(w, resp.Body, translateResponse)
 		}
 		// Wrap with SSE stall detection
@@ -64,7 +64,7 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 	return internalproxy.ScanStream(upstream, func(chunk []byte) {
 		translated, err := translator.TranslateOpenAIToClaudeStream(chunk)
 		if err != nil {
-			log.Printf("[stream_error] TranslateOpenAIToClaudeStream error: %v", err)
+			log.Error("stream", "translate error", "error", err)
 			return
 		}
 		if translated == nil {
@@ -104,7 +104,7 @@ func (h *ChatHandler) handleJSONResponse(w http.ResponseWriter, upstream io.Read
 		if err != nil {
 			errMsg = errMsg + ": " + err.Error()
 		}
-		log.Printf("[json_error] %s", errMsg)
+		log.Error("json", "translate error", "msg", errMsg)
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, errMsg)
 		return fmt.Errorf("%s", errMsg)
 	}

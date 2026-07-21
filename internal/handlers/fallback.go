@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"9router/proxy/internal/log"
 	"net/http"
 	"slices"
 	"strings"
@@ -33,12 +33,12 @@ func (h *ChatHandler) handleAccountFallback(
 		if err != nil {
 			return fmt.Errorf("pinned connection %s: %w", pinnedConnectionID, err)
 		}
-		log.Printf("[debug] fallback pinned: pinnedConnectionID=%q, connObj.ID=%q", pinnedConnectionID, connObj.ID)
+		log.Debug("fallback", "pinned", "pinnedConn", pinnedConnectionID, "connObj", connObj.ID)
 		return h.tryForwardWithConnection(w, provider, model, connObj.ID, connData, body, isStream, translateResponse, endpoint)
 	}
 
 	if !db.IsProviderHealthy(h.Repo.RawDB(), provider, model) {
-		log.Printf("[health] provider %s/%s is unhealthy (consecutive errors >= 5), skipping", provider, model)
+		log.Warn("fallback", "skip unhealthy", "provider", provider, "model", model)
 		return fmt.Errorf("provider %s/%s is unhealthy", provider, model)
 	}
 
@@ -73,7 +73,7 @@ func (h *ChatHandler) handleAccountFallback(
 				continue
 			}
 		}
-		log.Printf("[debug] fallback loop: conn.ID=%q, connObj.ID=%q", conn.ID, connObj.ID)
+		log.Debug("fallback", "connection", "conn", conn.ID, "connObj", connObj.ID)
 		lastErr = h.tryForwardWithConnection(w, provider, model, connObj.ID, connData, body, isStream, translateResponse, endpoint)
 		if lastErr == nil {
 			return nil
@@ -134,7 +134,7 @@ func (h *ChatHandler) tryForwardWithConnection(
 		if err == nil {
 			apiKey = rekey
 		} else {
-			log.Printf("[oauth] token refresh error for connection %s: %v (using existing token)", connectionID, err)
+			log.Warn("fallback", "OAuth token refresh error", "conn", connectionID, "error", err)
 		}
 	}
 
@@ -168,13 +168,13 @@ func (h *ChatHandler) tryForwardWithConnection(
 		}
 	}
 	if healthErr := db.RecordProviderHealth(h.Repo.RawDB(), provider, model, statusCode, latencyMs); healthErr != nil {
-		log.Printf("[health] failed to record health for %s/%s: %v", provider, model, healthErr)
+		log.Warn("health", "record failed", "provider", provider, "model", model, "error", healthErr)
 	}
 
 	if fwdErr == nil {
 		// Clear any existing model lock on success (matching Next.js clearAccountError)
 		if unlockErr := h.Repo.UnlockModel(provider, model); unlockErr != nil {
-			log.Printf("[fallback] failed to unlock %s/%s on success: %v", provider, model, unlockErr)
+			log.Warn("fallback", "unlock failed", "provider", provider, "model", model, "error", unlockErr)
 		}
 		usage := translator.GetAndClearLastUsage()
 		if usage == nil {
@@ -199,19 +199,19 @@ func (h *ChatHandler) applyTokenSavers(body []byte) []byte {
 	if h.TokenSaver.RTKEnabled() {
 		out, ok = tokensaver.CompressMessages(out)
 		if !ok {
-			log.Printf("[tokensaver] RTK compression failed")
+			log.Warn("tokensaver", "RTK compression failed")
 		}
 	}
 	if h.TokenSaver.CavemanEnabled() {
 		out, ok = tokensaver.InjectSystemPrompt(out, tokensaver.CavemanPrompt)
 		if !ok {
-			log.Printf("[tokensaver] Caveman injection failed")
+			log.Warn("tokensaver", "Caveman injection failed")
 		}
 	}
 	if h.TokenSaver.PonytailEnabled() {
 		out, ok = tokensaver.InjectSystemPrompt(out, tokensaver.PonytailPrompt)
 		if !ok {
-			log.Printf("[tokensaver] Ponytail injection failed")
+			log.Warn("tokensaver", "Ponytail injection failed")
 		}
 	}
 	return out
