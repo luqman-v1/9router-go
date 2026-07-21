@@ -12,33 +12,77 @@ High-performance Go proxy gateway for [9Router](https://github.com/decolua/9rout
 - **32K+ RPS** peak throughput (Go vs Next.js ~500 RPS)
 - **42 MB** memory footprint
 - SQLite WAL mode (shared with [9Router dashboard](https://github.com/decolua/9router))
-- OpenAI & Claude format support
-- SSE streaming with real-time translation
-- Combo fallback (multi-model retry)
+- OpenAI & Claude format support + real-time SSE translation
+- **Combo strategies**: sticky round-robin, round-robin, fallback, fusion (multi-panel + judge)
+- **Auto-capability-switch**: floats vision/pdf-capable models to front based on request content
+- **Error classification**: text-based error rules + exponential backoff (matching Next.js)
+- **Per-connection model locks**: DB-compatible with Next.js dashboard
+- **SSE stall detection**: 6-minute timeout with per-chunk reset
+- **Retry-after tracking**: earliest retry time across combo models
+- **Fusion**: parallel panel fan-out + quorum-grace collection + anonymized judge synthesis
+- **Health tracking**: per-model consecutive error counter
 - API key auth middleware
 - **Token savers**: RTK input compression, Caveman terse output, Ponytail minimal-code bias
+- Gemini-native provider support (antigravity)
 - CGO-free, cross-compile to any platform
 
 ## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   CLI Client    │────▶│   Go Proxy       │────▶│  Upstream LLM   │
-│  (Claude Code,  │     │  • Auth (SQLite) │     │  (OpenAI, etc.) │
-│   Codex, etc.)  │     │  • Model resolve │     │                 │
-└─────────────────┘     │  • Translation   │     └─────────────────┘
-                        │  • Combo fallback│
-                        │  • SSE streaming │
-                        └───────┬──────────┘
-                                │
-┌─────────────────┐     ┌───────▼──────────┐
-│   Dashboard     │────▶│  SQLite (WAL)    │
-│  [9Router](https://github.com/decolua/9router) │     └──────────────────┘
-│  • Providers    │
-│  • API Keys     │
-│  • Usage        │
-└─────────────────┘
+┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────┐
+│   CLI Client    │────▶│    Go Proxy           │────▶│  Upstream LLM   │
+│  (Claude Code,  │     │                       │     │  (OpenAI, etc.) │
+│   Codex, etc.)  │     │  • Auth (SQLite)      │     └─────────────────┘
+│                 │     │  • Model resolution   │
+│                 │     │  • Combo strategies   │
+│                 │     │    - sticky           │
+│                 │     │    - round-robin      │
+│                 │     │    - fallback         │
+│                 │     │    - fusion           │
+│                 │     │  • Auto-capability    │
+│                 │     │  • SSE streaming      │
+│                 │     │  • Stall detection    │
+│                 │     │  • Error klasifikasi  │
+│                 │     │  • Translation        │
+│                 │     └───────┬──────────┘
+│                             │
+└─────────────────────┐     ┌─▼──────────────────┐
+  │   Dashboard     │────▶│  SQLite (WAL)    │
+  │  [9Router]      │     └────────────────────┘
+  │  • Providers    │
+  │  • API Keys     │
+  │  • Usage        │
+  └─────────────────┘
 ```
+
+### Request Flow
+
+```
+Client → Auth → resolveModel() → [Combo?]
+    │                              │
+    │ Yes                          │ No
+    ▼                              ▼
+Combo Handler                 Single Model
+    │                              │
+    ├─ sticky/round-robin          │
+    ├─ fallback                    │
+    └─ fusion (parallel panel)     │
+    │                              │
+    ▼                              ▼
+detectRequiredCapabilities()
+    │
+    ▼
+tryForwardWithConnection()
+    │
+    ├─ Success → unlockModel + logUsage
+    └─ Error  → classifyError() → lockConnectionModel()
+                                       │
+                                  Fallback model?
+                                       │ Yes → retry next model
+                                       │ No  → error response
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed flow diagrams (combo, fusion, error classification, locking, SSE stall, etc.).
 
 ## Quick Start
 
@@ -49,12 +93,67 @@ go build -o 9router-go ./cmd/9router-go/
 # Run (standalone, no dashboard needed)
 PORT=20128 ./9router-go
 
-# Run with token savers enabled
-RTK_ENABLED=true CAVEMAN_ENABLED=true ./9router-go
-
 # Health check
 curl http://localhost:20128/health
 ```
+
+## Combo Strategies
+
+Combo models support multiple routing strategies, configurable per combo:
+
+| Strategy | Description |
+|----------|-------------|
+| **fallback** | Try models in order, skip on error (default) |
+| **round-robin** | Rotate starting index per request |
+| **sticky** | Round-robin with consecutive-use pinning; rotate after `stickyLimit` requests |
+| **fusion** | Fire all panel models in parallel → collect with quorum grace → judge synthesizes final answer |
+
+All strategies support **auto-capability-switch**: if the request body contains images or PDFs, capable models (OpenAI, Anthropic, Gemini, etc.) are floated to the front automatically.
+
+### Fusion
+
+Fusion runs multiple models as a panel in parallel:
+
+1. **Fan-out**: Send request to all panel models simultaneously (non-streaming)
+2. **CollectPanel**: Wait for quorum (`minPanel=2`), apply `stragglerGraceMs=8s`, hard timeout at `panelHardTimeoutMs=90s`
+3. **Degrade gracefully**: If 0 answers → 503; if 1 answer → answer directly
+4. **Judge synthesis**: Build anonymized panel responses → send to judge model → final answer streamed to client
+
+## Error Classification
+
+Errors are classified using the same rule system as Next.js:
+
+| Rule | Type | Action |
+|------|------|--------|
+| `"no credentials"` | Text | Cooldown 120s |
+| `"request not allowed"` | Text | Cooldown 5s |
+| `"rate limit"` | Text | Exponential backoff |
+| `"too many requests"` | Text | Exponential backoff |
+| `"quota exceeded"` | Text | Exponential backoff |
+| `"capacity"` / `"overloaded"` | Text | Exponential backoff |
+| 401 / 402 / 403 / 404 | Status | Cooldown 120s |
+| 429 | Status | Exponential backoff |
+| Default (unmatched) | — | Cooldown 30s |
+
+**Exponential backoff**: 2s base, doubled per level, max 5 minutes, 15 levels max.
+Backoff level is tracked per-connection in `providerConnections.data.backoffLevel` (DB-compatible with Next.js dashboard).
+
+## Model Locking
+
+**Per-connection model locks** — stored as `modelLock_<model>` fields in `providerConnections.data` JSON blob.
+Same format as Next.js, readable by the shared dashboard.
+
+- Failed connection → `LockConnectionModel(id, model, duration)` → `data.modelLock_gpt-4 = "ISO timestamp"`
+- Successful request → `UnlockConnectionModel(id, model)` → `data.modelLock_gpt-4 = null`, `backoffLevel = 0`
+- Connection selection → skips connections with active model lock
+
+## SSE Stall Detection
+
+Each SSE stream is wrapped with a `StallReader` (6-minute timeout by default).
+
+- Timer resets on each received chunk
+- If timer fires (no data for 6 minutes) → underlying connection is closed → `Read` unblocks with error → stream terminated
+- No goroutine leak on clean stream close (timer stopped)
 
 ## Token Savers
 
@@ -70,9 +169,6 @@ via CLI flag or environment variable (CLI flag overrides env).
 ```bash
 # All savers on
 ./9router-go --rtk --caveman --ponytail
-
-# Only RTK (default), others off
-RTK_ENABLED=true CAVEMAN_ENABLED=false PONYTAIL_ENABLED=false ./9router-go
 ```
 
 > RTK is on by default. Disable with `RTK_ENABLED=false` or `--rtk=false`.
@@ -91,15 +187,39 @@ RTK_ENABLED=true CAVEMAN_ENABLED=false PONYTAIL_ENABLED=false ./9router-go
 
 ## Database
 
-Uses same SQLite DB as [9Router dashboard](https://github.com/decolua/9router) (`~/.9router/db/data.sqlite`) with WAL mode.
+Uses the same SQLite DB as [9Router dashboard](https://github.com/decolua/9router) (`~/.9router/db/data.sqlite`) with WAL mode.
 
-Tables: `apiKeys`, `providerConnections`, `providerNodes`, `combos`, `modelAliases`
+**Tables:** `apiKeys`, `providerConnections`, `providerNodes`, `combos`, `kv`, `settings`, `usageHistory`, `usageDaily`, `requestDetails`, `proxyPools`, `_meta`
+
+See [DATABASE.md](DATABASE.md) for full schema documentation, JSON blob structure, and Go vs Next.js differences.
 
 ### Custom DB Location
 
 ```bash
 # Use custom SQLite path
 DB_PATH=/mnt/shared/9router/data.sqlite PORT=20128 ./9router-go
+```
+
+## API Endpoints
+
+```
+POST /v1/chat/completions      # OpenAI format
+POST /v1/messages              # Claude format
+POST /v1/embeddings            # Embeddings
+POST /v1/responses             # Responses API
+POST /v1/images/generations    # Image generation
+POST /v1/video/generations     # Video generation
+POST /v1/video/extend          # Video extend
+POST /v1/video/edit            # Video edit
+POST /v1/audio/speech          # Text-to-speech (TTS)
+POST /v1/audio/transcriptions  # Speech-to-text (STT)
+POST /v1/web/fetch             # Web URL extraction (Jina Reader / Firecrawl)
+POST /v1/search                # Web search (provider-selected)
+POST /v1/scrape                # Web fetch (provider-selected)
+GET  /v1/models                # List models
+POST /v1/oauth/authorize       # OAuth authorize
+POST /v1/oauth/refresh         # OAuth refresh
+GET  /health                   # Health check
 ```
 
 ## Docker
@@ -119,22 +239,6 @@ docker run -d -p 20128:20128 \
   --name 9router-go 9router-go
 ```
 
-## API Endpoints
-
-```
-POST /v1/chat/completions      # OpenAI format
-POST /v1/messages              # Claude format
-POST /v1/embeddings            # Embeddings
-POST /v1/responses             # Responses API
-POST /v1/images/generations    # Image generation
-POST /v1/audio/speech          # Text-to-speech (TTS)
-POST /v1/audio/transcriptions  # Speech-to-text (STT)
-POST /v1/search                 # Web search (provider-selected)
-POST /v1/scrape                 # Web fetch (provider-selected)
-GET  /v1/models                 # List models
-GET  /health                    # Health check
-```
-
 ## Cross-Compile
 
 ```bash
@@ -149,10 +253,12 @@ GOOS=windows GOARCH=amd64 go build -o 9router-go.exe ./cmd/9router-go/
 go test ./... -v
 ```
 
+All **655 tests** pass (with `-count=1` to bypass test caching).
+
 ## Benchmark
 
 The Go proxy was benchmarked against the legacy Next.js router using `hey`
-against a mock upstream. Headline results:
+against a mock upstream.
 
 | Metric | Go Proxy | Legacy Next.js | Speedup |
 |---|---|---|---|
@@ -162,23 +268,7 @@ against a mock upstream. Headline results:
 | Memory (RSS) | 42.5 MB | 270.9 MB | **6.4x lighter** |
 | Startup | <100ms | 3–5s | **30–50x** |
 
-Full methodology, per-concurrency tables, and reproduction steps:
-see [`benchmark/RESULTS.md`](benchmark/RESULTS.md).
-
-```bash
-bash benchmark/run_comparison.sh
-```
-
-## TODO / Known Gaps
-
-Tracked items not yet implemented:
-
-- [ ] **Search & scrape provider dispatch** — `/v1/search` and `/v1/scrape` are
-      simple forward endpoints (provider selected via the `model` field, path
-      appended to the connection base URL). Unlike the 9Router JS reference, there
-      is **no multi-provider dispatch or response normalizer** (Tavily/Exa/Brave,
-      firecrawl/jina). Register a connection with the search/fetch base URL + key
-      to use them.
+See [`benchmark/RESULTS.md`](benchmark/RESULTS.md) for full methodology and reproduction steps.
 
 ## Credits
 
