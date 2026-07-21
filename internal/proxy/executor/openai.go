@@ -31,20 +31,12 @@ func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 	flusher := proxy.WriteSSEHeaders(w)
 
 	if !translate {
-		b := make([]byte, 4096)
-		for {
-			n, err := upstream.Read(b)
-			if n > 0 {
-				if ttft != nil && *ttft == 0 {
-					*ttft = time.Since(startTime).Milliseconds()
-				}
-				if buf != nil { buf.Write(b[:n]) }
-				w.Write(b[:n])
-				if flusher != nil { flusher.Flush() }
+		return proxy.SSECopy(w, upstream, flusher, func(chunk []byte) {
+			if ttft != nil && *ttft == 0 {
+				*ttft = time.Since(startTime).Milliseconds()
 			}
-			if err != nil { break }
-		}
-		return nil
+			if buf != nil { buf.Write(chunk) }
+		})
 	}
 
 	return proxy.ScanStream(upstream, func(chunk []byte) {

@@ -18,11 +18,15 @@ func WriteSSEHeaders(w http.ResponseWriter) http.Flusher {
 
 // SSECopy reads from upstream in a raw loop and writes each chunk to the client.
 // A simplified passthrough that does NOT parse SSE framing — use when translation is not needed.
-func SSECopy(w http.ResponseWriter, upstream io.Reader, flusher http.Flusher) error {
+// onChunk is called for each chunk before writing (for metrics/TTFT tracking).
+func SSECopy(w http.ResponseWriter, upstream io.Reader, flusher http.Flusher, onChunk func([]byte)) error {
 	buf := make([]byte, 4096)
 	for {
 		n, err := upstream.Read(buf)
 		if n > 0 {
+			if onChunk != nil {
+				onChunk(buf[:n])
+			}
 			w.Write(buf[:n])
 			if flusher != nil {
 				flusher.Flush()

@@ -53,24 +53,12 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 	flusher := internalproxy.WriteSSEHeaders(w)
 
 	if !translate {
-		buf := make([]byte, 4096)
-		for {
-			n, err := upstream.Read(buf)
-			if n > 0 {
-				if metrics.ttft == 0 {
-					metrics.ttft = time.Since(startTime).Milliseconds()
-				}
-				metrics.responseBuf.Write(buf[:n])
-				w.Write(buf[:n])
-				if flusher != nil {
-					flusher.Flush()
-				}
+		return internalproxy.SSECopy(w, upstream, flusher, func(chunk []byte) {
+			if metrics.ttft == 0 {
+				metrics.ttft = time.Since(startTime).Milliseconds()
 			}
-			if err != nil {
-				break
-			}
-		}
-		return nil
+			metrics.responseBuf.Write(chunk)
+		})
 	}
 
 	return internalproxy.ScanStream(upstream, func(chunk []byte) {
