@@ -107,6 +107,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		if !strings.HasPrefix(strings.ToLower(contentType), "text/event-stream") {
 			return h.handleGeminiNonStream(w, resp.Body, translateResponse)
 		}
+		resp.Body = proxy.NewStallReader(resp.Body, 0, provider)
 		return h.handleGeminiStream(w, resp.Body, translateResponse, metrics)
 	}
 	return h.handleGeminiNonStream(w, resp.Body, translateResponse)

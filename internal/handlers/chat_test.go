@@ -607,8 +607,8 @@ func TestHandleChatCompletions_AccountFallback_401(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IsModelLocked failed: %v", err)
 	}
-	if !locked {
-		t.Error("expected model to be locked after 401 error")
+	if locked {
+		t.Error("expected model lock to be cleared after successful fallback (UnlockModel on success)")
 	}
 }
 

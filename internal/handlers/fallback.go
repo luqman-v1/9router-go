@@ -177,6 +177,10 @@ func (h *ChatHandler) tryForwardWithConnection(
 	}
 
 	if fwdErr == nil {
+		// Clear any existing model lock on success (matching Next.js clearAccountError)
+		if unlockErr := h.Repo.UnlockModel(provider, model); unlockErr != nil {
+			log.Printf("[fallback] failed to unlock %s/%s on success: %v", provider, model, unlockErr)
+		}
 		usage := translator.GetAndClearLastUsage()
 		if usage == nil {
 			usage = &translator.OpenAIUsage{}

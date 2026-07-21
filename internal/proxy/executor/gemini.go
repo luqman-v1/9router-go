@@ -31,6 +31,7 @@ func ForwardGemini(w http.ResponseWriter, req *Request) error {
 		return geminiNonStream(w, bytes.NewReader(unwrapped))
 	}
 	if req.IsStream {
+		resp.Body = proxy.NewStallReader(resp.Body, 0, "gemini")
 		return geminiStream(w, resp.Body)
 	}
 	return geminiNonStream(w, resp.Body)

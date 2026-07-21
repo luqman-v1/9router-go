@@ -41,6 +41,8 @@ func (h *ChatHandler) forwardRequest(
 			log.Printf("[stream_warning] upstream returned non-stream Content-Type: %s for stream request", contentType)
 			return h.handleJSONResponse(w, resp.Body, translateResponse)
 		}
+		// Wrap with SSE stall detection
+		resp.Body = internalproxy.NewStallReader(resp.Body, 0, "upstream")
 		return h.handleStreamResponse(w, resp.Body, translateResponse, start, metrics)
 	}
 	return h.handleJSONResponse(w, resp.Body, translateResponse)

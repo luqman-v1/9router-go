@@ -19,7 +19,8 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	}
 	defer resp.Body.Close()
 	if req.IsStream {
-		return sseStream(w, resp.Body, req.TranslateResp, time.Now(), nil, nil)
+		resp.Body = proxy.NewStallReader(resp.Body, 0, "openai")
+	return sseStream(w, resp.Body, req.TranslateResp, time.Now(), nil, nil)
 	}
 	return jsonResponse(w, resp.Body, req.TranslateResp)
 }
