@@ -13,101 +13,101 @@ Go gak punya migration — schema additive (new columns di-ignore sama query lam
 erDiagram
     apiKeys ||--o{ usageHistory : ""
     providerConnections ||--o{ usageHistory : ""
-    providerConnections }o--|| providerNodes : "belongs to"
+    providerConnections }o--|| providerNodes : "belongs-to"
     combos ||--o{ usageHistory : ""
     settings ||--|| providerConnections : "config"
 
     apiKeys {
-        id TEXT PK
-        key TEXT UNIQUE
-        name TEXT
-        machineId TEXT
-        isActive INTEGER
-        createdAt TEXT
+        string id PK
+        string key UK
+        string name
+        string machineId
+        int isActive
+        string createdAt
     }
 
     providerConnections {
-        id TEXT PK
-        provider TEXT FK
-        authType TEXT
-        name TEXT
-        email TEXT
-        priority INTEGER
-        isActive INTEGER
-        data TEXT JSON
-        lastUsedAt TEXT
-        consecutiveUseCount INTEGER
-        createdAt TEXT
-        updatedAt TEXT
+        string id PK
+        string provider
+        string authType
+        string name
+        string email
+        int priority
+        int isActive
+        string data
+        string lastUsedAt
+        int consecutiveUseCount
+        string createdAt
+        string updatedAt
     }
 
     kv {
-        scope TEXT PK
-        key TEXT PK
-        value TEXT
+        string scope PK
+        string key PK
+        string value
     }
 
     combos {
-        id TEXT PK
-        name TEXT UNIQUE
-        kind TEXT
-        models TEXT JSON
-        createdAt TEXT
-        updatedAt TEXT
+        string id PK
+        string name UK
+        string kind
+        string models
+        string createdAt
+        string updatedAt
     }
 
     providerNodes {
-        id TEXT PK
-        type TEXT
-        name TEXT
-        data TEXT JSON
-        createdAt TEXT
-        updatedAt TEXT
+        string id PK
+        string type
+        string name
+        string data
+        string createdAt
+        string updatedAt
     }
 
     settings {
-        id INTEGER PK
-        data TEXT JSON
+        int id PK
+        string data
     }
 
     usageHistory {
-        id INTEGER PK~auto
-        timestamp TEXT
-        provider TEXT
-        model TEXT
-        connectionId TEXT
-        apiKey TEXT
-        endpoint TEXT
-        promptTokens INTEGER
-        completionTokens INTEGER
-        cost REAL
-        status TEXT
-        tokens TEXT JSON
-        meta TEXT JSON
+        int id PK
+        string timestamp
+        string provider
+        string model
+        string connectionId
+        string apiKey
+        string endpoint
+        int promptTokens
+        int completionTokens
+        float cost
+        string status
+        string tokens
+        string meta
     }
 
     usageDaily {
-        dateKey TEXT PK
-        data TEXT JSON
+        string dateKey PK
+        string data
     }
 
     requestDetails {
-        id TEXT PK
-        timestamp TEXT
-        provider TEXT
-        model TEXT
-        connectionId TEXT
-        status TEXT
-        data TEXT JSON
+        string id PK
+        string timestamp
+        string provider
+        string model
+        string connectionId
+        string status
+        string data
     }
 
     proxyPools {
-        id TEXT PK
-        isActive INTEGER
-        testStatus TEXT
-        data TEXT JSON
-        createdAt TEXT
-        updatedAt TEXT
+        string id PK
+        int isActive
+        string testStatus
+        string data
+        string createdAt
+        string updatedAt
     }
 ```
 
