@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -74,7 +75,8 @@ func (h *ChatHandler) handleSingleModel(w http.ResponseWriter, body []byte, mode
 
 	result := h.handleAccountFallback(w, modelInfo.Provider, modelInfo.Model, modelInfo.ConnectionID, upstreamJSON, isStream, translateResponse, "/v1/chat/completions")
 	if result != nil {
-		if ue, ok := result.(*upstreamError); ok {
+		var ue *upstreamError
+		if errors.As(result, &ue) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(ue.StatusCode)
 			w.Write(ue.Body)
@@ -141,7 +143,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	if len(modelInfo.ComboModels) > 0 {
 		if modelInfo.Strategy == "fusion" {
-			bodyJSON, _ := json.Marshal(workingBody)
+			bodyJSON, err := json.Marshal(workingBody)
+			if err != nil {
+				handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal request body")
+				return
+			}
 			h.handleFusion(w, bodyJSON, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, translateResponse)
 			return
 		}
@@ -163,7 +169,8 @@ func (h *ChatHandler) handleMessagesSingleModel(w http.ResponseWriter, translate
 
 	result := h.handleAccountFallback(w, modelInfo.Provider, modelInfo.Model, modelInfo.ConnectionID, finalBody, isStream, translateResponse, "/v1/v1/messages")
 	if result != nil {
-		if ue, ok := result.(*upstreamError); ok {
+		var ue *upstreamError
+		if errors.As(result, &ue) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(ue.StatusCode)
 			w.Write(ue.Body)
@@ -524,7 +531,12 @@ func (h *ChatHandler) HandleResponsesCompact(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	m["_compact"] = true
-	body, _ = json.Marshal(m)
+	body, err = json.Marshal(m)
+	if err != nil {
+		log.Printf("[chat] failed to marshal compact request body: %v", err)
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to process request")
+		return
+	}
 
 	newReq, _ := http.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
 	newReq.Header = r.Header

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -9,7 +10,7 @@ func (r *Repo) GetUsageDaily(dateKey string) (string, error) {
 	var data string
 	err := r.db.QueryRow(`SELECT data FROM usageDaily WHERE dateKey = ?`, dateKey).Scan(&data)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("get daily usage %s: %w", dateKey, err)
 	}
 	return data, nil
 }
@@ -22,7 +23,10 @@ func (r *Repo) InsertUsageHistory(provider, model, connectionID, apiKey, endpoin
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		timestamp, provider, model, connectionID, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokensJSON, meta,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("insert usage history: %w", err)
+	}
+	return nil
 }
 
 // UpsertUsageDaily inserts or replaces a daily usage aggregation record.
@@ -32,7 +36,10 @@ func (r *Repo) UpsertUsageDaily(dateKey string, data string) error {
 		`INSERT OR REPLACE INTO usageDaily (dateKey, data) VALUES (?, ?)`,
 		dateKey, data,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("upsert daily usage %s: %w", dateKey, err)
+	}
+	return nil
 }
 
 // InsertRequestDetail logs a request detail record for the Recent Requests dashboard tab.
@@ -42,7 +49,10 @@ func (r *Repo) InsertRequestDetail(id, provider, model, connectionID, status str
 		`INSERT OR IGNORE INTO requestDetails (id, timestamp, provider, model, connectionId, status, data) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		id, timestamp, provider, model, connectionID, status, data,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("insert request detail %s: %w", id, err)
+	}
+	return nil
 }
 
 // UpdateConnectionLastUsed updates the lastUsedAt timestamp and increments
@@ -53,5 +63,8 @@ func (r *Repo) UpdateConnectionLastUsed(connectionID string) error {
 		`UPDATE providerConnections SET lastUsedAt = ?, consecutiveUseCount = COALESCE(consecutiveUseCount, 0) + 1 WHERE id = ?`,
 		now, connectionID,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("update connection last used %s: %w", connectionID, err)
+	}
+	return nil
 }

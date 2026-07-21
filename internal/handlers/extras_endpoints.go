@@ -131,7 +131,11 @@ func (h *ChatHandler) HandleWebFetch(w http.ResponseWriter, r *http.Request) {
 		handlerutil.SetAuthHeader(req, ctx.apiKey, cfg.AuthHeader, cfg.AuthScheme)
 		upstreamResp, err = h.Client.Do(req)
 	} else {
-		fetchBody, _ := json.Marshal(map[string]string{"url": reqBody.URL})
+		fetchBody, marshalErr := json.Marshal(map[string]string{"url": reqBody.URL})
+		if marshalErr != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to marshal fetch body: %v", marshalErr))
+			return
+		}
 		upstreamResp, err = h.Client.Post(fetchURL, "application/json", strings.NewReader(string(fetchBody)))
 	}
 	if err != nil {

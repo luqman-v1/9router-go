@@ -27,7 +27,10 @@ func RecordProviderHealth(database *sql.DB, provider, model string, statusCode i
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	// Try to read existing record
-	existing, _ := GetProviderHealth(database, provider, model)
+	existing, err := GetProviderHealth(database, provider, model)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("get existing health for %s/%s: %w", provider, model, err)
+	}
 
 	record := HealthRecord{
 		LastStatus:    statusCode,
@@ -63,7 +66,10 @@ func RecordProviderHealth(database *sql.DB, provider, model string, statusCode i
 		 ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`,
 		key, string(valueBytes),
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("insert/update health record for %s: %w", key, err)
+	}
+	return nil
 }
 
 // GetProviderHealth retrieves the health record for a provider/model pair.

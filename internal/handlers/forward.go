@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"9router/proxy/internal/handlerutil"
@@ -23,7 +26,7 @@ func (h *ChatHandler) forwardRequest(
 ) error {
 	resp, err := internalproxy.ForwardOpenAI(h.Client, cfg, apiKey, body, isStream)
 	if err != nil {
-		return err
+		return fmt.Errorf("forward to upstream: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -32,6 +35,12 @@ func (h *ChatHandler) forwardRequest(
 		metrics = &streamMetrics{}
 	}
 	if isStream {
+		contentType := resp.Header.Get("Content-Type")
+		if !strings.HasPrefix(strings.ToLower(contentType), "text/event-stream") {
+			// Upstream returned non-streaming response (e.g. JSON error with 200 OK)
+			log.Printf("[stream_warning] upstream returned non-stream Content-Type: %s for stream request", contentType)
+			return h.handleJSONResponse(w, resp.Body, translateResponse)
+		}
 		return h.handleStreamResponse(w, resp.Body, translateResponse, start, metrics)
 	}
 	return h.handleJSONResponse(w, resp.Body, translateResponse)
@@ -69,7 +78,11 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 	flusher, _ := w.(http.Flusher)
 	return internalproxy.ScanStream(upstream, func(chunk []byte) {
 		translated, err := translator.TranslateOpenAIToClaudeStream(chunk)
-		if err != nil || translated == nil {
+		if err != nil {
+			log.Printf("[stream_error] TranslateOpenAIToClaudeStream error: %v", err)
+			return
+		}
+		if translated == nil {
 			return
 		}
 		if metrics.ttft == 0 {
@@ -87,7 +100,7 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 func (h *ChatHandler) handleJSONResponse(w http.ResponseWriter, upstream io.Reader, translate bool) error {
 	body, err := io.ReadAll(upstream)
 	if err != nil {
-		return err
+		return fmt.Errorf("read upstream response body: %w", err)
 	}
 
 	if !translate {
@@ -97,14 +110,18 @@ func (h *ChatHandler) handleJSONResponse(w http.ResponseWriter, upstream io.Read
 		return nil
 	}
 
-	translated, err := translator.TranslateOpenAIToClaude(body)
+	translated, usage, err := translator.TranslateOpenAIToClaude(body)
+	if err == nil && usage != nil {
+		translator.SetLastUsage(usage)
+	}
 	if err != nil || translated == nil {
 		errMsg := "failed to translate upstream response to Claude format"
 		if err != nil {
 			errMsg = errMsg + ": " + err.Error()
 		}
+		log.Printf("[json_error] %s", errMsg)
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, errMsg)
-		return nil
+		return fmt.Errorf("%s", errMsg)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

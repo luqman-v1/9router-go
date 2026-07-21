@@ -20,7 +20,10 @@ func extractReasoningText(delta OpenAIDelta) string {
 
 func formatSSE(event map[string]any) string {
 	eventType, _ := event["type"].(string)
-	payload, _ := json.Marshal(event)
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Sprintf("event: %s\ndata: {}\n\n", eventType)
+	}
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(payload))
 }
 
@@ -47,20 +50,20 @@ func stopTextBlock(state *StreamState, results *[]map[string]any) {
 	state.TextBlockStarted = false
 }
 
-// TranslateOpenAIToClaude converts a non-streaming OpenAI response to Claude message format.
-func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, error) {
+// TranslateOpenAIToClaude translates an OpenAI non-streaming response into a Claude non-streaming response.
+func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 	trimmed := bytes.TrimSpace(openaiResp)
 	if len(trimmed) == 0 {
-		return nil, fmt.Errorf("empty response body")
+		return nil, nil, fmt.Errorf("empty response body")
 	}
 
 	var resp OpenAIResponse
-	if err := json.Unmarshal(trimmed, &resp); err != nil {
-		return nil, fmt.Errorf("failed to parse OpenAI response: %w", err)
+	if err := json.Unmarshal(openaiResp, &resp); err != nil {
+		return nil, nil, fmt.Errorf("failed to parse OpenAI response: %w", err)
 	}
 
 	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in OpenAI response")
+		return nil, nil, fmt.Errorf("no choices in OpenAI response")
 	}
 
 	choice := resp.Choices[0]
@@ -149,11 +152,12 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, error) {
 		outputTokens = resp.Usage.CompletionTokens
 		details = resp.Usage.CompletionTokensDetails
 	}
-	SetLastUsage(&OpenAIUsage{
+	usage := &OpenAIUsage{
 		PromptTokens:            inputTokens,
 		CompletionTokens:        outputTokens,
 		CompletionTokensDetails: details,
-	})
+	}
+	SetLastUsage(usage) // Still call it for backward compatibility or parallel reads, but caller receives it directly.
 
 	result := map[string]any{
 		"id":            msgID,
@@ -169,7 +173,11 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, error) {
 		},
 	}
 
-	return json.Marshal(result)
+	out, err := json.Marshal(result)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal Claude response: %w", err)
+	}
+	return out, usage, nil
 }
 
 // TranslateOpenAIToClaudeStream converts a single OpenAI SSE chunk JSON payload to Claude SSE format.
@@ -198,7 +206,7 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 
 	var chunk OpenAIChunk
 	if err := json.Unmarshal(dataPart, &chunk); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshal stream chunk: %w", err)
 	}
 
 	stateKey := chunk.ID
@@ -209,6 +217,12 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 	statesMu.Lock()
 	state, exists := states[stateKey]
 	if !exists {
+		// Zero-choice sidecars (OpenCode inference-cost, usage-only after finish)
+		// must not bootstrap a fake Claude message.
+		if len(chunk.Choices) == 0 {
+			statesMu.Unlock()
+			return nil, nil
+		}
 		cleanID := strings.Replace(chunk.ID, "chatcmpl-", "", 1)
 		if cleanID == "" || cleanID == "chat" {
 			cleanID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
@@ -269,6 +283,9 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 	}
 
 	if len(chunk.Choices) == 0 {
+		if chunk.Usage != nil && state.Usage != nil {
+			SetLastUsage(state.Usage)
+		}
 		if len(results) > 0 {
 			var buf bytes.Buffer
 			for _, res := range results {

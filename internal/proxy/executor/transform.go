@@ -3,6 +3,7 @@ package executor
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -92,7 +93,9 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
 	}
-	_ = json.Unmarshal(oreq.Messages, &messages)
+	if err := json.Unmarshal(oreq.Messages, &messages); err != nil {
+		log.Printf("[buildResponsesBody] unmarshal messages: %v", err)
+	}
 
 	var inputItems []map[string]interface{}
 
@@ -143,7 +146,9 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		case "tool":
 			text := ExtractSimpleText(msg.Content)
 			var toolCallID string
-			_ = json.Unmarshal(msg.Content, &toolCallID)
+			if err := json.Unmarshal(msg.Content, &toolCallID); err != nil {
+				log.Printf("[buildResponsesBody] unmarshal tool_call_id: %v", err)
+			}
 			inputItems = append(inputItems, map[string]interface{}{
 				"type":    "function_call_output",
 				"call_id": toolCallID,
@@ -186,7 +191,9 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 						Description string          `json:"description"`
 						Parameters  json.RawMessage `json:"parameters"`
 					}
-					json.Unmarshal(t.Function, &fn)
+					if err := json.Unmarshal(t.Function, &fn); err != nil {
+						log.Printf("[buildResponsesBody] unmarshal tool function: %v", err)
+					}
 					tool["name"] = fn.Name
 					if fn.Description != "" {
 						tool["description"] = fn.Description
@@ -356,3 +363,67 @@ func stripKimchiReasoningContent(body map[string]any) {
 		}
 	}
 }
+
+// InjectReasoningContent ensures assistant messages in request body have reasoning_content
+// injected (e.g. " " placeholder) for providers like opencode, deepseek, or kimi models.
+func InjectReasoningContent(body []byte, provider string) []byte {
+	var reqMap map[string]any
+	if err := json.Unmarshal(body, &reqMap); err != nil {
+		return body
+	}
+
+	msgs, ok := reqMap["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		return body
+	}
+
+	modelStr, _ := reqMap["model"].(string)
+	modelLower := strings.ToLower(modelStr)
+
+	isDeepSeek := strings.Contains(modelLower, "deepseek") || provider == "opencode" || provider == "opencode-go"
+	isKimi := strings.HasPrefix(modelLower, "kimi-")
+
+	if !isDeepSeek && !isKimi {
+		return body
+	}
+
+	changed := false
+	for i, m := range msgs {
+		msgMap, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := msgMap["role"].(string)
+		if role != "assistant" {
+			continue
+		}
+
+		rc, hasRC := msgMap["reasoning_content"].(string)
+		if hasRC && len(rc) > 0 {
+			continue
+		}
+
+		if isKimi {
+			toolCalls, hasTC := msgMap["tool_calls"].([]any)
+			if !hasTC || len(toolCalls) == 0 {
+				continue
+			}
+		}
+
+		msgMap["reasoning_content"] = " "
+		msgs[i] = msgMap
+		changed = true
+	}
+
+	if !changed {
+		return body
+	}
+
+	reqMap["messages"] = msgs
+	newBody, err := json.Marshal(reqMap)
+	if err != nil {
+		return body
+	}
+	return newBody
+}
+

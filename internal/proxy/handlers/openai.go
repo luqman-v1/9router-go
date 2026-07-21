@@ -1,6 +1,7 @@
 package proxyhandlers
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 func ForwardOpenAI(w http.ResponseWriter, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream, translateResponse bool) error {
 	resp, err := proxy.ForwardOpenAI(client, cfg, apiKey, body, isStream)
 	if err != nil {
-		return err
+		return fmt.Errorf("forward OpenAI: %w", err)
 	}
 	defer resp.Body.Close()
 

@@ -3,7 +3,9 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -12,7 +14,6 @@ import (
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
-	"9router/proxy/internal/translator"
 )
 
 // applyComboStrategy reorders combo models based on the configured strategy.
@@ -53,26 +54,19 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 			continue
 		}
 
-		var providerCfg *providers.ProviderConfig
-		var apiKey string
+		var connID string
+		var connData *ConnectionData
 		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-			c := cfg
-			providerCfg = &c
-			apiKey = c.DefaultAPIKey
+			connData = &ConnectionData{
+				APIKey: cfg.DefaultAPIKey,
+			}
 		} else {
-			_, connData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+			conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 			if err != nil {
 				continue
 			}
-			cfg, err := h.getProviderConfig(modelInfo.Provider, connData)
-			if err != nil {
-				continue
-			}
-			providerCfg = cfg
-			apiKey = extractAPIKey(connData)
-			if apiKey == "" {
-				continue
-			}
+			connID = conn.ID
+			connData = cData
 		}
 
 		var upstreamBody map[string]any
@@ -87,19 +81,16 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 			continue
 		}
 
-		comboStart := time.Now()
-		comboMetrics := &streamMetrics{}
-
 		var fwdErr error
 		if modelInfo.Provider == "mimo-free" {
+			comboMetrics := &streamMetrics{}
 			fwdErr = h.MimoFreeChat(w, upstreamJSON, isStream, comboMetrics)
 		} else {
-			comboBody := h.applyTokenSavers(upstreamJSON)
-			fwdErr = h.forwardRequest(w, providerCfg, apiKey, comboBody, isStream, translateResponse, comboMetrics)
+			fwdErr = h.tryForwardWithConnection(w, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, isStream, translateResponse, "/v1/chat/completions")
 		}
-		comboLatency := time.Since(comboStart).Milliseconds()
 		if fwdErr != nil {
-			if ue, ok := fwdErr.(*upstreamError); ok {
+			var ue *upstreamError
+			if errors.As(fwdErr, &ue) {
 				lastErr = ue
 				continue
 			}
@@ -107,18 +98,7 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 			continue
 		}
 
-		usage := translator.GetAndClearLastUsage()
-		if usage == nil {
-			usage = &translator.OpenAIUsage{}
-		}
-		logInfo := &UsageLogInfo{
-			Provider:     modelInfo.Provider,
-			Model:        modelInfo.Model,
-			ConnectionID: modelInfo.ConnectionID,
-			APIKey:       apiKey,
-			Endpoint:     "/v1/chat/completions",
-		}
-		h.logUsage(logInfo, usage, comboLatency, upstreamJSON, comboMetrics)
+		// tryForwardWithConnection already logs usage, so we just return.
 		return
 	}
 
@@ -143,26 +123,19 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 			continue
 		}
 
-		var providerCfg *providers.ProviderConfig
-		var apiKey string
+		var connID string
+		var connData *ConnectionData
 		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-			c := cfg
-			providerCfg = &c
-			apiKey = c.DefaultAPIKey
+			connData = &ConnectionData{
+				APIKey: cfg.DefaultAPIKey,
+			}
 		} else {
-			_, connData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+			conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 			if err != nil {
 				continue
 			}
-			cfg, err := h.getProviderConfig(modelInfo.Provider, connData)
-			if err != nil {
-				continue
-			}
-			providerCfg = cfg
-			apiKey = extractAPIKey(connData)
-			if apiKey == "" {
-				continue
-			}
+			connID = conn.ID
+			connData = cData
 		}
 
 		entryReq := make(map[string]any, len(translatedReq))
@@ -176,13 +149,11 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 			continue
 		}
 
-		comboStart := time.Now()
-		comboMetrics := &streamMetrics{}
-		comboBody := h.applyTokenSavers(upstreamJSON)
-		fwdErr := h.forwardRequest(w, providerCfg, apiKey, comboBody, isStream, true, comboMetrics)
-		comboLatency := time.Since(comboStart).Milliseconds()
+		fwdErr := h.tryForwardWithConnection(w, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, isStream, true, "/v1/messages")
+		
 		if fwdErr != nil {
-			if ue, ok := fwdErr.(*upstreamError); ok {
+			var ue *upstreamError
+			if errors.As(fwdErr, &ue) {
 				lastErr = ue
 				continue
 			}
@@ -190,18 +161,7 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 			continue
 		}
 
-		usage := translator.GetAndClearLastUsage()
-		if usage == nil {
-			usage = &translator.OpenAIUsage{}
-		}
-		logInfo := &UsageLogInfo{
-			Provider:     modelInfo.Provider,
-			Model:        modelInfo.Model,
-			ConnectionID: modelInfo.ConnectionID,
-			APIKey:       apiKey,
-			Endpoint:     "/v1/v1/messages",
-		}
-		h.logUsage(logInfo, usage, comboLatency, upstreamJSON, comboMetrics)
+		// tryForwardWithConnection already logs usage, so we just return.
 		return
 	}
 
@@ -368,28 +328,19 @@ func (h *ChatHandler) makePanelCall(body []byte, entry string) func() *fusionRes
 			return &fusionResult{model: entry, err: fmt.Errorf("unresolved model: %s", entry)}
 		}
 
-		var providerCfg *providers.ProviderConfig
-		var apiKey string
 		var connID string
+		var connData *ConnectionData
 		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-			c := cfg
-			providerCfg = &c
-			apiKey = c.DefaultAPIKey
+			connData = &ConnectionData{
+				APIKey: cfg.DefaultAPIKey,
+			}
 		} else {
-			conn, connData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+			conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 			if err != nil {
 				return &fusionResult{model: entry, err: err}
-			}
-			cfg, err := h.getProviderConfig(modelInfo.Provider, connData)
-			if err != nil {
-				return &fusionResult{model: entry, err: err}
-			}
-			providerCfg = cfg
-			apiKey = extractAPIKey(connData)
-			if apiKey == "" {
-				return &fusionResult{model: entry, err: fmt.Errorf("no API key")}
 			}
 			connID = conn.ID
+			connData = cData
 		}
 
 		var upstreamBody map[string]any
@@ -403,8 +354,7 @@ func (h *ChatHandler) makePanelCall(body []byte, entry string) func() *fusionRes
 		}
 
 		rec := &responseBuffer{header: http.Header{}}
-		_ = connID
-		fwdErr := h.forwardRequest(rec, providerCfg, apiKey, upstreamJSON, false, false, nil)
+		fwdErr := h.tryForwardWithConnection(rec, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, false, false, "/v1/chat/completions")
 		if fwdErr != nil {
 			return &fusionResult{model: entry, err: fwdErr}
 		}
@@ -460,7 +410,11 @@ func appendUserTurn(body []byte, content string) []byte {
 		m["messages"] = []any{userMsg}
 	}
 
-	b, _ := json.Marshal(m)
+	b, err := json.Marshal(m)
+	if err != nil {
+		log.Printf("[combo] failed to marshal appendUserTurn body: %v", err)
+		return body
+	}
 	return b
 }
 
@@ -532,14 +486,23 @@ func (h *ChatHandler) handleFusion(w http.ResponseWriter, body []byte, comboMode
 	judgeBody := appendUserTurn(body, buildJudgePrompt(answers))
 
 	var ub map[string]any
-	json.Unmarshal(judgeBody, &ub)
+	if err := json.Unmarshal(judgeBody, &ub); err != nil {
+		log.Printf("[fusion] failed to unmarshal judge body: %v", err)
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to parse judge request")
+		return
+	}
 	ub["model"] = judgeModel
 	if isStream {
 		ub["stream"] = true
 	} else {
 		delete(ub, "stream")
 	}
-	judgeJSON, _ := json.Marshal(ub)
+	judgeJSON, err := json.Marshal(ub)
+	if err != nil {
+		log.Printf("[fusion] failed to marshal judge request body: %v", err)
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal judge request")
+		return
+	}
 
 	modelInfo := h.resolveModelEntry(judgeModel)
 	if modelInfo == nil {

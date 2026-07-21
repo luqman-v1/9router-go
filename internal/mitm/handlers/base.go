@@ -44,7 +44,9 @@ func PipeSSE(upstream *http.Response, w http.ResponseWriter) error {
 	for {
 		n, err := upstream.Body.Read(buf)
 		if n > 0 {
-			w.Write(buf[:n])
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return fmt.Errorf("write SSE chunk: %w", werr)
+			}
 			if flusher != nil {
 				flusher.Flush()
 			}

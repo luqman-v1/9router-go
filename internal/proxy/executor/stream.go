@@ -46,7 +46,10 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				"delta": map[string]interface{}{"content": delta},
 			}},
 		}
-		b, _ := json.Marshal(chunk)
+		b, err := json.Marshal(chunk)
+		if err != nil {
+			return nil
+		}
 		return []string{fmt.Sprintf("data: %s\n\n", string(b))}
 
 	case "response.function_call_arguments.delta":
@@ -71,7 +74,10 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				},
 			}},
 		}
-		b, _ := json.Marshal(chunk)
+		b, err := json.Marshal(chunk)
+		if err != nil {
+			return nil
+		}
 		return []string{fmt.Sprintf("data: %s\n\n", string(b))}
 
 	case "response.function_call_arguments.done":
@@ -96,7 +102,10 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				},
 			}},
 		}
-		b, _ := json.Marshal(chunk)
+		b, err := json.Marshal(chunk)
+		if err != nil {
+			return nil
+		}
 		return []string{fmt.Sprintf("data: %s\n\n", string(b))}
 
 	case "response.completed":
@@ -110,7 +119,10 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				"finish_reason": "stop",
 			}},
 		}
-		b, _ := json.Marshal(chunk)
+		b, err := json.Marshal(chunk)
+		if err != nil {
+			return nil
+		}
 		return []string{fmt.Sprintf("data: %s\n\n", string(b))}
 	}
 
@@ -187,7 +199,11 @@ type kiroStreamState struct {
 }
 
 func writeSSE(w io.Writer, data interface{}) {
-	b, _ := json.Marshal(data)
+	b, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("[executor] writeSSE marshal error: %v", err)
+		return
+	}
 	w.Write([]byte(fmt.Sprintf("data: %s\n\n", string(b))))
 }
 
@@ -205,11 +221,13 @@ func handleKiroStream(w http.ResponseWriter, upstream io.Reader) error {
 	state := &kiroStreamState{}
 
 	var accumulatedContent strings.Builder
+	var readErr error
 
 	for {
 		frame, err := esr.ReadFrame()
 		if err != nil {
 			log.Printf("[kiro] eventstream error: %v", err)
+			readErr = err
 			break
 		}
 		if frame == nil {
@@ -335,7 +353,7 @@ func handleKiroStream(w http.ResponseWriter, upstream io.Reader) error {
 		CompletionTokens: outputTokens,
 	})
 
-	return nil
+	return readErr
 }
 
 // ---- CommandCode NDJSON → OpenAI SSE ----
@@ -366,7 +384,10 @@ func BuildCommandcodeChunk(state *CommandcodeStreamState, delta map[string]inter
 	if finishReason != "" {
 		chunk["choices"].([]map[string]interface{})[0]["finish_reason"] = finishReason
 	}
-	b, _ := json.Marshal(chunk)
+	b, err := json.Marshal(chunk)
+	if err != nil {
+		return ""
+	}
 	return string(b)
 }
 
@@ -533,8 +554,12 @@ func ProcessCommandcodeEvent(event map[string]interface{}, eventType string, sta
 		if input, ok := event["input"].(string); ok {
 			argsStr = input
 		} else if input, ok := event["input"]; ok {
-			b, _ := json.Marshal(input)
-			argsStr = string(b)
+			b, marshalErr := json.Marshal(input)
+			if marshalErr != nil {
+				argsStr = "{}"
+			} else {
+				argsStr = string(b)
+			}
 		}
 		if argsStr == "" {
 			argsStr = "{}"
@@ -582,10 +607,17 @@ func ProcessCommandcodeEvent(event map[string]interface{}, eventType string, sta
 			}
 			if len(usage) > 0 {
 				var parsed map[string]interface{}
-				json.Unmarshal([]byte(chunk), &parsed)
-				parsed["usage"] = usage
-				b, _ := json.Marshal(parsed)
-				chunk = string(b)
+				if err := json.Unmarshal([]byte(chunk), &parsed); err != nil {
+					log.Printf("[commandcode] unmarshal chunk for usage: %v", err)
+				} else {
+					parsed["usage"] = usage
+					b, marshalErr := json.Marshal(parsed)
+					if marshalErr != nil {
+						log.Printf("[commandcode] marshal chunk with usage: %v", marshalErr)
+					} else {
+						chunk = string(b)
+					}
+				}
 			}
 		}
 		out = append(out, chunk)

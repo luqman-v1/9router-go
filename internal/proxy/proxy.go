@@ -33,8 +33,11 @@ func DoRequest(client *http.Client, method, url string, headers map[string]strin
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
+		errBody, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)
+		}
 		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
 	}
 	return resp, nil

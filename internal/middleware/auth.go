@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"log"
 	"net/http"
 
 	"9router/proxy/internal/constants"
@@ -33,10 +34,17 @@ func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 
 			// Validate via SQLite repository and retrieve details
 			apiKeyObj, err := repo.GetApiKeyByKey(apiKeyString)
-			if err != nil || apiKeyObj == nil {
+			if err != nil {
+				log.Printf("[auth] DB error looking up API key: %v", err)
+				w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte(`{"error":{"message":"Internal server error","type":"server_error"}}`))
+				return
+			}
+			if apiKeyObj == nil {
 				w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error": {"message": "Invalid API key.", "type": "invalid_request_error", "code": "invalid_api_key"}}`))
+				w.Write([]byte(`{"error":{"message":"Invalid API key.","type":"invalid_request_error","code":"invalid_api_key"}}`))
 				return
 			}
 

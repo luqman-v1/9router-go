@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"hash/crc32"
 	"net/http"
 	"net/http/httptest"
@@ -191,8 +192,8 @@ func TestForwardKiroRequest_UpstreamError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 401")
 	}
-	ue, ok := err.(*upstreamError)
-	if !ok {
+	var ue *upstreamError
+	if !errors.As(err, &ue) {
 		t.Fatalf("expected *upstreamError, got %T", err)
 	}
 	if ue.StatusCode != http.StatusUnauthorized {

@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -23,12 +24,12 @@ func OpenDatabase(path string) (*sql.DB, error) {
 	// Ensure the parent directory of the database file exists
 	dbDir := filepath.Dir(path)
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create db dir %s: %w", dbDir, err)
 	}
 
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sql.Open(%s): %w", path, err)
 	}
 
 	// Configure PRAGMAs for performance, safety, and concurrency.
@@ -45,7 +46,7 @@ PRAGMA busy_timeout = 5000;
 `
 	if _, err = db.Exec(pragmas); err != nil {
 		db.Close()
-		return nil, err
+		return nil, fmt.Errorf("pragma exec: %w", err)
 	}
 
 	// Configure connection pool limits for SQLite to reduce lock contention

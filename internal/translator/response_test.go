@@ -92,9 +92,23 @@ func TestTranslateOpenAIToClaudeStream_EdgeCases(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		// First chunk with zero choices should still emit message_start
-		if !strings.Contains(string(out), "event: message_start") {
-			t.Errorf("expected message_start for first zero-choice chunk, got: %s", out)
+		// Zero-choice sidecar (e.g. OpenCode inference-cost) must not bootstrap a message
+		if out != nil {
+			t.Errorf("expected nil for zero-choice with no state, got: %s", out)
+		}
+	})
+
+	t.Run("post-finish zero-choice cost chunk does not emit message_start", func(t *testing.T) {
+		id := "opencode-cost"
+		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"` + id + `","model":"deepseek","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`))
+		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"` + id + `","model":"deepseek","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`))
+		// OpenCode trailing sidecar after finish: empty choices
+		out, err := TranslateOpenAIToClaudeStream([]byte(`{"choices":[],"x-opencode-type":"inference-cost","normalizedUsage":{"inputTokens":84,"outputTokens":92}}`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out != nil {
+			t.Errorf("expected nil for post-finish cost chunk, got: %s", out)
 		}
 	})
 
@@ -170,7 +184,7 @@ func TestTranslateOpenAIToClaudeStream_EdgeCases(t *testing.T) {
 func TestTranslateOpenAIToClaude(t *testing.T) {
 	t.Run("basic text response", func(t *testing.T) {
 		input := []byte(`{"id":"chatcmpl-123","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`)
-		out, err := TranslateOpenAIToClaude(input)
+		out, _, err := TranslateOpenAIToClaude(input)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -194,7 +208,7 @@ func TestTranslateOpenAIToClaude(t *testing.T) {
 
 	t.Run("response with reasoning", func(t *testing.T) {
 		input := []byte(`{"id":"chatcmpl-r","model":"o3-mini","choices":[{"index":0,"message":{"role":"assistant","content":"Answer","reasoning_content":"Let me think..."},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":20}}`)
-		out, err := TranslateOpenAIToClaude(input)
+		out, _, err := TranslateOpenAIToClaude(input)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -209,7 +223,7 @@ func TestTranslateOpenAIToClaude(t *testing.T) {
 
 	t.Run("response with tool calls", func(t *testing.T) {
 		input := []byte(`{"id":"chatcmpl-t","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"Read","arguments":"{\"path\":\"/tmp\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`)
-		out, err := TranslateOpenAIToClaude(input)
+		out, _, err := TranslateOpenAIToClaude(input)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -226,14 +240,14 @@ func TestTranslateOpenAIToClaude(t *testing.T) {
 	})
 
 	t.Run("empty response returns error", func(t *testing.T) {
-		_, err := TranslateOpenAIToClaude([]byte(""))
+		_, _, err := TranslateOpenAIToClaude([]byte(""))
 		if err == nil {
 			t.Error("expected error for empty input")
 		}
 	})
 
 	t.Run("no choices returns error", func(t *testing.T) {
-		_, err := TranslateOpenAIToClaude([]byte(`{"id":"chatcmpl-empty","model":"gpt-4o","choices":[]}`))
+		_, _, err := TranslateOpenAIToClaude([]byte(`{"id":"chatcmpl-empty","model":"gpt-4o","choices":[]}`))
 		if err == nil {
 			t.Error("expected error for zero choices")
 		}
@@ -241,7 +255,7 @@ func TestTranslateOpenAIToClaude(t *testing.T) {
 
 	t.Run("proxy_ prefix stripped", func(t *testing.T) {
 		input := []byte(`{"id":"chatcmpl-proxy","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_p","type":"function","function":{"name":"proxy_Bash","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
-		out, err := TranslateOpenAIToClaude(input)
+		out, _, err := TranslateOpenAIToClaude(input)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -256,7 +270,7 @@ func TestTranslateOpenAIToClaude(t *testing.T) {
 	t.Run("usage tracked globally", func(t *testing.T) {
 		GetAndClearLastUsage()
 		input := []byte(`{"id":"chatcmpl-usage","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":42,"completion_tokens":8}}`)
-		_, _ = TranslateOpenAIToClaude(input)
+		_, _, _ = TranslateOpenAIToClaude(input)
 		u := GetAndClearLastUsage()
 		if u == nil {
 			t.Fatal("expected usage tracked")
@@ -286,7 +300,7 @@ func TestTranslateOpenAIToClaude_CompletionTokensDetails(t *testing.T) {
 	t.Run("captures reasoning_tokens from non-stream response", func(t *testing.T) {
 		GetAndClearLastUsage()
 		input := []byte(`{"id":"chatcmpl-detail","model":"o3-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":99,"completion_tokens_details":{"reasoning_tokens":80}}}`)
-		_, err := TranslateOpenAIToClaude(input)
+		_, _, err := TranslateOpenAIToClaude(input)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

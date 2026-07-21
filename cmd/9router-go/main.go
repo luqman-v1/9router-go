@@ -95,7 +95,10 @@ func mitmEnable(cCtx *cli.Context) error {
 }
 
 func mitmDisable(_ *cli.Context) error {
-	homeDir, _ := os.UserHomeDir()
+	homeDir, herr := os.UserHomeDir()
+	if herr != nil {
+		homeDir = "/tmp"
+	}
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
 		dataDir = homeDir + "/.9router"
@@ -109,7 +112,10 @@ func mitmDisable(_ *cli.Context) error {
 }
 
 func mitmStatus(_ *cli.Context) error {
-	homeDir, _ := os.UserHomeDir()
+	homeDir, herr := os.UserHomeDir()
+	if herr != nil {
+		homeDir = "/tmp"
+	}
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
 		dataDir = homeDir + "/.9router"

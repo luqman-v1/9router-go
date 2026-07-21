@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -58,13 +59,19 @@ func (r *Repo) GetApiKeyByKey(key string) (*models.APIKey, error) {
 
 // CreateProviderConnection inserts a new provider connection.
 func (r *Repo) CreateProviderConnection(id, provider, authType, name string, apiKey string) error {
-	data, _ := json.Marshal(map[string]string{"apiKey": apiKey})
+	data, err := json.Marshal(map[string]string{"apiKey": apiKey})
+	if err != nil {
+		return fmt.Errorf("marshal provider connection data: %w", err)
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := r.db.Exec(
+	_, err = r.db.Exec(
 		`INSERT INTO providerConnections (id, provider, authType, name, isActive, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
 		id, provider, authType, name, string(data), now, now,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("create provider connection: %w", err)
+	}
+	return nil
 }
 
 func (r *Repo) GetProviderConnectionByID(id string) (*models.ProviderConnection, error) {
@@ -150,8 +157,11 @@ func (r *Repo) GetModelAlias(alias string) (string, error) {
 		"SELECT value FROM kv WHERE scope = 'modelAliases' AND key = ? LIMIT 1",
 		alias,
 	).Scan(&rawVal)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("get model alias %s: %w", alias, err)
 	}
 	return parseJSONString(rawVal), nil
 }

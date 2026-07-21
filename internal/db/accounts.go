@@ -34,7 +34,10 @@ func (r *Repo) LockModel(provider, model string, durationSec int, lastError stri
 		`INSERT OR REPLACE INTO kv (scope, key, value) VALUES ('modelLock', ?, ?)`,
 		key, string(valueBytes),
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("lock model %s: %w", key, err)
+	}
+	return nil
 }
 
 // IsModelLocked checks whether a model lock exists and has not expired.
@@ -49,7 +52,7 @@ func (r *Repo) IsModelLocked(provider, model string) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("is model locked %s: %w", key, err)
 	}
 
 	var lock ModelLock
@@ -72,7 +75,10 @@ func (r *Repo) UnlockModel(provider, model string) error {
 		"DELETE FROM kv WHERE scope = 'modelLock' AND key = ?",
 		key,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("unlock model %s: %w", key, err)
+	}
+	return nil
 }
 
 // GetModelLock retrieves the current lock details for a model, if any.
@@ -88,7 +94,7 @@ func (r *Repo) GetModelLock(provider, model string) (*ModelLock, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get model lock %s: %w", key, err)
 	}
 
 	var lock ModelLock

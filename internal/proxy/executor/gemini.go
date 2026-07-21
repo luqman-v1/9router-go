@@ -17,7 +17,7 @@ import (
 func ForwardGemini(w http.ResponseWriter, req *Request) error {
 	resp, err := proxy.ForwardGemini(req.Client, req.Config, req.APIKey, string(req.Body), req.IsStream, req.ProjectID, req.ModelName)
 	if err != nil {
-		return err
+		return fmt.Errorf("ForwardGemini: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -100,7 +100,14 @@ func geminiNonStream(w http.ResponseWriter, upstream io.Reader) error {
 			FinishReason: &fr,
 		})
 	}
-	openaiResp, _ := json.Marshal(resp)
+	openaiResp, err := json.Marshal(resp)
+	if err != nil {
+		// Fall back to writing the raw Gemini response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(body)
+		return nil
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(openaiResp)

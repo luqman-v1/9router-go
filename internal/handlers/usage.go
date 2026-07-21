@@ -37,7 +37,7 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 			respContent = respContent[:constants.MaxResponseContentLen] + "...[truncated]"
 		}
 	}
-	reqData, _ := json.Marshal(map[string]any{
+	reqData, err := json.Marshal(map[string]any{
 		"id": reqID, "provider": info.Provider, "model": info.Model,
 		"connectionId": info.ConnectionID, "status": "success",
 		"timestamp": now.Format("2006-01-02T15:04:05.000Z"),
@@ -49,6 +49,10 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 		"request":  map[string]any{"messages": reqMsgs},
 		"response": map[string]any{"content": respContent},
 	})
+	if err != nil {
+		log.Printf("[usage] failed to marshal request detail data: %v", err)
+		return
+	}
 	if err := h.Repo.InsertRequestDetail(reqID, info.Provider, info.Model, info.ConnectionID, "success", string(reqData)); err != nil {
 		log.Printf("[error] component=request-detail err=\"insert: %v\"", err)
 	}

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -27,20 +28,29 @@ func (h *ChatHandler) handleAccountFallback(
 	endpoint string,
 ) error {
 	if pinnedConnectionID != "" {
-		_, connData, err := h.getBestConnection(provider, pinnedConnectionID, nil, model)
+		connObj, connData, err := h.getBestConnection(provider, pinnedConnectionID, nil, model)
 		if err != nil {
-			return err
+			return fmt.Errorf("pinned connection %s: %w", pinnedConnectionID, err)
 		}
-		return h.tryForwardWithConnection(w, provider, model, pinnedConnectionID, connData, body, isStream, translateResponse, endpoint)
+		log.Printf("[debug] fallback pinned: pinnedConnectionID=%q, connObj.ID=%q", pinnedConnectionID, connObj.ID)
+		return h.tryForwardWithConnection(w, provider, model, connObj.ID, connData, body, isStream, translateResponse, endpoint)
 	}
 
 	if !db.IsProviderHealthy(h.Repo.RawDB(), provider, model) {
 		log.Printf("[health] provider %s/%s is unhealthy (consecutive errors >= 5), skipping", provider, model)
+		return fmt.Errorf("provider %s/%s is unhealthy", provider, model)
 	}
 
 	locked, _ := h.Repo.IsModelLocked(provider, model)
 	allConns, err := h.Repo.GetProviderConnections(provider, true)
 	if err != nil || len(allConns) == 0 {
+		if cfg, ok := providers.KnownProviders[provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
+			apiKey := cfg.DefaultAPIKey
+			if apiKey == "" {
+				apiKey = "public"
+			}
+			return h.tryForwardWithConnection(w, provider, model, "default", &ConnectionData{APIKey: apiKey}, body, isStream, translateResponse, endpoint)
+		}
 		return fmt.Errorf("no active connections for provider: %s", provider)
 	}
 
@@ -56,15 +66,21 @@ func (h *ChatHandler) handleAccountFallback(
 		}
 		apiKey := extractAPIKey(connData)
 		if apiKey == "" {
-			continue
+			providerCfg, pErr := h.getProviderConfig(provider, connData)
+			if pErr == nil && providerCfg.DefaultAPIKey != "" {
+				apiKey = providerCfg.DefaultAPIKey
+			} else {
+				continue
+			}
 		}
-		if locked {
-		}
+		_ = locked // available for future use (model lock check)
+		log.Printf("[debug] fallback loop: conn.ID=%q, connObj.ID=%q", conn.ID, connObj.ID)
 		lastErr = h.tryForwardWithConnection(w, provider, model, connObj.ID, connData, body, isStream, translateResponse, endpoint)
 		if lastErr == nil {
 			return nil
 		}
-		if ue, ok := lastErr.(*upstreamError); ok && providers.RetryableStatusCodes[ue.StatusCode] {
+		var ue *upstreamError
+		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
 			durationSec := constants.DefaultLockDuration429
 			if ue.StatusCode == http.StatusUnauthorized {
 				durationSec = constants.DefaultLockDuration401
@@ -96,18 +112,24 @@ func (h *ChatHandler) tryForwardWithConnection(
 ) error {
 	providerCfg, err := h.getProviderConfig(provider, connData)
 	if err != nil {
-		return err
+		return fmt.Errorf("get config for %s/%s: %w", provider, model, err)
 	}
 
 	apiKey := extractAPIKey(connData)
 	if apiKey == "" {
-		return &upstreamError{StatusCode: http.StatusUnauthorized, Body: []byte(`{"error":{"message":"no API key found","type":"auth_error","code":401}}`)}
+		if providerCfg.DefaultAPIKey != "" {
+			apiKey = providerCfg.DefaultAPIKey
+		} else {
+			return &upstreamError{StatusCode: http.StatusUnauthorized, Body: []byte(`{"error":{"message":"no API key found","type":"auth_error","code":401}}`)}
+		}
 	}
 
 	if connectionID != "" {
 		rekey, _, err := h.refreshOAuthTokenIfExpired(connectionID, apiKey)
 		if err == nil {
 			apiKey = rekey
+		} else {
+			log.Printf("[oauth] token refresh error for connection %s: %v (using existing token)", connectionID, err)
 		}
 	}
 
@@ -125,7 +147,7 @@ func (h *ChatHandler) tryForwardWithConnection(
 			IsStream:       isStream,
 		})
 	} else if providerCfg.IsGeminiNative() {
-		fwdErr = h.forwardGeminiNativeRequest(w, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)
+		fwdErr = h.forwardGeminiNativeRequest(w, provider, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)
 	} else {
 		fwdErr = h.forwardRequest(w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
 	}
@@ -163,14 +185,24 @@ func (h *ChatHandler) tryForwardWithConnection(
 // applyTokenSavers runs RTK compression and prompt injection on the request body.
 func (h *ChatHandler) applyTokenSavers(body []byte) []byte {
 	out := body
+	var ok bool
 	if h.TokenSaver.RTKEnabled() {
-		out, _ = tokensaver.CompressMessages(out)
+		out, ok = tokensaver.CompressMessages(out)
+		if !ok {
+			log.Printf("[tokensaver] RTK compression failed")
+		}
 	}
 	if h.TokenSaver.CavemanEnabled() {
-		out, _ = tokensaver.InjectSystemPrompt(out, tokensaver.CavemanPrompt)
+		out, ok = tokensaver.InjectSystemPrompt(out, tokensaver.CavemanPrompt)
+		if !ok {
+			log.Printf("[tokensaver] Caveman injection failed")
+		}
 	}
 	if h.TokenSaver.PonytailEnabled() {
-		out, _ = tokensaver.InjectSystemPrompt(out, tokensaver.PonytailPrompt)
+		out, ok = tokensaver.InjectSystemPrompt(out, tokensaver.PonytailPrompt)
+		if !ok {
+			log.Printf("[tokensaver] Ponytail injection failed")
+		}
 	}
 	return out
 }

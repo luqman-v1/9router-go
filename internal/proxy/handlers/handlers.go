@@ -3,7 +3,9 @@
 package proxyhandlers
 
 import (
+	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -31,22 +33,29 @@ func SSEStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 				if buf != nil {
 					buf.Write(b[:n])
 				}
-				w.Write(b[:n])
+				if _, werr := w.Write(b[:n]); werr != nil {
+					return fmt.Errorf("write SSE chunk: %w", werr)
+				}
 				if flusher != nil {
 					flusher.Flush()
 				}
 			}
 			if err != nil {
-				break
+				if err == io.EOF {
+					return nil
+				}
+				return fmt.Errorf("reading upstream SSE: %w", err)
 			}
 		}
-		return nil
 	}
 
 	flusher, _ := w.(http.Flusher)
 	return proxy.ScanStream(upstream, func(chunk []byte) {
 		translated, err := translator.TranslateOpenAIToClaudeStream(chunk)
 		if err != nil || translated == nil {
+			if err != nil {
+				log.Printf("[sse] translate error: %v", err)
+			}
 			return
 		}
 		if ttft != nil && *ttft == 0 {
@@ -55,7 +64,9 @@ func SSEStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 		if buf != nil {
 			buf.Write(translated)
 		}
-		w.Write(translated)
+		if _, werr := w.Write(translated); werr != nil {
+			log.Printf("[sse] write translated chunk: %v", werr)
+		}
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -66,17 +77,22 @@ func SSEStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 func JSONResponse(w http.ResponseWriter, upstream io.Reader, translate bool) error {
 	body, err := io.ReadAll(upstream)
 	if err != nil {
-		return err
+		return fmt.Errorf("read upstream response body: %w", err)
 	}
 
 	if !translate {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write(body)
+		if _, werr := w.Write(body); werr != nil {
+			return fmt.Errorf("write JSON response: %w", werr)
+		}
 		return nil
 	}
 
-	translated, err := translator.TranslateOpenAIToClaude(body)
+	translated, usage, err := translator.TranslateOpenAIToClaude(body)
+	if err == nil && usage != nil {
+		translator.SetLastUsage(usage)
+	}
 	if err != nil || translated == nil {
 		errMsg := "failed to translate upstream response to Claude format"
 		if err != nil {
@@ -88,7 +104,9 @@ func JSONResponse(w http.ResponseWriter, upstream io.Reader, translate bool) err
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write(translated)
+	if _, werr := w.Write(translated); werr != nil {
+		return fmt.Errorf("write translated JSON response: %w", werr)
+	}
 	return nil
 }
 

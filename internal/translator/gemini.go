@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -173,7 +174,9 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 			// Tool calls → functionCall parts
 			for _, tc := range msg.ToolCalls {
 				var args map[string]any
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+					args = make(map[string]any)
+				}
 				parts = append(parts, GeminiPart{
 					FunctionCall: &GeminiFunctionCall{Name: tc.Function.Name, Args: args},
 				})
@@ -190,10 +193,19 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 			if idx := strings.Index(name, "_"); idx > 0 {
 				name = name[idx+1:]
 			}
+			// Tool result content may be plain text or JSON.
+			// Gemini requires the result to be valid JSON.
+			var resultValue any
+			if json.Valid([]byte(content)) {
+				resultValue = json.RawMessage(content)
+			} else {
+				// Wrap plain text as a JSON object
+				resultValue = map[string]string{"output": content}
+			}
 			parts := []GeminiPart{{
 				FunctionResponse: &GeminiFunctionResp{
-					Name: name,
-					Response: &GeminiFuncResp{Result: json.RawMessage(content)},
+					Name:     name,
+					Response: &GeminiFuncResp{Result: resultValue},
 				},
 			}}
 			req.Contents = append(req.Contents, GeminiContent{Role: "user", Parts: parts})
@@ -203,22 +215,21 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	// Tools
 	if len(oreq.Tools) > 0 {
 		var openaiTools []OpenAITool
-		if err := json.Unmarshal(oreq.Tools, &openaiTools); err == nil {
-			var decls []GeminiFunctionDecl
-			for _, t := range openaiTools {
-				params := t.Function.Parameters
-				if params == nil || string(params) == "null" {
-					params = json.RawMessage(`{"type":"object","properties":{}}`)
-				}
-				decls = append(decls, GeminiFunctionDecl{
-					Name:        t.Function.Name,
-					Description: t.Function.Description,
-					Parameters:  params,
-				})
-			}
-			if len(decls) > 0 {
-				req.Tools = []GeminiTool{{FunctionDeclarations: decls}}
-			}
+		if err := json.Unmarshal(oreq.Tools, &openaiTools); err != nil {
+			return nil, fmt.Errorf("parse tools: %w", err)
+		}
+		var decls []GeminiFunctionDecl
+		for _, t := range openaiTools {
+			params := t.Function.Parameters
+			params = CleanParametersSchema(params)
+			decls = append(decls, GeminiFunctionDecl{
+				Name:        t.Function.Name,
+				Description: t.Function.Description,
+				Parameters:  params,
+			})
+		}
+		if len(decls) > 0 {
+			req.Tools = []GeminiTool{{FunctionDeclarations: decls}}
 		}
 	}
 
@@ -242,11 +253,18 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		}
 	}
 	if len(genConfig) > 0 {
-		configJSON, _ := json.Marshal(genConfig)
+		configJSON, err := json.Marshal(genConfig)
+		if err != nil {
+			return nil, fmt.Errorf("marshal generation config: %w", err)
+		}
 		req.GenerationConfig = configJSON
 	}
 
-	return json.Marshal(req)
+	out, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal gemini request: %w", err)
+	}
+	return out, nil
 }
 
 // effortToBudget converts reasoning_effort string to thinking budget tokens.
@@ -264,14 +282,13 @@ func effortToBudget(effort string) int {
 // ─── Gemini Response → OpenAI ───
 
 // TranslateGeminiResponseToOpenAI converts a non-stream Gemini response to OpenAI format.
-// If translateResponse is true, it's for the /v1/messages path (Claude-compat).
-func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, error) {
+func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, error) {
 	var geminiResp GeminiResponse
 	if err := json.Unmarshal(geminiBody, &geminiResp); err != nil {
-		return nil, fmt.Errorf("parse Gemini response: %w", err)
+		return nil, nil, fmt.Errorf("parse Gemini response: %w", err)
 	}
 	if len(geminiResp.Candidates) == 0 {
-		return nil, fmt.Errorf("no candidates in Gemini response")
+		return nil, nil, fmt.Errorf("no candidates in Gemini response")
 	}
 
 	content := geminiResp.Candidates[0].Content
@@ -295,9 +312,12 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, error) {
 				reasoningContent += part.Text
 			}
 			if part.FunctionCall != nil {
-				args, _ := json.Marshal(part.FunctionCall.Args)
+				args, err := json.Marshal(part.FunctionCall.Args)
+				if err != nil {
+					args = []byte("{}")
+				}
 				toolCalls = append(toolCalls, OpenAIToolCall{
-					ID:   fmt.Sprintf("call_%s", part.FunctionCall.Name),
+					ID:   fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, len(toolCalls)),
 					Type: "function",
 					Function: OpenAIFunctionCall{
 						Name:      part.FunctionCall.Name,
@@ -337,13 +357,14 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, error) {
 		}
 	}
 
-	SetLastUsage(&OpenAIUsage{
+	usage := &OpenAIUsage{
 		PromptTokens:     inputTokens,
 		CompletionTokens: outputTokens,
 		CompletionTokensDetails: &CompletionTokensDetails{
 			ReasoningTokens: reasoningTokens,
 		},
-	})
+	}
+	SetLastUsage(usage) // still call it just in case someone else relies on it temporarily
 
 	resp := map[string]interface{}{
 		"id":     fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
@@ -377,7 +398,11 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, error) {
 		delete(resp["choices"].([]map[string]interface{})[0]["message"].(map[string]interface{}), "tool_calls")
 	}
 
-	return json.Marshal(resp)
+	out, err := json.Marshal(resp)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal OpenAI response: %w", err)
+	}
+	return out, usage, nil
 }
 
 // TranslateGeminiChunkToOpenAI converts a Gemini SSE stream chunk to OpenAI SSE format.
@@ -405,21 +430,24 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 
 	var results []map[string]interface{}
 
-	// Message start on first actual content
+	// First chunk setup
 	if !state.MessageStartSent {
-		// Check if this chunk has actual content
-		if len(geminiChunk.Candidates) > 0 && geminiChunk.Candidates[0].Content != nil {
-			state.MessageStartSent = true
-			results = append(results, map[string]interface{}{
-				"type": "message_start",
-				"message": map[string]interface{}{
-					"id":    state.MessageId,
-					"type":  "message",
-					"role":  "assistant",
-					"model": state.Model,
+		state.MessageStartSent = true
+		results = append(results, map[string]interface{}{
+			"id":      state.MessageId,
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   state.Model,
+			"choices": []map[string]interface{}{
+				{
+					"index": 0,
+					"delta": map[string]interface{}{
+						"role": "assistant",
+					},
+					"finish_reason": nil,
 				},
-			})
-		}
+			},
+		})
 	}
 
 	if len(geminiChunk.Candidates) > 0 {
@@ -427,37 +455,41 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 
 		if candidate.Content != nil {
 			for _, part := range candidate.Content.Parts {
+				delta := map[string]interface{}{}
 				if part.Text != "" && (part.Thought == nil || !*part.Thought) {
-					results = append(results, map[string]interface{}{
-						"type": "content_block_delta",
-						"delta": map[string]interface{}{
-							"type":    "text_delta",
-							"content": part.Text,
-						},
-					})
+					delta["content"] = part.Text
 				}
 				if part.Text != "" && part.Thought != nil && *part.Thought {
-					results = append(results, map[string]interface{}{
-						"type": "content_block_delta",
-						"delta": map[string]interface{}{
-							"type":              "reasoning_delta",
-							"reasoning_content": part.Text,
-						},
-					})
+					delta["reasoning_content"] = part.Text
 				}
 				if part.FunctionCall != nil {
-					args, _ := json.Marshal(part.FunctionCall.Args)
+					args, err := json.Marshal(part.FunctionCall.Args)
+					if err != nil {
+						args = []byte("{}")
+					}
+					delta["tool_calls"] = []map[string]interface{}{
+						{
+							"index": 0,
+							"id":    fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, time.Now().UnixNano()),
+							"type":  "function",
+							"function": map[string]interface{}{
+								"name":      part.FunctionCall.Name,
+								"arguments": string(args),
+							},
+						},
+					}
+				}
+				if len(delta) > 0 {
 					results = append(results, map[string]interface{}{
-						"type": "content_block_delta",
-						"delta": map[string]interface{}{
-							"type": "tool_call_delta",
-							"tool_call": map[string]interface{}{
-								"id":   fmt.Sprintf("call_%s", part.FunctionCall.Name),
-								"type": "function",
-								"function": map[string]interface{}{
-									"name":      part.FunctionCall.Name,
-									"arguments": string(args),
-								},
+						"id":      state.MessageId,
+						"object":  "chat.completion.chunk",
+						"created": time.Now().Unix(),
+						"model":   state.Model,
+						"choices": []map[string]interface{}{
+							{
+								"index": 0,
+								"delta": delta,
+								"finish_reason": nil,
 							},
 						},
 					})
@@ -467,16 +499,16 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 
 		// Finish reason
 		if candidate.FinishReason != "" {
-			claudeStop := "end_turn"
+			openAIStop := "stop"
 			switch candidate.FinishReason {
 			case "STOP":
-				claudeStop = "end_turn"
+				openAIStop = "stop"
 			case "MAX_TOKENS":
-				claudeStop = "max_tokens"
-			case "SAFETY":
-				claudeStop = "end_turn"
+				openAIStop = "length"
+			case "SAFETY", "RECITATION", "OTHER":
+				openAIStop = "stop"
 			default:
-				claudeStop = "end_turn"
+				openAIStop = "stop"
 			}
 
 			inputTokens, outputTokens := 0, 0
@@ -491,16 +523,46 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 			}
 
 			results = append(results, map[string]interface{}{
-				"type": "message_delta",
-				"delta": map[string]interface{}{
-					"stop_reason":   claudeStop,
-					"stop_sequence": nil,
+				"id":      state.MessageId,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   state.Model,
+				"choices": []map[string]interface{}{
+					{
+						"index": 0,
+						"delta": map[string]interface{}{},
+						"finish_reason": openAIStop,
+					},
+				},
+				"usage": map[string]interface{}{
+					"prompt_tokens":     inputTokens,
+					"completion_tokens": outputTokens,
+					"total_tokens":      inputTokens + outputTokens,
 				},
 			})
-			results = append(results, map[string]interface{}{
-				"type": "message_stop",
-			})
 		}
+	}
+
+	if len(results) == 0 && geminiChunk.UsageMetadata != nil {
+		// Just usage update chunk
+		inputTokens := geminiChunk.UsageMetadata.PromptTokenCount
+		outputTokens := geminiChunk.UsageMetadata.CandidatesTokenCount
+		state.Usage = &OpenAIUsage{
+			PromptTokens:     inputTokens,
+			CompletionTokens: outputTokens,
+		}
+		results = append(results, map[string]interface{}{
+			"id":      state.MessageId,
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   state.Model,
+			"choices": []interface{}{},
+			"usage": map[string]interface{}{
+				"prompt_tokens":     inputTokens,
+				"completion_tokens": outputTokens,
+				"total_tokens":      inputTokens + outputTokens,
+			},
+		})
 	}
 
 	if len(results) == 0 {
@@ -510,7 +572,10 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 	// Format as multiple SSE lines
 	var buf bytes.Buffer
 	for _, res := range results {
-		payload, _ := json.Marshal(res)
+		payload, err := json.Marshal(res)
+		if err != nil {
+			continue
+		}
 		buf.WriteString(fmt.Sprintf("data: %s\n\n", string(payload)))
 	}
 	return buf.Bytes(), nil
@@ -594,7 +659,11 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 		RequestID:   fmt.Sprintf("agent/%s/%d/%s/%d", projectID, time.Now().UnixMilli(), modelName, 1),
 		Request:     geminiBody,
 	}
-	return json.Marshal(wrapper)
+	out, err := json.Marshal(wrapper)
+	if err != nil {
+		return nil, fmt.Errorf("marshal antigravity wrapper: %w", err)
+	}
+	return out, nil
 }
 
 // UnwrapAntigravityResponse extracts the inner Gemini response from antigravity envelope.
@@ -602,7 +671,12 @@ func UnwrapAntigravityResponse(raw []byte) []byte {
 	var envelope struct {
 		Response json.RawMessage `json:"response"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Response) == 0 {
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		log.Printf("unmarshal antigravity envelope failed: %v", err)
+		return raw // passthrough on failure
+	}
+	if len(envelope.Response) == 0 {
+		log.Printf("antigravity envelope has empty response field")
 		return raw // passthrough on failure
 	}
 	return []byte(envelope.Response)

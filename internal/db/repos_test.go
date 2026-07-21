@@ -241,8 +241,11 @@ func TestModelAliases(t *testing.T) {
 
 	// Test nonexistent alias
 	val, err = repo.GetModelAlias("nonexistent")
-	if err != sql.ErrNoRows {
-		t.Errorf("expected sql.ErrNoRows, got err: %v, val: %s", err, val)
+	if err != nil {
+		t.Errorf("expected nil err for nonexistent alias, got: %v", err)
+	}
+	if val != "" {
+		t.Errorf("expected empty string for nonexistent alias, got: %s", val)
 	}
 
 	// Test GetModelAliases (all aliases)

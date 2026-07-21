@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/hex"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -80,7 +81,9 @@ func LoadConfig() *Config {
 	}
 
 	// Ensure the base data directory exists
-	_ = os.MkdirAll(dataDir, constants.FilePermDir)
+	if err := os.MkdirAll(dataDir, constants.FilePermDir); err != nil {
+		log.Printf("[config] warning: could not create data directory %s: %v", dataDir, err)
+	}
 
 	// Database file: DB_PATH overrides default DATA_DIR/db/data.sqlite
 	dbPath := os.Getenv("DB_PATH")
@@ -139,6 +142,8 @@ func loadJWTSecret(dataDir string) string {
 	}
 
 	generated := hex.EncodeToString(bytes)
-	_ = os.WriteFile(secretFile, []byte(generated), constants.FilePermKey)
+	if err := os.WriteFile(secretFile, []byte(generated), constants.FilePermKey); err != nil {
+		log.Printf("[config] warning: could not write JWT secret file %s: %v", secretFile, err)
+	}
 	return generated
 }

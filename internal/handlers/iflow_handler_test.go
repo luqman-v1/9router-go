@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -135,8 +136,8 @@ func TestForwardIflowRequest_UpstreamError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 401")
 	}
-	ue, ok := err.(*upstreamError)
-	if !ok {
+	var ue *upstreamError
+	if !errors.As(err, &ue) {
 		t.Fatalf("expected *upstreamError, got %T", err)
 	}
 	if ue.StatusCode != http.StatusUnauthorized {

@@ -3,6 +3,7 @@ package translator
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 )
@@ -35,6 +36,7 @@ func parseSystemPrompt(systemRaw json.RawMessage) string {
 		return strings.Join(parts, "\n")
 	}
 
+	log.Printf("[translator] parseSystemPrompt: both string and block unmarshal failed")
 	return ""
 }
 
@@ -269,6 +271,7 @@ func convertToolChoice(choiceRaw *json.RawMessage) any {
 			}
 		}
 	}
+	log.Printf("[translator] convertToolChoice: both string and object unmarshal failed for %s", string(*choiceRaw))
 	return "auto"
 }
 
@@ -276,7 +279,7 @@ func convertToolChoice(choiceRaw *json.RawMessage) any {
 func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 	var creq ClaudeRequest
 	if err := json.Unmarshal(claudeBody, &creq); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshal Claude request body: %w", err)
 	}
 
 	var oreq OpenAIRequest
@@ -293,10 +296,10 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		})
 	}
 
-	for _, msg := range creq.Messages {
+	for i, msg := range creq.Messages {
 		converted, err := convertClaudeMessage(msg)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("convert msg[%d]: %w", i, err)
 		}
 		oreq.Messages = append(oreq.Messages, converted...)
 	}
@@ -327,5 +330,9 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		oreq.ReasoningEffort = budgetToEffort(creq.Thinking.Budget)
 	}
 
-	return json.Marshal(oreq)
+	out, err := json.Marshal(oreq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal OpenAI request: %w", err)
+	}
+	return out, nil
 }

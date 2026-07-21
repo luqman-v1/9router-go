@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"net/http/httptest"
@@ -121,8 +122,8 @@ func TestTryForwardWithConnection_NoAPIKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when API key missing")
 	}
-	ue, ok := err.(*upstreamError)
-	if !ok {
+	var ue *upstreamError
+	if !errors.As(err, &ue) {
 		t.Fatalf("expected *upstreamError, got %T", err)
 	}
 	if ue.StatusCode != http.StatusUnauthorized {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -19,13 +20,17 @@ import (
 func ForwardGemini(w http.ResponseWriter, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream, translateResponse bool, projectID, modelName string) error {
 	resp, err := proxy.ForwardGemini(client, cfg, apiKey, string(body), isStream, projectID, modelName)
 	if err != nil {
-		return err
+		return fmt.Errorf("forward to Gemini: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// Unwrap antigravity envelope
 	if projectID != "" {
-		raw, _ := io.ReadAll(resp.Body)
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			resp.Body.Close()
+			return fmt.Errorf("read antigravity response body: %w", err)
+		}
 		resp.Body.Close()
 		unwrapped := translator.UnwrapAntigravityResponse(raw)
 		if isStream {
@@ -64,10 +69,17 @@ func geminiStream(w http.ResponseWriter, upstream io.Reader, translateResponse b
 		dataStr := strings.TrimPrefix(chunkStr, "data: ")
 		openaiChunk, err := translator.TranslateGeminiChunkToOpenAI([]byte(dataStr), state)
 		if err != nil || openaiChunk == nil {
+			if err != nil {
+				log.Printf("[gemini_stream] translate error: %v", err)
+			}
 			return
 		}
-		w.Write(openaiChunk)
-		w.Write([]byte("\n\n"))
+		if _, werr := w.Write(openaiChunk); werr != nil {
+			log.Printf("[gemini_stream] write chunk: %v", werr)
+		}
+		if _, werr := w.Write([]byte("\n\n")); werr != nil {
+			log.Printf("[gemini_stream] write separator: %v", werr)
+		}
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -77,7 +89,7 @@ func geminiStream(w http.ResponseWriter, upstream io.Reader, translateResponse b
 func geminiNonStream(w http.ResponseWriter, upstream io.Reader) error {
 	body, err := io.ReadAll(upstream)
 	if err != nil {
-		return err
+		return fmt.Errorf("read Gemini non-stream body: %w", err)
 	}
 
 	var geminiResp struct {
@@ -131,9 +143,14 @@ func geminiNonStream(w http.ResponseWriter, upstream io.Reader) error {
 			FinishReason: &fr,
 		})
 	}
-	openaiResp, _ := json.Marshal(resp)
+	openaiResp, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("marshal OpenAI response: %w", err)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write(openaiResp)
+	if _, werr := w.Write(openaiResp); werr != nil {
+		return fmt.Errorf("write Gemini non-stream response: %w", werr)
+	}
 	return nil
 }

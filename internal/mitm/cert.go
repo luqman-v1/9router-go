@@ -152,16 +152,16 @@ func generateRootCA() (*x509.Certificate, crypto.PrivateKey, error) {
 func saveRootCA(certPath, keyPath string, cert *x509.Certificate, key crypto.PrivateKey) error {
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
 	if err := os.WriteFile(certPath, certPEM, 0644); err != nil {
-		return err
+		return fmt.Errorf("write root CA cert %s: %w", certPath, err)
 	}
 
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal root CA key: %w", err)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
-		return err
+		return fmt.Errorf("write root CA key %s: %w", keyPath, err)
 	}
 
 	return nil
@@ -261,12 +261,17 @@ func GetOrCreateLeafCert(baseDir, domain string, caCert *x509.Certificate, caKey
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
-	os.WriteFile(certPath, certPEM, 0644)
+	if err := os.WriteFile(certPath, certPEM, 0644); err != nil {
+		return nil, nil, fmt.Errorf("write leaf cert %s: %w", certPath, err)
+	}
 
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
-	if err == nil {
-		keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-		os.WriteFile(keyPath, keyPEM, 0600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal leaf key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+		return nil, nil, fmt.Errorf("write leaf key %s: %w", keyPath, err)
 	}
 
 	return cert, key, nil

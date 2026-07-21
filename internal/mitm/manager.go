@@ -104,6 +104,8 @@ func ConfigFilePath(baseDir string) string {
 // LogDir returns the MITM log directory.
 func LogDir(baseDir string) string {
 	d := filepath.Join(MITMDir(baseDir), "logs")
-	os.MkdirAll(d, 0700)
+	if err := os.MkdirAll(d, 0700); err != nil {
+		log.Printf("[mitm] warning: could not create log dir %s: %v", d, err)
+	}
 	return d
 }

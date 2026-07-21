@@ -29,7 +29,7 @@ func ForwardOpenAI(client *http.Client, cfg *providers.ProviderConfig, apiKey st
 	}
 	resp, err := DoRequest(client, "POST", cfg.BaseURL, headers, body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("forward to %s: %w", cfg.BaseURL, err)
 	}
 	return resp, nil
 }
@@ -44,7 +44,7 @@ func ReadBody(resp *http.Response) ([]byte, error) {
 func UpstreamBody(resp *http.Response) ([]byte, error) {
 	body, err := ReadBody(resp)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read upstream body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: body}

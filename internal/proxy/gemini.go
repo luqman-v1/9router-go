@@ -34,6 +34,12 @@ func ForwardGemini(client *http.Client, cfg *providers.ProviderConfig, apiKey, b
 
 	// Build URL
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	if idx := strings.Index(baseURL, "/v1beta/openai"); idx != -1 {
+		baseURL = baseURL[:idx]
+	} else if idx := strings.Index(baseURL, "/v1/"); idx != -1 {
+		baseURL = baseURL[:idx]
+	}
+
 	action := "generateContent"
 	if isStream {
 		action = "streamGenerateContent?alt=sse"
@@ -42,7 +48,7 @@ func ForwardGemini(client *http.Client, cfg *providers.ProviderConfig, apiKey, b
 	if projectID != "" {
 		requestURL = fmt.Sprintf("%s/v1internal:%s", baseURL, action)
 	} else {
-		requestURL = fmt.Sprintf("%s/%s:%s", baseURL, modelName, action)
+		requestURL = fmt.Sprintf("%s/v1beta/models/%s:%s", baseURL, modelName, action)
 	}
 
 	headers := map[string]string{
@@ -64,8 +70,11 @@ func ForwardGemini(client *http.Client, cfg *providers.ProviderConfig, apiKey, b
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
+		errBody, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)
+		}
 		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
 	}
 	return resp, nil

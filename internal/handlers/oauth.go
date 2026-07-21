@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -71,7 +72,12 @@ func (h *ChatHandler) HandleOAuthImport(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	data, _ := json.Marshal(dataFields)
+	data, err := json.Marshal(dataFields)
+	if err != nil {
+		log.Printf("[oauth] failed to marshal import data for %s: %v", provider, err)
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to process connection data")
+		return
+	}
 
 	now := currentTimestamp()
 	_, err = h.Repo.RawDB().Exec(
@@ -160,7 +166,11 @@ func (h *ChatHandler) HandleOAuthKiroSocialExchange(w http.ResponseWriter, r *ht
 	defer tokenResp.Body.Close()
 
 	var tokenData map[string]any
-	json.NewDecoder(tokenResp.Body).Decode(&tokenData)
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenData); err != nil {
+		log.Printf("[oauth] failed to decode token response: %v", err)
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to decode token response")
+		return
+	}
 	if accessToken, ok := tokenData["access_token"].(string); ok {
 		// Save as kiro provider connection
 		connID := fmt.Sprintf("kiro-oauth-%d", len(accessToken)%10000)
@@ -173,12 +183,18 @@ func (h *ChatHandler) HandleOAuthKiroSocialExchange(w http.ResponseWriter, r *ht
 		if refreshToken, ok := tokenData["refresh_token"].(string); ok {
 			dataMap["refreshToken"] = refreshToken
 		}
-		data, _ := json.Marshal(dataMap)
-		now := currentTimestamp()
-		h.Repo.RawDB().Exec(
-			`INSERT INTO providerConnections (id, provider, authType, name, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'oauth', ?, 1, ?, ?, ?)`,
-			connID, "kiro", "Kiro Social", string(data), now, now,
-		)
+		data, err := json.Marshal(dataMap)
+		if err != nil {
+			log.Printf("[oauth] failed to marshal Kiro social data: %v", err)
+		} else {
+			now := currentTimestamp()
+			if _, err := h.Repo.RawDB().Exec(
+				`INSERT INTO providerConnections (id, provider, authType, name, isActive, data, createdAt, updatedAt) VALUES (?, ?, 'oauth', ?, 1, ?, ?, ?)`,
+				connID, "kiro", "Kiro Social", string(data), now, now,
+			); err != nil {
+				log.Printf("[oauth] failed to save Kiro social connection: %v", err)
+			}
+		}
 		tokenData["id"] = connID
 	}
 
@@ -216,9 +232,13 @@ func (h *ChatHandler) HandleOAuthCodexBulkImport(w http.ResponseWriter, r *http.
 			name = "Codex import"
 		}
 		connID := fmt.Sprintf("codex-bulk-%d", len(t.AccessToken)%10000)
-		data, _ := json.Marshal(map[string]string{"accessToken": t.AccessToken})
+		data, err := json.Marshal(map[string]string{"accessToken": t.AccessToken})
+		if err != nil {
+			log.Printf("[oauth] failed to marshal Codex bulk import data: %v", err)
+			continue
+		}
 		now := currentTimestamp()
-		_, err := h.Repo.RawDB().Exec(
+		_, err = h.Repo.RawDB().Exec(
 			`INSERT INTO providerConnections (id, provider, authType, name, isActive, data, createdAt, updatedAt) VALUES (?, 'codex', 'oauth', ?, 1, ?, ?, ?)`,
 			connID, name, string(data), now, now,
 		)
@@ -253,7 +273,11 @@ func randomString(n int) string {
 	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, n)
 	for i := range b {
-		randInt, _ := cryptoRandInt(len(letters))
+		randInt, err := cryptoRandInt(len(letters))
+		if err != nil {
+			// Fallback to less secure but reliable math/rand
+			panic(fmt.Sprintf("crypto/rand failed: %v", err))
+		}
 		b[i] = letters[randInt%len(letters)]
 	}
 	return string(b)

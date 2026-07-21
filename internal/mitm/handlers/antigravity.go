@@ -18,7 +18,11 @@ func HandleAntigravity(w http.ResponseWriter, r *http.Request, body []byte) {
 		reqBody["model"] = "antigravity/" + model
 	}
 	reqBody["userAgent"] = "antigravity"
-	forwardBody, _ := json.Marshal(reqBody)
+	forwardBody, err := json.Marshal(reqBody)
+	if err != nil {
+		SendError(w, http.StatusInternalServerError, "failed to marshal Antigravity request")
+		return
+	}
 
 	isStream := len(r.URL.Query().Get("alt")) > 0 || len(r.URL.Query().Get(":streamGenerateContent")) > 0
 

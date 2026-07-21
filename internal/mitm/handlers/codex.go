@@ -18,7 +18,11 @@ func HandleCodex(w http.ResponseWriter, r *http.Request, body []byte) {
 	if model != "" && !strings.Contains(model, "/") {
 		reqBody["model"] = "codex/" + model
 	}
-	forwardBody, _ := json.Marshal(reqBody)
+	forwardBody, err := json.Marshal(reqBody)
+	if err != nil {
+		SendError(w, http.StatusInternalServerError, "failed to marshal Codex request")
+		return
+	}
 
 	upstream, err := FetchRouter(forwardBody, "/v1/responses", r.Header, "")
 	if err != nil {

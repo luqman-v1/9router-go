@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net/http"
 	"os"
@@ -135,7 +136,10 @@ func getMimoJWT() (string, error) {
 	}
 
 	fingerprint := generateMimoFingerprint()
-	bootstrapBody, _ := json.Marshal(map[string]string{"client": fingerprint})
+	bootstrapBody, err := json.Marshal(map[string]string{"client": fingerprint})
+	if err != nil {
+		return "", fmt.Errorf("bootstrap marshal: %w", err)
+	}
 
 	resp, err := http.Post(mimoBootstrapURL, "application/json", bytes.NewReader(bootstrapBody))
 	if err != nil {
@@ -200,6 +204,10 @@ func injectMimoMarker(body []byte) []byte {
 	newMessages := append([]any{markerMsg}, messages...)
 	req["messages"] = newMessages
 
-	patched, _ := json.Marshal(req)
+	patched, err := json.Marshal(req)
+	if err != nil {
+		log.Printf("[mimo] failed to marshal patched request with marker: %v", err)
+		return body
+	}
 	return patched
 }

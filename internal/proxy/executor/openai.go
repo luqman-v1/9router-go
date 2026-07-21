@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -12,7 +13,7 @@ import (
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	resp, err := proxy.ForwardOpenAI(req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
 	if err != nil {
-		return err
+		return fmt.Errorf("ForwardOpenAI upstream: %w", err)
 	}
 	defer resp.Body.Close()
 	if req.IsStream {
@@ -55,16 +56,11 @@ func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 	})
 }
 
-// jsonResponse writes JSON with optional Claude-format translation.
+// jsonResponse writes the upstream JSON response.
+// TODO: When translate==true, call Claude translation.
 func jsonResponse(w http.ResponseWriter, upstream io.Reader, translate bool) error {
 	body, err := io.ReadAll(upstream)
-	if err != nil { return err }
-	if !translate {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write(body)
-		return nil
-	}
+	if err != nil { return fmt.Errorf("read upstream response: %w", err) }
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(body)

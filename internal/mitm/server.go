@@ -70,7 +70,7 @@ func (s *Server) Start() error {
 
 	caCert, caKey, err := EnsureRootCA(s.baseDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("ensure root CA: %w", err)
 	}
 
 	tlsConfig := &tls.Config{
@@ -80,14 +80,14 @@ func (s *Server) Start() error {
 			}
 			leafCert, leafKey, err := GetOrCreateLeafCert(s.baseDir, hello.ServerName, caCert, caKey)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("get leaf cert for %s: %w", hello.ServerName, err)
 			}
 			leafDER, err := tls.X509KeyPair(
 				certToPEM(leafCert),
 				privateKeyToPEM(leafKey),
 			)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("X509KeyPair for %s: %w", hello.ServerName, err)
 			}
 			return &leafDER, nil
 		},

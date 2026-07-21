@@ -18,7 +18,11 @@ func HandleCopilot(w http.ResponseWriter, r *http.Request, body []byte) {
 	if model != "" && !strings.Contains(model, "/") {
 		reqBody["model"] = "github/" + model
 	}
-	forwardBody, _ := json.Marshal(reqBody)
+	forwardBody, err := json.Marshal(reqBody)
+	if err != nil {
+		SendError(w, http.StatusInternalServerError, "failed to marshal Copilot request")
+		return
+	}
 
 	upstream, err := FetchRouter(forwardBody, "/v1/chat/completions", r.Header, "")
 	if err != nil {

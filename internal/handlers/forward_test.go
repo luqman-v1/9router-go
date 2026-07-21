@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -189,8 +190,8 @@ func TestForwardRequest_UpstreamError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected upstream error")
 	}
-	ue, ok := err.(*upstreamError)
-	if !ok {
+	var ue *upstreamError
+	if !errors.As(err, &ue) {
 		t.Fatalf("expected *upstreamError, got %T", err)
 	}
 	if ue.StatusCode != http.StatusTooManyRequests {
