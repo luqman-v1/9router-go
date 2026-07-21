@@ -343,7 +343,7 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 	if lastErr != nil {
 		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		if earliestRetryAfter != "" {
-			retryAfterSec := int((time.Until(mustParseTime(earliestRetryAfter)) + 999) / 1000000000)
+			retryAfterSec := int((time.Until(mustParseTime(earliestRetryAfter)) + time.Second - 1) / time.Second)
 			if retryAfterSec < 1 {
 				retryAfterSec = 1
 			}
@@ -466,7 +466,7 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 	if lastErr != nil {
 		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		if earliestRetryAfter != "" {
-			retryAfterSec := int((time.Until(mustParseTime(earliestRetryAfter)) + 999) / 1000000000)
+			retryAfterSec := int((time.Until(mustParseTime(earliestRetryAfter)) + time.Second - 1) / time.Second)
 			if retryAfterSec < 1 {
 				retryAfterSec = 1
 			}
