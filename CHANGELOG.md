@@ -1,5 +1,27 @@
 # Changelog
 
+## [v1.2.0] — 2026-07-22
+
+### 🎯 Gemini Tool Calling Fixes
+
+- **thought_signature round-trip** — Gemini response encodes `thought_signature` into tool call `id` via `__ts__` separator; request decoder restores it for valid verification. Works for both streaming and non-streaming. (`internal/translator/gemini.go`)
+- **Antigravity (AGY) support** — Custom `GeminiPart.UnmarshalJSON` handles `thoughtSignature` (camelCase) AND `thought_signature` (snake_case) since the internal `v1internal` endpoint returns camelCase. (`internal/translator/gemini.go`)
+- **Tool response name fix** — `tool_call_id` with `__ts__` suffix no longer corrupts `functionResponse.name` extraction, preventing Gemini validation errors on turn 2. (`internal/translator/gemini.go`)
+
+### 🎨 Logging
+
+- **ANSI color-coded logs** — `INF` = green, `WRN` = yellow, `ERR` = red, `DBG` = cyan. Auto-detects TTY (disabled when piped). Disable via `NO_COLOR=1`. (`internal/log/log.go`)
+
+### 🔧 Streaming Fixes
+
+- **SSE multi-line** — Gemini stream chunks with multiple SSE lines (`data: ...\ndata: ...`) are now split and translated individually. Error on one line continues to next instead of aborting. (`internal/handlers/gemini_handler.go`)
+
+### 🧹 Cleanup
+
+- `fallback.go`: Removed misleading `WRN tokensaver failed` logs — replaced with idiomatic `if next, did := ...; did` pattern.
+- `test_opencode.go`: Removed (stale temporary test file).
+- `internal/translator/gemini_test.go`: Added (unit tests for `thought_signature` round-trip).
+
 ## [v1.1.0] — 2026-07-21
 
 ### 🚀 New Features
