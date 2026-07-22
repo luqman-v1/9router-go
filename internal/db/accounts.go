@@ -208,3 +208,159 @@ func (r *Repo) GetConnectionBackoffLevel(connID string) int {
 	}
 	return int(level)
 }
+
+// IsProviderAvailable returns true if at least one active connection for the
+// given provider has no active modelLock_<model>. This is the connection-based
+// replacement for the old kv-based IsProviderHealthy, matching Next.js's
+// isModelLockActive + filterAvailableAccounts flow.
+// Returns true when no connections exist (optimistic default for no-auth providers).
+func (r *Repo) IsProviderAvailable(provider, model string) bool {
+	if provider == "" {
+		return true
+	}
+	conns, err := r.GetProviderConnections(provider, true)
+	if err != nil || len(conns) == 0 {
+		return true
+	}
+	for _, c := range conns {
+		locked, err := r.IsConnectionModelLocked(c.ID, model)
+		if err == nil && !locked {
+			return true
+		}
+	}
+	return false
+}
+
+// ResetProviderHealth clears modelLock_* fields on connections, matching
+// Next.js clearAccountError semantics.
+//   - provider="" and model="" → all connections
+//   - model="" → all connections for provider
+//   - both set → specific provider + model on all its connections
+func (r *Repo) ResetProviderHealth(provider, model string) error {
+	if provider == "" && model == "" {
+		return r.clearAllModelLocks()
+	}
+	if model == "" {
+		return r.clearProviderModelLocks(provider)
+	}
+	return r.clearSpecificModelLock(provider, model)
+}
+
+func (r *Repo) clearAllModelLocks() error {
+	rows, err := r.db.Query("SELECT id, data FROM providerConnections")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			return err
+		}
+		if err := r.clearConnectionModelLocks(id, data); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func (r *Repo) clearProviderModelLocks(provider string) error {
+	rows, err := r.db.Query("SELECT id, data FROM providerConnections WHERE provider = ?", provider)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			return err
+		}
+		if err := r.clearConnectionModelLocks(id, data); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func (r *Repo) clearSpecificModelLock(provider, model string) error {
+	key := "$." + modelLockPrefix + model
+	rows, err := r.db.Query("SELECT id, data FROM providerConnections WHERE provider = ?", provider)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			return err
+		}
+		locked := checkConnectionModelLock(data, model)
+		if !locked {
+			continue
+		}
+		if _, err := r.db.Exec(
+			`UPDATE providerConnections SET data = json_set(data, ?, json('null'), '$.backoffLevel', 0), updatedAt = datetime('now') WHERE id = ?`,
+			key, id,
+		); err != nil {
+			return fmt.Errorf("clear lock %s on %s: %w", key, id, err)
+		}
+	}
+	return rows.Err()
+}
+
+func (r *Repo) clearConnectionModelLocks(id, data string) error {
+	fields := listModelLockJSONKeys(data)
+	if len(fields) == 0 {
+		return nil
+	}
+	q := "UPDATE providerConnections SET data = json_set(data"
+	args := make([]any, 0, len(fields)*2+2)
+	for _, f := range fields {
+		q += ", ?, json('null')"
+		args = append(args, "$."+f)
+	}
+	q += ", '$.backoffLevel', 0), updatedAt = datetime('now') WHERE id = ?"
+	args = append(args, id)
+	_, err := r.db.Exec(q, args...)
+	return err
+}
+
+// checkConnectionModelLock parses connection data to check if modelLock_<model> is active.
+func checkConnectionModelLock(data string, model string) bool {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+		return false
+	}
+	key := modelLockPrefix + model
+	val, ok := raw[key]
+	if !ok {
+		return false
+	}
+	str, ok := val.(string)
+	if !ok || str == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, str)
+	if err != nil {
+		return false
+	}
+	return time.Now().UTC().Before(t)
+}
+
+// listModelLockJSONKeys returns all top-level JSON keys starting with modelLockPrefix.
+func listModelLockJSONKeys(data string) []string {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+		return nil
+	}
+	var keys []string
+	for k := range raw {
+		if len(k) > len(modelLockPrefix) && k[:len(modelLockPrefix)] == modelLockPrefix {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -197,6 +198,18 @@ func runServer(cCtx *cli.Context) error {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	// Health reset endpoint — the dashboard calls this via headroom proxy.
+	r.Post("/admin/health/reset", func(w http.ResponseWriter, r *http.Request) {
+		provider := r.URL.Query().Get("provider")
+		model := r.URL.Query().Get("model")
+		if err := repo.ResetProviderHealth(provider, model); err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
 	r.Group(func(r chi.Router) {

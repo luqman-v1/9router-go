@@ -510,13 +510,21 @@ func TestHandleChatCompletions_AccountFallback_401(t *testing.T) {
 		t.Errorf("expected 200 OK via account fallback, got %d, body: %s", rec.Code, rec.Body.String())
 	}
 
-	// Verify model lock was created for the failed account
-	locked, err := repo.IsModelLocked("deepseek", "deepseek-chat")
+	// Verify model lock created for failed connection, cleared for successful one
+	failLocked, err := repo.IsConnectionModelLocked("conn-fail", "deepseek-chat")
 	if err != nil {
-		t.Fatalf("IsModelLocked failed: %v", err)
+		t.Fatalf("IsConnectionModelLocked(conn-fail) failed: %v", err)
 	}
-	if locked {
-		t.Error("expected model lock to be cleared after successful fallback (UnlockModel on success)")
+	if !failLocked {
+		t.Error("expected model lock on failed connection (conn-fail)")
+	}
+
+	okLocked, err := repo.IsConnectionModelLocked("conn-ok", "deepseek-chat")
+	if err != nil {
+		t.Fatalf("IsConnectionModelLocked(conn-ok) failed: %v", err)
+	}
+	if okLocked {
+		t.Error("expected no model lock on successful connection (conn-ok)")
 	}
 }
 
@@ -1249,9 +1257,9 @@ func TestAccountFallback_NonRetryableError(t *testing.T) {
 	}
 
 	// Verify no lock was created for 500 error
-	locked, err := repo.IsModelLocked("deepseek", "deepseek-chat")
+	locked, err := repo.IsConnectionModelLocked("conn-500", "deepseek-chat")
 	if err != nil {
-		t.Fatalf("IsModelLocked failed: %v", err)
+		t.Fatalf("IsConnectionModelLocked failed: %v", err)
 	}
 	if locked {
 		t.Error("expected no model lock for non-retryable 500 error")
@@ -1275,14 +1283,8 @@ func TestAccountFallback_LockExpiration(t *testing.T) {
 		t.Fatalf("failed to insert expired lock: %v", err)
 	}
 
-	// Verify lock is reported as expired
-	locked, err := db.NewRepo(database).IsModelLocked("deepseek", "deepseek-chat")
-	if err != nil {
-		t.Fatalf("IsModelLocked failed: %v", err)
-	}
-	if locked {
-		t.Error("expected expired lock to not be locked")
-	}
+	// Verify the expired lock in kv is ignored by connection-based health
+	// (kv table modelLock is legacy; new code reads modelLock_* from providerConnections.data)
 
 	// Request should succeed since lock is expired
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

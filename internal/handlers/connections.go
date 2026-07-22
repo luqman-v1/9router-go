@@ -8,7 +8,6 @@ import (
 
 	"9router/proxy/internal/constants"
 
-	"9router/proxy/internal/db"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 )
@@ -16,7 +15,7 @@ import (
 // getBestConnection retrieves the highest-priority active connection for a provider.
 // When connectionID is non-empty, it fetches that specific connection directly.
 func (h *ChatHandler) getBestConnection(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
-	if model != "" && !db.IsProviderHealthy(h.Repo.RawDB(), provider, model) {
+	if model != "" && !h.Repo.IsProviderAvailable(provider, model) {
 		log.Warn("health", "unhealthy provider", "provider", provider, "model", model)
 	}
 

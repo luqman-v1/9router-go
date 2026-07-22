@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"9router/proxy/internal/db"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/tokensaver"
@@ -37,7 +36,7 @@ func (h *ChatHandler) handleAccountFallback(
 		return h.tryForwardWithConnection(w, provider, model, connObj.ID, connData, body, isStream, translateResponse, endpoint)
 	}
 
-	if !db.IsProviderHealthy(h.Repo.RawDB(), provider, model) {
+	if !h.Repo.IsProviderAvailable(provider, model) {
 		log.Warn("fallback", "skip unhealthy", "provider", provider, "model", model)
 		return fmt.Errorf("provider %s/%s is unhealthy", provider, model)
 	}
@@ -159,21 +158,9 @@ func (h *ChatHandler) tryForwardWithConnection(
 	}
 
 	latencyMs := time.Since(start).Milliseconds()
-	statusCode := http.StatusOK
-	if fwdErr != nil {
-		if ue, ok := fwdErr.(*upstreamError); ok {
-			statusCode = ue.StatusCode
-		} else {
-			statusCode = http.StatusBadGateway
-		}
-	}
-	if healthErr := db.RecordProviderHealth(h.Repo.RawDB(), provider, model, statusCode, latencyMs); healthErr != nil {
-		log.Warn("health", "record failed", "provider", provider, "model", model, "error", healthErr)
-	}
-
 	if fwdErr == nil {
 		// Clear any existing model lock on success (matching Next.js clearAccountError)
-		if unlockErr := h.Repo.UnlockModel(provider, model); unlockErr != nil {
+		if unlockErr := h.Repo.UnlockConnectionModel(connectionID, model); unlockErr != nil {
 			log.Warn("fallback", "unlock failed", "provider", provider, "model", model, "error", unlockErr)
 		}
 		usage := translator.GetAndClearLastUsage()

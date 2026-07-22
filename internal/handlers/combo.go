@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
-	"9router/proxy/internal/db"
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
@@ -263,8 +262,8 @@ func (h *ChatHandler) handleComboFallback(w http.ResponseWriter, body []byte, co
 			continue
 		}
 
-		// Skip unhealthy or locked models
-		if !db.IsProviderHealthy(h.Repo.RawDB(), modelInfo.Provider, modelInfo.Model) {
+		// Skip unavailable (model-locked) providers
+		if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
 			log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
 			continue
 		}
@@ -389,8 +388,8 @@ func (h *ChatHandler) handleMessagesComboFallback(w http.ResponseWriter, transla
 			continue
 		}
 
-		// Skip unhealthy or locked models
-		if !db.IsProviderHealthy(h.Repo.RawDB(), modelInfo.Provider, modelInfo.Model) {
+		// Skip unavailable (model-locked) providers
+		if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
 			log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
 			continue
 		}
