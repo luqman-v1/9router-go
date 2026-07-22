@@ -193,25 +193,22 @@ func (h *ChatHandler) tryForwardWithConnection(
 }
 
 // applyTokenSavers runs RTK compression and prompt injection on the request body.
+// false from compress/inject means nothing changed (or unparseable) — keep original, not a failure.
 func (h *ChatHandler) applyTokenSavers(body []byte) []byte {
 	out := body
-	var ok bool
 	if h.TokenSaver.RTKEnabled() {
-		out, ok = tokensaver.CompressMessages(out)
-		if !ok {
-			log.Warn("tokensaver", "RTK compression failed")
+		if next, did := tokensaver.CompressMessages(out); did {
+			out = next
 		}
 	}
 	if h.TokenSaver.CavemanEnabled() {
-		out, ok = tokensaver.InjectSystemPrompt(out, tokensaver.CavemanPrompt)
-		if !ok {
-			log.Warn("tokensaver", "Caveman injection failed")
+		if next, did := tokensaver.InjectSystemPrompt(out, tokensaver.CavemanPrompt); did {
+			out = next
 		}
 	}
 	if h.TokenSaver.PonytailEnabled() {
-		out, ok = tokensaver.InjectSystemPrompt(out, tokensaver.PonytailPrompt)
-		if !ok {
-			log.Warn("tokensaver", "Ponytail injection failed")
+		if next, did := tokensaver.InjectSystemPrompt(out, tokensaver.PonytailPrompt); did {
+			out = next
 		}
 	}
 	return out

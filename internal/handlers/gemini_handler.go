@@ -331,16 +331,22 @@ func (h *ChatHandler) handleGeminiStream(w http.ResponseWriter, upstream io.Read
 		metrics.responseBuf.Write(openaiChunk)
 
 		if translateResponse {
-			// Translate OpenAI → Claude (Anthropic) format
-			claudeChunk, tErr := translator.TranslateOpenAIToClaudeStream(openaiChunk)
-			if tErr != nil {
-				log.Error("gemini", "claude translate error", "error", tErr)
-				return
+			// openaiChunk may have multiple SSE lines -- split and translate each
+			for _, sse := range strings.Split(string(openaiChunk), "\n") {
+				sse = strings.TrimSpace(sse)
+				if !strings.HasPrefix(sse, "data: ") {
+					continue
+				}
+				claudeChunk, tErr := translator.TranslateOpenAIToClaudeStream([]byte(strings.TrimPrefix(sse, "data: ")))
+				if tErr != nil {
+					log.Error("gemini", "claude translate error", "error", tErr)
+					continue
+				}
+				if claudeChunk == nil {
+					continue
+				}
+				w.Write(claudeChunk)
 			}
-			if claudeChunk == nil {
-				return
-			}
-			w.Write(claudeChunk)
 		} else {
 			w.Write(openaiChunk)
 			w.Write([]byte("\n\n"))

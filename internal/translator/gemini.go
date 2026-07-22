@@ -24,9 +24,28 @@ type GeminiStreamState struct {
 type GeminiPart struct {
 	Text             string                `json:"text,omitempty"`
 	Thought          *bool                 `json:"thought,omitempty"`
+	ThoughtSignature string                `json:"thoughtSignature,omitempty"`
 	FunctionCall     *GeminiFunctionCall   `json:"functionCall,omitempty"`
 	FunctionResponse *GeminiFunctionResp   `json:"functionResponse,omitempty"`
 	InlineData       *GeminiInlineData     `json:"inlineData,omitempty"`
+}
+
+// UnmarshalJSON handles both thoughtSignature (camelCase) and thought_signature (snake_case).
+func (p *GeminiPart) UnmarshalJSON(data []byte) error {
+	type Alias GeminiPart
+	aux := &struct {
+		ThoughtSignatureSnake string `json:"thought_signature"`
+		*Alias
+	}{
+		Alias: (*Alias)(p),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if aux.ThoughtSignatureSnake != "" && p.ThoughtSignature == "" {
+		p.ThoughtSignature = aux.ThoughtSignatureSnake
+	}
+	return nil
 }
 
 type GeminiFunctionCall struct {
@@ -177,9 +196,11 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 					args = make(map[string]any)
 				}
-				parts = append(parts, GeminiPart{
-					FunctionCall: &GeminiFunctionCall{Name: tc.Function.Name, Args: args},
-				})
+				gp := GeminiPart{FunctionCall: &GeminiFunctionCall{Name: tc.Function.Name, Args: args}}
+				if ts := extractThoughtSig(tc.ID); ts != "" {
+					gp.ThoughtSignature = ts
+				}
+				parts = append(parts, gp)
 			}
 
 			if len(parts) > 0 {
@@ -189,7 +210,12 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		case "tool":
 			content := extractContentString(msg.Content)
 			// Extract tool name from tool_call_id (function name prefix)
-			name := msg.ToolCallID
+			// Strip __ts__ suffix first (encoded thought_signature — not needed for response)
+			cleanID := msg.ToolCallID
+			if ts := strings.LastIndex(cleanID, "__ts__"); ts != -1 {
+				cleanID = cleanID[:ts]
+			}
+			name := cleanID
 			if idx := strings.Index(name, "_"); idx > 0 {
 				name = name[idx+1:]
 			}
@@ -267,6 +293,15 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	return out, nil
 }
 
+// extractThoughtSig extracts a thought_signature encoded in a tool call ID (format: "...__ts__<sig>").
+func extractThoughtSig(id string) string {
+	const sep = "__ts__"
+	if idx := strings.LastIndex(id, sep); idx != -1 {
+		return id[idx+len(sep):]
+	}
+	return ""
+}
+
 // effortToBudget converts reasoning_effort string to thinking budget tokens.
 func effortToBudget(effort string) int {
 	switch effort {
@@ -316,8 +351,12 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 				if err != nil {
 					args = []byte("{}")
 				}
+				id := fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, len(toolCalls))
+				if part.ThoughtSignature != "" {
+					id += "__ts__" + part.ThoughtSignature
+				}
 				toolCalls = append(toolCalls, OpenAIToolCall{
-					ID:   fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, len(toolCalls)),
+					ID:   id,
 					Type: "function",
 					Function: OpenAIFunctionCall{
 						Name:      part.FunctionCall.Name,
@@ -467,10 +506,14 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 					if err != nil {
 						args = []byte("{}")
 					}
+					id := fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, time.Now().UnixNano())
+					if part.ThoughtSignature != "" {
+						id += "__ts__" + part.ThoughtSignature
+					}
 					delta["tool_calls"] = []map[string]interface{}{
 						{
 							"index": 0,
-							"id":    fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, time.Now().UnixNano()),
+							"id":    id,
 							"type":  "function",
 							"function": map[string]interface{}{
 								"name":      part.FunctionCall.Name,

@@ -42,6 +42,16 @@ var (
 		LevelWarn:  "WRN",
 		LevelError: "ERR",
 	}
+	// ANSI color codes per level.
+	levelColor = map[Level]string{
+		LevelDebug: "\033[36m", // cyan
+		LevelInfo:  "\033[32m", // green
+		LevelWarn:  "\033[33m", // yellow
+		LevelError: "\033[31m", // red
+	}
+	colorReset = "\033[0m"
+	// cached — set once at init.
+	colorEnabled bool
 )
 
 func init() {
@@ -50,6 +60,11 @@ func init() {
 		if l, ok := levelNames[strings.ToLower(lvl)]; ok {
 			currentLevel = l
 		}
+	}
+
+	// Enable color when stdout is a terminal and NO_COLOR is not set.
+	if fi, _ := os.Stdout.Stat(); fi != nil && (fi.Mode()&os.ModeCharDevice) != 0 {
+		colorEnabled = os.Getenv("NO_COLOR") == ""
 	}
 }
 
@@ -105,7 +120,13 @@ func output(l Level, tag, msg string, kv ...any) {
 	prefix := levelPrefix[l]
 	var b strings.Builder
 	b.Grow(len(prefix) + len(tag) + len(msg) + 80)
+	if colorEnabled {
+		b.WriteString(levelColor[l])
+	}
 	b.WriteString(prefix)
+	if colorEnabled {
+		b.WriteString(colorReset)
+	}
 	b.WriteString(" [")
 	b.WriteString(tag)
 	b.WriteString("] ")
