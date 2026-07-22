@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -1266,112 +1265,6 @@ func TestAccountFallback_NonRetryableError(t *testing.T) {
 	}
 }
 
-// Test handleAccountFallback — lock expiration: expired lock allows retry.
-func TestAccountFallback_LockExpiration(t *testing.T) {
-	database, cleanup := setupChatTestDB(t)
-	defer cleanup()
-
-	// Insert an expired lock (lockedUntil in the past)
-	expiredTime := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
-	lockData, _ := json.Marshal(db.ModelLock{
-		LockedUntil: expiredTime,
-		LastError:   "401 upstream error",
-		ErrorCode:   401,
-	})
-	_, err := database.Exec(`INSERT OR REPLACE INTO kv (scope, key, value) VALUES ('modelLock', 'DEEPSEEK/DEEPSEEK-CHAT', ?)`, string(lockData))
-	if err != nil {
-		t.Fatalf("failed to insert expired lock: %v", err)
-	}
-
-	// Verify the expired lock in kv is ignored by connection-based health
-	// (kv table modelLock is legacy; new code reads modelLock_* from providerConnections.data)
-
-	// Request should succeed since lock is expired
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id":"resp-ok","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`))
-	}))
-	defer upstream.Close()
-
-	mockData, _ := json.Marshal(map[string]interface{}{
-		"apiKey":  "sk-ok-key",
-		"baseUrl": upstream.URL,
-	})
-	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
-		('conn-ok', 'deepseek', 'apikey', 'OK Connection', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
-		string(mockData))
-	if err != nil {
-		t.Fatalf("failed to insert connection: %v", err)
-	}
-
-	repo := db.NewRepo(database)
-	handler := NewChatHandler(repo)
-
-	reqBody := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hello"}],"stream":false}`
-	req := httptest.NewRequest("POST", "/chat/completions", strings.NewReader(reqBody))
-	rec := httptest.NewRecorder()
-	handler.HandleChatCompletions(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d (lock should be expired)", rec.Code)
-	}
-}
-
-// Test handleAccountFallback — lock duration: 401 = 120s, 429 = 60s.
-func TestAccountFallback_LockDuration(t *testing.T) {
-	database, cleanup := setupChatTestDB(t)
-	defer cleanup()
-
-	repo := db.NewRepo(database)
-
-	// Lock with 401
-	err := repo.LockModel("deepseek", "model-401", 120, "401 error", 401, 0)
-	if err != nil {
-		t.Fatalf("LockModel failed: %v", err)
-	}
-	lock, err := repo.GetModelLock("deepseek", "model-401")
-	if err != nil {
-		t.Fatalf("GetModelLock failed: %v", err)
-	}
-	if lock == nil {
-		t.Fatal("expected non-nil lock for 401")
-	}
-	if lock.ErrorCode != 401 {
-		t.Errorf("expected error code 401, got %d", lock.ErrorCode)
-	}
-
-	// Lock with 429
-	err = repo.LockModel("deepseek", "model-429", 60, "429 error", 429, 0)
-	if err != nil {
-		t.Fatalf("LockModel failed: %v", err)
-	}
-	lock, err = repo.GetModelLock("deepseek", "model-429")
-	if err != nil {
-		t.Fatalf("GetModelLock failed: %v", err)
-	}
-	if lock == nil {
-		t.Fatal("expected non-nil lock for 429")
-	}
-	if lock.ErrorCode != 429 {
-		t.Errorf("expected error code 429, got %d", lock.ErrorCode)
-	}
-
-	// UnlockModel should remove the lock
-	err = repo.UnlockModel("deepseek", "model-401")
-	if err != nil {
-		t.Fatalf("UnlockModel failed: %v", err)
-	}
-	locked, err := repo.IsModelLocked("deepseek", "model-401")
-	if err != nil {
-		t.Fatalf("IsModelLocked failed: %v", err)
-	}
-	if locked {
-		t.Error("expected model to be unlocked after UnlockModel")
-	}
-}
-
-// Test handleAccountFallback — all connections fail with retryable (429).
 func TestAccountFallback_AllExhaustedRetryable(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()

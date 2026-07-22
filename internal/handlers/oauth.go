@@ -7,12 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"9router/proxy/internal/log"
-		"net/http"
+	mathRand "math/rand"
+	"net/http"
 	"strings"
 	"time"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
 )
 
 // HandleOAuthImport saves credentials from CLI token import (Codex, Cursor, GitLab, etc.).
@@ -272,24 +273,18 @@ func currentTimestamp() string {
 func randomString(n int) string {
 	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, n)
-	for i := range b {
-		randInt, err := cryptoRandInt(len(letters))
-		if err != nil {
-			// Fallback to less secure but reliable math/rand
-			panic(fmt.Sprintf("crypto/rand failed: %v", err))
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to math/rand — crypto/rand practically never fails on normal systems
+		rng := mathRand.New(mathRand.NewSource(time.Now().UnixNano()))
+		for i := range b {
+			b[i] = letters[rng.Intn(len(letters))]
 		}
-		b[i] = letters[randInt%len(letters)]
+		return string(b)
+	}
+	for i := range b {
+		b[i] = letters[int(b[i])%len(letters)]
 	}
 	return string(b)
-}
-
-// cryptoRandInt returns a random int in [0, max).
-func cryptoRandInt(max int) (int, error) {
-	var b [1]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return 0, err
-	}
-	return int(b[0]) % max, nil
 }
 
 // sha256Base64 returns the base64url-encoded SHA256 digest of input.
