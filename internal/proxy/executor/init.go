@@ -59,4 +59,5 @@ func RegisterAll() {
 	Register("kiro", func() Executor { return ForwardKiro })
 	Register("azure", func() Executor { return ForwardAzure })
 	Register("commandcode", func() Executor { return ForwardCommandcode })
+	Register("qoder", func() Executor { return ForwardQoder })
 }

@@ -24,7 +24,7 @@ func HandleKiro(w http.ResponseWriter, r *http.Request, body []byte) {
 		return
 	}
 
-	upstream, err := FetchRouter(forwardBody, "/v1/chat/completions", r.Header, "")
+	upstream, err := FetchRouter(r.Context(), forwardBody, "/v1/chat/completions", r.Header, "")
 	if err != nil {
 		SendError(w, http.StatusBadGateway, err.Error())
 		return

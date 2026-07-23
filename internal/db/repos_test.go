@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"os"
 	"testing"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 func setupTestDB(t *testing.T) (*sql.DB, func()) {
@@ -446,19 +448,19 @@ func TestGetString(t *testing.T) {
 		"active":   true,
 	}
 
-	if got := getString(m, "name"); got != "pool-1" {
+	if got := handlerutil.GetString(m, "name"); got != "pool-1" {
 		t.Errorf("expected 'pool-1', got '%s'", got)
 	}
-	if got := getString(m, "strategy"); got != "round-robin" {
+	if got := handlerutil.GetString(m, "strategy"); got != "round-robin" {
 		t.Errorf("expected 'round-robin', got '%s'", got)
 	}
-	if got := getString(m, "missing"); got != "" {
+	if got := handlerutil.GetString(m, "missing"); got != "" {
 		t.Errorf("expected '' for missing key, got '%s'", got)
 	}
-	if got := getString(m, "count"); got != "" {
+	if got := handlerutil.GetString(m, "count"); got != "" {
 		t.Errorf("expected '' for non-string value, got '%s'", got)
 	}
-	if got := getString(m, "active"); got != "" {
+	if got := handlerutil.GetString(m, "active"); got != "" {
 		t.Errorf("expected '' for bool value, got '%s'", got)
 	}
 }

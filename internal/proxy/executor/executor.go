@@ -1,23 +1,30 @@
 package executor
 
 import (
+	"context"
+	"io"
 	"net/http"
+	"time"
 
 	"9router/proxy/internal/providers"
 )
 
 // Request holds all inputs for an executor.
 type Request struct {
+	Ctx            context.Context
 	Client         *http.Client
 	Config         *providers.ProviderConfig
 	APIKey         string
 	Body           []byte
 	IsStream       bool
 	TranslateResp  bool
-	ConnectionID   string // for OAuth refresh by fallback
-	ProjectID      string // for gemini-native (antigravity)
-	ModelName      string // extracted model name
-	Endpoint       string // custom URL override (azure)
+	ConnectionID   string    // for OAuth refresh by fallback
+	ProjectID      string    // for gemini-native (antigravity)
+	ModelName      string    // extracted model name
+	Endpoint       string    // custom URL override (azure)
+	ResponseBuf    io.Writer // writer to capture response text for token estimation & logging
+	StartTime      time.Time // request start time for TTFT tracking
+	TTFT           *int64    // pointer to TTFT metric (ms to first chunk)
 }
 
 // Executor forwards a request upstream and writes the response.

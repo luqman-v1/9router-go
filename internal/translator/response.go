@@ -145,19 +145,34 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 	}
 
 	// Usage
-	inputTokens, outputTokens := 0, 0
+	inputTokens, outputTokens, cachedTokens, cacheCreationTokens := 0, 0, 0, 0
 	var details *CompletionTokensDetails
 	if resp.Usage != nil {
 		inputTokens = resp.Usage.PromptTokens
 		outputTokens = resp.Usage.CompletionTokens
 		details = resp.Usage.CompletionTokensDetails
+		cachedTokens = resp.Usage.GetCachedTokens()
+		cacheCreationTokens = resp.Usage.CacheCreationInputTokens
 	}
 	usage := &OpenAIUsage{
-		PromptTokens:            inputTokens,
-		CompletionTokens:        outputTokens,
-		CompletionTokensDetails: details,
+		PromptTokens:             inputTokens,
+		CompletionTokens:         outputTokens,
+		CachedTokens:             cachedTokens,
+		CacheCreationInputTokens: cacheCreationTokens,
+		CompletionTokensDetails:  details,
 	}
 	SetLastUsage(usage) // Still call it for backward compatibility or parallel reads, but caller receives it directly.
+
+	claudeUsageMap := map[string]any{
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+	}
+	if cachedTokens > 0 {
+		claudeUsageMap["cache_read_input_tokens"] = cachedTokens
+	}
+	if cacheCreationTokens > 0 {
+		claudeUsageMap["cache_creation_input_tokens"] = cacheCreationTokens
+	}
 
 	result := map[string]any{
 		"id":            msgID,
@@ -167,10 +182,7 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 		"content":       contentBlocks,
 		"stop_reason":   claudeStop,
 		"stop_sequence": nil,
-		"usage": map[string]any{
-			"input_tokens":  inputTokens,
-			"output_tokens": outputTokens,
-		},
+		"usage":         claudeUsageMap,
 	}
 
 	out, err := json.Marshal(result)
@@ -186,9 +198,6 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 	if len(trimmed) == 0 {
 		return nil, nil
 	}
-
-	// SSE scanner (proxy.ScanStream) already strips "data:" prefix.
-	// Handle [DONE] marker BEFORE checking for "data:" prefix.
 	if string(trimmed) == "[DONE]" {
 		return []byte("data: [DONE]\n\n"), nil
 	}
@@ -221,6 +230,7 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 	}
 
 	statesMu.Lock()
+	pruneStaleStatesLocked()
 	state, exists := states[stateKey]
 	if !exists {
 		// Zero-choice sidecars (OpenCode inference-cost, usage-only after finish)
@@ -238,6 +248,7 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 			modelName = "claude-3-5-sonnet"
 		}
 		state = &StreamState{
+			CreatedAt:      time.Now(),
 			MessageId:      cleanID,
 			Model:          modelName,
 			ToolCalls:      make(map[int]ToolCallState),
@@ -257,12 +268,16 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 		if chunk.Usage.CompletionTokens > 0 {
 			state.Usage.CompletionTokens = chunk.Usage.CompletionTokens
 		}
-		if chunk.Usage.CachedTokens > 0 {
-			state.Usage.CachedTokens = chunk.Usage.CachedTokens
+		if cached := chunk.Usage.GetCachedTokens(); cached > 0 {
+			state.Usage.CachedTokens = cached
+		}
+		if chunk.Usage.CacheCreationInputTokens > 0 {
+			state.Usage.CacheCreationInputTokens = chunk.Usage.CacheCreationInputTokens
 		}
 		if chunk.Usage.CompletionTokensDetails != nil {
 			state.Usage.CompletionTokensDetails = chunk.Usage.CompletionTokensDetails
 		}
+		SetLastUsage(state.Usage)
 	}
 
 	var results []map[string]any

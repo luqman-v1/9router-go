@@ -1,9 +1,13 @@
 package translator
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // StreamState holds translation state for a single SSE stream.
 type StreamState struct {
+	CreatedAt            time.Time
 	MessageStartSent     bool
 	MessageId            string
 	Model                string
@@ -28,10 +32,29 @@ type ToolCallState struct {
 
 // OpenAIUsage tracks token counts.
 type OpenAIUsage struct {
-	PromptTokens            int                      `json:"prompt_tokens"`
-	CompletionTokens        int                      `json:"completion_tokens"`
-	CachedTokens            int                      `json:"cached_tokens"`
-	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	PromptTokens             int                      `json:"prompt_tokens"`
+	CompletionTokens         int                      `json:"completion_tokens"`
+	CachedTokens             int                      `json:"cached_tokens"`
+	CacheCreationInputTokens int                      `json:"cache_creation_input_tokens"`
+	PromptTokensDetails      *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails  *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+func (u *OpenAIUsage) GetCachedTokens() int {
+	if u == nil {
+		return 0
+	}
+	if u.CachedTokens > 0 {
+		return u.CachedTokens
+	}
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 {
+		return u.PromptTokensDetails.CachedTokens
+	}
+	return 0
 }
 
 type CompletionTokensDetails struct {

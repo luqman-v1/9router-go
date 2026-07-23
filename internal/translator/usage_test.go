@@ -1,8 +1,34 @@
 package translator
 
 import (
+	"context"
 	"testing"
 )
+
+// --- Context-based Usage ---
+
+func TestContextUsage(t *testing.T) {
+	ctx := context.Background()
+	ctx = WithUsageCapture(ctx)
+
+	if u := GetAndClearUsage(ctx); u != nil {
+		t.Errorf("expected nil initially, got %#v", u)
+	}
+
+	SetUsage(ctx, &OpenAIUsage{PromptTokens: 10, CompletionTokens: 20})
+	
+	u := GetAndClearUsage(ctx)
+	if u == nil {
+		t.Fatal("expected non-nil usage")
+	}
+	if u.PromptTokens != 10 || u.CompletionTokens != 20 {
+		t.Errorf("got %#v", u)
+	}
+
+	if u2 := GetAndClearUsage(ctx); u2 != nil {
+		t.Errorf("expected nil after clear, got %#v", u2)
+	}
+}
 
 // --- SetLastUsage / GetAndClearLastUsage ---
 

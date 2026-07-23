@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +14,7 @@ import (
 
 // ForwardGemini sends an OpenAI-format request to a Gemini-native endpoint.
 // projectID is non-empty for antigravity (cloudcode-pa.googleapis.com).
-func ForwardGemini(client *http.Client, cfg *providers.ProviderConfig, apiKey, bodyStr string, isStream bool, projectID, modelName string) (*http.Response, error) {
+func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey, bodyStr string, isStream bool, projectID, modelName string) (*http.Response, error) {
 	body := []byte(bodyStr)
 
 	// Translate OpenAI → Gemini native
@@ -57,7 +58,7 @@ func ForwardGemini(client *http.Client, cfg *providers.ProviderConfig, apiKey, b
 		"User-Agent":    "antigravity/ide/2.1.1 darwin/arm64",
 	}
 
-	req, err := http.NewRequest("POST", requestURL, bytes.NewReader(sendBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewReader(sendBody))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

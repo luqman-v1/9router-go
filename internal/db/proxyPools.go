@@ -3,7 +3,10 @@ package db
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"sync/atomic"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 // ProxyPool represents a pool of proxy URLs for routing requests.
@@ -15,6 +18,8 @@ type ProxyPool struct {
 	Strategy string   `json:"strategy"` // "round-robin" or "random"
 	index    uint64   // atomic counter for round-robin
 }
+
+var proxyPoolCache sync.Map // map[string]*ProxyPool
 
 // GetProxyPool reads a proxy pool from the proxyPools table.
 func (r *Repo) GetProxyPool(poolID string) (*ProxyPool, error) {
@@ -35,8 +40,8 @@ func (r *Repo) GetProxyPool(poolID string) (*ProxyPool, error) {
 	pool := &ProxyPool{
 		ID:       poolID,
 		IsActive: isActive == 1,
-		Name:     getString(raw, "name"),
-		Strategy: getString(raw, "strategy"),
+		Name:     handlerutil.GetString(raw, "name"),
+		Strategy: handlerutil.GetString(raw, "strategy"),
 	}
 
 	if urls, ok := raw["urls"].([]any); ok {
@@ -51,6 +56,16 @@ func (r *Repo) GetProxyPool(poolID string) (*ProxyPool, error) {
 		pool.Strategy = "round-robin"
 	}
 
+	if cached, ok := proxyPoolCache.Load(poolID); ok {
+		existing := cached.(*ProxyPool)
+		existing.IsActive = pool.IsActive
+		existing.Name = pool.Name
+		existing.Strategy = pool.Strategy
+		existing.URLs = pool.URLs
+		return existing, nil
+	}
+	proxyPoolCache.Store(poolID, pool)
+
 	return pool, nil
 }
 
@@ -61,13 +76,4 @@ func (p *ProxyPool) NextURL() string {
 	}
 	idx := atomic.AddUint64(&p.index, 1)
 	return p.URLs[idx%uint64(len(p.URLs))]
-}
-
-func getString(m map[string]any, key string) string {
-	if v, ok := m[key]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
 }

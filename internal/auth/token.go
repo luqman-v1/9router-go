@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 // TokenInfo holds OAuth token data from a provider connection.
@@ -35,11 +38,11 @@ func ParseTokenFromConnection(data string) (*TokenInfo, error) {
 	}
 
 	token := &TokenInfo{
-		AccessToken:  getString(raw, "accessToken"),
-		RefreshToken: getString(raw, "refreshToken"),
-		ExpiresAt:    getString(raw, "expiresAt"),
-		TokenType:    getString(raw, "tokenType"),
-		Scope:        getString(raw, "scope"),
+		AccessToken:  handlerutil.GetString(raw, "accessToken"),
+		RefreshToken: handlerutil.GetString(raw, "refreshToken"),
+		ExpiresAt:    handlerutil.GetString(raw, "expiresAt"),
+		TokenType:    handlerutil.GetString(raw, "tokenType"),
+		Scope:        handlerutil.GetString(raw, "scope"),
 	}
 	return token, nil
 }
@@ -57,10 +60,10 @@ func ParseProviderSpecificData(data string) (*ProviderSpecificData, error) {
 	}
 
 	return &ProviderSpecificData{
-		ClientID:     getString(psd, "clientId"),
-		ClientSecret: getString(psd, "clientSecret"),
-		TokenURL:     getString(psd, "tokenEndpoint"),
-		Scope:        getString(psd, "scope"),
+		ClientID:     handlerutil.GetString(psd, "clientId"),
+		ClientSecret: handlerutil.GetString(psd, "clientSecret"),
+		TokenURL:     handlerutil.GetString(psd, "tokenEndpoint"),
+		Scope:        handlerutil.GetString(psd, "scope"),
 	}, nil
 }
 
@@ -77,7 +80,7 @@ func IsTokenExpired(token *TokenInfo) bool {
 }
 
 // RefreshToken exchanges a refresh token for a new access token.
-func RefreshToken(token *TokenInfo, psd *ProviderSpecificData) (*TokenInfo, error) {
+func RefreshToken(ctx context.Context, token *TokenInfo, psd *ProviderSpecificData) (*TokenInfo, error) {
 	if token.RefreshToken == "" {
 		return nil, fmt.Errorf("no refresh token available")
 	}
@@ -98,7 +101,7 @@ func RefreshToken(token *TokenInfo, psd *ProviderSpecificData) (*TokenInfo, erro
 		form.Set("scope", psd.Scope)
 	}
 
-	req, err := http.NewRequest("POST", psd.TokenURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", psd.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("create refresh request: %w", err)
 	}
@@ -125,9 +128,9 @@ func RefreshToken(token *TokenInfo, psd *ProviderSpecificData) (*TokenInfo, erro
 	}
 
 	newToken := &TokenInfo{
-		AccessToken:  getString(result, "access_token"),
-		RefreshToken: getString(result, "refresh_token"),
-		TokenType:    getString(result, "token_type"),
+		AccessToken:  handlerutil.GetString(result, "access_token"),
+		RefreshToken: handlerutil.GetString(result, "refresh_token"),
+		TokenType:    handlerutil.GetString(result, "token_type"),
 	}
 
 	if newToken.RefreshToken == "" {
@@ -140,15 +143,6 @@ func RefreshToken(token *TokenInfo, psd *ProviderSpecificData) (*TokenInfo, erro
 	}
 
 	return newToken, nil
-}
-
-func getString(m map[string]any, key string) string {
-	if v, ok := m[key]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
 }
 
 func getInt(m map[string]any, key string) int {

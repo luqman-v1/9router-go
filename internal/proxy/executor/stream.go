@@ -129,7 +129,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 	return nil
 }
 
-func handleCodexStream(w http.ResponseWriter, upstream io.Reader) error {
+func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) error {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -185,7 +185,7 @@ func handleCodexStream(w http.ResponseWriter, upstream io.Reader) error {
 		flusher.Flush()
 	}
 
-	translator.SetLastUsage(&translator.OpenAIUsage{
+	translator.SetUsage(req.Ctx, &translator.OpenAIUsage{
 		CompletionTokens: state.OutputLength / 4,
 	})
 
@@ -207,7 +207,7 @@ func writeSSE(w io.Writer, data interface{}) {
 	w.Write([]byte(fmt.Sprintf("data: %s\n\n", string(b))))
 }
 
-func handleKiroStream(w http.ResponseWriter, upstream io.Reader) error {
+func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) error {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -348,7 +348,7 @@ func handleKiroStream(w http.ResponseWriter, upstream io.Reader) error {
 
 	inputTokens := 0
 	outputTokens := len(accumulatedContent.String()) / 4
-	translator.SetLastUsage(&translator.OpenAIUsage{
+	translator.SetUsage(req.Ctx, &translator.OpenAIUsage{
 		PromptTokens:     inputTokens,
 		CompletionTokens: outputTokens,
 	})
@@ -391,7 +391,7 @@ func BuildCommandcodeChunk(state *CommandcodeStreamState, delta map[string]inter
 	return string(b)
 }
 
-func handleCommandcodeStream(w http.ResponseWriter, upstream io.Reader, model string) error {
+func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Reader, model string) error {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -445,7 +445,7 @@ func handleCommandcodeStream(w http.ResponseWriter, upstream io.Reader, model st
 		flusher.Flush()
 	}
 
-	translator.SetLastUsage(&translator.OpenAIUsage{
+	translator.SetUsage(req.Ctx, &translator.OpenAIUsage{
 		CompletionTokens: state.OutputLength / 4,
 	})
 

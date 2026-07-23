@@ -26,6 +26,34 @@ const (
 	PonytailPrompt = PonytailFull
 )
 
+// GetCavemanPrompt returns the caveman system prompt for the specified level.
+func GetCavemanPrompt(level string) string {
+	switch level {
+	case "lite":
+		return CavemanLite
+	case "ultra":
+		return CavemanUltra
+	case "full":
+		return CavemanFull
+	default:
+		return CavemanFull
+	}
+}
+
+// GetPonytailPrompt returns the ponytail system prompt for the specified level.
+func GetPonytailPrompt(level string) string {
+	switch level {
+	case "lite":
+		return PonytailLite
+	case "ultra":
+		return PonytailUltra
+	case "full":
+		return PonytailFull
+	default:
+		return PonytailFull
+	}
+}
+
 // InjectSystemPrompt adds a system prompt to an OpenAI-format request body.
 // Handles messages[] (chat), input[] (responses), and instructions (responses string).
 // Finds existing system/developer message and appends, or inserts at position 0.

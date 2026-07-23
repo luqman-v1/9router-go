@@ -1,20 +1,25 @@
-// Package log provides a structured logger with levels for the 9router proxy.
+// Package log provides a structured logger with levels and context tracing for the 9router proxy.
 //
 // Usage:
 //
 //	log.Info("combo", "Model failed", "provider", provider, "model", model)
-//	log.Warn("auth", "Invalid key", "key", maskedKey)
+//	log.InfoCtx(ctx, "chat", "Processing request", "model", model)
+//	log.Warn("auth", "Invalid key", "key", log.MaskSecret(key))
 //	log.Error("stream", "Connection error", "err", err)
 //
 // Levels are controlled via LOG_LEVEL env var: debug, info (default), warn, error.
+// Format is controlled via LOG_FORMAT env var: text (default), json.
 package log
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Level represents a log level.
@@ -29,6 +34,7 @@ const (
 
 var (
 	currentLevel Level
+	isJSONFormat bool
 	levelMu      sync.RWMutex
 	levelNames   = map[string]Level{
 		"debug": LevelDebug,
@@ -42,15 +48,13 @@ var (
 		LevelWarn:  "WRN",
 		LevelError: "ERR",
 	}
-	// ANSI color codes per level.
 	levelColor = map[Level]string{
 		LevelDebug: "\033[36m", // cyan
 		LevelInfo:  "\033[32m", // green
 		LevelWarn:  "\033[33m", // yellow
 		LevelError: "\033[31m", // red
 	}
-	colorReset = "\033[0m"
-	// cached — set once at init.
+	colorReset   = "\033[0m"
 	colorEnabled bool
 )
 
@@ -62,9 +66,12 @@ func init() {
 		}
 	}
 
-	// Enable color when stdout is a terminal and NO_COLOR is not set.
+	if fmtEnv := os.Getenv("LOG_FORMAT"); strings.ToLower(fmtEnv) == "json" {
+		isJSONFormat = true
+	}
+
 	if fi, _ := os.Stdout.Stat(); fi != nil && (fi.Mode()&os.ModeCharDevice) != 0 {
-		colorEnabled = os.Getenv("NO_COLOR") == ""
+		colorEnabled = os.Getenv("NO_COLOR") == "" && !isJSONFormat
 	}
 }
 
@@ -75,14 +82,28 @@ func SetLevel(l Level) {
 	currentLevel = l
 }
 
-// shouldLog returns true if the given level should be logged.
+// SetJSONFormat toggles JSON vs Text log format.
+func SetJSONFormat(enable bool) {
+	levelMu.Lock()
+	defer levelMu.Unlock()
+	isJSONFormat = enable
+}
+
 func shouldLog(l Level) bool {
 	levelMu.RLock()
 	defer levelMu.RUnlock()
 	return l >= currentLevel
 }
 
-// Debug logs a debug-level message. Hidden unless LOG_LEVEL=debug.
+// MaskSecret masks sensitive credentials (e.g. "sk-proj-12345678" -> "sk-p...5678").
+func MaskSecret(secret string) string {
+	if len(secret) <= 8 {
+		return "***"
+	}
+	return secret[:4] + "..." + secret[len(secret)-4:]
+}
+
+// Debug logs a debug-level message.
 func Debug(tag, msg string, kv ...any) {
 	if !shouldLog(LevelDebug) {
 		return
@@ -114,9 +135,75 @@ func Error(tag, msg string, kv ...any) {
 	output(LevelError, tag, msg, kv...)
 }
 
-// output formats and writes a log message.
-// Format: "[LEVEL] [tag] msg key=val key=val"
+// DebugCtx logs a debug-level message with request ID from context if present.
+func DebugCtx(ctx context.Context, tag, msg string, kv ...any) {
+	if !shouldLog(LevelDebug) {
+		return
+	}
+	outputCtx(ctx, LevelDebug, tag, msg, kv...)
+}
+
+// InfoCtx logs an info-level message with request ID from context if present.
+func InfoCtx(ctx context.Context, tag, msg string, kv ...any) {
+	if !shouldLog(LevelInfo) {
+		return
+	}
+	outputCtx(ctx, LevelInfo, tag, msg, kv...)
+}
+
+// WarnCtx logs a warning-level message with request ID from context if present.
+func WarnCtx(ctx context.Context, tag, msg string, kv ...any) {
+	if !shouldLog(LevelWarn) {
+		return
+	}
+	outputCtx(ctx, LevelWarn, tag, msg, kv...)
+}
+
+// ErrorCtx logs an error-level message with request ID from context if present.
+func ErrorCtx(ctx context.Context, tag, msg string, kv ...any) {
+	if !shouldLog(LevelError) {
+		return
+	}
+	outputCtx(ctx, LevelError, tag, msg, kv...)
+}
+
+func outputCtx(ctx context.Context, l Level, tag, msg string, kv ...any) {
+	if ctx != nil {
+		if reqID, ok := ctx.Value("requestID").(string); ok && reqID != "" {
+			kv = append([]any{"req_id", reqID}, kv...)
+		}
+	}
+	output(l, tag, msg, kv...)
+}
+
 func output(l Level, tag, msg string, kv ...any) {
+	levelMu.RLock()
+	jsonMode := isJSONFormat
+	levelMu.RUnlock()
+
+	if jsonMode {
+		entry := map[string]any{
+			"time":  time.Now().UTC().Format(time.RFC3339Nano),
+			"level": levelPrefix[l],
+			"tag":   tag,
+			"msg":   msg,
+		}
+		if len(kv) > 0 {
+			if len(kv)%2 != 0 {
+				kv = append(kv, "")
+			}
+			for i := 0; i < len(kv); i += 2 {
+				key := fmt.Sprint(kv[i])
+				entry[key] = kv[i+1]
+			}
+		}
+		b, err := json.Marshal(entry)
+		if err == nil {
+			log.Println(string(b))
+			return
+		}
+	}
+
 	prefix := levelPrefix[l]
 	var b strings.Builder
 	b.Grow(len(prefix) + len(tag) + len(msg) + 80)
@@ -134,7 +221,6 @@ func output(l Level, tag, msg string, kv ...any) {
 
 	if len(kv) > 0 {
 		if len(kv)%2 != 0 {
-			// Odd number — last is a single value
 			kv = append(kv, "")
 		}
 		for i := 0; i < len(kv); i += 2 {

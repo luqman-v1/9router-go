@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"os"
 	"time"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 // OAuthClientConfig holds OAuth app credentials for token refresh.
@@ -122,10 +124,10 @@ func ParseOAuthConnection(data map[string]interface{}) *OAuthConnectionData {
 		return nil
 	}
 	return &OAuthConnectionData{
-		AccessToken:  getString(data, "accessToken"),
-		RefreshToken: getString(data, "refreshToken"),
-		ExpiresAt:    getString(data, "expiresAt"),
-		ProjectID:    getString(data, "projectId"),
+		AccessToken:  handlerutil.GetString(data, "accessToken"),
+		RefreshToken: handlerutil.GetString(data, "refreshToken"),
+		ExpiresAt:    handlerutil.GetString(data, "expiresAt"),
+		ProjectID:    handlerutil.GetString(data, "projectId"),
 	}
 }
 
@@ -169,13 +171,4 @@ func (r *OAuthTokenResponse) BuildConnectionUpdate() map[string]interface{} {
 		"accessToken": r.AccessToken,
 		"expiresAt":   time.Now().Add(time.Duration(r.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}
-}
-
-func getString(m map[string]interface{}, key string) string {
-	if v, ok := m[key]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
 }

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,7 +10,7 @@ import (
 )
 
 // ForwardOpenAI sends an OpenAI-format request to the provider endpoint.
-func ForwardOpenAI(client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool) (*http.Response, error) {
+func ForwardOpenAI(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool) (*http.Response, error) {
 	headers := map[string]string{}
 	if !cfg.NoAuth {
 		switch cfg.AuthScheme {
@@ -27,7 +28,7 @@ func ForwardOpenAI(client *http.Client, cfg *providers.ProviderConfig, apiKey st
 	if isStream {
 		headers["Accept"] = "text/event-stream"
 	}
-	resp, err := DoRequest(client, "POST", cfg.BaseURL, headers, body)
+	resp, err := DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
 	if err != nil {
 		return nil, fmt.Errorf("forward to %s: %w", cfg.BaseURL, err)
 	}

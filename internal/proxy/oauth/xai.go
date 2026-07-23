@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,14 +20,14 @@ func init() {
 
 // refreshXAI refreshes an xAI token using standard OAuth2 refresh_token grant.
 // xAI uses a public client (no client_secret needed).
-func refreshXAI(p *Params) (*TokenResult, error) {
+func refreshXAI(ctx context.Context, p *Params) (*TokenResult, error) {
 	vals := url.Values{
 		"grant_type":    {"refresh_token"},
 		"client_id":     {xaiClientID},
 		"refresh_token": {p.RefreshToken},
 	}
 
-	req, err := http.NewRequest("POST", xaiTokenURL, strings.NewReader(vals.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", xaiTokenURL, strings.NewReader(vals.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("xAI create request: %w", err)
 	}

@@ -24,7 +24,7 @@ func HandleCodex(w http.ResponseWriter, r *http.Request, body []byte) {
 		return
 	}
 
-	upstream, err := FetchRouter(forwardBody, "/v1/responses", r.Header, "")
+	upstream, err := FetchRouter(r.Context(), forwardBody, "/v1/responses", r.Header, "")
 	if err != nil {
 		SendError(w, http.StatusBadGateway, err.Error())
 		return

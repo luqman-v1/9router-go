@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,15 +16,27 @@ import (
 
 // ForwardGemini forwards to gemini-native endpoints (antigravity).
 func ForwardGemini(w http.ResponseWriter, req *Request) error {
-	resp, err := proxy.ForwardGemini(req.Client, req.Config, req.APIKey, string(req.Body), req.IsStream, req.ProjectID, req.ModelName)
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resp, err := proxy.ForwardGemini(ctx, req.Client, req.Config, req.APIKey, string(req.Body), req.IsStream, req.ProjectID, req.ModelName)
 	if err != nil {
 		return fmt.Errorf("ForwardGemini: %w", err)
 	}
-	defer resp.Body.Close()
+
+	var bodyCloser io.Closer = resp.Body
+	defer func() {
+		if bodyCloser != nil {
+			bodyCloser.Close()
+		}
+	}()
 
 	if req.ProjectID != "" {
-		raw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("read response body: %w", err)
+		}
 		unwrapped := translator.UnwrapAntigravityResponse(raw)
 		if req.IsStream {
 			return geminiStream(w, io.NopCloser(bytes.NewReader(unwrapped)))
@@ -31,8 +44,9 @@ func ForwardGemini(w http.ResponseWriter, req *Request) error {
 		return geminiNonStream(w, bytes.NewReader(unwrapped))
 	}
 	if req.IsStream {
-		resp.Body = proxy.NewStallReader(resp.Body, 0, "gemini")
-		return geminiStream(w, resp.Body)
+		stallReader := proxy.NewStallReader(resp.Body, 0, "gemini")
+		bodyCloser = stallReader
+		return geminiStream(w, stallReader)
 	}
 	return geminiNonStream(w, resp.Body)
 }

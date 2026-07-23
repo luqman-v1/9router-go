@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,7 +18,7 @@ func init() {
 
 // refreshClaude refreshes an Anthropic Claude OAuth token.
 // Claude uses JSON body encoding for refresh (not form-urlencoded).
-func refreshClaude(p *Params) (*TokenResult, error) {
+func refreshClaude(ctx context.Context, p *Params) (*TokenResult, error) {
 	body := map[string]interface{}{
 		"grant_type":    "refresh_token",
 		"client_id":     claudeClientID,
@@ -29,7 +30,7 @@ func refreshClaude(p *Params) (*TokenResult, error) {
 		return nil, fmt.Errorf("claude marshal: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", claudeTokenURL, bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", claudeTokenURL, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("claude create request: %w", err)
 	}

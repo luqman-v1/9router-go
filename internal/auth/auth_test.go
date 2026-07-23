@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 func TestGetString(t *testing.T) {
@@ -23,7 +26,7 @@ func TestGetString(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getString(tt.m, tt.key)
+			got := handlerutil.GetString(tt.m, tt.key)
 			if got != tt.want {
 				t.Errorf("getString() = %q, want %q", got, tt.want)
 			}
@@ -333,7 +336,7 @@ func TestRefreshToken_preHttpErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := RefreshToken(tt.token, tt.psd)
+			got, err := RefreshToken(context.Background(), tt.token, tt.psd)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -359,7 +362,7 @@ func TestRefreshToken_httpCallFails(t *testing.T) {
 		Scope:        "read",
 	}
 
-	got, err := RefreshToken(token, psd)
+	got, err := RefreshToken(context.Background(), token, psd)
 	if err == nil {
 		t.Fatal("expected error from HTTP call to unused port, got nil")
 	}
@@ -376,7 +379,7 @@ func TestRefreshToken_invalidUrl(t *testing.T) {
 		TokenURL: "://invalid-url",
 	}
 
-	got, err := RefreshToken(token, psd)
+	got, err := RefreshToken(context.Background(), token, psd)
 	if err == nil {
 		t.Fatal("expected error from invalid URL, got nil")
 	}

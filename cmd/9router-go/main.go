@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"9router/proxy/internal/handlers"
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/mitm"
+	"9router/proxy/internal/updater"
 )
 
 // statusWriter wraps http.ResponseWriter to capture the status code.
@@ -53,8 +56,53 @@ func main() {
 				Value: os.Getenv("PONYTAIL_ENABLED") == "true",
 				Usage: "enable Ponytail lazy dev code style (env: PONYTAIL_ENABLED)",
 			},
+			&cli.BoolFlag{
+				Name:  "auto-update",
+				Value: os.Getenv("AUTO_UPDATE") == "true",
+				Usage: "automatically download and install updates if available (env: AUTO_UPDATE)",
+			},
 		},
 		Commands: []*cli.Command{
+			{
+				Name:  "version",
+				Usage: "Display version details and check for updates",
+				Action: func(cCtx *cli.Context) error {
+					info, err := updater.CheckUpdate(cCtx.Context)
+					if err != nil {
+						fmt.Printf("9router-go version %s (%s/%s)\nUpdate check failed: %v\n", updater.CurrentVersion, runtime.GOOS, runtime.GOARCH, err)
+						return nil
+					}
+					fmt.Printf("9router-go version %s (%s/%s)\n", info.CurrentVersion, info.OS, info.Arch)
+					fmt.Printf("Latest version: %s\n", info.LatestVersion)
+					if info.HasUpdate {
+						fmt.Printf("\n🚀 NEW UPDATE AVAILABLE! (%s)\nNotes: %s\nRun '9router-go update' to install.\n", info.LatestVersion, info.ReleaseNotes)
+					} else {
+						fmt.Println("App is up to date.")
+					}
+					return nil
+				},
+			},
+			{
+				Name:  "update",
+				Usage: "Check and perform self-update to the latest version",
+				Action: func(cCtx *cli.Context) error {
+					fmt.Printf("Checking for updates (current: %s)...\n", updater.CurrentVersion)
+					info, err := updater.CheckUpdate(cCtx.Context)
+					if err != nil {
+						return fmt.Errorf("update check failed: %w", err)
+					}
+					if !info.HasUpdate {
+						fmt.Printf("9router-go is already on the latest version (%s).\n", info.CurrentVersion)
+						return nil
+					}
+					fmt.Printf("Downloading update v%s...\n", info.LatestVersion)
+					if err := updater.PerformSelfUpdate(info.DownloadURL); err != nil {
+						return fmt.Errorf("update failed: %w", err)
+					}
+					fmt.Println("✅ 9router-go updated successfully!")
+					return nil
+				},
+			},
 			{
 				Name:  "mitm",
 				Usage: "Manage MITM proxy for CLI tool traffic interception",
@@ -167,11 +215,31 @@ func runServer(cCtx *cli.Context) error {
 	repo := db.NewRepo(conn)
 
 	ts := handlers.NewTokenSaverConfig(cCtx.Bool("rtk"), cCtx.Bool("caveman"), cCtx.Bool("ponytail"))
-	log.Printf("[config] token savers — rtk=%v caveman=%v ponytail=%v", ts.RTKEnabled(), ts.CavemanEnabled(), ts.PonytailEnabled())
+	if settings, sErr := repo.GetSettings(); sErr == nil && settings != nil {
+		rtk := settings.RTKEnabled
+		if cCtx.IsSet("rtk") {
+			rtk = cCtx.Bool("rtk")
+		}
+		caveman := settings.CavemanEnabled
+		if cCtx.IsSet("caveman") {
+			caveman = cCtx.Bool("caveman")
+		}
+		ponytail := settings.PonytailEnabled
+		if cCtx.IsSet("ponytail") {
+			ponytail = cCtx.Bool("ponytail")
+		}
+		ts.SetAll(rtk, caveman, ponytail)
+		ts.SetCaveman(caveman, settings.CavemanLevel)
+		ts.SetPonytail(ponytail, settings.PonytailLevel)
+	}
+	log.Printf("[config] token savers — rtk=%v caveman=%v (%s) ponytail=%v (%s)", ts.RTKEnabled(), ts.CavemanEnabled(), ts.CavemanLevel(), ts.PonytailEnabled(), ts.PonytailLevel())
+
+	updater.StartBackgroundCheck(cCtx.Bool("auto-update"))
 
 	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.MaxBody(middleware.DefaultMaxBodySize))
 	r.Use(chiMiddleware.Recoverer)
-	r.Use(chiMiddleware.RequestID)
 
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -200,6 +268,14 @@ func runServer(cCtx *cli.Context) error {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	r.HandleFunc("/api/hello", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodHead {
+			w.Write([]byte(`{"status":"ok","message":"hello"}`))
+		}
+	})
+
 	// Health reset endpoint — the dashboard calls this via headroom proxy.
 	r.Post("/admin/health/reset", func(w http.ResponseWriter, r *http.Request) {
 		provider := r.URL.Query().Get("provider")
@@ -223,8 +299,13 @@ func runServer(cCtx *cli.Context) error {
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
 
+	server := &http.Server{
+		Addr:    addr,
+		Handler: r,
+	}
+
 	go func() {
-		if err := http.ListenAndServe(addr, r); err != nil && err != http.ErrServerClosed {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed: %v", err)
 		}
 	}()
@@ -233,6 +314,13 @@ func runServer(cCtx *cli.Context) error {
 	log.Printf("Server is ready to handle requests at %s", addr)
 	<-done
 	fmt.Fprintln(os.Stdout, "\n  Shutting down...")
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("Server shutdown failed: %v", err)
+	}
+
 	log.Println("Server stopped gracefully")
 	return nil
 }

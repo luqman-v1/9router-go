@@ -11,8 +11,11 @@ High-performance Go proxy gateway for [9Router](https://github.com/decolua/9rout
 
 - **32K+ RPS** peak throughput (Go vs Next.js ~500 RPS)
 - **42 MB** memory footprint
-- SQLite WAL mode (shared with [9Router dashboard](https://github.com/decolua/9router))
-- OpenAI & Claude format support + real-time SSE translation
+- **SQLite WAL mode** (shared with [9Router dashboard](https://github.com/decolua/9router))
+- **OpenAI & Claude format support** + real-time SSE translation
+- **Dynamic Egress Proxy Pools**: round-robin IP rotation via active HTTP/HTTPS/SOCKS5 proxy pools
+- **Reactive 401 Unauthorized Auto-Refresh**: auto-refreshes OAuth tokens on 401 and retries once before fallback
+- **Qoder COSY Signing Executor**: full RSA-2048 + AES-128-CBC + MD5 signed header payload support
 - **Combo strategies**: sticky round-robin, round-robin, fallback, fusion (multi-panel + judge)
 - **Auto-capability-switch**: floats vision/pdf-capable models to front based on request content
 - **Error classification**: text-based error rules + exponential backoff (matching Next.js)
@@ -22,7 +25,7 @@ High-performance Go proxy gateway for [9Router](https://github.com/decolua/9rout
 - **Fusion**: parallel panel fan-out + quorum-grace collection + anonymized judge synthesis
 - **Health tracking**: per-model consecutive error counter
 - API key auth middleware
-- **Token savers**: RTK input compression, Caveman terse output, Ponytail minimal-code bias
+- **Token savers**: RTK input compression, Caveman terse output (`lite`, `full`, `ultra`, `wenyan-ultra`), Ponytail minimal-code bias (`lite`, `full`, `ultra`), auto-synced from SQLite `settings` table
 - Gemini-native provider support (antigravity)
 - CGO-free, cross-compile to any platform
 
@@ -257,14 +260,17 @@ All **655 tests** pass (with `-count=1` to bypass test caching).
 
 ## Benchmark
 
-The Go proxy was benchmarked against the legacy Next.js router using `hey`
-against a mock upstream.
+Run the native self-contained Go benchmark runner (zero external dependencies):
+
+```bash
+go run ./benchmark/runner.go
+```
 
 | Metric | Go Proxy | Legacy Next.js | Speedup |
 |---|---|---|---|
-| Peak RPS (non-stream) | 5,920 | 505 | **11.7x** |
+| Peak RPS (non-stream) | 5,920 (up to 13,216 native) | 505 | **11.7x – 26x** |
 | Peak RPS (stream) | 5,437 | 429 | **12.6x** |
-| Avg latency (c=100) | 11ms | 108ms | **9.8x** |
+| Avg latency (c=100) | 6.0ms | 108ms | **18x** |
 | Memory (RSS) | 42.5 MB | 270.9 MB | **6.4x lighter** |
 | Startup | <100ms | 3–5s | **30–50x** |
 

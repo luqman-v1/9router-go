@@ -1,6 +1,9 @@
 package oauth
 
-import "net/url"
+import (
+	"context"
+	"net/url"
+)
 
 func init() {
 	Register("grok-cli", refreshGrokCLI)
@@ -8,11 +11,11 @@ func init() {
 
 // refreshGrokCLI refreshes a Grok CLI OAuth token.
 // Uses same xAI public client (no client_secret needed).
-func refreshGrokCLI(p *Params) (*TokenResult, error) {
+func refreshGrokCLI(ctx context.Context, p *Params) (*TokenResult, error) {
 	vals := url.Values{
 		"grant_type":    {"refresh_token"},
 		"client_id":     {xaiClientID},
 		"refresh_token": {p.RefreshToken},
 	}
-	return doFormRefresh(p.Client, "https://auth.x.ai/oauth2/token", vals)
+	return doFormRefresh(ctx, p.Client, "https://auth.x.ai/oauth2/token", vals)
 }

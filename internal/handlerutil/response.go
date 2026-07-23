@@ -95,3 +95,16 @@ func SetAuthHeader(req *http.Request, apiKey, authHeader, authScheme string) {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 }
+
+// GetString safely extracts a string value from a map[string]any by key.
+func GetString(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	if v, ok := m[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}

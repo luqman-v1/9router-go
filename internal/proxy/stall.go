@@ -43,7 +43,11 @@ func NewStallReader(rc io.ReadCloser, timeout time.Duration, label string) io.Re
 // Read implements io.Reader. Each call resets the stall timer.
 func (s *StallReader) Read(p []byte) (int, error) {
 	s.timer.Reset(s.timeout)
-	return s.reader.Read(p)
+	n, err := s.reader.Read(p)
+	if err != nil {
+		s.timer.Stop()
+	}
+	return n, err
 }
 
 // Close implements io.Closer. Stops the stall timer and closes the reader.

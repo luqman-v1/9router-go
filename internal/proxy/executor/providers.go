@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -29,12 +30,16 @@ func ForwardGrokCLI(w http.ResponseWriter, req *Request) error {
 	if err != nil {
 		return fmt.Errorf("transform body: %w", err)
 	}
-	resp, err := proxy.ForwardGrokCLI(req.Client, req.Config, req.APIKey, transformedBody, req.IsStream)
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resp, err := proxy.ForwardGrokCLI(ctx, req.Client, req.Config, req.APIKey, transformedBody, req.IsStream)
 	if err != nil {
 		return fmt.Errorf("ForwardGrokCLI: %w", err)
 	}
 	defer resp.Body.Close()
-	return handleCodexStream(w, resp.Body)
+	return handleCodexStream(w, req, resp.Body)
 }
 
 // ForwardCodex forwards to codex using Responses API format.
@@ -44,12 +49,16 @@ func ForwardCodex(w http.ResponseWriter, req *Request) error {
 	if err != nil {
 		return fmt.Errorf("transform body: %w", err)
 	}
-	resp, err := proxy.ForwardCodex(req.Client, req.Config, req.APIKey, transformedBody, req.IsStream)
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resp, err := proxy.ForwardCodex(ctx, req.Client, req.Config, req.APIKey, transformedBody, req.IsStream)
 	if err != nil {
 		return fmt.Errorf("ForwardCodex: %w", err)
 	}
 	defer resp.Body.Close()
-	return handleCodexStream(w, resp.Body)
+	return handleCodexStream(w, req, resp.Body)
 }
 
 // ForwardIflow forwards to iflow with HMAC-SHA256 signature.
@@ -86,16 +95,20 @@ func ForwardIflow(w http.ResponseWriter, req *Request) error {
 		"x-iflow-timestamp": strconv.FormatInt(timestamp, 10),
 		"x-iflow-signature": signature,
 	}
-	resp, err := proxy.ForwardIflow(req.Client, req.Config, req.APIKey, reqBody, req.IsStream, extraHeaders)
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resp, err := proxy.ForwardIflow(ctx, req.Client, req.Config, req.APIKey, reqBody, req.IsStream, extraHeaders)
 	if err != nil {
 		return fmt.Errorf("ForwardIflow upstream: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if req.IsStream {
-		return sseStream(w, resp.Body, req.TranslateResp, time.Now(), nil, nil)
+		return execSSEStream(w, resp.Body, req)
 	}
-	return jsonResponse(w, resp.Body, req.TranslateResp)
+	return jsonResponse(req.Ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
 }
 
 // ForwardKimchi forwards to kimchi with Anthropic field stripping.
@@ -113,27 +126,35 @@ func ForwardKimchi(w http.ResponseWriter, req *Request) error {
 		return fmt.Errorf("marshal cleaned body: %w", err)
 	}
 
-	resp, err := proxy.ForwardKimchi(req.Client, req.Config, req.APIKey, cleanedBody, req.IsStream)
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resp, err := proxy.ForwardKimchi(ctx, req.Client, req.Config, req.APIKey, cleanedBody, req.IsStream)
 	if err != nil {
 		return fmt.Errorf("ForwardKimchi: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if req.IsStream {
-		return sseStream(w, resp.Body, req.TranslateResp, time.Now(), nil, nil)
+		return execSSEStream(w, resp.Body, req)
 	}
-	return jsonResponse(w, resp.Body, req.TranslateResp)
+	return jsonResponse(req.Ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
 }
 
 // ForwardKiro forwards to kiro with AWS EventStream response handling.
 // Uses EventStream binary parsing instead of standard SSE.
 func ForwardKiro(w http.ResponseWriter, req *Request) error {
-	resp, err := proxy.ForwardKiro(req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resp, err := proxy.ForwardKiro(ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
 	if err != nil {
 		return fmt.Errorf("ForwardKiro: %w", err)
 	}
 	defer resp.Body.Close()
-	return handleKiroStream(w, resp.Body)
+	return handleKiroStream(w, req, resp.Body)
 }
 
 // ForwardAzure forwards to Azure OpenAI with dynamic URL from env vars.
@@ -166,7 +187,11 @@ func ForwardAzure(w http.ResponseWriter, req *Request) error {
 	url := fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s",
 		baseURL, deployment, apiVersion)
 
-	r, err := http.NewRequest("POST", url, bytes.NewReader(req.Body))
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(req.Body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -191,9 +216,9 @@ func ForwardAzure(w http.ResponseWriter, req *Request) error {
 	}
 
 	if req.IsStream {
-		return sseStream(w, resp.Body, req.TranslateResp, time.Now(), nil, nil)
+		return execSSEStream(w, resp.Body, req)
 	}
-	return jsonResponse(w, resp.Body, req.TranslateResp)
+	return jsonResponse(req.Ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
 }
 
 // ForwardCommandcode forwards to CommandCode with NDJSON→SSE translation.
@@ -217,7 +242,11 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 	}
 
 	// Build request with custom headers (not using proxy.ForwardCommandcode)
-	r, err := http.NewRequest("POST", req.Config.BaseURL, bytes.NewReader(reqBody))
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r, err := http.NewRequestWithContext(ctx, "POST", req.Config.BaseURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -242,7 +271,7 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
 	}
 
-	return handleCommandcodeStream(w, resp.Body, oreq.Model)
+	return handleCommandcodeStream(w, req, resp.Body, oreq.Model)
 }
 
 // ForwardOpencode handles requests for opencode (free tier).
@@ -260,16 +289,20 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 	}
 	cfg.StaticHeaders["x-opencode-client"] = "desktop"
 
-	resp, err := proxy.ForwardOpenAI(req.Client, &cfg, apiKey, body, req.IsStream)
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resp, err := proxy.ForwardOpenAI(ctx, req.Client, &cfg, apiKey, body, req.IsStream)
 	if err != nil {
 		return fmt.Errorf("ForwardOpencode: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if req.IsStream {
-		return sseStream(w, resp.Body, req.TranslateResp, time.Now(), nil, nil)
+		return execSSEStream(w, resp.Body, req)
 	}
-	return jsonResponse(w, resp.Body, req.TranslateResp)
+	return jsonResponse(req.Ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
 }
 
 var opencodeGoMessagesModels = map[string]bool{
@@ -303,28 +336,36 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		if req.IsStream {
 			headers["Accept"] = "text/event-stream"
 		}
-		resp, err := proxy.DoRequest(req.Client, "POST", messagesURL, headers, body)
+		ctx := req.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		resp, err := proxy.DoRequest(ctx, req.Client, "POST", messagesURL, headers, body)
 		if err != nil {
 			return fmt.Errorf("ForwardOpencodeGo (messages route): %w", err)
 		}
 		defer resp.Body.Close()
 
 		if req.IsStream {
-			return sseStream(w, resp.Body, req.TranslateResp, time.Now(), nil, nil)
+			return execSSEStream(w, resp.Body, req)
 		}
-		return jsonResponse(w, resp.Body, req.TranslateResp)
+		return jsonResponse(req.Ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
 	}
 
 	// Default OpenAI format endpoint: https://opencode.ai/zen/go/v1/chat/completions
-	resp, err := proxy.ForwardOpenAI(req.Client, req.Config, req.APIKey, body, req.IsStream)
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resp, err := proxy.ForwardOpenAI(ctx, req.Client, req.Config, req.APIKey, body, req.IsStream)
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeGo (default route): %w", err)
 	}
 	defer resp.Body.Close()
 
 	if req.IsStream {
-		return sseStream(w, resp.Body, req.TranslateResp, time.Now(), nil, nil)
+		return execSSEStream(w, resp.Body, req)
 	}
-	return jsonResponse(w, resp.Body, req.TranslateResp)
+	return jsonResponse(req.Ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
 }
 

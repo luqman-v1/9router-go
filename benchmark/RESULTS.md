@@ -67,6 +67,24 @@
 
 ## How to Reproduce
 
+### Option A: Native Go Benchmark Runner (Recommended — Zero Dependencies)
+
+```bash
+go run ./benchmark/runner.go
+```
+
+**Sample Output (Apple Silicon):**
+
+| Concurrency | Total Reqs | RPS | Avg Latency | p50 | p95 | p99 | Max Latency |
+|-------------|------------|-----|-------------|-----|-----|-----|-------------|
+| 1 | 500 | 382.7 | 2.60ms | 2.53ms | 2.67ms | 5.10ms | 16.51ms |
+| 10 | 500 | 3,786.9 | 2.59ms | 2.37ms | 3.48ms | 8.24ms | 8.70ms |
+| 25 | 500 | 7,691.9 | 3.01ms | 2.28ms | 11.65ms | 15.60ms | 20.96ms |
+| 50 | 500 | 11,852.6 | 3.76ms | 2.63ms | 11.71ms | 15.05ms | 18.45ms |
+| 100 | 500 | 13,216.1 | 6.08ms | 4.27ms | 16.53ms | 19.98ms | 20.74ms |
+
+### Option B: Bash Comparison Script (`hey`)
+
 ```bash
 cd go-proxy
 

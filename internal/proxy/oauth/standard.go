@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +12,7 @@ import (
 
 // NewStandardRefresher creates a refresher for a standard OAuth2 refresh_token grant.
 func NewStandardRefresher(tokenURL, clientID, clientSecret string) Refresher {
-	return func(p *Params) (*TokenResult, error) {
+	return func(ctx context.Context, p *Params) (*TokenResult, error) {
 		vals := url.Values{
 			"grant_type":    {"refresh_token"},
 			"client_id":     {clientID},
@@ -21,14 +22,14 @@ func NewStandardRefresher(tokenURL, clientID, clientSecret string) Refresher {
 			vals.Set("client_secret", clientSecret)
 		}
 
-		return doFormRefresh(p.Client, tokenURL, vals)
+		return doFormRefresh(ctx, p.Client, tokenURL, vals)
 	}
 }
 
 // doFormRefresh performs a standard form-urlencoded POST to a token endpoint
 // and returns the parsed TokenResult.
-func doFormRefresh(client *http.Client, tokenURL string, vals url.Values) (*TokenResult, error) {
-	req, err := http.NewRequest("POST", tokenURL, strings.NewReader(vals.Encode()))
+func doFormRefresh(ctx context.Context, client *http.Client, tokenURL string, vals url.Values) (*TokenResult, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(vals.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

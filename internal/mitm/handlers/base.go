@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,9 +12,9 @@ import (
 const proxyBase = "http://localhost:20128"
 
 // FetchRouter sends a request body to the 9router proxy endpoint and returns the response.
-func FetchRouter(body []byte, endpoint string, headers http.Header, apiKey string) (*http.Response, error) {
+func FetchRouter(ctx context.Context, body []byte, endpoint string, headers http.Header, apiKey string) (*http.Response, error) {
 	url := proxyBase + endpoint
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

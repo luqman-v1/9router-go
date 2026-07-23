@@ -556,84 +556,11 @@ var KnownProviders = map[string]ProviderConfig{
 	},
 }
 
-// ProviderAliasMap maps short aliases to canonical provider IDs.
-var ProviderAliasMap = map[string]string{
-		"aai": "assemblyai",
-		"ag": "antigravity",
-		"ali": "alicode",
-		"alii": "alicode-intl",
-		"ant": "anthropic",
-		"ark": "volcengine-ark",
-		"az": "azure",
-	"bb": "blackbox",
-	"bfl": "black-forest-labs",
-	"bpm": "byteplus",
-	"brave": "brave-search",
-	"cc": "claude",
-	"cf": "cloudflare-ai",
-	"ch": "chutes",
-	"cl": "cline",
-	"cmc": "commandcode",
-	"cu": "cursor",
-	"cx": "codex",
-	"dg": "deepgram",
-	"ds": "deepseek",
-	"el": "elevenlabs",
-	"fal": "fal-ai",
-	"fl": "featherless",
-	"fw": "fireworks",
-	"gb": "grok-cli",
-	"gc": "gemini-cli",
-	"gcli": "grok-cli",
-	"gh": "github",
-	"gpse": "google-pse",
-	"gq": "groq",
-	"grok-build": "grok-cli",
-	"gw": "grok-web",
-	"hf": "huggingface",
-	"hyp": "hyperbolic",
-	"jina": "jina-ai",
-	"kc": "kilocode",
-	"kr": "kiro",
-	"mimo": "xiaomi-mimo",
-	"mmf": "mimo-free",
-	"nb": "nanobanana",
-	"nv": "nvidia",
-	"oa": "openai",
-	"oc": "opencode",
-	"ocg": "opencode-go",
-	"or": "openrouter",
-	"polly": "aws-polly",
-	"pplx": "perplexity",
-	"pplx-agent": "perplexity-agent",
-	"pplx-responses": "perplexity-agent",
-	"pw": "perplexity-web",
-	"qd": "qoder",
-	"runway": "runwayml",
-	"stability": "stability-ai",
-	"tg": "together",
-		"cb": "cerebras",
-	"cd": "codebuddy-cn",
-	"gl": "gitlab",
-	"glmcn": "glm-cn",
-	"if": "iflow",
-	"ne": "nebius",
-	"qw": "qwen",
-	"vali": "volcengine-ark",
-	"vercel": "vercel-ai-gateway",
-	"vn": "venice",
-	"xmtp": "xiaomi-tokenplan",
-		"km": "kimi",
-		"mm": "minimax",
-		"cp": "clinepass",
-		"pa": "perplexity-agent",
-}
-
 // RetryableStatusCodes are HTTP status codes that trigger account fallback.
 var RetryableStatusCodes = map[int]bool{
-	http.StatusUnauthorized:          true, // 401
-	http.StatusTooManyRequests:       true, // 429
-	http.StatusBadGateway:            true, // 502
-	http.StatusServiceUnavailable:    true, // 503
-	http.StatusGatewayTimeout:        true, // 504
+	http.StatusUnauthorized:       true, // 401
+	http.StatusTooManyRequests:    true, // 429
+	http.StatusBadGateway:         true, // 502
+	http.StatusServiceUnavailable: true, // 503
+	http.StatusGatewayTimeout:     true, // 504
 }

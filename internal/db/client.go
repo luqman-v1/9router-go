@@ -50,7 +50,7 @@ PRAGMA busy_timeout = 5000;
 	}
 
 	// Configure connection pool limits for SQLite to reduce lock contention
-	db.SetMaxOpenConns(50)
+	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(time.Hour)
 

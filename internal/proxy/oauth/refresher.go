@@ -3,6 +3,7 @@
 package oauth
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 )
@@ -24,7 +25,7 @@ type Params struct {
 }
 
 // Refresher refreshes an OAuth token for a specific provider.
-type Refresher func(p *Params) (*TokenResult, error)
+type Refresher func(ctx context.Context, p *Params) (*TokenResult, error)
 
 var registry = map[string]Refresher{}
 
@@ -39,9 +40,9 @@ func Get(provider string) Refresher {
 }
 
 // Refresh calls the provider's refresher, or falls back to standard OAuth2.
-func Refresh(p *Params) (*TokenResult, error) {
+func Refresh(ctx context.Context, p *Params) (*TokenResult, error) {
 	if fn := Get(p.Provider); fn != nil {
-		return fn(p)
+		return fn(ctx, p)
 	}
 	return nil, fmt.Errorf("no OAuth refresher for: %s", p.Provider)
 }

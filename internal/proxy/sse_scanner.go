@@ -10,6 +10,8 @@ import (
 // extracts the data payload, and invokes onChunk for each payload found.
 func ScanStream(r io.Reader, onChunk func([]byte)) error {
 	scanner := bufio.NewScanner(r)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024) // Allow lines up to 10MB (tool calls, multimodal data)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		// In SSE, lines are colon-separated fields. We care about "data".
