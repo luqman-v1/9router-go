@@ -1,0 +1,5 @@
+{
+  "latestVersion": "1.4.0",
+  "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
+  "releaseNotes": "v1.4.0: Technical debt remediation, TTFT and token accounting fixes, E2E integration test suite, and graceful server shutdown."
+}

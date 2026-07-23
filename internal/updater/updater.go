@@ -19,11 +19,11 @@ import (
 )
 
 // CurrentVersion is the active 9router-go application version.
-// Can be set at build time via -ldflags "-X 9router/proxy/internal/updater.CurrentVersion=1.1.0"
-var CurrentVersion = "1.0.0"
+// Can be set at build time via -ldflags "-X 9router/proxy/internal/updater.CurrentVersion=1.4.0"
+var CurrentVersion = "1.4.0"
 
 // DefaultUpdateURL is the default remote version manifest URL.
-var DefaultUpdateURL = "https://raw.githubusercontent.com/luqmans/9router-go/main/version.json"
+var DefaultUpdateURL = "https://raw.githubusercontent.com/luqman-v1/9router-go/main/version.json"
 
 var (
 	cachedInfo   *UpdateInfo
