@@ -466,3 +466,10 @@ flowchart LR
 > so Go's INSERT would fail on a Next.js schema that expects `AUTOINCREMENT`).
 > And `providerConnections.lastUsedAt`/`consecutiveUseCount` — Go stores as real columns,
 > Next.js stores in the JSON `data` blob. Data could become inconsistent.
+
+## SQLite Connection Pooling & Thread Safety (v1.4.0)
+
+- **Max Open Connections**: `SetMaxOpenConns(4)` is set on the SQLite `sql.DB` instance (`internal/db/client.go`). SQLite in WAL mode allows concurrent readers with a single writer; 4 connections provides optimal throughput without lock thrashing.
+- **Daily Usage Thread Safety**: `upsertDailyUsage` uses `dailyUsageMu` (`sync.Mutex`) to serialize the read-modify-write cycle on the `usageDaily` table (`internal/handlers/chat/usage.go`), preventing lost updates under high concurrency.
+- **ProxyPool Caching**: `proxyPoolCache` (`sync.Map`) caches `ProxyPool` instances in memory (`internal/db/proxyPools.go`) to preserve atomic round-robin indices across request lifecycles.
+
