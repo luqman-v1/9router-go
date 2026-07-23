@@ -227,19 +227,75 @@ GET  /health                   # Health check
 
 ## Docker
 
+### Pull from Docker Hub
+
 ```bash
-# Build & run
+docker pull luqmenul/9router-go:latest
+```
+
+### Docker Compose (`docker-compose.yml`)
+
+#### With Outbound Egress Proxy (Microwarp SOCKS5)
+
+```yaml
+services:
+  microwarp:
+    image: ghcr.io/ccbkkb/microwarp:latest
+    container_name: microwarp
+    restart: always
+    ports:
+      - "1080:1080"
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    volumes:
+      - /srv/dev-disk-by-uuid-893af3d9-834e-db01-803a-f3d9834edb01/9router/warp:/etc/wireguard
+
+  9router-go:
+    image: luqmenul/9router-go:latest
+    container_name: 9router-go
+    ports:
+      - "20130:20128"
+    environment:
+      - PORT=20128
+      - DATA_DIR=/data
+      - RTK_ENABLED=true
+      - CAVEMAN_ENABLED=false
+      - PONYTAIL_ENABLED=true
+      - HTTP_PROXY=socks5://microwarp:1080
+      - HTTPS_PROXY=socks5://microwarp:1080
+    volumes:
+      - /srv/dev-disk-by-uuid-893af3d9-834e-db01-803a-f3d9834edb01/9router:/data
+    depends_on:
+      - microwarp
+    restart: unless-stopped
+```
+
+#### Standalone Deployment
+
+```yaml
+services:
+  9router-go:
+    image: luqmenul/9router-go:latest
+    container_name: 9router-go
+    ports:
+      - "20128:20128"
+    environment:
+      - PORT=20128
+      - DATA_DIR=/data
+      - RTK_ENABLED=true
+      - CAVEMAN_ENABLED=false
+      - PONYTAIL_ENABLED=true
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+```
+
+```bash
+# Start container
 docker compose up -d
-
-# Or manually
-docker build -t 9router-go .
-docker run -d -p 20128:20128 -v 9router-data:/data --name 9router-go 9router-go
-
-# With custom DB path
-docker run -d -p 20128:20128 \
-  -v /path/to/your/data.sqlite:/db/data.sqlite \
-  -e DB_PATH=/db/data.sqlite \
-  --name 9router-go 9router-go
 ```
 
 ## Cross-Compile
