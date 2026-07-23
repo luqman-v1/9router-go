@@ -251,7 +251,7 @@ services:
     sysctls:
       - net.ipv4.conf.all.src_valid_mark=1
     volumes:
-      - /srv/dev-disk-by-uuid-893af3d9-834e-db01-803a-f3d9834edb01/9router/warp:/etc/wireguard
+      - ./warp:/etc/wireguard
 
   9router-go:
     image: luqmenul/9router-go:latest
@@ -267,7 +267,7 @@ services:
       - HTTP_PROXY=socks5://microwarp:1080
       - HTTPS_PROXY=socks5://microwarp:1080
     volumes:
-      - /srv/dev-disk-by-uuid-893af3d9-834e-db01-803a-f3d9834edb01/9router:/data
+      - ./data:/data
     depends_on:
       - microwarp
     restart: unless-stopped
