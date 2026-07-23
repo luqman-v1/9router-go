@@ -302,9 +302,8 @@ flowchart TD
     OC --> Text["extractTextContent()"]
     CR --> Text
     GR --> Text
-    RES --> Text
-    
     Text --> Judge["Judge model synthesizes\nfinal answer"]
+```
 
 ## Safety, Thread-Safety & Concurrency (v1.4.0)
 
