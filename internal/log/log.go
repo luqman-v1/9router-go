@@ -22,6 +22,13 @@ import (
 	"time"
 )
 
+// RequestIDContextKey is the typed context key for request IDs.
+// Shared between middleware and log packages to ensure context value lookups match.
+type RequestIDContextKey string
+
+// RequestIDKey is the context key used to store request IDs.
+const RequestIDKey RequestIDContextKey = "requestID"
+
 // Level represents a log level.
 type Level int
 
@@ -169,7 +176,7 @@ func ErrorCtx(ctx context.Context, tag, msg string, kv ...any) {
 
 func outputCtx(ctx context.Context, l Level, tag, msg string, kv ...any) {
 	if ctx != nil {
-		if reqID, ok := ctx.Value("requestID").(string); ok && reqID != "" {
+		if reqID, ok := ctx.Value(RequestIDKey).(string); ok && reqID != "" {
 			kv = append([]any{"req_id", reqID}, kv...)
 		}
 	}

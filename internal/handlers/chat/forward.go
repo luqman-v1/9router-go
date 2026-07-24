@@ -39,6 +39,14 @@ func (h *ChatHandler) forwardRequest(
 		}
 	}()
 
+	if resp.StatusCode != http.StatusOK {
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+		if err != nil {
+			return fmt.Errorf("read upstream error body: %w", err)
+		}
+		return &upstreamError{StatusCode: resp.StatusCode, Body: respBody}
+	}
+
 	start := time.Now()
 	if metrics == nil {
 		metrics = &streamMetrics{}
@@ -93,7 +101,7 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 
 // handleJSONResponse forwards a non-streaming JSON response.
 func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translate bool, metrics *streamMetrics) error {
-	body, err := io.ReadAll(upstream)
+	body, err := io.ReadAll(io.LimitReader(upstream, 10*1024*1024))
 	if err != nil {
 		return fmt.Errorf("read upstream response body: %w", err)
 	}

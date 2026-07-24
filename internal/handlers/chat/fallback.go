@@ -94,6 +94,7 @@ func (h *ChatHandler) handleAccountFallback(
 				errMsg = fmt.Sprintf("%d upstream error", ue.StatusCode)
 			}
 			h.Repo.LockConnectionModel(connObj.ID, model, cooldownSec, classification.NewBackoffLevel)
+			log.Warn("fallback", "connection locked", "conn", connObj.ID, "provider", provider, "model", model, "status", ue.StatusCode, "cooldown_s", cooldownSec)
 			excludeIDs = append(excludeIDs, c.ID)
 			continue
 		}
@@ -214,6 +215,13 @@ func (h *ChatHandler) tryForwardWithConnection(
 			Endpoint:     endpoint,
 		}
 		h.logUsage(logInfo, usage, latencyMs, body, metrics)
+	} else {
+		var ue *upstreamError
+		statusCode := 0
+		if errors.As(fwdErr, &ue) {
+			statusCode = ue.StatusCode
+		}
+		log.Warn("fallback", "upstream failed", "provider", provider, "model", model, "conn", connectionID, "status", statusCode, "error", fwdErr)
 	}
 	return fwdErr
 }

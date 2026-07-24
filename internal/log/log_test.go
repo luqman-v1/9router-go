@@ -34,7 +34,7 @@ func TestJSONLogOutput(t *testing.T) {
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
 
-	ctx := context.WithValue(context.Background(), "requestID", "req_test123")
+	ctx := context.WithValue(context.Background(), RequestIDKey, "req_test123")
 	InfoCtx(ctx, "test", "hello JSON log", "key", "value")
 
 	output := buf.String()

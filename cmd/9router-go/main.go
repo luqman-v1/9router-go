@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,24 +16,12 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"9router/proxy/internal/config"
-	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers"
 	"9router/proxy/internal/middleware"
-	"9router/proxy/internal/mitm"
 	"9router/proxy/internal/updater"
 )
 
-// statusWriter wraps http.ResponseWriter to capture the status code.
-type statusWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (w *statusWriter) WriteHeader(code int) {
-	w.status = code
-	w.ResponseWriter.WriteHeader(code)
-}
 
 func main() {
 	app := &cli.App{
@@ -133,61 +120,7 @@ func main() {
 	}
 }
 
-func mitmEnable(cCtx *cli.Context) error {
-	dataDir := resolveDataDir()
-	mgr := mitm.NewManager(dataDir)
-	if err := mgr.Enable(); err != nil {
-		return fmt.Errorf("MITM enable failed: %w", err)
-	}
-	fmt.Println("MITM proxy enabled. Intercepted traffic on :443 → 9router proxy.")
-	return nil
-}
 
-func mitmDisable(_ *cli.Context) error {
-	homeDir, herr := os.UserHomeDir()
-	if herr != nil {
-		homeDir = "/tmp"
-	}
-	dataDir := os.Getenv("DATA_DIR")
-	if dataDir == "" {
-		dataDir = homeDir + "/.9router"
-	}
-	mgr := mitm.NewManager(dataDir)
-	if err := mgr.Disable(); err != nil {
-		return fmt.Errorf("MITM disable failed: %w", err)
-	}
-	fmt.Println("MITM proxy disabled.")
-	return nil
-}
-
-func mitmStatus(_ *cli.Context) error {
-	homeDir, herr := os.UserHomeDir()
-	if herr != nil {
-		homeDir = "/tmp"
-	}
-	dataDir := os.Getenv("DATA_DIR")
-	if dataDir == "" {
-		dataDir = homeDir + "/.9router"
-	}
-	mgr := mitm.NewManager(dataDir)
-	status := mgr.Status()
-	fmt.Printf("Running: %v\n", status["running"])
-	fmt.Printf("CA installed: %v\n", status["ca_installed"])
-	fmt.Printf("MITM dir: %v\n", status["mitm_dir"])
-	return nil
-}
-
-func resolveDataDir() string {
-	d := os.Getenv("DATA_DIR")
-	if d != "" {
-		return d
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".9router"
-	}
-	return home + "/.9router"
-}
 
 func runServer(cCtx *cli.Context) error {
 	if logPath := os.Getenv("LOG_FILE"); logPath != "" {
@@ -241,57 +174,9 @@ func runServer(cCtx *cli.Context) error {
 	r.Use(middleware.MaxBody(middleware.DefaultMaxBodySize))
 	r.Use(chiMiddleware.Recoverer)
 
-	r.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			start := time.Now()
-			path := req.URL.Path
-			for len(path) > 3 && path[:4] == "/v1/" {
-				path = path[3:]
-			}
-			req.URL.Path = path
-			reqID := chiMiddleware.GetReqID(req.Context())
-			if reqID != "" {
-				w.Header().Set("X-Request-ID", reqID)
-			}
-			ww := &statusWriter{ResponseWriter: w, status: http.StatusOK}
-			next.ServeHTTP(ww, req)
-			if reqID != "" {
-				log.Printf("[request] id=%s %s %s %d %s", reqID, req.Method, path, ww.status, time.Since(start))
-			} else {
-				log.Printf("[request] %s %s %d %s", req.Method, path, ww.status, time.Since(start))
-			}
-		})
-	})
+	r.Use(middleware.RequestLogger)
 
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-		w.Write([]byte(`{"status":"ok"}`))
-	})
-
-	r.HandleFunc("/api/hello", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-		w.WriteHeader(http.StatusOK)
-		if r.Method != http.MethodHead {
-			w.Write([]byte(`{"status":"ok","message":"hello"}`))
-		}
-	})
-
-	// Health reset endpoint — the dashboard calls this via headroom proxy.
-	r.Post("/admin/health/reset", func(w http.ResponseWriter, r *http.Request) {
-		provider := r.URL.Query().Get("provider")
-		model := r.URL.Query().Get("model")
-		if err := repo.ResetProviderHealth(provider, model); err != nil {
-			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-
-	r.Group(func(r chi.Router) {
-		r.Use(middleware.RequireApiKey(repo))
-		handlers.SetupRoutes(r, repo, ts)
-	})
+	handlers.SetupServerRouter(r, repo, ts)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("9Router Go Proxy starting on port %d", cfg.Port)

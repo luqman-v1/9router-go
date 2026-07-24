@@ -5,10 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
-)
 
-// RequestIDContextKey is the context key for tracing request IDs.
-const RequestIDContextKey ContextKey = "requestID"
+	"9router/proxy/internal/log"
+)
 
 // RequestID returns a middleware that injects a unique request ID (Correlation ID)
 // into each request context and response header (X-Request-ID).
@@ -20,7 +19,7 @@ func RequestID(next http.Handler) http.Handler {
 		}
 
 		w.Header().Set("X-Request-ID", reqID)
-		ctx := context.WithValue(r.Context(), RequestIDContextKey, reqID)
+		ctx := context.WithValue(r.Context(), log.RequestIDKey, reqID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -38,7 +37,7 @@ func GetRequestIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	val := ctx.Value(RequestIDContextKey)
+	val := ctx.Value(log.RequestIDKey)
 	if val == nil {
 		return ""
 	}

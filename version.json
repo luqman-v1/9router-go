@@ -1,5 +1,5 @@
 {
-  "latestVersion": "1.4.0",
+  "latestVersion": "1.5.0",
   "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
-  "releaseNotes": "v1.4.0: Technical debt remediation, TTFT and token accounting fixes, E2E integration test suite, and graceful server shutdown."
+  "releaseNotes": "v1.5.0: Modular main.go refactoring, structured request logging with Correlation ID, upstream failure logging, memory protection with LimitReader, and status code-based log level filtering."
 }

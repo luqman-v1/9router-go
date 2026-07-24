@@ -466,13 +466,17 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	}
 
 	if lastErr != nil {
-		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		if cw.IsCommitted() {
+			log.Error("combo", "upstream error after headers committed", "error", lastErr)
+			return
+		}
+		cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		if earliestRetryAfter != "" {
 			retryAfterSec := int((time.Until(mustParseTime(earliestRetryAfter)) + time.Second - 1) / time.Second)
 			if retryAfterSec < 1 {
 				retryAfterSec = 1
 			}
-			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+			cw.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSec))
 			retryHuman := formatRetryAfter(earliestRetryAfter)
 			var errBody map[string]any
 			if err := json.Unmarshal(lastErr.Body, &errBody); err == nil {
@@ -480,19 +484,22 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					if msg, _ := errObj["message"].(string); msg != "" {
 						errObj["message"] = msg + " (" + retryHuman + ")"
 						updated, _ := json.Marshal(errBody)
-						w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-						w.WriteHeader(lastErr.StatusCode)
-						w.Write(updated)
+						cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+						cw.WriteHeader(lastErr.StatusCode)
+						cw.Write(updated)
 						return
 					}
 				}
 			}
 		}
-		w.WriteHeader(lastErr.StatusCode)
-		w.Write(lastErr.Body)
+		cw.WriteHeader(lastErr.StatusCode)
+		cw.Write(lastErr.Body)
 		return
 	}
-	handlerutil.WriteJSONError(w, http.StatusBadGateway, "all combo models failed: no valid entries")
+	if cw.IsCommitted() {
+		return
+	}
+	handlerutil.WriteJSONError(cw, http.StatusBadGateway, "all combo models failed: no valid entries")
 }
 
 

@@ -1,13 +1,19 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlers/media"
 	"9router/proxy/internal/handlers/oauth"
 	"9router/proxy/internal/handlers/shared"
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/middleware"
 )
 
 // Re-export TokenSaverConfig for root compatibility
@@ -61,4 +67,40 @@ func SetupRoutes(r interface {
 	r.Get("/api/oauth/kiro/social-authorize", oauthH.HandleOAuthKiroSocialAuthorize)
 	r.Post("/api/oauth/kiro/social-exchange", oauthH.HandleOAuthKiroSocialExchange)
 	r.Post("/api/oauth/codex/bulk-import", oauthH.HandleOAuthCodexBulkImport)
+}
+
+// SetupServerRouter mounts both public endpoints (/health, /api/hello, /admin/health/reset)
+// and API-key protected routes on the provided chi router.
+func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
+	// Public (unauthenticated) endpoints
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	r.HandleFunc("/api/hello", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodHead {
+			w.Write([]byte(`{"status":"ok","message":"hello"}`))
+		}
+	})
+
+	// Health reset endpoint — dashboard calls this via headroom proxy
+	r.Post("/admin/health/reset", func(w http.ResponseWriter, r *http.Request) {
+		provider := r.URL.Query().Get("provider")
+		model := r.URL.Query().Get("model")
+		if err := repo.ResetProviderHealth(provider, model); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	// API-key protected domain routes
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.RequireApiKey(repo))
+		SetupRoutes(r, repo, ts)
+	})
 }
