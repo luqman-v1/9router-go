@@ -48,6 +48,11 @@ func main() {
 				Value: os.Getenv("AUTO_UPDATE") == "true",
 				Usage: "automatically download and install updates if available (env: AUTO_UPDATE)",
 			},
+			&cli.BoolFlag{
+				Name:  "no-injection-guard",
+				Value: os.Getenv("INJECTION_GUARD_DISABLED") == "true",
+				Usage: "disable the prompt-injection detector (on by default; env: INJECTION_GUARD_DISABLED)",
+			},
 		},
 		Commands: []*cli.Command{
 			{
@@ -165,7 +170,9 @@ func runServer(cCtx *cli.Context) error {
 		ts.SetCaveman(caveman, settings.CavemanLevel)
 		ts.SetPonytail(ponytail, settings.PonytailLevel)
 	}
+	ts.SetInjectionGuard(!cCtx.Bool("no-injection-guard"))
 	log.Printf("[config] token savers — rtk=%v caveman=%v (%s) ponytail=%v (%s)", ts.RTKEnabled(), ts.CavemanEnabled(), ts.CavemanLevel(), ts.PonytailEnabled(), ts.PonytailLevel())
+	log.Printf("[config] prompt-injection guard enabled=%v", ts.InjectionGuardEnabled())
 
 	updater.StartBackgroundCheck(cCtx.Bool("auto-update"))
 

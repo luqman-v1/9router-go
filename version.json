@@ -1,5 +1,5 @@
 {
-  "latestVersion": "1.5.0",
+  "latestVersion": "1.6.0",
   "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
-  "releaseNotes": "v1.5.0: Modular main.go refactoring, structured request logging with Correlation ID, upstream failure logging, memory protection with LimitReader, and status code-based log level filtering."
+  "releaseNotes": "v1.6.0: Ported Next.js engine features (TTS voices, proxy-pools deploy, headroom, cli-tools status), live console log streaming, lightweight request tracing, prompt-injection guard, and security hardening (auth-protected health reset, loopback-only MITM, registry mutexes, JSON number preservation)."
 }

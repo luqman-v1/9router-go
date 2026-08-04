@@ -13,6 +13,7 @@ import (
 
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
+	"9router/proxy/internal/tracing"
 	"9router/proxy/internal/tokensaver"
 	"9router/proxy/internal/translator"
 )
@@ -198,6 +199,22 @@ func (h *ChatHandler) tryForwardWithConnection(
 	}
 
 	latencyMs := time.Since(start).Milliseconds()
+
+	// Lightweight request trace for /debug/traces (provider/model latency).
+	status := "error"
+	if fwdErr == nil {
+		status = "200"
+	} else if ue, ok := fwdErr.(*upstreamError); ok && ue.StatusCode > 0 {
+		status = fmt.Sprintf("%d", ue.StatusCode)
+	}
+	tracing.Record(tracing.Span{
+		Provider:   provider,
+		Model:      model,
+		Status:     status,
+		DurationMs: latencyMs,
+		TTFTMs:     metrics.TTFT,
+	})
+
 	if fwdErr == nil {
 		// Clear any existing model lock on success (matching Next.js clearAccountError)
 		if unlockErr := h.Repo.UnlockConnectionModel(connectionID, model); unlockErr != nil {
@@ -229,6 +246,14 @@ func (h *ChatHandler) tryForwardWithConnection(
 // applyTokenSavers runs RTK compression and prompt injection on the request body.
 // false from compress/inject means nothing changed (or unparseable) — keep original, not a failure.
 func (h *ChatHandler) applyTokenSavers(body []byte) []byte {
+	// Prompt-injection guard: tag (never block) flagged user content. Early
+	// detection here means operators can see abuse before it reaches upstream.
+	// Toggle via settings.injectionGuardEnabled (off bypasses the scan).
+	if h.TokenSaver.InjectionGuardEnabled() {
+		if inj := tokensaver.DetectInjection(body); inj.Flagged {
+			log.Warn("guard", "prompt injection flagged", "reasons", inj.Reasons, "messageId", inj.MessageID)
+		}
+	}
 	out := body
 	if h.TokenSaver.RTKEnabled() {
 		if next, did := tokensaver.CompressMessages(out); did {

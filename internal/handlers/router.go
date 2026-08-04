@@ -94,10 +94,13 @@ func SetupRoutes(r interface {
 	r.Get("/translator/console-logs", HandleConsoleLogsGet)
 	r.Delete("/translator/console-logs", HandleConsoleLogsDelete)
 	r.Get("/translator/console-logs/stream", HandleConsoleLogsStream)
+
+	// Debug Tracing Domain (p50/p95 latency per provider+model)
+	r.Get("/debug/traces", HandleDebugTraces)
 }
 
-// SetupServerRouter mounts both public endpoints (/health, /api/hello, /admin/health/reset)
-// and API-key protected routes on the provided chi router.
+// SetupServerRouter mounts public endpoints (/health, /api/hello) and
+// API-key protected routes (all engine + admin routes) on the chi router.
 func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	// Public (unauthenticated) endpoints
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -113,21 +116,23 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 		}
 	})
 
-	// Health reset endpoint — dashboard calls this via headroom proxy
-	r.Post("/admin/health/reset", func(w http.ResponseWriter, r *http.Request) {
-		provider := r.URL.Query().Get("provider")
-		model := r.URL.Query().Get("model")
-		if err := repo.ResetProviderHealth(provider, model); err != nil {
-			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-
-	// API-key protected domain routes
+	// API-key protected domain routes (includes /admin/health/reset so health
+	// state cannot be reset by an unauthenticated caller — open-source hardening)
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireApiKey(repo))
+
+		// Health reset endpoint — dashboard calls this via headroom proxy
+		r.Post("/admin/health/reset", func(w http.ResponseWriter, r *http.Request) {
+			provider := r.URL.Query().Get("provider")
+			model := r.URL.Query().Get("model")
+			if err := repo.ResetProviderHealth(provider, model); err != nil {
+				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		})
+
 		SetupRoutes(r, repo, ts)
 	})
 }

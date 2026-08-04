@@ -3,10 +3,12 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/tracing"
 )
 
 // consolePingInterval matches the Next dashboard's 25s keepalive so proxies
@@ -20,6 +22,24 @@ func HandleConsoleLogsGet(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"logs":    log.ConsoleLogs(),
 	})
+}
+
+// HandleDebugTraces returns recent request spans + p50/p95/p99 latency per
+// provider+model. Optional ?n= query caps the span list.
+func HandleDebugTraces(w http.ResponseWriter, r *http.Request) {
+	n := 0
+	if q := r.URL.Query().Get("n"); q != "" {
+		if v, err := strconv.Atoi(q); err == nil && v > 0 {
+			n = v
+		}
+	}
+	body, err := tracing.JSON(n)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(body)
 }
 
 // HandleConsoleLogsDelete clears the buffered console logs.

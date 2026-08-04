@@ -5,22 +5,24 @@ import "sync"
 // TokenSaverConfig holds runtime-configurable token saver flags and levels.
 // Thread-safe via RWMutex. Zero value = all off.
 type TokenSaverConfig struct {
-	mu              sync.RWMutex
-	rtkEnabled      bool
-	cavemanEnabled  bool
-	cavemanLevel    string
-	ponytailEnabled bool
-	ponytailLevel   string
+	mu                    sync.RWMutex
+	rtkEnabled            bool
+	cavemanEnabled        bool
+	cavemanLevel          string
+	ponytailEnabled       bool
+	ponytailLevel         string
+	injectionGuardEnabled bool
 }
 
 // NewTokenSaverConfig creates config with initial values.
 func NewTokenSaverConfig(rtk, caveman, ponytail bool) *TokenSaverConfig {
 	return &TokenSaverConfig{
-		rtkEnabled:      rtk,
-		cavemanEnabled:  caveman,
-		cavemanLevel:    "full",
-		ponytailEnabled: ponytail,
-		ponytailLevel:   "full",
+		rtkEnabled:            rtk,
+		cavemanEnabled:        caveman,
+		cavemanLevel:          "full",
+		ponytailEnabled:       ponytail,
+		ponytailLevel:         "full",
+		injectionGuardEnabled: true, // on by default; toggle via settings
 	}
 }
 
@@ -82,6 +84,20 @@ func (c *TokenSaverConfig) SetPonytail(v bool, level ...string) {
 	if len(level) > 0 && level[0] != "" {
 		c.ponytailLevel = level[0]
 	}
+}
+
+// InjectionGuardEnabled reports whether the prompt-injection detector is on.
+func (c *TokenSaverConfig) InjectionGuardEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.injectionGuardEnabled
+}
+
+// SetInjectionGuard toggles the prompt-injection detector.
+func (c *TokenSaverConfig) SetInjectionGuard(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.injectionGuardEnabled = v
 }
 
 // Snapshot returns all current values.

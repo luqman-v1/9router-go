@@ -86,3 +86,18 @@ func TestSetAll(t *testing.T) {
 		t.Errorf("SetAll mismatch: got (%v,%v,%v), want (true,true,false)", rtk, caveman, ponytail)
 	}
 }
+
+func TestInjectionGuardToggle(t *testing.T) {
+	c := NewTokenSaverConfig(false, false, false)
+	if !c.InjectionGuardEnabled() {
+		t.Error("injection guard must be enabled by default")
+	}
+	c.SetInjectionGuard(false)
+	if c.InjectionGuardEnabled() {
+		t.Error("expected guard disabled after SetInjectionGuard(false)")
+	}
+	c.SetInjectionGuard(true)
+	if !c.InjectionGuardEnabled() {
+		t.Error("expected guard re-enabled after SetInjectionGuard(true)")
+	}
+}
