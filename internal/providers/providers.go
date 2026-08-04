@@ -57,6 +57,10 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://openrouter.ai/api/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"HTTP-Referer": "https://endpoint-proxy.local",
+			"X-Title":      "Endpoint Proxy",
+		},
 	},
 	"cerebras": {
 		BaseURL:    "https://api.cerebras.ai/v1/chat/completions",
@@ -95,6 +99,18 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://api.githubcopilot.com/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"copilot-integration-id":              "vscode-chat",
+			"editor-version":                      "vscode/1.110.0",
+			"editor-plugin-version":               "copilot-chat/0.38.0",
+			"user-agent":                          "GitHubCopilotChat/0.38.0",
+			"openai-intent":                       "conversation-panel",
+			"x-github-api-version":                "2025-04-01",
+			"x-vscode-user-agent-library-version": "electron-fetch",
+			"X-Initiator":                         "user",
+			"Accept":                              "application/json",
+			"Content-Type":                        "application/json",
+		},
 	},
 	"mistral": {
 		BaseURL:    "https://api.mistral.ai/v1/chat/completions",
@@ -204,6 +220,10 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://api.cline.bot/api/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"HTTP-Referer": "https://cline.bot",
+			"X-Title":      "Cline",
+		},
 	},
 	"alicode": {
 		BaseURL:    "https://coding.dashscope.aliyuncs.com/v1/chat/completions",
@@ -224,6 +244,27 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://copilot.tencent.com/v2/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"User-Agent":          "CLI/2.108.1 CodeBuddy/2.108.1",
+			"X-Product":           "SaaS",
+			"X-IDE-Type":          "CLI",
+			"X-IDE-Name":          "CLI",
+			"x-requested-with":    "XMLHttpRequest",
+			"x-codebuddy-request": "1",
+		},
+	},
+	"codebuddy-intl": {
+		BaseURL:    "https://www.codebuddy.ai/v2/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"User-Agent":          "IDE/2.108.1 CodeBuddy/2.108.1",
+			"X-Product":           "SaaS",
+			"X-IDE-Type":          "IDE",
+			"X-IDE-Name":          "IDE",
+			"x-requested-with":    "XMLHttpRequest",
+			"x-codebuddy-request": "1",
+		},
 	},
 	"gitlab": {
 		BaseURL:    "https://gitlab.com/api/v4/chat/completions",
@@ -244,6 +285,9 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://llm.kimchi.dev/openai/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"User-Agent": "kimchi/0.1.50",
+		},
 	},
 	"iflow": {
 		BaseURL:    "https://apis.iflow.cn/v1/chat/completions",
@@ -275,6 +319,10 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://api.cline.bot/api/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"HTTP-Referer": "https://cline.bot",
+			"X-Title":      "Cline",
+		},
 	},
 	"perplexity-agent": {
 		BaseURL:    "https://api.perplexity.ai/v1/responses",
@@ -308,23 +356,24 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "raw",
 		StaticHeaders: map[string]string{
 			"anthropic-version": "2023-06-01",
-				"Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14",
-			},
+			"Anthropic-Beta":    "claude-code-20250219,interleaved-thinking-2025-05-14",
 		},
-		"codex": {
-			BaseURL:    "https://chatgpt.com/backend-api/codex/responses",
-			AuthHeader: "Authorization",
-			AuthScheme: "bearer",
-			StaticHeaders: map[string]string{
-				"originator": "codex_cli_rs",
-			},
+	},
+	"codex": {
+		BaseURL:    "https://chatgpt.com/backend-api/codex/responses",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"originator": "codex_cli_rs",
+			"User-Agent": "codex_cli_rs/0.136.0",
 		},
-		"grok-cli": {
-			BaseURL:    "https://cli-chat-proxy.grok.com",
-			AuthHeader: "Authorization",
-			AuthScheme: "bearer",
-		},
-		"kiro": {
+	},
+	"grok-cli": {
+		BaseURL:    "https://cli-chat-proxy.grok.com",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"kiro": {
 			BaseURL:    "https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
 			AuthHeader: "Authorization",
 			AuthScheme: "bearer",
@@ -549,10 +598,102 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
-"google-pse": {
+	"google-pse": {
 		BaseURL:    "https://www.googleapis.com/customsearch/v1",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+	},
+	"alims-intl": {
+		BaseURL:    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"api-airforce": {
+		BaseURL:    "https://api.airforce/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"HTTP-Referer": "https://endpoint-proxy.local",
+			"X-Title":      "Endpoint Proxy",
+		},
+	},
+	"baidu": {
+		BaseURL:    "https://qianfan.baidubce.com/v2/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"bazaarlink": {
+		BaseURL:    "https://bazaarlink.ai/api/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"bluesminds": {
+		BaseURL:    "https://api.bluesminds.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"devin-cli": {
+		BaseURL:    "devin://acp/stdio",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"kilo-gateway": {
+		BaseURL:    "https://api.kilo.ai/api/gateway/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"llm7": {
+		BaseURL:    "https://api.llm7.io/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"morph": {
+		BaseURL:    "https://api.morphllm.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"poolside": {
+		BaseURL:    "https://inference.poolside.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"sambanova": {
+		BaseURL:    "https://api.sambanova.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"tencent": {
+		BaseURL:    "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"trae": {
+		BaseURL:    "https://core-normal.trae.ai/api/remote/v1",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"X-Trae-Client-Type":     "web",
+			"X-Preferenced-Language": "en",
+			"Referer":                "https://solo.trae.ai/",
+		},
+	},
+	"windsurf": {
+		BaseURL:    "https://server.codeium.com/exa.language_server_pb.LanguageServerService/GetChatMessage",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"Content-Type": "application/grpc-web+proto",
+			"Accept":       "application/grpc-web+proto",
+			"X-Grpc-Web":   "1",
+		},
+	},
+	"zed": {
+		BaseURL:    "https://cloud.zed.dev/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"content-type": "application/json",
+		},
 	},
 }
 

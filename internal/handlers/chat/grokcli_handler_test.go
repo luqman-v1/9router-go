@@ -14,10 +14,13 @@ import (
 
 func TestForwardGrokCLIRequest_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("x-grok-client-identifier") != "grok-cli-go" {
+		if r.Header.Get("User-Agent") != "grok-shell/0.2.99 (linux; x86_64)" {
+			t.Errorf("expected grok-shell User-Agent, got %q", r.Header.Get("User-Agent"))
+		}
+		if r.Header.Get("x-grok-client-identifier") != "grok-shell" {
 			t.Errorf("expected x-grok-client-identifier header, got %q", r.Header.Get("x-grok-client-identifier"))
 		}
-		if r.Header.Get("x-grok-client-version") != "0.1.0" {
+		if r.Header.Get("x-grok-client-version") != "0.2.99" {
 			t.Errorf("expected x-grok-client-version header, got %q", r.Header.Get("x-grok-client-version"))
 		}
 		if r.Header.Get("Authorization") != "Bearer test-key" {

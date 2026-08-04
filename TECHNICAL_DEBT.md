@@ -18,7 +18,13 @@ Documented technical debt, concurrency risks, resource leaks, and planned archit
 
 ## 🟡 Open Medium Items (Priority 3: Code Robustness & Performance)
 
-*No open medium items.*
+- **Windsurf / Zed / Devin-CLI / Trae registered to plain `ForwardOpenAI` but are not OpenAI-HTTP at their endpoint** (added in the v1.6.1 provider parity port): these four providers show up as selectable but their upstreams need a dedicated executor. `ForwardOpenAI` posts JSON to whatever `BaseURL` is set, so:
+  - `windsurf` → `server.codeium.com/exa.language_server_pb.LanguageServerService/GetChatMessage` is a **gRPC/protobuf** endpoint — a JSON POST cannot speak protobuf.
+  - `zed` → needs non-standard `Authorization: <user_id> <access_token>` + `x-zed-cloud-token` built via an RSA token exchange that the Go executor doesn't do (JS: `open-sse/shared/zedAuth` + `executors/zed.js`).
+  - `devin-cli` → `BaseURL` is `devin://acp/stdio`, a **non-HTTP scheme**; `http.NewRequest` fails on it.
+  - `trae` → custom session/auth logic in `executors/trae.js`.
+  - **Fix when**: porting each provider's JS executor before advertising it as usable. Prioritize `devin-cli` (also callable over HTTP via ACP) and `windsurf`. Unregistering any of these until their executor lands is the safe stopgap. Reference: `open-sse/executors/{windsurf,zed,devin-cli,trae}.js`.
+- **CodeBuddy OAuth not ported**: `codebuddy-cn`/`codebuddy-intl` have no `KnownOAuthConfigs` entry, so the CN/INTL OAuth flow isn't wired into the Go backend. API-key connections work via `Authorization: Bearer` (reference `authModes` includes `apikey`). Fix when OAuth login/refresh parity with the Next dashboard is wanted.
 
 ---
 
@@ -69,3 +75,4 @@ Documented technical debt, concurrency risks, resource leaks, and planned archit
 - **Token Saver Re-Marshal Corrupts Field Types**: `CompressMessages` and `InjectSystemPrompt` now decode via `unmarshalAny` (`json.Decoder.UseNumber()`), preserving numeric literals as `json.Number` instead of coercing to `float64` — large ints and floats round-trip unchanged. New test asserts `9007199254740993` survives.
 - **SSE Fragment Rejoin (opencode free-tier)**: `TranslateOpenAIToClaudeStreamSession` buffers a truncated SSE JSON payload per session (`pendingJSON`, capped 1 MiB) and rejoins it with the continuation chunk, instead of erroring `unexpected end of JSON input` and dropping the chunk. Malformed (non-truncation) JSON still errors. 2 new tests.
 - **Next→Go Engine Ports (COMPARISON.md)**: TTS voices (`voices.go`), proxy-pools deploy Vercel/Deno/Cloudflare (`deploy.go`), headroom process management (`internal/headroom/`), cli-tools all-statuses (`clitools.go`) — ported into the Go engine so the shared Next dashboard keeps working. Feature-parity mapping in `COMPARISON.md`.
+- **CodeBuddy CN 502 (GitHub #1)**: `codebuddy-cn`/`codebuddy-intl` now use a dedicated executor (`internal/proxy/executor/codebuddy.go`) that forces `stream=true` upstream (CodeBuddy rejects non-stream, HTTP 400 code 11101), injects the CLI/IDE static headers, and re-aggregates OpenAI-chat SSE into a single JSON `chat.completion` for non-stream clients (`sseToOpenAIJSON`, mirroring the JS `parseSSEToOpenAIResponse`). 8 executor tests pass.

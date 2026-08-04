@@ -14,6 +14,7 @@ var ProviderAliasMap = map[string]string{
 	"bpm":            "byteplus",
 	"brave":          "brave-search",
 	"cb":             "cerebras",
+	"cbai":           "codebuddy-intl",
 	"cc":             "claude",
 	"cd":             "codebuddy-cn",
 	"cf":             "cloudflare-ai",
@@ -71,6 +72,17 @@ var ProviderAliasMap = map[string]string{
 	"vercel":         "vercel-ai-gateway",
 	"vn":             "venice",
 	"xmtp":           "xiaomi-tokenplan",
+	"af":             "api-airforce",
+	"bzl":            "bazaarlink",
+	"bm":             "bluesminds",
+	"dv":             "devin-cli",
+	"hunyuan":        "tencent",
+	"kgw":            "kilo-gateway",
+	"qianfan":        "baidu",
+	"samba":          "sambanova",
+	"tr":             "trae",
+	"ws":             "windsurf",
+	"zd":             "zed",
 }
 
 // ResolveAlias returns the canonical provider ID for an alias, or the alias itself if not found.

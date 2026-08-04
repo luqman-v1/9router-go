@@ -36,8 +36,9 @@ func streamHeaders(headers map[string]string, isStream bool) {
 // Body transformation (Chat→Responses API) is done by the caller.
 func ForwardGrokCLI(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool) (*http.Response, error) {
 	headers := map[string]string{
-		"x-grok-client-identifier": "grok-cli-go",
-		"x-grok-client-version":    "0.1.0",
+		"User-Agent":               "grok-shell/0.2.99 (linux; x86_64)",
+		"x-grok-client-identifier": "grok-shell",
+		"x-grok-client-version":    "0.2.99",
 	}
 	setAuth(headers, cfg, apiKey)
 	streamHeaders(headers, isStream)
@@ -85,10 +86,12 @@ func ForwardKimchi(ctx context.Context, client *http.Client, cfg *providers.Prov
 func ForwardKiro(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool) (*http.Response, error) {
 	invocationID := fmt.Sprintf("%d-%d", time.Now().UnixMilli(), time.Now().UnixNano())
 	headers := map[string]string{
-		"X-Amz-Target":       "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
-		"Amz-Sdk-Request":    "attempt=1; max=3",
+		"X-Amz-Target":          "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+		"Amz-Sdk-Request":       "attempt=1; max=3",
 		"Amz-Sdk-Invocation-Id": invocationID,
-		"Accept":             "application/vnd.amazon.eventstream",
+		"Accept":                "application/vnd.amazon.eventstream",
+		"User-Agent":            "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
+		"X-Amz-User-Agent":      "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
 	}
 	setAuth(headers, cfg, apiKey)
 	return DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
