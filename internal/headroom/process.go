@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"9router/proxy/internal/constants"
@@ -80,15 +79,6 @@ func clearPid(dataDir string) {
 	os.Remove(pidFile(dataDir))
 }
 
-// pidAlive probes a PID with signal 0 (process.kill(pid, 0)).
-func pidAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
-}
-
 // GetManagedPid returns the PID from the pid file if it is still alive.
 func GetManagedPid(dataDir string) int {
 	pid := readPid(dataDir)
@@ -144,7 +134,7 @@ func StartHeadroomProxy(dataDir string, port int, codeAware, kompress bool) (Sta
 	cmd := exec.Command(binary, args...)
 	cmd.Stdout = f
 	cmd.Stderr = f
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detached: survives server restart
+	cmd.SysProcAttr = detachedProcAttr() // detached: survives server restart
 
 	if err := cmd.Start(); err != nil {
 		f.Close()
@@ -185,14 +175,14 @@ func StopHeadroomProxy(dataDir string) (StopResult, error) {
 	if pid == 0 {
 		return StopResult{Stopped: false, Reason: "not_running"}, nil
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	if err := sendSigTerm(pid); err != nil {
 		clearPid(dataDir)
 		return StopResult{}, fmt.Errorf("%w: %v", ErrStopFailed, err)
 	}
 	// Give it a moment, then force if still alive.
 	time.Sleep(2 * time.Second)
 	if pidAlive(pid) {
-		syscall.Kill(pid, syscall.SIGKILL)
+		sendSigKill(pid)
 	}
 	clearPid(dataDir)
 	return StopResult{Stopped: true, PID: pid}, nil
@@ -201,13 +191,13 @@ func StopHeadroomProxy(dataDir string) (StopResult, error) {
 // RestartHeadroomProxy stops the managed proxy (up to ~3s), then starts fresh.
 func RestartHeadroomProxy(dataDir string, port int, codeAware, kompress bool) (StartResult, error) {
 	if pid := GetManagedPid(dataDir); pid > 0 {
-		syscall.Kill(pid, syscall.SIGTERM)
+		sendSigTerm(pid)
 		// Wait up to ~3s for graceful exit, force-kill if still alive.
 		for i := 0; i < 30 && pidAlive(pid); i++ {
 			time.Sleep(100 * time.Millisecond)
 		}
 		if pidAlive(pid) {
-			syscall.Kill(pid, syscall.SIGKILL)
+			sendSigKill(pid)
 			time.Sleep(300 * time.Millisecond)
 		}
 		clearPid(dataDir)
