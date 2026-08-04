@@ -1,10 +1,12 @@
 package db
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"9router/proxy/internal/handlerutil"
 )
@@ -57,16 +59,13 @@ func (r *Repo) GetProxyPool(poolID string) (*ProxyPool, error) {
 	}
 
 	if cached, ok := proxyPoolCache.Load(poolID); ok {
-		existing := cached.(*ProxyPool)
-		existing.IsActive = pool.IsActive
-		existing.Name = pool.Name
-		existing.Strategy = pool.Strategy
-		existing.URLs = pool.URLs
-		return existing, nil
+		return cached.(*ProxyPool), nil
 	}
-	proxyPoolCache.Store(poolID, pool)
-
-	return pool, nil
+	// Store the freshly-read pool. If another goroutine won the race, return
+	// its value instead of overwriting — never mutate a value in the cache,
+	// since concurrent readers use it lock-free via NextURL.
+	actual, _ := proxyPoolCache.LoadOrStore(poolID, pool)
+	return actual.(*ProxyPool), nil
 }
 
 // NextURL returns the next proxy URL using round-robin selection.
@@ -76,4 +75,58 @@ func (p *ProxyPool) NextURL() string {
 	}
 	idx := atomic.AddUint64(&p.index, 1)
 	return p.URLs[idx%uint64(len(p.URLs))]
+}
+
+// ProxyPoolData is the JSON payload stored in the proxyPools.data column for
+// deploy-type pools. Field order matches what the Next.js dashboard writes so
+// the shared DB stays byte-compatible.
+type ProxyPoolData struct {
+	Name         string  `json:"name"`
+	ProxyURL     string  `json:"proxyUrl"`
+	NoProxy      string  `json:"noProxy"`
+	Type         string  `json:"type"`
+	StrictProxy  bool    `json:"strictProxy"`
+	LastTestedAt *string `json:"lastTestedAt"`
+	LastError    *string `json:"lastError"`
+}
+
+// InsertProxyPool inserts a new proxy pool row and returns the pool object in
+// the same shape as the dashboard's createProxyPool result.
+func (r *Repo) InsertProxyPool(d ProxyPoolData) (map[string]any, error) {
+	id := randomID()
+	now := time.Now().UTC().Format(time.RFC3339)
+	dataBytes, err := json.Marshal(d)
+	if err != nil {
+		return nil, fmt.Errorf("marshal pool data: %w", err)
+	}
+	_, err = r.db.Exec(
+		`INSERT INTO proxyPools (id, isActive, testStatus, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		id, 1, "unknown", string(dataBytes), now, now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert proxy pool: %w", err)
+	}
+	return map[string]any{
+		"id":           id,
+		"name":         d.Name,
+		"proxyUrl":     d.ProxyURL,
+		"noProxy":      d.NoProxy,
+		"type":         d.Type,
+		"strictProxy":  d.StrictProxy,
+		"isActive":     true,
+		"testStatus":   "unknown",
+		"lastTestedAt": nil,
+		"lastError":    nil,
+		"createdAt":    now,
+		"updatedAt":    now,
+	}, nil
+}
+
+// randomID returns a random hex id (uuid-shaped, like the dashboard's uuidv4).
+func randomID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("pool-%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%x", b)
 }

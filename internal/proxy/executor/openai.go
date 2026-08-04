@@ -58,8 +58,10 @@ func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 		})
 	}
 
+	sessionKey := fmt.Sprintf("stream-%d", time.Now().UnixNano())
+	defer translator.ClearStreamState(sessionKey)
 	return proxy.ScanStream(upstream, func(chunk []byte) {
-		translated, err := translator.TranslateOpenAIToClaudeStream(chunk)
+		translated, err := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, chunk)
 		if err != nil {
 			log.Error("executor", "translate error", "error", err)
 			return
@@ -82,7 +84,7 @@ func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 
 // jsonResponse writes the upstream JSON response with optional translation.
 func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translate bool, buf io.Writer) error {
-	body, err := io.ReadAll(upstream)
+	body, err := io.ReadAll(io.LimitReader(upstream, 10*1024*1024))
 	if err != nil {
 		return fmt.Errorf("read upstream response: %w", err)
 	}

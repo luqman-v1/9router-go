@@ -313,6 +313,10 @@ func (h *ChatHandler) handleGeminiStream(w http.ResponseWriter, upstream io.Read
 	flusher := proxy.WriteSSEHeaders(w)
 	geminiState := &translator.GeminiStreamState{}
 	start := time.Now()
+	// One session per stream so the OpenAI→Claude translation state cannot
+	// collide across concurrent requests; always cleared on exit.
+	sessionKey := fmt.Sprintf("gemini-stream-%d", time.Now().UnixNano())
+	defer translator.ClearStreamState(sessionKey)
 
 	return proxy.ScanStream(upstream, func(chunk []byte) {
 		chunkStr := strings.TrimSpace(string(chunk))
@@ -345,7 +349,7 @@ func (h *ChatHandler) handleGeminiStream(w http.ResponseWriter, upstream io.Read
 				if !strings.HasPrefix(sse, "data: ") {
 					continue
 				}
-				claudeChunk, tErr := translator.TranslateOpenAIToClaudeStream([]byte(strings.TrimPrefix(sse, "data: ")))
+				claudeChunk, tErr := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, []byte(strings.TrimPrefix(sse, "data: ")))
 				if tErr != nil {
 					log.Error("gemini", "claude translate error", "error", tErr)
 					continue

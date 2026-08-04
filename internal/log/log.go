@@ -22,6 +22,96 @@ import (
 	"time"
 )
 
+// Console log capture: an in-process ring buffer plus live subscribers, so the
+// dashboard can stream server log output. Mirrors the Next translator
+// console-logs contract (buffer + SSE with init/line/lines/clear events).
+const (
+	consoleMaxLines = 200
+	consoleBufSize  = 256
+)
+
+type consoleEvent struct {
+	kind string // "line" | "clear"
+	line string
+}
+
+// Kind returns the event kind ("line" or "clear").
+func (e consoleEvent) Kind() string { return e.kind }
+
+// Line returns the log line for "line" events.
+func (e consoleEvent) Line() string { return e.line }
+
+var (
+	consoleMu   sync.Mutex
+	consoleLogs []string
+	consoleSubs = map[int]chan consoleEvent{}
+	consoleNext int
+)
+
+// captureConsole appends a formatted line to the ring buffer and fans it out
+// to live subscribers without blocking the logger.
+func captureConsole(line string) {
+	consoleMu.Lock()
+	consoleLogs = append(consoleLogs, line)
+	if len(consoleLogs) > consoleMaxLines {
+		consoleLogs = consoleLogs[len(consoleLogs)-consoleMaxLines:]
+	}
+	subs := make([]chan consoleEvent, 0, len(consoleSubs))
+	for _, ch := range consoleSubs {
+		subs = append(subs, ch)
+	}
+	consoleMu.Unlock()
+	for _, ch := range subs {
+		select {
+		case ch <- consoleEvent{kind: "line", line: line}:
+		default: // drop for slow subscriber, never block logging
+		}
+	}
+}
+
+// ConsoleLogs returns a copy of the buffered console lines.
+func ConsoleLogs() []string {
+	consoleMu.Lock()
+	defer consoleMu.Unlock()
+	out := make([]string, len(consoleLogs))
+	copy(out, consoleLogs)
+	return out
+}
+
+// ClearConsoleLogs empties the buffer and notifies subscribers.
+func ClearConsoleLogs() {
+	consoleMu.Lock()
+	consoleLogs = consoleLogs[:0]
+	subs := make([]chan consoleEvent, 0, len(consoleSubs))
+	for _, ch := range consoleSubs {
+		subs = append(subs, ch)
+	}
+	consoleMu.Unlock()
+	for _, ch := range subs {
+		select {
+		case ch <- consoleEvent{kind: "clear"}:
+		default:
+		}
+	}
+}
+
+// SubscribeConsole returns a channel of live log events. The caller must call
+// cancel when done to stop delivery.
+func SubscribeConsole() (<-chan consoleEvent, func()) {
+	consoleMu.Lock()
+	defer consoleMu.Unlock()
+	id := consoleNext
+	consoleNext++
+	ch := make(chan consoleEvent, consoleBufSize)
+	consoleSubs[id] = ch
+	cancel := func() {
+		consoleMu.Lock()
+		delete(consoleSubs, id)
+		consoleMu.Unlock()
+	}
+	return ch, cancel
+}
+
 // RequestIDContextKey is the typed context key for request IDs.
 // Shared between middleware and log packages to ensure context value lookups match.
 type RequestIDContextKey string
@@ -206,7 +296,9 @@ func output(l Level, tag, msg string, kv ...any) {
 		}
 		b, err := json.Marshal(entry)
 		if err == nil {
-			log.Println(string(b))
+			line := string(b)
+			captureConsole(line)
+			log.Println(line)
 			return
 		}
 	}
@@ -238,5 +330,7 @@ func output(l Level, tag, msg string, kv ...any) {
 		}
 	}
 
-	log.Println(b.String())
+	line := b.String()
+	captureConsole(line)
+	log.Println(line)
 }

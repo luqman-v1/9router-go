@@ -28,6 +28,8 @@ func NewTokenSaverConfig(rtk, caveman, ponytail bool) *TokenSaverConfig {
 func SetupRoutes(r interface {
 	Get(pattern string, handlerFn http.HandlerFunc)
 	Post(pattern string, handlerFn http.HandlerFunc)
+	Delete(pattern string, handlerFn http.HandlerFunc)
+	HandleFunc(pattern string, handlerFn http.HandlerFunc)
 }, repo *db.Repo, ts *TokenSaverConfig) {
 	chatH := chat.NewChatHandler(repo, ts)
 	mediaH := media.NewMediaHandler(repo, ts, chatH)
@@ -62,11 +64,36 @@ func SetupRoutes(r interface {
 	r.Post("/scrape", mediaH.HandleScrape)
 	r.Post("/web/fetch", mediaH.HandleWebFetch)
 
+	// Proxy Pool Deploy Domain
+	r.Post("/proxy-pools/vercel-deploy", mediaH.HandleVercelDeploy)
+	r.Post("/proxy-pools/deno-deploy", mediaH.HandleDenoDeploy)
+	r.Post("/proxy-pools/cloudflare-deploy", mediaH.HandleCloudflareDeploy)
+
+	// CLI Tools Status Domain (dashboard batch status for installed CLI tools)
+	r.Get("/cli-tools/all-statuses", media.NewCLIToolsHandler().HandleAllStatuses)
+
+	// Headroom Management Domain (token-compression proxy lifecycle + dashboard proxy)
+	headroomH := media.NewHeadroomHandler(repo)
+	r.Post("/headroom/start", headroomH.HandleHeadroomStart)
+	r.Post("/headroom/stop", headroomH.HandleHeadroomStop)
+	r.Post("/headroom/restart", headroomH.HandleHeadroomRestart)
+	r.Get("/headroom/status", headroomH.HandleHeadroomStatus)
+	r.Get("/headroom/extras", headroomH.HandleHeadroomExtras)
+	r.Post("/headroom/extras", headroomH.HandleHeadroomExtras)
+	r.Delete("/headroom/extras", headroomH.HandleHeadroomExtras)
+	r.HandleFunc("/headroom/proxy", headroomH.HandleHeadroomProxy)
+	r.HandleFunc("/headroom/proxy/*", headroomH.HandleHeadroomProxy)
+
 	// OAuth & Import Tokens Domain
 	r.Post("/api/oauth/{provider}/import", oauthH.HandleOAuthImport)
 	r.Get("/api/oauth/kiro/social-authorize", oauthH.HandleOAuthKiroSocialAuthorize)
 	r.Post("/api/oauth/kiro/social-exchange", oauthH.HandleOAuthKiroSocialExchange)
 	r.Post("/api/oauth/codex/bulk-import", oauthH.HandleOAuthCodexBulkImport)
+
+	// Live Console Logs Domain (dashboard "Monitor Console Log")
+	r.Get("/translator/console-logs", HandleConsoleLogsGet)
+	r.Delete("/translator/console-logs", HandleConsoleLogsDelete)
+	r.Get("/translator/console-logs/stream", HandleConsoleLogsStream)
 }
 
 // SetupServerRouter mounts both public endpoints (/health, /api/hello, /admin/health/reset)

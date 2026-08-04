@@ -31,6 +31,16 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
+// Flush forwards to the underlying writer if it implements http.Flusher.
+// Without this, SSE streaming handlers lose mid-stream flushing (and
+// first-token latency) because the type assertion w.(http.Flusher) fails
+// on the wrapped writer.
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // RequestLogger returns a middleware that logs each HTTP request with
 // method, path, status code, duration, and request ID using the
 // structured logger. It also strips repeated /v1/ prefixes from paths.

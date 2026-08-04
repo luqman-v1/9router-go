@@ -69,7 +69,7 @@ func geminiStream(w http.ResponseWriter, upstream io.Reader) error {
 }
 
 func geminiNonStream(w http.ResponseWriter, upstream io.Reader) error {
-	body, err := io.ReadAll(upstream)
+	body, err := io.ReadAll(io.LimitReader(upstream, 10*1024*1024))
 	if err != nil { return err }
 	var geminiResp struct {
 		Candidates []struct {

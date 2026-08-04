@@ -100,8 +100,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.Port != 20128 { // Default port
 		t.Errorf("expected default port 20128, got %d", cfg.Port)
 	}
-	if cfg.InitialPassword != "123456" {
-		t.Errorf("expected default password 123456, got %s", cfg.InitialPassword)
+	if cfg.InitialPassword != "" {
+		t.Errorf("expected no default password (operator must set INITIAL_PASSWORD), got %s", cfg.InitialPassword)
 	}
 	if cfg.APIKeySecret != "endpoint-proxy-api-key-secret" {
 		t.Errorf("expected default api-key-secret, got %s", cfg.APIKeySecret)

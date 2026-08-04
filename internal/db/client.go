@@ -26,6 +26,9 @@ func OpenDatabase(path string) (*sql.DB, error) {
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
 		return nil, fmt.Errorf("create db dir %s: %w", dbDir, err)
 	}
+	// The DB stores provider API keys/tokens in plaintext, so keep the file
+	// and its directory private to the owning user.
+	_ = os.Chmod(dbDir, 0700)
 
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -47,6 +50,14 @@ PRAGMA busy_timeout = 5000;
 	if _, err = db.Exec(pragmas); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("pragma exec: %w", err)
+	}
+
+	// Restrict the DB file to the owning user (it stores plaintext keys).
+	// The file is created by the driver on first open; chmod it now and
+	// again on every open to re-assert the permission.
+	if err := os.Chmod(path, 0600); err != nil && !errors.Is(err, os.ErrNotExist) {
+		db.Close()
+		return nil, fmt.Errorf("chmod db file %s: %w", path, err)
 	}
 
 	// Configure connection pool limits for SQLite to reduce lock contention

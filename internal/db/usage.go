@@ -31,6 +31,10 @@ func (r *Repo) InsertUsageHistory(provider, model, connectionID, apiKey, endpoin
 
 // UpsertUsageDaily inserts or replaces a daily usage aggregation record.
 // The data parameter should be a JSON string matching the 9Router daily aggregation format.
+// NOTE: INSERT OR REPLACE is an atomic full-row replace of the pre-merged JSON
+// blob. Merging happens in-process (see handlers/chat/usage.go dailyUsageMu), so
+// concurrent writers from MULTIPLE processes can still clobber each other. This
+// is documented as single-writer unless the aggregation moves SQL-side.
 func (r *Repo) UpsertUsageDaily(dateKey string, data string) error {
 	_, err := r.db.Exec(
 		`INSERT OR REPLACE INTO usageDaily (dateKey, data) VALUES (?, ?)`,

@@ -43,6 +43,12 @@ func (r *EventStreamReader) ReadFrame() (*EventStreamFrame, error) {
 	if totalLen < 12 || totalLen > 10*1024*1024 {
 		return nil, fmt.Errorf("invalid frame total length: %d", totalLen)
 	}
+	// headerLen must fit within the frame's total length; otherwise the
+	// slice below would panic with an out-of-range access on a malicious
+	// or corrupt frame from the upstream.
+	if int(headerLen) > int(totalLen)-12 {
+		return nil, fmt.Errorf("invalid frame header length: %d (total %d)", headerLen, totalLen)
+	}
 
 	// Read remaining bytes
 	frame := make([]byte, totalLen)

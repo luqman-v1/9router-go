@@ -8,21 +8,26 @@ import (
 
 // SettingsData represents token saver and general settings stored in the settings table.
 type SettingsData struct {
-	RTKEnabled      bool   `json:"rtkEnabled"`
-	CavemanEnabled  bool   `json:"cavemanEnabled"`
-	CavemanLevel    string `json:"cavemanLevel"`
-	PonytailEnabled bool   `json:"ponytailEnabled"`
-	PonytailLevel   string `json:"ponytailLevel"`
+	RTKEnabled        bool   `json:"rtkEnabled"`
+	CavemanEnabled    bool   `json:"cavemanEnabled"`
+	CavemanLevel      string `json:"cavemanLevel"`
+	PonytailEnabled   bool   `json:"ponytailEnabled"`
+	PonytailLevel     string `json:"ponytailLevel"`
+	HeadroomUrl       string `json:"headroomUrl"`
+	HeadroomCodeAware bool   `json:"headroomCodeAware"`
+	HeadroomKompress  bool   `json:"headroomKompress"`
 }
 
 // DefaultSettings returns fallback settings.
 func DefaultSettings() *SettingsData {
 	return &SettingsData{
-		RTKEnabled:      true,
-		CavemanEnabled:  false,
-		CavemanLevel:    "full",
-		PonytailEnabled: false,
-		PonytailLevel:   "full",
+		RTKEnabled:       true,
+		CavemanEnabled:   false,
+		CavemanLevel:     "full",
+		PonytailEnabled:  false,
+		PonytailLevel:    "full",
+		HeadroomUrl:      "http://localhost:8787",
+		HeadroomKompress: true,
 	}
 }
 
@@ -54,6 +59,15 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	}
 	if lvl := handlerutil.GetString(raw, "ponytailLevel"); lvl != "" {
 		s.PonytailLevel = lvl
+	}
+	if v := handlerutil.GetString(raw, "headroomUrl"); v != "" {
+		s.HeadroomUrl = v
+	}
+	if v, ok := raw["headroomCodeAware"].(bool); ok {
+		s.HeadroomCodeAware = v
+	}
+	if v, ok := raw["headroomKompress"].(bool); ok {
+		s.HeadroomKompress = v
 	}
 
 	return s, nil

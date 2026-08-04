@@ -45,7 +45,7 @@ func refreshXAI(ctx context.Context, p *Params) (*TokenResult, error) {
 		return nil, fmt.Errorf("xAI read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("xAI refresh returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("xAI refresh returned %d: %s", resp.StatusCode, truncateBody(body))
 	}
 
 	var result struct {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
@@ -22,10 +23,17 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 	if len(ts) > 0 && ts[0] != nil {
 		cfg = ts[0]
 	}
+	// Timeout: 0 is required so long SSE streams are not cut short, but a
+	// ResponseHeaderTimeout bounds how long we wait for the upstream to
+	// start responding — closing the "accept then go silent" gap without
+	// killing a stream that has already begun.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 2 * time.Minute
 	return &ChatHandler{
 		Repo: repo,
 		Client: &http.Client{
-			Timeout: 0, // no timeout for streaming support
+			Transport: transport,
+			Timeout:   0, // no timeout for streaming support
 		},
 		TokenSaver:  cfg,
 		stickyState: make(map[string]*comboStickyState),

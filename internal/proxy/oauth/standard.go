@@ -26,6 +26,15 @@ func NewStandardRefresher(tokenURL, clientID, clientSecret string) Refresher {
 	}
 }
 
+// truncateBody caps an upstream body used in error messages so credentials
+// echoed back by a token endpoint cannot leak into logs.
+func truncateBody(b []byte) string {
+	if len(b) > 200 {
+		return string(b[:200])
+	}
+	return string(b)
+}
+
 // doFormRefresh performs a standard form-urlencoded POST to a token endpoint
 // and returns the parsed TokenResult.
 func doFormRefresh(ctx context.Context, client *http.Client, tokenURL string, vals url.Values) (*TokenResult, error) {
@@ -47,7 +56,9 @@ func doFormRefresh(ctx context.Context, client *http.Client, tokenURL string, va
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("refresh returned %d: %s", resp.StatusCode, string(body))
+		// Truncate the body so a token endpoint that echoes the request
+		// (including refresh_token/client_secret) cannot leak it into logs.
+		return nil, fmt.Errorf("refresh returned %d: %s", resp.StatusCode, truncateBody(body))
 	}
 
 	var result struct {

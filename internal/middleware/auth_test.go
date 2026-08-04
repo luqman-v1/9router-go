@@ -88,11 +88,13 @@ func TestRequireApiKeyMiddleware(t *testing.T) {
 			expectedStatus: http.StatusOK,
 		},
 		{
-			name: "Valid key in query parameter",
+			// Query-param keys are intentionally not supported (they leak via
+			// referrers/history); header auth is required.
+			name: "Key in query parameter is rejected",
 			setupRequest: func() *http.Request {
 				return httptest.NewRequest("GET", "http://example.com/v1/chat/completions?key=valid-token", nil)
 			},
-			expectedStatus: http.StatusOK,
+			expectedStatus: http.StatusUnauthorized,
 		},
 		{
 			name: "Inactive key in Authorization header",
@@ -198,19 +200,19 @@ func TestExtractApiKey(t *testing.T) {
 			expected: "test-key",
 		},
 		{
-			name:     "query key param",
+			name:     "query key param is rejected",
 			req:      httptest.NewRequest("GET", "/?key=query-key", nil),
-			expected: "query-key",
+			expected: "",
 		},
 		{
-			name:     "query api_key param",
+			name:     "query api_key param is rejected",
 			req:      httptest.NewRequest("GET", "/?api_key=alt-key", nil),
-			expected: "alt-key",
+			expected: "",
 		},
 		{
-			name:     "query apiKey param",
+			name:     "query apiKey param is rejected",
 			req:      httptest.NewRequest("GET", "/?apiKey=camel-key", nil),
-			expected: "camel-key",
+			expected: "",
 		},
 		{
 			name:     "X-API-Key header fallback",
@@ -218,8 +220,8 @@ func TestExtractApiKey(t *testing.T) {
 			expected: "header-key",
 		},
 		{
-			name:     "Bearer takes priority over query",
-			req:      func() *http.Request { r := httptest.NewRequest("GET", "/?key=query-key", nil); r.Header.Set("Authorization", "Bearer bearer-key"); return r }(),
+			name:     "Bearer takes priority over X-API-Key header",
+			req:      func() *http.Request { r := httptest.NewRequest("GET", "/", nil); r.Header.Set("Authorization", "Bearer bearer-key"); r.Header.Set("X-API-Key", "header-key"); return r }(),
 			expected: "bearer-key",
 		},
 		{

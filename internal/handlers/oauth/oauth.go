@@ -69,7 +69,7 @@ func (h *OAuthHandler) HandleOAuthImport(w http.ResponseWriter, r *http.Request)
 		connName = provider + " import"
 	}
 
-	connID := fmt.Sprintf("%s-import-%d", provider, len(credential)%10000)
+	connID := provider + "-import-" + randomString(12)
 
 	// Build data JSON with provider-specific fields
 	dataFields := map[string]any{
@@ -185,7 +185,7 @@ func (h *OAuthHandler) HandleOAuthKiroSocialExchange(w http.ResponseWriter, r *h
 	}
 	if accessToken, ok := tokenData["access_token"].(string); ok {
 		// Save as kiro provider connection
-		connID := fmt.Sprintf("kiro-oauth-%d", len(accessToken)%10000)
+		connID := "kiro-oauth-" + randomString(12)
 		dataMap := map[string]any{
 			"accessToken": accessToken,
 		}
@@ -243,7 +243,7 @@ func (h *OAuthHandler) HandleOAuthCodexBulkImport(w http.ResponseWriter, r *http
 		if name == "" {
 			name = "Codex import"
 		}
-		connID := fmt.Sprintf("codex-bulk-%d", len(t.AccessToken)%10000)
+		connID := "codex-bulk-" + randomString(12)
 		data, err := json.Marshal(map[string]string{"accessToken": t.AccessToken})
 		if err != nil {
 			log.Error("oauth", "marshal Codex bulk import failed", "error", err)

@@ -34,7 +34,7 @@ func DoRequest(ctx context.Context, client *http.Client, method, url string, hea
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		errBody, readErr := io.ReadAll(resp.Body)
+		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		resp.Body.Close()
 		if readErr != nil {
 			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)

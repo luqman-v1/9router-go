@@ -48,7 +48,7 @@ func refreshClaude(ctx context.Context, p *Params) (*TokenResult, error) {
 		return nil, fmt.Errorf("claude read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("claude refresh returned %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("claude refresh returned %d: %s", resp.StatusCode, truncateBody(respBody))
 	}
 
 	var result struct {

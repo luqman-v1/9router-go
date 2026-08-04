@@ -51,7 +51,11 @@ func (s *StallReader) Read(p []byte) (int, error) {
 }
 
 // Close implements io.Closer. Stops the stall timer and closes the reader.
+// Idempotent and synchronized with the timer goroutine: whichever of Close or
+// the stall-fire runs first closes the reader exactly once via s.once.
 func (s *StallReader) Close() error {
 	s.timer.Stop()
-	return s.reader.Close()
+	var err error
+	s.once.Do(func() { err = s.reader.Close() })
+	return err
 }

@@ -27,9 +27,11 @@ type MediaHandler struct {
 
 // NewMediaHandler creates a MediaHandler instance.
 func NewMediaHandler(repo *db.Repo, ts *shared.TokenSaverConfig, chatH *chat.ChatHandler) *MediaHandler {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 2 * time.Minute
 	return &MediaHandler{
 		Repo:       repo,
-		Client:     &http.Client{Timeout: 0},
+		Client:     &http.Client{Transport: transport, Timeout: 0},
 		TokenSaver: ts,
 		ChatH:      chatH,
 	}
@@ -155,19 +157,6 @@ func (h *MediaHandler) HandleAudioSpeech(w http.ResponseWriter, r *http.Request)
 	}
 	defer r.Body.Close()
 	h.forwardMediaRequest(w, r, body, "tts-1", "/v1/audio/speech")
-}
-
-// HandleAudioVoices lists available audio voices.
-func (h *MediaHandler) HandleAudioVoices(w http.ResponseWriter, r *http.Request) {
-	voices := []map[string]string{
-		{"id": "alloy", "name": "Alloy"},
-		{"id": "echo", "name": "Echo"},
-		{"id": "fable", "name": "Fable"},
-		{"id": "onyx", "name": "Onyx"},
-		{"id": "nova", "name": "Nova"},
-		{"id": "shimmer", "name": "Shimmer"},
-	}
-	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"voices": voices})
 }
 
 // HandleAudioTranscriptions handles /v1/audio/transcriptions.

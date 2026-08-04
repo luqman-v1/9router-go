@@ -63,10 +63,26 @@ func AssertPublicURL(rawURL string) error {
 		}
 	}
 
-	// Check IPv4
+	// Check IPv4 / IPv6 literal, and also resolve the hostname and check the
+	// resolved addresses so DNS-rebinding / hostnames pointing at private IPs
+	// are rejected too.
+	candidates := []net.IP{}
 	if ip := net.ParseIP(lower); ip != nil {
-		if ip4 := ip.To4(); ip4 != nil {
-			ipInt := ip4ToUint32(ip4)
+		candidates = append(candidates, ip)
+	} else {
+		addrs, err := net.LookupIP(lower)
+		if err != nil {
+			return fmt.Errorf("blocked URL: unresolvable host")
+		}
+		candidates = addrs
+	}
+
+	for _, ip := range candidates {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
+			return fmt.Errorf("blocked URL: private IP")
+		}
+		if v4 := ip.To4(); v4 != nil {
+			ipInt := ip4ToUint32(v4)
 			for _, r := range blockedIPv4Ranges {
 				mask := uint32(0xFFFFFFFF << (32 - r.mask))
 				if (ipInt & mask) == (r.network & mask) {
@@ -74,22 +90,8 @@ func AssertPublicURL(rawURL string) error {
 				}
 			}
 		} else {
-			// IPv6
-			h := strings.Trim(lower, "[]")
-			// Check IPv4-mapped IPv6 (::ffff:x.x.x.x)
-			if strings.HasPrefix(h, "::ffff:") {
-				v4 := net.ParseIP(h[7:])
-				if v4 != nil && v4.To4() != nil {
-					ipInt := ip4ToUint32(v4.To4())
-					for _, r := range blockedIPv4Ranges {
-						mask := uint32(0xFFFFFFFF << (32 - r.mask))
-						if (ipInt & mask) == (r.network & mask) {
-							return fmt.Errorf("blocked URL: private IP")
-						}
-					}
-				}
-			}
-			// Block loopback, link-local, unique-local
+			// IPv6: block loopback, link-local, unique-local
+			h := ip.String()
 			if h == "::1" || h == "::" {
 				return fmt.Errorf("blocked URL: private IP")
 			}

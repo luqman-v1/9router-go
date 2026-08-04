@@ -2,6 +2,7 @@ package translator
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
@@ -9,7 +10,22 @@ import (
 var (
 	statesMu sync.Mutex
 	states   = make(map[string]*StreamState)
+	// pendingJSON holds the tail of a truncated SSE JSON payload, keyed by
+	// sessionKey, until the continuation chunk arrives. Some upstreams (opencode
+	// free-tier) split a single JSON object across multiple SSE events.
+	pendingJSON = make(map[string][]byte)
 )
+
+// maxPendingJSON bounds a single buffered fragment so a hostile/endless
+// stream cannot grow the map without limit.
+const maxPendingJSON = 1 << 20 // 1 MiB
+
+// isTruncatedJSON reports whether err is json.Unmarshal failing because the
+// input ended mid-value ("unexpected end of JSON input") — i.e. a valid JSON
+// prefix awaiting a continuation, as opposed to actual malformed data.
+func isTruncatedJSON(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "unexpected end of JSON input")
+}
 
 func pruneStaleStatesLocked() {
 	if len(states) < 50 {
@@ -28,6 +44,7 @@ func GetStreamUsage(sessionKey string) *OpenAIUsage {
 	statesMu.Lock()
 	defer statesMu.Unlock()
 	pruneStaleStatesLocked()
+	delete(pendingJSON, sessionKey)
 	if state, ok := states[sessionKey]; ok {
 		delete(states, sessionKey)
 		if state.Usage != nil {
@@ -38,12 +55,13 @@ func GetStreamUsage(sessionKey string) *OpenAIUsage {
 	return nil
 }
 
-// ClearStreamState removes a stream session state.
+// ClearStreamState removes a stream session state and any buffered fragment.
 func ClearStreamState(sessionKey string) {
 	statesMu.Lock()
 	defer statesMu.Unlock()
 	pruneStaleStatesLocked()
 	delete(states, sessionKey)
+	delete(pendingJSON, sessionKey)
 }
 
 // Global last-usage capture for the non-streaming path.

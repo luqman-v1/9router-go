@@ -17,6 +17,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 )
 
@@ -233,11 +234,45 @@ func GenerateLeafCert(domain string, caCert *x509.Certificate, caKey crypto.Priv
 	return cert, key, nil
 }
 
+var (
+	leafLocksMu sync.Mutex
+	leafLocks   = make(map[string]*sync.Mutex)
+)
+
+// validCertDomain rejects domain names that could escape the cert directory
+// (path traversal) — only DNS-safe characters are allowed.
+func validCertDomain(domain string) bool {
+	if domain == "" || len(domain) > 253 {
+		return false
+	}
+	for _, c := range domain {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 // GetOrCreateLeafCert returns a cached leaf cert for domain, generating one if needed.
+// Serialized per-domain so concurrent TLS handshakes for the same new domain
+// cannot race and generate two different certs.
 func GetOrCreateLeafCert(baseDir, domain string, caCert *x509.Certificate, caKey crypto.PrivateKey) (*x509.Certificate, crypto.PrivateKey, error) {
+	if !validCertDomain(domain) {
+		return nil, nil, fmt.Errorf("invalid cert domain: %q", domain)
+	}
 	certDir := CertDir(baseDir)
 	certPath := filepath.Join(certDir, domain+".pem")
 	keyPath := filepath.Join(certDir, domain+"-key.pem")
+
+	leafLocksMu.Lock()
+	lock := leafLocks[domain]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		leafLocks[domain] = lock
+	}
+	leafLocksMu.Unlock()
+	lock.Lock()
+	defer lock.Unlock()
 
 	if certPEM, err := os.ReadFile(certPath); err == nil {
 		if keyPEM, err := os.ReadFile(keyPath); err == nil {

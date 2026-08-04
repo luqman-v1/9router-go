@@ -119,7 +119,11 @@ func RefreshToken(ctx context.Context, token *TokenInfo, psd *ProviderSpecificDa
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("refresh returned %d: %s", resp.StatusCode, string(body))
+		snippet := string(body)
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		return nil, fmt.Errorf("refresh returned %d: %s", resp.StatusCode, snippet)
 	}
 
 	var result map[string]any

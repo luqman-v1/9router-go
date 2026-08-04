@@ -35,10 +35,11 @@ func ForwardOpenAI(ctx context.Context, client *http.Client, cfg *providers.Prov
 	return resp, nil
 }
 
-// ReadBody reads and returns the full response body, closing it.
+// ReadBody reads and returns the response body (capped to prevent
+// unbounded memory use), closing it.
 func ReadBody(resp *http.Response) ([]byte, error) {
 	defer resp.Body.Close()
-	return io.ReadAll(resp.Body)
+	return io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 }
 
 // UpstreamBody reads the body and wraps non-200 as UpstreamError.

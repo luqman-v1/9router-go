@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 )
 
 // TokenResult holds the result of a token refresh.
@@ -27,15 +28,22 @@ type Params struct {
 // Refresher refreshes an OAuth token for a specific provider.
 type Refresher func(ctx context.Context, p *Params) (*TokenResult, error)
 
-var registry = map[string]Refresher{}
+var (
+	registryMu sync.RWMutex
+	registry   = map[string]Refresher{}
+)
 
 // Register adds a refresher for the given provider.
 func Register(provider string, fn Refresher) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
 	registry[provider] = fn
 }
 
 // Get returns the refresher for the given provider, or nil.
 func Get(provider string) Refresher {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	return registry[provider]
 }
 

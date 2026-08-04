@@ -39,12 +39,18 @@ func getHandler(host string) func(http.ResponseWriter, *http.Request, []byte) {
 	return nil
 }
 
+// maxBodyBounds caps a single intercepted request body so an attacker cannot
+// exhaust memory with an unbounded upload.
+const maxBodyBounds = 10 << 20 // 10 MiB
+
 // Server is the MITM TLS proxy server.
 type Server struct {
 	baseDir  string
 	listener net.Listener
 	mu       sync.Mutex
 	running  bool
+	conns    sync.WaitGroup            // tracks in-flight handleConn goroutines
+	active   map[net.Conn]struct{}     // connections closed on Stop (guarded by mu)
 }
 
 // NewServer creates a MITM server with root CA in the given base directory.
@@ -56,6 +62,7 @@ func NewServer(baseDir string) (*Server, error) {
 
 	return &Server{
 		baseDir: baseDir,
+		active:  make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -93,9 +100,12 @@ func (s *Server) Start() error {
 		},
 	}
 
-	listener, err := tls.Listen("tcp", ":443", tlsConfig)
+	// Bind loopback only. This is an outbound local proxy (DNS entries redirect
+	// tool domains to localhost); exposing it on all interfaces would let any
+	// LAN client use it as an unauthenticated open proxy.
+	listener, err := tls.Listen("tcp", "127.0.0.1:443", tlsConfig)
 	if err != nil {
-		return fmt.Errorf("listen :443: %w (try: sudo or CAP_NET_BIND_SERVICE)", err)
+		return fmt.Errorf("listen 127.0.0.1:443: %w (try: sudo or CAP_NET_BIND_SERVICE)", err)
 	}
 
 	s.listener = listener
@@ -111,14 +121,33 @@ func (s *Server) acceptLoop() {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
-			if !s.running {
+			if !s.isRunning() {
 				return
 			}
 			log.Error("mitm", "accept error", "error", err)
 			continue
 		}
-		go s.handleConn(conn)
+		s.conns.Add(1)
+		s.mu.Lock()
+		s.active[conn] = struct{}{}
+		s.mu.Unlock()
+		go func() {
+			defer s.conns.Done()
+			defer func() {
+				s.mu.Lock()
+				delete(s.active, conn)
+				s.mu.Unlock()
+			}()
+			s.handleConn(conn)
+		}()
 	}
+}
+
+// isRunning reads s.running under the mutex (acceptLoop runs on Stop's caller).
+func (s *Server) isRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running
 }
 
 func (s *Server) handleConn(conn net.Conn) {
@@ -147,23 +176,33 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	body, err := io.ReadAll(req.Body)
+	body, err := io.ReadAll(io.LimitReader(req.Body, maxBodyBounds+1))
 	if err != nil {
 		return
+	}
+	if len(body) > maxBodyBounds {
+		return // body too large — drop the connection rather than proxy a truncated request
 	}
 
 	rw := newResponseWriter(tlsConn)
 	handler(rw, req, body)
 }
 
-// Stop gracefully shuts down the MITM server.
+// Stop gracefully shuts down the MITM server. It closes the listener so
+// acceptLoop exits, closes any live connections (so blocked reads/handshakes
+// return), then waits for in-flight handlers so their goroutines are not leaked.
 func (s *Server) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.running = false
 	if s.listener != nil {
 		s.listener.Close()
 	}
+	for conn := range s.active {
+		conn.Close()
+	}
+	s.mu.Unlock()
+
+	s.conns.Wait()
 }
 
 // IsRunning returns whether the server is active.

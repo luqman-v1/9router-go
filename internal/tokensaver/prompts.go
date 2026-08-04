@@ -60,7 +60,7 @@ func GetPonytailPrompt(level string) string {
 // Returns modified body and true if any modification was made.
 func InjectSystemPrompt(body []byte, prompt string) ([]byte, bool) {
 	var req map[string]any
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := unmarshalAny(body, &req); err != nil {
 		return body, false
 	}
 

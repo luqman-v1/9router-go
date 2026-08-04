@@ -1,11 +1,23 @@
 package tokensaver
 
 import (
+	"bytes"
 	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+// unmarshalAny decodes body into a generic map, preserving number literals as
+// json.Number instead of float64. A plain json.Unmarshal into map[string]any
+// coerces ints/large numbers to float64, so re-marshaling corrupts their type
+// and precision. Callers here only mutate string fields, so the preserved
+// numbers round-trip unchanged.
+func unmarshalAny(body []byte, dst *map[string]any) error {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	return dec.Decode(dst)
+}
 
 const (
 	MinCompressSize = 500
@@ -22,7 +34,7 @@ const (
 // Returns modified body and true if any compression was applied.
 func CompressMessages(body []byte) ([]byte, bool) {
 	var m map[string]any
-	if err := json.Unmarshal(body, &m); err != nil {
+	if err := unmarshalAny(body, &m); err != nil {
 		return body, false
 	}
 

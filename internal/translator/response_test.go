@@ -155,21 +155,23 @@ func TestTranslateOpenAIToClaudeStream_EdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("cleanup after finish deletes state", func(t *testing.T) {
+	t.Run("clear stream state restarts session", func(t *testing.T) {
 		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"cleanup-test","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"once"},"finish_reason":null}]}`))
 		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"cleanup-test","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`))
-		// After finish, state should be deleted. A new chunk with same ID starts fresh.
+		// Caller is responsible for clearing state; a fresh chunk with the same
+		// ID after ClearStreamState starts a new session.
+		ClearStreamState("cleanup-test")
 		out, _ := TranslateOpenAIToClaudeStream([]byte(`{"id":"cleanup-test","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"fresh"},"finish_reason":null}]}`))
 		if !strings.Contains(string(out), "event: message_start") {
 			t.Errorf("expected message_start again (fresh session), got: %s", out)
 		}
 	})
 
-	t.Run("usage captured in global after finish", func(t *testing.T) {
-		GetAndClearLastUsage()
-		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"usage-capture","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"x"},"finish_reason":null}]}`))
-		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"usage-capture","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":15,"cached_tokens":3}}`))
-		u := GetAndClearLastUsage()
+	t.Run("usage captured in stream state after finish", func(t *testing.T) {
+		const id = "usage-capture"
+		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"` + id + `","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"x"},"finish_reason":null}]}`))
+		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"` + id + `","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":15,"cached_tokens":3}}`))
+		u := GetStreamUsage(id)
 		if u == nil {
 			t.Fatal("expected non-nil usage after finish")
 		}
@@ -267,13 +269,11 @@ func TestTranslateOpenAIToClaude(t *testing.T) {
 		}
 	})
 
-	t.Run("usage tracked globally", func(t *testing.T) {
-		GetAndClearLastUsage()
+	t.Run("usage returned to caller", func(t *testing.T) {
 		input := []byte(`{"id":"chatcmpl-usage","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":42,"completion_tokens":8}}`)
-		_, _, _ = TranslateOpenAIToClaude(input)
-		u := GetAndClearLastUsage()
+		_, u, _ := TranslateOpenAIToClaude(input)
 		if u == nil {
-			t.Fatal("expected usage tracked")
+			t.Fatal("expected usage returned")
 		}
 		if u.PromptTokens != 42 || u.CompletionTokens != 8 {
 			t.Errorf("usage mismatch: %#v", u)
@@ -298,13 +298,11 @@ func TestTranslateOpenAIToClaudeStream_Defaults(t *testing.T) {
 
 func TestTranslateOpenAIToClaude_CompletionTokensDetails(t *testing.T) {
 	t.Run("captures reasoning_tokens from non-stream response", func(t *testing.T) {
-		GetAndClearLastUsage()
 		input := []byte(`{"id":"chatcmpl-detail","model":"o3-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":99,"completion_tokens_details":{"reasoning_tokens":80}}}`)
-		_, _, err := TranslateOpenAIToClaude(input)
+		_, u, err := TranslateOpenAIToClaude(input)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		u := GetAndClearLastUsage()
 		if u == nil {
 			t.Fatal("expected non-nil usage")
 		}
@@ -322,11 +320,10 @@ func TestTranslateOpenAIToClaude_CompletionTokensDetails(t *testing.T) {
 
 func TestTranslateOpenAIToClaudeStream_CompletionTokensDetails(t *testing.T) {
 	t.Run("captures reasoning_tokens in stream usage", func(t *testing.T) {
-		GetAndClearLastUsage()
 		id := "stream-detail"
 		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"` + id + `","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`))
 		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"` + id + `","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":50,"completion_tokens_details":{"reasoning_tokens":40}}}`))
-		u := GetAndClearLastUsage()
+		u := GetStreamUsage(id)
 		if u == nil {
 			t.Fatal("expected non-nil usage")
 		}

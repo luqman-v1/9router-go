@@ -1,11 +1,11 @@
 package executor
 
 import (
+	"9router/proxy/internal/log"
 	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
-	"9router/proxy/internal/log"
 	"net/http"
 	"strings"
 	"time"
@@ -20,10 +20,15 @@ type CodexStreamState struct {
 	CurrentEvent  string
 	OutputLength  int
 	ToolCallCount int
+	Completed     bool // response.completed seen — finish chunk already emitted
+	// ToolCallIdx maps the upstream call_id → the OpenAI tool-call index
+	// assigned when the call first appears, so all argument deltas for the
+	// same tool share one index/id (not a fresh one per fragment).
+	ToolCallIdx map[string]int
 }
 
 func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, created int64) []string {
-	var event map[string]interface{}
+	var event map[string]any
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
 		return nil
 	}
@@ -37,13 +42,13 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			return nil
 		}
 		state.OutputLength += len(delta)
-		chunk := map[string]interface{}{
+		chunk := map[string]any{
 			"id":      responseID,
 			"object":  "chat.completion.chunk",
 			"created": created,
-			"choices": []map[string]interface{}{{
+			"choices": []map[string]any{{
 				"index": 0,
-				"delta": map[string]interface{}{"content": delta},
+				"delta": map[string]any{"content": delta},
 			}},
 		}
 		b, err := json.Marshal(chunk)
@@ -57,19 +62,19 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		if delta == "" {
 			return nil
 		}
-		state.ToolCallCount++
-		chunk := map[string]interface{}{
+		id, idx := toolCallIndex(state, event)
+		chunk := map[string]any{
 			"id":      responseID,
 			"object":  "chat.completion.chunk",
 			"created": created,
-			"choices": []map[string]interface{}{{
+			"choices": []map[string]any{{
 				"index": 0,
-				"delta": map[string]interface{}{
-					"tool_calls": []map[string]interface{}{{
-						"index":    state.ToolCallCount,
-						"id":       fmt.Sprintf("call_%d", state.ToolCallCount),
+				"delta": map[string]any{
+					"tool_calls": []map[string]any{{
+						"index":    idx,
+						"id":       id,
 						"type":     "function",
-						"function": map[string]interface{}{"arguments": delta},
+						"function": map[string]any{"arguments": delta},
 					}},
 				},
 			}},
@@ -86,15 +91,20 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		if name == "" {
 			return nil
 		}
-		chunk := map[string]interface{}{
+		// Reuse the same index/id that streamed the incremental arguments.
+		id, idx := toolCallIndex(state, event)
+		chunk := map[string]any{
 			"id":      responseID,
 			"object":  "chat.completion.chunk",
 			"created": created,
-			"choices": []map[string]interface{}{{
+			"choices": []map[string]any{{
 				"index": 0,
-				"delta": map[string]interface{}{
-					"tool_calls": []map[string]interface{}{{
-						"function": map[string]interface{}{
+				"delta": map[string]any{
+					"tool_calls": []map[string]any{{
+						"index": idx,
+						"id":    id,
+						"type":  "function",
+						"function": map[string]any{
 							"name":      name,
 							"arguments": args,
 						},
@@ -109,13 +119,14 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		return []string{fmt.Sprintf("data: %s\n\n", string(b))}
 
 	case "response.completed":
-		chunk := map[string]interface{}{
+		state.Completed = true
+		chunk := map[string]any{
 			"id":      responseID,
 			"object":  "chat.completion.chunk",
 			"created": created,
-			"choices": []map[string]interface{}{{
-				"index":        0,
-				"delta":        map[string]interface{}{},
+			"choices": []map[string]any{{
+				"index":         0,
+				"delta":         map[string]any{},
 				"finish_reason": "stop",
 			}},
 		}
@@ -127,6 +138,26 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 	}
 
 	return nil
+}
+
+// toolCallIndex returns the OpenAI tool-call id + index for a Codex event.
+// It uses the upstream call_id (falling back to a stable fabricated id) and
+// assigns an index on first sight, so all fragments of one call share them.
+func toolCallIndex(state *CodexStreamState, event map[string]any) (string, int) {
+	if state.ToolCallIdx == nil {
+		state.ToolCallIdx = make(map[string]int)
+	}
+	id, _ := event["call_id"].(string)
+	if id == "" {
+		id = fmt.Sprintf("call_%d", state.ToolCallCount)
+	}
+	if idx, ok := state.ToolCallIdx[id]; ok {
+		return id, idx
+	}
+	idx := state.ToolCallCount
+	state.ToolCallIdx[id] = idx
+	state.ToolCallCount++
+	return id, idx
 }
 
 func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) error {
@@ -163,11 +194,13 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 				if strings.HasPrefix(line, "data: ") {
 					data := line[6:]
 					if data == "[DONE]" {
-						continue
+						return writeSSEFinish(w, flusher, req, state, responseID, created)
 					}
 					out := ProcessCodexEvent(data, state, responseID, created)
 					for _, chunk := range out {
-						w.Write([]byte(chunk))
+						if _, werr := w.Write([]byte(chunk)); werr != nil {
+							return werr
+						}
 					}
 					if flusher != nil {
 						flusher.Flush()
@@ -180,7 +213,33 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 		}
 	}
 
-	w.Write([]byte("data: [DONE]\n\n"))
+	return writeSSEFinish(w, flusher, req, state, responseID, created)
+}
+
+// writeSSEFinish writes the closing [DONE] frame and records usage. If the
+// upstream never sent response.completed, it emits the finish chunk first so
+// clients always see a terminal frame exactly once.
+func writeSSEFinish(w http.ResponseWriter, flusher http.Flusher, req *Request, state *CodexStreamState, responseID string, created int64) error {
+	if !state.Completed {
+		chunk := map[string]any{
+			"id":      responseID,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"choices": []map[string]any{{
+				"index":         0,
+				"delta":         map[string]any{},
+				"finish_reason": "stop",
+			}},
+		}
+		if b, err := json.Marshal(chunk); err == nil {
+			if _, werr := w.Write([]byte(fmt.Sprintf("data: %s\n\n", string(b)))); werr != nil {
+				return werr
+			}
+		}
+	}
+	if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
+		return err
+	}
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -188,7 +247,6 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 	translator.SetUsage(req.Ctx, &translator.OpenAIUsage{
 		CompletionTokens: state.OutputLength / 4,
 	})
-
 	return nil
 }
 
@@ -198,13 +256,15 @@ type kiroStreamState struct {
 	toolCallIndex int
 }
 
-func writeSSE(w io.Writer, data interface{}) {
+func writeSSE(w io.Writer, data any) error {
 	b, err := json.Marshal(data)
 	if err != nil {
-		log.Error("executor", "writeSSE marshal error", "error", err)
-		return
+		return fmt.Errorf("writeSSE marshal: %w", err)
 	}
-	w.Write([]byte(fmt.Sprintf("data: %s\n\n", string(b))))
+	if _, err := w.Write([]byte(fmt.Sprintf("data: %s\n\n", string(b)))); err != nil {
+		return err
+	}
+	return nil
 }
 
 func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) error {
@@ -249,16 +309,18 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 			}
 			accumulatedContent.WriteString(payload.Content)
 
-			chunk := map[string]interface{}{
+			chunk := map[string]any{
 				"id":      responseID,
 				"object":  "chat.completion.chunk",
 				"created": created,
-				"choices": []map[string]interface{}{{
+				"choices": []map[string]any{{
 					"index": 0,
-					"delta": map[string]interface{}{"content": payload.Content},
+					"delta": map[string]any{"content": payload.Content},
 				}},
 			}
-			writeSSE(w, chunk)
+			if err := writeSSE(w, chunk); err != nil {
+				return err
+			}
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -273,16 +335,18 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 			if payload.Text == "" {
 				continue
 			}
-			chunk := map[string]interface{}{
+			chunk := map[string]any{
 				"id":      responseID,
 				"object":  "chat.completion.chunk",
 				"created": created,
-				"choices": []map[string]interface{}{{
+				"choices": []map[string]any{{
 					"index": 0,
-					"delta": map[string]interface{}{"reasoning_content": payload.Text},
+					"delta": map[string]any{"reasoning_content": payload.Text},
 				}},
 			}
-			writeSSE(w, chunk)
+			if err := writeSSE(w, chunk); err != nil {
+				return err
+			}
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -298,18 +362,18 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 			}
 
 			if payload.Content != "" {
-				chunk := map[string]interface{}{
+				chunk := map[string]any{
 					"id":      responseID,
 					"object":  "chat.completion.chunk",
 					"created": created,
-					"choices": []map[string]interface{}{{
+					"choices": []map[string]any{{
 						"index": 0,
-						"delta": map[string]interface{}{
-							"tool_calls": []map[string]interface{}{{
-								"index":    state.toolCallIndex,
-								"id":       payload.ToolUseID,
-								"type":     "function",
-								"function": map[string]interface{}{
+						"delta": map[string]any{
+							"tool_calls": []map[string]any{{
+								"index": state.toolCallIndex,
+								"id":    payload.ToolUseID,
+								"type":  "function",
+								"function": map[string]any{
 									"name":      payload.Name,
 									"arguments": payload.Content,
 								},
@@ -318,7 +382,9 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 					}},
 				}
 				state.toolCallIndex++
-				writeSSE(w, chunk)
+				if err := writeSSE(w, chunk); err != nil {
+					return err
+				}
 				if flusher != nil {
 					flusher.Flush()
 				}
@@ -330,18 +396,22 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 	if state.toolCallIndex > 0 {
 		finishReason = "tool_calls"
 	}
-	done := map[string]interface{}{
+	done := map[string]any{
 		"id":      responseID,
 		"object":  "chat.completion.chunk",
 		"created": created,
-		"choices": []map[string]interface{}{{
-			"index":        0,
-			"delta":        map[string]interface{}{},
+		"choices": []map[string]any{{
+			"index":         0,
+			"delta":         map[string]any{},
 			"finish_reason": finishReason,
 		}},
 	}
-	writeSSE(w, done)
-	w.Write([]byte("data: [DONE]\n\n"))
+	if err := writeSSE(w, done); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
+		return err
+	}
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -370,19 +440,19 @@ type CommandcodeStreamState struct {
 	Finished      bool
 }
 
-func BuildCommandcodeChunk(state *CommandcodeStreamState, delta map[string]interface{}, finishReason string) string {
-	chunk := map[string]interface{}{
+func BuildCommandcodeChunk(state *CommandcodeStreamState, delta map[string]any, finishReason string) string {
+	chunk := map[string]any{
 		"id":      state.ResponseID,
 		"object":  "chat.completion.chunk",
 		"created": state.Created,
 		"model":   state.Model,
-		"choices": []map[string]interface{}{{
+		"choices": []map[string]any{{
 			"index": 0,
 			"delta": delta,
 		}},
 	}
 	if finishReason != "" {
-		chunk["choices"].([]map[string]interface{})[0]["finish_reason"] = finishReason
+		chunk["choices"].([]map[string]any)[0]["finish_reason"] = finishReason
 	}
 	b, err := json.Marshal(chunk)
 	if err != nil {
@@ -421,7 +491,7 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 			continue
 		}
 
-		var event map[string]interface{}
+		var event map[string]any
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			continue
 		}
@@ -429,7 +499,9 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 
 		chunks := ProcessCommandcodeEvent(event, eventType, state)
 		for _, chunk := range chunks {
-			w.Write([]byte(fmt.Sprintf("data: %s\n\n", chunk)))
+			if _, err := w.Write([]byte(fmt.Sprintf("data: %s\n\n", chunk))); err != nil {
+				return err
+			}
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -437,10 +509,14 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 	}
 
 	if !state.Finished {
-		finishChunk := BuildCommandcodeChunk(state, map[string]interface{}{}, "stop")
-		w.Write([]byte(fmt.Sprintf("data: %s\n\n", finishChunk)))
+		finishChunk := BuildCommandcodeChunk(state, map[string]any{}, "stop")
+		if _, err := w.Write([]byte(fmt.Sprintf("data: %s\n\n", finishChunk))); err != nil {
+			return err
+		}
 	}
-	w.Write([]byte("data: [DONE]\n\n"))
+	if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
+		return err
+	}
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -452,7 +528,7 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 	return scanner.Err()
 }
 
-func ProcessCommandcodeEvent(event map[string]interface{}, eventType string, state *CommandcodeStreamState) []string {
+func ProcessCommandcodeEvent(event map[string]any, eventType string, state *CommandcodeStreamState) []string {
 	if state.ToolIndexByID == nil {
 		state.ToolIndexByID = make(map[string]int)
 	}
@@ -472,7 +548,7 @@ func ProcessCommandcodeEvent(event map[string]interface{}, eventType string, sta
 		}
 		state.OutputLength += len(text)
 
-		delta := map[string]interface{}{"content": text}
+		delta := map[string]any{"content": text}
 		if state.ChunkIndex == 0 {
 			delta["role"] = "assistant"
 		}
@@ -484,7 +560,7 @@ func ProcessCommandcodeEvent(event map[string]interface{}, eventType string, sta
 		if text == "" {
 			return nil
 		}
-		delta := map[string]interface{}{"reasoning_content": text}
+		delta := map[string]any{"reasoning_content": text}
 		if state.ChunkIndex == 0 {
 			delta["role"] = "assistant"
 		}
@@ -507,12 +583,12 @@ func ProcessCommandcodeEvent(event map[string]interface{}, eventType string, sta
 		idx := state.ToolIndexByID[id]
 		toolName, _ := event["toolName"].(string)
 
-		delta := map[string]interface{}{
-			"tool_calls": []map[string]interface{}{{
+		delta := map[string]any{
+			"tool_calls": []map[string]any{{
 				"index":    idx,
 				"id":       id,
 				"type":     "function",
-				"function": map[string]interface{}{"name": toolName, "arguments": ""},
+				"function": map[string]any{"name": toolName, "arguments": ""},
 			}},
 		}
 		out = append(out, BuildCommandcodeChunk(state, delta, ""))
@@ -529,10 +605,11 @@ func ProcessCommandcodeEvent(event map[string]interface{}, eventType string, sta
 			return nil
 		}
 		args, _ := event["delta"].(string)
-		delta := map[string]interface{}{
-			"tool_calls": []map[string]interface{}{{
+		delta := map[string]any{
+			"tool_calls": []map[string]any{{
 				"index":    idx,
-				"function": map[string]interface{}{"arguments": args},
+				"id":       id,
+				"function": map[string]any{"arguments": args},
 			}},
 		}
 		out = append(out, BuildCommandcodeChunk(state, delta, ""))
@@ -565,11 +642,11 @@ func ProcessCommandcodeEvent(event map[string]interface{}, eventType string, sta
 			argsStr = "{}"
 		}
 
-		delta := map[string]interface{}{
-			"tool_calls": []map[string]interface{}{{
+		delta := map[string]any{
+			"tool_calls": []map[string]any{{
 				"id":       id,
 				"type":     "function",
-				"function": map[string]interface{}{"name": toolName, "arguments": argsStr},
+				"function": map[string]any{"name": toolName, "arguments": argsStr},
 			}},
 		}
 		if state.ChunkIndex == 0 {
@@ -595,10 +672,10 @@ func ProcessCommandcodeEvent(event map[string]interface{}, eventType string, sta
 		}
 		state.Finished = true
 
-		chunk := BuildCommandcodeChunk(state, map[string]interface{}{}, reason)
+		chunk := BuildCommandcodeChunk(state, map[string]any{}, reason)
 
-		if totalUsage, ok := event["totalUsage"].(map[string]interface{}); ok {
-			usage := map[string]interface{}{}
+		if totalUsage, ok := event["totalUsage"].(map[string]any); ok {
+			usage := map[string]any{}
 			if pt, ok := totalUsage["promptTokens"].(float64); ok {
 				usage["prompt_tokens"] = int(pt)
 			}
@@ -606,7 +683,7 @@ func ProcessCommandcodeEvent(event map[string]interface{}, eventType string, sta
 				usage["completion_tokens"] = int(ct)
 			}
 			if len(usage) > 0 {
-				var parsed map[string]interface{}
+				var parsed map[string]any
 				if err := json.Unmarshal([]byte(chunk), &parsed); err != nil {
 					log.Warn("executor", "commandcode unmarshal chunk", "error", err)
 				} else {
@@ -632,9 +709,9 @@ func ProcessCommandcodeEvent(event map[string]interface{}, eventType string, sta
 		if msg == "" {
 			msg = "unknown error"
 		}
-		delta := map[string]interface{}{"content": fmt.Sprintf("\n\n[CommandCode error: %s]", msg)}
+		delta := map[string]any{"content": fmt.Sprintf("\n\n[CommandCode error: %s]", msg)}
 		out = append(out, BuildCommandcodeChunk(state, delta, ""))
-		out = append(out, BuildCommandcodeChunk(state, map[string]interface{}{}, "stop"))
+		out = append(out, BuildCommandcodeChunk(state, map[string]any{}, "stop"))
 		state.Finished = true
 	}
 

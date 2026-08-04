@@ -76,12 +76,12 @@ func TestGetStreamUsage(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Usage should be captured after finish
-	global := GetAndClearLastUsage()
-	if global == nil {
-		t.Fatal("expected non-nil last usage after stream finish")
+	// Usage should be captured in the stream state after finish
+	sessionUsage := GetStreamUsage("usage-test")
+	if sessionUsage == nil {
+		t.Fatal("expected non-nil stream usage after finish")
 	}
-	if global.PromptTokens != 5 || global.CompletionTokens != 3 {
-		t.Errorf("expected 5/3 tokens, got %#v", global)
+	if sessionUsage.PromptTokens != 5 || sessionUsage.CompletionTokens != 3 {
+		t.Errorf("expected 5/3 tokens, got %#v", sessionUsage)
 	}
 }

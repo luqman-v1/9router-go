@@ -402,8 +402,6 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 			ReasoningTokens: reasoningTokens,
 		},
 	}
-	SetLastUsage(usage) // still call it just in case someone else relies on it temporarily
-
 	resp := map[string]interface{}{
 		"id":     fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
 		"object": "chat.completion",

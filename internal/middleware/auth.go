@@ -67,7 +67,8 @@ func GetAuthenticatedApiKey(r *http.Request) *models.APIKey {
 }
 
 // ExtractApiKey extracts the client API key from the request.
-// It checks the Authorization header and URL query parameters.
+// Only header-based auth is accepted — keys in query strings would leak via
+// browser history, referrers, and upstream proxy logs.
 func ExtractApiKey(r *http.Request) string {
 	// 1. Try Authorization header
 	authHeader := r.Header.Get("Authorization")
@@ -78,18 +79,7 @@ func ExtractApiKey(r *http.Request) string {
 		}
 	}
 
-	// 2. Try query parameters (e.g. ?key=xxx or ?api_key=xxx or ?apiKey=xxx)
-	if keyVal := r.URL.Query().Get("key"); keyVal != "" {
-		return keyVal
-	}
-	if keyVal := r.URL.Query().Get("api_key"); keyVal != "" {
-		return keyVal
-	}
-	if keyVal := r.URL.Query().Get("apiKey"); keyVal != "" {
-		return keyVal
-	}
-
-	// 3. Try custom X-API-Key header as fallback
+	// 2. Try custom X-API-Key header as fallback
 	if xApiKey := r.Header.Get("X-API-Key"); xApiKey != "" {
 		return xApiKey
 	}

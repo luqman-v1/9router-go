@@ -40,20 +40,28 @@ func AllDomains() []string {
 }
 
 // AddHostsEntries adds /etc/hosts entries redirecting intercepted domains to localhost.
+// Uses sudo tee with stdin instead of shell interpolation to avoid command
+// injection if domains ever become dynamic.
 func AddHostsEntries() error {
-	entries := hostsEntries()
-	cmd := fmt.Sprintf("echo '%s' | sudo tee -a /etc/hosts > /dev/null", entries)
-	return runSudo(cmd)
+	if runtime.GOOS == "windows" {
+		return fmt.Errorf("Windows MITM not yet supported")
+	}
+	c := exec.Command("sudo", "tee", "-a", "/etc/hosts")
+	c.Stdin = strings.NewReader(hostsEntries())
+	return c.Run()
 }
 
 // RemoveHostsEntries removes /etc/hosts entries added by 9router.
 func RemoveHostsEntries() error {
-	if runtime.GOOS == "darwin" {
-		cmd := `sudo sed -i '' '/# 9router-mitm/d' /etc/hosts`
-		return runSudo(cmd)
+	if runtime.GOOS == "windows" {
+		return fmt.Errorf("Windows MITM not yet supported")
 	}
-	cmd := `sudo sed -i '/# 9router-mitm/d' /etc/hosts`
-	return runSudo(cmd)
+	args := []string{"sed", "-i", "-e", "/# 9router-mitm/d"}
+	if runtime.GOOS == "darwin" {
+		args = []string{"sed", "-i", "", "-e", "/# 9router-mitm/d"}
+	}
+	args = append(args, "/etc/hosts")
+	return exec.Command("sudo", args...).Run()
 }
 
 // CheckDNSStatus verifies that all domains resolve to 127.0.0.1.
@@ -74,12 +82,4 @@ func hostsEntries() string {
 	}
 	b.WriteString("# end 9router-mitm\n")
 	return b.String()
-}
-
-func runSudo(cmd string) error {
-	if runtime.GOOS == "windows" {
-		return fmt.Errorf("Windows MITM not yet supported")
-	}
-	c := exec.Command("sh", "-c", cmd)
-	return c.Run()
 }

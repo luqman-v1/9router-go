@@ -5,10 +5,6 @@ import (
 	"sync/atomic"
 )
 
-// TODO: This should be used in fallback.go to wrap the ResponseWriter.
-// Example: cw := newCommittedResponseWriter(w)
-// Then check cw.IsCommitted() before retrying.
-
 // committedResponseWriter wraps http.ResponseWriter to track whether
 // response headers have been sent to the client (i.e., WriteHeader or
 // first Write has been called). This is used by fallback logic to

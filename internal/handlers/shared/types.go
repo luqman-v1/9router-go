@@ -2,7 +2,6 @@ package shared
 
 import (
 	"net/http"
-	"strings"
 
 	"9router/proxy/internal/proxy"
 )
@@ -39,10 +38,46 @@ type UsageLogInfo struct {
 	Endpoint     string
 }
 
+// ResponseCaptureMax is the maximum response content retained for token
+// estimation. Content beyond this is dropped — a huge upstream response must
+// not balloon per-request memory just to estimate tokens.
+const ResponseCaptureMax = 100_000
+
+// ResponseBuf is a size-capped buffer for captured response content.
+// It implements io.Writer and keeps only the first ResponseCaptureMax bytes.
+type ResponseBuf struct {
+	buf  []byte
+	done bool
+}
+
+// Write appends p up to the cap, dropping anything beyond it.
+func (b *ResponseBuf) Write(p []byte) (int, error) {
+	if b.done {
+		return len(p), nil
+	}
+	room := ResponseCaptureMax - len(b.buf)
+	if room <= 0 {
+		b.done = true
+		return len(p), nil
+	}
+	if len(p) > room {
+		b.buf = append(b.buf, p[:room]...)
+		b.done = true
+	} else {
+		b.buf = append(b.buf, p...)
+	}
+	return len(p), nil
+}
+
+// String returns the captured content.
+func (b *ResponseBuf) String() string {
+	return string(b.buf)
+}
+
 // StreamMetrics captures timing and content during a proxied stream.
 type StreamMetrics struct {
-	TTFT        int64           // ms from request start to first chunk
-	ResponseBuf strings.Builder // accumulated response content
+	TTFT        int64       // ms from request start to first chunk
+	ResponseBuf ResponseBuf // accumulated response content (capped)
 }
 
 // UpstreamError is an alias for proxy.UpstreamError — retryable errors from upstream.

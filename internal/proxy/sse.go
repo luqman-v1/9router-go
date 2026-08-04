@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 )
@@ -19,6 +20,8 @@ func WriteSSEHeaders(w http.ResponseWriter) http.Flusher {
 // SSECopy reads from upstream in a raw loop and writes each chunk to the client.
 // A simplified passthrough that does NOT parse SSE framing — use when translation is not needed.
 // onChunk is called for each chunk before writing (for metrics/TTFT tracking).
+// Returns the first upstream or write error so a truncated stream is not
+// reported as a successful completion.
 func SSECopy(w http.ResponseWriter, upstream io.Reader, flusher http.Flusher, onChunk func([]byte)) error {
 	buf := make([]byte, 4096)
 	for {
@@ -27,14 +30,18 @@ func SSECopy(w http.ResponseWriter, upstream io.Reader, flusher http.Flusher, on
 			if onChunk != nil {
 				onChunk(buf[:n])
 			}
-			w.Write(buf[:n])
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return fmt.Errorf("write stream to client: %w", werr)
+			}
 			if flusher != nil {
 				flusher.Flush()
 			}
 		}
 		if err != nil {
-			break
+			if err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("read upstream stream: %w", err)
 		}
 	}
-	return nil
 }

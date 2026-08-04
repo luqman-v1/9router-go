@@ -161,8 +161,6 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 		CacheCreationInputTokens: cacheCreationTokens,
 		CompletionTokensDetails:  details,
 	}
-	SetLastUsage(usage) // Still call it for backward compatibility or parallel reads, but caller receives it directly.
-
 	claudeUsageMap := map[string]any{
 		"input_tokens":  inputTokens,
 		"output_tokens": outputTokens,
@@ -193,7 +191,18 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 }
 
 // TranslateOpenAIToClaudeStream converts a single OpenAI SSE chunk JSON payload to Claude SSE format.
+// It keys the per-stream translation state by chunk.ID; callers with concurrent
+// streams should prefer TranslateOpenAIToClaudeStreamSession to scope state per request.
 func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
+	return TranslateOpenAIToClaudeStreamSession("", openaiChunk)
+}
+
+// TranslateOpenAIToClaudeStreamSession is like TranslateOpenAIToClaudeStream but
+// scopes the translation state to sessionKey instead of chunk.ID. A stream that
+// spans multiple calls MUST pass the same sessionKey every time, and SHOULD
+// defer ClearStreamState(sessionKey) after the stream ends so state cannot
+// collide with another request or leak.
+func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte) ([]byte, error) {
 	trimmed := bytes.TrimSpace(openaiChunk)
 	if len(trimmed) == 0 {
 		return nil, nil
@@ -219,12 +228,33 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 		return []byte("data: [DONE]\n\n"), nil
 	}
 
+	// Some upstreams (opencode free-tier) split one JSON object across multiple
+	// SSE events. Rejoin any buffered tail of a previously-truncated payload
+	// before parsing. Only possible with a stable sessionKey.
+	if sessionKey != "" {
+		statesMu.Lock()
+		if prev, ok := pendingJSON[sessionKey]; ok {
+			dataPart = append(prev, dataPart...)
+			delete(pendingJSON, sessionKey)
+		}
+		statesMu.Unlock()
+	}
+
 	var chunk OpenAIChunk
 	if err := json.Unmarshal(dataPart, &chunk); err != nil {
+		if sessionKey != "" && isTruncatedJSON(err) && len(dataPart) < maxPendingJSON {
+			statesMu.Lock()
+			pendingJSON[sessionKey] = dataPart
+			statesMu.Unlock()
+			return nil, nil // hold the fragment until the continuation arrives
+		}
 		return nil, fmt.Errorf("unmarshal stream chunk: %w", err)
 	}
 
-	stateKey := chunk.ID
+	stateKey := sessionKey
+	if stateKey == "" {
+		stateKey = chunk.ID
+	}
 	if stateKey == "" {
 		stateKey = "default-session"
 	}
@@ -277,7 +307,6 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 		if chunk.Usage.CompletionTokensDetails != nil {
 			state.Usage.CompletionTokensDetails = chunk.Usage.CompletionTokensDetails
 		}
-		SetLastUsage(state.Usage)
 	}
 
 	var results []map[string]any
@@ -304,9 +333,6 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 	}
 
 	if len(chunk.Choices) == 0 {
-		if chunk.Usage != nil && state.Usage != nil {
-			SetLastUsage(state.Usage)
-		}
 		if len(results) > 0 {
 			var buf bytes.Buffer
 			for _, res := range results {
@@ -461,12 +487,9 @@ func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 		results = append(results, map[string]any{
 			"type": "message_stop",
 		})
-		if state.Usage != nil {
-			SetLastUsage(state.Usage)
-		}
-		statesMu.Lock()
-		delete(states, stateKey)
-		statesMu.Unlock()
+		// NOTE: the state is intentionally left in the map here so callers can
+		// still read accumulated usage via GetStreamUsage(sessionKey) after the
+		// finish chunk. Cleanup is the caller's job via ClearStreamState (defer).
 	}
 
 	var buf bytes.Buffer

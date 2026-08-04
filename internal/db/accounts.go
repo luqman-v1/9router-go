@@ -13,7 +13,9 @@ const modelLockPrefix = "modelLock_"
 // providerConnections.data blob. Matches Next.js flat field key format
 // so dashboard can read modelLock_* fields across shared DB.
 func modelLockDataKey(model string) string {
-	return "$." + modelLockPrefix + model
+	// Quote the path segment so a model containing '.', '"', '[', ']' etc.
+	// is treated as a literal key name, not JSON path syntax.
+	return "$.\"" + modelLockPrefix + model + "\""
 }
 
 // LockConnectionModel stores a per-connection model lock in the

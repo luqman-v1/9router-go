@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"9router/proxy/internal/providers"
@@ -32,15 +33,22 @@ type Executor func(w http.ResponseWriter, req *Request) error
 
 type executorFactory func() Executor
 
-var registry = map[string]executorFactory{}
+var (
+	registryMu sync.RWMutex
+	registry   = map[string]executorFactory{}
+)
 
 // Register adds an executor factory for the given provider name.
 func Register(provider string, fn executorFactory) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
 	registry[provider] = fn
 }
 
 // Get returns the executor for the given provider, or nil if not found.
 func Get(provider string) Executor {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	fn, ok := registry[provider]
 	if !ok {
 		return nil

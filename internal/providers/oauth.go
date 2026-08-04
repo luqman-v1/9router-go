@@ -112,7 +112,11 @@ func RefreshToken(cfg OAuthClientConfig, refreshToken string) (*OAuthTokenRespon
 		return nil, fmt.Errorf("read OAuth response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("OAuth token refresh returned %d: %s", resp.StatusCode, string(body))
+		snippet := string(body)
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		return nil, fmt.Errorf("OAuth token refresh returned %d: %s", resp.StatusCode, snippet)
 	}
 
 	return ParseRefreshResponse(body)

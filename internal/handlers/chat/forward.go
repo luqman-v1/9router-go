@@ -79,8 +79,10 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 		})
 	}
 
+	sessionKey := fmt.Sprintf("stream-%d", time.Now().UnixNano())
+	defer translator.ClearStreamState(sessionKey)
 	return internalproxy.ScanStream(upstream, func(chunk []byte) {
-		translated, err := translator.TranslateOpenAIToClaudeStream(chunk)
+		translated, err := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, chunk)
 		if err != nil {
 			log.Error("stream", "translate error", "error", err)
 			return

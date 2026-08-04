@@ -208,7 +208,7 @@ func ForwardAzure(w http.ResponseWriter, req *Request) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		errBody, readErr := io.ReadAll(resp.Body)
+		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		if readErr != nil {
 			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: []byte("failed to read error body")}
 		}
@@ -264,7 +264,7 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		errBody, readErr := io.ReadAll(resp.Body)
+		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		if readErr != nil {
 			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: []byte("failed to read error body")}
 		}
