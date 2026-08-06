@@ -300,11 +300,6 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
-	"qwen": {
-		BaseURL:    "https://portal.qwen.ai/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
-	},
 	"minimax": {
 		BaseURL:    "https://api.minimax.io/v1/chat/completions",
 		AuthHeader: "Authorization",
@@ -664,6 +659,11 @@ var KnownProviders = map[string]ProviderConfig{
 	},
 	"tencent": {
 		BaseURL:    "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"tokenrouter": {
+		BaseURL:    "https://api.tokenrouter.com/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},

@@ -2,10 +2,12 @@ package media
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -156,7 +158,196 @@ func (h *MediaHandler) HandleAudioSpeech(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer r.Body.Close()
+
+	// Xiaomi MiMo TTS uses a chat-completions contract, not the OpenAI
+	// /audio/speech shape (port of open-sse/handlers/ttsProviders/xiaomi-mimo.js).
+	if h.isMiMoSpeech(body) {
+		h.forwardMiMoSpeech(w, r, body)
+		return
+	}
 	h.forwardMediaRequest(w, r, body, "tts-1", "/v1/audio/speech")
+}
+
+// isMiMoSpeech reports whether body.model resolves to the xiaomi-mimo provider.
+func (h *MediaHandler) isMiMoSpeech(body []byte) bool {
+	var reqBody struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &reqBody); err != nil || reqBody.Model == "" {
+		return false
+	}
+	info, err := h.ChatH.ResolveModel(reqBody.Model)
+	return err == nil && info != nil && info.Provider == "xiaomi-mimo"
+}
+
+// mimoTTSPrefix/voice defaults (open-sse/handlers/ttsProviders/xiaomi-mimo.js).
+const (
+	mimoDefaultModel = "mimo-v2.5-tts"
+	mimoDefaultVoice = "mimo_default"
+)
+
+// parseMiMoModelVoice splits the model part as "modelId/voiceId" against the
+// single known mimo model (port of _base.js parseModelVoice for this adapter).
+func parseMiMoModelVoice(model string) (modelID, voiceID string) {
+	switch {
+	case model == "":
+		return mimoDefaultModel, mimoDefaultVoice
+	case model == mimoDefaultModel:
+		return mimoDefaultModel, mimoDefaultVoice
+	case strings.HasPrefix(model, mimoDefaultModel+"/"):
+		return mimoDefaultModel, strings.TrimPrefix(model, mimoDefaultModel+"/")
+	}
+	if idx := strings.LastIndex(model, "/"); idx > 0 {
+		return model[:idx], model[idx+1:]
+	}
+	return mimoDefaultModel, mimoDefaultVoice
+}
+
+// forwardMiMoSpeech synthesizes speech via Xiaomi MiMo's OpenAI-compatible
+// chat-completions contract: target text in role:assistant, style/language
+// instructions in role:user, voice via the top-level audio.voice field, audio
+// returned base64 in choices[0].message.audio.data.
+func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request, body []byte) {
+	var req struct {
+		Model       string `json:"model"`
+		Input       string `json:"input"`
+		Style       string `json:"style"`
+		Language    string `json:"language"`
+		ResponseFmt string `json:"response_format"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(req.Input) == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: input")
+		return
+	}
+
+	modelInfo, err := h.ChatH.ResolveModel(req.Model)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	_, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	apiKey := chat.ExtractAPIKey(connData)
+	if apiKey == "" {
+		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
+		return
+	}
+
+	modelID, voiceID := parseMiMoModelVoice(modelInfo.Model)
+
+	// Language and style are soft instructions; MiMo auto-detects the spoken
+	// language of the text, the hint only nudges it (independent of the voice).
+	var instructions []string
+	if req.Language != "" {
+		instructions = append(instructions, "Speak in "+req.Language+".")
+	}
+	if req.Style != "" {
+		instructions = append(instructions, req.Style)
+	}
+	messages := []map[string]string{{"role": "assistant", "content": req.Input}}
+	if len(instructions) > 0 {
+		messages = append([]map[string]string{{"role": "user", "content": strings.Join(instructions, " ")}}, messages...)
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"model":    modelID,
+		"stream":   false,
+		"messages": messages,
+		"audio":    map[string]string{"format": "wav", "voice": voiceID},
+	})
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, providerCfg.BaseURL, bytes.NewReader(payload))
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
+		return
+	}
+	upstreamReq.Header.Set("Content-Type", "application/json")
+	upstreamReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := h.Client.Do(upstreamReq)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	var data struct {
+		Error   *struct{ Message string `json:"message"` } `json:"error"`
+		Choices []struct {
+			Message struct {
+				Audio struct {
+					Data   string `json:"data"`
+					Format string `json:"format"`
+				} `json:"audio"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	// Upstream body may be non-JSON; tolerate parse failure (JS wraps in try/catch).
+	_ = json.Unmarshal(respBody, &data)
+
+	if resp.StatusCode != http.StatusOK {
+		msg := fmt.Sprintf("MiMo TTS error (%d)", resp.StatusCode)
+		switch {
+		case data.Error != nil && data.Error.Message != "":
+			msg = data.Error.Message
+		case len(bytes.TrimSpace(respBody)) > 0:
+			msg = string(bytes.TrimSpace(respBody))
+		}
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, msg)
+		return
+	}
+
+	audio, format := "", "wav"
+	if len(data.Choices) > 0 {
+		audio = data.Choices[0].Message.Audio.Data
+		if data.Choices[0].Message.Audio.Format != "" {
+			format = data.Choices[0].Message.Audio.Format
+		}
+	}
+	if audio == "" {
+		msg := "MiMo TTS returned no audio"
+		if data.Error != nil && data.Error.Message != "" {
+			msg = data.Error.Message
+		}
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, msg)
+		return
+	}
+
+	// response_format=json returns {audio, format}; default returns raw audio bytes.
+	if req.ResponseFmt == "json" {
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]string{"audio": audio, "format": format})
+		return
+	}
+	raw, err := base64.StdEncoding.DecodeString(audio)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, "MiMo TTS returned invalid audio")
+		return
+	}
+	w.Header().Set("Content-Type", "audio/"+format)
+	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
 }
 
 // HandleAudioTranscriptions handles /v1/audio/transcriptions.

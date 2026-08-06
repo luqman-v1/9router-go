@@ -73,11 +73,6 @@ var KnownOAuthConfigs = map[string]OAuthClientConfig{
 		ClientSecret: envOr("KIMI_CODING_OAUTH_CLIENT_SECRET", ""),
 		TokenURL:     "https://auth.kimi.com/api/oauth/token",
 	},
-	"qwen": {
-		ClientID:     envOr("QWEN_OAUTH_CLIENT_ID", "f0304373b74a44d2b584a3fb70ca9e56"),
-		ClientSecret: envOr("QWEN_OAUTH_CLIENT_SECRET", ""),
-		TokenURL:     "https://chat.qwen.ai/api/v1/oauth2/token",
-	},
 	"qoder": {
 		ClientID:     envOr("QODER_OAUTH_CLIENT_ID", ""),
 		ClientSecret: envOr("QODER_OAUTH_CLIENT_SECRET", ""),

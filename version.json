@@ -1,5 +1,5 @@
 {
-  "latestVersion": "1.6.0",
+  "latestVersion": "1.7.0",
   "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
-  "releaseNotes": "v1.6.0: Ported Next.js engine features (TTS voices, proxy-pools deploy, headroom, cli-tools status), live console log streaming, lightweight request tracing, prompt-injection guard, and security hardening (auth-protected health reset, loopback-only MITM, registry mutexes, JSON number preservation)."
+  "releaseNotes": "v1.7.0: New executors — Trae SOLO remote agent (chat_sessions + events SSE, Cloud-IDE-JWT auth, cumulative plan_item thought rendering) and Windsurf gRPC-web (hand-rolled protobuf GetChatMessageRequest + CompletionChunk decoder streaming OpenAI SSE). Plus Xiaomi MiMo TTS via chat-completions contract, tokenrouter provider registration, and removal of the deprecated qwen provider. Changelog: CHANGELOG.md."
 }

@@ -44,7 +44,6 @@ func RegisterAll() {
 	Register("glm-cn", func() Executor { return ForwardOpenAI })
 	Register("glm", func() Executor { return ForwardOpenAI })
 	Register("nebius", func() Executor { return ForwardOpenAI })
-	Register("qwen", func() Executor { return ForwardOpenAI })
 	Register("minimax", func() Executor { return ForwardOpenAI })
 	Register("kimi", func() Executor { return ForwardOpenAI })
 	Register("clinepass", func() Executor { return ForwardOpenAI })
@@ -73,7 +72,8 @@ func RegisterAll() {
 	Register("poolside", func() Executor { return ForwardOpenAI })
 	Register("sambanova", func() Executor { return ForwardOpenAI })
 	Register("tencent", func() Executor { return ForwardOpenAI })
-	Register("trae", func() Executor { return ForwardOpenAI })
-	Register("windsurf", func() Executor { return ForwardOpenAI })
+	Register("tokenrouter", func() Executor { return ForwardOpenAI })
+	Register("trae", func() Executor { return ForwardTrae })
+	Register("windsurf", func() Executor { return ForwardWindsurf })
 	Register("zed", func() Executor { return ForwardOpenAI })
 }

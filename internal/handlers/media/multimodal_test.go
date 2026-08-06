@@ -28,6 +28,15 @@ func seedOpenAIConn(t *testing.T, database *sql.DB, baseURL string) {
 	}
 }
 
+func seedMiMoConn(t *testing.T, database *sql.DB, baseURL string) {
+	t.Helper()
+	data, _ := json.Marshal(map[string]any{"apiKey": "sk-mimo", "baseUrl": baseURL})
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-mimo', 'xiaomi-mimo', 'apikey', 'MiMo Test', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(data)); err != nil {
+		t.Fatalf("seed mimo connection: %v", err)
+	}
+}
+
 func TestHandleImages_Success(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/images/generations") {
@@ -164,6 +173,75 @@ func TestHandleAudioSpeech_MissingModel(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleAudioSpeech_MiMo(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("expected path /v1/chat/completions, got %s", r.URL.Path)
+		}
+		if auth := r.Header.Get("Authorization"); auth != "Bearer sk-mimo" {
+			t.Errorf("expected Bearer sk-mimo, got %q", auth)
+		}
+		var reqBody struct {
+			Model    string `json:"model"`
+			Stream   bool   `json:"stream"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+			Audio struct {
+				Format string `json:"format"`
+				Voice  string `json:"voice"`
+			} `json:"audio"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		if reqBody.Model != "mimo-v2.5-tts" {
+			t.Errorf("expected model mimo-v2.5-tts, got %q", reqBody.Model)
+		}
+		if reqBody.Stream {
+			t.Error("expected stream=false")
+		}
+		if len(reqBody.Messages) != 2 || reqBody.Messages[0].Role != "user" || reqBody.Messages[1].Role != "assistant" {
+			t.Fatalf("unexpected messages: %+v", reqBody.Messages)
+		}
+		if !strings.Contains(reqBody.Messages[0].Content, "Speak in English") {
+			t.Errorf("expected language hint, got %q", reqBody.Messages[0].Content)
+		}
+		if reqBody.Audio.Format != "wav" || reqBody.Audio.Voice != "冰糖" {
+			t.Errorf("unexpected audio cfg: %+v", reqBody.Audio)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"audio":{"data":"aGVsbG8=","format":"wav"}}}]}`))
+	}))
+	defer upstream.Close()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+	seedMiMoConn(t, database, upstream.URL+"/v1/chat/completions")
+
+	repo := db.NewRepo(database)
+	handler := newTestMediaHandler(repo)
+
+	body := `{"model":"mimo/mimo-v2.5-tts/冰糖","input":"hello world","language":"English","style":"cheerful"}`
+	req := httptest.NewRequest("POST", "/v1/audio/speech", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleAudioSpeech(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "audio/wav" {
+		t.Errorf("expected audio/wav, got %q", ct)
+	}
+	if rec.Body.String() != "hello" {
+		t.Errorf("expected decoded audio 'hello', got %q", rec.Body.String())
 	}
 }
 
