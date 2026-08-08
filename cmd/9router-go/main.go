@@ -19,9 +19,9 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/updater"
 )
-
 
 func main() {
 	app := &cli.App{
@@ -125,8 +125,6 @@ func main() {
 	}
 }
 
-
-
 func runServer(cCtx *cli.Context) error {
 	if logPath := os.Getenv("LOG_FILE"); logPath != "" {
 		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -188,8 +186,8 @@ func runServer(cCtx *cli.Context) error {
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("9Router Go Proxy starting on port %d", cfg.Port)
 
-	done := make(chan os.Signal, 1)
-	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 
 	server := &http.Server{
 		Addr:    addr,
@@ -204,15 +202,30 @@ func runServer(cCtx *cli.Context) error {
 
 	fmt.Fprintf(os.Stdout, "\n  🚀 9Router Go Proxy on %s\n\n", addr)
 	log.Printf("Server is ready to handle requests at %s", addr)
-	<-done
+
+	<-signals // first signal → begin graceful shutdown
 	fmt.Fprintln(os.Stdout, "\n  Shutting down...")
-	
+
+	// Signal in-flight SSE streams to end promptly: the stall reader closes each
+	// upstream body, handlers emit a final [DONE], and Shutdown completes well
+	// within its deadline instead of waiting out the full timeout.
+	shutdown.Cancel()
+
+	// A second signal force-quits immediately (e.g. a stream stuck mid-drain).
+	go func() {
+		<-signals
+		fmt.Fprintln(os.Stdout, "\n  Force quitting...")
+		os.Exit(1)
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server shutdown failed: %v", err)
+		// Log instead of Fatalf so the deferred conn.Close()/logFile.Close()
+		// still run; SQLite WAL recovers any straggler on next open.
+		log.Printf("Server shutdown did not complete in time: %v", err)
+	} else {
+		log.Println("Server stopped gracefully")
 	}
-
-	log.Println("Server stopped gracefully")
 	return nil
 }

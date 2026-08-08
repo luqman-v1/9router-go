@@ -250,7 +250,7 @@ func TestHandleStreamResponse_NonTranslate(t *testing.T) {
 	upstream := strings.NewReader("chunk1chunk2")
 	rec := httptest.NewRecorder()
 	metrics := &streamMetrics{}
-	if err := h.handleStreamResponse(rec, upstream, false, time.Now(), metrics); err != nil {
+	if err := h.handleStreamResponse(context.Background(), rec, upstream, false, time.Now(), metrics); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if rec.Header().Get(constants.HeaderContentType) != constants.ContentTypeEventStream {
@@ -277,7 +277,7 @@ func TestHandleStreamResponse_Translate(t *testing.T) {
 	upstream := strings.NewReader(`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n")
 	rec := httptest.NewRecorder()
 	metrics := &streamMetrics{}
-	if err := h.handleStreamResponse(rec, upstream, true, time.Now(), metrics); err != nil {
+	if err := h.handleStreamResponse(context.Background(), rec, upstream, true, time.Now(), metrics); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(rec.Body.String(), "content_block_delta") {

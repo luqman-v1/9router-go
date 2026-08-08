@@ -1,18 +1,19 @@
 package chat
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"9router/proxy/internal/log"
 	"net/http"
 	"strings"
 	"time"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	internalproxy "9router/proxy/internal/proxy"
+	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/translator"
 )
 
@@ -61,13 +62,13 @@ func (h *ChatHandler) forwardRequest(
 		// Wrap with SSE stall detection
 		stallReader := internalproxy.NewStallReader(resp.Body, 0, "upstream")
 		bodyCloser = stallReader
-		return h.handleStreamResponse(w, stallReader, translateResponse, start, metrics)
+		return h.handleStreamResponse(ctx, w, stallReader, translateResponse, start, metrics)
 	}
 	return h.handleJSONResponse(ctx, w, resp.Body, translateResponse, metrics)
 }
 
 // handleStreamResponse pipes SSE chunks from upstream to the client.
-func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, metrics *streamMetrics) error {
+func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, metrics *streamMetrics) error {
 	flusher := internalproxy.WriteSSEHeaders(w)
 
 	if !translate {
@@ -81,7 +82,8 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 
 	sessionKey := fmt.Sprintf("stream-%d", time.Now().UnixNano())
 	defer translator.ClearStreamState(sessionKey)
-	return internalproxy.ScanStream(upstream, func(chunk []byte) {
+	finished := false
+	err := internalproxy.ScanStream(upstream, func(chunk []byte) {
 		translated, err := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, chunk)
 		if err != nil {
 			log.Error("stream", "translate error", "error", err)
@@ -89,6 +91,9 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 		}
 		if translated == nil {
 			return
+		}
+		if bytes.Contains(translated, []byte("[DONE]")) {
+			finished = true
 		}
 		if metrics.TTFT == 0 {
 			metrics.TTFT = time.Since(startTime).Milliseconds()
@@ -99,6 +104,21 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, upstream io.Re
 			flusher.Flush()
 		}
 	})
+	// A shutdown abort cuts the stream mid-way. End it with the same terminator
+	// a natural finish emits, so the client sees a clean [DONE] instead of a
+	// truncated stream (the stall reader already closed the upstream body).
+	if shutdown.Fired() && !finished {
+		w.Write([]byte("data: [DONE]\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	// Pull actual accumulated usage (incl. cached tokens) out of the session so
+	// the log sees real numbers instead of the fallback estimate.
+	if usage := translator.GetStreamUsage(sessionKey); usage != nil {
+		translator.SetUsage(ctx, usage)
+	}
+	return err
 }
 
 // handleJSONResponse forwards a non-streaming JSON response.
@@ -113,11 +133,11 @@ func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWri
 	}
 
 	if !translate {
-		var raw struct {
-			Usage *translator.OpenAIUsage `json:"usage"`
-		}
-		if json.Unmarshal(body, &raw) == nil && raw.Usage != nil {
-			translator.SetUsage(ctx, raw.Usage)
+		// The !translate path serves both OpenAI bodies (/v1/chat/completions,
+		// translateResponse hardcoded false) and Claude bodies (claude/anthropic
+		// providers). ParseResponseUsage handles both formats.
+		if usage := translator.ParseResponseUsage(body); usage != nil {
+			translator.SetUsage(ctx, usage)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

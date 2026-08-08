@@ -1,15 +1,16 @@
 package executor
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"9router/proxy/internal/log"
 	"net/http"
 	"time"
 
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/translator"
 )
 
@@ -40,11 +41,11 @@ func execSSEStream(w http.ResponseWriter, upstream io.Reader, req *Request) erro
 	if startTime.IsZero() {
 		startTime = time.Now()
 	}
-	return sseStream(w, upstream, req.TranslateResp, startTime, req.TTFT, req.ResponseBuf)
+	return sseStream(w, upstream, req.TranslateResp, startTime, req.TTFT, req.ResponseBuf, req.Ctx)
 }
 
 // sseStream pipes SSE chunks to client with optional format translation.
-func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, ttft *int64, buf io.Writer) error {
+func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startTime time.Time, ttft *int64, buf io.Writer, ctx context.Context) error {
 	flusher := proxy.WriteSSEHeaders(w)
 
 	if !translate {
@@ -60,7 +61,8 @@ func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 
 	sessionKey := fmt.Sprintf("stream-%d", time.Now().UnixNano())
 	defer translator.ClearStreamState(sessionKey)
-	return proxy.ScanStream(upstream, func(chunk []byte) {
+	finished := false
+	err := proxy.ScanStream(upstream, func(chunk []byte) {
 		translated, err := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, chunk)
 		if err != nil {
 			log.Error("executor", "translate error", "error", err)
@@ -68,6 +70,9 @@ func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 		}
 		if translated == nil {
 			return
+		}
+		if bytes.Contains(translated, []byte("[DONE]")) {
+			finished = true
 		}
 		if ttft != nil && *ttft == 0 {
 			*ttft = time.Since(startTime).Milliseconds()
@@ -80,6 +85,19 @@ func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 			flusher.Flush()
 		}
 	})
+	// Same shutdown terminator as the chat path: end with [DONE] on abort.
+	if shutdown.Fired() && !finished {
+		w.Write([]byte("data: [DONE]\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	// Pull actual accumulated usage (incl. cached tokens) out of the session so
+	// the log sees real numbers instead of the fallback estimate.
+	if usage := translator.GetStreamUsage(sessionKey); usage != nil {
+		translator.SetUsage(ctx, usage)
+	}
+	return err
 }
 
 // jsonResponse writes the upstream JSON response with optional translation.
@@ -116,14 +134,11 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 		return nil
 	}
 
-	var raw struct {
-		Usage *translator.OpenAIUsage `json:"usage"`
-	}
-	if json.Unmarshal(body, &raw) == nil && raw.Usage != nil {
+	if usage := translator.ParseResponseUsage(body); usage != nil {
 		if ctx != nil {
-			translator.SetUsage(ctx, raw.Usage)
+			translator.SetUsage(ctx, usage)
 		} else {
-			translator.SetLastUsage(raw.Usage)
+			translator.SetLastUsage(usage)
 		}
 	}
 
@@ -132,4 +147,3 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 	w.Write(body)
 	return nil
 }
-

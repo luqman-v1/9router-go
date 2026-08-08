@@ -117,7 +117,7 @@ func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, b
 	}
 
 	if isStream {
-		h.handleStreamResponse(w, resp.Body, false, time.Now(), metrics)
+		h.handleStreamResponse(ctx, w, resp.Body, false, time.Now(), metrics)
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

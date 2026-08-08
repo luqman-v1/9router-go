@@ -100,7 +100,7 @@ type GeminiResponse struct {
 	UsageMetadata *struct {
 		PromptTokenCount     int `json:"promptTokenCount"`
 		CandidatesTokenCount int `json:"candidatesTokenCount"`
-		CachedContentToken   int `json:"cachedContentToken,omitempty"`
+		CachedContentToken     int `json:"cachedContentToken,omitempty"`
 		CandidatesTokenDetails *struct {
 			ReasoningTokens int `json:"reasoningTokens"`
 		} `json:"candidatesTokenDetails,omitempty"`
@@ -117,6 +117,7 @@ type GeminiStreamChunk struct {
 	UsageMetadata *struct {
 		PromptTokenCount     int `json:"promptTokenCount"`
 		CandidatesTokenCount int `json:"candidatesTokenCount"`
+		CachedContentToken   int `json:"cachedContentToken,omitempty"`
 	} `json:"usageMetadata,omitempty"`
 }
 
@@ -385,11 +386,12 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 	}
 
 	// Usage
-	inputTokens, outputTokens := 0, 0
+	inputTokens, outputTokens, cachedTokens := 0, 0, 0
 	reasoningTokens := 0
 	if geminiResp.UsageMetadata != nil {
 		inputTokens = geminiResp.UsageMetadata.PromptTokenCount
 		outputTokens = geminiResp.UsageMetadata.CandidatesTokenCount
+		cachedTokens = geminiResp.UsageMetadata.CachedContentToken
 		if geminiResp.UsageMetadata.CandidatesTokenDetails != nil {
 			reasoningTokens = geminiResp.UsageMetadata.CandidatesTokenDetails.ReasoningTokens
 		}
@@ -398,6 +400,7 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 	usage := &OpenAIUsage{
 		PromptTokens:     inputTokens,
 		CompletionTokens: outputTokens,
+		CachedTokens:     cachedTokens,
 		CompletionTokensDetails: &CompletionTokensDetails{
 			ReasoningTokens: reasoningTokens,
 		},
@@ -420,6 +423,7 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 		"usage": map[string]interface{}{
 			"prompt_tokens":     inputTokens,
 			"completion_tokens": outputTokens,
+			"cached_tokens":     cachedTokens,
 			"completion_tokens_details": map[string]interface{}{
 				"reasoning_tokens": reasoningTokens,
 			},
@@ -551,15 +555,17 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 				openAIStop = "stop"
 			}
 
-			inputTokens, outputTokens := 0, 0
+			inputTokens, outputTokens, cachedTokens := 0, 0, 0
 			if geminiChunk.UsageMetadata != nil {
 				inputTokens = geminiChunk.UsageMetadata.PromptTokenCount
 				outputTokens = geminiChunk.UsageMetadata.CandidatesTokenCount
+				cachedTokens = geminiChunk.UsageMetadata.CachedContentToken
 			}
 
 			state.Usage = &OpenAIUsage{
 				PromptTokens:     inputTokens,
 				CompletionTokens: outputTokens,
+				CachedTokens:     cachedTokens,
 			}
 
 			results = append(results, map[string]interface{}{
@@ -577,6 +583,7 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 				"usage": map[string]interface{}{
 					"prompt_tokens":     inputTokens,
 					"completion_tokens": outputTokens,
+					"cached_tokens":     cachedTokens,
 					"total_tokens":      inputTokens + outputTokens,
 				},
 			})
@@ -587,9 +594,11 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 		// Just usage update chunk
 		inputTokens := geminiChunk.UsageMetadata.PromptTokenCount
 		outputTokens := geminiChunk.UsageMetadata.CandidatesTokenCount
+		cachedTokens := geminiChunk.UsageMetadata.CachedContentToken
 		state.Usage = &OpenAIUsage{
 			PromptTokens:     inputTokens,
 			CompletionTokens: outputTokens,
+			CachedTokens:     cachedTokens,
 		}
 		results = append(results, map[string]interface{}{
 			"id":      state.MessageId,
@@ -600,6 +609,7 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 			"usage": map[string]interface{}{
 				"prompt_tokens":     inputTokens,
 				"completion_tokens": outputTokens,
+				"cached_tokens":     cachedTokens,
 				"total_tokens":      inputTokens + outputTokens,
 			},
 		})

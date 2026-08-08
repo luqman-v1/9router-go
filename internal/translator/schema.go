@@ -26,16 +26,20 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 		"gap", "padding", "strokeColor", "strokeThickness", "textColor",
 	}
 
-	for _, k := range unsupported {
-		delete(schema, k)
-	}
-
-	// Delete all vendor extensions (x- prefixes)
-	for k := range schema {
-		if len(k) > 2 && k[0] == 'x' && k[1] == '-' {
-			delete(schema, k)
+	// stripUnsupported removes keywords Gemini rejects. Called again after anyOf/oneOf
+	// flattening, which can re-inject them (e.g. const) from a merged branch.
+	stripUnsupported := func(s map[string]interface{}) {
+		for _, k := range unsupported {
+			delete(s, k)
+		}
+		// Delete all vendor extensions (x- prefixes)
+		for k := range s {
+			if len(k) > 2 && k[0] == 'x' && k[1] == '-' {
+				delete(s, k)
+			}
 		}
 	}
+	stripUnsupported(schema)
 
 	// Ensure type="object" if properties exist (Gemini requirement)
 	if _, hasProps := schema["properties"]; hasProps {
@@ -90,6 +94,9 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 			delete(schema, key)
 		}
 	}
+
+	// anyOf/oneOf merge copies branch keys (including const/$ref/etc.) back in.
+	stripUnsupported(schema)
 
 	// Flatten type arrays
 	if typeRaw, hasType := schema["type"]; hasType {

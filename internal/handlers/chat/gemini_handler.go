@@ -116,7 +116,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		}
 		stallReader := proxy.NewStallReader(resp.Body, 0, provider)
 		bodyCloser = stallReader
-		return h.handleGeminiStream(w, stallReader, translateResponse, metrics)
+		return h.handleGeminiStream(ctx, w, stallReader, translateResponse, metrics)
 	}
 	return h.handleGeminiNonStream(ctx, w, resp.Body, translateResponse, metrics)
 }
@@ -309,7 +309,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 
 // handleGeminiStream processes Gemini stream SSE chunks and translates to OpenAI format.
 // The stream drops the first SSE line (model metadata), then translates each content block SSE.
-func (h *ChatHandler) handleGeminiStream(w http.ResponseWriter, upstream io.Reader, translateResponse bool, metrics *streamMetrics) error {
+func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translateResponse bool, metrics *streamMetrics) error {
 	flusher := proxy.WriteSSEHeaders(w)
 	geminiState := &translator.GeminiStreamState{}
 	start := time.Now()
@@ -318,7 +318,7 @@ func (h *ChatHandler) handleGeminiStream(w http.ResponseWriter, upstream io.Read
 	sessionKey := fmt.Sprintf("gemini-stream-%d", time.Now().UnixNano())
 	defer translator.ClearStreamState(sessionKey)
 
-	return proxy.ScanStream(upstream, func(chunk []byte) {
+	err := proxy.ScanStream(upstream, func(chunk []byte) {
 		chunkStr := strings.TrimSpace(string(chunk))
 		if chunkStr == "" || chunkStr == "[DONE]" {
 			return
@@ -367,6 +367,16 @@ func (h *ChatHandler) handleGeminiStream(w http.ResponseWriter, upstream io.Read
 			flusher.Flush()
 		}
 	})
+	// Pull actual accumulated usage (incl. cached tokens) out of the session so
+	// the log sees real numbers instead of the fallback estimate.
+	if translateResponse {
+		if usage := translator.GetStreamUsage(sessionKey); usage != nil {
+			translator.SetUsage(ctx, usage)
+		}
+	} else if geminiState.Usage != nil {
+		translator.SetUsage(ctx, geminiState.Usage)
+	}
+	return err
 }
 
 // handleGeminiNonStream translates a Gemini non-stream response to OpenAI format,

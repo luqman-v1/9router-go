@@ -27,6 +27,61 @@ func formatSSE(event map[string]any) string {
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(payload))
 }
 
+// ParseClaudeUsage extracts usage from a Claude-format response body. Maps
+// Claude's input_tokens/output_tokens/cache_read_input_tokens to OpenAIUsage.
+// Returns nil when the body has no Claude usage (e.g. OpenAI format or error),
+// so callers never stamp a bogus all-zero usage over a real one.
+func ParseClaudeUsage(body []byte) *OpenAIUsage {
+	var raw struct {
+		Usage json.RawMessage `json:"usage"`
+	}
+	if json.Unmarshal(body, &raw) != nil || len(raw.Usage) == 0 || string(raw.Usage) == "null" {
+		return nil
+	}
+	// Only treat it as Claude usage when the defining Claude key is present.
+	// An OpenAI-format body (prompt_tokens/completion_tokens) must yield nil,
+	// not an all-zero usage.
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(raw.Usage, &keys) != nil {
+		return nil
+	}
+	if _, ok := keys["input_tokens"]; !ok {
+		return nil
+	}
+	var u struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	}
+	if err := json.Unmarshal(raw.Usage, &u); err != nil {
+		return nil
+	}
+	return &OpenAIUsage{
+		PromptTokens:             u.InputTokens,
+		CompletionTokens:         u.OutputTokens,
+		CachedTokens:             u.CacheReadInputTokens,
+		CacheCreationInputTokens: u.CacheCreationInputTokens,
+	}
+}
+
+// ParseResponseUsage extracts usage from a response body in either OpenAI or
+// Claude format. The !translate path serves both /v1/chat/completions (OpenAI
+// bodies, translateResponse hardcoded false) and claude/anthropic providers
+// (Claude bodies), so a single-format parser would silently drop usage.
+func ParseResponseUsage(body []byte) *OpenAIUsage {
+	if u := ParseClaudeUsage(body); u != nil {
+		return u
+	}
+	var raw struct {
+		Usage *OpenAIUsage `json:"usage"`
+	}
+	if json.Unmarshal(body, &raw) == nil && raw.Usage != nil {
+		return raw.Usage
+	}
+	return nil
+}
+
 func stopThinkingBlock(state *StreamState, results *[]map[string]any) {
 	if !state.ThinkingBlockStarted {
 		return
