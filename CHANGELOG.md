@@ -1,5 +1,34 @@
 # Changelog
 
+## [v1.7.2] — 2026-08-08
+
+### 🐛 Bug Fixes
+
+- **Antigravity 429/404 failure-loop fix** — An unprovisioned Antigravity account
+  (`onboardUser` returns `200` with an empty `cloudaicompanionProject`) left the
+  connection without a `projectID`. The router then force-refreshed the OAuth
+  token on every request (never an auth problem, so it never helped), fell through
+  to a guaranteed-404 OpenAI-compatible lane on `cloudcode-pa.googleapis.com`,
+  and repeated client retries rammed Google's rate limit (`429`). (`internal/handlers/chat/gemini_handler.go`, `internal/handlers/chat/antigravity_project.go`)
+  - `fetchAntigravityProjectID` now reports the outcome (`projectID`, `authFailed`,
+    `noProject`). Token refresh runs **only** on a genuine `401/403` — never on a
+    missing/empty project.
+  - When antigravity has no project ID, it no longer burns a request on the dead
+    OpenAI lane; it returns an error and the fallback chain moves straight to the
+    next provider.
+  - **Negative cache (10 min, per connection):** once Google confirms "no project",
+    later requests skip the `loadCodeAssist`/`onboardUser` RPCs entirely — this is
+    what stops the repeated `429` hammering.
+  - Onboarding guidance is logged once per connection per window
+    ("onboard the account via Antigravity IDE/CLI, then re-login"); repeated
+    failures log at `Debug` instead of spamming `Warn`. (`internal/handlers/chat/fallback.go`)
+
+### 🧪 Tests
+
+- `antigravity_project_test.go` — pins the probe classification (project found /
+  token rejected `401`+`403` / project definitively missing / transient `429`+`503`)
+  and the negative-cache expiry semantics. (`internal/handlers/chat/antigravity_project_test.go`)
+
 ## [v1.7.1] — 2026-08-08
 
 ### 🐛 Bug Fixes

@@ -52,36 +52,44 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		projectID = pid
 	}
 
-	if (provider == "antigravity" || provider == "gemini-cli") && projectID == "" {
-		if pid := fetchAntigravityProjectID(ctx, h.Client, apiKey); pid != "" {
+	if (provider == "antigravity" || provider == "gemini-cli") && projectID == "" && !projectProbeCached(connectionID) {
+		pid, authFailed, noProject := fetchAntigravityProjectID(ctx, h.Client, apiKey)
+		switch {
+		case pid != "":
 			projectID = pid
-			go func() {
-				if _, err := h.Repo.RawDB().Exec("UPDATE providerConnections SET data = json_set(data, '$.projectId', ?) WHERE id = ?", pid, connectionID); err != nil {
-					log.Warn("gemini", "update projectId failed", "conn", connectionID, "error", err)
-				}
-			}()
-		} else {
-			// Access token might be invalid/expired, force refresh OAuth token and retry
+			h.storeAntigravityProjectID(connectionID, pid)
+		case authFailed:
+			// Upstream rejected the token (401/403) — refresh once and retry.
+			// A missing/empty project is NOT an auth failure; refreshing there
+			// only hammers the onboarding RPCs (the 429 source) without helping.
 			log.Info("gemini", "force refresh OAuth token", "conn", connectionID)
 			refreshedKey, pid2, err2 := h.forceRefreshOAuthToken(connectionID)
 			if err2 == nil && refreshedKey != "" {
 				apiKey = refreshedKey
 				if pid2 != "" {
 					projectID = pid2
-				} else if pid := fetchAntigravityProjectID(ctx, h.Client, apiKey); pid != "" {
-					projectID = pid
-					go func() {
-					if _, err := h.Repo.RawDB().Exec("UPDATE providerConnections SET data = json_set(data, '$.projectId', ?) WHERE id = ?", pid, connectionID); err != nil {
-						log.Warn("gemini", "update projectId failed", "conn", connectionID, "error", err)
-					}
-				}()
+					h.storeAntigravityProjectID(connectionID, pid2)
+				} else if pid2, _, _ := fetchAntigravityProjectID(ctx, h.Client, apiKey); pid2 != "" {
+					projectID = pid2
+					h.storeAntigravityProjectID(connectionID, pid2)
 				}
 			}
+		case noProject:
+			// Google definitively said this token has no project. Cache it so
+			// client retries stop re-probing the onboarding RPCs.
+			cacheProjectMissing(connectionID)
 		}
 	}
 
 	if projectID == "" {
-		// Fallback to OpenAI compatibility endpoint if project ID is missing
+		// antigravity has no OpenAI-compatible endpoint without a project ID — a
+		// bare POST to cloudcode-pa.googleapis.com is a guaranteed 404. Bail with
+		// an error so the fallback chain moves on instead of burning a request on
+		// a dead lane.
+		if provider == "antigravity" {
+			return fmt.Errorf("antigravity: no project ID — onboard the account in Antigravity (antigravity.google) then re-login")
+		}
+		// gemini-cli keeps its OpenAI-style fallback.
 		log.Info("gemini", "no projectID, fallback to OpenAI", "provider", provider)
 		return h.forwardRequest(ctx, w, cfg, apiKey, body, isStream, translateResponse, metrics)
 	}
@@ -119,6 +127,19 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		return h.handleGeminiStream(ctx, w, stallReader, translateResponse, metrics)
 	}
 	return h.handleGeminiNonStream(ctx, w, resp.Body, translateResponse, metrics)
+}
+
+// storeAntigravityProjectID persists a discovered Antigravity project ID on the
+// connection so later requests skip the onboarding RPCs entirely.
+func (h *ChatHandler) storeAntigravityProjectID(connectionID, pid string) {
+	if connectionID == "" || pid == "" {
+		return
+	}
+	go func() {
+		if _, err := h.Repo.RawDB().Exec("UPDATE providerConnections SET data = json_set(data, '$.projectId', ?) WHERE id = ?", pid, connectionID); err != nil {
+			log.Warn("gemini", "update projectId failed", "conn", connectionID, "error", err)
+		}
+	}()
 }
 
 // refreshOAuthTokenIfExpired checks and refreshes OAuth token for any provider with refreshToken.

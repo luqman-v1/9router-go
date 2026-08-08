@@ -238,7 +238,13 @@ func (h *ChatHandler) tryForwardWithConnection(
 		if errors.As(fwdErr, &ue) {
 			statusCode = ue.StatusCode
 		}
-		log.Warn("fallback", "upstream failed", "provider", provider, "model", model, "conn", connectionID, "status", statusCode, "error", fwdErr)
+		// antigravity with a cached "no project" verdict already logged its
+		// one-time onboarding hint — don't re-WARN on every retried request.
+		if projectProbeCached(connectionID) {
+			log.Debug("fallback", "upstream skipped (cached no-project)", "provider", provider, "model", model, "conn", connectionID, "error", fwdErr)
+		} else {
+			log.Warn("fallback", "upstream failed", "provider", provider, "model", model, "conn", connectionID, "status", statusCode, "error", fwdErr)
+		}
 	}
 	return fwdErr
 }
