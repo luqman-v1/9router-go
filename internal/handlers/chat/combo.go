@@ -244,6 +244,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var earliestRetryAfter string
+	// Connections that failed with a retryable status this request; remaining
+	// combo models must not re-select them (same account = same 429 quota).
+	var excludeIDs []string
 
 	// Auto-capability-switch: float models that satisfy the request's required capabilities to the front.
 	models := comboModels
@@ -277,12 +280,20 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				APIKey: cfg.DefaultAPIKey,
 			}
 		} else {
-			conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+			conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 			if err != nil {
 				continue
 			}
 			connID = conn.ID
 			connData = cData
+		}
+		// Skip a connection that is already locked for this model (pinned
+		// connections bypass the lock check inside getBestConnection).
+		if connID != "" {
+			if locked, _ := h.Repo.IsConnectionModelLocked(connID, modelInfo.Model); locked {
+				log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
+				continue
+			}
 		}
 
 		var upstreamBody map[string]any
@@ -300,13 +311,18 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 		var fwdErr error
 		if modelInfo.Provider == "mimo-free" {
 			comboMetrics := &streamMetrics{}
-			fwdErr = h.MimoFreeChat(context.Background(), cw, upstreamJSON, isStream, comboMetrics)
+			fwdErr = h.MimoFreeChat(ctx, cw, upstreamJSON, isStream, comboMetrics)
 		} else {
-			fwdErr = h.tryForwardWithConnection(context.Background(), cw, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, isStream, translateResponse, "/v1/chat/completions")
+			fwdErr = h.tryForwardWithConnection(ctx, cw, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, isStream, translateResponse, "/v1/chat/completions")
 		}
 		if fwdErr != nil {
 			var ue *upstreamError
 			if errors.As(fwdErr, &ue) {
+				// Retryable error: lock the connection so this request and future
+				// requests back off instead of re-hammering the same account quota.
+				if providers.RetryableStatusCodes[ue.StatusCode] {
+					h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
+				}
 				// Transient error: classify and wait before trying next model
 				if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
 					errorText := extractErrorText(ue.Body)
@@ -383,6 +399,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 
 	// Auto-capability-switch: convert body to JSON for detection
 	bodyJSON, _ := json.Marshal(translatedReq)
+	// Connections that failed with a retryable status this request; remaining
+	// combo models must not re-select them (same account = same 429 quota).
+	var excludeIDs []string
 	models := comboModels
 	if required := detectRequiredCapabilities(bodyJSON); len(required) > 0 {
 		reordered := reorderByCapabilities(comboModels, required)
@@ -411,12 +430,20 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				APIKey: cfg.DefaultAPIKey,
 			}
 		} else {
-			conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+			conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 			if err != nil {
 				continue
 			}
 			connID = conn.ID
 			connData = cData
+		}
+		// Skip a connection that is already locked for this model (pinned
+		// connections bypass the lock check inside getBestConnection).
+		if connID != "" {
+			if locked, _ := h.Repo.IsConnectionModelLocked(connID, modelInfo.Model); locked {
+				log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
+				continue
+			}
 		}
 
 		entryReq := make(map[string]any, len(translatedReq))
@@ -431,10 +458,15 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		}
 
 		fwdErr := h.tryForwardWithConnection(ctx, cw, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, isStream, true, "/v1/messages")
-		
+
 		if fwdErr != nil {
 			var ue *upstreamError
 			if errors.As(fwdErr, &ue) {
+				// Retryable error: lock the connection so this request and future
+				// requests back off instead of re-hammering the same account quota.
+				if providers.RetryableStatusCodes[ue.StatusCode] {
+					h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
+				}
 				// Transient error: classify and wait before trying next model
 				if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
 					errorText := extractErrorText(ue.Body)
@@ -510,6 +542,30 @@ func mustParseTime(s string) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+// comboLockRetryable classifies a retryable upstream error in a combo loop and
+// locks the failed connection+model so the exponential backoff persists across
+// requests. The combo path iterates tryForwardWithConnection directly and used
+// to skip this entirely — so a 429 never set a lock, every request re-tried all
+// combo models on the same account, and Google rate-limited it forever. The
+// connection is also appended to excludeIDs so the remaining combo models in
+// this request skip it instead of re-hitting the same quota bucket.
+func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider, model string, ue *upstreamError) {
+	if connID == "" {
+		return
+	}
+	currentLevel := h.Repo.GetConnectionBackoffLevel(connID)
+	cls := providers.ClassifyError(ue.StatusCode, extractErrorText(ue.Body), currentLevel)
+	if cls.CooldownMs <= 0 {
+		return
+	}
+	cooldownSec := int((cls.CooldownMs + 999) / 1000)
+	if err := h.Repo.LockConnectionModel(connID, model, cooldownSec, cls.NewBackoffLevel); err != nil {
+		log.Warn("combo", "lock failed", "conn", connID, "provider", provider, "model", model, "error", err)
+	}
+	*excludeIDs = append(*excludeIDs, connID)
+	log.Warn("combo", "locked on retryable error", "provider", provider, "model", model, "conn", connID, "status", ue.StatusCode, "cooldown_s", cooldownSec)
 }
 // ---- Fusion (parallel fan-out + judge synthesis) ----
 

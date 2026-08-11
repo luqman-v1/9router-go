@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"context"
 
@@ -159,6 +160,56 @@ func TestHandleAccountFallback_RetryableLocksModel(t *testing.T) {
 	}
 	if !locked {
 		t.Error("expected conn-429 per-connection lock after 429 on all connections")
+	}
+}
+
+func TestHandleMessagesComboFallback_429LocksAndExcludesConnection(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	// Remove the helper's pre-seeded deepseek/groq connections so conn-combo is
+	// the only deepseek connection (they're priority 1 and would shadow it).
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE id IN ('conn-1', 'conn-2')`); err != nil {
+		t.Fatalf("clear seeded connections: %v", err)
+	}
+	seedConnDB(t, database, "deepseek", "conn-combo", "sk-combo", srv.URL)
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// Two models on the SAME provider+connection: after the first 429, the
+	// connection is locked AND excluded so the second model must not re-hit it.
+	comboModels := []string{"deepseek/deepseek-chat", "deepseek/deepseek-reasoner"}
+	modelsJSON, _ := json.Marshal(comboModels)
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES ('combo-1', 'combo-test', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(modelsJSON)); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	translatedReq := map[string]any{
+		"model":      "deepseek-chat",
+		"max_tokens": 100,
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+	}
+	rec := httptest.NewRecorder()
+	h.handleMessagesComboFallback(context.Background(), rec, translatedReq, comboModels, "fallback", false, "combo-test", 0)
+
+	if got := hits.Load(); got != 1 {
+		t.Errorf("expected 1 upstream hit (second combo model excluded), got %d", got)
+	}
+
+	locked, lerr := repo.IsConnectionModelLocked("conn-combo", "deepseek-chat")
+	if lerr != nil {
+		t.Fatalf("IsConnectionModelLocked failed: %v", lerr)
+	}
+	if !locked {
+		t.Error("expected conn-combo locked for deepseek-chat after 429")
 	}
 }
 

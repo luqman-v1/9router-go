@@ -1,5 +1,5 @@
 {
-  "latestVersion": "1.7.2",
+  "latestVersion": "1.8.0",
   "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
-  "releaseNotes": "v1.7.2: Antigravity 429/404 failure-loop fix — onboarding outcome now classified (token refresh only on real 401/403), no dead OpenAI-lane forward when projectID is missing, and a 10-minute per-connection negative cache stops re-probing (and 429 hammering) when Google reports an unprovisioned account; onboarding guidance logged once, repeat failures at Debug. Changelog: CHANGELOG.md."
+  "releaseNotes": "v1.8.0: Combo/router fallback now locks connections on retryable errors (429/500s) with exponential backoff and excludes the failed connection from subsequent fallback attempts within the same request, breaking the antigravity rate-limit loop. Changelog: CHANGELOG.md."
 }
