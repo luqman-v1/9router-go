@@ -90,7 +90,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"antigravity": {
-		BaseURL:    "https://cloudcode-pa.googleapis.com",
+		BaseURL:    "https://daily-cloudcode-pa.googleapis.com",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 		Format:     "gemini-native",
@@ -589,7 +589,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"gemini-cli": {
-		BaseURL:    "https://cloudcode-pa.googleapis.com/v1internal",
+		BaseURL:    "https://daily-cloudcode-pa.googleapis.com/v1internal",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
