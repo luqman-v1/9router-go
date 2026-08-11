@@ -48,8 +48,9 @@ func (p *GeminiPart) UnmarshalJSON(data []byte) error {
 }
 
 type GeminiFunctionCall struct {
-	Name string         `json:"name"`
-	Args map[string]any `json:"args"`
+	Name    string         `json:"name"`
+	Args    map[string]any `json:"args"`
+	Thought string         `json:"thought"`
 }
 
 type GeminiFunctionResp struct {
@@ -196,8 +197,9 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 					args = make(map[string]any)
 				}
-				gp := GeminiPart{FunctionCall: &GeminiFunctionCall{Name: tc.Function.Name, Args: args}}
-				if ts := extractThoughtSig(tc.ID); ts != "" {
+				ts := extractThoughtSig(tc.ID)
+				gp := GeminiPart{FunctionCall: &GeminiFunctionCall{Name: tc.Function.Name, Args: args, Thought: ts}}
+				if ts != "" {
 					gp.ThoughtSignature = ts
 				}
 				parts = append(parts, gp)

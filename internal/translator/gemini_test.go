@@ -280,3 +280,57 @@ func TestThoughtSignatureNoSignature(t *testing.T) {
 		t.Errorf("no __ts__ expected when thought_signature is empty, got %s", tc.ID)
 	}
 }
+
+func TestGeminiThoughtSignature(t *testing.T) {
+	// Simulate the translation from OpenAI (derived from Anthropic tool_use) to Gemini
+	openaiReq := `{
+		"model": "gemini-3.5-flash",
+		"messages": [
+			{
+				"role": "assistant",
+				"content": "",
+				"tool_calls": [
+					{
+						"id": "call_1__ts__test_signature",
+						"type": "function",
+						"function": {
+							"name": "get_weather",
+							"arguments": "{}"
+						}
+					}
+				]
+			}
+		]
+	}`
+
+	geminiBytes, err := TranslateOpenAIToGemini([]byte(openaiReq))
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini failed: %v", err)
+	}
+
+	var geminiReq struct {
+		Contents []struct {
+			Parts []GeminiPart `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(geminiBytes, &geminiReq); err != nil {
+		t.Fatalf("unmarshal gemini request: %v", err)
+	}
+
+	if len(geminiReq.Contents) == 0 {
+		t.Fatal("expected contents")
+	}
+
+	var found bool
+	for _, p := range geminiReq.Contents[0].Parts {
+		if p.FunctionCall != nil && p.FunctionCall.Name == "get_weather" {
+			found = true
+			if p.FunctionCall.Thought != "test_signature" {
+				t.Errorf("expected thought inside functionCall to be 'test_signature', got: %q", p.FunctionCall.Thought)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected get_weather functionCall")
+	}
+}
