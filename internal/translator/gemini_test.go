@@ -325,8 +325,8 @@ func TestGeminiThoughtSignature(t *testing.T) {
 	for _, p := range geminiReq.Contents[0].Parts {
 		if p.FunctionCall != nil && p.FunctionCall.Name == "get_weather" {
 			found = true
-			if p.FunctionCall.Thought != "test_signature" {
-				t.Errorf("expected thought inside functionCall to be 'test_signature', got: %q", p.FunctionCall.Thought)
+			if p.ThoughtSignature != "test_signature" {
+				t.Errorf("expected thought_signature to be 'test_signature', got: %q", p.ThoughtSignature)
 			}
 		}
 	}

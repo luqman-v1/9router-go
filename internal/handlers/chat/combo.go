@@ -47,11 +47,27 @@ func modelHasCapability(modelEntry string, cap string) bool {
 		provider = modelEntry[:idx]
 	}
 
+	caps := providers.GetCapabilitiesForModel(provider, modelEntry)
+
 	switch cap {
 	case "vision":
-		return visionProviders[provider]
+		return caps.Vision
 	case "pdf":
-		return pdfProviders[provider]
+		return caps.PDF
+	case "audioInput":
+		return caps.AudioInput
+	case "videoInput":
+		return caps.VideoInput
+	case "imageOutput":
+		return caps.ImageOutput
+	case "audioOutput":
+		return caps.AudioOutput
+	case "search":
+		return caps.Search
+	case "tools":
+		return caps.Tools
+	case "reasoning":
+		return caps.Reasoning
 	default:
 		return true
 	}
@@ -66,17 +82,25 @@ func DetectRequiredCapabilities(body []byte) map[string]bool {
 		return required
 	}
 
-	// Scan messages (OpenAI / Claude format)
+	// Scan messages (OpenAI / Claude format) - ONLY trailing user turn
 	if msgs, ok := m["messages"].([]any); ok {
-		for _, msg := range msgs {
-			scanMessageContent(msg, required)
+		for i := len(msgs) - 1; i >= 0; i-- {
+			msg, ok := msgs[i].(map[string]any)
+			if ok && msg["role"] == "user" {
+				scanMessageContent(msgs[i], required)
+				break
+			}
 		}
 	}
 
-	// Scan input (Responses API format)
+	// Scan input (Responses API format) - ONLY trailing user turn
 	if input, ok := m["input"].([]any); ok {
-		for _, msg := range input {
-			scanMessageContent(msg, required)
+		for i := len(input) - 1; i >= 0; i-- {
+			msg, ok := input[i].(map[string]any)
+			if ok && msg["role"] == "user" {
+				scanMessageContent(input[i], required)
+				break
+			}
 		}
 	}
 
@@ -116,11 +140,19 @@ func scanContentBlock(block any, required map[string]bool) {
 		required["vision"] = true
 	case "file", "document", "input_file":
 		required["pdf"] = true
+	case "audio_url", "audio", "input_audio":
+		required["audioInput"] = true
+	case "video_url", "video", "input_video":
+		required["videoInput"] = true
 	}
 	// Check mime type for inlineData/fileData (Gemini format)
 	if mime, ok := b["mimeType"].(string); ok {
 		if strings.HasPrefix(mime, "image/") {
 			required["vision"] = true
+		} else if strings.HasPrefix(mime, "audio/") {
+			required["audioInput"] = true
+		} else if strings.HasPrefix(mime, "video/") {
+			required["videoInput"] = true
 		} else if mime == "application/pdf" {
 			required["pdf"] = true
 		}
@@ -131,6 +163,10 @@ func scanContentBlock(block any, required map[string]bool) {
 			if mime, ok := fd["mimeType"].(string); ok {
 				if strings.HasPrefix(mime, "image/") {
 					required["vision"] = true
+				} else if strings.HasPrefix(mime, "audio/") {
+					required["audioInput"] = true
+				} else if strings.HasPrefix(mime, "video/") {
+					required["videoInput"] = true
 				} else if mime == "application/pdf" {
 					required["pdf"] = true
 				}
@@ -182,20 +218,20 @@ func (h *ChatHandler) ApplyComboStrategy(strategy string, models []string, combo
 		if stickyLimit <= 1 {
 			stickyLimit = 1
 		}
-		h.comboMu.Lock()
-		defer h.comboMu.Unlock()
-		if h.comboState == nil {
-			h.comboState = make(map[string]*comboStickyState)
+		h.stickyMu.Lock()
+		defer h.stickyMu.Unlock()
+		if h.stickyState == nil {
+			h.stickyState = make(map[string]*comboStickyState)
 		}
 
 		key := comboName
 		if key == "" {
 			key = "__default__"
 		}
-		state, exists := h.comboState[key]
+		state, exists := h.stickyState[key]
 		if !exists {
 			state = &comboStickyState{Index: 0, ConsecutiveUseCount: 0}
-			h.comboState[key] = state
+			h.stickyState[key] = state
 		}
 
 		currentIndex := state.Index % len(models)
@@ -236,7 +272,6 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var earliestRetryAfter string
-	settings, _ := h.Repo.GetSettings()
 	// Connections that failed with a retryable status this request; remaining
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
@@ -299,10 +334,6 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 
 			var upstreamBody map[string]any
 			upstreamBodyJSON := body
-			poolModels := getCapacityAdapterModels(settings)
-			if contains(poolModels, modelInfo.Model) || contains(poolModels, modelInfo.Provider+"/"+modelInfo.Model) {
-				upstreamBodyJSON = stripHistoryForContext(body, getContextWindow(entry))
-			}
 
 			if err := json.Unmarshal(upstreamBodyJSON, &upstreamBody); err != nil {
 				handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to parse request body")
@@ -414,7 +445,6 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
 	var earliestRetryAfter string
-	settings, _ := h.Repo.GetSettings()
 
 	// Auto-capability-switch: convert body to JSON for detection
 	bodyJSON, _ := json.Marshal(translatedReq)
@@ -478,17 +508,6 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				entryReq[k] = v
 			}
 			
-			poolModels := getCapacityAdapterModels(settings)
-			if contains(poolModels, modelInfo.Model) || contains(poolModels, modelInfo.Provider+"/"+modelInfo.Model) {
-				bodyJSON, _ := json.Marshal(translatedReq)
-				stripped := stripHistoryForContext(bodyJSON, getContextWindow(entry))
-				var strippedMap map[string]any
-				if err := json.Unmarshal(stripped, &strippedMap); err == nil {
-					for k, v := range strippedMap {
-						entryReq[k] = v
-					}
-				}
-			}
 			entryReq["model"] = modelInfo.Model
 
 			upstreamJSON, err := json.Marshal(entryReq)
@@ -737,14 +756,14 @@ func (h *ChatHandler) handleFusion(ctx context.Context, w http.ResponseWriter, b
 
 // ResetComboState clears the sticky state for combos
 func (h *ChatHandler) ResetComboState(comboName string) {
-	h.comboMu.Lock()
-	defer h.comboMu.Unlock()
-	if h.comboState == nil {
-		h.comboState = make(map[string]*comboStickyState)
+	h.stickyMu.Lock()
+	defer h.stickyMu.Unlock()
+	if h.stickyState == nil {
+		h.stickyState = make(map[string]*comboStickyState)
 	}
 	if comboName != "" {
-		delete(h.comboState, comboName)
+		delete(h.stickyState, comboName)
 	} else {
-		h.comboState = make(map[string]*comboStickyState)
+		h.stickyState = make(map[string]*comboStickyState)
 	}
 }

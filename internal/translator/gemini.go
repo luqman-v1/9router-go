@@ -23,7 +23,7 @@ type GeminiStreamState struct {
 type GeminiPart struct {
 	Text             string                `json:"text,omitempty"`
 	Thought          *bool                 `json:"thought,omitempty"`
-	ThoughtSignature string                `json:"thoughtSignature,omitempty"`
+	ThoughtSignature string                `json:"thought_signature,omitempty"`
 	FunctionCall     *GeminiFunctionCall   `json:"functionCall,omitempty"`
 	FunctionResponse *GeminiFunctionResp   `json:"functionResponse,omitempty"`
 	InlineData       *GeminiInlineData     `json:"inlineData,omitempty"`
@@ -48,9 +48,8 @@ func (p *GeminiPart) UnmarshalJSON(data []byte) error {
 }
 
 type GeminiFunctionCall struct {
-	Name    string         `json:"name"`
-	Args    map[string]any `json:"args"`
-	Thought string         `json:"thought"`
+	Name string         `json:"name"`
+	Args map[string]any `json:"args"`
 }
 
 type GeminiFunctionResp struct {
@@ -198,7 +197,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 					args = make(map[string]any)
 				}
 				ts := extractThoughtSig(tc.ID)
-				gp := GeminiPart{FunctionCall: &GeminiFunctionCall{Name: tc.Function.Name, Args: args, Thought: ts}}
+				gp := GeminiPart{FunctionCall: &GeminiFunctionCall{Name: tc.Function.Name, Args: args}}
 				if ts != "" {
 					gp.ThoughtSignature = ts
 				}

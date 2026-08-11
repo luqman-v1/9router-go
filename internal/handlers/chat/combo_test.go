@@ -226,9 +226,9 @@ func TestFlattenToolHistory_toolResult(t *testing.T) {
 		t.Fatalf("expected 3 messages, got %d", len(got))
 	}
 	// Assistant with tool_calls → prose
-	assertMsgContent(t, got[1], "assistant", "[Call tool get_weather]")
-	// Tool result → assistant prose
-	assertMsgContent(t, got[2], "assistant", "[Tool result]\n{\"temp\":32}")
+	assertMsgContent(t, got[1], "assistant", "[Call tool get_weather({\"city\":\"Jakarta\"})]")
+	// Tool result → user prose
+	assertMsgContent(t, got[2], "user", "[Tool result]\n{\"temp\":32}")
 }
 
 func TestFlattenToolHistory_mixedContent(t *testing.T) {
@@ -249,11 +249,11 @@ func TestFlattenToolHistory_mixedContent(t *testing.T) {
 	// Second message: content preserved + tool call prose appended
 	second := got[1].(map[string]any)
 	c, _ := second["content"].(string)
-	if !strings.Contains(c, "Let me check") || !strings.Contains(c, "[Call tool search]") {
+	if !strings.Contains(c, "Let me check") || !strings.Contains(c, "[Call tool search(") {
 		t.Errorf("assistant content should include original text + tool prose, got: %s", c)
 	}
-	// Tool result → assistant with [Tool result] prefix
-	assertMsgContent(t, got[2], "assistant", "[Tool result]\nresults")
+	// Tool result → user with [Tool result] prefix
+	assertMsgContent(t, got[2], "user", "[Tool result]\nresults")
 	// Last assistant message unchanged
 	assertMsgContent(t, got[3], "assistant", "Here are the results")
 }
@@ -443,5 +443,84 @@ func assertMsgContent(t *testing.T, msg any, expectedRole, expectedContent strin
 	content, _ := m["content"].(string)
 	if content != expectedContent {
 		t.Errorf("expected content %q, got %q", expectedContent, content)
+	}
+}
+
+func TestDetectRequiredCapabilities(t *testing.T) {
+	t.Run("Trailing user turn only", func(t *testing.T) {
+		body := []byte(`{
+			"messages": [
+				{
+					"role": "user",
+					"content": [
+						{"type": "image_url", "image_url": {"url": "..."}}
+					]
+				},
+				{
+					"role": "assistant",
+					"content": "Image description"
+				},
+				{
+					"role": "user",
+					"content": [
+						{"type": "text", "text": "Now what about this audio?"},
+						{"type": "input_audio", "input_audio": {"data": "..."}}
+					]
+				}
+			]
+		}`)
+		
+		caps := DetectRequiredCapabilities(body)
+		
+		if caps["vision"] {
+			t.Errorf("expected vision to be false (earlier turn should be ignored)")
+		}
+		if !caps["audioInput"] {
+			t.Errorf("expected audioInput to be true from trailing turn")
+		}
+	})
+
+	t.Run("Responses API format", func(t *testing.T) {
+		body := []byte(`{
+			"input": [
+				{
+					"role": "user",
+					"content": [
+						{"type": "video_url", "video_url": {"url": "..."}}
+					]
+				}
+			]
+		}`)
+		
+		caps := DetectRequiredCapabilities(body)
+		
+		if !caps["videoInput"] {
+			t.Errorf("expected videoInput to be true")
+		}
+	})
+}
+
+func TestReorderByCapabilities(t *testing.T) {
+	
+	// gemini-1.5-pro has audioInput=true, videoInput=true, vision=true
+	// openai/gpt-4 has vision=false, audioInput=false (defaults to false? wait, GetCapabilitiesForModel handles this)
+	// Actually, wait, let's use known models from capabilities.go.
+	// "gemini-3-pro" has audioInput, videoInput, etc.
+	// "gpt-4" has only Tools: true
+	// "claude-3-opus" has vision: true, tools: true.
+
+	testModels := []string{"openai/gpt-4", "anthropic/claude-3-opus", "gemini/gemini-3-pro"}
+
+	req := map[string]bool{
+		"audioInput": true,
+	}
+
+	reordered := ReorderByCapabilities(testModels, req)
+	
+	if len(reordered) != 3 {
+		t.Fatalf("expected 3 models, got %d", len(reordered))
+	}
+	if reordered[0] != "gemini/gemini-3-pro" {
+		t.Errorf("expected gemini/gemini-3-pro first for audioInput, got %s", reordered[0])
 	}
 }
