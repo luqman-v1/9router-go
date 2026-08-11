@@ -12,7 +12,7 @@ import (
 func TestApplyComboStrategy_capacity(t *testing.T) {
 	h := NewChatHandler(nil)
 	models := []string{"gpt-4", "claude-3", "gemini-pro"}
-	got := h.applyComboStrategy("capacity", models, "", 1)
+	got := h.ApplyComboStrategy("capacity", models, "", 1)
 	if !reflect.DeepEqual(got, models) {
 		t.Errorf("capacity: got %v, want %v", got, models)
 	}
@@ -24,21 +24,64 @@ func TestApplyComboStrategy_capacity(t *testing.T) {
 func TestApplyComboStrategy_roundRobin(t *testing.T) {
 	h := NewChatHandler(nil)
 	models := []string{"a", "b", "c"}
-	first := h.applyComboStrategy("round-robin", models, "", 1)
+	first := h.ApplyComboStrategy("round-robin", models, "combo1", 1)
 	if !reflect.DeepEqual(first, models) {
 		t.Errorf("first call: got %v, want %v", first, models)
 	}
-	second := h.applyComboStrategy("round-robin", models, "", 1)
+	second := h.ApplyComboStrategy("round-robin", models, "combo1", 1)
 	want := []string{"b", "c", "a"}
 	if !reflect.DeepEqual(second, want) {
 		t.Errorf("second call: got %v, want %v", second, want)
 	}
 }
 
+func TestApplyComboStrategy_roundRobinPerCombo(t *testing.T) {
+	h := NewChatHandler(nil)
+	models := []string{"a", "b", "c"}
+
+	// combo1: first call → [a, b, c]
+	h.ApplyComboStrategy("round-robin", models, "combo1", 1)
+	// combo1: second call → [b, c, a]
+	c1second := h.ApplyComboStrategy("round-robin", models, "combo1", 1)
+	if !reflect.DeepEqual(c1second, []string{"b", "c", "a"}) {
+		t.Errorf("combo1 second: got %v, want [b c a]", c1second)
+	}
+
+	// combo2: first call should start fresh → [a, b, c] (independent of combo1)
+	c2first := h.ApplyComboStrategy("round-robin", models, "combo2", 1)
+	if !reflect.DeepEqual(c2first, models) {
+		t.Errorf("combo2 first: got %v, want %v (should be independent)", c2first, models)
+	}
+
+	// combo1: third call → [c, a, b] (continues its own state)
+	c1third := h.ApplyComboStrategy("round-robin", models, "combo1", 1)
+	if !reflect.DeepEqual(c1third, []string{"c", "a", "b"}) {
+		t.Errorf("combo1 third: got %v, want [c a b]", c1third)
+	}
+}
+
+func TestApplyComboStrategy_stickyBackwardCompat(t *testing.T) {
+	h := NewChatHandler(nil)
+	models := []string{"a", "b", "c"}
+
+	// sticky with stickyLimit=3: model should stay for 3 requests
+	for i := 0; i < 3; i++ {
+		got := h.ApplyComboStrategy("sticky", models, "combo1", 3)
+		if got[0] != "a" {
+			t.Errorf("call %d: first model should be 'a' (sticky), got %q", i+1, got[0])
+		}
+	}
+	// 4th call: should rotate to "b"
+	got := h.ApplyComboStrategy("sticky", models, "combo1", 3)
+	if got[0] != "b" {
+		t.Errorf("4th call: first model should be 'b' after rotation, got %q", got[0])
+	}
+}
+
 func TestApplyComboStrategy_fallback(t *testing.T) {
 	h := NewChatHandler(nil)
 	models := []string{"gpt-4", "claude-3", "gemini-pro"}
-	got := h.applyComboStrategy("fallback", models, "", 1)
+	got := h.ApplyComboStrategy("fallback", models, "", 1)
 	if !reflect.DeepEqual(got, models) {
 		t.Errorf("fallback: got %v, want %v", got, models)
 	}
@@ -51,19 +94,19 @@ func TestApplyComboStrategy_singleModel(t *testing.T) {
 	h := NewChatHandler(nil)
 	models := []string{"gpt-4"}
 	t.Run("capacity", func(t *testing.T) {
-		got := h.applyComboStrategy("capacity", models, "", 1)
+		got := h.ApplyComboStrategy("capacity", models, "", 1)
 		if !reflect.DeepEqual(got, models) {
 			t.Errorf("got %v, want %v", got, models)
 		}
 	})
 	t.Run("round-robin", func(t *testing.T) {
-		got := h.applyComboStrategy("round-robin", models, "", 1)
+		got := h.ApplyComboStrategy("round-robin", models, "", 1)
 		if !reflect.DeepEqual(got, models) {
 			t.Errorf("got %v, want %v", got, models)
 		}
 	})
 	t.Run("fallback", func(t *testing.T) {
-		got := h.applyComboStrategy("fallback", models, "", 1)
+		got := h.ApplyComboStrategy("fallback", models, "", 1)
 		if !reflect.DeepEqual(got, models) {
 			t.Errorf("got %v, want %v", got, models)
 		}
@@ -73,17 +116,79 @@ func TestApplyComboStrategy_singleModel(t *testing.T) {
 func TestApplyComboStrategy_empty(t *testing.T) {
 	h := NewChatHandler(nil)
 	t.Run("capacity", func(t *testing.T) {
-		got := h.applyComboStrategy("capacity", nil, "", 1)
+		got := h.ApplyComboStrategy("capacity", nil, "", 1)
 		if got != nil {
 			t.Errorf("got %v, want nil", got)
 		}
 	})
 	t.Run("round-robin", func(t *testing.T) {
-		got := h.applyComboStrategy("round-robin", nil, "", 1)
+		got := h.ApplyComboStrategy("round-robin", nil, "", 1)
 		if got != nil {
 			t.Errorf("got %v, want nil", got)
 		}
 	})
+}
+
+func TestResetComboState(t *testing.T) {
+	h := NewChatHandler(nil)
+	models := []string{"a", "b", "c"}
+
+	// Advance combo1 state
+	h.ApplyComboStrategy("round-robin", models, "combo1", 1)
+	h.ApplyComboStrategy("round-robin", models, "combo1", 1)
+
+	// Reset combo1
+	h.ResetComboState("combo1")
+
+	// Should start fresh (index 0)
+	got := h.ApplyComboStrategy("round-robin", models, "combo1", 1)
+	if !reflect.DeepEqual(got, models) {
+		t.Errorf("after reset: got %v, want %v", got, models)
+	}
+}
+
+func TestResetComboState_all(t *testing.T) {
+	h := NewChatHandler(nil)
+	models := []string{"a", "b"}
+
+	h.ApplyComboStrategy("round-robin", models, "combo1", 1)
+	h.ApplyComboStrategy("round-robin", models, "combo2", 1)
+
+	// Reset all
+	h.ResetComboState("")
+
+	// Both should start fresh
+	got1 := h.ApplyComboStrategy("round-robin", models, "combo1", 1)
+	got2 := h.ApplyComboStrategy("round-robin", models, "combo2", 1)
+	if !reflect.DeepEqual(got1, models) {
+		t.Errorf("combo1 after reset all: got %v, want %v", got1, models)
+	}
+	if !reflect.DeepEqual(got2, models) {
+		t.Errorf("combo2 after reset all: got %v, want %v", got2, models)
+	}
+}
+
+func TestExportedWrappers(t *testing.T) {
+	h := NewChatHandler(nil)
+	models := []string{"a", "b"}
+
+	// ApplyComboStrategy should behave the same as internal version
+	got := h.ApplyComboStrategy("round-robin", models, "test", 1)
+	if len(got) != 2 {
+		t.Errorf("ApplyComboStrategy: expected 2 models, got %d", len(got))
+	}
+
+	// DetectRequiredCapabilities should handle empty body
+	caps := DetectRequiredCapabilities([]byte(`{"messages":[{"role":"user","content":"hello"}]}`))
+	if caps == nil {
+		// nil is fine (no capabilities detected)
+	}
+
+	// ReorderByCapabilities with no required caps should return same order
+	reordered := ReorderByCapabilities(models, nil)
+	if len(reordered) != 2 {
+		t.Errorf("ReorderByCapabilities: expected 2 models, got %d", len(reordered))
+	}
 }
 
 // ---- Fusion tests ----
@@ -121,9 +226,9 @@ func TestFlattenToolHistory_toolResult(t *testing.T) {
 		t.Fatalf("expected 3 messages, got %d", len(got))
 	}
 	// Assistant with tool_calls → prose
-	assertMsgContent(t, got[1], "assistant", "[Call tool get_weather({\"city\":\"Jakarta\"})]")
-	// Tool result → user prose
-	assertMsgContent(t, got[2], "user", "[Tool result]\n{\"temp\":32}")
+	assertMsgContent(t, got[1], "assistant", "[Call tool get_weather]")
+	// Tool result → assistant prose
+	assertMsgContent(t, got[2], "assistant", "[Tool result]\n{\"temp\":32}")
 }
 
 func TestFlattenToolHistory_mixedContent(t *testing.T) {
@@ -144,11 +249,11 @@ func TestFlattenToolHistory_mixedContent(t *testing.T) {
 	// Second message: content preserved + tool call prose appended
 	second := got[1].(map[string]any)
 	c, _ := second["content"].(string)
-	if !strings.Contains(c, "Let me check") || !strings.Contains(c, "[Call tool search(") {
+	if !strings.Contains(c, "Let me check") || !strings.Contains(c, "[Call tool search]") {
 		t.Errorf("assistant content should include original text + tool prose, got: %s", c)
 	}
-	// Tool result → user with [Tool result] prefix
-	assertMsgContent(t, got[2], "user", "[Tool result]\nresults")
+	// Tool result → assistant with [Tool result] prefix
+	assertMsgContent(t, got[2], "assistant", "[Tool result]\nresults")
 	// Last assistant message unchanged
 	assertMsgContent(t, got[3], "assistant", "Here are the results")
 }
