@@ -126,6 +126,16 @@ func TestThoughtSignatureResponseRoundTrip(t *testing.T) {
 		t.Fatalf("TranslateOpenAIToGemini failed: %v", err)
 	}
 
+	// The native Gemini generateContent endpoint only recognizes the camelCase
+	// part field. The 400 "missing thought_signature" regression was caused by
+	// emitting snake_case here.
+	if !strings.Contains(string(geminiBytes), `"thoughtSignature":"EvEFCu4FAQw..."`) {
+		t.Errorf("emitted Gemini part must use camelCase thoughtSignature, got: %s", geminiBytes)
+	}
+	if strings.Contains(string(geminiBytes), `"thought_signature"`) {
+		t.Errorf("emitted Gemini part must NOT use snake_case thought_signature, got: %s", geminiBytes)
+	}
+
 	// Parse Gemini request
 	var geminiReq struct {
 		Contents []struct {

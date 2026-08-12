@@ -23,7 +23,7 @@ type GeminiStreamState struct {
 type GeminiPart struct {
 	Text             string                `json:"text,omitempty"`
 	Thought          *bool                 `json:"thought,omitempty"`
-	ThoughtSignature string                `json:"thought_signature,omitempty"`
+	ThoughtSignature string                `json:"thoughtSignature,omitempty"`
 	FunctionCall     *GeminiFunctionCall   `json:"functionCall,omitempty"`
 	FunctionResponse *GeminiFunctionResp   `json:"functionResponse,omitempty"`
 	InlineData       *GeminiInlineData     `json:"inlineData,omitempty"`
