@@ -28,6 +28,14 @@ func (h *ChatHandler) forwardRequest(
 	translateResponse bool,
 	metrics *streamMetrics,
 ) error {
+	// OpenAI-compat Gemini endpoints validate tool schemas as strictly as the
+	// native one — sanitize tools so no unsupported JSON-Schema keyword reaches
+	// them ("Invalid tool parameters" fix).
+	if cfg.IsGeminiOpenAICompat() {
+		if sanitized, serr := translator.SanitizeOpenAITools(body); serr == nil && sanitized != nil {
+			body = sanitized
+		}
+	}
 	resp, err := internalproxy.ForwardOpenAI(ctx, h.Client, cfg, apiKey, body, isStream)
 	if err != nil {
 		return fmt.Errorf("forward to upstream: %w", err)

@@ -211,3 +211,49 @@ func CleanParametersSchema(raw json.RawMessage) json.RawMessage {
 	}
 	return cleaned
 }
+
+// SanitizeOpenAITools rewrites every tool's parameters schema through
+// CleanParametersSchema in an OpenAI-format request body. Used for OpenAI-compat
+// Gemini endpoints whose tool schema validation is as strict as the native
+// generateContent path (one unsupported keyword rejects the whole request).
+// Returns the body unchanged when there are no tools or nothing to clean.
+func SanitizeOpenAITools(body []byte) ([]byte, error) {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	tools, ok := m["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		return body, nil
+	}
+	changed := false
+	for _, t := range tools {
+		tm, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		fn, ok := tm["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		params, ok := fn["parameters"]
+		if !ok {
+			continue
+		}
+		raw, err := json.Marshal(params)
+		if err != nil {
+			continue
+		}
+		cleaned := CleanParametersSchema(raw)
+		var cleanedOut any
+		if err := json.Unmarshal(cleaned, &cleanedOut); err != nil {
+			continue
+		}
+		fn["parameters"] = cleanedOut
+		changed = true
+	}
+	if !changed {
+		return body, nil
+	}
+	return json.Marshal(m)
+}

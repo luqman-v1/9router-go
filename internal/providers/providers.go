@@ -26,6 +26,11 @@ type ProviderConfig struct {
 // IsGeminiNative returns true if provider uses Gemini-native format.
 func (p *ProviderConfig) IsGeminiNative() bool { return p.Format == "gemini-native" }
 
+// IsGeminiOpenAICompat returns true if provider is Gemini behind an
+// OpenAI-compatible endpoint whose tool schema validation is as strict as the
+// native one (e.g. the "gemini" provider at /v1beta/openai/chat/completions).
+func (p *ProviderConfig) IsGeminiOpenAICompat() bool { return p.Format == "gemini-openai" }
+
 // KnownProviders maps provider IDs to their upstream configuration.
 var KnownProviders = map[string]ProviderConfig{
 	"openai": {
@@ -88,6 +93,7 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		Format:     "gemini-openai",
 	},
 	"antigravity": {
 		BaseURL:    "https://daily-cloudcode-pa.googleapis.com",
