@@ -524,3 +524,33 @@ func TestReorderByCapabilities(t *testing.T) {
 		t.Errorf("expected gemini/gemini-3-pro first for audioInput, got %s", reordered[0])
 	}
 }
+
+func TestComboStrategy_OrderAndRotation(t *testing.T) {
+	h := NewChatHandler(nil)
+	
+	// gemini/gemini-3-pro has audioInput=true
+	// openai/gpt-4 has audioInput=false
+	// anthropic/claude-3-opus has audioInput=false
+	models := []string{"openai/gpt-4", "anthropic/claude-3-opus", "gemini/gemini-3-pro"}
+
+	// 1. First request: round-robin returns [openai/gpt-4, anthropic/claude-3-opus, gemini/gemini-3-pro]
+	// But it requires audioInput, so ReorderByCapabilities MUST push gemini-3-pro to the front.
+	req1 := map[string]bool{"audioInput": true}
+	rotated1 := h.ApplyComboStrategy("round-robin", models, "mycombo", 1)
+	reordered1 := ReorderByCapabilities(rotated1, req1)
+	
+	if reordered1[0] != "gemini/gemini-3-pro" {
+		t.Errorf("First call: expected gemini to be front due to capability override, got %s", reordered1[0])
+	}
+
+	// 2. Second request: NO capabilities required.
+	// Round robin should advance index to 1.
+	// Original models rotated by 1 -> [anthropic/claude-3-opus, gemini/gemini-3-pro, openai/gpt-4]
+	req2 := map[string]bool{}
+	rotated2 := h.ApplyComboStrategy("round-robin", models, "mycombo", 1)
+	reordered2 := ReorderByCapabilities(rotated2, req2)
+
+	if reordered2[0] != "anthropic/claude-3-opus" {
+		t.Errorf("Second call: expected claude to be front due to rotation, got %s", reordered2[0])
+	}
+}

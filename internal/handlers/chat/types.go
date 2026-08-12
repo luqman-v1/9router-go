@@ -19,8 +19,6 @@ type ChatHandler struct {
 	Repo        *db.Repo
 	Client      *http.Client
 	TokenSaver  *shared.TokenSaverConfig
-	rrMu        sync.Mutex
-	rrIdx       int
 	stickyMu    sync.Mutex
 	stickyState map[string]*comboStickyState
 }

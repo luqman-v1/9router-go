@@ -276,17 +276,18 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
 
-	// Auto-capability-switch: float models that satisfy the request's required capabilities to the front.
-	models := comboModels
+	// 1. Apply combo rotation strategy first
+	models := h.ApplyComboStrategy(strategy, comboModels, comboName, stickyLimit)
+
+	// 2. Auto-capability-switch: float models that satisfy the request's required capabilities to the front.
+	// This ensures that if the rotated model lacks required capabilities (e.g., vision), a capable model overrides it.
 	if required := DetectRequiredCapabilities(body); len(required) > 0 {
-		reordered := ReorderByCapabilities(comboModels, required)
-		if reordered[0] != comboModels[0] {
+		reordered := ReorderByCapabilities(models, required)
+		if reordered[0] != models[0] {
 			log.Info("combo", "auto-switch", "caps", keysString(required), "model", reordered[0])
 		}
 		models = reordered
 	}
-
-	models = h.ApplyComboStrategy(strategy, models, comboName, stickyLimit)
 
 	for _, entry := range models {
 		modelInfo := h.resolveModelEntry(entry)
@@ -451,13 +452,11 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	// Connections that failed with a retryable status this request; remaining
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
-	models := comboModels
+	models := h.ApplyComboStrategy(strategy, comboModels, comboName, stickyLimit)
 	if required := DetectRequiredCapabilities(bodyJSON); len(required) > 0 {
-		reordered := ReorderByCapabilities(comboModels, required)
+		reordered := ReorderByCapabilities(models, required)
 		models = reordered
 	}
-
-	models = h.ApplyComboStrategy(strategy, models, comboName, stickyLimit)
 
 	for _, entry := range models {
 		modelInfo := h.resolveModelEntry(entry)
