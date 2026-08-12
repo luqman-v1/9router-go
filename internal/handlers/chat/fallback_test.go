@@ -1,16 +1,17 @@
 package chat
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"context"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/tokensaver"
@@ -210,6 +211,52 @@ func TestHandleMessagesComboFallback_429LocksAndExcludesConnection(t *testing.T)
 	}
 	if !locked {
 		t.Error("expected conn-combo locked for deepseek-chat after 429")
+	}
+}
+
+func TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n == 1 {
+			// Upstream says "wait ~4s" (RFC3339). The 429 connection lock is ~2s,
+			// so the retry pass after the wait finds it unlocked again.
+			ra := time.Now().Add(4 * time.Second).Format(time.RFC3339)
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"error":{"retryAfter":"` + ra + `"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"deepseek-chat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE id IN ('conn-1', 'conn-2')`); err != nil {
+		t.Fatalf("clear seeded connections: %v", err)
+	}
+	seedConnDB(t, database, "deepseek", "conn-combo", "sk-combo", srv.URL)
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	comboModels := []string{"deepseek/deepseek-chat"}
+	modelsJSON, _ := json.Marshal(comboModels)
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES ('combo-r', 'combo-retry', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(modelsJSON)); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	translatedReq := map[string]any{
+		"model":      "deepseek-chat",
+		"max_tokens": 100,
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+	}
+	rec := httptest.NewRecorder()
+	h.handleMessagesComboFallback(context.Background(), rec, translatedReq, comboModels, "fallback", false, "combo-retry", 0)
+
+	if got := hits.Load(); got != 2 {
+		t.Errorf("expected 2 upstream hits (1 failure + 1 retry), got %d", got)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestApplyComboStrategy_capacity(t *testing.T) {
@@ -469,9 +470,9 @@ func TestDetectRequiredCapabilities(t *testing.T) {
 				}
 			]
 		}`)
-		
+
 		caps := DetectRequiredCapabilities(body)
-		
+
 		if caps["vision"] {
 			t.Errorf("expected vision to be false (earlier turn should be ignored)")
 		}
@@ -491,9 +492,9 @@ func TestDetectRequiredCapabilities(t *testing.T) {
 				}
 			]
 		}`)
-		
+
 		caps := DetectRequiredCapabilities(body)
-		
+
 		if !caps["videoInput"] {
 			t.Errorf("expected videoInput to be true")
 		}
@@ -501,7 +502,7 @@ func TestDetectRequiredCapabilities(t *testing.T) {
 }
 
 func TestReorderByCapabilities(t *testing.T) {
-	
+
 	// gemini-1.5-pro has audioInput=true, videoInput=true, vision=true
 	// openai/gpt-4 has vision=false, audioInput=false (defaults to false? wait, GetCapabilitiesForModel handles this)
 	// Actually, wait, let's use known models from capabilities.go.
@@ -516,7 +517,7 @@ func TestReorderByCapabilities(t *testing.T) {
 	}
 
 	reordered := ReorderByCapabilities(testModels, req)
-	
+
 	if len(reordered) != 3 {
 		t.Fatalf("expected 3 models, got %d", len(reordered))
 	}
@@ -527,7 +528,7 @@ func TestReorderByCapabilities(t *testing.T) {
 
 func TestComboStrategy_OrderAndRotation(t *testing.T) {
 	h := NewChatHandler(nil)
-	
+
 	// gemini/gemini-3-pro has audioInput=true
 	// openai/gpt-4 has audioInput=false
 	// anthropic/claude-3-opus has audioInput=false
@@ -538,7 +539,7 @@ func TestComboStrategy_OrderAndRotation(t *testing.T) {
 	req1 := map[string]bool{"audioInput": true}
 	rotated1 := h.ApplyComboStrategy("round-robin", models, "mycombo", 1)
 	reordered1 := ReorderByCapabilities(rotated1, req1)
-	
+
 	if reordered1[0] != "gemini/gemini-3-pro" {
 		t.Errorf("First call: expected gemini to be front due to capability override, got %s", reordered1[0])
 	}
@@ -594,5 +595,45 @@ func TestApplyComboStrategy_roundRobinTurnAware(t *testing.T) {
 	second := h.applyComboStrategy("round-robin", models, "comboT", 1, true)
 	if second[0] != "b/y" {
 		t.Errorf("second lead = %s, want b/y", second[0])
+	}
+}
+
+func TestComboRetryAfter(t *testing.T) {
+	past := time.Now().Add(-1 * time.Second)
+	bounded := time.Now().Add(4 * time.Second)
+	tooFar := time.Now().Add(60 * time.Second)
+
+	tests := []struct {
+		name       string
+		retryAfter string
+	}{
+		{"empty", ""},
+		{"invalid time", "not-a-time"},
+		{"past", past.Format(time.RFC3339)},
+		{"bounded", bounded.Format(time.RFC3339)},
+		{"exceeds cap", tooFar.Format(time.RFC3339)},
+	}
+	wants := map[string]time.Duration{
+		"empty":        0,
+		"invalid time": 0,
+		"past":         time.Second, // clamped to a minimum 1s wait
+		"bounded":      4 * time.Second,
+		"exceeds cap":  0, // too long -> surface Retry-After header instead
+	}
+
+	for _, tt := range tests {
+		got := comboRetryAfter(tt.retryAfter)
+		want := wants[tt.name]
+		switch tt.name {
+		case "bounded":
+			// Allow the ceil() rounding to land on 4s or just either side of it.
+			if got <= 0 || got > comboRetryWaitCap {
+				t.Errorf("%s: comboRetryAfter = %v, want in (0, %v]", tt.name, got, comboRetryWaitCap)
+			}
+		default:
+			if got != want {
+				t.Errorf("%s: comboRetryAfter = %v, want %v", tt.name, got, want)
+			}
+		}
 	}
 }

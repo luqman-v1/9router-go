@@ -1,11 +1,11 @@
 package chat
 
 import (
+	"9router/proxy/internal/log"
+	"context"
 	"encoding/json"
 	"errors"
-	"context"
 	"fmt"
-	"9router/proxy/internal/log"
 	"net/http"
 	"sort"
 	"strings"
@@ -67,23 +67,23 @@ func contentHasText(content json.RawMessage) bool {
 
 // visionProviders lists providers known to support vision/image input.
 var visionProviders = map[string]bool{
-	"openai":     true,
-	"anthropic":  true,
-	"claude":     true,
-	"gemini":     true,
+	"openai":      true,
+	"anthropic":   true,
+	"claude":      true,
+	"gemini":      true,
 	"antigravity": true,
-	"xai":        true,
-	"mistral":    true,
-	"groq":       true,
-	"openrouter": true,
+	"xai":         true,
+	"mistral":     true,
+	"groq":        true,
+	"openrouter":  true,
 }
 
 // pdfProviders lists providers known to support PDF/document input.
 var pdfProviders = map[string]bool{
-	"openai":     true,
-	"anthropic":  true,
-	"claude":     true,
-	"gemini":     true,
+	"openai":      true,
+	"anthropic":   true,
+	"claude":      true,
+	"gemini":      true,
 	"antigravity": true,
 }
 
@@ -354,117 +354,145 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 		models = reordered
 	}
 
-	for _, entry := range models {
-		modelInfo := h.resolveModelEntry(entry)
-		if modelInfo == nil {
-			continue
-		}
-
-		// Skip unavailable (model-locked) providers
-		if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
-			log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
-			if lastErr == nil {
-				lastErr = &upstreamError{StatusCode: http.StatusTooManyRequests, Body: []byte(`{"error":{"message":"all connections for this provider are rate-limited","type":"rate_limit_error","code":429}}`)}
+	// If every model fails, retry the whole pass once after a bounded
+	// Retry-After wait so a transient provider blip doesn't surface as a hard
+	// 429 to the client.
+	var attempt int
+	for ; attempt < 2; attempt++ {
+		if attempt > 0 {
+			wait := comboRetryAfter(earliestRetryAfter)
+			if wait == 0 {
+				break
 			}
-			continue
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			// Fresh pass: re-allow connections locked by the previous attempt
+			// (their cooldown has elapsed) and clear the error state.
+			lastErr = nil
+			earliestRetryAfter = ""
+			excludeIDs = nil
 		}
 
+		for _, entry := range models {
+			modelInfo := h.resolveModelEntry(entry)
+			if modelInfo == nil {
+				continue
+			}
 
-		var entrySuccess bool
-		// Try up to 10 connections for this model entry
-		for connAttempt := 0; connAttempt < 10; connAttempt++ {
-			var connID string
-			var connData *ConnectionData
-			isKnownNoAuth := false
-			if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-				isKnownNoAuth = true
-				connData = &ConnectionData{
-					APIKey: cfg.DefaultAPIKey,
+			// Skip unavailable (model-locked) providers
+			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
+				log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
+				if lastErr == nil {
+					lastErr = &upstreamError{StatusCode: http.StatusTooManyRequests, Body: []byte(`{"error":{"message":"all connections for this provider are rate-limited","type":"rate_limit_error","code":429}}`)}
 				}
-			} else {
-				conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+				continue
+			}
+
+			var entrySuccess bool
+			// Try up to 10 connections for this model entry
+			for connAttempt := 0; connAttempt < 10; connAttempt++ {
+				var connID string
+				var connData *ConnectionData
+				isKnownNoAuth := false
+				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
+					isKnownNoAuth = true
+					connData = &ConnectionData{
+						APIKey: cfg.DefaultAPIKey,
+					}
+				} else {
+					conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+					if err != nil {
+						break
+					}
+					connID = conn.ID
+					connData = cData
+				}
+				// Skip a connection that is already locked for this model
+				if connID != "" {
+					if locked, _ := h.Repo.IsConnectionModelLocked(connID, modelInfo.Model); locked {
+						log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
+						excludeIDs = append(excludeIDs, connID)
+						continue
+					}
+				}
+
+				var upstreamBody map[string]any
+				upstreamBodyJSON := body
+
+				if err := json.Unmarshal(upstreamBodyJSON, &upstreamBody); err != nil {
+					handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to parse request body")
+					return
+				}
+				upstreamBody["model"] = modelInfo.Model
+
+				upstreamJSON, err := json.Marshal(upstreamBody)
 				if err != nil {
 					break
 				}
-				connID = conn.ID
-				connData = cData
-			}
-			// Skip a connection that is already locked for this model
-			if connID != "" {
-				if locked, _ := h.Repo.IsConnectionModelLocked(connID, modelInfo.Model); locked {
-					log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
-					excludeIDs = append(excludeIDs, connID)
-					continue
+
+				var fwdErr error
+				if modelInfo.Provider == "mimo-free" {
+					comboMetrics := &streamMetrics{}
+					fwdErr = h.MimoFreeChat(ctx, cw, upstreamJSON, isStream, comboMetrics)
+				} else {
+					fwdErr = h.tryForwardWithConnection(ctx, cw, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, isStream, translateResponse, "/v1/chat/completions")
 				}
-			}
 
-			var upstreamBody map[string]any
-			upstreamBodyJSON := body
-
-			if err := json.Unmarshal(upstreamBodyJSON, &upstreamBody); err != nil {
-				handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to parse request body")
-				return
-			}
-			upstreamBody["model"] = modelInfo.Model
-
-			upstreamJSON, err := json.Marshal(upstreamBody)
-			if err != nil {
-				break
-			}
-
-			var fwdErr error
-			if modelInfo.Provider == "mimo-free" {
-				comboMetrics := &streamMetrics{}
-				fwdErr = h.MimoFreeChat(ctx, cw, upstreamJSON, isStream, comboMetrics)
-			} else {
-				fwdErr = h.tryForwardWithConnection(ctx, cw, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, isStream, translateResponse, "/v1/chat/completions")
-			}
-			
-			if fwdErr != nil {
-				if ctx.Err() != nil {
-					lastErr = &upstreamError{StatusCode: 499, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
-					break
-				}
-				var ue *upstreamError
-				if errors.As(fwdErr, &ue) {
-					if providers.RetryableStatusCodes[ue.StatusCode] {
-						h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
+				if fwdErr != nil {
+					if ctx.Err() != nil {
+						lastErr = &upstreamError{StatusCode: 499, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
+						break
 					}
-					if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
-						errorText := extractErrorText(ue.Body)
-						classification := providers.ClassifyError(ue.StatusCode, errorText, 0)
-						if classification.CooldownMs > 0 && classification.CooldownMs <= 5000 {
-							cooldown := time.Duration(classification.CooldownMs) * time.Millisecond
-							log.Info("combo", "transient wait", "status", ue.StatusCode, "provider", modelInfo.Provider, "duration", cooldown)
-							time.Sleep(cooldown)
-						} else {
-							log.Info("combo", "transient skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "cooldownMs", classification.CooldownMs)
+					var ue *upstreamError
+					if errors.As(fwdErr, &ue) {
+						if providers.RetryableStatusCodes[ue.StatusCode] {
+							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
 						}
-					}
-					if ra := extractRetryAfter(ue.Body); ra != "" {
-						if earliestRetryAfter == "" || ra < earliestRetryAfter {
-							earliestRetryAfter = ra
+						if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
+							errorText := extractErrorText(ue.Body)
+							classification := providers.ClassifyError(ue.StatusCode, errorText, 0)
+							if classification.CooldownMs > 0 && classification.CooldownMs <= 5000 {
+								cooldown := time.Duration(classification.CooldownMs) * time.Millisecond
+								log.Info("combo", "transient wait", "status", ue.StatusCode, "provider", modelInfo.Provider, "duration", cooldown)
+								time.Sleep(cooldown)
+							} else {
+								log.Info("combo", "transient skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "cooldownMs", classification.CooldownMs)
+							}
 						}
+						if ra := extractRetryAfter(ue.Body); ra != "" {
+							if earliestRetryAfter == "" || ra < earliestRetryAfter {
+								earliestRetryAfter = ra
+							}
+						}
+						lastErr = ue
+						if isKnownNoAuth {
+							break
+						}
+						continue
 					}
-					lastErr = ue
+					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
 					if isKnownNoAuth {
 						break
 					}
 					continue
 				}
-				lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
-				if isKnownNoAuth {
-					break
-				}
-				continue
+
+				entrySuccess = true
+				break
 			}
 
-			entrySuccess = true
-			break
+			if entrySuccess || ctx.Err() != nil {
+				return
+			}
 		}
-		
-		if entrySuccess || ctx.Err() != nil {
-			return
+
+		// All entries failed. Retry once only if a bounded wait is available;
+		// otherwise fall through to the error response below.
+		if lastErr == nil || ctx.Err() != nil || attempt == 1 {
+			break
 		}
 	}
 
@@ -523,109 +551,137 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		models = reordered
 	}
 
-	for _, entry := range models {
-		modelInfo := h.resolveModelEntry(entry)
-		if modelInfo == nil {
-			continue
-		}
-
-		// Skip unavailable (model-locked) providers
-		if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
-			log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
-			if lastErr == nil {
-				lastErr = &upstreamError{StatusCode: http.StatusTooManyRequests, Body: []byte(`{"error":{"message":"all connections for this provider are rate-limited","type":"rate_limit_error","code":429}}`)}
+	// If every model fails, retry the whole pass once after a bounded
+	// Retry-After wait so a transient provider blip doesn't surface as a hard
+	// 429 to the client.
+	var attempt int
+	for ; attempt < 2; attempt++ {
+		if attempt > 0 {
+			wait := comboRetryAfter(earliestRetryAfter)
+			if wait == 0 {
+				break
 			}
-			continue
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			// Fresh pass: re-allow connections locked by the previous attempt
+			// (their cooldown has elapsed) and clear the error state.
+			lastErr = nil
+			earliestRetryAfter = ""
+			excludeIDs = nil
 		}
 
+		for _, entry := range models {
+			modelInfo := h.resolveModelEntry(entry)
+			if modelInfo == nil {
+				continue
+			}
 
-		var entrySuccess bool
-		// Try up to 10 connections for this model entry
-		for connAttempt := 0; connAttempt < 10; connAttempt++ {
-			var connID string
-			var connData *ConnectionData
-			isKnownNoAuth := false
-			if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
-				isKnownNoAuth = true
-				connData = &ConnectionData{
-					APIKey: cfg.DefaultAPIKey,
+			// Skip unavailable (model-locked) providers
+			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
+				log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
+				if lastErr == nil {
+					lastErr = &upstreamError{StatusCode: http.StatusTooManyRequests, Body: []byte(`{"error":{"message":"all connections for this provider are rate-limited","type":"rate_limit_error","code":429}}`)}
 				}
-			} else {
-				conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+				continue
+			}
+
+			var entrySuccess bool
+			// Try up to 10 connections for this model entry
+			for connAttempt := 0; connAttempt < 10; connAttempt++ {
+				var connID string
+				var connData *ConnectionData
+				isKnownNoAuth := false
+				if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
+					isKnownNoAuth = true
+					connData = &ConnectionData{
+						APIKey: cfg.DefaultAPIKey,
+					}
+				} else {
+					conn, cData, err := h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+					if err != nil {
+						break
+					}
+					connID = conn.ID
+					connData = cData
+				}
+				// Skip a connection that is already locked for this model
+				if connID != "" {
+					if locked, _ := h.Repo.IsConnectionModelLocked(connID, modelInfo.Model); locked {
+						log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
+						excludeIDs = append(excludeIDs, connID)
+						continue
+					}
+				}
+
+				entryReq := make(map[string]any, len(translatedReq))
+				for k, v := range translatedReq {
+					entryReq[k] = v
+				}
+
+				entryReq["model"] = modelInfo.Model
+
+				upstreamJSON, err := json.Marshal(entryReq)
 				if err != nil {
 					break
 				}
-				connID = conn.ID
-				connData = cData
-			}
-			// Skip a connection that is already locked for this model
-			if connID != "" {
-				if locked, _ := h.Repo.IsConnectionModelLocked(connID, modelInfo.Model); locked {
-					log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
-					excludeIDs = append(excludeIDs, connID)
-					continue
-				}
-			}
 
-			entryReq := make(map[string]any, len(translatedReq))
-			for k, v := range translatedReq {
-				entryReq[k] = v
-			}
-			
-			entryReq["model"] = modelInfo.Model
+				fwdErr := h.tryForwardWithConnection(ctx, cw, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, isStream, true, "/v1/messages")
 
-			upstreamJSON, err := json.Marshal(entryReq)
-			if err != nil {
-				break
-			}
-
-			fwdErr := h.tryForwardWithConnection(ctx, cw, modelInfo.Provider, modelInfo.Model, connID, connData, upstreamJSON, isStream, true, "/v1/messages")
-
-			if fwdErr != nil {
-				if ctx.Err() != nil {
-					lastErr = &upstreamError{StatusCode: 499, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
-					break
-				}
-				var ue *upstreamError
-				if errors.As(fwdErr, &ue) {
-					if providers.RetryableStatusCodes[ue.StatusCode] {
-						h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
+				if fwdErr != nil {
+					if ctx.Err() != nil {
+						lastErr = &upstreamError{StatusCode: 499, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
+						break
 					}
-					if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
-						errorText := extractErrorText(ue.Body)
-						classification := providers.ClassifyError(ue.StatusCode, errorText, 0)
-						if classification.CooldownMs > 0 && classification.CooldownMs <= 5000 {
-							cooldown := time.Duration(classification.CooldownMs) * time.Millisecond
-							log.Info("combo", "transient wait", "status", ue.StatusCode, "provider", modelInfo.Provider, "duration", cooldown)
-							time.Sleep(cooldown)
-						} else {
-							log.Info("combo", "transient skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "cooldownMs", classification.CooldownMs)
+					var ue *upstreamError
+					if errors.As(fwdErr, &ue) {
+						if providers.RetryableStatusCodes[ue.StatusCode] {
+							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
 						}
-					}
-					if ra := extractRetryAfter(ue.Body); ra != "" {
-						if earliestRetryAfter == "" || ra < earliestRetryAfter {
-							earliestRetryAfter = ra
+						if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
+							errorText := extractErrorText(ue.Body)
+							classification := providers.ClassifyError(ue.StatusCode, errorText, 0)
+							if classification.CooldownMs > 0 && classification.CooldownMs <= 5000 {
+								cooldown := time.Duration(classification.CooldownMs) * time.Millisecond
+								log.Info("combo", "transient wait", "status", ue.StatusCode, "provider", modelInfo.Provider, "duration", cooldown)
+								time.Sleep(cooldown)
+							} else {
+								log.Info("combo", "transient skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "cooldownMs", classification.CooldownMs)
+							}
 						}
+						if ra := extractRetryAfter(ue.Body); ra != "" {
+							if earliestRetryAfter == "" || ra < earliestRetryAfter {
+								earliestRetryAfter = ra
+							}
+						}
+						lastErr = ue
+						if isKnownNoAuth {
+							break
+						}
+						continue
 					}
-					lastErr = ue
+					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
 					if isKnownNoAuth {
 						break
 					}
 					continue
 				}
-				lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
-				if isKnownNoAuth {
-					break
-				}
-				continue
+
+				entrySuccess = true
+				break
 			}
 
-			entrySuccess = true
-			break
+			if entrySuccess || ctx.Err() != nil {
+				return
+			}
 		}
 
-		if entrySuccess || ctx.Err() != nil {
-			return
+		// All entries failed. Retry once only if a bounded wait is available;
+		// otherwise fall through to the error response below.
+		if lastErr == nil || ctx.Err() != nil || attempt == 1 {
+			break
 		}
 	}
 
@@ -666,7 +722,6 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	handlerutil.WriteJSONError(cw, http.StatusBadGateway, "all combo models failed: no valid entries")
 }
 
-
 // mustParseTime parses an RFC3339 timestamp. Returns zero time on error.
 func mustParseTime(s string) time.Time {
 	t, err := time.Parse(time.RFC3339, s)
@@ -674,6 +729,33 @@ func mustParseTime(s string) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+// comboRetryWaitCap bounds how long a fully-failed combo pass will hold the
+// request before retrying. Longer upstream Retry-After values are surfaced via
+// the Retry-After header instead so the client decides.
+const comboRetryWaitCap = 8 * time.Second
+
+// comboRetryAfter returns how long to wait before retrying a fully-failed
+// combo pass. It honors the earliest upstream Retry-After, capped at
+// comboRetryWaitCap. Returns 0 (no retry) when there is no usable Retry-After
+// or the wait would exceed the cap.
+func comboRetryAfter(retryAfter string) time.Duration {
+	if retryAfter == "" {
+		return 0
+	}
+	until := mustParseTime(retryAfter)
+	if until.IsZero() {
+		return 0
+	}
+	sec := int((time.Until(until) + time.Second - 1) / time.Second)
+	if sec < 1 {
+		sec = 1
+	}
+	if sec > int(comboRetryWaitCap/time.Second) {
+		return 0
+	}
+	return time.Duration(sec) * time.Second
 }
 
 // comboLockRetryable classifies a retryable upstream error in a combo loop and
@@ -699,6 +781,7 @@ func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider,
 	*excludeIDs = append(*excludeIDs, connID)
 	log.Warn("combo", "locked on retryable error", "provider", provider, "model", model, "conn", connID, "status", ue.StatusCode, "cooldown_s", cooldownSec)
 }
+
 // ---- Fusion (parallel fan-out + judge synthesis) ----
 
 // fusionResult holds a single panel model's response.
