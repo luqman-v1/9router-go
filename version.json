@@ -1,5 +1,5 @@
 {
-  "latestVersion": "1.8.0",
+  "latestVersion": "1.8.1",
   "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
-  "releaseNotes": "v1.8.0: Combo/router fallback now locks connections on retryable errors (429/500s) with exponential backoff and excludes the failed connection from subsequent fallback attempts within the same request, breaking the antigravity rate-limit loop. Changelog: CHANGELOG.md."
+  "releaseNotes": "v1.8.1: Combo strategy sync with Next.js — flatten nested combos so rotation covers all leaf models (fixes 429 all-connections-rate-limited), turn-aware rotation so a tool-use turn never switches providers (fixes Gemini thought_signature 400), bounded retry-once on total 429, default thought_signature backfill, and Gemini tool-schema keyword parity (fixes Invalid tool parameters on the antigravity/OpenAI-compat paths). Changelog: CHANGELOG.md."
 }
