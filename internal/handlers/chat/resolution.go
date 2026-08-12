@@ -84,6 +84,45 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 	return &ModelInfo{Provider: provider, Model: parts[1]}
 }
 
+// flattenComboModels recursively expands combo-name entries into concrete
+// "provider/model" leaves, keeping order and deduping consecutive identical
+// leaves so a nested combo can't create pointless rotation slots. Guards
+// against cyclic combo references. Inner-combo strategies are not applied
+// here; the top-level combo's strategy governs the flattened list.
+func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
+	out := make([]string, 0, len(models))
+	seen := make(map[string]bool)
+	var walk func([]string) error
+	walk = func(ms []string) error {
+		for _, m := range ms {
+			if !strings.Contains(m, "/") {
+				if seen[m] {
+					return fmt.Errorf("combo cycle detected at %q", m)
+				}
+				if combo, err := h.Repo.GetComboByName(m); err == nil && combo != nil && combo.Models != "" {
+					var sub []string
+					if err := json.Unmarshal([]byte(combo.Models), &sub); err == nil {
+						seen[m] = true
+						if err := walk(sub); err != nil {
+							return err
+						}
+						delete(seen, m)
+						continue
+					}
+				}
+			}
+			if len(out) == 0 || out[len(out)-1] != m {
+				out = append(out, m)
+			}
+		}
+		return nil
+	}
+	if err := walk(models); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // resolveModel resolves a model string through aliases, combos, and provider/model parsing.
 // Returns the first concrete ModelInfo found, or an error.
 func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
@@ -129,13 +168,19 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	if err == nil && combo != nil && combo.Models != "" {
 		var modelStrings []string
 		if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err == nil && len(modelStrings) > 0 {
-			firstModel := modelStrings[0]
-			if strings.Contains(firstModel, "/") {
-				parts := strings.SplitN(firstModel, "/", 2)
+			// Flatten nested combos into concrete leaves so rotation covers
+			// every reachable model (a nested combo entry used to collapse to
+			// its first leaf, so combo-wombo -> free-tier never rotated).
+			flattened, flatErr := h.flattenComboModels(modelStrings)
+			if flatErr != nil {
+				return nil, flatErr
+			}
+			if len(flattened) > 0 {
+				parts := strings.SplitN(flattened[0], "/", 2)
 				provider := resolveProviderAlias(parts[0])
 				if _, ok := providers.KnownProviders[provider]; !ok {
 					if info := h.resolvePrefixProvider(provider, parts[1]); info != nil {
-						info.ComboModels = modelStrings
+						info.ComboModels = flattened
 						info.Strategy = combo.Strategy
 						return info, nil
 					}
@@ -143,15 +188,9 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 				return &ModelInfo{
 					Provider:    provider,
 					Model:       parts[1],
-					ComboModels: modelStrings,
+					ComboModels: flattened,
 					Strategy:    combo.Strategy,
 				}, nil
-			}
-			firstInfo := h.resolveModelEntry(firstModel)
-			if firstInfo != nil {
-				firstInfo.ComboModels = modelStrings
-				firstInfo.Strategy = combo.Strategy
-				return firstInfo, nil
 			}
 		}
 	}

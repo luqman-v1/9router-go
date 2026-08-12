@@ -215,8 +215,72 @@ func TestResolveModel_ComboWithNestedComboName(t *testing.T) {
 	if info.Model != "deepseek-chat" {
 		t.Errorf("expected model 'deepseek-chat', got %s", info.Model)
 	}
-	if len(info.ComboModels) != 2 {
-		t.Errorf("expected 2 combo models, got %d", len(info.ComboModels))
+	if len(info.ComboModels) != 1 || info.ComboModels[0] != "deepseek/deepseek-chat" {
+		t.Errorf("expected flattened [deepseek/deepseek-chat], got %v", info.ComboModels)
+	}
+}
+
+func TestFlattenComboModels_ExpandsNested(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	inner, _ := json.Marshal([]string{"oc/ling-3.0-flash-free", "gemini/gemini-3.5-flash"})
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"ft1", "free-tier", "fallback", string(inner), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z")
+
+	flat, err := h.flattenComboModels([]string{"free-tier", "openai/gpt-4"})
+	if err != nil {
+		t.Fatalf("flatten error: %v", err)
+	}
+	want := []string{"oc/ling-3.0-flash-free", "gemini/gemini-3.5-flash", "openai/gpt-4"}
+	if len(flat) != len(want) {
+		t.Fatalf("expected %d models, got %d: %v", len(want), len(flat), flat)
+	}
+	for i := range want {
+		if flat[i] != want[i] {
+			t.Errorf("expected %v, got %v", want, flat)
+			break
+		}
+	}
+}
+
+func TestFlattenComboModels_DedupesConsecutive(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	inner, _ := json.Marshal([]string{"deepseek/deepseek-chat"})
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"in1", "inner-only", "fallback", string(inner), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z")
+
+	// ["inner-only", "deepseek/deepseek-chat"] both expand to the same leaf.
+	flat, err := h.flattenComboModels([]string{"inner-only", "deepseek/deepseek-chat"})
+	if err != nil {
+		t.Fatalf("flatten error: %v", err)
+	}
+	if len(flat) != 1 || flat[0] != "deepseek/deepseek-chat" {
+		t.Errorf("expected [deepseek/deepseek-chat], got %v", flat)
+	}
+}
+
+func TestFlattenComboModels_Cycle(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	a, _ := json.Marshal([]string{"combo-b"})
+	b, _ := json.Marshal([]string{"combo-a"})
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"ca", "combo-a", "fallback", string(a), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z")
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"cb", "combo-b", "fallback", string(b), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z")
+
+	if _, err := h.flattenComboModels([]string{"combo-a"}); err == nil {
+		t.Fatal("expected cycle error")
 	}
 }
 
