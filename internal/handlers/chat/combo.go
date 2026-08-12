@@ -17,6 +17,54 @@ import (
 	"9router/proxy/internal/providers"
 )
 
+// detectNewTurn reports whether the request body starts a new conversation
+// turn. A turn boundary is the most recent plain-text user message; a request
+// whose last user-type message is a tool result continues the current turn,
+// and the combo must not switch providers mid-turn (Gemini thinking models
+// require a thought_signature on every current-turn functionCall, which only
+// the model that made the call can provide).
+func detectNewTurn(body []byte) bool {
+	var req struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return true
+	}
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		msg := req.Messages[i]
+		if msg.Role == "tool" {
+			return false
+		}
+		if msg.Role != "user" {
+			continue
+		}
+		return contentHasText(msg.Content)
+	}
+	return true
+}
+
+// contentHasText reports whether OpenAI message content contains plain text.
+func contentHasText(content json.RawMessage) bool {
+	var s string
+	if err := json.Unmarshal(content, &s); err == nil {
+		return s != ""
+	}
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content, &parts); err == nil {
+		for _, p := range parts {
+			if p.Text != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // visionProviders lists providers known to support vision/image input.
 var visionProviders = map[string]bool{
 	"openai":     true,
@@ -204,7 +252,15 @@ func ReorderByCapabilities(comboModels []string, required map[string]bool) []str
 }
 
 // ApplyComboStrategy rotates the array of models based on the selected strategy.
+// It treats every call as a new turn (backward-compatible wrapper).
 func (h *ChatHandler) ApplyComboStrategy(strategy string, models []string, comboName string, stickyLimit int) []string {
+	return h.applyComboStrategy(strategy, models, comboName, stickyLimit, true)
+}
+
+// applyComboStrategy is ApplyComboStrategy with turn awareness: the rotation
+// index advances only on a new turn (newTurn=true), so a mid-turn tool-use
+// sequence stays on the same provider/model.
+func (h *ChatHandler) applyComboStrategy(strategy string, models []string, comboName string, stickyLimit int, newTurn bool) []string {
 	if len(models) <= 1 {
 		return models
 	}
@@ -234,16 +290,25 @@ func (h *ChatHandler) ApplyComboStrategy(strategy string, models []string, combo
 			h.stickyState[key] = state
 		}
 
-		currentIndex := state.Index % len(models)
-		rotated := make([]string, len(models))
-		for i := 0; i < len(models); i++ {
-			rotated[i] = models[(currentIndex+i)%len(models)]
+		// The model owning this turn. A new turn starts from the rotation
+		// pointer; a mid-turn request reuses the model serving the turn even
+		// after the pointer has advanced for the next turn.
+		servingIndex := state.Index % len(models)
+		if newTurn {
+			// Advance the rotation pointer at the turn boundary.
+			state.ConsecutiveUseCount++
+			if state.ConsecutiveUseCount >= stickyLimit {
+				state.Index = (servingIndex + 1) % len(models)
+				state.ConsecutiveUseCount = 0
+			}
+			state.ServingIndex = servingIndex
+		} else {
+			servingIndex = state.ServingIndex
 		}
 
-		state.ConsecutiveUseCount++
-		if state.ConsecutiveUseCount >= stickyLimit {
-			state.Index = (currentIndex + 1) % len(models)
-			state.ConsecutiveUseCount = 0
+		rotated := make([]string, len(models))
+		for i := 0; i < len(models); i++ {
+			rotated[i] = models[(servingIndex+i)%len(models)]
 		}
 
 		return rotated
@@ -277,7 +342,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	var excludeIDs []string
 
 	// 1. Apply combo rotation strategy first
-	models := h.ApplyComboStrategy(strategy, comboModels, comboName, stickyLimit)
+	models := h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit, detectNewTurn(body))
 
 	// 2. Auto-capability-switch: float models that satisfy the request's required capabilities to the front.
 	// This ensures that if the rotated model lacks required capabilities (e.g., vision), a capable model overrides it.
@@ -452,7 +517,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	// Connections that failed with a retryable status this request; remaining
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
-	models := h.ApplyComboStrategy(strategy, comboModels, comboName, stickyLimit)
+	models := h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit, detectNewTurn(bodyJSON))
 	if required := DetectRequiredCapabilities(bodyJSON); len(required) > 0 {
 		reordered := ReorderByCapabilities(models, required)
 		models = reordered

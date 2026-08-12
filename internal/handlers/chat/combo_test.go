@@ -554,3 +554,45 @@ func TestComboStrategy_OrderAndRotation(t *testing.T) {
 		t.Errorf("Second call: expected claude to be front due to rotation, got %s", reordered2[0])
 	}
 }
+
+func TestDetectNewTurn(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"user text", `{"messages":[{"role":"user","content":"hello"}]}`, true},
+		{"user text array", `{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`, true},
+		{"mid-turn tool result", `{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"x","tool_calls":[{"id":"t1"}]},{"role":"tool","tool_call_id":"t1","content":"ok"}]}`, false},
+		{"empty body", `{}`, true},
+	}
+	for _, tt := range tests {
+		if got := detectNewTurn([]byte(tt.body)); got != tt.want {
+			t.Errorf("%s: detectNewTurn = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestApplyComboStrategy_roundRobinTurnAware(t *testing.T) {
+	h := NewChatHandler(nil)
+	models := []string{"a/x", "b/y", "c/z"}
+
+	first := h.applyComboStrategy("round-robin", models, "comboT", 1, true)
+	if first[0] != "a/x" {
+		t.Errorf("first lead = %s, want a/x", first[0])
+	}
+
+	mid1 := h.applyComboStrategy("round-robin", models, "comboT", 1, false)
+	if mid1[0] != "a/x" {
+		t.Errorf("mid1 lead = %s, want a/x", mid1[0])
+	}
+	mid2 := h.applyComboStrategy("round-robin", models, "comboT", 1, false)
+	if mid2[0] != "a/x" {
+		t.Errorf("mid2 lead = %s, want a/x", mid2[0])
+	}
+
+	second := h.applyComboStrategy("round-robin", models, "comboT", 1, true)
+	if second[0] != "b/y" {
+		t.Errorf("second lead = %s, want b/y", second[0])
+	}
+}
