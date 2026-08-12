@@ -344,3 +344,29 @@ func TestGeminiThoughtSignature(t *testing.T) {
 		t.Fatal("expected get_weather functionCall")
 	}
 }
+
+func TestThoughtSignatureBackfill(t *testing.T) {
+	// A function call with no __ts__ transport (made by a non-Gemini model, or
+	// the client dropped the id) must still be signed with the default so
+	// Gemini thinking models don't 400.
+	openaiReq := `{
+		"model": "gemini-3.5-flash",
+		"messages": [
+			{"role": "user", "content": "hi"},
+			{"role": "assistant", "content": "", "tool_calls": [{"id": "call_plain_0", "type": "function", "function": {"name": "ScheduleWakeup", "arguments": "{\"time\":\"2026-08-13T00:00:00Z\"}"}}]}
+		],
+		"tools": [{"type": "function", "function": {"name": "ScheduleWakeup", "description": "wake", "parameters": {"type": "object", "properties": {"time": {"type": "string"}}}}}]
+	}`
+
+	geminiBytes, err := TranslateOpenAIToGemini([]byte(openaiReq))
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini failed: %v", err)
+	}
+
+	if !strings.Contains(string(geminiBytes), `"thoughtSignature":"`+DefaultThinkingSignature+`"`) {
+		t.Errorf("unsigned functionCall must be backfilled with DefaultThinkingSignature, got: %s", geminiBytes)
+	}
+	if strings.Contains(string(geminiBytes), `"thought_signature"`) {
+		t.Errorf("must emit camelCase thoughtSignature, got: %s", geminiBytes)
+	}
+}
