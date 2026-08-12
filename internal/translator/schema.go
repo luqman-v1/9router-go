@@ -14,7 +14,11 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 	// Keywords rejected by Gemini
 	unsupported := []string{
 		"minLength", "maxLength", "exclusiveMinimum", "exclusiveMaximum",
-		"minItems", "maxItems", "format",
+		"minItems", "maxItems", "format", "multipleOf",
+		// Array/2020-12 keywords the Gemini schema proto has no field for.
+		// Agent tool schemas set these routinely; one occurrence rejects the
+		// whole request (Next.js UNSUPPORTED_SCHEMA_CONSTRAINTS parity).
+		"uniqueItems", "contains", "unevaluatedProperties", "unevaluatedItems", "contentSchema",
 		"default", "examples",
 		"$schema", "$defs", "definitions", "const", "$ref", "$comment",
 		"deprecated", "readOnly", "writeOnly",
@@ -158,6 +162,20 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 			}
 			schema["required"] = []string{"reason"}
 		}
+	}
+
+	// Empty schema {} (no type at all) must also become the object placeholder
+	// (Next.js addPlaceholders parity) — Gemini rejects a function declaration
+	// whose parameters component has no parseable structure.
+	if len(schema) == 0 {
+		schema["type"] = "object"
+		schema["properties"] = map[string]interface{}{
+			"reason": map[string]interface{}{
+				"type":        "string",
+				"description": "Brief explanation of why you are calling this tool",
+			},
+		}
+		schema["required"] = []string{"reason"}
 	}
 
 	for _, v := range schema {
