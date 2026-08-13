@@ -2,9 +2,9 @@ BINARY_NAME := 9router-go
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "1.0.0")
 PORT ?= 20128
 DATA_DIR ?= $(HOME)/.9router
-RTK ?= true
-CAVEMAN ?= false
-PONYTAIL ?= false
+RTK ?=
+CAVEMAN ?=
+PONYTAIL ?=
 AUTO_UPDATE ?= false
 
 LDFLAGS := -s -w -X '9router/proxy/internal/updater.CurrentVersion=$(VERSION)'
@@ -17,11 +17,11 @@ build:
 
 ## run — start proxy (PORT=20128)
 run: build
-	PORT=$(PORT) DATA_DIR=$(DATA_DIR) ./$(BINARY_NAME) --rtk=$(RTK) --caveman=$(CAVEMAN) --ponytail=$(PONYTAIL) --auto-update=$(AUTO_UPDATE)
+	PORT=$(PORT) DATA_DIR=$(DATA_DIR) ./$(BINARY_NAME) $(if $(RTK),--rtk=$(RTK)) $(if $(CAVEMAN),--caveman=$(CAVEMAN)) $(if $(PONYTAIL),--ponytail=$(PONYTAIL)) --auto-update=$(AUTO_UPDATE)
 
 ## dev — start with go run (auto-rebuild)
 dev:
-	PORT=$(PORT) DATA_DIR=$(DATA_DIR) go run -ldflags="$(LDFLAGS)" ./cmd/9router-go/ --rtk=$(RTK) --caveman=$(CAVEMAN) --ponytail=$(PONYTAIL) --auto-update=$(AUTO_UPDATE)
+	PORT=$(PORT) DATA_DIR=$(DATA_DIR) go run -ldflags="$(LDFLAGS)" ./cmd/9router-go/ $(if $(RTK),--rtk=$(RTK)) $(if $(CAVEMAN),--caveman=$(CAVEMAN)) $(if $(PONYTAIL),--ponytail=$(PONYTAIL)) --auto-update=$(AUTO_UPDATE)
 
 ## version — display binary version info
 version: build
