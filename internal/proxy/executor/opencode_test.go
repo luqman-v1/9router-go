@@ -42,6 +42,18 @@ func TestForwardOpencode(t *testing.T) {
 		if r.Header.Get("x-opencode-client") != "desktop" {
 			t.Errorf("expected desktop client header, got %s", r.Header.Get("x-opencode-client"))
 		}
+		if r.Header.Get("x-opencode-project") != "global" {
+			t.Errorf("expected x-opencode-project global, got %s", r.Header.Get("x-opencode-project"))
+		}
+		if !strings.HasPrefix(r.Header.Get("x-opencode-session"), "ses_") {
+			t.Errorf("expected ses_ prefix on x-opencode-session, got %s", r.Header.Get("x-opencode-session"))
+		}
+		if !strings.HasPrefix(r.Header.Get("x-opencode-request"), "msg_") {
+			t.Errorf("expected msg_ prefix on x-opencode-request, got %s", r.Header.Get("x-opencode-request"))
+		}
+		if r.Header.Get("User-Agent") != "opencode" {
+			t.Errorf("expected User-Agent opencode, got %s", r.Header.Get("User-Agent"))
+		}
 		body, _ := io.ReadAll(r.Body)
 		if !strings.Contains(string(body), `"reasoning_content":" "`) {
 			t.Errorf("expected reasoning_content injected in request body, got %s", string(body))

@@ -284,10 +284,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 	body := InjectReasoningContent(req.Body, "opencode")
 
 	cfg := *req.Config
-	if cfg.StaticHeaders == nil {
-		cfg.StaticHeaders = make(map[string]string)
-	}
-	cfg.StaticHeaders["x-opencode-client"] = "desktop"
+	cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(cfg.StaticHeaders, req.SessionID, req.IsStream)
 
 	ctx := req.Ctx
 	if ctx == nil {

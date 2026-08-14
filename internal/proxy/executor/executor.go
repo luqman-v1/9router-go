@@ -20,6 +20,7 @@ type Request struct {
 	IsStream       bool
 	TranslateResp  bool
 	ConnectionID   string    // for OAuth refresh by fallback
+	SessionID      string    // client session / conversation id
 	ProjectID      string    // for gemini-native (antigravity)
 	ModelName      string    // extracted model name
 	Endpoint       string    // custom URL override (azure)
