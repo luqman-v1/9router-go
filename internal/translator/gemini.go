@@ -97,6 +97,7 @@ type GeminiRequest struct {
 	SystemInstruction *GeminiContent  `json:"system_instruction,omitempty"`
 	Contents          []GeminiContent `json:"contents"`
 	Tools             []GeminiTool    `json:"tools,omitempty"`
+	ToolConfig        any             `json:"toolConfig,omitempty"`
 	GenerationConfig  json.RawMessage `json:"generationConfig,omitempty"`
 }
 
@@ -161,6 +162,23 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		return nil, fmt.Errorf("parse messages: %w", err)
 	}
 
+	// Pre-map tool_call_id -> function name from assistant messages
+	tcID2Name := make(map[string]string)
+	for _, msg := range msgs {
+		if msg.Role == "assistant" {
+			for _, tc := range msg.ToolCalls {
+				if tc.ID != "" && tc.Function.Name != "" {
+					cleanID := tc.ID
+					if ts := strings.LastIndex(cleanID, "__ts__"); ts != -1 {
+						cleanID = cleanID[:ts]
+					}
+					tcID2Name[tc.ID] = tc.Function.Name
+					tcID2Name[cleanID] = tc.Function.Name
+				}
+			}
+		}
+	}
+
 	for _, msg := range msgs {
 		switch msg.Role {
 		case "system":
@@ -219,15 +237,24 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 
 		case "tool":
 			content := extractContentString(msg.Content)
-			// Extract tool name from tool_call_id (function name prefix)
-			// Strip __ts__ suffix first (encoded thought_signature — not needed for response)
 			cleanID := msg.ToolCallID
 			if ts := strings.LastIndex(cleanID, "__ts__"); ts != -1 {
 				cleanID = cleanID[:ts]
 			}
-			name := cleanID
-			if idx := strings.Index(name, "_"); idx > 0 {
-				name = name[idx+1:]
+			name := tcID2Name[msg.ToolCallID]
+			if name == "" {
+				name = tcID2Name[cleanID]
+			}
+			if name == "" {
+				name = cleanID
+				if strings.HasPrefix(name, "call_") {
+					rest := strings.TrimPrefix(name, "call_")
+					if lastUnderscore := strings.LastIndex(rest, "_"); lastUnderscore > 0 {
+						name = rest[:lastUnderscore]
+					} else {
+						name = rest
+					}
+				}
 			}
 			// Tool result content may be plain text or JSON.
 			// Gemini requires the result to be valid JSON.
@@ -266,6 +293,11 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		}
 		if len(decls) > 0 {
 			req.Tools = []GeminiTool{{FunctionDeclarations: decls}}
+			req.ToolConfig = map[string]any{
+				"functionCallingConfig": map[string]any{
+					"mode": "VALIDATED",
+				},
+			}
 		}
 	}
 

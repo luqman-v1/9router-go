@@ -141,4 +141,83 @@ func TestNormalizeAntigravityModel(t *testing.T) {
 	}
 }
 
+func TestAntigravityDecoyTools_NonEmptyProperties(t *testing.T) {
+	for _, dt := range translator.AntigravityDecoyTools {
+		params, ok := dt.Parameters.(map[string]any)
+		if !ok {
+			t.Fatalf("decoy tool %s has invalid parameters type", dt.Name)
+		}
+		props, ok := params["properties"].(map[string]any)
+		if !ok || len(props) == 0 {
+			t.Errorf("decoy tool %s has empty properties; Gemini will reject with 'Invalid tool parameters'", dt.Name)
+		}
+	}
+}
+
+func TestTranslateOpenAIToGemini_ClaudeCodeToolResponseMapping(t *testing.T) {
+	body := []byte(`{
+		"model": "antigravity/gemini-3.5-flash-high",
+		"messages": [
+			{
+				"role": "assistant",
+				"tool_calls": [
+					{
+						"id": "toolu_01ABC123",
+						"type": "function",
+						"function": {
+							"name": "plugin:claude-mem:mcp-search",
+							"arguments": "{\"query\":\"test\"}"
+						}
+					}
+				]
+			},
+			{
+				"role": "tool",
+				"tool_call_id": "toolu_01ABC123",
+				"content": "{\"results\":[]}"
+			}
+		],
+		"tools": [
+			{
+				"type": "function",
+				"function": {
+					"name": "plugin:claude-mem:mcp-search",
+					"description": "search memory",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"query": { "type": "string" }
+						},
+						"required": ["query"]
+					}
+				}
+			}
+		]
+	}`)
+
+	geminiJSON, err := translator.TranslateOpenAIToGemini(body)
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini failed: %v", err)
+	}
+
+	var req translator.GeminiRequest
+	if err := json.Unmarshal(geminiJSON, &req); err != nil {
+		t.Fatalf("unmarshal gemini request failed: %v", err)
+	}
+
+	if len(req.Contents) != 2 {
+		t.Fatalf("expected 2 contents, got %d", len(req.Contents))
+	}
+
+	// Tool response part must have exact name "plugin:claude-mem:mcp-search"
+	respPart := req.Contents[1].Parts[0]
+	if respPart.FunctionResponse == nil {
+		t.Fatal("expected functionResponse part")
+	}
+	if respPart.FunctionResponse.Name != "plugin:claude-mem:mcp-search" {
+		t.Errorf("expected functionResponse name 'plugin:claude-mem:mcp-search', got %q", respPart.FunctionResponse.Name)
+	}
+}
+
+
 

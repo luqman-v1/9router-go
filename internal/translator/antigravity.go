@@ -44,29 +44,41 @@ var AntigravityNativeToolNames = map[string]bool{
 	"write_to_file":                              true,
 }
 
+// AntigravityDecoyPlaceholderParams provides a valid schema for tools with no input parameters.
+var AntigravityDecoyPlaceholderParams = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"reason": map[string]any{
+			"type":        "string",
+			"description": "Brief explanation of why you are calling this tool",
+		},
+	},
+	"required": []string{"reason"},
+}
+
 // AntigravityDecoyTools are the 21 decoy tools matching official IDE defaults.
 var AntigravityDecoyTools = []GeminiFunctionDecl{
-	{Name: "browser_subagent", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "command_status", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "find_by_name", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "generate_image", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "grep_search", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "list_dir", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "list_resources", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "mcp_sequential-thinking_sequentialthinking", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "multi_replace_file_content", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "notify_user", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "read_resource", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "read_terminal", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "read_url_content", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "replace_file_content", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "run_command", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "search_web", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "send_command_input", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "task_boundary", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "view_content_chunk", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "view_file", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
-	{Name: "write_to_file", Description: "This tool is currently unavailable.", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}}},
+	{Name: "browser_subagent", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "command_status", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "find_by_name", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "generate_image", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "grep_search", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "list_dir", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "list_resources", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "mcp_sequential-thinking_sequentialthinking", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "multi_replace_file_content", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "notify_user", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "read_resource", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "read_terminal", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "read_url_content", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "replace_file_content", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "run_command", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "search_web", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "send_command_input", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "task_boundary", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "view_content_chunk", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "view_file", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
+	{Name: "write_to_file", Description: "This tool is currently unavailable.", Parameters: AntigravityDecoyPlaceholderParams},
 }
 
 // CloakAntigravityRequest cloaks tool names with `_ide` suffix and appends decoy tools.
@@ -141,6 +153,11 @@ func CloakAntigravityRequest(req *GeminiRequest, clientTool string) (*GeminiRequ
 
 	res := *req
 	res.Tools = []GeminiTool{{FunctionDeclarations: allDecls}}
+	res.ToolConfig = map[string]any{
+		"functionCallingConfig": map[string]any{
+			"mode": "VALIDATED",
+		},
+	}
 	res.Contents = cloakedContents
 
 	return &res, toolNameMap
