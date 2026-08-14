@@ -1,6 +1,7 @@
 package translator_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"9router/proxy/internal/translator"
@@ -72,3 +73,47 @@ func TestUncloakToolName(t *testing.T) {
 		t.Errorf("expected other (suffix stripped), got %s", un)
 	}
 }
+
+func TestAntigravityImageModelAndConfig(t *testing.T) {
+	if !translator.IsAntigravityImageModel("gemini-3.1-flash-image") {
+		t.Error("expected gemini-3.1-flash-image to be image model")
+	}
+	if !translator.IsAntigravityImageModel("imagen-3.0-generate-002") {
+		t.Error("expected imagen-3.0-generate-002 to be image model")
+	}
+	if translator.IsAntigravityImageModel("gemini-3-flash") {
+		t.Error("expected gemini-3-flash NOT to be image model")
+	}
+
+	clean, ratio := translator.ParseImageConfig("gemini-3.1-flash-image-16x9")
+	if clean != "gemini-3.1-flash-image" || ratio != "16:9" {
+		t.Errorf("expected (gemini-3.1-flash-image, 16:9), got (%s, %s)", clean, ratio)
+	}
+
+	clean2, ratio2 := translator.ParseImageConfig("gemini-3.1-flash-image-1024x768")
+	if clean2 != "gemini-3.1-flash-image" || ratio2 != "4:3" {
+		t.Errorf("expected (gemini-3.1-flash-image, 4:3), got (%s, %s)", clean2, ratio2)
+	}
+}
+
+func TestWrapAntigravityImageRequest(t *testing.T) {
+	reqBytes, err := translator.WrapAntigravityImageRequest("A cute cat", "", "proj-123", "gemini-3.1-flash-image", "16:9")
+	if err != nil {
+		t.Fatalf("WrapAntigravityImageRequest failed: %v", err)
+	}
+	if len(reqBytes) == 0 {
+		t.Fatal("expected non-empty request bytes")
+	}
+
+	var req translator.AntigravityRequest
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal wrapper failed: %v", err)
+	}
+	if req.RequestType != "image_gen" {
+		t.Errorf("expected requestType image_gen, got %s", req.RequestType)
+	}
+	if req.Project != "proj-123" {
+		t.Errorf("expected project proj-123, got %s", req.Project)
+	}
+}
+

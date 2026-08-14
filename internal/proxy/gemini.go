@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,20 +18,51 @@ import (
 func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey, bodyStr string, isStream bool, projectID, modelName string) (*http.Response, error) {
 	body := []byte(bodyStr)
 
-	// Translate OpenAI → Gemini native
-	geminiBody, err := translator.TranslateOpenAIToGemini(body)
-	if err != nil {
-		return nil, fmt.Errorf("translate to Gemini: %w", err)
-	}
+	var sendBody []byte
+	if projectID != "" && translator.IsAntigravityImageModel(modelName) {
+		isStream = false
+		cleanModel, aspectRatio := translator.ParseImageConfig(modelName)
 
-	// Wrap for antigravity if needed
-	sendBody := geminiBody
-	if projectID != "" {
-		wrapped, err := translator.WrapForAntigravity(geminiBody, projectID, modelName)
+		var oreq struct {
+			Prompt   string `json:"prompt"`
+			Messages []struct {
+				Content any `json:"content"`
+			} `json:"messages"`
+		}
+		prompt := ""
+		if err := json.Unmarshal(body, &oreq); err == nil {
+			if oreq.Prompt != "" {
+				prompt = oreq.Prompt
+			} else {
+				for _, m := range oreq.Messages {
+					if s, ok := m.Content.(string); ok && s != "" {
+						prompt = s
+					}
+				}
+			}
+		}
+
+		wrapped, err := translator.WrapAntigravityImageRequest(prompt, "", projectID, cleanModel, aspectRatio)
 		if err != nil {
-			return nil, fmt.Errorf("wrap for antigravity: %w", err)
+			return nil, fmt.Errorf("wrap antigravity image: %w", err)
 		}
 		sendBody = wrapped
+	} else {
+		// Translate OpenAI → Gemini native
+		geminiBody, err := translator.TranslateOpenAIToGemini(body)
+		if err != nil {
+			return nil, fmt.Errorf("translate to Gemini: %w", err)
+		}
+
+		// Wrap for antigravity if needed
+		sendBody = geminiBody
+		if projectID != "" {
+			wrapped, err := translator.WrapForAntigravity(geminiBody, projectID, modelName)
+			if err != nil {
+				return nil, fmt.Errorf("wrap for antigravity: %w", err)
+			}
+			sendBody = wrapped
+		}
 	}
 
 	// Build URL
