@@ -7,26 +7,33 @@ High-performance Go proxy gateway for [9Router](https://github.com/decolua/9rout
 
 > **9Router** is a local AI routing gateway + dashboard. This Go proxy replaces the Next.js `/v1/*` routes for high-throughput LLM traffic, while the [9Router dashboard](https://github.com/decolua/9router) handles management UI (providers, API keys, combos, usage tracking).
 
-## Features
+### Features
 
 - **32K+ RPS** peak throughput (Go vs Next.js ~500 RPS)
 - **42 MB** memory footprint
-- **SQLite WAL mode** (shared with [9Router dashboard](https://github.com/decolua/9router))
-- **OpenAI & Claude format support** + real-time SSE translation
-- **Dynamic Egress Proxy Pools**: round-robin IP rotation via active HTTP/HTTPS/SOCKS5 proxy pools
-- **Reactive 401 Unauthorized Auto-Refresh**: auto-refreshes OAuth tokens on 401 and retries once before fallback
-- **Qoder COSY Signing Executor**: full RSA-2048 + AES-128-CBC + MD5 signed header payload support
-- **Combo strategies**: sticky round-robin, round-robin, fallback, fusion (multi-panel + judge)
-- **Auto-capability-switch**: floats vision/pdf-capable models to front based on request content
-- **Error classification**: text-based error rules + exponential backoff (matching Next.js)
+- **SQLite WAL mode** with non-blocking concurrency (shared with [9Router dashboard](https://github.com/decolua/9router))
+- **OpenAI, Claude, and Gemini native format support** with bidirectional SSE translation
+- **Antigravity Tool Cloaking & Anti-Ban Decoy System**: 21 official IDE decoy tools (`run_command`, `replace_file_content`, etc.) with `_ide` suffix cloaking and protobuf validation safeguards
+- **Antigravity Anti-Competitive Prompt Stripping**: strips competitor identity prompts to prevent synthetic 429 quota exhaustion errors
+- **Dynamic Egress Proxy Pools & Edge Relays**: round-robin IP rotation via active HTTP/HTTPS/SOCKS5 pools + Vercel/Cloudflare/Deno edge relays (`x-relay-target` / `x-relay-path`)
+- **No-Auth Provider Proxy Strategies**: automatic proxy pool routing & rotation for free-tier/public providers (`settings.providerStrategies`)
+- **Realtime SSE Usage Stream (`/api/usage/stream`)**: in-memory in-flight request tracker powering live glowing pulse & marching-ants animations on the Next.js Usage Topology graph
+- **Snake_case Token Limits (`/v1/models` & `/v1/models/info`)**: exposes `context_length`, `max_completion_tokens`, `max_input_tokens`, and `max_output_tokens`
+- **Gemini 3.7 Flash Model Family**: complete alias and capability mapping for Gemini 3.7 Flash models
+- **Gemini Multimodal Vision & Audio**: support for base64 inline images, remote HTTP/HTTPS `fileData` URLs, and `input_audio`
+- **OpenCode Desktop Fingerprint**: official client headers (`User-Agent: opencode`, `x-opencode-client: desktop`, session/request IDs)
+- **Kimchi Dual Authentication**: seamless API key + OAuth token resolution
+- **Dedicated High-Performance Executors**: Qoder COSY signing (RSA-2048 + AES-128 + MD5), CodeBuddy CN/INTL streaming, Trae SOLO remote agent, Windsurf gRPC-web
+- **Combo strategies**: sticky round-robin, round-robin, fallback, fusion (multi-panel + judge), weight
+- **Auto-capability-switch**: floats vision/pdf/audio-capable models to front based on request content
+- **Turn & Tool-Calling Stickiness**: locks multi-turn tool calling to the same provider/model to preserve thought signatures
+- **Error classification**: text-based error rules + exponential backoff matching Next.js
 - **Per-connection model locks**: DB-compatible with Next.js dashboard
 - **SSE stall detection**: 6-minute timeout with per-chunk reset
-- **Retry-after tracking**: earliest retry time across combo models
-- **Fusion**: parallel panel fan-out + quorum-grace collection + anonymized judge synthesis
-- **Health tracking**: per-model consecutive error counter
-- API key auth middleware
+- **Reactive 401 Unauthorized Auto-Refresh**: auto-refreshes OAuth tokens on 401 and retries once before fallback
 - **Token savers**: RTK input compression, Caveman terse output (`lite`, `full`, `ultra`, `wenyan-ultra`), Ponytail minimal-code bias (`lite`, `full`, `ultra`), auto-synced from SQLite `settings` table
-- Gemini-native provider support (antigravity)
+- **Headroom Lifecycle Proxy**: token compression proxy management & dashboard reverse proxy
+- **Live Console Logs**: in-process ring buffer + SSE streaming for dashboard console monitoring
 - CGO-free, cross-compile to any platform
 
 ## Architecture
@@ -206,23 +213,49 @@ DB_PATH=/mnt/shared/9router/data.sqlite PORT=20128 ./9router-go
 ## API Endpoints
 
 ```
+# Core Chat & Completion Endpoints
 POST /v1/chat/completions      # OpenAI format
 POST /v1/messages              # Claude format
+POST /v1/messages/count_tokens # Claude token counter
 POST /v1/embeddings            # Embeddings
 POST /v1/responses             # Responses API
-POST /v1/images/generations    # Image generation
-POST /v1/video/generations     # Video generation
-POST /v1/video/extend          # Video extend
-POST /v1/video/edit            # Video edit
+POST /v1/responses/compact     # Compact responses API
+POST /api/chat                 # Ollama compatible format
+
+# Media & Multimodal Endpoints
+POST /v1/images/generations    # Text-to-image generation
+POST /v1/images/understanding  # Image understanding (vision)
+POST /v1/videos/generations    # Video generation
+POST /v1/videos/edits          # Video edits
+POST /v1/videos/extensions     # Video extension
+GET  /v1/videos/{id}           # Video status lookup
 POST /v1/audio/speech          # Text-to-speech (TTS)
 POST /v1/audio/transcriptions  # Speech-to-text (STT)
-POST /v1/web/fetch             # Web URL extraction (Jina Reader / Firecrawl)
+POST /v1/audio/music           # Music generation
+GET  /v1/audio/voices          # TTS voices list
+
+# Search, Scrape & Web Fetch
 POST /v1/search                # Web search (provider-selected)
-POST /v1/scrape                # Web fetch (provider-selected)
-GET  /v1/models                # List models
+POST /v1/scrape                # Web scrape
+POST /v1/web/fetch             # Web URL extraction (Jina Reader / Firecrawl)
+
+# Models & Token Limits
+GET  /v1/models                # List models (with context_length, token limits)
+GET  /v1/models/info           # Model capability & limits metadata
+GET  /v1/models/{kind}         # Models filtered by kind (e.g. tts, image)
+
+# Usage & Realtime SSE Stream
+GET  /api/usage/stream         # Live SSE in-flight request tracking & topology animation
+GET  /api/usage/stats          # Realtime usage stats & active concurrency
+
+# OAuth & Authentication
 POST /v1/oauth/authorize       # OAuth authorize
 POST /v1/oauth/refresh         # OAuth refresh
+
+# System & Monitoring
 GET  /health                   # Health check
+GET  /api/version              # Proxy version & update check
+GET  /api/translator/stream    # Dashboard live console log SSE stream
 ```
 
 ## Docker

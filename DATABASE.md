@@ -311,9 +311,16 @@ Example `data` content:
     "free-tier": { "strategy": "round-robin", "stickyLimit": 3 },
     "pro-models": { "strategy": "fusion" }
   },
+  "providerStrategies": {
+    "mimo-free": { "proxyPoolId": "pool-xyz", "rotateStrategy": "round-robin" },
+    "opencode": { "proxyPoolId": "pool-abc" }
+  },
   "fusionTuning": {
     "pro-models": { "minPanel": 3, "stragglerGraceMs": 5000 }
-  }
+  },
+  "rtk": { "enabled": true },
+  "caveman": { "enabled": false, "mode": "lite" },
+  "ponytail": { "enabled": true, "mode": "lite" }
 }
 ```
 
@@ -406,6 +413,17 @@ CREATE TABLE proxyPools (
 ```sql
 CREATE INDEX idx_pp_active ON proxyPools(isActive);
 CREATE INDEX idx_pp_status ON proxyPools(testStatus);
+```
+
+Example `data` content:
+```json
+{
+  "type": "vercel",
+  "proxyUrl": "https://my-relay.vercel.app",
+  "urls": ["http://user:pass@ip1:port", "http://user:pass@ip2:port"],
+  "noProxy": "localhost,127.0.0.1,api.deepseek.com",
+  "strategy": "round-robin"
+}
 ```
 
 ---

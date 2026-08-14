@@ -277,35 +277,45 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Registry["executor.RegisterAll()"] --> Prov["62 registered providers"]
-    Prov --> OpenAI["ForwardOpenAI (default)\n~55 providers"]
-    Prov --> Gemini["ForwardGemini\ngemini-native providers"]
+    Registry["executor.RegisterAll()"] --> Prov["100+ registered providers"]
+    Prov --> OpenAI["ForwardOpenAI (default)\n~80 providers"]
+    Prov --> Gemini["ForwardGemini\nantigravity, gemini"]
+    Prov --> Qoder["ForwardQoder\nCOSY RSA-2048+AES-128+MD5 signing"]
+    Prov --> CodeBuddy["ForwardCodeBuddy\nforceStream + SSE/JSON re-aggregation"]
+    Prov --> Trae["ForwardTrae\nSOLO remote agent + thought stream"]
+    Prov --> Windsurf["ForwardWindsurf\nHand-rolled Protobuf + gRPC-web"]
     Prov --> GrokCLI["ForwardGrokCLI"]
     Prov --> Codex["ForwardCodex\nResponses API"]
     Prov --> Iflow["ForwardIflow\nHMAC auth"]
     Prov --> Azure["ForwardAzure"]
     Prov --> Kiro["ForwardKiro\nKiro-specific"]
-    
-    OpenAI --> SSES["SSE Stream + JSON Response\nWith optional TranslateOpenAIToClaude"]
 ```
 
-## Fusion Panel Text Extraction
+## Antigravity Decoy & Anti-Ban Architecture
 
 ```mermaid
 flowchart TD
-    PanelResp["Panel Response (JSON)"] --> PFormat{"Which format?"}
-    PFormat -->|OpenAI Chat| OC["choices[0].message.content"]
-    PFormat -->|Claude| CR["json.content (text blocks)"]
-    PFormat -->|Gemini| GR["candidates[0].content.parts[*].text"]
-    PFormat -->|Responses API| RES["output[*].content[*].text"]
-    
-    OC --> Text["extractTextContent()"]
-    CR --> Text
-    GR --> Text
-    Text --> Judge["Judge model synthesizes\nfinal answer"]
+    In["OpenAI / Claude Request"] --> Strip["StripCompetitorPrompts()\nRemove Zed & Claude SDK Identifiers"]
+    Strip --> Decoy["Antigravity Decoy Cloaking\nInject 21 IDE Tools with _ide suffix"]
+    Decoy --> Validate["Protobuf Safeguard\nEnsure non-empty properties schema"]
+    Validate --> Upstream["Antigravity Upstream Gateway\n(daily-cloudcode-pa.googleapis.com)"]
+    Upstream --> Stream["Stream Translation\nThought signatures & Tool Call IDs mapped"]
+    Stream --> Client["Client Response (SSE / JSON)"]
 ```
 
-## Safety, Thread-Safety & Concurrency (v1.4.0)
+## Realtime SSE Usage Stream & In-Flight Tracker
+
+```mermaid
+flowchart LR
+    ReqStart["tryForwardWithConnection()"] --> Track["usagetracker.TrackPending(model, connId)\nIncrement in-flight counter"]
+    Track --> SSE["SSE Broadcast (/api/usage/stream)\nEmits active model/account counters"]
+    SSE --> Dash["Next.js Topology Graph\nTriggers pulsing nodes & animated edge ants"]
+    ReqStart --> Finish["logUsage()"]
+    Finish --> Push["usagetracker.PushRecent(completion)\nRing Buffer (50 items)"]
+    Push --> TrackEnd["Decrement in-flight counter"]
+```
+
+## Safety, Thread-Safety & Concurrency (v1.8.3)
 
 ```mermaid
 flowchart TD
@@ -313,7 +323,7 @@ flowchart TD
     MaxBody --> CtxUsage["translator.WithUsageCapture(ctx)\nContext-Isolated Usage Storage"]
     CtxUsage --> CommitW["committedResponseWriter(w)\nTrack header writes via IsCommitted()"]
     
-    CommitW --> PoolCache["proxyPoolCache (sync.Map)\nThread-safe Round-Robin Index"]
+    CommitW --> PoolCache["proxyPoolCache (sync.Map)\nThread-safe Round-Robin Index + Edge Relay"]
     CommitW --> DailyMu["upsertDailyUsage()\nProtected by dailyUsageMu Mutex"]
     
     CommitW --> Shutdown["http.Server Graceful Shutdown\n15-second drain timeout on SIGINT/SIGTERM"]
@@ -322,7 +332,6 @@ flowchart TD
 - **Context-based Usage Capture**: Replaced global `translator.lastUsage` with context-captured isolation (`WithUsageCapture`, `SetUsage`, `GetAndClearUsage`) to eliminate cross-request data races.
 - **Committed Response Writer**: `committedResponseWriter` tracks header writes (`IsCommitted()`), ensuring fallback retries are aborted if SSE streaming has already started.
 - **Request Body Guard**: `middleware.MaxBody(10MB)` wraps `r.Body` with `http.MaxBytesReader` to protect endpoints against OOM exhaustion attacks.
-- **Thread-safe ProxyPool Cache**: `proxyPoolCache` (`sync.Map`) caches pool instances so round-robin counters rotate properly across concurrent requests.
+- **Thread-safe ProxyPool Cache & Edge Relays**: `proxyPoolCache` (`sync.Map`) caches pool instances so round-robin counters rotate properly across concurrent requests, and injects `x-relay-target` / `x-relay-path` for Vercel/Cloudflare/Deno edge relays.
+- **In-Memory Request Tracker**: Thread-safe tracker with mutex-guarded active concurrency maps and subscriber channels for live SSE telemetry.
 - **Graceful Shutdown**: `cmd/9router-go/main.go` runs `http.Server` with OS signal listener (SIGINT/SIGTERM) and 15-second graceful drain timeout.
-
-```
