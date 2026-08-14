@@ -42,6 +42,28 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			return nil, nil, fmt.Errorf("failed to query connections for %s: %w", provider, queryErr)
 		}
 		if len(connections) == 0 {
+			if cfg, ok := providers.KnownProviders[provider]; ok && cfg.NoAuth {
+				// Inject virtual connection for no-auth provider with optional proxy pool strategy from settings
+				connData := &ConnectionData{
+					AccessToken: "public",
+				}
+				settings, err := h.Repo.GetSettings()
+				if err == nil && settings != nil && settings.ProviderStrategies != nil {
+					if strat, ok := settings.ProviderStrategies[provider]; ok {
+						if strat.ProxyPoolID != "" && strat.ProxyPoolID != "__none__" {
+							connData.ProxyPoolID = strat.ProxyPoolID
+						}
+					}
+				}
+				publicName := "Public"
+				conn := &models.ProviderConnection{
+					ID:       "noauth",
+					Provider: provider,
+					Name:     &publicName,
+					IsActive: 1,
+				}
+				return conn, connData, nil
+			}
 			return nil, nil, fmt.Errorf("no active connections for provider: %s", provider)
 		}
 

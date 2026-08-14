@@ -6,16 +6,23 @@ import (
 	"9router/proxy/internal/handlerutil"
 )
 
+// ProviderStrategy defines routing and proxy pool options for a specific provider.
+type ProviderStrategy struct {
+	ProxyPoolID    string `json:"proxyPoolId"`
+	RotateStrategy string `json:"rotateStrategy"` // "none", "round-robin", "random"
+}
+
 // SettingsData represents token saver and general settings stored in the settings table.
 type SettingsData struct {
-	RTKEnabled        bool   `json:"rtkEnabled"`
-	CavemanEnabled    bool   `json:"cavemanEnabled"`
-	CavemanLevel      string `json:"cavemanLevel"`
-	PonytailEnabled   bool   `json:"ponytailEnabled"`
-	PonytailLevel     string `json:"ponytailLevel"`
-	HeadroomUrl       string `json:"headroomUrl"`
-	HeadroomCodeAware bool   `json:"headroomCodeAware"`
-	HeadroomKompress  bool   `json:"headroomKompress"`
+	RTKEnabled         bool                        `json:"rtkEnabled"`
+	CavemanEnabled     bool                        `json:"cavemanEnabled"`
+	CavemanLevel       string                      `json:"cavemanLevel"`
+	PonytailEnabled    bool                        `json:"ponytailEnabled"`
+	PonytailLevel      string                      `json:"ponytailLevel"`
+	HeadroomUrl        string                      `json:"headroomUrl"`
+	HeadroomCodeAware  bool                        `json:"headroomCodeAware"`
+	HeadroomKompress   bool                        `json:"headroomKompress"`
+	ProviderStrategies map[string]ProviderStrategy `json:"providerStrategies,omitempty"`
 }
 
 // DefaultSettings returns fallback settings.
@@ -68,6 +75,17 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	}
 	if v, ok := raw["headroomKompress"].(bool); ok {
 		s.HeadroomKompress = v
+	}
+	if ps, ok := raw["providerStrategies"].(map[string]any); ok {
+		s.ProviderStrategies = make(map[string]ProviderStrategy)
+		for k, v := range ps {
+			if vm, ok := v.(map[string]any); ok {
+				s.ProviderStrategies[k] = ProviderStrategy{
+					ProxyPoolID:    handlerutil.GetString(vm, "proxyPoolId"),
+					RotateStrategy: handlerutil.GetString(vm, "rotateStrategy"),
+				}
+			}
+		}
 	}
 
 	return s, nil
