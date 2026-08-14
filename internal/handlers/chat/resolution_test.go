@@ -246,6 +246,39 @@ func TestFlattenComboModels_ExpandsNested(t *testing.T) {
 	}
 }
 
+func TestFlattenComboModels_DeeplyNested(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// base-combo -> ["ag/gemini-3.7-flash-high", "ag/gemini-pro-agent"]
+	base, _ := json.Marshal([]string{"ag/gemini-3.7-flash-high", "ag/gemini-pro-agent"})
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"c-base", "base-combo", "fallback", string(base), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z")
+
+	// mid-combo -> ["base-combo", "oc/deepseek-v4-flash-free"]
+	mid, _ := json.Marshal([]string{"base-combo", "oc/deepseek-v4-flash-free"})
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"c-mid", "mid-combo", "fallback", string(mid), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z")
+
+	// super-combo -> ["mid-combo", "openai/gpt-4o"]
+	flat, err := h.flattenComboModels([]string{"mid-combo", "openai/gpt-4o"})
+	if err != nil {
+		t.Fatalf("flatten error: %v", err)
+	}
+
+	want := []string{"ag/gemini-3.7-flash-high", "ag/gemini-pro-agent", "oc/deepseek-v4-flash-free", "openai/gpt-4o"}
+	if len(flat) != len(want) {
+		t.Fatalf("expected %d models, got %d: %v", len(want), len(flat), flat)
+	}
+	for i := range want {
+		if flat[i] != want[i] {
+			t.Errorf("at index %d: expected %q, got %q", i, want[i], flat[i])
+		}
+	}
+}
+
 func TestFlattenComboModels_DedupesConsecutive(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
