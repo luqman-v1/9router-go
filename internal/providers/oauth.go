@@ -78,6 +78,16 @@ var KnownOAuthConfigs = map[string]OAuthClientConfig{
 		ClientSecret: envOr("QODER_OAUTH_CLIENT_SECRET", ""),
 		TokenURL:     "https://center.qoder.sh/algo/api/v3/user/refresh_token",
 	},
+	"codebuddy-cn": {
+		ClientID:     envOr("CODEBUDDY_CN_OAUTH_CLIENT_ID", ""),
+		ClientSecret: envOr("CODEBUDDY_CN_OAUTH_CLIENT_SECRET", ""),
+		TokenURL:     "https://copilot.tencent.com/v2/plugin/auth/token/refresh",
+	},
+	"codebuddy-intl": {
+		ClientID:     envOr("CODEBUDDY_INTL_OAUTH_CLIENT_ID", ""),
+		ClientSecret: envOr("CODEBUDDY_INTL_OAUTH_CLIENT_SECRET", ""),
+		TokenURL:     "https://copilot.tencent.com/v2/plugin/auth/token/refresh",
+	},
 }
 
 func envOr(key, fallback string) string {

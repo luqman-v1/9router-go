@@ -18,15 +18,15 @@ Documented technical debt, concurrency risks, resource leaks, and planned archit
 
 ## 🟡 Open Medium Items (Priority 3: Code Robustness & Performance)
 
-- **Zed / Devin-CLI registered to plain `ForwardOpenAI` but are not OpenAI-HTTP at their endpoint** (added in the v1.6.1 provider parity port): these providers show up as selectable but their upstreams need a dedicated executor. `ForwardOpenAI` posts JSON to whatever `BaseURL` is set, so:
-  - `zed` → needs non-standard `Authorization: <user_id> <access_token>` + `x-zed-cloud-token` built via an RSA token exchange that the Go executor doesn't do (JS: `open-sse/shared/zedAuth` + `executors/zed.js`), plus Claude-chunk→OpenAI and Responses→OpenAI reverse translators Go's `internal/translator` does not yet have.
-  - `devin-cli` → `BaseURL` is `devin://acp/stdio` and the executor `spawn`s the local `devin` binary over ACP JSON-RPC **stdio** (JS `executors/devin-cli.js` line 423) — not HTTP; depends on a locally installed CLI (`CLI_DEVIN_BIN`).
-  - **Fix when**: porting each provider's JS executor before advertising it as usable. Unregistering any of these until their executor lands is the safe stopgap. Reference: `open-sse/executors/{zed,devin-cli}.js`.
-- **CodeBuddy OAuth not ported**: `codebuddy-cn`/`codebuddy-intl` have no `KnownOAuthConfigs` entry, so the CN/INTL OAuth flow isn't wired into the Go backend. API-key connections work via `Authorization: Bearer` (reference `authModes` includes `apikey`). Fix when OAuth login/refresh parity with the Next dashboard is wanted.
+*No open medium items.*
 
 ---
 
 ## ✅ Resolved Items
+
+- **CodeBuddy OAuth Configuration**: `codebuddy-cn` and `codebuddy-intl` OAuth token refresh configuration registered in `KnownOAuthConfigs` (`internal/providers/oauth.go`), alongside its dedicated stream executor (`internal/proxy/executor/codebuddy.go`).
+- **Realtime SSE Usage Stream & Topology Animation**: Added `internal/usagetracker` with in-memory active request tracking and SSE broadcast handlers (`/api/usage/stream` & `/usage/stream`) matching Next.js dashboard topology animation requirements.
+- **Edge Relay URL Rewriting**: Added automatic `BaseURL` rewrite and `x-relay-target` / `x-relay-path` header injection for Vercel, Cloudflare, and Deno edge relays in `GetProviderConfig`.
 
 - **Combo/router fallback bypasses model-lock backoff on 429 → antigravity rate-limit loop** (was Critical): `handleComboFallback` / `handleMessagesComboFallback` (`internal/handlers/chat/combo.go`) used to call `tryForwardWithConnection` directly, so `LockConnectionModel` was never invoked on retryable errors — unlike the single-model path `handleAccountFallback` (`fallback.go:97`) — leaving the exponential 429 backoff dead in the router path: every request re-tried all combo models back-to-back on the same connection/account, got 429, returned 429, and the client's ~35s retry repeated the loop forever (log signature: two `[fallback] upstream failed ... status=429` lines, different models, same `conn=`, under one `[request] POST /messages status=429`). Fix: new `comboLockRetryable` helper (`combo.go:554`) runs on every `RetryableStatusCodes` error in both combo loops — it classifies via `ClassifyError`, calls `LockConnectionModel(connID, model, cooldownSec, newBackoffLevel)` so the exponential backoff persists across requests, and appends the conn to a request-local `excludeIDs` passed into `getBestConnection` so the remaining combo models don't re-select the same connection (same account = same quota bucket). A locked-connection skip covers pinned connections whose direct-fetch branch bypasses `getBestConnection`'s lock check; `context.Background()` → `ctx` in `handleComboFallback` so client cancels propagate; the 502/503/504 transient-wait sleep is preserved. Test: `TestHandleMessagesComboFallback_429LocksAndExcludesConnection` (`fallback_test.go`) asserts a 429 locks the connection AND keeps the second combo model from re-hitting it (exactly 1 upstream hit).
 - **`getString` Helper Consolidation**: Consolidated into `internal/handlerutil.GetString`. Removed duplicates from `token.go`, `proxyPools.go`, and `providers/oauth.go`.
