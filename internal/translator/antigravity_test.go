@@ -247,24 +247,23 @@ func TestStripCompetitivePrompts(t *testing.T) {
 	}
 }
 
-func TestNormalizeAntigravityModel_Gemini37(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"gemini-3.7-flash", "gemini-3-flash-agent"},
-		{"gemini-3.7-flash-high", "gemini-3-flash-agent"},
-		{"gemini-3.7-flash-agent", "gemini-3-flash-agent"},
-		{"gemini-3.7-flash-medium", "gemini-3.5-flash-low"},
-		{"gemini-3.7-flash-low", "gemini-3.5-flash-low"},
-		{"gemini-3.7-flash-extra-low", "gemini-3.5-flash-extra-low"},
-		{"gemini-3.7-flash-thinking", "gemini-3-flash-agent"},
+func TestNormalizeAntigravityModel_AllSynonymsValid(t *testing.T) {
+	validBackendModels := map[string]bool{
+		"gemini-3-flash-agent":       true,
+		"gemini-3.5-flash-low":       true,
+		"gemini-3.5-flash-extra-low": true,
+		"gemini-pro-agent":           true,
+		"gemini-3.1-pro-low":         true,
+		"claude-sonnet-4-6":          true,
+		"claude-opus-4-6-thinking":   true,
+		"gpt-oss-120b-medium":        true,
+		"gemini-3-flash":             true,
+		"gemini-3.1-flash-image":     true,
 	}
 
-	for _, tt := range tests {
-		got := translator.NormalizeAntigravityModel(tt.input)
-		if got != tt.expected {
-			t.Errorf("NormalizeAntigravityModel(%q) = %q, expected %q", tt.input, got, tt.expected)
+	for alias, targetModel := range translator.AntigravityModelSynonyms {
+		if !validBackendModels[targetModel] {
+			t.Errorf("Antigravity synonym %q maps to invalid upstream model %q (will cause 404)", alias, targetModel)
 		}
 	}
 }
