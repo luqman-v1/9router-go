@@ -361,7 +361,8 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 				if err != nil {
 					args = []byte("{}")
 				}
-				id := fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, len(toolCalls))
+				fnName := UncloakToolName(part.FunctionCall.Name, nil)
+				id := fmt.Sprintf("call_%s_%d", fnName, len(toolCalls))
 				if part.ThoughtSignature != "" {
 					id += "__ts__" + part.ThoughtSignature
 				}
@@ -369,7 +370,7 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 					ID:   id,
 					Type: "function",
 					Function: OpenAIFunctionCall{
-						Name:      part.FunctionCall.Name,
+						Name:      fnName,
 						Arguments: string(args),
 					},
 				})
@@ -517,7 +518,8 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 					if err != nil {
 						args = []byte("{}")
 					}
-					id := fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, time.Now().UnixNano())
+					fnName := UncloakToolName(part.FunctionCall.Name, nil)
+					id := fmt.Sprintf("call_%s_%d", fnName, time.Now().UnixNano())
 					if part.ThoughtSignature != "" {
 						id += "__ts__" + part.ThoughtSignature
 					}
@@ -527,7 +529,7 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 							"id":    id,
 							"type":  "function",
 							"function": map[string]interface{}{
-								"name":      part.FunctionCall.Name,
+								"name":      fnName,
 								"arguments": string(args),
 							},
 						},
