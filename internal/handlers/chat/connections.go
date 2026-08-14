@@ -137,28 +137,69 @@ func (h *ChatHandler) GetClientForConnection(connData *ConnectionData) *http.Cli
 }
 
 func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Client {
-	if connData == nil || connData.ProxyPoolID == "" {
-		return h.Client
-	}
-	pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID)
-	if err != nil || pool == nil || !pool.IsActive {
-		return h.Client
-	}
-	proxyURLStr := pool.NextURL()
-	if proxyURLStr == "" {
-		return h.Client
-	}
-	parsedURL, err := url.Parse(proxyURLStr)
-	if err != nil {
-		log.Warn("proxy", "invalid proxy pool url", "pool", connData.ProxyPoolID, "url", proxyURLStr, "error", err)
+	if connData == nil {
 		return h.Client
 	}
 
-	transport := &http.Transport{
-		Proxy: http.ProxyURL(parsedURL),
+	var proxyURLStr string
+	var proxyType string
+	var strictProxy bool
+
+	// 1. Resolve from ProxyPool
+	if connData.ProxyPoolID != "" {
+		pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID)
+		if err == nil && pool != nil && pool.IsActive {
+			proxyURLStr = pool.NextURL()
+			proxyType = pool.Type
+			strictProxy = pool.StrictProxy
+		}
 	}
-	return &http.Client{
-		Transport: transport,
-		Timeout:   h.Client.Timeout,
+
+	// 2. Fallback to legacy connection proxy
+	if proxyURLStr == "" {
+		proxyEnabled := connData.ConnectionProxyEnabled
+		proxyURL := connData.ConnectionProxyURL
+		if !proxyEnabled && connData.ProviderSpecificData != nil {
+			if en, ok := connData.ProviderSpecificData["connectionProxyEnabled"].(bool); ok {
+				proxyEnabled = en
+			}
+			if u, ok := connData.ProviderSpecificData["connectionProxyUrl"].(string); ok {
+				proxyURL = u
+			}
+			if sp, ok := connData.ProviderSpecificData["strictProxy"].(bool); ok {
+				strictProxy = sp
+			}
+		}
+		if proxyEnabled && proxyURL != "" {
+			proxyURLStr = proxyURL
+			proxyType = "http"
+		}
 	}
+
+	if proxyURLStr == "" {
+		return h.Client
+	}
+
+	parsedURL, err := url.Parse(proxyURLStr)
+	if err != nil {
+		log.Warn("proxy", "invalid proxy pool url", "pool", connData.ProxyPoolID, "url", proxyURLStr, "error", err)
+		if strictProxy {
+			log.Error("proxy", "strict proxy enabled but proxy url invalid", "url", proxyURLStr)
+		}
+		return h.Client
+	}
+
+	if proxyType == "http" || proxyType == "" {
+		transport := &http.Transport{
+			Proxy: http.ProxyURL(parsedURL),
+		}
+		return &http.Client{
+			Transport: transport,
+			Timeout:   h.Client.Timeout,
+		}
+	}
+
+	// For Edge Relays (vercel, cloudflare, deno), standard client is used because
+	// URL rewriting and x-relay headers are handled at request time.
+	return h.Client
 }

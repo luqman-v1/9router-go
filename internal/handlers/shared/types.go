@@ -22,11 +22,15 @@ type ModelInfo struct {
 
 // ConnectionData holds parsed fields from the providerConnections.data JSON blob.
 type ConnectionData struct {
-	APIKey               string                 `json:"apiKey"`
-	AccessToken          string                 `json:"accessToken"`
-	BaseURL              string                 `json:"baseUrl,omitempty"`
-	ProxyPoolID          string                 `json:"proxyPoolId,omitempty"`
-	ProviderSpecificData map[string]interface{} `json:"providerSpecificData,omitempty"`
+	APIKey                 string                 `json:"apiKey"`
+	AccessToken            string                 `json:"accessToken"`
+	BaseURL                string                 `json:"baseUrl,omitempty"`
+	ProxyPoolID            string                 `json:"proxyPoolId,omitempty"`
+	ConnectionProxyEnabled bool                   `json:"connectionProxyEnabled,omitempty"`
+	ConnectionProxyURL     string                 `json:"connectionProxyUrl,omitempty"`
+	ConnectionNoProxy      string                 `json:"connectionNoProxy,omitempty"`
+	StrictProxy            bool                   `json:"strictProxy,omitempty"`
+	ProviderSpecificData   map[string]interface{} `json:"providerSpecificData,omitempty"`
 }
 
 // UsageLogInfo holds request context needed to log a usage record.
