@@ -16,6 +16,9 @@ var injectionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(reveal|show|print|output).{0,30}(your (system )?(prompt|instructions)|the system prompt|system instructions)`),
 	regexp.MustCompile(`(?i)act as (if )?(an? |the )?(unfiltered|unrestricted|uncensored|developer mode|do anything now|DAN)`),
 	regexp.MustCompile(`(?i)` + "`" + `\s*(system|developer)\s*:`), // inline role-injection like `system:`
+	regexp.MustCompile(`(?i)(<\|im_start\|>system|<<SYS>>|\[SYSTEM PROMPT\]|\[INST\]\s*<<SYS>>)`),
+	regexp.MustCompile(`(?i)(repeat|print|output|write).{0,30}(the text (above|before)|everything (above|before)).{0,30}(verbatim|word for word|exact)`),
+	regexp.MustCompile(`(?i)(developer override|admin mode|maintenance mode).{0,30}(enabled|activated|on)`),
 }
 
 // InjectionResult reports whether a request body contains a flagged message.
