@@ -19,14 +19,21 @@ type GeminiStreamState struct {
 	FinishReason     string
 }
 
+// GeminiFileData represents remote or uploaded files referenced by URI.
+type GeminiFileData struct {
+	FileUri  string `json:"fileUri"`
+	MimeType string `json:"mimeType"`
+}
+
 // GeminiPart is a single part in a Gemini content block.
 type GeminiPart struct {
-	Text             string                `json:"text,omitempty"`
-	Thought          *bool                 `json:"thought,omitempty"`
-	ThoughtSignature string                `json:"thoughtSignature,omitempty"`
-	FunctionCall     *GeminiFunctionCall   `json:"functionCall,omitempty"`
-	FunctionResponse *GeminiFunctionResp   `json:"functionResponse,omitempty"`
-	InlineData       *GeminiInlineData     `json:"inlineData,omitempty"`
+	Text             string              `json:"text,omitempty"`
+	Thought          *bool               `json:"thought,omitempty"`
+	ThoughtSignature string              `json:"thoughtSignature,omitempty"`
+	FunctionCall     *GeminiFunctionCall `json:"functionCall,omitempty"`
+	FunctionResponse *GeminiFunctionResp `json:"functionResponse,omitempty"`
+	InlineData       *GeminiInlineData   `json:"inlineData,omitempty"`
+	FileData         *GeminiFileData     `json:"fileData,omitempty"`
 }
 
 // UnmarshalJSON handles both thoughtSignature (camelCase) and thought_signature (snake_case).
@@ -713,12 +720,58 @@ func convertContentToGeminiParts(content interface{}) []GeminiPart {
 					parts = append(parts, GeminiPart{Text: text})
 				}
 				if img, ok := m["image_url"].(map[string]interface{}); ok {
-					if url, ok := img["url"].(string); ok && strings.HasPrefix(url, "data:") {
-						// Parse data URL: data:mimeType;base64,data
+					if url, ok := img["url"].(string); ok {
+						if strings.HasPrefix(url, "data:") {
+							// Parse data URL: data:mimeType;base64,data
+							if semi := strings.Index(url, ";"); semi > 5 {
+								mimeType := url[5:semi]
+								if comma := strings.Index(url, ","); comma > 0 {
+									data := url[comma+1:]
+									parts = append(parts, GeminiPart{
+										InlineData: &GeminiInlineData{MimeType: mimeType, Data: data},
+									})
+								}
+							}
+						} else if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+							parts = append(parts, GeminiPart{
+								FileData: &GeminiFileData{FileUri: url, MimeType: "image/*"},
+							})
+						}
+					}
+				}
+				if audio, ok := m["input_audio"].(map[string]interface{}); ok {
+					if data, ok := audio["data"].(string); ok && data != "" {
+						format, _ := audio["format"].(string)
+						mimeType := "audio/" + format
+						if format == "mp3" {
+							mimeType = "audio/mpeg"
+						} else if format == "" {
+							mimeType = "audio/wav"
+						}
+						parts = append(parts, GeminiPart{
+							InlineData: &GeminiInlineData{MimeType: mimeType, Data: data},
+						})
+					}
+				}
+				if audio, ok := m["audio_url"].(map[string]interface{}); ok {
+					if url, ok := audio["url"].(string); ok && strings.HasPrefix(url, "data:") {
 						if semi := strings.Index(url, ";"); semi > 5 {
 							mimeType := url[5:semi]
 							if comma := strings.Index(url, ","); comma > 0 {
 								data := url[comma+1:]
+								parts = append(parts, GeminiPart{
+									InlineData: &GeminiInlineData{MimeType: mimeType, Data: data},
+								})
+							}
+						}
+					}
+				}
+				if file, ok := m["file"].(map[string]interface{}); ok {
+					if fileData, ok := file["file_data"].(string); ok && strings.HasPrefix(fileData, "data:") {
+						if semi := strings.Index(fileData, ";"); semi > 5 {
+							mimeType := fileData[5:semi]
+							if comma := strings.Index(fileData, ","); comma > 0 {
+								data := fileData[comma+1:]
 								parts = append(parts, GeminiPart{
 									InlineData: &GeminiInlineData{MimeType: mimeType, Data: data},
 								})
