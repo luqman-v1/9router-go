@@ -2,6 +2,7 @@ package translator_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"9router/proxy/internal/translator"
@@ -218,6 +219,54 @@ func TestTranslateOpenAIToGemini_ClaudeCodeToolResponseMapping(t *testing.T) {
 		t.Errorf("expected functionResponse name 'plugin:claude-mem:mcp-search', got %q", respPart.FunctionResponse.Name)
 	}
 }
+
+func TestStripCompetitivePrompts(t *testing.T) {
+	req := &translator.GeminiRequest{
+		SystemInstruction: &translator.GeminiContent{
+			Role: "user",
+			Parts: []translator.GeminiPart{
+				{Text: "You are a Claude agent, built on Anthropic's Claude Agent SDK. Solve this task."},
+			},
+		},
+		Contents: []translator.GeminiContent{
+			{
+				Role: "user",
+				Parts: []translator.GeminiPart{
+					{Text: "You are a Claude agent, built on Anthropic's Claude Agent SDK. Do something."},
+				},
+			},
+		},
+	}
+
+	stripped := translator.StripCompetitivePrompts(req)
+	if strings.Contains(stripped.SystemInstruction.Parts[0].Text, "Anthropic's Claude Agent SDK") {
+		t.Errorf("expected competitive prompt removed from systemInstruction, got %s", stripped.SystemInstruction.Parts[0].Text)
+	}
+	if strings.Contains(stripped.Contents[0].Parts[0].Text, "Anthropic's Claude Agent SDK") {
+		t.Errorf("expected competitive prompt removed from contents, got %s", stripped.Contents[0].Parts[0].Text)
+	}
+}
+
+func TestNormalizeAntigravityModel_Gemini37(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"gemini-3.7-flash", "gemini-3.7-flash-agent"},
+		{"gemini-3.7-flash-high", "gemini-3.7-flash-agent"},
+		{"gemini-3.7-flash-medium", "gemini-3.7-flash-low"},
+		{"gemini-3.7-flash-extra-low", "gemini-3.7-flash-extra-low"},
+		{"gemini-3.7-flash-thinking", "gemini-3.7-flash-thinking"},
+	}
+
+	for _, tt := range tests {
+		got := translator.NormalizeAntigravityModel(tt.input)
+		if got != tt.expected {
+			t.Errorf("NormalizeAntigravityModel(%q) = %q, expected %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
 
 
 

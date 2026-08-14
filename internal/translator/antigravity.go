@@ -176,6 +176,53 @@ func UncloakToolName(name string, toolMap map[string]string) string {
 	return name
 }
 
+// Competitive prompt phrases that cause Antigravity to reject requests with 429.
+var competitivePromptBlacklist = []string{
+	"You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+	"You are a Claude agent, built on Anthropic's Claude Agent SDK",
+	"Anthropic's Claude Agent SDK",
+}
+
+// StripCompetitivePrompts removes competitor identity strings from system instruction and contents.
+func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
+	if req == nil {
+		return nil
+	}
+	res := *req
+	if res.SystemInstruction != nil {
+		parts := make([]GeminiPart, len(res.SystemInstruction.Parts))
+		for i, p := range res.SystemInstruction.Parts {
+			text := p.Text
+			for _, phrase := range competitivePromptBlacklist {
+				text = strings.ReplaceAll(text, phrase, "")
+			}
+			p.Text = strings.TrimSpace(text)
+			parts[i] = p
+		}
+		res.SystemInstruction = &GeminiContent{
+			Role:  res.SystemInstruction.Role,
+			Parts: parts,
+		}
+	}
+	contents := make([]GeminiContent, len(res.Contents))
+	for i, c := range res.Contents {
+		parts := make([]GeminiPart, len(c.Parts))
+		for j, p := range c.Parts {
+			if p.Text != "" {
+				text := p.Text
+				for _, phrase := range competitivePromptBlacklist {
+					text = strings.ReplaceAll(text, phrase, "")
+				}
+				p.Text = strings.TrimSpace(text)
+			}
+			parts[j] = p
+		}
+		contents[i] = GeminiContent{Role: c.Role, Parts: parts}
+	}
+	res.Contents = contents
+	return &res
+}
+
 // AntigravityModelSynonyms maps client/UI model names to internal Google Antigravity backend model IDs.
 var AntigravityModelSynonyms = map[string]string{
 	"gemini-default":             "gemini-3.5-flash-low",
@@ -185,6 +232,11 @@ var AntigravityModelSynonyms = map[string]string{
 	"gemini-3.1-pro-high":        "gemini-pro-agent",
 	"gemini-3-pro-high":          "gemini-pro-agent",
 	"gemini-3-pro-low":           "gemini-3.1-pro-low",
+	"gemini-3.7-flash":           "gemini-3.7-flash-agent",
+	"gemini-3.7-flash-high":      "gemini-3.7-flash-agent",
+	"gemini-3.7-flash-medium":    "gemini-3.7-flash-low",
+	"gemini-3.7-flash-extra-low": "gemini-3.7-flash-extra-low",
+	"gemini-3.7-flash-thinking":  "gemini-3.7-flash-thinking",
 }
 
 // NormalizeAntigravityModel maps known aliases/synonyms to Antigravity internal backend model names.
@@ -201,9 +253,13 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 	modelName = NormalizeAntigravityModel(modelName)
 
 	var geminiReq GeminiRequest
-	if err := json.Unmarshal(geminiBody, &geminiReq); err == nil && len(geminiReq.Tools) > 0 {
-		cloaked, _ := CloakAntigravityRequest(&geminiReq, "")
-		if cloakedBytes, err := json.Marshal(cloaked); err == nil {
+	if err := json.Unmarshal(geminiBody, &geminiReq); err == nil {
+		cleanedReq := StripCompetitivePrompts(&geminiReq)
+		if len(cleanedReq.Tools) > 0 {
+			cloaked, _ := CloakAntigravityRequest(cleanedReq, "")
+			cleanedReq = cloaked
+		}
+		if cloakedBytes, err := json.Marshal(cleanedReq); err == nil {
 			geminiBody = cloakedBytes
 		}
 	}
