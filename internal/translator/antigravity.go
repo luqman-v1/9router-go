@@ -159,8 +159,30 @@ func UncloakToolName(name string, toolMap map[string]string) string {
 	return name
 }
 
+// AntigravityModelSynonyms maps client/UI model names to internal Google Antigravity backend model IDs.
+var AntigravityModelSynonyms = map[string]string{
+	"gemini-default":             "gemini-3.5-flash-low",
+	"gemini-3.5-flash-high":      "gemini-3-flash-agent",
+	"gemini-3.5-flash-medium":    "gemini-3.5-flash-low",
+	"gemini-3.5-flash-extra-low": "gemini-3.5-flash-extra-low",
+	"gemini-3.1-pro-high":        "gemini-pro-agent",
+	"gemini-3-pro-high":          "gemini-pro-agent",
+	"gemini-3-pro-low":           "gemini-3.1-pro-low",
+}
+
+// NormalizeAntigravityModel maps known aliases/synonyms to Antigravity internal backend model names.
+func NormalizeAntigravityModel(model string) string {
+	m := strings.ToLower(model)
+	if canonical, ok := AntigravityModelSynonyms[m]; ok {
+		return canonical
+	}
+	return model
+}
+
 // WrapForAntigravity wraps a standard Gemini request in Antigravity API envelope.
 func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte, error) {
+	modelName = NormalizeAntigravityModel(modelName)
+
 	var geminiReq GeminiRequest
 	if err := json.Unmarshal(geminiBody, &geminiReq); err == nil && len(geminiReq.Tools) > 0 {
 		cloaked, _ := CloakAntigravityRequest(&geminiReq, "")

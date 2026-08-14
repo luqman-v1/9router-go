@@ -17,6 +17,9 @@ import (
 // projectID is non-empty for antigravity (cloudcode-pa.googleapis.com).
 func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey, bodyStr string, isStream bool, projectID, modelName string) (*http.Response, error) {
 	body := []byte(bodyStr)
+	if projectID != "" {
+		modelName = translator.NormalizeAntigravityModel(modelName)
+	}
 
 	var sendBody []byte
 	if projectID != "" && translator.IsAntigravityImageModel(modelName) {
