@@ -24,7 +24,7 @@
 **Interfaces:**
 - Produces: `ProxyPool` struct with `Type`, `NoProxy`, `StrictProxy`, and fallback parsing for single `proxyUrl`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `internal/db/proxyPools_test.go`, add:
 ```go
@@ -79,12 +79,12 @@ func TestGetProxyPool_SingleProxyUrl_AndMetadata(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test -v ./internal/db -run TestGetProxyPool_SingleProxyUrl_AndMetadata`
 Expected: FAIL (missing fields / empty URLs)
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `internal/db/proxyPools.go`, update `ProxyPool` and `GetProxyPool`:
 ```go
@@ -123,12 +123,12 @@ type ProxyPool struct {
 	}
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `go test -v ./internal/db -run TestGetProxyPool`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/db/proxyPools.go internal/db/proxyPools_test.go
@@ -148,7 +148,7 @@ git commit -m "fix(db): support single proxyUrl, edge relay types and proxy meta
 - Produces: `ShouldBypassNoProxy(targetURL, noProxy string) bool`, `ResolveProxyForConnection(connData *ConnectionData, repo Repo) (*ResolvedProxy, error)`.
 - Updates `connections.go` to handle legacy proxies and edge relay headers.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `internal/proxy/transport_test.go`:
 ```go
@@ -200,12 +200,12 @@ func TestBuildEdgeRelayHeaders(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test -v ./internal/proxy -run TestShouldBypassNoProxy`
 Expected: FAIL (types/functions undefined)
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `internal/proxy/transport.go`:
 ```go
@@ -275,12 +275,12 @@ func BuildEdgeRelayHeaders(targetURL string, existingHeaders map[string]string) 
 
 Update `internal/handlers/chat/connections.go` to support legacy proxy and pass proxy metadata to `getClientForConnection`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `go test -v ./internal/proxy -run TestShouldBypassNoProxy`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/proxy/transport.go internal/proxy/transport_test.go internal/handlers/chat/connections.go
@@ -299,7 +299,7 @@ git commit -m "feat(proxy): add noProxy matching, edge relay headers, and legacy
 **Interfaces:**
 - Produces: `CloakAntigravityRequest(req *GeminiRequest, clientTool string) (*GeminiRequest, map[string]string)`, `UncloakToolName(name string, toolMap map[string]string) string`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `internal/translator/antigravity_test.go`:
 ```go
@@ -378,12 +378,12 @@ func TestUncloakToolName(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test -v ./internal/translator -run TestCloakAntigravityRequest`
 Expected: FAIL (functions undefined)
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `internal/translator/antigravity.go`, define:
 - `AntigravityNativeToolNames` (map of 21 native Antigravity names).
@@ -393,12 +393,12 @@ In `internal/translator/antigravity.go`, define:
 
 In `internal/translator/gemini.go`, integrate `UncloakToolName` into `TranslateGeminiResponseToOpenAI` and `TranslateGeminiChunkToOpenAI`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `go test -v ./internal/translator -run "TestCloak|TestUncloak"`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/translator/antigravity.go internal/translator/antigravity_test.go internal/translator/gemini.go
@@ -417,7 +417,7 @@ git commit -m "feat(antigravity): add anti-ban tool cloaking and decoy tool inje
 **Interfaces:**
 - Produces: `IsAntigravityImageModel(model string) bool`, `ParseImageConfig(model string) (string, string)`, `WrapAntigravityImageRequest(...)`, `FormatAntigravityImageResponse(...)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `internal/translator/antigravity_test.go`:
 ```go
@@ -444,12 +444,12 @@ func TestAntigravityImageModelAndConfig(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test -v ./internal/translator -run TestAntigravityImageModelAndConfig`
 Expected: FAIL (functions undefined)
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `internal/translator/antigravity.go`, implement:
 - `IsAntigravityImageModel(model string) bool`
@@ -459,12 +459,12 @@ In `internal/translator/antigravity.go`, implement:
 
 In `internal/proxy/gemini.go`, check `IsAntigravityImageModel(modelName)` and route to `WrapAntigravityImageRequest` with forced non-streaming `/v1internal:generateContent`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `go test -v ./internal/translator -run TestAntigravityImageModelAndConfig`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/translator/antigravity.go internal/translator/antigravity_test.go internal/proxy/gemini.go
@@ -478,17 +478,17 @@ git commit -m "feat(antigravity): add native image generation support"
 **Files:**
 - Test: All test suites across the repository
 
-- [ ] **Step 1: Run complete repository test suite**
+- [x] **Step 1: Run complete repository test suite**
 
 Run: `go test -v ./...`
 Expected: ALL PASS with 0 failures
 
-- [ ] **Step 2: Run benchmark & lint check**
+- [x] **Step 2: Run benchmark & lint check**
 
 Run: `go vet ./...`
 Expected: clean
 
-- [ ] **Step 3: Update CHANGELOG & commit**
+- [x] **Step 3: Update CHANGELOG & commit**
 
 ```bash
 git add CHANGELOG.md
