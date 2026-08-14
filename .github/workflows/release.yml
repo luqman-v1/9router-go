@@ -32,18 +32,23 @@ jobs:
       - name: Generate changelog
         id: changelog
         run: |
-          # Get previous tag (if any)
-          PREV_TAG=$(git tag --sort=-version:refname | grep '^v' | head -2 | tail -1)
-          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "${GITHUB_REF_NAME}" ]; then
-            # First release — list all commits
-            LOG=$(git log --pretty=format:"- %s (%h)" --no-merges)
-          else
-            LOG=$(git log --pretty=format:"- %s (%h)" --no-merges ${PREV_TAG}..${GITHUB_REF_NAME})
+          TAG="${GITHUB_REF_NAME}"
+          # Try to extract section for this version tag from CHANGELOG.md
+          if [ -f CHANGELOG.md ]; then
+            NOTES=$(awk "/## \\[$TAG\\]/{flag=1; next} /## \\[v/{flag=0} flag" CHANGELOG.md)
           fi
-          # Write to file (multiline safe)
-          echo "$LOG" > /tmp/changelog.md
-          echo "### Changes" >> /tmp/changelog.md
-          echo "" >> /tmp/changelog.md
+          if [ -n "$NOTES" ]; then
+            echo "$NOTES" > /tmp/changelog.md
+          else
+            # Fallback to git log
+            PREV_TAG=$(git tag --sort=-version:refname | grep '^v' | head -2 | tail -1)
+            if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "${GITHUB_REF_NAME}" ]; then
+              LOG=$(git log --pretty=format:"- %s (%h)" --no-merges)
+            else
+              LOG=$(git log --pretty=format:"- %s (%h)" --no-merges ${PREV_TAG}..${GITHUB_REF_NAME})
+            fi
+            echo "$LOG" > /tmp/changelog.md
+          fi
           cat /tmp/changelog.md
 
       - name: Upload binaries to release
@@ -55,7 +60,7 @@ jobs:
             9router-go-darwin-arm64
             9router-go-windows-amd64.exe
           body_path: /tmp/changelog.md
-          generate_release_notes: true
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
