@@ -11,6 +11,7 @@ import (
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/translator"
+	"9router/proxy/internal/usagetracker"
 )
 
 var dailyUsageMu sync.Mutex
@@ -90,6 +91,16 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 	}
 
 	h.upsertDailyUsage(info.Provider, info.Model, info.Endpoint, info.ConnectionID, info.APIKey, usage.PromptTokens, usage.CompletionTokens, cachedTokens, cost)
+
+	usagetracker.GetTracker().PushRecent(usagetracker.RecentRequest{
+		Timestamp:        now.Format(time.RFC3339),
+		Model:            info.Model,
+		Provider:         info.Provider,
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		CachedTokens:     cachedTokens,
+		Status:           "ok",
+	}, h.Repo)
 }
 
 // extractRequestMessages extracts truncated messages from the request body for logging.

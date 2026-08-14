@@ -95,6 +95,12 @@ func SetupRoutes(r interface {
 	r.Delete("/translator/console-logs", HandleConsoleLogsDelete)
 	r.Get("/translator/console-logs/stream", HandleConsoleLogsStream)
 
+	// Usage Real-time SSE Stream & Stats Domain (dashboard topology animation + recent requests)
+	r.Get("/usage/stream", HandleUsageStream(repo))
+	r.Get("/api/usage/stream", HandleUsageStream(repo))
+	r.Get("/usage/stats", HandleUsageStats(repo))
+	r.Get("/api/usage/stats", HandleUsageStats(repo))
+
 	// Debug Tracing Domain (p50/p95 latency per provider+model)
 	r.Get("/debug/traces", HandleDebugTraces)
 }

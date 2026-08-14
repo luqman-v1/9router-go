@@ -16,6 +16,7 @@ import (
 	"9router/proxy/internal/tracing"
 	"9router/proxy/internal/tokensaver"
 	"9router/proxy/internal/translator"
+	"9router/proxy/internal/usagetracker"
 )
 
 // handleAccountFallback attempts to forward a request with automatic account fallback.
@@ -149,6 +150,12 @@ func (h *ChatHandler) tryForwardWithConnection(
 	start := time.Now()
 	metrics := &streamMetrics{}
 	var fwdErr error
+
+	usagetracker.GetTracker().TrackPending(model, provider, connectionID, true, false)
+	defer func() {
+		hasErr := fwdErr != nil
+		usagetracker.GetTracker().TrackPending(model, provider, connectionID, false, hasErr)
+	}()
 
 	httpClient := h.getClientForConnection(connData)
 
