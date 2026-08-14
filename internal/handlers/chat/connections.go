@@ -11,6 +11,7 @@ import (
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
+	internalproxy "9router/proxy/internal/proxy"
 )
 
 // GetBestConnection retrieves the highest-priority active connection for a provider.
@@ -84,39 +85,75 @@ func (h *ChatHandler) GetProviderConfig(provider string, connData *ConnectionDat
 }
 
 func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionData) (*providers.ProviderConfig, error) {
-	if connData.BaseURL != "" {
-		return &providers.ProviderConfig{
+	var baseCfg *providers.ProviderConfig
+
+	if connData != nil && connData.BaseURL != "" {
+		baseCfg = &providers.ProviderConfig{
 			BaseURL:    connData.BaseURL,
 			AuthHeader: constants.HeaderAuthorization,
 			AuthScheme: constants.AuthSchemeBearer,
-		}, nil
-	}
-
-	if cfg, ok := providers.KnownProviders[provider]; ok {
-		return &cfg, nil
-	}
-
-	node, nodeData, err := h.Repo.GetProviderNodeByID(provider)
-	if err != nil {
-		return nil, fmt.Errorf("failed to look up provider node %s: %w", provider, err)
-	}
-	if node != nil && nodeData != nil && nodeData.BaseURL != "" {
-		baseURL := nodeData.BaseURL
-		if !strings.HasSuffix(baseURL, "/chat/completions") {
-			if strings.HasSuffix(baseURL, "/v1") || strings.HasSuffix(baseURL, "/v1/") {
-				baseURL = strings.TrimRight(baseURL, "/") + "/chat/completions"
-			} else {
-				baseURL = strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
+		}
+	} else if cfg, ok := providers.KnownProviders[provider]; ok {
+		// Clone config so per-request headers don't mutate global registry
+		cloned := cfg
+		baseCfg = &cloned
+	} else {
+		node, nodeData, err := h.Repo.GetProviderNodeByID(provider)
+		if err != nil {
+			return nil, fmt.Errorf("failed to look up provider node %s: %w", provider, err)
+		}
+		if node != nil && nodeData != nil && nodeData.BaseURL != "" {
+			baseURL := nodeData.BaseURL
+			if !strings.HasSuffix(baseURL, "/chat/completions") {
+				if strings.HasSuffix(baseURL, "/v1") || strings.HasSuffix(baseURL, "/v1/") {
+					baseURL = strings.TrimRight(baseURL, "/") + "/chat/completions"
+				} else {
+					baseURL = strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
+				}
+			}
+			baseCfg = &providers.ProviderConfig{
+				BaseURL:    baseURL,
+				AuthHeader: constants.HeaderAuthorization,
+				AuthScheme: constants.AuthSchemeBearer,
 			}
 		}
-		return &providers.ProviderConfig{
-			BaseURL:    baseURL,
-			AuthHeader: constants.HeaderAuthorization,
-			AuthScheme: constants.AuthSchemeBearer,
-		}, nil
 	}
 
-	return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
+	if baseCfg == nil {
+		return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
+	}
+
+	// Check if this connection uses an Edge Relay Proxy Pool (Vercel, Cloudflare, Deno)
+	if connData != nil {
+		var relayURL string
+		var noProxy string
+
+		if connData.ProxyPoolID != "" {
+			if pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID); err == nil && pool != nil && pool.IsActive {
+				if pool.Type == "vercel" || pool.Type == "cloudflare" || pool.Type == "deno" {
+					relayURL = pool.NextURL()
+					noProxy = pool.NoProxy
+				}
+			}
+		}
+		if relayURL == "" && connData.ProviderSpecificData != nil {
+			if u, ok := connData.ProviderSpecificData["vercelRelayUrl"].(string); ok && u != "" {
+				relayURL = u
+				if np, ok := connData.ProviderSpecificData["connectionNoProxy"].(string); ok {
+					noProxy = np
+				}
+			}
+		}
+
+		if relayURL != "" && !internalproxy.ShouldBypassNoProxy(baseCfg.BaseURL, noProxy) {
+			cloned := *baseCfg
+			cloned.StaticHeaders = internalproxy.BuildEdgeRelayHeaders(baseCfg.BaseURL, cloned.StaticHeaders)
+			cloned.BaseURL = relayURL
+			return &cloned, nil
+		}
+	}
+
+	return baseCfg, nil
 }
 
 // ExtractAPIKey gets the API key from a connection's data.
