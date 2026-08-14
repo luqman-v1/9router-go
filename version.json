@@ -1,5 +1,5 @@
 {
-  "latestVersion": "1.8.3",
+  "latestVersion": "1.8.4",
   "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
-  "releaseNotes": "v1.8.3: Antigravity tool cloaking & anti-competitive prompt stripping (429 quota exhaustion fix), Gemini vision FileData & audio modalities, edge relay proxy pool header forwarding, no-auth proxy pool auto-rotation, snake_case model limits, and realtime SSE usage stream for dashboard topology animations. Changelog: CHANGELOG.md."
+  "releaseNotes": "v1.8.4: Combo cycle graceful recovery & fault tolerance (skips cyclic entries without failing HTTP 400), deep multi-level nested combo expansion, and safe model resolution across nested combos. Changelog: CHANGELOG.md."
 }
