@@ -226,17 +226,23 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 // AntigravityModelSynonyms maps client/UI model names to internal Google Antigravity backend model IDs.
 var AntigravityModelSynonyms = map[string]string{
 	"gemini-default":             "gemini-3.5-flash-low",
+	"gemini-3.5-flash":           "gemini-3-flash-agent",
 	"gemini-3.5-flash-high":      "gemini-3-flash-agent",
 	"gemini-3.5-flash-medium":    "gemini-3.5-flash-low",
+	"gemini-3.5-flash-low":       "gemini-3.5-flash-low",
 	"gemini-3.5-flash-extra-low": "gemini-3.5-flash-extra-low",
+	"gemini-3.5-flash-agent":     "gemini-3-flash-agent",
 	"gemini-3.1-pro-high":        "gemini-pro-agent",
+	"gemini-3.1-pro":             "gemini-pro-agent",
 	"gemini-3-pro-high":          "gemini-pro-agent",
 	"gemini-3-pro-low":           "gemini-3.1-pro-low",
-	"gemini-3.7-flash":           "gemini-3.7-flash-agent",
-	"gemini-3.7-flash-high":      "gemini-3.7-flash-agent",
-	"gemini-3.7-flash-medium":    "gemini-3.7-flash-low",
-	"gemini-3.7-flash-extra-low": "gemini-3.7-flash-extra-low",
-	"gemini-3.7-flash-thinking":  "gemini-3.7-flash-thinking",
+	"gemini-3.7-flash":           "gemini-3-flash-agent",
+	"gemini-3.7-flash-high":      "gemini-3-flash-agent",
+	"gemini-3.7-flash-agent":     "gemini-3-flash-agent",
+	"gemini-3.7-flash-medium":    "gemini-3.5-flash-low",
+	"gemini-3.7-flash-low":       "gemini-3.5-flash-low",
+	"gemini-3.7-flash-extra-low": "gemini-3.5-flash-extra-low",
+	"gemini-3.7-flash-thinking":  "gemini-3-flash-agent",
 }
 
 // NormalizeAntigravityModel maps known aliases/synonyms to Antigravity internal backend model names.

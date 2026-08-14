@@ -252,11 +252,13 @@ func TestNormalizeAntigravityModel_Gemini37(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"gemini-3.7-flash", "gemini-3.7-flash-agent"},
-		{"gemini-3.7-flash-high", "gemini-3.7-flash-agent"},
-		{"gemini-3.7-flash-medium", "gemini-3.7-flash-low"},
-		{"gemini-3.7-flash-extra-low", "gemini-3.7-flash-extra-low"},
-		{"gemini-3.7-flash-thinking", "gemini-3.7-flash-thinking"},
+		{"gemini-3.7-flash", "gemini-3-flash-agent"},
+		{"gemini-3.7-flash-high", "gemini-3-flash-agent"},
+		{"gemini-3.7-flash-agent", "gemini-3-flash-agent"},
+		{"gemini-3.7-flash-medium", "gemini-3.5-flash-low"},
+		{"gemini-3.7-flash-low", "gemini-3.5-flash-low"},
+		{"gemini-3.7-flash-extra-low", "gemini-3.5-flash-extra-low"},
+		{"gemini-3.7-flash-thinking", "gemini-3-flash-agent"},
 	}
 
 	for _, tt := range tests {
