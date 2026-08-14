@@ -300,6 +300,16 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"alitp-intl": {
+		BaseURL:    "https://token-plan.ap-southeast-1.aliyuncs.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"fish-audio": {
+		BaseURL:    "https://api.fish.audio/v1/tts",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 
 	"nebius": {
 		BaseURL:    "https://api.studio.nebius.ai/v1/chat/completions",

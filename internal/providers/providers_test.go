@@ -110,3 +110,21 @@ func TestRetryableStatusCodes(t *testing.T) {
 		t.Error("500 should not be retryable")
 	}
 }
+
+func TestNewProvidersRegistry_v055(t *testing.T) {
+	if _, ok := KnownProviders["alitp-intl"]; !ok {
+		t.Error("expected alitp-intl provider registered")
+	}
+	if _, ok := KnownProviders["fish-audio"]; !ok {
+		t.Error("expected fish-audio provider registered")
+	}
+	if a := ResolveAlias("ali-tp"); a != "alitp-intl" {
+		t.Errorf("expected ali-tp alias to resolve to alitp-intl, got %s", a)
+	}
+	if a := ResolveAlias("alitp"); a != "alitp-intl" {
+		t.Errorf("expected alitp alias to resolve to alitp-intl, got %s", a)
+	}
+	if a := ResolveAlias("fish"); a != "fish-audio" {
+		t.Errorf("expected fish alias to resolve to fish-audio, got %s", a)
+	}
+}
