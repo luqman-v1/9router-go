@@ -365,6 +365,10 @@ go run ./benchmark/runner.go
 
 See [`benchmark/RESULTS.md`](benchmark/RESULTS.md) for full methodology and reproduction steps.
 
+## Roadmap
+
+See [`ROADMAP.md`](ROADMAP.md) for planned future features, cost-aware model routing, semantic caching, and alerting proposals.
+
 ## Credits
 
 - [9Router](https://github.com/decolua/9router) — Original Next.js LLM routing gateway + dashboard
