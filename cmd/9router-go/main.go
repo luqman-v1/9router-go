@@ -184,7 +184,7 @@ func runServer(cCtx *cli.Context) error {
 	handlers.SetupServerRouter(r, repo, ts)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
-	log.Printf("9Router Go Proxy starting on port %d", cfg.Port)
+	log.Printf("9Router Go Proxy (%s) starting on port %d", updater.CurrentVersion, cfg.Port)
 
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
@@ -200,7 +200,7 @@ func runServer(cCtx *cli.Context) error {
 		}
 	}()
 
-	fmt.Fprintf(os.Stdout, "\n  🚀 9Router Go Proxy on %s\n\n", addr)
+	fmt.Fprintf(os.Stdout, "\n  🚀 9Router Go Proxy (%s) on %s\n\n", updater.CurrentVersion, addr)
 	log.Printf("Server is ready to handle requests at %s", addr)
 
 	<-signals // first signal → begin graceful shutdown
