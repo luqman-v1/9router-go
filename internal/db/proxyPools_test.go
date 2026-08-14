@@ -82,3 +82,51 @@ func TestInsertProxyPool_DataShape(t *testing.T) {
 		}
 	}
 }
+
+func TestGetProxyPool_SingleProxyUrl_AndMetadata(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
+		id TEXT PRIMARY KEY,
+		data TEXT,
+		isActive INTEGER DEFAULT 1,
+		testStatus TEXT,
+		createdAt TEXT,
+		updatedAt TEXT
+	);`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	repo := NewRepo(db)
+
+	// Single proxyUrl string (Next.js format)
+	poolData := `{"name":"relay-pool","proxyUrl":"https://relay.example.com","type":"vercel","noProxy":"localhost,*.internal","strictProxy":true}`
+	if _, err := db.Exec(`INSERT INTO proxyPools (id, data, isActive) VALUES (?, ?, ?)`, "pool-single", poolData, 1); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	pool, err := repo.GetProxyPool("pool-single")
+	if err != nil {
+		t.Fatalf("GetProxyPool failed: %v", err)
+	}
+	if pool == nil {
+		t.Fatal("expected pool, got nil")
+	}
+	if len(pool.URLs) != 1 || pool.URLs[0] != "https://relay.example.com" {
+		t.Errorf("expected URLs [https://relay.example.com], got %v", pool.URLs)
+	}
+	if pool.Type != "vercel" {
+		t.Errorf("expected Type vercel, got %s", pool.Type)
+	}
+	if pool.NoProxy != "localhost,*.internal" {
+		t.Errorf("expected NoProxy localhost,*.internal, got %s", pool.NoProxy)
+	}
+	if !pool.StrictProxy {
+		t.Errorf("expected StrictProxy true, got %v", pool.StrictProxy)
+	}
+	if next := pool.NextURL(); next != "https://relay.example.com" {
+		t.Errorf("expected NextURL https://relay.example.com, got %s", next)
+	}
+}
+

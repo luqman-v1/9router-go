@@ -13,12 +13,15 @@ import (
 
 // ProxyPool represents a pool of proxy URLs for routing requests.
 type ProxyPool struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	IsActive bool     `json:"isActive"`
-	URLs     []string `json:"urls"`
-	Strategy string   `json:"strategy"` // "round-robin" or "random"
-	index    uint64   // atomic counter for round-robin
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	IsActive    bool     `json:"isActive"`
+	URLs        []string `json:"urls"`
+	Strategy    string   `json:"strategy"` // "round-robin" or "random"
+	Type        string   `json:"type"`     // "http", "vercel", "cloudflare", "deno"
+	NoProxy     string   `json:"noProxy"`
+	StrictProxy bool     `json:"strictProxy"`
+	index       uint64   // atomic counter for round-robin
 }
 
 var proxyPoolCache sync.Map // map[string]*ProxyPool
@@ -48,10 +51,24 @@ func (r *Repo) GetProxyPool(poolID string) (*ProxyPool, error) {
 
 	if urls, ok := raw["urls"].([]any); ok {
 		for _, u := range urls {
-			if s, ok := u.(string); ok {
+			if s, ok := u.(string); ok && s != "" {
 				pool.URLs = append(pool.URLs, s)
 			}
 		}
+	}
+	if len(pool.URLs) == 0 {
+		if singleURL := handlerutil.GetString(raw, "proxyUrl"); singleURL != "" {
+			pool.URLs = append(pool.URLs, singleURL)
+		}
+	}
+
+	pool.Type = handlerutil.GetString(raw, "type")
+	if pool.Type == "" {
+		pool.Type = "http"
+	}
+	pool.NoProxy = handlerutil.GetString(raw, "noProxy")
+	if sp, ok := raw["strictProxy"].(bool); ok {
+		pool.StrictProxy = sp
 	}
 
 	if pool.Strategy == "" {
