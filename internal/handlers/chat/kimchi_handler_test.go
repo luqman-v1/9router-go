@@ -309,3 +309,24 @@ func TestKimchiSystemToText_Nil(t *testing.T) {
 		t.Errorf("expected empty, got %q", result)
 	}
 }
+
+func TestKimchi_DualAuth_APIKeySupport(t *testing.T) {
+	connData := &ConnectionData{
+		APIKey: "sk-kimchi-direct-key-12345",
+	}
+	key := ExtractAPIKey(connData)
+	if key != "sk-kimchi-direct-key-12345" {
+		t.Errorf("expected direct API key sk-kimchi-direct-key-12345, got %s", key)
+	}
+}
+
+func TestKimchi_DualAuth_OAuthSupport(t *testing.T) {
+	connData := &ConnectionData{
+		AccessToken: "oauth-kimchi-token-67890",
+	}
+	key := ExtractAPIKey(connData)
+	if key != "oauth-kimchi-token-67890" {
+		t.Errorf("expected OAuth access token oauth-kimchi-token-67890, got %s", key)
+	}
+}
+
