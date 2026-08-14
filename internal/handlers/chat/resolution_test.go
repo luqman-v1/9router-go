@@ -280,7 +280,28 @@ func TestFlattenComboModels_Cycle(t *testing.T) {
 		"cb", "combo-b", "fallback", string(b), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z")
 
 	if _, err := h.flattenComboModels([]string{"combo-a"}); err == nil {
-		t.Fatal("expected cycle error")
+		t.Fatal("expected cycle error when no concrete models remain")
+	}
+}
+
+func TestFlattenComboModels_GracefulCycleRecovery(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// combo-self contains ["combo-self", "antigravity/gemini-3.7-flash"]
+	selfList, _ := json.Marshal([]string{"combo-self", "antigravity/gemini-3.7-flash"})
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"cself", "combo-self", "fallback", string(selfList), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z")
+
+	flat, err := h.flattenComboModels([]string{"combo-self"})
+	if err != nil {
+		t.Fatalf("expected graceful cycle recovery, got error: %v", err)
+	}
+
+	if len(flat) != 1 || flat[0] != "antigravity/gemini-3.7-flash" {
+		t.Fatalf("expected [antigravity/gemini-3.7-flash], got %v", flat)
 	}
 }
 

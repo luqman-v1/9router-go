@@ -9,6 +9,7 @@ import (
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
@@ -87,8 +88,9 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 // flattenComboModels recursively expands combo-name entries into concrete
 // "provider/model" leaves, keeping order and deduping consecutive identical
 // leaves so a nested combo can't create pointless rotation slots. Guards
-// against cyclic combo references. Inner-combo strategies are not applied
-// here; the top-level combo's strategy governs the flattened list.
+// against cyclic combo references by skipping recursive cycles. Inner-combo
+// strategies are not applied here; the top-level combo's strategy governs
+// the flattened list.
 func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
 	out := make([]string, 0, len(models))
 	seen := make(map[string]bool)
@@ -97,7 +99,8 @@ func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
 		for _, m := range ms {
 			if !strings.Contains(m, "/") {
 				if seen[m] {
-					return fmt.Errorf("combo cycle detected at %q", m)
+					log.Warn("combo", "cyclic combo reference detected, skipping", "combo", m)
+					continue
 				}
 				if combo, err := h.Repo.GetComboByName(m); err == nil && combo != nil && combo.Models != "" {
 					var sub []string
@@ -110,6 +113,9 @@ func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
 						continue
 					}
 				}
+				if aliasTarget, err := h.Repo.GetModelAlias(m); err == nil && aliasTarget != "" && strings.Contains(aliasTarget, "/") {
+					m = aliasTarget
+				}
 			}
 			if len(out) == 0 || out[len(out)-1] != m {
 				out = append(out, m)
@@ -119,6 +125,9 @@ func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
 	}
 	if err := walk(models); err != nil {
 		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("combo has no valid leaf models")
 	}
 	return out, nil
 }
@@ -176,21 +185,15 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 				return nil, flatErr
 			}
 			if len(flattened) > 0 {
-				parts := strings.SplitN(flattened[0], "/", 2)
-				provider := resolveProviderAlias(parts[0])
-				if _, ok := providers.KnownProviders[provider]; !ok {
-					if info := h.resolvePrefixProvider(provider, parts[1]); info != nil {
-						info.ComboModels = flattened
-						info.Strategy = combo.Strategy
-						return info, nil
-					}
+				firstInfo := h.resolveModelEntry(flattened[0])
+				if firstInfo == nil {
+					firstInfo, _ = h.resolveModel(flattened[0])
 				}
-				return &ModelInfo{
-					Provider:    provider,
-					Model:       parts[1],
-					ComboModels: flattened,
-					Strategy:    combo.Strategy,
-				}, nil
+				if firstInfo != nil {
+					firstInfo.ComboModels = flattened
+					firstInfo.Strategy = combo.Strategy
+					return firstInfo, nil
+				}
 			}
 		}
 	}
