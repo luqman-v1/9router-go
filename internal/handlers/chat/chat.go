@@ -246,10 +246,12 @@ func (h *ChatHandler) HandleTriggerUpdate(w http.ResponseWriter, r *http.Request
 // HandleModels responds with the list of available model identifiers from the DB.
 func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	type modelObj struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int64  `json:"created"`
-		OwnedBy string `json:"owned_by"`
+		ID                  string `json:"id"`
+		Object              string `json:"object"`
+		Created             int64  `json:"created"`
+		OwnedBy             string `json:"owned_by"`
+		ContextLength       int    `json:"context_length,omitempty"`
+		MaxCompletionTokens int    `json:"max_completion_tokens,omitempty"`
 	}
 
 	var data []modelObj
@@ -258,11 +260,14 @@ func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	aliases, err := h.Repo.GetModelAliases()
 	if err == nil {
 		for alias := range aliases {
+			ctxLen, maxOut := providers.GetModelTokenLimits(alias)
 			data = append(data, modelObj{
-				ID:      alias,
-				Object:  "model",
-				Created: now,
-				OwnedBy: "system",
+				ID:                  alias,
+				Object:              "model",
+				Created:             now,
+				OwnedBy:             "system",
+				ContextLength:       ctxLen,
+				MaxCompletionTokens: maxOut,
 			})
 		}
 	}
@@ -270,11 +275,14 @@ func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	combos, err := h.Repo.GetCombos()
 	if err == nil {
 		for _, c := range combos {
+			ctxLen, maxOut := providers.GetModelTokenLimits(c.Name)
 			data = append(data, modelObj{
-				ID:      c.Name,
-				Object:  "model",
-				Created: now,
-				OwnedBy: "system",
+				ID:                  c.Name,
+				Object:              "model",
+				Created:             now,
+				OwnedBy:             "system",
+				ContextLength:       ctxLen,
+				MaxCompletionTokens: maxOut,
 			})
 		}
 	}
@@ -304,11 +312,17 @@ func (h *ChatHandler) HandleModelsInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctxLen, maxOut := providers.GetModelTokenLimits(modelID)
+
 	info := map[string]any{
-		"id":       modelID,
-		"object":   "model",
-		"owned_by": modelInfo.Provider,
-		"endpoint": "/v1/chat/completions",
+		"id":                    modelID,
+		"object":                "model",
+		"owned_by":              modelInfo.Provider,
+		"endpoint":              "/v1/chat/completions",
+		"context_length":        ctxLen,
+		"max_completion_tokens": maxOut,
+		"max_input_tokens":      ctxLen - maxOut,
+		"max_output_tokens":     maxOut,
 	}
 	if len(modelInfo.ComboModels) > 0 {
 		info["combo"] = true

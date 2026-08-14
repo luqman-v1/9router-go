@@ -241,6 +241,26 @@ func matchPattern(pattern, s string) bool {
 	return matched
 }
 
+// GetModelTokenLimits returns the context window and maximum output tokens for a model.
+func GetModelTokenLimits(model string) (contextWindow int, maxOutput int) {
+	m := strings.ToLower(model)
+
+	switch {
+	case strings.Contains(m, "gemini-1.5") || strings.Contains(m, "gemini-2.0") || strings.Contains(m, "gemini-2.5") || strings.Contains(m, "gemini-3"):
+		return 1048576, 65536
+	case strings.Contains(m, "claude-3") || strings.Contains(m, "claude-sonnet") || strings.Contains(m, "claude-opus") || strings.Contains(m, "claude-haiku"):
+		return 200000, 8192
+	case strings.Contains(m, "gpt-4o") || strings.Contains(m, "gpt-4-turbo") || strings.Contains(m, "gpt-4.1") || strings.Contains(m, "gpt-5"):
+		return 128000, 16384
+	case strings.Contains(m, "o1") || strings.Contains(m, "o3"):
+		return 200000, 100000
+	case strings.Contains(m, "deepseek") || strings.Contains(m, "qwen") || strings.Contains(m, "glm") || strings.Contains(m, "kimi"):
+		return 131072, 8192
+	default:
+		return 128000, 4096
+	}
+}
+
 // GetCapabilitiesForModel resolves capabilities using the fallback chain.
 func GetCapabilitiesForModel(provider, model string) Capabilities {
 	if model == "" {
