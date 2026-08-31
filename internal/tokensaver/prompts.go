@@ -1,6 +1,9 @@
 package tokensaver
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Caveman prompts adapted from open-sse/rtk/cavemanPrompts.js
 const (
@@ -66,6 +69,9 @@ func InjectSystemPrompt(body []byte, prompt string) ([]byte, bool) {
 
 	// OpenAI Responses API: top-level instructions string field
 	if instructions, ok := req["instructions"].(string); ok {
+		if strings.Contains(instructions, prompt) {
+			return body, false
+		}
 		if instructions != "" {
 			req["instructions"] = instructions + "\n\n" + prompt
 		} else {
@@ -97,6 +103,9 @@ func InjectSystemPrompt(body []byte, prompt string) ([]byte, bool) {
 		role, _ := msg["role"].(string)
 		if role == "system" || role == "developer" {
 			content, _ := msg["content"].(string)
+			if strings.Contains(content, prompt) {
+				return body, false
+			}
 			if content != "" {
 				msg["content"] = content + "\n\n" + prompt
 			} else {

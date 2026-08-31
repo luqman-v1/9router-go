@@ -281,6 +281,67 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		apiKey = "public"
 	}
 
+	var reqObj struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(req.Body, &reqObj)
+	cleanModel := strings.TrimPrefix(reqObj.Model, "oc/")
+	if parenIdx := strings.IndexByte(cleanModel, '('); parenIdx != -1 {
+		cleanModel = cleanModel[:parenIdx]
+	}
+
+	if cleanModel == "muse-spark-1.2-contributor-free" {
+		// Route through Responses API format: https://opencode.ai/zen/v1/responses
+		transformedBody, _, err := buildResponsesBody(req.Body)
+		if err != nil {
+			return fmt.Errorf("transform body for muse-spark: %w", err)
+		}
+
+		var m map[string]any
+		if err := json.Unmarshal(transformedBody, &m); err == nil {
+			if rEffort, ok := m["reasoning_effort"].(string); ok {
+				if rEffort == "max" {
+					rEffort = "xhigh"
+				}
+				m["reasoning"] = map[string]any{
+					"effort":  rEffort,
+					"summary": "auto",
+				}
+				delete(m, "reasoning_effort")
+			} else if rMap, ok := m["reasoning"].(map[string]any); ok {
+				if eff, ok := rMap["effort"].(string); ok && eff == "max" {
+					rMap["effort"] = "xhigh"
+				}
+				rMap["summary"] = "auto"
+			}
+			if transformedBody, err = json.Marshal(m); err != nil {
+				return fmt.Errorf("marshal muse-spark body: %w", err)
+			}
+		}
+
+		cfg := *req.Config
+		if !strings.HasSuffix(cfg.BaseURL, "/responses") {
+			baseURL := strings.TrimRight(cfg.BaseURL, "/")
+			if strings.HasSuffix(baseURL, "/chat/completions") {
+				baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
+			}
+			cfg.BaseURL = baseURL + "/responses"
+		}
+		cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(cfg.StaticHeaders, req.SessionID, req.IsStream)
+
+		ctx := req.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		resp, err := proxy.ForwardOpenAI(ctx, req.Client, &cfg, apiKey, transformedBody, req.IsStream)
+		if err != nil {
+			return fmt.Errorf("ForwardOpencode (muse-spark responses): %w", err)
+		}
+		defer resp.Body.Close()
+
+		return handleCodexStream(w, req, resp.Body)
+	}
+
 	body := InjectReasoningContent(req.Body, "opencode")
 
 	cfg := *req.Config

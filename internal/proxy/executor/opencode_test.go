@@ -121,3 +121,46 @@ func TestForwardOpencodeGo_OpenAIRouting(t *testing.T) {
 	}
 }
 
+func TestForwardOpencode_MuseSparkResponsesRouting(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/responses") {
+			t.Errorf("expected path ending in /responses, got %s", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if parsed["input"] == nil {
+			t.Errorf("expected input array in Responses API format, got: %s", string(body))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"resp_123","output":[{"type":"message","content":[{"type":"text","text":"4"}]}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{
+		BaseURL: srv.URL + "/chat/completions",
+	}
+
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Client:        srv.Client(),
+		Config:        cfg,
+		APIKey:        "",
+		Body:          []byte(`{"model":"muse-spark-1.2-contributor-free","messages":[{"role":"user","content":"2+2?"}],"reasoning_effort":"max"}`),
+		IsStream:      false,
+		TranslateResp: false,
+	}
+
+	err := ForwardOpencode(rec, req)
+	if err != nil {
+		t.Fatalf("ForwardOpencode muse-spark failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rec.Code)
+	}
+}
+
+
