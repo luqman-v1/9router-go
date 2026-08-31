@@ -124,6 +124,15 @@ func CloakAntigravityRequest(req *GeminiRequest, clientTool string) (*GeminiRequ
 			continue
 		}
 		seen[decl.Name] = true
+		if decl.Parameters != nil {
+			if b, err := json.Marshal(decl.Parameters); err == nil {
+				cleaned := CleanParametersSchema(b)
+				var cleanedParams any
+				if err := json.Unmarshal(cleaned, &cleanedParams); err == nil {
+					decl.Parameters = cleanedParams
+				}
+			}
+		}
 		allDecls = append(allDecls, decl)
 	}
 

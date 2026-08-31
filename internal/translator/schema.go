@@ -60,9 +60,7 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 				if s, ok := item.(string); ok {
 					strArr = append(strArr, s)
 				} else {
-					// Extremely simplistic conversion to string
 					if b, err := json.Marshal(item); err == nil {
-						// Remove quotes if it's a JSON string, otherwise use raw
 						if len(b) >= 2 && b[0] == '"' && b[len(b)-1] == '"' {
 							strArr = append(strArr, string(b[1:len(b)-1]))
 						} else {
@@ -82,11 +80,9 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 	for _, key := range []string{"anyOf", "oneOf"} {
 		if rawArr, has := schema[key]; has {
 			if arr, ok := rawArr.([]interface{}); ok && len(arr) > 0 {
-				// Pick first schema that is not just type="null"
 				for _, itemRaw := range arr {
 					if item, ok := itemRaw.(map[string]interface{}); ok {
 						if t, hasT := item["type"]; !hasT || t != "null" {
-							// Merge item into schema
 							for k, v := range item {
 								schema[k] = v
 							}
@@ -120,17 +116,52 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 		}
 	}
 
+	// Recurse into properties definitions (each value is a property schema, NOT the container map)
+	if propsRaw, hasProps := schema["properties"]; hasProps {
+		if props, ok := propsRaw.(map[string]interface{}); ok {
+			for _, propVal := range props {
+				if propSchema, ok := propVal.(map[string]interface{}); ok {
+					cleanGeminiSchema(propSchema)
+				}
+			}
+		}
+	}
+
+	// Recurse into items (array schema element)
+	if itemsRaw, hasItems := schema["items"]; hasItems {
+		switch items := itemsRaw.(type) {
+		case map[string]interface{}:
+			cleanGeminiSchema(items)
+		case []interface{}:
+			for _, elem := range items {
+				if elemMap, ok := elem.(map[string]interface{}); ok {
+					cleanGeminiSchema(elemMap)
+				}
+			}
+		}
+	}
+
 	// Clean up required array (must only contain keys present in properties)
 	if reqRaw, hasReq := schema["required"]; hasReq {
-		if reqArr, ok := reqRaw.([]interface{}); ok {
+		var reqStrs []string
+		switch arr := reqRaw.(type) {
+		case []interface{}:
+			for _, r := range arr {
+				if s, ok := r.(string); ok {
+					reqStrs = append(reqStrs, s)
+				}
+			}
+		case []string:
+			reqStrs = arr
+		}
+
+		if len(reqStrs) > 0 {
 			var validReqs []string
 			if propsRaw, hasProps := schema["properties"]; hasProps {
 				if props, ok := propsRaw.(map[string]interface{}); ok {
-					for _, rRaw := range reqArr {
-						if rStr, ok := rRaw.(string); ok {
-							if _, exists := props[rStr]; exists {
-								validReqs = append(validReqs, rStr)
-							}
+					for _, rStr := range reqStrs {
+						if _, exists := props[rStr]; exists {
+							validReqs = append(validReqs, rStr)
 						}
 					}
 				}
@@ -141,7 +172,7 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 				delete(schema, "required")
 			}
 		} else {
-			delete(schema, "required") // invalid format
+			delete(schema, "required")
 		}
 	}
 
@@ -165,8 +196,6 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 	}
 
 	// Empty schema {} (no type at all) must also become the object placeholder
-	// (Next.js addPlaceholders parity) — Gemini rejects a function declaration
-	// whose parameters component has no parseable structure.
 	if len(schema) == 0 {
 		schema["type"] = "object"
 		schema["properties"] = map[string]interface{}{
@@ -176,19 +205,6 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 			},
 		}
 		schema["required"] = []string{"reason"}
-	}
-
-	for _, v := range schema {
-		switch child := v.(type) {
-		case map[string]interface{}:
-			cleanGeminiSchema(child)
-		case []interface{}:
-			for _, elem := range child {
-				if elemMap, ok := elem.(map[string]interface{}); ok {
-					cleanGeminiSchema(elemMap)
-				}
-			}
-		}
 	}
 }
 

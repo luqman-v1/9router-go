@@ -88,3 +88,64 @@ func TestSanitizeOpenAITools_NoToolsUnchanged(t *testing.T) {
 		t.Errorf("no-tools body must be returned unchanged, got: %s", out)
 	}
 }
+
+func TestCleanParametersSchema_RequiredPropertiesValidation(t *testing.T) {
+	// A tool schema where required contains fields not defined in properties (or stripped)
+	input := `{"type":"object","properties":{
+		"path":{"type":"string"},
+		"format":{"type":"string"}
+	},"required":["path","format","undefined_field","another_ghost"]}`
+
+	out := CleanParametersSchema([]byte(input))
+	var parsed struct {
+		Properties map[string]any `json:"properties"`
+		Required   []string       `json:"required"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	// Must keep "path" and "format", but strip "undefined_field" and "another_ghost"
+	if len(parsed.Required) != 2 {
+		t.Fatalf("expected 2 required fields, got %d: %v", len(parsed.Required), parsed.Required)
+	}
+	if parsed.Required[0] != "path" || parsed.Required[1] != "format" {
+		t.Errorf("expected ['path', 'format'], got %v", parsed.Required)
+	}
+	if _, ok := parsed.Properties["format"]; !ok {
+		t.Errorf("expected property 'format' to be preserved")
+	}
+}
+
+func TestCleanParametersSchema_NestedRequiredValidation(t *testing.T) {
+	input := `{"type":"object","properties":{
+		"options":{
+			"type":"object",
+			"properties":{
+				"enabled":{"type":"boolean"}
+			},
+			"required":["enabled","missing_sub_prop"]
+		}
+	},"required":["options"]}`
+
+	out := CleanParametersSchema([]byte(input))
+	var parsed struct {
+		Properties map[string]struct {
+			Properties map[string]any `json:"properties"`
+			Required   []string       `json:"required"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	opts, ok := parsed.Properties["options"]
+	if !ok {
+		t.Fatal("expected options property")
+	}
+	if len(opts.Required) != 1 || opts.Required[0] != "enabled" {
+		t.Errorf("expected nested required to only contain ['enabled'], got %v", opts.Required)
+	}
+}
+
