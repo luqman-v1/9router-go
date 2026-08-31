@@ -14,6 +14,12 @@ import (
 	internalproxy "9router/proxy/internal/proxy"
 )
 
+// CredentialFallbacks maps search/tool providers to the primary chat provider whose API key can be reused.
+var CredentialFallbacks = map[string]string{
+	"ollama-search": "ollama",
+	"zai-search":    "glm",
+}
+
 // GetBestConnection retrieves the highest-priority active connection for a provider.
 // When connectionID is non-empty, it fetches that specific connection directly.
 func (h *ChatHandler) GetBestConnection(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
@@ -40,6 +46,14 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		connections, queryErr := h.Repo.GetProviderConnections(provider, true)
 		if queryErr != nil {
 			return nil, nil, fmt.Errorf("failed to query connections for %s: %w", provider, queryErr)
+		}
+		if len(connections) == 0 {
+			if fallbackProvider, ok := CredentialFallbacks[provider]; ok {
+				fallbackConns, fallbackErr := h.Repo.GetProviderConnections(fallbackProvider, true)
+				if fallbackErr == nil && len(fallbackConns) > 0 {
+					connections = fallbackConns
+				}
+			}
 		}
 		if len(connections) == 0 {
 			if cfg, ok := providers.KnownProviders[provider]; ok && cfg.NoAuth {

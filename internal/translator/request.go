@@ -336,3 +336,31 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 	}
 	return out, nil
 }
+
+// DefaultClaudeToolType ensures all tools in a Claude-format request have a type (defaulting to "custom" if missing).
+// Strict Anthropic-compatible gateways (e.g. MiniMax) reject payloads omitting tool type with HTTP 400.
+func DefaultClaudeToolType(body []byte) []byte {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body
+	}
+	toolsRaw, ok := req["tools"].([]any)
+	if !ok || len(toolsRaw) == 0 {
+		return body
+	}
+	changed := false
+	for _, t := range toolsRaw {
+		if toolMap, isMap := t.(map[string]any); isMap {
+			if typeVal, hasType := toolMap["type"]; !hasType || typeVal == "" || typeVal == nil {
+				toolMap["type"] = "custom"
+				changed = true
+			}
+		}
+	}
+	if changed {
+		if out, err := json.Marshal(req); err == nil {
+			return out
+		}
+	}
+	return body
+}

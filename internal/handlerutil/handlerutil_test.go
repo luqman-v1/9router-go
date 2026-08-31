@@ -231,3 +231,35 @@ func TestSetAuthHeader_defaultScheme(t *testing.T) {
 		t.Errorf("req.Header[Authorization] = %q, want %q", got, want)
 	}
 }
+
+func TestExtractSessionID(t *testing.T) {
+	t.Run("extracts x-claude-code-session-id with priority", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.Header.Set("x-claude-code-session-id", "cc-session-123")
+		req.Header.Set("x-session-id", "generic-session-456")
+
+		got := ExtractSessionID(req)
+		if got != "cc-session-123" {
+			t.Errorf("expected cc-session-123, got %s", got)
+		}
+	})
+
+	t.Run("extracts x-session-id fallback", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.Header.Set("x-session-id", "generic-session-456")
+
+		got := ExtractSessionID(req)
+		if got != "generic-session-456" {
+			t.Errorf("expected generic-session-456, got %s", got)
+		}
+	})
+
+	t.Run("returns empty when no session header", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		got := ExtractSessionID(req)
+		if got != "" {
+			t.Errorf("expected empty string, got %s", got)
+		}
+	})
+}
+

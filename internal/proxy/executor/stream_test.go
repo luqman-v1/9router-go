@@ -89,3 +89,50 @@ func TestProcessCommandcodeEvent_ToolInputDeltaHasID(t *testing.T) {
 		t.Errorf("tool-input-delta: got id=%q idx=%d, want call_1/0", id, idx)
 	}
 }
+
+func TestParseCommandCodeError(t *testing.T) {
+	t.Run("parses explicit 503 error event", func(t *testing.T) {
+		event := map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":       "server_error",
+				"message":    "Service temporarily unavailable. Please try again shortly.",
+				"statusCode": float64(503),
+			},
+		}
+		status, msg := ParseCommandCodeError(event)
+		if status != 503 {
+			t.Errorf("expected 503, got %d", status)
+		}
+		if !strings.Contains(msg, "Service temporarily unavailable") {
+			t.Errorf("unexpected message: %s", msg)
+		}
+	})
+
+	t.Run("parses rate limit message as 429", func(t *testing.T) {
+		event := map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"message": "Rate limit reached for model",
+			},
+		}
+		status, _ := ParseCommandCodeError(event)
+		if status != 429 {
+			t.Errorf("expected 429, got %d", status)
+		}
+	})
+
+	t.Run("parses unauthorized message as 401", func(t *testing.T) {
+		event := map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"message": "Invalid API key provided",
+			},
+		}
+		status, _ := ParseCommandCodeError(event)
+		if status != 401 {
+			t.Errorf("expected 401, got %d", status)
+		}
+	})
+}
+

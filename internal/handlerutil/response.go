@@ -108,3 +108,25 @@ func GetString(m map[string]any, key string) string {
 	}
 	return ""
 }
+
+// SessionHeaderKeys defines the client request header keys that carry session IDs in priority order.
+var SessionHeaderKeys = []string{
+	"x-claude-code-session-id",
+	"x-session-id",
+	"session-id",
+	"session_id",
+	"x-amp-thread-id",
+}
+
+// ExtractSessionID extracts the session identifier from incoming HTTP request headers.
+func ExtractSessionID(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	for _, key := range SessionHeaderKeys {
+		if val := r.Header.Get(key); val != "" {
+			return val
+		}
+	}
+	return ""
+}

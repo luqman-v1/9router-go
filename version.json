@@ -1,5 +1,5 @@
 {
-  "latestVersion": "1.8.4",
+  "latestVersion": "1.8.5",
   "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
-  "releaseNotes": "v1.8.4: Combo cycle graceful recovery & fault tolerance (skips cyclic entries without failing HTTP 400), deep multi-level nested combo expansion, and safe model resolution across nested combos. Changelog: CHANGELOG.md."
+  "releaseNotes": "v1.8.5: Parity sync with Next.js v0.5.59 (new models GLM-5.3-Flash, DeepSeek V4 Vision, Grok 4.5/4.6; search providers Xquik, Ollama-search, Zai-search with credential fallback; Claude tool type defaulting; x-claude-code-session-id support; CommandCode in-stream error peeking). Changelog: CHANGELOG.md."
 }

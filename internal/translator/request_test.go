@@ -408,3 +408,40 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestDefaultClaudeToolType(t *testing.T) {
+	t.Run("defaults missing type to custom", func(t *testing.T) {
+		input := []byte(`{"tools":[{"name":"get_weather","description":"fetch weather","input_schema":{"type":"object"}}]}`)
+		output := DefaultClaudeToolType(input)
+		var parsed struct {
+			Tools []struct {
+				Name string `json:"name"`
+				Type string `json:"type"`
+			} `json:"tools"`
+		}
+		if err := json.Unmarshal(output, &parsed); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if len(parsed.Tools) != 1 || parsed.Tools[0].Type != "custom" {
+			t.Errorf("expected type='custom', got %+v", parsed.Tools)
+		}
+	})
+
+	t.Run("preserves existing tool type", func(t *testing.T) {
+		input := []byte(`{"tools":[{"name":"computer","type":"computer_use","input_schema":{"type":"object"}}]}`)
+		output := DefaultClaudeToolType(input)
+		var parsed struct {
+			Tools []struct {
+				Name string `json:"name"`
+				Type string `json:"type"`
+			} `json:"tools"`
+		}
+		if err := json.Unmarshal(output, &parsed); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if len(parsed.Tools) != 1 || parsed.Tools[0].Type != "computer_use" {
+			t.Errorf("expected type='computer_use', got %+v", parsed.Tools)
+		}
+	})
+}
+

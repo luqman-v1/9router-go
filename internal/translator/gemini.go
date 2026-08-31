@@ -115,10 +115,11 @@ type GeminiResponse struct {
 		FinishReason  string         `json:"finishReason,omitempty"`
 	} `json:"candidates"`
 	UsageMetadata *struct {
-		PromptTokenCount       int `json:"promptTokenCount"`
-		CandidatesTokenCount   int `json:"candidatesTokenCount"`
+		PromptTokenCount        int `json:"promptTokenCount"`
+		CandidatesTokenCount    int `json:"candidatesTokenCount"`
 		CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
-		CandidatesTokenDetails *struct {
+		CachedContentToken      int `json:"cachedContentToken,omitempty"`
+		CandidatesTokenDetails  *struct {
 			ReasoningTokens int `json:"reasoningTokens"`
 		} `json:"candidatesTokenDetails,omitempty"`
 	} `json:"usageMetadata,omitempty"`
@@ -132,9 +133,10 @@ type GeminiStreamChunk struct {
 		Index        int            `json:"index"`
 	} `json:"candidates"`
 	UsageMetadata *struct {
-		PromptTokenCount       int `json:"promptTokenCount"`
-		CandidatesTokenCount   int `json:"candidatesTokenCount"`
+		PromptTokenCount        int `json:"promptTokenCount"`
+		CandidatesTokenCount    int `json:"candidatesTokenCount"`
 		CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
+		CachedContentToken      int `json:"cachedContentToken,omitempty"`
 	} `json:"usageMetadata,omitempty"`
 }
 
@@ -442,6 +444,9 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 		inputTokens = geminiResp.UsageMetadata.PromptTokenCount
 		outputTokens = geminiResp.UsageMetadata.CandidatesTokenCount
 		cachedTokens = geminiResp.UsageMetadata.CachedContentTokenCount
+		if cachedTokens == 0 {
+			cachedTokens = geminiResp.UsageMetadata.CachedContentToken
+		}
 		if geminiResp.UsageMetadata.CandidatesTokenDetails != nil {
 			reasoningTokens = geminiResp.UsageMetadata.CandidatesTokenDetails.ReasoningTokens
 		}
@@ -611,6 +616,9 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 				inputTokens = geminiChunk.UsageMetadata.PromptTokenCount
 				outputTokens = geminiChunk.UsageMetadata.CandidatesTokenCount
 				cachedTokens = geminiChunk.UsageMetadata.CachedContentTokenCount
+				if cachedTokens == 0 {
+					cachedTokens = geminiChunk.UsageMetadata.CachedContentToken
+				}
 			}
 
 			state.Usage = &OpenAIUsage{

@@ -527,6 +527,21 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"xquik": {
+		BaseURL:    "https://api.xquik.com/v1/x/search-tweets",
+		AuthHeader: "x-api-key",
+		AuthScheme: "raw",
+	},
+	"ollama-search": {
+		BaseURL:    "https://ollama.com/api/web_search",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"zai-search": {
+		BaseURL:    "https://api.z.ai/api/mcp/web_search",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"vertex": {
 		BaseURL:    "https://aiplatform.googleapis.com/v1",
 		AuthHeader: "Authorization",

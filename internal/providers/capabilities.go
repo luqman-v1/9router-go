@@ -50,7 +50,13 @@ var modelCapabilities = map[string]Capabilities{
 	"claude-sonnet-5-agentic":        {Vision: true, Reasoning: true, Search: true, Tools: true},
 	"claude-sonnet-5-thinking-agentic": {Vision: true, Reasoning: true, Search: true, Tools: true},
 	"gpt-image-1":                    {ImageOutput: true},
+	"glm-5.3-flash":                  {Vision: true, Reasoning: true, Tools: true},
+	"glm-5.3":                        {Reasoning: true, Tools: true},
 	"glm-4.6v":                       {Vision: true, Reasoning: true, Tools: true},
+	"deepseek-v4-vision":             {Vision: true, Reasoning: true, Tools: true},
+	"grok-4.6":                       {Vision: true, Reasoning: true, Search: true, Tools: true},
+	"grok-4.5":                       {Vision: true, Reasoning: true, Search: true, Tools: true},
+	"muse-spark-1.2-contributor-free": {Reasoning: true, Tools: true},
 	"vision-model":                   {Vision: true, Reasoning: true, Tools: true},
 	"coder-model":                    {Reasoning: true, Tools: true},
 	"kimi-k3":                        {Vision: true, VideoInput: true, Reasoning: true, Tools: true},
@@ -246,8 +252,10 @@ func GetModelTokenLimits(model string) (contextWindow int, maxOutput int) {
 	m := strings.ToLower(model)
 
 	switch {
-	case strings.Contains(m, "gemini-1.5") || strings.Contains(m, "gemini-2.0") || strings.Contains(m, "gemini-2.5") || strings.Contains(m, "gemini-3"):
+	case strings.Contains(m, "gemini-1.5") || strings.Contains(m, "gemini-2.0") || strings.Contains(m, "gemini-2.5") || strings.Contains(m, "gemini-3") || strings.Contains(m, "glm-5.3-flash"):
 		return 1048576, 65536
+	case strings.Contains(m, "grok-4.5") || strings.Contains(m, "grok-4.6"):
+		return 524288, 32768
 	case strings.Contains(m, "claude-3") || strings.Contains(m, "claude-sonnet") || strings.Contains(m, "claude-opus") || strings.Contains(m, "claude-haiku"):
 		return 200000, 8192
 	case strings.Contains(m, "gpt-4o") || strings.Contains(m, "gpt-4-turbo") || strings.Contains(m, "gpt-4.1") || strings.Contains(m, "gpt-5"):

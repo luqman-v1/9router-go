@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"9router/proxy/internal/log"
 	"bufio"
 	"encoding/json"
 	"fmt"
@@ -10,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
 
@@ -461,13 +462,54 @@ func BuildCommandcodeChunk(state *CommandcodeStreamState, delta map[string]any, 
 	return string(b)
 }
 
-func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Reader, model string) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
+// ParseCommandCodeError extracts HTTP status code and message from a CommandCode error event.
+func ParseCommandCodeError(event map[string]any) (int, string) {
+	if event == nil {
+		return 503, "CommandCode upstream error"
+	}
+	message := "CommandCode upstream error"
+	statusCode := 503
 
-	flusher, _ := w.(http.Flusher)
+	if errVal, ok := event["error"]; ok {
+		if errMap, ok := errVal.(map[string]any); ok {
+			if msg, ok := errMap["message"].(string); ok && msg != "" {
+				message = msg
+			}
+			if sc, ok := errMap["statusCode"].(float64); ok && sc >= 400 && sc <= 599 {
+				statusCode = int(sc)
+			} else if sc, ok := errMap["status"].(float64); ok && sc >= 400 && sc <= 599 {
+				statusCode = int(sc)
+			}
+		} else if msg, ok := errVal.(string); ok && msg != "" {
+			message = msg
+		}
+	} else if msg, ok := event["message"].(string); ok && msg != "" {
+		message = msg
+	}
+
+	if sc, ok := event["statusCode"].(float64); ok && sc >= 400 && sc <= 599 {
+		statusCode = int(sc)
+	}
+
+	if statusCode == 503 {
+		lower := strings.ToLower(message)
+		if strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests") {
+			statusCode = 429
+		} else if strings.Contains(lower, "unauthorized") || strings.Contains(lower, "invalid api key") || strings.Contains(lower, "authentication") {
+			statusCode = 401
+		} else if strings.Contains(lower, "payment required") || strings.Contains(lower, "billing") {
+			statusCode = 402
+		} else if strings.Contains(lower, "quota") || strings.Contains(lower, "forbidden") || strings.Contains(lower, "permission") {
+			statusCode = 403
+		} else if strings.Contains(lower, "not found") {
+			statusCode = 404
+		}
+	}
+
+	return statusCode, message
+}
+
+func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Reader, model string) error {
 	state := &CommandcodeStreamState{
 		ResponseID: fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
 		Created:    time.Now().Unix(),
@@ -476,6 +518,8 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 
 	scanner := bufio.NewScanner(upstream)
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+
+	var headersWritten bool
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -497,7 +541,24 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 		}
 		eventType, _ := event["type"].(string)
 
+		if eventType == "error" && !headersWritten {
+			code, msg := ParseCommandCodeError(event)
+			return &proxy.UpstreamError{
+				StatusCode: code,
+				Body:       []byte(fmt.Sprintf(`{"error":{"message":"%s","code":%d}}`, msg, code)),
+			}
+		}
+
 		chunks := ProcessCommandcodeEvent(event, eventType, state)
+		if !headersWritten {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			w.WriteHeader(http.StatusOK)
+			headersWritten = true
+		}
+
+		flusher, _ := w.(http.Flusher)
 		for _, chunk := range chunks {
 			if _, err := w.Write([]byte(fmt.Sprintf("data: %s\n\n", chunk))); err != nil {
 				return err
@@ -508,6 +569,15 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 		}
 	}
 
+	if !headersWritten {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+		headersWritten = true
+	}
+
+	flusher, _ := w.(http.Flusher)
 	if !state.Finished {
 		finishChunk := BuildCommandcodeChunk(state, map[string]any{}, "stop")
 		if _, err := w.Write([]byte(fmt.Sprintf("data: %s\n\n", finishChunk))); err != nil {

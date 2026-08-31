@@ -128,3 +128,35 @@ func TestNewProvidersRegistry_v055(t *testing.T) {
 		t.Errorf("expected fish alias to resolve to fish-audio, got %s", a)
 	}
 }
+
+func TestNewProvidersRegistry_v059(t *testing.T) {
+	if _, ok := KnownProviders["xquik"]; !ok {
+		t.Error("expected xquik provider registered")
+	}
+	if _, ok := KnownProviders["ollama-search"]; !ok {
+		t.Error("expected ollama-search provider registered")
+	}
+	if _, ok := KnownProviders["zai-search"]; !ok {
+		t.Error("expected zai-search provider registered")
+	}
+	if a := ResolveAlias("xq"); a != "xquik" {
+		t.Errorf("expected xq alias to resolve to xquik, got %s", a)
+	}
+
+	// Verify new model capabilities
+	glmFlashCaps := GetCapabilitiesForModel("glm", "glm-5.3-flash")
+	if !glmFlashCaps.Vision || !glmFlashCaps.Reasoning {
+		t.Errorf("expected glm-5.3-flash to have vision and reasoning, got %+v", glmFlashCaps)
+	}
+
+	dsVisionCaps := GetCapabilitiesForModel("deepseek", "deepseek-v4-vision")
+	if !dsVisionCaps.Vision || !dsVisionCaps.Reasoning {
+		t.Errorf("expected deepseek-v4-vision to have vision and reasoning, got %+v", dsVisionCaps)
+	}
+
+	grokCaps := GetCapabilitiesForModel("xai", "grok-4.6")
+	if !grokCaps.Reasoning || !grokCaps.Search {
+		t.Errorf("expected grok-4.6 to have reasoning and search, got %+v", grokCaps)
+	}
+}
+

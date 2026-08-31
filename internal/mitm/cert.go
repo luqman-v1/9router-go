@@ -17,6 +17,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -169,6 +170,9 @@ func saveRootCA(certPath, keyPath string, cert *x509.Certificate, key crypto.Pri
 }
 
 func installRootCA(certPath string) error {
+	if strings.HasSuffix(os.Args[0], ".test") || os.Getenv("NO_INSTALL_CA") == "1" {
+		return nil
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return exec.Command("sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", "/Library/Keychains/System.keychain", certPath).Run()
