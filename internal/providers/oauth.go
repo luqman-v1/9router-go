@@ -88,6 +88,11 @@ var KnownOAuthConfigs = map[string]OAuthClientConfig{
 		ClientSecret: envOr("CODEBUDDY_INTL_OAUTH_CLIENT_SECRET", ""),
 		TokenURL:     "https://copilot.tencent.com/v2/plugin/auth/token/refresh",
 	},
+	"cline": {
+		ClientID:     envOr("CLINE_OAUTH_CLIENT_ID", ""),
+		ClientSecret: envOr("CLINE_OAUTH_CLIENT_SECRET", ""),
+		TokenURL:     "https://api.cline.bot/v1/auth/refresh",
+	},
 }
 
 func envOr(key, fallback string) string {

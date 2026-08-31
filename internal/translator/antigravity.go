@@ -3,6 +3,7 @@ package translator
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -192,7 +193,26 @@ var competitivePromptBlacklist = []string{
 	"Anthropic's Claude Agent SDK",
 }
 
-// StripCompetitivePrompts removes competitor identity strings from system instruction and contents.
+var opencodeRegex = regexp.MustCompile(`(?i)\bopencode\b`)
+
+func rewriteCompetingBranding(text string) string {
+	for _, phrase := range competitivePromptBlacklist {
+		text = strings.ReplaceAll(text, phrase, "")
+	}
+	text = opencodeRegex.ReplaceAllStringFunc(text, func(m string) string {
+		switch m {
+		case "OpenCode":
+			return "Antigravity"
+		case "OPENCODE":
+			return "ANTIGRAVITY"
+		default:
+			return "antigravity"
+		}
+	})
+	return strings.TrimSpace(text)
+}
+
+// StripCompetitivePrompts removes competitor identity strings and rewrites competing client branding.
 func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 	if req == nil {
 		return nil
@@ -201,11 +221,7 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 	if res.SystemInstruction != nil {
 		parts := make([]GeminiPart, len(res.SystemInstruction.Parts))
 		for i, p := range res.SystemInstruction.Parts {
-			text := p.Text
-			for _, phrase := range competitivePromptBlacklist {
-				text = strings.ReplaceAll(text, phrase, "")
-			}
-			p.Text = strings.TrimSpace(text)
+			p.Text = rewriteCompetingBranding(p.Text)
 			parts[i] = p
 		}
 		res.SystemInstruction = &GeminiContent{
@@ -218,11 +234,7 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 		parts := make([]GeminiPart, len(c.Parts))
 		for j, p := range c.Parts {
 			if p.Text != "" {
-				text := p.Text
-				for _, phrase := range competitivePromptBlacklist {
-					text = strings.ReplaceAll(text, phrase, "")
-				}
-				p.Text = strings.TrimSpace(text)
+				p.Text = rewriteCompetingBranding(p.Text)
 			}
 			parts[j] = p
 		}

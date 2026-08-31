@@ -22,19 +22,21 @@ type SettingsData struct {
 	HeadroomUrl        string                      `json:"headroomUrl"`
 	HeadroomCodeAware  bool                        `json:"headroomCodeAware"`
 	HeadroomKompress   bool                        `json:"headroomKompress"`
+	HeadroomTimeoutMs  int                         `json:"headroomTimeoutMs"`
 	ProviderStrategies map[string]ProviderStrategy `json:"providerStrategies,omitempty"`
 }
 
 // DefaultSettings returns fallback settings.
 func DefaultSettings() *SettingsData {
 	return &SettingsData{
-		RTKEnabled:       true,
-		CavemanEnabled:   false,
-		CavemanLevel:     "full",
-		PonytailEnabled:  false,
-		PonytailLevel:    "full",
-		HeadroomUrl:      "http://localhost:8787",
-		HeadroomKompress: true,
+		RTKEnabled:        true,
+		CavemanEnabled:    false,
+		CavemanLevel:      "full",
+		PonytailEnabled:   false,
+		PonytailLevel:     "full",
+		HeadroomUrl:       "http://localhost:8787",
+		HeadroomKompress:  true,
+		HeadroomTimeoutMs: 3000,
 	}
 }
 
@@ -75,6 +77,9 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	}
 	if v, ok := raw["headroomKompress"].(bool); ok {
 		s.HeadroomKompress = v
+	}
+	if v, ok := raw["headroomTimeoutMs"].(float64); ok && v > 0 {
+		s.HeadroomTimeoutMs = int(v)
 	}
 	if ps, ok := raw["providerStrategies"].(map[string]any); ok {
 		s.ProviderStrategies = make(map[string]ProviderStrategy)
