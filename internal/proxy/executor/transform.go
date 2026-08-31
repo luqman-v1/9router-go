@@ -74,101 +74,183 @@ func convertUserContent(raw json.RawMessage) map[string]interface{} {
 	return result
 }
 
+func cleanResponsesModel(model string) string {
+	clean := strings.TrimPrefix(model, "oc/")
+	clean = strings.TrimPrefix(clean, "opencode/")
+	if idx := strings.IndexByte(clean, '('); idx != -1 {
+		clean = clean[:idx]
+	}
+	return clean
+}
+
 // buildResponsesBody transforms OpenAI Chat Completions body → Responses API body.
 // Returns (responsesBody, modelName, error).
 func buildResponsesBody(body []byte) ([]byte, string, error) {
+	// If the body is already in Responses API format (has input[]), normalize fields and return
+	var quickCheck struct {
+		Input               []any  `json:"input"`
+		Model               string `json:"model"`
+		MaxTokens           *int   `json:"max_tokens,omitempty"`
+		MaxCompletionTokens *int   `json:"max_completion_tokens,omitempty"`
+		MaxOutputTokens     *int   `json:"max_output_tokens,omitempty"`
+	}
+	if err := json.Unmarshal(body, &quickCheck); err == nil && len(quickCheck.Input) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(body, &m); err == nil {
+			cleanModel := cleanResponsesModel(quickCheck.Model)
+			m["model"] = cleanModel
+			m["stream"] = true
+			m["store"] = false
+			if m["max_output_tokens"] == nil {
+				if quickCheck.MaxCompletionTokens != nil {
+					m["max_output_tokens"] = *quickCheck.MaxCompletionTokens
+				} else if quickCheck.MaxTokens != nil {
+					m["max_output_tokens"] = *quickCheck.MaxTokens
+				}
+			}
+			delete(m, "max_tokens")
+			delete(m, "max_completion_tokens")
+			out, err := json.Marshal(m)
+			return out, cleanModel, err
+		}
+	}
+
 	var oreq struct {
-		Model        string          `json:"model"`
-		Messages     json.RawMessage `json:"messages"`
-		Instructions string          `json:"instructions,omitempty"`
-		MaxTokens    int             `json:"max_tokens,omitempty"`
-		Stream       bool            `json:"stream,omitempty"`
-		Tools        json.RawMessage `json:"tools,omitempty"`
+		Model               string          `json:"model"`
+		Messages            json.RawMessage `json:"messages"`
+		Instructions        string          `json:"instructions,omitempty"`
+		MaxTokens           *int            `json:"max_tokens,omitempty"`
+		MaxCompletionTokens *int            `json:"max_completion_tokens,omitempty"`
+		MaxOutputTokens     *int            `json:"max_output_tokens,omitempty"`
+		Temperature         *float64        `json:"temperature,omitempty"`
+		TopP                *float64        `json:"top_p,omitempty"`
+		ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
+		Reasoning           any             `json:"reasoning,omitempty"`
+		Tools               json.RawMessage `json:"tools,omitempty"`
 	}
 	if err := json.Unmarshal(body, &oreq); err != nil {
 		return nil, "", fmt.Errorf("parse request: %w", err)
 	}
 
+	cleanModel := cleanResponsesModel(oreq.Model)
+
 	var messages []struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
+		Role         string          `json:"role"`
+		Content      json.RawMessage `json:"content"`
+		ToolCallID   string          `json:"tool_call_id,omitempty"`
+		ToolCalls    []struct {
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Function struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			} `json:"function"`
+		} `json:"tool_calls,omitempty"`
 	}
 	if err := json.Unmarshal(oreq.Messages, &messages); err != nil {
 		log.Warn("executor", "unmarshal messages", "error", err)
 	}
 
 	var inputItems []map[string]interface{}
+	instructions := oreq.Instructions
 
 	for _, msg := range messages {
 		switch msg.Role {
-		case "system":
-			text := ExtractSimpleText(msg.Content)
-			if text != "" {
-				inputItems = append(inputItems, map[string]interface{}{
-					"type": "message",
-					"role": "developer",
-					"content": []map[string]interface{}{{
-						"type": "input_text",
-						"text": text,
-					}},
-				})
+		case "system", "developer":
+			if instructions == "" {
+				instructions = ExtractSimpleText(msg.Content)
 			}
 		case "user":
 			inputItems = append(inputItems, convertUserContent(msg.Content))
 		case "assistant":
-			aiItem := map[string]interface{}{
-				"type": "message",
-				"role": "assistant",
-			}
 			var textContent string
-			if err := json.Unmarshal(msg.Content, &textContent); err == nil {
-				if textContent != "" {
-					aiItem["content"] = []map[string]interface{}{{
-						"type": "input_text",
+			if err := json.Unmarshal(msg.Content, &textContent); err == nil && textContent != "" {
+				inputItems = append(inputItems, map[string]interface{}{
+					"type": "message",
+					"role": "assistant",
+					"content": []map[string]interface{}{{
+						"type": "output_text",
 						"text": textContent,
-					}}
-				}
+					}},
+				})
 			} else {
 				var blocks []map[string]interface{}
-				if err := json.Unmarshal(msg.Content, &blocks); err == nil {
+				if err := json.Unmarshal(msg.Content, &blocks); err == nil && len(blocks) > 0 {
+					var contentList []map[string]interface{}
 					for _, b := range blocks {
 						if t, ok := b["text"].(string); ok && t != "" {
-							aiItem["content"] = []map[string]interface{}{{
-								"type": "input_text",
+							contentList = append(contentList, map[string]interface{}{
+								"type": "output_text",
 								"text": t,
-							}}
-							break
+							})
 						}
+					}
+					if len(contentList) > 0 {
+						inputItems = append(inputItems, map[string]interface{}{
+							"type": "message",
+							"role": "assistant",
+							"content": contentList,
+						})
 					}
 				}
 			}
-			inputItems = append(inputItems, aiItem)
+
+			// Add assistant tool calls
+			for _, tc := range msg.ToolCalls {
+				inputItems = append(inputItems, map[string]interface{}{
+					"type":      "function_call",
+					"call_id":   tc.ID,
+					"name":      tc.Function.Name,
+					"arguments": tc.Function.Arguments,
+				})
+			}
 		case "tool":
 			text := ExtractSimpleText(msg.Content)
-			var toolCallID string
-			if err := json.Unmarshal(msg.Content, &toolCallID); err != nil {
-				log.Warn("executor", "unmarshal tool call id", "error", err)
-			}
 			inputItems = append(inputItems, map[string]interface{}{
 				"type":    "function_call_output",
-				"call_id": toolCallID,
+				"call_id": msg.ToolCallID,
 				"output":  text,
 			})
 		}
 	}
 
 	respReq := map[string]interface{}{
-		"model":  oreq.Model,
+		"model":  cleanModel,
 		"input":  inputItems,
 		"stream": true,
 		"store":  false,
 	}
 
-	if oreq.Instructions != "" {
-		respReq["instructions"] = oreq.Instructions
+	if instructions != "" {
+		respReq["instructions"] = instructions
 	}
-	if oreq.MaxTokens > 0 {
-		respReq["max_output_tokens"] = oreq.MaxTokens
+
+	if oreq.MaxOutputTokens != nil {
+		respReq["max_output_tokens"] = *oreq.MaxOutputTokens
+	} else if oreq.MaxCompletionTokens != nil {
+		respReq["max_output_tokens"] = *oreq.MaxCompletionTokens
+	} else if oreq.MaxTokens != nil {
+		respReq["max_output_tokens"] = *oreq.MaxTokens
+	}
+
+	if oreq.Temperature != nil {
+		respReq["temperature"] = *oreq.Temperature
+	}
+	if oreq.TopP != nil {
+		respReq["top_p"] = *oreq.TopP
+	}
+
+	if oreq.ReasoningEffort != "" {
+		rEffort := oreq.ReasoningEffort
+		if rEffort == "max" {
+			rEffort = "xhigh"
+		}
+		respReq["reasoning"] = map[string]interface{}{
+			"effort":  rEffort,
+			"summary": "auto",
+		}
+	} else if oreq.Reasoning != nil {
+		respReq["reasoning"] = oreq.Reasoning
 	}
 
 	// Tools
@@ -187,18 +269,25 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 				}
 				if t.Function != nil {
 					var fn struct {
-						Name        string          `json:"name"`
-						Description string          `json:"description"`
-						Parameters  json.RawMessage `json:"parameters"`
+						Name        string         `json:"name"`
+						Description string         `json:"description"`
+						Parameters  map[string]any `json:"parameters"`
 					}
-					if err := json.Unmarshal(t.Function, &fn); err != nil {
-						log.Warn("executor", "unmarshal tool function", "error", err)
-					}
-					tool["name"] = fn.Name
-					if fn.Description != "" {
-						tool["description"] = fn.Description
-					}
-					if fn.Parameters != nil {
+					if err := json.Unmarshal(t.Function, &fn); err == nil {
+						tool["name"] = fn.Name
+						if fn.Description != "" {
+							tool["description"] = fn.Description
+						}
+						if fn.Parameters == nil {
+							fn.Parameters = map[string]any{"type": "object", "properties": map[string]any{}}
+						} else {
+							if fn.Parameters["type"] == nil {
+								fn.Parameters["type"] = "object"
+							}
+							if fn.Parameters["properties"] == nil {
+								fn.Parameters["properties"] = map[string]any{}
+							}
+						}
 						tool["parameters"] = fn.Parameters
 					}
 				}
@@ -211,7 +300,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 	}
 
 	reqBody, err := json.Marshal(respReq)
-	return reqBody, oreq.Model, err
+	return reqBody, cleanModel, err
 }
 
 // Kimchi body cleaning helpers

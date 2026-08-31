@@ -339,6 +339,11 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		}
 		defer resp.Body.Close()
 
+		if resp.StatusCode != http.StatusOK {
+			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		}
+
 		return handleCodexStream(w, req, resp.Body)
 	}
 
