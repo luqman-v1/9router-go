@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"9router/proxy/internal/db"
@@ -53,6 +54,51 @@ func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	bodyStr := rec.Body.String()
+	if !strings.Contains(bodyStr, "event: message_start") || !strings.Contains(bodyStr, "event: content_block_delta") {
+		t.Fatalf("expected Claude SSE format (message_start / content_block_delta), got: %s", bodyStr)
+	}
+}
+
+func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
+	executor.RegisterAll()
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	// Test Claude messages format: POST /v1/messages with stream=false
+	claudeBody := `{
+		"model": "oc/muse-spark-1.2-contributor-free",
+		"messages": [
+			{"role": "user", "content": "Say hello in one word"}
+		],
+		"max_tokens": 1024,
+		"stream": false,
+		"system": "You are a concise assistant."
+	}`
+
+	req := httptest.NewRequest("POST", "/v1/messages", bytes.NewReader([]byte(claudeBody)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleMessages(rec, req)
+
+	t.Logf("Non-streaming Response Code: %d", rec.Code)
+	t.Logf("Non-streaming Response Body: %s", rec.Body.String())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	contentType := rec.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "application/json") {
+		t.Fatalf("expected application/json content type, got: %s", contentType)
+	}
+	bodyStr := rec.Body.String()
+	if !strings.Contains(bodyStr, `"type":"message"`) || !strings.Contains(bodyStr, `"role":"assistant"`) {
+		t.Fatalf("expected Claude JSON message structure, got: %s", bodyStr)
 	}
 }
 

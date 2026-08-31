@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -162,16 +163,153 @@ func toolCallIndex(state *CodexStreamState, event map[string]any) (string, int) 
 }
 
 func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-
-	flusher, _ := w.(http.Flusher)
 	responseID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 	state := &CodexStreamState{}
 
+	if req.IsStream {
+		if !req.TranslateResp {
+			// Streaming to OpenAI-compatible client
+			flusher := proxy.WriteSSEHeaders(w)
+			buf := make([]byte, 64*1024)
+			var leftover string
+
+			for {
+				n, err := upstream.Read(buf)
+				if n > 0 {
+					text := leftover + string(buf[:n])
+					leftover = ""
+
+					for _, line := range strings.Split(text, "\n") {
+						line = strings.TrimSpace(line)
+						if line == "" {
+							continue
+						}
+
+						if strings.HasPrefix(line, "event: ") {
+							state.CurrentEvent = line[7:]
+							continue
+						}
+
+						if strings.HasPrefix(line, "data: ") {
+							data := line[6:]
+							if data == "[DONE]" {
+								return writeSSEFinish(w, flusher, req, state, responseID, created)
+							}
+							out := ProcessCodexEvent(data, state, responseID, created)
+							for _, chunk := range out {
+								if req.TTFT != nil && *req.TTFT == 0 {
+									*req.TTFT = time.Since(req.StartTime).Milliseconds()
+								}
+								if req.ResponseBuf != nil {
+									req.ResponseBuf.Write([]byte(chunk))
+								}
+								if _, werr := w.Write([]byte(chunk)); werr != nil {
+									return werr
+								}
+							}
+							if flusher != nil {
+								flusher.Flush()
+							}
+						}
+					}
+				}
+				if err != nil {
+					break
+				}
+			}
+			return writeSSEFinish(w, flusher, req, state, responseID, created)
+		}
+
+		// Streaming with Claude translation (/v1/messages)
+		flusher := proxy.WriteSSEHeaders(w)
+		sessionKey := fmt.Sprintf("stream-%d", time.Now().UnixNano())
+		defer translator.ClearStreamState(sessionKey)
+
+		buf := make([]byte, 64*1024)
+		var leftover string
+
+		for {
+			n, err := upstream.Read(buf)
+			if n > 0 {
+				text := leftover + string(buf[:n])
+				leftover = ""
+
+				for _, line := range strings.Split(text, "\n") {
+					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
+					}
+
+					if strings.HasPrefix(line, "event: ") {
+						state.CurrentEvent = line[7:]
+						continue
+					}
+
+					if strings.HasPrefix(line, "data: ") {
+						data := line[6:]
+						if data == "[DONE]" {
+							break
+						}
+						out := ProcessCodexEvent(data, state, responseID, created)
+						for _, chunk := range out {
+							chunkBytes := []byte(chunk)
+							translated, terr := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, chunkBytes)
+							if terr != nil {
+								log.Error("executor", "translate codex stream error", "error", terr)
+								continue
+							}
+							if translated == nil {
+								continue
+							}
+							if req.TTFT != nil && *req.TTFT == 0 {
+								*req.TTFT = time.Since(req.StartTime).Milliseconds()
+							}
+							if req.ResponseBuf != nil {
+								req.ResponseBuf.Write(translated)
+							}
+							if _, werr := w.Write(translated); werr != nil {
+								return werr
+							}
+							if flusher != nil {
+								flusher.Flush()
+							}
+						}
+					}
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+
+		// Finish stream
+		if !state.Completed {
+			finishChunk := []byte(fmt.Sprintf("data: %s\n\n", fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`, responseID, created)))
+			if translated, terr := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, finishChunk); terr == nil && translated != nil {
+				w.Write(translated)
+			}
+		}
+		doneChunk := []byte("data: [DONE]\n\n")
+		if translated, terr := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, doneChunk); terr == nil && translated != nil {
+			w.Write(translated)
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+
+		if usage := translator.GetStreamUsage(sessionKey); usage != nil {
+			translator.SetUsage(req.Ctx, usage)
+		} else {
+			translator.SetUsage(req.Ctx, &translator.OpenAIUsage{
+				CompletionTokens: state.OutputLength / 4,
+			})
+		}
+		return nil
+	}
+
+	// Non-streaming (req.IsStream == false)
+	var sseBuf bytes.Buffer
 	buf := make([]byte, 64*1024)
 	var leftover string
 
@@ -195,16 +333,11 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 				if strings.HasPrefix(line, "data: ") {
 					data := line[6:]
 					if data == "[DONE]" {
-						return writeSSEFinish(w, flusher, req, state, responseID, created)
+						break
 					}
 					out := ProcessCodexEvent(data, state, responseID, created)
 					for _, chunk := range out {
-						if _, werr := w.Write([]byte(chunk)); werr != nil {
-							return werr
-						}
-					}
-					if flusher != nil {
-						flusher.Flush()
+						sseBuf.WriteString(chunk)
 					}
 				}
 			}
@@ -214,7 +347,12 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 		}
 	}
 
-	return writeSSEFinish(w, flusher, req, state, responseID, created)
+	converted, ok := sseToOpenAIJSON(sseBuf.Bytes())
+	if !ok {
+		// Fallback empty response
+		converted = []byte(fmt.Sprintf(`{"id":"%s","object":"chat.completion","created":%d,"choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`, responseID, created))
+	}
+	return jsonResponse(req.Ctx, w, bytes.NewReader(converted), req.TranslateResp, req.ResponseBuf)
 }
 
 // writeSSEFinish writes the closing [DONE] frame and records usage. If the
