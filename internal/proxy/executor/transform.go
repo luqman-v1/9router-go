@@ -1,14 +1,15 @@
 package executor
 
 import (
-	"encoding/json"
-	"fmt"
 	"9router/proxy/internal/log"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
+	"fmt"
 	"strings"
 )
 
-// ExtractSimpleText extracts text from json.RawMessage (string or array[text]).
-func ExtractSimpleText(raw json.RawMessage) string {
+// ExtractSimpleText extracts text from jsontext.Value (string or array[text]).
+func ExtractSimpleText(raw jsontext.Value) string {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s
@@ -25,7 +26,7 @@ func ExtractSimpleText(raw json.RawMessage) string {
 }
 
 // convertUserContent converts OpenAI user message content to Responses API format.
-func convertUserContent(raw json.RawMessage) map[string]interface{} {
+func convertUserContent(raw jsontext.Value) map[string]interface{} {
 	result := map[string]interface{}{
 		"type": "message",
 		"role": "user",
@@ -135,17 +136,17 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 	}
 
 	var oreq struct {
-		Model               string          `json:"model"`
-		Messages            json.RawMessage `json:"messages"`
-		Instructions        string          `json:"instructions,omitempty"`
-		MaxTokens           *int            `json:"max_tokens,omitempty"`
-		MaxCompletionTokens *int            `json:"max_completion_tokens,omitempty"`
-		MaxOutputTokens     *int            `json:"max_output_tokens,omitempty"`
-		Temperature         *float64        `json:"temperature,omitempty"`
-		TopP                *float64        `json:"top_p,omitempty"`
-		ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
-		Reasoning           any             `json:"reasoning,omitempty"`
-		Tools               json.RawMessage `json:"tools,omitempty"`
+		Model               string         `json:"model"`
+		Messages            jsontext.Value `json:"messages"`
+		Instructions        string         `json:"instructions,omitempty"`
+		MaxTokens           *int           `json:"max_tokens,omitempty"`
+		MaxCompletionTokens *int           `json:"max_completion_tokens,omitempty"`
+		MaxOutputTokens     *int           `json:"max_output_tokens,omitempty"`
+		Temperature         *float64       `json:"temperature,omitempty"`
+		TopP                *float64       `json:"top_p,omitempty"`
+		ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
+		Reasoning           any            `json:"reasoning,omitempty"`
+		Tools               jsontext.Value `json:"tools,omitempty"`
 	}
 	if err := json.Unmarshal(body, &oreq); err != nil {
 		return nil, "", fmt.Errorf("parse request: %w", err)
@@ -154,10 +155,10 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 	cleanModel := cleanResponsesModel(oreq.Model)
 
 	var messages []struct {
-		Role         string          `json:"role"`
-		Content      json.RawMessage `json:"content"`
-		ToolCallID   string          `json:"tool_call_id,omitempty"`
-		ToolCalls    []struct {
+		Role       string         `json:"role"`
+		Content    jsontext.Value `json:"content"`
+		ToolCallID string         `json:"tool_call_id,omitempty"`
+		ToolCalls  []struct {
 			ID       string `json:"id"`
 			Type     string `json:"type"`
 			Function struct {
@@ -206,8 +207,8 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 					}
 					if len(contentList) > 0 {
 						inputItems = append(inputItems, map[string]interface{}{
-							"type": "message",
-							"role": "assistant",
+							"type":    "message",
+							"role":    "assistant",
 							"content": contentList,
 						})
 					}
@@ -275,9 +276,9 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 	// Tools
 	if len(oreq.Tools) > 0 {
 		var tools []struct {
-			Type     string          `json:"type"`
-			Function json.RawMessage `json:"function,omitempty"`
-			Name     string          `json:"name,omitempty"`
+			Type     string         `json:"type"`
+			Function jsontext.Value `json:"function,omitempty"`
+			Name     string         `json:"name,omitempty"`
 		}
 		if err := json.Unmarshal(oreq.Tools, &tools); err == nil {
 			var apiTools []map[string]interface{}
@@ -534,4 +535,3 @@ func InjectReasoningContent(body []byte, provider string) []byte {
 	}
 	return newBody
 }
-

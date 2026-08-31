@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -28,7 +28,7 @@ func TestForwardGrokCLIRequest_Success(t *testing.T) {
 		}
 
 		var reqBody map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		if err := json.UnmarshalRead(r.Body, &reqBody); err != nil {
 			t.Fatalf("parse body: %v", err)
 		}
 		if reqBody["stream"] != true {

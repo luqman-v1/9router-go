@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +18,7 @@ func TestForwardKimchiRequest_Success(t *testing.T) {
 			t.Errorf("expected Bearer auth")
 		}
 		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.UnmarshalRead(r.Body, &body); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
 		if _, ok := body["anthropic_version"]; ok {
@@ -118,13 +118,13 @@ func TestForwardKimchiRequest_UpstreamError(t *testing.T) {
 
 func TestCleanKimchiBody_TopLevelDrops(t *testing.T) {
 	body := map[string]any{
-		"model":              "test",
-		"anthropic_version":  "2023-06-01",
-		"anthropic_beta":     []any{"tools-2024-05-16"},
-		"client_metadata":    "some-data",
-		"stop_sequences":     []string{"end"},
-		"thinking":           map[string]any{},
-		"top_k":              20,
+		"model":             "test",
+		"anthropic_version": "2023-06-01",
+		"anthropic_beta":    []any{"tools-2024-05-16"},
+		"client_metadata":   "some-data",
+		"stop_sequences":    []string{"end"},
+		"thinking":          map[string]any{},
+		"top_k":             20,
 	}
 	executor.CleanKimchiBody(body)
 	if _, ok := body["anthropic_version"]; ok {
@@ -149,7 +149,7 @@ func TestCleanKimchiBody_TopLevelDrops(t *testing.T) {
 
 func TestCleanKimchiBody_SystemMerge(t *testing.T) {
 	body := map[string]any{
-		"model": "test",
+		"model":  "test",
 		"system": "You are a helpful assistant",
 		"messages": []any{
 			map[string]any{"role": "user", "content": "hi"},
@@ -192,7 +192,7 @@ func TestCleanKimchiBody_SystemArray(t *testing.T) {
 
 func TestCleanKimchiBody_ExistingSystemMessage(t *testing.T) {
 	body := map[string]any{
-		"model": "test",
+		"model":  "test",
 		"system": "override system",
 		"messages": []any{
 			map[string]any{"role": "system", "content": "existing system"},
@@ -213,8 +213,8 @@ func TestCleanKimchiBody_StripMessageArtifacts(t *testing.T) {
 		"model": "test",
 		"messages": []any{
 			map[string]any{
-				"role":    "user",
-				"content": "hi",
+				"role":          "user",
+				"content":       "hi",
 				"cache_control": map[string]any{"ephemeral": true},
 			},
 		},
@@ -253,8 +253,8 @@ func TestCleanKimchiBody_ReasoningContentLong(t *testing.T) {
 		"model": "test",
 		"messages": []any{
 			map[string]any{
-				"role":             "assistant",
-				"content":          "final answer",
+				"role":              "assistant",
+				"content":           "final answer",
 				"reasoning_content": "long reasoning trace here that is more than 8 chars",
 			},
 		},
@@ -272,8 +272,8 @@ func TestCleanKimchiBody_ReasoningContentShort(t *testing.T) {
 		"model": "test",
 		"messages": []any{
 			map[string]any{
-				"role":             "assistant",
-				"content":          "final answer",
+				"role":              "assistant",
+				"content":           "final answer",
 				"reasoning_content": " ",
 			},
 		},
@@ -329,4 +329,3 @@ func TestKimchi_DualAuth_OAuthSupport(t *testing.T) {
 		t.Errorf("expected OAuth access token oauth-kimchi-token-67890, got %s", key)
 	}
 }
-

@@ -3,7 +3,7 @@ package media
 import (
 	"bytes"
 	"database/sql"
-	"encoding/json"
+	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -196,7 +196,7 @@ func TestHandleAudioSpeech_MiMo(t *testing.T) {
 				Voice  string `json:"voice"`
 			} `json:"audio"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		if err := json.UnmarshalRead(r.Body, &reqBody); err != nil {
 			t.Errorf("decode upstream body: %v", err)
 		}
 		if reqBody.Model != "mimo-v2.5-tts" {

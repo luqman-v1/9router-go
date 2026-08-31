@@ -24,7 +24,11 @@ const maxPendingJSON = 1 << 20 // 1 MiB
 // input ended mid-value ("unexpected end of JSON input") — i.e. a valid JSON
 // prefix awaiting a continuation, as opposed to actual malformed data.
 func isTruncatedJSON(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "unexpected end of JSON input")
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "unexpected end of JSON input") || strings.Contains(s, "unexpected EOF")
 }
 
 func pruneStaleStatesLocked() {

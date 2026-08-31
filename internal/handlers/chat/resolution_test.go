@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"testing"
 
 	"9router/proxy/internal/db"
@@ -363,4 +363,3 @@ func TestResolveModel_UnresolvableReturnsError(t *testing.T) {
 		t.Error("expected error for unresolvable model with no connections")
 	}
 }
-

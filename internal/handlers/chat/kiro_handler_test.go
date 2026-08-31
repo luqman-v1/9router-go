@@ -3,7 +3,7 @@ package chat
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"hash/crc32"
 	"net/http"

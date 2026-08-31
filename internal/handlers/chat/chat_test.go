@@ -1,19 +1,19 @@
 package chat
 
 import (
+	"context"
 	"database/sql"
-	"encoding/json"
+	json "encoding/json/v2"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"context"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/dbtest"
-	"os"
 	"9router/proxy/internal/handlerutil"
+	"os"
 )
 
 func setupChatTestDB(t *testing.T) (*sql.DB, func()) {
@@ -817,8 +817,6 @@ func TestHandleMessages_NoConnection(t *testing.T) {
 		t.Errorf("expected 404 or 502, got %d, body: %s", rec.Code, rec.Body.String())
 	}
 }
-
-
 
 func TestHandleChatCompletions_NilBody(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)

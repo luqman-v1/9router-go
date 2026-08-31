@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"strings"
 	"testing"
 
@@ -153,8 +153,8 @@ func TestGetJSONFloatComprehensive(t *testing.T) {
 func TestGetJSONMapComprehensive(t *testing.T) {
 	nested := map[string]any{"foo": "bar"}
 	m := map[string]any{
-		"existing":  nested,
-		"notamap":   "stringval",
+		"existing": nested,
+		"notamap":  "stringval",
 	}
 	tests := []struct {
 		name string

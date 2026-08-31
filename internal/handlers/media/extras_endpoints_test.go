@@ -2,7 +2,7 @@ package media
 
 import (
 	"database/sql"
-	"encoding/json"
+	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -454,7 +454,6 @@ func setupFakeOpenAIUpstream(t *testing.T) *httptest.Server {
 		w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
 	}))
 }
-
 
 func TestHandleWebFetch_missingFields(t *testing.T) {
 	database, cleanup := setupEmbeddingsTestDB(t)

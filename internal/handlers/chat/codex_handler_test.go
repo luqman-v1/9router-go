@@ -1,7 +1,8 @@
 package chat
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -93,28 +94,28 @@ func TestProcessCodexEvent_UnknownType(t *testing.T) {
 }
 
 func TestExtractSimpleText_String(t *testing.T) {
-	result := executor.ExtractSimpleText(json.RawMessage(`"plain text"`))
+	result := executor.ExtractSimpleText(jsontext.Value(`"plain text"`))
 	if result != "plain text" {
 		t.Errorf("expected 'plain text', got %q", result)
 	}
 }
 
 func TestExtractSimpleText_EmptyString(t *testing.T) {
-	result := executor.ExtractSimpleText(json.RawMessage(`""`))
+	result := executor.ExtractSimpleText(jsontext.Value(`""`))
 	if result != "" {
 		t.Errorf("expected empty, got %q", result)
 	}
 }
 
 func TestExtractSimpleText_Blocks(t *testing.T) {
-	result := executor.ExtractSimpleText(json.RawMessage(`[{"type":"text","text":"hello from block"}]`))
+	result := executor.ExtractSimpleText(jsontext.Value(`[{"type":"text","text":"hello from block"}]`))
 	if result != "hello from block" {
 		t.Errorf("expected 'hello from block', got %q", result)
 	}
 }
 
 func TestExtractSimpleText_InvalidJSON(t *testing.T) {
-	result := executor.ExtractSimpleText(json.RawMessage(`not json`))
+	result := executor.ExtractSimpleText(jsontext.Value(`not json`))
 	if result != "" {
 		t.Errorf("expected empty for invalid, got %q", result)
 	}
@@ -130,7 +131,7 @@ func TestForwardCodexRequest_Success(t *testing.T) {
 		}
 
 		var reqBody map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		if err := json.UnmarshalRead(r.Body, &reqBody); err != nil {
 			t.Fatalf("parse body: %v", err)
 		}
 		input, ok := reqBody["input"].([]interface{})

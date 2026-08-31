@@ -1,7 +1,7 @@
 package translator
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"time"
 )
 
@@ -85,17 +85,17 @@ type OpenAIChoice struct {
 
 // OpenAIResponse represents a non-streaming OpenAI-compatible response.
 type OpenAIResponse struct {
-	ID      string              `json:"id"`
-	Model   string              `json:"model"`
+	ID      string                 `json:"id"`
+	Model   string                 `json:"model"`
 	Choices []OpenAIResponseChoice `json:"choices"`
-	Usage   *OpenAIUsage        `json:"usage"`
+	Usage   *OpenAIUsage           `json:"usage"`
 }
 
 // OpenAIResponseChoice holds one choice from a non-streaming OpenAI response.
 type OpenAIResponseChoice struct {
-	Index        int              `json:"index"`
-	Message      OpenAIRespMsg    `json:"message"`
-	FinishReason *string          `json:"finish_reason"`
+	Index        int           `json:"index"`
+	Message      OpenAIRespMsg `json:"message"`
+	FinishReason *string       `json:"finish_reason"`
 }
 
 // OpenAIRespMsg holds the message in a non-streaming OpenAI response choice.
@@ -144,9 +144,9 @@ type ClaudeContentBlock struct {
 	Source    *ClaudeImageSource `json:"source,omitempty"`
 	ID        string             `json:"id,omitempty"`
 	Name      string             `json:"name,omitempty"`
-	Input     json.RawMessage    `json:"input,omitempty"`
+	Input     jsontext.Value     `json:"input,omitempty"`
 	ToolUseID string             `json:"tool_use_id,omitempty"`
-	Content   json.RawMessage    `json:"content,omitempty"`
+	Content   jsontext.Value     `json:"content,omitempty"`
 }
 
 // ClaudeImageSource holds base64 image data.
@@ -158,15 +158,15 @@ type ClaudeImageSource struct {
 
 // ClaudeMessage is a single message in a Claude request.
 type ClaudeMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role    string         `json:"role"`
+	Content jsontext.Value `json:"content"`
 }
 
 // ClaudeTool describes a tool in a Claude request.
 type ClaudeTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema jsontext.Value `json:"input_schema,omitempty"`
 }
 
 // ClaudeToolChoice represents the tool_choice field.
@@ -177,21 +177,21 @@ type ClaudeToolChoice struct {
 
 // ClaudeThinking represents the thinking configuration in a Claude request.
 type ClaudeThinking struct {
-	Type    string `json:"type"`
-	Budget  int    `json:"budget_tokens"`
+	Type   string `json:"type"`
+	Budget int    `json:"budget_tokens"`
 }
 
 // ClaudeRequest is the full Claude /v1/messages request body.
 type ClaudeRequest struct {
-	Model       string           `json:"model"`
-	Messages    []ClaudeMessage  `json:"messages"`
-	System      json.RawMessage  `json:"system,omitempty"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	MaxTokens   *int             `json:"max_tokens,omitempty"`
-	Thinking    *ClaudeThinking  `json:"thinking,omitempty"`
-	Tools       []ClaudeTool     `json:"tools,omitempty"`
-	ToolChoice  *json.RawMessage `json:"tool_choice,omitempty"`
-	Stream      bool             `json:"stream,omitempty"`
+	Model       string          `json:"model"`
+	Messages    []ClaudeMessage `json:"messages"`
+	System      jsontext.Value  `json:"system,omitempty"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	MaxTokens   *int            `json:"max_tokens,omitempty"`
+	Thinking    *ClaudeThinking `json:"thinking,omitempty"`
+	Tools       []ClaudeTool    `json:"tools,omitempty"`
+	ToolChoice  *jsontext.Value `json:"tool_choice,omitempty"`
+	Stream      bool            `json:"stream,omitempty"`
 }
 
 // OpenAIRequest is the translated OpenAI-compatible request body.
@@ -248,7 +248,7 @@ type OpenAITool struct {
 
 // OpenAIFunction holds the function definition for an OpenAI tool.
 type OpenAIFunction struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  jsontext.Value `json:"parameters,omitempty"`
 }

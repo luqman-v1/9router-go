@@ -2,7 +2,7 @@ package db
 
 import (
 	"crypto/rand"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"sync"
 	"sync/atomic"

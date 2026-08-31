@@ -2,8 +2,8 @@ package chat
 
 import (
 	"bytes"
-	"encoding/json"
 	"context"
+	json "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"strings"
@@ -184,7 +184,7 @@ type responseBuffer struct {
 	code   int
 }
 
-func (b *responseBuffer) Header() http.Header        { return b.header }
+func (b *responseBuffer) Header() http.Header         { return b.header }
 func (b *responseBuffer) Write(p []byte) (int, error) { return b.body.Write(p) }
 func (b *responseBuffer) WriteHeader(code int)        { b.code = code }
 

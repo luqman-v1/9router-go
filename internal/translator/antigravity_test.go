@@ -1,7 +1,7 @@
 package translator_test
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"strings"
 	"testing"
 
@@ -267,7 +267,3 @@ func TestNormalizeAntigravityModel_AllSynonymsValid(t *testing.T) {
 		}
 	}
 }
-
-
-
-

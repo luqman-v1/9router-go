@@ -1,7 +1,7 @@
 package translator
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"regexp"
 	"strings"
@@ -18,8 +18,14 @@ func sanitizeToolArgs(toolName, argsJSON string) string {
 		name = strings.TrimPrefix(name, "proxy_")
 	}
 
-	if name == "Read" {
+	nameLower := strings.ToLower(name)
+	switch {
+	case name == "Read" || nameLower == "view_file" || nameLower == "read_file":
 		sanitizeReadArgs(args)
+	case strings.Contains(nameLower, "search") || nameLower == "websearch":
+		sanitizeSearchArgs(args)
+	case nameLower == "bash" || nameLower == "run_command" || nameLower == "terminal":
+		sanitizeBashArgs(args)
 	}
 
 	sanitized, err := json.Marshal(args)
@@ -27,6 +33,77 @@ func sanitizeToolArgs(toolName, argsJSON string) string {
 		return argsJSON
 	}
 	return string(sanitized)
+}
+
+func sanitizeSearchArgs(args map[string]any) {
+	// Unwrap nested argument wrappers (e.g. {"input": {...}} or {"params": {...}})
+	for _, wrapperKey := range []string{"input", "params", "arguments", "parameters"} {
+		if wrapped, ok := args[wrapperKey].(map[string]any); ok {
+			for k, v := range wrapped {
+				if _, exists := args[k]; !exists {
+					args[k] = v
+				}
+			}
+		}
+	}
+
+	// If "query" is missing, extract from common synonyms
+	if _, ok := args["query"]; !ok {
+		if q, ok := args["q"].(string); ok && q != "" {
+			args["query"] = q
+		} else if sq, ok := args["search_query"].(string); ok && sq != "" {
+			args["query"] = sq
+		} else if st, ok := args["search_terms"].(string); ok && st != "" {
+			args["query"] = st
+		} else if kw, ok := args["keyword"].(string); ok && kw != "" {
+			args["query"] = kw
+		} else if prompt, ok := args["prompt"].(string); ok && prompt != "" {
+			args["query"] = prompt
+		} else if text, ok := args["text"].(string); ok && text != "" {
+			args["query"] = text
+		} else if queries, ok := args["queries"].([]any); ok && len(queries) > 0 {
+			if first, ok := queries[0].(string); ok && first != "" {
+				args["query"] = first
+			} else if firstMap, ok := queries[0].(map[string]any); ok {
+				if q, ok := firstMap["q"].(string); ok && q != "" {
+					args["query"] = q
+				} else if q, ok := firstMap["query"].(string); ok && q != "" {
+					args["query"] = q
+				}
+			}
+		} else if sqArr, ok := args["search_queries"].([]any); ok && len(sqArr) > 0 {
+			if first, ok := sqArr[0].(string); ok && first != "" {
+				args["query"] = first
+			}
+		}
+	}
+
+	// If query was passed as a slice/array, take the first string
+	if qArr, ok := args["query"].([]any); ok && len(qArr) > 0 {
+		if first, ok := qArr[0].(string); ok {
+			args["query"] = first
+		}
+	}
+
+	// Ensure both "query", "q", and "queries" are populated for different schema expectations
+	if qStr, ok := args["query"].(string); ok && qStr != "" {
+		if _, ok := args["q"]; !ok {
+			args["q"] = qStr
+		}
+		if _, ok := args["queries"]; !ok {
+			args["queries"] = []string{qStr}
+		}
+	}
+}
+
+func sanitizeBashArgs(args map[string]any) {
+	if _, ok := args["command"]; !ok {
+		if cmd, ok := args["cmd"].(string); ok && cmd != "" {
+			args["command"] = cmd
+		} else if cl, ok := args["CommandLine"].(string); ok && cl != "" {
+			args["command"] = cl
+		}
+	}
 }
 
 func sanitizeReadArgs(args map[string]any) {

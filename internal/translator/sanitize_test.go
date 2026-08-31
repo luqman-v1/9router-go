@@ -1,7 +1,7 @@
 package translator
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"testing"
 )
 
@@ -66,6 +66,59 @@ func TestSanitizeToolArgs(t *testing.T) {
 		json.Unmarshal([]byte(got), &m)
 		if _, ok := m["limit"]; ok {
 			t.Errorf("expected limit deleted, got %v", m["limit"])
+		}
+	})
+
+	t.Run("Search tool normalizes q and search_query to query", func(t *testing.T) {
+		args := `{"q":"makanan favorit prabowo"}`
+		got := sanitizeToolArgs("WebSearch", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["query"] != "makanan favorit prabowo" {
+			t.Errorf("expected query 'makanan favorit prabowo', got %v", m["query"])
+		}
+		if m["q"] != "makanan favorit prabowo" {
+			t.Errorf("expected q 'makanan favorit prabowo', got %v", m["q"])
+		}
+	})
+
+	t.Run("Search tool unwraps query array", func(t *testing.T) {
+		args := `{"query":["makanan favorit prabowo"]}`
+		got := sanitizeToolArgs("search_web", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["query"] != "makanan favorit prabowo" {
+			t.Errorf("expected unwrapped query string, got %v", m["query"])
+		}
+	})
+
+	t.Run("Bash tool normalizes cmd to command", func(t *testing.T) {
+		args := `{"cmd":"ls -la"}`
+		got := sanitizeToolArgs("Bash", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["command"] != "ls -la" {
+			t.Errorf("expected command 'ls -la', got %v", m["command"])
+		}
+	})
+
+	t.Run("Search tool unwraps queries array with objects", func(t *testing.T) {
+		args := `{"queries":[{"q":"makanan favorit prabowo"}]}`
+		got := sanitizeToolArgs("WebSearch", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["query"] != "makanan favorit prabowo" {
+			t.Errorf("expected query extracted from queries object, got %v", m["query"])
+		}
+	})
+
+	t.Run("Search tool unwraps input parameter wrapper", func(t *testing.T) {
+		args := `{"input":{"search_query":"makanan favorit prabowo"}}`
+		got := sanitizeToolArgs("web_search", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["query"] != "makanan favorit prabowo" {
+			t.Errorf("expected query extracted from input wrapper, got %v", m["query"])
 		}
 	})
 }

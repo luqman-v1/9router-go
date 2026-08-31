@@ -1,11 +1,11 @@
 package chat
 
 import (
+	"9router/proxy/internal/log"
 	"bytes"
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"io"
-	"9router/proxy/internal/log"
 	"net/http"
 	"strings"
 	"sync"
@@ -30,9 +30,28 @@ var projectNoCache sync.Map // connID -> unix expiry
 
 const projectNoCacheTTL = 10 * time.Minute
 
-// antigravityProbeDelay is the backoff between onboarding retries (a var so
-// tests can shorten it).
+// antigravityProbeDelay is the base backoff between onboarding retries (a var
+// so tests can shorten it). The actual delay doubles per attempt (2s, 4s, ...)
+// so we do not hammer Google's RPCs during a 429 burst.
 var antigravityProbeDelay = 2 * time.Second
+
+// probeBackoffWait sleeps an exponential backoff for the given retry attempt
+// (attempt 1 = base, attempt 2 = 2x base, ...) and returns false if ctx was
+// cancelled mid-wait so callers can bail out promptly instead of sleeping blind.
+func probeBackoffWait(ctx context.Context, attempt int) bool {
+	if attempt <= 0 {
+		return true
+	}
+	delay := antigravityProbeDelay * time.Duration(1<<uint(attempt-1))
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
 
 func projectProbeCached(connID string) bool {
 	if connID == "" {
@@ -151,13 +170,17 @@ func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToke
 		})
 		if err != nil {
 			log.Error("antigravity", "onboardUser marshal failed", "error", err)
-			time.Sleep(antigravityProbeDelay)
+			if !probeBackoffWait(ctx, attempt) {
+				return "", false, false
+			}
 			continue
 		}
 		req, err := http.NewRequestWithContext(ctx, "POST", onboardUserURL, bytes.NewReader(payload))
 		if err != nil {
 			log.Error("antigravity", "onboardUser request failed", "error", err)
-			time.Sleep(antigravityProbeDelay)
+			if !probeBackoffWait(ctx, attempt) {
+				return "", false, false
+			}
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -168,7 +191,9 @@ func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToke
 		clientMetadata, err := json.Marshal(lcaMetadata)
 		if err != nil {
 			log.Error("antigravity", "marshal metadata failed", "error", err)
-			time.Sleep(antigravityProbeDelay)
+			if !probeBackoffWait(ctx, attempt) {
+				return "", false, false
+			}
 			continue
 		}
 		req.Header.Set("Client-Metadata", string(clientMetadata))
@@ -176,7 +201,9 @@ func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToke
 		resp, err := client.Do(req)
 		if err != nil {
 			log.Error("antigravity", "onboardUser HTTP error", "attempt", attempt, "error", err)
-			time.Sleep(antigravityProbeDelay)
+			if !probeBackoffWait(ctx, attempt) {
+				return "", false, false
+			}
 			continue
 		}
 
@@ -184,7 +211,9 @@ func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToke
 		resp.Body.Close()
 		if err != nil {
 			log.Error("antigravity", "onboardUser read failed", "error", err)
-			time.Sleep(antigravityProbeDelay)
+			if !probeBackoffWait(ctx, attempt) {
+				return "", false, false
+			}
 			continue
 		}
 
@@ -193,14 +222,18 @@ func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToke
 			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 				return "", true, false
 			}
-			time.Sleep(antigravityProbeDelay)
+			if !probeBackoffWait(ctx, attempt) {
+				return "", false, false
+			}
 			continue
 		}
 
 		var data map[string]any
 		if err := json.Unmarshal(body, &data); err != nil {
 			log.Error("antigravity", "onboardUser unmarshal failed", "error", err)
-			time.Sleep(antigravityProbeDelay)
+			if !probeBackoffWait(ctx, attempt) {
+				return "", false, false
+			}
 			continue
 		}
 
@@ -213,7 +246,9 @@ func onboardAntigravityUser(ctx context.Context, client *http.Client, accessToke
 			}
 			return "", false, true
 		}
-		time.Sleep(antigravityProbeDelay)
+		if !probeBackoffWait(ctx, attempt) {
+			return "", false, false
+		}
 	}
 	return "", false, false
 }

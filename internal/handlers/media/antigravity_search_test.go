@@ -1,7 +1,7 @@
 package media
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,7 +28,7 @@ func TestHandleSearch_Antigravity(t *testing.T) {
 				Tools []map[string]any `json:"tools"`
 			} `json:"request"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		if err := json.UnmarshalRead(r.Body, &reqBody); err != nil {
 			t.Errorf("decode request body: %v", err)
 		}
 

@@ -1,11 +1,11 @@
 package chat
 
 import (
-	"encoding/json"
-	"errors"
-	"context"
-	"fmt"
 	"9router/proxy/internal/log"
+	"context"
+	json "encoding/json/v2"
+	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -14,8 +14,8 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
-	"9router/proxy/internal/tracing"
 	"9router/proxy/internal/tokensaver"
+	"9router/proxy/internal/tracing"
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/usagetracker"
 )

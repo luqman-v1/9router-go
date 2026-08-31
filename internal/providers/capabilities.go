@@ -3,7 +3,21 @@ package providers
 import (
 	"path"
 	"strings"
+	"sync"
+	"unique"
 )
+
+var (
+	capsCacheMu sync.RWMutex
+	capsCache   = make(map[unique.Handle[string]]Capabilities)
+)
+
+// InvalidateCapabilitiesCache resets the cached model capabilities.
+func InvalidateCapabilitiesCache() {
+	capsCacheMu.Lock()
+	capsCache = make(map[unique.Handle[string]]Capabilities)
+	capsCacheMu.Unlock()
+}
 
 // Capabilities represents what a model can do beyond plain text.
 type Capabilities struct {
@@ -197,6 +211,8 @@ var patternCapabilities = []patternCapability{
 	{"*glm-4.7*", Capabilities{Reasoning: true, Tools: true}},
 	{"*glm-4*", Capabilities{Reasoning: true, Tools: true}},
 	{"*glm*", Capabilities{Reasoning: true, Tools: true}},
+	{"*z-ai*", Capabilities{Reasoning: true, Tools: true}},
+	{"*zai*", Capabilities{Reasoning: true, Tools: true}},
 
 	{"*deepseek-v4*", Capabilities{Reasoning: true, Tools: true}},
 	{"*reasoner*", Capabilities{Reasoning: true, Tools: true}},
@@ -275,40 +291,81 @@ func GetCapabilitiesForModel(provider, model string) Capabilities {
 		return DefaultCapabilities
 	}
 
+	key := unique.Make(provider + "||" + model)
+	capsCacheMu.RLock()
+	if cached, ok := capsCache[key]; ok {
+		capsCacheMu.RUnlock()
+		return cached
+	}
+	capsCacheMu.RUnlock()
+
 	baseModel := model
-	if idx := strings.LastIndex(model, "/"); idx != -1 {
-		baseModel = model[idx+1:]
+	if _, after, ok := strings.CutLast(model, "/"); ok {
+		baseModel = after
 	}
 
 	// 1. Provider-specific override
+	var res Capabilities
+	resolved := false
+
 	if provider != "" {
 		if pCaps, ok := providerCapabilities[provider]; ok {
 			if caps, ok := pCaps[model]; ok {
-				return mergeCapabilities(DefaultCapabilities, caps)
-			}
-			if caps, ok := pCaps[baseModel]; ok {
-				return mergeCapabilities(DefaultCapabilities, caps)
+				res = mergeCapabilities(DefaultCapabilities, caps)
+				resolved = true
+			} else if caps, ok := pCaps[baseModel]; ok {
+				res = mergeCapabilities(DefaultCapabilities, caps)
+				resolved = true
 			}
 		}
 	}
 
 	// 2. Canonical exact
-	if caps, ok := modelCapabilities[baseModel]; ok {
-		return mergeCapabilities(DefaultCapabilities, caps)
-	}
-	if caps, ok := modelCapabilities[model]; ok {
-		return mergeCapabilities(DefaultCapabilities, caps)
-	}
-
-	// 3. Pattern match
-	for _, p := range patternCapabilities {
-		if matchPattern(p.pattern, baseModel) || matchPattern(p.pattern, model) {
-			return mergeCapabilities(DefaultCapabilities, p.caps)
+	if !resolved {
+		if caps, ok := modelCapabilities[baseModel]; ok {
+			res = mergeCapabilities(DefaultCapabilities, caps)
+			resolved = true
+		} else if caps, ok := modelCapabilities[model]; ok {
+			res = mergeCapabilities(DefaultCapabilities, caps)
+			resolved = true
 		}
 	}
 
-	// 4. Default floor
-	return DefaultCapabilities
+	// 3. Pattern match
+	if !resolved {
+		for _, p := range patternCapabilities {
+			if matchPattern(p.pattern, baseModel) || matchPattern(p.pattern, model) {
+				res = mergeCapabilities(DefaultCapabilities, p.caps)
+				resolved = true
+				break
+			}
+		}
+	}
+	if !resolved {
+		res = DefaultCapabilities
+	}
+
+	// 5. Dynamic synced catalog overlay (only ever turns capabilities ON)
+	if dynamic := GetCatalogModalities(model); dynamic != nil {
+		if dynamic.Vision {
+			res.Vision = true
+		}
+		if dynamic.PDF {
+			res.PDF = true
+		}
+		if dynamic.AudioInput {
+			res.AudioInput = true
+		}
+		if dynamic.VideoInput {
+			res.VideoInput = true
+		}
+	}
+
+	capsCacheMu.Lock()
+	capsCache[key] = res
+	capsCacheMu.Unlock()
+
+	return res
 }
 
 func mergeCapabilities(base, overlay Capabilities) Capabilities {

@@ -2,7 +2,7 @@ package translator
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"testing"
 )
 
@@ -17,7 +17,7 @@ func TestContextUsage(t *testing.T) {
 	}
 
 	SetUsage(ctx, &OpenAIUsage{PromptTokens: 10, CompletionTokens: 20})
-	
+
 	u := GetAndClearUsage(ctx)
 	if u == nil {
 		t.Fatal("expected non-nil usage")
@@ -200,4 +200,3 @@ func TestTranslateGeminiChunkToOpenAI_cachedTokens(t *testing.T) {
 		}
 	})
 }
-

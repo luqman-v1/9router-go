@@ -2,7 +2,7 @@ package oauth
 
 import (
 	"database/sql"
-	"encoding/json"
+	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"

@@ -1,7 +1,7 @@
 package db
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 
 	"9router/proxy/internal/handlerutil"
 )
@@ -23,6 +23,7 @@ type SettingsData struct {
 	HeadroomCodeAware  bool                        `json:"headroomCodeAware"`
 	HeadroomKompress   bool                        `json:"headroomKompress"`
 	HeadroomTimeoutMs  int                         `json:"headroomTimeoutMs"`
+	AutoUpdate         bool                        `json:"autoUpdate"`
 	ProviderStrategies map[string]ProviderStrategy `json:"providerStrategies,omitempty"`
 }
 
@@ -37,6 +38,7 @@ func DefaultSettings() *SettingsData {
 		HeadroomUrl:       "http://localhost:8787",
 		HeadroomKompress:  true,
 		HeadroomTimeoutMs: 3000,
+		AutoUpdate:        false,
 	}
 }
 
@@ -81,6 +83,9 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	if v, ok := raw["headroomTimeoutMs"].(float64); ok && v > 0 {
 		s.HeadroomTimeoutMs = int(v)
 	}
+	if v, ok := raw["autoUpdate"].(bool); ok {
+		s.AutoUpdate = v
+	}
 	if ps, ok := raw["providerStrategies"].(map[string]any); ok {
 		s.ProviderStrategies = make(map[string]ProviderStrategy)
 		for k, v := range ps {
@@ -94,4 +99,19 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	}
 
 	return s, nil
+}
+
+// SetAutoUpdate updates the autoUpdate flag in the settings table.
+func (r *Repo) SetAutoUpdate(enabled bool) error {
+	s, err := r.GetSettings()
+	if err != nil {
+		s = DefaultSettings()
+	}
+	s.AutoUpdate = enabled
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.Exec(`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, string(b))
+	return err
 }

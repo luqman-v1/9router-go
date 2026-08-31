@@ -2,7 +2,7 @@ package db
 
 import (
 	"database/sql"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"time"
 )

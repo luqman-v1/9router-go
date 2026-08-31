@@ -1,15 +1,15 @@
 package executor
 
 import (
+	"9router/proxy/internal/log"
 	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
-	"9router/proxy/internal/log"
 	"net/http"
 	"os"
 	"strconv"
@@ -90,8 +90,8 @@ func ForwardIflow(w http.ResponseWriter, req *Request) error {
 	signature := hex.EncodeToString(mac.Sum(nil))
 
 	extraHeaders := map[string]string{
-		"User-Agent":       userAgent,
-		"session-id":       sessionID,
+		"User-Agent":        userAgent,
+		"session-id":        sessionID,
 		"x-iflow-timestamp": strconv.FormatInt(timestamp, 10),
 		"x-iflow-signature": signature,
 	}
@@ -431,4 +431,3 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	}
 	return jsonResponse(req.Ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
 }
-

@@ -2,9 +2,9 @@ package chat
 
 import (
 	"bytes"
-	"encoding/json"
-	"errors"
 	"context"
+	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -211,6 +211,33 @@ func (h *ChatHandler) HandleVersion(w http.ResponseWriter, r *http.Request) {
 	handlerutil.WriteJSON(w, http.StatusOK, info)
 }
 
+// HandleVersionStatus responds with the full updater engine status and auto-update configuration.
+func (h *ChatHandler) HandleVersionStatus(w http.ResponseWriter, r *http.Request) {
+	status := updater.GetStatus()
+	handlerutil.WriteJSON(w, http.StatusOK, status)
+}
+
+// HandleToggleAutoUpdate enables or disables automatic updates in settings and runtime.
+func (h *ChatHandler) HandleToggleAutoUpdate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.UnmarshalRead(r.Body, &body); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	updater.SetAutoUpdate(body.Enabled)
+	if h.Repo != nil {
+		_ = h.Repo.SetAutoUpdate(body.Enabled)
+	}
+
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"success":           true,
+		"autoUpdateEnabled": body.Enabled,
+	})
+}
+
 // HandleCheckUpdate fetches fresh update info from remote release server.
 func (h *ChatHandler) HandleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	info, err := updater.CheckUpdate(r.Context())
@@ -221,7 +248,7 @@ func (h *ChatHandler) HandleCheckUpdate(w http.ResponseWriter, r *http.Request) 
 	handlerutil.WriteJSON(w, http.StatusOK, info)
 }
 
-// HandleTriggerUpdate performs immediate self-updating if an update is available.
+// HandleTriggerUpdate performs immediate self-updating if an update is available and restarts gracefully.
 func (h *ChatHandler) HandleTriggerUpdate(w http.ResponseWriter, r *http.Request) {
 	info, err := updater.CheckUpdate(r.Context())
 	if err != nil {
@@ -236,15 +263,22 @@ func (h *ChatHandler) HandleTriggerUpdate(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
-	if err := updater.PerformSelfUpdate(info.DownloadURL); err != nil {
+	if err := updater.PerformSelfUpdate(info.DownloadURL, info.SHA256); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("self-update failed: %v", err))
 		return
 	}
+
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":  "updated",
 		"message": "Update installed successfully. Process is restarting...",
 		"version": info.LatestVersion,
 	})
+
+	// Schedule process restart shortly after HTTP response is flushed
+	go func() {
+		time.Sleep(1 * time.Second)
+		updater.RestartSelf()
+	}()
 }
 
 // HandleModels responds with the list of available model identifiers from the DB.

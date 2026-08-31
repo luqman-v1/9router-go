@@ -3,7 +3,7 @@ package headroom
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"net/http"
 	"net/url"
 	"os"

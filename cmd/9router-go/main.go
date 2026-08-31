@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/updater"
 )
@@ -88,7 +90,7 @@ func main() {
 						return nil
 					}
 					fmt.Printf("Downloading update v%s...\n", info.LatestVersion)
-					if err := updater.PerformSelfUpdate(info.DownloadURL); err != nil {
+					if err := updater.PerformSelfUpdate(info.DownloadURL, info.SHA256); err != nil {
 						return fmt.Errorf("update failed: %w", err)
 					}
 					fmt.Println("✅ 9router-go updated successfully!")
@@ -170,9 +172,16 @@ func runServer(cCtx *cli.Context) error {
 	}
 	ts.SetInjectionGuard(!cCtx.Bool("no-injection-guard"))
 	log.Printf("[config] token savers — rtk=%v caveman=%v (%s) ponytail=%v (%s)", ts.RTKEnabled(), ts.CavemanEnabled(), ts.CavemanLevel(), ts.PonytailEnabled(), ts.PonytailLevel())
-	log.Printf("[config] prompt-injection guard enabled=%v", ts.InjectionGuardEnabled())
-
-	updater.StartBackgroundCheck(cCtx.Bool("auto-update"))
+	autoUpdate := cCtx.Bool("auto-update")
+	if !autoUpdate && repo != nil {
+		if settings, sErr := repo.GetSettings(); sErr == nil && settings != nil {
+			autoUpdate = settings.AutoUpdate
+		}
+	}
+	updater.StartBackgroundCheck(context.Background(), autoUpdate)
+	log.Printf("[config] auto-update enabled=%v", autoUpdate)
+	catalogPath := filepath.Join(filepath.Dir(cfg.DatabasePath), "model-catalog.json")
+	providers.StartBackgroundCatalogSync(context.Background(), nil, catalogPath)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)

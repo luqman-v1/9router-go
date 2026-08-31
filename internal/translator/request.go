@@ -1,10 +1,11 @@
 package translator
 
 import (
-	"encoding/json"
-	"fmt"
 	"9router/proxy/internal/log"
-		"regexp"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
+	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -14,7 +15,7 @@ func stripAnthropicBillingHeader(text string) string {
 	return billingHeaderRegex.ReplaceAllString(text, "")
 }
 
-func parseSystemPrompt(systemRaw json.RawMessage) string {
+func parseSystemPrompt(systemRaw jsontext.Value) string {
 	if len(systemRaw) == 0 {
 		return ""
 	}
@@ -169,7 +170,7 @@ func convertClaudeMessage(msg ClaudeMessage) ([]OpenAIMessage, error) {
 		msg := OpenAIMessage{
 			Role:             "assistant",
 			ReasoningContent: reasoningContent,
-			ToolCalls: toolCalls,
+			ToolCalls:        toolCalls,
 		}
 		if len(textParts) > 0 {
 			msg.Content = collapseTextParts(textParts)
@@ -247,7 +248,7 @@ func budgetToEffort(budget int) string {
 	}
 }
 
-func convertToolChoice(choiceRaw *json.RawMessage) any {
+func convertToolChoice(choiceRaw *jsontext.Value) any {
 	if choiceRaw == nil {
 		return "auto"
 	}

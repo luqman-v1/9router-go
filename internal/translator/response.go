@@ -2,7 +2,8 @@ package translator
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"fmt"
 	"strings"
 	"time"
@@ -33,7 +34,7 @@ func formatSSE(event map[string]any) string {
 // so callers never stamp a bogus all-zero usage over a real one.
 func ParseClaudeUsage(body []byte) *OpenAIUsage {
 	var raw struct {
-		Usage json.RawMessage `json:"usage"`
+		Usage jsontext.Value `json:"usage"`
 	}
 	if json.Unmarshal(body, &raw) != nil || len(raw.Usage) == 0 || string(raw.Usage) == "null" {
 		return nil
@@ -41,7 +42,7 @@ func ParseClaudeUsage(body []byte) *OpenAIUsage {
 	// Only treat it as Claude usage when the defining Claude key is present.
 	// An OpenAI-format body (prompt_tokens/completion_tokens) must yield nil,
 	// not an all-zero usage.
-	var keys map[string]json.RawMessage
+	var keys map[string]jsontext.Value
 	if json.Unmarshal(raw.Usage, &keys) != nil {
 		return nil
 	}
@@ -166,13 +167,13 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 		if tc.Function != nil && tc.Function.Name != "" {
 			toolName = tc.Function.Name
 		}
-		toolName, _ = strings.CutPrefix(toolName, "proxy_")
-		var input json.RawMessage
+		toolName = UncloakToolName(toolName, nil)
+		var input jsontext.Value
 		if tc.Function != nil && tc.Function.Arguments != "" {
 			sanitized := sanitizeToolArgs(toolName, tc.Function.Arguments)
-			input = json.RawMessage(sanitized)
+			input = jsontext.Value(sanitized)
 		} else {
-			input = json.RawMessage("{}")
+			input = jsontext.Value("{}")
 		}
 		contentBlocks = append(contentBlocks, map[string]any{
 			"type":  "tool_use",
@@ -470,7 +471,7 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 			if tc.Function != nil && tc.Function.Name != "" {
 				toolName = tc.Function.Name
 			}
-			toolName, _ = strings.CutPrefix(toolName, "proxy_")
+			toolName = UncloakToolName(toolName, nil)
 			state.ToolCalls[idx] = ToolCallState{
 				ID:         tc.ID,
 				Name:       toolName,

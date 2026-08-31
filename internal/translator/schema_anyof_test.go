@@ -1,7 +1,7 @@
 package translator
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"strings"
 	"testing"
 )
@@ -9,7 +9,7 @@ import (
 // Reproduces the Gemini 400 "Unknown name const": a nullable property
 // declared as anyOf with a const branch. Flattening re-injects const.
 func TestCleanParametersSchema_anyOfConst(t *testing.T) {
-	schema := json.RawMessage(`{
+	schema := jsontext.Value(`{
 		"type": "object",
 		"properties": {
 			"value": {"anyOf": [{"type": "string", "const": "A"}, {"type": "null"}]}
@@ -22,7 +22,7 @@ func TestCleanParametersSchema_anyOfConst(t *testing.T) {
 }
 
 func TestCleanParametersSchema_oneOfConst(t *testing.T) {
-	schema := json.RawMessage(`{
+	schema := jsontext.Value(`{
 		"type": "object",
 		"properties": {
 			"value": {"oneOf": [{"type": "string", "const": "X"}, {"type": "null"}]}

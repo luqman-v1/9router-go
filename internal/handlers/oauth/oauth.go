@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	mathRand "math/rand"
@@ -178,7 +178,7 @@ func (h *OAuthHandler) HandleOAuthKiroSocialExchange(w http.ResponseWriter, r *h
 	defer tokenResp.Body.Close()
 
 	var tokenData map[string]any
-	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenData); err != nil {
+	if err := json.UnmarshalRead(tokenResp.Body, &tokenData); err != nil {
 		log.Error("oauth", "decode token response failed", "error", err)
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to decode token response")
 		return

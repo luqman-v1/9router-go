@@ -5,7 +5,7 @@
 package tracing
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"math"
 	"sort"
 	"sync"
@@ -123,7 +123,7 @@ func percentile(durs []int64, p float64) float64 {
 // JSON renders the recent-traces payload for the debug endpoint.
 func JSON(n int) ([]byte, error) {
 	return json.Marshal(struct {
-		Spans  []Span         `json:"spans"`
+		Spans   []Span         `json:"spans"`
 		Latency []LatencyStats `json:"latency"`
 	}{
 		Spans:   Recent(n),

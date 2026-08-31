@@ -1,14 +1,14 @@
 package chat
 
 import (
+	"9router/proxy/internal/log"
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
-	"9router/proxy/internal/log"
-		"math/rand"
+	"math/rand"
 	"net/http"
 	"os"
 	"strings"
@@ -155,7 +155,7 @@ func getMimoJWT() (string, error) {
 	var result struct {
 		JWT string `json:"jwt"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &result); err != nil {
 		return "", fmt.Errorf("bootstrap decode: %w", err)
 	}
 	if result.JWT == "" {

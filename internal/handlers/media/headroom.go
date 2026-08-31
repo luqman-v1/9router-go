@@ -1,7 +1,7 @@
 package media
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"io"
 	"net/http"
 	"net/url"
@@ -11,8 +11,8 @@ import (
 
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
-	"9router/proxy/internal/headroom"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/headroom"
 )
 
 // hopByHopHeaders are stripped from both forwarded requests and responses.
@@ -170,7 +170,7 @@ func (h *HeadroomHandler) HandleHeadroomExtras(w http.ResponseWriter, r *http.Re
 		var body struct {
 			Extras []string `json:"extras"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body) // Next: req.json().catch(() => ({}))
+		_ = json.UnmarshalRead(r.Body, &body) // Next: req.json().catch(() => ({}))
 		result, err := headroom.InstallHeadroomExtras(h.DataDir, body.Extras)
 		if err != nil {
 			code := headroom.CodeOf(err)
@@ -186,7 +186,7 @@ func (h *HeadroomHandler) HandleHeadroomExtras(w http.ResponseWriter, r *http.Re
 		var body struct {
 			Extras []string `json:"extras"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.UnmarshalRead(r.Body, &body)
 		result, err := headroom.UninstallHeadroomExtras(h.DataDir, body.Extras)
 		if err != nil {
 			code := headroom.CodeOf(err)

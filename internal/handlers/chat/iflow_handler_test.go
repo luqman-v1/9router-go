@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -41,7 +41,7 @@ func TestForwardIflowRequest_Stream(t *testing.T) {
 		}
 
 		var body map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&body)
+		json.UnmarshalRead(r.Body, &body)
 		if body["stream"] != true {
 			t.Errorf("expected stream=true in body")
 		}
@@ -148,7 +148,7 @@ func TestForwardIflowRequest_UpstreamError(t *testing.T) {
 func TestForwardIflowRequest_ForceStreamOptions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&body)
+		json.UnmarshalRead(r.Body, &body)
 
 		so, ok := body["stream_options"].(map[string]interface{})
 		if !ok {

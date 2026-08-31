@@ -23,7 +23,12 @@ func WriteSSEHeaders(w http.ResponseWriter) http.Flusher {
 // Returns the first upstream or write error so a truncated stream is not
 // reported as a successful completion.
 func SSECopy(w http.ResponseWriter, upstream io.Reader, flusher http.Flusher, onChunk func([]byte)) error {
+	// Allocate a local buffer instead of using the shared pool. The buffer is
+	// alive for the entire read loop, so there is no safe point to return it
+	// to the pool, and the pool would add a race window between ReleaseByteSlice
+	// and the next iteration's write/flush completing.
 	buf := make([]byte, 4096)
+
 	for {
 		n, err := upstream.Read(buf)
 		if n > 0 {

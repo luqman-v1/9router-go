@@ -4,7 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,8 +26,8 @@ import (
 // carries usage; `done` ends the turn. Auth: `Authorization: Cloud-IDE-JWT`.
 func ForwardTrae(w http.ResponseWriter, req *Request) error {
 	var oreq struct {
-		Model    string            `json:"model"`
-		Messages []json.RawMessage `json:"messages"`
+		Model    string           `json:"model"`
+		Messages []jsontext.Value `json:"messages"`
 	}
 	if err := json.Unmarshal(req.Body, &oreq); err != nil {
 		return fmt.Errorf("parse body: %w", err)
@@ -80,8 +81,8 @@ func ForwardTrae(w http.ResponseWriter, req *Request) error {
 			"choices": choices,
 		}
 	}
-	handleEvent := func(emit func(map[string]any) error) func(string, json.RawMessage) (bool, error) {
-		return func(ev string, data json.RawMessage) (bool, error) {
+	handleEvent := func(emit func(map[string]any) error) func(string, jsontext.Value) (bool, error) {
+		return func(ev string, data jsontext.Value) (bool, error) {
 			switch ev {
 			case "error":
 				var e traeErr
@@ -241,7 +242,7 @@ func (s *traeTextState) join() string {
 }
 
 // traeFlattenQuery joins messages into the JSON-encoded query Trae expects.
-func traeFlattenQuery(messages []json.RawMessage) string {
+func traeFlattenQuery(messages []jsontext.Value) string {
 	var parts []string
 	for _, m := range messages {
 		var msg struct {
@@ -382,7 +383,7 @@ func traeCreateSession(ctx context.Context, client *http.Client, baseURL string,
 // traeStreamUpstream reads the events SSE until onEvent returns stop=true, the
 // stream ends, or an error. Non-parseable data lines are passed through as
 // {"_raw": ...} (mirroring the reference implementation).
-func traeStreamUpstream(ctx context.Context, client *http.Client, baseURL string, headers map[string]string, sessionID, messageID string, onEvent func(string, json.RawMessage) (bool, error)) error {
+func traeStreamUpstream(ctx context.Context, client *http.Client, baseURL string, headers map[string]string, sessionID, messageID string, onEvent func(string, jsontext.Value) (bool, error)) error {
 	u := fmt.Sprintf("%s/chat_sessions/%s/events?reply_to_message_id=%s", baseURL, url.PathEscape(sessionID), url.QueryEscape(messageID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -414,10 +415,10 @@ func traeStreamUpstream(ctx context.Context, client *http.Client, baseURL string
 			if payload == "" {
 				break
 			}
-			var data json.RawMessage
+			var data jsontext.Value
 			if jerr := json.Unmarshal([]byte(payload), &data); jerr != nil {
 				raw, _ := json.Marshal(payload)
-				data = json.RawMessage(`{"_raw":` + string(raw) + `}`)
+				data = jsontext.Value(`{"_raw":` + string(raw) + `}`)
 			}
 			stop, eerr := onEvent(ev, data)
 			if eerr != nil {

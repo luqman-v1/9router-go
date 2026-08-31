@@ -1,12 +1,12 @@
 package chat
 
 import (
+	"9router/proxy/internal/log"
 	"bytes"
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
-	"9router/proxy/internal/log"
 	"net/http"
 	"strings"
 	"time"
@@ -96,6 +96,11 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 
 	resp, err := proxy.ForwardGemini(ctx, h.Client, cfg, apiKey, string(body), isStream, projectID, modelName)
 	if err != nil {
+		if uErr, ok := err.(*proxy.UpstreamError); ok {
+			if uErr.StatusCode == http.StatusConflict || uErr.StatusCode == http.StatusTooManyRequests {
+				HandleAntigravityQuotaError(ctx, h.Client, connectionID, uErr.StatusCode, modelName, apiKey, projectID)
+			}
+		}
 		return fmt.Errorf("ForwardGemini (%s/%s): %w", provider, modelName, err)
 	}
 

@@ -2,7 +2,7 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -35,7 +35,7 @@ func TestForwardTrae_StreamsAccumulatedThought(t *testing.T) {
 					CommonParams string `json:"common_params"`
 				} `json:"initial_message"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			if err := json.UnmarshalRead(r.Body, &body); err != nil {
 				t.Errorf("decode create body: %v", err)
 			}
 			if body.Mode != "work" {
@@ -46,7 +46,7 @@ func TestForwardTrae_StreamsAccumulatedThought(t *testing.T) {
 			}
 			sawCreate = true
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			json.MarshalWrite(w, map[string]any{
 				"code": 0,
 				"data": map[string]any{"chat_session_id": "sess-1", "message_id": "msg-1"},
 			})
@@ -118,7 +118,7 @@ func TestForwardTrae_NonStream(t *testing.T) {
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/chat_sessions"):
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			json.MarshalWrite(w, map[string]any{
 				"code": 0,
 				"data": map[string]any{"chat_session_id": "sess-2", "message_id": "msg-2"},
 			})

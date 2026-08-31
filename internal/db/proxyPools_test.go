@@ -1,7 +1,7 @@
 package db
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"testing"
 )
 
@@ -129,4 +129,3 @@ func TestGetProxyPool_SingleProxyUrl_AndMetadata(t *testing.T) {
 		t.Errorf("expected NextURL https://relay.example.com, got %s", next)
 	}
 }
-

@@ -3,7 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -56,31 +56,46 @@ func geminiStream(w http.ResponseWriter, upstream io.Reader) error {
 	firstLine := true
 	state := &translator.GeminiStreamState{}
 	return proxy.ScanStream(upstream, func(chunk []byte) {
-		if firstLine { firstLine = false; return }
+		if firstLine {
+			firstLine = false
+			return
+		}
 		cs := strings.TrimSpace(string(chunk))
-		if cs == "" || cs == "data: [DONE]" { return }
-		if !strings.HasPrefix(cs, "data: ") { return }
+		if cs == "" || cs == "data: [DONE]" {
+			return
+		}
+		if !strings.HasPrefix(cs, "data: ") {
+			return
+		}
 		oc, err := translator.TranslateGeminiChunkToOpenAI([]byte(strings.TrimPrefix(cs, "data: ")), state)
-		if err != nil || oc == nil { return }
+		if err != nil || oc == nil {
+			return
+		}
 		w.Write(oc)
 		w.Write([]byte("\n\n"))
-		if flusher != nil { flusher.Flush() }
+		if flusher != nil {
+			flusher.Flush()
+		}
 	})
 }
 
 func geminiNonStream(w http.ResponseWriter, upstream io.Reader) error {
 	body, err := io.ReadAll(io.LimitReader(upstream, 10*1024*1024))
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	var geminiResp struct {
 		Candidates []struct {
 			Content struct {
-				Parts []struct { Text string `json:"text"` } `json:"parts"`
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
 				Role string `json:"role"`
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
 		} `json:"candidates"`
 		UsageMetadata *struct {
-			PromptTokenCount int `json:"promptTokenCount"`
+			PromptTokenCount     int `json:"promptTokenCount"`
 			CandidatesTokenCount int `json:"candidatesTokenCount"`
 		} `json:"usageMetadata"`
 	}
@@ -91,23 +106,27 @@ func geminiNonStream(w http.ResponseWriter, upstream io.Reader) error {
 		return nil
 	}
 	resp := translator.OpenAIResponse{
-		ID: "chatcmpl-" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		ID:    "chatcmpl-" + fmt.Sprintf("%d", time.Now().UnixNano()),
 		Model: "gemini",
 	}
 	if geminiResp.UsageMetadata != nil {
 		resp.Usage = &translator.OpenAIUsage{
-			PromptTokens: geminiResp.UsageMetadata.PromptTokenCount,
+			PromptTokens:     geminiResp.UsageMetadata.PromptTokenCount,
 			CompletionTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
 		}
 	}
 	for _, c := range geminiResp.Candidates {
 		text := ""
-		if len(c.Content.Parts) > 0 { text = c.Content.Parts[0].Text }
+		if len(c.Content.Parts) > 0 {
+			text = c.Content.Parts[0].Text
+		}
 		fr := "stop"
-		if c.FinishReason != "" && c.FinishReason != "STOP" { fr = strings.ToLower(c.FinishReason) }
+		if c.FinishReason != "" && c.FinishReason != "STOP" {
+			fr = strings.ToLower(c.FinishReason)
+		}
 		resp.Choices = append(resp.Choices, translator.OpenAIResponseChoice{
-			Index: 0,
-			Message: translator.OpenAIRespMsg{Role: "assistant", Content: text},
+			Index:        0,
+			Message:      translator.OpenAIRespMsg{Role: "assistant", Content: text},
 			FinishReason: &fr,
 		})
 	}

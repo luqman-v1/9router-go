@@ -1,7 +1,8 @@
 package translator
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 )
 
 // cleanGeminiSchema recursively removes JSON Schema Draft 7/8 keywords
@@ -209,9 +210,9 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 }
 
 // CleanParametersSchema parses raw JSON schema, cleans it, and returns it.
-func CleanParametersSchema(raw json.RawMessage) json.RawMessage {
+func CleanParametersSchema(raw jsontext.Value) jsontext.Value {
 	if len(raw) == 0 || string(raw) == "null" {
-		return json.RawMessage(`{"type":"object","properties":{}}`)
+		return jsontext.Value(`{"type":"object","properties":{}}`)
 	}
 
 	var parsed map[string]interface{}

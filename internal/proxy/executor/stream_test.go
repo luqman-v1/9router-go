@@ -1,7 +1,7 @@
 package executor
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"strings"
 	"testing"
 )
@@ -219,5 +219,3 @@ func TestProcessCodexEvent_OutputItemAdded_FunctionCall(t *testing.T) {
 		t.Errorf("expected finish_reason 'tool_calls', got: %s", compChunk.Choices[0].FinishReason)
 	}
 }
-
-

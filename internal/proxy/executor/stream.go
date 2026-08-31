@@ -3,7 +3,7 @@ package executor
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"

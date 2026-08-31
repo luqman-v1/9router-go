@@ -1,6 +1,7 @@
 package translator
 
 import (
+	json "encoding/json/v2"
 	"strings"
 	"testing"
 )
@@ -38,9 +39,20 @@ func TestFormatSSE(t *testing.T) {
 		},
 	}
 	got := formatSSE(event)
-	expected := `event: content_block_delta` + "\n" + `data: {"delta":{"text":"hello","type":"text_delta"},"type":"content_block_delta"}` + "\n\n"
-	if got != expected {
-		t.Errorf("formatSSE mismatch.\ngot:  %q\nwant: %q", got, expected)
+	if !strings.HasPrefix(got, "event: content_block_delta\ndata: ") || !strings.HasSuffix(got, "\n\n") {
+		t.Fatalf("formatSSE bad frame: %q", got)
+	}
+	dataStr := strings.TrimSuffix(strings.TrimPrefix(got, "event: content_block_delta\ndata: "), "\n\n")
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(dataStr), &parsed); err != nil {
+		t.Fatalf("formatSSE data not valid JSON: %v", err)
+	}
+	if parsed["type"] != "content_block_delta" {
+		t.Errorf("type mismatch: %v", parsed["type"])
+	}
+	delta, ok := parsed["delta"].(map[string]any)
+	if !ok || delta["type"] != "text_delta" || delta["text"] != "hello" {
+		t.Errorf("delta mismatch: %v", parsed["delta"])
 	}
 }
 

@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -38,11 +38,15 @@ func SetupRoutes(r interface {
 	// Chat, Version & Models Domain
 	r.Get("/version", chatH.HandleVersion)
 	r.Get("/api/version", chatH.HandleVersion)
+	r.Get("/api/version/status", chatH.HandleVersionStatus)
 	r.Get("/api/version/check", chatH.HandleCheckUpdate)
 	r.Post("/api/version/update", chatH.HandleTriggerUpdate)
+	r.Post("/api/version/auto-update", chatH.HandleToggleAutoUpdate)
 	r.Get("/models", chatH.HandleModels)
 	r.Get("/models/info", chatH.HandleModelsInfo)
 	r.Get("/models/{kind}", chatH.HandleModelsByKind)
+	r.Get("/api/models/catalog-sync", chatH.HandleCatalogSyncStatus)
+	r.Post("/api/models/catalog-sync", chatH.HandleCatalogSyncTrigger)
 	r.Post("/chat/completions", chatH.HandleChatCompletions)
 	r.Post("/messages", chatH.HandleMessages)
 	r.Post("/messages/count_tokens", chatH.HandleCountTokens)
@@ -89,6 +93,7 @@ func SetupRoutes(r interface {
 	r.Get("/api/oauth/kiro/social-authorize", oauthH.HandleOAuthKiroSocialAuthorize)
 	r.Post("/api/oauth/kiro/social-exchange", oauthH.HandleOAuthKiroSocialExchange)
 	r.Post("/api/oauth/codex/bulk-import", oauthH.HandleOAuthCodexBulkImport)
+	r.Post("/api/oauth/grok-cli/bulk-import", oauthH.HandleOAuthGrokCliBulkImport)
 
 	// Live Console Logs Domain (dashboard "Monitor Console Log")
 	r.Get("/translator/console-logs", HandleConsoleLogsGet)
@@ -136,7 +141,7 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 				return
 			}
 			w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			json.MarshalWrite(w, map[string]string{"status": "ok"})
 		})
 
 		SetupRoutes(r, repo, ts)

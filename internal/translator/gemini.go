@@ -2,7 +2,8 @@ package translator
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"fmt"
 	"strings"
 	"time"
@@ -69,8 +70,8 @@ type GeminiFunctionCall struct {
 const DefaultThinkingSignature = "EuwGCukGAXLI2nxwZIq54WWSoL/YN0P3TsDZ7zRnLi8g0S4aVr2HUGxvaHKySuY6HAVzcE0GPGjXrytLIldxthSvfxgUlJh6Qa9Z+Oj5QZBlYdg6HaJ6yuY5R7waE6rdwBsRf7Ft2j3DJ9rMi9qhWFqApewYtPhls3VHtuvND3l8Rm09+lbAXQs6KKWEWrxNLKTBkfpMgXhRERc/TQRMZu1twAablm6/Zk1tsYRvfWKLsNbeKF+CCojJdXJKvnR/8Ouuoa+Y2Ti20hcW7aZIIjZDFYPU//k6Ybmhg69J/imbFai2ckhfLaisqdDkdoIiBJScTOUvYqP6AE9d4MsydSC+UlhIMk4hoP76R8vUSCZRMkjOaDXstf/QoVZKbt94wyRZgAJ1G0BqI8L5ow86kLpA4wJEtxsRGymOE4bKUvApveBakYDNM9APkf+LbtbzWSseGjoZcSlycF9iN8Q2XNYKRrHbv3Lr5Y8JjdH/5y/6SHkNehTEZugaeGnSPSyCTWto1kQgHpxdWmhkLfJGNUGLmue7Mesj4TSms4J33mRpYVhNB/J333FCqIP0hr/E7BkkjEn7yZ4X7SQlh+xKPurapsnHRwiKmtsilmEFrnTE9iQr+pMr6M29qqFNv1tr5yumbaJw8JW9sB15tNsRv+dW6BjNanbsKz7HCgKUBc8tGy+7YuhXzAfViyRefcjK7eZW0Fbyt7AbybJTKz78W8NH7ye6LAwzOebXpeZ4D43fNIt8bKh26qgduSQv/7o+pAflkuqHZ99YWgHQ8h8OkZFi3eOiSYjsjhdZ/czWOdoPI/OnqIldzMPF5YlrKBLFX8VhRKVmqgsmWf5PHGulHhMkVlS+XG2UIseGy69ARa93D78Gsa+1n1kJr7EEB7Rh+27vUMxVYLdz1yMSvE5nalTAlg/ZeG8+XQ0cHuAI3KbQpHW2Q++RdXfm5JzD5WdJZUU+Zn8t8UUn85BH4RxZLeE0qJikgSsKoYVBc6YhiMjhPgkR95ReimY4Z0xCJdRo1gjexOFeODZMpQF6Yxnoic7IrdgsFA3iePTbFnPp3IAM1fAThWhXJUn3QInUOTd5o1qmTmn6REbL15g/JQNl+dqUoPkhleeb2V3kjqp1okmO3wMZbPknR3S1LZNmlS72/iBQUm+n2b/RCn4PjmM2"
 
 type GeminiFunctionResp struct {
-	Name     string           `json:"name"`
-	Response *GeminiFuncResp  `json:"response,omitempty"`
+	Name     string          `json:"name"`
+	Response *GeminiFuncResp `json:"response,omitempty"`
 }
 
 type GeminiFuncResp struct {
@@ -105,14 +106,14 @@ type GeminiRequest struct {
 	Contents          []GeminiContent `json:"contents"`
 	Tools             []GeminiTool    `json:"tools,omitempty"`
 	ToolConfig        any             `json:"toolConfig,omitempty"`
-	GenerationConfig  json.RawMessage `json:"generationConfig,omitempty"`
+	GenerationConfig  jsontext.Value  `json:"generationConfig,omitempty"`
 }
 
 // GeminiResponse is the Gemini API response body (non-stream).
 type GeminiResponse struct {
 	Candidates []struct {
-		Content       *GeminiContent `json:"content,omitempty"`
-		FinishReason  string         `json:"finishReason,omitempty"`
+		Content      *GeminiContent `json:"content,omitempty"`
+		FinishReason string         `json:"finishReason,omitempty"`
 	} `json:"candidates"`
 	UsageMetadata *struct {
 		PromptTokenCount        int `json:"promptTokenCount"`
@@ -143,15 +144,15 @@ type GeminiStreamChunk struct {
 // TranslateOpenAIToGemini converts an OpenAI-compatible request body to Gemini native format.
 func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	var oreq struct {
-		Model           string          `json:"model"`
-		Messages        json.RawMessage `json:"messages"`
-		Temperature     *float64        `json:"temperature,omitempty"`
-		MaxTokens       *int            `json:"max_tokens,omitempty"`
-		TopP            *float64        `json:"top_p,omitempty"`
-		TopK            *int            `json:"top_k,omitempty"`
-		Stream          bool            `json:"stream,omitempty"`
-		Tools           json.RawMessage `json:"tools,omitempty"`
-		ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+		Model           string         `json:"model"`
+		Messages        jsontext.Value `json:"messages"`
+		Temperature     *float64       `json:"temperature,omitempty"`
+		MaxTokens       *int           `json:"max_tokens,omitempty"`
+		TopP            *float64       `json:"top_p,omitempty"`
+		TopK            *int           `json:"top_k,omitempty"`
+		Stream          bool           `json:"stream,omitempty"`
+		Tools           jsontext.Value `json:"tools,omitempty"`
+		ReasoningEffort string         `json:"reasoning_effort,omitempty"`
 	}
 	if err := json.Unmarshal(openaiBody, &oreq); err != nil {
 		return nil, fmt.Errorf("parse OpenAI request: %w", err)
@@ -161,11 +162,11 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 
 	// Parse messages
 	var msgs []struct {
-		Role             string                 `json:"role"`
-		Content          interface{}            `json:"content"`
-		ToolCalls        []OpenAIToolCall       `json:"tool_calls,omitempty"`
-		ToolCallID       string                 `json:"tool_call_id,omitempty"`
-		ReasoningContent string                 `json:"reasoning_content,omitempty"`
+		Role             string           `json:"role"`
+		Content          interface{}      `json:"content"`
+		ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+		ToolCallID       string           `json:"tool_call_id,omitempty"`
+		ReasoningContent string           `json:"reasoning_content,omitempty"`
 	}
 	if err := json.Unmarshal(oreq.Messages, &msgs); err != nil {
 		return nil, fmt.Errorf("parse messages: %w", err)
@@ -268,8 +269,8 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 			// Tool result content may be plain text or JSON.
 			// Gemini requires the result to be valid JSON.
 			var resultValue any
-			if json.Valid([]byte(content)) {
-				resultValue = json.RawMessage(content)
+			if jsontext.Value(content).IsValid() {
+				resultValue = jsontext.Value(content)
 			} else {
 				// Wrap plain text as a JSON object
 				resultValue = map[string]string{"output": content}
@@ -347,8 +348,8 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 // extractThoughtSig extracts a thought_signature encoded in a tool call ID (format: "...__ts__<sig>").
 func extractThoughtSig(id string) string {
 	const sep = "__ts__"
-	if idx := strings.LastIndex(id, sep); idx != -1 {
-		return id[idx+len(sep):]
+	if _, after, ok := strings.CutLast(id, sep); ok {
+		return after
 	}
 	return ""
 }
@@ -461,10 +462,10 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 		},
 	}
 	resp := map[string]interface{}{
-		"id":     fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
-		"object": "chat.completion",
+		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+		"object":  "chat.completion",
 		"created": time.Now().Unix(),
-		"model":  "gemini",
+		"model":   "gemini",
 		"choices": []map[string]interface{}{{
 			"index": 0,
 			"message": map[string]interface{}{
@@ -587,8 +588,8 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 						"model":   state.Model,
 						"choices": []map[string]interface{}{
 							{
-								"index": 0,
-								"delta": delta,
+								"index":         0,
+								"delta":         delta,
 								"finish_reason": nil,
 							},
 						},
@@ -634,8 +635,8 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 				"model":   state.Model,
 				"choices": []map[string]interface{}{
 					{
-						"index": 0,
-						"delta": map[string]interface{}{},
+						"index":         0,
+						"delta":         map[string]interface{}{},
 						"finish_reason": openAIStop,
 					},
 				},
@@ -797,6 +798,3 @@ func convertContentToGeminiParts(content interface{}) []GeminiPart {
 	}
 	return nil
 }
-
-
-

@@ -1,9 +1,9 @@
 package chat
 
 import (
-	"encoding/json"
-	"fmt"
 	"9router/proxy/internal/log"
+	json "encoding/json/v2"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -73,7 +73,7 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 		"id": reqID, "provider": info.Provider, "model": info.Model,
 		"connectionId": info.ConnectionID, "status": "success",
 		"timestamp": now.Format("2006-01-02T15:04:05.000Z"),
-		"latency": map[string]int64{"ttft": ttftMs, "total": latencyMs},
+		"latency":   map[string]int64{"ttft": ttftMs, "total": latencyMs},
 		"tokens": map[string]int{
 			"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens,
 			"cached_tokens": cachedTokens, "cache_creation_input_tokens": cacheCreationTokens,

@@ -6,7 +6,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -327,7 +328,7 @@ func wsRandHex(n int) string {
 }
 
 // wsOpenAIMessagesToWs converts OpenAI messages to the wire form Windsurf needs.
-func wsOpenAIMessagesToWs(messages []json.RawMessage) [][]byte {
+func wsOpenAIMessagesToWs(messages []jsontext.Value) [][]byte {
 	out := [][]byte{}
 	for _, m := range messages {
 		var msg struct {
@@ -363,8 +364,8 @@ func wsOpenAIMessagesToWs(messages []json.RawMessage) [][]byte {
 // ForwardWindsurf implements the Executor signature.
 func ForwardWindsurf(w http.ResponseWriter, req *Request) error {
 	var oreq struct {
-		Model    string            `json:"model"`
-		Messages []json.RawMessage `json:"messages"`
+		Model    string           `json:"model"`
+		Messages []jsontext.Value `json:"messages"`
 	}
 	if err := json.Unmarshal(req.Body, &oreq); err != nil {
 		return fmt.Errorf("parse body: %w", err)

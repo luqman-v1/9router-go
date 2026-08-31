@@ -1,23 +1,12 @@
 package tokensaver
 
 import (
-	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"regexp"
 	"strconv"
 	"strings"
 )
-
-// unmarshalAny decodes body into a generic map, preserving number literals as
-// json.Number instead of float64. A plain json.Unmarshal into map[string]any
-// coerces ints/large numbers to float64, so re-marshaling corrupts their type
-// and precision. Callers here only mutate string fields, so the preserved
-// numbers round-trip unchanged.
-func unmarshalAny(body []byte, dst *map[string]any) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	return dec.Decode(dst)
-}
 
 const (
 	MinCompressSize = 500
@@ -33,31 +22,34 @@ const (
 // CompressMessages compresses tool_result content in LLM request bodies in-place.
 // Returns modified body and true if any compression was applied.
 func CompressMessages(body []byte) ([]byte, bool) {
-	var m map[string]any
-	if err := unmarshalAny(body, &m); err != nil {
+	var rawMap map[string]jsontext.Value
+	if err := json.Unmarshal(body, &rawMap); err != nil {
+		return body, false
+	}
+	// Unmarshal into map[string]jsontext.Value succeeds for "null" or "[]",
+	// leaving rawMap nil. Marshal(nil map) yields "null", which would corrupt
+	// the request body downstream, so bail out on non-object payloads.
+	if rawMap == nil {
 		return body, false
 	}
 
-	itemsRaw, ok := m["messages"]
+	key := "messages"
+	itemsBytes, ok := rawMap["messages"]
 	if !ok {
-		itemsRaw, ok = m["input"]
+		key = "input"
+		itemsBytes, ok = rawMap["input"]
 	}
-	if !ok {
+	if !ok || len(itemsBytes) == 0 {
 		return body, false
 	}
 
-	items, ok := itemsRaw.([]any)
-	if !ok || len(items) == 0 {
+	var items []map[string]any
+	if err := json.Unmarshal(itemsBytes, &items); err != nil || len(items) == 0 {
 		return body, false
 	}
 
 	compressed := false
-	for _, item := range items {
-		msg, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-
+	for _, msg := range items {
 		// OpenAI Responses: function_call_output
 		if msg["type"] == "function_call_output" {
 			if output, ok := msg["output"].(string); ok && len(output) > MinCompressSize {
@@ -105,7 +97,13 @@ func CompressMessages(body []byte) ([]byte, bool) {
 		return body, false
 	}
 
-	out, err := json.Marshal(m)
+	compressedBytes, err := json.Marshal(items)
+	if err != nil {
+		return body, false
+	}
+	rawMap[key] = jsontext.Value(compressedBytes)
+
+	out, err := json.Marshal(rawMap)
 	if err != nil {
 		return body, false
 	}

@@ -1,7 +1,7 @@
 package handlerutil
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -40,7 +40,7 @@ func TestWriteJSONError(t *testing.T) {
 			}
 
 			var body map[string]map[string]any
-			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			if err := json.UnmarshalRead(resp.Body, &body); err != nil {
 				t.Fatalf("decode body: %v", err)
 			}
 			errObj, ok := body["error"]
@@ -75,7 +75,7 @@ func TestWriteJSONError_marshalFallback(t *testing.T) {
 	}
 
 	var body map[string]map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
 	// Verify the function still returns a valid error shape even if marshal
@@ -262,4 +262,3 @@ func TestExtractSessionID(t *testing.T) {
 		}
 	})
 }
-

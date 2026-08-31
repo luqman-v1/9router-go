@@ -2,7 +2,7 @@ package media
 
 import (
 	"database/sql"
-	"encoding/json"
+	json "encoding/json/v2"
 	"io"
 	"net/http"
 	"net/http/httptest"

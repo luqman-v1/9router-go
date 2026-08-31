@@ -3,7 +3,8 @@ package chat
 import (
 	"9router/proxy/internal/log"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/http"
@@ -26,8 +27,8 @@ import (
 func detectNewTurn(body []byte) bool {
 	var req struct {
 		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
+			Role    string         `json:"role"`
+			Content jsontext.Value `json:"content"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -47,7 +48,7 @@ func detectNewTurn(body []byte) bool {
 }
 
 // contentHasText reports whether OpenAI message content contains plain text.
-func contentHasText(content json.RawMessage) bool {
+func contentHasText(content jsontext.Value) bool {
 	var s string
 	if err := json.Unmarshal(content, &s); err == nil {
 		return s != ""

@@ -1,7 +1,8 @@
 package translator
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"strings"
 	"testing"
 )
@@ -32,15 +33,15 @@ func TestStripAnthropicBillingHeader(t *testing.T) {
 func TestParseSystemPrompt(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    json.RawMessage
+		input    jsontext.Value
 		expected string
 	}{
 		{"empty", nil, ""},
-		{"empty string", json.RawMessage(`""`), ""},
-		{"string prompt", json.RawMessage(`"You are helpful"`), "You are helpful"},
-		{"string with billing header", json.RawMessage(`"x-anthropic-billing-header: k\nBe concise"`), "Be concise"},
-		{"array blocks", json.RawMessage(`[{"type":"text","text":"Part A"},{"type":"text","text":"Part B"}]`), "Part A\nPart B"},
-		{"array with empty", json.RawMessage(`[{"type":"text","text":""},{"type":"text","text":"Only"}]`), "Only"},
+		{"empty string", jsontext.Value(`""`), ""},
+		{"string prompt", jsontext.Value(`"You are helpful"`), "You are helpful"},
+		{"string with billing header", jsontext.Value(`"x-anthropic-billing-header: k\nBe concise"`), "Be concise"},
+		{"array blocks", jsontext.Value(`[{"type":"text","text":"Part A"},{"type":"text","text":"Part B"}]`), "Part A\nPart B"},
+		{"array with empty", jsontext.Value(`[{"type":"text","text":""},{"type":"text","text":"Only"}]`), "Only"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -103,11 +104,11 @@ func TestCollapseTextParts(t *testing.T) {
 // --- convertToolChoice ---
 
 func TestConvertToolChoice(t *testing.T) {
-	auto := json.RawMessage(`"auto"`)
+	auto := jsontext.Value(`"auto"`)
 
 	tests := []struct {
 		name  string
-		input *json.RawMessage
+		input *jsontext.Value
 		want  string
 		check func(t *testing.T, got any)
 	}{
@@ -139,8 +140,8 @@ func TestConvertToolChoice(t *testing.T) {
 	}
 }
 
-func rawPtr(s string) *json.RawMessage {
-	r := json.RawMessage(s)
+func rawPtr(s string) *jsontext.Value {
+	r := jsontext.Value(s)
 	return &r
 }
 
@@ -189,8 +190,8 @@ func TestFixMissingToolResponsesOpenAI(t *testing.T) {
 
 func TestConvertClaudeMessage_ToolResultArrayContent(t *testing.T) {
 	msg := ClaudeMessage{
-		Role: "user",
-		Content: json.RawMessage(`[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"result text"}]}]`),
+		Role:    "user",
+		Content: jsontext.Value(`[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"result text"}]}]`),
 	}
 	results, err := convertClaudeMessage(msg)
 	if err != nil {
@@ -206,8 +207,8 @@ func TestConvertClaudeMessage_ToolResultArrayContent(t *testing.T) {
 
 func TestConvertClaudeMessage_ToolResultRawContent(t *testing.T) {
 	msg := ClaudeMessage{
-		Role: "user",
-		Content: json.RawMessage(`[{"type":"tool_result","tool_use_id":"call_1","content":{"raw":true}}]`),
+		Role:    "user",
+		Content: jsontext.Value(`[{"type":"tool_result","tool_use_id":"call_1","content":{"raw":true}}]`),
 	}
 	results, err := convertClaudeMessage(msg)
 	if err != nil {
@@ -224,7 +225,7 @@ func TestConvertClaudeMessage_ToolResultRawContent(t *testing.T) {
 func TestConvertClaudeMessage_EmptyBlocks(t *testing.T) {
 	msg := ClaudeMessage{
 		Role:    "user",
-		Content: json.RawMessage(`[]`),
+		Content: jsontext.Value(`[]`),
 	}
 	results, err := convertClaudeMessage(msg)
 	if err != nil {
@@ -263,7 +264,7 @@ func TestConvertClaudeMessage_ThinkingBlock(t *testing.T) {
 	t.Run("thinking block with text and tool_use", func(t *testing.T) {
 		msg := ClaudeMessage{
 			Role: "assistant",
-			Content: json.RawMessage(`[
+			Content: jsontext.Value(`[
 				{"type":"thinking","thinking":"Let me reason step by step..."},
 				{"type":"text","text":"Final answer"},
 				{"type":"tool_use","id":"call_1","name":"Bash","input":{"cmd":"ls"}}
@@ -293,7 +294,7 @@ func TestConvertClaudeMessage_ThinkingBlock(t *testing.T) {
 	t.Run("thinking block without tool_use", func(t *testing.T) {
 		msg := ClaudeMessage{
 			Role: "assistant",
-			Content: json.RawMessage(`[
+			Content: jsontext.Value(`[
 				{"type":"thinking","thinking":"Thinking..."},
 				{"type":"text","text":"Hello"}
 			]`),
@@ -316,7 +317,7 @@ func TestConvertClaudeMessage_ThinkingBlock(t *testing.T) {
 	t.Run("thinking block alone (no text, no tool_use)", func(t *testing.T) {
 		msg := ClaudeMessage{
 			Role: "assistant",
-			Content: json.RawMessage(`[
+			Content: jsontext.Value(`[
 				{"type":"thinking","thinking":"Just thinking..."}
 			]`),
 		}
@@ -444,4 +445,3 @@ func TestDefaultClaudeToolType(t *testing.T) {
 		}
 	})
 }
-

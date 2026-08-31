@@ -1,6 +1,7 @@
 package tokensaver
 
 import (
+	json "encoding/json/v2"
 	"regexp"
 )
 
@@ -34,7 +35,7 @@ type InjectionResult struct {
 // the body isn't a parseable messages-style JSON.
 func DetectInjection(body []byte) InjectionResult {
 	var m map[string]any
-	if err := unmarshalAny(body, &m); err != nil {
+	if err := json.Unmarshal(body, &m); err != nil {
 		return InjectionResult{}
 	}
 

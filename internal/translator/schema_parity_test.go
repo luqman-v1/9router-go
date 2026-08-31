@@ -1,7 +1,7 @@
 package translator
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"strings"
 	"testing"
 )
@@ -148,4 +148,3 @@ func TestCleanParametersSchema_NestedRequiredValidation(t *testing.T) {
 		t.Errorf("expected nested required to only contain ['enabled'], got %v", opts.Required)
 	}
 }
-

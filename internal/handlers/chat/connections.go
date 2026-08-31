@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -94,6 +94,9 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			// Skip connections that have an active per-connection model lock
 			if model != "" {
 				if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, model); locked {
+					continue
+				}
+				if provider == "antigravity" && IsAntigravityModelBlocked(c.ID, model) {
 					continue
 				}
 			}

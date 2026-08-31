@@ -1,7 +1,8 @@
 package translator
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"strings"
 	"testing"
 )
@@ -139,8 +140,8 @@ func TestThoughtSignatureResponseRoundTrip(t *testing.T) {
 	// Parse Gemini request
 	var geminiReq struct {
 		Contents []struct {
-			Role  string          `json:"role"`
-			Parts json.RawMessage `json:"parts"`
+			Role  string         `json:"role"`
+			Parts jsontext.Value `json:"parts"`
 		} `json:"contents"`
 	}
 	if err := json.Unmarshal(geminiBytes, &geminiReq); err != nil {
@@ -149,8 +150,8 @@ func TestThoughtSignatureResponseRoundTrip(t *testing.T) {
 
 	// Find the assistant/model content
 	var modelContent *struct {
-		Role  string          `json:"role"`
-		Parts json.RawMessage `json:"parts"`
+		Role  string         `json:"role"`
+		Parts jsontext.Value `json:"parts"`
 	}
 	for i := range geminiReq.Contents {
 		if geminiReq.Contents[i].Role == "model" {

@@ -3,7 +3,7 @@ package oauth
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"

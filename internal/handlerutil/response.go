@@ -2,7 +2,7 @@ package handlerutil
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"net/http"
 
@@ -48,24 +48,18 @@ func WriteJSONError(w http.ResponseWriter, status int, message string) {
 			"code":    errCode,
 		},
 	}
-	jsonBytes, err := json.Marshal(errResp)
-	if err != nil {
+	if err := json.MarshalWrite(w, errResp); err != nil {
 		w.Write([]byte(`{"error":{"message":"internal error","type":"server_error","code":"internal_server_error"}}`))
-		return
 	}
-	w.Write(jsonBytes)
 }
 
-// WriteJSON writes a JSON response with the given status code and body.
+// WriteJSON writes a JSON response directly to the ResponseWriter with zero intermediate byte buffering.
 func WriteJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	w.WriteHeader(status)
-	jsonBytes, err := json.Marshal(data)
-	if err != nil {
+	if err := json.MarshalWrite(w, data); err != nil {
 		w.Write([]byte(`{"error":{"message":"internal error","type":"invalid_request_error","code":500}}`))
-		return
 	}
-	w.Write(jsonBytes)
 }
 
 // UpdateModelInBody returns a copy of body with the "model" field set to modelName.

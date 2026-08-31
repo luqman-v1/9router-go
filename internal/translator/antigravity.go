@@ -1,7 +1,8 @@
 package translator
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"fmt"
 	"regexp"
 	"strings"
@@ -12,23 +13,23 @@ import (
 
 // AntigravityRequest is the wrapper format for Antigravity API.
 type AntigravityRequest struct {
-	Project     string          `json:"project"`
-	Model       string          `json:"model"`
-	UserAgent   string          `json:"userAgent"`
-	RequestType string          `json:"requestType"`
-	RequestID   string          `json:"requestId"`
-	Request     json.RawMessage `json:"request"`
+	Project     string         `json:"project"`
+	Model       string         `json:"model"`
+	UserAgent   string         `json:"userAgent"`
+	RequestType string         `json:"requestType"`
+	RequestID   string         `json:"requestId"`
+	Request     jsontext.Value `json:"request"`
 }
 
 // AntigravityNativeToolNames are tool names preserved without suffix.
 var AntigravityNativeToolNames = map[string]bool{
-	"browser_subagent":                           true,
-	"command_status":                             true,
-	"find_by_name":                               true,
-	"generate_image":                             true,
-	"grep_search":                                true,
-	"list_dir":                                   true,
-	"list_resources":                             true,
+	"browser_subagent": true,
+	"command_status":   true,
+	"find_by_name":     true,
+	"generate_image":   true,
+	"grep_search":      true,
+	"list_dir":         true,
+	"list_resources":   true,
 	"mcp_sequential-thinking_sequentialthinking": true,
 	"multi_replace_file_content":                 true,
 	"notify_user":                                true,
@@ -180,6 +181,7 @@ func UncloakToolName(name string, toolMap map[string]string) string {
 			return orig
 		}
 	}
+	name = strings.TrimPrefix(name, "proxy_")
 	if strings.HasSuffix(name, "_ide") {
 		return strings.TrimSuffix(name, "_ide")
 	}
@@ -309,7 +311,7 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 // UnwrapAntigravityResponse extracts the inner Gemini response from antigravity envelope.
 func UnwrapAntigravityResponse(raw []byte) []byte {
 	var envelope struct {
-		Response json.RawMessage `json:"response"`
+		Response jsontext.Value `json:"response"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		log.Warn("translator", "unmarshal envelope failed", "error", err)
@@ -342,13 +344,11 @@ func ParseImageConfig(model string) (cleanModel, aspectRatio string) {
 	cleanModel = model
 
 	// Look for suffix like -16x9, -4x3, -1x1, -1024x768
-	dashIdx := strings.LastIndex(model, "-")
-	if dashIdx != -1 && dashIdx < len(model)-1 {
-		suffix := model[dashIdx+1:]
+	if before, suffix, ok := strings.CutLast(model, "-"); ok && suffix != "" {
 		if xIdx := strings.Index(suffix, "x"); xIdx != -1 {
 			var w, h int
 			if _, err := fmt.Sscanf(suffix, "%dx%d", &w, &h); err == nil && w > 0 && h > 0 {
-				cleanModel = model[:dashIdx]
+				cleanModel = before
 				if w <= 16 && h <= 16 {
 					aspectRatio = fmt.Sprintf("%d:%d", w, h)
 				} else {
@@ -453,4 +453,68 @@ func FormatAntigravityImageResponse(rawGeminiResp []byte, prompt string) ([]byte
 	return json.Marshal(result)
 }
 
+// decloakContentBlockStart is the shared implementation that restores the
+// original tool name on a parsed Claude content_block_start event with
+// content_block.type == "tool_use". It never mutates the input map. The
+// boolean reports whether a tool name was actually rewritten.
+func decloakContentBlockStart(event map[string]any, toolNameMap map[string]string) (map[string]any, bool) {
+	if len(toolNameMap) == 0 || event == nil {
+		return event, false
+	}
+	if event["type"] != "content_block_start" {
+		return event, false
+	}
+	block, ok := event["content_block"].(map[string]any)
+	if !ok || block == nil || block["type"] != "tool_use" {
+		return event, false
+	}
+	name, ok := block["name"].(string)
+	if !ok || name == "" {
+		return event, false
+	}
+	original, found := toolNameMap[name]
+	if !found {
+		return event, false
+	}
+	blockCopy := make(map[string]any, len(block))
+	for k, v := range block {
+		blockCopy[k] = v
+	}
+	blockCopy["name"] = original
+	eventCopy := make(map[string]any, len(event))
+	for k, v := range event {
+		eventCopy[k] = v
+	}
+	eventCopy["content_block"] = blockCopy
+	return eventCopy, true
+}
 
+// DecloakStreamChunk restores original tool names in streamed Claude SSE event chunks.
+// Specifically handles "content_block_start" events with content_block.type == "tool_use".
+func DecloakStreamChunk(chunkBytes []byte, toolNameMap map[string]string) []byte {
+	if len(toolNameMap) == 0 || len(chunkBytes) == 0 {
+		return chunkBytes
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(chunkBytes, &raw); err != nil {
+		return chunkBytes
+	}
+
+	out, changed := decloakContentBlockStart(raw, toolNameMap)
+	if !changed {
+		return chunkBytes
+	}
+
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		return chunkBytes
+	}
+	return encoded
+}
+
+// DecloakClaudeStreamEvent restores the original tool name on parsed Claude content_block_start event.
+func DecloakClaudeStreamEvent(event map[string]any, toolNameMap map[string]string) map[string]any {
+	out, _ := decloakContentBlockStart(event, toolNameMap)
+	return out
+}

@@ -3,7 +3,7 @@ package media
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -197,8 +197,8 @@ func parseMiMoModelVoice(model string) (modelID, voiceID string) {
 	case strings.HasPrefix(model, mimoDefaultModel+"/"):
 		return mimoDefaultModel, strings.TrimPrefix(model, mimoDefaultModel+"/")
 	}
-	if idx := strings.LastIndex(model, "/"); idx > 0 {
-		return model[:idx], model[idx+1:]
+	if before, after, ok := strings.CutLast(model, "/"); ok && before != "" {
+		return before, after
 	}
 	return mimoDefaultModel, mimoDefaultVoice
 }
@@ -293,7 +293,9 @@ func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request,
 	}
 
 	var data struct {
-		Error   *struct{ Message string `json:"message"` } `json:"error"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 		Choices []struct {
 			Message struct {
 				Audio struct {
@@ -467,6 +469,14 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					continue
 				}
 			}
+			if endpoint == "/v1/search" && (subInfo.Provider == "xquik" || subInfo.Provider == "xquik-search") {
+				if err := h.handleXquikSearch(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					lastErr = err.Error()
+					continue
+				}
+			}
 
 			conn, connData, err := h.ChatH.GetBestConnection(subInfo.Provider, subInfo.ConnectionID, nil, subInfo.Model)
 			if err != nil || conn == nil {
@@ -521,6 +531,13 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	if endpoint == "/v1/search" && modelInfo.Provider == "antigravity" {
 		if err := h.handleAntigravitySearch(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+
+	if endpoint == "/v1/search" && (modelInfo.Provider == "xquik" || modelInfo.Provider == "xquik-search") {
+		if err := h.handleXquikSearch(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
 		return

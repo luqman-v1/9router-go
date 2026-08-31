@@ -1,7 +1,7 @@
 package executor
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -162,5 +162,3 @@ func TestForwardOpencode_MuseSparkResponsesRouting(t *testing.T) {
 		t.Errorf("expected status 200, got %d", rec.Code)
 	}
 }
-
-

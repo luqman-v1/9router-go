@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"net/http"
 	"strings"
 	"time"
@@ -16,8 +16,8 @@ type bypassResponse struct {
 	Created int64  `json:"created"`
 	Model   string `json:"model"`
 	Choices []struct {
-		Index        int `json:"index"`
-		Message      *struct {
+		Index   int `json:"index"`
+		Message *struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"message,omitempty"`
@@ -185,8 +185,8 @@ func handleBypassRequest(w http.ResponseWriter, body []byte, model string, isStr
 			"model":   model,
 			"choices": []map[string]any{
 				{
-					"index": 0,
-					"delta":       map[string]any{},
+					"index":         0,
+					"delta":         map[string]any{},
 					"finish_reason": "stop",
 				},
 			},
