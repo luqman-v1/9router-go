@@ -19,14 +19,13 @@ import (
 // ---- Codex Responses API SSE → Chat SSE ----
 
 type CodexStreamState struct {
-	CurrentEvent  string
-	OutputLength  int
-	ToolCallCount int
-	Completed     bool // response.completed seen — finish chunk already emitted
-	// ToolCallIdx maps the upstream call_id → the OpenAI tool-call index
-	// assigned when the call first appears, so all argument deltas for the
-	// same tool share one index/id (not a fresh one per fragment).
-	ToolCallIdx map[string]int
+	CurrentEvent      string
+	OutputLength      int
+	ToolCallCount     int
+	Completed         bool // response.completed seen — finish chunk already emitted
+	CurrentToolCallID string
+	ToolCallIdx       map[string]int
+	ToolCallNames     map[string]string
 }
 
 func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, created int64) []string {
@@ -59,12 +58,105 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		}
 		return []string{fmt.Sprintf("data: %s\n\n", string(b))}
 
-	case "response.function_call_arguments.delta":
+	case "response.output_item.added":
+		item, _ := event["item"].(map[string]any)
+		if item == nil {
+			return nil
+		}
+		itemType, _ := item["type"].(string)
+		if itemType == "function_call" || itemType == "custom_tool_call" {
+			name, _ := item["name"].(string)
+			callID, _ := item["call_id"].(string)
+			if callID == "" {
+				callID, _ = item["id"].(string)
+			}
+			if callID == "" {
+				callID = fmt.Sprintf("call_%d", state.ToolCallCount)
+			}
+			if state.ToolCallIdx == nil {
+				state.ToolCallIdx = make(map[string]int)
+			}
+			if state.ToolCallNames == nil {
+				state.ToolCallNames = make(map[string]string)
+			}
+			idx, ok := state.ToolCallIdx[callID]
+			if !ok {
+				idx = state.ToolCallCount
+				state.ToolCallIdx[callID] = idx
+				state.ToolCallCount++
+			}
+			state.ToolCallNames[callID] = name
+			state.CurrentToolCallID = callID
+
+			chunk := map[string]any{
+				"id":      responseID,
+				"object":  "chat.completion.chunk",
+				"created": created,
+				"choices": []map[string]any{{
+					"index": 0,
+					"delta": map[string]any{
+						"tool_calls": []map[string]any{{
+							"index": idx,
+							"id":    callID,
+							"type":  "function",
+							"function": map[string]any{
+								"name":      name,
+								"arguments": "",
+							},
+						}},
+					},
+				}},
+			}
+			b, err := json.Marshal(chunk)
+			if err != nil {
+				return nil
+			}
+			return []string{fmt.Sprintf("data: %s\n\n", string(b))}
+		}
+
+	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 		delta, _ := event["delta"].(string)
 		if delta == "" {
 			return nil
 		}
-		id, idx := toolCallIndex(state, event)
+		callID, _ := event["call_id"].(string)
+		if callID == "" {
+			callID = state.CurrentToolCallID
+		}
+		if callID == "" {
+			callID = fmt.Sprintf("call_%d", state.ToolCallCount)
+		}
+		if state.ToolCallIdx == nil {
+			state.ToolCallIdx = make(map[string]int)
+		}
+		name, _ := event["name"].(string)
+		if name == "" && state.ToolCallNames != nil {
+			name = state.ToolCallNames[callID]
+		}
+		if name != "" && state.ToolCallNames != nil {
+			state.ToolCallNames[callID] = name
+		}
+
+		idx, ok := state.ToolCallIdx[callID]
+		if !ok {
+			idx = state.ToolCallCount
+			state.ToolCallIdx[callID] = idx
+			state.ToolCallCount++
+		}
+
+		fnMap := map[string]any{
+			"arguments": delta,
+		}
+		if name != "" {
+			fnMap["name"] = name
+		}
+		tcMap := map[string]any{
+			"index":    idx,
+			"id":       callID,
+			"type":     "function",
+			"function": fnMap,
+		}
+
 		chunk := map[string]any{
 			"id":      responseID,
 			"object":  "chat.completion.chunk",
@@ -72,12 +164,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			"choices": []map[string]any{{
 				"index": 0,
 				"delta": map[string]any{
-					"tool_calls": []map[string]any{{
-						"index":    idx,
-						"id":       id,
-						"type":     "function",
-						"function": map[string]any{"arguments": delta},
-					}},
+					"tool_calls": []map[string]any{tcMap},
 				},
 			}},
 		}
@@ -90,11 +177,29 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 	case "response.function_call_arguments.done":
 		name, _ := event["name"].(string)
 		args, _ := event["arguments"].(string)
-		if name == "" {
-			return nil
+		callID, _ := event["call_id"].(string)
+		if callID == "" {
+			callID = state.CurrentToolCallID
 		}
-		// Reuse the same index/id that streamed the incremental arguments.
-		id, idx := toolCallIndex(state, event)
+		if callID == "" {
+			callID = fmt.Sprintf("call_%d", state.ToolCallCount)
+		}
+		if state.ToolCallIdx == nil {
+			state.ToolCallIdx = make(map[string]int)
+		}
+		idx, ok := state.ToolCallIdx[callID]
+		if !ok {
+			idx = state.ToolCallCount
+			state.ToolCallIdx[callID] = idx
+			state.ToolCallCount++
+		}
+		// If name wasn't captured before, use it now
+		if name == "" && state.ToolCallNames != nil {
+			name = state.ToolCallNames[callID]
+		}
+		if name != "" && state.ToolCallNames != nil {
+			state.ToolCallNames[callID] = name
+		}
 		chunk := map[string]any{
 			"id":      responseID,
 			"object":  "chat.completion.chunk",
@@ -104,7 +209,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				"delta": map[string]any{
 					"tool_calls": []map[string]any{{
 						"index": idx,
-						"id":    id,
+						"id":    callID,
 						"type":  "function",
 						"function": map[string]any{
 							"name":      name,
@@ -120,8 +225,22 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		}
 		return []string{fmt.Sprintf("data: %s\n\n", string(b))}
 
+	case "response.output_item.done":
+		item, _ := event["item"].(map[string]any)
+		if item != nil {
+			itemType, _ := item["type"].(string)
+			if itemType == "function_call" || itemType == "custom_tool_call" {
+				state.CurrentToolCallID = ""
+			}
+		}
+		return nil
+
 	case "response.completed":
 		state.Completed = true
+		finishReason := "stop"
+		if state.ToolCallCount > 0 {
+			finishReason = "tool_calls"
+		}
 		chunk := map[string]any{
 			"id":      responseID,
 			"object":  "chat.completion.chunk",
@@ -129,7 +248,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			"choices": []map[string]any{{
 				"index":         0,
 				"delta":         map[string]any{},
-				"finish_reason": "stop",
+				"finish_reason": finishReason,
 			}},
 		}
 		if resp, ok := event["response"].(map[string]any); ok {
@@ -174,6 +293,9 @@ func toolCallIndex(state *CodexStreamState, event map[string]any) (string, int) 
 		state.ToolCallIdx = make(map[string]int)
 	}
 	id, _ := event["call_id"].(string)
+	if id == "" {
+		id = state.CurrentToolCallID
+	}
 	if id == "" {
 		id = fmt.Sprintf("call_%d", state.ToolCallCount)
 	}

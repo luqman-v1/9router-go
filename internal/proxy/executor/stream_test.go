@@ -136,3 +136,88 @@ func TestParseCommandCodeError(t *testing.T) {
 	})
 }
 
+func TestProcessCodexEvent_OutputItemAdded_FunctionCall(t *testing.T) {
+	state := &CodexStreamState{}
+	// 1. Output item added (function_call with name 'view_file')
+	out := ProcessCodexEvent(`{
+		"type": "response.output_item.added",
+		"item": {
+			"id": "item_123",
+			"type": "function_call",
+			"call_id": "call_abc123",
+			"name": "view_file"
+		}
+	}`, state, "chatcmpl-test", 1)
+
+	if len(out) == 0 {
+		t.Fatal("expected chunk for output_item.added")
+	}
+
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				ToolCalls []struct {
+					Index    int    `json:"index"`
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(out[0], "data: ")), &chunk); err != nil {
+		t.Fatalf("unmarshal chunk: %v", err)
+	}
+
+	if len(chunk.Choices) == 0 || len(chunk.Choices[0].Delta.ToolCalls) == 0 {
+		t.Fatalf("expected tool_calls in chunk")
+	}
+	tc := chunk.Choices[0].Delta.ToolCalls[0]
+	if tc.ID != "call_abc123" {
+		t.Errorf("expected id call_abc123, got: %s", tc.ID)
+	}
+	if tc.Function.Name != "view_file" {
+		t.Errorf("expected function name view_file, got: %s", tc.Function.Name)
+	}
+
+	// 2. Arguments delta
+	outDelta := ProcessCodexEvent(`{
+		"type": "response.function_call_arguments.delta",
+		"item_id": "item_123",
+		"call_id": "call_abc123",
+		"delta": "{\"path\":\"file.go\"}"
+	}`, state, "chatcmpl-test", 1)
+
+	if len(outDelta) == 0 {
+		t.Fatal("expected chunk for arguments.delta")
+	}
+
+	// 3. Response completed -> finish_reason should be tool_calls
+	outDone := ProcessCodexEvent(`{
+		"type": "response.completed",
+		"response": {
+			"id": "resp_test",
+			"usage": {"input_tokens": 10, "output_tokens": 5}
+		}
+	}`, state, "chatcmpl-test", 1)
+
+	if len(outDone) == 0 {
+		t.Fatal("expected chunk for completed")
+	}
+	var compChunk struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(outDone[0], "data: ")), &compChunk); err != nil {
+		t.Fatalf("unmarshal completed chunk: %v", err)
+	}
+	if compChunk.Choices[0].FinishReason != "tool_calls" {
+		t.Errorf("expected finish_reason 'tool_calls', got: %s", compChunk.Choices[0].FinishReason)
+	}
+}
+
+
