@@ -459,6 +459,15 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			if err != nil {
 				continue
 			}
+			if endpoint == "/v1/search" && subInfo.Provider == "antigravity" {
+				if err := h.handleAntigravitySearch(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					lastErr = err.Error()
+					continue
+				}
+			}
+
 			conn, connData, err := h.ChatH.GetBestConnection(subInfo.Provider, subInfo.ConnectionID, nil, subInfo.Model)
 			if err != nil || conn == nil {
 				lastErr = fmt.Sprintf("no connection for %s", subInfo.Provider)
@@ -507,6 +516,13 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("all combo models failed: %s", lastErr))
+		return
+	}
+
+	if endpoint == "/v1/search" && modelInfo.Provider == "antigravity" {
+		if err := h.handleAntigravitySearch(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
 		return
 	}
 
