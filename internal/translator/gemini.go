@@ -649,29 +649,33 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 		}
 	}
 
-	if len(results) == 0 && geminiChunk.UsageMetadata != nil {
-		// Just usage update chunk
+	if geminiChunk.UsageMetadata != nil {
 		inputTokens := geminiChunk.UsageMetadata.PromptTokenCount
 		outputTokens := geminiChunk.UsageMetadata.CandidatesTokenCount
 		cachedTokens := geminiChunk.UsageMetadata.CachedContentTokenCount
+		if cachedTokens == 0 {
+			cachedTokens = geminiChunk.UsageMetadata.CachedContentToken
+		}
 		state.Usage = &OpenAIUsage{
 			PromptTokens:     inputTokens,
 			CompletionTokens: outputTokens,
 			CachedTokens:     cachedTokens,
 		}
-		results = append(results, map[string]interface{}{
-			"id":      state.MessageId,
-			"object":  "chat.completion.chunk",
-			"created": time.Now().Unix(),
-			"model":   state.Model,
-			"choices": []interface{}{},
-			"usage": map[string]interface{}{
-				"prompt_tokens":     inputTokens,
-				"completion_tokens": outputTokens,
-				"cached_tokens":     cachedTokens,
-				"total_tokens":      inputTokens + outputTokens,
-			},
-		})
+		if len(geminiChunk.Candidates) == 0 {
+			results = append(results, map[string]interface{}{
+				"id":      state.MessageId,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   state.Model,
+				"choices": []interface{}{},
+				"usage": map[string]interface{}{
+					"prompt_tokens":     inputTokens,
+					"completion_tokens": outputTokens,
+					"cached_tokens":     cachedTokens,
+					"total_tokens":      inputTokens + outputTokens,
+				},
+			})
+		}
 	}
 
 	if len(results) == 0 {

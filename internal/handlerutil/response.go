@@ -1,6 +1,7 @@
 package handlerutil
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -130,3 +131,25 @@ func ExtractSessionID(r *http.Request) string {
 	}
 	return ""
 }
+
+type sessionIDKey struct{}
+
+// WithSessionID returns a context carrying the given session ID.
+func WithSessionID(ctx context.Context, sessionID string) context.Context {
+	if sessionID == "" || ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionIDKey{}, sessionID)
+}
+
+// GetSessionID retrieves the session ID from the context if present.
+func GetSessionID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if val, ok := ctx.Value(sessionIDKey{}).(string); ok {
+		return val
+	}
+	return ""
+}
+

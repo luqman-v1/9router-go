@@ -52,16 +52,18 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+
 	if len(modelInfo.ComboModels) > 0 {
 		if modelInfo.Strategy == "fusion" {
-			h.handleFusion(r.Context(), w, body, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit)
+			h.handleFusion(ctx, w, body, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit)
 			return
 		}
-		h.handleComboFallback(r.Context(), w, body, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit)
+		h.handleComboFallback(ctx, w, body, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit)
 		return
 	}
 
-	h.handleSingleModel(r.Context(), w, body, modelInfo, reqBody.Stream, false)
+	h.handleSingleModel(ctx, w, body, modelInfo, reqBody.Stream, false)
 }
 
 // handleSingleModel resolves a single ModelInfo and forwards the request upstream.
@@ -152,6 +154,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	workingBody["stream"] = reqBody.Stream
+	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
 
 	if len(modelInfo.ComboModels) > 0 {
 		if modelInfo.Strategy == "fusion" {
@@ -160,14 +163,14 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal request body")
 				return
 			}
-			h.handleFusion(r.Context(), w, bodyJSON, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, translateResponse, reqBody.Model, modelInfo.StickyLimit)
+			h.handleFusion(ctx, w, bodyJSON, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, translateResponse, reqBody.Model, modelInfo.StickyLimit)
 			return
 		}
-		h.handleMessagesComboFallback(r.Context(), w, workingBody, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, reqBody.Model, modelInfo.StickyLimit)
+		h.handleMessagesComboFallback(ctx, w, workingBody, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, reqBody.Model, modelInfo.StickyLimit)
 		return
 	}
 
-	h.handleMessagesSingleModel(r.Context(), w, workingBody, modelInfo, reqBody.Stream, translateResponse)
+	h.handleMessagesSingleModel(ctx, w, workingBody, modelInfo, reqBody.Stream, translateResponse)
 }
 
 // handleMessagesSingleModel forwards a translated Claude request for a single model.

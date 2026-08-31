@@ -550,6 +550,10 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 		}
 
 		chunks := ProcessCommandcodeEvent(event, eventType, state)
+		if len(chunks) == 0 {
+			continue
+		}
+
 		if !headersWritten {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")

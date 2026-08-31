@@ -154,3 +154,50 @@ func TestTranslateGeminiResponseToOpenAI_cachedTokens(t *testing.T) {
 		t.Errorf("expected cached_tokens=90 in output usage, got %v", parsed.Usage["cached_tokens"])
 	}
 }
+
+func TestTranslateGeminiChunkToOpenAI_cachedTokens(t *testing.T) {
+	t.Run("delta chunk with cachedContentToken", func(t *testing.T) {
+		chunkJSON := []byte(`{
+			"candidates": [{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP","index":0}],
+			"usageMetadata": {
+				"promptTokenCount": 50,
+				"candidatesTokenCount": 2,
+				"cachedContentToken": 40
+			}
+		}`)
+		state := &GeminiStreamState{MessageId: "msg-1", Model: "gemini-2.5-flash"}
+		chunks, err := TranslateGeminiChunkToOpenAI(chunkJSON, state)
+		if err != nil {
+			t.Fatalf("translate chunk error: %v", err)
+		}
+		if len(chunks) == 0 {
+			t.Fatal("expected chunks")
+		}
+		if state.Usage == nil || state.Usage.CachedTokens != 40 {
+			t.Errorf("expected state.Usage.CachedTokens=40, got %+v", state.Usage)
+		}
+	})
+
+	t.Run("trailing usage-only chunk with cachedContentToken", func(t *testing.T) {
+		chunkJSON := []byte(`{
+			"candidates": [],
+			"usageMetadata": {
+				"promptTokenCount": 120,
+				"candidatesTokenCount": 15,
+				"cachedContentToken": 100
+			}
+		}`)
+		state := &GeminiStreamState{MessageId: "msg-2", Model: "gemini-2.5-flash"}
+		chunks, err := TranslateGeminiChunkToOpenAI(chunkJSON, state)
+		if err != nil {
+			t.Fatalf("translate chunk error: %v", err)
+		}
+		if len(chunks) == 0 {
+			t.Fatal("expected usage chunk")
+		}
+		if state.Usage == nil || state.Usage.CachedTokens != 100 {
+			t.Errorf("expected state.Usage.CachedTokens=100, got %+v", state.Usage)
+		}
+	})
+}
+

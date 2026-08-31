@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/tracing"
@@ -158,6 +159,7 @@ func (h *ChatHandler) tryForwardWithConnection(
 	}()
 
 	httpClient := h.getClientForConnection(connData)
+	sessionID := handlerutil.GetSessionID(ctx)
 
 	if exec := executor.Get(provider); exec != nil {
 		fwdErr = exec(w, &executor.Request{
@@ -168,6 +170,8 @@ func (h *ChatHandler) tryForwardWithConnection(
 			Body:          pipedBody,
 			IsStream:      isStream,
 			TranslateResp: translateResponse,
+			ConnectionID:  connectionID,
+			SessionID:     sessionID,
 			ResponseBuf:   &metrics.ResponseBuf,
 			StartTime:     start,
 			TTFT:          &metrics.TTFT,
@@ -193,6 +197,8 @@ func (h *ChatHandler) tryForwardWithConnection(
 					Body:          pipedBody,
 					IsStream:      isStream,
 					TranslateResp: translateResponse,
+					ConnectionID:  connectionID,
+					SessionID:     sessionID,
 					ResponseBuf:   &metrics.ResponseBuf,
 					StartTime:     start,
 					TTFT:          &metrics.TTFT,
