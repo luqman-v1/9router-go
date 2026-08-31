@@ -132,6 +132,30 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				"finish_reason": "stop",
 			}},
 		}
+		if resp, ok := event["response"].(map[string]any); ok {
+			if usage, ok := resp["usage"].(map[string]any); ok {
+				chunkUsage := map[string]any{}
+				if inTok, ok := usage["input_tokens"].(float64); ok {
+					chunkUsage["prompt_tokens"] = int(inTok)
+				}
+				if outTok, ok := usage["output_tokens"].(float64); ok {
+					chunkUsage["completion_tokens"] = int(outTok)
+				}
+				if totTok, ok := usage["total_tokens"].(float64); ok {
+					chunkUsage["total_tokens"] = int(totTok)
+				}
+				if inDetails, ok := usage["input_tokens_details"].(map[string]any); ok {
+					if cTok, ok := inDetails["cached_tokens"].(float64); ok {
+						chunkUsage["prompt_tokens_details"] = map[string]any{
+							"cached_tokens": int(cTok),
+						}
+					}
+				}
+				if len(chunkUsage) > 0 {
+					chunk["usage"] = chunkUsage
+				}
+			}
+		}
 		b, err := json.Marshal(chunk)
 		if err != nil {
 			return nil
