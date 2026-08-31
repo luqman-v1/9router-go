@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
@@ -211,6 +212,9 @@ func (h *MediaHandler) handleAntigravitySearch(w http.ResponseWriter, r *http.Re
 					} `json:"groundingSupports"`
 				} `json:"groundingMetadata"`
 			} `json:"candidates"`
+			UsageMetadata *struct {
+				TotalTokenCount int `json:"totalTokenCount"`
+			} `json:"usageMetadata"`
 		} `json:"response"`
 		Candidates []struct {
 			Content *struct {
@@ -236,6 +240,9 @@ func (h *MediaHandler) handleAntigravitySearch(w http.ResponseWriter, r *http.Re
 				} `json:"groundingSupports"`
 			} `json:"groundingMetadata"`
 		} `json:"candidates"`
+		UsageMetadata *struct {
+			TotalTokenCount int `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
 	}
 
 	_ = json.Unmarshal(respBytes, &agResp)
@@ -303,6 +310,15 @@ func (h *MediaHandler) handleAntigravitySearch(w http.ResponseWriter, r *http.Re
 		}
 	}
 
+	limit := reqBody.MaxResults
+	if limit <= 0 {
+		limit = 10
+	}
+	if len(sourceOrder) > limit {
+		sourceOrder = sourceOrder[:limit]
+	}
+
+	retrievedAt := time.Now().UTC().Format(time.RFC3339)
 	var results []map[string]any
 	for idx, u := range sourceOrder {
 		src := sourcesMap[u]
@@ -316,23 +332,51 @@ func (h *MediaHandler) handleAntigravitySearch(w http.ResponseWriter, r *http.Re
 		}
 
 		results = append(results, map[string]any{
-			"title":   src.Title,
-			"url":     u,
-			"snippet": snippet,
-			"content": content,
+			"title":        src.Title,
+			"url":          u,
+			"snippet":      snippet,
+			"position":     idx + 1,
+			"score":        nil,
+			"published_at": nil,
+			"favicon_url":  nil,
+			"content":      content,
+			"metadata":     map[string]any{},
 			"citation": map[string]any{
-				"provider": "antigravity",
-				"rank":     idx + 1,
+				"provider":     "antigravity",
+				"retrieved_at": retrievedAt,
+				"rank":         idx + 1,
 			},
+			"provider_raw": nil,
 		})
+	}
+
+	tokens := 0
+	if agResp.Response.UsageMetadata != nil {
+		tokens = agResp.Response.UsageMetadata.TotalTokenCount
+	} else if agResp.UsageMetadata != nil {
+		tokens = agResp.UsageMetadata.TotalTokenCount
 	}
 
 	h.Repo.UpdateConnectionLastUsed(conn.ID)
 
 	searchResponse := map[string]any{
-		"results": results,
-		"answer":  answerText,
-		"query":   query,
+		"provider": "antigravity",
+		"query":    query,
+		"results":  results,
+		"answer": map[string]any{
+			"source": "antigravity",
+			"text":   answerText,
+			"model":  model,
+		},
+		"usage": map[string]any{
+			"queries_used":    1,
+			"search_cost_usd": 0,
+			"llm_tokens":      tokens,
+		},
+		"metrics": map[string]any{
+			"total_results_available": nil,
+		},
+		"errors": []any{},
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, searchResponse)

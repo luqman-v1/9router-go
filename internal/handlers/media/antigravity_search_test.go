@@ -101,17 +101,28 @@ func TestHandleSearch_Antigravity(t *testing.T) {
 	}
 
 	var resp struct {
-		Results []struct {
+		Provider string `json:"provider"`
+		Results  []struct {
 			Title    string `json:"title"`
 			URL      string `json:"url"`
 			Snippet  string `json:"snippet"`
+			Position int    `json:"position"`
 			Citation struct {
-				Provider string `json:"provider"`
-				Rank     int    `json:"rank"`
+				Provider    string `json:"provider"`
+				RetrievedAt string `json:"retrieved_at"`
+				Rank        int    `json:"rank"`
 			} `json:"citation"`
 		} `json:"results"`
-		Answer string `json:"answer"`
-		Query  string `json:"query"`
+		Answer struct {
+			Source string `json:"source"`
+			Text   string `json:"text"`
+			Model  string `json:"model"`
+		} `json:"answer"`
+		Query string `json:"query"`
+		Usage struct {
+			QueriesUsed int `json:"queries_used"`
+			LLMTokens   int `json:"llm_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
@@ -123,10 +134,19 @@ func TestHandleSearch_Antigravity(t *testing.T) {
 	if resp.Results[0].URL != "https://example.com/ai-news" {
 		t.Errorf("expected URL https://example.com/ai-news, got %s", resp.Results[0].URL)
 	}
+	if resp.Results[0].Position != 1 {
+		t.Errorf("expected position 1, got %d", resp.Results[0].Position)
+	}
 	if resp.Results[0].Citation.Provider != "antigravity" {
 		t.Errorf("expected citation provider antigravity, got %s", resp.Results[0].Citation.Provider)
 	}
-	if !strings.Contains(resp.Answer, "evolving rapidly") {
-		t.Errorf("expected answer text, got %s", resp.Answer)
+	if resp.Results[0].Citation.RetrievedAt == "" {
+		t.Errorf("expected non-empty retrieved_at")
+	}
+	if !strings.Contains(resp.Answer.Text, "evolving rapidly") {
+		t.Errorf("expected answer text, got %s", resp.Answer.Text)
+	}
+	if resp.Answer.Source != "antigravity" {
+		t.Errorf("expected answer source antigravity, got %s", resp.Answer.Source)
 	}
 }
