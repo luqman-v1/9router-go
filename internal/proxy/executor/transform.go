@@ -83,6 +83,13 @@ func cleanResponsesModel(model string) string {
 	return clean
 }
 
+func clampCallID(id string) string {
+	if len(id) > 64 {
+		return id[:64]
+	}
+	return id
+}
+
 // buildResponsesBody transforms OpenAI Chat Completions body → Responses API body.
 // Returns (responsesBody, modelName, error).
 func buildResponsesBody(body []byte) ([]byte, string, error) {
@@ -110,6 +117,18 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			}
 			delete(m, "max_tokens")
 			delete(m, "max_completion_tokens")
+
+			// Clamp call_id in existing input items
+			if inList, ok := m["input"].([]any); ok {
+				for _, item := range inList {
+					if itemMap, ok := item.(map[string]any); ok {
+						if cid, ok := itemMap["call_id"].(string); ok && len(cid) > 64 {
+							itemMap["call_id"] = cid[:64]
+						}
+					}
+				}
+			}
+
 			out, err := json.Marshal(m)
 			return out, cleanModel, err
 		}
@@ -199,7 +218,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			for _, tc := range msg.ToolCalls {
 				inputItems = append(inputItems, map[string]interface{}{
 					"type":      "function_call",
-					"call_id":   tc.ID,
+					"call_id":   clampCallID(tc.ID),
 					"name":      tc.Function.Name,
 					"arguments": tc.Function.Arguments,
 				})
@@ -208,7 +227,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			text := ExtractSimpleText(msg.Content)
 			inputItems = append(inputItems, map[string]interface{}{
 				"type":    "function_call_output",
-				"call_id": msg.ToolCallID,
+				"call_id": clampCallID(msg.ToolCallID),
 				"output":  text,
 			})
 		}

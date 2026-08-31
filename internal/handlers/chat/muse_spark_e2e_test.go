@@ -124,7 +124,7 @@ func TestIntegration_OpenCode_MuseSpark_MultiTurnWithTools(t *testing.T) {
 					{"type": "text", "text": "I will calculate that for you."},
 					{
 						"type": "tool_use",
-						"id": "call_123456",
+						"id": "toolu_01abcdefghijklmnopqrstuvwxyz_1234567890_abcdefghijklmnopqrstuvwxyz_1234567890_extra_long_identifier",
 						"name": "calc",
 						"input": {"expr": "2+2"}
 					}
@@ -135,7 +135,7 @@ func TestIntegration_OpenCode_MuseSpark_MultiTurnWithTools(t *testing.T) {
 				"content": [
 					{
 						"type": "tool_result",
-						"tool_use_id": "call_123456",
+						"tool_use_id": "toolu_01abcdefghijklmnopqrstuvwxyz_1234567890_abcdefghijklmnopqrstuvwxyz_1234567890_extra_long_identifier",
 						"content": "4"
 					}
 				]
