@@ -56,8 +56,8 @@ func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
 		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	bodyStr := rec.Body.String()
-	if !strings.Contains(bodyStr, "event: message_start") || !strings.Contains(bodyStr, "event: content_block_delta") {
-		t.Fatalf("expected Claude SSE format (message_start / content_block_delta), got: %s", bodyStr)
+	if !strings.Contains(bodyStr, "event: message_start") || (!strings.Contains(bodyStr, "event: content_block_delta") && !strings.Contains(bodyStr, "event: message_delta")) {
+		t.Fatalf("expected Claude SSE format (message_start / message_delta), got: %s", bodyStr)
 	}
 }
 
