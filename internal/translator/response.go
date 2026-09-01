@@ -554,3 +554,89 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 	}
 	return buf.Bytes(), nil
 }
+
+// EnsureStreamClosed generates closing events (message_delta, message_stop) if a stream
+// was interrupted or ended without an explicit finish_reason from upstream.
+func EnsureStreamClosed(sessionKey string) []byte {
+	if sessionKey == "" {
+		return nil
+	}
+	statesMu.Lock()
+	state, exists := states[sessionKey]
+	statesMu.Unlock()
+	if !exists || state == nil {
+		return nil
+	}
+	if state.FinishReason != "" {
+		return nil // Already cleanly closed
+	}
+
+	state.FinishReason = "stop"
+	var results []map[string]any
+
+	if !state.MessageStartSent {
+		state.MessageStartSent = true
+		results = append(results, map[string]any{
+			"type": "message_start",
+			"message": map[string]any{
+				"id":            state.MessageId,
+				"type":          "message",
+				"role":          "assistant",
+				"model":         state.Model,
+				"content":       []any{},
+				"stop_reason":   nil,
+				"stop_sequence": nil,
+				"usage": map[string]any{
+					"input_tokens":  0,
+					"output_tokens": 0,
+				},
+			},
+		})
+	}
+
+	stopThinkingBlock(state, &results)
+	stopTextBlock(state, &results)
+
+	for idx, toolInfo := range state.ToolCalls {
+		buffered := state.ToolArgBuffers[idx]
+		sanitized := sanitizeToolArgs(toolInfo.Name, buffered)
+		results = append(results, map[string]any{
+			"type":  "content_block_delta",
+			"index": toolInfo.BlockIndex,
+			"delta": map[string]any{
+				"type":         "input_json_delta",
+				"partial_json": sanitized,
+			},
+		})
+		results = append(results, map[string]any{
+			"type":  "content_block_stop",
+			"index": toolInfo.BlockIndex,
+		})
+	}
+
+	finalUsage := map[string]any{
+		"input_tokens":  0,
+		"output_tokens": 0,
+	}
+	if state.Usage != nil {
+		finalUsage["input_tokens"] = state.Usage.PromptTokens
+		finalUsage["output_tokens"] = state.Usage.CompletionTokens
+	}
+	results = append(results, map[string]any{
+		"type": "message_delta",
+		"delta": map[string]any{
+			"stop_reason":   "end_turn",
+			"stop_sequence": nil,
+		},
+		"usage": finalUsage,
+	})
+	results = append(results, map[string]any{
+		"type": "message_stop",
+	})
+
+	var buf bytes.Buffer
+	for _, res := range results {
+		buf.WriteString(formatSSE(res))
+	}
+	return buf.Bytes()
+}

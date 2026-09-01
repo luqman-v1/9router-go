@@ -206,8 +206,12 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 			db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 				string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
 		}
-		log.Info("oauth", "token refreshed", "provider", provider, "project", result.ProjectID)
-		return result.AccessToken, result.ProjectID, nil
+		newPID := projectID
+		if result.ProjectID != "" {
+			newPID = result.ProjectID
+		}
+		log.Info("oauth", "token refreshed", "provider", provider, "project", newPID)
+		return result.AccessToken, newPID, nil
 	}
 
 	// Fall back to standard OAuth2
@@ -293,7 +297,11 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 				db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 					string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
 			}
-			return result.AccessToken, result.ProjectID, nil
+			newPID := oauthData.ProjectID
+			if result.ProjectID != "" {
+				newPID = result.ProjectID
+			}
+			return result.AccessToken, newPID, nil
 		}
 	}
 
@@ -342,8 +350,20 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 	// One session per stream so the OpenAI→Claude translation state cannot
 	// collide across concurrent requests; always cleared on exit.
 	sessionKey := fmt.Sprintf("gemini-stream-%d", time.Now().UnixNano())
-	defer translator.ClearStreamState(sessionKey)
+	defer func() {
+		if translateResponse {
+			if endChunk := translator.EnsureStreamClosed(sessionKey); len(endChunk) > 0 {
+				w.Write(endChunk)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+		translator.ClearStreamState(sessionKey)
+	}()
 
+	var totalChunks int
+	var totalBytesWritten int
 	err := proxy.ScanStream(upstream, func(chunk []byte) {
 		chunkStr := strings.TrimSpace(string(chunk))
 		if chunkStr == "" || chunkStr == "[DONE]" {
@@ -363,6 +383,7 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 			return
 		}
 
+		totalChunks++
 		if metrics.TTFT == 0 {
 			metrics.TTFT = time.Since(start).Milliseconds()
 		}
@@ -383,7 +404,8 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 				if claudeChunk == nil {
 					continue
 				}
-				w.Write(claudeChunk)
+				n, _ := w.Write(claudeChunk)
+				totalBytesWritten += n
 			}
 		} else {
 			w.Write(openaiChunk)
@@ -393,6 +415,7 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 			flusher.Flush()
 		}
 	})
+	log.Info("gemini", "stream ended", "chunks", totalChunks, "bytesWritten", totalBytesWritten, "duration_ms", time.Since(start).Milliseconds(), "err", err)
 	// Pull actual accumulated usage (incl. cached tokens) out of the session so
 	// the log sees real numbers instead of the fallback estimate.
 	if translateResponse {

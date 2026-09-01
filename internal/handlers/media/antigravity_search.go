@@ -79,7 +79,7 @@ func (h *MediaHandler) handleAntigravitySearch(w http.ResponseWriter, r *http.Re
 
 	model := modelInfo.Model
 	if model == "" || model == "antigravity" || model == "search" {
-		model = "gemini-3.5-flash-low"
+		model = "gemini-3-flash-agent"
 	}
 	model = translator.NormalizeAntigravityModel(model)
 

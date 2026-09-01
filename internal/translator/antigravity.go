@@ -247,34 +247,45 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 }
 
 // AntigravityModelSynonyms maps client/UI model names to internal Google Antigravity backend model IDs.
+// Upstream Google Antigravity uses "gemini-3.7-flash-tiered" / "gemini-3.6-flash-tiered" as backend model names.
 var AntigravityModelSynonyms = map[string]string{
-	"gemini-default":             "gemini-3.5-flash-low",
+	"gemini-default":             "gemini-3-flash-agent",
 	"gemini-3.5-flash":           "gemini-3-flash-agent",
 	"gemini-3.5-flash-high":      "gemini-3-flash-agent",
-	"gemini-3.5-flash-medium":    "gemini-3.5-flash-low",
-	"gemini-3.5-flash-low":       "gemini-3.5-flash-low",
-	"gemini-3.5-flash-extra-low": "gemini-3.5-flash-extra-low",
+	"gemini-3.5-flash-medium":    "gemini-3-flash-agent",
+	"gemini-3.5-flash-low":       "gemini-3-flash-agent",
+	"gemini-3.5-flash-extra-low": "gemini-3-flash-agent",
 	"gemini-3.5-flash-agent":     "gemini-3-flash-agent",
 	"gemini-3.1-pro-high":        "gemini-pro-agent",
 	"gemini-3.1-pro":             "gemini-pro-agent",
 	"gemini-3-pro-high":          "gemini-pro-agent",
 	"gemini-3-pro-low":           "gemini-3.1-pro-low",
-	"gemini-3.7-flash":           "gemini-3-flash-agent",
-	"gemini-3.7-flash-high":      "gemini-3-flash-agent",
-	"gemini-3.7-flash-agent":     "gemini-3-flash-agent",
-	"gemini-3.7-flash-medium":    "gemini-3.5-flash-low",
-	"gemini-3.7-flash-low":       "gemini-3.5-flash-low",
-	"gemini-3.7-flash-extra-low": "gemini-3.5-flash-extra-low",
-	"gemini-3.7-flash-thinking":  "gemini-3-flash-agent",
+	// 3.7 flash tiered models -> backend model: gemini-3.7-flash-tiered
+	"gemini-3.7-flash":           "gemini-3.7-flash-tiered",
+	"gemini-3.7-flash-high":      "gemini-3.7-flash-tiered",
+	"gemini-3.7-flash-agent":     "gemini-3.7-flash-tiered",
+	"gemini-3.7-flash-medium":    "gemini-3.7-flash-tiered",
+	"gemini-3.7-flash-low":       "gemini-3.7-flash-tiered",
+	"gemini-3.7-flash-extra-low": "gemini-3.7-flash-tiered",
+	"gemini-3.7-flash-thinking":  "gemini-3.7-flash-tiered",
+	// 3.6 flash tiered models -> backend model: gemini-3.6-flash-tiered
+	"gemini-3.6-flash":           "gemini-3.6-flash-tiered",
+	"gemini-3.6-flash-high":      "gemini-3.6-flash-tiered",
+	"gemini-3.6-flash-medium":    "gemini-3.6-flash-tiered",
+	"gemini-3.6-flash-low":       "gemini-3.6-flash-tiered",
 }
 
 // NormalizeAntigravityModel maps known aliases/synonyms to Antigravity internal backend model names.
 func NormalizeAntigravityModel(model string) string {
-	m := strings.ToLower(model)
+	m := strings.ToLower(strings.TrimSpace(model))
+	// Strip trailing thinking suffix like (high), (medium), (low) if present
+	if idx := strings.Index(m, "("); idx != -1 && strings.HasSuffix(m, ")") {
+		m = strings.TrimSpace(m[:idx])
+	}
 	if canonical, ok := AntigravityModelSynonyms[m]; ok {
 		return canonical
 	}
-	return model
+	return m
 }
 
 // WrapForAntigravity wraps a standard Gemini request in Antigravity API envelope.

@@ -124,12 +124,17 @@ func TestNormalizeAntigravityModel(t *testing.T) {
 		expected string
 	}{
 		{"gemini-3.5-flash-high", "gemini-3-flash-agent"},
-		{"gemini-3.5-flash-medium", "gemini-3.5-flash-low"},
-		{"gemini-3.5-flash-extra-low", "gemini-3.5-flash-extra-low"},
+		{"gemini-3.5-flash-medium", "gemini-3-flash-agent"},
+		{"gemini-3.5-flash-extra-low", "gemini-3-flash-agent"},
 		{"gemini-3.1-pro-high", "gemini-pro-agent"},
 		{"gemini-3-pro-high", "gemini-pro-agent"},
 		{"gemini-3-pro-low", "gemini-3.1-pro-low"},
-		{"gemini-default", "gemini-3.5-flash-low"},
+		{"gemini-default", "gemini-3-flash-agent"},
+		{"gemini-3.7-flash-high", "gemini-3.7-flash-tiered"},
+		{"gemini-3.7-flash", "gemini-3.7-flash-tiered"},
+		{"gemini-3.7-flash-low", "gemini-3.7-flash-tiered"},
+		{"gemini-3.6-flash-high", "gemini-3.6-flash-tiered"},
+		{"gemini-3.7-flash-tiered(high)", "gemini-3.7-flash-tiered"},
 		{"claude-sonnet-4-6", "claude-sonnet-4-6"},
 		{"gemini-3-flash-agent", "gemini-3-flash-agent"},
 	}
@@ -249,16 +254,16 @@ func TestStripCompetitivePrompts(t *testing.T) {
 
 func TestNormalizeAntigravityModel_AllSynonymsValid(t *testing.T) {
 	validBackendModels := map[string]bool{
-		"gemini-3-flash-agent":       true,
-		"gemini-3.5-flash-low":       true,
-		"gemini-3.5-flash-extra-low": true,
-		"gemini-pro-agent":           true,
-		"gemini-3.1-pro-low":         true,
-		"claude-sonnet-4-6":          true,
-		"claude-opus-4-6-thinking":   true,
-		"gpt-oss-120b-medium":        true,
-		"gemini-3-flash":             true,
-		"gemini-3.1-flash-image":     true,
+		"gemini-3-flash-agent":     true,
+		"gemini-pro-agent":         true,
+		"gemini-3.1-pro-low":       true,
+		"gemini-3.7-flash-tiered":  true,
+		"gemini-3.6-flash-tiered":  true,
+		"claude-sonnet-4-6":        true,
+		"claude-opus-4-6-thinking": true,
+		"gpt-oss-120b-medium":      true,
+		"gemini-3-flash":           true,
+		"gemini-3.1-flash-image":   true,
 	}
 
 	for alias, targetModel := range translator.AntigravityModelSynonyms {

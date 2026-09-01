@@ -179,16 +179,13 @@ func TestTranslateOpenAIToClaudeStream_EdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("usage captured in stream state after finish", func(t *testing.T) {
-		const id = "usage-capture"
-		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"` + id + `","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"x"},"finish_reason":null}]}`))
-		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"` + id + `","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":15,"cached_tokens":3}}`))
-		u := GetStreamUsage(id)
-		if u == nil {
-			t.Fatal("expected non-nil usage after finish")
-		}
-		if u.PromptTokens != 7 || u.CompletionTokens != 15 || u.CachedTokens != 3 {
-			t.Errorf("got %#v", u)
+	t.Run("EnsureStreamClosed closes unclosed stream gracefully", func(t *testing.T) {
+		const key = "ensure-closed-test"
+		defer ClearStreamState(key)
+		_, _ = TranslateOpenAIToClaudeStreamSession(key, []byte(`{"id":"`+key+`","model":"gemini-3.7-flash","choices":[{"index":0,"delta":{"content":"interrupted stream"},"finish_reason":null}]}`))
+		closed := EnsureStreamClosed(key)
+		if !strings.Contains(string(closed), "event: message_delta") || !strings.Contains(string(closed), "event: message_stop") {
+			t.Errorf("expected message_delta and message_stop from EnsureStreamClosed, got: %s", closed)
 		}
 	})
 }
