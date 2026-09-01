@@ -8,6 +8,105 @@ import (
 	"9router/proxy/internal/translator"
 )
 
+func TestCloakAntigravityRequest_WebSearchGetsRenamed(t *testing.T) {
+	// web_search (Claude's server tool type) is NOT in AntigravityNativeToolNames
+	// — only search_web (Gemini's native) is. This test locks in the distinction:
+	// web_search must be renamed to web_search_ide, while search_web stays as-is.
+	req := &translator.GeminiRequest{
+		Contents: []translator.GeminiContent{
+			{
+				Role: "user",
+				Parts: []translator.GeminiPart{
+					{Text: "cari sesuatu"},
+				},
+			},
+		},
+		Tools: []translator.GeminiTool{
+			{
+				FunctionDeclarations: []translator.GeminiFunctionDecl{
+					{
+						Name:        "web_search",
+						Description: "Search the internet",
+						Parameters: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"query": map[string]any{
+									"type":      "string",
+									"minLength": 1,
+									"maxLength": 4000,
+								},
+							},
+							"required": []string{"query"},
+						},
+					},
+					{
+						Name:        "search_web",
+						Description: "Gemini web search",
+						Parameters: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"query": map[string]any{"type": "string"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	cloaked, toolMap := translator.CloakAntigravityRequest(req, "")
+	if cloaked == nil {
+		t.Fatal("expected cloaked request, got nil")
+	}
+
+	// web_search → web_search_ide (not native)
+	if orig, ok := toolMap["web_search_ide"]; !ok || orig != "web_search" {
+		t.Errorf("expected toolMap[web_search_ide] = web_search, got %s/%v", orig, ok)
+	}
+
+	// search_web — native, no rename
+	if _, ok := toolMap["search_web"]; ok {
+		t.Errorf("search_web is native and should NOT be in toolMap")
+	}
+
+	// Verify the renamed declaration has cleaned schema (no minLength/maxLength)
+	foundWS := false
+	foundSW := false
+	for _, tg := range cloaked.Tools {
+		for _, decl := range tg.FunctionDeclarations {
+			switch decl.Name {
+			case "web_search_ide":
+				foundWS = true
+				params, ok := decl.Parameters.(map[string]any)
+				if !ok {
+					t.Fatalf("web_search_ide parameters not an object: %T", decl.Parameters)
+				}
+				props, _ := params["properties"].(map[string]any)
+				query, _ := props["query"].(map[string]any)
+				if _, has := query["minLength"]; has {
+					t.Errorf("web_search_ide query schema still has minLength (should be cleaned)")
+				}
+				if _, has := query["maxLength"]; has {
+					t.Errorf("web_search_ide query schema still has maxLength (should be cleaned)")
+				}
+			case "search_web":
+				foundSW = true
+				// search_web is native so the client's declaration passes through
+				// unchanged (the decoy "unavailable" version is deduped away).
+				if decl.Description != "Gemini web search" {
+					t.Errorf("search_web should keep client description, got %q", decl.Description)
+				}
+			}
+		}
+	}
+	if !foundWS {
+		t.Error("web_search_ide not found in cloaked tools")
+	}
+	if !foundSW {
+		t.Error("search_web decoy not found in cloaked tools")
+	}
+}
+
 func TestCloakAntigravityRequest_RenamesAndInjectsDecoys(t *testing.T) {
 	req := &translator.GeminiRequest{
 		Contents: []translator.GeminiContent{
