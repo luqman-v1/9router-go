@@ -20,7 +20,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"9router/proxy/internal/log"
@@ -726,8 +725,8 @@ func RestartSelf() {
 	// main's signal handler drains in-flight SSE streams and closes the listener
 	// before exiting, so the spawned process can bind the same port without
 	// "address already in use". If we are not the process leader or the signal
-	// path is unavailable, fall back to os.Exit(0).
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err == nil {
+	// path is unavailable (e.g. Windows), fall back to os.Exit(0).
+	if signalSelfShutdown() {
 		// Give main a bounded window to complete graceful shutdown; if it does
 		// not exit in time, force-quit so the new process can take over.
 		time.AfterFunc(5*time.Second, func() { os.Exit(1) })
