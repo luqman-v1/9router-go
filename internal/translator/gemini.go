@@ -13,11 +13,12 @@ import (
 
 // GeminiStreamState holds translation state for Gemini stream chunks.
 type GeminiStreamState struct {
-	MessageStartSent bool
-	MessageId        string
-	Model            string
-	Usage            *OpenAIUsage
-	FinishReason     string
+	MessageStartSent     bool
+	MessageId            string
+	Model                string
+	Usage                *OpenAIUsage
+	FinishReason         string
+	LastThoughtSignature string
 }
 
 // GeminiFileData represents remote or uploaded files referenced by URI.
@@ -208,23 +209,28 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		case "assistant":
 			var parts []GeminiPart
 
-			// Reasoning content → thought part
-			if msg.ReasoningContent != "" {
-				t := true
-				parts = append(parts, GeminiPart{Text: msg.ReasoningContent, Thought: &t})
-			}
-
 			// Text content
+			hasText := false
 			if contentStr, ok := msg.Content.(string); ok && contentStr != "" {
 				parts = append(parts, GeminiPart{Text: contentStr})
+				hasText = true
 			} else if contentArr, ok := msg.Content.([]interface{}); ok {
 				for _, item := range contentArr {
 					if m, ok := item.(map[string]interface{}); ok {
 						if text, ok := m["text"].(string); ok && text != "" {
 							parts = append(parts, GeminiPart{Text: text})
+							hasText = true
 						}
 					}
 				}
+			}
+
+			// If there is no text content and no tool calls, use reasoning_content as plain text.
+			// Do NOT emit reasoning_content as a thought: true part in history because Gemini
+			// requires valid cryptographic signatures on thought: true parts and rejects unsigned
+			// thoughts with "Corrupted thought signature".
+			if !hasText && len(msg.ToolCalls) == 0 && msg.ReasoningContent != "" {
+				parts = append(parts, GeminiPart{Text: msg.ReasoningContent})
 			}
 
 			// Tool calls → functionCall parts
@@ -348,7 +354,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 // extractThoughtSig extracts a thought_signature encoded in a tool call ID (format: "...__ts__<sig>").
 func extractThoughtSig(id string) string {
 	const sep = "__ts__"
-	if _, after, ok := strings.CutLast(id, sep); ok {
+	if _, after, ok := strings.CutLast(id, sep); ok && after != "" {
 		return after
 	}
 	return ""
@@ -387,7 +393,11 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 	var toolCalls []OpenAIToolCall
 
 	if content != nil {
+		var lastSig string
 		for _, part := range content.Parts {
+			if part.ThoughtSignature != "" {
+				lastSig = part.ThoughtSignature
+			}
 			if part.Text != "" && (part.Thought == nil || !*part.Thought) {
 				if openaiContent != "" {
 					openaiContent += part.Text
@@ -405,8 +415,12 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 				}
 				fnName := UncloakToolName(part.FunctionCall.Name, nil)
 				id := fmt.Sprintf("call_%s_%d", fnName, len(toolCalls))
-				if part.ThoughtSignature != "" {
-					id += "__ts__" + part.ThoughtSignature
+				sig := part.ThoughtSignature
+				if sig == "" {
+					sig = lastSig
+				}
+				if sig != "" {
+					id += "__ts__" + sig
 				}
 				toolCalls = append(toolCalls, OpenAIToolCall{
 					ID:   id,
@@ -551,6 +565,9 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 
 		if candidate.Content != nil {
 			for _, part := range candidate.Content.Parts {
+				if part.ThoughtSignature != "" {
+					state.LastThoughtSignature = part.ThoughtSignature
+				}
 				delta := map[string]interface{}{}
 				if part.Text != "" && (part.Thought == nil || !*part.Thought) {
 					delta["content"] = part.Text
@@ -565,8 +582,12 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 					}
 					fnName := UncloakToolName(part.FunctionCall.Name, nil)
 					id := fmt.Sprintf("call_%s_%d", fnName, time.Now().UnixNano())
-					if part.ThoughtSignature != "" {
-						id += "__ts__" + part.ThoughtSignature
+					sig := part.ThoughtSignature
+					if sig == "" {
+						sig = state.LastThoughtSignature
+					}
+					if sig != "" {
+						id += "__ts__" + sig
 					}
 					delta["tool_calls"] = []map[string]interface{}{
 						{

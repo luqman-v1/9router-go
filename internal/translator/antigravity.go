@@ -1,6 +1,7 @@
 package translator
 
 import (
+	"crypto/sha256"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
@@ -10,6 +11,22 @@ import (
 
 	"9router/proxy/internal/log"
 )
+
+// maxAntigravityOutputTokens caps generationConfig.maxOutputTokens; Google's
+// Antigravity backend rejects larger values (parity with Next.js capabilities.js).
+const maxAntigravityOutputTokens = 64000
+
+// antigravityRequestBlacklist are fields Google generateContent rejects when
+// present at the request root (thinking/reasoning fields set by upstream clients).
+var antigravityRequestBlacklist = []string{
+	"output_config",
+	"thinking",
+	"reasoning_effort",
+	"reasoning",
+	"enable_thinking",
+	"thinking_budget",
+	"thinkingConfig",
+}
 
 // AntigravityRequest is the wrapper format for Antigravity API.
 type AntigravityRequest struct {
@@ -288,12 +305,205 @@ func NormalizeAntigravityModel(model string) string {
 	return m
 }
 
+// antigravityUUIDFromSeed derives a deterministic RFC-4122-style UUID (v5-like)
+// from a seed string, matching the Next.js uuidFromSeed helper so trajectory and
+// conversation IDs are stable per session.
+func antigravityUUIDFromSeed(seed string) string {
+	h := sha256.Sum256([]byte(seed))
+	b := h[:16]
+	b[6] = (b[6] & 0x0f) | 0x50
+	b[8] = (b[8] & 0x3f) | 0x80
+	hex := fmt.Sprintf("%x", b)
+	return fmt.Sprintf("%s-%s-%s-%s-%s", hex[0:8], hex[8:12], hex[12:16], hex[16:20], hex[20:32])
+}
+
+// antigravityBuildRequestID builds the IDE request ID in the same shape as the
+// Next.js reference: agent/<conversationId>/<ts>/<trajectoryId>/<step>.
+func antigravityBuildRequestID(sessionID, model, requestType string, contentCount int) string {
+	if sessionID == "" {
+		sessionID = "anonymous"
+	}
+	conversationID := antigravityUUIDFromSeed("antigravity:conversation:" + sessionID)
+	trajectoryID := antigravityUUIDFromSeed(fmt.Sprintf("antigravity:trajectory:%s:%s:%s", sessionID, model, requestType))
+	step := contentCount*2 - 1
+	if step < 1 {
+		step = 1
+	}
+	return fmt.Sprintf("agent/%s/%d/%s/%d", conversationID, time.Now().UnixMilli(), trajectoryID, step)
+}
+
+// hardenAntigravityRequest strips blacklisted thinking/reasoning fields Google
+// rejects and caps maxOutputTokens at maxAntigravityOutputTokens. It leaves the
+// request byte-for-byte intact when nothing needs changing so thought signatures
+// on functionCall/thought parts are never re-encoded (which would corrupt them).
+func hardenAntigravityRequest(geminiBody []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(geminiBody, &m); err != nil {
+		return geminiBody
+	}
+
+	changed := false
+	for _, k := range antigravityRequestBlacklist {
+		if _, ok := m[k]; ok {
+			delete(m, k)
+			changed = true
+		}
+	}
+
+	gc, _ := m["generationConfig"].(map[string]any)
+	if v, ok := gc["maxOutputTokens"].(float64); ok && v > maxAntigravityOutputTokens {
+		gc["maxOutputTokens"] = float64(maxAntigravityOutputTokens)
+		changed = true
+	}
+
+	if !changed {
+		return geminiBody
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return geminiBody
+	}
+	return out
+}
+
+// StripThoughtSignatures removes all thoughtSignature / thought_signature keys
+// from a JSON body (Antigravity wrapper or plain Gemini). Used as a fallback
+// when the backend rejects a history signature as corrupted — stripping lets
+// the model treat the turn as a fresh thought.
+func StripThoughtSignatures(body []byte) []byte {
+	var v any
+	if err := json.Unmarshal(body, &v); err != nil {
+		return body
+	}
+	stripThoughtSignaturesRecursive(v)
+	out, err := json.Marshal(v)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+func stripThoughtSignaturesRecursive(v any) {
+	switch x := v.(type) {
+	case map[string]any:
+		delete(x, "thoughtSignature")
+		delete(x, "thought_signature")
+		for _, val := range x {
+			stripThoughtSignaturesRecursive(val)
+		}
+	case []any:
+		for _, elem := range x {
+			stripThoughtSignaturesRecursive(elem)
+		}
+	}
+}
+
+// ReplaceThoughtSignatures replaces every thoughtSignature / thought_signature
+// value with the given replacement (typically DefaultThinkingSignature). Used
+// when the backend rejects a history signature as corrupted/invalid — the
+// default is a known-valid signature for the Antigravity backend.
+func ReplaceThoughtSignatures(body []byte, replacement string) []byte {
+	var v any
+	if err := json.Unmarshal(body, &v); err != nil {
+		return body
+	}
+	replaceThoughtSignaturesRecursive(v, replacement)
+	out, err := json.Marshal(v)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+func replaceThoughtSignaturesRecursive(v any, replacement string) {
+	switch x := v.(type) {
+	case map[string]any:
+		if _, ok := x["thoughtSignature"]; ok {
+			x["thoughtSignature"] = replacement
+		}
+		if _, ok := x["thought_signature"]; ok {
+			x["thought_signature"] = replacement
+		}
+		for _, val := range x {
+			replaceThoughtSignaturesRecursive(val, replacement)
+		}
+	case []any:
+		for _, elem := range x {
+			replaceThoughtSignaturesRecursive(elem, replacement)
+		}
+	}
+}
+
+// fixAntigravityContents mirrors the Next.js Antigravity executor's content
+// fixup: role correction for functionResponse, stripping of thought-only parts
+// that Gemini 3 rejects, and backfilling of thoughtSignature on functionCall
+// parts (parity with open-sse/executors/antigravity.js).
+func fixAntigravityContents(req *GeminiRequest) bool {
+	if req == nil || len(req.Contents) == 0 {
+		return false
+	}
+	changed := false
+	fixed := make([]GeminiContent, len(req.Contents))
+	for i, c := range req.Contents {
+		role := c.Role
+		hasFunctionResponse := false
+		for _, p := range c.Parts {
+			if p.FunctionResponse != nil {
+				hasFunctionResponse = true
+				break
+			}
+		}
+		if hasFunctionResponse {
+			role = "user"
+		}
+
+		filtered := make([]GeminiPart, 0, len(c.Parts))
+		for _, p := range c.Parts {
+			if p.Thought != nil && *p.Thought && p.FunctionCall == nil {
+				continue
+			}
+			if p.ThoughtSignature != "" && p.FunctionCall == nil && p.Text == "" {
+				continue
+			}
+			filtered = append(filtered, p)
+		}
+
+		needsBackfill := false
+		for _, p := range filtered {
+			if p.FunctionCall != nil && p.ThoughtSignature == "" {
+				needsBackfill = true
+				break
+			}
+		}
+
+		if needsBackfill {
+			for idx, p := range filtered {
+				if p.FunctionCall != nil && p.ThoughtSignature == "" {
+					filtered[idx].ThoughtSignature = DefaultThinkingSignature
+				}
+			}
+		}
+
+		if role != c.Role || len(filtered) != len(c.Parts) || needsBackfill {
+			changed = true
+		}
+		fixed[i] = GeminiContent{Role: role, Parts: filtered}
+	}
+	if changed {
+		req.Contents = fixed
+	}
+	return changed
+}
+
 // WrapForAntigravity wraps a standard Gemini request in Antigravity API envelope.
 func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte, error) {
 	modelName = NormalizeAntigravityModel(modelName)
 
+	contentCount := 1
 	var geminiReq GeminiRequest
 	if err := json.Unmarshal(geminiBody, &geminiReq); err == nil {
+		contentCount = len(geminiReq.Contents)
+		fixAntigravityContents(&geminiReq)
 		cleanedReq := StripCompetitivePrompts(&geminiReq)
 		if len(cleanedReq.Tools) > 0 {
 			cloaked, _ := CloakAntigravityRequest(cleanedReq, "")
@@ -303,13 +513,14 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 			geminiBody = cloakedBytes
 		}
 	}
+	geminiBody = hardenAntigravityRequest(geminiBody)
 
 	wrapper := AntigravityRequest{
 		Project:     projectID,
 		Model:       modelName,
 		UserAgent:   "antigravity",
 		RequestType: "agent",
-		RequestID:   fmt.Sprintf("agent/%s/%d/%s/%d", projectID, time.Now().UnixMilli(), modelName, 1),
+		RequestID:   antigravityBuildRequestID(projectID, modelName, "agent", contentCount),
 		Request:     geminiBody,
 	}
 	out, err := json.Marshal(wrapper)
@@ -423,7 +634,7 @@ func WrapAntigravityImageRequest(prompt, base64Input, projectID, cleanModel, asp
 		Model:       cleanModel,
 		UserAgent:   "antigravity",
 		RequestType: "image_gen",
-		RequestID:   fmt.Sprintf("agent/%s/%d/%s/1", projectID, time.Now().UnixMilli(), cleanModel),
+		RequestID:   antigravityBuildRequestID(projectID, cleanModel, "image_gen", 1),
 		Request:     reqJSON,
 	}
 

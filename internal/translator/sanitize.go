@@ -5,13 +5,29 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"9router/proxy/internal/log"
 )
 
 func sanitizeToolArgs(toolName, argsJSON string) string {
+	// Handle "null", empty, or whitespace-only args — common when LLM sends null for web_search
+	if argsJSON == "" || argsJSON == "null" || strings.TrimSpace(argsJSON) == "" {
+		argsJSON = "{}"
+	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return argsJSON
+		// If args is a JSON string (e.g. "\"query\""), try to unwrap
+		var s string
+		if err2 := json.Unmarshal([]byte(argsJSON), &s); err2 == nil && s != "" {
+			args = map[string]any{"query": s}
+		} else {
+			return argsJSON
+		}
 	}
+	if args == nil {
+		args = make(map[string]any)
+	}
+	origArgsJSON := argsJSON
 
 	name := toolName
 	if strings.HasPrefix(name, "proxy_") {
@@ -24,15 +40,95 @@ func sanitizeToolArgs(toolName, argsJSON string) string {
 		sanitizeReadArgs(args)
 	case strings.Contains(nameLower, "search") || nameLower == "websearch":
 		sanitizeSearchArgs(args)
+		// Fallback for web_search when query is still missing/null after normal sanitization
+		if _, ok := args["query"]; !ok {
+			if qVal, ok := args["query"]; ok && qVal != nil {
+				// query exists but is not a string (e.g. null) — will be handled below
+			}
+			// Try any string value in args as query
+			for _, v := range args {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					args["query"] = strings.TrimSpace(s)
+					args["q"] = strings.TrimSpace(s)
+					args["queries"] = []string{strings.TrimSpace(s)}
+					log.Warn("sanitize", "web_search query fallback from args value", "tool", toolName, "query", s)
+					break
+				}
+			}
+			if _, ok := args["query"]; !ok && origArgsJSON != "" && origArgsJSON != "{}" && origArgsJSON != "null" {
+				trimmed := strings.Trim(origArgsJSON, "\" \t\n\r")
+				if trimmed != "" && trimmed != "{}" && trimmed != "null" {
+					// If original was a plain string like "cara mengalahkan bot", use it
+					// Also handle case where original was `{"query": null}` — trimmed would be `{"query": null}` not useful
+					// So only use if trimmed looks like a query (no braces)
+					if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+						args["query"] = trimmed
+						args["q"] = trimmed
+						args["queries"] = []string{trimmed}
+						log.Warn("sanitize", "web_search query fallback from raw string", "tool", toolName, "query", trimmed)
+					}
+				}
+			}
+			// Final fallback: if still no query and this is web_search, ensure args is at least a valid object
+			// The LLM may have sent null/empty; Jcode's websearch will error "missing field query" — provide a placeholder
+			// that will at least not be "null" so the tool can be called (it will search for empty, but better than error)
+			if _, ok := args["query"]; !ok {
+				// Check if query key exists but is nil/null
+				if _, exists := args["query"]; exists {
+					// query is present but not a string (likely nil) — remove and set fallback
+					delete(args, "query")
+				}
+				// If still no query, leave args as is — Jcode will return missing field error which will be shown to LLM
+				// and LLM will retry. Don't fabricate a query from nothing.
+			}
+		} else {
+			// Query exists but might be not a string or empty — ensure it's a string
+			if qStr, ok := args["query"].(string); !ok || strings.TrimSpace(qStr) == "" {
+				// Query is present but not a valid string (null, empty, etc.)
+				// Try fallback as above
+				for _, v := range args {
+					if s, ok := v.(string); ok && strings.TrimSpace(s) != "" && s != args["query"] {
+						args["query"] = strings.TrimSpace(s)
+						args["q"] = strings.TrimSpace(s)
+						args["queries"] = []string{strings.TrimSpace(s)}
+						log.Warn("sanitize", "web_search query fallback for empty query", "tool", toolName, "query", s)
+						break
+					}
+				}
+			}
+		}
 	case nameLower == "bash" || nameLower == "run_command" || nameLower == "terminal":
 		sanitizeBashArgs(args)
+	}
+
+	// Final ensure web_search has a string query if it has any query key that is not a string (e.g. null)
+	if strings.Contains(nameLower, "search") {
+		if qVal, exists := args["query"]; exists {
+			if _, ok := qVal.(string); !ok {
+				// query exists but is not a string (null, number, etc.) — try to convert or remove
+				if qVal == nil {
+					delete(args, "query")
+					delete(args, "q")
+					delete(args, "queries")
+					log.Warn("sanitize", "web_search removed null query", "tool", toolName, "before", origArgsJSON)
+				}
+			}
+		}
 	}
 
 	sanitized, err := json.Marshal(args)
 	if err != nil {
 		return argsJSON
 	}
-	return string(sanitized)
+	out := string(sanitized)
+	if nameLower == "web_search" || nameLower == "websearch" || nameLower == "search_web" || nameLower == "web_search_ide" || nameLower == "search_web_ide" {
+		if out != origArgsJSON {
+			log.Warn("sanitize", "web_search args sanitized", "tool", toolName, "before", origArgsJSON, "after", out)
+		} else {
+			log.Info("sanitize", "web_search args", "tool", toolName, "args", out)
+		}
+	}
+	return out
 }
 
 func sanitizeSearchArgs(args map[string]any) {

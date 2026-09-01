@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
 )
@@ -110,6 +112,61 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		resp.Body.Close()
 		if readErr != nil {
 			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)
+		}
+		if bytes.Contains(errBody, []byte("thought signature")) || bytes.Contains(errBody, []byte("Thought signature")) {
+			_ = os.WriteFile("/tmp/9router-ag-debug.json", sendBody, 0644)
+			log.Warn("gemini", "dumped thought-signature request to /tmp/9router-ag-debug.json", "model", modelName, "bytes", len(sendBody), "error", string(errBody[:min(200, len(errBody))]))
+			preview := sendBody
+			if len(preview) > 4000 {
+				preview = preview[:4000]
+			}
+			log.Warn("gemini", "thought-signature preview", "preview", string(preview))
+
+			// Retry with a known-valid default signature. Stripping makes
+			// Gemini 3 complain about missing signature; replacing with the
+			// default (same as Next.js backfill) gives the backend a
+			// signature it accepts for the cloaked tool history.
+			replaced := translator.ReplaceThoughtSignatures(sendBody, translator.DefaultThinkingSignature)
+			if !bytes.Equal(replaced, sendBody) {
+				log.Warn("gemini", "retrying with default thoughtSignature", "model", modelName)
+				req2, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewReader(replaced))
+				if err == nil {
+					for k, v := range headers {
+						req2.Header.Set(k, v)
+					}
+					if resp2, err := client.Do(req2); err == nil {
+						if resp2.StatusCode == http.StatusOK {
+							return resp2, nil
+						}
+						errBody2, _ := io.ReadAll(io.LimitReader(resp2.Body, 1*1024*1024))
+						resp2.Body.Close()
+						log.Warn("gemini", "retry with default thoughtSignature also failed", "status", resp2.StatusCode, "body", string(errBody2[:min(500, len(errBody2))]))
+						// Fall through to try stripping as last resort
+						if bytes.Contains(errBody2, []byte("thought signature")) || bytes.Contains(errBody2, []byte("Thought signature")) {
+							stripped := translator.StripThoughtSignatures(replaced)
+							if !bytes.Equal(stripped, replaced) {
+								log.Warn("gemini", "retrying without thoughtSignature", "model", modelName)
+								req3, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewReader(stripped))
+								if err == nil {
+									for k, v := range headers {
+										req3.Header.Set(k, v)
+									}
+									if resp3, err := client.Do(req3); err == nil {
+										if resp3.StatusCode == http.StatusOK {
+											return resp3, nil
+										}
+										errBody3, _ := io.ReadAll(io.LimitReader(resp3.Body, 1*1024*1024))
+										resp3.Body.Close()
+										log.Warn("gemini", "retry without thoughtSignature also failed", "status", resp3.StatusCode, "body", string(errBody3[:min(500, len(errBody3))]))
+										return nil, &UpstreamError{StatusCode: resp3.StatusCode, Body: errBody3}
+									}
+								}
+							}
+						}
+						return nil, &UpstreamError{StatusCode: resp2.StatusCode, Body: errBody2}
+					}
+				}
+			}
 		}
 		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
 	}

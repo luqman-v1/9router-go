@@ -13,8 +13,10 @@ import (
 )
 
 // vars (not consts) so tests can point them at a local server.
-var loadCodeAssistURL = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
-var onboardUserURL = "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser"
+// Discovery/onboarding RPCs stay on PROD: the daily host rejects these calls
+// (parity with the Next.js reference — see registry/antigravity.js usage config).
+var loadCodeAssistURL = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+var onboardUserURL = "https://cloudcode-pa.googleapis.com/v1internal:onboardUser"
 
 var lcaMetadata = map[string]any{
 	"ideType":    9, // ANTIGRAVITY

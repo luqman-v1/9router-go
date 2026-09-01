@@ -371,3 +371,138 @@ func TestThoughtSignatureBackfill(t *testing.T) {
 		t.Errorf("must emit camelCase thoughtSignature, got: %s", geminiBytes)
 	}
 }
+
+func TestReasoningContentNotEmittedAsThoughtTrue(t *testing.T) {
+	// When an assistant message has reasoning_content, it must NOT be emitted with "thought": true
+	// in Gemini request history, because unsigned thought parts cause 400 "Corrupted thought signature".
+	openaiReq := `{
+		"model": "gemini-3.7-flash",
+		"messages": [
+			{"role": "user", "content": "hello"},
+			{
+				"role": "assistant",
+				"content": "Here is the result",
+				"reasoning_content": "I am thinking about hello...",
+				"tool_calls": [
+					{
+						"id": "call_1__ts__sig123",
+						"type": "function",
+						"function": {"name": "test_tool", "arguments": "{}"}
+					}
+				]
+			}
+		]
+	}`
+
+	geminiBytes, err := TranslateOpenAIToGemini([]byte(openaiReq))
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini failed: %v", err)
+	}
+
+	if strings.Contains(string(geminiBytes), `"thought":true`) || strings.Contains(string(geminiBytes), `"thought": true`) {
+		t.Errorf("history assistant messages must not contain 'thought: true' without signature, got: %s", geminiBytes)
+	}
+	if !strings.Contains(string(geminiBytes), "Here is the result") {
+		t.Errorf("expected content to be preserved, got: %s", geminiBytes)
+	}
+}
+
+func TestThoughtSignatureStreamMultiChunk(t *testing.T) {
+	// Verify that when a thought_signature arrives in a thinking chunk (chunk 1),
+	// a subsequent functionCall chunk (chunk 2) with no thought_signature inherits
+	// the signature from state.LastThoughtSignature.
+	state := &GeminiStreamState{}
+
+	// Chunk 1: Thinking with thought_signature
+	chunk1 := `{
+		"candidates": [{
+			"content": {
+				"role": "model",
+				"parts": [{
+					"text": "Thinking about search...",
+					"thought": true,
+					"thought_signature": "SIG_FROM_THINKING_CHUNK"
+				}]
+			},
+			"index": 0
+		}]
+	}`
+
+	_, err := TranslateGeminiChunkToOpenAI([]byte(chunk1), state)
+	if err != nil {
+		t.Fatalf("chunk1 failed: %v", err)
+	}
+	if state.LastThoughtSignature != "SIG_FROM_THINKING_CHUNK" {
+		t.Errorf("expected LastThoughtSignature to be saved, got %q", state.LastThoughtSignature)
+	}
+
+	// Chunk 2: FunctionCall without thought_signature
+	chunk2 := `{
+		"candidates": [{
+			"content": {
+				"role": "model",
+				"parts": [{
+					"functionCall": {
+						"name": "search_tool",
+						"args": {"query": "golang"}
+					}
+				}]
+			},
+			"index": 0
+		}]
+	}`
+
+	openaiChunk, err := TranslateGeminiChunkToOpenAI([]byte(chunk2), state)
+	if err != nil {
+		t.Fatalf("chunk2 failed: %v", err)
+	}
+	if !strings.Contains(string(openaiChunk), "__ts__SIG_FROM_THINKING_CHUNK") {
+		t.Errorf("functionCall in chunk2 must inherit thoughtSignature from chunk1, got: %s", string(openaiChunk))
+	}
+}
+
+func TestTranslateGeminiResponseToOpenAI_PropagatesThoughtSig(t *testing.T) {
+	// In non-stream, if thought_signature is on the thinking part, it should propagate to functionCall
+	geminiResp := `{
+		"candidates": [{
+			"content": {
+				"role": "model",
+				"parts": [
+					{
+						"text": "Let me think...",
+						"thought": true,
+						"thought_signature": "SIG_ON_THOUGHT_PART"
+					},
+					{
+						"functionCall": {
+							"name": "lookup",
+							"args": {"id": 1}
+						}
+					}
+				]
+			},
+			"finishReason": "STOP"
+		}]
+	}`
+
+	openaiBytes, _, err := TranslateGeminiResponseToOpenAI([]byte(geminiResp))
+	if err != nil {
+		t.Fatalf("TranslateGeminiResponseToOpenAI failed: %v", err)
+	}
+
+	if !strings.Contains(string(openaiBytes), "__ts__SIG_ON_THOUGHT_PART") {
+		t.Errorf("functionCall tool_call id must inherit thought_signature from thought part, got: %s", string(openaiBytes))
+	}
+}
+
+func TestWrapForAntigravityPreservesThoughtSignature(t *testing.T) {
+	geminiBody := []byte(`{"contents":[{"role":"model","parts":[{"thoughtSignature":"SIG123","functionCall":{"name":"get_weather","args":{}}}]}],"tools":[{"functionDeclarations":[{"name":"get_weather"}]}]}`)
+	wrapped, err := WrapForAntigravity(geminiBody, "proj-1", "gemini-3.7-flash")
+	if err != nil {
+		t.Fatalf("failed: %v", err)
+	}
+	if !strings.Contains(string(wrapped), `"thoughtSignature":"SIG123"`) {
+		t.Fatalf("expected thoughtSignature:SIG123 in wrapped output, got: %s", string(wrapped))
+	}
+}
+

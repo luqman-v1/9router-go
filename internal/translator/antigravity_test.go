@@ -2,6 +2,7 @@ package translator_test
 
 import (
 	json "encoding/json/v2"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -368,6 +369,70 @@ func TestNormalizeAntigravityModel_AllSynonymsValid(t *testing.T) {
 	for alias, targetModel := range translator.AntigravityModelSynonyms {
 		if !validBackendModels[targetModel] {
 			t.Errorf("Antigravity synonym %q maps to invalid upstream model %q (will cause 404)", alias, targetModel)
+		}
+	}
+}
+
+func unwrapInnerRequest(t *testing.T, wrapped []byte) map[string]any {
+	t.Helper()
+	var req translator.AntigravityRequest
+	if err := json.Unmarshal(wrapped, &req); err != nil {
+		t.Fatalf("unmarshal wrapper: %v", err)
+	}
+	var inner map[string]any
+	if err := json.Unmarshal([]byte(req.Request), &inner); err != nil {
+		t.Fatalf("unmarshal inner request: %v", err)
+	}
+	return inner
+}
+
+var antigravityRequestIDRe = regexp.MustCompile(`^agent/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/\d+/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/\d+$`)
+
+func TestWrapForAntigravity_CapAndRequestID(t *testing.T) {
+	geminiBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":100000}}`)
+	wrapped, err := translator.WrapForAntigravity(geminiBody, "proj-1", "gemini-3.7-flash-high")
+	if err != nil {
+		t.Fatalf("WrapForAntigravity failed: %v", err)
+	}
+
+	var req translator.AntigravityRequest
+	if err := json.Unmarshal(wrapped, &req); err != nil {
+		t.Fatalf("unmarshal wrapper: %v", err)
+	}
+	if req.Model != "gemini-3.7-flash-tiered" {
+		t.Errorf("expected model gemini-3.7-flash-tiered, got %s", req.Model)
+	}
+	if !antigravityRequestIDRe.MatchString(req.RequestID) {
+		t.Errorf("request ID %q does not match UUID format", req.RequestID)
+	}
+
+	inner := unwrapInnerRequest(t, wrapped)
+	gc, _ := inner["generationConfig"].(map[string]any)
+	if gc == nil {
+		t.Fatal("generationConfig missing")
+	}
+	if v, _ := gc["maxOutputTokens"].(float64); v != 64000 {
+		t.Errorf("expected maxOutputTokens capped to 64000, got %v", gc["maxOutputTokens"])
+	}
+	// The tier must NOT be injected as a thinking config: gemini-3.7-flash-tiered
+	// is always-thinking, and injecting thinkingConfig triggers strict thought
+	// signature validation that rejects the backfilled default signature.
+	if _, ok := gc["thinkingConfig"]; ok {
+		t.Errorf("expected no thinkingConfig injection, got %v", gc["thinkingConfig"])
+	}
+}
+
+func TestWrapForAntigravity_StripsThinkingFields(t *testing.T) {
+	geminiBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"thinking":{"type":"enabled"},"reasoning_effort":"high","output_config":{},"enable_thinking":true}`)
+	wrapped, err := translator.WrapForAntigravity(geminiBody, "proj-1", "gemini-3-flash")
+	if err != nil {
+		t.Fatalf("WrapForAntigravity failed: %v", err)
+	}
+
+	inner := unwrapInnerRequest(t, wrapped)
+	for _, k := range []string{"thinking", "reasoning_effort", "output_config", "enable_thinking"} {
+		if _, ok := inner[k]; ok {
+			t.Errorf("expected %q stripped, still present", k)
 		}
 	}
 }

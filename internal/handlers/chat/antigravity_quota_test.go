@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"9router/proxy/internal/providers"
 )
 
 func TestAntigravityQuota_RefreshAndBlock(t *testing.T) {
@@ -44,14 +42,9 @@ func TestAntigravityQuota_RefreshAndBlock(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	agCfg := providers.KnownProviders["antigravity"]
-	origBase := agCfg.BaseURL
-	agCfg.BaseURL = mockServer.URL
-	providers.KnownProviders["antigravity"] = agCfg
-	defer func() {
-		agCfg.BaseURL = origBase
-		providers.KnownProviders["antigravity"] = agCfg
-	}()
+	oldBase := antigravityQuotaBaseURL
+	antigravityQuotaBaseURL = mockServer.URL
+	defer func() { antigravityQuotaBaseURL = oldBase }()
 
 	client := mockServer.Client()
 	connectionID := "test-ag-conn-1"
@@ -105,14 +98,9 @@ func TestAntigravityQuota_CoalescingAndThrottle(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	agCfg := providers.KnownProviders["antigravity"]
-	origBase := agCfg.BaseURL
-	agCfg.BaseURL = mockServer.URL
-	providers.KnownProviders["antigravity"] = agCfg
-	defer func() {
-		agCfg.BaseURL = origBase
-		providers.KnownProviders["antigravity"] = agCfg
-	}()
+	oldBase := antigravityQuotaBaseURL
+	antigravityQuotaBaseURL = mockServer.URL
+	defer func() { antigravityQuotaBaseURL = oldBase }()
 
 	client := mockServer.Client()
 	connID := "test-ag-conn-throttle"

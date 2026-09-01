@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"9router/proxy/internal/log"
-	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
 )
 
@@ -21,6 +19,11 @@ type AntigravityModelQuota struct {
 	RemainingPercentage float64   `json:"remainingPercentage"`
 	ResetAt             time.Time `json:"resetAt"`
 }
+
+// antigravityQuotaBaseURL hosts the v1internal:fetchAvailableModels discovery RPC.
+// Discovery stays on PROD (parity with the Next.js reference); the daily host only
+// serves chat traffic. A var (not const) so tests can point it at a local server.
+var antigravityQuotaBaseURL = "https://cloudcode-pa.googleapis.com"
 
 var (
 	agQuotaMu       sync.RWMutex
@@ -124,11 +127,7 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 	agLastRefreshAt[connectionID] = now
 	agQuotaMu.Unlock()
 
-	baseURL := "https://cloudcodecompanion.googleapis.com"
-	if cfg, ok := providers.KnownProviders["antigravity"]; ok && cfg.BaseURL != "" {
-		baseURL = strings.TrimRight(cfg.BaseURL, "/")
-	}
-	quotaURL := baseURL + "/v1internal:fetchAvailableModels"
+	quotaURL := antigravityQuotaBaseURL + "/v1internal:fetchAvailableModels"
 
 	reqBodyMap := map[string]any{}
 	if projectID != "" {
