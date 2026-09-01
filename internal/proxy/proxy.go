@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // UpstreamError captures a non-200 upstream response.
@@ -15,6 +16,16 @@ type UpstreamError struct {
 }
 
 func (e *UpstreamError) Error() string {
+	// Include the upstream body (truncated) so 4xx/5xx failures are diagnosable
+	// from the fallback log alone — the body often carries Google/Antigravity's
+	// actual rejection reason ("Invalid tool parameters", unknown model, etc.).
+	body := strings.TrimSpace(string(e.Body))
+	if len(body) > 512 {
+		body = body[:512] + "... (truncated)"
+	}
+	if body != "" {
+		return fmt.Sprintf("upstream returned %d: %s", e.StatusCode, body)
+	}
 	return fmt.Sprintf("upstream returned %d", e.StatusCode)
 }
 
