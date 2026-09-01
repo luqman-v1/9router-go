@@ -73,7 +73,8 @@ func DetectInjection(body []byte) InjectionResult {
 }
 
 // extractTexts pulls every user-visible string out of a message: string
-// content, Claude content[] blocks, and tool output.
+// content, Claude content[] blocks (including tool_result output), and
+// tool output.
 func extractTexts(msg map[string]any) []string {
 	var texts []string
 	if s, ok := msg["content"].(string); ok {
@@ -81,15 +82,39 @@ func extractTexts(msg map[string]any) []string {
 	}
 	if arr, ok := msg["content"].([]any); ok {
 		for _, part := range arr {
-			if blk, ok := part.(map[string]any); ok {
-				if text, ok := blk["text"].(string); ok {
-					texts = append(texts, text)
-				}
-			}
+			texts = append(texts, extractBlockTexts(part)...)
 		}
 	}
 	if s, ok := msg["output"].(string); ok {
 		texts = append(texts, s)
+	}
+	if arr, ok := msg["output"].([]any); ok {
+		for _, part := range arr {
+			texts = append(texts, extractBlockTexts(part)...)
+		}
+	}
+	return texts
+}
+
+// extractBlockTexts walks a content block and returns every user-visible
+// string: text fields plus nested content (tool_result carries its output in
+// "content", either as a string or an array of text blocks).
+func extractBlockTexts(part any) []string {
+	var texts []string
+	blk, ok := part.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if text, ok := blk["text"].(string); ok {
+		texts = append(texts, text)
+	}
+	if content, ok := blk["content"].(string); ok {
+		texts = append(texts, content)
+	}
+	if contentArr, ok := blk["content"].([]any); ok {
+		for _, sub := range contentArr {
+			texts = append(texts, extractBlockTexts(sub)...)
+		}
 	}
 	return texts
 }
