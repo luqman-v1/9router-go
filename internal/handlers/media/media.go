@@ -449,9 +449,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	modelInfo, err := h.ChatH.ResolveModel(model)
 	if err != nil {
+		log.Warn("media", "resolve model failed", "endpoint", endpoint, "model", model, "error", err)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	log.Debug("media", "forward request", "endpoint", endpoint, "model", model, "provider", modelInfo.Provider, "resolvedModel", modelInfo.Model)
 
 	// Handle combo fallback if model is a combo
 	if len(modelInfo.ComboModels) > 0 {
@@ -508,12 +510,15 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			client := h.ChatH.GetClientForConnection(connData)
 			resp, err := client.Do(req)
 			if err != nil {
+				log.Warn("media", "upstream combo request failed", "endpoint", endpoint, "provider", subInfo.Provider, "model", subInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "error", err)
 				lastErr = err.Error()
 				continue
 			}
 			if resp.StatusCode >= 400 {
+				errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024))
 				resp.Body.Close()
-				lastErr = fmt.Sprintf("upstream status %d", resp.StatusCode)
+				log.Warn("media", "upstream combo error", "endpoint", endpoint, "provider", subInfo.Provider, "model", subInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "status", resp.StatusCode, "body", string(errBody))
+				lastErr = fmt.Sprintf("upstream status %d: %s", resp.StatusCode, string(errBody[:min(200, len(errBody))]))
 				continue
 			}
 			defer resp.Body.Close()
@@ -545,18 +550,21 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	conn, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 	if err != nil {
+		log.Warn("media", "no connection", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "error", err)
 		handlerutil.WriteJSONError(w, http.StatusNotFound, fmt.Sprintf("no active connections for provider: %s", modelInfo.Provider))
 		return
 	}
 
 	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
 	if err != nil {
+		log.Error("media", "get provider config failed", "endpoint", endpoint, "provider", modelInfo.Provider, "error", err)
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	apiKey := chat.ExtractAPIKey(connData)
 	if apiKey == "" {
+		log.Warn("media", "no api key", "endpoint", endpoint, "provider", modelInfo.Provider, "conn", conn.ID[:min(8, len(conn.ID))])
 		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
 		return
 	}
@@ -594,11 +602,18 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Error("media", "upstream request failed", "endpoint", endpoint, "error", err)
+		log.Error("media", "upstream request failed", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "error", err)
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, "upstream request failed")
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024))
+		log.Warn("media", "upstream error", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "status", resp.StatusCode, "body", string(errBody))
+		// Need to re-create body for copying
+		resp.Body = io.NopCloser(bytes.NewReader(errBody))
+	}
 
 	for k, v := range resp.Header {
 		w.Header()[k] = v

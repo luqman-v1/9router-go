@@ -3,6 +3,8 @@ package translator
 import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+
+	"9router/proxy/internal/log"
 )
 
 // cleanGeminiSchema recursively removes JSON Schema Draft 7/8 keywords
@@ -313,6 +315,10 @@ func CleanParametersSchema(raw jsontext.Value) jsontext.Value {
 	cleaned, err := json.Marshal(parsed)
 	if err != nil {
 		return raw // fallback
+	}
+	if string(cleaned) != string(raw) {
+		// Detailed debug for schema cleaning - helps diagnose Gemini 400s
+		log.Debug("translator", "cleaned schema", "before", string(raw[:min(500, len(raw))]), "after", string(cleaned[:min(500, len(cleaned))]))
 	}
 	return cleaned
 }
