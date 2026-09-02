@@ -198,6 +198,25 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		}
 	}
 
+	// 3.5 Check if it's a bare provider alias (e.g., "ag" -> "antigravity")
+	// Next.js treats bare alias as provider with default model for search/media endpoints.
+	if canonical := resolveProviderAlias(modelStr); canonical != modelStr {
+		if _, ok := providers.KnownProviders[canonical]; ok {
+			if conns, err := h.Repo.GetProviderConnections(canonical, true); err == nil && len(conns) > 0 {
+				return &ModelInfo{Provider: canonical, Model: ""}, nil
+			}
+		}
+	}
+	if _, ok := providers.KnownProviders[modelStr]; ok {
+		if conns, err := h.Repo.GetProviderConnections(modelStr, true); err == nil && len(conns) > 0 {
+			return &ModelInfo{Provider: modelStr, Model: ""}, nil
+		}
+	}
+	// Also check prefix provider nodes for bare alias (e.g., custom prefixes)
+	if info := h.resolvePrefixProvider(modelStr, ""); info != nil {
+		return info, nil
+	}
+
 	// 4. Check common providers as a fallback
 	for _, provider := range []string{"openai", "anthropic", "deepseek"} {
 		conns, err := h.Repo.GetProviderConnections(provider, true)

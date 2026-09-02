@@ -80,9 +80,14 @@ func (h *MediaHandler) handleAntigravitySearch(w http.ResponseWriter, r *http.Re
 
 	model := modelInfo.Model
 	if model == "" || model == "antigravity" || model == "search" {
-		model = "gemini-3-flash-agent"
+		model = "gemini-2.5-flash"
 	}
 	model = translator.NormalizeAntigravityModel(model)
+	// gemini-2.5-flash is the Next.js search default (ag -> 2.5-flash); keep it
+	// even though NormalizeAntigravityModel maps some 3.x aliases to tiered models.
+	if model == "gemini-3-flash-agent" {
+		model = "gemini-2.5-flash"
+	}
 
 	conn, connData, err := h.ChatH.GetBestConnection("antigravity", modelInfo.ConnectionID, nil, model)
 	if err != nil || conn == nil {

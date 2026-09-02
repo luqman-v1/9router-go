@@ -113,6 +113,16 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		if readErr != nil {
 			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)
 		}
+		// Always dump 400 INVALID_ARGUMENT payloads for post-mortem (covers
+		// "items.items: missing field." and other schema rejections).
+		if resp.StatusCode == http.StatusBadRequest {
+			_ = os.WriteFile("/tmp/9router-gemini-400.json", sendBody, 0644)
+			preview := sendBody
+			if len(preview) > 8000 {
+				preview = preview[:8000]
+			}
+			log.Warn("gemini", "dumped 400 request to /tmp/9router-gemini-400.json", "model", modelName, "bytes", len(sendBody), "error", string(errBody[:min(500, len(errBody))]), "preview", string(preview))
+		}
 		if bytes.Contains(errBody, []byte("thought signature")) || bytes.Contains(errBody, []byte("Thought signature")) {
 			_ = os.WriteFile("/tmp/9router-ag-debug.json", sendBody, 0644)
 			log.Warn("gemini", "dumped thought-signature request to /tmp/9router-ag-debug.json", "model", modelName, "bytes", len(sendBody), "error", string(errBody[:min(200, len(errBody))]))

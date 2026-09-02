@@ -117,6 +117,56 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 		}
 	}
 
+	// Handle prefixItems (JSON Schema 2020-12 tuple) — Gemini only supports single items.
+	if prefixItemsRaw, hasPrefix := schema["prefixItems"]; hasPrefix {
+		if _, hasItems := schema["items"]; !hasItems {
+			if arr, ok := prefixItemsRaw.([]interface{}); ok && len(arr) > 0 {
+				if firstMap, ok := arr[0].(map[string]interface{}); ok {
+					schema["items"] = firstMap
+				}
+			}
+		}
+		delete(schema, "prefixItems")
+	}
+
+	// Ensure every array has an items schema (Gemini protobuf requires it).
+	// Missing items causes: "...items.items: missing field." or "...items: missing field."
+	if t, ok := schema["type"].(string); ok && t == "array" {
+		if _, hasItems := schema["items"]; !hasItems {
+			schema["items"] = map[string]interface{}{"type": "string"}
+		} else {
+			// Tuple form: items: [ {...}, {...} ] — take first element as single schema.
+			switch items := schema["items"].(type) {
+			case []interface{}:
+				if len(items) > 0 {
+					if firstMap, ok := items[0].(map[string]interface{}); ok {
+						schema["items"] = firstMap
+					} else {
+						schema["items"] = map[string]interface{}{"type": "string"}
+					}
+				} else {
+					schema["items"] = map[string]interface{}{"type": "string"}
+				}
+			case map[string]interface{}:
+				if len(items) == 0 {
+					schema["items"] = map[string]interface{}{"type": "string"}
+				} else if _, hasType := items["type"]; !hasType {
+					if _, hasProps := items["properties"]; !hasProps {
+						if _, hasItemsInner := items["items"]; !hasItemsInner {
+							if _, hasEnum := items["enum"]; !hasEnum {
+								if _, hasAnyOf := items["anyOf"]; !hasAnyOf {
+									if _, hasOneOf := items["oneOf"]; !hasOneOf {
+										items["type"] = "string"
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Recurse into properties definitions (each value is a property schema, NOT the container map)
 	if propsRaw, hasProps := schema["properties"]; hasProps {
 		if props, ok := propsRaw.(map[string]interface{}); ok {
@@ -139,6 +189,15 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 					cleanGeminiSchema(elemMap)
 				}
 			}
+		}
+	}
+
+	// Recurse into additionalProperties if it is a schema (some generators put constraints there)
+	if apRaw, hasAP := schema["additionalProperties"]; hasAP {
+		if apMap, ok := apRaw.(map[string]interface{}); ok {
+			cleanGeminiSchema(apMap)
+			// additionalProperties is stripped above via unsupported list, but if
+			// it survived (e.g. future list change), still ensure its content is clean.
 		}
 	}
 
