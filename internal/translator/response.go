@@ -466,41 +466,38 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 			idx = *tc.Index
 		}
 		if tc.ID != "" {
-			// Don't fallback to ID when Function.Name is empty — would emit tool_use with name=call_... (decolua/9router#2077)
-			if tc.Function == nil || tc.Function.Name == "" {
-				// If ID is present but no name yet, wait for name in later chunk; don't create orphan block
-				if _, exists := state.ToolCalls[idx]; !exists {
+			// If we already have this tool idx, don't create a new block — it's a delta for the same tool (e.g. Codex streaming where first chunk has name, second has arguments with same id)
+			if _, exists := state.ToolCalls[idx]; exists {
+				// Already have this tool, skip block creation, just buffer arguments below
+			} else {
+				// New tool — don't fallback to ID when Function.Name is empty (decolua/9router#2077)
+				if tc.Function == nil || tc.Function.Name == "" {
 					continue
 				}
+				toolName := UncloakToolName(tc.Function.Name, nil)
+				if toolName == "" {
+					continue
+				}
+				stopThinkingBlock(state, &results)
+				stopTextBlock(state, &results)
+				toolBlockIndex := state.NextBlockIndex
+				state.NextBlockIndex++
+				state.ToolCalls[idx] = ToolCallState{
+					ID:         tc.ID,
+					Name:       toolName,
+					BlockIndex: toolBlockIndex,
+				}
+				results = append(results, map[string]any{
+					"type":  "content_block_start",
+					"index": toolBlockIndex,
+					"content_block": map[string]any{
+						"type":  "tool_use",
+						"id":    tc.ID,
+						"name":  toolName,
+						"input": map[string]any{},
+					},
+				})
 			}
-			stopThinkingBlock(state, &results)
-			stopTextBlock(state, &results)
-			toolBlockIndex := state.NextBlockIndex
-			state.NextBlockIndex++
-			toolName := ""
-			if tc.Function != nil {
-				toolName = tc.Function.Name
-			}
-			toolName = UncloakToolName(toolName, nil)
-			if toolName == "" {
-				// Keep ID for tracking but don't emit block with empty name
-				continue
-			}
-			state.ToolCalls[idx] = ToolCallState{
-				ID:         tc.ID,
-				Name:       toolName,
-				BlockIndex: toolBlockIndex,
-			}
-			results = append(results, map[string]any{
-				"type":  "content_block_start",
-				"index": toolBlockIndex,
-				"content_block": map[string]any{
-					"type":  "tool_use",
-					"id":    tc.ID,
-					"name":  toolName,
-					"input": map[string]any{},
-				},
-			})
 		}
 		if tc.Function != nil && tc.Function.Arguments != "" {
 			state.ToolArgBuffers[idx] = state.ToolArgBuffers[idx] + tc.Function.Arguments
