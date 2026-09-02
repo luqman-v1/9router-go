@@ -196,14 +196,15 @@ type ClaudeRequest struct {
 
 // OpenAIRequest is the translated OpenAI-compatible request body.
 type OpenAIRequest struct {
-	Model           string          `json:"model"`
-	Messages        []OpenAIMessage `json:"messages"`
-	Temperature     *float64        `json:"temperature,omitempty"`
-	MaxTokens       *int            `json:"max_tokens,omitempty"`
-	Tools           []OpenAITool    `json:"tools,omitempty"`
-	ToolChoice      any             `json:"tool_choice,omitempty"`
-	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
-	Stream          bool            `json:"stream,omitempty"`
+	Model               string          `json:"model"`
+	Messages            []OpenAIMessage `json:"messages"`
+	Temperature         *float64        `json:"temperature,omitempty"`
+	MaxTokens           *int            `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int            `json:"max_completion_tokens,omitempty"`
+	Tools               []OpenAITool    `json:"tools,omitempty"`
+	ToolChoice          any             `json:"tool_choice,omitempty"`
+	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
+	Stream              bool            `json:"stream,omitempty"`
 }
 
 // OpenAIMessage is a single message in OpenAI format.

@@ -11,6 +11,19 @@ import (
 
 var billingHeaderRegex = regexp.MustCompile(`(?i)^x-anthropic-billing-header:[^\n]*(?:\r?\n)?`)
 
+// requiresMaxCompletionTokens reports whether model needs max_completion_tokens instead of max_tokens (PR #3657).
+// Matches gpt-5.x and o1/o3/o4 with hyphen, same as JS /gpt-5|o[134]-/i
+func requiresMaxCompletionTokens(model string) bool {
+	lower := strings.ToLower(model)
+	if strings.Contains(lower, "gpt-5") {
+		return true
+	}
+	if strings.Contains(lower, "o1-") || strings.Contains(lower, "o3-") || strings.Contains(lower, "o4-") {
+		return true
+	}
+	return false
+}
+
 func stripAnthropicBillingHeader(text string) string {
 	return billingHeaderRegex.ReplaceAllString(text, "")
 }
@@ -286,7 +299,12 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 	var oreq OpenAIRequest
 	oreq.Model = creq.Model
 	oreq.Temperature = creq.Temperature
-	oreq.MaxTokens = creq.MaxTokens
+	// gpt-5/o-series use max_completion_tokens (PR #3657)
+	if requiresMaxCompletionTokens(creq.Model) {
+		oreq.MaxCompletionTokens = creq.MaxTokens
+	} else {
+		oreq.MaxTokens = creq.MaxTokens
+	}
 	oreq.Stream = creq.Stream
 
 	sysContent := parseSystemPrompt(creq.System)
