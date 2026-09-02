@@ -26,6 +26,7 @@ type CodexStreamState struct {
 	CurrentToolCallID string
 	ToolCallIdx       map[string]int
 	ToolCallNames     map[string]string
+	ToolCallArgs      map[string]string
 }
 
 func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, created int64) []string {
@@ -144,11 +145,24 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			state.ToolCallCount++
 		}
 
+		if state.ToolCallArgs == nil {
+			state.ToolCallArgs = make(map[string]string)
+		}
+		state.ToolCallArgs[callID] += delta
+
 		fnMap := map[string]any{
 			"arguments": delta,
 		}
+		// Only include name if not already sent (avoid triplication across added/delta/done)
 		if name != "" {
-			fnMap["name"] = name
+			if existing, ok := state.ToolCallNames[callID]; !ok || existing == "" {
+				fnMap["name"] = name
+			} else if existing != name {
+				// For split names, only append remainder
+				if !strings.Contains(existing, name) {
+					fnMap["name"] = name
+				}
+			}
 		}
 		tcMap := map[string]any{
 			"index":    idx,
@@ -198,7 +212,44 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			name = state.ToolCallNames[callID]
 		}
 		if name != "" && state.ToolCallNames != nil {
-			state.ToolCallNames[callID] = name
+			if _, ok := state.ToolCallNames[callID]; !ok || state.ToolCallNames[callID] == "" {
+				state.ToolCallNames[callID] = name
+			}
+		}
+		// Avoid duplicating arguments already sent via delta
+		if state.ToolCallArgs == nil {
+			state.ToolCallArgs = make(map[string]string)
+		}
+		if existing, ok := state.ToolCallArgs[callID]; ok && existing != "" {
+			if existing == args || strings.Contains(existing, args) {
+				// Already sent via delta, skip emitting done
+				return nil
+			}
+			if strings.HasPrefix(args, existing) {
+				// Only send the remaining suffix
+				args = strings.TrimPrefix(args, existing)
+				if args == "" {
+					return nil
+				}
+			}
+		}
+		if args != "" {
+			state.ToolCallArgs[callID] += args
+		}
+		// Only include name if not already sent
+		fnMapDone := map[string]any{
+			"arguments": args,
+		}
+		if name != "" {
+			if _, ok := state.ToolCallNames[callID]; !ok {
+				fnMapDone["name"] = name
+			} else if state.ToolCallNames[callID] != name && !strings.Contains(state.ToolCallNames[callID], name) {
+				fnMapDone["name"] = name
+			}
+		}
+		// If both name and args would be empty, skip
+		if len(fnMapDone) == 1 && fnMapDone["arguments"] == "" {
+			return nil
 		}
 		chunk := map[string]any{
 			"id":      responseID,
@@ -211,10 +262,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 						"index": idx,
 						"id":    callID,
 						"type":  "function",
-						"function": map[string]any{
-							"name":      name,
-							"arguments": args,
-						},
+						"function": fnMapDone,
 					}},
 				},
 			}},

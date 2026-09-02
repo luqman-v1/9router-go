@@ -164,11 +164,24 @@ func sseToOpenAIJSON(raw []byte) ([]byte, bool) {
 				}
 				if fn, ok := tc["function"].(map[string]any); ok {
 					fEntry, _ := entry["function"].(map[string]any)
-					if n, ok := fn["name"].(string); ok {
-						fEntry["name"] = fEntry["name"].(string) + n
+					if n, ok := fn["name"].(string); ok && n != "" {
+						if existing, _ := fEntry["name"].(string); existing == "" {
+							fEntry["name"] = n
+						} else if existing != n && !strings.Contains(existing, n) {
+							fEntry["name"] = existing + n
+						}
 					}
-					if a, ok := fn["arguments"].(string); ok {
-						fEntry["arguments"] = fEntry["arguments"].(string) + a
+					if a, ok := fn["arguments"].(string); ok && a != "" {
+						existing, _ := fEntry["arguments"].(string)
+						if existing == "" {
+							fEntry["arguments"] = a
+						} else if existing != a && !strings.Contains(existing, a) {
+							// Only append if not already present (avoid duplicating done after delta)
+							// For split arguments, delta fragments should be appended
+							if len(a) > 0 && !strings.HasSuffix(existing, a) {
+								fEntry["arguments"] = existing + a
+							}
+						}
 					}
 				}
 			}
