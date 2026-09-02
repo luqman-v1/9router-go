@@ -167,6 +167,35 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 		}
 	}
 
+	// Fix misplaced `required` inside `properties` (common generator bug: required as property instead of sibling)
+	// e.g. {"properties":{"query":{...},"required":["query"]}} -> {"properties":{"query":{...}},"required":["query"]}
+	if propsRaw, hasProps := schema["properties"]; hasProps {
+		if props, ok := propsRaw.(map[string]interface{}); ok {
+			if reqInProps, hasReqInProps := props["required"]; hasReqInProps {
+				// If value is not an object schema, it's misplaced required array
+				if _, isObj := reqInProps.(map[string]interface{}); !isObj {
+					delete(props, "required")
+					if _, hasTopReq := schema["required"]; !hasTopReq {
+						// Only promote if top-level required missing
+						if reqArr, ok := reqInProps.([]interface{}); ok {
+							schema["required"] = reqArr
+						} else if reqStrArr, ok := reqInProps.([]string); ok {
+							schema["required"] = reqStrArr
+						} else {
+							// Fallback: marshal and unmarshal to handle mixed types
+							if b, err := json.Marshal(reqInProps); err == nil {
+								var arr []interface{}
+								if err := json.Unmarshal(b, &arr); err == nil {
+									schema["required"] = arr
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Recurse into properties definitions (each value is a property schema, NOT the container map)
 	if propsRaw, hasProps := schema["properties"]; hasProps {
 		if props, ok := propsRaw.(map[string]interface{}); ok {

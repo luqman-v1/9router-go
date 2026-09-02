@@ -238,28 +238,50 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 	}
 	res := *req
 	if res.SystemInstruction != nil {
-		parts := make([]GeminiPart, len(res.SystemInstruction.Parts))
-		for i, p := range res.SystemInstruction.Parts {
-			p.Text = rewriteCompetingBranding(p.Text)
-			parts[i] = p
-		}
-		res.SystemInstruction = &GeminiContent{
-			Role:  res.SystemInstruction.Role,
-			Parts: parts,
-		}
-	}
-	contents := make([]GeminiContent, len(res.Contents))
-	for i, c := range res.Contents {
-		parts := make([]GeminiPart, len(c.Parts))
-		for j, p := range c.Parts {
-			if p.Text != "" {
-				p.Text = rewriteCompetingBranding(p.Text)
+		var filtered []GeminiPart
+		for _, p := range res.SystemInstruction.Parts {
+			text := rewriteCompetingBranding(p.Text)
+			// Drop empty system instruction parts - Gemini requires oneof data field
+			if strings.TrimSpace(text) == "" && p.FunctionCall == nil && p.FunctionResponse == nil && p.InlineData == nil && p.FileData == nil && p.ThoughtSignature == "" {
+				continue
 			}
-			parts[j] = p
+			p.Text = text
+			filtered = append(filtered, p)
 		}
-		contents[i] = GeminiContent{Role: c.Role, Parts: parts}
+		if len(filtered) == 0 {
+			res.SystemInstruction = nil
+		} else {
+			res.SystemInstruction = &GeminiContent{
+				Role:  res.SystemInstruction.Role,
+				Parts: filtered,
+			}
+		}
 	}
-	res.Contents = contents
+	contents := make([]GeminiContent, 0, len(res.Contents))
+	for _, c := range res.Contents {
+		var filtered []GeminiPart
+		for _, p := range c.Parts {
+			if p.Text != "" {
+				text := rewriteCompetingBranding(p.Text)
+				if strings.TrimSpace(text) == "" && p.FunctionCall == nil && p.FunctionResponse == nil && p.InlineData == nil && p.FileData == nil && p.ThoughtSignature == "" {
+					continue
+				}
+				p.Text = text
+			}
+			// Keep non-text parts as-is, drop truly empty text parts
+			if p.Text == "" && p.FunctionCall == nil && p.FunctionResponse == nil && p.InlineData == nil && p.FileData == nil && p.ThoughtSignature == "" && p.Thought == nil {
+				continue
+			}
+			filtered = append(filtered, p)
+		}
+		if len(filtered) == 0 {
+			continue
+		}
+		contents = append(contents, GeminiContent{Role: c.Role, Parts: filtered})
+	}
+	if len(contents) > 0 || len(res.Contents) == 0 {
+		res.Contents = contents
+	}
 	return &res
 }
 

@@ -1,5 +1,5 @@
 {
-  "latestVersion": "1.8.6",
+  "latestVersion": "1.8.7",
   "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
-  "releaseNotes": "v1.8.6: Fix Gemini tool schema where.items.items 400 (array missing items, prefixItems/tuple handling), bare alias ag -> antigravity resolution, Antigravity search default gemini-2.5-flash parity, and 400 payload dump. Changelog: CHANGELOG.md."
+  "releaseNotes": "v1.8.7: Fix Gemini system_instruction empty part 400 and required-inside-properties 400, plus where.items handling. Changelog: CHANGELOG.md."
 }

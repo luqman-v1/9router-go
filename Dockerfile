@@ -3,7 +3,7 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-ARG VERSION=1.8.6
+ARG VERSION=1.8.7
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X '9router/proxy/internal/updater.CurrentVersion=${VERSION}'" -o 9router-go ./cmd/9router-go/
 
 FROM alpine:3.21

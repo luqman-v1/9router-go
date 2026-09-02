@@ -194,7 +194,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		switch msg.Role {
 		case "system":
 			content := extractContentString(msg.Content)
-			if content != "" {
+			if strings.TrimSpace(content) != "" {
 				req.SystemInstruction = &GeminiContent{
 					Parts: []GeminiPart{{Text: content}},
 				}
