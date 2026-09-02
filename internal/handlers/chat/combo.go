@@ -153,6 +153,17 @@ func DetectRequiredCapabilities(body []byte) map[string]bool {
 		}
 	}
 
+	if tools, ok := m["tools"].([]any); ok {
+		for _, t := range tools {
+			if tm, ok := t.(map[string]any); ok {
+				if tm["type"] == "function" || tm["function"] != nil || tm["functionDeclarations"] != nil {
+					required["tools"] = true
+					break
+				}
+			}
+		}
+	}
+
 	return required
 }
 

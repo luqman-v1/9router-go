@@ -37,6 +37,21 @@ func (h *ChatHandler) forwardRequest(
 			body = sanitized
 		}
 	}
+	// OpenRouter strict pattern validation (PR #3665): strip malformed regex patterns
+	if strings.Contains(cfg.BaseURL, "openrouter.ai") {
+		var bodyMap map[string]any
+		if err := json.Unmarshal(body, &bodyMap); err == nil {
+			if tools, ok := bodyMap["tools"].([]any); ok && len(tools) > 0 {
+				if normalized, removed := translator.NormalizeToolSchemasForProvider("openrouter", tools); removed > 0 {
+					bodyMap["tools"] = normalized
+					log.Debug("tool_schema", "openrouter stripped invalid patterns", "removed", removed)
+					if newBody, err := json.Marshal(bodyMap); err == nil {
+						body = newBody
+					}
+				}
+			}
+		}
+	}
 	resp, err := internalproxy.ForwardOpenAI(ctx, h.Client, cfg, apiKey, body, isStream)
 	if err != nil {
 		return fmt.Errorf("forward to upstream: %w", err)
