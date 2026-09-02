@@ -91,6 +91,47 @@ func GetAndClearLastUsage() *OpenAIUsage {
 	return u
 }
 
+// requestedModelCtxKey stores the original client-requested model for echoing in streaming responses (PR #3693).
+type requestedModelCtxKey struct{}
+
+func WithRequestedModel(ctx context.Context, model string) context.Context {
+	return context.WithValue(ctx, requestedModelCtxKey{}, model)
+}
+
+func RequestedModelFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(requestedModelCtxKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// SeedStreamState pre-seeds a stream session with the requested model so message_start
+// echoes the client's model instead of the provider's chunk model (decolua/9router#3693).
+func SeedStreamState(sessionKey, model string) {
+	if sessionKey == "" || model == "" {
+		return
+	}
+	statesMu.Lock()
+	defer statesMu.Unlock()
+	pruneStaleStatesLocked()
+	if state, ok := states[sessionKey]; ok {
+		if state.Model == "" {
+			state.Model = model
+		}
+		return
+	}
+	states[sessionKey] = &StreamState{
+		CreatedAt:      time.Now(),
+		MessageId:      "",
+		Model:          model,
+		ToolCalls:      make(map[int]ToolCallState),
+		ToolArgBuffers: make(map[int]string),
+	}
+}
+
 // usageCtxKey is the context key for per-request usage storage.
 type usageCtxKey struct{}
 

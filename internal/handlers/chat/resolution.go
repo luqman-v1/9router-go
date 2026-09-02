@@ -132,12 +132,32 @@ func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
 	return out, nil
 }
 
+// stripModelContextMarker strips trailing [1m] marker that Claude Code appends for 1M context beta.
+// Port of decolua/9router PR #3691 (open-sse/utils/modelMarkers.js).
+// Claude Code sends model: "claude-opus-5[1m]" — the marker is client-side annotation, not a real model.
+// It must be stripped before combo/alias/provider lookup, while anthropic-beta header still carries the capability.
+func stripModelContextMarker(modelStr string) string {
+	trimmed := strings.TrimSpace(modelStr)
+	if len(trimmed) < 4 {
+		return modelStr
+	}
+	// Case-insensitive check for trailing "[1m]"
+	suffix := trimmed[len(trimmed)-4:]
+	if strings.EqualFold(suffix, "[1m]") {
+		// Only strip if it's a trailing marker, not bracket inside name
+		return strings.TrimSpace(trimmed[:len(trimmed)-4])
+	}
+	return modelStr
+}
+
 // resolveModel resolves a model string through aliases, combos, and provider/model parsing.
 // Returns the first concrete ModelInfo found, or an error.
 func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	if modelStr == "" {
 		return nil, fmt.Errorf("missing model")
 	}
+	// Strip [1m] context marker before resolution (PR #3691)
+	modelStr = stripModelContextMarker(modelStr)
 
 	// 1. Standard format: "provider/model"
 	if strings.Contains(modelStr, "/") {
