@@ -576,6 +576,21 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 	client := h.ChatH.GetClientForConnection(connData)
+	// Log search query for observability (was "nebak" before)
+	if endpoint == "/v1/search" {
+		var qb struct {
+			Query  string `json:"query"`
+			Prompt string `json:"prompt"`
+		}
+		_ = json.Unmarshal(body, &qb)
+		q := qb.Query
+		if q == "" {
+			q = qb.Prompt
+		}
+		if q != "" {
+			log.Info("request", "POST "+endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "query", q, "conn", conn.ID[:min(8, len(conn.ID))])
+		}
+	}
 	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {

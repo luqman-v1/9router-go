@@ -11,6 +11,7 @@ import (
 
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/translator"
 )
 
@@ -358,6 +359,8 @@ func (h *MediaHandler) handleAntigravitySearch(w http.ResponseWriter, r *http.Re
 	}
 
 	h.Repo.UpdateConnectionLastUsed(conn.ID)
+	log.Info("request", "POST /v1/search", "provider", "antigravity", "model", model, "query", query, "results", len(results), "conn", conn.ID[:min(8, len(conn.ID))], "tokens", tokens)
+	log.Info("usage", "logged", "provider", "antigravity", "model", model, "query", query, "results", len(results), "tokens", tokens)
 
 	searchResponse := map[string]any{
 		"provider": "antigravity",
