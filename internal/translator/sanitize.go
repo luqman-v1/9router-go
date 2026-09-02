@@ -244,6 +244,13 @@ func sanitizeBashArgs(args map[string]any) {
 			args["command"] = cl
 		}
 	}
+	// Strip extra fields that Muse Spark sometimes hallucinates (e.g. description inside input)
+	// Bash tool only allows 'command' (and maybe 'description' at tool level, not inside input)
+	for k := range args {
+		if k != "command" {
+			delete(args, k)
+		}
+	}
 }
 
 func sanitizeReadArgs(args map[string]any) {
