@@ -1,5 +1,5 @@
 {
-  "latestVersion": "1.8.7",
+  "latestVersion": "1.8.6",
   "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
-  "releaseNotes": "v1.8.7: Fix Gemini system_instruction empty part 400, required-inside-properties 400 (now sanitized for all OpenAI providers including opencode), and where.items handling. Changelog: CHANGELOG.md."
+  "releaseNotes": "v1.8.6: Fix gateway IP check (call_ tool name, streaming delta, Bash extra fields, server_tool_use foreign ID, 1M marker, model echo, gpt-5 max_completion_tokens, antigravity strike-breaker, forced-SSE, OpenRouter pattern) — port decolua/9router#3686/3691/3693/3657/3684/3683/3665. Changelog: CHANGELOG.md."
 }
