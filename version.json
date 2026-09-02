@@ -1,5 +1,5 @@
 {
   "latestVersion": "1.8.7",
   "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
-  "releaseNotes": "v1.8.7: Fix Gemini system_instruction empty part 400 and required-inside-properties 400, plus where.items handling. Changelog: CHANGELOG.md."
+  "releaseNotes": "v1.8.7: Fix Gemini system_instruction empty part 400, required-inside-properties 400 (now sanitized for all OpenAI providers including opencode), and where.items handling. Changelog: CHANGELOG.md."
 }

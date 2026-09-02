@@ -148,6 +148,11 @@ func (h *ChatHandler) tryForwardWithConnection(
 	}
 
 	pipedBody := h.applyTokenSavers(body)
+	// Sanitize tool schemas for all OpenAI-compatible providers (opencode, gemini-openai, etc.)
+	// Fixes misplaced `required` inside `properties` and missing `items` for arrays.
+	if sanitized, err := translator.SanitizeOpenAITools(pipedBody); err == nil && sanitized != nil {
+		pipedBody = sanitized
+	}
 	start := time.Now()
 	metrics := &streamMetrics{}
 	var fwdErr error
