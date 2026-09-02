@@ -34,6 +34,14 @@ var (
 
 	// MinAntigravityQuotaRefreshInterval prevents hammering quota API during 429 bursts.
 	MinAntigravityQuotaRefreshInterval = 30 * time.Second
+
+	// Strike-breaker for optimistic quota (PR #3684): when quota reports >0 but we keep getting 429,
+	// after 3 consecutive 429s within 60s, treat as exhausted for 15m.
+	agStrikeMu            sync.Mutex
+	agStrikes             = make(map[string][]time.Time) // key = connectionID|model -> 429 timestamps
+	agStrikeWindow        = 60 * time.Second
+	agStrikeThreshold     = 3
+	agStrikeBlockDuration = 15 * time.Minute
 )
 
 // ClearAntigravityQuotaCache resets the in-memory cache (primarily for unit tests).
@@ -235,8 +243,44 @@ func HandleAntigravityQuotaError(ctx context.Context, client *http.Client, conne
 				res := q.ResetAt
 				return &res
 			}
+			// Optimistic quota strike-breaker (PR #3684): remaining >0 but still 429
+			if q.RemainingPercentage > 0 {
+				key := connectionID + "|" + m
+				agStrikeMu.Lock()
+				// Prune strikes outside window
+				cutoff := now.Add(-agStrikeWindow)
+				strikes := agStrikes[key]
+				var kept []time.Time
+				for _, t := range strikes {
+					if t.After(cutoff) {
+						kept = append(kept, t)
+					}
+				}
+				kept = append(kept, now)
+				agStrikes[key] = kept
+				shouldBlock := len(kept) >= agStrikeThreshold
+				agStrikeMu.Unlock()
+				if shouldBlock {
+					blockUntil := now.Add(agStrikeBlockDuration)
+					log.Warn("ag_quota", "optimistic quota strike-break: 3x429 within 60s while quota>0, CACHE_BLOCK 15m", "connection", shortConn, "model", m, "blockUntil", blockUntil.Format(time.RFC3339))
+					return &blockUntil
+				}
+			}
 		}
 	}
 
 	return nil
+}
+
+// ClearAntigravityStrikes clears strike history for a connection/model (called on success).
+func ClearAntigravityStrikes(connectionID, model string) {
+	if connectionID == "" || model == "" {
+		return
+	}
+	agStrikeMu.Lock()
+	defer agStrikeMu.Unlock()
+	delete(agStrikes, connectionID+"|"+model)
+	if canonical, exists := translator.AntigravityModelSynonyms[model]; exists {
+		delete(agStrikes, connectionID+"|"+canonical)
+	}
 }
