@@ -135,6 +135,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	var workingBody map[string]any
 	if modelInfo.Provider == "claude" || modelInfo.Provider == "anthropic" {
 		translateResponse = false
+		body = translator.SanitizeClaudePassthrough(body)
 		body = translator.DefaultClaudeToolType(body)
 		if err := json.Unmarshal(body, &workingBody); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")

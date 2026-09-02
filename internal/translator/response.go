@@ -161,13 +161,16 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 		})
 	}
 
-	// Tool calls
+	// Tool calls — don't fallback to ID when Function.Name is empty (see decolua/9router#2077, #3685)
+	// Using call_ ID as tool name causes "No such tool available: call_..." in Claude Code.
 	for _, tc := range msg.ToolCalls {
-		toolName := tc.ID
-		if tc.Function != nil && tc.Function.Name != "" {
-			toolName = tc.Function.Name
+		if tc.Function == nil || tc.Function.Name == "" {
+			continue
 		}
-		toolName = UncloakToolName(toolName, nil)
+		toolName := UncloakToolName(tc.Function.Name, nil)
+		if toolName == "" {
+			continue
+		}
 		var input jsontext.Value
 		if tc.Function != nil && tc.Function.Arguments != "" {
 			sanitized := sanitizeToolArgs(toolName, tc.Function.Arguments)
@@ -463,15 +466,26 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 			idx = *tc.Index
 		}
 		if tc.ID != "" {
+			// Don't fallback to ID when Function.Name is empty — would emit tool_use with name=call_... (decolua/9router#2077)
+			if tc.Function == nil || tc.Function.Name == "" {
+				// If ID is present but no name yet, wait for name in later chunk; don't create orphan block
+				if _, exists := state.ToolCalls[idx]; !exists {
+					continue
+				}
+			}
 			stopThinkingBlock(state, &results)
 			stopTextBlock(state, &results)
 			toolBlockIndex := state.NextBlockIndex
 			state.NextBlockIndex++
-			toolName := tc.ID
-			if tc.Function != nil && tc.Function.Name != "" {
+			toolName := ""
+			if tc.Function != nil {
 				toolName = tc.Function.Name
 			}
 			toolName = UncloakToolName(toolName, nil)
+			if toolName == "" {
+				// Keep ID for tracking but don't emit block with empty name
+				continue
+			}
 			state.ToolCalls[idx] = ToolCallState{
 				ID:         tc.ID,
 				Name:       toolName,

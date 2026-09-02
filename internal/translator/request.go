@@ -338,6 +338,152 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 	return out, nil
 }
 
+// SanitizeClaudePassthrough drops foreign server_tool_use blocks that would poison Claude history.
+// Port of decolua/9router PR #3686 (fix/claude: drop server_tool_use blocks carrying a foreign id).
+// Anthropic validates server_tool_use.id against ^srvtoolu_[a-zA-Z0-9_]+$ and 400s if not matched.
+// Providers like z.ai/glm emit OpenAI-style call_ ids for built-in tools (e.g. analyze_image).
+// In a mixed combo those blocks stay in history and every later Claude turn fails.
+// This sanitizes before forwarding to a Claude/Anthropic upstream:
+//   - drops server_tool_use whose id doesn't match srvtoolu_ pattern
+//   - drops paired tool_result/web_search_tool_result referencing dropped ids
+//   - strips empty text blocks and drops messages that end up empty (Anthropic rejects empty content)
+var serverToolUseIDRegex = regexp.MustCompile(`^srvtoolu_[a-zA-Z0-9_]+$`)
+
+func SanitizeClaudePassthrough(body []byte) []byte {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body
+	}
+	messagesRaw, ok := req["messages"].([]any)
+	if !ok || len(messagesRaw) == 0 {
+		return body
+	}
+	droppedIDs := make(map[string]bool)
+	changed := false
+
+	// First pass: drop foreign server_tool_use and collect their ids
+	for _, mRaw := range messagesRaw {
+		msgMap, ok := mRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		contentRaw, ok := msgMap["content"]
+		if !ok {
+			continue
+		}
+		blocks, ok := contentRaw.([]any)
+		if !ok {
+			continue
+		}
+		var kept []any
+		for _, bRaw := range blocks {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				kept = append(kept, bRaw)
+				continue
+			}
+			bType, _ := block["type"].(string)
+			if bType == "server_tool_use" {
+				id, _ := block["id"].(string)
+				if !serverToolUseIDRegex.MatchString(id) {
+					droppedIDs[id] = true
+					changed = true
+					continue
+				}
+			}
+			// Strip empty text blocks (Anthropic 400s on empty text)
+			if bType == "text" {
+				if txt, _ := block["text"].(string); strings.TrimSpace(txt) == "" {
+					changed = true
+					continue
+				}
+			}
+			kept = append(kept, bRaw)
+		}
+		if len(kept) != len(blocks) {
+			msgMap["content"] = kept
+		}
+	}
+
+	// Second pass: drop tool_result referencing dropped server_tool_use ids
+	if len(droppedIDs) > 0 {
+		for _, mRaw := range messagesRaw {
+			msgMap, ok := mRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			contentRaw, ok := msgMap["content"]
+			if !ok {
+				continue
+			}
+			blocks, ok := contentRaw.([]any)
+			if !ok {
+				continue
+			}
+			var kept []any
+			for _, bRaw := range blocks {
+				block, ok := bRaw.(map[string]any)
+				if !ok {
+					kept = append(kept, bRaw)
+					continue
+				}
+				bType, _ := block["type"].(string)
+				if bType == "tool_result" || bType == "web_search_tool_result" {
+					toolUseID, _ := block["tool_use_id"].(string)
+					if droppedIDs[toolUseID] {
+						changed = true
+						continue
+					}
+				}
+				kept = append(kept, bRaw)
+			}
+			if len(kept) != len(blocks) {
+				msgMap["content"] = kept
+			}
+		}
+	}
+
+	// Third pass: drop messages that ended up with empty content (Anthropic rejects empty array)
+	var filtered []any
+	for _, mRaw := range messagesRaw {
+		msgMap, ok := mRaw.(map[string]any)
+		if !ok {
+			filtered = append(filtered, mRaw)
+			continue
+		}
+		contentRaw, exists := msgMap["content"]
+		if !exists {
+			filtered = append(filtered, mRaw)
+			continue
+		}
+		switch c := contentRaw.(type) {
+		case string:
+			if strings.TrimSpace(c) == "" {
+				changed = true
+				continue
+			}
+		case []any:
+			if len(c) == 0 {
+				changed = true
+				continue
+			}
+		}
+		filtered = append(filtered, mRaw)
+	}
+	if len(filtered) != len(messagesRaw) {
+		req["messages"] = filtered
+		changed = true
+	}
+
+	if !changed {
+		return body
+	}
+	if out, err := json.Marshal(req); err == nil {
+		return out
+	}
+	return body
+}
+
 // DefaultClaudeToolType ensures all tools in a Claude-format request have a type (defaulting to "custom" if missing).
 // Strict Anthropic-compatible gateways (e.g. MiniMax) reject payloads omitting tool type with HTTP 400.
 func DefaultClaudeToolType(body []byte) []byte {
