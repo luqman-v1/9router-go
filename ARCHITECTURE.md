@@ -1,5 +1,9 @@
 # 9Router Go Proxy — Architecture Documentation
 
+> **Version sync:** `9router-go v1.8.8` ↔ `decolua/9router v0.5.65` (Next.js) — 100% engine parity, 31 commits `v0.5.59...v0.5.65`. Diagrams below are for maintainers/AI to understand the ported Go flows.
+
+**For AI/Maintainers:** Go repo is the *engine* (proxy, SSE, translation), Next.js is the *dashboard UI* — they share `~/.9router/db/data.sqlite` (WAL). All `providerConnections.data` JSON blobs, `kv` (`modelAliases`, `customModels`), and `combos` are 1:1 compatible. Do not duplicate translation logic; check `internal/translator` first. E2E tests are in `internal/handlers/chat/*_e2e_test.go` (deterministic mocks, no real network).
+
 ## Request Lifecycle
 
 ```mermaid
@@ -313,6 +317,89 @@ flowchart LR
     ReqStart --> Finish["logUsage()"]
     Finish --> Push["usagetracker.PushRecent(completion)\nRing Buffer (50 items)"]
     Push --> TrackEnd["Decrement in-flight counter"]
+```
+
+## Custom Models with Capability Toggles (v0.5.65)
+
+```mermaid
+flowchart TD
+    UI["Dashboard AddCustomModelModal\nvision/reasoning toggle"] --> API["POST /api/models/custom\n{providerAlias, id, caps}"]
+    API --> KV["kv scope=customModels\nkey: cc/my-model/llm\nvalue: {caps:{vision:true}}"]
+    KV --> List["GET /models → HandleModels()\nMerge aliases+combos+customModels"]
+    List --> Caps["providers.SetCustomModelCaps()\nInvalidateCapabilitiesCache()"]
+    Caps --> Resolve["GetCapabilitiesForModel(provider, model)\nCheck customCaps → OR with heuristic"]
+    Resolve --> Combo["ReorderByCapabilities()\nVision models first"]
+```
+
+- **Upsert:** `aliasRepo.addCustomModel` in Next.js uses `SELECT value` + `UPDATE` if exists (no duplicate `INSERT`), Go reads via `Repo.GetCustomModels()` + `SetCustomModelCaps` on each `HandleModels` (live refresh, no restart needed).
+
+## SSRF Guard Hardening (v0.5.65 #3714)
+
+```mermaid
+flowchart LR
+    URL["AssertPublicURL(rawURL)"] --> Norm["normalizeHost()\ntrim trailing . + lower"]
+    Norm --> BlockHost{"isBlockedHost()?"}
+    BlockHost -->|hostname .internal/.local| Block["throw Blocked"]
+    BlockHost -->|ipv4 10/8, 100.64/10, 127/8, 169.254/16| Block
+    BlockHost -->|ipv6 ::1, fe80, fc, ::ffff:7f00:1 hex, 64:ff9b::| Block
+    BlockHost -->|pass literal| DNS["net.LookupIP(normalized)\nAll addrs"]
+    DNS --> CheckIP{"IsLoopback/IsPrivate/\nIsLinkLocal/Multicast?\nisBlockedIpv4Int / isBlockedIpv6Groups?"}
+    CheckIP -->|private| Block
+    CheckIP -->|public| Allow["return nil"]
+    Allow --> Fetch["fetchPublic(url) manual redirect\nRe-validate each 30x hop via assertPublicUrlResolved"]
+```
+
+- **IPv6:** `parseIPv6ToGroups` handles `::ffff:127.0.0.1` vs `::ffff:7f00:1` (same numeric groups), `64:ff9b::`, `::` compressed.
+- **Unresolvable host** → `return nil` (let `fetch` fail, not SSRF).
+
+## Ollama Cloud Web Fetch (v0.5.65)
+
+```mermaid
+flowchart TD
+    Client["POST /v1/web/fetch {model: ollama, url}"] --> Resolve["ResolveModel(ollama) → provider ollama"]
+    Resolve --> Conn["GetBestConnection(ollama) → apiKey dari ollama chat conn"]
+    Conn --> FetchURL{"provider.FetchURL?"}
+    FetchURL -->|ollama| Ollama["POST https://ollama.com/api/web_fetch\nBody: {url} + Bearer apiKey"]
+    FetchURL -->|jina/firecrawl| Other["POST/GET FetchURL (existing)"]
+    Ollama --> Parse["ReadJson {title, content, links}"]
+    Parse --> Build["buildData + links[] → {provider, url, title, content, links, usage}"]
+    Build --> Resp["JSON to client"]
+```
+
+- **Scoped lock:** `webfetch:ollama` key so `429` fetch doesn't lock `LLM` (Next.js `handleFetch` uses `fetchLockKey`, Go via `media.go` `FetchURL` check).
+
+## Groq Usage via x-ratelimit-* (v0.5.65)
+
+```mermaid
+flowchart LR
+    Req["GET https://api.groq.com/openai/v1/models\nBearer apikey (no token cost)"] --> Headers["x-ratelimit-limit-requests / remaining-requests\nx-ratelimit-limit-tokens / remaining-tokens\nx-ratelimit-reset-requests: 2m59.56s (Go duration)"]
+    Headers --> Parse["ParseGroqQuotasFromHeaders()\nused = limit - remaining\nresetAt = now + ParseDuration"]
+    Parse --> Quota["ProviderQuotaInfo{requests: {used,limit,90%}, tokens: {2000/10000}}"]
+```
+
+## Single Model Lookup Catch-All (v0.5.65 #3588)
+
+```mermaid
+flowchart TD
+    Path["GET /v1/models/*  (chi wildcard)"] --> Suffix["suffix = TrimPrefix(path, /models/)"]
+    Suffix --> IsKind{"kindSlugMap[image,tts,stt,embedding,image-to-text,web]?"}
+    IsKind -->|yes| Kind["HandleModelsByKind() → filter KnownProviders by ImageURL/TTSURL/etc."]
+    IsKind -->|no| Lookup["Build list aliases+combos+customModels\nSearch id == suffix (cc/claude-sonnet-4-6)"]
+    Lookup --> Found{"found?"}
+    Found -->|yes| Single["200 {id, object:model, owned_by, context_length}"]
+    Found -->|no| NotFound["404 {error: model_not_found}"]
+```
+
+## Opencode Muse-Spark Routing (v0.5.65 + 1.3 fix)
+
+```mermaid
+flowchart TD
+    Req["POST /v1/chat/completions\nmodel: oc/muse-spark-1.2/1.3"] --> Check{"strings.Contains(model, muse-spark)?"}
+    Check -->|yes| Build["buildResponsesBody() → {model, input, stream:true, store:false}\nreasoning max→xhigh + summary:auto"]
+    Build --> Forward["POST https://opencode.ai/zen/v1/responses\nx-opencode-* headers"]
+    Forward --> SSE["handleCodexStream() SSE → sseToOpenAIJSON() dedup name/args"]
+    SSE --> Resp["OpenAI chat.completion / Claude message"]
+    Check -->|no| OpenAI["ForwardOpenAI() /v1/chat/completions"]
 ```
 
 ## Safety, Thread-Safety & Concurrency (v1.8.3)

@@ -30,6 +30,8 @@ func formatSSE(event map[string]any) string {
 
 // ParseClaudeUsage extracts usage from a Claude-format response body. Maps
 // Claude's input_tokens/output_tokens/cache_read_input_tokens to OpenAIUsage.
+// Also handles OpenAI Responses shape where cached_tokens rides in
+// input_tokens_details.cached_tokens (cache-INCLUSIVE prompt).
 // Returns nil when the body has no Claude usage (e.g. OpenAI format or error),
 // so callers never stamp a bogus all-zero usage over a real one.
 func ParseClaudeUsage(body []byte) *OpenAIUsage {
@@ -50,18 +52,30 @@ func ParseClaudeUsage(body []byte) *OpenAIUsage {
 		return nil
 	}
 	var u struct {
-		InputTokens              int `json:"input_tokens"`
-		OutputTokens             int `json:"output_tokens"`
-		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		InputTokens              int  `json:"input_tokens"`
+		OutputTokens             int  `json:"output_tokens"`
+		CachedTokens             *int `json:"cached_tokens"`
+		CacheReadInputTokens     int  `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int  `json:"cache_creation_input_tokens"`
+		InputTokensDetails       *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
 	}
 	if err := json.Unmarshal(raw.Usage, &u); err != nil {
 		return nil
 	}
+	cached := 0
+	if u.CachedTokens != nil {
+		cached = *u.CachedTokens
+	} else if u.InputTokensDetails != nil {
+		cached = u.InputTokensDetails.CachedTokens
+	} else {
+		cached = u.CacheReadInputTokens
+	}
 	return &OpenAIUsage{
 		PromptTokens:             u.InputTokens,
 		CompletionTokens:         u.OutputTokens,
-		CachedTokens:             u.CacheReadInputTokens,
+		CachedTokens:             cached,
 		CacheCreationInputTokens: u.CacheCreationInputTokens,
 	}
 }

@@ -5,6 +5,8 @@
 
 High-performance Go proxy gateway for [9Router](https://github.com/decolua/9router) LLM routing.
 
+> **Sync:** `v1.8.8` ↔ `decolua/9router v0.5.65` (31 commits `v0.5.59...v0.5.65`) — see `CHANGELOG.md` & `ARCHITECTURE.md` for the latest flow diagrams (Gemini 3.8, Opencode 1.3, Ollama web_fetch, SSRF hardening).
+
 > **9Router** is a local AI routing gateway + dashboard. This Go proxy replaces the Next.js `/v1/*` routes for high-throughput LLM traffic, while the [9Router dashboard](https://github.com/decolua/9router) handles management UI (providers, API keys, combos, usage tracking).
 
 ### Features
@@ -19,9 +21,16 @@ High-performance Go proxy gateway for [9Router](https://github.com/decolua/9rout
 - **No-Auth Provider Proxy Strategies**: automatic proxy pool routing & rotation for free-tier/public providers (`settings.providerStrategies`)
 - **Realtime SSE Usage Stream (`/api/usage/stream`)**: in-memory in-flight request tracker powering live glowing pulse & marching-ants animations on the Next.js Usage Topology graph
 - **Snake_case Token Limits (`/v1/models` & `/v1/models/info`)**: exposes `context_length`, `max_completion_tokens`, `max_input_tokens`, and `max_output_tokens`
-- **Gemini 3.7 Flash Model Family**: complete alias and capability mapping for Gemini 3.7 Flash models
-- **Gemini Multimodal Vision & Audio**: support for base64 inline images, remote HTTP/HTTPS `fileData` URLs, and `input_audio`
+- **Gemini 3.8 / 3.7 Flash Model Family**: alias `gemini-3.8-flash-high/medium/low` → `gemini-3.8-flash-tiered` (1M ctx) + `2.11.0` fingerprint, `prefixItems` cleaning
+- **Gemini Multimodal Vision & Audio**: base64 inline images, remote `fileData` URLs, `input_audio`, `thoughtSignature` backfill
+- **Opencode Muse-Spark 1.2/1.3 + Vision**: `Responses API /v1/responses` routing, `Vision:true`, `oc/` prefix, `reasoning max→xhigh`
 - **OpenCode Desktop Fingerprint**: official client headers (`User-Agent: opencode`, `x-opencode-client: desktop`, session/request IDs)
+- **Ollama Cloud Web Fetch**: `POST https://ollama.com/api/web_fetch` via `ollama` chat connection API key, `links` + scoped `webfetch:ollama` lock
+- **Groq Usage via x-ratelimit***: `GET /openai/v1/models` headers `limit/requests/tokens` + Go duration `2m59.56s` → `ProviderQuotaInfo`
+- **Custom Models with Caps Toggle**: `kv customModels` upsert + `SetCustomModelCaps` live refresh, merge di `HandleModels` + `GetCapabilitiesForModel`
+- **Single Model Lookup**: `GET /v1/models/*` catch-all `cc/claude-sonnet-4-6` + kind `image/tts/web` (`#3588`)
+- **SSRF Hardening**: `CGNAT 100.64/10`, `trailing dot`, IPv6 `::ffff:7f00:1` hex, `64:ff9b::`, `normalizeHost`
+- **Defer-Lowering Cache Fix**: `LastCacheableToolIndex` untuk MCP `defer_loading:true` tail (#3567)
 - **Kimchi Dual Authentication**: seamless API key + OAuth token resolution
 - **Dedicated High-Performance Executors**: Qoder COSY signing (RSA-2048 + AES-128 + MD5), CodeBuddy CN/INTL streaming, Trae SOLO remote agent, Windsurf gRPC-web
 - **Combo strategies**: sticky round-robin, round-robin, fallback, fusion (multi-panel + judge), weight

@@ -127,10 +127,16 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 	var baseCfg *providers.ProviderConfig
 
 	if connData != nil && connData.BaseURL != "" {
-		baseCfg = &providers.ProviderConfig{
-			BaseURL:    connData.BaseURL,
-			AuthHeader: constants.HeaderAuthorization,
-			AuthScheme: constants.AuthSchemeBearer,
+		if cfg, ok := providers.KnownProviders[provider]; ok {
+			cloned := cfg
+			cloned.BaseURL = connData.BaseURL
+			baseCfg = &cloned
+		} else {
+			baseCfg = &providers.ProviderConfig{
+				BaseURL:    connData.BaseURL,
+				AuthHeader: constants.HeaderAuthorization,
+				AuthScheme: constants.AuthSchemeBearer,
+			}
 		}
 	} else if cfg, ok := providers.KnownProviders[provider]; ok {
 		// Clone config so per-request headers don't mutate global registry

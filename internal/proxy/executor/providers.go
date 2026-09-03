@@ -286,11 +286,12 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 	}
 	_ = json.Unmarshal(req.Body, &reqObj)
 	cleanModel := strings.TrimPrefix(reqObj.Model, "oc/")
+	cleanModel = strings.TrimPrefix(cleanModel, "opencode/")
 	if parenIdx := strings.IndexByte(cleanModel, '('); parenIdx != -1 {
 		cleanModel = cleanModel[:parenIdx]
 	}
 
-	if cleanModel == "muse-spark-1.2-contributor-free" {
+	if strings.Contains(cleanModel, "muse-spark") {
 		// Route through Responses API format: https://opencode.ai/zen/v1/responses
 		transformedBody, _, err := buildResponsesBody(req.Body)
 		if err != nil {

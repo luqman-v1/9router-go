@@ -357,6 +357,7 @@ func TestNormalizeAntigravityModel_AllSynonymsValid(t *testing.T) {
 		"gemini-3-flash-agent":     true,
 		"gemini-pro-agent":         true,
 		"gemini-3.1-pro-low":       true,
+		"gemini-3.8-flash-tiered":  true,
 		"gemini-3.7-flash-tiered":  true,
 		"gemini-3.6-flash-tiered":  true,
 		"claude-sonnet-4-6":        true,

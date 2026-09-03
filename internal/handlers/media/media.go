@@ -498,7 +498,28 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 			finalBody := handlerutil.UpdateModelInBody(body, subInfo.Model)
 			targetURL := strings.TrimRight(providerCfg.BaseURL, "/") + endpoint
-			req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader(finalBody))
+			method := r.Method
+			// Use provider FetchURL for web/fetch when configured (e.g., ollama cloud)
+			if endpoint == "/v1/web/fetch" && providerCfg.FetchURL != "" {
+				targetURL = providerCfg.FetchURL
+				if providerCfg.FetchMethod != "" {
+					method = providerCfg.FetchMethod
+				} else {
+					method = "POST"
+				}
+				// Ollama cloud expects {"url": "https://..."} only
+				if subInfo.Provider == "ollama" {
+					var tmp struct {
+						URL string `json:"url"`
+					}
+					if err := json.Unmarshal(body, &tmp); err == nil && tmp.URL != "" {
+						if b, err := json.Marshal(map[string]string{"url": tmp.URL}); err == nil {
+							finalBody = b
+						}
+					}
+				}
+			}
+			req, err := http.NewRequestWithContext(r.Context(), method, targetURL, bytes.NewReader(finalBody))
 			if err != nil {
 				lastErr = err.Error()
 				continue
@@ -571,7 +592,26 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
 	targetURL := strings.TrimRight(providerCfg.BaseURL, "/") + endpoint
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader(finalBody))
+	method := r.Method
+	if endpoint == "/v1/web/fetch" && providerCfg.FetchURL != "" {
+		targetURL = providerCfg.FetchURL
+		if providerCfg.FetchMethod != "" {
+			method = providerCfg.FetchMethod
+		} else {
+			method = "POST"
+		}
+		if modelInfo.Provider == "ollama" {
+			var tmp struct {
+				URL string `json:"url"`
+			}
+			if err := json.Unmarshal(body, &tmp); err == nil && tmp.URL != "" {
+				if b, err := json.Marshal(map[string]string{"url": tmp.URL}); err == nil {
+					finalBody = b
+				}
+			}
+		}
+	}
+	req, err := http.NewRequestWithContext(r.Context(), method, targetURL, bytes.NewReader(finalBody))
 	if err != nil {
 		log.Error("media", "create request failed", "endpoint", endpoint, "error", err)
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to create request")

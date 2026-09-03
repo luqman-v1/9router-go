@@ -1,5 +1,5 @@
 {
-  "latestVersion": "1.8.6",
+  "latestVersion": "1.8.8",
   "downloadUrl": "https://github.com/luqman-v1/9router-go/releases/latest",
-  "releaseNotes": "v1.8.6: Fix gateway IP check (call_ tool name, streaming delta, Bash extra fields, server_tool_use foreign ID, 1M marker, model echo, gpt-5 max_completion_tokens, antigravity strike-breaker, forced-SSE, OpenRouter pattern) — port decolua/9router#3686/3691/3693/3657/3684/3683/3665. Changelog: CHANGELOG.md."
+  "releaseNotes": "v1.8.8: E2E Gemini 3.8 + Opencode muse-spark mock, unit kunci v0.5.65 (claude 2.1.258, ollama fetch, defer_loading, SSRF, kiro/antigravity MITM, Groq, strike re-assert, Responses cached_tokens, single model lookup, custom caps, muse-spark 1.3) + fix 1.3 500\u2192200 & jcode 3\u21921. Changelog: CHANGELOG.md."
 }

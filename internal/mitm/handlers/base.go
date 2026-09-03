@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const proxyBase = "http://localhost:20128"
+var proxyBase = "http://localhost:20128"
 
 // FetchRouter sends a request body to the 9router proxy endpoint and returns the response.
 func FetchRouter(ctx context.Context, body []byte, endpoint string, headers http.Header, apiKey string) (*http.Response, error) {
@@ -22,12 +22,15 @@ func FetchRouter(ctx context.Context, body []byte, endpoint string, headers http
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	// Forward original auth headers
+	// Forward original headers
 	if auth := headers.Get("Authorization"); auth != "" {
 		req.Header.Set("Authorization", auth)
 	}
 	if ct := headers.Get("Content-Type"); ct != "" {
 		req.Header.Set("Content-Type", ct)
+	}
+	if ua := headers.Get("User-Agent"); ua != "" {
+		req.Header.Set("User-Agent", ua)
 	}
 
 	client := &http.Client{Timeout: 5 * time.Minute}

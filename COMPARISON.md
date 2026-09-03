@@ -1,10 +1,12 @@
-# 9Router (Next.js) vs 9router-go (Go) — Komparasi Feature
+# 9Router (Next.js) vs 9router-go (Go) — Feature Comparison
 
-> **Konteks:** `htdocs/9router` adalah versi awal (Next.js, dashboard + engine monolitik).
-> `9router-go` adalah swap engine ke Go untuk performa (proxy/streaming/SSE).
-> Dokumen ini mencatat kesenjangan fitur agar keputusan port bisa diambil.
+> **Context:** `htdocs/9router` is the original (Next.js, dashboard + engine monolith).
+> `9router-go` is the engine swap to Go for performance (proxy/streaming/SSE).
+> This document tracks the feature gap for porting decisions.
 
-**Tanggal:** 2026-08-04
+> **Sync:** `9router-go v1.8.8` is synced with `decolua/9router v0.5.65` (31 commits `v0.5.59...v0.5.65`) — 100% engine parity.
+
+**Date:** 2026-09-03
 
 ---
 
@@ -46,64 +48,66 @@ responses, media, model listing).
 | `v1/models` | `GET /models` | ✅ |
 | `v1/models/info` | `GET /models/info` | ✅ |
 | `v1/models/[kind]` | `GET /models/{kind}` | ✅ |
-| `v1beta/models` + `[...path]` | — | ❌ **Gap** |
+| `v1/models/[...model]` | `GET /v1/models/*` + `GET /api/v1/models/*` | ✅ | Catch-all `cc/claude-sonnet-4-6` + kind `image/tts/web` (`#3588`) |
+| `v1beta/models` + `[...path]` | `GET /v1/models/*` (alias) | ✅ | Di-handle via `HandleModelLookup` yang sama |
 | `v1/api/chat` (Ollama) | `POST /api/chat` | ✅ |
+| `v1/web/fetch` (ollama) | `POST /web/fetch` via `ollama FetchURL https://ollama.com/api/web_fetch` | ✅ | `links` + scoped `webfetch:ollama` lock |
 
-Catatan: Next pakai prefix `/api/v1/...`, Go di root `/...`. Hanya `v1beta/models/{path}` yang belum ada.
+Note: Next.js uses prefix `/api/v1/...`, Go uses root `/...` + `v1`/`api/v1` aliases. All `v1beta` is covered.
 
 ---
 
 ## 3. Per-Endpoint — Dashboard/Admin Engine Ports (✅ 100% Core Engine Ported)
 
-| Feature / Endpoint | Go Route | Status | Keterangan |
+| Feature / Endpoint | Go Route | Status | Notes |
 |--------------------|----------|--------|------------|
-| **Realtime Usage Stream** | `GET /api/usage/stream`, `GET /usage/stream` | ✅ | In-memory in-flight tracker, SSE broadcasting untuk animasi visual topology graph di dashboard |
+| **Realtime Usage Stream** | `GET /api/usage/stream`, `GET /usage/stream` | ✅ | In-memory in-flight tracker, SSE broadcasting for dashboard topology graph animation |
 | **Realtime Usage Stats** | `GET /api/usage/stats`, `GET /usage/stats` | ✅ | Realtime concurrency and model counters |
-| **Proxy-Pools Deploy** | `POST /proxy-pools/*-deploy`, `GET /proxy-pools/deploy-status` | ✅ | Vercel, Deno, dan Cloudflare automated edge relay deploy |
-| **Headroom Engine** | `POST /headroom/*`, `ANY /headroom/proxy/*` | ✅ | Process lifecycle manager & reverse proxy untuk token compression |
-| **CLI-Tools Statuses** | `GET /cli-tools/all-statuses`, `GET /cli-tools/{tool}/status` | ✅ | Status per-CLI (codex, claude, opencode, cline, cursor, dll.) |
-| **Media TTS Voices** | `GET /audio/voices`, `GET /v1/audio/voices` | ✅ | Dynamic voice fetcher untuk ElevenLabs, Deepgram, MiniMax, Inworld |
-| **Translator Console Logs** | `GET /api/translator/stream`, `GET /translator/console-logs` | ✅ | Live streaming in-process log buffer untuk dashboard |
+| **Proxy-Pools Deploy** | `POST /proxy-pools/*-deploy`, `GET /proxy-pools/deploy-status` | ✅ | Vercel, Deno, and Cloudflare automated edge relay deploy |
+| **Headroom Engine** | `POST /headroom/*`, `ANY /headroom/proxy/*` | ✅ | Process lifecycle manager & reverse proxy for token compression |
+| **CLI-Tools Statuses** | `GET /cli-tools/all-statuses`, `GET /cli-tools/{tool}/status` | ✅ | Per-CLI status (codex, claude, opencode, cline, cursor, etc.) |
+| **Media TTS Voices** | `GET /audio/voices`, `GET /v1/audio/voices` | ✅ | Dynamic voice fetcher for ElevenLabs, Deepgram, MiniMax, Inworld |
+| **Translator Console Logs** | `GET /api/translator/stream`, `GET /translator/console-logs` | ✅ | Live streaming in-process log buffer for dashboard |
 | **OAuth Token Refresh** | `POST /v1/oauth/refresh`, `POST /v1/oauth/authorize` | ✅ | Antigravity, xAI, Codex, GitHub, iFlow, Gemini CLI, Kimi Coding, Qoder, CodeBuddy CN/INTL, Grok CLI |
-| **App Version & Self-Update**| `GET /api/version`, `POST /api/version/update` | ✅ | Semver check dan in-place binary update |
-| **CRUD Providers/Keys/Combos**| Direct SQLite Shared Access | ✅ | Next.js membaca/menulis langsung ke SQLite `9router.db` bersama |
+| **App Version & Self-Update**| `GET /api/version`, `POST /api/version/update` | ✅ | Semver check and in-place binary update |
+| **CRUD Providers/Keys/Combos**| Direct SQLite Shared Access | ✅ | Next.js reads/writes directly to shared SQLite `9router.db` |
 
 ---
 
-## 4. Database Schema — Kompatibel 100%
+## 4. Database Schema — 100% Compatible
 
-| Table | Next | Go | Status |
+| Table | Next.js | Go | Status |
 |-------|------|----|--------|
-| `providerConnections` | ✅ | ✅ | 100% Identik + Go metadata `lastUsedAt`, `consecutiveUseCount`, `modelLock_<model>` |
-| `providerNodes` | ✅ | ✅ | 100% Identik |
-| `proxyPools` | ✅ | ✅ | 100% Identik (HTTP/SOCKS5/Vercel/Cloudflare/Deno) |
-| `apiKeys` | ✅ | ✅ | 100% Identik |
-| `combos` | ✅ | ✅ | 100% Identik (fallback, round-robin, random, fusion, weight) |
-| `kv` | ✅ | ✅ | 100% Identik |
-| `usageHistory` | ✅ | ✅ | 100% Identik (12 kolom lengkap + token breakdowns) |
-| `usageDaily` | ✅ | ✅ | 100% Identik (daily JSON aggregations) |
-| `requestDetails` | ✅ | ✅ | 100% Identik |
-| `settings` | ✅ | ✅ | 100% Identik (`data` JSON blob termasuk `providerStrategies`, token savers) |
-| `_meta` | ✅ | ✅ | 100% Identik (`SCHEMA_VERSION = 1`) |
+| `providerConnections` | ✅ | ✅ | 100% Identical + Go metadata `lastUsedAt`, `consecutiveUseCount`, `modelLock_<model>` |
+| `providerNodes` | ✅ | ✅ | 100% Identical |
+| `proxyPools` | ✅ | ✅ | 100% Identical (HTTP/SOCKS5/Vercel/Cloudflare/Deno) |
+| `apiKeys` | ✅ | ✅ | 100% Identical |
+| `combos` | ✅ | ✅ | 100% Identical (fallback, round-robin, random, fusion, weight) |
+| `kv` | ✅ | ✅ | 100% Identical |
+| `usageHistory` | ✅ | ✅ | 100% Identical (12 columns + token breakdowns) |
+| `usageDaily` | ✅ | ✅ | 100% Identical (daily JSON aggregations) |
+| `requestDetails` | ✅ | ✅ | 100% Identical |
+| `settings` | ✅ | ✅ | 100% Identical (`data` JSON blob includes `providerStrategies`, token savers) |
+| `_meta` | ✅ | ✅ | 100% Identical (`SCHEMA_VERSION = 1`) |
 
-**Kesimpulan:** Kolom & tipe 1:1. Dashboard Next.js dapat langsung membaca dan menulis ke SQLite Go secara realtime tanpa konflik atau kebutuhan migrasi.
-
----
-
-## 5. Kesimpulan Arsitektur
-
-> **Arsitektur Model:**
-> Next.js berfungsi sebagai Dashboard UI, sementara `9router-go` mengambil alih 100% beban traffic proxy, SSE streaming, multi-provider translations, token compression, dan in-flight usage tracking.
-
-### Keunggulan `9router-go`:
-1. **Performa Tinggi**: 32K+ peak RPS dengan memori hanya ~42 MB (vs ~500 RPS dan 270 MB di Next.js).
-2. **Koneksi Non-Blocking**: Menggunakan SQLite WAL mode dengan connection pooling yang aman dari write contention.
-3. **Resilience**: Exponential 429 lock backoff, reactive 401 OAuth token refresh, auto-capability routing, dan SSE stall detection (6 menit).
-4. **Parity Lengkap**: Seluruh 100+ provider, media modalities (image, video, audio TTS/STT/music, search, fetch), dan dashboard animation stream telah beroperasi penuh.
+**Conclusion:** Columns & types 1:1. Next.js dashboard can read/write directly to Go's SQLite in realtime without conflicts or migration.
 
 ---
 
-## Lampiran: Referensi file
+## 5. Architecture Conclusion
+
+> **Model:**
+> Next.js acts as Dashboard UI, while `9router-go` handles 100% of proxy traffic, SSE streaming, multi-provider translations, token compression, and in-flight usage tracking.
+
+### Advantages of `9router-go`:
+1. **High Performance**: 32K+ peak RPS with only ~42 MB memory (vs ~500 RPS and 270 MB on Next.js).
+2. **Non-Blocking Connections**: SQLite WAL mode with safe connection pooling, no write contention.
+3. **Resilience**: Exponential 429 lock backoff, reactive 401 OAuth refresh, auto-capability routing, and SSE stall detection (6 min).
+4. **Full Parity**: All 100+ providers, media modalities (image, video, audio TTS/STT/music, search, fetch), and dashboard animation stream fully operational.
+
+---
+
+## Appendix: File References
 
 | Repo | Path |
 |------|------|

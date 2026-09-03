@@ -3,6 +3,8 @@ package usagetracker
 import (
 	json "encoding/json/v2"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -273,6 +275,69 @@ func ParseZedUsageQuotas(data []byte) (*ProviderQuotaInfo, error) {
 		Plan:     plan,
 		Quotas:   quotas,
 		Raw:      raw,
+	}, nil
+}
+
+// ParseGroqQuotasFromHeaders builds quota windows from Groq x-ratelimit headers.
+// Groq has no dedicated quota endpoint; rate-limit info rides on every response
+// as x-ratelimit-limit-requests / remaining-requests and x-ratelimit-limit-tokens
+// / remaining-tokens plus reset duration headers like "2m59.56s".
+// See open-sse/services/usage/groq.js parity.
+func ParseGroqQuotasFromHeaders(header http.Header) (*ProviderQuotaInfo, error) {
+	quotas := make(map[string]QuotaWindow)
+
+	parseQuota := func(limitKey, remainingKey, resetKey string) *QuotaWindow {
+		limitRaw := header.Get(limitKey)
+		remainingRaw := header.Get(remainingKey)
+		if limitRaw == "" || remainingRaw == "" {
+			return nil
+		}
+		limit, err1 := strconv.Atoi(limitRaw)
+		remaining, err2 := strconv.Atoi(remainingRaw)
+		if err1 != nil || err2 != nil {
+			return nil
+		}
+		used := limit - remaining
+		if used < 0 {
+			used = 0
+		}
+		qw := QuotaWindow{
+			UsedCount:  int64(used),
+			LimitCount: int64(limit),
+		}
+		// Groq reset headers are Go durations, e.g. "2m59.56s" or "7.66s"
+		if resetRaw := header.Get(resetKey); resetRaw != "" {
+			if d, err := time.ParseDuration(resetRaw); err == nil {
+				qw.ResetAt = time.Now().Add(d).UTC()
+			}
+		}
+		if limit > 0 {
+			qw.RemainingPercentage = float64(remaining) / float64(limit) * 100
+		}
+		qw.RemainingPercentage = clampPercentage(qw.RemainingPercentage)
+		return &qw
+	}
+
+	if qw := parseQuota("x-ratelimit-limit-requests", "x-ratelimit-remaining-requests", "x-ratelimit-reset-requests"); qw != nil {
+		quotas["requests"] = *qw
+	}
+	if qw := parseQuota("x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens", "x-ratelimit-reset-tokens"); qw != nil {
+		quotas["tokens"] = *qw
+	}
+
+	if len(quotas) == 0 {
+		return &ProviderQuotaInfo{
+			Provider: "groq",
+			Plan:     "Groq",
+			Quotas:   map[string]QuotaWindow{},
+			Raw:      map[string]any{"message": "Groq rate-limit headers not present"},
+		}, nil
+	}
+
+	return &ProviderQuotaInfo{
+		Provider: "groq",
+		Plan:     "Groq",
+		Quotas:   quotas,
 	}, nil
 }
 

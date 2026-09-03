@@ -1,6 +1,7 @@
 package usagetracker
 
 import (
+	"net/http"
 	"testing"
 )
 
@@ -104,5 +105,44 @@ func TestParseZedUsageQuotas(t *testing.T) {
 
 	if hosted, ok := info.Quotas["hosted_models"]; !ok || !hosted.IsUnlimited || hosted.UsedCount != 42 {
 		t.Errorf("expected hosted models unlimited, used=42, got %v", hosted)
+	}
+}
+
+func TestParseGroqQuotasFromHeaders(t *testing.T) {
+	header := http.Header{}
+	header.Set("x-ratelimit-limit-requests", "100")
+	header.Set("x-ratelimit-remaining-requests", "90")
+	header.Set("x-ratelimit-reset-requests", "2m59.56s")
+	header.Set("x-ratelimit-limit-tokens", "10000")
+	header.Set("x-ratelimit-remaining-tokens", "8000")
+	header.Set("x-ratelimit-reset-tokens", "7.66s")
+
+	info, err := ParseGroqQuotasFromHeaders(header)
+	if err != nil {
+		t.Fatalf("ParseGroqQuotasFromHeaders failed: %v", err)
+	}
+	if len(info.Quotas) != 2 {
+		t.Fatalf("expected 2 quotas (requests+tokens), got %d", len(info.Quotas))
+	}
+	if req, ok := info.Quotas["requests"]; !ok || req.UsedCount != 10 || req.LimitCount != 100 {
+		t.Errorf("expected requests used 10/100, got %v", req)
+	}
+	if req, ok := info.Quotas["requests"]; ok && req.RemainingPercentage != 90 {
+		t.Errorf("expected 90%% remaining for requests, got %v", req.RemainingPercentage)
+	}
+	if tok, ok := info.Quotas["tokens"]; !ok || tok.UsedCount != 2000 || tok.LimitCount != 10000 {
+		t.Errorf("expected tokens used 2000/10000, got %v", tok)
+	}
+	if tok, ok := info.Quotas["tokens"]; ok && tok.ResetAt.IsZero() {
+		t.Error("expected tokens ResetAt to be set from duration")
+	}
+	// Missing headers should give empty quotas with message
+	emptyHeader := http.Header{}
+	info2, err := ParseGroqQuotasFromHeaders(emptyHeader)
+	if err != nil {
+		t.Fatalf("empty header should not error, got %v", err)
+	}
+	if len(info2.Quotas) != 0 {
+		t.Errorf("expected 0 quotas for empty header, got %d", len(info2.Quotas))
 	}
 }

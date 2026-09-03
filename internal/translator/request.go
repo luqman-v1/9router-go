@@ -529,3 +529,76 @@ func DefaultClaudeToolType(body []byte) []byte {
 	}
 	return body
 }
+
+// LastCacheableToolIndex returns the index of the last tool that can carry cache_control.
+// Anthropic rejects a tool carrying both defer_loading:true and cache_control (#3567).
+// MCP clients put deferred tools at the tail, which is exactly where the cache anchor lands.
+func LastCacheableToolIndex(tools []any) int {
+	if tools == nil {
+		return -1
+	}
+	for i := len(tools) - 1; i >= 0; i-- {
+		if m, ok := tools[i].(map[string]any); ok {
+			if v, exists := m["defer_loading"]; exists {
+				if b, ok := v.(bool); ok && b {
+					continue
+				}
+			}
+		}
+		return i
+	}
+	return -1
+}
+
+// AnchorClaudeCache ensures prompt-caching breakpoint lands on the last non-deferred tool.
+// Port of open-sse/translator/formats/claude.js#lastCacheableToolIndex / anchorClaudeCache (#3567).
+func AnchorClaudeCache(body []byte) []byte {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body
+	}
+	toolsRaw, ok := req["tools"].([]any)
+	if !ok || len(toolsRaw) == 0 {
+		return body
+	}
+	last := LastCacheableToolIndex(toolsRaw)
+	changed := false
+	for i, t := range toolsRaw {
+		m, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		_, hasCache := m["cache_control"]
+		if i == last {
+			// Ensure last cacheable has 1h breakpoint
+			want := map[string]any{"type": "ephemeral", "ttl": "1h"}
+			if !hasCache {
+				m["cache_control"] = want
+				changed = true
+			} else {
+				// Normalize existing to 1h if not already
+				if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != "1h" {
+					m["cache_control"] = want
+					changed = true
+				}
+			}
+		} else {
+			if hasCache {
+				delete(m, "cache_control")
+				changed = true
+			}
+			// Also strip cache_control that client incorrectly put on deferred tool
+			if _, had := m["cache_control"]; had {
+				delete(m, "cache_control")
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return body
+	}
+	if out, err := json.Marshal(req); err == nil {
+		return out
+	}
+	return body
+}

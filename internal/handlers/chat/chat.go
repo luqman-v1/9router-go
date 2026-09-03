@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -137,6 +138,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		translateResponse = false
 		body = translator.SanitizeClaudePassthrough(body)
 		body = translator.DefaultClaudeToolType(body)
+		body = translator.AnchorClaudeCache(body)
 		if err := json.Unmarshal(body, &workingBody); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 			return
@@ -328,6 +330,54 @@ func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Include custom models with live caps (port of Next.js GET /api/models customModels merge)
+	if customs, err := h.Repo.GetCustomModels(); err == nil {
+		seen := make(map[string]bool, len(data))
+		for _, m := range data {
+			seen[m.ID] = true
+		}
+		for _, cm := range customs {
+			fullModel := cm.ProviderAlias + "/" + cm.ID
+			if seen[fullModel] {
+				continue
+			}
+			ctxLen, maxOut := providers.GetModelTokenLimits(fullModel)
+			// Apply custom caps to provider registry for capability detection
+			if len(cm.Caps) > 0 {
+				var caps providers.Capabilities
+				if cm.Caps["vision"] {
+					caps.Vision = true
+				}
+				if cm.Caps["reasoning"] {
+					caps.Reasoning = true
+				}
+				if cm.Caps["search"] {
+					caps.Search = true
+				}
+				if cm.Caps["tools"] {
+					caps.Tools = true
+				}
+				if cm.Caps["image"] || cm.Caps["imageOutput"] {
+					caps.ImageOutput = true
+				}
+				if cm.Caps["audio"] {
+					caps.AudioInput = true
+				}
+				providers.SetCustomModelCaps(cm.ProviderAlias, cm.ID, caps)
+				// If custom caps enable vision/reasoning, reflect in token limits display? Keep as is.
+			}
+			data = append(data, modelObj{
+				ID:                  fullModel,
+				Object:              "model",
+				Created:             now,
+				OwnedBy:             cm.ProviderAlias,
+				ContextLength:       ctxLen,
+				MaxCompletionTokens: maxOut,
+			})
+			seen[fullModel] = true
+		}
+	}
+
 	if data == nil {
 		data = []modelObj{}
 	}
@@ -443,6 +493,158 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   data,
+	})
+}
+
+// HandleModelLookup handles GET /v1/models/* catch-all for both kind filtering and provider/model lookup.
+// Port of Next.js src/app/api/v1/models/[...model]/route.js (#3588).
+// - GET /v1/models/{kind} -> list filtered by capability (image, tts, stt, embedding, image-to-text, web)
+// - GET /v1/models/{provider}/{model} -> single model lookup (e.g. cc/claude-sonnet-5)
+func (h *ChatHandler) HandleModelLookup(w http.ResponseWriter, r *http.Request) {
+	// Extract suffix after /models
+	path := r.URL.Path
+	idx := strings.Index(path, "/models")
+	if idx == -1 {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+	suffix := strings.TrimPrefix(path[idx+len("/models"):], "/")
+	// Handle wildcard "*" when no suffix (chi may pass "*")
+	if suffix == "*" || suffix == "" {
+		suffix = r.PathValue("*")
+		if suffix == "" {
+			suffix = r.PathValue("kind")
+		}
+	}
+	// Fallback to chi wildcard or kind param
+	if suffix == "" {
+		if v := r.PathValue("*"); v != "" {
+			suffix = v
+		} else if v := r.PathValue("kind"); v != "" {
+			suffix = v
+		}
+	}
+	suffix = strings.Trim(suffix, "/")
+	if decoded, err := url.PathUnescape(suffix); err == nil {
+		suffix = decoded
+	}
+	// Normalize: handle encoded slash in single segment e.g. "cc%2Fclaude-sonnet-5"
+	suffix = strings.TrimSpace(suffix)
+	if suffix == "" {
+		h.HandleModels(w, r)
+		return
+	}
+
+	// Known kind slugs
+	kindSlugMap := map[string]bool{
+		"image":         true,
+		"tts":           true,
+		"stt":           true,
+		"embedding":     true,
+		"image-to-text": true,
+		"web":           true,
+	}
+	// If suffix is a known kind without slash, delegate to kind handling
+	if kindSlugMap[suffix] && !strings.Contains(suffix, "/") {
+		// Reuse HandleModelsByKind logic by setting path value
+		r.SetPathValue("kind", suffix)
+		h.HandleModelsByKind(w, r)
+		return
+	}
+
+	// Otherwise treat as provider/model ID lookup
+	// Build full model list like HandleModels does
+	type modelObj struct {
+		ID                  string `json:"id"`
+		Object              string `json:"object"`
+		Created             int64  `json:"created"`
+		OwnedBy             string `json:"owned_by"`
+		ContextLength       int    `json:"context_length,omitempty"`
+		MaxCompletionTokens int    `json:"max_completion_tokens,omitempty"`
+	}
+	var data []modelObj
+	now := time.Now().Unix()
+	aliases, err := h.Repo.GetModelAliases()
+	if err == nil {
+		for alias := range aliases {
+			ctxLen, maxOut := providers.GetModelTokenLimits(alias)
+			data = append(data, modelObj{
+				ID:                  alias,
+				Object:              "model",
+				Created:             now,
+				OwnedBy:             "system",
+				ContextLength:       ctxLen,
+				MaxCompletionTokens: maxOut,
+			})
+		}
+	}
+	combos, err := h.Repo.GetCombos()
+	if err == nil {
+		for _, c := range combos {
+			ctxLen, maxOut := providers.GetModelTokenLimits(c.Name)
+			data = append(data, modelObj{
+				ID:                  c.Name,
+				Object:              "model",
+				Created:             now,
+				OwnedBy:             "system",
+				ContextLength:       ctxLen,
+				MaxCompletionTokens: maxOut,
+			})
+		}
+	}
+	if customs, err := h.Repo.GetCustomModels(); err == nil {
+		seen := make(map[string]bool, len(data))
+		for _, m := range data {
+			seen[m.ID] = true
+		}
+		for _, cm := range customs {
+			fullModel := cm.ProviderAlias + "/" + cm.ID
+			if seen[fullModel] {
+				continue
+			}
+			ctxLen, maxOut := providers.GetModelTokenLimits(fullModel)
+			if len(cm.Caps) > 0 {
+				var caps providers.Capabilities
+				if cm.Caps["vision"] {
+					caps.Vision = true
+				}
+				if cm.Caps["reasoning"] {
+					caps.Reasoning = true
+				}
+				if cm.Caps["search"] {
+					caps.Search = true
+				}
+				if cm.Caps["tools"] {
+					caps.Tools = true
+				}
+				providers.SetCustomModelCaps(cm.ProviderAlias, cm.ID, caps)
+			}
+			data = append(data, modelObj{
+				ID:                  fullModel,
+				Object:              "model",
+				Created:             now,
+				OwnedBy:             cm.ProviderAlias,
+				ContextLength:       ctxLen,
+				MaxCompletionTokens: maxOut,
+			})
+		}
+	}
+
+	// Search for exact match (including provider prefix)
+	for _, m := range data {
+		if m.ID == suffix {
+			handlerutil.WriteJSON(w, http.StatusOK, m)
+			return
+		}
+	}
+	// Also try without provider prefix? No, must be exact.
+
+	handlerutil.WriteJSON(w, http.StatusNotFound, map[string]any{
+		"error": map[string]any{
+			"message": fmt.Sprintf("The model '%s' does not exist or you do not have access to it.", suffix),
+			"type":    "invalid_request_error",
+			"code":    "model_not_found",
+		},
 	})
 }
 

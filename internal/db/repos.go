@@ -316,6 +316,47 @@ func (r *Repo) GetComboById(id string) (*models.Combo, error) {
 	return &combo, nil
 }
 
+// CustomModel represents a user-defined model stored in kv scope customModels.
+type CustomModel struct {
+	ProviderAlias string          `json:"providerAlias"`
+	ID            string          `json:"id"`
+	Type          string          `json:"type"`
+	Name          string          `json:"name"`
+	Caps          map[string]bool `json:"caps"`
+}
+
+// GetCustomModels returns all custom models from kv scope customModels.
+func (r *Repo) GetCustomModels() ([]*CustomModel, error) {
+	rows, err := r.db.Query("SELECT key, value FROM kv WHERE scope = 'customModels'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*CustomModel
+	for rows.Next() {
+		var key, raw string
+		if err := rows.Scan(&key, &raw); err != nil {
+			return nil, err
+		}
+		var cm CustomModel
+		if err := json.Unmarshal([]byte(raw), &cm); err != nil {
+			continue
+		}
+		// Only LLM custom models are routable (matches Next.js filtering)
+		if cm.Type != "" && cm.Type != "llm" {
+			continue
+		}
+		if cm.ID == "" || cm.ProviderAlias == "" {
+			continue
+		}
+		out = append(out, &cm)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GetCombos retrieves all combos from the database.
 func (r *Repo) GetCombos() ([]*models.Combo, error) {
 	rows, err := r.db.Query("SELECT id, name, kind, models, createdAt, updatedAt FROM combos ORDER BY createdAt ASC")

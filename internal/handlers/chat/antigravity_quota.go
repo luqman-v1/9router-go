@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,10 +40,35 @@ var (
 	// after 3 consecutive 429s within 60s, treat as exhausted for 15m.
 	agStrikeMu            sync.Mutex
 	agStrikes             = make(map[string][]time.Time) // key = connectionID|model -> 429 timestamps
+	agStrikeBlocks        = make(map[string]time.Time)   // key -> blockUntil (15m strike block)
 	agStrikeWindow        = 60 * time.Second
 	agStrikeThreshold     = 3
 	agStrikeBlockDuration = 15 * time.Minute
 )
+
+// applyActiveStrikeBlocks re-asserts active 15m strike blocks into quotas so a fresh
+// optimistic quota reading cannot resurrect a pair we just circuit-broke (#3714).
+func applyActiveStrikeBlocks(connectionID string, quotas map[string]AntigravityModelQuota) map[string]AntigravityModelQuota {
+	now := time.Now().UTC()
+	agStrikeMu.Lock()
+	defer agStrikeMu.Unlock()
+	for key, blockUntil := range agStrikeBlocks {
+		if !strings.HasPrefix(key, connectionID+"|") {
+			continue
+		}
+		if blockUntil.After(now) {
+			model := strings.TrimPrefix(key, connectionID+"|")
+			quotas[model] = AntigravityModelQuota{
+				RemainingPercentage: 0,
+				ResetAt:             blockUntil,
+			}
+		} else {
+			delete(agStrikeBlocks, key)
+			delete(agStrikes, key)
+		}
+	}
+	return quotas
+}
 
 // ClearAntigravityQuotaCache resets the in-memory cache (primarily for unit tests).
 func ClearAntigravityQuotaCache() {
@@ -206,6 +232,9 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 		}
 	}
 
+	// Re-assert active strike blocks so optimistic quota cannot resurrect blocked pair
+	quotas = applyActiveStrikeBlocks(connectionID, quotas)
+
 	agQuotaMu.Lock()
 	agQuotaCache[connectionID] = quotas
 	agQuotaMu.Unlock()
@@ -259,12 +288,24 @@ func HandleAntigravityQuotaError(ctx context.Context, client *http.Client, conne
 				kept = append(kept, now)
 				agStrikes[key] = kept
 				shouldBlock := len(kept) >= agStrikeThreshold
-				agStrikeMu.Unlock()
 				if shouldBlock {
 					blockUntil := now.Add(agStrikeBlockDuration)
+					agStrikeBlocks[key] = blockUntil
+					agStrikeMu.Unlock()
+					// Store blocked quota so IsAntigravityModelBlocked sees it even after optimistic refresh
+					agQuotaMu.Lock()
+					if _, ok := agQuotaCache[connectionID]; !ok {
+						agQuotaCache[connectionID] = make(map[string]AntigravityModelQuota)
+					}
+					agQuotaCache[connectionID][m] = AntigravityModelQuota{
+						RemainingPercentage: 0,
+						ResetAt:             blockUntil,
+					}
+					agQuotaMu.Unlock()
 					log.Warn("ag_quota", "optimistic quota strike-break: 3x429 within 60s while quota>0, CACHE_BLOCK 15m", "connection", shortConn, "model", m, "blockUntil", blockUntil.Format(time.RFC3339))
 					return &blockUntil
 				}
+				agStrikeMu.Unlock()
 			}
 		}
 	}
@@ -280,7 +321,9 @@ func ClearAntigravityStrikes(connectionID, model string) {
 	agStrikeMu.Lock()
 	defer agStrikeMu.Unlock()
 	delete(agStrikes, connectionID+"|"+model)
+	delete(agStrikeBlocks, connectionID+"|"+model)
 	if canonical, exists := translator.AntigravityModelSynonyms[model]; exists {
 		delete(agStrikes, connectionID+"|"+canonical)
+		delete(agStrikeBlocks, connectionID+"|"+canonical)
 	}
 }

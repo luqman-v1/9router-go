@@ -162,3 +162,59 @@ func TestForwardOpencode_MuseSparkResponsesRouting(t *testing.T) {
 		t.Errorf("expected status 200, got %d", rec.Code)
 	}
 }
+
+func TestForwardOpencode_MuseSpark13_ResponsesRouting(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/responses") {
+			t.Errorf("expected /responses for muse-spark-1.3, got %s", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		_ = json.Unmarshal(body, &parsed)
+		if parsed["model"] != "muse-spark-1.3-contributor-free" {
+			t.Errorf("expected model muse-spark-1.3, got %v", parsed["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"resp_13","output":[{"type":"message","content":[{"type":"text","text":"ok 1.3"}]}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL + "/chat/completions"}
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Client: srv.Client(), Config: cfg, APIKey: "",
+		Body: []byte(`{"model":"oc/muse-spark-1.3-contributor-free","messages":[{"role":"user","content":"hi"}],"stream":false}`),
+		IsStream: false, TranslateResp: false,
+	}
+	if err := ForwardOpencode(rec, req); err != nil {
+		t.Fatalf("1.3 failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestForwardOpencode_MuseSpark_OCPrefix(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/responses") {
+			t.Errorf("expected /responses for oc/ prefix, got %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"resp_oc","output":[{"type":"message","content":[{"type":"text","text":"ok"}]}]}`))
+	}))
+	defer srv.Close()
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL + "/chat/completions"}
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Client: srv.Client(), Config: cfg, APIKey: "",
+		Body: []byte(`{"model":"oc/muse-spark-1.3-contributor-free","messages":[{"role":"user","content":"hi"}]}`),
+		IsStream: false, TranslateResp: false,
+	}
+	if err := ForwardOpencode(rec, req); err != nil {
+		t.Fatalf("oc prefix failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+}

@@ -52,6 +52,9 @@ func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
 	t.Logf("Response Code: %d", rec.Code)
 	t.Logf("Response Body: %s", rec.Body.String())
 
+	if rec.Code == http.StatusTooManyRequests {
+		t.Skipf("opencode free tier rate limited (429), skipping real upstream test: %s", rec.Body.String())
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -89,6 +92,9 @@ func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
 	t.Logf("Non-streaming Response Code: %d", rec.Code)
 	t.Logf("Non-streaming Response Body: %s", rec.Body.String())
 
+	if rec.Code == http.StatusTooManyRequests {
+		t.Skipf("opencode rate limited 429, skipping: %s", rec.Body.String())
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -146,6 +152,9 @@ func TestIntegration_OpenCode_MuseSpark_ChatCompletions(t *testing.T) {
 	t.Logf("Response Code: %d", rec.Code)
 	t.Logf("Response Body: %s", rec.Body.String())
 
+	if rec.Code == http.StatusTooManyRequests {
+		t.Skipf("opencode rate limited 429, skipping: %s", rec.Body.String())
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -214,6 +223,9 @@ func TestIntegration_OpenCode_MuseSpark_MultiTurnWithTools(t *testing.T) {
 	t.Logf("Response Code: %d", rec.Code)
 	t.Logf("Response Body: %s", rec.Body.String())
 
+	if rec.Code == http.StatusTooManyRequests {
+		t.Skipf("opencode rate limited 429, skipping: %s", rec.Body.String())
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
 	}
