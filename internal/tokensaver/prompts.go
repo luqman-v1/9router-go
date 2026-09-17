@@ -136,6 +136,52 @@ func InjectSystemPrompt(body []byte, prompt string) ([]byte, bool) {
 	return out, true
 }
 
+// InjectSystemPromptClaude adds a system prompt to a Claude Messages-format
+// request body. The Anthropic API forbids role:"system" inside messages[];
+// the system prompt must be the top-level "system" field (string or text
+// blocks). Merges into an existing value, skipping if the prompt is present.
+// Returns modified body and true if any modification was made.
+func InjectSystemPromptClaude(body []byte, prompt string) ([]byte, bool) {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body, false
+	}
+
+	switch sys := req["system"].(type) {
+	case string:
+		if strings.Contains(sys, prompt) {
+			return body, false
+		}
+		if sys != "" {
+			req["system"] = sys + "\n\n" + prompt
+		} else {
+			req["system"] = prompt
+		}
+	case []any:
+		// Text blocks: skip if already present, else append a text block.
+		for _, block := range sys {
+			bMap, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, ok := bMap["text"].(string); ok && strings.Contains(t, prompt) {
+				return body, false
+			}
+		}
+		req["system"] = append(sys, map[string]any{"type": "text", "text": prompt})
+	case nil:
+		req["system"] = prompt
+	default:
+		return body, false
+	}
+
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body, false
+	}
+	return out, true
+}
+
 // toMessageArray extracts []any from a JSON value that might be an array.
 func toMessageArray(v any) []any {
 	if v == nil {

@@ -22,7 +22,7 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 		if startTime.IsZero() {
 			startTime = time.Now()
 		}
-		return sseStream(w, upstream, false, startTime, req.TTFT, req.ResponseBuf, req.Ctx)
+		return sseStream(w, upstream, false, startTime, req.TTFT, req.ResponseBuf, req.Ctx, req.ToolNameMap)
 	}
 
 	// Client requested OpenAI format (/v1/chat/completions) but upstream is Claude Messages SSE.
@@ -33,10 +33,15 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 
 	state := &translator.ClaudeToOpenAIStreamState{}
 	doneSeen := false
-
-	err := proxy.ScanStream(upstream, func(payload []byte) {
-		if doneSeen {
+	sawTerminal := false // saw message_delta (with stop_reason) or message_stop
+	decloaker := NewClaudeStreamDecloaker(req.ToolNameMap)
+	var writeErr error
+	emit := func(payload []byte) {
+		if doneSeen || writeErr != nil {
 			return
+		}
+		if bytes.Contains(payload, []byte(`"message_delta"`)) || bytes.Contains(payload, []byte(`"message_stop"`)) {
+			sawTerminal = true
 		}
 		trimmed := bytes.TrimSpace(payload)
 		if string(trimmed) == "[DONE]" {
@@ -68,6 +73,9 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 			req.ResponseBuf.Write(out)
 		}
 		if _, werr := hw.Write(out); werr != nil {
+			// Client went away mid-stream: stop feeding it and report the
+			// abort instead of recording a 200.
+			writeErr = werr
 			return
 		}
 		if flusher != nil {
@@ -76,9 +84,33 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 		if bytes.Contains(out, []byte("[DONE]")) {
 			doneSeen = true
 		}
+	}
+	err := proxy.ScanStream(upstream, func(payload []byte) {
+		if doneSeen || writeErr != nil {
+			return
+		}
+		if decloaker != nil {
+			for _, ev := range decloaker.Events(payload) {
+				emit(ev.Payload)
+			}
+			return
+		}
+		emit(payload)
 	})
+	if writeErr != nil {
+		return fmt.Errorf("write to client: %w", writeErr)
+	}
 
 	if !doneSeen {
+		// Truncated or mid-stream aborted upstream: mirror SSECopy's terminal
+		// synthesis (PR #4079) so clients like Oh My Pi get an explicit
+		// finish_reason instead of "stream closed before finish_reason".
+		if err != nil || !sawTerminal {
+			term := []byte(`data: {"id":` + mustJSONString(state.MessageID) + `,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"network_error"}]}` + "\n\n")
+			if _, werr := hw.Write(term); werr == nil && flusher != nil {
+				flusher.Flush()
+			}
+		}
 		_, _ = hw.Write([]byte("data: [DONE]\n\n"))
 		if flusher != nil {
 			flusher.Flush()
@@ -98,6 +130,12 @@ func handleClaudeMessagesNonStream(w http.ResponseWriter, req *Request, upstream
 	if req.TranslateResp {
 		// Client requested Claude format, upstream is Claude format: pass through
 		return jsonResponse(req.Ctx, w, bytes.NewReader(body), false, req.ResponseBuf)
+	}
+
+	if req.ToolNameMap != nil {
+		// Claude OAuth tool cloaking: restore original tool names before
+		// translating / forwarding the response to the client.
+		body = DecloakClaudeResponseBody(body, req.ToolNameMap)
 	}
 
 	// Client requested OpenAI format, upstream is Claude format: translate!

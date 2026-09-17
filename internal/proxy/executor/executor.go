@@ -19,14 +19,16 @@ type Request struct {
 	Body           []byte
 	IsStream       bool
 	TranslateResp  bool
-	ConnectionID   string    // for OAuth refresh by fallback
-	SessionID      string    // client session / conversation id
-	ProjectID      string    // for gemini-native (antigravity)
-	ModelName      string    // extracted model name
-	Endpoint       string    // custom URL override (azure)
-	ResponseBuf    io.Writer // writer to capture response text for token estimation & logging
-	StartTime      time.Time // request start time for TTFT tracking
-	TTFT           *int64    // pointer to TTFT metric (ms to first chunk)
+	ConnectionID   string            // for OAuth refresh by fallback
+	SessionID      string            // client session / conversation id
+	ProjectID      string            // for gemini-native (antigravity)
+	ModelName      string            // extracted model name
+	Endpoint       string            // custom URL override (azure)
+	ToolNameMap    map[string]string // claude OAuth tool-cloak map (suffixed -> original)
+	UpstreamClaude bool              // upstream responds in Claude format while client sent OpenAI format
+	ResponseBuf    io.Writer         // writer to capture response text for token estimation & logging
+	StartTime      time.Time         // request start time for TTFT tracking
+	TTFT           *int64            // pointer to TTFT metric (ms to first chunk)
 }
 
 // Executor forwards a request upstream and writes the response.

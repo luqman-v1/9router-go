@@ -131,6 +131,35 @@ func (h *ChatHandler) handleAccountFallback(
 }
 
 // tryForwardWithConnection attempts a single upstream request using the given connection data.
+// isAnthropicUpstream reports whether the request is headed to Anthropic's
+// native Messages API (as opposed to an anthropic-compatible custom node).
+func isAnthropicUpstream(provider string, cfg *providers.ProviderConfig) bool {
+	if provider != "claude" && provider != "anthropic" {
+		return false
+	}
+	if cfg == nil {
+		return false
+	}
+	targetURL := cfg.BaseURL
+	if cfg.StaticHeaders != nil {
+		if relayTarget, ok := cfg.StaticHeaders["x-relay-target"]; ok && relayTarget != "" {
+			targetURL = relayTarget + cfg.StaticHeaders["x-relay-path"]
+		}
+	}
+	return targetURL == "https://api.anthropic.com/v1/messages" ||
+		strings.HasPrefix(targetURL, "https://api.anthropic.com/v1/messages?")
+}
+
+func appendBetaQuery(u string) string {
+	if strings.Contains(u, "beta=true") {
+		return u
+	}
+	if strings.Contains(u, "?") {
+		return u + "&beta=true"
+	}
+	return u + "?beta=true"
+}
+
 func (h *ChatHandler) tryForwardWithConnection(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -159,6 +188,28 @@ func (h *ChatHandler) tryForwardWithConnection(
 		}
 	}
 
+	// OAuth connections (e.g. Claude subscription logins) must authenticate
+	// with "Authorization: Bearer" against the beta endpoint, matching the
+	// Next.js dashboard (open-sse/executors/default.js + registry/claude.js).
+	// Sending the OAuth access token via x-api-key makes api.anthropic.com
+	// return 401 "API key is invalid" even after a successful token refresh.
+	// A connection is OAuth when it only carries an accessToken (no apiKey).
+	isAnthropic := isAnthropicUpstream(provider, providerCfg)
+	// OAuth = connection carries only an accessToken, OR the token itself is
+	// an Anthropic OAuth token (some connections store sk-ant-oat in APIKey).
+	isOAuth := isAnthropic && connData != nil &&
+		((connData.APIKey == "" && connData.AccessToken != "") ||
+			strings.Contains(connData.APIKey, "sk-ant-oat"))
+	if isOAuth {
+		providerCfg.AuthHeader = "Authorization"
+		providerCfg.AuthScheme = "bearer"
+		if providerCfg.StaticHeaders != nil && providerCfg.StaticHeaders["x-relay-path"] != "" {
+			providerCfg.StaticHeaders["x-relay-path"] = appendBetaQuery(providerCfg.StaticHeaders["x-relay-path"])
+		} else {
+			providerCfg.BaseURL = appendBetaQuery(providerCfg.BaseURL)
+		}
+	}
+
 	apiKey := extractAPIKey(connData)
 	if apiKey == "" {
 		if providerCfg.DefaultAPIKey != "" {
@@ -178,7 +229,42 @@ func (h *ChatHandler) tryForwardWithConnection(
 	}
 	apiKey = NormalizeProviderToken(provider, apiKey)
 
-	pipedBody := h.applyTokenSavers(body)
+	// Token savers + provider-format normalization:
+	// - /v1/messages (claudeNative): body stays Claude format; savers inject
+	//   into top-level "system".
+	// - /v1/chat/completions to an Anthropic upstream: the body is OpenAI
+	//   format and would otherwise be forwarded raw; convert it to a
+	//   spec-compliant Claude Messages payload (top-level system, tools,
+	//   merged roles) — same conversion the dashboard applies server-side.
+	// claudeNative indicates the CLIENT body is in Claude Messages format.
+	// Requires an Anthropic upstream too: chat.go converts /v1/messages
+	// requests for non-Anthropic providers (DeepSeek, OpenAI-compatible) to
+	// OpenAI format before the fallback, and passing endpoint "/v1/v1/messages"
+	// alone would wrongly inject a top-level "system" the upstream ignores.
+	claudeNative := isAnthropic && (endpoint == "/v1/v1/messages" || endpoint == "/v1/messages")
+	pipedBody := h.applyTokenSavers(body, claudeNative)
+	var claudeToolMap map[string]string
+	if isAnthropic {
+		if !claudeNative {
+			// Raw OpenAI-format body would be invalid at the Messages API:
+			// convert to a spec-compliant Claude payload (top-level system,
+			// tools, merged roles) — what the dashboard does server-side.
+			pipedBody = executor.EnsureClaudeMessages(pipedBody, model)
+		}
+		// OAuth connections (or sk-ant-oat tokens) require Claude-Code-shaped requests:
+		// billing-header system block + metadata.user_id + cloaked tools,
+		// or the API 429s (anti-abuse fingerprinting).
+		if isOAuth || strings.Contains(apiKey, "sk-ant-oat") {
+			pipedBody = applyClaudeCloaking(pipedBody, apiKey, handlerutil.GetSessionID(ctx))
+			var reqMap map[string]any
+			if err := json.Unmarshal(pipedBody, &reqMap); err == nil {
+				claudeToolMap = cloakClaudeTools(reqMap)
+				if out, err := json.Marshal(reqMap); err == nil {
+					pipedBody = out
+				}
+			}
+		}
+	}
 	// Sanitize tool schemas for all OpenAI-compatible providers (opencode, gemini-openai, etc.)
 	// Fixes misplaced `required` inside `properties` and missing `items` for arrays.
 	if sanitized, err := translator.SanitizeOpenAITools(pipedBody); err == nil && sanitized != nil && string(sanitized) != string(pipedBody) {
@@ -202,18 +288,20 @@ func (h *ChatHandler) tryForwardWithConnection(
 
 	if exec := executor.Get(provider); exec != nil {
 		fwdErr = exec(w, &executor.Request{
-			Ctx:           ctx,
-			Client:        httpClient,
-			Config:        providerCfg,
-			APIKey:        apiKey,
-			Body:          pipedBody,
-			IsStream:      isStream,
-			TranslateResp: translateResponse,
-			ConnectionID:  connectionID,
-			SessionID:     sessionID,
-			ResponseBuf:   &metrics.ResponseBuf,
-			StartTime:     start,
-			TTFT:          &metrics.TTFT,
+			Ctx:            ctx,
+			Client:         httpClient,
+			Config:         providerCfg,
+			APIKey:         apiKey,
+			Body:           pipedBody,
+			IsStream:       isStream,
+			TranslateResp:  translateResponse,
+			ConnectionID:   connectionID,
+			SessionID:      sessionID,
+			ToolNameMap:    claudeToolMap,
+			UpstreamClaude: isAnthropic && !claudeNative,
+			ResponseBuf:    &metrics.ResponseBuf,
+			StartTime:      start,
+			TTFT:           &metrics.TTFT,
 		})
 	} else if providerCfg.IsGeminiNative() {
 		fwdErr = h.forwardGeminiNativeRequest(ctx, w, provider, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)
@@ -229,18 +317,20 @@ func (h *ChatHandler) tryForwardWithConnection(
 			apiKey = NormalizeProviderToken(provider, refreshedKey)
 			if exec := executor.Get(provider); exec != nil {
 				fwdErr = exec(w, &executor.Request{
-					Ctx:           ctx,
-					Client:        httpClient,
-					Config:        providerCfg,
-					APIKey:        apiKey,
-					Body:          pipedBody,
-					IsStream:      isStream,
-					TranslateResp: translateResponse,
-					ConnectionID:  connectionID,
-					SessionID:     sessionID,
-					ResponseBuf:   &metrics.ResponseBuf,
-					StartTime:     start,
-					TTFT:          &metrics.TTFT,
+					Ctx:            ctx,
+					Client:         httpClient,
+					Config:         providerCfg,
+					APIKey:         apiKey,
+					Body:           pipedBody,
+					IsStream:       isStream,
+					TranslateResp:  translateResponse,
+					ConnectionID:   connectionID,
+					SessionID:      sessionID,
+					ToolNameMap:    claudeToolMap,
+					UpstreamClaude: isAnthropic && !claudeNative,
+					ResponseBuf:    &metrics.ResponseBuf,
+					StartTime:      start,
+					TTFT:           &metrics.TTFT,
 				})
 			} else if providerCfg.IsGeminiNative() {
 				fwdErr = h.forwardGeminiNativeRequest(ctx, w, provider, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)
@@ -326,10 +416,12 @@ func isClientCanceled(ctx context.Context, err error) bool {
 	return strings.Contains(errStr, "context canceled") || strings.Contains(errStr, "client closed")
 }
 
-
 // applyTokenSavers runs RTK compression and prompt injection on the request body.
+// claudeNative indicates the body is in Claude Messages format (endpoint
+// /v1/messages): system prompts must go to the top-level "system" field —
+// a role:"system" message is rejected by the Anthropic API.
 // false from compress/inject means nothing changed (or unparseable) — keep original, not a failure.
-func (h *ChatHandler) applyTokenSavers(body []byte) []byte {
+func (h *ChatHandler) applyTokenSavers(body []byte, claudeNative bool) []byte {
 	// Prompt-injection guard: tag (never block) flagged user content. Early
 	// detection here means operators can see abuse before it reaches upstream.
 	// Toggle via settings.injectionGuardEnabled (off bypasses the scan).
@@ -344,15 +436,19 @@ func (h *ChatHandler) applyTokenSavers(body []byte) []byte {
 			out = next
 		}
 	}
+	inject := tokensaver.InjectSystemPrompt
+	if claudeNative {
+		inject = tokensaver.InjectSystemPromptClaude
+	}
 	if h.TokenSaver.CavemanEnabled() {
 		prompt := tokensaver.GetCavemanPrompt(h.TokenSaver.CavemanLevel())
-		if next, did := tokensaver.InjectSystemPrompt(out, prompt); did {
+		if next, did := inject(out, prompt); did {
 			out = next
 		}
 	}
 	if h.TokenSaver.PonytailEnabled() {
 		prompt := tokensaver.GetPonytailPrompt(h.TokenSaver.PonytailLevel())
-		if next, did := tokensaver.InjectSystemPrompt(out, prompt); did {
+		if next, did := inject(out, prompt); did {
 			out = next
 		}
 	}
@@ -393,6 +489,7 @@ func extractErrorText(body []byte) string {
 	}
 	return ""
 }
+
 var resetsInRegex = regexp.MustCompile(`(?i)resets?\s+in\s+([0-9hms\.]+)`)
 
 const (

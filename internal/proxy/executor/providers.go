@@ -371,7 +371,6 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		return handleClaudeMessagesNonStream(w, req, resp.Body)
 	}
 
-
 	body := InjectReasoningContent(req.Body, "opencode")
 
 	cfg := *req.Config
@@ -394,15 +393,22 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 }
 
 var opencodeGoMessagesModels = map[string]bool{
-	"minimax-m3":   true,
-	"minimax-m2.7": true,
-	"minimax-m2.5": true,
-	"qwen3.8-max":  true,
+	"minimax-m3":    true,
+	"minimax-m2.7":  true,
+	"minimax-m2.5":  true,
+	"qwen3.8-max":   true,
 	"qwen3.8-flash": true,
-	"qwen3.7-max":  true,
-	"qwen3.7-plus": true,
-	"qwen3.6-plus": true,
-	"union-alpha":  true,
+	"qwen3.7-max":   true,
+	"qwen3.7-plus":  true,
+	"qwen3.6-plus":  true,
+	"union-alpha":   true,
+}
+
+// EnsureClaudeMessages exposes the OpenAI→Claude Messages request conversion
+// (see ensureMessagesMaxTokens) for the fallback path, which forwards raw
+// OpenAI-format bodies to Anthropic-native upstreams.
+func EnsureClaudeMessages(body []byte, model string) []byte {
+	return ensureMessagesMaxTokens(body, model)
 }
 
 // ensureMessagesMaxTokens converts an incoming request (OpenAI or Claude) into a spec-compliant
@@ -577,9 +583,45 @@ func convertToolChoiceToClaude(tc any) any {
 	}
 }
 
+// sanitizeToolUseID returns a tool id valid for the Anthropic Messages API
+// (must match ^[a-zA-Z0-9_-]+$). Ids from other upstreams (e.g. Gemini
+// function-call history translated to OpenAI format) may contain other
+// characters; those are rewritten deterministically as "toolu_<sha256>" so
+// the same id always maps to the same replacement, keeping tool_use and
+// tool_result blocks paired. mapping must be shared across the whole request.
+func sanitizeToolUseID(id string, mapping map[string]string) string {
+	if id == "" {
+		return id
+	}
+	if mapped, ok := mapping[id]; ok {
+		return mapped
+	}
+	valid := true
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		valid = false
+		break
+	}
+	if valid {
+		mapping[id] = id
+		return id
+	}
+	sum := sha256.Sum256([]byte(id))
+	newID := "toolu_" + hex.EncodeToString(sum[:])[:24]
+	mapping[id] = newID
+	return newID
+}
+
 func convertOpenAIMessagesToClaude(messages []any) (systemText string, claudeMessages []any) {
+	// Anthropic requires tool_use.id / tool_use_id to match ^[a-zA-Z0-9_-]+$.
+	// History from other upstreams (e.g. Gemini) can contain ids with other
+	// characters; rewrite them deterministically, with a single mapping shared
+	// across the whole conversation so tool_use and tool_result stay paired.
+	toolIDMap := map[string]string{}
 	var systemParts []string
-	var intermediate []map[string]any
+	intermediate := make([]map[string]any, 0, len(messages))
 
 	for _, m := range messages {
 		msgMap, ok := m.(map[string]any)
@@ -608,6 +650,7 @@ func convertOpenAIMessagesToClaude(messages []any) (systemText string, claudeMes
 
 		if role == "tool" {
 			toolCallID, _ := msgMap["tool_call_id"].(string)
+			toolCallID = sanitizeToolUseID(toolCallID, toolIDMap)
 			contentVal := msgMap["content"]
 			intermediate = append(intermediate, map[string]any{
 				"role": "user",
@@ -639,6 +682,7 @@ func convertOpenAIMessagesToClaude(messages []any) (systemText string, claudeMes
 						continue
 					}
 					id, _ := tcMap["id"].(string)
+					id = sanitizeToolUseID(id, toolIDMap)
 					fn, _ := tcMap["function"].(map[string]any)
 					name := ""
 					var inputMap any = map[string]any{}
