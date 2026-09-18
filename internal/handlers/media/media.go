@@ -617,8 +617,12 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
 	client := h.ChatH.GetClientForConnection(connData)
 
-	if (endpoint == "/responses" || endpoint == "/v1/responses") && (modelInfo.Provider == "opencode" || modelInfo.Provider == "opencode-go") && executor.Get(modelInfo.Provider) != nil {
+	if (endpoint == "/responses" || endpoint == "/v1/responses") && (modelInfo.Provider == "opencode" || modelInfo.Provider == "opencode-go" || modelInfo.Provider == "antigravity" || modelInfo.Provider == "antigravity-go") {
 		exec := executor.Get(modelInfo.Provider)
+		if (modelInfo.Provider == "antigravity" || modelInfo.Provider == "antigravity-go") && strings.Contains(modelInfo.Model, "muse-spark") {
+			exec = executor.Get("opencode")
+		}
+		if exec != nil {
 		var isStream bool
 		var checkStream struct {
 			Stream bool `json:"stream"`
@@ -653,7 +657,8 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		if conn != nil {
 			h.Repo.UpdateConnectionLastUsed(conn.ID)
 		}
-		return
+			return
+		}
 	}
 
 	baseURL := strings.TrimRight(providerCfg.BaseURL, "/")

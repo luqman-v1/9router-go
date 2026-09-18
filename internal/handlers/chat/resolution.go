@@ -99,6 +99,9 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 			}
 		}
 	}
+	if (provider == "antigravity" || provider == "ag") && strings.Contains(model, "muse-spark") {
+		provider = "opencode"
+	}
 	return &ModelInfo{Provider: provider, Model: model}
 }
 
@@ -202,6 +205,9 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 					}
 				}
 			}
+		}
+		if (provider == "antigravity" || provider == "ag") && strings.Contains(model, "muse-spark") {
+			provider = "opencode"
 		}
 		return &ModelInfo{Provider: provider, Model: model}, nil
 	}
