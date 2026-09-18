@@ -519,3 +519,62 @@ func TestForwardOpencode_UnionAlpha_ConvertsOpenAIToolsInRequest(t *testing.T) {
 		t.Errorf("expected top-level system, got %v", capturedBody["system"])
 	}
 }
+
+func TestBuildResponsesBody_StringInput(t *testing.T) {
+	body := []byte(`{
+		"model": "opencode/muse-spark-1.3-contributor-free",
+		"input": "Say hello in one sentence.",
+		"max_output_tokens": 100,
+		"stream": true
+	}`)
+
+	out, cleanModel, err := buildResponsesBody(body)
+	if err != nil {
+		t.Fatalf("buildResponsesBody failed: %v", err)
+	}
+	if cleanModel != "muse-spark-1.3-contributor-free" {
+		t.Errorf("expected cleanModel 'muse-spark-1.3-contributor-free', got %q", cleanModel)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	inputList, ok := parsed["input"].([]any)
+	if !ok || len(inputList) == 0 {
+		t.Fatalf("expected non-empty input array, got %v", parsed["input"])
+	}
+	msg := inputList[0].(map[string]any)
+	if msg["role"] != "user" {
+		t.Errorf("expected role user, got %v", msg["role"])
+	}
+	content := msg["content"].([]any)
+	c0 := content[0].(map[string]any)
+	if c0["text"] != "Say hello in one sentence." {
+		t.Errorf("expected text 'Say hello in one sentence.', got %v", c0["text"])
+	}
+}
+
+func TestBuildResponsesBody_EmptyArrayInput(t *testing.T) {
+	body := []byte(`{
+		"model": "muse-spark-1.3",
+		"input": [],
+		"max_output_tokens": 100
+	}`)
+
+	out, _, err := buildResponsesBody(body)
+	if err != nil {
+		t.Fatalf("buildResponsesBody failed: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	inputList, ok := parsed["input"].([]any)
+	if !ok || len(inputList) == 0 {
+		t.Fatalf("expected non-empty placeholder input array, got %v", parsed["input"])
+	}
+}

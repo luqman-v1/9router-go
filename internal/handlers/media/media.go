@@ -17,6 +17,8 @@ import (
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 )
 
 // MediaHandler handles embeddings, responses, audio, video, image, and web tool endpoints.
@@ -574,10 +576,20 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	}
 
 	conn, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
-	if err != nil {
-		log.Warn("media", "no connection", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "error", err)
-		handlerutil.WriteJSONError(w, http.StatusNotFound, fmt.Sprintf("no active connections for provider: %s", modelInfo.Provider))
-		return
+	if err != nil || connData == nil {
+		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
+			apiKey := cfg.DefaultAPIKey
+			if apiKey == "" {
+				apiKey = "public"
+			}
+			connData = &chat.ConnectionData{
+				APIKey: apiKey,
+			}
+		} else {
+			log.Warn("media", "no connection", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "error", err)
+			handlerutil.WriteJSONError(w, http.StatusNotFound, fmt.Sprintf("no active connections for provider: %s", modelInfo.Provider))
+			return
+		}
 	}
 
 	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
@@ -589,13 +601,68 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	apiKey := chat.ExtractAPIKey(connData)
 	if apiKey == "" {
-		log.Warn("media", "no api key", "endpoint", endpoint, "provider", modelInfo.Provider, "conn", conn.ID[:min(8, len(conn.ID))])
-		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
-		return
+		if providerCfg != nil && providerCfg.DefaultAPIKey != "" {
+			apiKey = providerCfg.DefaultAPIKey
+		} else {
+			connIDStr := ""
+			if conn != nil {
+				connIDStr = conn.ID[:min(8, len(conn.ID))]
+			}
+			log.Warn("media", "no api key", "endpoint", endpoint, "provider", modelInfo.Provider, "conn", connIDStr)
+			handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
+			return
+		}
 	}
 
 	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
-	targetURL := strings.TrimRight(providerCfg.BaseURL, "/") + endpoint
+	client := h.ChatH.GetClientForConnection(connData)
+
+	if (endpoint == "/responses" || endpoint == "/v1/responses") && (modelInfo.Provider == "opencode" || modelInfo.Provider == "opencode-go") && executor.Get(modelInfo.Provider) != nil {
+		exec := executor.Get(modelInfo.Provider)
+		var isStream bool
+		var checkStream struct {
+			Stream bool `json:"stream"`
+		}
+		if err := json.Unmarshal(body, &checkStream); err == nil {
+			isStream = checkStream.Stream
+		}
+
+		connID := ""
+		if conn != nil {
+			connID = conn.ID
+		}
+
+		fwdErr := exec(w, &executor.Request{
+			Ctx:           r.Context(),
+			Client:        client,
+			Config:        providerCfg,
+			APIKey:        apiKey,
+			Body:          finalBody,
+			ModelName:     modelInfo.Model,
+			IsStream:      isStream,
+			TranslateResp: false,
+			ConnectionID:  connID,
+			SessionID:     handlerutil.ExtractSessionID(r),
+			StartTime:     time.Now(),
+		})
+		if fwdErr != nil {
+			log.Error("media", "executor request failed", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "error", fwdErr)
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, fwdErr.Error())
+			return
+		}
+		if conn != nil {
+			h.Repo.UpdateConnectionLastUsed(conn.ID)
+		}
+		return
+	}
+
+	baseURL := strings.TrimRight(providerCfg.BaseURL, "/")
+	if endpoint == "/responses" || endpoint == "/v1/responses" {
+		if strings.HasSuffix(baseURL, "/chat/completions") {
+			baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
+		}
+	}
+	targetURL := baseURL + endpoint
 	method := r.Method
 	if endpoint == "/v1/web/fetch" && providerCfg.FetchURL != "" {
 		targetURL = providerCfg.FetchURL
@@ -627,7 +694,10 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	}
 
 	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-	client := h.ChatH.GetClientForConnection(connData)
+	connIDStr := ""
+	if conn != nil {
+		connIDStr = conn.ID[:min(8, len(conn.ID))]
+	}
 	// Log search query for observability (was "nebak" before)
 	if endpoint == "/v1/search" {
 		var qb struct {
@@ -640,13 +710,13 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			q = qb.Prompt
 		}
 		if q != "" {
-			log.Info("request", "POST "+endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "query", q, "conn", conn.ID[:min(8, len(conn.ID))])
+			log.Info("request", "POST "+endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "query", q, "conn", connIDStr)
 		}
 	}
 	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Error("media", "upstream request failed", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "error", err)
+		log.Error("media", "upstream request failed", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connIDStr, "error", err)
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, "upstream request failed")
 		return
 	}
@@ -654,7 +724,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	if resp.StatusCode >= 400 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024))
-		log.Warn("media", "upstream error", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "status", resp.StatusCode, "body", string(errBody))
+		log.Warn("media", "upstream error", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connIDStr, "status", resp.StatusCode, "body", string(errBody))
 		// Need to re-create body for copying
 		resp.Body = io.NopCloser(bytes.NewReader(errBody))
 	}

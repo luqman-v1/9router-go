@@ -97,13 +97,13 @@ func clampCallID(id string) string {
 func buildResponsesBody(body []byte) ([]byte, string, error) {
 	// If the body is already in Responses API format (has input[]), normalize fields and return
 	var quickCheck struct {
-		Input               []any  `json:"input"`
+		Input               any    `json:"input"`
 		Model               string `json:"model"`
 		MaxTokens           *int   `json:"max_tokens,omitempty"`
 		MaxCompletionTokens *int   `json:"max_completion_tokens,omitempty"`
 		MaxOutputTokens     *int   `json:"max_output_tokens,omitempty"`
 	}
-	if err := json.Unmarshal(body, &quickCheck); err == nil && len(quickCheck.Input) > 0 {
+	if err := json.Unmarshal(body, &quickCheck); err == nil && quickCheck.Input != nil {
 		var m map[string]any
 		if err := json.Unmarshal(body, &m); err == nil {
 			cleanModel := cleanResponsesModel(quickCheck.Model)
@@ -119,6 +119,42 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			}
 			delete(m, "max_tokens")
 			delete(m, "max_completion_tokens")
+
+			// Normalize input if string or empty array (OpenAI Responses API parity)
+			switch in := quickCheck.Input.(type) {
+			case string:
+				txt := strings.TrimSpace(in)
+				if txt == "" {
+					txt = "..."
+				}
+				m["input"] = []any{
+					map[string]any{
+						"type": "message",
+						"role": "user",
+						"content": []any{
+							map[string]any{
+								"type": "input_text",
+								"text": txt,
+							},
+						},
+					},
+				}
+			case []any:
+				if len(in) == 0 {
+					m["input"] = []any{
+						map[string]any{
+							"type": "message",
+							"role": "user",
+							"content": []any{
+								map[string]any{
+									"type": "input_text",
+									"text": "...",
+								},
+							},
+						},
+					}
+				}
+			}
 
 			// PR #4090: Repair missing call_id and clamp call_id in existing input items
 			if inList, ok := m["input"].([]any); ok {
