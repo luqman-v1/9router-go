@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -222,6 +223,113 @@ func ForwardAzure(w http.ResponseWriter, req *Request) error {
 	return jsonResponse(req.Ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
 }
 
+// buildCommandcodeBody transforms OpenAI request payload into CommandCode schema
+// {threadId, memory, config, params} matching upstream openaiToCommandCodeRequest.
+func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body, err
+	}
+
+	// If already wrapped in params, ensure required top-level fields
+	if _, hasParams := m["params"]; hasParams {
+		if _, hasThread := m["threadId"]; !hasThread {
+			m["threadId"] = uuid.New().String()
+		}
+		if _, hasMem := m["memory"]; !hasMem {
+			m["memory"] = ""
+		}
+		if _, hasCfg := m["config"]; !hasCfg {
+			m["config"] = map[string]any{
+				"workingDir":    "/",
+				"date":          time.Now().UTC().Format("2006-01-02"),
+				"environment":   runtime.GOOS,
+				"structure":     []any{},
+				"isGitRepo":     false,
+				"currentBranch": "",
+				"mainBranch":    "",
+				"gitStatus":     "",
+				"recentCommits": []any{},
+			}
+		}
+		return json.Marshal(m)
+	}
+
+	params := make(map[string]any, len(m))
+	for k, v := range m {
+		params[k] = v
+	}
+	if model != "" {
+		params["model"] = model
+	}
+	params["stream"] = true
+
+	// CommandCode messages require content as array of blocks (never raw string)
+	if rawMsgs, ok := m["messages"].([]any); ok {
+		var systemTexts []string
+		convertedMsgs := make([]any, 0, len(rawMsgs))
+		for _, rawMsg := range rawMsgs {
+			msgMap, ok := rawMsg.(map[string]any)
+			if !ok {
+				continue
+			}
+			role, _ := msgMap["role"].(string)
+			contentVal := msgMap["content"]
+
+			if role == "system" || role == "developer" {
+				if s, ok := contentVal.(string); ok && s != "" {
+					systemTexts = append(systemTexts, s)
+				}
+				continue
+			}
+
+			var contentBlocks []any
+			if strContent, ok := contentVal.(string); ok {
+				contentBlocks = append(contentBlocks, map[string]any{
+					"type": "text",
+					"text": strContent,
+				})
+			} else if arrContent, ok := contentVal.([]any); ok {
+				contentBlocks = arrContent
+			} else {
+				contentBlocks = append(contentBlocks, map[string]any{
+					"type": "text",
+					"text": "",
+				})
+			}
+
+			convertedMsg := map[string]any{
+				"role":    role,
+				"content": contentBlocks,
+			}
+			convertedMsgs = append(convertedMsgs, convertedMsg)
+		}
+		params["messages"] = convertedMsgs
+		if len(systemTexts) > 0 {
+			params["system"] = strings.Join(systemTexts, "\n\n")
+		}
+	}
+
+	payload := map[string]any{
+		"threadId": uuid.New().String(),
+		"memory":   "",
+		"config": map[string]any{
+			"workingDir":    "/",
+			"date":          time.Now().UTC().Format("2006-01-02"),
+			"environment":   runtime.GOOS,
+			"structure":     []any{},
+			"isGitRepo":     false,
+			"currentBranch": "",
+			"mainBranch":    "",
+			"gitStatus":     "",
+			"recentCommits": []any{},
+		},
+		"params": params,
+	}
+
+	return json.Marshal(payload)
+}
+
 // ForwardCommandcode forwards to CommandCode with NDJSON→SSE translation.
 func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 	var oreq struct {
@@ -231,17 +339,10 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 		log.Warn("executor", "commandcode unmarshal body", "error", err)
 	}
 
-	// Force stream=true — commandcode always uses NDJSON
-	var reqMap map[string]interface{}
-	if err := json.Unmarshal(req.Body, &reqMap); err != nil {
-		return fmt.Errorf("parse body: %w", err)
-	}
-	reqMap["stream"] = true
-	reqBody, err := json.Marshal(reqMap)
+	reqBody, err := buildCommandcodeBody(req.Body, oreq.Model)
 	if err != nil {
 		return fmt.Errorf("marshal commandcode body: %w", err)
 	}
-
 	// Build request with custom headers (not using proxy.ForwardCommandcode)
 	ctx := req.Ctx
 	if ctx == nil {
