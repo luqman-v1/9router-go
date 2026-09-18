@@ -20,6 +20,20 @@ func (e *UpstreamError) Error() string {
 	// from the fallback log alone — the body often carries Google/Antigravity's
 	// actual rejection reason ("Invalid tool parameters", unknown model, etc.).
 	body := strings.TrimSpace(string(e.Body))
+	if strings.HasPrefix(body, "<!DOCTYPE html") || strings.HasPrefix(body, "<html") {
+		lower := strings.ToLower(body)
+		if strings.Contains(lower, "cloudflare") || strings.Contains(lower, "attention required") {
+			return fmt.Sprintf("upstream returned %d: Cloudflare WAF challenge (Attention Required!): check User-Agent or network proxy", e.StatusCode)
+		}
+		if titleStart := strings.Index(lower, "<title>"); titleStart != -1 {
+			titleEnd := strings.Index(lower[titleStart:], "</title>")
+			if titleEnd != -1 {
+				titleText := strings.TrimSpace(body[titleStart+7 : titleStart+titleEnd])
+				return fmt.Sprintf("upstream returned %d: HTML page (%s)", e.StatusCode, titleText)
+			}
+		}
+		return fmt.Sprintf("upstream returned %d: HTML error page", e.StatusCode)
+	}
 	if len(body) > 512 {
 		body = body[:512] + "... (truncated)"
 	}

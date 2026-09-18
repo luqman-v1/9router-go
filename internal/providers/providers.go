@@ -361,6 +361,11 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://api.commandcode.ai/alpha/generate",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"User-Agent":             "commandcode/0.25.7 (cli)",
+			"x-command-code-version": "0.25.7",
+			"x-cli-environment":     "cli",
+		},
 	},
 	"ollama-local": {
 		BaseURL:    "http://localhost:11434/v1/chat/completions",

@@ -174,6 +174,9 @@ func TestForwardCommandcodeRequest_Success(t *testing.T) {
 		if r.Header.Get("x-session-id") == "" {
 			t.Errorf("expected x-session-id header")
 		}
+		if r.Header.Get("User-Agent") != "commandcode/0.25.7 (cli)" {
+			t.Errorf("expected User-Agent header 'commandcode/0.25.7 (cli)', got %q", r.Header.Get("User-Agent"))
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"type":"text-delta","text":"commandcode response"}` + "\n" +
@@ -229,5 +232,38 @@ func TestForwardCommandcodeRequest_UpstreamError(t *testing.T) {
 	}
 	if ue.StatusCode != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", ue.StatusCode)
+	}
+}
+
+func TestForwardCommandcodeRequest_StaticHeaders(t *testing.T) {
+	var capturedUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"type":"finish","finishReason":"stop"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{
+		BaseURL: srv.URL,
+		StaticHeaders: map[string]string{
+			"User-Agent": "custom-cc-agent/1.0",
+		},
+	}
+	body := []byte(`{"model":"deepseek-v4","messages":[{"role":"user","content":"hi"}]}`)
+	rec := httptest.NewRecorder()
+	err := executor.ForwardCommandcode(rec, &executor.Request{
+		Client:   srv.Client(),
+		Config:   cfg,
+		APIKey:   "sk-cc",
+		Body:     body,
+		IsStream: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedUA != "custom-cc-agent/1.0" {
+		t.Errorf("expected User-Agent 'custom-cc-agent/1.0', got %q", capturedUA)
 	}
 }

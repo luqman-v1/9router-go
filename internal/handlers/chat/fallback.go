@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"9router/proxy/internal/log"
+	"bytes"
 	"context"
 	json "encoding/json/v2"
 	"errors"
@@ -12,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/tokensaver"
@@ -486,6 +488,20 @@ func extractErrorText(body []byte) string {
 		if len(parts) > 0 {
 			return strings.Join(parts, " ")
 		}
+	}
+	trimmed := bytes.TrimSpace(body)
+	if bytes.HasPrefix(trimmed, []byte("<!DOCTYPE html")) || bytes.HasPrefix(trimmed, []byte("<html")) {
+		lower := strings.ToLower(string(trimmed))
+		if strings.Contains(lower, "cloudflare") || strings.Contains(lower, "attention required") {
+			return "Cloudflare WAF challenge (Attention Required!): check User-Agent or network proxy"
+		}
+		if titleStart := strings.Index(lower, "<title>"); titleStart != -1 {
+			titleEnd := strings.Index(lower[titleStart:], "</title>")
+			if titleEnd != -1 {
+				return "upstream returned HTML: " + strings.TrimSpace(string(trimmed[titleStart+7:titleStart+titleEnd]))
+			}
+		}
+		return "upstream returned HTML error page"
 	}
 	return ""
 }

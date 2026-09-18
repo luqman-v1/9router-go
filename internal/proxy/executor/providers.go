@@ -256,8 +256,13 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 	r.Header.Set("x-session-id", uuid.New().String())
 	r.Header.Set("x-command-code-version", "0.25.7")
 	r.Header.Set("x-cli-environment", "cli")
+	r.Header.Set("User-Agent", "commandcode/0.25.7 (cli)")
 	r.Header.Set("Accept", "text/event-stream")
-
+	if req.Config != nil && req.Config.StaticHeaders != nil {
+		for k, v := range req.Config.StaticHeaders {
+			r.Header.Set(k, v)
+		}
+	}
 	resp, err := req.Client.Do(r)
 	if err != nil {
 		return fmt.Errorf("upstream request failed: %w", err)

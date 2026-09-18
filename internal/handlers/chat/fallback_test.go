@@ -325,3 +325,21 @@ func TestHandleAccountFallback_503CapacityLocksCanonicalModel(t *testing.T) {
 		t.Errorf("expected no connection available for high tier when canonical model is locked, got %s", conn.ID)
 	}
 }
+
+func TestExtractErrorText_CloudflareHTML(t *testing.T) {
+	htmlBody := []byte(`<!DOCTYPE html>
+<html class="no-js" lang="en-US">
+<head>
+<title>Attention Required! | Cloudflare</title>
+<meta charset="UTF-8" />
+</head>
+<body>
+<h1>Attention Required!</h1>
+</body>
+</html>`)
+
+	got := extractErrorText(htmlBody)
+	if !strings.Contains(got, "Cloudflare WAF challenge") {
+		t.Errorf("expected Cloudflare WAF challenge in error text, got %q", got)
+	}
+}
