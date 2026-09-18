@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/translator"
 )
 
 // ---- Provider-specific executors ----
@@ -305,6 +306,13 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 			return fmt.Errorf("normalize muse-spark body: %w", err)
 		}
 
+		// The free-tier gate fingerprints the lowercase tool quartet; capitalised
+		// variants from Claude Code CLI are renamed here and restored on the
+		// response (translator.ConcealFingerprintTools).
+		transformedBody, toolNameMap := translator.ConcealFingerprintTools(transformedBody)
+		req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
+		w = NewToolNameRestoringWriter(w, toolNameMap)
+
 		cfg := *req.Config
 		if !strings.HasSuffix(cfg.BaseURL, "/responses") {
 			baseURL := strings.TrimRight(cfg.BaseURL, "/")
@@ -373,6 +381,10 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 
 
 	body := InjectReasoningContent(req.Body, "opencode")
+	// opencode Chat Completions path: same conceal + restore of tool names.
+	body, toolNameMap := translator.ConcealFingerprintTools(body)
+	req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
+	w = NewToolNameRestoringWriter(w, toolNameMap)
 
 	cfg := *req.Config
 	cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(cfg.StaticHeaders, req.SessionID, req.IsStream)
@@ -904,6 +916,10 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	}
 
 	// Default OpenAI format endpoint: https://opencode.ai/zen/go/v1/chat/completions
+	body, toolNameMap := translator.ConcealFingerprintTools(body)
+	req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
+	w = NewToolNameRestoringWriter(w, toolNameMap)
+
 	cfg := *req.Config
 	headers := make(map[string]string)
 	for k, v := range cfg.StaticHeaders {
