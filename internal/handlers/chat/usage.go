@@ -320,6 +320,8 @@ func getJSONMap(m map[string]any, key string) map[string]any {
 }
 
 // maskAPIKey returns a masked version of an API key for storage.
+// NOTE: kept as if/else, not lo.Ternary — Ternary evaluates both branches
+// eagerly and the slicing panics on short keys.
 func maskAPIKey(key string) string {
 	if len(key) <= 8 {
 		return "***"

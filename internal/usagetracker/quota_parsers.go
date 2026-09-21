@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/samber/lo"
 )
 
 // QuotaWindow represents a single usage limit/window (remaining percentage, reset time, limits).
@@ -48,36 +50,22 @@ func ParseCodexUsageQuotas(data []byte) (*ProviderQuotaInfo, error) {
 
 		// Primary window / session
 		if primary, ok := limitMap["primary_window"].(map[string]any); ok {
-			key := "session"
-			if prefix != "" {
-				key = prefix + "_session"
-			}
-			quotas[key] = extractWindow(primary)
+			quotas[lo.Ternary(prefix != "", prefix+"_session", "session")] = extractWindow(primary)
 		} else if sess, ok := limitMap["session"].(map[string]any); ok {
-			key := "session"
-			if prefix != "" {
-				key = prefix + "_session"
-			}
-			quotas[key] = extractWindow(sess)
+			quotas[lo.Ternary(prefix != "", prefix+"_session", "session")] = extractWindow(sess)
 		}
 
 		// Secondary window / weekly
 		if secondary, ok := limitMap["secondary_window"].(map[string]any); ok {
-			key := "weekly"
-			if prefix != "" {
-				key = prefix + "_weekly"
-			}
-			quotas[key] = extractWindow(secondary)
+			quotas[lo.Ternary(prefix != "", prefix+"_weekly", "weekly")] = extractWindow(secondary)
 		} else if weekly, ok := limitMap["weekly"].(map[string]any); ok {
-			key := "weekly"
-			if prefix != "" {
-				key = prefix + "_weekly"
-			}
-			quotas[key] = extractWindow(weekly)
+			quotas[lo.Ternary(prefix != "", prefix+"_weekly", "weekly")] = extractWindow(weekly)
 		}
 	}
 
 	// 1. Normal rate limits
+	// NOTE: not lo.Coalesce — values are `any` often holding maps, and
+	// Coalesce's != comparison panics on uncomparable dynamic types.
 	normalLimit := raw["rate_limit"]
 	if normalLimit == nil {
 		normalLimit = raw["rate_limits"]

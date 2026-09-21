@@ -19,7 +19,7 @@ func init() {
 // refreshClaude refreshes an Anthropic Claude OAuth token.
 // Claude uses JSON body encoding for refresh (not form-urlencoded).
 func refreshClaude(ctx context.Context, p *Params) (*TokenResult, error) {
-	body := map[string]interface{}{
+	body := map[string]any{
 		"grant_type":    "refresh_token",
 		"client_id":     claudeClientID,
 		"refresh_token": p.RefreshToken,

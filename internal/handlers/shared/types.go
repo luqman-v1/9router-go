@@ -30,7 +30,7 @@ type ConnectionData struct {
 	ConnectionProxyURL     string                 `json:"connectionProxyUrl,omitempty"`
 	ConnectionNoProxy      string                 `json:"connectionNoProxy,omitempty"`
 	StrictProxy            bool                   `json:"strictProxy,omitempty"`
-	ProviderSpecificData   map[string]interface{} `json:"providerSpecificData,omitempty"`
+	ProviderSpecificData   map[string]any `json:"providerSpecificData,omitempty"`
 }
 
 // UsageLogInfo holds request context needed to log a usage record.

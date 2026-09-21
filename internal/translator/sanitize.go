@@ -253,6 +253,10 @@ func sanitizeBashArgs(args map[string]any) {
 	}
 }
 
+// maxReadLimit caps the read tool "limit" arg; larger values are clamped,
+// smaller/invalid values drop the arg.
+const maxReadLimit = 2000
+
 func sanitizeReadArgs(args map[string]any) {
 	if limitVal, ok := args["limit"]; ok {
 		switch v := limitVal.(type) {
@@ -264,16 +268,16 @@ func sanitizeReadArgs(args map[string]any) {
 		}
 		if limitNum, ok := args["limit"].(float64); ok {
 			n := int(limitNum)
-			if n > 2000 {
-				args["limit"] = 2000
+			if n > maxReadLimit {
+				args["limit"] = maxReadLimit
 			} else if n < 1 {
 				delete(args, "limit")
 			} else {
 				args["limit"] = n
 			}
 		} else if limitNum, ok := args["limit"].(int); ok {
-			if limitNum > 2000 {
-				args["limit"] = 2000
+			if limitNum > maxReadLimit {
+				args["limit"] = maxReadLimit
 			} else if limitNum < 1 {
 				delete(args, "limit")
 			}
@@ -304,7 +308,10 @@ func sanitizeReadArgs(args map[string]any) {
 
 	if pagesVal, ok := args["pages"]; ok {
 		filePath, _ := args["file_path"].(string)
-		pages, _ := pagesVal.(string)
+		pages, ok := pagesVal.(string)
+		if !ok {
+			pages = ""
+		}
 		if !isValidPdfPagesArg(filePath, pages) {
 			delete(args, "pages")
 		}

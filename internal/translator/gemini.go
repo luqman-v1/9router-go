@@ -96,9 +96,9 @@ type GeminiTool struct {
 }
 
 type GeminiFunctionDecl struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	Parameters  interface{} `json:"parameters,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parameters  any    `json:"parameters,omitempty"`
 }
 
 // GeminiRequest is the full Gemini API request body.
@@ -170,7 +170,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	// Parse messages
 	var msgs []struct {
 		Role             string           `json:"role"`
-		Content          interface{}      `json:"content"`
+		Content          any              `json:"content"`
 		ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
 		ToolCallID       string           `json:"tool_call_id,omitempty"`
 		ReasoningContent string           `json:"reasoning_content,omitempty"`
@@ -218,9 +218,9 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 			if contentStr, ok := msg.Content.(string); ok && contentStr != "" {
 				parts = append(parts, GeminiPart{Text: contentStr})
 				hasText = true
-			} else if contentArr, ok := msg.Content.([]interface{}); ok {
+			} else if contentArr, ok := msg.Content.([]any); ok {
 				for _, item := range contentArr {
-					if m, ok := item.(map[string]interface{}); ok {
+					if m, ok := item.(map[string]any); ok {
 						if text, ok := m["text"].(string); ok && text != "" {
 							parts = append(parts, GeminiPart{Text: text})
 							hasText = true
@@ -337,7 +337,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	}
 
 	// Generation config
-	genConfig := make(map[string]interface{})
+	genConfig := make(map[string]any)
 	if oreq.Temperature != nil {
 		genConfig["temperature"] = *oreq.Temperature
 	}
@@ -363,13 +363,13 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	}
 
 	if thinkingBudget > 0 {
-		genConfig["thinkingConfig"] = map[string]interface{}{
+		genConfig["thinkingConfig"] = map[string]any{
 			"thinkingBudget":  thinkingBudget,
 			"includeThoughts": true,
 		}
 		// Ensure maxOutputTokens strictly exceeds thinkingBudget to prevent 400 INVALID_ARGUMENT
 		if maxTokens == nil || *maxTokens <= thinkingBudget {
-			adjustedMax := thinkingBudget + 8192
+			adjustedMax := thinkingBudget + thinkingHeadroomTokens
 			maxTokens = &adjustedMax
 		}
 	}
@@ -515,14 +515,14 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 			ReasoningTokens: reasoningTokens,
 		},
 	}
-	resp := map[string]interface{}{
+	resp := map[string]any{
 		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
 		"object":  "chat.completion",
 		"created": time.Now().Unix(),
 		"model":   "gemini",
-		"choices": []map[string]interface{}{{
+		"choices": []map[string]any{{
 			"index": 0,
-			"message": map[string]interface{}{
+			"message": map[string]any{
 				"role":              "assistant",
 				"content":           openaiContent,
 				"reasoning_content": reasoningContent,
@@ -530,11 +530,11 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 			},
 			"finish_reason": claudeStop,
 		}},
-		"usage": map[string]interface{}{
+		"usage": map[string]any{
 			"prompt_tokens":     inputTokens,
 			"completion_tokens": outputTokens,
 			"cached_tokens":     cachedTokens,
-			"completion_tokens_details": map[string]interface{}{
+			"completion_tokens_details": map[string]any{
 				"reasoning_tokens": reasoningTokens,
 			},
 		},
@@ -542,10 +542,10 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 
 	// Remove empty fields
 	if reasoningContent == "" {
-		delete(resp["choices"].([]map[string]interface{})[0]["message"].(map[string]interface{}), "reasoning_content")
+		delete(resp["choices"].([]map[string]any)[0]["message"].(map[string]any), "reasoning_content")
 	}
 	if len(toolCalls) == 0 {
-		delete(resp["choices"].([]map[string]interface{})[0]["message"].(map[string]interface{}), "tool_calls")
+		delete(resp["choices"].([]map[string]any)[0]["message"].(map[string]any), "tool_calls")
 	}
 
 	out, err := json.Marshal(resp)
@@ -578,20 +578,20 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 		state.Model = "gemini"
 	}
 
-	var results []map[string]interface{}
+	var results []map[string]any
 
 	// First chunk setup
 	if !state.MessageStartSent {
 		state.MessageStartSent = true
-		results = append(results, map[string]interface{}{
+		results = append(results, map[string]any{
 			"id":      state.MessageId,
 			"object":  "chat.completion.chunk",
 			"created": time.Now().Unix(),
 			"model":   state.Model,
-			"choices": []map[string]interface{}{
+			"choices": []map[string]any{
 				{
 					"index": 0,
-					"delta": map[string]interface{}{
+					"delta": map[string]any{
 						"role": "assistant",
 					},
 					"finish_reason": nil,
@@ -608,7 +608,7 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 				if part.ThoughtSignature != "" {
 					state.LastThoughtSignature = part.ThoughtSignature
 				}
-				delta := map[string]interface{}{}
+				delta := map[string]any{}
 				if part.Text != "" && (part.Thought == nil || !*part.Thought) {
 					delta["content"] = part.Text
 				}
@@ -630,12 +630,12 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 						StoreGeminiThoughtSignature(id, sig, state.MessageId, state.Model)
 						id += "__ts__" + sig
 					}
-					delta["tool_calls"] = []map[string]interface{}{
+					delta["tool_calls"] = []map[string]any{
 						{
 							"index": 0,
 							"id":    id,
 							"type":  "function",
-							"function": map[string]interface{}{
+							"function": map[string]any{
 								"name":      fnName,
 								"arguments": string(args),
 							},
@@ -643,12 +643,12 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 					}
 				}
 				if len(delta) > 0 {
-					results = append(results, map[string]interface{}{
+					results = append(results, map[string]any{
 						"id":      state.MessageId,
 						"object":  "chat.completion.chunk",
 						"created": time.Now().Unix(),
 						"model":   state.Model,
-						"choices": []map[string]interface{}{
+						"choices": []map[string]any{
 							{
 								"index":         0,
 								"delta":         delta,
@@ -690,19 +690,19 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 				CachedTokens:     cachedTokens,
 			}
 
-			results = append(results, map[string]interface{}{
+			results = append(results, map[string]any{
 				"id":      state.MessageId,
 				"object":  "chat.completion.chunk",
 				"created": time.Now().Unix(),
 				"model":   state.Model,
-				"choices": []map[string]interface{}{
+				"choices": []map[string]any{
 					{
 						"index":         0,
-						"delta":         map[string]interface{}{},
+						"delta":         map[string]any{},
 						"finish_reason": openAIStop,
 					},
 				},
-				"usage": map[string]interface{}{
+				"usage": map[string]any{
 					"prompt_tokens":     inputTokens,
 					"completion_tokens": outputTokens,
 					"cached_tokens":     cachedTokens,
@@ -725,13 +725,13 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 			CachedTokens:     cachedTokens,
 		}
 		if len(geminiChunk.Candidates) == 0 {
-			results = append(results, map[string]interface{}{
+			results = append(results, map[string]any{
 				"id":      state.MessageId,
 				"object":  "chat.completion.chunk",
 				"created": time.Now().Unix(),
 				"model":   state.Model,
-				"choices": []interface{}{},
-				"usage": map[string]interface{}{
+				"choices": []any{},
+				"usage": map[string]any{
 					"prompt_tokens":     inputTokens,
 					"completion_tokens": outputTokens,
 					"cached_tokens":     cachedTokens,
@@ -760,14 +760,14 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 // ─── Helpers ───
 
 // extractContentString extracts a string from OpenAI message content (string or array).
-func extractContentString(content interface{}) string {
+func extractContentString(content any) string {
 	switch v := content.(type) {
 	case string:
 		return v
-	case []interface{}:
+	case []any:
 		var parts []string
 		for _, item := range v {
-			if m, ok := item.(map[string]interface{}); ok {
+			if m, ok := item.(map[string]any); ok {
 				if text, ok := m["text"].(string); ok && text != "" {
 					parts = append(parts, text)
 				}
@@ -780,21 +780,21 @@ func extractContentString(content interface{}) string {
 }
 
 // convertContentToGeminiParts converts OpenAI message content to Gemini parts.
-func convertContentToGeminiParts(content interface{}) []GeminiPart {
+func convertContentToGeminiParts(content any) []GeminiPart {
 	switch v := content.(type) {
 	case string:
 		if v == "" {
 			return nil
 		}
 		return []GeminiPart{{Text: v}}
-	case []interface{}:
+	case []any:
 		var parts []GeminiPart
 		for _, item := range v {
-			if m, ok := item.(map[string]interface{}); ok {
+			if m, ok := item.(map[string]any); ok {
 				if text, ok := m["text"].(string); ok && text != "" {
 					parts = append(parts, GeminiPart{Text: text})
 				}
-				if img, ok := m["image_url"].(map[string]interface{}); ok {
+				if img, ok := m["image_url"].(map[string]any); ok {
 					if url, ok := img["url"].(string); ok {
 						if strings.HasPrefix(url, "data:") {
 							// Parse data URL: data:mimeType;base64,data
@@ -814,7 +814,7 @@ func convertContentToGeminiParts(content interface{}) []GeminiPart {
 						}
 					}
 				}
-				if audio, ok := m["input_audio"].(map[string]interface{}); ok {
+				if audio, ok := m["input_audio"].(map[string]any); ok {
 					if data, ok := audio["data"].(string); ok && data != "" {
 						format, _ := audio["format"].(string)
 						mimeType := "audio/" + format
@@ -828,7 +828,7 @@ func convertContentToGeminiParts(content interface{}) []GeminiPart {
 						})
 					}
 				}
-				if audio, ok := m["audio_url"].(map[string]interface{}); ok {
+				if audio, ok := m["audio_url"].(map[string]any); ok {
 					if url, ok := audio["url"].(string); ok && strings.HasPrefix(url, "data:") {
 						if semi := strings.Index(url, ";"); semi > 5 {
 							mimeType := url[5:semi]
@@ -841,7 +841,7 @@ func convertContentToGeminiParts(content interface{}) []GeminiPart {
 						}
 					}
 				}
-				if file, ok := m["file"].(map[string]interface{}); ok {
+				if file, ok := m["file"].(map[string]any); ok {
 					if fileData, ok := file["file_data"].(string); ok && strings.HasPrefix(fileData, "data:") {
 						if semi := strings.Index(fileData, ";"); semi > 5 {
 							mimeType := fileData[5:semi]

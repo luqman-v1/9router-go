@@ -1,7 +1,7 @@
 BINARY_NAME := 9router-go
 # Central version — single source: VERSION file, fallback to version.json, then git
 VERSION ?= $(shell cat VERSION 2>/dev/null || (cat version.json 2>/dev/null | grep -o '"latestVersion": *"[^"]*"' | cut -d'"' -f4) || git describe --tags --always 2>/dev/null || echo "1.0.0")
-PORT ?= 20128
+PORT ?= 20130
 DATA_DIR ?= $(HOME)/.9router
 RTK ?=
 CAVEMAN ?=
@@ -16,7 +16,7 @@ LDFLAGS := -s -w -X '9router/proxy/internal/updater.CurrentVersion=$(VERSION)'
 build:
 	go build -ldflags="$(LDFLAGS)" -o $(BINARY_NAME) ./cmd/9router-go/
 
-## run — start proxy (PORT=20128)
+## run — start proxy (PORT=20130)
 run: build
 	PORT=$(PORT) DATA_DIR=$(DATA_DIR) ./$(BINARY_NAME) $(if $(RTK),--rtk=$(RTK)) $(if $(CAVEMAN),--caveman=$(CAVEMAN)) $(if $(PONYTAIL),--ponytail=$(PONYTAIL)) --auto-update=$(AUTO_UPDATE)
 

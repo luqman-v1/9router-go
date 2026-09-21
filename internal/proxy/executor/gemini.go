@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
@@ -82,7 +83,7 @@ func geminiStream(w http.ResponseWriter, upstream io.Reader, ctx context.Context
 }
 
 func geminiNonStream(w http.ResponseWriter, upstream io.Reader) error {
-	body, err := io.ReadAll(io.LimitReader(upstream, 10*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(upstream, constants.MaxUpstreamBodyBytes))
 	if err != nil {
 		return err
 	}

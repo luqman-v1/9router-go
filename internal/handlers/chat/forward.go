@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
@@ -65,7 +67,7 @@ func (h *ChatHandler) forwardRequest(
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
 		if err != nil {
 			return fmt.Errorf("read upstream error body: %w", err)
 		}
@@ -320,7 +322,7 @@ func sseToClaudeJSON(raw []byte) ([]byte, bool) {
 
 // handleJSONResponse forwards a non-streaming JSON response.
 func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translate bool, metrics *streamMetrics) error {
-	body, err := io.ReadAll(io.LimitReader(upstream, 10*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(upstream, constants.MaxUpstreamBodyBytes))
 	if err != nil {
 		return fmt.Errorf("read upstream response body: %w", err)
 	}
@@ -374,7 +376,7 @@ func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWri
 		}
 		log.Error("json", "translate error", "msg", errMsg)
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, errMsg)
-		return fmt.Errorf("%s", errMsg)
+		return errors.New(errMsg)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -7,8 +7,9 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -335,12 +336,7 @@ func (h *ChatHandler) applyComboStrategy(strategy string, models []string, combo
 
 // keysString returns a comma-separated list of map keys.
 func keysString(m map[string]bool) string {
-	var keys []string
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return strings.Join(keys, ",")
+	return strings.Join(slices.Sorted(maps.Keys(m)), ",")
 }
 
 // handleComboFallback iterates through combo model entries, trying each one.
@@ -369,8 +365,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	// If every model fails, retry the whole pass once after a bounded
 	// Retry-After wait so a transient provider blip doesn't surface as a hard
 	// 429 to the client.
-	var attempt int
-	for ; attempt < 2; attempt++ {
+	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
 			wait := comboRetryAfter(earliestRetryAfter)
 			if wait == 0 {
@@ -564,8 +559,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	// If every model fails, retry the whole pass once after a bounded
 	// Retry-After wait so a transient provider blip doesn't surface as a hard
 	// 429 to the client.
-	var attempt int
-	for ; attempt < 2; attempt++ {
+	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
 			wait := comboRetryAfter(earliestRetryAfter)
 			if wait == 0 {

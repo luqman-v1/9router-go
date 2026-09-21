@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
@@ -108,7 +109,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
 		resp.Body.Close()
 		if readErr != nil {
 			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)
@@ -148,7 +149,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 						if resp2.StatusCode == http.StatusOK {
 							return resp2, nil
 						}
-						errBody2, _ := io.ReadAll(io.LimitReader(resp2.Body, 1*1024*1024))
+						errBody2, _ := io.ReadAll(io.LimitReader(resp2.Body, constants.UpstreamErrLimit))
 						resp2.Body.Close()
 						log.Warn("gemini", "retry with default thoughtSignature also failed", "status", resp2.StatusCode, "body", string(errBody2[:min(500, len(errBody2))]))
 						// Fall through to try stripping as last resort
@@ -165,7 +166,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 										if resp3.StatusCode == http.StatusOK {
 											return resp3, nil
 										}
-										errBody3, _ := io.ReadAll(io.LimitReader(resp3.Body, 1*1024*1024))
+										errBody3, _ := io.ReadAll(io.LimitReader(resp3.Body, constants.UpstreamErrLimit))
 										resp3.Body.Close()
 										log.Warn("gemini", "retry without thoughtSignature also failed", "status", resp3.StatusCode, "body", string(errBody3[:min(500, len(errBody3))]))
 										return nil, &UpstreamError{StatusCode: resp3.StatusCode, Body: errBody3}

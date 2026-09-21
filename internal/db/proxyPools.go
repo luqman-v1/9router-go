@@ -76,13 +76,18 @@ func (r *Repo) GetProxyPool(poolID string) (*ProxyPool, error) {
 	}
 
 	if cached, ok := proxyPoolCache.Load(poolID); ok {
-		return cached.(*ProxyPool), nil
+		if pool, ok := cached.(*ProxyPool); ok {
+			return pool, nil
+		}
 	}
 	// Store the freshly-read pool. If another goroutine won the race, return
 	// its value instead of overwriting — never mutate a value in the cache,
 	// since concurrent readers use it lock-free via NextURL.
 	actual, _ := proxyPoolCache.LoadOrStore(poolID, pool)
-	return actual.(*ProxyPool), nil
+	if pool, ok := actual.(*ProxyPool); ok {
+		return pool, nil
+	}
+	return pool, nil
 }
 
 // NextURL returns the next proxy URL using round-robin selection.

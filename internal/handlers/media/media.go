@@ -279,8 +279,8 @@ func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request,
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
 		return
 	}
-	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Authorization", "Bearer "+apiKey)
+	upstreamReq.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	upstreamReq.Header.Set(constants.HeaderAuthorization, "Bearer "+apiKey)
 
 	resp, err := h.Client.Do(upstreamReq)
 	if err != nil {

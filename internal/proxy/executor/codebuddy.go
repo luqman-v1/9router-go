@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/proxy"
 )
 
@@ -47,7 +48,7 @@ func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 	// upstream body is OpenAI-chat SSE. Re-aggregate the chunks into a single
 	// JSON chat.completion response (mirrors the JS parseSSEToOpenAIResponse
 	// path). If it isn't SSE (e.g. an upstream error JSON), pass it through.
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
 	if err != nil {
 		return fmt.Errorf("read codebuddy response: %w", err)
 	}
@@ -59,7 +60,7 @@ func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 
 // transformCodebuddyBody forces stream=true and handles reasoning params.
 func transformCodebuddyBody(body []byte) ([]byte, error) {
-	var reqMap map[string]interface{}
+	var reqMap map[string]any
 	if err := json.Unmarshal(body, &reqMap); err != nil {
 		return nil, fmt.Errorf("parse body: %w", err)
 	}

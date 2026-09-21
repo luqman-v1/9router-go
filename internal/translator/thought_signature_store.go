@@ -168,6 +168,6 @@ func GetGeminiThoughtSignature(toolCallID, sessionID string, model ...string) st
 func ClearGeminiThoughtSignatures() {
 	globalThoughtSigStore.mu.Lock()
 	defer globalThoughtSigStore.mu.Unlock()
-	globalThoughtSigStore.entries = make(map[string]signatureEntry)
-	globalThoughtSigStore.order = make([]string, 0, maxMemorySignatures)
+	clear(globalThoughtSigStore.entries)
+	globalThoughtSigStore.order = globalThoughtSigStore.order[:0]
 }

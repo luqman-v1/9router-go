@@ -26,24 +26,28 @@ func NewTokenSaverConfig(rtk, caveman, ponytail bool) *TokenSaverConfig {
 	}
 }
 
+// RTKEnabled reports whether RTK input compression is on.
 func (c *TokenSaverConfig) RTKEnabled() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.rtkEnabled
 }
 
+// SetRTK toggles RTK input compression.
 func (c *TokenSaverConfig) SetRTK(v bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rtkEnabled = v
 }
 
+// CavemanEnabled reports whether Caveman terse output style is on.
 func (c *TokenSaverConfig) CavemanEnabled() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.cavemanEnabled
 }
 
+// CavemanLevel returns the active Caveman level, defaulting to "full".
 func (c *TokenSaverConfig) CavemanLevel() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -53,6 +57,7 @@ func (c *TokenSaverConfig) CavemanLevel() string {
 	return c.cavemanLevel
 }
 
+// SetCaveman toggles Caveman style and optionally sets its level.
 func (c *TokenSaverConfig) SetCaveman(v bool, level ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -62,12 +67,14 @@ func (c *TokenSaverConfig) SetCaveman(v bool, level ...string) {
 	}
 }
 
+// PonytailEnabled reports whether Ponytail lazy dev code style is on.
 func (c *TokenSaverConfig) PonytailEnabled() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.ponytailEnabled
 }
 
+// PonytailLevel returns the active Ponytail level, defaulting to "full".
 func (c *TokenSaverConfig) PonytailLevel() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -77,6 +84,7 @@ func (c *TokenSaverConfig) PonytailLevel() string {
 	return c.ponytailLevel
 }
 
+// SetPonytail toggles Ponytail style and optionally sets its level.
 func (c *TokenSaverConfig) SetPonytail(v bool, level ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

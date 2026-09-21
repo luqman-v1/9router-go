@@ -138,7 +138,7 @@ func RefreshToken(cfg OAuthClientConfig, refreshToken string) (*OAuthTokenRespon
 }
 
 // ParseOAuthConnection extracts OAuth fields from a ConnectionData blob.
-func ParseOAuthConnection(data map[string]interface{}) *OAuthConnectionData {
+func ParseOAuthConnection(data map[string]any) *OAuthConnectionData {
 	if data == nil {
 		return nil
 	}
@@ -185,8 +185,8 @@ func ParseRefreshResponse(body []byte) (*OAuthTokenResponse, error) {
 }
 
 // BuildConnectionUpdate builds a partial ConnectionData map for DB update.
-func (r *OAuthTokenResponse) BuildConnectionUpdate() map[string]interface{} {
-	return map[string]interface{}{
+func (r *OAuthTokenResponse) BuildConnectionUpdate() map[string]any {
+	return map[string]any{
 		"accessToken": r.AccessToken,
 		"expiresAt":   time.Now().Add(time.Duration(r.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}

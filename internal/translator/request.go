@@ -815,8 +815,10 @@ func AnchorClaudeCache(body []byte) []byte {
 	// 4. Budget guard: if already >= 4 markers, cap and return
 	if countCacheControlBlocks(req) >= 4 {
 		capCacheControlBlocks(req)
-		out, _ := json.Marshal(req)
-		return out
+		if out, err := json.Marshal(req); err == nil {
+			return out
+		}
+		return body
 	}
 
 	// 5. Ensure total cache_control blocks <= 4

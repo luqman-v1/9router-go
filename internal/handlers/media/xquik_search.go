@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 )
@@ -118,8 +119,8 @@ func (h *MediaHandler) handleXquikSearch(w http.ResponseWriter, r *http.Request,
 	if err != nil {
 		return fmt.Errorf("create Xquik request: %w", err)
 	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set(constants.HeaderAccept, constants.ContentTypeJSON)
+	req.Header.Set(constants.HeaderXAPIKey, apiKey)
 
 	client := h.ChatH.GetClientForConnection(connData)
 	if client == nil {

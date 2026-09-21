@@ -6,6 +6,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -15,7 +16,7 @@ func ExtractSimpleText(raw jsontext.Value) string {
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s
 	}
-	var blocks []map[string]interface{}
+	var blocks []map[string]any
 	if err := json.Unmarshal(raw, &blocks); err == nil {
 		for _, b := range blocks {
 			if t, ok := b["text"].(string); ok && t != "" {
@@ -27,33 +28,33 @@ func ExtractSimpleText(raw jsontext.Value) string {
 }
 
 // convertUserContent converts OpenAI user message content to Responses API format.
-func convertUserContent(raw jsontext.Value) map[string]interface{} {
-	result := map[string]interface{}{
+func convertUserContent(raw jsontext.Value) map[string]any {
+	result := map[string]any{
 		"type": "message",
 		"role": "user",
 	}
 
 	var text string
 	if err := json.Unmarshal(raw, &text); err == nil && text != "" {
-		result["content"] = []map[string]interface{}{
+		result["content"] = []map[string]any{
 			{"type": "input_text", "text": text},
 		}
 		return result
 	}
 
-	var blocks []map[string]interface{}
+	var blocks []map[string]any
 	if err := json.Unmarshal(raw, &blocks); err == nil {
-		var content []map[string]interface{}
+		var content []map[string]any
 		for _, b := range blocks {
 			if t, ok := b["text"].(string); ok && t != "" {
-				content = append(content, map[string]interface{}{
+				content = append(content, map[string]any{
 					"type": "input_text",
 					"text": t,
 				})
 			}
-			if img, ok := b["image_url"].(map[string]interface{}); ok {
+			if img, ok := b["image_url"].(map[string]any); ok {
 				if url, ok := img["url"].(string); ok {
-					content = append(content, map[string]interface{}{
+					content = append(content, map[string]any{
 						"type":      "input_image",
 						"image_url": url,
 					})
@@ -63,14 +64,14 @@ func convertUserContent(raw jsontext.Value) map[string]interface{} {
 		if len(content) > 0 {
 			result["content"] = content
 		} else {
-			result["content"] = []map[string]interface{}{
+			result["content"] = []map[string]any{
 				{"type": "input_text", "text": "..."},
 			}
 		}
 		return result
 	}
 
-	result["content"] = []map[string]interface{}{
+	result["content"] = []map[string]any{
 		{"type": "input_text", "text": "..."},
 	}
 	return result
@@ -85,9 +86,12 @@ func cleanResponsesModel(model string) string {
 	return clean
 }
 
+// maxCallIDLen clamps Responses API call_id values; longer IDs are truncated.
+const maxCallIDLen = 64
+
 func clampCallID(id string) string {
-	if len(id) > 64 {
-		return id[:64]
+	if len(id) > maxCallIDLen {
+		return id[:maxCallIDLen]
 	}
 	return id
 }
@@ -171,8 +175,8 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 								toolSeq++
 								itemMap["call_id"] = cid
 							}
-							if len(cid) > 64 {
-								cid = cid[:64]
+							if len(cid) > maxCallIDLen {
+								cid = cid[:maxCallIDLen]
 								itemMap["call_id"] = cid
 							}
 							pendingCallIDs = append(pendingCallIDs, cid)
@@ -181,7 +185,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 							if cid != "" {
 								for idx, p := range pendingCallIDs {
 									if p == cid {
-										pendingCallIDs = append(pendingCallIDs[:idx], pendingCallIDs[idx+1:]...)
+										pendingCallIDs = slices.Delete(pendingCallIDs, idx, idx+1)
 										break
 									}
 								}
@@ -194,8 +198,8 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 								toolSeq++
 								itemMap["call_id"] = cid
 							}
-							if len(cid) > 64 {
-								itemMap["call_id"] = cid[:64]
+							if len(cid) > maxCallIDLen {
+								itemMap["call_id"] = cid[:maxCallIDLen]
 							}
 						}
 					}
@@ -254,7 +258,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		log.Warn("executor", "unmarshal messages", "error", err)
 	}
 
-	var inputItems []map[string]interface{}
+	var inputItems []map[string]any
 	instructions := oreq.Instructions
 	var pendingToolCallIDs []string
 	toolSeq := 0
@@ -270,28 +274,28 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		case "assistant":
 			var textContent string
 			if err := json.Unmarshal(msg.Content, &textContent); err == nil && textContent != "" {
-				inputItems = append(inputItems, map[string]interface{}{
+				inputItems = append(inputItems, map[string]any{
 					"type": "message",
 					"role": "assistant",
-					"content": []map[string]interface{}{{
+					"content": []map[string]any{{
 						"type": "output_text",
 						"text": textContent,
 					}},
 				})
 			} else {
-				var blocks []map[string]interface{}
+				var blocks []map[string]any
 				if err := json.Unmarshal(msg.Content, &blocks); err == nil && len(blocks) > 0 {
-					var contentList []map[string]interface{}
+					var contentList []map[string]any
 					for _, b := range blocks {
 						if t, ok := b["text"].(string); ok && t != "" {
-							contentList = append(contentList, map[string]interface{}{
+							contentList = append(contentList, map[string]any{
 								"type": "output_text",
 								"text": t,
 							})
 						}
 					}
 					if len(contentList) > 0 {
-						inputItems = append(inputItems, map[string]interface{}{
+						inputItems = append(inputItems, map[string]any{
 							"type":    "message",
 							"role":    "assistant",
 							"content": contentList,
@@ -311,7 +315,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 					cid = fmt.Sprintf("call_%d_%d", toolSeq, tcIdx)
 				}
 				pendingToolCallIDs = append(pendingToolCallIDs, cid)
-				inputItems = append(inputItems, map[string]interface{}{
+				inputItems = append(inputItems, map[string]any{
 					"type":      "function_call",
 					"call_id":   clampCallID(cid),
 					"name":      name,
@@ -325,7 +329,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			if cid != "" {
 				for idx, p := range pendingToolCallIDs {
 					if p == cid {
-						pendingToolCallIDs = append(pendingToolCallIDs[:idx], pendingToolCallIDs[idx+1:]...)
+						pendingToolCallIDs = slices.Delete(pendingToolCallIDs, idx, idx+1)
 						break
 					}
 				}
@@ -335,7 +339,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			} else {
 				cid = fmt.Sprintf("call_tool_%d", i)
 			}
-			inputItems = append(inputItems, map[string]interface{}{
+			inputItems = append(inputItems, map[string]any{
 				"type":    "function_call_output",
 				"call_id": clampCallID(cid),
 				"output":  text,
@@ -343,7 +347,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		}
 	}
 
-	respReq := map[string]interface{}{
+	respReq := map[string]any{
 		"model":  cleanModel,
 		"input":  inputItems,
 		"stream": true,
@@ -374,7 +378,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		if rEffort == "max" {
 			rEffort = "xhigh"
 		}
-		respReq["reasoning"] = map[string]interface{}{
+		respReq["reasoning"] = map[string]any{
 			"effort":  rEffort,
 			"summary": "auto",
 		}
@@ -390,9 +394,9 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			Name     string         `json:"name,omitempty"`
 		}
 		if err := json.Unmarshal(oreq.Tools, &tools); err == nil {
-			var apiTools []map[string]interface{}
+			var apiTools []map[string]any
 			for _, t := range tools {
-				tool := map[string]interface{}{
+				tool := map[string]any{
 					"type": "function",
 					"name": t.Name,
 				}

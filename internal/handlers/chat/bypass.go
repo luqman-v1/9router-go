@@ -108,14 +108,15 @@ func handleBypassRequest(w http.ResponseWriter, body []byte, model string, isStr
 	// Pattern 4: Claude Code naming (isNewTopic)
 	if !shouldBypass {
 		// Check system field from body (Claude format sends system at top level)
-		systemText := ""
+		var systemText strings.Builder
 		if sysStr, ok := req.System.(string); ok {
-			systemText = sysStr
+			systemText.WriteString(sysStr)
 		} else if sysArr, ok := req.System.([]any); ok {
 			for _, item := range sysArr {
 				if m, ok := item.(map[string]any); ok {
 					if t, ok := m["text"].(string); ok {
-						systemText += t + " "
+						systemText.WriteString(t)
+						systemText.WriteByte(' ')
 					}
 				}
 			}
@@ -123,10 +124,11 @@ func handleBypassRequest(w http.ResponseWriter, body []byte, model string, isStr
 		// Also check system message in messages array
 		for _, msg := range req.Messages {
 			if msg.Role == "system" {
-				systemText += getText(msg.Content) + " "
+				systemText.WriteString(getText(msg.Content))
+				systemText.WriteByte(' ')
 			}
 		}
-		if strings.Contains(systemText, "isNewTopic") {
+		if strings.Contains(systemText.String(), "isNewTopic") {
 			shouldBypass = true
 			isNaming = true
 		}

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-var proxyBase = "http://localhost:20128"
+var proxyBase = "http://localhost:20130"
 
 // FetchRouter sends a request body to the 9router proxy endpoint and returns the response.
 func FetchRouter(ctx context.Context, body []byte, endpoint string, headers http.Header, apiKey string) (*http.Response, error) {

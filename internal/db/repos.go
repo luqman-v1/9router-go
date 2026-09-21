@@ -10,6 +10,7 @@ import (
 	"9router/proxy/internal/models"
 )
 
+// Repo wraps the SQLite handle and groups all persistence queries.
 type Repo struct {
 	db *sql.DB
 }

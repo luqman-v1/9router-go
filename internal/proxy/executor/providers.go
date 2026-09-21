@@ -66,14 +66,14 @@ func ForwardCodex(w http.ResponseWriter, req *Request) error {
 // ForwardIflow forwards to iflow with HMAC-SHA256 signature.
 // Injects stream_options and generates HMAC headers before forwarding.
 func ForwardIflow(w http.ResponseWriter, req *Request) error {
-	var reqMap map[string]interface{}
+	var reqMap map[string]any
 	if err := json.Unmarshal(req.Body, &reqMap); err != nil {
 		return fmt.Errorf("parse body: %w", err)
 	}
 	if req.IsStream {
 		reqMap["stream"] = true
 		if _, ok := reqMap["stream_options"]; !ok {
-			reqMap["stream_options"] = map[string]interface{}{"include_usage": true}
+			reqMap["stream_options"] = map[string]any{"include_usage": true}
 		}
 	}
 	reqBody, err := json.Marshal(reqMap)

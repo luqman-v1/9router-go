@@ -339,15 +339,15 @@ func wsOpenAIMessagesToWs(messages []jsontext.Value) [][]byte {
 		if err := json.Unmarshal(m, &msg); err != nil {
 			continue
 		}
-		var content string
+		var contentBuilder strings.Builder
 		switch c := msg.Content.(type) {
 		case string:
-			content = c
+			contentBuilder.WriteString(c)
 		case []any:
 			for _, p := range c {
 				if pm, ok := p.(map[string]any); ok {
 					if t, ok := pm["text"].(string); ok {
-						content += t
+						contentBuilder.WriteString(t)
 					}
 				}
 			}
@@ -356,7 +356,7 @@ func wsOpenAIMessagesToWs(messages []jsontext.Value) [][]byte {
 		if role == "" {
 			role = "user"
 		}
-		out = append(out, wsChatMessage(role, content, msg.ToolCallID))
+		out = append(out, wsChatMessage(role, contentBuilder.String(), msg.ToolCallID))
 	}
 	return out
 }
@@ -412,7 +412,8 @@ func ForwardWindsurf(w http.ResponseWriter, req *Request) error {
 	responseID := fmt.Sprintf("chatcmpl-ws-%d", time.Now().UnixMilli())
 	created := time.Now().Unix()
 	roleEmitted := false
-	var totalText, hadError string
+	var totalText strings.Builder
+	var hadError string
 	var promptTokens, completionTokens int
 
 	if req.IsStream {
@@ -507,7 +508,7 @@ func ForwardWindsurf(w http.ResponseWriter, req *Request) error {
 		c := wsDecodeCompletionChunk(payload)
 		switch c.kind {
 		case "content":
-			totalText += c.text
+			totalText.WriteString(c.text)
 		case "done":
 			promptTokens = c.promptTokens
 			completionTokens = c.completionTokens
@@ -526,7 +527,7 @@ func ForwardWindsurf(w http.ResponseWriter, req *Request) error {
 		"object":  "chat.completion",
 		"created": created,
 		"model":   oreq.Model,
-		"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": totalText}, "finish_reason": "stop"}},
+		"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": totalText.String()}, "finish_reason": "stop"}},
 	}
 	if promptTokens > 0 || completionTokens > 0 {
 		out["usage"] = map[string]any{"prompt_tokens": promptTokens, "completion_tokens": completionTokens, "total_tokens": promptTokens + completionTokens}

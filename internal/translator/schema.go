@@ -9,7 +9,7 @@ import (
 
 // cleanGeminiSchema recursively removes JSON Schema Draft 7/8 keywords
 // that Google's Protobuf parser rejects for function declarations.
-func cleanGeminiSchema(schema map[string]interface{}) {
+func cleanGeminiSchema(schema map[string]any) {
 	if schema == nil {
 		return
 	}
@@ -35,7 +35,7 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 
 	// stripUnsupported removes keywords Gemini rejects. Called again after anyOf/oneOf
 	// flattening, which can re-inject them (e.g. const) from a merged branch.
-	stripUnsupported := func(s map[string]interface{}) {
+	stripUnsupported := func(s map[string]any) {
 		for _, k := range unsupported {
 			delete(s, k)
 		}
@@ -57,7 +57,7 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 
 	// Ensure enum is string array and type="string" (Gemini requirement)
 	if enumRaw, hasEnum := schema["enum"]; hasEnum {
-		if enumArr, ok := enumRaw.([]interface{}); ok {
+		if enumArr, ok := enumRaw.([]any); ok {
 			strArr := make([]string, 0, len(enumArr))
 			for _, item := range enumArr {
 				if s, ok := item.(string); ok {
@@ -82,9 +82,9 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 	// Flatten anyOf/oneOf (Google doesn't support them)
 	for _, key := range []string{"anyOf", "oneOf"} {
 		if rawArr, has := schema[key]; has {
-			if arr, ok := rawArr.([]interface{}); ok && len(arr) > 0 {
+			if arr, ok := rawArr.([]any); ok && len(arr) > 0 {
 				for _, itemRaw := range arr {
-					if item, ok := itemRaw.(map[string]interface{}); ok {
+					if item, ok := itemRaw.(map[string]any); ok {
 						if t, hasT := item["type"]; !hasT || t != "null" {
 							for k, v := range item {
 								schema[k] = v
@@ -103,7 +103,7 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 
 	// Flatten type arrays
 	if typeRaw, hasType := schema["type"]; hasType {
-		if typeArr, ok := typeRaw.([]interface{}); ok && len(typeArr) > 0 {
+		if typeArr, ok := typeRaw.([]any); ok && len(typeArr) > 0 {
 			var firstValid string
 			for _, tRaw := range typeArr {
 				if t, ok := tRaw.(string); ok && t != "null" {
@@ -122,8 +122,8 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 	// Handle prefixItems (JSON Schema 2020-12 tuple) — Gemini only supports single items.
 	if prefixItemsRaw, hasPrefix := schema["prefixItems"]; hasPrefix {
 		if _, hasItems := schema["items"]; !hasItems {
-			if arr, ok := prefixItemsRaw.([]interface{}); ok && len(arr) > 0 {
-				if firstMap, ok := arr[0].(map[string]interface{}); ok {
+			if arr, ok := prefixItemsRaw.([]any); ok && len(arr) > 0 {
+				if firstMap, ok := arr[0].(map[string]any); ok {
 					schema["items"] = firstMap
 				}
 			}
@@ -135,23 +135,23 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 	// Missing items causes: "...items.items: missing field." or "...items: missing field."
 	if t, ok := schema["type"].(string); ok && t == "array" {
 		if _, hasItems := schema["items"]; !hasItems {
-			schema["items"] = map[string]interface{}{"type": "string"}
+			schema["items"] = map[string]any{"type": "string"}
 		} else {
 			// Tuple form: items: [ {...}, {...} ] — take first element as single schema.
 			switch items := schema["items"].(type) {
-			case []interface{}:
+			case []any:
 				if len(items) > 0 {
-					if firstMap, ok := items[0].(map[string]interface{}); ok {
+					if firstMap, ok := items[0].(map[string]any); ok {
 						schema["items"] = firstMap
 					} else {
-						schema["items"] = map[string]interface{}{"type": "string"}
+						schema["items"] = map[string]any{"type": "string"}
 					}
 				} else {
-					schema["items"] = map[string]interface{}{"type": "string"}
+					schema["items"] = map[string]any{"type": "string"}
 				}
-			case map[string]interface{}:
+			case map[string]any:
 				if len(items) == 0 {
-					schema["items"] = map[string]interface{}{"type": "string"}
+					schema["items"] = map[string]any{"type": "string"}
 				} else if _, hasType := items["type"]; !hasType {
 					if _, hasProps := items["properties"]; !hasProps {
 						if _, hasItemsInner := items["items"]; !hasItemsInner {
@@ -172,21 +172,21 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 	// Fix misplaced `required` inside `properties` (common generator bug: required as property instead of sibling)
 	// e.g. {"properties":{"query":{...},"required":["query"]}} -> {"properties":{"query":{...}},"required":["query"]}
 	if propsRaw, hasProps := schema["properties"]; hasProps {
-		if props, ok := propsRaw.(map[string]interface{}); ok {
+		if props, ok := propsRaw.(map[string]any); ok {
 			if reqInProps, hasReqInProps := props["required"]; hasReqInProps {
 				// If value is not an object schema, it's misplaced required array
-				if _, isObj := reqInProps.(map[string]interface{}); !isObj {
+				if _, isObj := reqInProps.(map[string]any); !isObj {
 					delete(props, "required")
 					if _, hasTopReq := schema["required"]; !hasTopReq {
 						// Only promote if top-level required missing
-						if reqArr, ok := reqInProps.([]interface{}); ok {
+						if reqArr, ok := reqInProps.([]any); ok {
 							schema["required"] = reqArr
 						} else if reqStrArr, ok := reqInProps.([]string); ok {
 							schema["required"] = reqStrArr
 						} else {
 							// Fallback: marshal and unmarshal to handle mixed types
 							if b, err := json.Marshal(reqInProps); err == nil {
-								var arr []interface{}
+								var arr []any
 								if err := json.Unmarshal(b, &arr); err == nil {
 									schema["required"] = arr
 								}
@@ -200,9 +200,9 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 
 	// Recurse into properties definitions (each value is a property schema, NOT the container map)
 	if propsRaw, hasProps := schema["properties"]; hasProps {
-		if props, ok := propsRaw.(map[string]interface{}); ok {
+		if props, ok := propsRaw.(map[string]any); ok {
 			for _, propVal := range props {
-				if propSchema, ok := propVal.(map[string]interface{}); ok {
+				if propSchema, ok := propVal.(map[string]any); ok {
 					cleanGeminiSchema(propSchema)
 				}
 			}
@@ -212,11 +212,11 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 	// Recurse into items (array schema element)
 	if itemsRaw, hasItems := schema["items"]; hasItems {
 		switch items := itemsRaw.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			cleanGeminiSchema(items)
-		case []interface{}:
+		case []any:
 			for _, elem := range items {
-				if elemMap, ok := elem.(map[string]interface{}); ok {
+				if elemMap, ok := elem.(map[string]any); ok {
 					cleanGeminiSchema(elemMap)
 				}
 			}
@@ -225,7 +225,7 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 
 	// Recurse into additionalProperties if it is a schema (some generators put constraints there)
 	if apRaw, hasAP := schema["additionalProperties"]; hasAP {
-		if apMap, ok := apRaw.(map[string]interface{}); ok {
+		if apMap, ok := apRaw.(map[string]any); ok {
 			cleanGeminiSchema(apMap)
 			// additionalProperties is stripped above via unsupported list, but if
 			// it survived (e.g. future list change), still ensure its content is clean.
@@ -236,7 +236,7 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 	if reqRaw, hasReq := schema["required"]; hasReq {
 		var reqStrs []string
 		switch arr := reqRaw.(type) {
-		case []interface{}:
+		case []any:
 			for _, r := range arr {
 				if s, ok := r.(string); ok {
 					reqStrs = append(reqStrs, s)
@@ -249,7 +249,7 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 		if len(reqStrs) > 0 {
 			var validReqs []string
 			if propsRaw, hasProps := schema["properties"]; hasProps {
-				if props, ok := propsRaw.(map[string]interface{}); ok {
+				if props, ok := propsRaw.(map[string]any); ok {
 					for _, rStr := range reqStrs {
 						if _, exists := props[rStr]; exists {
 							validReqs = append(validReqs, rStr)
@@ -271,13 +271,13 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 	if t, hasT := schema["type"]; hasT && t == "object" {
 		needsPlaceholder := true
 		if propsRaw, hasProps := schema["properties"]; hasProps {
-			if props, ok := propsRaw.(map[string]interface{}); ok && len(props) > 0 {
+			if props, ok := propsRaw.(map[string]any); ok && len(props) > 0 {
 				needsPlaceholder = false
 			}
 		}
 		if needsPlaceholder {
-			schema["properties"] = map[string]interface{}{
-				"reason": map[string]interface{}{
+			schema["properties"] = map[string]any{
+				"reason": map[string]any{
 					"type":        "string",
 					"description": "Brief explanation of why you are calling this tool",
 				},
@@ -289,8 +289,8 @@ func cleanGeminiSchema(schema map[string]interface{}) {
 	// Empty schema {} (no type at all) must also become the object placeholder
 	if len(schema) == 0 {
 		schema["type"] = "object"
-		schema["properties"] = map[string]interface{}{
-			"reason": map[string]interface{}{
+		schema["properties"] = map[string]any{
+			"reason": map[string]any{
 				"type":        "string",
 				"description": "Brief explanation of why you are calling this tool",
 			},
@@ -305,7 +305,7 @@ func CleanParametersSchema(raw jsontext.Value) jsontext.Value {
 		return jsontext.Value(`{"type":"object","properties":{}}`)
 	}
 
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return raw // fallback
 	}

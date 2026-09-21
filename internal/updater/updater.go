@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/log"
+	"github.com/samber/lo"
 )
 
 // CurrentVersion is the active 9router-go application version.
@@ -145,10 +146,7 @@ func GetStatus() *UpdaterStatus {
 
 // CheckUpdate queries remote version sources (manifest or GitHub Releases API) and compares semver.
 func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
-	updateURL := os.Getenv("UPDATE_URL")
-	if updateURL == "" {
-		updateURL = DefaultUpdateURL
-	}
+	updateURL := lo.CoalesceOrEmpty(os.Getenv("UPDATE_URL"), DefaultUpdateURL)
 
 	// 1. Try manifest URL first
 	info, err := checkManifest(ctx, updateURL)
@@ -161,10 +159,7 @@ func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	}
 
 	// 2. Fallback to GitHub Releases API
-	repo := os.Getenv("UPDATE_REPO")
-	if repo == "" {
-		repo = DefaultGitHubRepo
-	}
+	repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
 	ghURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
 	log.Debug("updater", "checking github releases fallback", "repo", repo)
 
@@ -178,7 +173,7 @@ func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("check update failed: manifest error (%v), github releases error (%v)", err, ghErr)
+		return nil, fmt.Errorf("check update failed: manifest error (%w), github releases error (%w)", err, ghErr)
 	}
 	return nil, ghErr
 }

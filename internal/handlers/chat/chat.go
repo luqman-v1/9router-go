@@ -237,7 +237,9 @@ func (h *ChatHandler) HandleToggleAutoUpdate(w http.ResponseWriter, r *http.Requ
 
 	updater.SetAutoUpdate(body.Enabled)
 	if h.Repo != nil {
-		_ = h.Repo.SetAutoUpdate(body.Enabled)
+		if err := h.Repo.SetAutoUpdate(body.Enabled); err != nil {
+			log.Warn("chat", "persist auto-update setting failed", "error", err)
+		}
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -181,7 +182,7 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 		syncStateMu.Lock()
 		syncState.LastError = errText
 		syncStateMu.Unlock()
-		return fmt.Errorf("%s", errText)
+		return errors.New(errText)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20)) // 50MB limit

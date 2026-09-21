@@ -85,7 +85,7 @@ func LoadConfig() *Config {
 	portStr := os.Getenv("PORT")
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port <= 0 {
-		port = 20128 // Default port
+		port = 20130 // Default port
 	}
 
 	dataDir := ResolveDataDir()

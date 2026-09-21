@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -266,7 +267,7 @@ func fetchElevenLabsVoices(client *http.Client, ctx context.Context, apiKey stri
 		return nil, err
 	}
 	req.Header.Set("xi-api-key", apiKey)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

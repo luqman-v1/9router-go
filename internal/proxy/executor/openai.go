@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/shutdown"
@@ -44,7 +45,7 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	if req.ToolNameMap != nil {
 		// Claude OAuth tool cloaking: restore original tool names before
 		// the response reaches the client.
-		raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+		raw, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
 		if rerr != nil {
 			return fmt.Errorf("read upstream body: %w", rerr)
 		}
@@ -188,7 +189,7 @@ func sseStream(w http.ResponseWriter, upstream io.Reader, translate bool, startT
 
 // jsonResponse writes the upstream JSON response with optional translation.
 func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader, translate bool, buf io.Writer) error {
-	body, err := io.ReadAll(io.LimitReader(upstream, 10*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(upstream, constants.MaxUpstreamBodyBytes))
 	if err != nil {
 		return fmt.Errorf("read upstream response: %w", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	json "encoding/json/v2"
+	"slices"
 	"strings"
 )
 
@@ -38,10 +39,8 @@ var OpenCodeFingerprintTools = []string{"bash", "glob", "grep", "read"}
 // member, or "" when it is not.
 func FingerprintToolKey(name string) string {
 	lower := strings.ToLower(strings.TrimSpace(name))
-	for _, t := range OpenCodeFingerprintTools {
-		if lower == t {
-			return t
-		}
+	if slices.Contains(OpenCodeFingerprintTools, lower) {
+		return lower
 	}
 	return ""
 }
