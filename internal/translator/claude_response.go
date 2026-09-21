@@ -199,6 +199,22 @@ func TranslateClaudeChunkToOpenAI(payload []byte, state *ClaudeToOpenAIStreamSta
 					finishReason = "length"
 				case "end_turn", "stop_sequence":
 					finishReason = "stop"
+				case "refusal":
+					// A refusal is a blocked turn, not a clean stop: without
+					// this mapping the client sees finish_reason "stop" with
+					// an empty message, indistinguishable from a real answer
+					// (parity with decolua/9router#4210).
+					finishReason = "content_filter"
+				}
+				// A refusal carries no content blocks at all. Surface
+				// Anthropic's own explanation as message text so the client
+				// shows *why* the turn is empty instead of a blank reply.
+				if stopReason == "refusal" {
+					if details, ok := delta["stop_details"].(map[string]any); ok {
+						if explanation, ok := details["explanation"].(string); ok && explanation != "" {
+							writeChunk(map[string]any{"content": explanation}, nil, nil)
+						}
+					}
 				}
 				state.FinishReason = finishReason
 				state.FinishReasonSent = true
@@ -290,6 +306,9 @@ func TranslateClaudeResponseToOpenAI(claudeBody []byte) ([]byte, error) {
 		finishReason = "length"
 	case "end_turn", "stop_sequence":
 		finishReason = "stop"
+	case "refusal":
+		// Blocked turn, not a clean stop (parity with decolua/9router#4210).
+		finishReason = "content_filter"
 	}
 
 	msgObj := map[string]any{

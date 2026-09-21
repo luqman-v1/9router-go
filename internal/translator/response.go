@@ -214,6 +214,8 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 			claudeStop = "max_tokens"
 		case "tool_calls":
 			claudeStop = "tool_use"
+		case "content_filter":
+			claudeStop = "refusal"
 		}
 	}
 
@@ -548,6 +550,8 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 			claudeStop = "max_tokens"
 		case "tool_calls":
 			claudeStop = "tool_use"
+		case "content_filter":
+			claudeStop = "refusal"
 		}
 		finalUsage := map[string]any{
 			"input_tokens":  0,

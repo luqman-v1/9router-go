@@ -53,6 +53,18 @@ var (
 	agStrikeWindow        = 60 * time.Second
 	agStrikeThreshold     = 3
 	agStrikeBlockDuration = 15 * time.Minute
+
+	// Explicit quota-error markers (parity with decolua/9router#4197): only
+	// 429s carrying one of these count toward the strike-breaker. Generic or
+	// content-triggered 429s must not synthesize 15m blocks while quota reads
+	// optimistic. NOTE: bare "RESOURCE_EXHAUSTED" is deliberately NOT a
+	// marker — both false-bucket and real-quota 429s carry it; real quota
+	// errors additionally carry QUOTA_EXHAUSTED / "Individual quota reached".
+	agQuotaErrorMarkers = []string{
+		"RATE_LIMIT_EXCEEDED",
+		"QUOTA_EXHAUSTED",
+		"Individual quota reached",
+	}
 )
 var (
 	agWeeklyMu    sync.RWMutex
@@ -323,8 +335,22 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 	return quotas, nil
 }
 
+// isExplicitQuotaError reports whether an upstream error message explicitly
+// indicates quota/rate limiting (parity with decolua/9router#4197).
+func isExplicitQuotaError(errorMessage string) bool {
+	for _, marker := range agQuotaErrorMarkers {
+		if strings.Contains(errorMessage, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // HandleAntigravityQuotaError handles Antigravity 409/429 errors by refreshing live quota and returning model resetAt.
-func HandleAntigravityQuotaError(ctx context.Context, client *http.Client, connectionID string, status int, model, accessToken, projectID string) *time.Time {
+// errorMessage is the raw upstream error body/text: 429s only feed the
+// optimistic strike-breaker when it carries an explicit quota marker;
+// generic/content-triggered 429s return nil without striking (#4197 parity).
+func HandleAntigravityQuotaError(ctx context.Context, client *http.Client, connectionID string, status int, model, accessToken, projectID, errorMessage string) *time.Time {
 	if status != http.StatusConflict && status != http.StatusTooManyRequests {
 		return nil
 	}
@@ -353,8 +379,13 @@ func HandleAntigravityQuotaError(ctx context.Context, client *http.Client, conne
 				res := q.ResetAt
 				return &res
 			}
-			// Optimistic quota strike-breaker (PR #3684): remaining >0 but still 429
-			if q.RemainingPercentage > 0 {
+			// Optimistic quota strike-breaker (PR #3684, gated by #4197):
+			// remaining >0 but still 429. Generic/content-triggered 429s
+			// (no explicit quota marker) must not contribute strikes.
+			if status == http.StatusTooManyRequests && !isExplicitQuotaError(errorMessage) && q.RemainingPercentage > 0 {
+				return nil
+			}
+			if q.RemainingPercentage > 0 && isExplicitQuotaError(errorMessage) {
 				key := connectionID + "|" + m
 				agStrikeMu.Lock()
 				// Prune strikes outside window

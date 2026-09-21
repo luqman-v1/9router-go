@@ -95,6 +95,69 @@ func TestTranslateClaudeChunkToOpenAI(t *testing.T) {
 	})
 }
 
+func TestTranslateClaudeChunkToOpenAI_Refusal(t *testing.T) {
+	// Port of decolua/9router#4210: a refusal (zero output tokens, no content
+	// blocks) must surface as finish_reason "content_filter" carrying
+	// Anthropic's explanation — not a clean, empty "stop".
+	const explanation = "This request was blocked as it seems to violate Anthropic's Terms of Service restrictions."
+	state := &ClaudeToOpenAIStreamState{}
+
+	start := []byte(`{"type":"message_start","message":{"id":"msg_refusal","role":"assistant","model":"claude-opus-5","content":[],"usage":{"input_tokens":637,"cache_creation_input_tokens":206779,"cache_read_input_tokens":0,"output_tokens":0}}}`)
+	if _, err := TranslateClaudeChunkToOpenAI(start, state); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	delta := []byte(`{"type":"message_delta","delta":{"stop_reason":"refusal","stop_sequence":null,"stop_details":{"type":"refusal","category":"reasoning_extraction","explanation":"` + explanation + `"}},"usage":{"input_tokens":637,"output_tokens":0}}`)
+	out, err := TranslateClaudeChunkToOpenAI(delta, state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	outStr := string(out)
+	if !strings.Contains(outStr, `"finish_reason":"content_filter"`) {
+		t.Errorf("expected finish_reason content_filter, got: %s", outStr)
+	}
+	if strings.Contains(outStr, `"finish_reason":"stop"`) {
+		t.Errorf("refusal must not map to stop, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, explanation) {
+		t.Errorf("expected refusal explanation as content, got: %s", outStr)
+	}
+	// Prompt tokens were billed (637 + 206779 cache creation).
+	if !strings.Contains(outStr, `"prompt_tokens":207416`) {
+		t.Errorf("expected usage prompt_tokens 207416 on final chunk, got: %s", outStr)
+	}
+}
+
+func TestTranslateClaudeResponseToOpenAI_Refusal(t *testing.T) {
+	claudeJSON := []byte(`{
+		"id": "msg_refusal",
+		"type": "message",
+		"role": "assistant",
+		"model": "claude-opus-5",
+		"content": [],
+		"stop_reason": "refusal",
+		"usage": {"input_tokens": 637, "output_tokens": 0}
+	}`)
+	out, err := TranslateClaudeResponseToOpenAI(claudeJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outStr := string(out); !strings.Contains(outStr, `"finish_reason":"content_filter"`) {
+		t.Errorf("expected finish_reason content_filter, got: %s", outStr)
+	}
+}
+
+func TestTranslateOpenAIToClaude_ContentFilterRoundTrip(t *testing.T) {
+	// Reverse mapping parity with #4210: content_filter -> refusal.
+	openaiJSON := []byte(`{"id":"chatcmpl-x","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":1,"completion_tokens":0,"total_tokens":1}}`)
+	out, _, err := TranslateOpenAIToClaude(openaiJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outStr := string(out); !strings.Contains(outStr, `"stop_reason":"refusal"`) {
+		t.Errorf("expected stop_reason refusal, got: %s", outStr)
+	}
+}
+
 func TestTranslateClaudeResponseToOpenAI(t *testing.T) {
 	claudeJSON := []byte(`{
 		"id": "msg_xyz",

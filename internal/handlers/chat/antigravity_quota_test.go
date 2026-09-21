@@ -70,7 +70,7 @@ func TestAntigravityQuota_RefreshAndBlock(t *testing.T) {
 	}
 
 	// 4. Handle 429 quota error returns resetAt
-	resetAt := HandleAntigravityQuotaError(context.Background(), client, connectionID, 429, "gemini-3.7-flash-high", "test-ag-token", "test-project")
+	resetAt := HandleAntigravityQuotaError(context.Background(), client, connectionID, 429, "gemini-3.7-flash-high", "test-ag-token", "test-project", "")
 	if resetAt == nil || resetAt.Before(time.Now()) {
 		t.Errorf("expected future resetAt from 429 handler, got %v", resetAt)
 	}
@@ -201,5 +201,58 @@ func TestAntigravityWeeklyQuota_ParseAndFetch(t *testing.T) {
 	}
 	if len(res) != 2 {
 		t.Errorf("expected 2 quotas from fetch, got %d", len(res))
+	}
+}
+
+// TestAntigravityQuota_Generic429NoStrike is the Go port of the
+// decolua/9router#4197 regression test: generic/content-triggered 429s must
+// not feed the strike-breaker while quota reads optimistic, while explicit
+// quota 429s still block on the third strike.
+func TestAntigravityQuota_Generic429NoStrike(t *testing.T) {
+	const model = "test-strike-model"
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"models":{"` + model + `":{"quotaInfo":{"remainingFraction":0.9,"resetTime":"2099-01-01T00:00:00Z"}}}}`))
+	}))
+	defer mockServer.Close()
+
+	oldBase := antigravityQuotaBaseURL
+	antigravityQuotaBaseURL = mockServer.URL
+	defer func() { antigravityQuotaBaseURL = oldBase }()
+
+	ctx := context.Background()
+	client := mockServer.Client()
+
+	// 1. Generic content-triggered 429s never strike, even repeated.
+	genericConn := "test-conn-generic-429"
+	ClearAntigravityQuotaCache()
+	ClearAntigravityStrikes(genericConn, model)
+	genericErr := `{"error":{"code":429,"message":"Request blocked for content reasons.","status":"RESOURCE_EXHAUSTED"}}`
+	for i := 0; i < 5; i++ {
+		if res := HandleAntigravityQuotaError(ctx, client, genericConn, 429, model, "token", "proj", genericErr); res != nil {
+			t.Fatalf("generic 429 #%d must not block, got %v", i+1, *res)
+		}
+	}
+	if IsAntigravityModelBlocked(genericConn, model) {
+		t.Errorf("generic 429s must not block the model while quota is optimistic")
+	}
+
+	// 2. Explicit quota 429s still strike: nil, nil, then block.
+	quotaConn := "test-conn-quota-429"
+	ClearAntigravityQuotaCache()
+	ClearAntigravityStrikes(quotaConn, model)
+	quotaErr := `{"error":{"code":429,"message":"Individual quota reached. Please upgrade your subscription.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"}]}}`
+	for i := 0; i < 2; i++ {
+		if res := HandleAntigravityQuotaError(ctx, client, quotaConn, 429, model, "token", "proj", quotaErr); res != nil {
+			t.Fatalf("explicit quota 429 #%d must not block yet, got %v", i+1, *res)
+		}
+	}
+	blocked := HandleAntigravityQuotaError(ctx, client, quotaConn, 429, model, "token", "proj", quotaErr)
+	if blocked == nil {
+		t.Fatalf("explicit quota 429 #3 must trigger strike block")
+	}
+	if !IsAntigravityModelBlocked(quotaConn, model) {
+		t.Errorf("model must be blocked after 3 explicit quota 429s")
 	}
 }
