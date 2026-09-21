@@ -204,6 +204,88 @@ func TestAntigravityWeeklyQuota_ParseAndFetch(t *testing.T) {
 	}
 }
 
+// TestAntigravityWeeklyQuota_SessionBuckets is the Go port of
+// decolua/9router#4209: 5h-session buckets parse separately from weekly
+// buckets, disabled sessions pin to 0, and session exhaustion blocks routing.
+func TestAntigravityWeeklyQuota_SessionBuckets(t *testing.T) {
+	rawSummary := []byte(`{
+		"groups": [
+			{
+				"displayName": "Gemini Models",
+				"buckets": [
+					{
+						"bucketId": "gemini-weekly-bucket",
+						"displayName": "Gemini Weekly Limit",
+						"disabled": false,
+						"remainingFraction": 0.75,
+						"resetTime": "2099-01-01T00:00:00Z"
+					},
+					{
+						"bucketId": "gemini-5h-bucket",
+						"displayName": "Gemini Five Hour Limit",
+						"window": "5h",
+						"disabled": false,
+						"remainingFraction": 0.40,
+						"resetTime": "2099-01-01T05:00:00Z"
+					},
+					{
+						"bucketId": "gemini-5h-disabled",
+						"displayName": "Gemini 5h Limit",
+						"disabled": true,
+						"remainingFraction": 0.90,
+						"resetTime": "2099-01-01T05:00:00Z"
+					}
+				]
+			}
+		]
+	}`)
+
+	parsed := ParseWeeklyQuotaSummary(rawSummary)
+	if len(parsed) != 2 {
+		t.Fatalf("expected weekly+session quotas, got %v", parsed)
+	}
+	gw, ok := parsed["gemini_weekly"]
+	if !ok || gw.RemainingPercentage != 75.0 {
+		t.Errorf("expected gemini_weekly at 75%%, got %+v", parsed)
+	}
+	// First session bucket wins; the disabled duplicate must not overwrite it.
+	gs, ok := parsed["gemini_session"]
+	if !ok {
+		t.Fatal("expected gemini_session")
+	}
+	if gs.RemainingPercentage != 40.0 || gs.DisplayName != "Gemini (5h)" {
+		t.Errorf("unexpected gemini_session values: %+v", gs)
+	}
+
+	// A lone disabled session bucket pins to 0 (upstream marks it disabled
+	// when weekly is hit, but the row must still surface).
+	disabledOnly := []byte(`{"groups": [{"displayName": "Gemini Models", "buckets": [
+		{"bucketId": "gemini-5h-x", "displayName": "Gemini 5h", "disabled": true, "remainingFraction": 0.9}
+	]}]}`)
+	if ds := ParseWeeklyQuotaSummary(disabledOnly)["gemini_session"]; ds.RemainingPercentage != 0 {
+		t.Errorf("expected disabled session pinned to 0, got %+v", ds)
+	}
+
+	// Session exhaustion blocks family routing even with healthy weekly/model quota.
+	connID := "test-conn-session-block"
+	future := time.Now().UTC().Add(2 * time.Hour)
+	agQuotaMu.Lock()
+	agQuotaCache[connID] = map[string]AntigravityModelQuota{
+		"gemini-3.8-flash-x": {RemainingPercentage: 90, ResetAt: future},
+		"gemini_weekly":      {RemainingPercentage: 75, ResetAt: future},
+		"gemini_session":     {RemainingPercentage: 0, ResetAt: future},
+	}
+	agQuotaMu.Unlock()
+	defer func() {
+		agQuotaMu.Lock()
+		delete(agQuotaCache, connID)
+		agQuotaMu.Unlock()
+	}()
+	if !IsAntigravityModelBlocked(connID, "gemini-3.8-flash-x") {
+		t.Errorf("expected block via exhausted gemini_session despite healthy weekly/model quota")
+	}
+}
+
 // TestAntigravityQuota_Generic429NoStrike is the Go port of the
 // decolua/9router#4197 regression test: generic/content-triggered 429s must
 // not feed the strike-breaker while quota reads optimistic, while explicit

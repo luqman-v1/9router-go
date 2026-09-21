@@ -163,32 +163,44 @@ func IsAntigravityModelBlocked(connectionID, model string) bool {
 	now := time.Now().UTC()
 	for _, m := range checkModels {
 		if q, exists := modelsMap[m]; exists {
-			if q.RemainingPercentage <= 0 && !q.ResetAt.IsZero() && q.ResetAt.After(now) {
+			if quotaEntryExhausted(q, now) {
 				agQuotaMu.RUnlock()
 				return true
 			}
 		}
 	}
 
-	// Check family weekly quota
+	// Check family weekly + 5h-session quotas (parity with
+	// decolua/9router#4209: session exhaustion blocks the family even when
+	// weekly remains).
 	if strings.HasPrefix(model, "gemini-") {
-		if wq, exists := modelsMap["gemini_weekly"]; exists {
-			if wq.RemainingPercentage <= 0 && !wq.ResetAt.IsZero() && wq.ResetAt.After(now) {
-				agQuotaMu.RUnlock()
-				return true
+		for _, key := range []string{"gemini_weekly", "gemini_session"} {
+			if wq, exists := modelsMap[key]; exists {
+				if quotaEntryExhausted(wq, now) {
+					agQuotaMu.RUnlock()
+					return true
+				}
 			}
 		}
 	} else if strings.HasPrefix(model, "claude-") || strings.HasPrefix(model, "gpt-") {
-		if wq, exists := modelsMap["claude_gpt_weekly"]; exists {
-			if wq.RemainingPercentage <= 0 && !wq.ResetAt.IsZero() && wq.ResetAt.After(now) {
-				agQuotaMu.RUnlock()
-				return true
+		for _, key := range []string{"claude_gpt_weekly", "claude_gpt_session"} {
+			if wq, exists := modelsMap[key]; exists {
+				if quotaEntryExhausted(wq, now) {
+					agQuotaMu.RUnlock()
+					return true
+				}
 			}
 		}
 	}
 	agQuotaMu.RUnlock()
 
 	return false
+}
+
+// quotaEntryExhausted reports whether a cached quota entry means "do not route
+// here until reset".
+func quotaEntryExhausted(q AntigravityModelQuota, now time.Time) bool {
+	return q.RemainingPercentage <= 0 && !q.ResetAt.IsZero() && q.ResetAt.After(now)
 }
 
 // RefreshAntigravityQuota fetches live quota for a connection from v1internal:fetchAvailableModels.
@@ -374,7 +386,7 @@ func HandleAntigravityQuotaError(ctx context.Context, client *http.Client, conne
 	now := time.Now().UTC()
 	for _, m := range checkModels {
 		if q, ok := quotas[m]; ok {
-			if q.RemainingPercentage <= 0 && !q.ResetAt.IsZero() && q.ResetAt.After(now) {
+			if quotaEntryExhausted(q, now) {
 				log.Warn("ag_quota", "quota exhausted; CACHE_BLOCK until reset", "connection", shortConn, "model", m, "resetAt", q.ResetAt.Format(time.RFC3339))
 				res := q.ResetAt
 				return &res
@@ -448,6 +460,7 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 			Buckets     []struct {
 				BucketID          string  `json:"bucketId"`
 				DisplayName       string  `json:"displayName"`
+				Window            string  `json:"window"`
 				Disabled          bool    `json:"disabled"`
 				RemainingFraction float64 `json:"remainingFraction"`
 				ResetTime         string  `json:"resetTime"`
@@ -459,6 +472,7 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 				Buckets     []struct {
 					BucketID          string  `json:"bucketId"`
 					DisplayName       string  `json:"displayName"`
+					Window            string  `json:"window"`
 					Disabled          bool    `json:"disabled"`
 					RemainingFraction float64 `json:"remainingFraction"`
 					ResetTime         string  `json:"resetTime"`
@@ -489,11 +503,27 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 		}
 
 		for _, b := range g.Buckets {
+			// Classify weekly vs 5h-session buckets (parity with
+			// decolua/9router#4209). A disabled session bucket is kept at
+			// 0 (upstream marks it disabled when weekly is hit); disabled
+			// weekly buckets are truly disabled and skipped.
+			windowType := strings.ToLower(b.Window)
 			bText := strings.ToLower(b.BucketID + " " + b.DisplayName)
-			if !strings.Contains(bText, "weekly") || b.Disabled {
+			isWeekly := windowType == "weekly" || strings.Contains(bText, "weekly")
+			isSession := windowType == "5h" || windowType == "daily" ||
+				strings.Contains(bText, "five hour") ||
+				strings.Contains(bText, "5h") ||
+				strings.Contains(bText, "daily")
+			if !isWeekly && !isSession {
+				continue
+			}
+			if b.Disabled && isWeekly {
 				continue
 			}
 			frac := b.RemainingFraction
+			if b.Disabled {
+				frac = 0
+			}
 			if frac < 0 {
 				frac = 0
 			}
@@ -520,7 +550,18 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 				key = "claude_gpt_weekly"
 				dName = "Claude & GPT (Weekly)"
 			}
+			if !isWeekly {
+				if strings.HasPrefix(key, "gemini") {
+					key = "gemini_session"
+					dName = "Gemini (5h)"
+				} else {
+					key = "claude_gpt_session"
+					dName = "Claude & GPT (5h)"
+				}
+			}
 
+			// First matching bucket per type wins (no break: one group can
+			// yield both a weekly and a session bucket).
 			if _, exists := result[key]; !exists {
 				result[key] = AntigravityWeeklyQuota{
 					Used:                used,
@@ -530,7 +571,6 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 					DisplayName:         dName,
 				}
 			}
-			break
 		}
 	}
 	return result
