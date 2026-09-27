@@ -198,30 +198,158 @@ func (h *ChatHandler) disabledModelIndex() map[string]map[string]bool {
 	return disabled
 }
 
-// buildModelsList mirrors upstream buildModelsList(["llm"]):
-// combos first, then one model set per active connection, with the static
-// catalog dump only when the connections table itself is empty.
+// ModelsListMode selects which provider set buildModelsList walks. The zero
+// value is modeListAll, so every existing caller keeps the upstream-faithful
+// behaviour: static catalog dump when no connection rows exist, otherwise one
+// model set per active connection.
+type ModelsListMode int
+
+const (
+	// modeListAll is the upstream default: catalog dump on a fresh install,
+	// connection-scoped otherwise.
+	modeListAll ModelsListMode = iota
+	// modeListConnected restricts output to providers that have an active
+	// connection, plus registry noAuth providers (usable without credentials).
+	// With no connection rows at all this yields the noAuth subset instead of
+	// the full 1300-entry catalog, which is what a client asking for "what can
+	// I actually call" wants.
+	modeListConnected
+	// modeListCatalog forces the full static catalog dump plus custom models
+	// even when connections exist, for explicit discovery requests.
+	modeListCatalog
+)
+
+// ModelsListResult carries the model list plus the metadata the handler echoes
+// back, so a caller can tell a candidate catalog from a usable one.
+type ModelsListResult struct {
+	Models []ModelInfoObject
+	Mode   string
+	// Connections is the number of active provider connections considered.
+	Connections int
+}
+
+// modelsListModeString maps a mode to the wire value published as "mode".
+func modelsListModeString(mode ModelsListMode) string {
+	switch mode {
+	case modeListConnected:
+		return "connected"
+	case modeListCatalog:
+		return "catalog"
+	default:
+		return "all"
+	}
+}
+
+// connectedProviderIDs is the set of provider ids with at least one active
+// connection, plus every noAuth registry provider (usable with no credential).
+func (h *ChatHandler) connectedProviderIDs(conns []*models.ProviderConnection) map[string]bool {
+	ids := make(map[string]bool, len(conns))
+	for _, conn := range conns {
+		if conn == nil || conn.Provider == "" || conn.IsActive == 0 {
+			continue
+		}
+		ids[conn.Provider] = true
+		if canon := providers.ResolveAlias(conn.Provider); canon != "" {
+			ids[canon] = true
+		}
+	}
+	for id, cfg := range providers.KnownProviders {
+		if cfg.NoAuth {
+			ids[id] = true
+		}
+	}
+	return ids
+}
+
+// isUsableProvider reports whether a provider id (or its canonical form) is
+// reachable: either connected, or noAuth in the registry.
+func isUsableProvider(providerID string, usable map[string]bool) bool {
+	if providerID == "" {
+		return false
+	}
+	if usable[providerID] {
+		return true
+	}
+	canon := providers.ResolveAlias(providerID)
+	return canon != "" && usable[canon]
+}
+
+// buildModelsListResult mirrors upstream buildModelsList(["llm"]) and reports
+// the mode it used. Combos come first, then one model set per active
+// connection, with the static catalog dump only when the connections table
+// itself is empty (and unconditionally in modeListCatalog).
+func (h *ChatHandler) buildModelsListResult(ctx context.Context, mode ModelsListMode) ModelsListResult {
+	var allConns []*models.ProviderConnection
+	if h.Repo != nil {
+		allConns, _ = h.Repo.GetProviderConnections("", false)
+	}
+
+	// Connections is the number of distinct providers with an active
+	// connection, counted from the connection rows directly: `usable` also
+	// folds in noAuth providers and canonical aliases, which would
+	// double-count a single connection.
+	activeCount := 0
+	seenProviders := make(map[string]bool, len(allConns))
+	for _, conn := range allConns {
+		if conn == nil || conn.Provider == "" || conn.IsActive == 0 {
+			continue
+		}
+		canon := providers.ResolveAlias(conn.Provider)
+		if seenProviders[canon] {
+			continue
+		}
+		seenProviders[canon] = true
+		activeCount++
+	}
+	usable := h.connectedProviderIDs(allConns)
+
+	data := h.buildModelsListForMode(ctx, mode, allConns, usable)
+	return ModelsListResult{Models: data, Mode: modelsListModeString(mode), Connections: activeCount}
+}
+
+// buildModelsList is the upstream-faithful entry point used by model lookup.
 func (h *ChatHandler) buildModelsList(ctx context.Context) []ModelInfoObject {
+	return h.buildModelsListForMode(ctx, modeListAll, h.allConnections(), nil)
+}
+
+// allConnections returns every provider connection row, or nil without a Repo.
+func (h *ChatHandler) allConnections() []*models.ProviderConnection {
+	if h.Repo == nil {
+		return nil
+	}
+	conns, _ := h.Repo.GetProviderConnections("", false)
+	return conns
+}
+
+// buildModelsListForMode is the shared builder. usable may be nil for
+// modeListAll, in which case no provider filtering is applied.
+func (h *ChatHandler) buildModelsListForMode(
+	ctx context.Context,
+	mode ModelsListMode,
+	allConns []*models.ProviderConnection,
+	usable map[string]bool,
+) []ModelInfoObject {
 	var data []ModelInfoObject
 	seen := make(map[string]bool)
 	disabled := h.disabledModelIndex()
 	isDisabled := func(provider, modelID string) bool {
 		return disabled[provider][modelID]
 	}
+	filterConnected := mode == modeListConnected && usable != nil
 
 	// 1. Combos first (upstream pushes them before provider models).
 	data = h.appendCombos(data, seen)
 
-	var allConns []*models.ProviderConnection
-	if h.Repo != nil {
-		allConns, _ = h.Repo.GetProviderConnections("", false)
-	}
-
 	// 2. No connection rows at all: static catalog dump + custom models, so a
 	// fresh install still has a usable picker (upstream connections.length === 0).
-	if len(allConns) == 0 {
+	// In connected mode the dump is narrowed to providers that are actually
+	// usable, so the endpoint stops advertising the whole catalog.
+	if len(allConns) == 0 || mode == modeListCatalog {
 		for alias, models := range providers.ProviderModels {
 			if canon := providers.ResolveAlias(alias); canon != alias && providers.GetProviderAlias(canon) != alias {
+				continue
+			}
+			if filterConnected && !isUsableProvider(alias, usable) {
 				continue
 			}
 			for _, mID := range models {
@@ -231,7 +359,7 @@ func (h *ChatHandler) buildModelsList(ctx context.Context) []ModelInfoObject {
 				data = appendStaticModel(data, seen, alias, mID)
 			}
 		}
-		data = h.appendLooseCustomModels(data, seen, disabled)
+		data = h.appendLooseCustomModels(data, seen, disabled, filterConnected, usable)
 		return finalizeModels(data)
 	}
 
@@ -241,6 +369,9 @@ func (h *ChatHandler) buildModelsList(ctx context.Context) []ModelInfoObject {
 	order := make([]string, 0, len(allConns))
 	for _, conn := range allConns {
 		if conn.Provider == "" || conn.IsActive == 0 {
+			continue
+		}
+		if filterConnected && !isUsableProvider(conn.Provider, usable) {
 			continue
 		}
 		if _, ok := firstPerProvider[conn.Provider]; !ok {
@@ -447,10 +578,19 @@ func appendStaticModel(data []ModelInfoObject, seen map[string]bool, alias, mode
 
 // appendLooseCustomModels lists custom models on a fresh install (upstream
 // lists every llm-typed custom row when there are no connections at all).
-func (h *ChatHandler) appendLooseCustomModels(data []ModelInfoObject, seen map[string]bool, disabled map[string]map[string]bool) []ModelInfoObject {
+func (h *ChatHandler) appendLooseCustomModels(
+	data []ModelInfoObject,
+	seen map[string]bool,
+	disabled map[string]map[string]bool,
+	filterConnected bool,
+	usable map[string]bool,
+) []ModelInfoObject {
 	prefixMap := h.providerNodePrefixMap()
 	customs := h.customModelsByProvider()
 	for providerID, list := range customs {
+		if filterConnected && !isUsableProvider(providerID, usable) {
+			continue
+		}
 		prefix := providerID
 		if mapped, ok := prefixMap[providerID]; ok && mapped != "" {
 			prefix = mapped

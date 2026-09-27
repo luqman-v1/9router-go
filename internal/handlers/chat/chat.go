@@ -367,13 +367,53 @@ func (h *ChatHandler) HandleTriggerUpdate(w http.ResponseWriter, r *http.Request
 	}()
 }
 
+// modelsListModeFromQuery reads the listing scope from the request. Absent
+// params keep the upstream default (modeListAll) so existing clients are
+// unaffected: `?connected=1` narrows to usable providers, `?all=1` forces the
+// full catalog.
+func modelsListModeFromQuery(r *http.Request) ModelsListMode {
+	q := r.URL.Query()
+	if queryFlagEnabled(q.Get("connected")) {
+		return modeListConnected
+	}
+	if queryFlagEnabled(q.Get("all")) {
+		return modeListCatalog
+	}
+	return modeListAll
+}
+
+// queryFlagEnabled treats an explicit "1"/"true" as on, matching the loose
+// boolean parsing the rest of the dashboard API uses. An absent value is off,
+// so `?all` alone (no value) also reads as false and the default applies.
+func queryFlagEnabled(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
 // HandleModels responds with the list of available model identifiers.
+//
+// Scope is controlled by query parameters:
+//   - default        upstream behaviour: full static catalog on a fresh
+//     install, connection-scoped once connections exist
+//   - ?connected=1   only providers with an active connection, plus registry
+//     noAuth providers — the set a client can actually call
+//   - ?all=1         always the full static catalog, connections ignored
+//
+// The response always carries `mode` and `connections` so a caller can tell a
+// candidate catalog from a usable model list.
 func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
-	data := h.buildModelsList(r.Context())
+	mode := modelsListModeFromQuery(r)
+	result := h.buildModelsListResult(r.Context(), mode)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"object": "list",
-		"data":   data,
-		"models": data,
+		"object":      "list",
+		"data":        result.Models,
+		"models":      result.Models,
+		"mode":        result.Mode,
+		"connections": result.Connections,
 	})
 }
 

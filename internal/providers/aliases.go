@@ -109,6 +109,17 @@ func ResolveAlias(alias string) string {
 	return alias
 }
 
+// IsNoAuthProvider reports whether a provider is marked noAuth in the registry,
+// i.e. it is usable without any configured credential. Aliases resolve to their
+// canonical id first, so callers may pass either form.
+func IsNoAuthProvider(providerID string) bool {
+	canon := ResolveAlias(providerID)
+	if cfg, ok := KnownProviders[canon]; ok {
+		return cfg.NoAuth
+	}
+	return false
+}
+
 // GetProviderAlias returns the alias upstream publishes a provider under, ported
 // from the registry's uiAlias/alias. Providers without a registry alias are
 // published under their id (clinepass, nvidia, openrouter, openai) — exactly
