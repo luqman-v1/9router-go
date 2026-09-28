@@ -94,8 +94,11 @@ func SetupRoutes(r interface {
 	r.Post("/proxy-pools/cloudflare-deploy", mediaH.HandleCloudflareDeploy)
 
 	// CLI Tools Status Domain (dashboard batch status for installed CLI tools)
+	// The /api/cli-tools/all-statuses alias is registered in SetupServerRouter
+	// under RequireDashboardAuth instead — it is a dashboard read. Registering it
+	// here too would win the match under RequireApiKey and keep it unreachable
+	// from the session cookie the SPA actually sends.
 	r.Get("/cli-tools/all-statuses", media.NewCLIToolsHandler().HandleAllStatuses)
-	r.Get("/api/cli-tools/all-statuses", media.NewCLIToolsHandler().HandleAllStatuses)
 
 	// Headroom Management Domain (token-compression proxy lifecycle + dashboard proxy)
 	headroomH := media.NewHeadroomHandler(repo)
@@ -419,6 +422,16 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireDashboardAuth(repo))
 		SetupDashboardRoutes(r, repo, versionH)
+	})
+
+	// CLI Tools status is a dashboard read: the SPA calls it with the session
+	// cookie, never an LLM API key. It was registered inside SetupRoutes, which
+	// is mounted under RequireApiKey, so every dashboard call 401'd and the view
+	// bounced to the endpoint tab. Reachable with a session, an API key, or the
+	// local CLI token — same policy as the rest of the dashboard group.
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.RequireDashboardAuth(repo))
+		r.Get("/api/cli-tools/all-statuses", media.NewCLIToolsHandler().HandleAllStatuses)
 	})
 
 	SetupConsoleLogRoutes(r, repo)

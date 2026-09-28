@@ -37,6 +37,12 @@
   let searchQuery = $state('')
   let activeCategory = $state<'all' | 'cli' | 'ide' | 'mitm'>('all')
   let copiedSnippetId = $state<string | null>(null)
+  // Modal target for the tool-detail dialog. d8aa5ec3 dropped this declaration
+  // while leaving ~20 references behind, so the template threw
+  // "ReferenceError: selectedTool is not defined" and the view never rendered
+  // past the loading state. tsc does not typecheck .svelte files and the svelte
+  // compiler does not scope-check templates, so nothing in CI noticed.
+  let selectedTool = $state<ToolItem | null>(null)
   // SSR fallback uses the Go default port 20130; live origin wins on mount.
   let localOrigin = $state(typeof window !== 'undefined' ? window.location.origin : 'http://localhost:20130')
   onMount(() => {

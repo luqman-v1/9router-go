@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -309,5 +310,65 @@ func TestSetupServerRouter_ModelTestDashboardSession(t *testing.T) {
 	r.ServeHTTP(sessRec, sess)
 	if sessRec.Code != http.StatusOK {
 		t.Fatalf("session-authenticated /api/models/test status = %d, want 200 (ping outcome, not auth 401): %s", sessRec.Code, sessRec.Body.String())
+	}
+}
+
+// TestSetupServerRouter_CLIToolsStatusIsADashboardRead pins that
+// /api/cli-tools/all-statuses sits behind RequireDashboardAuth. The SPA calls
+// it with the session cookie, never an LLM API key; when it was registered
+// inside SetupRoutes (the RequireApiKey group) every dashboard call returned
+// 401 and the CLI Tools view bounced back to the endpoint tab.
+func TestSetupServerRouter_CLIToolsStatusIsADashboardRead(t *testing.T) {
+	t.Setenv("JWT_SECRET", "router-test-secret")
+
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	// requireLogin defaults to on with no settings row, so anonymous is denied.
+	anonRec := httptest.NewRecorder()
+	r.ServeHTTP(anonRec, httptest.NewRequest(http.MethodGet, "/api/cli-tools/all-statuses", nil))
+	if anonRec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous /api/cli-tools/all-statuses status = %d, want 401: %s", anonRec.Code, anonRec.Body.String())
+	}
+
+	token, err := auth.Sign("router-test-secret", time.Now())
+	if err != nil {
+		t.Fatalf("sign session token: %v", err)
+	}
+	sess := httptest.NewRequest(http.MethodGet, "/api/cli-tools/all-statuses", nil)
+	sess.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	sessRec := httptest.NewRecorder()
+	r.ServeHTTP(sessRec, sess)
+	if sessRec.Code != http.StatusOK {
+		t.Fatalf("session-authenticated /api/cli-tools/all-statuses status = %d, want 200 (not auth 401): %s", sessRec.Code, sessRec.Body.String())
+	}
+	if !strings.Contains(sessRec.Body.String(), "claude") {
+		t.Errorf("expected a per-tool status map, got %s", sessRec.Body.String())
+	}
+}
+
+// TestSetupServerRouter_CLIToolsStatusAPIKeyAliasUnchanged keeps the unprefixed
+// /cli-tools/all-statuses alias on the API-key group, where external callers
+// expect it. Moving the /api/ alias out must not drag this one along.
+func TestSetupServerRouter_CLIToolsStatusAPIKeyAliasUnchanged(t *testing.T) {
+	t.Setenv("JWT_SECRET", "router-test-secret")
+
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	// No API key is configured, so the API-key group rejects rather than 404s.
+	// A 404 would mean the alias vanished instead of being gated.
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/cli-tools/all-statuses", nil))
+	if rec.Code == http.StatusNotFound {
+		t.Fatal("/cli-tools/all-statuses disappeared; it must stay registered on the API-key group")
 	}
 }
