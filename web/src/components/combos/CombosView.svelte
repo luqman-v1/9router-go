@@ -256,6 +256,36 @@
     }
   }
 
+  let isBuildingAutoFamily = $state(false)
+
+  async function handleBuildAutoFamily() {
+    isBuildingAutoFamily = true
+    try {
+      const res = await api.buildAutoFamilyCombos()
+      if (res.count === 0) {
+        alert(
+          'No usable model families found. Add connections for providers with chat models, or enable disabled models.'
+        )
+      } else {
+        // A wide catalog yields dozens of families; show the head of the list
+        // rather than a wall of names.
+        const shown = res.created.slice(0, 8)
+        const extra = res.created.length - shown.length
+        alert(
+          `Grouped into ${res.count} combo(s): ${shown.join(', ')}` +
+            (extra > 0 ? ` (+${extra} more)` : '')
+        )
+      }
+      onRefresh()
+    } catch (e) {
+      alert(
+        'Failed to auto-group combos: ' + (e instanceof Error ? e.message : String(e))
+      )
+    } finally {
+      isBuildingAutoFamily = false
+    }
+  }
+
   async function handleReorderCombo(combo: Combo, models: string[]) {
     try {
       await api.updateCombo(combo.id, {
@@ -274,6 +304,8 @@
 <div class="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
   <CombosHeader
     onCreateClick={openCreateModal}
+    onAutoFamilyClick={handleBuildAutoFamily}
+    {isBuildingAutoFamily}
     onAutoFreeClick={handleBuildAutoFree}
     {isBuildingAutoFree}
   />

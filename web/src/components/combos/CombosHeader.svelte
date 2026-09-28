@@ -3,12 +3,16 @@
 
   interface Props {
     onCreateClick: () => void
+    onAutoFamilyClick?: () => void
+    isBuildingAutoFamily?: boolean
     onAutoFreeClick?: () => void
     isBuildingAutoFree?: boolean
   }
 
   let {
     onCreateClick,
+    onAutoFamilyClick,
+    isBuildingAutoFamily = false,
     onAutoFreeClick,
     isBuildingAutoFree = false,
   }: Props = $props()
@@ -37,6 +41,17 @@
     <Button icon="add" onclick={onCreateClick} class="w-full sm:w-auto whitespace-nowrap">
       Create Combo
     </Button>
+    {#if onAutoFamilyClick}
+      <Button
+        icon="hub"
+        onclick={onAutoFamilyClick}
+        disabled={isBuildingAutoFamily}
+        variant="outline"
+        class="w-full sm:w-auto whitespace-nowrap"
+      >
+        {isBuildingAutoFamily ? 'Grouping...' : 'Auto Group by Model'}
+      </Button>
+    {/if}
     {#if onAutoFreeClick}
       <Button
         icon="auto_awesome"

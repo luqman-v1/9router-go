@@ -52,6 +52,7 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/combos", h.HandleGetCombos)
 		r.Post("/combos", h.HandleCreateCombo)
 		r.Post("/combos/auto-free", h.HandleAutoFreeCombo)
+		r.Post("/combos/auto-family", h.HandleAutoFamilyCombos)
 		r.Put("/combos/{id}", h.HandleUpdateCombo)
 		r.Delete("/combos/{id}", h.HandleDeleteCombo)
 
