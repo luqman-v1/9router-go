@@ -47,6 +47,10 @@ export function hasReasoning(model: string): boolean {
   )
 }
 
+export function isAutoFreeCombo(c: Combo): boolean {
+  return c.kind === 'auto-free'
+}
+
 export function getComboModels(c: Combo): string[] {
   if (Array.isArray(c.models)) return c.models
   if (typeof c.models === 'string') {

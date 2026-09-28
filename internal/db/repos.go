@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	json "encoding/json/v2"
 	"fmt"
@@ -176,6 +177,29 @@ func (r *Repo) GetProviderConnectionByID(id string) (*models.ProviderConnection,
 		return nil, err
 	}
 	return &conn, nil
+}
+
+// GetConnectedProviders returns the set of provider ids that have at least one
+// connection row. Used to seed the auto free-tier combo with models that are
+// actually reachable from the user's configured providers.
+func (r *Repo) GetConnectedProviders(ctx context.Context) (map[string]struct{}, error) {
+	rows, err := r.db.QueryContext(ctx, "SELECT DISTINCT provider FROM providerConnections")
+	if err != nil {
+		return nil, fmt.Errorf("get connected providers: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var provider string
+		if err := rows.Scan(&provider); err != nil {
+			return nil, fmt.Errorf("get connected providers: scan: %w", err)
+		}
+		if provider != "" {
+			out[provider] = struct{}{}
+		}
+	}
+	return out, rows.Err()
 }
 
 // GetProviderConnections retrieves provider connections. If activeOnly is true, only returns active ones.

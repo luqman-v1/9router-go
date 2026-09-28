@@ -10,6 +10,12 @@
 - **Verified behaviour-preserving against 13 live providers.** A three-way fingerprint (HTTP status, response envelope, error body) was captured from the pre-change build, a `-pgo=off` build and a PGO build, all against the same real upstream accounts: **0/13 providers changed outcome**, and the provider executor suite is 94/94 identical. The eight providers that fail do so for account reasons that predate this work — model not in plan (groq, clinepass), ChatGPT-plan restriction (codex), zero credits (commandcode, trae/opencode), and a bad base path (nvidia).
 - **Two pre-existing non-streaming bugs surfaced while probing and are left as-is here.** `qd/*` and `kr/*` answer a `stream:false` request with HTTP 200 and an SSE-shaped body (qoder even mislabels it `application/json` while embedding an upstream 400 envelope). Confirmed identical on the pre-change build, so this change neither caused nor fixed it.
 - **`benchmark/run_perf_test.py`** reproduces the load numbers end-to-end against a mock upstream; **`benchmark/live_provider_smoke.py`** reproduces the 13-provider fingerprint against the real database. Neither is part of `go test` — the live one needs `SMOKE_API_KEY` and a populated `~/.9router/db/data.sqlite`.
+### ✨ Locked auto free-tier combo
+
+- A **Auto Free Tier** button on the combos page (re)builds the locked combo from the registry's free-tier models (`:free` / `/free` / `-free` suffixes) of providers the user actually has a connection for, so it never references unreachable providers.
+- Locked combos carry a badge and can be **reordered** (fallback order matters) but not edited or deleted — the delete button renders disabled, and `validateLockedReorder` rejects any update that changes the name, kind, or model *set* while permitting pure permutations.
+- `isLlmCombo` rejected any `kind !== 'llm'`, so an `auto-free` combo would be invisible on the combos page. It now accepts the `auto-*` kinds while still excluding the upstream `search-combo` media combos.
+- **Strategy-only updates no longer fail with 403.** The card's strategy dropdown persists via `PUT {strategy}` with no `models` field, which `validateLockedReorder` read as "models changed to nothing" and always refused with `auto free-tier combo models are locked`. A request that carries no `models` field now skips the model-set comparison entirely — only a request that actually sends models must prove it is a pure permutation.
 
 ### 🐛 The CLI Tools page could not be opened at all (broken since v1.9.0)
 

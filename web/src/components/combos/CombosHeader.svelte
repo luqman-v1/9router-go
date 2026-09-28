@@ -3,9 +3,15 @@
 
   interface Props {
     onCreateClick: () => void
+    onAutoFreeClick?: () => void
+    isBuildingAutoFree?: boolean
   }
 
-  let { onCreateClick }: Props = $props()
+  let {
+    onCreateClick,
+    onAutoFreeClick,
+    isBuildingAutoFree = false,
+  }: Props = $props()
 </script>
 
 <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -31,5 +37,16 @@
     <Button icon="add" onclick={onCreateClick} class="w-full sm:w-auto whitespace-nowrap">
       Create Combo
     </Button>
+    {#if onAutoFreeClick}
+      <Button
+        icon="auto_awesome"
+        onclick={onAutoFreeClick}
+        disabled={isBuildingAutoFree}
+        variant="secondary"
+        class="w-full sm:w-auto whitespace-nowrap"
+      >
+        {isBuildingAutoFree ? 'Building...' : 'Auto Free Tier'}
+      </Button>
+    {/if}
   </div>
 </div>

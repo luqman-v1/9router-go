@@ -601,6 +601,11 @@ export const api = {
     request<{ success: boolean }>(`/api/combos/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
+  /** (Re)build the locked auto free-tier combo from the registry's free models. */
+  buildAutoFreeCombo: () =>
+    request<{ status: string; id: string; models: string[] }>('/api/combos/auto-free', {
+      method: 'POST',
+    }),
 
   // API Keys
   getApiKeys: () => request<APIKey[]>('/api/keys'),

@@ -1,5 +1,7 @@
 package providers
 
+import "strings"
+
 // ProviderModels maps provider aliases/IDs to their supported models in 9router.
 // Ported verbatim from open-sse/providers/registry (registry/{id}.js models arrays,
 // keyed by uiAlias/alias and by provider id so both lookups resolve).
@@ -570,6 +572,15 @@ func GetProviderModelKind(aliasOrID, modelID string) string {
 		}
 	}
 	return ""
+}
+
+// IsFreeTierModel reports whether a registry model id is a free-tier entry.
+// Upstream marks free models with a trailing ":free", "/free" or "-free"
+// (open-sse/providers/registry model arrays), e.g. "deepseek-v4.1-flash:free".
+func IsFreeTierModel(modelID string) bool {
+	return strings.HasSuffix(modelID, ":free") ||
+		strings.HasSuffix(modelID, "/free") ||
+		strings.HasSuffix(modelID, "-free")
 }
 
 // GetProviderModels returns the list of models for a provider or alias.

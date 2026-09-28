@@ -177,6 +177,7 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 
 	r.Get("/api/combos", dashH.HandleGetCombos)
 	r.Post("/api/combos", dashH.HandleCreateCombo)
+	r.Post("/api/combos/auto-free", dashH.HandleAutoFreeCombo)
 	r.Put("/api/combos/{id}", dashH.HandleUpdateCombo)
 	r.Delete("/api/combos/{id}", dashH.HandleDeleteCombo)
 
