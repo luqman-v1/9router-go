@@ -339,12 +339,31 @@ func TestHandleImportDatabase_ClientContract(t *testing.T) {
 		t.Fatalf("password header should authorize import: %d %s", rec.Code, rec.Body.String())
 	}
 
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/settings/database", strings.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(passwordHeader, "wrong")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong password should be rejected: %d %s", rec.Code, rec.Body.String())
+	// The authorized import above wiped the settings row and re-inserted only
+	// payload["settings"], so the stored hash is gone. Re-arm it, otherwise this
+	// negative case would be answered by the default-password fallback rather
+	// than by bcrypt and would keep passing even if header auth were broken.
+	if err := repo.UpdateSettingsRaw(map[string]any{"password": string(hash)}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		password string
+	}{
+		{"wrong password", "wrong"},
+		// The upstream default must not authorize once a password is stored.
+		{"default password", defaultInitialPassword},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec = httptest.NewRecorder()
+			req = httptest.NewRequest(http.MethodPost, "/api/settings/database", strings.NewReader(payload))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(passwordHeader, tc.password)
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401 for %q, got %d: %s", tc.password, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }

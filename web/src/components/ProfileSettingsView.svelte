@@ -25,7 +25,7 @@
   import Modal from '../lib/ui/Modal.svelte'
   import Button from '../lib/ui/Button.svelte'
   import Input from '../lib/ui/Input.svelte'
-  import { api, getAuthHeaders, type Settings } from '../api/client'
+  import { api, getAuthHeaders, responseErrorMessage, type Settings } from '../api/client'
 
   interface Props {
     settings?: Settings
@@ -202,7 +202,20 @@
     }
   }
 
+  // closeDbAuth is the single dismissal path for the password modal. Modal
+  // wires Escape, the overlay and both ✕ buttons to onClose, and an import
+  // already in flight is a destructive operation the user must not be able to
+  // abandon by pressing a key — dismissing the dialog would leave the POST
+  // running and then wipe the database on completion.
+  function closeDbAuth() {
+    if (isImportingBackup || isDownloadingBackup) return
+    dbAuthOpen = false
+    dbPassword = ''
+    pendingImportFile = null
+  }
+
   function handleDownloadBackup() {
+    if (isImportingBackup || isDownloadingBackup) return
     dbPassword = ''
     pendingImportFile = null
     dbAuthOpen = true
@@ -210,13 +223,18 @@
 
   async function runDownloadBackup() {
     isDownloadingBackup = true
+    const password = dbPassword
     try {
       const res = await fetch('/api/settings/database', {
-        headers: { ...getAuthHeaders(), 'x-9r-password': dbPassword },
+        headers: { ...getAuthHeaders(), 'x-9r-password': password },
       })
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to export database')
+        // This route is always-protected, so the middleware answers a
+        // sessionless request with the nested {"error":{...}} envelope rather
+        // than the handler's flat {"error":"..."}. responseErrorMessage unwraps
+        // both; reading `data.error` alone stringifies the envelope to
+        // "[object Object]".
+        throw new Error(await responseErrorMessage(res, 'Failed to export database'))
       }
       const payload = await res.json()
       const content = JSON.stringify(payload, null, 2)
@@ -239,7 +257,8 @@
     }
   }
 
-  async function handleFileSelected(e: Event) {
+  function handleFileSelected(e: Event) {
+    if (isImportingBackup || isDownloadingBackup) return
     const target = e.target as HTMLInputElement
     const file = target.files?.[0]
     if (!file) return
@@ -253,6 +272,10 @@
   async function runImportBackup() {
     const file = pendingImportFile
     if (!file) return
+    // Snapshot the password before the first await: file.text() and
+    // JSON.parse() can both yield, and reading live state afterwards would let a
+    // concurrent dismissal blank the credential the request is authorized with.
+    const password = dbPassword
     isImportingBackup = true
     try {
       const raw = await file.text()
@@ -260,12 +283,11 @@
 
       const res = await fetch('/api/settings/database', {
         method: 'POST',
-        headers: { ...getAuthHeaders(), 'x-9r-password': dbPassword },
+        headers: { ...getAuthHeaders(), 'x-9r-password': password },
         body: JSON.stringify(payload),
       })
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to import database')
+        throw new Error(await responseErrorMessage(res, 'Failed to import database'))
       }
 
       alert('Database backup imported successfully! Reloading page...')
@@ -355,7 +377,7 @@
           <button
             type="button"
             onclick={handleDownloadBackup}
-            disabled={isDownloadingBackup}
+            disabled={isDownloadingBackup || isImportingBackup}
             class="flex-1 py-2 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5"
           >
             <Download class="w-3.5 h-3.5 text-brand-500" />
@@ -373,7 +395,7 @@
           <button
             type="button"
             onclick={() => fileInput?.click()}
-            disabled={isImportingBackup}
+            disabled={isImportingBackup || isDownloadingBackup}
             class="flex-1 py-2 px-3 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main transition cursor-pointer flex items-center justify-center gap-1.5"
           >
             <Upload class="w-3.5 h-3.5 text-text-muted" />
@@ -696,7 +718,7 @@
 
     <Modal
       isOpen={dbAuthOpen}
-      onClose={() => (dbAuthOpen = false)}
+      onClose={closeDbAuth}
       title={pendingImportFile ? 'Confirm Import' : 'Confirm Download'}
       size="sm"
     >
@@ -714,7 +736,7 @@
         />
       </div>
       {#snippet footer()}
-        <Button variant="ghost" onclick={() => (dbAuthOpen = false)} disabled={isImportingBackup || isDownloadingBackup}>
+        <Button variant="ghost" onclick={closeDbAuth} disabled={isImportingBackup || isDownloadingBackup}>
           Cancel
         </Button>
         <Button
