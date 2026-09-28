@@ -26,6 +26,13 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
+      # The web suite ran nowhere before this: CI only built the SPA, so a PR
+      # breaking client.ts or router.ts still went green. bun:test needs no
+      # extra dependency — the runner already has bun and the install above.
+      - name: Test web
+        working-directory: web
+        run: bun test
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

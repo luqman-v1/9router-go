@@ -32,3 +32,8 @@ node_modules/
 web/node_modules/
 stitch-screens/
 stitch-screenshots/
+
+# Git worktrees — each is a nested repo, so `git add -A` will happily stage
+# them as embedded gitlinks. A worktree caught in a commit has to be undone
+# with `git rm --cached` before it reaches the remote.
+.worktrees/
