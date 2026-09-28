@@ -7,6 +7,10 @@
     isBuildingAutoFamily?: boolean
     onAutoFreeClick?: () => void
     isBuildingAutoFree?: boolean
+    selectedCount?: number
+    deletableCount?: number
+    onDeleteSelected?: () => void
+    onDeleteAll?: () => void
   }
 
   let {
@@ -15,6 +19,10 @@
     isBuildingAutoFamily = false,
     onAutoFreeClick,
     isBuildingAutoFree = false,
+    selectedCount = 0,
+    deletableCount = 0,
+    onDeleteSelected,
+    onDeleteAll,
   }: Props = $props()
 </script>
 
@@ -61,6 +69,28 @@
         class="w-full sm:w-auto whitespace-nowrap"
       >
         {isBuildingAutoFree ? 'Building...' : 'Auto Free Tier'}
+      </Button>
+    {/if}
+    {#if onDeleteSelected}
+      <Button
+        icon="delete"
+        onclick={onDeleteSelected}
+        disabled={selectedCount === 0}
+        variant="danger"
+        class="w-full sm:w-auto whitespace-nowrap"
+      >
+        Delete Selected ({selectedCount})
+      </Button>
+    {/if}
+    {#if onDeleteAll}
+      <Button
+        icon="delete_sweep"
+        onclick={onDeleteAll}
+        disabled={deletableCount === 0}
+        variant="outline"
+        class="w-full sm:w-auto whitespace-nowrap"
+      >
+        Delete All ({deletableCount})
       </Button>
     {/if}
   </div>

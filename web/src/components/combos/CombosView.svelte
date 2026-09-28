@@ -4,6 +4,7 @@
   import {
     clearJudgeModel,
     getComboModels,
+    isAutoFreeCombo,
     parseCapacityAdapterSettings,
     updateComboStrategy,
     updateJudgeModel,
@@ -62,8 +63,32 @@
   let showModelPicker = $state(false)
   let modelPickerTarget = $state<'combo' | 'vision' | 'audio' | 'judge'>('combo')
 
-  // Confirm Delete Modal state (upstream confirmState parity)
-  let confirmState = $state<{ name: string; id: string } | null>(null)
+  // Confirm Delete Modal state (upstream confirmState parity). Carries the
+  // ids to remove; the locked auto free-tier combo can never be in here.
+  let confirmState = $state<{ name: string; ids: string[] } | null>(null)
+
+  // Bulk-delete selection. Set re-created on every toggle so Svelte 5 sees the
+  // change (mutating a Set in place is not tracked).
+  let selectedIds = $state<Set<string>>(new Set())
+
+  function toggleSelect(combo: Combo) {
+    if (isAutoFreeCombo(combo)) return
+    const next = new Set(selectedIds)
+    if (next.has(combo.id)) next.delete(combo.id)
+    else next.add(combo.id)
+    selectedIds = next
+  }
+
+  // Delete All still skips locked combos: the button count and the actual
+  // deletes must agree on what is removable.
+  let deletableCombos = $derived(llmCombos.filter((c) => !isAutoFreeCombo(c)))
+  let selectedDeletable = $derived(
+    deletableCombos.filter((c) => selectedIds.has(c.id))
+  )
+
+  function clearSelection() {
+    selectedIds = new Set()
+  }
 
   async function loadSettings() {
     try {
@@ -224,15 +249,39 @@
       showModelPicker = false
     }
   }
-  async function handleDeleteCombo() {
+  async function handleDeleteCombos() {
     if (!confirmState) return
-    const id = confirmState.id
-    try {
-      await api.deleteCombo(id)
-      confirmState = null
-      onRefresh()
-    } catch (e) {
-      console.error('Failed to delete combo:', e)
+    const ids = confirmState.ids
+    let deleted = 0
+    for (const id of ids) {
+      try {
+        await api.deleteCombo(id)
+        deleted++
+      } catch (e) {
+        console.error(`Failed to delete combo ${id}:`, e)
+      }
+    }
+    confirmState = null
+    clearSelection()
+    onRefresh()
+    if (deleted < ids.length) {
+      alert(`Deleted ${deleted} of ${ids.length} combo(s). Locked or failed combos were kept.`)
+    }
+  }
+
+  function handleDeleteSelected() {
+    if (selectedDeletable.length === 0) return
+    confirmState = {
+      name: selectedDeletable.map((c) => c.name).join(', '),
+      ids: selectedDeletable.map((c) => c.id),
+    }
+  }
+
+  function handleDeleteAll() {
+    if (deletableCombos.length === 0) return
+    confirmState = {
+      name: deletableCombos.map((c) => c.name).join(', '),
+      ids: deletableCombos.map((c) => c.id),
     }
   }
 
@@ -308,6 +357,10 @@
     {isBuildingAutoFamily}
     onAutoFreeClick={handleBuildAutoFree}
     {isBuildingAutoFree}
+    selectedCount={selectedDeletable.length}
+    deletableCount={deletableCombos.length}
+    onDeleteSelected={handleDeleteSelected}
+    onDeleteAll={handleDeleteAll}
   />
 
   <!-- Combos List -->
@@ -336,8 +389,10 @@
           onClearJudge={clearJudge}
           onCopy={copyName}
           onEdit={openEditModal}
-          onDelete={(c) => (confirmState = { name: c.name, id: c.id })}
+          onDelete={(c) => (confirmState = { name: c.name, ids: [c.id] })}
           onReorder={handleReorderCombo}
+          isSelected={selectedIds.has(combo.id)}
+          onToggleSelect={toggleSelect}
         />
       {/each}
     </div>
@@ -384,7 +439,13 @@
 <ConfirmModal
   isOpen={!!confirmState}
   title="Delete Combo"
-  message={confirmState ? `Delete combo "${confirmState.name}"?` : 'Delete this combo?'}
+  message={
+    confirmState
+      ? confirmState.ids.length === 1
+        ? `Delete combo "${confirmState.name}"?`
+        : `Delete ${confirmState.ids.length} combo(s)? (${confirmState.name})`
+      : 'Delete this combo?'
+  }
   onClose={() => (confirmState = null)}
-  onConfirm={handleDeleteCombo}
+  onConfirm={handleDeleteCombos}
 />

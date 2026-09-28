@@ -35,6 +35,8 @@
     onEdit: (combo: Combo) => void
     onDelete: (combo: Combo) => void
     onReorder?: (combo: Combo, models: string[]) => void
+    isSelected?: boolean
+    onToggleSelect?: (combo: Combo) => void
   }
 
   let {
@@ -48,9 +50,16 @@
     onEdit,
     onDelete,
     onReorder,
+    isSelected = false,
+    onToggleSelect,
   }: Props = $props()
 
   let modelsList = $derived(getComboModels(combo))
+
+  function handleToggleSelect(e: Event) {
+    e.stopPropagation()
+    onToggleSelect?.(combo)
+  }
 
   function moveModel(index: number, delta: -1 | 1) {
     const next = modelsList.slice()
@@ -69,6 +78,14 @@
   <div class="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
     <!-- Left: Icon, Name, Model Badges & Fusion Judge -->
     <div class="flex min-w-0 flex-1 items-start gap-3 sm:items-center">
+      <input
+        type="checkbox"
+        checked={isSelected}
+        onchange={handleToggleSelect}
+        disabled={isLocked}
+        class="mt-1 size-4 shrink-0 cursor-pointer accent-brand-500 disabled:cursor-not-allowed disabled:opacity-30"
+        title={isLocked ? 'Locked auto free-tier combo cannot be deleted' : 'Select for bulk delete'}
+      />
       <div class="size-8 rounded-lg bg-brand-500/10 flex items-center justify-center shrink-0">
         <Layers class="w-4 h-4 text-brand-500" />
       </div>
