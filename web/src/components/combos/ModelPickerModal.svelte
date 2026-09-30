@@ -8,7 +8,7 @@
     resolveFilteredGroups,
     resolveModelPickerGroups,
   } from './pickerData'
-  import { parseCustomModelsResponse, parseDisabledModelsMap } from '../../lib/customModels'
+  import { EMPTY_PICKER_EXTRAS, loadPickerExtras, type ResolvedPickerExtras } from './pickerExtras'
 
   interface Props {
     isOpen: boolean
@@ -43,36 +43,24 @@
   }: Props = $props()
 
   let searchQuery = $state('')
-  let fetchedAliases = $state<Record<string, string>>({})
-  let fetchedCustoms = $state<Array<{ providerAlias?: string; id: string; name?: string; type?: string }>>([])
-  let fetchedDisabled = $state<Record<string, string[]>>({})
+  let fetchedExtras = $state<ResolvedPickerExtras>(EMPTY_PICKER_EXTRAS)
 
   $effect(() => {
     if (isOpen) {
       searchQuery = ''
       // Upstream parity (ComboFormModal fetchModalData): aliases drive
       // passthrough + custom-node rows; customs/disabled complete the merge.
-      api.getModelAliases().then((r) => (fetchedAliases = r?.aliases || {})).catch(() => {})
-      api.getCustomModels().then(normalizeCustoms).catch(() => {})
-      api.getDisabledModels().then(normalizeDisabled).catch(() => {})
+      // One batch, one write: three chained fetches each published their own
+      // $state and rebuilt the whole pill list on every settle (#61).
+      void loadPickerExtras(api).then((extras) => (fetchedExtras = extras))
     }
   })
 
-  function normalizeCustoms(res: unknown) {
-    // Upstream parity: GET /api/models/custom -> { models: [...] }.
-    fetchedCustoms = parseCustomModelsResponse(res)
-  }
-
-  function normalizeDisabled(res: unknown) {
-    // Upstream parity: full-map { disabled: {...} } (ModelSelectModal) / bare map (go port).
-    fetchedDisabled = parseDisabledModelsMap(res)
-  }
-
   let groups = $derived(
     resolveModelPickerGroups(connections, providerNodes, {
-      modelAliases: modelAliases ?? fetchedAliases,
-      customModels: customModels ?? fetchedCustoms,
-      disabledModels: disabledModels ?? fetchedDisabled,
+      modelAliases: modelAliases ?? fetchedExtras.modelAliases,
+      customModels: customModels ?? fetchedExtras.customModels,
+      disabledModels: disabledModels ?? fetchedExtras.disabledModels,
     })
   )
   let filteredCombos = $derived(
@@ -175,7 +163,7 @@
                   label={combo.name}
                   value={combo.name}
                   isAdded={addedModelValues.includes(combo.name)}
-                  onClick={() => handleToggle(combo.name)}
+                  onToggle={handleToggle}
                 />
               {/each}
             </div>
@@ -208,8 +196,9 @@
                   label={model.name}
                   value={model.value}
                   isAdded={addedModelValues.includes(model.value)}
-                  caps={model.caps}
-                  onClick={() => handleToggle(model.value)}
+                  vision={model.caps.vision}
+                  reasoning={model.caps.reasoning}
+                  onToggle={handleToggle}
                 />
               {/each}
             </div>
