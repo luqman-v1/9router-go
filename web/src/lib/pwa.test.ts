@@ -1,5 +1,5 @@
 import assert from 'node:assert'
-import { describe, it } from 'node:test'
+import { afterEach, describe, it } from 'node:test'
 
 type Listener = (event: FakeInstallEvent) => void
 type ListenerRegistry = Record<string, Listener[]>
@@ -17,6 +17,28 @@ interface GlobalStubs {
   navigator: unknown
   document: unknown
 }
+
+const STUBBED_GLOBALS = ['window', 'navigator', 'document'] as const
+
+// bun test runs every file in one process, so a stubbed window that outlives
+// this file breaks whatever reads it next: client.ts evaluates
+// `window.location.pathname` inside handleUnauthorized, and a stub without
+// `location` throws there - the 401 listener never fires and its test hangs
+// until the 5s timeout. Descriptors, not values, so a global that was absent
+// stays absent and a read-only one is not assigned over.
+const pristine = STUBBED_GLOBALS.map(
+  (key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const
+)
+
+afterEach(() => {
+  for (const [key, descriptor] of pristine) {
+    if (descriptor) {
+      Object.defineProperty(globalThis, key, descriptor)
+    } else {
+      delete (globalThis as unknown as Record<string, unknown>)[key]
+    }
+  }
+})
 
 function harness(standalone: boolean) {
   const listeners: ListenerRegistry = {}
