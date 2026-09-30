@@ -169,17 +169,17 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 										errBody3, _ := io.ReadAll(io.LimitReader(resp3.Body, constants.UpstreamErrLimit))
 										resp3.Body.Close()
 										log.Warn("gemini", "retry without thoughtSignature also failed", "status", resp3.StatusCode, "body", string(errBody3[:min(500, len(errBody3))]))
-										return nil, &UpstreamError{StatusCode: resp3.StatusCode, Body: errBody3}
+										return nil, &UpstreamError{StatusCode: resp3.StatusCode, Body: errBody3, Header: resp3.Header}
 									}
 								}
 							}
 						}
-						return nil, &UpstreamError{StatusCode: resp2.StatusCode, Body: errBody2}
+						return nil, &UpstreamError{StatusCode: resp2.StatusCode, Body: errBody2, Header: resp2.Header}
 					}
 				}
 			}
 		}
-		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 	}
 	return resp, nil
 }

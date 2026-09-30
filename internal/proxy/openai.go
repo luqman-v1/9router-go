@@ -49,7 +49,7 @@ func UpstreamBody(resp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("read upstream body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: body}
+		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: body, Header: resp.Header}
 	}
 	return body, nil
 }

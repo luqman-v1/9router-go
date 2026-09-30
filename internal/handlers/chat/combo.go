@@ -434,7 +434,7 @@ func keysString(m map[string]bool) string {
 func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int) {
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
-	var earliestRetryAfter string
+	var retry passRetry
 	// Connections that failed with a retryable status this request; remaining
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
@@ -457,7 +457,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	// 429 to the client.
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
-			wait := comboRetryAfter(earliestRetryAfter)
+			wait := retry.wait()
 			if wait == 0 {
 				break
 			}
@@ -469,7 +469,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			// Fresh pass: re-allow connections locked by the previous attempt
 			// (their cooldown has elapsed) and clear the error state.
 			lastErr = nil
-			earliestRetryAfter = ""
+			retry.reset()
 			excludeIDs = nil
 		}
 
@@ -563,11 +563,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 							// In combo loops, fail over immediately to the next connection/model without blocking the client turn
 							log.Info("combo", "transient failover skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "conn", connID)
 						}
-						if ra := extractRetryAfter(ue.Body); ra != "" {
-							if earliestRetryAfter == "" || ra < earliestRetryAfter {
-								earliestRetryAfter = ra
-							}
-						}
+						retry.note(ue)
 						lastErr = ue
 						if isKnownNoAuth {
 							break
@@ -603,29 +599,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			return
 		}
 		cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-		if earliestRetryAfter != "" {
-			retryAfterSec := int((time.Until(mustParseTime(earliestRetryAfter)) + time.Second - 1) / time.Second)
-			if retryAfterSec < 1 {
-				retryAfterSec = 1
-			}
-			cw.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-			retryHuman := formatRetryAfter(earliestRetryAfter)
-			var errBody map[string]any
-			if err := json.Unmarshal(lastErr.Body, &errBody); err == nil {
-				if errObj, ok := errBody["error"].(map[string]any); ok {
-					if msg, _ := errObj["message"].(string); msg != "" {
-						errObj["message"] = msg + " (" + retryHuman + ")"
-						updated, _ := json.Marshal(errBody)
-						cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-						cw.WriteHeader(lastErr.StatusCode)
-						cw.Write(updated)
-						return
-					}
-				}
-			}
-		}
-		cw.WriteHeader(lastErr.StatusCode)
-		cw.Write(lastErr.Body)
+		retry.writeError(cw, lastErr)
 		return
 	}
 	if cw.IsCommitted() {
@@ -639,7 +613,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int) {
 	cw := newCommittedResponseWriter(w)
 	var lastErr *upstreamError
-	var earliestRetryAfter string
+	var retry passRetry
 
 	// Auto-capability-switch: convert body to JSON for detection
 	bodyJSON, _ := json.Marshal(translatedReq)
@@ -657,7 +631,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	// 429 to the client.
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
-			wait := comboRetryAfter(earliestRetryAfter)
+			wait := retry.wait()
 			if wait == 0 {
 				break
 			}
@@ -669,7 +643,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			// Fresh pass: re-allow connections locked by the previous attempt
 			// (their cooldown has elapsed) and clear the error state.
 			lastErr = nil
-			earliestRetryAfter = ""
+			retry.reset()
 			excludeIDs = nil
 		}
 
@@ -753,11 +727,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 							// In combo loops, fail over immediately to the next connection/model without blocking the client turn
 							log.Info("combo", "transient failover skip", "status", ue.StatusCode, "provider", modelInfo.Provider, "conn", connID)
 						}
-						if ra := extractRetryAfter(ue.Body); ra != "" {
-							if earliestRetryAfter == "" || ra < earliestRetryAfter {
-								earliestRetryAfter = ra
-							}
-						}
+						retry.note(ue)
 						lastErr = ue
 						if isKnownNoAuth {
 							break
@@ -793,71 +763,13 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			return
 		}
 		cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-		if earliestRetryAfter != "" {
-			retryAfterSec := int((time.Until(mustParseTime(earliestRetryAfter)) + time.Second - 1) / time.Second)
-			if retryAfterSec < 1 {
-				retryAfterSec = 1
-			}
-			cw.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-			retryHuman := formatRetryAfter(earliestRetryAfter)
-			var errBody map[string]any
-			if err := json.Unmarshal(lastErr.Body, &errBody); err == nil {
-				if errObj, ok := errBody["error"].(map[string]any); ok {
-					if msg, _ := errObj["message"].(string); msg != "" {
-						errObj["message"] = msg + " (" + retryHuman + ")"
-						updated, _ := json.Marshal(errBody)
-						cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-						cw.WriteHeader(lastErr.StatusCode)
-						cw.Write(updated)
-						return
-					}
-				}
-			}
-		}
-		cw.WriteHeader(lastErr.StatusCode)
-		cw.Write(lastErr.Body)
+		retry.writeError(cw, lastErr)
 		return
 	}
 	if cw.IsCommitted() {
 		return
 	}
 	handlerutil.WriteJSONError(cw, http.StatusBadGateway, "all combo models failed: no valid entries")
-}
-
-// mustParseTime parses an RFC3339 timestamp. Returns zero time on error.
-func mustParseTime(s string) time.Time {
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return time.Time{}
-	}
-	return t
-}
-
-// comboRetryWaitCap bounds how long a fully-failed combo pass will hold the
-// request before retrying. Longer upstream Retry-After values are surfaced via
-// the Retry-After header instead so the client decides.
-const comboRetryWaitCap = 8 * time.Second
-
-// comboRetryAfter returns how long to wait before retrying a fully-failed
-// combo pass. It honors the earliest upstream Retry-After, capped at
-// comboRetryWaitCap. Returns 0 (no retry) when there is no usable Retry-After
-// or the wait would exceed the cap.
-func comboRetryAfter(retryAfter string) time.Duration {
-	if retryAfter == "" {
-		return 0
-	}
-	until := mustParseTime(retryAfter)
-	if until.IsZero() {
-		return 0
-	}
-	sec := int((time.Until(until) + time.Second - 1) / time.Second)
-	if sec < 1 {
-		sec = 1
-	}
-	if sec > int(comboRetryWaitCap/time.Second) {
-		return 0
-	}
-	return time.Duration(sec) * time.Second
 }
 
 // comboLockRetryable classifies a retryable upstream error in a combo loop and
@@ -879,10 +791,7 @@ func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider,
 	if !cls.ShouldFallback || cls.CooldownMs <= 0 {
 		return
 	}
-	cooldownSec := int((cls.CooldownMs + 999) / 1000)
-	if dur, ok := extractResetDuration(ue.Body); ok {
-		cooldownSec = int(dur.Seconds())
-	}
+	cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(cls.CooldownMs)*time.Millisecond, ue)
 	lockKey := canonicalLockModel(provider, model)
 	if err := h.Repo.LockConnectionModel(connID, lockKey, cooldownSec, cls.NewBackoffLevel); err != nil {
 		log.Warn("combo", "lock failed", "conn", connID, "provider", provider, "model", lockKey, "error", err)
