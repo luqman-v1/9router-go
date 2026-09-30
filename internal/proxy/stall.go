@@ -2,8 +2,11 @@ package proxy
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"9router/proxy/internal/log"
@@ -14,6 +17,12 @@ import (
 // stream is considered stalled and the connection is closed.
 // Matches Next.js STREAM_STALL_TIMEOUT_MS = 360000 (6 minutes).
 const DefaultStallTimeout = 6 * time.Minute
+
+// ErrStreamStall reports that the stall watchdog fired, so a pending Read
+// fails with this instead of the bare "file already closed" the Close would
+// otherwise produce. Callers that must tell a timeout apart from a lost
+// socket (an in-band SSE error frame, for instance) match on it.
+var ErrStreamStall = errors.New("stream stall timeout")
 
 // StallReader wraps an io.ReadCloser with a timer that fires if no data is
 // read within the timeout. When the timer fires, the underlying reader is
@@ -26,6 +35,7 @@ type StallReader struct {
 	once     sync.Once
 	doneOnce sync.Once
 	done     chan struct{} // closed on Close; stops the shutdown watcher
+	stalled   atomic.Bool // watchdog fired; Read reports ErrStreamStall
 }
 
 // NewStallReader wraps rc with stall detection. If no data is read within
@@ -51,6 +61,7 @@ func NewStallReaderWithContext(ctx context.Context, rc io.ReadCloser, timeout ti
 	}
 	s.timer = time.AfterFunc(timeout, func() {
 		log.Warn("stream", "stall detected", "label", label, "timeout", timeout)
+		s.stalled.Store(true)
 		s.Close()
 	})
 	go func() {
@@ -82,6 +93,12 @@ func (s *StallReader) Read(p []byte) (int, error) {
 	n, err := s.reader.Read(p)
 	if err != nil {
 		s.timer.Stop()
+	}
+	// The watchdog closes the reader out from under this Read, so the raw
+	// error is an opaque "file already closed". Translate it back into the
+	// timeout it actually was, so callers can tell a stall from a lost socket.
+	if err != nil && s.stalled.Load() {
+		err = fmt.Errorf("read upstream after stall: %w", ErrStreamStall)
 	}
 	return n, err
 }

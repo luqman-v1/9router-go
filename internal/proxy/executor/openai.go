@@ -165,12 +165,13 @@ func sseStream(o sseStreamOpts) error {
 			if writeErr != nil {
 				return fmt.Errorf("write to client: %w", writeErr)
 			}
-			// Truncated or mid-stream aborted upstream: synthesize a terminal
-			// error event (mirrors SSECopy's finish_reason synthesis, PR #4079)
-			// so native clients do not hang on a stream with no end.
+			// Truncated or mid-stream aborted upstream. HTTP 200 is already
+			// on the wire, so report the failure in-band: openai-python
+			// raises on a `data:` payload carrying `error` rather than
+			// keeping the truncated text (upstream 93001213).
 			if err != nil || !sawTerminal {
-				term := "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"upstream stream ended before completion\"}}\n\n"
-				_, _ = hw.Write([]byte(term))
+				code, message := proxy.ClassifyStreamAbort(err)
+				_, _ = hw.Write(proxy.BuildStreamErrorBytes(code, message, proxy.SSEFormatClaude))
 				if flusher != nil {
 					flusher.Flush()
 				}
