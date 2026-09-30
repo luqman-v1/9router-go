@@ -47,6 +47,10 @@ export function registerServiceWorker() {
   }
 
   window.addEventListener('beforeinstallprompt', (e) => {
+    // Already running as an installed app: no custom button will ever be
+    // shown, so do not swallow the event — that only earns Chrome's
+    // "preventDefault() called, the page must call prompt()" console error.
+    if (isStandalone()) return
     e.preventDefault()
     deferredPrompt = e as BeforeInstallPromptEvent
     notify(true)
@@ -77,16 +81,18 @@ export function subscribeInstallPrompt(callback: (canInstall: boolean) => void):
 
 export async function promptInstall(): Promise<boolean> {
   if (!deferredPrompt) return false
+  // A BeforeInstallPromptEvent is single-use. Keeping it after a dismissed
+  // dialog made the next click call prompt() on a spent event, which Chrome
+  // rejects with "Ignored bad install" in the console.
+  const event = deferredPrompt
+  deferredPrompt = null
+  notify(false)
   try {
-    await deferredPrompt.prompt()
-    const choice = await deferredPrompt.userChoice
-    if (choice.outcome === 'accepted') {
-      deferredPrompt = null
-      notify(false)
-      return true
-    }
+    await event.prompt()
+    const choice = await event.userChoice
+    return choice.outcome === 'accepted'
   } catch (err) {
     console.error('Error prompting install:', err)
+    return false
   }
-  return false
 }

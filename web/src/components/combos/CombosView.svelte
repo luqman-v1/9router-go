@@ -105,11 +105,21 @@
   }
 
   $effect(() => { loadSettings() })
+  // Reset the create form once per open. Unguarded, this looped forever: the
+  // effect bumps `modalNameResetKey`, which the `{#key}` block below reads, that
+  // block re-creates CreateComboModal, and that re-queues the effect. Svelte
+  // aborted the flush with effect_update_depth_exceeded after 1000 rounds, so
+  // "Add Model" never opened the picker at all.
+  let createSessionOpen = $state(false)
   $effect(() => {
-    if (isCreatingOpen && !editingCombo) {
-      modalModels = []
-      modalNameResetKey += 1
+    if (!isCreatingOpen) {
+      createSessionOpen = false
+      return
     }
+    if (editingCombo || createSessionOpen) return
+    createSessionOpen = true
+    modalModels = []
+    modalNameResetKey += 1
   })
 
   function copyName(name: string, id: string) {

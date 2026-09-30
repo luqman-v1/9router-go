@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### 🐛 Dua error console dashboard: tombol "Add Model" tidak pernah membuka picker, dan event install dipakai ulang
+
+- **Gejalanya satu, root cause-nya lain, dan keduanya sudah terukur di browser.** Membuka modal Create/Edit Combo lalu menekan **Add Model** melempar `effect_update_depth_exceeded` — picker tidak pernah tampil, tidak ada input pencarian di DOM. Efek reset di `CombosView.svelte` menulis `modalNameResetKey`, nilai yang dibaca blok `{#key}` di bawahnya; blok itu membuat ulang `CreateComboModal`, dan itu mengantrekan ulang efeknya. Svelte membuang seluruh flush setelah **1001** putaran (terhitung di dev build: `window.__resetRuns = 1001` tepat saat modal Create terbuka, sebelum "Add Model" ditekan). Efeknya kini dijaga `createSessionOpen`, jadi reset terjadi sekali per sesi — diverifikasi di build production: picker terbuka, search 77 → 36 pill → kembali 77, klik pill toggle, **0 error console**.
+- **Bukan regression dari #61.** Bug ini direproduksi juga dengan kode pra-#61 (`git show a8b1556^`), dan dibisect: menghapus `modalNameResetKey += 1` saja (sambil membiarkan `modalModels = []`) membuat efek berhenti di **1** putaran dan error hilang. Jadi penyebabnya terukur, bukan dugaan.
+- **Event `beforeinstallprompt` sekarang benar-benar sekali pakai.** `promptInstall()` lama menyimpan event setelah dialog di-*dismiss*, jadi klik berikutnya memanggil `prompt()` pada event yang sudah dipakai dan Chrome menolak dengan "Ignored bad install" di console. Sekarang event di-*spend* pada panggilan pertama (accepted maupun dismissed) dan CTA-nya mati sampai Chrome mengirim event baru; kalau app sudah berjalan standalone, event tidak lagi di-*preventDefault* karena tidak ada tombol custom yang memakainya. Dites di `web/src/lib/pwa.test.ts` (4 kasus) dan **mutation-checked**: menghapus guard standalone atau mengembalikan event ke keadaan "belum dipakai" membuat 3 dari 4 test gagal pada asersi yang tepat.
+- **`s.includes is not a function` belum bisa direproduksi** pada build saat ini: seluruh 19 route dashboard disapu di build production dengan data lokal yang sama (5 koneksi Antigravity, 0 lalu 2 combo) dan nol kemunculan. Butuh halaman + langkah yang tepat dari laporan itu sebelum bisa ditunjuk ke baris kodenya — belum ada tebakan yang ditulis ke changelog ini.
+
+
 ### 🐛 Issue #61 (partial) — picker combo: satu flush untuk tiga fetch metadata, bukan tiga
 
 - **Status jujurnya: #61 BELUM selesai.** Angka utamanya masih hidup. Diukur ulang di build production memakai komponen aslinya (`ModelPickerModal` + katalog asli, 997 pill / 5.561 node di dalam satu `max-h-[400px] overflow-y-auto` + `flex flex-wrap`), median 14 iterasi bergantian di satu sesi Chromium: **clear search → full list 146ms Task / 72ms Script**, dan itu tetap setelah perubahan di bawah.
