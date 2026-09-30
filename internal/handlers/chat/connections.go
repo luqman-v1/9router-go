@@ -173,13 +173,13 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			if excludeSet[c.ID] {
 				continue
 			}
-			// Account-scoped cooldown. An account whose quota is spent or
-			// whose auth already failed is skipped before it is selected, so
-			// the request does not have to be spent on a call that is going
-			// to fail — round-robin otherwise kept handing out dead
-			// accounts until a live 429/401 locked them. Upstream parity:
-			// filterAvailableAccounts.
-			if until, ok := db.ConnectionCooldownUntil(c.Data); ok && until.After(now) {
+			// Account-scoped cooldown. An account whose quota is spent, or
+			// whose OAuth grant the provider already rejected, is skipped
+			// before it is selected — round-robin otherwise kept handing out
+			// dead accounts until a live 429/401 locked them, and a rejected
+			// grant cost a token-endpoint call on every request until the IP
+			// was rate limited. Upstream parity: filterAvailableAccounts.
+			if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
 				if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
 					cooldownUntil = until
 				}
@@ -249,7 +249,7 @@ func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection
 	if slices.Contains(excludeIDs, conn.ID) {
 		return true, "excluded"
 	}
-	if until, ok := db.ConnectionCooldownUntil(conn.Data); ok && until.After(time.Now()) {
+	if until, ok := db.ConnectionBlockedUntil(conn.Data); ok && until.After(time.Now()) {
 		return true, "account cooldown until " + until.UTC().Format(time.RFC3339)
 	}
 	if model == "" {

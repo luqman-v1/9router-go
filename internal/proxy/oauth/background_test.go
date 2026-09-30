@@ -45,6 +45,21 @@ func TestSelectConnectionsNeedingRefresh(t *testing.T) {
 			conn: mk("c5", "oauth", `{"refreshToken":"rt"}`),
 			want: false,
 		},
+		{
+			name: "parked connection is not retried on every tick",
+			conn: mk("c6", "oauth", `{"refreshToken":"rt","expiresAt":"`+now.Add(time.Minute).UTC().Format(time.RFC3339)+`","oauthLockedUntil":"`+now.Add(20*time.Minute).UTC().Format(time.RFC3339)+`"}`),
+			want: false,
+		},
+		{
+			name: "expired park lets the connection back in",
+			conn: mk("c7", "oauth", `{"refreshToken":"rt","expiresAt":"`+now.Add(time.Minute).UTC().Format(time.RFC3339)+`","oauthLockedUntil":"`+now.Add(-time.Minute).UTC().Format(time.RFC3339)+`"}`),
+			want: true,
+		},
+		{
+			name: "malformed park is not due-blocking",
+			conn: mk("c8", "oauth", `{"refreshToken":"rt","expiresAt":"`+now.Add(time.Minute).UTC().Format(time.RFC3339)+`","oauthLockedUntil":"soon"}`),
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {

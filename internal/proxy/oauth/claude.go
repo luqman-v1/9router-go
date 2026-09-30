@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"9router/proxy/internal/providers"
 )
 
 const claudeTokenURL = "https://api.anthropic.com/v1/oauth/token"
@@ -48,7 +50,7 @@ func refreshClaude(ctx context.Context, p *Params) (*TokenResult, error) {
 		return nil, fmt.Errorf("claude read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("claude refresh returned %d: %s", resp.StatusCode, truncateBody(respBody))
+		return nil, fmt.Errorf("claude %w", &providers.OAuthRefreshError{Status: resp.StatusCode, Body: truncateBody(respBody)})
 	}
 
 	var result struct {

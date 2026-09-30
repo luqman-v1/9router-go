@@ -11,6 +11,7 @@ import (
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/models"
+	"9router/proxy/internal/providers"
 )
 
 // Refresh when expiry is within 30 minutes (upstream BACKGROUND_REFRESH_LEAD_MS parity).
@@ -68,6 +69,12 @@ func SelectConnectionsNeedingRefresh(conns []*models.ProviderConnection, now tim
 			continue
 		}
 		if strings.TrimSpace(data.RefreshToken) == "" {
+			continue
+		}
+		// A grant the provider already rejected is not retried on every tick:
+		// the account stays parked until its cooldown expires, or until it is
+		// re-logged in and the row is rewritten.
+		if until, ok := db.ConnectionOAuthLockUntil(c.Data); ok && until.After(now) {
 			continue
 		}
 		exp, err := time.Parse(time.RFC3339, strings.TrimSpace(data.ExpiresAt))
@@ -162,6 +169,15 @@ func refreshBackgroundConnection(ctx context.Context, repo *db.Repo, c Connectio
 	})
 	if err != nil || result == nil || result.AccessToken == "" {
 		log.Printf("[BG_TOKEN_REFRESH] refresh failed conn=%s provider=%s: %v", c.ID, c.Provider, err)
+		// Record the rejection so the tick, and the request path, stop
+		// hammering the token endpoint for a grant only a re-login fixes.
+		if providers.IsRefreshUnauthorized(err) {
+			if until, failures, lockErr := repo.RecordConnectionOAuthFailure(c.ID, http.StatusUnauthorized, err.Error()); lockErr != nil {
+				log.Printf("[BG_TOKEN_REFRESH] park failed conn=%s: %v", c.ID, lockErr)
+			} else {
+				log.Printf("[BG_TOKEN_REFRESH] parked conn=%s until=%s failures=%d", c.ID, until.Format(time.RFC3339), failures)
+			}
+		}
 		return
 	}
 

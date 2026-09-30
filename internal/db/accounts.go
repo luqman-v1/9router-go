@@ -36,34 +36,25 @@ func (r *Repo) LockConnectionModel(connID, model string, durationSec int, backof
 	return nil
 }
 
-// ConnectionCooldownUntil reads the account-scoped cooldown a connection
+// ConnectionCooldownUntil reads the account-scoped quota cooldown a connection
 // carries in its data blob, mirroring upstream filterAvailableAccounts
 // (open-sse/services/accountFallback.js:180), which skips any account whose
 // rateLimitedUntil is still in the future.
 //
 // Unlike the model lock this cooldown is not keyed by model, which is what
-// catches a quota spent account-wide, and it is the only cooldown the
-// selector can consult when the request carries no model at all.
+// catches a quota spent account-wide, and it is the only quota cooldown the
+// selector can consult when the request carries no model at all. An account
+// parked for a rejected OAuth grant carries its own timestamp instead; read
+// both through ConnectionBlockedUntil.
 //
 // A missing, empty or unparseable value reports "not in cooldown" so a
 // malformed field can never take routing down.
 func ConnectionCooldownUntil(rawData string) (time.Time, bool) {
-	if rawData == "" {
+	raw, ok := parseConnData(rawData)
+	if !ok {
 		return time.Time{}, false
 	}
-	var raw map[string]any
-	if err := json.Unmarshal([]byte(rawData), &raw); err != nil {
-		return time.Time{}, false
-	}
-	untilStr, ok := raw["rateLimitedUntil"].(string)
-	if !ok || strings.TrimSpace(untilStr) == "" {
-		return time.Time{}, false
-	}
-	until, err := time.Parse(time.RFC3339, untilStr)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return until, true
+	return readTimestampField(raw, "rateLimitedUntil")
 }
 
 // LockConnectionRateLimit stores the account-scoped cooldown and the error
@@ -189,6 +180,8 @@ func (r *Repo) ResetConnectionHealthState(connID string) error {
 
 	dataMap["errorCode"] = nil
 	dataMap["rateLimitedUntil"] = nil
+	dataMap["oauthLockedUntil"] = nil
+	dataMap["oauthFailureCount"] = 0
 	dataMap["backoffLevel"] = 0
 
 	for k := range dataMap {

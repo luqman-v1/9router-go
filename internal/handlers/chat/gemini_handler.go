@@ -206,6 +206,7 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 			ProviderSpecificData: oauth.StringMap(connPSD),
 		})
 		if err != nil {
+			h.parkRejectedOAuthAccount(connectionID, err)
 			return currentToken, projectID, fmt.Errorf("OAuth refresh for %s: %w", provider, err)
 		}
 		update := oauth.BuildConnectionUpdate(result)
@@ -232,6 +233,7 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 			newPID = result.ProjectID
 		}
 		log.Info("oauth", "token refreshed", "provider", provider, "project", newPID)
+		h.clearOAuthAccountPark(connectionID)
 		return result.AccessToken, newPID, nil
 	}
 
@@ -244,6 +246,7 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 	log.Info("oauth", "token expired, standard refresh", "provider", provider, "project", projectID)
 	tokenResp, err := providers.RefreshToken(cfg, oauthData.RefreshToken)
 	if err != nil {
+		h.parkRejectedOAuthAccount(connectionID, err)
 		return currentToken, projectID, fmt.Errorf("OAuth refresh for %s: %w", provider, err)
 	}
 
@@ -263,6 +266,8 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 			string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
 	}
+
+	h.clearOAuthAccountPark(connectionID)
 
 	log.Info("oauth", "token refreshed", "provider", provider, "project", projectID)
 	return tokenResp.AccessToken, projectID, nil
@@ -330,7 +335,18 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 			if result.ProjectID != "" {
 				newPID = result.ProjectID
 			}
+			h.clearOAuthAccountPark(connectionID)
 			return result.AccessToken, newPID, nil
+		}
+		// A grant the provider rejected is rejected on the standard endpoint
+		// too, so park the account and report instead of spending a second
+		// call on it. Any other failure still falls through: the standard
+		// endpoint stays a real second chance for a provider quirk.
+		if err != nil {
+			if h.parkRejectedOAuthAccount(connectionID, err) {
+				return "", "", fmt.Errorf("OAuth refresh for %s: %w", provider, err)
+			}
+			log.Warn("oauth", "custom refresh failed, trying standard", "provider", provider, "conn", connectionID, "error", err)
 		}
 	}
 
@@ -343,6 +359,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 	log.Info("oauth", "force refresh (standard)", "provider", provider)
 	tokenResp, err := providers.RefreshToken(cfg, oauthData.RefreshToken)
 	if err != nil {
+		h.parkRejectedOAuthAccount(connectionID, err)
 		return "", "", fmt.Errorf("OAuth refresh for %s: %w", provider, err)
 	}
 
@@ -362,6 +379,8 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 		db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 			string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
 	}
+
+	h.clearOAuthAccountPark(connectionID)
 
 	pid := ""
 	if v, ok := existing["projectId"].(string); ok {
