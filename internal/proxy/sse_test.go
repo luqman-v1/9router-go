@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+	"sync"
 	"time"
 )
 
@@ -133,14 +134,35 @@ func TestStreamWriterErrors(t *testing.T) {
 	}
 }
 
+// mockResponseWriter is written from the heartbeat goroutine while the test
+// reads it, so every field is behind a mutex. The embedded buffer cannot be
+// locked on its own, so writes are serialized through w and String reads
+// through a snapshot.
 type mockResponseWriter struct {
-	bytes.Buffer
+	mu      sync.Mutex
+	buf     bytes.Buffer
 	header  http.Header
 	code    int
 	flushed bool
 }
 
+// String snapshots the buffer under the lock, so a test never reads a buffer
+// the heartbeat goroutine is appending to.
+func (m *mockResponseWriter) String() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.buf.String()
+}
+
+func (m *mockResponseWriter) Write(p []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.buf.Write(p)
+}
+
 func (m *mockResponseWriter) Header() http.Header {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.header == nil {
 		m.header = make(http.Header)
 	}
@@ -148,12 +170,24 @@ func (m *mockResponseWriter) Header() http.Header {
 }
 
 func (m *mockResponseWriter) WriteHeader(code int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.code = code
 }
 
 func (m *mockResponseWriter) Flush() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.flushed = true
 }
+
+// wasFlushed reports whether Flush was called at least once.
+func (m *mockResponseWriter) wasFlushed() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.flushed
+}
+
 
 func TestHeartbeatWriter_EmitsKeepAliveWhenIdle(t *testing.T) {
 	rec := &mockResponseWriter{}
@@ -167,7 +201,7 @@ func TestHeartbeatWriter_EmitsKeepAliveWhenIdle(t *testing.T) {
 	if !strings.Contains(out, ": keep-alive\n\n") {
 		t.Errorf("expected keep-alive in output, got %q", out)
 	}
-	if !rec.flushed {
+	if !rec.wasFlushed() {
 		t.Errorf("expected flusher to be called")
 	}
 }
@@ -368,7 +402,7 @@ func TestSSECopy_InjectsStopBeforeBareDone(t *testing.T) {
 		}
 	})
 
-	t.Run("read error still terminates the stream before returning", func(t *testing.T) {
+	t.Run("read error closes the stream with an in-band error frame, not a finish_reason", func(t *testing.T) {
 		rec := &mockResponseWriter{}
 		upstream := io.MultiReader(
 			strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"),
@@ -378,8 +412,14 @@ func TestSSECopy_InjectsStopBeforeBareDone(t *testing.T) {
 			t.Fatal("expected the upstream read error to be reported")
 		}
 		out := rec.String()
-		if !strings.Contains(out, `"finish_reason":"network_error"`) {
-			t.Errorf("expected a synthesized terminal finish_reason, got %q", out)
+		// A client must be able to tell a dropped stream from a finished
+		// answer. A finish_reason says "stop"/"network_error", which every
+		// OpenAI client reads as a normal completion.
+		if !strings.Contains(out, `{"error":{"message":"upstream connection lost"`) {
+			t.Errorf("expected an in-band error frame, got %q", out)
+		}
+		if strings.Contains(out, "finish_reason") {
+			t.Errorf("abort must not fabricate a finish_reason, got %q", out)
 		}
 		if !strings.HasSuffix(out, "data: [DONE]\n\n") {
 			t.Errorf("expected the stream to close with [DONE], got %q", out)

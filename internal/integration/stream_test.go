@@ -89,3 +89,58 @@ func sseDataLines(t *testing.T, body []byte) []string {
 	}
 	return payloads
 }
+
+// TestStreamMidStreamDropReportsInBandError pins issue #57 end to end.
+// The HTTP 200 and the first content delta are already on the wire when the
+// provider dies, so an in-band frame is the only way to tell the client. Before
+// this the gateway just closed the socket and SDKs kept the truncated text as a
+// finished answer.
+func TestStreamMidStreamDropReportsInBandError(t *testing.T) {
+	env := newEnv(t)
+	upstream := env.NewUpstream(t, midStreamDropResponder())
+	env.AddConnection(t, "conn-deepseek", "deepseek", "DeepSeek Integration", upstream, "sk-upstream")
+
+	res := env.Post(t, "/v1/chat/completions", ChatBody("deepseek/deepseek-chat", true))
+	if res.Status != http.StatusOK {
+		t.Fatalf("POST /v1/chat/completions = %d, want 200", res.Status)
+	}
+	body := string(res.Body)
+	if !strings.Contains(body, "the answer is") {
+		t.Errorf("delta that made it through is missing: %q", truncate(res.Body))
+	}
+
+	frame, ok := sseErrorFrame(t, res.Body)
+	if !ok {
+		t.Fatalf("client was never told the stream failed: %q", truncate(res.Body))
+	}
+	if frame.Error.Code == "" {
+		t.Errorf("error frame carries no machine-readable code: %q", truncate(res.Body))
+	}
+	// A dropped stream must not be dressed up as a finished turn: that is
+	// exactly what made the truncation invisible to clients before.
+	if strings.Contains(body, "finish_reason") {
+		t.Errorf("dropped stream must not carry a finish_reason: %q", truncate(res.Body))
+	}
+	if !strings.HasSuffix(body, "data: [DONE]\n\n") {
+		t.Errorf("client read loop must close with [DONE]: %q", truncate(res.Body))
+	}
+}
+func midStreamDropResponder() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"the answer is\"}}]}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Kill the connection mid-turn.
+		if hj, ok := w.(http.Hijacker); ok {
+			conn, _, err := hj.Hijack()
+			if err == nil {
+				_ = conn.Close()
+				return
+			}
+		}
+		panic(http.ErrAbortHandler)
+	}
+}

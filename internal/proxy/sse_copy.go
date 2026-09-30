@@ -41,9 +41,7 @@ const (
 //   - a bare `data: [DONE]` arriving without a prior terminal frame gains a
 //     `finish_reason: "stop"` frame first, otherwise the client fails with
 //     "stream closed before a finish_reason was received";
-//   - EOF before [DONE] gains `finish_reason: "network_error"` + [DONE];
-//   - a non-EOF read error gains the same best-effort terminator before the
-//     error is returned, so the client never sees a bare stream end.
+//   - EOF or a read error before [DONE] gains an in-band error frame.
 func SSECopy(w http.ResponseWriter, upstream io.Reader, flusher http.Flusher, onChunk func([]byte)) error {
 	// Allocate a local buffer instead of using the shared pool. The buffer is
 	// alive for the entire read loop, so there is no safe point to return it
@@ -73,9 +71,11 @@ func SSECopy(w http.ResponseWriter, upstream io.Reader, flusher http.Flusher, on
 				c.finish()
 				return nil
 			}
-			// Best-effort terminator so the client still sees a closed
-			// stream; the error itself is returned for logging/fallback.
-			c.finish()
+			// HTTP 200 is already on the wire, so the abort cannot be
+			// reported as a status code. Close it in-band instead: an
+			// error frame the client can parse, never a fabricated
+			// successful finish_reason (upstream 93001213).
+			c.abort(err)
 			return fmt.Errorf("read upstream stream: %w", err)
 		}
 	}
@@ -202,6 +202,31 @@ func (c *sseCopier) finish() {
 		_ = c.writeRaw([]byte(sseDoneFrame))
 		c.hasDone = true
 	}
+}
+
+// abort closes a stream that died after HTTP 200 with an in-band error frame
+// instead of a terminal finish_reason. A fabricated "stop" or "network_error"
+// finish_reason is worse than nothing: OpenAI clients treat both as a normal
+// completion and keep the truncated text, so a stall timeout and a dropped
+// socket are indistinguishable from a finished answer. The error frame is
+// what makes the difference visible (upstream decolua/9router 93001213).
+func (c *sseCopier) abort(cause error) {
+	if len(c.pending) > 0 {
+		frag := c.pending
+		c.pending = nil
+		_ = c.writeRaw(frag)
+	}
+	if !c.seenSSE || c.hasDone {
+		return
+	}
+	code, message := ClassifyStreamAbort(cause)
+	_ = c.ensureBlank()
+	// OpenAI shape only: SSECopy only ever serves OpenAI-format clients. The
+	// Claude-named path terminates in the executor that already owns that
+	// translation, and sends its own event: error frame.
+	_ = c.writeRaw(BuildStreamErrorBytes(code, message, SSEFormatOpenAI))
+	c.hasTerminal = true
+	c.hasDone = true
 }
 
 // observe records terminal tokens from raw bytes, including tokens split
