@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"9router/proxy/internal/constants"
-
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
@@ -602,30 +600,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			log.Error("combo", "upstream error after headers committed", "error", lastErr)
 			return
 		}
-		cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-		if earliestRetryAfter != "" {
-			retryAfterSec := int((time.Until(mustParseTime(earliestRetryAfter)) + time.Second - 1) / time.Second)
-			if retryAfterSec < 1 {
-				retryAfterSec = 1
-			}
-			cw.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-			retryHuman := formatRetryAfter(earliestRetryAfter)
-			var errBody map[string]any
-			if err := json.Unmarshal(lastErr.Body, &errBody); err == nil {
-				if errObj, ok := errBody["error"].(map[string]any); ok {
-					if msg, _ := errObj["message"].(string); msg != "" {
-						errObj["message"] = msg + " (" + retryHuman + ")"
-						updated, _ := json.Marshal(errBody)
-						cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-						cw.WriteHeader(lastErr.StatusCode)
-						cw.Write(updated)
-						return
-					}
-				}
-			}
-		}
-		cw.WriteHeader(lastErr.StatusCode)
-		cw.Write(lastErr.Body)
+		writeExhaustedComboError(cw, lastErr, earliestRetryAfter)
 		return
 	}
 	if cw.IsCommitted() {
@@ -792,30 +767,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			log.Error("combo", "upstream error after headers committed", "error", lastErr)
 			return
 		}
-		cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-		if earliestRetryAfter != "" {
-			retryAfterSec := int((time.Until(mustParseTime(earliestRetryAfter)) + time.Second - 1) / time.Second)
-			if retryAfterSec < 1 {
-				retryAfterSec = 1
-			}
-			cw.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-			retryHuman := formatRetryAfter(earliestRetryAfter)
-			var errBody map[string]any
-			if err := json.Unmarshal(lastErr.Body, &errBody); err == nil {
-				if errObj, ok := errBody["error"].(map[string]any); ok {
-					if msg, _ := errObj["message"].(string); msg != "" {
-						errObj["message"] = msg + " (" + retryHuman + ")"
-						updated, _ := json.Marshal(errBody)
-						cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-						cw.WriteHeader(lastErr.StatusCode)
-						cw.Write(updated)
-						return
-					}
-				}
-			}
-		}
-		cw.WriteHeader(lastErr.StatusCode)
-		cw.Write(lastErr.Body)
+		writeExhaustedComboError(cw, lastErr, earliestRetryAfter)
 		return
 	}
 	if cw.IsCommitted() {
