@@ -599,43 +599,36 @@ func TestApplyComboStrategy_roundRobinTurnAware(t *testing.T) {
 	}
 }
 
-func TestComboRetryAfter(t *testing.T) {
-	past := time.Now().Add(-1 * time.Second)
-	bounded := time.Now().Add(4 * time.Second)
-	tooFar := time.Now().Add(60 * time.Second)
-
+// A rate-limited account must not be retried once the upstream names a window
+// longer than brief429RetryTolerance; only a blip is worth another pass.
+func TestComboPassRetryWait(t *testing.T) {
 	tests := []struct {
-		name       string
-		retryAfter string
+		name        string
+		earliest    time.Duration
+		rateLimited bool
+		wantRetry   bool
 	}{
-		{"empty", ""},
-		{"invalid time", "not-a-time"},
-		{"past", past.Format(time.RFC3339)},
-		{"bounded", bounded.Format(time.RFC3339)},
-		{"exceeds cap", tooFar.Format(time.RFC3339)},
-	}
-	wants := map[string]time.Duration{
-		"empty":        0,
-		"invalid time": 0,
-		"past":         time.Second, // clamped to a minimum 1s wait
-		"bounded":      4 * time.Second,
-		"exceeds cap":  0, // too long -> surface Retry-After header instead
+		{"no retry-after", 0, false, false},
+		{"no retry-after rate limited", 0, true, false},
+		{"short 429 blip", time.Second, true, true},
+		{"429 exactly at tolerance", brief429RetryTolerance, true, true},
+		{"429 just past tolerance", brief429RetryTolerance + time.Millisecond, true, false},
+		{"429 quota window", 2 * time.Minute, true, false},
+		{"short transient failure", time.Second, false, true},
+		{"transient within old cap", comboRetryWaitCap, false, true},
+		{"transient past old cap", comboRetryWaitCap + time.Second, false, false},
 	}
 
 	for _, tt := range tests {
-		got := comboRetryAfter(tt.retryAfter)
-		want := wants[tt.name]
-		switch tt.name {
-		case "bounded":
-			// Allow the ceil() rounding to land on 4s or just either side of it.
-			if got <= 0 || got > comboRetryWaitCap {
-				t.Errorf("%s: comboRetryAfter = %v, want in (0, %v]", tt.name, got, comboRetryWaitCap)
+		t.Run(tt.name, func(t *testing.T) {
+			got := comboPassRetryWait(tt.earliest, tt.rateLimited)
+			if tt.wantRetry && got != tt.earliest {
+				t.Errorf("comboPassRetryWait(%v, %v) = %v, want %v", tt.earliest, tt.rateLimited, got, tt.earliest)
 			}
-		default:
-			if got != want {
-				t.Errorf("%s: comboRetryAfter = %v, want %v", tt.name, got, want)
+			if !tt.wantRetry && got != 0 {
+				t.Errorf("comboPassRetryWait(%v, %v) = %v, want 0 (no repeat pass)", tt.earliest, tt.rateLimited, got)
 			}
-		}
+		})
 	}
 }
 

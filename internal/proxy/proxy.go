@@ -15,6 +15,12 @@ import (
 type UpstreamError struct {
 	StatusCode int
 	Body       []byte
+	// Header is the upstream response's headers. Rate-limit carriers such as
+	// Retry-After live only here — a Gemini/Antigravity 429 body repeats the
+	// wait in a google.rpc.RetryInfo payload at best — and the error is built
+	// where the response is still in hand, so this is the only chance to keep
+	// them.
+	Header http.Header
 }
 
 func (e *UpstreamError) Error() string {
@@ -103,7 +109,7 @@ func DoRequest(ctx context.Context, client *http.Client, method, url string, hea
 		if readErr != nil {
 			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)
 		}
-		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 	}
 	return resp, nil
 }
