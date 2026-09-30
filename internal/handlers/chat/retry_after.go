@@ -96,21 +96,37 @@ func (p *passRetry) reset() { *p = passRetry{} }
 // must not be repeated.
 func (p *passRetry) wait() time.Duration { return comboPassRetryWait(p.earliest, p.rateLimited) }
 
-// writeError answers the client with lastErr, surfacing the earliest
-// Retry-After the pass collected both as the Retry-After header and as a
-// human-readable suffix on the error message.
+// writeError answers the client with lastErr, publishing the earliest
+// Retry-After the pass collected three ways: the Retry-After header, the
+// human-readable suffix on the error message, and the reset_at / retry_after
+// pair in the JSON error object. The body fields exist because a client that
+// never surfaces headers — a browser SDK, a log-only integration — has no
+// other way to learn when the combo becomes usable again.
+//
+// Without a usable reset the upstream body is forwarded untouched: an invented
+// reset instant would send clients into a retry loop against a quota with no
+// known end.
 func (p *passRetry) writeError(cw *committedResponseWriter, lastErr *upstreamError) {
+	// Set before any branch so the pass-through path below is a JSON body
+	// too. The upstream content type is not trusted here: a 429 served as
+	// text/html is what makes an SDK report a parse crash instead of a quota.
+	cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	if p.earliest > 0 {
 		sec := max(ceilSeconds(p.earliest), 1)
 		cw.Header().Set("Retry-After", strconv.Itoa(sec))
-		retryHuman := formatRetryAfter(time.Now().UTC().Add(p.earliest).Format(time.RFC3339))
+		retryAt := time.Now().UTC().Add(p.earliest)
+		retryHuman := formatRetryAfter(retryAt.Format(time.RFC3339))
 		var errBody map[string]any
 		if err := json.Unmarshal(lastErr.Body, &errBody); err == nil {
 			if errObj, ok := errBody["error"].(map[string]any); ok {
 				if msg, _ := errObj["message"].(string); msg != "" {
 					errObj["message"] = msg + " (" + retryHuman + ")"
+					// The instant has to travel as data, not only as prose:
+					// only a human reads "reset after 2m 30s", and a client
+					// that never surfaces the header has nothing else left.
+					errObj["reset_at"] = retryAt.Format(time.RFC3339)
+					errObj["retry_after"] = sec
 					updated, _ := json.Marshal(errBody)
-					cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 					cw.WriteHeader(lastErr.StatusCode)
 					cw.Write(updated)
 					return

@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"9router/proxy/internal/log"
 	"context"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -13,9 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"9router/proxy/internal/constants"
-
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
 )
@@ -598,7 +596,6 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			log.Error("combo", "upstream error after headers committed", "error", lastErr)
 			return
 		}
-		cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		retry.writeError(cw, lastErr)
 		return
 	}
@@ -762,7 +759,6 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			log.Error("combo", "upstream error after headers committed", "error", lastErr)
 			return
 		}
-		cw.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		retry.writeError(cw, lastErr)
 		return
 	}
