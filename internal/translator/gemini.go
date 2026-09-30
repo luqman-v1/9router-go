@@ -301,6 +301,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 					Response: &GeminiFuncResp{Result: resultValue},
 				},
 			}}
+			parts = append(parts, geminiToolMediaParts(msg.Content)...)
 			req.Contents = append(req.Contents, GeminiContent{Role: "user", Parts: parts})
 		}
 	}
@@ -864,6 +865,23 @@ func convertContentToGeminiParts(content any) []GeminiPart {
 		return parts
 	}
 	return nil
+}
+
+// geminiToolMediaParts picks the binary blocks out of a tool result so they can
+// ride along with the functionResponse. A browser or screenshot tool returns
+// binary, and Gemini only lets the model look at bytes that arrive as an
+// inlineData part — stringifying the screenshot into the result payload hides
+// the very pixels the model was called to read. Text is deliberately left out:
+// it already travels inside functionResponse.response.result.
+func geminiToolMediaParts(content any) []GeminiPart {
+	all := convertContentToGeminiParts(content)
+	var media []GeminiPart
+	for _, p := range all {
+		if p.InlineData != nil || p.FileData != nil {
+			media = append(media, p)
+		}
+	}
+	return media
 }
 
 // NormalizeGeminiContents merges adjacent same-role messages, strips empty
