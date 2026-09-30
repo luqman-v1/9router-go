@@ -22,6 +22,12 @@ type ClaudeToOpenAIStreamState struct {
 	Usage             *OpenAIUsage
 }
 
+// modelUnknown is what a Messages stream that omits `model` falls back to
+// when the request did not name one either. It is a placeholder, not a claim
+// about which model answered: a real model id hardcoded here outlives the
+// model it names, and the client echoes it in every chunk.
+const modelUnknown = "unknown"
+
 // ClaudeStreamToolCall tracks an in-flight tool call block.
 type ClaudeStreamToolCall struct {
 	Index int
@@ -109,7 +115,7 @@ func TranslateClaudeChunkToOpenAI(payload []byte, state *ClaudeToOpenAIStreamSta
 			state.MessageID = fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 		}
 		if state.Model == "" {
-			state.Model = "union-alpha"
+			state.Model = modelUnknown
 		}
 		if !state.RoleSent {
 			state.RoleSent = true

@@ -67,7 +67,12 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 		)
 	}
 
-	state := &translator.ClaudeToOpenAIStreamState{}
+	// A Messages stream that omits `model` still has to echo one back, and
+	// the model the client asked for is the value that is actually true. The
+	// translator's own fallback is a placeholder, not a substitute for this.
+	state := &translator.ClaudeToOpenAIStreamState{
+		Model: translator.RequestedModelFromContext(req.Ctx),
+	}
 	doneSeen := false
 	sawTerminal := false // saw message_delta (with stop_reason) or message_stop
 	decloaker := NewClaudeStreamDecloaker(req.ToolNameMap)

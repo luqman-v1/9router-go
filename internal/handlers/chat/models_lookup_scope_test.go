@@ -46,12 +46,12 @@ func TestModelLookup_AgreesWithConnectedListing(t *testing.T) {
 	h := NewChatHandler(db.NewRepo(database))
 	// The model has to be advertised before the lookup can be said to agree
 	// with it, otherwise this asserts nothing.
-	if !fetchModels(t, h, "?connected=1").idSet()["oc/union-alpha"] {
-		t.Fatal("?connected=1 did not advertise oc/union-alpha")
+	if !fetchModels(t, h, "?connected=1").idSet()["oc/jev-1.13-free"] {
+		t.Fatal("?connected=1 did not advertise oc/jev-1.13-free")
 	}
 
 	w := httptest.NewRecorder()
-	h.HandleModelLookup(w, httptest.NewRequest("GET", "/v1/models/oc/union-alpha", nil))
+	h.HandleModelLookup(w, httptest.NewRequest("GET", "/v1/models/oc/jev-1.13-free", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("lookup of a model advertised by ?connected=1 = %d, want 200: %s",
 			w.Code, w.Body.String())

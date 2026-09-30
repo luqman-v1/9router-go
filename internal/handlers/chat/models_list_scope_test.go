@@ -242,14 +242,14 @@ func TestHandleModels_ConnectedModeConnectionOwnsItsCatalog(t *testing.T) {
 		t.Fatalf("delete disabled: %v", err)
 	}
 	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
-		('conn-oc-1', 'opencode', 'api_key', 'OpenCode', 1, 1, '{"apiKey":"public","enabledModels":["union-alpha"]}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		('conn-oc-1', 'opencode', 'api_key', 'OpenCode', 1, 1, '{"apiKey":"public","enabledModels":["big-pickle"]}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
 		t.Fatalf("seed opencode: %v", err)
 	}
 
 	h := NewChatHandler(db.NewRepo(database))
 	ids := fetchModels(t, h, "?connected=1").idSet()
 
-	if !ids["oc/union-alpha"] {
+	if !ids["oc/big-pickle"] {
 		t.Error("connected mode dropped the pinned enabledModel of an active connection")
 	}
 	if ids["oc/jev-1.13-free"] {
@@ -357,18 +357,18 @@ func TestHandleModels_DisabledModelsStillWin(t *testing.T) {
 	h := NewChatHandler(db.NewRepo(database))
 	queries := []string{"", "?connected=1", "?all=1"}
 	for _, query := range queries {
-		if !fetchModels(t, h, query).idSet()["oc/union-alpha"] {
+		if !fetchModels(t, h, query).idSet()["oc/jev-1.13-free"] {
 			t.Fatalf("query %q did not list the enabled model", query)
 		}
 	}
 
 	if _, err := database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('disabledModels', 'oc', ?)`,
-		`["union-alpha"]`); err != nil {
+		`["jev-1.13-free"]`); err != nil {
 		t.Fatalf("seed disabled: %v", err)
 	}
 
 	for _, query := range queries {
-		if fetchModels(t, h, query).idSet()["oc/union-alpha"] {
+		if fetchModels(t, h, query).idSet()["oc/jev-1.13-free"] {
 			t.Errorf("query %q listed a disabled model", query)
 		}
 	}

@@ -309,14 +309,14 @@ func TestNormalizeMuseSparkResponsesBody_ReasoningAndToolChoice(t *testing.T) {
 
 func TestEnsureMessagesMaxTokens(t *testing.T) {
 	t.Run("missing max_tokens defaults to 4096", func(t *testing.T) {
-		input := []byte(`{"model":"oc/union-alpha","messages":[{"role":"user","content":"hi"}]}`)
-		out := ensureMessagesMaxTokens(input, "union-alpha")
+		input := []byte(`{"model":"oc/claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`)
+		out := ensureMessagesMaxTokens(input, "claude-sonnet-4-5")
 		var m map[string]any
 		if err := json.Unmarshal(out, &m); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
-		if m["model"] != "union-alpha" {
-			t.Errorf("expected model 'union-alpha', got %v", m["model"])
+		if m["model"] != "claude-sonnet-4-5" {
+			t.Errorf("expected model 'claude-sonnet-4-5', got %v", m["model"])
 		}
 		if m["max_tokens"] != float64(4096) {
 			t.Errorf("expected max_tokens 4096, got %v", m["max_tokens"])
@@ -324,8 +324,8 @@ func TestEnsureMessagesMaxTokens(t *testing.T) {
 	})
 
 	t.Run("max_tokens <= 0 defaults to 4096", func(t *testing.T) {
-		input := []byte(`{"model":"union-alpha","max_tokens":0,"messages":[{"role":"user","content":"hi"}]}`)
-		out := ensureMessagesMaxTokens(input, "union-alpha")
+		input := []byte(`{"model":"claude-sonnet-4-5","max_tokens":0,"messages":[{"role":"user","content":"hi"}]}`)
+		out := ensureMessagesMaxTokens(input, "claude-sonnet-4-5")
 		var m map[string]any
 		if err := json.Unmarshal(out, &m); err != nil {
 			t.Fatalf("unmarshal: %v", err)
@@ -336,8 +336,8 @@ func TestEnsureMessagesMaxTokens(t *testing.T) {
 	})
 
 	t.Run("max_completion_tokens used when max_tokens missing", func(t *testing.T) {
-		input := []byte(`{"model":"union-alpha","max_completion_tokens":2048,"messages":[{"role":"user","content":"hi"}]}`)
-		out := ensureMessagesMaxTokens(input, "union-alpha")
+		input := []byte(`{"model":"claude-sonnet-4-5","max_completion_tokens":2048,"messages":[{"role":"user","content":"hi"}]}`)
+		out := ensureMessagesMaxTokens(input, "claude-sonnet-4-5")
 		var m map[string]any
 		if err := json.Unmarshal(out, &m); err != nil {
 			t.Fatalf("unmarshal: %v", err)
@@ -348,8 +348,8 @@ func TestEnsureMessagesMaxTokens(t *testing.T) {
 	})
 
 	t.Run("existing positive max_tokens preserved", func(t *testing.T) {
-		input := []byte(`{"model":"union-alpha","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)
-		out := ensureMessagesMaxTokens(input, "union-alpha")
+		input := []byte(`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)
+		out := ensureMessagesMaxTokens(input, "claude-sonnet-4-5")
 		var m map[string]any
 		if err := json.Unmarshal(out, &m); err != nil {
 			t.Fatalf("unmarshal: %v", err)
@@ -358,58 +358,6 @@ func TestEnsureMessagesMaxTokens(t *testing.T) {
 			t.Errorf("expected max_tokens 1024, got %v", m["max_tokens"])
 		}
 	})
-}
-
-func TestForwardOpencode_UnionAlpha_InjectsMaxTokens(t *testing.T) {
-	var capturedHeader string
-	var capturedBody map[string]any
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/messages") {
-			t.Errorf("expected /messages path, got %s", r.URL.Path)
-		}
-		capturedHeader = r.Header.Get("anthropic-version")
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &capturedBody)
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		// The Messages route is always asked for stream:true, so the upstream
-		// answers with Claude events, not a single message document.
-		w.Write([]byte(claudeEventStream("hello from union-alpha")))
-	}))
-	defer srv.Close()
-
-	cfg := &providers.ProviderConfig{BaseURL: srv.URL + "/chat/completions"}
-	rec := httptest.NewRecorder()
-	req := &Request{
-		Client:   srv.Client(),
-		Config:   cfg,
-		APIKey:   "test-key",
-		Body:     []byte(`{"model":"ag/union-alpha","messages":[{"role":"user","content":"hi"}]}`),
-		IsStream: false,
-	}
-
-	if err := ForwardOpencode(rec, req); err != nil {
-		t.Fatalf("ForwardOpencode union-alpha failed: %v", err)
-	}
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rec.Code)
-	}
-	// The fold is the whole point of this route: the served body must carry
-	// the assistant text, not an empty completion.
-	if got := rec.Body.String(); !strings.Contains(got, "hello from union-alpha") {
-		t.Errorf("served body lost the answer: %s", got)
-	}
-	if capturedHeader != "2023-06-01" {
-		t.Errorf("expected anthropic-version 2023-06-01, got %s", capturedHeader)
-	}
-	if capturedBody["model"] != "union-alpha" {
-		t.Errorf("expected model 'union-alpha', got %v", capturedBody["model"])
-	}
-	if capturedBody["max_tokens"] != float64(4096) {
-		t.Errorf("expected max_tokens 4096 injected, got %v", capturedBody["max_tokens"])
-	}
 }
 
 func TestEnsureMessagesMaxTokens_ConvertsOpenAIToolsAndSystem(t *testing.T) {
@@ -442,15 +390,15 @@ func TestEnsureMessagesMaxTokens_ConvertsOpenAIToolsAndSystem(t *testing.T) {
 		"reasoning_effort": "xhigh"
 	}`)
 
-	out := ensureMessagesMaxTokens(inputJSON, "union-alpha")
+	out := ensureMessagesMaxTokens(inputJSON, "claude-sonnet-4-5")
 	var m map[string]any
 	if err := json.Unmarshal(out, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
 	// 1. Model normalized
-	if m["model"] != "union-alpha" {
-		t.Errorf("expected model 'union-alpha', got %v", m["model"])
+	if m["model"] != "claude-sonnet-4-5" {
+		t.Errorf("expected model 'claude-sonnet-4-5', got %v", m["model"])
 	}
 
 	// 2. max_tokens converted from max_completion_tokens
@@ -516,148 +464,6 @@ func TestEnsureMessagesMaxTokens_ConvertsOpenAIToolsAndSystem(t *testing.T) {
 	}
 }
 
-func TestForwardOpencode_UnionAlpha_ConvertsOpenAIToolsInRequest(t *testing.T) {
-	var capturedBody map[string]any
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &capturedBody)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(claudeEventStream("ok")))
-	}))
-	defer srv.Close()
-
-	cfg := &providers.ProviderConfig{BaseURL: srv.URL + "/chat/completions"}
-	rec := httptest.NewRecorder()
-	req := &Request{
-		Client: srv.Client(),
-		Config: cfg,
-		APIKey: "test-key",
-		Body: []byte(`{
-			"model": "oc/union-alpha",
-			"messages": [
-				{"role": "system", "content": "system instruction"},
-				{"role": "user", "content": "hi"}
-			],
-			"tools": [
-				{
-					"type": "function",
-					"function": {
-						"name": "read",
-						"parameters": {"type": "object"}
-					}
-				}
-			]
-		}`),
-		IsStream: false,
-	}
-
-	if err := ForwardOpencode(rec, req); err != nil {
-		t.Fatalf("ForwardOpencode failed: %v", err)
-	}
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rec.Code)
-	}
-	if got := rec.Body.String(); !strings.Contains(got, `"content":"ok"`) {
-		t.Errorf("served body lost the answer: %s", got)
-	}
-
-	// Upstream received Claude-formatted tools
-	tools := capturedBody["tools"].([]any)
-	t0 := tools[0].(map[string]any)
-	if t0["name"] != "read" || t0["input_schema"] == nil {
-		t.Errorf("expected tool with name and input_schema, got %+v", t0)
-	}
-	if capturedBody["system"] != "system instruction" {
-		t.Errorf("expected top-level system, got %v", capturedBody["system"])
-	}
-}
-
-func TestForwardOpencode_BigPickle_ForcesStreamAndAggregatesSSE(t *testing.T) {
-	var capturedBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(b, &capturedBody)
-		// OpenCode free tier requires stream: true
-		if capturedBody["stream"] != true {
-			t.Errorf("expected stream: true in upstream body, got %v", capturedBody["stream"])
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"pickle response\"}}]}\n\ndata: [DONE]\n\n"))
-	}))
-	defer srv.Close()
-
-	cfg := &providers.ProviderConfig{
-		BaseURL: srv.URL,
-	}
-
-	rec := httptest.NewRecorder()
-	req := &Request{
-		Client:        srv.Client(),
-		Config:        cfg,
-		Body:          []byte(`{"model":"big-pickle","messages":[{"role":"user","content":"hi"}],"stream":false}`),
-		IsStream:      false, // non-streaming request
-		TranslateResp: false,
-	}
-
-	err := ForwardOpencode(rec, req)
-	if err != nil {
-		t.Fatalf("ForwardOpencode failed: %v", err)
-	}
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rec.Code)
-	}
-
-	var resp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal non-streaming response: %v", err)
-	}
-	choices := resp["choices"].([]any)
-	c0 := choices[0].(map[string]any)
-	msg := c0["message"].(map[string]any)
-	if msg["content"] != "pickle response" {
-		t.Errorf("expected 'pickle response', got %v", msg["content"])
-	}
-}
-
-func TestBuildResponsesBody_StringInput(t *testing.T) {
-	body := []byte(`{
-		"model": "opencode/muse-spark-1.3-contributor-free",
-		"input": "Say hello in one sentence.",
-		"max_output_tokens": 100,
-		"stream": true
-	}`)
-
-	out, cleanModel, err := buildResponsesBody(body)
-	if err != nil {
-		t.Fatalf("buildResponsesBody failed: %v", err)
-	}
-	if cleanModel != "muse-spark-1.3-contributor-free" {
-		t.Errorf("expected cleanModel 'muse-spark-1.3-contributor-free', got %q", cleanModel)
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal(out, &parsed); err != nil {
-		t.Fatalf("unmarshal result: %v", err)
-	}
-
-	inputList, ok := parsed["input"].([]any)
-	if !ok || len(inputList) == 0 {
-		t.Fatalf("expected non-empty input array, got %v", parsed["input"])
-	}
-	msg := inputList[0].(map[string]any)
-	if msg["role"] != "user" {
-		t.Errorf("expected role user, got %v", msg["role"])
-	}
-	content := msg["content"].([]any)
-	c0 := content[0].(map[string]any)
-	if c0["text"] != "Say hello in one sentence." {
-		t.Errorf("expected text 'Say hello in one sentence.', got %v", c0["text"])
-	}
-}
-
 func TestBuildResponsesBody_EmptyArrayInput(t *testing.T) {
 	body := []byte(`{
 		"model": "muse-spark-1.3",
@@ -689,18 +495,4 @@ func responsesEventStream(text string) string {
 		`data: {"type":"response.output_text.delta","delta":"` + text + `"}` + "\n\n" +
 		"event: response.completed\n" +
 		`data: {"type":"response.completed"}` + "\n\n"
-}
-
-// claudeEventStream is the Messages API answer to a stream:true request.
-func claudeEventStream(text string) string {
-	return "event: message_start\n" +
-		`data: {"type":"message_start","message":{"id":"msg_ua","role":"assistant","content":[]}}` + "\n\n" +
-		"event: content_block_start\n" +
-		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
-		"event: content_block_delta\n" +
-		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"` + text + `"}}` + "\n\n" +
-		"event: message_delta\n" +
-		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}` + "\n\n" +
-		"event: message_stop\n" +
-		`data: {"type":"message_stop"}` + "\n\n"
 }

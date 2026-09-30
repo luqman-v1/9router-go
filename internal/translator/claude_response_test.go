@@ -1,6 +1,7 @@
 package translator
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -9,7 +10,7 @@ func TestTranslateClaudeChunkToOpenAI(t *testing.T) {
 	state := &ClaudeToOpenAIStreamState{}
 
 	t.Run("message_start emits role assistant chunk", func(t *testing.T) {
-		payload := []byte(`{"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","model":"union-alpha","usage":{"input_tokens":15,"output_tokens":0}}}`)
+		payload := []byte(`{"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","model":"claude-sonnet-4-5","usage":{"input_tokens":15,"output_tokens":0}}}`)
 		out, err := TranslateClaudeChunkToOpenAI(payload, state)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -163,7 +164,7 @@ func TestTranslateClaudeResponseToOpenAI(t *testing.T) {
 		"id": "msg_xyz",
 		"type": "message",
 		"role": "assistant",
-		"model": "union-alpha",
+		"model": "claude-sonnet-4-5",
 		"content": [
 			{"type": "thinking", "thinking": "Let me calculate."},
 			{"type": "text", "text": "The answer is 42."},
@@ -213,5 +214,53 @@ func TestTranslateClaudeCacheUsageIdempotent(t *testing.T) {
 	NormalizeClaudeUsage(parsed)
 	if parsed.PromptTokens != 17 {
 		t.Fatalf("round-trip must not double-fold cache: %+v", parsed)
+	}
+}
+
+// A Messages stream that omits `model` still has to echo one back, and the
+// value must not be a real model id. This path used to hardcode one that has
+// since been retired, so every such chunk advertised a route that no longer
+// existed. The executor seeds the requested model before scanning; this is the
+// last-resort placeholder for when even that is empty.
+func TestTranslateClaudeChunkToOpenAI_ModelEcho(t *testing.T) {
+	const start = `{"type":"message_start","message":{"id":"msg_echo","type":"message","role":"assistant","usage":{"input_tokens":1,"output_tokens":0}%s}}`
+
+	tests := []struct {
+		name         string
+		seeded       string
+		upstreamEcho string
+		want         string
+	}{
+		{
+			name:         "upstream model wins over the seed",
+			seeded:       "claude-sonnet-4-5",
+			upstreamEcho: `,"model":"claude-opus-5"`,
+			want:         "claude-opus-5",
+		},
+		{
+			name:         "seeded model survives an upstream that omits it",
+			seeded:       "claude-sonnet-4-5",
+			upstreamEcho: "",
+			want:         "claude-sonnet-4-5",
+		},
+		{
+			name:         "placeholder when neither side names one",
+			seeded:       "",
+			upstreamEcho: "",
+			want:         modelUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := &ClaudeToOpenAIStreamState{Model: tt.seeded}
+			out, err := TranslateClaudeChunkToOpenAI([]byte(fmt.Sprintf(start, tt.upstreamEcho)), state)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if want := `"model":"` + tt.want + `"`; !strings.Contains(string(out), want) {
+				t.Errorf("chunk should echo %s, got: %s", want, out)
+			}
+		})
 	}
 }

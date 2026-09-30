@@ -643,74 +643,6 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		}
 		return handleCodexStream(w, req, resp.Body)
 	}
-	if cleanModel == "union-alpha" {
-		// Route through Messages API format: https://opencode.ai/zen/v1/messages (PR #4099)
-		messagesURL := "https://opencode.ai/zen/v1/messages"
-		staticH := map[string]string(nil)
-		if req.Config != nil {
-			staticH = req.Config.StaticHeaders
-		}
-		isRelay := staticH != nil && staticH["x-relay-target"] != ""
-		if isRelay {
-			messagesURL = req.Config.BaseURL
-			headersCopy := make(map[string]string, len(staticH))
-			for k, v := range staticH {
-				headersCopy[k] = v
-			}
-			headersCopy["x-relay-path"] = "/zen/v1/messages"
-			staticH = headersCopy
-		} else if req.Config != nil && req.Config.BaseURL != "" && !strings.Contains(req.Config.BaseURL, "opencode.ai") {
-			base := strings.TrimRight(req.Config.BaseURL, "/")
-			if strings.HasSuffix(base, "/chat/completions") {
-				base = strings.TrimSuffix(base, "/chat/completions")
-			}
-			messagesURL = base + "/messages"
-		}
-		headers := proxy.BuildOpenCodeHeaders(staticH, req.SessionID, true)
-		headers["anthropic-version"] = "2023-06-01"
-		ctx := req.Ctx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		body := ensureMessagesMaxTokens(req.Body, cleanModel)
-		var msgMap map[string]any
-		if err := json.Unmarshal(body, &msgMap); err == nil {
-			msgMap["stream"] = true
-			if b, err := json.Marshal(msgMap); err == nil {
-				body = b
-			}
-		}
-		resp, err := proxy.DoRequest(ctx, req.Client, "POST", messagesURL, headers, body)
-		if err != nil {
-			return fmt.Errorf("ForwardOpencode (union-alpha messages route): %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
-			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
-		}
-
-		if req.IsStream {
-			return handleClaudeMessagesStream(w, req, resp.Body)
-		}
-		var sseChunks []byte
-		var state translator.ClaudeToOpenAIStreamState
-		_ = proxy.ScanStream(resp.Body, func(payload []byte) {
-			if oaiChunk, cErr := translator.TranslateClaudeChunkToOpenAI(payload, &state); cErr == nil && oaiChunk != nil {
-				sseChunks = append(sseChunks, oaiChunk...)
-			}
-		})
-		converted, ok := sseToOpenAIJSON(sseChunks)
-		if !ok {
-			// The Messages API was asked for stream:true, so an empty fold
-			// means the upstream produced no assistant response. Serving the
-			// empty buffer as a 200 reads as a served empty turn and pins the
-			// router to this model; a 502 lets combo fallback move on.
-			return proxy.UpstreamFailure(http.StatusBadGateway, proxy.NoCompletionInStream)
-		}
-		return jsonResponse(req.Ctx, w, bytes.NewReader(converted), req.TranslateResp, req.ResponseBuf)
-	}
 
 	body := InjectReasoningContent(req.Body, "opencode")
 	// opencode Chat Completions path: same conceal + restore of tool names.
@@ -771,7 +703,6 @@ var opencodeGoMessagesModels = map[string]bool{
 	"qwen3.7-max":   true,
 	"qwen3.7-plus":  true,
 	"qwen3.6-plus":  true,
-	"union-alpha":   true,
 }
 
 // EnsureClaudeMessages exposes the OpenAI→Claude Messages request conversion
@@ -1294,7 +1225,7 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		return handleCodexStream(w, req, resp.Body)
 	}
 
-	if opencodeGoMessagesModels[reqObj.Model] || opencodeGoMessagesModels[cleanModel] || cleanModel == "union-alpha" {
+	if opencodeGoMessagesModels[reqObj.Model] || opencodeGoMessagesModels[cleanModel] {
 		// Route to /zen/go/v1/messages (Anthropic/Claude format)
 		messagesURL := "https://opencode.ai/zen/go/v1/messages"
 		if req.Config != nil && req.Config.BaseURL != "" && !strings.Contains(req.Config.BaseURL, "opencode.ai") {
