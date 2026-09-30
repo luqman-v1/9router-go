@@ -25,7 +25,11 @@ func cleanGeminiSchema(schema map[string]any) {
 		"default", "examples",
 		"$schema", "$defs", "definitions", "const", "$ref", "$comment",
 		"deprecated", "readOnly", "writeOnly",
-		"additionalProperties", "propertyNames", "patternProperties", "enumDescriptions",
+		// additionalItems (draft-07 tuple tail) is rejected like prefixItems:
+		// `Unknown name "additionalItems" at functionDeclaration.parameters` 400.
+		// Listed here, not deleted locally, so the strip re-runs on keys an
+		// anyOf/oneOf branch merges back in.
+		"additionalItems", "additionalProperties", "propertyNames", "patternProperties", "enumDescriptions",
 		"allOf", "not",
 		"dependencies", "dependentSchemas", "dependentRequired",
 		"title", "optional", "if", "then", "else", "contentMediaType", "contentEncoding",
