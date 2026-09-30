@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"9router/proxy/internal/providers"
 )
 
 // NewStandardRefresher creates a refresher for a standard OAuth2 refresh_token grant.
@@ -58,7 +60,7 @@ func doFormRefresh(ctx context.Context, client *http.Client, tokenURL string, va
 	if resp.StatusCode != http.StatusOK {
 		// Truncate the body so a token endpoint that echoes the request
 		// (including refresh_token/client_secret) cannot leak it into logs.
-		return nil, fmt.Errorf("refresh returned %d: %s", resp.StatusCode, truncateBody(body))
+		return nil, &providers.OAuthRefreshError{Status: resp.StatusCode, Body: truncateBody(body)}
 	}
 
 	var result struct {

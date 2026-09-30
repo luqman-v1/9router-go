@@ -136,7 +136,7 @@ func RefreshToken(cfg OAuthClientConfig, refreshToken string) (*OAuthTokenRespon
 		if len(snippet) > 200 {
 			snippet = snippet[:200]
 		}
-		return nil, fmt.Errorf("OAuth token refresh returned %d: %s", resp.StatusCode, snippet)
+		return nil, &OAuthRefreshError{Status: resp.StatusCode, Body: snippet}
 	}
 
 	return ParseRefreshResponse(body)

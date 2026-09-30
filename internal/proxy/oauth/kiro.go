@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"9router/proxy/internal/providers"
 )
 
 func init() {
@@ -83,7 +85,7 @@ func refreshKiroAWS(ctx context.Context, client *http.Client, refreshToken, clie
 		return nil, fmt.Errorf("kiro: read refresh response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("kiro: refresh returned status %d: %s", resp.StatusCode, truncateBody(body))
+		return nil, fmt.Errorf("kiro: %w", &providers.OAuthRefreshError{Status: resp.StatusCode, Body: truncateBody(body)})
 	}
 
 	var tokens struct {
@@ -137,7 +139,7 @@ func refreshKiroSocial(ctx context.Context, client *http.Client, refreshToken st
 		return nil, fmt.Errorf("kiro: read social refresh response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("kiro: social refresh returned status %d: %s", resp.StatusCode, truncateBody(body))
+		return nil, fmt.Errorf("kiro: social %w", &providers.OAuthRefreshError{Status: resp.StatusCode, Body: truncateBody(body)})
 	}
 
 	var tokens struct {

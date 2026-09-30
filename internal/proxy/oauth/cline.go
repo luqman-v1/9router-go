@@ -98,7 +98,7 @@ func RefreshCline(ctx context.Context, p *Params) (*TokenResult, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: refresh returned status %d: %s", prov, resp.StatusCode, string(body))
+		return nil, fmt.Errorf("%s: %w", prov, &providers.OAuthRefreshError{Status: resp.StatusCode, Body: truncateBody(body)})
 	}
 
 	var parsed struct {
