@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### 🐛 The Tailscale dashboard test asserted on whatever was installed on the machine running it
+
+- **The handler was never wrong; the test was.** `TestHandleTunnelEndpoints/TailscaleEnable_ReturnsCleanError` asserted a 400, which is only what the handler returns when no `tailscale` binary is found. On any machine with Tailscale installed the handler finds the binary, probes it, sees a logged-out daemon, and correctly answers **200 with `needsLogin` + `authUrl`** so the dashboard can render its login button — the same contract upstream returns. So the test passed only where Tailscale was absent, and failed for everyone else.
+- **It also mutated the developer's machine.** These handlers shell out to the real binary, so the test ran `tailscale up --reset` against a live daemon (~10s), and `TailscaleDisable` ran `tailscale funnel --bg reset` — real side effects on a real Tailscale node, from a unit test.
+- **Fixed by pinning the host, not by loosening the assertion.** `internal/handlers/dashboard/tunnel.go` now resolves the binary and runs commands through two package-level seams (`tailscaleBinFn`, `tailscaleExec`), the same pattern `validate.go` and `connection_probe.go` already use for their network calls. No test shells out to a real binary any more; the suite dropped from 10.04s to 0.10s.
+- **Both real branches are now pinned**, not just the absent-binary one: no binary -> 400 clean error, installed-but-logged-out -> 200 `needsLogin` with the auth URL parsed out of the login output, and disable -> exactly one `funnel --bg reset`. Mutation-checked: routing the handler back around the seam fails with `must not exec tailscale when none is installed`. `go test -race ./...` is green across the repo for the first time.
+
+
 ### ✨ Feature integration suite + `integration` CI job
 
 - **The gap this closes.** Every Go test until now called a handler directly or mounted a hand-built `chi` router. That shape cannot see a regression in the wiring production actually uses, and the failures it hides are exactly the ones nobody can reproduce by hand later: a route registered in the wrong auth group, the `middleware.RequestLogger` `/v1` rewrite dropped so every documented OpenAI URL 404s, account rotation no longer skipping a throttled connection, usage no longer being recorded. `internal/handlers/router_test.go` already documents two of these having shipped — the CLI-Tools 401 and the Codex reset-credit 404 — both found after the fact, both because a route was wired into a table the tests exercised but the server did not.

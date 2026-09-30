@@ -27,6 +27,19 @@ var unixTailscaleCandidates = []string{
 	"/snap/bin/tailscale",
 }
 
+// Package-level seams so tests can pin the host instead of depending on what
+// is installed on the machine running them. A dashboard test that shells out
+// to the developer's real tailscale is not a unit test: it reads whatever
+// state that daemon happens to be in and, via `tailscale up --reset`, mutates
+// it.
+var (
+	tailscaleBinFn = findTailscaleBin
+	tailscaleExec  = func(ctx context.Context, bin string, args ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, bin, args...).CombinedOutput()
+	}
+)
+
+
 // findTailscaleBin searches for the tailscale executable across PATH and well-known locations.
 func findTailscaleBin() string {
 	if p, err := exec.LookPath("tailscale"); err == nil {
@@ -85,8 +98,7 @@ func probeTailscaleStatus(ctx context.Context, bin string) (*TailscaleStatusJSON
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, bin, "status", "--json")
-	out, err := cmd.Output()
+	out, err := tailscaleExec(ctx, bin, "status", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +123,7 @@ func (h *DashboardHandler) HandleTunnelStatus(w http.ResponseWriter, r *http.Req
 	tailscaleEnabled, _ := raw["tailscaleEnabled"].(bool)
 	tailscaleURL, _ := raw["tailscaleUrl"].(string)
 
-	bin := findTailscaleBin()
+	bin := tailscaleBinFn()
 	tailscaleRunning := false
 	tailscaleLoggedIn := false
 
@@ -166,7 +178,7 @@ func (h *DashboardHandler) HandleTunnelDisable(w http.ResponseWriter, r *http.Re
 // HandleTailscaleCheck handles GET /api/tunnel/tailscale-check.
 // Checks Tailscale installation, login state, and daemon status, matching upstream route.js.
 func (h *DashboardHandler) HandleTailscaleCheck(w http.ResponseWriter, r *http.Request) {
-	bin := findTailscaleBin()
+	bin := tailscaleBinFn()
 	if bin == "" {
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"installed":     false,
@@ -200,7 +212,7 @@ func (h *DashboardHandler) HandleTailscaleCheck(w http.ResponseWriter, r *http.R
 // HandleTailscaleEnable handles POST /api/tunnel/tailscale-enable.
 // Mirrors upstream enableTailscale: verifies login, triggers login flow if needed, and starts background Funnel.
 func (h *DashboardHandler) HandleTailscaleEnable(w http.ResponseWriter, r *http.Request) {
-	bin := findTailscaleBin()
+	bin := tailscaleBinFn()
 	if bin == "" {
 		writePlainError(w, http.StatusBadRequest, "Tailscale CLI is not installed or detected on your system path")
 		return
@@ -215,7 +227,7 @@ func (h *DashboardHandler) HandleTailscaleEnable(w http.ResponseWriter, r *http.
 			// Trigger login flow to obtain AuthURL
 			upCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
-			out, _ := exec.CommandContext(upCtx, bin, "up", "--reset").CombinedOutput()
+			out, _ := tailscaleExec(upCtx, bin, "up", "--reset")
 			re := regexp.MustCompile(`https://login\.tailscale\.com/[^\s]+`)
 			if match := re.FindString(string(out)); match != "" {
 				authURL = match
@@ -236,7 +248,7 @@ func (h *DashboardHandler) HandleTailscaleEnable(w http.ResponseWriter, r *http.
 	}
 
 	// Reset any existing funnel before starting a fresh one
-	_ = exec.Command(bin, "funnel", "--bg", "reset").Run()
+	_, _ = tailscaleExec(context.Background(), bin, "funnel", "--bg", "reset")
 
 	port := config.LoadConfig().Port
 	if port <= 0 {
@@ -246,8 +258,7 @@ func (h *DashboardHandler) HandleTailscaleEnable(w http.ResponseWriter, r *http.
 	funnelCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(funnelCtx, bin, "funnel", "--bg", strconv.Itoa(port))
-	out, err := cmd.CombinedOutput()
+	out, err := tailscaleExec(funnelCtx, bin, "funnel", "--bg", strconv.Itoa(port))
 	outStr := string(out)
 
 	if strings.Contains(outStr, "Funnel is not enabled") {
@@ -297,9 +308,9 @@ func (h *DashboardHandler) HandleTailscaleEnable(w http.ResponseWriter, r *http.
 // HandleTailscaleDisable handles POST /api/tunnel/tailscale-disable.
 // Mirrors upstream disableTailscale: resets background funnel and clears settings.
 func (h *DashboardHandler) HandleTailscaleDisable(w http.ResponseWriter, r *http.Request) {
-	bin := findTailscaleBin()
+	bin := tailscaleBinFn()
 	if bin != "" {
-		_ = exec.Command(bin, "funnel", "--bg", "reset").Run()
+		_, _ = tailscaleExec(context.Background(), bin, "funnel", "--bg", "reset")
 	}
 
 	_ = h.Repo.UpdateSettingsRaw(map[string]any{
