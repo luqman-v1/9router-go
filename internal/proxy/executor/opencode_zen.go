@@ -168,16 +168,47 @@ func stripOpenCodePrefix(model string, prefixes ...string) string {
 // zenHeaders builds the fingerprint headers the free-tier gate expects, keeping
 // the caller's key rather than the public placeholder
 // (open-sse/executors/opencode-zen.js buildHeaders).
+//
+// A relay header set (x-relay-target / x-relay-path) is carried over verbatim:
+// BuildEdgeRelayHeaders stamps those when an edge pool fronts a provider, and
+// the relay answers 400 "Missing x-relay-target header" without them.
 func zenHeaders(cfg *providers.ProviderConfig, session string, stream bool) map[string]string {
 	headers := proxy.BuildOpenCodeHeaders(nil, session, stream)
 	// Upstream sends the desktop client id; BuildOpenCodeHeaders defaults to cli.
 	headers["x-opencode-client"] = "desktop"
 	for k, v := range cfg.StaticHeaders {
-		if strings.EqualFold(k, "x-opencode-client") && v != "" {
-			headers["x-opencode-client"] = v
+		switch strings.ToLower(k) {
+		case "x-relay-target", "x-relay-path", "x-opencode-project":
+			headers[k] = v
+		case "x-opencode-client":
+			if v != "" {
+				headers[k] = v
+			}
 		}
 	}
 	return headers
+}
+
+// zenRelayPath reports the path an edge relay should forward to for a Zen lane.
+// The relay header set is stamped from the connection's base URL
+// (BuildEdgeRelayHeaders), so the path it carries is whatever lane that base
+// URL named — /chat/completions for a default connection. Rewriting it keeps
+// the relay pointed at the endpoint the model actually lives on.
+func zenRelayPath(cfg *providers.ProviderConfig, lanePath string) string {
+	if cfg != nil {
+		if target := cfg.StaticHeaders["x-relay-target"]; target != "" {
+			// An absolute origin is only a host; the lane decides the path. A
+			// relative one already carries the origin's path.
+			if strings.Contains(target, "://") {
+				return "/zen/v1" + lanePath
+			}
+			if i := strings.IndexByte(target, '/'); i >= 0 {
+				return target[i:]
+			}
+			return "/"
+		}
+	}
+	return "/zen/v1" + lanePath
 }
 
 func zenAuthHeaders(apiKey string) map[string]string {
@@ -260,11 +291,15 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 
 	cfg := *req.Config
 	if isRelayConfig(&cfg) {
+		// The relay stamps the destination in its headers, so the lane
+		// decision belongs in x-relay-path, not in the URL we dial.
 		cfg.StaticHeaders = copyHeaders(cfg.StaticHeaders)
-		cfg.StaticHeaders["x-relay-path"] = "/zen/v1" + zenResponsesPath
+		cfg.StaticHeaders["x-relay-path"] = zenRelayPath(req.Config, zenResponsesPath)
+		cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/") + zenResponsesPath
 	} else {
 		cfg.BaseURL = zenBaseURL(&cfg) + zenResponsesPath
 	}
+	// zenHeaders reads from the copy so the relay headers just set survive.
 	cfg.StaticHeaders = zenHeaders(&cfg, req.SessionID, req.IsStream)
 
 	ctx := reqCtx(req)
@@ -317,8 +352,16 @@ func forwardZenMessages(w http.ResponseWriter, req *Request, cleanModel string, 
 		}
 	}
 
+	// An edge relay carries the destination in headers, so the lane belongs in
+	// x-relay-path rather than in the URL the gateway dials.
+	messagesURL := zenBaseURL(req.Config) + zenMessagesPath
+	if isRelayConfig(req.Config) {
+		headers["x-relay-path"] = zenRelayPath(req.Config, zenMessagesPath)
+		messagesURL = strings.TrimRight(req.Config.BaseURL, "/") + zenMessagesPath
+	}
+
 	ctx := reqCtx(req)
-	resp, err := proxy.DoRequest(ctx, req.Client, "POST", zenBaseURL(req.Config)+zenMessagesPath, headers, body)
+	resp, err := proxy.DoRequest(ctx, req.Client, "POST", messagesURL, headers, body)
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeZen (messages): %w", err)
 	}

@@ -102,6 +102,30 @@ tetap keluar lewat IP asli. Tiga sebab, ketiganya diperbaiki.
   `go vet ./...`, `go test -race ./internal/...`,
   `go test -tags=integration -race ./internal/integration/...`.
 
+### 🐛 Edge relay kehilangan `x-relay-target` di lane Zen
+
+Dengan pool bertipe `vercel`/`cloudflare`/`deno`, `getProviderConfig` menukar
+tujuan upstream menjadi header relay (`BuildEdgeRelayHeaders`) lalu mengganti
+`BaseURL` dengan host relay. `ForwardOpencodeZen` membangun ulang header dari
+nol, jadi `x-relay-target` hilang dan relay menjawab
+`400 {"error":"Missing x-relay-target header"}` — **semua** request gagal begitu
+pool edge dipasang.
+
+- **`zenHeaders` kini membawa `x-relay-target` / `x-relay-path` /
+  `x-opencode-project`** dari config koneksi. Fingerprint UA tetap menang
+  atas `User-Agent` yang dikirim koneksi.
+- **`zenRelayPath` menentukan lane dari satu tempat.** Nilai `x-relay-path`
+  di-stamp dari `baseUrl` koneksi, jadi untuk koneksi default isinya
+  `/zen/v1/chat/completions` — penting saat modelnya butuh lane lain.
+- **Lane `/messages` juga.** Jalur itu membangun set header sendiri
+  (`x-api-key` + `anthropic-version`), jadi ikut kehilangan header relay; sekarang
+  sama seperti dua lane lain, tujuan ada di header dan `BaseURL` yang dipanggil
+  adalah host relay.
+- **Verifikasi:** 5 kasus test memakai relay palsu yang meniru perilaku
+  deployment (`internal/handlers/media/deploy.go`) dan membalas 400 seperti
+  aslinya — ketiganya **gagal dengan pesan yang sama seperti laporan Anda**
+  sebelum fix, lalu hijau sesudahnya.
+
 ## [v1.9.6] - 2026-10-01
 
 ### 🐛 Pre-release review: 5 blocker yang lolos semua gate (#70)
