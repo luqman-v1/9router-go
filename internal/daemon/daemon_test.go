@@ -104,11 +104,13 @@ func TestRunningPIDMalformedFile(t *testing.T) {
 }
 
 // A live PID is what makes "already running" work: the second start must be
-// refused instead of binding the same port twice.
+// refused instead of binding the same port twice. The claim has to name this
+// binary as well as the number — a bare PID that later belongs to an unrelated
+// process is not a daemon (issue #74).
 func TestRunningPIDReportsLiveProcess(t *testing.T) {
 	isolate(t)
 	pid := livePID(t)
-	writePIDFile(t, strconv.Itoa(pid))
+	writePIDFile(t, pidLine(pid, selfExecutable(t)))
 
 	if got := RunningPID(); got != pid {
 		t.Fatalf("RunningPID() = %d, want the live pid %d", got, pid)

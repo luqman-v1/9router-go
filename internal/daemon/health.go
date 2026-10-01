@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -61,17 +63,58 @@ func waitHealthy(url string, pid int) error {
 	}
 }
 
+// startupLogScanBytes bounds what one bind-failure poll reads off the end of
+// the log. waitHealthy runs this every 150ms for up to StartupTimeout, and
+// reading the whole file turned a startup into hundreds of full-file reads
+// against a log that is already capped at RunLogMaxBytes and only ever holds
+// the lines written since the daemon was spawned.
+const startupLogScanBytes int64 = 32 << 10
+
+// bindFailureMarkers are the strings a failed listen leaves behind: Go reports
+// "bind: Only one usage of each socket address", while the native accept error
+// a second daemon actually hits says "address already in use".
+var bindFailureMarkers = [][]byte{
+	[]byte("bind: Only one usage of each socket address"),
+	[]byte("address already in use"),
+}
+
 // bindFailureSeen reports whether the daemon logged an address-in-use failure.
 // The server treats a failed bind as fatal, but the log line lands a moment
 // before the liveness check notices the exit; catching it keeps a failed start
 // from burning the whole startup timeout.
+//
+// The daemon logs its own exit rather than anything both processes could read
+// directly: the failure happens in a goroutine in the child, the log is the
+// only channel it has to the parent, and reading a marker out of it is what
+// turns that channel into an error message instead of a twenty second hang.
 func bindFailureSeen() bool {
-	data, err := os.ReadFile(LogPath())
+	f, err := os.Open(LogPath())
 	if err != nil {
 		return false
 	}
-	return bytes.Contains(data, []byte("bind: Only one usage of each socket address")) ||
-		bytes.Contains(data, []byte("address already in use"))
+	defer f.Close()
+
+	size, err := logSize()
+	if err != nil {
+		return false
+	}
+	offset := size - startupLogScanBytes
+	if offset < 0 {
+		offset = 0
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return false
+	}
+	chunk := make([]byte, size-offset)
+	if _, err := io.ReadFull(f, chunk); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return false
+	}
+	for _, marker := range bindFailureMarkers {
+		if bytes.Contains(chunk, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // probeHealthy reports whether /health answers 200.

@@ -146,6 +146,11 @@ func GetStatus() *UpdaterStatus {
 	}
 }
 
+// githubReleasesAPI is the GitHub Releases endpoint template, overridden by the
+// UPSTREAM_API_BASE release pipeline. It stays a template with a single verb so
+// a test can point the fallback at a local server.
+var githubReleasesAPI = lo.CoalesceOrEmpty(os.Getenv("UPSTREAM_API_BASE"), "https://api.github.com") + "/repos/%s/releases/latest"
+
 // CheckUpdate queries remote version sources (manifest or GitHub Releases API) and compares semver.
 func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	updateURL := lo.CoalesceOrEmpty(os.Getenv("UPDATE_URL"), DefaultUpdateURL)
@@ -153,24 +158,18 @@ func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	// 1. Try manifest URL first
 	info, err := checkManifest(ctx, updateURL)
 	if err == nil && info != nil {
-		cacheMu.Lock()
-		cachedInfo = info
-		lastCheckTime = time.Now()
-		cacheMu.Unlock()
+		cacheUpdateInfo(info)
 		return info, nil
 	}
 
 	// 2. Fallback to GitHub Releases API
 	repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
-	ghURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+	ghURL := fmt.Sprintf(githubReleasesAPI, repo)
 	log.Debug("updater", "checking github releases fallback", "repo", repo)
 
 	ghInfo, ghErr := checkGitHubReleases(ctx, ghURL)
 	if ghErr == nil && ghInfo != nil {
-		cacheMu.Lock()
-		cachedInfo = ghInfo
-		lastCheckTime = time.Now()
-		cacheMu.Unlock()
+		cacheUpdateInfo(ghInfo)
 		return ghInfo, nil
 	}
 
@@ -178,6 +177,13 @@ func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 		return nil, fmt.Errorf("check update failed: manifest error (%w), github releases error (%w)", err, ghErr)
 	}
 	return nil, ghErr
+}
+
+func cacheUpdateInfo(info *UpdateInfo) {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	cachedInfo = info
+	lastCheckTime = time.Now()
 }
 
 func checkManifest(ctx context.Context, url string) (*UpdateInfo, error) {
@@ -273,13 +279,10 @@ func checkGitHubReleases(ctx context.Context, apiURL string) (*UpdateInfo, error
 	}
 
 	var release struct {
-		TagName string `json:"tag_name"`
-		Name    string `json:"name"`
-		Body    string `json:"body"`
-		Assets  []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-		} `json:"assets"`
+		TagName string         `json:"tag_name"`
+		Name    string         `json:"name"`
+		Body    string         `json:"body"`
+		Assets  []releaseAsset `json:"assets"`
 	}
 
 	if err := json.UnmarshalRead(resp.Body, &release); err != nil {
@@ -292,6 +295,16 @@ func checkGitHubReleases(ctx context.Context, apiURL string) (*UpdateInfo, error
 
 	downloadURL := matchReleaseAsset(release.Assets, runtime.GOOS, runtime.GOARCH)
 
+	// A missing digest only disables the install: PerformSelfUpdate refuses to
+	// rename over the running binary without one, and the user can still see
+	// the release notes and update manually.
+	sha256 := ""
+	if digest, err := lookupAssetSHA256(ctx, release.Assets, downloadURL); err != nil {
+		logChecksumLookupFailure(latestVersion, err)
+	} else {
+		sha256 = digest
+	}
+
 	return &UpdateInfo{
 		CurrentVersion: CurrentVersion,
 		LatestVersion:  latestVersion,
@@ -301,6 +314,7 @@ func checkGitHubReleases(ctx context.Context, apiURL string) (*UpdateInfo, error
 		GoVersion:      runtime.Version(),
 		OS:             runtime.GOOS,
 		Arch:           runtime.GOARCH,
+		SHA256:         sha256,
 		CheckedAt:      time.Now().UTC().Format(time.RFC3339),
 		Source:         "github_releases",
 	}, nil
@@ -321,10 +335,7 @@ func archAliases(archKey string) []string {
 }
 
 // matchReleaseAsset finds the best matching asset URL for target OS and Architecture.
-func matchReleaseAsset(assets []struct {
-	Name               string `json:"name"`
-	BrowserDownloadURL string `json:"browser_download_url"`
-}, targetOS, targetArch string) string {
+func matchReleaseAsset(assets []releaseAsset, targetOS, targetArch string) string {
 	osKey := strings.ToLower(targetOS)
 	archNames := archAliases(targetArch)
 
@@ -352,12 +363,21 @@ func matchReleaseAsset(assets []struct {
 	return ""
 }
 
+// selfExecutable resolves the binary this process runs, so the tests can point
+// the swap at a temp file instead of the live test binary.
+var selfExecutable = os.Executable
+
 // PerformSelfUpdate downloads, decompresses (tar.gz/zip if needed), verifies, and safely replaces the active binary.
-// When expectedSHA256 is non-empty, the downloaded asset (after archive extraction) is verified against it before
-// the binary is written to disk; a mismatch aborts the update and keeps the running binary intact.
+// The downloaded asset (after archive extraction) is verified against expectedSHA256 before the binary is written
+// to disk, and a mismatch aborts the update and keeps the running binary intact.
 func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 	if downloadURL == "" {
 		return fmt.Errorf("missing download URL for platform %s_%s", runtime.GOOS, runtime.GOARCH)
+	}
+	// Renaming over the running executable with no digest is exactly the
+	// unverified install this refuses, so it is checked before any request.
+	if expectedSHA256 == "" {
+		return fmt.Errorf("refusing to install %s: release carries no checksum", downloadURL)
 	}
 
 	updateProgressMu.Lock()
@@ -374,7 +394,7 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 		updateProgressMu.Unlock()
 	}()
 
-	execPath, err := os.Executable()
+	execPath, err := selfExecutable()
 	if err != nil {
 		return fmt.Errorf("locate executable path: %w", err)
 	}
@@ -407,14 +427,11 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 		return fmt.Errorf("extract executable: %w", err)
 	}
 
-	// Verify SHA256 checksum when the manifest provides one
-	if expectedSHA256 != "" {
-		actualSHA := ComputeSHA256(binaryBytes)
-		if !strings.EqualFold(actualSHA, expectedSHA256) {
-			return fmt.Errorf("SHA256 mismatch: expected %s, got %s", expectedSHA256, actualSHA)
-		}
-		log.Info("updater", "SHA256 checksum verified", "sha256", actualSHA)
+	actualSHA := ComputeSHA256(binaryBytes)
+	if !strings.EqualFold(actualSHA, expectedSHA256) {
+		return fmt.Errorf("SHA256 mismatch: expected %s, got %s", expectedSHA256, actualSHA)
 	}
+	log.Info("updater", "SHA256 checksum verified", "sha256", actualSHA)
 
 	// Create temporary binary file in the target directory
 	dir := filepath.Dir(execPath)
@@ -436,17 +453,27 @@ func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
 		return fmt.Errorf("chmod executable: %w", err)
 	}
 
-	// Replace running binary atomically
+	// Replace the running binary. The old image moves aside first so the rename
+	// below can restore it if it fails, and the fresh image is then renamed to
+	// the real path: renaming over a path this process is still executing from
+	// fails on windows, which is the platform that needs it.
 	oldPath := execPath + ".old"
+	newPath := execPath + ".new"
 	_ = os.Remove(oldPath)
+	_ = os.Remove(newPath)
 
 	if err := os.Rename(execPath, oldPath); err != nil {
 		return fmt.Errorf("backup active binary: %w", err)
 	}
 
-	if err := os.Rename(tmpPath, execPath); err != nil {
-		// Rollback on failure
+	if err := os.Rename(tmpPath, newPath); err != nil {
 		_ = os.Rename(oldPath, execPath)
+		return fmt.Errorf("stage updated binary: %w", err)
+	}
+
+	if err := os.Rename(newPath, execPath); err != nil {
+		_ = os.Rename(oldPath, execPath)
+		_ = os.Remove(newPath)
 		return fmt.Errorf("swap binary asset: %w", err)
 	}
 
@@ -681,13 +708,22 @@ func runCheckCycle(ctx context.Context) {
 		"downloadUrl", info.DownloadURL,
 	)
 
+	// An unattended install must not move a user on a final release onto a
+	// prerelease of the next one. The CLI and the dashboard trigger keep
+	// working, so an RC is still one command away.
+	if !autoApplyAllowed(info.CurrentVersion, info.LatestVersion) {
+		log.Info("updater", "auto-update skipped: prerelease does not replace a final release — install it manually",
+			"current", info.CurrentVersion, "latest", info.LatestVersion)
+		return
+	}
+
 	if IsAutoUpdateEnabled() || os.Getenv("AUTO_UPDATE") == "true" {
 		log.Info("updater", "auto-update is enabled — applying update...", "version", info.LatestVersion)
 		if err := PerformSelfUpdate(info.DownloadURL, info.SHA256); err != nil {
 			log.Error("updater", "auto-update download/apply failed", "error", err)
 		} else {
 			log.Info("updater", "auto-update applied successfully! Restarting process...")
-			RestartSelf()
+			restartSelf()
 		}
 	}
 }
@@ -734,6 +770,10 @@ func RestartSelf() {
 	shutdown.RestartAfterStop(spawn)
 }
 
+// restartSelf is the indirection the cycle restarts through; a test swaps it so
+// an applied update cannot take the test process down with it.
+var restartSelf = RestartSelf
+
 // restartArgs drops the background flag: the replacement process is the
 // daemon already, and re-honouring the flag would make it spawn another one.
 func restartArgs() []string {
@@ -751,26 +791,14 @@ func restartArgs() []string {
 
 // CompareVersions compares two semver strings (v1 > v2 -> 1, v1 < v2 -> -1, v1 == v2 -> 0).
 func CompareVersions(v1, v2 string) int {
-	parts1 := parseSemver(v1)
-	parts2 := parseSemver(v2)
-
-	for i := 0; i < 3; i++ {
-		if parts1[i] > parts2[i] {
-			return 1
-		}
-		if parts1[i] < parts2[i] {
-			return -1
-		}
-	}
-	return 0
+	return compareSemver(parseSemver(v1), parseSemver(v2))
 }
 
-func parseSemver(v string) [3]int {
-	v = strings.TrimPrefix(v, "v")
-	if idx := strings.Index(v, "-"); idx != -1 {
-		v = v[:idx]
-	}
-	var parts [3]int
-	fmt.Sscanf(v, "%d.%d.%d", &parts[0], &parts[1], &parts[2])
-	return parts
+// autoApplyAllowed decides whether the background cycle may install latest over
+// current without a human in the loop. A prerelease never replaces a final
+// release unattended: 1.9.7 must not silently become 1.9.8-rc1. Someone already
+// running a prerelease is opted in, so prereleases keep rolling forward there,
+// and a final release is always welcome.
+func autoApplyAllowed(current, latest string) bool {
+	return parseSemver(current).hasPrerelease() || !parseSemver(latest).hasPrerelease()
 }

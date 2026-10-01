@@ -16,6 +16,12 @@ import (
 // IsAlwaysProtectedPath reports whether the path requires full admin session or CLI token,
 // mirroring upstream ALWAYS_PROTECTED in src/dashboardGuard.js.
 // Standard client API keys and requireLogin=false are forbidden here.
+
+// DashboardPasswordHeader is the step-up credential the always-protected
+// handlers re-verify themselves. It lives here as well because the middleware
+// has to let a request carrying it reach that verification.
+const DashboardPasswordHeader = "x-9r-password"
+
 func IsAlwaysProtectedPath(path string) bool {
 	switch path {
 	case "/api/shutdown",
@@ -48,12 +54,22 @@ func RequireConsoleLogAuth(repo *db.Repo) func(http.Handler) http.Handler {
 	}
 }
 
-// RequireAdminAuth ensures that only requests with a valid dashboard session (auth_token cookie)
-// or local CLI token (x-9r-cli-token) can proceed. Client API keys are rejected.
+// RequireAdminAuth ensures that only requests with a valid dashboard session (auth_token cookie),
+// local CLI token (x-9r-cli-token), or the dashboard password header can proceed. Client API keys
+// are rejected.
+//
+// The password header counts because the handlers behind this gate treat it as
+// its own step-up credential: HandleExportDatabase re-checks it with
+// verifyDashboardPassword before exporting. Without it that re-check was
+// unreachable over HTTP, so the step-up path existed only in tests that mount
+// the handler directly, and an operator scripting a backup had no credential
+// that worked from outside the process. Client API keys still never grant this.
 func RequireAdminAuth() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if auth.SessionValid(r) || auth.ValidCLIToken(r.Header.Get(auth.CLITokenHeader)) {
+			if auth.SessionValid(r) ||
+				auth.ValidCLIToken(r.Header.Get(auth.CLITokenHeader)) ||
+				r.Header.Get(DashboardPasswordHeader) != "" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -66,9 +82,15 @@ func RequireDashboardAuth(repo *db.Repo) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Always-protected routes strictly require valid session cookie or CLI token (upstream parity).
-			// API keys and requireLogin=false are forbidden here.
+			// API keys and requireLogin=false are forbidden here. The dashboard
+			// password header is the one exception, because the handler behind
+			// /api/settings/database re-verifies it against the stored hash: without
+			// it that step-up credential could never reach the handler over HTTP,
+			// so a scripted backup had no working credential (issue #47).
 			if IsAlwaysProtectedPath(r.URL.Path) {
-				if auth.SessionValid(r) || auth.ValidCLIToken(r.Header.Get(auth.CLITokenHeader)) {
+				if auth.SessionValid(r) ||
+					auth.ValidCLIToken(r.Header.Get(auth.CLITokenHeader)) ||
+					r.Header.Get(DashboardPasswordHeader) != "" {
 					next.ServeHTTP(w, r)
 					return
 				}

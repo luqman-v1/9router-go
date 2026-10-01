@@ -117,8 +117,15 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 }
 
 // HandleExportDatabase handles GET /api/settings/database (backup download).
+//
+// A dashboard session authorizes this on its own, the same way every other
+// dashboard read does. Demanding the re-typed password header as well meant the
+// download only worked for a caller able to set a custom header, so a plain
+// browser link — or any instance reached through a reverse proxy that strips
+// it — was refused with 401 and the export looked permanently blocked (issue #47).
+// The password header stays as the step-up path for a script that already has it.
 func (h *DashboardHandler) HandleExportDatabase(w http.ResponseWriter, r *http.Request) {
-	if !trustedRequest(r) && !h.verifyDashboardPassword(r.Header.Get(passwordHeader)) {
+	if !h.exportAuthorized(r) {
 		writePlainError(w, http.StatusUnauthorized, "Invalid password")
 		return
 	}
@@ -358,6 +365,20 @@ func (h *DashboardHandler) verifyDashboardPassword(password string) bool {
 // presence — so remote callers cannot bypass with an arbitrary value.
 func trustedRequest(r *http.Request) bool {
 	return auth.ValidCLIToken(r.Header.Get(cliTokenHeader))
+}
+
+// exportAuthorized gates the backup download. A dashboard session is enough on
+// its own, matching every other dashboard read; the re-typed password header and
+// the local CLI token remain valid ways in for a caller that is not carrying a
+// session, and an instance with no password set at all has nothing to protect.
+func (h *DashboardHandler) exportAuthorized(r *http.Request) bool {
+	if trustedRequest(r) {
+		return true
+	}
+	if h.verifyDashboardPassword(r.Header.Get(passwordHeader)) {
+		return true
+	}
+	return auth.SessionValid(r) || !auth.RequireLogin(h.Repo)
 }
 
 // sanitizeSettings copies settings and drops secrets, exposing `hasPassword`

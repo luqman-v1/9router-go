@@ -334,6 +334,9 @@ func RestoreToolNames(payload []byte, toolNameMap map[string]string) []byte {
 			}
 		}
 	}
+	if restoreConverseToolNames(m, toolNameMap) {
+		changed = true
+	}
 	if !changed {
 		return payload
 	}

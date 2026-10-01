@@ -12,6 +12,71 @@ import (
 	"time"
 )
 
+// usagePeriod is the window /api/usage/stats aggregates over.
+type usagePeriod struct {
+	// daily reports whether the window is aggregated from usageDaily rows. The
+	// two sub-day windows instead scan raw usageHistory, because a daily rollup
+	// cannot express "since 14:00 yesterday".
+	daily bool
+	// days is the usageDaily row limit for a daily window.
+	days int
+	// since is the usageHistory cutoff for a raw-history window.
+	since time.Time
+}
+
+// allUsageDays bounds an unbounded period. usageDaily holds one row per calendar
+// day, so this covers every window this build can have written while keeping a
+// query parameter from asking for an unbounded scan.
+const allUsageDays = 3650
+
+// resolveUsagePeriod maps the ?period parameter onto a window. The named
+// shortcuts cover the dashboard presets; the <n>d and <n>h forms let a client ask
+// for a window that is not one of them.
+//
+// A zero day count means "unbounded", which only the explicit `all` shortcut
+// produces: a user-supplied 0 would otherwise silently read as the floor.
+func resolveUsagePeriod(raw string, now time.Time) usagePeriod {
+	if raw == "" {
+		raw = "today"
+	}
+
+	switch raw {
+	case "today":
+		day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		return usagePeriod{since: day}
+	case "24h":
+		return usagePeriod{since: now.Add(-24 * time.Hour)}
+	case "all":
+		return usagePeriod{daily: true, days: allUsageDays}
+	}
+
+	if n, ok := usagePeriodCount(raw, "d"); ok {
+		return usagePeriod{daily: true, days: n}
+	}
+	if n, ok := usagePeriodCount(raw, "h"); ok {
+	return usagePeriod{since: now.Add(-time.Duration(n) * time.Hour)}
+	}
+
+	// Unrecognized input falls back to the 7-day window rather than erroring: the
+	// dashboard keeps working against an older gateway that does not know a
+	// period, which is the common case when the SPA is newer than the server.
+	return usagePeriod{daily: true, days: 7}
+}
+
+// usagePeriodCount parses the "<n><unit>" shorthand, accepting only a positive
+// count with no sign or decimal part.
+func usagePeriodCount(raw, unit string) (int, bool) {
+	digits, ok := strings.CutSuffix(raw, unit)
+	if !ok || digits == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 type ProviderUsageItem struct {
 	Requests         int     `json:"requests"`
 	PromptTokens     int64   `json:"promptTokens"`
@@ -87,13 +152,12 @@ type UsageStatsResponse struct {
 	Pending               usagetracker.PendingState    `json:"pending"`
 }
 
-// HandleUsageStats returns aggregated stats for the specified period ("today", "24h", "7d", "30d", "60d").
+// HandleUsageStats aggregates usage over the window named by ?period. Besides the
+// dashboard presets ("today", "24h", "7d", "30d", "60d", "all") it accepts any
+// <n>d or <n>h window, so the selector is not limited to a fixed set.
 func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		period := r.URL.Query().Get("period")
-		if period == "" {
-			period = "today"
-		}
+		window := resolveUsagePeriod(r.URL.Query().Get("period"), time.Now())
 
 		tracker := usagetracker.GetTracker()
 		activeState := tracker.GetActiveState(repo)
@@ -182,19 +246,8 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 			resp.ByApiKey[bucketKey] = cur
 		}
 
-		useDailySummary := period != "today" && period != "24h"
-
-		if useDailySummary {
-			daysLimit := 7
-			if period == "30d" {
-				daysLimit = 30
-			} else if period == "60d" {
-				daysLimit = 60
-			} else if period == "all" {
-				daysLimit = 365
-			}
-
-			dailyRows, err := repo.GetUsageDailyRecent(daysLimit)
+		if window.daily {
+			dailyRows, err := repo.GetUsageDailyRecent(window.days)
 			if err == nil {
 				for _, rowJSON := range dailyRows {
 					var dayData map[string]any
@@ -316,15 +369,9 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				}
 			}
 		} else {
-			// Today or 24h: query usageHistory directly
-			var cutoff string
-			now := time.Now().UTC()
-			if period == "today" {
-				startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-				cutoff = startOfDay.Format(time.RFC3339)
-			} else {
-				cutoff = now.Add(-24 * time.Hour).Format(time.RFC3339)
-			}
+			// Sub-day windows read raw history: a daily rollup cannot express
+			// "since 14:00 yesterday".
+			cutoff := window.since.UTC().Format(time.RFC3339)
 
 			histRows, err := repo.GetUsageHistorySince(cutoff)
 			if err == nil {

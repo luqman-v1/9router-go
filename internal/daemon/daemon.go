@@ -39,6 +39,7 @@ const (
 
 // ErrAlreadyRunning is returned when a live daemon already owns the port.
 var ErrAlreadyRunning = errors.New("9router-go is already running")
+
 // StopTimeout is how long Restart waits for the old daemon's port to be
 // released before giving up.
 const StopTimeout = 10 * time.Second
@@ -86,23 +87,30 @@ func RegisterPID() {
 // process: the updater's replacement process claims it before the old instance
 // exits, and the old one must not delete the new one's claim.
 func UnregisterPID() {
-	if readPID() == os.Getpid() {
+	if c := readClaim(); c.pid == os.Getpid() {
 		clearPID()
 	}
 }
 
-// RunningPID returns the PID of the live daemon, or 0. A pid file left behind
-// by a killed process is removed instead of reported.
+// RunningPID returns the PID of the daemon running right now, or 0.
+//
+// The pid file is a claim, not a fact: the PID must still be alive *and* still
+// be running the executable the claim recorded. A file left behind by a killed
+// daemon therefore reads as 0 even once the OS hands that PID to an unrelated
+// process. So does a bare-number file written by an older build: it cannot be
+// checked against anything, and an unverifiable claim is not a running daemon.
+// Either way the file is removed, so the next command starts from a clean
+// slate.
 func RunningPID() int {
-	pid := readPID()
-	if pid == 0 {
+	c := readClaim()
+	if c.pid == 0 {
 		return 0
 	}
-	if !proc.Alive(pid) {
+	if !c.owner() {
 		clearPID()
 		return 0
 	}
-	return pid
+	return c.pid
 }
 
 // Start spawns a detached daemon, records its PID, and waits for it to become
@@ -124,9 +132,9 @@ func Start(url string, extraArgs []string) (StartResult, error) {
 		return StartResult{}, fmt.Errorf("daemon.Start: create run dir: %w", err)
 	}
 
-	logFile, err := os.OpenFile(LogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, constants.FilePermFile)
+	logFile, err := openRunLog()
 	if err != nil {
-		return StartResult{}, fmt.Errorf("daemon.Start: open %s: %w", LogPath(), err)
+		return StartResult{}, fmt.Errorf("daemon.Start: %w", err)
 	}
 	defer logFile.Close()
 
@@ -171,22 +179,23 @@ func Start(url string, extraArgs []string) (StartResult, error) {
 // The endpoint is what the dashboard button and the updater already use, it is
 // the one path that lets server.Shutdown drain, and the force-kill below stays
 // as the fallback for a daemon too broken to answer.
+//
+// Only a claim RunningPID verified is signalled: the PID still has to be the
+// executable the pid file recorded, so a recycled PID can never turn this into
+// a kill against an unrelated process.
 func Stop() (StopResult, error) {
 	pid := RunningPID()
 	if pid == 0 {
 		return StopResult{Reason: "not_running"}, nil
 	}
 
-	if requestGracefulStop() {
-		if waitExit(pid, stopGraceMS) {
-			clearPID()
-			return StopResult{Stopped: true, PID: pid}, nil
-		}
+	if requestGracefulStop() && waitExit(pid, stopGraceMS) {
+		clearPID()
+		return StopResult{Stopped: true, PID: pid}, nil
 	}
 
-	if gone := proc.Terminate(pid, stopGraceMS); !gone {
-		clearPID()
-		return StopResult{PID: pid}, fmt.Errorf("daemon.Stop: pid %d ignored the stop request and had to be killed", pid)
+	if !proc.Terminate(pid, stopGraceMS) {
+		return StopResult{PID: pid}, fmt.Errorf("daemon.Stop: pid %d ignored the stop request and could not be killed", pid)
 	}
 	clearPID()
 	return StopResult{Stopped: true, PID: pid}, nil
@@ -276,19 +285,6 @@ func waitPortFree(url string) error {
 	}
 }
 
-// LogTail returns the last maxLines lines of the background run log.
-func LogTail(maxLines int) string {
-	data, err := os.ReadFile(LogPath())
-	if err != nil {
-		return ""
-	}
-	lines := strings.Split(strings.TrimRight(string(data), "\r\n"), "\n")
-	if maxLines > 0 && len(lines) > maxLines {
-		lines = lines[len(lines)-maxLines:]
-	}
-	return strings.Join(lines, "\n")
-}
-
 // childArgs drops the background flag from the forwarded arguments: the child
 // runs the server directly and must never try to spawn another daemon.
 func childArgs(args []string) []string {
@@ -302,34 +298,6 @@ func childArgs(args []string) []string {
 		out = append(out, a)
 	}
 	return out
-}
-
-// writePID records the running daemon PID, replacing a stale file.
-func writePID(pid int) error {
-	if err := os.MkdirAll(Dir(), constants.FilePermDir); err != nil {
-		return err
-	}
-	return os.WriteFile(PIDFile(), []byte(strconv.Itoa(pid)), constants.FilePermFile)
-}
-
-// clearPID removes the pid file.
-func clearPID() {
-	if err := os.Remove(PIDFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Warn("daemon", "remove pid file failed", "path", PIDFile(), "error", err)
-	}
-}
-
-// readPID parses the pid file, ignoring a missing or malformed one.
-func readPID() int {
-	data, err := os.ReadFile(PIDFile())
-	if err != nil {
-		return 0
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return 0
-	}
-	return pid
 }
 
 // portBusy reports whether the daemon's port already answers, and what it is.

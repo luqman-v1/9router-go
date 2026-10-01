@@ -2,6 +2,103 @@
 
 ## [Unreleased]
 
+### 🐛 Batch perbaikan issue terbuka (#72, #73, #74, #75, #76, #77, #78, #79, #47, #61)
+
+Sepuluh issue yang masih terbuka ditutup di satu batch. Yang sudah benar di
+`main` (#48) tidak disentuh; yang butuh PR terpisah masih tercatat di issue.
+
+- 🔴 **Self-update bisa mengganti binary tanpa verifikasi checksum (#72).**
+  `PerformSelfUpdate` hanya memverifikasi SHA256 *kalau* manifest menyediakannya,
+  padahal di jalur yang benar-benar dipakai `expectedSHA256` selalu kosong:
+  `checkManifest` membaca field `sha256` yang tidak ada di `version.json`, dan
+  `checkGitHubReleases` tidak pernah mengisinya. Rangkaian download → tulis →
+  rename menimpa binary yang sedang berjalan tanpa cek integritas. Sekarang
+  checksum **wajib**: tanpa itu `PerformSelfUpdate` menolak sebelum request
+  jaringan apa pun dan binary yang berjalan tidak tersentuh. Untuk menutup
+  gap-nya, `checkGitHubReleases` membaca aset `SHA256SUMS.txt` yang memang
+  sudah diterbitkan `release.yml` (tidak ada kode Go yang membacanya) dan
+  memilih entri yang cocok dengan aset platform aktif. Kegagalan lookup tidak
+  mematikan pengecekan update; `SHA256` kosong dan instalasi ditolak dengan
+  pesan yang menyebut tidak ada checksum.
+- 🔴 **`parseSemver` membuang suffix prerelease (#73).** `1.9.7-rc1` dan
+  `1.9.7` sama-sama jadi `[1,9,7]`, jadi RC tidak pernah ditawarkan sebagai
+  update — dan begitu `1.9.8-rc1` terbit, user di `1.9.7` auto-update ke RC.
+  Precedence semver sebenarnya sekarang dipakai (versi final menang atas
+  prereleasenya sendiri, `rc2 > rc1`, build metadata diabaikan), plus guard
+  kedua di `runCheckCycle`: jalur otomatis tidak pernah memasang tag
+  ber-prerelease ke proses yang sedang berjalan di versi final. RC tetap bisa
+  dipasang manual lewat `9router-go update` maupun tombol dashboard.
+- 🔴 **PID daur-ulang bisa membuat `stop` membunuh proses lain (#74).**
+  `RunningPID` hanya percaya PID telanjang plus `proc.Alive`, jadi file pid
+  yang ditinggalkan daemon yang mati bisa dilaporkan hidup setelah OS memakai
+  ulang nomornya — lalu `Stop` mengirim SIGTERM/SIGKILL ke orang tak
+  bersalah. Klaim pid kini mencatat `<pid> <exe>`, dan `proc.Executable(pid)`
+  (Windows `QueryFullProcessImageName`, Linux `/proc/<pid>/exe`, BSD
+  `kern.proc.pathname`) memverifikasinya sebelum sinyal dikirim. Klaim yang
+  tidak bisa diverifikasi **bukan** daemon yang hidup, jadi tidak pernah
+  berwenang atas sinyal. `Stop` juga tidak lagi menghapus file pid di jalur
+  force-kill, sehingga keadaan "ada klaim tapi prosesnya sudah mati" bisa
+  terwakili.
+- 🔴 **`gateway.log` tumbuh tanpa batas dan dibaca utuh tiap 150 ms (#75).**
+  Log di-append tanpa cap, `LogTail` memuat seluruh file per panggilan
+  `logs`, dan `bindFailureSeen` melakukan `os.ReadFile` + `bytes.Contains`
+  pada setiap iterasi polling 150 ms. Log sekarang di-trim ke 16 MiB saat
+  dibuka (ekor dipertahankan, kepala dipindah ke `gateway.log.1`), `LogTail`
+  hanya membaca jendela 256 KiB dari belakang, dan pemindaian bind failure
+  dibatasi ke ekor log.
+- **`tools[].toolSpec.name` (Bedrock Converse) dilewati dua arah (#77).**
+  `visitTools`/`replaceInTools` hanya mengenal `name`, `function.name`, dan
+  `functionDeclarations`, sehingga request berbentuk Converse tetap membawa
+  nama > 64 karakter ke upstream dan tidak ada apa pun yang memulihkannya di
+  respons. Issue menyebut ini "direkam tapi tidak ditulis"; yang sebenarnya
+  adalah keduanya tidak disentuh —adding `toolSpec` ke sisi request saja
+  akan membuat respons mengembalikan nama yang tidak pernah dideklarasikan.
+  Bentuk Converse kini ditangani simetris di request **dan** respons
+  (`contentBlockStart.start.toolUse` dan `output.message.content[].toolUse`).
+- **`signalSelfShutdown` dead code di kedua varian build (#76).** Kedua file
+  `signal_unix.go`/`signal_windows.go` tidak punya call site sejak rewrite
+  `RestartSelf` pindah ke `shutdown.RestartAfterStop`; isinya identik dan
+  platform split yang membenarkan file terpisah sudah tidak ada. Keduanya
+  dihapus.
+- **Kredensial Kiro tidak pernah sampai ke quota tracker (#78).**
+  `fetchProviderUsage` mengirim `accessToken` ke `fetchKiroUsage`, padahal
+  koneksi Kiro menyimpan kredensialnya di `apiKey` — jadi request-nya
+  membawa `Authorization: Bearer ` dan dashboard menampilkan *"Kiro quota API
+  rejected the current token. Chat may still work."* sementara chat-nya
+  sendiri sukses memakai kredensial yang tidak pernah dibaca quota path.
+  Presedensinya sekarang sama dengan `resolveProviderAuthToken` di jalur chat,
+  dan token kosong dilaporkan sebagai "kredensial tidak tersimpan" — bukan
+  penolakan token yang menyesatkan.
+- **Antigravityqueue dua kali di gate quota (#78).** `HandleGetConnectionUsage`
+  mengambil slot `quotaFetchGate` sekali sebelum dispatch lalu sekali lagi
+  di cabang Antigravity, jadi tiap akun Antigravity menunggu dua gap 250 ms
+  berturut-turut untuk satu burst request. Slot kedua dihapus.
+- **Dropdown periode usage dengan `all` + window kustom (#79).**
+  Selector periode berupa deretan tombol pill hardcoded yang tidak punya
+>  `all`, padahal backend sudah menerimanya. Sekarang dropdown dengan preset
+>  (Today, 24h, 7D, 30D, 60D, All time) plus input kustom, dan backend
+>  `/api/usage/stats` menerima bentuk `<n>d` / `<n>h` apa pun —
+>  `resolveUsagePeriod` mengganti rantai `if/else` yang diam-diam memakai
+>  365 hari untuk `all` dan 7 hari untuk nilai yang tidak dikenal.
+- **Download database ditolak padahal sudah login (#47).**
+>  `HandleExportDatabase` tidak menerima session dashboard — hanya header
+>  `x-9r-password` atau token CLI — sehingga link browser biasa selalu 401
+>  dan ekspor terlihat permanen terblokir. Session sekarang cukup dengan
+>  sendirinya seperti baca dashboard lain, sementara header password tetap
+>  jalan untuk skrip. Jalur zip yang diminta sudah ada di backend dan kini
+>  bisa dijangkau.
+- **Picker model tidak lagi menyortir ulang seluruh katalog per klik (#61).**
+  `resolveFilteredGroups` menerima `addedModelValues` yang tidak pernah
+  dibaca, tapi karena argumennya ada di signature, Svelte menjadikannya bagian
+  dari graf reaktif: setiap klik satu pill memicu filter + sort ulang seluruh
+  grup dan rekonsiliasi ulang ratusan/ribuan pill. Argumen itu dihapus; logika
+  filter/sort tidak berubah sama sekali.
+
+**Di luar cakupan:** #78 butir 1–2 (executor `opencode-zen`) sudah dikerjakan
+di PR #80 dan #48 sudah benar di `main` (`stripCodexUnsupportedTokenParams`
+berjalan setelah `buildResponsesBody`, bukan sebelumnya) — keduanya tidak
+disentuh di sini.
+
 ## [v1.9.6] - 2026-10-01
 
 ### 🐛 Pre-release review: 5 blocker yang lolos semua gate (#70)

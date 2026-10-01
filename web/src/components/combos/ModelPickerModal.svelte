@@ -74,9 +74,7 @@
   let filteredCombos = $derived(
     resolveFilteredCombos(combos, currentComboName, searchQuery, target)
   )
-  let filteredGroups = $derived(
-    resolveFilteredGroups(groups, searchQuery, target, addedModelValues)
-  )
+  let filteredGroups = $derived(resolveFilteredGroups(groups, searchQuery, target))
 
   function handleToggle(val: string) {
     if (addedModelValues.includes(val)) {

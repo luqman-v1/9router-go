@@ -244,11 +244,15 @@ export function resolveFilteredCombos(
   })
 }
 
+// resolveFilteredGroups applies the search text and the modality target. The
+// already-added models are deliberately not an input: nothing here reads them, but
+// passing them from the caller made the signature part of the reactive graph, so
+// clicking one pill re-filtered and re-sorted every group and reconciled the
+// whole pill list again (#61).
 export function resolveFilteredGroups(
   groups: PickerGroup[] = [],
   searchQuery: string,
-  target: string,
-  _addedModelValues: string[] = []
+  target: string
 ): PickerGroup[] {
   const query = searchQuery.trim().toLowerCase()
 

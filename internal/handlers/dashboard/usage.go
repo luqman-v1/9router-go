@@ -82,9 +82,9 @@ func (h *DashboardHandler) HandleGetConnectionUsage(w http.ResponseWriter, r *ht
 		accessToken, _ := data["accessToken"].(string)
 		projectID, _ := data["projectId"].(string)
 		if accessToken != "" {
-			if !acquireQuotaSlot(w, r) {
-				return
-			}
+			// The slot above is already held; taking a second one made every
+			// Antigravity account queue for two consecutive 250ms gaps even
+			// though it issues one burst of upstream reads.
 
 			// The gate is paced on the request context, not this deadline, so a
 			// long queue cannot expire a fetch that has not started yet; the

@@ -149,6 +149,10 @@ func visitTools(req map[string]any, record func(string)) {
 	if !ok {
 		return
 	}
+	keep := func(n string) string {
+		record(n)
+		return n
+	}
 	for _, t := range tools {
 		tm, ok := t.(map[string]any)
 		if !ok {
@@ -162,6 +166,7 @@ func visitTools(req map[string]any, record func(string)) {
 				record(n)
 			}
 		}
+		converseToolSpecName(tm, keep)
 		if decls, ok := tm["functionDeclarations"].([]any); ok {
 			for _, d := range decls {
 				if dm, ok := d.(map[string]any); ok {
@@ -192,6 +197,7 @@ func replaceInTools(req map[string]any, mutate func(string) string) {
 				fn["name"] = mutate(n)
 			}
 		}
+		converseToolSpecName(tm, mutate)
 		if decls, ok := tm["functionDeclarations"].([]any); ok {
 			for _, d := range decls {
 				if dm, ok := d.(map[string]any); ok {

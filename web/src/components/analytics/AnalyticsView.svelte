@@ -6,6 +6,8 @@
     fmt,
     timeAgo,
     PERIODS,
+    periodLabel,
+    normalizeCustomPeriod,
     type MainTab,
     type Period,
     type StatsData,
@@ -27,6 +29,53 @@
   let activeTab = $state<MainTab>('overview')
   let period = $state<Period>('today')
   let isFetching = $state(false)
+
+  let showPeriodMenu = $state(false)
+  let customPeriodInput = $state('')
+  let customPeriodError = $state('')
+  let periodMenuRoot: HTMLDivElement | null = $state(null)
+
+  const isPresetPeriod = $derived(PERIODS.some((p) => p.value === period))
+  const selectedLabel = $derived(periodLabel(period))
+
+  function selectPeriod(next: Period) {
+    period = next
+    showPeriodMenu = false
+    customPeriodError = ''
+  }
+
+  function applyCustomPeriod() {
+    const normalized = normalizeCustomPeriod(customPeriodInput)
+    if (!normalized) {
+      customPeriodError = 'Enter a number of days or hours, like 14d or 12h.'
+      return
+    }
+    selectPeriod(normalized)
+  }
+
+  function onPeriodMenuKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      showPeriodMenu = false
+      return
+    }
+    if (event.key !== 'Tab') return
+    // A menu that stays open behind the next control leaves the following
+    // focusable element unreachable, so Tab closes it instead.
+    showPeriodMenu = false
+  }
+
+  $effect(() => {
+    if (!showPeriodMenu) return
+    function handleDocClick(e: MouseEvent): void {
+      const target = e.target as HTMLElement | null
+      if (!target?.closest('#period-dropdown-root')) {
+        showPeriodMenu = false
+      }
+    }
+    document.addEventListener('click', handleDocClick)
+    return () => document.removeEventListener('click', handleDocClick)
+  })
+
   let stats = $state<StatsData>({})
   let activeRequests = $state<ActiveRequestItem[]>([])
   let pulseProvider = $state<string>('')
@@ -329,21 +378,80 @@
     </div>
 
     {#if activeTab === 'overview'}
-      <div class="flex items-center gap-1.5 self-start sm:self-auto">
-        <div class="inline-flex rounded-xl bg-surface border border-border p-1 shadow-sm">
-          {#each PERIODS as p}
-            <button
-              type="button"
-              onclick={() => (period = p.value)}
-              disabled={isFetching}
-              class="rounded-lg px-3 py-1 text-xs sm:text-sm font-medium transition-colors cursor-pointer {period === p.value
-                ? 'bg-brand-500 text-white font-semibold shadow-sm'
-                : 'text-text-muted hover:text-text-main'}"
-            >
-              {p.label}
-            </button>
-          {/each}
-        </div>
+      <div id="period-dropdown-root" class="relative flex items-center gap-1.5 self-start sm:self-auto">
+        <button
+          type="button"
+          disabled={isFetching}
+          aria-haspopup="listbox"
+          aria-expanded={showPeriodMenu}
+          onclick={() => (showPeriodMenu = !showPeriodMenu)}
+          onkeydown={onPeriodMenuKeydown}
+          class="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text-main shadow-sm transition-colors hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 disabled:opacity-50 sm:text-sm"
+        >
+          <span>{selectedLabel}</span>
+          {#if !isPresetPeriod}
+            <span class="rounded-md bg-surface-3 px-1.5 py-0.5 font-code text-[10px] text-text-muted">{period}</span>
+          {/if}
+          <span class="material-symbols-outlined text-[16px] text-text-muted" aria-hidden="true">
+            {showPeriodMenu ? 'expand_less' : 'expand_more'}
+          </span>
+        </button>
+
+        {#if showPeriodMenu}
+          <div
+            role="listbox"
+            tabindex="-1"
+            onkeydown={onPeriodMenuKeydown}
+            class="absolute right-0 top-full z-30 mt-1 w-64 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)]"
+          >
+            {#each PERIODS as p (p.value)}
+              <button
+                type="button"
+                role="option"
+                aria-selected={period === p.value}
+                onclick={() => selectPeriod(p.value)}
+                class="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs text-text-main transition-colors hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 sm:text-sm"
+              >
+                <span>{p.label}</span>
+                {#if period === p.value}
+                  <span class="material-symbols-outlined text-[16px] text-brand-500" aria-hidden="true">check</span>
+                {/if}
+              </button>
+            {/each}
+
+            <div class="mt-1 border-t border-border-subtle px-3 pt-2 pb-1">
+              <label for="custom-period" class="text-[11px] font-medium text-text-muted">Custom window</label>
+              <div class="mt-1.5 flex items-center gap-1.5">
+                <input
+                  id="custom-period"
+                  type="text"
+                  inputmode="numeric"
+                  placeholder="14d"
+                  bind:value={customPeriodInput}
+                  onkeydown={(e) => e.key === 'Enter' && applyCustomPeriod()}
+                  aria-describedby={customPeriodError ? 'custom-period-error' : undefined}
+                  aria-invalid={customPeriodError ? 'true' : undefined}
+                  class="min-w-0 flex-1 rounded-lg border border-border bg-bg px-2 py-1.5 font-code text-xs text-text-main outline-none transition-colors placeholder:text-text-subtle focus:border-brand-500"
+                />
+                <button
+                  type="button"
+                  onclick={applyCustomPeriod}
+                  class="shrink-0 rounded-lg bg-brand-500 px-2.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-primary-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50"
+                >
+                  Set
+                </button>
+              </div>
+              {#if customPeriodError}
+                <p id="custom-period-error" class="mt-1.5 text-[11px] text-red-600 dark:text-red-400" role="alert">
+                  {customPeriodError}
+                </p>
+              {:else}
+                <p class="mt-1.5 text-[11px] text-text-muted">Days or hours, for example 14d or 12h.</p>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
         {#if isFetching}
           <span class="w-2 h-2 rounded-full bg-brand-500 animate-ping"></span>
         {/if}

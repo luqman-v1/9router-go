@@ -84,7 +84,7 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 	case "codebuddy-intl":
 		return fetchCodeBuddyIntlUsage(ctx, accessToken, apiKey), true
 	case "kiro":
-		return fetchKiroUsage(ctx, accessToken, psd), true
+		return fetchKiroUsage(ctx, kiroUsageToken(accessToken, apiKey, psd), psd), true
 	case "grok-cli":
 		return fetchGrokCliUsage(ctx, accessToken, psd), true
 	case "codex":
@@ -103,6 +103,23 @@ func usageCreds(data map[string]any) (accessToken, apiKey string, psd map[string
 		return accessToken, apiKey, psd
 	}
 	return accessToken, apiKey, map[string]any{}
+}
+
+// kiroUsageToken mirrors resolveProviderAuthToken in internal/handlers/chat, which
+// picks the credential the chat path sends. Keeping the same precedence here is
+// what stops the quota tracker from sending an empty bearer for a connection whose
+// chat traffic works: a Kiro connection stores its credential in apiKey, and
+// passing only accessToken produced "Kiro quota API rejected the current token"
+// while chat succeeded with the very credential the quota read never looked at.
+func kiroUsageToken(accessToken, apiKey string, psd map[string]any) string {
+	authMethod, _ := psd["authMethod"].(string)
+	if authMethod == "api_key" && apiKey != "" {
+		return apiKey
+	}
+	if accessToken != "" {
+		return accessToken
+	}
+	return apiKey
 }
 
 func psdStr(psd map[string]any, keys ...string) string {
@@ -1057,6 +1074,12 @@ func resetAtStr(s string) any {
 }
 
 func fetchKiroUsage(ctx context.Context, accessToken string, psd map[string]any) usageResult {
+	// Without a credential every attempt sends an empty bearer and comes back as
+	// an auth rejection, which reads as "your token expired" when the real
+	// problem is that the connection was saved without one.
+	if strings.TrimSpace(accessToken) == "" {
+		return usageResult{message: "No Kiro credential is stored for this connection.", quotas: map[string]any{}}
+	}
 	authMethod, _ := psd["authMethod"].(string)
 	if authMethod == "" {
 		authMethod = "builder-id"
