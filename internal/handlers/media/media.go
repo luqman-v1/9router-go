@@ -252,7 +252,11 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 	if modelInfo.Provider == "opencode" || modelInfo.Provider == "opencode-zen" {
 		req.Header.Set("x-opencode-session", proxy.GenerateOpenCodeSessionID())
 	}
-	client := h.ChatH.GetClientForConnection(connData)
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
+		return
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		// Transport-level failure only (proxy block, DNS, reset): retry once
@@ -697,7 +701,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				req.Header[k] = v
 			}
 			handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-			client := h.ChatH.GetClientForConnection(connData)
+			client, clientErr := h.ChatH.GetClientForConnection(connData)
+			if clientErr != nil {
+				lastErr = clientErr.Error()
+				continue
+			}
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Warn("media", "upstream combo request failed", "endpoint", endpoint, "provider", subInfo.Provider, "model", subInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "error", err)
@@ -833,7 +841,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			log.Warn("media", "multipart model rewrite skipped", "endpoint", endpoint, "error", err)
 		}
 	}
-	client := h.ChatH.GetClientForConnection(connData)
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
+		return
+	}
 
 	connID := ""
 	if conn != nil {

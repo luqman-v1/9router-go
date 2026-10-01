@@ -31,7 +31,17 @@ func (h *ChatHandler) forwardRequest(
 	isStream bool,
 	translateResponse bool,
 	metrics *streamMetrics,
+	// httpClient is the connection's client, proxy pool included. It is a
+	// parameter because falling back to h.Client here would dial the provider
+	// directly for every provider without a custom executor — the assigned
+	// pool would look bound in the dashboard and never be used.
+	httpClient *http.Client,
 ) error {
+	// A nil client means the caller had no connection context; the shared one
+	// is the only sensible default.
+	if httpClient == nil {
+		httpClient = h.Client
+	}
 	// OpenAI-compat Gemini endpoints validate tool schemas as strictly as the
 	// native one — sanitize tools so no unsupported JSON-Schema keyword reaches
 	// them ("Invalid tool parameters" fix).
@@ -55,7 +65,7 @@ func (h *ChatHandler) forwardRequest(
 			}
 		}
 	}
-	resp, err := internalproxy.ForwardOpenAI(ctx, h.Client, cfg, apiKey, body, isStream)
+	resp, err := internalproxy.ForwardOpenAI(ctx, httpClient, cfg, apiKey, body, isStream)
 	if err != nil {
 		return fmt.Errorf("forward to upstream: %w", err)
 	}

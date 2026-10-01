@@ -68,6 +68,40 @@ karena `forwardRequestParams` tidak membawa nama akun.
   identitas, `go vet ./...`, `go test -race ./internal/...`,
   `go test -tags=integration -race ./internal/integration/...`.
 
+### 🐛 Proxy pool ter-assign tapi tidak pernah dipakai — issue #78 (butir 1)
+
+Pool yang terpasang di dashboard **tidak pernah dipakai** untuk sebagian besar
+provider. UI menulis `proxyPoolId` dan menampilkan badge "Proxy" — request-nya
+tetap keluar lewat IP asli. Tiga sebab, ketiganya diperbaiki.
+
+- **`forwardRequest` mengabaikan client koneksi.** Signature-nya tidak punya
+  client, jadi selalu `h.Client`: **setiap provider tanpa executor kustom**
+  (deepseek, openai, openrouter, groq, mistral, …) melompati proxy. Jalur Gemini
+  native punya masalah yang sama. Client hasil resolusi sekarang diteruskan
+  (`forwardRequest` + `forwardGeminiNativeRequest`).
+- **Pool level provider hanya dibaca koneksi virtual no-auth.**
+  `settings.providerStrategies[...].proxyPoolId` baru dipakai di
+  `getBestConnection` untuk koneksi hasil sintetis, jadi koneksi yang punya API
+  key sendiri keluar langsung. `applyProviderProxyPool` kini menjadikannya
+  fallback ketika koneksi tidak punya binding sendiri (binding eksplisit tetap
+  menang).
+- **Alias vs id kanonik.** UI menyimpan pool di bawah `storageAlias` (mis.
+  `mmf`, `cl`, `ocg`, `ocz`) sedangkan request membawa id kanonik
+  (`mimo-free`, `clinepass`, `opencode-go`, `opencode-zen`).
+  `ResolveProviderProxyPoolID` hanya mengingat tiga pasangan, jadi sisanya
+  membaca "tidak ada". Sekarang kunci dicari lewat `providerStrategyKeys`:
+  id → alias terpublikasi → id kanonik → pasangan upstream (cline ↔ clinepass).
+- **Pool tak terpakai gagal diam-diam.** Pool yang terhapus, nonaktif, tanpa
+  URL, atau URL-nya tidak bisa diparse sebelumnya membuat request pergi
+  langsung. Sekarang `getClientForConnection` mengembalikan error dan
+  `tryForwardWithConnection` gagal **sebelum** ada byte yang terkirim — tidak
+  ada request pertama yang bocor ke IP asli.
+- **Verifikasi:** 4 kasus integrasi lewat router produksi dengan proxy palsu
+  yang menghitung setiap tunnel (termasuk satu yang membuktikan hop lewat
+  header yang di-stamp proxy), 6 unit test untuk resolusi alias pool,
+  `go vet ./...`, `go test -race ./internal/...`,
+  `go test -tags=integration -race ./internal/integration/...`.
+
 ## [v1.9.6] - 2026-10-01
 
 ### 🐛 Pre-release review: 5 blocker yang lolos semua gate (#70)

@@ -396,7 +396,16 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		usagetracker.GetTracker().TrackPending(model, provider, connectionID, false, hasErr)
 	}()
 
-	httpClient := h.getClientForConnection(connData)
+	// A connection bound to a pool that cannot serve traffic must fail before
+	// anything is sent: the first request is the one that would otherwise
+	// escape from the real IP while the error only shows on the next attempt.
+	httpClient, clientErr := h.getClientForConnection(connData)
+	if clientErr != nil {
+		return &upstreamError{
+			StatusCode: http.StatusBadGateway,
+			Body:       []byte(`{"error":{"type":"proxy_error","message":"` + clientErr.Error() + `"}}`),
+		}
+	}
 	sessionID := handlerutil.GetSessionID(ctx)
 
 	if exec := executor.Get(provider); exec != nil {
@@ -429,9 +438,9 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		}
 		fwdErr = exec(w, execReq)
 	} else if providerCfg.IsGeminiNative() {
-		fwdErr = h.forwardGeminiNativeRequest(ctx, w, provider, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)
+		fwdErr = h.forwardGeminiNativeRequest(ctx, w, provider, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics, httpClient)
 	} else {
-		fwdErr = h.forwardRequest(ctx, w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
+		fwdErr = h.forwardRequest(ctx, w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics, httpClient)
 	}
 
 	var ue *upstreamError
@@ -469,9 +478,9 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 				}
 				fwdErr = exec(w, retryReq)
 			} else if providerCfg.IsGeminiNative() {
-				fwdErr = h.forwardGeminiNativeRequest(ctx, w, provider, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics)
+				fwdErr = h.forwardGeminiNativeRequest(ctx, w, provider, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics, httpClient)
 			} else {
-				fwdErr = h.forwardRequest(ctx, w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics)
+				fwdErr = h.forwardRequest(ctx, w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics, httpClient)
 			}
 		}
 	}

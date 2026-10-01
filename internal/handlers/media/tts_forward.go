@@ -192,7 +192,10 @@ func (h *MediaHandler) tryNvidiaTTSConn(w http.ResponseWriter, r *http.Request, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := h.ChatH.GetClientForConnection(connData)
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		return http.StatusBadGateway, clientErr.Error(), false
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return http.StatusBadGateway, "nvidia tts request failed: " + err.Error(), true

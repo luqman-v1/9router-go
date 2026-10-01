@@ -25,8 +25,12 @@ var CredentialFallbacks = map[string]string{
 	"clinepass":     "cline",
 }
 
-// ResolveProviderProxyPoolID returns the active proxy pool ID configured for a provider,
-// checking both the canonical provider name and its alias/counterpart (e.g. antigravity <-> opencode).
+// ResolveProviderProxyPoolID returns the active proxy pool ID configured for a
+// provider. The dashboard writes a provider-level pool under the provider's
+// short alias (ProviderDetailView's storageAlias) while requests arrive
+// carrying the canonical id, so both keys are checked — in the shape upstream
+// resolves them (src/shared/constants/providers.js), not a hand-written pair
+// list, which is how an assignment could be shown in the UI yet read as none.
 func (h *ChatHandler) ResolveProviderProxyPoolID(provider string) string {
 	if h.Repo == nil {
 		return ""
@@ -35,25 +39,53 @@ func (h *ChatHandler) ResolveProviderProxyPoolID(provider string) string {
 	if err != nil || settings == nil || settings.ProviderStrategies == nil {
 		return ""
 	}
-
-	checkList := []string{provider}
-	switch provider {
-	case "antigravity", "ag":
-		checkList = append(checkList, "ag", "antigravity")
-	case "opencode", "oc":
-		checkList = append(checkList, "oc", "opencode")
-	case "cline":
-		checkList = append(checkList, "clinepass")
-	case "clinepass":
-		checkList = append(checkList, "cline")
-	}
-
-	for _, p := range checkList {
+	for _, p := range providerStrategyKeys(provider) {
 		if strat, ok := settings.ProviderStrategies[p]; ok {
 			if strat.ProxyPoolID != "" && strat.ProxyPoolID != "__none__" {
 				return strat.ProxyPoolID
 			}
 		}
+	}
+	return ""
+}
+
+// providerStrategyKeys lists the settings keys a provider's pool may be stored
+// under, most specific first: the id as given, its dashboard alias, and the
+// keys of the provider that shares its upstream account pool.
+func providerStrategyKeys(provider string) []string {
+	keys := []string{provider}
+	seen := map[string]bool{provider: true}
+	add := func(key string) {
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		keys = append(keys, key)
+	}
+	add(providers.GetProviderAlias(provider))
+	if canon := providers.ResolveAlias(provider); canon != "" {
+		add(canon)
+		add(providers.GetProviderAlias(canon))
+	}
+	// cline and clinepass are one upstream account pool, and the dashboard
+	// publishes cline as "cl" while clinepass keeps its own id, so both keys
+	// must be reachable from either side.
+	if counterpart := proxyPoolCounterpart(provider); counterpart != "" {
+		add(counterpart)
+		add(providers.GetProviderAlias(counterpart))
+	}
+	return keys
+}
+
+// proxyPoolCounterpart returns the provider that shares a pool with this one
+// upstream (cline and clinepass are the same upstream account pool), so an
+// assignment made on one applies to the other.
+func proxyPoolCounterpart(provider string) string {
+	switch provider {
+	case "cline":
+		return "clinepass"
+	case "clinepass":
+		return "cline"
 	}
 	return ""
 }
@@ -230,8 +262,24 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			connData.ProxyPoolID = poolID
 		}
 	}
+	// No per-connection binding: fall back to the pool assigned to the
+	// provider itself. It used to be read only for the synthesized no-auth
+	// connection, so a stored connection carrying its own key went out
+	// directly — the assignment the dashboard shows was never dialled.
+	h.applyProviderProxyPool(&connData, provider)
 
 	return conn, &connData, nil
+}
+
+// applyProviderProxyPool binds a provider-level pool to a connection that has
+// none of its own. An explicit per-connection binding always wins.
+func (h *ChatHandler) applyProviderProxyPool(connData *ConnectionData, provider string) {
+	if connData == nil || connData.ProxyPoolID != "" {
+		return
+	}
+	if poolID := h.ResolveProviderProxyPoolID(provider); poolID != "" {
+		connData.ProxyPoolID = poolID
+	}
 }
 
 // pinnedConnectionIneligible reports whether a client-pinned connection must

@@ -167,7 +167,10 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 	httpReq.Header.Set("X-Client-Name", "antigravity")
 	httpReq.Header.Set("X-Client-Version", "2.11.0")
 
-	client := h.ChatH.GetClientForConnection(connData)
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		return clientErr
+	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("antigravity request failed: %w", err)

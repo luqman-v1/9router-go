@@ -31,6 +31,8 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	isStream bool,
 	translateResponse bool,
 	metrics *streamMetrics,
+	// httpClient is the connection's client, proxy pool included.
+	httpClient *http.Client,
 ) error {
 	// Extract model
 	var reqMeta struct {
@@ -55,7 +57,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	}
 
 	if (provider == "antigravity" || provider == "gemini-cli") && projectID == "" && !projectProbeCached(connectionID) {
-		pid, authFailed, noProject := fetchAntigravityProjectID(ctx, h.Client, apiKey)
+		pid, authFailed, noProject := fetchAntigravityProjectID(ctx, httpClient, apiKey)
 		switch {
 		case pid != "":
 			projectID = pid
@@ -71,7 +73,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 				if pid2 != "" {
 					projectID = pid2
 					h.storeAntigravityProjectID(connectionID, pid2)
-				} else if pid2, _, _ := fetchAntigravityProjectID(ctx, h.Client, apiKey); pid2 != "" {
+				} else if pid2, _, _ := fetchAntigravityProjectID(ctx, httpClient, apiKey); pid2 != "" {
 					projectID = pid2
 					h.storeAntigravityProjectID(connectionID, pid2)
 				}
@@ -93,10 +95,10 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		}
 		// gemini-cli keeps its OpenAI-style fallback.
 		log.Info("gemini", "no projectID, fallback to OpenAI", "provider", provider)
-		return h.forwardRequest(ctx, w, cfg, apiKey, body, isStream, translateResponse, metrics)
+		return h.forwardRequest(ctx, w, cfg, apiKey, body, isStream, translateResponse, metrics, httpClient)
 	}
 
-	resp, err := proxy.ForwardGemini(ctx, h.Client, cfg, apiKey, string(body), isStream, projectID, modelName)
+	resp, err := proxy.ForwardGemini(ctx, httpClient, cfg, apiKey, string(body), isStream, projectID, modelName)
 	if err != nil {
 		if uErr, ok := err.(*proxy.UpstreamError); ok {
 			if uErr.StatusCode == http.StatusConflict || uErr.StatusCode == http.StatusTooManyRequests {
@@ -104,7 +106,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 					BlockAntigravityModelUntil(connectionID, modelName, time.Now().UTC().Add(dur))
 				}
 				HandleAntigravityQuotaError(AntigravityQuotaError{
-					Ctx: ctx, Client: h.Client, ConnectionID: connectionID,
+					Ctx: ctx, Client: httpClient, ConnectionID: connectionID,
 					Status: uErr.StatusCode, Model: modelName, AccessToken: apiKey,
 					ProjectID: projectID, ErrorMessage: string(uErr.Body),
 				})
