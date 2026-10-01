@@ -141,7 +141,8 @@ var usageSupportedProviders = []string{
 	"antigravity", "claude", "codebuddy-cn", "codebuddy-intl", "codex",
 	"commandcode", "deepseek", "gemini-cli", "github", "glm", "glm-cn",
 	"grok-cli", "groq", "kimi", "kiro", "minimax", "minimax-cn", "ollama",
-	"opencode-go", "qoder", "qoder-cn", "trae", "vercel-ai-gateway", "xiaomi-mimo", "zed",
+	"opencode-go", "opencode-zen", "qoder", "qoder-cn", "trae",
+	"vercel-ai-gateway", "xiaomi-mimo", "zed",
 }
 
 // usageApikeyProviders mirrors upstream USAGE_APIKEY_PROVIDERS
@@ -149,7 +150,8 @@ var usageSupportedProviders = []string{
 var usageApikeyProviders = []string{
 	"codebuddy-cn", "codebuddy-intl", "commandcode", "deepseek", "glm",
 	"glm-cn", "groq", "kimi", "kiro", "minimax", "minimax-cn", "ollama",
-	"opencode-go", "qoder", "qoder-cn", "vercel-ai-gateway", "xiaomi-mimo",
+	"opencode-go", "opencode-zen", "qoder", "qoder-cn", "vercel-ai-gateway",
+	"xiaomi-mimo",
 }
 
 func strSliceContains(list []string, v string) bool {

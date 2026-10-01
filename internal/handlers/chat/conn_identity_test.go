@@ -2,85 +2,94 @@ package chat
 
 import (
 	"testing"
-
-	"github.com/samber/lo"
-
-	"9router/proxy/internal/models"
 )
 
-func TestConnIdentityKV(t *testing.T) {
+// A multi-account user reads the console to find out which account answered.
+// The name only helps if the request reports the account it actually used, and
+// the lookup must not run twice for one request.
+func TestConnIdentityKVOr(t *testing.T) {
 	tests := []struct {
-		name string
-		conn *models.ProviderConnection
-		want []any
+		name   string
+		params forwardRequestParams
+		connID string
+		want   map[string]string
+		absent []string
 	}{
 		{
-			name: "name, email and top-level project id",
-			conn: &models.ProviderConnection{
-				Name:  lo.ToPtr("AG Main"),
-				Email: lo.ToPtr("main@example.com"),
-				Data:  `{"accessToken":"ya29.x","projectId":"mega-rainfall-szp2g"}`,
-			},
-			want: []any{"connName", "AG Main", "email", "main@example.com", "projectId", "mega-rainfall-szp2g"},
+			name:   "carried name is used as-is",
+			params: forwardRequestParams{ConnName: "Work Account"},
+			connID: "conn-1",
+			want:   map[string]string{"conn": "conn-1", "connName": "Work Account"},
+			// A repo lookup would add the email; the carried name is enough and
+			// the success path runs on every request.
+			absent: []string{"email", "projectId"},
 		},
 		{
-			name: "project id from providerSpecificData",
-			conn: &models.ProviderConnection{
-				Email: lo.ToPtr("nested@example.com"),
-				Data:  `{"providerSpecificData":{"projectId":"nifty-journal-rjgl4"}}`,
+			name:   "carried email is kept too",
+			params: forwardRequestParams{ConnName: "Work Account", ConnEmail: "ops@example.com"},
+			connID: "conn-1",
+			want: map[string]string{
+				"conn":     "conn-1",
+				"connName": "Work Account",
+				"email":    "ops@example.com",
 			},
-			want: []any{"email", "nested@example.com", "projectId", "nifty-journal-rjgl4"},
 		},
 		{
-			name: "top-level project id wins over providerSpecificData",
-			conn: &models.ProviderConnection{
-				Data: `{"projectId":"top","providerSpecificData":{"projectId":"nested"}}`,
-			},
-			want: []any{"projectId", "top"},
-		},
-		{
-			name: "absent fields are omitted",
-			conn: &models.ProviderConnection{
-				Name: lo.ToPtr("Only Name"),
-				Data: `{"apiKey":"sk-test"}`,
-			},
-			want: []any{"connName", "Only Name"},
-		},
-		{
-			name: "unparseable data blob yields no project id",
-			conn: &models.ProviderConnection{
-				Email: lo.ToPtr("broken@example.com"),
-				Data:  `not-json`,
-			},
-			want: []any{"email", "broken@example.com"},
-		},
-		{
-			name: "nil connection yields no fields",
-			conn: nil,
-			want: nil,
+			name:   "a connection with no identity still reports its id",
+			params: forwardRequestParams{},
+			connID: "noauth",
+			want:   map[string]string{"conn": "noauth"},
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := connIdentityKV(tt.conn)
-			if len(got) != len(tt.want) {
-				t.Fatalf("connIdentityKV() = %v, want %v", got, tt.want)
+			kv := (&ChatHandler{}).connIdentityKVOr(tt.params, tt.connID)
+			got := map[string]string{}
+			for i := 0; i+1 < len(kv); i += 2 {
+				key, ok := kv[i].(string)
+				if !ok {
+					t.Fatalf("kv[%d] is not a string key: %v", i, kv)
+				}
+				got[key] = kv[i+1].(string)
 			}
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Fatalf("connIdentityKV()[%d] = %v, want %v (full: %v vs %v)", i, got[i], tt.want[i], got, tt.want)
+			for k, want := range tt.want {
+				if got[k] != want {
+					t.Errorf("kv[%q] = %q, want %q (full kv: %v)", k, got[k], want, kv)
+				}
+			}
+			for _, k := range tt.absent {
+				if v, ok := got[k]; ok {
+					t.Errorf("kv[%q] = %q, want it absent: the lookup must not run when the name is carried", k, v)
 				}
 			}
 		})
 	}
 }
 
-func TestConnIdentityKVByID_MissingConnection(t *testing.T) {
-	// A handler without a Repo (unit tests construct NewChatHandler(nil)) must
-	// not panic on the failure logging path.
-	h := NewChatHandler(nil)
-	if got := h.connIdentityKVByID("conn-does-not-exist"); len(got) != 0 {
-		t.Fatalf("expected no identity fields without a repo, got %v", got)
+func TestIdentityNames(t *testing.T) {
+	kv := []any{"conn", "conn-1", "connName", "Work Account", "email", "ops@example.com", "projectId", "p-1"}
+	name, email := identityNames(kv)
+	if name != "Work Account" || email != "ops@example.com" {
+		t.Errorf("name=%q email=%q, want the connName/email pairs", name, email)
+	}
+	if n, e := identityNames([]any{"conn", "x"}); n != "" || e != "" {
+		t.Errorf("identity with no name/email = (%q, %q), want both empty", n, e)
+	}
+}
+
+// The virtual no-auth connection and a real row reach the log through the same
+// helpers, so a nil name must not panic.
+func TestConnObjAccessorsAreNilSafe(t *testing.T) {
+	if got := connObjName(nil); got != "" {
+		t.Errorf("connObjName(nil) = %q, want empty", got)
+	}
+	if got := connObjEmail(nil); got != "" {
+		t.Errorf("connObjEmail(nil) = %q, want empty", got)
+	}
+	if got := connObjName(&ProviderConnection{ID: "noauth"}); got != "" {
+		t.Errorf("a connection with no name = %q, want empty", got)
+	}
+	if got := connObjName(&ProviderConnection{Name: new("Public")}); got != "Public" {
+		t.Errorf("connObjName = %q, want Public", got)
 	}
 }

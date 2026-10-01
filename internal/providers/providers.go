@@ -23,6 +23,7 @@ type ProviderConfig struct {
 	SystemoneURL  string            // override /systemone endpoint (System One structured evaluation)
 	FetchURL      string            // override /web/fetch endpoint (Jina, Firecrawl, etc.)
 	FetchMethod   string            // HTTP method for fetch: GET or POST (default POST)
+	UsageURL       string            // override /usage endpoint (quota tracker)
 }
 
 // IsGeminiNative returns true if provider uses Gemini-native format.
@@ -197,13 +198,16 @@ var KnownProviders = map[string]ProviderConfig{
 		SystemoneURL:  "https://opencode.ai/zen/v1/systemone",
 		StaticHeaders: map[string]string{"x-opencode-client": "desktop", "User-Agent": "opencode/1.18.31"},
 	},
+	// Pay-as-you-go lane (upstream open-sse/providers/registry/opencode-zen.js):
+	// a key is required, and the same key answers /chat/completions, /messages
+	// and /responses. NoAuth stays false so a connection with no key is refused
+	// instead of silently falling back to the free tier's "public" placeholder.
 	"opencode-zen": {
-		BaseURL:       "https://opencode.ai/zen/v1/chat/completions",
-		AuthHeader:    "Authorization",
-		AuthScheme:    "bearer",
-		DefaultAPIKey: "public",
-		NoAuth:        true,
-		SystemoneURL:  "https://opencode.ai/zen/v1/systemone",
+		BaseURL:      "https://opencode.ai/zen/v1/chat/completions",
+		AuthHeader:   "Authorization",
+		AuthScheme:   "bearer",
+		UsageURL:     "https://opencode.ai/zen/v1/usage",
+		SystemoneURL: "https://opencode.ai/zen/v1/systemone",
 		StaticHeaders: map[string]string{
 			"x-opencode-client": "desktop",
 			"User-Agent":        "opencode/1.18.31",

@@ -28,6 +28,10 @@ export interface ProviderCatalogItem {
   modelsFetcher?: { url: string; type: string }
   /** Upstream registry systemoneConfig */
   systemoneConfig?: { baseUrl?: string; format?: string; headers?: Record<string, string> }
+  /** Upstream registry passthroughModels: unknown ids are accepted unvalidated. */
+  passthroughModels?: boolean
+  /** Upstream registry features.usage: the quota tracker can read this provider. */
+  usage?: boolean
   searchConfig?: Record<string, any>
   fetchConfig?: Record<string, any>
   searchViaChat?: {
@@ -1616,6 +1620,8 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "notice": {"text":"OpenCode Zen PAYG: pay-as-you-go, key from https://opencode.ai/auth. Same models as Zen: paid + free tiers on the fast lane.","apiKeyUrl":"https://opencode.ai/auth"},
     "noAuth": false,
     "priority": 205,
+    "passthroughModels": true,
+    "usage": true,
     "systemoneConfig": {
       "baseUrl": "https://opencode.ai/zen/v1/systemone",
       "format": "systemone"
@@ -1623,7 +1629,8 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "serviceKinds": [
       "llm",
       "systemone"
-    ]
+    ],
+    "modelsFetcher": {"url":"https://opencode.ai/zen/v1/models","type":"opencode-free"}
   },
   {
     "id": "originator",

@@ -48,7 +48,8 @@ func (h *ChatHandler) handleAccountFallback(
 		log.Debug("fallback", "pinned", "pinnedConn", pinnedConnectionID, "connObj", connObj.ID)
 		return h.tryForwardWithConnection(forwardRequestParams{
 			Ctx: ctx, W: w, Provider: provider, Model: model,
-			ConnectionID: connObj.ID, ConnData: connData, Body: body,
+			ConnectionID: connObj.ID, ConnName: connObjName(connObj), ConnEmail: connObjEmail(connObj),
+			ConnData: connData, Body: body,
 			IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
 		})
 	}
@@ -120,7 +121,8 @@ func (h *ChatHandler) handleAccountFallback(
 		log.Debug("fallback", "connection", "conn", c.ID, "connObj", connObj.ID)
 		if err := h.tryForwardWithConnection(forwardRequestParams{
 			Ctx: ctx, W: w, Provider: provider, Model: model,
-			ConnectionID: c.ID, ConnData: connData, Body: body,
+			ConnectionID: c.ID, ConnName: connObjName(connObj), ConnEmail: connObjEmail(connObj),
+			ConnData: connData, Body: body,
 			IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
 		}); err == nil {
 			return nil
@@ -207,6 +209,8 @@ type forwardRequestParams struct {
 	Provider          string
 	Model             string
 	ConnectionID      string
+	ConnName          string // human-readable account name, for logs
+	ConnEmail         string
 	ConnData          *ConnectionData
 	Body              []byte
 	IsStream          bool
@@ -290,6 +294,16 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// OpenAI format before the fallback, and passing endpoint "/v1/v1/messages"
 	// alone would wrongly inject a top-level "system" the upstream ignores.
 	claudeNative := isAnthropic && (endpoint == "/v1/v1/messages" || endpoint == "/v1/messages")
+	// A /v1/messages client is only converted away from Claude format when the
+	// upstream cannot answer in it. opencode-zen routes the Claude and Qwen
+	// models to its own /zen/v1/messages endpoint, so those requests keep the
+	// client's own wire format end to end (upstream resolveTransport picks the
+	// sourceFormat-matched transport and skips translation).
+	if endpoint == "/v1/v1/messages" || endpoint == "/v1/messages" {
+		if executor.ServesMessagesEndpoint(provider, model) {
+			claudeNative = true
+		}
+	}
 	pipedBody := h.applyTokenSavers(body, claudeNative)
 	var claudeToolMap map[string]string
 	if isAnthropic {
@@ -393,6 +407,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			APIKey:         apiKey,
 			Body:           pipedBody,
 			IsStream:       isStream,
+			ClaudeClient:   endpoint == "/v1/v1/messages" || endpoint == "/v1/messages",
 			TranslateResp:  translateResponse,
 			ConnectionID:   connectionID,
 			SessionID:      sessionID,
@@ -433,6 +448,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 					APIKey:         apiKey,
 					Body:           pipedBody,
 					IsStream:       isStream,
+					ClaudeClient:   endpoint == "/v1/v1/messages" || endpoint == "/v1/messages",
 					TranslateResp:  translateResponse,
 					ConnectionID:   connectionID,
 					SessionID:      sessionID,
@@ -532,6 +548,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			APIKey:       apiKey,
 			Endpoint:     endpoint,
 		}
+		logInfo.ConnName, logInfo.ConnEmail = identityNames(h.connIdentityKVOr(f, connectionID))
 		h.logUsage(logInfo, usage, latencyMs, body, metrics)
 		fwdErr = nil
 		return nil
@@ -544,11 +561,15 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	if errors.As(fwdErr, &ue) {
 		statusCode = ue.StatusCode
 	}
+	identity := h.connIdentityKVOr(f, connectionID)
+	connName, connEmail := identityNames(identity)
 	h.LogFailure(
 		&UsageLogInfo{
 			Provider:     provider,
 			Model:        model,
 			ConnectionID: connectionID,
+			ConnName:     connName,
+			ConnEmail:    connEmail,
 			Endpoint:     endpoint,
 		},
 		usage,
@@ -558,14 +579,18 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		metrics,
 	)
 	if isClientCanceled(ctx, fwdErr) {
-		log.Info("fallback", "client canceled request", "provider", provider, "model", model, "conn", connectionID)
+		log.Info("fallback", "client canceled request", append([]any{
+			"provider", provider, "model", model,
+		}, identity...)...)
 	} else if projectProbeCached(connectionID) {
-		log.Debug("fallback", "upstream skipped (cached no-project)", "provider", provider, "model", model, "conn", connectionID, "error", fwdErr)
+		log.Debug("fallback", "upstream skipped (cached no-project)", append([]any{
+			"provider", provider, "model", model, "error", fwdErr,
+		}, identity...)...)
 	} else {
 		log.Warn("fallback", "upstream failed", append([]any{
-			"provider", provider, "model", model, "conn", connectionID,
+			"provider", provider, "model", model,
 			"status", statusCode, "error", fwdErr,
-		}, h.connIdentityKVByID(connectionID)...)...)
+		}, identity...)...)
 	}
 	return fwdErr
 }
