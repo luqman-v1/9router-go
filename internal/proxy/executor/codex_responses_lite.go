@@ -13,8 +13,13 @@ import "strings"
 
 // codexResponsesLiteModels mirrors the `responsesLite: true` registry flag.
 var codexResponsesLiteModels = map[string]bool{
-	"gpt-6-sol":  true,
-	"gpt-6-luna": true,
+	"gpt-6.1-sol": true,
+	"gpt-6-sol":   true,
+	"gpt-6-luna":  true,
+	// The `[1m]` ids resolve to their base model upstream (upstreamModelId),
+	// so they keep the base model's transport shape.
+	"gpt-6-sol[1m]":  true,
+	"gpt-6-luna[1m]": true,
 }
 
 // codexResponsesLiteDefaultEffort is the effort a lite model gets when the

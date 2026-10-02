@@ -158,13 +158,29 @@ func TestHandleModels_DisabledBuiltinExcluded(t *testing.T) {
 
 	h := NewChatHandler(repo)
 	ids := modelsIDs(t, h)
-	joined := strings.Join(ids, "\n")
-	if strings.Contains(joined, "cx/gpt-6-astra") {
-		t.Errorf("disabled builtin cx/gpt-6-astra must be excluded, got:\n%s", joined)
+	// Membership, not substring: cx/gpt-6-astra[1m] contains cx/gpt-6-astra as a
+	// prefix, and disabling one must not disable the other.
+	if containsID(ids, "cx/gpt-6-astra") {
+		t.Errorf("disabled builtin cx/gpt-6-astra must be excluded, got:\n%s", strings.Join(ids, "\n"))
 	}
-	if !strings.Contains(joined, "cx/gpt-5.6-sol") {
-		t.Errorf("non-disabled cx/gpt-5.6-sol must stay, got:\n%s", joined)
+	if !containsID(ids, "cx/gpt-6-astra[1m]") {
+		t.Errorf("only cx/gpt-6-astra was disabled, so cx/gpt-6-astra[1m] must stay, got:\n%s", strings.Join(ids, "\n"))
 	}
+	if !containsID(ids, "cx/gpt-5.6-sol") {
+		t.Errorf("non-disabled cx/gpt-5.6-sol must stay, got:\n%s", strings.Join(ids, "\n"))
+	}
+}
+
+// containsID reports exact membership. Model ids prefix each other
+// (gpt-6-astra / gpt-6-astra[1m]), so a substring check cannot tell a disabled
+// id from a live one that starts with it.
+func containsID(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestHandleModels_ActiveRowWinsOverInactiveDuplicate(t *testing.T) {

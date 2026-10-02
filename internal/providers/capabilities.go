@@ -173,6 +173,22 @@ var modelCapabilities = map[string]Capabilities{
 	"kimi-k2.7-code-highspeed":         {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
 }
 
+// codexExtendedContextWindow is the context window the codex registry
+// publishes for the `[1m]` extended-context variants. The suffix is a 9router
+// catalog id, not a wire id — upstream resolves it to the base model through
+// `upstreamModelId` — so these entries carry their own window rather than
+// inheriting the base model's.
+const codexExtendedContextWindow = 872000
+
+// codexGpt56Caps builds the shared Codex capability block at a given context
+// window. Every codex model reports vision, reasoning, search and tools with
+// OpenAI-style reasoning_effort; only the window differs between families.
+func codexGpt56Caps(contextWindow int) Capabilities {
+	return Capabilities{
+		Vision: true, Reasoning: true, Search: true, Tools: true,
+		ThinkingFormat: "openai", ContextWindow: contextWindow, MaxOutput: 128000,
+	}
+}
 var providerCapabilities = map[string]map[string]Capabilities{
 	"nvidia": {
 		"minimaxai/minimax-m2.7":        {Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
@@ -182,13 +198,26 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"deepseek-ai/deepseek-v4-flash": {Reasoning: true, Tools: true, ThinkingFormat: "openai"},
 	},
 	"codex": {
-		"gpt-6-astra":            {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"},
-		"gpt-5.6-sol":            {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"},
-		"gpt-5.6-sol-review":     {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"},
-		"gpt-5.6-terra":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"},
-		"gpt-5.6-terra-review":   {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"},
-		"gpt-5.6-luna":           {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"},
-		"gpt-5.6-luna-review":    {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"},
+		// Codex OAuth reports its own context windows (open-sse/providers/
+		// capabilities.js), which differ from both the OpenAI API's and the
+		// sibling GPT-5.6 models' — Sol is wider than Terra/Luna, and the [1m]
+		// variants are wider again.
+		"gpt-6-astra":            codexGpt56Caps(272000),
+		"gpt-6-sol":              codexGpt56Caps(272000),
+		"gpt-6-luna":             codexGpt56Caps(272000),
+		"gpt-6.1-sol":            codexGpt56Caps(272000),
+		"gpt-6-astra[1m]":        codexGpt56Caps(codexExtendedContextWindow),
+		"gpt-6-sol[1m]":          codexGpt56Caps(codexExtendedContextWindow),
+		"gpt-6-luna[1m]":         codexGpt56Caps(codexExtendedContextWindow),
+		"gpt-5.6-sol":            codexGpt56Caps(372000),
+		"gpt-5.6-sol[1m]":        codexGpt56Caps(codexExtendedContextWindow),
+		"gpt-5.6-sol-review":     codexGpt56Caps(372000),
+		"gpt-5.6-terra":          codexGpt56Caps(272000),
+		"gpt-5.6-terra[1m]":      codexGpt56Caps(codexExtendedContextWindow),
+		"gpt-5.6-terra-review":   codexGpt56Caps(272000),
+		"gpt-5.6-luna":           codexGpt56Caps(272000),
+		"gpt-5.6-luna[1m]":       codexGpt56Caps(codexExtendedContextWindow),
+		"gpt-5.6-luna-review":    codexGpt56Caps(272000),
 		"gpt-5.6-sol-image":      {ImageOutput: true, Tools: true},
 		"gpt-5.6-terra-image":    {ImageOutput: true, Tools: true},
 		"gpt-5.6-luna-image":     {ImageOutput: true, Tools: true},
@@ -256,6 +285,11 @@ func init() {
 			ThinkingFormat: "openai", ThinkingCanDisable: new(false),
 		},
 	}
+
+	// `cx` is the alias codex publishes under, so it serves the same catalog
+	// upstream does (open-sse/providers/capabilities.js:
+	// PROVIDER_CAPABILITIES.cx = PROVIDER_CAPABILITIES.codex).
+	providerCapabilities["cx"] = providerCapabilities["codex"]
 }
 
 type patternCapability struct {

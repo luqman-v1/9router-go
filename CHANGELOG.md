@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### ⬆️ Katalog Codex disinkronkan dengan upstream v0.5.95 — issue #93
+
+Tujuh model yang upstream hapus masih dipublish di `/v1/models`, sementara model yang upstream konfirmasi hidup belum ada sama sekali. Dua-duanya 400.
+
+- **Ghost model dihapus.** `gpt-5.4`, `gpt-5.4-review`, `gpt-5.4-mini`, `gpt-5.4-mini-review`, `gpt-5.3-codex-spark`, `gpt-5.3-codex-spark-review`, dan `gpt-5.4-image` tidak ada di `backend-api/codex/models` untuk akun ChatGPT Plus/Pro — semuanya menjawab HTTP 400 "model is not supported" (upstream #4202). Dihapus dari `registry_models.go` dan katalog dashboard. Entri `gpt-5.4` milik provider lain (`openai`, `tokenrouter`) tidak disentuh.
+- **Model hidup ditambahkan.** `gpt-6.1-sol`, `gpt-daybreak-blue-latest`, `gpt-reserve`, dan enam varian konteks ekstended `[1m]`.
+- **Id katalog bukan id wire.** Varian `[1m]` dan `-review` adalah id katalog; ChatGPT menjawab 400 kalau keduanya diteruskan apa adanya. `providers.CodexUpstreamModelID` memetakan ke model dasar (setara `getModelUpstreamId` upstream), dipanggil dari `rewriteCodexUpstreamModel` **setelah** `buildResponsesBody` — sufiks "(level)" harus sudah dilepas lebih dulu. `codex-auto-review` sengaja tidak dipangkas (#1398), dan id berawalan vendor tidak ditulis ulang karena prefix itu menandai provider lain.
+- **Bare slug route ke codex.** `gpt-5.*`, `gpt-6.*`, `gpt-6-*`, `gpt-daybreak-*`, dan `gpt-reserve` sekarang resolve ke codex, bukan jatuh ke aturan generik `gpt-*` → openai dan 404 untuk akun codex-only (#4405). Posisinya di luar guard `Repo` supaya jalur katalog statis (Repo nil) tetap jalan. `gpt-4*` / `gpt-3.5*` / `gpt-4o*` tetap openai.
+- **Context window per model.** Codex OAuth melaporkan jendela sendiri, bukan milik OpenAI API: 272k untuk GPT-6 dan Terra/Luna, 372k untuk Sol, 872k untuk varian `[1m]`. `codexGpt56Caps` membangun blok kapabilitas bersama, dan `providerCapabilities["cx"]` sekarang mewarisi blok codex seperti upstream (`PROVIDER_CAPABILITIES.cx = PROVIDER_CAPABILITIES.codex`).
+- **Harga.** `gpt-6-astra` dikoreksi ke 10/50/1/50/12.5 (sebelumnya 5/30 — setengah nilai sebenarnya); `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna` ditambahkan.
+- **Lite + thinking levels.** `gpt-6.1-sol` dan varian `[1m]` yang berbasis lite masuk ke `codexResponsesLiteModels` dan `codexModelThinkingLevels`.
+
+**Verifikasi:** `go vet ./...` bersih · `go test -race ./internal/providers/... ./internal/proxy/... ./internal/pricing/...` hijau · 15 kasus baru (`TestCodexUpstreamModelID`, `TestCodexCatalogWireIDsResolve`, `TestCodexOnlyModelSlug`, `TestResolveModel_BareCodexSlugWithoutRepo`, `TestRewriteCodexUpstreamModel` + 4 kasus body tak usable) · `bun run build` (`tsc -b` + vite) bersih.
+
+Satu test yang tersisa rapuh **bukan** hasil perubahan ini: `TestApplyConnectionStrategy_KeepsRotatingPastFirstCycle` gagal intermittent di `origin/main` juga (terbukti lewat `git stash` + `-count=20`), jadi di luar cakupan issue ini.
+
 ## [v1.9.7] - 2026-10-02
 
 ### 🐛 Egress di log tercetak UUID, bukan nama pool

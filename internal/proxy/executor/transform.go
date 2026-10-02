@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"9router/proxy/internal/providers"
 )
 
 // ExtractSimpleText extracts text from jsontext.Value (string or array[text]).
@@ -77,6 +79,9 @@ func convertUserContent(raw jsontext.Value) map[string]any {
 	return result
 }
 
+// cleanResponsesModel strips the request modifiers a 9router client may wrap a
+// model id in: the opencode provider prefix, and the "(level)" thinking
+// override. Neither is part of the wire id.
 func cleanResponsesModel(model string) string {
 	clean := strings.TrimPrefix(model, "oc/")
 	clean = strings.TrimPrefix(clean, "opencode/")
@@ -84,6 +89,39 @@ func cleanResponsesModel(model string) string {
 		clean = clean[:idx]
 	}
 	return clean
+}
+
+// codexUpstreamModel resolves a codex catalog id to the id the ChatGPT backend
+// expects. The catalog publishes ids that are not wire ids — the `[1m]`
+// extended-context variants and the synthesized `-review` ones — and the
+// backend answers 400 when those reach it verbatim. It runs after
+// cleanResponsesModel, so the "(level)" suffix is already gone here.
+func codexUpstreamModel(model string) string {
+	return providers.CodexUpstreamModelID(model)
+}
+
+// rewriteCodexUpstreamModel replaces the body's `model` with the id the codex
+// backend expects. A body the gateway does not shape (unparseable, or one with
+// no model field) is returned untouched rather than replaced with a guess.
+func rewriteCodexUpstreamModel(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	model, ok := m["model"].(string)
+	if !ok || model == "" {
+		return body
+	}
+	upstream := codexUpstreamModel(model)
+	if upstream == model {
+		return body
+	}
+	m["model"] = upstream
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // maxCallIDLen clamps Responses API call_id values; longer IDs are truncated.

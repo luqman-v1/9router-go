@@ -91,7 +91,12 @@ var (
 		"gpt-5.6-luna":               {InputPer1M: 1, OutputPer1M: 6, CachedPer1M: 0.1, ReasoningPer1M: 6, CacheCreationPer1M: 1},
 		"gpt-5.6-sol":                {InputPer1M: 5, OutputPer1M: 30, CachedPer1M: 0.5, ReasoningPer1M: 30, CacheCreationPer1M: 5},
 		"gpt-5.6-terra":              {InputPer1M: 2.5, OutputPer1M: 15, CachedPer1M: 0.25, ReasoningPer1M: 15, CacheCreationPer1M: 2.5},
-		"gpt-6-astra":                {InputPer1M: 5, OutputPer1M: 30, CachedPer1M: 0.5, ReasoningPer1M: 30, CacheCreationPer1M: 5},
+		// OpenAI Standard short-context pricing (developers.openai.com/api/docs/pricing).
+		// Long-context pricing is higher, but this table stores one rate per model.
+		"gpt-6-astra":                {InputPer1M: 10, OutputPer1M: 50, CachedPer1M: 1, ReasoningPer1M: 50, CacheCreationPer1M: 12.5},
+		"gpt-6.1-sol":                {InputPer1M: 2, OutputPer1M: 10, CachedPer1M: 0.1, ReasoningPer1M: 10, CacheCreationPer1M: 2.5},
+		"gpt-6-sol":                  {InputPer1M: 2, OutputPer1M: 10, CachedPer1M: 0.2, ReasoningPer1M: 10, CacheCreationPer1M: 2.5},
+		"gpt-6-luna":                 {InputPer1M: 0.1, OutputPer1M: 0.5, CachedPer1M: 0.01, ReasoningPer1M: 0.5, CacheCreationPer1M: 0.125},
 		"gpt-oss-120b-medium":        {InputPer1M: 0.5, OutputPer1M: 2, CachedPer1M: 0.25, ReasoningPer1M: 3, CacheCreationPer1M: 0.5},
 		"grok-code-fast-1":           {InputPer1M: 0.5, OutputPer1M: 2, CachedPer1M: 0.25, ReasoningPer1M: 3, CacheCreationPer1M: 0.5},
 		"k3":                         {InputPer1M: 3, OutputPer1M: 15, CachedPer1M: 0.3, ReasoningPer1M: 15, CacheCreationPer1M: 3},

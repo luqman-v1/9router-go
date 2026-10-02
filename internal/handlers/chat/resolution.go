@@ -279,10 +279,16 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		}
 	}
 
-	// Upstream PR #4135: route bare codex-auto-review to the Codex provider
-	// Outside Repo guard so it resolves with nil Repo / empty DB (static catalog).
-	if modelStr == "codex-auto-review" {
-		return &ModelInfo{Provider: "codex", Model: "codex-auto-review"}, nil
+	// Codex-only GPT model slugs (open-sse/services/model.js MODEL_PREFIX_
+	// PROVIDERS): these exist on backend-api/codex/models but not on the OpenAI
+	// API, so a bare id from the Codex CLI's own picker used to fall through to
+	// openai and 404 for anyone holding only a Codex OAuth account (#4405).
+	// The rules sit ahead of the generic gpt-* fallback; plain gpt-4* / gpt-3.5*
+	// / gpt-4o* stay on openai.
+	//
+	// Outside the Repo guard so it resolves with nil Repo / an empty DB.
+	if codexOnlyModelSlug(modelStr) {
+		return &ModelInfo{Provider: "codex", Model: modelStr}, nil
 	}
 
 	// 3. Check if it's a combo name
@@ -344,6 +350,35 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		}
 	}
 	return nil, fmt.Errorf("could not resolve model: %s", modelStr)
+}
+
+// codexOnlyModelSlug reports whether a bare model id is served only by the
+// Codex backend (open-sse/services/model.js MODEL_PREFIX_PROVIDERS). These
+// slugs exist on backend-api/codex/models but not on the OpenAI API, so a bare
+// id from the Codex CLI's picker used to fall through to the generic gpt-*
+// rule and 404 for anyone holding only a Codex OAuth account (#4405).
+//
+// The rules are checked in upstream's order and ahead of the generic fallback;
+// plain gpt-4*, gpt-3.5* and gpt-4o* deliberately do not match.
+func codexOnlyModelSlug(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	if lower == "" {
+		return false
+	}
+	// codex-auto-review is the Codex CLI's virtual model. It carries no gpt
+	// prefix, but it belongs to codex for the same reason (#4135).
+	if lower == providers.CodexAutoReviewModel {
+		return true
+	}
+	// gpt-5.<x> and gpt-6.<x>.
+	if len(lower) > 7 && (strings.HasPrefix(lower, "gpt-5.") || strings.HasPrefix(lower, "gpt-6.")) {
+		return true
+	}
+	// gpt-6-<variant>.
+	if strings.HasPrefix(lower, "gpt-6-") {
+		return true
+	}
+	return strings.HasPrefix(lower, "gpt-daybreak-") || strings.HasPrefix(lower, "gpt-reserve")
 }
 
 // resolvePrefixProvider checks if a provider name is a providerNode prefix.

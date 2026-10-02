@@ -914,44 +914,78 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   ],
   "cx": [
     {
+      "id": "gpt-6.1-sol",
+      "name": "GPT 6.1 Sol",
+      "upstreamModelId": "gpt-6.1-sol"
+    },
+    {
       "id": "gpt-6-astra",
       "name": "GPT 6.0 Astra"
+    },
+    {
+      "id": "gpt-6-astra[1m]",
+      "name": "GPT 6.0 Astra (extended context)",
+      "upstreamModelId": "gpt-6-astra"
     },
     {
       "id": "gpt-6-sol",
-      "name": "GPT-6 Sol"
+      "name": "GPT 6.0 Sol"
+    },
+    {
+      "id": "gpt-6-sol[1m]",
+      "name": "GPT 6.0 Sol (extended context)",
+      "upstreamModelId": "gpt-6-sol"
     },
     {
       "id": "gpt-6-luna",
-      "name": "GPT-6 Luna"
+      "name": "GPT 6.0 Luna"
     },
     {
-      "id": "gpt-6-astra",
-      "name": "GPT 6.0 Astra"
+      "id": "gpt-6-luna[1m]",
+      "name": "GPT 6.0 Luna (extended context)",
+      "upstreamModelId": "gpt-6-luna"
     },
     {
       "id": "gpt-5.6-sol",
       "name": "GPT 5.6 Sol"
     },
     {
+      "id": "gpt-5.6-sol[1m]",
+      "name": "GPT 5.6 Sol (extended context)",
+      "upstreamModelId": "gpt-5.6-sol"
+    },
+    {
       "id": "gpt-5.6-sol-review",
-      "name": "GPT 5.6 Sol Review"
+      "name": "GPT 5.6 Sol Review",
+      "upstreamModelId": "gpt-5.6-sol"
     },
     {
       "id": "gpt-5.6-terra",
       "name": "GPT 5.6 Terra"
     },
     {
+      "id": "gpt-5.6-terra[1m]",
+      "name": "GPT 5.6 Terra (extended context)",
+      "upstreamModelId": "gpt-5.6-terra"
+    },
+    {
       "id": "gpt-5.6-terra-review",
-      "name": "GPT 5.6 Terra Review"
+      "name": "GPT 5.6 Terra Review",
+      "upstreamModelId": "gpt-5.6-terra"
     },
     {
       "id": "gpt-5.6-luna",
       "name": "GPT 5.6 Luna"
     },
     {
+      "id": "gpt-5.6-luna[1m]",
+      "name": "GPT 5.6 Luna (extended context)",
+      "upstreamModelId": "gpt-5.6-luna"
+    },
+    {
       "id": "gpt-5.6-luna-review",
-      "name": "GPT 5.6 Luna Review"
+      "name": "GPT 5.6 Luna Review",
+      "upstreamModelId": "gpt-5.6-luna"
     },
     {
       "id": "gpt-5.5",
@@ -959,31 +993,21 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     },
     {
       "id": "gpt-5.5-review",
-      "name": "GPT 5.5 Review"
+      "name": "GPT 5.5 Review",
+      "upstreamModelId": "gpt-5.5"
     },
     {
-      "id": "gpt-5.4",
-      "name": "GPT 5.4"
+      "id": "gpt-daybreak-blue-latest",
+      "name": "GPT Daybreak Blue"
     },
     {
-      "id": "gpt-5.4-review",
-      "name": "GPT 5.4 Review"
+      "id": "gpt-reserve",
+      "name": "GPT Reserve"
     },
     {
-      "id": "gpt-5.4-mini",
-      "name": "GPT 5.4 Mini"
-    },
-    {
-      "id": "gpt-5.4-mini-review",
-      "name": "GPT 5.4 Mini Review"
-    },
-    {
-      "id": "gpt-5.3-codex-spark",
-      "name": "GPT 5.3 Codex Spark"
-    },
-    {
-      "id": "gpt-5.3-codex-spark-review",
-      "name": "GPT 5.3 Codex Spark Review"
+      "id": "codex-auto-review",
+      "name": "Codex Auto Review",
+      "upstreamModelId": "codex-auto-review"
     },
     {
       "id": "gpt-image-2.5",
@@ -1020,10 +1044,6 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "gpt-5.5-image",
       "name": "GPT 5.5 Image"
-    },
-    {
-      "id": "gpt-5.4-image",
-      "name": "GPT 5.4 Image"
     },
     {
       "id": "gpt-5.3-image",
