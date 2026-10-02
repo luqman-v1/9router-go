@@ -649,3 +649,151 @@ func TestRunCheckCycle_SkipsPrereleaseForFinalInstall(t *testing.T) {
 		t.Errorf("restarts after the final release = %d, want 1", got)
 	}
 }
+
+// version.json ships three keys — downloadUrl, latestVersion, releaseNotes — and
+// no sha256. Since #72 made the digest mandatory, returning that manifest on
+// sight meant the one path that CAN fill the digest from the release's
+// SHA256SUMS.txt never ran: every install ended in "release carries no
+// checksum", and `9router-go update` failed outright. This pins the manifest to
+// being a lead rather than an answer when it describes an update it cannot
+// verify.
+func TestCheckUpdate_ManifestWithoutDigestFallsThroughToReleaseDigest(t *testing.T) {
+	payload := bytes.Repeat([]byte("NEW_BINARY_PAYLOAD"), 200)
+	digest := ComputeSHA256(payload)
+	assetName := platformBinaryAsset()
+
+	previousVersion := CurrentVersion
+	previousAPI := githubReleasesAPI
+	t.Cleanup(func() {
+		CurrentVersion = previousVersion
+		githubReleasesAPI = previousAPI
+	})
+	CurrentVersion = "1.9.6"
+
+	var base string
+	releaseRequests := 0
+	server := releaseServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/version.json":
+			// Exactly the shape this repo publishes: no sha256 key at all.
+			w.Header().Set("Content-Type", "application/json")
+			json.MarshalWrite(w, map[string]any{
+				"downloadUrl":  "https://example.invalid/releases/latest",
+				"latestVersion": "1.9.7",
+				"releaseNotes":  "notes",
+			})
+		case r.URL.Path == "/repos/owner/repo/releases/latest":
+			releaseRequests++
+			w.Header().Set("Content-Type", "application/json")
+			json.MarshalWrite(w, map[string]any{
+				"tag_name": "v1.9.7",
+				"body":     "notes",
+				"assets": []map[string]any{
+					{"name": assetName, "browser_download_url": base + assetName},
+					{"name": checksumsAssetName, "browser_download_url": base + checksumsAssetName},
+				},
+			})
+		case strings.HasSuffix(r.URL.Path, "/"+checksumsAssetName):
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprintf(w, "%s  %s\n", digest, assetName)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	base = server.URL + "/"
+
+	githubReleasesAPI = server.URL + "/repos/%s/releases/latest"
+	t.Setenv("UPDATE_URL", server.URL+"/version.json")
+	t.Setenv("UPDATE_REPO", "owner/repo")
+
+	info, err := CheckUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("CheckUpdate failed: %v", err)
+	}
+	if releaseRequests == 0 {
+		t.Fatal("manifest answered without ever consulting the release digest; the manifest carries no sha256")
+	}
+	if info.SHA256 != digest {
+		t.Errorf("SHA256 = %q, want the release digest %q", info.SHA256, digest)
+	}
+	if info.Source != "github_releases" {
+		t.Errorf("Source = %q, want github_releases", info.Source)
+	}
+	if !info.HasUpdate || info.LatestVersion != "1.9.7" {
+		t.Fatalf("expected 1.9.7 to be reported as available, got %+v", info)
+	}
+}
+
+// The fallback must not become a regression of its own: a manifest that does
+// carry a digest is still the faster, authoritative answer, and one reporting
+// no update needs no digest to be useful.
+func TestCheckUpdate_ManifestWithDigestStillAnswersWithoutGitHub(t *testing.T) {
+	digest := strings.Repeat("cd", 32)
+	var releaseRequests int
+	server := releaseServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/version.json" {
+			w.Header().Set("Content-Type", "application/json")
+			json.MarshalWrite(w, map[string]any{
+				"latestVersion": "1.9.7",
+				"downloadUrl":   "https://example.invalid/bin.zip",
+				"sha256":        digest,
+			})
+			return
+		}
+		releaseRequests++
+		w.Header().Set("Content-Type", "application/json")
+		json.MarshalWrite(w, map[string]any{"tag_name": "v1.9.7", "assets": []map[string]any{}})
+	})
+
+	previousAPI := githubReleasesAPI
+	githubReleasesAPI = server.URL + "/repos/%s/releases/latest"
+	t.Cleanup(func() { githubReleasesAPI = previousAPI })
+	t.Setenv("UPDATE_URL", server.URL+"/version.json")
+
+	previousVersion := CurrentVersion
+	CurrentVersion = "1.9.6"
+	t.Cleanup(func() { CurrentVersion = previousVersion })
+
+	info, err := CheckUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("CheckUpdate failed: %v", err)
+	}
+	if info.SHA256 != digest {
+		t.Errorf("SHA256 = %q, want the manifest digest %q", info.SHA256, digest)
+	}
+	if info.Source != "manifest" {
+		t.Errorf("Source = %q, want manifest", info.Source)
+	}
+	if releaseRequests != 0 {
+		t.Errorf("consulted the GitHub fallback %d times for a manifest that already had a digest", releaseRequests)
+	}
+}
+
+// A digest-less manifest that reports no update is still a fine answer — there
+// is nothing to install, so it must not drag the release API into the answer.
+func TestCheckUpdate_UpToDateManifestNeedsNoDigest(t *testing.T) {
+	server := releaseServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/version.json" {
+			w.Header().Set("Content-Type", "application/json")
+			json.MarshalWrite(w, map[string]any{"latestVersion": CurrentVersion})
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	previousAPI := githubReleasesAPI
+	githubReleasesAPI = server.URL + "/repos/%s/releases/latest"
+	t.Cleanup(func() { githubReleasesAPI = previousAPI })
+	t.Setenv("UPDATE_URL", server.URL+"/version.json")
+
+	info, err := CheckUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("CheckUpdate failed: %v", err)
+	}
+	if info.HasUpdate {
+		t.Errorf("expected no update, got %+v", info)
+	}
+	if info.Source != "manifest" {
+		t.Errorf("Source = %q, want manifest", info.Source)
+	}
+}
