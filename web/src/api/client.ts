@@ -971,8 +971,17 @@ export const api = {
     const fallback = await api.getProvidersClient()
     return { connections: fallback.connections }
   },
-  getConnectionUsage: async (connectionId: string, force = false): Promise<ConnectionUsageResponse> => {
-    return request<ConnectionUsageResponse>(`/api/usage/${encodeURIComponent(connectionId)}${force ? '?force=1' : ''}`)
+  // The quota tracker cancels a superseded pass with `signal`: the reading it
+  // would receive belongs to a page the user has already navigated away from.
+  getConnectionUsage: async (
+    connectionId: string,
+    force = false,
+    signal?: AbortSignal,
+  ): Promise<ConnectionUsageResponse> => {
+    return request<ConnectionUsageResponse>(
+      `/api/usage/${encodeURIComponent(connectionId)}${force ? '?force=1' : ''}`,
+      { signal },
+    )
   },
   // Codex reset credits. The list is fetched when the user opens the chooser
   // rather than with the quota poll, so the button stays cheap until it is used.

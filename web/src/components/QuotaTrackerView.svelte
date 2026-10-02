@@ -6,7 +6,12 @@
   // bulk turn off empty / on available, quota hide/show via settings,
   // and per-connection refresh/toggle/delete actions.
   import { onMount } from 'svelte'
-  import { api, type CodexResetCredit, type ProviderConnection } from '../api/client'
+  import {
+    api,
+    type CodexResetCredit,
+    type ConnectionUsageResponse,
+    type ProviderConnection,
+  } from '../api/client'
   import {
     getCodexResetCreditExpiryLabel,
     getResetCreditConfirmation,
@@ -48,6 +53,11 @@
     type QuotaVisibility,
     type Totals,
   } from './quota/types'
+  import {
+    QUOTA_FETCH_CONCURRENCY,
+    runQuotaFetchCycle,
+    type QuotaFetchTarget,
+  } from './quota/fetch'
 
   const CONNECTIONS_PAGE_SIZE = 20
 
@@ -116,6 +126,66 @@
   let initialLoadDone = false
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  // The controller of the quota cycle currently in flight, if any. Kept out of
+  // $state: it is a cancellation handle, not something the view renders, so
+  // putting it in the reactive graph would only add renders nobody reads.
+  let quotaCycleController: AbortController | null = null
+
+  // Runs one full pass over `targets`. Starting a pass supersedes any pass
+  // still running: its reads are aborted and its late answers are dropped, so
+  // a page change mid-refresh cannot leave rows blank or overwrite the new page.
+  async function fetchQuotasFor(
+    targets: QuotaFetchTarget[],
+    visible: ProviderConnection[],
+    force = false,
+  ): Promise<void> {
+    quotaErrors = filterQuotaStateByConnections(quotaErrors, visible)
+    quotaData = filterQuotaStateByConnections(quotaData, visible)
+    quotaLoading = buildLoadingState(targets)
+
+    // Supersede the pass in flight before starting this one. Its reads are
+    // aborted, so the browser stops waiting on answers no row will use and the
+    // late ones can no longer overwrite the rows below.
+    quotaCycleController?.abort()
+    const controller = new AbortController()
+    quotaCycleController = controller
+
+    await runQuotaFetchCycle<ConnectionUsageResponse>({
+      targets,
+      signal: controller.signal,
+      concurrency: QUOTA_FETCH_CONCURRENCY,
+      force,
+      fetch: (target, isForced) =>
+        api.getConnectionUsage(target.id, isForced, controller.signal),
+      onResult: (target, data) => {
+        const quotaEntry: QuotaEntry = {
+          quotas: parseQuotaData(target.provider, data),
+          plan: data?.plan || null,
+          message: data?.message || null,
+          raw: data,
+        }
+        quotaData = { ...quotaData, [target.id]: quotaEntry }
+        quotaErrors = { ...quotaErrors, [target.id]: '' }
+        quotaLoading = { ...quotaLoading, [target.id]: false }
+        setQuotaCache(target.id, quotaEntry)
+      },
+      onError: (target, error) => {
+        quotaLoading = { ...quotaLoading, [target.id]: false }
+        const message = error instanceof Error ? error.message : String(error)
+        // 404-style: the connection was deleted underneath the page, which is
+        // not a failure worth showing on a row that is about to disappear.
+        if (message.toLowerCase().includes('not found')) return
+        quotaErrors = { ...quotaErrors, [target.id]: message || 'Failed to fetch quota' }
+      },
+      onComplete: () => {
+        if (quotaCycleController === controller) quotaCycleController = null
+        lastUpdated = new Date()
+        refreshingAll = false
+      },
+    })
+  }
+
   const KIRO_METHOD_LABELS: Record<string, string> = {
     'builder-id': 'AWS Builder ID',
     idc: 'IAM Identity Center',
@@ -401,6 +471,9 @@
     }
   }
 
+  // Refreshes one connection on its own. The per-row button must not cancel the
+  // page-wide pass still working through the other rows, so this read owns its
+  // controller and nothing else aborts it.
   async function fetchQuota(
     connectionId: string,
     provider: string,
@@ -408,31 +481,35 @@
   ): Promise<void> {
     quotaLoading = { ...quotaLoading, [connectionId]: true }
     quotaErrors = { ...quotaErrors, [connectionId]: '' }
+    const controller = new AbortController()
 
-    try {
-      const data = await api.getConnectionUsage(connectionId, force)
-      const parsedQuotas = parseQuotaData(provider, data)
-      const quotaEntry: QuotaEntry = {
-        quotas: parsedQuotas,
-        plan: data?.plan || null,
-        message: data?.message || null,
-        raw: data,
-      }
-      quotaData = { ...quotaData, [connectionId]: quotaEntry }
-      quotaErrors = { ...quotaErrors, [connectionId]: '' }
-      setQuotaCache(connectionId, quotaEntry)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      // 404-style: connection not found — skip silently
-      if (message.toLowerCase().includes('not found')) {
-        console.warn(`[QuotaTracker] Connection not found for ${provider}, skipping`)
-        return
-      }
-      console.error(`[QuotaTracker] Error fetching quota for ${provider} (${connectionId}):`, error)
-      quotaErrors = { ...quotaErrors, [connectionId]: message || 'Failed to fetch quota' }
-    } finally {
-      quotaLoading = { ...quotaLoading, [connectionId]: false }
-    }
+    await runQuotaFetchCycle<ConnectionUsageResponse>({
+      targets: [{ id: connectionId, provider }],
+      signal: controller.signal,
+      force,
+      fetch: (target, isForced) =>
+        api.getConnectionUsage(target.id, isForced, controller.signal),
+      onResult: (target, data) => {
+        const quotaEntry: QuotaEntry = {
+          quotas: parseQuotaData(target.provider, data),
+          plan: data?.plan || null,
+          message: data?.message || null,
+          raw: data,
+        }
+        quotaData = { ...quotaData, [target.id]: quotaEntry }
+        quotaErrors = { ...quotaErrors, [target.id]: '' }
+        quotaLoading = { ...quotaLoading, [target.id]: false }
+        setQuotaCache(target.id, quotaEntry)
+      },
+      onError: (target, error) => {
+        quotaLoading = { ...quotaLoading, [target.id]: false }
+        const message = error instanceof Error ? error.message : String(error)
+        // 404-style: the connection is gone, which is not a failure worth
+        // showing on a row that is about to disappear.
+        if (message.toLowerCase().includes('not found')) return
+        quotaErrors = { ...quotaErrors, [target.id]: message || 'Failed to fetch quota' }
+      },
+    })
   }
 
   async function refreshProvider(connectionId: string, provider: string): Promise<void> {
@@ -453,19 +530,9 @@
 
     try {
       const visibleConnections = await fetchConnections(page)
-
-      quotaLoading = { ...buildLoadingState(visibleConnections) }
-      quotaErrors = filterQuotaStateByConnections(quotaErrors, visibleConnections)
-      quotaData = filterQuotaStateByConnections(quotaData, visibleConnections)
-
-      await Promise.allSettled(
-        visibleConnections.filter(shouldFetch).map((conn) => fetchQuota(conn.id, conn.provider)),
-      )
-
-      lastUpdated = new Date()
+      await fetchQuotasFor(visibleConnections.filter(shouldFetch), visibleConnections, force)
     } catch (error) {
       console.error('Error refreshing all providers:', error)
-    } finally {
       refreshingAll = false
     }
   }
@@ -699,13 +766,7 @@
       const visibleConnections = await fetchConnections(page)
       connectionsLoading = false
       initialLoadDone = true
-      quotaLoading = { ...buildLoadingState(visibleConnections) }
-      quotaErrors = filterQuotaStateByConnections(quotaErrors, visibleConnections)
-      quotaData = filterQuotaStateByConnections(quotaData, visibleConnections)
-      await Promise.allSettled(
-        visibleConnections.map((conn) => fetchQuota(conn.id, conn.provider)),
-      )
-      lastUpdated = new Date()
+      await fetchQuotasFor(visibleConnections, visibleConnections)
     })()
 
     // Pause auto-refresh when tab hidden (Page Visibility API)

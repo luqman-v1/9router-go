@@ -2,6 +2,55 @@
 
 ## [Unreleased]
 
+### 🐛 Quota tracker tidak fetch semua akun + refresh kredensial Kiro — issue #78 (butir 3 & 4)
+
+#### Audit upstream sebelum/sesudah
+
+| Aspek | Upstream `decolua/9router` | 9router-go sebelum | 9router-go sesudah |
+|:--|:--|:--|:--|
+| Refresh sebelum baca quota | ada (`refreshAndUpdateCredentials`, `src/app/api/usage/[connectionId]/route.js`) | **tidak ada** | ada (`usage_credentials.go`) |
+| Retry saat pesan auth-expired | ada (sekali) | **tidak ada** | ada (sekali) |
+| Pola auth-expired | `["expired","authentication","unauthorized","401","re-authorize"]` | — | identik |
+| Fetch kredensial Kiro | `open-sse/services/usage/kiro.js` | port 1:1 sudah benar | tidak diubah |
+| Throttle fetch quota | **tidak ada** (deliberate gap, lihat `usage.go`) | 250ms + 120ms jitter | tidak diubah |
+| Fan-out di halaman quota | `Promise.all` tanpa batas | `Promise.allSettled` tanpa batas | terikat + bisa dibatalkan |
+
+Butir 4 ternyata **sudah ter-port penuh** di sisi fetcher: `fetchKiroUsage`
+mencoba tiga endpoint (`codewhisperer-get`, `codewhisperer-post`, `q-get`) dengan
+header `tokentype`/`TokenType` dan profil ARN yang benar, dan `sawAuthError`
+menghasilkan pesan yang dilaporkan. Yang hilang adalah **dua langkah yang
+membuat token basi itu pernah sampai ke fetcher**: route `/api/usage/{id}` tidak
+pernah menyegarkan kredensial sebelum membaca, dan tidak pernah mencoba lagi
+saat provider menjawab dengan pesan auth-expired. Keduanya ada di upstream.
+
+#### Perubahan
+
+- **`internal/handlers/dashboard/usage_credentials.go` (baru).** Refresh
+  kredensial OAuth sebelum baca quota bila `expiresAt` sudah melewati lead
+  window 5 menit, penyimpanan token yang sudah dirotasi (OpenAI memutar refresh
+  token tiap refresh), dan satu percobaan ulang setelah refresh paksa bila
+  provider menjawab dengan pola auth-expired upstream.
+- **`apiKey` ikut dirotasi bila ia cerminan `accessToken`.** Login Kiro menulis
+  token OAuth ke kedua field (`HandleKiroAPIKey`, `HandleKiroImport`), jadi
+  hanya mengubah `accessToken` meninggalkan salinan basi untuk pembaca mana pun
+  yang memakai `apiKey`. Koneksi `api_key` dengan key yang berbeda tidak
+  ditimpa.
+- **`web/src/components/quota/fetch.ts` (baru).** Fan-out kuota terikat
+  (6 baca bersamaan — jumlah yang sama dengan yang dijaga browser per origin)
+  dengan `AbortSignal` yang dimiliki pemanggil. Pass yang disusul langsung
+  membatalkan pass sebelumnya, sehingga jawaban yang terlambat tidak lagi
+  menimpa baris halaman baru dan baris yang masih dalam antrean tidak lagi
+  tampil sebagai "selesai tapi kosong".
+
+#### Bukti
+
+- Repro (diulang): 50 koneksi lewat gate produksi butuh **15,07s** dan
+  **50/50** terbaca — jadi pemotongan terjadi di state klien, bukan di server.
+- Smoke live ke binary yang dibangun: 12 koneksi dalam satu pass tracker →
+  **12/12 baris live**, **12 read upstream**, 12 key berbeda. Bundle yang
+  dilayani memuat helper terikat (`Math.min(concurrency, targets.length)`).
+- `go vet ./...` · `go test -race ./internal/...` · `go test -tags=integration -race ./internal/integration/...` · `bun test` 120/120 · `tsc -b` · `oxlint` · `make build`.
+
 ### 🐛 OpenCode Zen (`ocz`) paritas dengan upstream — issue #78
 
 Halaman `/dashboard/providers/opencode-zen` hampir tidak punya perilaku upstream:

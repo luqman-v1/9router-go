@@ -8,6 +8,7 @@ import (
 
 	"9router/proxy/internal/fetchgate"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
 )
 
 // quotaFetchGate paces every live quota read this handler makes (issue #30).
@@ -40,6 +41,14 @@ func acquireQuotaSlot(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // HandleGetConnectionUsage handles GET /api/usage/{connectionId}
+//
+// Upstream parity (src/app/api/usage/[connectionId]/route.js): an OAuth
+// connection inside its expiry window is refreshed before the read, and a
+// provider that reports an auth failure as a message rather than a status is
+// force-refreshed and read once more. Both halves are what keep a stale token
+// from surfacing as "quota API rejected the current token. Chat may still
+// work." while chat traffic — refreshing on its own path — keeps working
+// (#78 item 4).
 func (h *DashboardHandler) HandleGetConnectionUsage(w http.ResponseWriter, r *http.Request) {
 	connID := getURLParam(r, "connectionId")
 	if connID == "" {
@@ -71,7 +80,29 @@ func (h *DashboardHandler) HandleGetConnectionUsage(w http.ResponseWriter, r *ht
 		return
 	}
 
-	if res, ok := fetchProviderUsage(r.Context(), conn.Provider, data); ok {
+	creds := usageCredentials{raw: data, provider: conn.Provider}
+	refreshable := isUsageRefreshable(conn, data)
+	if refreshable && creds.needsRefresh() {
+		if _, err := h.refreshUsageCredentials(r.Context(), conn, creds, nil); err != nil {
+			log.Warn("usage", "credential refresh failed", "provider", conn.Provider, "conn", connID, "error", err)
+		}
+	}
+
+	res, ok := fetchProviderUsage(r.Context(), conn.Provider, data)
+	if ok && refreshable && isAuthExpiredUsageMessage(res) {
+		// Upstream force-refreshes and retries exactly once here: the stored
+		// access token can age out while the refresh token is still good, and
+		// that is the whole difference between "expired" and a live reading.
+		if refreshed, err := h.refreshUsageCredentials(r.Context(), conn, creds, nil); err != nil {
+			log.Warn("usage", "forced credential refresh failed", "provider", conn.Provider, "conn", connID, "error", err)
+		} else if refreshed != nil {
+			if retried, retryOK := fetchProviderUsage(r.Context(), conn.Provider, data); retryOK {
+				handlerutil.WriteJSON(w, http.StatusOK, retried.toResponse())
+				return
+			}
+		}
+	}
+	if ok {
 		handlerutil.WriteJSON(w, http.StatusOK, res.toResponse())
 		return
 	}
