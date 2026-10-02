@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+### 🔵 Empat provider upstream v0.5.95 — Meta Muse, v1m System One, TinyFish, seed Agnes
+
+Empat entri registry dari upstream `decolua/9router` v0.5.91…v0.5.95.
+Setiap entri harus ada di **semua** tabel (transport, alias, katalog,
+executor, dashboard) — kalau tidak, provider itu ada di `/v1/models` tapi
+tidak pernah route.
+
+- **Meta Muse** (`muse`): Model API Meta dengan dual auth — device code akun
+  Meta (langganan Muse Code, key-nya di-mint dari token akun) **dan** API key
+  pay-as-you-go dari dev.meta.ai. Both rides the same bearer transport.
+  Kelima model Muse Spark meng-pin lane `openai-responses`, jadi
+  `internal/proxy/executor/muse.go` memilih endpoint per model (memakai
+  `handleCodexStream`, sama seperti executor Responses lain), bukan
+  per provider. Katalog live `/v1/models` butuh header `x-api-version: 1.0.0`
+  selain bearer — itu sebabnya ada `providers.ModelsListHeaders`
+  (upstream `PROVIDER_MODELS_CONFIG.muse`). Device flow-nya ada di
+  `internal/handlers/oauth/muse_device.go`, termasuk retry mint saat Meta
+  membalas 429 dan pesan langganan belum aktif. Pricing kelima model ikut
+  dari dev.meta.ai (contributor tier jauh lebih murah).
+- **v1m System One** (`v1m`, alias `systemone`): decision engine terkalibrasi,
+  `serviceKinds: ["systemone"]`, endpoint `https://v1m.ir/v1/systemone`.
+  Registry `ProviderConfig` tidak punya BaseURL chat untuknya — upstream pun
+  tidak, jadi `BaseURL` sengaja kosong dan hanya `SystemoneURL` yang diisi.
+  `/v1/models/{kind}` memilih lewat `SystemoneURL != ""`, jadi modelnya
+  otomatis tampil di tab System One.
+- **TinyFish** (`tinyfish`): `serviceKinds: ["webSearch","webFetch"]` dengan
+  **dua host terpisah** di balik satu key `x-api-key` — `api.search.tinyfish.ai`
+  dan `api.fetch.tinyfish.ai`. Karena `/v1/search` di repo ini adalah
+  *transparansi* (gateway meneruskan body apa adanya ke `BaseURL + endpoint`),
+  search TinyFish **tidak** diimplementasikan: menambahkan satu host kedua
+  berarti membangun pipeline builder/normalizer khusus provider di dalam
+  `internal/handlers/media/`, yang tidak pernah ada di repo ini — `linkup`,
+  `tavily`, `serper` dan `brave-search` semuanya seperti itu. Yang di-wire
+  adalah jalur fetch yang memang punya passthrough (`FetchURL` =
+  `https://api.fetch.tinyfish.ai`, POST) plus kartu dashboard dengan kedua
+  service kind. Detail lengkap di laporan issue.
+- **Agnes seed models**: provider-nya sudah ada sejak v0.5.91 tapi katalognya
+  kosong, dan `/v1/models` live-nya membalas 401 tanpa token, jadi halaman
+  provider-nya kosong total. Sekarang diisi empat seed upstream
+  (`agnes-2.5-flash`, `agnes-2.5-pro`, `agnes-2.5-pro-beta`,
+
 ### ⬆️ Tabel capabilities & thinking levels disinkronkan dengan upstream v0.5.95 — issue #97
 
 Ditemukan saat mengaudit range `v0.5.86..v0.5.95`. Fixture paritas yang mengunci thinking level **menyembunyikan** sebagian dari gap ini: `TestGetThinkingLevels_MatchesUpstreamFixture` melaporkan 1547/1547 tanpa error, karena fixture itu masih memakai versi lama.

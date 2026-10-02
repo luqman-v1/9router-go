@@ -1013,6 +1013,9 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 			return
 		}
 		headers := map[string]string{"Authorization": "Bearer " + token}
+		for k, v := range providers.ModelsListHeaders(conn.Provider) {
+			headers[k] = v
+		}
 		status, body, err := validateProbeDo(r.Context(), http.MethodGet, listURL, headers, nil)
 		if err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to fetch models: "+err.Error())

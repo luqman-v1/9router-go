@@ -330,6 +330,24 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "muse",
+    "name": "Muse (Meta Model API)",
+    "category": "oauth",
+    "alias": "muse",
+    "color": "#0866FF",
+    "icon": "auto_awesome",
+    "website": "https://muse.ai",
+    "notice": {"text":"Sign in with your Meta account (Muse Code subscription) or paste a Model API key from dev.meta.ai. Subscription keys are minted per account; Meta may train on contributor-tier data.", "apiKeyUrl":"https://dev.meta.ai", "signupUrl":"https://muse.ai"},
+    "noAuth": false,
+    "authModes": ["oauth", "apikey"],
+    "authType": "apikey",
+    "priority": 120,
+    "passthroughModels": true,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
     "id": "codex",
     "name": "OpenAI Codex",
     "category": "oauth",
@@ -1847,6 +1865,23 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "tinyfish",
+    "name": "TinyFish",
+    "category": "apikey",
+    "alias": "tinyfish",
+    "color": "#FF6700",
+    "icon": "dns",
+    "website": "https://www.tinyfish.ai/",
+    "notice": {"apiKeyUrl":"https://agent.tinyfish.ai/api-keys"},
+    "authType": "apikey",
+    "noAuth": false,
+    "priority": 999,
+    "serviceKinds": [
+      "webSearch",
+      "webFetch"
+    ]
+  },
+  {
     "id": "together",
     "name": "Together AI",
     "category": "apikey",
@@ -1919,6 +1954,26 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "noAuth": false,
     "serviceKinds": [
       "llm"
+    ]
+  },
+  {
+    "id": "v1m",
+    "name": "v1m (System One)",
+    "category": "apikey",
+    "alias": "v1m",
+    "color": "#6366F1",
+    "icon": "psychology",
+    "website": "https://v1m.ir",
+    "notice": {"text":"v1m System One calibrated decision engine. Fast probabilistic evaluations over state and questions.", "apiKeyUrl":"https://v1m.ir"},
+    "authType": "apikey",
+    "noAuth": false,
+    "priority": 45,
+    "systemoneConfig": {
+      "baseUrl": "https://v1m.ir/v1/systemone",
+      "format": "systemone"
+    },
+    "serviceKinds": [
+      "systemone"
     ]
   },
   {

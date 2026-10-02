@@ -17,6 +17,8 @@ func TestAggregatorProviders(t *testing.T) {
 		aliases     []string
 		modelsList  string
 		wantFetcher bool
+		authHeader   string
+		authScheme   string
 	}{
 		{
 			id: "tokenharbor", baseURL: "https://tokenharbor.ai/v1/chat/completions",
@@ -37,15 +39,35 @@ func TestAggregatorProviders(t *testing.T) {
 			modelsList: "https://api.atria-asi.ai/v1/models",
 		},
 		{
-			// agnes and bai ship no seed catalogue: their models are fetched live.
+			// agnes seeds a curated catalogue upstream (v0.5.95) because its live
+			// /v1/models answers 401 without a token; bai still ships none.
 			id: "agnes", baseURL: "https://apihub.agnes-ai.com/v1/chat/completions",
 			aliases:    []string{"agnes-ai"},
+			models:     []string{"agnes-2.5-flash", "agnes-2.5-pro", "agnes-2.5-pro-beta", "agnes-3.0-flash"},
 			modelsList: "https://apihub.agnes-ai.com/v1/models",
 		},
 		{
 			id: "bai", baseURL: "https://api.b.ai/v1/chat/completions",
 			aliases:    []string{"b-ai"},
 			modelsList: "https://api.b.ai/v1/models", wantFetcher: true,
+		},
+		{
+			// Muse (Meta Model API): every model pins the Responses lane, so the
+			// registry also carries a live catalogue endpoint for the dashboard.
+			id: "muse", baseURL: "https://api.meta.ai/v1/chat/completions",
+			models:     []string{"muse-spark-1.3", "muse-spark-1.2", "muse-spark-1.1", "muse-spark-1.3-contributor", "muse-spark-1.2-contributor"},
+			aliases:    []string{"muse-ai", "meta-model-api", "muse-code", "muse-subscription"},
+			modelsList: "https://api.meta.ai/v1/models", wantFetcher: true,
+		},
+		{
+			// v1m answers System One only: no chat base URL, one endpoint.
+			id: "v1m", baseURL: "",
+			models:  []string{"rev-latest", "v1m-decision-engine"},
+			aliases: []string{"systemone"},
+		},
+		{
+			id: "tinyfish", baseURL: "https://api.tinyfish.ai",
+			authHeader: "x-api-key", authScheme: "raw",
 		},
 	}
 
@@ -58,8 +80,12 @@ func TestAggregatorProviders(t *testing.T) {
 			if cfg.BaseURL != tt.baseURL {
 				t.Errorf("BaseURL = %q, want %q", cfg.BaseURL, tt.baseURL)
 			}
-			if cfg.AuthHeader != "Authorization" || cfg.AuthScheme != "bearer" {
-				t.Errorf("auth = %q/%q, want Authorization/bearer", cfg.AuthHeader, cfg.AuthScheme)
+			wantAuthHeader, wantAuthScheme := tt.authHeader, tt.authScheme
+			if wantAuthHeader == "" {
+				wantAuthHeader, wantAuthScheme = "Authorization", "bearer"
+			}
+			if cfg.AuthHeader != wantAuthHeader || cfg.AuthScheme != wantAuthScheme {
+				t.Errorf("auth = %q/%q, want %q/%q", cfg.AuthHeader, cfg.AuthScheme, wantAuthHeader, wantAuthScheme)
 			}
 
 			if got := len(GetProviderModels(tt.id)); got != len(tt.models) {

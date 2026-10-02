@@ -17,8 +17,21 @@ const (
 // with more than one transport declare it; everything else routes on the
 // transport its base URL already names.
 var ProviderModelFormats = map[string]map[string]ModelFormats{
-	"ocz":       openCodeZenModelFormats,
+	"muse":        museModelFormats,
+	"ocz":         openCodeZenModelFormats,
 	"opencode-zen": openCodeZenModelFormats,
+}
+
+// museModelFormats mirrors open-sse/providers/registry/muse.js models[]: Meta
+// accepts Chat Completions and Responses on the same key, but Muse Spark
+// reasoning only round-trips on /v1/responses, so every Muse Spark model pins
+// the Responses lane for both its target and its only supported format.
+var museModelFormats = map[string]ModelFormats{
+	"muse-spark-1.3":           {TargetFormat: FormatOpenAIResponses, SupportedFormats: []string{FormatOpenAIResponses}},
+	"muse-spark-1.2":           {TargetFormat: FormatOpenAIResponses, SupportedFormats: []string{FormatOpenAIResponses}},
+	"muse-spark-1.1":           {TargetFormat: FormatOpenAIResponses, SupportedFormats: []string{FormatOpenAIResponses}},
+	"muse-spark-1.3-contributor": {TargetFormat: FormatOpenAIResponses, SupportedFormats: []string{FormatOpenAIResponses}},
+	"muse-spark-1.2-contributor": {TargetFormat: FormatOpenAIResponses, SupportedFormats: []string{FormatOpenAIResponses}},
 }
 
 // ModelFormats is one registry model's declared format contract.

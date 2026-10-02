@@ -80,6 +80,26 @@ var modelsListURL = map[string]string{
 	"atria":       "https://api.atria-asi.ai/v1/models",
 	"agnes":       "https://apihub.agnes-ai.com/v1/models",
 	"bai":         "https://api.b.ai/v1/models",
+	// Meta's Model API refuses /v1/models without the protocol version header,
+	// so the live-catalog fetch carries it on top of the bearer token
+	// (upstream PROVIDER_MODELS_CONFIG.muse).
+	"muse": "https://api.meta.ai/v1/models",
+}
+
+// modelsListHeaders carries the extra headers one live-catalogue endpoint
+// needs beyond the connection's bearer token. Upstream keys the same values
+// off PROVIDER_MODELS_CONFIG per provider (src/app/api/providers/[id]/models/
+// route.js), which sets headers per entry — the flat Go map only has room for
+// the ones that actually differ.
+var modelsListHeaders = map[string]map[string]string{
+	"muse": {"x-api-version": "1.0.0", "Content-Type": "application/json"},
+}
+
+// ModelsListHeaders returns the extra headers the live catalogue endpoint of a
+// provider requires, or nil when it needs none. The map is shared by every
+// request, so a caller must not mutate it.
+func ModelsListHeaders(provider string) map[string]string {
+	return modelsListHeaders[strings.ToLower(provider)]
 }
 
 // ModelsListURL returns the live catalogue endpoint for a provider, or "" when
@@ -162,6 +182,30 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://apihub.agnes-ai.com/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+	},
+	// Muse — Meta's Model API. Dual auth upstream (Muse Code subscription
+	// device-code key and a dev.meta.ai pay-as-you-go key); both ride the same
+	// bearer transport, and only an account-issued (OAuth) key needs the
+	// protocol version header. Every Muse Spark model declares
+	// targetFormat "openai-responses" (see museModelFormats), so /v1/responses
+	// is the transport the executor dials for this provider.
+	"muse": {
+		BaseURL:    "https://api.meta.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		Format:     "openai-responses",
+		StaticHeaders: map[string]string{
+			"x-api-version": "1.0.0",
+		},
+	},
+	// v1m System One — a calibrated decision engine, not a chat model. Its
+	// two registry models carry kind "systemone", so the only endpoint it
+	// answers is /v1/systemone. BaseURL is empty because the port has no
+	// chat lane for this provider; an empty base never resolves a connection.
+	"v1m": {
+		AuthHeader:   "Authorization",
+		AuthScheme:   "bearer",
+		SystemoneURL: "https://v1m.ir/v1/systemone",
 	},
 	"anthropic": {
 		BaseURL:    "https://api.anthropic.com/v1/messages",
@@ -702,6 +746,16 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 		TTSURL:     "https://api.play.ht/api/v2/tts/stream",
+	},
+	// TinyFish — one x-api-key credential behind two separate hosts (search
+	// and fetch), which is why BaseURL is a non-endpoint root here: appending
+	// /v1/search to it would hit a host that does not serve search.
+	"tinyfish": {
+		BaseURL:    "https://api.tinyfish.ai",
+		AuthHeader: "x-api-key",
+		AuthScheme: "raw",
+		FetchURL:   "https://api.fetch.tinyfish.ai",
+		FetchMethod: "POST",
 	},
 	"runwayml": {
 		BaseURL:    "https://api.dev.runwayml.com/v1",

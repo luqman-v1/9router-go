@@ -2447,6 +2447,7 @@
     'atria',
     'agnes',
     'bai',
+    'muse',
   ])
 
   // canListLiveModels mirrors the backend's list of providers with a live

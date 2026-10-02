@@ -61,6 +61,16 @@ var ProviderAliasMap = map[string]string{
 	"mm":             "minimax",
 	"mmf":            "mimo-free",
 	"nb":             "nanobanana",
+	"muse-ai":           "muse",
+	"meta-model-api":    "muse",
+	"muse-code":         "muse",
+	"muse-subscription": "muse",
+	"systemone":         "v1m",
+	// Upstream publishes `jev` as a v1m alias, but jev-1.13-free already
+	// belongs to opencode and jev-1.13 to opencode-zen. Registering it here
+	// would let `jev/<model>` cross into v1m, which AGENTS.md §3 forbids and
+	// which would silently hijack a model id two other providers already own.
+	// The canonical `v1m/` prefix still reaches every v1m model.
 	"ne":             "nebius",
 	"nv":             "nvidia",
 	"oa":             "openai",

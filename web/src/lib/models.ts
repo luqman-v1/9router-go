@@ -84,6 +84,8 @@ export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
   "minimax-cn": "minimax-cn",
   "mistral": "mistral",
   "mmf": "mmf",
+  "muse": "muse",
+  "tinyfish": "tinyfish",
   "morph": "morph",
   "nanobanana": "nb",
   "nebius": "nebius",
@@ -121,6 +123,7 @@ export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
   "vertex": "vx",
   "vertex-partner": "vxp",
   "volcengine-ark": "ark",
+  "v1m": "v1m",
   "voyage-ai": "voyage",
   "windsurf": "windsurf",
   "xai": "xai",
@@ -1129,6 +1132,24 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "MiniMaxAI/MiniMax-M2.7",
       "name": "MiniMax M2.7"
+    }
+  ],
+  "agnes": [
+    {
+      "id": "agnes-2.5-flash",
+      "name": "Agnes 2.5 Flash"
+    },
+    {
+      "id": "agnes-2.5-pro",
+      "name": "Agnes 2.5 Pro"
+    },
+    {
+      "id": "agnes-2.5-pro-beta",
+      "name": "Agnes 2.5 Pro Beta"
+    },
+    {
+      "id": "agnes-3.0-flash",
+      "name": "Agnes 3.0 Flash"
     }
   ],
   "atria": [
@@ -2702,6 +2723,38 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "mimo-auto",
       "name": "MiMo Auto"
+    }
+  ],
+  "muse": [
+    {
+      "id": "muse-spark-1.3",
+      "name": "Muse Spark 1.3",
+      "targetFormat": "openai-responses",
+      "supportedFormats": ["openai-responses"]
+    },
+    {
+      "id": "muse-spark-1.2",
+      "name": "Muse Spark 1.2",
+      "targetFormat": "openai-responses",
+      "supportedFormats": ["openai-responses"]
+    },
+    {
+      "id": "muse-spark-1.1",
+      "name": "Muse Spark 1.1",
+      "targetFormat": "openai-responses",
+      "supportedFormats": ["openai-responses"]
+    },
+    {
+      "id": "muse-spark-1.3-contributor",
+      "name": "Muse Spark 1.3 Contributor",
+      "targetFormat": "openai-responses",
+      "supportedFormats": ["openai-responses"]
+    },
+    {
+      "id": "muse-spark-1.2-contributor",
+      "name": "Muse Spark 1.2 Contributor",
+      "targetFormat": "openai-responses",
+      "supportedFormats": ["openai-responses"]
     }
   ],
   "minimax-cn": [
@@ -4575,6 +4628,18 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "Kimi-K2.6",
       "name": "Kimi-K2.6"
+    }
+  ],
+  "v1m": [
+    {
+      "id": "rev-latest",
+      "name": "v1m Rev Latest (Calibrated)",
+      "kind": "systemone"
+    },
+    {
+      "id": "v1m-decision-engine",
+      "name": "v1m Decision Engine",
+      "kind": "systemone"
     }
   ],
   "voyage-ai": [

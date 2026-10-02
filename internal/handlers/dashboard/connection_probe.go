@@ -47,6 +47,18 @@ const (
 	codexProbeURL                 = "https://chatgpt.com/backend-api/codex/responses"
 	cloudCodeAssistProbeURL       = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 	cloudCodeAssistProbeBody      = `{"metadata":{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}`
+	// Meta's Model API lists its own catalogue for the credential that is
+	// being tested, which is the same call the dashboard's live-model import
+	// makes — a 401/403 is the only invalid answer. This is the Muse Code
+	// subscription's connection probe as well as the pasted API key's: both
+	// store the minted Model API key as the bearer token.
+	museProbeURL    = "https://api.meta.ai/v1/models"
+	museProbeAPIKey = "muse-spark-1.3"
+	// v1m has no /models endpoint; the cheapest call that proves a key is a
+	// single-token System One evaluation (upstream validateUrl defaults to
+	// the provider's chat base URL).
+	v1mProbeURL   = "https://v1m.ir/v1/systemone"
+	v1mProbeModel = "rev-latest"
 	// Upstream accepts any non-401/403 answer as proof the credentials work.
 	connectionBrowserUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
@@ -174,6 +186,18 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 	"qoder-cn":       {url: "https://openapi.qoder.com.cn/api/v1/userinfo", method: http.MethodGet, authHeader: "Authorization", authPrefix: "Bearer "},
 	"kimi":           {checkExpiry: true, refreshable: true},
 	"kimi-coding":    {checkExpiry: true, refreshable: true},
+	// A Muse Code subscription stores the minted Model API key as its bearer
+	// token, so the catalogue call proves the credential exactly the same way
+	// it does for a pasted dev.meta.ai key — and there is nothing to refresh,
+	// which is why refreshable stays off.
+	"muse": {
+		url: museProbeURL, method: http.MethodGet,
+		authHeader: "Authorization", authPrefix: "Bearer ",
+		extraHeaders: map[string]string{
+			"Accept":        "application/json",
+			"x-api-version": "1.0.0",
+		},
+	},
 	"cursor":         {tokenExists: true},
 	"kilocode":       {url: kilocodeProbeURL, method: http.MethodGet, authHeader: "Authorization", authPrefix: "Bearer "},
 	"cline":          {refreshable: true},
