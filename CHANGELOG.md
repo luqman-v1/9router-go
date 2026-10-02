@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### 🐛 CI gagal karena free tier opencode sedang overload — skip set tidak lengkap
+
+`internal/handlers/chat/muse_spark_e2e_test.go` memanggil endpoint opencode
+sungguhan, jadi status yang datang kapan saja ditentukan beban provider — bukan
+kekurangan gateway. Empat dari lima test di file itu sudah `t.Skip` untuk 429
+dan 403; `TestIntegration_OpenCode_MuseSpark13_ChatCompletions` hanya
+memperlakukan 429, sehingga 503 lolos dan menggagalkan CI #82 dengan:
+
+```
+WRN [fallback] upstream failed provider=opencode model=muse-spark-1.3-contributor-free
+  status=503 ... "Error from provider (Console): The backend is temporarily overloaded"
+expected HTTP 200 for muse-spark-1.3, got 503
+```
+
+Kelimanya kini memakai satu helper `upstreamUnavailable`: 429, 403, dan 503
+berarti "belum sekarang" dan di-skip; 400/401/500 tetap `Fatalf` supaya cacat
+nyata tidak ikut tertutupi. Test yang selama ini bergantung pada ketersediaan
+provider pihak ketiga tidak boleh gagal hanya karena satu status belum dicatat.
+
+**Verifikasi:** `TestUpstreamUnavailable_SkipsOnlyProviderAvailabilityStatuses`
+mengunci isi himpunan itu — memindahkan 500 ke dalamnya akan menggagalkan test
+dengan pesan yang menyebut status itu adalah bug kita. Rerun suite setelah
+perubahan: upstream sudah pulih dan test tersebut kembali 200; `go vet` bersih,
+`go test -race ./internal/handlers/chat/` hijau.
+
 ### 🐛 Quota tracker tidak fetch semua akun + refresh kredensial Kiro — issue #78 (butir 3 & 4)
 
 #### Audit upstream sebelum/sesudah
