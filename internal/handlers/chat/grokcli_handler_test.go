@@ -14,14 +14,18 @@ import (
 
 func TestForwardGrokCLIRequest_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-Agent") != "grok-shell/0.2.99 (linux; x86_64)" {
-			t.Errorf("expected grok-shell User-Agent, got %q", r.Header.Get("User-Agent"))
+		// Read the shipped constants rather than repeating the literals: the
+		// proxy refuses an identity below its own floor with HTTP 426, and a
+		// bump has to move one line in internal/providers. That floor itself is
+		// asserted in providers' client_identity_test.go, not repeated here.
+		if want := providers.GrokCLIUserAgent; r.Header.Get("User-Agent") != want {
+			t.Errorf("User-Agent = %q, want %q", r.Header.Get("User-Agent"), want)
 		}
-		if r.Header.Get("x-grok-client-identifier") != "grok-shell" {
-			t.Errorf("expected x-grok-client-identifier header, got %q", r.Header.Get("x-grok-client-identifier"))
+		if want := providers.GrokCLIClientIdentifier; r.Header.Get("x-grok-client-identifier") != want {
+			t.Errorf("x-grok-client-identifier = %q, want %q", r.Header.Get("x-grok-client-identifier"), want)
 		}
-		if r.Header.Get("x-grok-client-version") != "0.2.99" {
-			t.Errorf("expected x-grok-client-version header, got %q", r.Header.Get("x-grok-client-version"))
+		if got := r.Header.Get("x-grok-client-version"); got != providers.GrokCLIVersion {
+			t.Errorf("x-grok-client-version = %q, want %q", got, providers.GrokCLIVersion)
 		}
 		if r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Errorf("expected Authorization: Bearer test-key, got %q", r.Header.Get("Authorization"))

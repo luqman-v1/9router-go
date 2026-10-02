@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 )
 
@@ -1214,9 +1215,9 @@ func fetchKiroUsage(ctx context.Context, accessToken string, psd map[string]any)
 // ---------- grok-cli: billing + user ----------
 
 const (
-	grokCliVersion          = "0.2.99"
-	grokCliClientIdentifier = "grok-shell"
-	grokCliUserAgent        = "grok-shell/0.2.99 (linux; x86_64)"
+	grokCliVersion          = providers.GrokCLIVersion
+	grokCliClientIdentifier = providers.GrokCLIClientIdentifier
+	grokCliUserAgent        = providers.GrokCLIUserAgent
 	grokCliBillingURL       = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 	grokCliUserURL          = "https://cli-chat-proxy.grok.com/v1/user?include=subscription"
 )

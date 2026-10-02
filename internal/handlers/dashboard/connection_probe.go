@@ -38,9 +38,9 @@ const (
 	connectionRefreshLead = 5 * time.Minute
 
 	connectionAnthropicProbeModel = "claude-3-haiku-20240307"
-	codexCLIVersion               = "0.154.0"
+	codexCLIVersion               = providers.CodexCLIVersion
 	grokCLIProbeURL               = "https://cli-chat-proxy.grok.com/v1/user"
-	grokCLIProbeUA                = "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)"
+	grokCLIProbeUA                = providers.GrokCLIPagerUserAgent
 	kimchiProbeURL                = "https://api.cast.ai/v1/llm/openai/supported-providers"
 	kilocodeProbeURL              = "https://api.kilo.ai/api/profile"
 	clineProbeURL                 = "https://api.cline.bot/api/v1/users/me"
@@ -146,8 +146,7 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 		url:            codexProbeURL,
 		method:         http.MethodPost,
 		authHeader:     "Authorization",
-		authPrefix:     "Bearer ",
-		extraHeaders:   map[string]string{"Content-Type": "application/json", "originator": "codex_cli_rs", "User-Agent": "codex_cli_rs/" + codexCLIVersion},
+		extraHeaders:   map[string]string{"Content-Type": "application/json", "originator": "codex_cli_rs", "User-Agent": providers.CodexCLIUserAgent, "version": providers.CodexCLIVersionHeader},
 		body:           `{"model":"gpt-5.3-codex","input":[],"stream":false,"store":false}`,
 		acceptStatuses: []int{http.StatusBadRequest},
 		refreshable:    true,
@@ -201,8 +200,8 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 			"Accept":                   "application/json",
 			"User-Agent":               grokCLIProbeUA,
 			"x-xai-token-auth":         "xai-grok-cli",
-			"x-grok-client-identifier": "grok-pager",
-			"x-grok-client-version":    "0.2.93",
+			"x-grok-client-identifier": providers.GrokCLIPagerIdentifier,
+			"x-grok-client-version":    providers.GrokCLIVersion,
 		},
 		refreshable:    true,
 		acceptStatuses: []int{http.StatusPaymentRequired},
@@ -217,8 +216,8 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 			"Accept":                   "application/json",
 			"User-Agent":               grokCLIProbeUA,
 			"x-xai-token-auth":         "xai-grok-cli",
-			"x-grok-client-identifier": "grok-pager",
-			"x-grok-client-version":    "0.2.93",
+			"x-grok-client-identifier": providers.GrokCLIPagerIdentifier,
+			"x-grok-client-version":    providers.GrokCLIVersion,
 		},
 		refreshable:    true,
 		acceptStatuses: []int{http.StatusPaymentRequired},

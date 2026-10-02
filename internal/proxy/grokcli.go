@@ -38,9 +38,9 @@ func streamHeaders(headers map[string]string, isStream bool) {
 // Body transformation (Chat→Responses API) is done by the caller.
 func ForwardGrokCLI(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool) (*http.Response, error) {
 	headers := map[string]string{
-		"User-Agent":               "grok-shell/0.2.99 (linux; x86_64)",
-		"x-grok-client-identifier": "grok-shell",
-		"x-grok-client-version":    "0.2.99",
+		"User-Agent":               providers.GrokCLIUserAgent,
+		"x-grok-client-identifier": providers.GrokCLIClientIdentifier,
+		"x-grok-client-version":    providers.GrokCLIVersion,
 	}
 	setAuth(headers, cfg, apiKey)
 	streamHeaders(headers, isStream)

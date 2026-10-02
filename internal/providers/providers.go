@@ -526,7 +526,10 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 		StaticHeaders: map[string]string{
 			"originator": "codex_cli_rs",
-			"User-Agent": "codex_cli_rs/0.154.0",
+			"User-Agent": CodexCLIUserAgent,
+			// Upstream sends `version` next to the User-Agent; the codex
+			// backend gates newer models on the pair.
+			"version": CodexCLIVersionHeader,
 		},
 	},
 	"grok-cli": {

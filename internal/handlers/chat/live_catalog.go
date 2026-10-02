@@ -20,6 +20,7 @@ import (
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
+	"9router/proxy/internal/providers"
 )
 
 // Live model discovery for /v1/models, ported from the upstream
@@ -42,9 +43,9 @@ const (
 	kiroDefaultRegion    = "us-east-1"
 	kiroDefaultContext   = 200_000
 	grokCLIBaseURL       = "https://cli-chat-proxy.grok.com/v1"
-	grokCLIVersion       = "0.2.99"
-	grokCLIUserAgent     = "grok-shell/" + grokCLIVersion + " (linux; x86_64)"
-	grokCLIIdentifier    = "grok-shell"
+	grokCLIVersion       = providers.GrokCLIVersion
+	grokCLIUserAgent     = providers.GrokCLIUserAgent
+	grokCLIIdentifier    = providers.GrokCLIClientIdentifier
 	grokCLIDefaultModel  = "grok-build"
 	grokCLIDefaultCtxLen = 500_000
 	grokCLIDefaultMaxOut = 64_000

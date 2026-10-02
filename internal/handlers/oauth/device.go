@@ -14,6 +14,7 @@ import (
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/providers"
 )
 
 // deviceProviders lists providers supporting the device-code family.
@@ -262,7 +263,7 @@ func kilocodeStart() (map[string]any, error) {
 
 // --- grok-cli: standard device flow, referrer=grok-build ---
 
-var grokcliUA = "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)"
+var grokcliUA = providers.GrokCLIPagerUserAgent
 
 func grokcliStart() (map[string]any, error) {
 	form := url.Values{
