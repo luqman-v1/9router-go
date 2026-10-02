@@ -2,6 +2,65 @@
 
 ## [Unreleased]
 
+### 🐛 503 `service_overloaded` gagalkan satu turn penuh padahal attempt berikutnya dilayani
+
+Laporan: `opencode-zen`/`muse-spark-1.3-contributor-free` lewat proxy pool Vercel
+sering `503 service_overloaded`, sedangkan tanpa proxy "aman".
+
+**Proxy bukan penyebabnya.** Diuji dengan body dan header fingerprint yang sama
+persis, bergantian langsung ke `opencode.ai` vs lewat relay:
+
+```
+direct: {503: 16, 200: 12, ERR: 2}   ok 12/30
+relay:  {504: 3,  503: 14, 200: 13}   ok 13/30
+```
+
+Both `503` muncul di kedua jalur dengan rate serupa — itu kapasitas
+`opencode.ai` sendiri, bukan kerusakan relay. Relay yang terpasang juga terbukti
+lossless: seluruh header (`User-Agent`, `x-opencode-session/request/project`,
+`Authorization`) melewati hop, hanya `x-relay-*` yang di-strip seperti
+template-nya, dan response header upstream ikut diteruskan.
+
+**Satu temuan relay yang nyata (bukan penyebab 503):** relay menjawab
+`504` pada **25.09s persis** dengan header
+`X-Vercel-Error: FUNCTION_INVOCATION_TIMEOUT`, yang tidak pernah terjadi di jalur
+direct. Vercel Edge mensyaratkan respons awal di bawah 25 detik; TTFT direct
+yang terukur 28–55s membuat relay melewati batas itu. Jadi relay tidak
+membuat turn cepat jadi gagal — relay justru mengorbankan turn lambat: setiap
+turn yang token pertamanya tiba setelah ~25s akan berakhir 504 di relay.
+
+**Akar masalah yang tersisa:** gateway mengirim **satu** attempt, lalu
+menyurfacekan 503 ke klien dan lock koneksi — padahal attempt berikutnya
+dilayani. Upstream sudah mengulang 502x3/503x3/504x2 di `BaseExecutor.execute`
+(`open-sse/executors/base.js:107-125` + `config/runtimeConfig.js:78-83`); port
+Go tidak punya padanannya sama sekali. Diukur langsung dengan kebijakan
+upstream (3x @2s):
+
+```
+1 attempt (sekarang)     served  9/15 (60%)
+3 attempts @2s (upstream) served 15/15 (100%)
+```
+
+Kini `proxy.DoRequest` — titik choke yang diwarisi semua provider, sama seperti
+`BaseExecutor` upstream — mengulang transient 502/503/504 sesuai kebijakan itu
+sebelum melaporkan kegagalan. 429 **tidak** di-retry di sini: itu jendela kuota
+per akun yang harus diserahkan ke account fallback, sesuai kontrak upstream.
+Backoff terikat `ctx`, jadi klien yang sudah pergi tidak ditahan Rugi penuh.
+
+**Verifikasi:** `internal/proxy/retry_test.go` mengunci tabel kebijakan,
+hitung attempt, status asli yang diteruskan ke failover, penghentian saat
+status berubah, dan klien yang pergi. Diuji mutation: mengembalikan 429 ke
+tabel retry menggagalkan `TestTransientRetryPolicy_MatchesUpstreamDefaults`.
+`internal/integration/transient_retry_test.go` menutupnya melalui router
+produksi dengan upstream palsu: 503 lalu dilayani → klien dapat `200` berisi
+teks upstream; 400/429 → tepat satu request upstream.
+
+**Known limit (jujur):** ini menutup gap parity, bukan membuat upstream yang
+penuh menjadi tidak penuh. Saat `opencode.ai` benar-benar jenuh, ketiga attempt
+tetap 503 dan klien tetap menerima 503 — sekarang setelah menunggu sesuai
+kebijakan upstream, bukan langsung. Batas 25s edge relay juga tidak hilang:
+turn dengan TTFT di atas 25s masih perlu direct atau pool non-edge.
+
 ### 🐛 Manifest tanpa checksum membuat auto-update mati total — issue #72
 
 #72 membuat digest SHA256 **wajib**: `PerformSelfUpdate` menolak sebelum request

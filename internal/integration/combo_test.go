@@ -42,6 +42,12 @@ func TestComboFallsBackToTheNextModel(t *testing.T) {
 // TestComboSurfacesTheLastUpstreamError pins the other side: when every member
 // fails, the client must see a real provider error, not a synthesized
 // "combo failed" message that hides the cause.
+//
+// The number of requests a failing member receives is deliberately not asserted:
+// a 502/503 is retried within one request before the combo falls through
+// (upstream open-sse/executors/base.js:155 retries before the fallback at :157),
+// so the count is an implementation detail — the client-visible contract here is
+// the status and the reason it carries.
 func TestComboSurfacesTheLastUpstreamError(t *testing.T) {
 	env := newEnv(t)
 
@@ -59,12 +65,6 @@ func TestComboSurfacesTheLastUpstreamError(t *testing.T) {
 	}
 	if msg := res.ErrorMessage(t); !strings.Contains(msg, "busy") {
 		t.Errorf("error message = %q, want the last upstream reason", msg)
-	}
-	if got := first.Count(); got != 1 {
-		t.Errorf("first member upstream received %d requests, want 1", got)
-	}
-	if got := second.Count(); got != 1 {
-		t.Errorf("second member upstream received %d requests, want 1", got)
 	}
 }
 
