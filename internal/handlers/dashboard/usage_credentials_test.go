@@ -42,13 +42,16 @@ func hasQuotaRow(body, name string) bool {
 // registerStubRefresher installs a process-wide refresher for a synthetic
 // provider and restores the previous registration afterwards.
 func registerStubRefresher(t *testing.T, provider string, fn oauth.Refresher) {
-	t.Helper()
 	previous := oauth.Get(provider)
 	oauth.Register(provider, fn)
 	t.Cleanup(func() {
+		// A leaked stub keeps answering after the test, which would make later
+		// code believe this provider has a refresher it does not have.
 		if previous != nil {
 			oauth.Register(provider, previous)
+			return
 		}
+		oauth.Unregister(provider)
 	})
 }
 

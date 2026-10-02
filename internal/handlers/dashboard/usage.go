@@ -81,21 +81,29 @@ func (h *DashboardHandler) HandleGetConnectionUsage(w http.ResponseWriter, r *ht
 	}
 
 	creds := usageCredentials{raw: data, provider: conn.Provider}
-	refreshable := isUsageRefreshable(conn, data)
-	if refreshable && creds.needsRefresh() {
-		if _, err := h.refreshUsageCredentials(r.Context(), conn, creds, nil); err != nil {
-			log.Warn("usage", "credential refresh failed", "provider", conn.Provider, "conn", connID, "error", err)
+	// A pre-read refresh only makes sense when the token is inside its expiry
+	// window. When it is not, the single retry below is the one attempt: a
+	// second call would repeat a request whose outcome is already known.
+	preRead := usageRefreshOutcome{}
+	if creds.needsRefresh() {
+		preRead = h.runUsageRefresh(r.Context(), conn, creds)
+		if preRead.err != nil {
+			log.Warn("usage", "credential refresh failed", "provider", conn.Provider, "conn", connID, "error", preRead.err)
 		}
 	}
 
 	res, ok := fetchProviderUsage(r.Context(), conn.Provider, data)
-	if ok && refreshable && isAuthExpiredUsageMessage(res) {
-		// Upstream force-refreshes and retries exactly once here: the stored
-		// access token can age out while the refresh token is still good, and
-		// that is the whole difference between "expired" and a live reading.
-		if refreshed, err := h.refreshUsageCredentials(r.Context(), conn, creds, nil); err != nil {
-			log.Warn("usage", "forced credential refresh failed", "provider", conn.Provider, "conn", connID, "error", err)
-		} else if refreshed != nil {
+	// Upstream force-refreshes and retries exactly once here
+	// (src/app/api/usage/[connectionId]/route.js): a stored access token can age
+	// out while the refresh token is still good. That retry is only worth a call
+	// when this request has not already had one and it failed — repeating a
+	// rejected exchange just spent the call twice and logged the same failure
+	// twice, which is what the double warning per account came from.
+	if ok && !preRead.attempted && isAuthExpiredUsageMessage(res) {
+		retry := h.runUsageRefresh(r.Context(), conn, creds)
+		if retry.err != nil {
+			log.Warn("usage", "forced credential refresh failed", "provider", conn.Provider, "conn", connID, "error", retry.err)
+		} else if retry.refreshed {
 			if retried, retryOK := fetchProviderUsage(r.Context(), conn.Provider, data); retryOK {
 				handlerutil.WriteJSON(w, http.StatusOK, retried.toResponse())
 				return

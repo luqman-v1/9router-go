@@ -2,12 +2,14 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/oauth"
@@ -103,6 +105,66 @@ func isUsageRefreshable(conn *models.ProviderConnection, raw map[string]any) boo
 	}
 	s, _ := raw["refreshToken"].(string)
 	return strings.TrimSpace(s) != ""
+}
+
+// canAttemptRefresh reports whether this connection is worth spending a refresh
+// call on at all. oauth.Refresh can only succeed for a provider with a
+// registered refresher, and qoder has none — upstream's executor answers
+// `async refreshCredentials() { return null; }` — so asking it is a guaranteed
+// failure that logs on every panel open.
+func canAttemptRefresh(conn *models.ProviderConnection, raw map[string]any) bool {
+	return isUsageRefreshable(conn, raw) && oauth.Get(providers.ResolveAlias(conn.Provider)) != nil
+}
+
+// markDeadGrant records a refresh the provider refused in a way only a re-login
+// can fix, so the dashboard shows the account as needing re-authorization
+// instead of leaving it to surface as a warning nobody reads.
+//
+// Upstream's route throws on these (open-sse/services/tokenRefresh.js
+// isUnrecoverableRefreshError), which surfaces as an HTTP 500 on the quota
+// panel. Parking the account matches the chat path's existing treatment of a
+// revoked grant and keeps the reading available, so the row still shows what
+// the account has left while the badge says to re-authorize.
+func (h *DashboardHandler) markDeadGrant(conn *models.ProviderConnection, refreshErr error) {
+	if h.Repo == nil || !providers.IsRefreshGrantDead(refreshErr) {
+		return
+	}
+	status := 0
+	var refreshErrType *providers.OAuthRefreshError
+	if errors.As(refreshErr, &refreshErrType) {
+		status = refreshErrType.Status
+	}
+	until, failures, err := h.Repo.RecordConnectionOAuthFailure(conn.ID, status, refreshErr.Error())
+	if err != nil {
+		log.Warn("usage", "record dead oauth grant failed", "provider", conn.Provider, "conn", conn.ID, "error", err)
+		return
+	}
+	log.Warn("usage", "oauth grant dead, re-authorize this account",
+		"provider", conn.Provider, "conn", conn.ID,
+		"until", until.Format(time.RFC3339), "failures", failures)
+}
+
+// usageRefreshOutcome is what one guarded refresh did, so the caller can tell a
+// skipped refresh (no refresher registered) from a real failure.
+type usageRefreshOutcome struct {
+	attempted bool
+	refreshed bool
+	err       error
+}
+
+// runUsageRefresh performs one guarded refresh. It returns err only for a
+// failure the caller should surface; a provider with no refresher is not an
+// error, it is simply nothing to do.
+func (h *DashboardHandler) runUsageRefresh(ctx context.Context, conn *models.ProviderConnection, creds usageCredentials) usageRefreshOutcome {
+	if !canAttemptRefresh(conn, creds.raw) {
+		return usageRefreshOutcome{}
+	}
+	result, err := h.refreshUsageCredentials(ctx, conn, creds, nil)
+	if err != nil {
+		h.markDeadGrant(conn, err)
+		return usageRefreshOutcome{attempted: true, err: err}
+	}
+	return usageRefreshOutcome{attempted: true, refreshed: result != nil}
 }
 
 // refresh exchanges the refresh token and persists the rotated credentials.

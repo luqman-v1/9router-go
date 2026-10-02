@@ -26,6 +26,40 @@ mengunci isi himpunan itu — memindahkan 500 ke dalamnya akan menggagalkan test
 dengan pesan yang menyebut status itu adalah bug kita. Rerun suite setelah
 perubahan: upstream sudah pulih dan test tersebut kembali 200; `go vet` bersih,
 `go test -race ./internal/handlers/chat/` hijau.
+### 🐛 Refresh kredensial quota: satu percobaan, skip tanpa refresher, tandai grant mati — regresi #83
+
+PR #83 menambah refresh kredensial ke `/api/usage/{id}` dan langsung memunculkan
+dua warning per akun yang setiap kali panel dibuka:
+
+```
+WRN [usage] credential refresh failed         provider=grok-cli … invalid_grant
+WRN [usage] forced credential refresh failed  provider=grok-cli … invalid_grant
+```
+
+Audit upstream (`open-sse/services/tokenRefresh.js isUnrecoverableRefreshError`)
+menunjukkan upstream **juga** retry sekali pada pesan auth-expired
+(`open-sse/services/usage/grok-cli.js:372` mengembalikan "…authentication
+expired. Please re-authorize."), tapi tidak pernah mengulang refresh yang **baru
+saja ditolak** — itu celah yang diisi sendiri oleh #83.
+
+- **Satu percobaan refresh per request.** Retry dipindah ke jalur yang belum
+  mencoba, dan dilewati kalau percobaan yang baru saja gagal. Pair warning dan
+  satu slot `fetchgate` yang terbuang per akun hilang.
+- **Provider tanpa refresher dilewati.** `oauth.Refresh` hanya bisa berhasil
+  untuk provider yang terdaftar di `oauth.Get`; qoder tidak punya satu pun
+  (upstream: `open-sse/executors/qoder.js` → `refreshCredentials() { return null }`),
+  jadi setiap Panel Open sebelumnya dijamin gagal dan masuk log.
+- **Grant yang mati ditandai di DB.** `providers.IsRefreshGrantDead` memperluas
+  `IsRefreshUnauthorized` (401) ke 400 `invalid_grant` /
+  `refresh_token_reused` / `unrecoverable_refresh_error` — bentuk yang
+  dikembalikan xAI untuk refresh token grok-cli yang dicabut. Akun yang ditolak
+  sekarang di-park lewat `RecordConnectionOAuthFailure` sehingga dashboard
+  menampilkan akun yang perlu di-re-auth, bukan warning yang tidak dibaca siapa pun.
+  500/transport error tetap **tidak** di-park: itu bukti provider blip, bukan
+  bukti kredensial mati.
+- **`oauth.Unregister`** ditambahkan untuk 테스트 yang memasang stub di bawah
+  provider id asli; stub yang bocor diam-diam mengubah perilaku kode produksi
+  yang diuji.
 
 ### 🐛 Quota tracker tidak fetch semua akun + refresh kredensial Kiro — issue #78 (butir 3 & 4)
 
