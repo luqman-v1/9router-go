@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+### 🐛 Tiga perilaku translator yang hilang, satu yang memang belum ada — parity upstream v0.5.95
+
+**1. Keyword anotasi MCP menolak seluruh request Gemini** (upstream `aafe3002`, #4283).
+`UNSUPPORTED_SCHEMA_CONSTRAINTS` upstream menambah `errorMessage`,
+`errorMessages`, `markdownDescription`, `doNotSuggest`, `suggestSortText`,
+`minProperties`, dan `maxProperties`. Schema tool dari MCP server memakai
+ejaan polos itu; proto schema Gemini tidak punya field-nya dan menolak
+seluruh request dengan `Unknown name errorMessage: Cannot find field` —
+padahal ejaan berawalan vendor (`x-errorMessage`, `x-taplo`, …) sudah
+tertangkap aturan `x-` yang terpisah. Ketujuh ejaan polos kini masuk daftar
+yang dilepas.
+
+**2. Turn user yang isinya hanya `container_upload` dihapus** (upstream
+`4f274c7f`, #4316). Sanitizer passthrough Claude membuang pesan yang
+kontennya kosong, dan blok di luar daftar "berisi" ikut terhitung kosong —
+padahal `container_upload` (Files API) adalah input Anthropic yang sah
+sendiri. Akibatnya request diteruskan sebagai `messages: []` dan provider
+membalas 200 untuk percakapan yang sudah tidak ada. Sekarang filter memakai
+satu daftar blok berisi (`tool_use`, `tool_result`, `image`, `document`,
+`container_upload`) untuk keputusan kosong-tidak-kosong di kedua arah.
+
+**3. Hasil tool terakhir tidak pernah masuk cache** (upstream `49c761cd`).
+Dalam tool loop, request berakhir dengan hasil tool dari putaran assistant
+terakhir — sesudah breakpoint putaran itu — jadi isinya dibayar penuh dan
+hanya ditulis cache oleh request berikutnya. Selama anggaran 4 marker masih
+sisa, satu breakpoint 5m sekarang ditaruh di blok cache-eligible terakhir
+turn user tersebut; turn yang sudah punya `cache_control` tidak diubah
+sehingga re-anchoring tetap idempoten.
+
+**Belum dipindah: thinking placeholder tak bertanda tangan untuk DeepSeek**
+(upstream `08b21fea`, #4436). Upstream menyuntik
+`{"type":"thinking","thinking":"."}` ke putaran assistant yang punya
+`tool_use` tanpa blok thinking saat thinking aktif, dan pada DeepSeek
+menempelkan placeholder itu **tanpa** signature. Di `9router-go` jalur
+tersebut belum ada sama sekali: `prepareClaudeRequest` belum diporting, dan
+`AnchorClaudeCache` — satu-satunya penanchor `cache_control` — tidak pernah
+menyentuh thinking maupun signature (passthrough kita juga menghapus
+`signature` sebelum meneruskan). Menambal placeholder tanpa jalur
+`prepareClaudeRequest` yang sudah benar hanya akan menulis signature palsu ke
+riwayat, jadi perubahan ini sengaja tidak dipaksakan; tidak ada placeholder
+maupun fetch signature yang dibuat agar tidak tersisa kode mati.
+
 ### 🐛 Combo publish limit ctx salah total — plus rekursi tak berujung yang menggantung proses — issue #99
 
 Entry combo di `/v1/models` tidak menerbitkan `context_length` / `max_completion_tokens` sama sekali. Komentar di `models_list.go` mengklaim itu parity — v0.5.95 sudah mengizinkannya, jadi catatan itu usang dan dihapus.

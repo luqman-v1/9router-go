@@ -461,7 +461,8 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 // This sanitizes before forwarding to a Claude/Anthropic upstream:
 //   - drops server_tool_use whose id doesn't match srvtoolu_ pattern
 //   - drops paired tool_result/web_search_tool_result referencing dropped ids
-//   - strips empty text blocks and drops messages that end up empty (Anthropic rejects empty content)
+//   - strips empty text blocks and drops messages that end up with no content
+//     Anthropic accepts (upstream #4316: a container_upload-only turn is content)
 var serverToolUseIDRegex = regexp.MustCompile(`^srvtoolu_[a-zA-Z0-9_]+$`)
 
 func SanitizeClaudePassthrough(body []byte) []byte {
@@ -489,8 +490,8 @@ func SanitizeClaudePassthrough(body []byte) []byte {
 		if !ok {
 			continue
 		}
-		contentRaw, ok := msgMap["content"]
-		if !ok {
+		contentRaw, exists := msgMap["content"]
+		if !exists {
 			continue
 		}
 		blocks, ok := contentRaw.([]any)
@@ -513,12 +514,13 @@ func SanitizeClaudePassthrough(body []byte) []byte {
 					continue
 				}
 			}
-			// Strip empty text blocks (Anthropic 400s on empty text)
-			if bType == "text" {
-				if txt, _ := block["text"].(string); strings.TrimSpace(txt) == "" {
-					changed = true
-					continue
-				}
+			// Strip empty text blocks (Anthropic 400s on empty text). The same
+			// emptiness rule decides whether the whole message survives below,
+			// so both read it from one place — a whitespace-only block must not
+			// slip through one pass and be dropped by the other.
+			if bType == "text" && !isContentfulBlock(block) {
+				changed = true
+				continue
 			}
 			kept = append(kept, bRaw)
 		}
@@ -565,27 +567,14 @@ func SanitizeClaudePassthrough(body []byte) []byte {
 		}
 	}
 
-	// Third pass: drop messages that ended up with empty content (Anthropic rejects empty array)
+	// Third pass: drop messages whose content carries nothing Anthropic accepts.
+	// The check enumerates the block types that count as content, so an empty
+	// array, a blank string and a whitespace-only text turn all go, while a
+	// turn holding only a container_upload (Files API) stays.
 	var filtered []any
 	for _, mRaw := range messagesRaw {
-		msgMap, ok := mRaw.(map[string]any)
-		if !ok {
-			filtered = append(filtered, mRaw)
-			continue
-		}
-		contentRaw, exists := msgMap["content"]
-		if !exists {
-			filtered = append(filtered, mRaw)
-			continue
-		}
-		switch c := contentRaw.(type) {
-		case string:
-			if strings.TrimSpace(c) == "" {
-				changed = true
-				continue
-			}
-		case []any:
-			if len(c) == 0 {
+		if msgMap, ok := mRaw.(map[string]any); ok {
+			if content, exists := msgMap["content"]; exists && !isContentfulContent(content) {
 				changed = true
 				continue
 			}
@@ -594,7 +583,6 @@ func SanitizeClaudePassthrough(body []byte) []byte {
 	}
 	if len(filtered) != len(messagesRaw) {
 		req["messages"] = filtered
-		changed = true
 	}
 
 	if !changed {
@@ -662,6 +650,10 @@ func normalizeMessageContent(msgMap map[string]any) {
 		msgMap["content"] = []any{c}
 	}
 }
+
+// cacheControlMarkerBudget is how many cache_control markers a Messages
+// request may carry — the upstream API's hard limit.
+const cacheControlMarkerBudget = 4
 
 func countCacheControlBlocks(req map[string]any) int {
 	n := 0
@@ -747,7 +739,7 @@ func capCacheControlBlocks(req map[string]any) {
 		}
 	}
 
-	keep := 4 - len(headMarkers)
+	keep := cacheControlMarkerBudget - len(headMarkers)
 	if keep < 0 {
 		keep = 0
 	}
@@ -760,8 +752,9 @@ func capCacheControlBlocks(req map[string]any) {
 	}
 }
 
-// AnchorClaudeCache ensures prompt-caching breakpoints land on system/tool head anchors
-// and at most 4 cache_control markers are dispatched (parity with #3567 / #8a81085a).
+// AnchorClaudeCache ensures prompt-caching breakpoints land on system/tool head anchors,
+// the tool loop's final tool results, and at most 4 cache_control markers are dispatched
+// (parity with #3567 / #8a81085a / upstream #49c761cd).
 func AnchorClaudeCache(body []byte) []byte {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -812,8 +805,8 @@ func AnchorClaudeCache(body []byte) []byte {
 		}
 	}
 
-	// 4. Budget guard: if already >= 4 markers, cap and return
-	if countCacheControlBlocks(req) >= 4 {
+	// 4. Budget guard: if already >= the marker budget, cap and return
+	if countCacheControlBlocks(req) >= cacheControlMarkerBudget {
 		capCacheControlBlocks(req)
 		if out, err := json.Marshal(req); err == nil {
 			return out
@@ -821,7 +814,11 @@ func AnchorClaudeCache(body []byte) []byte {
 		return body
 	}
 
-	// 5. Ensure total cache_control blocks <= 4
+	// 5. A tool loop's final tool results sit after the head anchors, so they
+	//    get the remaining slot of the budget when one is free.
+	markFinalToolResults(req)
+
+	// 6. Ensure total cache_control blocks <= the marker budget.
 	capCacheControlBlocks(req)
 
 	out, err := json.Marshal(req)

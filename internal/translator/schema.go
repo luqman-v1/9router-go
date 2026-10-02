@@ -35,6 +35,13 @@ func cleanGeminiSchema(schema map[string]any) {
 		"title", "optional", "if", "then", "else", "contentMediaType", "contentEncoding",
 		"cornerRadius", "fillColor", "fontFamily", "fontSize", "fontWeight",
 		"gap", "padding", "strokeColor", "strokeThickness", "textColor",
+		// Non-standard annotation/error keywords some MCP tool schemas emit
+		// (upstream #4283). Gemini's schema proto has no field for these and
+		// rejects the whole request with "Unknown name X: Cannot find field"
+		// if any nested node carries one. Bare names: the x- rule below only
+		// catches the vendor-prefixed spellings.
+		"errorMessage", "errorMessages", "markdownDescription",
+		"doNotSuggest", "suggestSortText", "minProperties", "maxProperties",
 	}
 
 	// stripUnsupported removes keywords Gemini rejects. Called again after anyOf/oneOf
