@@ -199,6 +199,119 @@ func TestRequireAdminAuth(t *testing.T) {
 	}
 }
 
+// The dashboard password header is a step-up credential the middleware cannot
+// verify: checking it needs the stored bcrypt hash, which lives in a repo the
+// gate does not hold. Only the backup download re-verifies the value itself, so
+// only that path may treat the header's presence as anything at all.
+//
+// When the gate honoured the header on every always-protected path, any caller
+// who could set one arbitrary header reached shutdown, self-update, health reset
+// and the OAuth auto-imports, because none of those handlers check a credential
+// of their own. These cases pin the header to the one path that can honour it.
+func TestPasswordHeaderIsHonouredOnlyWhereTheHandlerVerifiesIt(t *testing.T) {
+	t.Setenv("JWT_SECRET", "middleware-test-secret")
+	t.Setenv("DATA_DIR", t.TempDir())
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+
+	adminGate := RequireAdminAuth()(okHandler())
+	dashGate := RequireDashboardAuth(repo)(okHandler())
+
+	serve := func(gate http.Handler, path string) int {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set(DashboardPasswordHeader, "not-the-password")
+		rec := httptest.NewRecorder()
+		gate.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	paths := []struct {
+		path    string
+		admin   bool
+		dash    bool
+		handler string
+	}{
+		{path: "/api/version/shutdown", admin: true, dash: true, handler: "HandleShutdown"},
+		{path: "/api/version/update", admin: true, dash: true, handler: "HandleTriggerUpdate"},
+		{path: "/admin/health/reset", admin: true, dash: true, handler: "inline health reset"},
+		{path: "/api/shutdown", dash: true, handler: "unregistered but still gated"},
+		{path: "/api/oauth/cursor/auto-import", dash: true, handler: "HandleCursorAutoImport"},
+		{path: "/api/oauth/kiro/auto-import", dash: true, handler: "HandleKiroAutoImport"},
+	}
+
+	for _, tt := range paths {
+		t.Run(tt.path, func(t *testing.T) {
+			if tt.admin {
+				if code := serve(adminGate, tt.path); code != http.StatusUnauthorized {
+					t.Errorf("RequireAdminAuth: password header reached %s (status %d), want 401",
+						tt.handler, code)
+				}
+			}
+			if code := serve(dashGate, tt.path); code != http.StatusUnauthorized {
+				t.Errorf("RequireDashboardAuth: password header reached %s (status %d), want 401",
+					tt.handler, code)
+			}
+		})
+	}
+
+	// The backup download is the exception, and it is the reason the header is
+	// admitted at all: its handler re-checks the value, so a wrong one still
+	// fails there. Reaching the handler is the whole point — the 401 must come
+	// from the credential check, not from the gate.
+	t.Run("backup download still reaches its handler", func(t *testing.T) {
+		if !IsAlwaysProtectedPath(PasswordHeaderCarriesOwnAuth) {
+			t.Fatalf("%s is not always-protected; the gate would never consult the header",
+				PasswordHeaderCarriesOwnAuth)
+		}
+		req := httptest.NewRequest(http.MethodGet, PasswordHeaderCarriesOwnAuth, nil)
+		req.Header.Set(DashboardPasswordHeader, "not-the-password")
+		rec := httptest.NewRecorder()
+		dashGate.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("password header did not reach the export handler: status %d, want 200 from the ok handler",
+				rec.Code)
+		}
+	})
+}
+
+// A session or the CLI token still authorizes every always-protected path; the
+// scoping above must not narrow the credentials those paths already accepted.
+func TestPasswordHeaderScopeKeepsOtherCredentialsWorking(t *testing.T) {
+	t.Setenv("JWT_SECRET", "middleware-test-secret")
+	t.Setenv("DATA_DIR", t.TempDir())
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+
+	adminGate := RequireAdminAuth()(okHandler())
+	dashGate := RequireDashboardAuth(repo)(okHandler())
+	token, err := auth.Sign(auth.Secret(), time.Now())
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	for _, path := range []string{"/api/version/shutdown", "/api/version/update", PasswordHeaderCarriesOwnAuth} {
+		cliReq := httptest.NewRequest(http.MethodPost, path, nil)
+		cliReq.Header.Set(auth.CLITokenHeader, auth.CLIToken())
+		if rec := httptest.NewRecorder(); func() int {
+			adminGate.ServeHTTP(rec, cliReq)
+			return rec.Code
+		}() != http.StatusOK {
+			t.Errorf("RequireAdminAuth: CLI token refused on %s (status %d), want 200", path, rec.Code)
+		}
+
+		cookieReq := httptest.NewRequest(http.MethodPost, path, nil)
+		cookieReq.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		if rec := httptest.NewRecorder(); func() int {
+			dashGate.ServeHTTP(rec, cookieReq)
+			return rec.Code
+		}() != http.StatusOK {
+			t.Errorf("RequireDashboardAuth: session cookie refused on %s (status %d), want 200", path, rec.Code)
+		}
+	}
+}
+
 func TestRequireDashboardPage_Redirects(t *testing.T) {
 	t.Setenv("JWT_SECRET", "middleware-test-secret")
 	t.Setenv("DATA_DIR", t.TempDir())

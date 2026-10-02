@@ -34,6 +34,43 @@ menjadi regresi sendiri — manifest yang **sudah** punya digest tetap dijawab
 tanpa menyentuh GitHub, dan manifest yang melaporkan sudah mutakhir tetap
 dijawab walau tanpa digest.
 
+### 🔴 Header password dashboard hanya diverifikasi di satu handler — auth bypass
+
+`RequireAdminAuth` dan `RequireDashboardAuth` mengizinkan request yang membawa
+header `x-9r-password` dengan memeriksa **keberadaan** header itu saja:
+`r.Header.Get(DashboardPasswordHeader) != ""`. Nilai yang dipakai tidak pernah
+diverifikasi di middleware — memang tidak bisa, karena ceknya butuh hash bcrypt
+yang tersimpan di repo yang tidak dipegang gate.
+
+Asumsi di balik itu — "handler di belakang gate memverifikasi sendiri" — hanya
+benar untuk **1 dari 7** path yang dilindungi. Handler lain sama sekali tidak
+memeriksa kredensial apa pun, sehingga siapa pun yang bisa memasang satu header
+acak cukup untuk lewat: `/api/version/shutdown` (`HandleShutdown`),
+`/api/version/update` (`HandleTriggerUpdate`), `/admin/health/reset`,
+`/api/oauth/cursor/auto-import`, dan `/api/oauth/kiro/auto-import`.
+
+Yang paling berbahaya `/api/version/shutdown`: `shutdown.RequestStop()`
+dijadwalkan 500 ms setelah response (`internal/handlers/shutdown.go:29-32`),
+jadi efeknya selalu terjadi dan klien melihat 200 yang bersih — DoS remote
+tanpa autentikasi. `/api/version/update` mencapai penggantian binary dan restart.
+
+Pengecualian header kini dibatasi ke `PasswordHeaderCarriesOwnAuth`
+(`/api/settings/database`) — satu-satunya handler yang memanggil
+`verifyDashboardPassword` (`settings.go:374-382`), dan alasannya tetap ada:
+tanpa pengecualian itu, jalur step-up untuk backup hanya hidup di test yang
+mem-mount handler langsung (#47). Kredensial lain tidak berubah: session dan
+CLI token tetap berlaku di semua path.
+
+**Verifikasi:** `TestPasswordHeaderIsHonouredOnlyWhereTheHandlerVerifiesIt`
+menolak header ngawur pada keenam path lain lewat kedua gate, dan memastikan
+header tetap sampai ke handler export. Diuji mutation: mengembalikan
+`allowsPasswordHeader(...)` ke pemeriksaan keberadaan membuat keenam subtest
+gagal dengan 200 di handler yang seharusnya 401.
+`TestPasswordHeaderScopeKeepsOtherCredentialsWorking` mengunci session dan
+CLI token tetap berlaku setelah pembatasan ini. 12 test
+`HandleExportDatabase`/`HandleImportDatabase` lolos tanpa perubahan — #47
+tidak rusak.
+
 ### 🐛 CI gagal karena free tier opencode sedang overload — skip set tidak lengkap
 
 `internal/handlers/chat/muse_spark_e2e_test.go` memanggil endpoint opencode
@@ -58,6 +95,40 @@ mengunci isi himpunan itu — memindahkan 500 ke dalamnya akan menggagalkan test
 dengan pesan yang menyebut status itu adalah bug kita. Rerun suite setelah
 perubahan: upstream sudah pulih dan test tersebut kembali 200; `go vet` bersih,
 `go test -race ./internal/handlers/chat/` hijau.
+### 🐛 Refresh kredensial quota: satu percobaan, skip tanpa refresher, tandai grant mati — regresi #83
+
+PR #83 menambah refresh kredensial ke `/api/usage/{id}` dan langsung memunculkan
+dua warning per akun yang setiap kali panel dibuka:
+
+```
+WRN [usage] credential refresh failed         provider=grok-cli … invalid_grant
+WRN [usage] forced credential refresh failed  provider=grok-cli … invalid_grant
+```
+
+Audit upstream (`open-sse/services/tokenRefresh.js isUnrecoverableRefreshError`)
+menunjukkan upstream **juga** retry sekali pada pesan auth-expired
+(`open-sse/services/usage/grok-cli.js:372` mengembalikan "…authentication
+expired. Please re-authorize."), tapi tidak pernah mengulang refresh yang **baru
+saja ditolak** — itu celah yang diisi sendiri oleh #83.
+
+- **Satu percobaan refresh per request.** Retry dipindah ke jalur yang belum
+  mencoba, dan dilewati kalau percobaan yang baru saja gagal. Pair warning dan
+  satu slot `fetchgate` yang terbuang per akun hilang.
+- **Provider tanpa refresher dilewati.** `oauth.Refresh` hanya bisa berhasil
+  untuk provider yang terdaftar di `oauth.Get`; qoder tidak punya satu pun
+  (upstream: `open-sse/executors/qoder.js` → `refreshCredentials() { return null }`),
+  jadi setiap Panel Open sebelumnya dijamin gagal dan masuk log.
+- **Grant yang mati ditandai di DB.** `providers.IsRefreshGrantDead` memperluas
+  `IsRefreshUnauthorized` (401) ke 400 `invalid_grant` /
+  `refresh_token_reused` / `unrecoverable_refresh_error` — bentuk yang
+  dikembalikan xAI untuk refresh token grok-cli yang dicabut. Akun yang ditolak
+  sekarang di-park lewat `RecordConnectionOAuthFailure` sehingga dashboard
+  menampilkan akun yang perlu di-re-auth, bukan warning yang tidak dibaca siapa pun.
+  500/transport error tetap **tidak** di-park: itu bukti provider blip, bukan
+  bukti kredensial mati.
+- **`oauth.Unregister`** ditambahkan untuk 테스트 yang memasang stub di bawah
+  provider id asli; stub yang bocor diam-diam mengubah perilaku kode produksi
+  yang diuji.
 
 ### 🐛 Quota tracker tidak fetch semua akun + refresh kredensial Kiro — issue #78 (butir 3 & 4)
 

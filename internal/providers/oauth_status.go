@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // OAuthRefreshError carries the HTTP status a token endpoint rejected a
@@ -32,4 +33,33 @@ func (e *OAuthRefreshError) Error() string {
 func IsRefreshUnauthorized(err error) bool {
 	var refreshErr *OAuthRefreshError
 	return errors.As(err, &refreshErr) && refreshErr.Status == http.StatusUnauthorized
+}
+
+// IsRefreshGrantDead reports whether err is a refresh the provider refused in a
+// way that only a re-login can fix, widening IsRefreshUnauthorized's 401 to the
+// two shapes upstream also treats as terminal
+// (open-sse/services/tokenRefresh.js isUnrecoverableRefreshError):
+//
+//   - 401 Unauthorized
+//   - 400 Bad Request whose body names a dead grant — `invalid_grant`,
+//     `invalid_request`, `refresh_token_reused`, `unrecoverable_refresh_error`
+//
+// xAI (grok-cli) answers a revoked refresh token with 400 `invalid_grant`
+// rather than 401, so the chat path alone never recognised it as terminal and
+// kept re-spending a refresh call on a grant no retry can revive.
+func IsRefreshGrantDead(err error) bool {
+	if IsRefreshUnauthorized(err) {
+		return true
+	}
+	var refreshErr *OAuthRefreshError
+	if !errors.As(err, &refreshErr) || refreshErr.Status != http.StatusBadRequest {
+		return false
+	}
+	body := strings.ToLower(refreshErr.Body)
+	for _, marker := range []string{"invalid_grant", "invalid_request", "refresh_token_reused", "unrecoverable_refresh_error"} {
+		if strings.Contains(body, marker) {
+			return true
+		}
+	}
+	return false
 }
