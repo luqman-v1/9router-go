@@ -180,7 +180,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	var workingBody map[string]any
 	if modelInfo.Provider == "claude" || modelInfo.Provider == "anthropic" {
 		translateResponse = false
-		body = translator.SanitizeClaudePassthrough(body)
+		body = translator.SanitizeClaudePassthrough(body, translator.ClaudeIntentionalPrefill(body))
 		if modelInfo.Provider == "minimax" || modelInfo.Provider == "minimax-cn" {
 			body = translator.DefaultClaudeToolType(body)
 		}

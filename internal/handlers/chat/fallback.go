@@ -313,6 +313,13 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			// tools, merged roles) — what the dashboard does server-side.
 			pipedBody = executor.EnsureClaudeMessages(pipedBody, model)
 		}
+		// The OpenAI→Claude conversion merges turns, so a client body whose
+		// last message was a tool result can still land on an assistant turn.
+		// A prefill is the client's own choice, so it is detected on the
+		// pre-conversion body (upstream ensureTrailingUserTurn, claude.js:345-349).
+		prefill := translator.ClaudeIntentionalPrefill(body)
+		pipedBody = translator.EnsureTrailingUserTurnBody(pipedBody, prefill)
+
 		// OAuth connections (or sk-ant-oat tokens) require Claude-Code-shaped requests:
 		// billing-header system block + metadata.user_id + cloaked tools,
 		// or the API 429s (anti-abuse fingerprinting).
@@ -372,6 +379,17 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	} else if err != nil {
 		log.Warn("fallback", "sanitize failed", "provider", provider, "model", model, "error", err)
 	}
+	// DeepSeek answers 400 "Tool names must be unique" for a request that
+	// declares the same tool twice, so same-name definitions are collapsed at
+	// the last point before dispatch — after every conversion (OpenAI →
+	// Claude for an Anthropic upstream included), like upstream
+	// dedupeTools in open-sse/handlers/chatCore.js. Scoped by model id, so no
+	// other provider's tool array is touched.
+	if deduped := translator.DedupeToolsDeepSeek(pipedBody, model); len(deduped) != len(pipedBody) {
+		log.Debug("fallback", "deduped duplicate tool names", "provider", provider, "model", model)
+		pipedBody = deduped
+	}
+
 	// Fit tool names exceeding MaxToolNameLength (64 chars) to prevent upstream HTTP 400.
 	fittedBody, fittedToolMap := translator.FitToolNames(pipedBody)
 	if len(fittedToolMap) > 0 {

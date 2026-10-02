@@ -463,9 +463,14 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 //   - drops paired tool_result/web_search_tool_result referencing dropped ids
 //   - strips empty text blocks and drops messages that end up with no content
 //     Anthropic accepts (upstream #4316: a container_upload-only turn is content)
+//   - restores a trailing user turn when the cleanup left an assistant tail
+//
+// intentionalPrefill says the client itself ended on an assistant turn (see
+// ClaudeIntentionalPrefill); in that case the assistant tail is a prefill the
+// client asked for and must survive untouched.
 var serverToolUseIDRegex = regexp.MustCompile(`^srvtoolu_[a-zA-Z0-9_]+$`)
 
-func SanitizeClaudePassthrough(body []byte) []byte {
+func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
 		return body
@@ -567,27 +572,46 @@ func SanitizeClaudePassthrough(body []byte) []byte {
 		}
 	}
 
-	// Third pass: drop messages whose content carries nothing Anthropic accepts.
-	// The check enumerates the block types that count as content, so an empty
-	// array, a blank string and a whitespace-only text turn all go, while a
-	// turn holding only a container_upload (Files API) stays.
+// Third pass: drop messages whose content carries nothing Anthropic accepts.
+	// isContentfulContent enumerates the block types that count as content, so
+	// an empty array, a blank string and a whitespace-only text turn all go,
+	// while a turn holding only a container_upload (Files API) stays (upstream
+	// #4316). The trailing user turn is kept even when it is empty — the tail
+	// repair below replaces its content instead of letting an assistant turn
+	// become last.
 	var filtered []any
-	for _, mRaw := range messagesRaw {
-		if msgMap, ok := mRaw.(map[string]any); ok {
-			if content, exists := msgMap["content"]; exists && !isContentfulContent(content) {
-				changed = true
-				continue
-			}
+	for i, mRaw := range messagesRaw {
+		msgMap, ok := mRaw.(map[string]any)
+		if !ok {
+			filtered = append(filtered, mRaw)
+			continue
+		}
+		contentRaw, exists := msgMap["content"]
+		if !exists {
+			filtered = append(filtered, mRaw)
+			continue
+		}
+		if !isContentfulContent(contentRaw) && !isTrailingUserTurn(messagesRaw, i) {
+			changed = true
+			continue
 		}
 		filtered = append(filtered, mRaw)
 	}
-	if len(filtered) != len(messagesRaw) {
-		req["messages"] = filtered
-	}
 
+// Newer Claude models refuse a body ending on an assistant turn ("does not
+// support assistant message prefill"). A prefill the client wrote itself is
+// its own choice and stays; one that only exists because the cleanup left
+// the last user turn empty is repaired (upstream ensureTrailingUserTurn,
+// open-sse/translator/formats/claude.js:345-349).
+	repaired := EnsureTrailingUserTurn(filtered, intentionalPrefill)
+	if len(repaired) != len(filtered) || !sameTail(repaired, filtered) {
+		filtered = repaired
+		changed = true
+	}
 	if !changed {
 		return body
 	}
+	req["messages"] = filtered
 	if out, err := json.Marshal(req); err == nil {
 		return out
 	}

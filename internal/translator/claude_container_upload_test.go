@@ -37,7 +37,7 @@ func TestSanitizeClaudePassthrough_ContainerUploadKeepsTurn(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":` + tt.content + `}]}`)
 
-			out := SanitizeClaudePassthrough(body)
+			out := SanitizeClaudePassthrough(body, false)
 
 			messages := claudeMessagesOf(t, out)
 			if len(messages) != 1 {
@@ -82,7 +82,7 @@ func TestSanitizeClaudePassthrough_DropsGenuinelyEmptyTurns(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":` + tt.content + `}]}`)
 
-			messages := claudeMessagesOf(t, SanitizeClaudePassthrough(body))
+			messages := claudeMessagesOf(t, SanitizeClaudePassthrough(body, false))
 
 			if got := len(messages) == 0; got != tt.wantDropped {
 				t.Errorf("dropped = %v, want %v (kept %d messages)", got, tt.wantDropped, len(messages))

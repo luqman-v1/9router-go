@@ -168,8 +168,19 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 
 		settings, settingsErr := h.Repo.GetSettings()
 		connections = filterConnectionsForModel(provider, connections, model, settings)
+
 		if len(connections) == 0 {
 			return nil, nil, fmt.Errorf("no connection assigned to model %s for provider %s under strict assignment", model, provider)
+		}
+
+		// A codex account only serves the models it was granted. The pin is
+		// read before the rotation so a full strategy sweep cannot land on an
+		// account that cannot serve the request (upstream filters
+		// availableConnections before the pin and before the strategy —
+		// src/sse/services/auth.js:86-89, :100-148).
+		connections = filterConnectionsByEnabledModels(provider, connections, model)
+		if len(connections) == 0 {
+			return nil, nil, fmt.Errorf("no connection for provider %s has model %s enabled", provider, model)
 		}
 
 		// Rotate only connections eligible for the requested model.
@@ -203,6 +214,11 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		now := time.Now()
 		for _, c := range connections {
 			if excludeSet[c.ID] {
+				continue
+			}
+			// The strategy sweep reorders the whole candidate list, so the
+			// account filter runs again on the row actually reached.
+			if !codexAccountServesModel(c, model) {
 				continue
 			}
 			// Account-scoped cooldown. An account whose quota is spent, or
@@ -316,6 +332,10 @@ func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection
 		return true, "quota cache"
 	}
 
+	if !codexAccountServesModel(conn, model) {
+		return true, "model not enabled on account"
+	}
+
 	settings, err := h.Repo.GetSettings()
 	if err != nil || settings == nil {
 		return false, ""
@@ -325,6 +345,46 @@ func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection
 		return true, "strict model assignment"
 	}
 	return false, ""
+}
+
+// codexAccountServesModel reports whether a codex connection can serve model.
+//
+// Upstream skips a codex account whose providerSpecificData.enabledModels is a
+// non-empty array that does not contain the requested model
+// (src/sse/services/auth.js:86-89). The account is subscribed to a subset of
+// the catalog, and the ones it is not are rejected by OpenAI with a 400 — so
+// this is the one provider the pin gates, never a model-name guess about any
+// other provider (AGENTS.md §3.B).
+//
+// enabledModels is read from providerSpecificData first and from the
+// top-level field second, exactly like the /v1/models build
+// (models_list.go buildModelsList), because both writers are in the wild.
+// An empty or absent list leaves the account unrestricted, and an absent model
+// (model == "") skips the check as upstream does.
+func codexAccountServesModel(conn *models.ProviderConnection, model string) bool {
+	if conn == nil || conn.Provider != "codex" || model == "" {
+		return true
+	}
+	enabled := parseConnectionModelData(conn).EnabledModels()
+	if len(enabled) == 0 {
+		return true
+	}
+	return slices.Contains(enabled, model)
+}
+
+// filterConnectionsByEnabledModels drops the codex accounts that cannot serve
+// the requested model, keeping every other provider's rows untouched.
+func filterConnectionsByEnabledModels(provider string, conns []*models.ProviderConnection, model string) []*models.ProviderConnection {
+	if provider != "codex" || model == "" {
+		return conns
+	}
+	kept := make([]*models.ProviderConnection, 0, len(conns))
+	for _, c := range conns {
+		if codexAccountServesModel(c, model) {
+			kept = append(kept, c)
+		}
+	}
+	return kept
 }
 
 // quotaCacheBlocked reports whether a provider's in-memory quota cache says

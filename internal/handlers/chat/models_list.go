@@ -133,7 +133,7 @@ func isLLMCustomModel(modelType string) bool {
 // top-level variants older dashboards wrote).
 type connectionModelData struct {
 	Prefix               string   `json:"prefix"`
-	EnabledModels        []string `json:"enabledModels"`
+	EnabledModelsTop     []string `json:"enabledModels"`
 	ProviderSpecificData struct {
 		Prefix        string   `json:"prefix"`
 		EnabledModels []string `json:"enabledModels"`
@@ -146,6 +146,16 @@ func parseConnectionModelData(conn *models.ProviderConnection) connectionModelDa
 		_ = json.Unmarshal([]byte(conn.Data), &data)
 	}
 	return data
+}
+
+// EnabledModels returns the model ids the operator pinned on the connection,
+// preferring providerSpecificData.enabledModels over the top-level field the
+// same way buildModelsList does.
+func (c connectionModelData) EnabledModels() []string {
+	if ids := c.ProviderSpecificData.EnabledModels; len(ids) > 0 {
+		return ids
+	}
+	return c.EnabledModelsTop
 }
 
 // stripModelPrefix removes a leading "<prefix>/" qualifier the way upstream
@@ -464,10 +474,7 @@ func (h *ChatHandler) appendConnectionModels(
 		outputAlias = connData.Prefix
 	}
 
-	ids := connData.ProviderSpecificData.EnabledModels
-	if len(ids) == 0 {
-		ids = connData.EnabledModels
-	}
+	ids := connData.EnabledModels()
 	// Upstream: a live catalog replaces the static one only when the operator
 	// has not pinned enabledModels on the connection.
 	liveByID := make(map[string]LiveModel)

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### 🐛 Routing & translator: enabledModels codex, tool DeepSeek ganda, prefill Claude — issue #95
+
+Tiga filter yang upstream terapkan saat memilih akun dan menyusun request tidak ada di sisi kita. Dua di antaranya menjawab 400.
+
+- **Codex `enabledModels` dipakai saat routing.** Akun codex punya daftar model sendiri; yang tidak ada di sana ditolak OpenAI dengan 400. `codexAccountServesModel` melewati akun yang daftar enabledModels-nya non-kosong tapi tidak memuat model yang diminta — dibaca dari `providerSpecificData.enabledModels` dulu lalu field top-level, persis seperti `buildModelsList` sudah melakukannya, karena dua penulisnya ada di dunia luar. Filter dijalankan **sebelum** strategi rotasi, bukan sesudahnya: sapuan round-robin mengembalikan urutan seluruh kandidat, jadi penyaring harus mendahului strategi. Dijalankan juga di dalam loop seleksi dan di `pinnedConnectionIneligible`, sesuai urutan predikat upstream.
+- **Tool DeepSeek dengan nama ganda.** `DedupeToolsDeepSeek` hanya berlaku untuk model DeepSeek (`isDeepSeekModel` melepas sufiks `(level)` dan menerima id berawalan vendor lebih dulu). Definisi pertama yang bertahan, dan tool lain milik provider apa pun tidak tersentuh. Diletakkan di `tryForwardWithConnection` setelah `SanitizeOpenAITools` dan sebelum `FitToolNames` — titik terakhir sebelum dispatch, jadi berjalan setelah semua konversi. Aturan dedupe MCP milik klien yang ada di upstream **sengaja tidak** dipindah: ia bergantung pada deteksi tool klien yang tidak kita punya.
+- **Perbaikan trailing turn Claude.** `EnsureTrailingUserTurn` menempelkan turn user `Continue.` ketika cleanup menyisakan ekor assistant, **kecuali** pemanggil memang membuka dengan prefill. `ClaudeIntentionalPrefill` membaca ekor mentah lebih dulu pada bentuk sumbernya (`contents[]` untuk Gemini/Antigravity, `input[]` untuk Responses/Codex), jadi prefill yang disengaja tetap utuh. Tanpa ini model Claude yang lebih baru menjawab `400 … does not support assistant message prefill`.
+
+**Verifikasi:** `go vet ./...` bersih · `go test -race ./internal/translator/ ./internal/handlers/chat/` hijau · ketiganya terbukti load-bearing lewat mutasi terarah: menonaktifkan pengecualian prefill menggagalkan `TestSanitizeClaudePassthrough_ClientPrefillPreserved`; menghapus gerbang `IsDeepSeekModel` menggagalkan `TestDedupeToolsDeepSeek`; membuat `codexAccountServesModel` selalu `true` menggagalkan `TestGetBestConnection_CodexEnabledModelsPickOnlyEligibleAccount`. Arah kedua diuji pada prefill: `TestEnsureTrailingUserTurnBody` punya kasus `assistant tail gets the placeholder` **dan** `client prefill is left alone` — satu arah saja tidak cukup.
+
+
 ### 🔵 Empat provider upstream v0.5.95 — Meta Muse, v1m System One, TinyFish, seed Agnes
 
 Empat entri registry dari upstream `decolua/9router` v0.5.91…v0.5.95.
