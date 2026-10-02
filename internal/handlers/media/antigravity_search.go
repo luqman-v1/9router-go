@@ -260,7 +260,10 @@ func (h *MediaHandler) tryAntigravitySearchConn(w http.ResponseWriter, r *http.R
 	httpReq.Header.Set(constants.HeaderAuthorization, "Bearer "+apiKey)
 	httpReq.Header.Set("User-Agent", "antigravity/ide/2.11.0 darwin/arm64")
 
-	client := h.ChatH.GetClientForConnection(connData)
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		return &searchUpstreamError{Message: clientErr.Error()}
+	}
 	upstreamStart := time.Now()
 	resp, err := client.Do(httpReq)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
+	"9router/proxy/internal/models"
 	"9router/proxy/internal/proxy"
 )
 
@@ -29,6 +30,8 @@ type ChatHandler struct {
 
 // Type aliases for shared types
 type ModelInfo = shared.ModelInfo
+// ProviderConnection is the stored connection row.
+type ProviderConnection = models.ProviderConnection
 type ConnectionData = shared.ConnectionData
 type UsageLogInfo = shared.UsageLogInfo
 type streamMetrics = shared.StreamMetrics

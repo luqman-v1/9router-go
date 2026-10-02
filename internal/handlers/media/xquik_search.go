@@ -146,7 +146,10 @@ func (h *MediaHandler) tryXquikSearchConn(w http.ResponseWriter, r *http.Request
 	req.Header.Set(constants.HeaderAccept, constants.ContentTypeJSON)
 	req.Header.Set(constants.HeaderXAPIKey, apiKey)
 
-	client := h.ChatH.GetClientForConnection(connData)
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		return &searchUpstreamError{Message: clientErr.Error()}
+	}
 	if client == nil {
 		client = h.Client
 	}

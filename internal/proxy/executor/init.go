@@ -33,7 +33,7 @@ func RegisterAll() {
 	Register("kilocode", func() Executor { return ForwardOpenAI })
 	Register("nanobanana", func() Executor { return ForwardOpenAI })
 	Register("opencode-go", func() Executor { return ForwardOpencodeGo })
-	Register("venice", func() Executor { return ForwardOpenAI })
+	Register("opencode-zen", func() Executor { return ForwardOpencodeZen })
 	Register("vercel-ai-gateway", func() Executor { return ForwardOpenAI })
 	Register("volcengine-ark", func() Executor { return ForwardOpenAI })
 	Register("xiaomi-mimo", func() Executor { return ForwardOpenAI })

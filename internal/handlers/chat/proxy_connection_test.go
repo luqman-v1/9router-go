@@ -43,7 +43,10 @@ func TestGetClientForConnection_ProxyPool(t *testing.T) {
 		ProxyPoolID: poolID,
 	}
 
-	client := h.GetClientForConnection(connData)
+	client, err := h.GetClientForConnection(connData)
+	if err != nil {
+		t.Fatalf("client for connection: %v", err)
+	}
 	if client == nil {
 		t.Fatal("expected non-nil client")
 	}

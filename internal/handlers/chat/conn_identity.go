@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"fmt"
+
 	json "encoding/json/v2"
 
 	"9router/proxy/internal/models"
@@ -50,6 +52,59 @@ func (h *ChatHandler) connIdentityKVByID(connectionID string) []any {
 		return nil
 	}
 	return connIdentityKV(conn)
+}
+
+// connIdentityKVOr returns the identity fields for a request, preferring the
+// name the picker already had. A query only happens when the caller could not
+// supply one, so the success path — the one that runs on every request — never
+// touches the database for log formatting.
+func (h *ChatHandler) connIdentityKVOr(f forwardRequestParams, connectionID string) []any {
+	if f.ConnName == "" && f.ConnEmail == "" {
+		if kv := h.connIdentityKVByID(connectionID); len(kv) > 0 {
+			return append([]any{"conn", connectionID}, kv...)
+		}
+	}
+	kv := make([]any, 0, 6)
+kv = append(kv, "conn", connectionID)
+	if f.ConnName != "" {
+		kv = append(kv, "connName", f.ConnName)
+	}
+	if f.ConnEmail != "" {
+		kv = append(kv, "email", f.ConnEmail)
+	}
+	return kv
+}
+
+// identityNames pulls the account name and email out of a log kv slice, so a
+// caller that already resolved the identity does not resolve it twice.
+func identityNames(kv []any) (name, email string) {
+	for i := 0; i+1 < len(kv); i += 2 {
+		switch fmt.Sprint(kv[i]) {
+		case "connName":
+			name, _ = kv[i+1].(string)
+		case "email":
+			email, _ = kv[i+1].(string)
+	}
+	}
+	return name, email
+}
+
+// connObjName returns a connection's user-facing label, or "" when it has
+// none. Nil-safe so the virtual no-auth connection ("noauth"/"Public") and a
+// real row read the same way.
+func connObjName(conn *models.ProviderConnection) string {
+	if conn == nil || conn.Name == nil {
+		return ""
+	}
+	return *conn.Name
+}
+
+// connObjEmail returns the account email stored on a connection, or "".
+func connObjEmail(conn *models.ProviderConnection) string {
+	if conn == nil || conn.Email == nil {
+		return ""
+	}
+	return *conn.Email
 }
 
 func projectIDFromConnData(data string) string {

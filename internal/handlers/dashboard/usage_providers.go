@@ -89,6 +89,8 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 		return fetchGrokCliUsage(ctx, accessToken, psd), true
 	case "codex":
 		return fetchCodexUsage(ctx, firstNonEmptyStr(accessToken, apiKey)), true
+	case "opencode-zen":
+		return fetchOpenCodeZenUsage(ctx, apiKey, connectionBaseURL(data)), true
 	default:
 		return usageResult{}, false
 	}
@@ -127,6 +129,23 @@ func psdStr(psd map[string]any, keys ...string) string {
 		if v, ok := psd[k].(string); ok && strings.TrimSpace(v) != "" {
 			return strings.TrimSpace(v)
 		}
+	}
+	return ""
+}
+
+// connectionBaseURL reports the endpoint a connection actually dials. The chat
+// path reads it from ConnectionData.BaseURL, which is hydrated from either the
+// top-level baseUrl or providerSpecificData.baseUrl depending on how the
+// connection was written.
+func connectionBaseURL(data map[string]any) string {
+	if data == nil {
+		return ""
+	}
+	if v := usageStr(data["baseUrl"]); v != "" {
+		return v
+	}
+	if psd, ok := data["providerSpecificData"].(map[string]any); ok {
+		return usageStr(psd["baseUrl"])
 	}
 	return ""
 }

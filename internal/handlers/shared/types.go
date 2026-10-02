@@ -34,13 +34,39 @@ type ConnectionData struct {
 	ProviderSpecificData   map[string]any `json:"providerSpecificData,omitempty"`
 }
 
-// UsageLogInfo holds request context needed to log a usage record.
+// UsageLogInfo holds request context needed to log a usage record. ConnName and
+// ConnEmail identify the account that actually served the turn: with several
+// connections behind one provider, provider+model says nothing about which
+// key or subscription paid for it.
 type UsageLogInfo struct {
 	Provider     string
 	Model        string
 	ConnectionID string
+	ConnName     string
+	ConnEmail    string
 	APIKey       string
 	Endpoint     string
+}
+
+// ConnIdentityKV returns the log key/value pairs naming the account behind a
+// request. A request with no stored connection (a no-auth provider dialled
+// directly) is reported as "Public / Direct" rather than as an empty field, so
+// a reader can always tell "which account" apart from "no account".
+func (u *UsageLogInfo) ConnIdentityKV() []any {
+	kv := make([]any, 0, 6)
+	if u.ConnectionID != "" {
+		kv = append(kv, "conn", u.ConnectionID)
+	}
+	if u.ConnName != "" {
+		kv = append(kv, "connName", u.ConnName)
+	}
+	if u.ConnEmail != "" {
+		kv = append(kv, "email", u.ConnEmail)
+	}
+	if len(kv) == 0 {
+		kv = append(kv, "account", "Public / Direct")
+	}
+	return kv
 }
 
 // ResponseCaptureMax is the maximum response content retained for token

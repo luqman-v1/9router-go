@@ -28,6 +28,7 @@ type Request struct {
 	APIKey         string
 	Body           []byte
 	IsStream       bool
+	ClaudeClient   bool              // /v1/messages client: body is Claude Messages, response must be translated back
 	TranslateResp  bool
 	ConnectionID   string            // for OAuth refresh by fallback
 	SessionID      string            // client session / conversation id

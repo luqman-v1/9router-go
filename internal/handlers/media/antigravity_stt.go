@@ -223,7 +223,10 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 	httpReq.Header.Set("X-Client-Name", "antigravity")
 	httpReq.Header.Set("X-Client-Version", "2.11.0")
 
-	client := h.ChatH.GetClientForConnection(connData)
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		return clientErr
+	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("antigravity stt request failed: %w", err)

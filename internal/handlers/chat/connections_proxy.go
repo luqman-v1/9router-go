@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"fmt"
+
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/log"
 	"net/http"
@@ -38,27 +40,44 @@ func logProxyOnce(poolID, proxyURLStr, proxyType string) {
 }
 
 // GetClientForConnection returns an http.Client configured with ProxyPool transport if set.
-func (h *ChatHandler) GetClientForConnection(connData *ConnectionData) *http.Client {
+// A connection bound to a pool that cannot serve traffic gets an error instead of a
+// client: silently dropping the pool would send the request out from the real IP,
+// which is the one thing the assignment exists to prevent.
+func (h *ChatHandler) GetClientForConnection(connData *ConnectionData) (*http.Client, error) {
 	return h.getClientForConnection(connData)
 }
 
-func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Client {
+func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Client, error) {
 	if connData == nil {
-		return h.Client
+		return h.Client, nil
 	}
 
 	var proxyURLStr string
 	var proxyType string
 	var strictProxy bool
 
-	// 1. Resolve from ProxyPool
+	// 1. Resolve from ProxyPool. A pool that cannot serve traffic (deleted,
+	// inactive, or carrying no URL) makes the request fail: silently going
+	// direct would publish the operator's egress IP, which is the one thing a
+	// proxy was assigned to prevent, and the dashboard would keep showing the
+	// connection as proxied.
 	if connData.ProxyPoolID != "" {
 		pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID)
-		if err == nil && pool != nil && pool.IsActive {
-			proxyURLStr = pool.NextURL()
-			proxyType = pool.Type
-			strictProxy = pool.StrictProxy
+		switch {
+		case err != nil || pool == nil:
+			log.Warn("proxy", "assigned pool not found", "pool", connData.ProxyPoolID)
+			return nil, fmt.Errorf("proxy pool %q is assigned but does not exist", connData.ProxyPoolID)
+		case !pool.IsActive:
+			log.Warn("proxy", "assigned pool is inactive", "pool", connData.ProxyPoolID)
+			return nil, fmt.Errorf("proxy pool %q is assigned but inactive", connData.ProxyPoolID)
 		}
+		proxyURLStr = pool.NextURL()
+		if proxyURLStr == "" {
+			log.Warn("proxy", "assigned pool has no url", "pool", connData.ProxyPoolID)
+			return nil, fmt.Errorf("proxy pool %q is assigned but carries no url", connData.ProxyPoolID)
+		}
+		proxyType = pool.Type
+		strictProxy = pool.StrictProxy
 	}
 
 	// 2. Fallback to legacy connection proxy
@@ -83,17 +102,22 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 	}
 
 	if proxyURLStr == "" {
-		return h.Client
+		return h.Client, nil
 	}
 	logProxyOnce(connData.ProxyPoolID, proxyURLStr, proxyType)
 
 	parsedURL, err := url.Parse(proxyURLStr)
 	if err != nil {
 		log.Warn("proxy", "invalid proxy pool url", "pool", connData.ProxyPoolID, "url", proxyURLStr, "error", err)
+		if connData.ProxyPoolID != "" {
+			// The connection is bound to this pool, so a URL the transport
+			// cannot parse is a broken assignment, not a missing one.
+			return nil, fmt.Errorf("proxy pool %q has an unparseable url", connData.ProxyPoolID)
+		}
 		if strictProxy {
 			log.Error("proxy", "strict proxy enabled but proxy url invalid", "url", proxyURLStr)
 		}
-		return h.Client
+		return h.Client, nil
 	}
 
 	if proxyType == "http" || proxyType == "" {
@@ -101,13 +125,13 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 		client, ok := proxyClients[proxyURLStr]
 		proxyClientsMu.RUnlock()
 		if ok {
-			return client
+			return client, nil
 		}
 
 		proxyClientsMu.Lock()
 		defer proxyClientsMu.Unlock()
 		if client, ok = proxyClients[proxyURLStr]; ok {
-			return client
+			return client, nil
 		}
 		// Evict idle sockets of a random victim when over cap (amortized O(1);
 		// exact LRU is overkill — URLs are hot or dead, never warm).
@@ -132,10 +156,10 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) *http.Cli
 			Timeout:   h.Client.Timeout,
 		}
 		proxyClients[proxyURLStr] = client
-		return client
+		return client, nil
 	}
 
 	// For Edge Relays (vercel, cloudflare, deno), standard client is used because
 	// URL rewriting and x-relay headers are handled at request time.
-	return h.Client
+	return h.Client, nil
 }

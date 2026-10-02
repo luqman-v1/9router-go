@@ -2,6 +2,130 @@
 
 ## [Unreleased]
 
+### 🐛 OpenCode Zen (`ocz`) paritas dengan upstream — issue #78
+
+Halaman `/dashboard/providers/opencode-zen` hampir tidak punya perilaku upstream:
+`opencode-zen` **tidak terdaftar sebagai executor**, jadi `executor.Get` mengembalikan
+`nil` dan semua request jatuh ke `forwardRequest` generik — satu POST ke
+`/zen/v1/chat/completions` tanpa session/request header, tanpa quartet fingerprint,
+dan tanpa routing per-model. Akibatnya model Claude dan Qwen (yang hanya hidup di
+`/zen/v1/messages`) serta GPT/Grok/Muse Spark (`/zen/v1/responses`) tidak pernah
+menyentuh endpoint yang benar, dan `NoAuth: true` + `DefaultAPIKey: "public"`
+membuat lane PAYG diam-diam memakai key free-tier.
+
+- **Executor `ForwardOpencodeZen` + tiga transport.** `internal/proxy/executor/opencode_zen.go`
+  mengimplementasikan `open-sse/executors/opencode-zen.js`: `/chat/completions`,
+  `/messages` (auth `x-api-key` mentah), `/responses`, plus fingerprint headers,
+  quartet `bash/glob/grep/read`, `stream:true` paksa, dan `store:false`.
+- **Metadata format per model.** `internal/providers/model_formats.go` mem-port
+  `targetFormat` / `supportedFormats` dari registry upstream plus fallback keluarga
+  (`open-sse/providers/models/helpers.js OPENCODE_FAMILIES`) untuk id dari
+  `modelsFetcher`/`passthroughModels` yang belum pernah dilihat. Katalog
+  `web/src/lib/models.ts` untuk `ocz` disinkronkan ke 74 entri (termasuk
+  `union-alpha` yang sebelumnya hilang) dengan medan format yang sama.
+- **Claude client boleh loseless.** `tryForwardWithConnection` hanya mengonversi
+  body `/v1/messages` untuk provider tanpa endpoint Messages
+  (`executor.ServesMessagesEndpoint`), jadi `claude-*` dan `qwen*` kini dikirim
+  apa adanya ke `/zen/v1/messages` alih-alih OpenAI → Claude bolak-balik.
+- **Lane Responses.** `UpstreamSpeaksResponses` kini membedakan
+  `opencode-zen` dan hanya meloloskan passthrough untuk model yang target
+  format-nya `openai-responses`; model chat-lane yang diminta klien Responses
+  diterjemahkan masuk, bukan diteruskan mentah.
+- **Quota tracker.** `GET /zen/v1/usage` (Rolling / Weekly / Monthly, persentase
+  → used/total 0..100) di-port ke `usage_opencode_zen.go`, dan `opencode-zen`
+  masuk `usageSupportedProviders` + `usageApikeyProviders` — sebelumnya tidak
+  eligible sehingga halaman tidak menampilkan akun sama sekali. URL usage
+  diturunkan dari `baseUrl` koneksi, jadi endpoint self-hosted/relay dibaca
+  dari host-nya sendiri.
+- **Konfigurasi provider.** `NoAuth` dan `DefaultAPIKey: "public"` dihapus
+  (koneksi tanpa key kini ditolak, bukan diam-diam memakai free tier), dan
+  `UsageURL` ditambahkan ke `ProviderConfig`.
+- **Verifikasi:** `go vet ./...`, `go test -race ./...`,
+  `go test -tags=integration -race ./internal/integration/...` (7 kasus zen baru
+  lewat router produksi dengan upstream palsu), `bun test` 115/115, `bun run build`,
+  plus smoke live ke binary terhadap upstream palsu ketiga lane.
+
+### 🐛 Console log named the provider but not the account — issue #78 (butir 2)
+
+Pada multi-akun, baris `[usage] logged` hanya menyebut `provider` + `model` + token.
+Tidak ada jejak akun mana yang melayani — padahal itu satu-satunya informasi yang
+berguna saat 20 koneksi berotasi di balik satu provider. `connIdentityKV` sudah
+ada, tapi hanya terpakai di jalur gagal (`upstream failed`, `connection locked`),
+karena `forwardRequestParams` tidak membawa nama akun.
+
+- **`forwardRequestParams.ConnName` / `.ConnEmail`** diisi di ketiga call site
+  picker (pinned, rotasi, combo) dari baris koneksi yang sudah dipegang, jadi
+  jalur sukses tidak perlu query database tambahan untuk format log.
+- **`UsageLogInfo` dapat `ConnName`/`ConnEmail`** plus `ConnIdentityKV()`, dan
+  `connIdentityKVOr()` menyelesaikan identitas sekali per attempt lalu dipakai
+  ulang oleh `logUsage`, `LogFailure`, dan ketiga baris `fallback` — tidak ada
+  permintaan yang membaca baris koneksi dua kali.
+- **Konsekuensi yang terlihat:** baris sukses kini berbunyi
+  `... cost=… conn=conn-a connName=Account A`; permintaan tanpa koneksi tersimpan
+  (no-auth) melapor `account=Public / Direct` alih-alih diam saja.
+- **Verifikasi:** 2 kasus integrasi lewat router produksi (rotasi dua akun harus
+  menghasilkan dua nama berbeda di console log), 3 unit test untuk resolusi
+  identitas, `go vet ./...`, `go test -race ./internal/...`,
+  `go test -tags=integration -race ./internal/integration/...`.
+
+### 🐛 Proxy pool ter-assign tapi tidak pernah dipakai — issue #78 (butir 1)
+
+Pool yang terpasang di dashboard **tidak pernah dipakai** untuk sebagian besar
+provider. UI menulis `proxyPoolId` dan menampilkan badge "Proxy" — request-nya
+tetap keluar lewat IP asli. Tiga sebab, ketiganya diperbaiki.
+
+- **`forwardRequest` mengabaikan client koneksi.** Signature-nya tidak punya
+  client, jadi selalu `h.Client`: **setiap provider tanpa executor kustom**
+  (deepseek, openai, openrouter, groq, mistral, …) melompati proxy. Jalur Gemini
+  native punya masalah yang sama. Client hasil resolusi sekarang diteruskan
+  (`forwardRequest` + `forwardGeminiNativeRequest`).
+- **Pool level provider hanya dibaca koneksi virtual no-auth.**
+  `settings.providerStrategies[...].proxyPoolId` baru dipakai di
+  `getBestConnection` untuk koneksi hasil sintetis, jadi koneksi yang punya API
+  key sendiri keluar langsung. `applyProviderProxyPool` kini menjadikannya
+  fallback ketika koneksi tidak punya binding sendiri (binding eksplisit tetap
+  menang).
+- **Alias vs id kanonik.** UI menyimpan pool di bawah `storageAlias` (mis.
+  `mmf`, `cl`, `ocg`, `ocz`) sedangkan request membawa id kanonik
+  (`mimo-free`, `clinepass`, `opencode-go`, `opencode-zen`).
+  `ResolveProviderProxyPoolID` hanya mengingat tiga pasangan, jadi sisanya
+  membaca "tidak ada". Sekarang kunci dicari lewat `providerStrategyKeys`:
+  id → alias terpublikasi → id kanonik → pasangan upstream (cline ↔ clinepass).
+- **Pool tak terpakai gagal diam-diam.** Pool yang terhapus, nonaktif, tanpa
+  URL, atau URL-nya tidak bisa diparse sebelumnya membuat request pergi
+  langsung. Sekarang `getClientForConnection` mengembalikan error dan
+  `tryForwardWithConnection` gagal **sebelum** ada byte yang terkirim — tidak
+  ada request pertama yang bocor ke IP asli.
+- **Verifikasi:** 4 kasus integrasi lewat router produksi dengan proxy palsu
+  yang menghitung setiap tunnel (termasuk satu yang membuktikan hop lewat
+  header yang di-stamp proxy), 6 unit test untuk resolusi alias pool,
+  `go vet ./...`, `go test -race ./internal/...`,
+  `go test -tags=integration -race ./internal/integration/...`.
+
+### 🐛 Edge relay kehilangan `x-relay-target` di lane Zen
+
+Dengan pool bertipe `vercel`/`cloudflare`/`deno`, `getProviderConfig` menukar
+tujuan upstream menjadi header relay (`BuildEdgeRelayHeaders`) lalu mengganti
+`BaseURL` dengan host relay. `ForwardOpencodeZen` membangun ulang header dari
+nol, jadi `x-relay-target` hilang dan relay menjawab
+`400 {"error":"Missing x-relay-target header"}` — **semua** request gagal begitu
+pool edge dipasang.
+
+- **`zenHeaders` kini membawa `x-relay-target` / `x-relay-path` /
+  `x-opencode-project`** dari config koneksi. Fingerprint UA tetap menang
+  atas `User-Agent` yang dikirim koneksi.
+- **`zenRelayPath` menentukan lane dari satu tempat.** Nilai `x-relay-path`
+  di-stamp dari `baseUrl` koneksi, jadi untuk koneksi default isinya
+  `/zen/v1/chat/completions` — penting saat modelnya butuh lane lain.
+- **Lane `/messages` juga.** Jalur itu membangun set header sendiri
+  (`x-api-key` + `anthropic-version`), jadi ikut kehilangan header relay; sekarang
+  sama seperti dua lane lain, tujuan ada di header dan `BaseURL` yang dipanggil
+  adalah host relay.
+- **Verifikasi:** 5 kasus test memakai relay palsu yang meniru perilaku
+  deployment (`internal/handlers/media/deploy.go`) dan membalas 400 seperti
+  aslinya — ketiganya **gagal dengan pesan yang sama seperti laporan Anda**
+  sebelum fix, lalu hijau sesudahnya.
+
 ### 🐛 Batch perbaikan issue terbuka (#72, #73, #74, #75, #76, #77, #78, #79, #47, #61)
 
 Sepuluh issue yang masih terbuka ditutup di satu batch. Yang sudah benar di
