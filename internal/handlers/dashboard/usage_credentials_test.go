@@ -294,3 +294,110 @@ func TestHandleGetConnectionUsage_FailedRefreshStillReadsWithStoredToken(t *test
 		t.Errorf("expected a quota row from the stored token, got %s", rec.Body.String())
 	}
 }
+
+// TestRunUsageRefresh_SpendsTheStoredRefreshToken is the whole point of the
+// re-read upstream added in 0bc7f86e4. The caller's snapshot still holds the
+// token a concurrent writer has already rotated; OpenAI revokes the entire
+// session when a rotated refresh token is presented again, so spending the
+// snapshot logs the account out rather than renewing it.
+func TestRunUsageRefresh_SpendsTheStoredRefreshToken(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	t.Cleanup(cleanup)
+
+	var spent string
+	registerStubRefresher(t, "ollama", func(_ context.Context, p *oauth.Params) (*oauth.TokenResult, error) {
+		spent = p.RefreshToken
+		return &oauth.TokenResult{AccessToken: "at", RefreshToken: "rotated-again", ExpiresIn: 3600}, nil
+	})
+
+	// The row holds the rotated token; the snapshot the caller carries was
+	// taken before that write and is now the stale one.
+	expired := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	stored := `{"accessToken":"stale","apiKey":"stale","refreshToken":"rt-rotated","expiresAt":"` + expired + `"}`
+	if err := repo.CreateProviderConnectionFull("conn-reuse", "ollama", "oauth", "Reuse", nil, stored); err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+	snapshot := map[string]any{"accessToken": "stale", "apiKey": "stale", "refreshToken": "rt-stale", "expiresAt": expired}
+	conn, err := repo.GetProviderConnectionByID("conn-reuse")
+	if err != nil || conn == nil {
+		t.Fatalf("read connection: %v", err)
+	}
+
+	h := &DashboardHandler{Repo: repo}
+	outcome := h.runUsageRefresh(t.Context(), conn, usageCredentials{raw: snapshot, provider: "ollama"})
+
+	if outcome.err != nil {
+		t.Fatalf("runUsageRefresh: %v", outcome.err)
+	}
+	if !outcome.attempted {
+		t.Fatal("refresh was not attempted")
+	}
+	if spent != "rt-rotated" {
+		t.Errorf("refresh spent %q, want the token stored on the row", spent)
+	}
+}
+
+// TestRunUsageRefresh_KeepsSnapshotWhenRowUnchanged pins the other direction:
+// with nothing newer stored, the snapshot is what gets spent, so the re-read
+// cannot start refusing tokens it has no reason to doubt.
+func TestRunUsageRefresh_KeepsSnapshotWhenRowUnchanged(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	t.Cleanup(cleanup)
+
+	var spent string
+	registerStubRefresher(t, "ollama", func(_ context.Context, p *oauth.Params) (*oauth.TokenResult, error) {
+		spent = p.RefreshToken
+		return &oauth.TokenResult{AccessToken: "at", ExpiresIn: 3600}, nil
+	})
+
+	expired := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	stored := `{"accessToken":"stale","apiKey":"stale","refreshToken":"rt-same","expiresAt":"` + expired + `"}`
+	if err := repo.CreateProviderConnectionFull("conn-same", "ollama", "oauth", "Same", nil, stored); err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+	conn, err := repo.GetProviderConnectionByID("conn-same")
+	if err != nil || conn == nil {
+		t.Fatalf("read connection: %v", err)
+	}
+
+	h := &DashboardHandler{Repo: repo}
+	snapshot := map[string]any{"accessToken": "stale", "apiKey": "stale", "refreshToken": "rt-same", "expiresAt": expired}
+	h.runUsageRefresh(t.Context(), conn, usageCredentials{raw: snapshot, provider: "ollama"})
+
+	if spent != "rt-same" {
+		t.Errorf("refresh spent %q, want the snapshot token when the row agrees", spent)
+	}
+}
+
+// TestRunUsageRefresh_FallsBackToSnapshotWhenRowIsUnreadable: a row that cannot
+// be read back (gone, undecodable blob) must not stop the refresh — it falls
+// back to the snapshot rather than presenting an empty token.
+func TestRunUsageRefresh_FallsBackToSnapshotWhenRowIsUnreadable(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	t.Cleanup(cleanup)
+
+	var spent string
+	registerStubRefresher(t, "ollama", func(_ context.Context, p *oauth.Params) (*oauth.TokenResult, error) {
+		spent = p.RefreshToken
+		return &oauth.TokenResult{AccessToken: "at", ExpiresIn: 3600}, nil
+	})
+
+	expired := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	if err := repo.CreateProviderConnectionFull("conn-gone", "ollama", "oauth", "Gone", nil, `{"refreshToken":"rt-only-on-row"}`); err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+	conn := &models.ProviderConnection{ID: "conn-does-not-exist", Provider: "ollama", AuthType: "oauth"}
+
+	h := &DashboardHandler{Repo: repo}
+	outcome := h.runUsageRefresh(t.Context(), conn, usageCredentials{
+		raw:      map[string]any{"accessToken": "a", "refreshToken": "rt-snapshot", "expiresAt": expired},
+		provider: "ollama",
+	})
+
+	if outcome.err != nil || !outcome.attempted {
+		t.Fatalf("outcome = %+v, want an attempted refresh", outcome)
+	}
+	if spent != "rt-snapshot" {
+		t.Errorf("refresh spent %q, want the snapshot token when the row is unreadable", spent)
+	}
+}

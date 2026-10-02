@@ -59,7 +59,7 @@ func TestForwardCodex_sendsChatGPTAccountHeader(t *testing.T) {
 			defer srv.Close()
 
 			cfg := &providers.ProviderConfig{BaseURL: srv.URL, AuthHeader: "Authorization", AuthScheme: "bearer"}
-			_, err := ForwardCodex(t.Context(), srv.Client(), cfg, "sk-test", []byte(`{}`), false, tt.psd)
+			_, err := ForwardCodex(t.Context(), srv.Client(), cfg, "sk-test", []byte(`{}`), false, tt.psd, false)
 			if err != nil {
 				t.Fatalf("ForwardCodex() error = %v", err)
 			}

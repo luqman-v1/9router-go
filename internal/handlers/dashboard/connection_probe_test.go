@@ -465,6 +465,7 @@ func TestConnectionTokenExpired(t *testing.T) {
 	now := time.Now().UTC()
 	tests := []struct {
 		name      string
+		provider  string
 		expiresAt string
 		want      bool
 	}{
@@ -473,11 +474,36 @@ func TestConnectionTokenExpired(t *testing.T) {
 		{name: "past", expiresAt: now.Add(-time.Hour).Format(time.RFC3339), want: true},
 		{name: "inside the refresh lead", expiresAt: now.Add(time.Minute).Format(time.RFC3339), want: true},
 		{name: "far future", expiresAt: now.Add(time.Hour).Format(time.RFC3339), want: false},
+		{
+			// codex's registry lead is 10 minutes, not the 5-minute default, so
+			// a token inside that band is already refreshable for codex alone.
+			name:      "codex refreshes earlier than the default lead",
+			provider:  "codex",
+			expiresAt: now.Add(7 * time.Minute).Format(time.RFC3339),
+			want:      true,
+		},
+		{
+			name:      "another provider keeps the default lead for the same window",
+			provider:  "xai",
+			expiresAt: now.Add(7 * time.Minute).Format(time.RFC3339),
+			want:      false,
+		},
+		{
+			// claude's registry lead is 4 hours.
+			name:      "claude refreshes four hours out",
+			provider:  "claude",
+			expiresAt: now.Add(3 * time.Hour).Format(time.RFC3339),
+			want:      true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := connectionTokenExpired(connectionProbeData{ExpiresAt: tt.expiresAt}); got != tt.want {
-				t.Errorf("connectionTokenExpired(%q) = %v, want %v", tt.expiresAt, got, tt.want)
+			provider := tt.provider
+			if provider == "" {
+				provider = "xai"
+			}
+			if got := connectionTokenExpired(provider, connectionProbeData{ExpiresAt: tt.expiresAt}); got != tt.want {
+				t.Errorf("connectionTokenExpired(%q, %q) = %v, want %v", provider, tt.expiresAt, got, tt.want)
 			}
 		})
 	}

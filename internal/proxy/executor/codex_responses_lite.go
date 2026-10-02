@@ -59,7 +59,9 @@ func isCodexResponsesLiteModel(model string) bool {
 // shape: the top-level tools and instructions move into the input array as a
 // developer prefix, and the top-level fields are cleared. A body that already
 // carries the prefix is left alone, so replaying a transcript back does not
-// double-wrap it. It reports false when the input shape is one it cannot read.
+// double-wrap it. It reports false when the body asks for hosted search — Lite
+// cannot execute it, so the caller has to keep regular Responses — or when the
+// input shape is one this cannot read.
 func applyCodexResponsesLite(req map[string]any) bool {
 	input, ok := responseInputItems(req["input"])
 	if !ok {
@@ -67,7 +69,7 @@ func applyCodexResponsesLite(req map[string]any) bool {
 	}
 	for _, item := range input {
 		if m, isMap := item.(map[string]any); isMap {
-			if t, _ := m["type"].(string); t == "additional_tools" {
+			if t, _ := m["type"].(string); t == codexAdditionalToolsType {
 				return true
 			}
 		}
@@ -118,8 +120,16 @@ func applyCodexLiteReasoning(req map[string]any) {
 // applyCodexModelShape dispatches on the model: a lite one gets the prefix shape
 // and the lite reasoning block, anything else keeps the classic one. Called once
 // per request, after the body has been normalised to Responses shape.
+//
+// Hosted search is registered and lifted out of any prefix first, so a body
+// asking for it stays on regular Responses rather than losing the tool inside
+// the prefix (upstream 7bf931781).
 func applyCodexModelShape(req map[string]any, cleanModel string) {
 	if !isCodexResponsesLiteModel(cleanModel) {
+		return
+	}
+	registered := registerCodexHostedWebSearch(req)
+	if liftCodexHostedWebSearch(req) || registered {
 		return
 	}
 	if !applyCodexResponsesLite(req) {

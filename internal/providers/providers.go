@@ -34,6 +34,42 @@ func (p *ProviderConfig) IsGeminiNative() bool { return p.Format == "gemini-nati
 // native one (e.g. the "gemini" provider at /v1beta/openai/chat/completions).
 func (p *ProviderConfig) IsGeminiOpenAICompat() bool { return p.Format == "gemini-openai" }
 
+// WithStaticHeader returns cfg with one static header set, copying the config
+// and the header map so a shared catalog entry is never mutated. A header the
+// config already carries is replaced in the copy.
+func WithStaticHeader(cfg *ProviderConfig, name, value string) *ProviderConfig {
+	if cfg == nil {
+		return nil
+	}
+	cloned := *cfg
+	cloned.StaticHeaders = make(map[string]string, len(cfg.StaticHeaders)+1)
+	for k, v := range cfg.StaticHeaders {
+		cloned.StaticHeaders[k] = v
+	}
+	cloned.StaticHeaders[name] = value
+	return &cloned
+}
+
+// WithoutStaticHeader returns cfg with one static header removed, copying both
+// the config and the map. It answers cfg unchanged when the header is absent,
+// so the common path allocates nothing.
+func WithoutStaticHeader(cfg *ProviderConfig, name string) *ProviderConfig {
+	if cfg == nil {
+		return nil
+	}
+	if _, present := cfg.StaticHeaders[name]; !present {
+		return cfg
+	}
+	cloned := *cfg
+	cloned.StaticHeaders = make(map[string]string, len(cfg.StaticHeaders)-1)
+	for k, v := range cfg.StaticHeaders {
+		if k != name {
+			cloned.StaticHeaders[k] = v
+		}
+	}
+	return &cloned
+}
+
 // modelsListURL is the OpenAI-compatible /v1/models endpoint of providers whose
 // catalogue is fetched live for the dashboard's "Suggested free models" import.
 // It is the same set upstream wires into PROVIDER_MODELS_CONFIG

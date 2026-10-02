@@ -27,15 +27,14 @@ import (
 //     refreshes with configs we do not carry (kimi, kimi-coding, kiro) report
 //     "Token expired"/"Token invalid or revoked" instead of silently refreshing.
 //   - Upstream's proactive codex "maxRefreshAgeMs" stale-window refresh is not
-//     ported; the plain expiresAt lead window below is used for every provider.
+//     ported; the expiresAt lead window below is used for every provider, at
+//     the width that provider's registry entry asks for (providers.RefreshLead)
+//     rather than the flat default upstream falls back to.
 const (
 	// connectionProbeTimeout mirrors upstream's AbortSignal.timeout(15000).
 	connectionProbeTimeout = 15 * time.Second
 	// connectionProxyProbeTimeout mirrors the proxy pool test timeout.
 	connectionProxyProbeTimeout = 5 * time.Second
-	// connectionRefreshLead mirrors getRefreshLeadMs' default buffer
-	// (TOKEN_EXPIRY_BUFFER_MS = 5 minutes).
-	connectionRefreshLead = 5 * time.Minute
 
 	connectionAnthropicProbeModel = "claude-3-haiku-20240307"
 	codexCLIVersion               = "0.154.0"
@@ -522,7 +521,7 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 	refreshed := false
 	var tokens *oauth.TokenResult
 
-	tokenExpired := connectionTokenExpired(data)
+	tokenExpired := connectionTokenExpired(provider, data)
 	if cfg.refreshable && tokenExpired && data.RefreshToken != "" {
 		tokens = h.refreshConnectionToken(ctx, provider, data, client)
 		if tokens == nil {
@@ -841,7 +840,7 @@ func (h *DashboardHandler) refreshConnectionToken(ctx context.Context, provider 
 
 // connectionTokenExpired mirrors shouldRefreshCredentials' expiresAt window.
 // An absent/unknown expiresAt means "not expired" (upstream returns false).
-func connectionTokenExpired(data connectionProbeData) bool {
+func connectionTokenExpired(provider string, data connectionProbeData) bool {
 	if data.ExpiresAt == "" {
 		return false
 	}
@@ -849,7 +848,7 @@ func connectionTokenExpired(data connectionProbeData) bool {
 	if err != nil {
 		return false
 	}
-	return time.Now().After(expiresAt.Add(-connectionRefreshLead))
+	return time.Now().After(expiresAt.Add(-providers.RefreshLead(provider)))
 }
 
 // persistProbeResult writes the probe outcome back to the connection row:

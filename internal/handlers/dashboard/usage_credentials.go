@@ -35,8 +35,11 @@ import (
 //     renders, and the row states why.
 //   - Upstream re-reads the row before refreshing because OpenAI rotates the
 //     refresh token on every call and reusing a stale snapshot revokes the
-//     session. The handler reads the row once per request and persists the
-//     rotated token below, which is what makes the next read correct.
+//     session. That re-read is ported below (adoptStoredUsageCredentials): the
+//     caller has already read the row once, and a writer that rotated the
+//     token since — the 5-minute background refresher, an auto-ping — would
+//     otherwise be answered with a token OpenAI has already revoked, which
+//     logs the account out permanently.
 
 // usageAuthExpiredPatterns mirrors upstream AUTH_EXPIRED_PATTERNS. A provider
 // that reports an auth failure as a message rather than a status (Kiro answers
@@ -61,8 +64,11 @@ func isAuthExpiredUsageMessage(res usageResult) bool {
 // usageCredentials is the mutable view of a connection's stored blob that a
 // quota read and its refresh operate on.
 type usageCredentials struct {
-	raw      map[string]any
-	provider string
+	// adoptedRefreshToken, when set, is token material read back from the row
+	// immediately before the refresh; it wins over the snapshot's own value.
+	adoptedRefreshToken string
+	raw                map[string]any
+	provider           string
 }
 
 // accessToken reports the token a quota read must present. Kiro and other
@@ -80,6 +86,15 @@ func (c usageCredentials) refreshToken() string {
 	return s
 }
 
+// refreshTokenFor reports the refresh token to spend: the one stored on the
+// row when that differs from the caller's snapshot, the snapshot otherwise.
+func (c usageCredentials) refreshTokenFor() string {
+	if adopted := c.adoptedRefreshToken; adopted != "" {
+		return adopted
+	}
+	return c.refreshToken()
+}
+
 // needsRefresh ports upstream needsRefresh. An absent or unparseable expiresAt
 // means "no expiry to trust" and answers false, so the expiry window is not the
 // thing that rejects a Kiro connection whose awsDate expiresAt is in the past
@@ -93,7 +108,7 @@ func (c usageCredentials) needsRefresh() bool {
 	if err != nil {
 		return false
 	}
-	return time.Now().After(ts.Add(-connectionRefreshLead))
+	return time.Now().After(ts.Add(-providers.RefreshLead(c.provider)))
 }
 
 // isOAuth reports whether this connection carries refreshable credentials.
@@ -144,6 +159,45 @@ func (h *DashboardHandler) markDeadGrant(conn *models.ProviderConnection, refres
 		"until", until.Format(time.RFC3339), "failures", failures)
 }
 
+// adoptStoredUsageCredentials re-reads the connection row and, when the stored
+// refresh token differs from the caller's snapshot, carries the stored one so
+// the refresh below spends the token the provider last handed out.
+//
+// OpenAI rotates the refresh token on every exchange and revokes the entire
+// session when a rotated token is presented again, so a snapshot taken before
+// a concurrent refresh would log the account out rather than renew it. A read
+// that fails, or a row that carries no token, leaves the snapshot in place:
+// this narrows what the refresh spends, it does not decide whether to refresh.
+func (h *DashboardHandler) adoptStoredUsageCredentials(ctx context.Context, conn *models.ProviderConnection, creds usageCredentials) usageCredentials {
+	if h.Repo == nil || conn == nil || conn.ID == "" {
+		return creds
+	}
+	latest, err := h.Repo.GetProviderConnectionByID(conn.ID)
+	if err != nil || latest == nil {
+		return creds
+	}
+	stored, _ := latestStoredCredentials(latest)
+	if stored.refreshToken() == "" || stored.refreshToken() == creds.refreshToken() {
+		return creds
+	}
+	log.Warn("usage", "adopting rotated refresh token from stored row",
+		"provider", conn.Provider, "conn", conn.ID)
+	creds.adoptedRefreshToken = stored.refreshToken()
+	return creds
+}
+
+// latestStoredCredentials decodes the token material a freshly read row
+// carries. A blob that will not decode yields empty credentials, which the
+// caller reads as "nothing newer stored".
+func latestStoredCredentials(latest *models.ProviderConnection) (usageCredentials, error) {
+	creds := usageCredentials{provider: latest.Provider}
+	if latest.Data == "" {
+		return creds, nil
+	}
+	err := json.Unmarshal([]byte(latest.Data), &creds.raw)
+	return creds, err
+}
+
 // usageRefreshOutcome is what one guarded refresh did, so the caller can tell a
 // skipped refresh (no refresher registered) from a real failure.
 type usageRefreshOutcome struct {
@@ -159,6 +213,7 @@ func (h *DashboardHandler) runUsageRefresh(ctx context.Context, conn *models.Pro
 	if !canAttemptRefresh(conn, creds.raw) {
 		return usageRefreshOutcome{}
 	}
+	creds = h.adoptStoredUsageCredentials(ctx, conn, creds)
 	result, err := h.refreshUsageCredentials(ctx, conn, creds, nil)
 	if err != nil {
 		h.markDeadGrant(conn, err)
@@ -180,7 +235,7 @@ func (h *DashboardHandler) refreshUsageCredentials(ctx context.Context, conn *mo
 	result, err := oauth.Refresh(ctx, &oauth.Params{
 		Client:               client,
 		Provider:             providers.ResolveAlias(conn.Provider),
-		RefreshToken:         creds.refreshToken(),
+		RefreshToken:         creds.refreshTokenFor(),
 		AccessToken:          creds.accessToken(),
 		ProviderSpecificData: oauth.StringMap(psd),
 	})
