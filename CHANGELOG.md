@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### 🐛 Egress di log tercetak UUID, bukan nama pool
+
+Baris `egress=` dari entri sebelumnya membawa **UUID** pool
+(`06a2c494-ef06-4d3f-a034-dad29ff3aebf`). Itu benar, tapi tidak menjawab
+pertanyaan yang muncul saat grep log: *pool yang mana?* — dashboard menampilkan
+pool berdasarkan nama, jadi operator harus membuka daftar proxy pool untuk
+mencocokkan UUID sebelum tahu request-nya keluar lewat mana.
+
+Kini nama pool yang dicetak, di-resolve **tanpa query tambahan**:
+`getClientForConnection` sudah membaca baris pool untuk membangun transport,
+jadi nama diambil dari objek yang sama dan ditaruh di
+`ConnectionData.ResolvedProxyPool` (`json:"-"`, per request, tidak dipersist —
+sehingga rename di dashboard langsung terlihat di log berikutnya).
+
+Nama yang difilter newline: nilainya diisi operator dan masuk ke setiap baris
+usage, jadi newline akan memalsukan baris log — dan log itulah jejak audit
+"egress mana yang melayani request ini".
+
+**Verifikasi:** `TestResolveEgress_ReportsThePathARequestLeftBy` mengunci delapan
+bentuk, termasuk "pool tanpa nama → jatuh ke UUID" dan "proxy legacy → URL".
+`TestResolveEgress_KeepsTheLabelSingleLine` menutup kasus pemalsuan baris log.
+
+**Live (`:20151`, DB sama dengan `main`):**
+
+```
+INF [usage] logged provider=opencode model=space-bunny-free … egress=vercel-relay
+INF [usage] logged provider=opencode-zen model=space-bunny-free …
+  conn=80d9c65d-… egress=direct
+INF [usage] logged provider=opencode-zen model=space-bunny-free …
+  conn=80d9c65d-… egress=vercel-relay
+```
+
+Tiga baris itu sekaligus menunjukkan dropdown proxy di dashboard berfungsi:
+baris `direct` tepat setelah `PUT /api/connections/…` yang melepas binding, dan
+baris berikutnya kembali `vercel-relay` setelah pool di-bind ulang.
+
 ### 🐛 Log tidak bisa menjawab "request ini lewat proxy atau bukan"
 
 Setelah kebocoran egress diperbaiki (entri sebelumnya), pertanyaan paling

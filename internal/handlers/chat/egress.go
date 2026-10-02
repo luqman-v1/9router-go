@@ -9,32 +9,49 @@ import (
 // Egress describes the path a request actually left the host by, in a form a log
 // line can carry.
 //
-// "Did this request use the proxy?" was unanswerable from the logs. The only
-// proxy line was emitted once per pool at debug level, so a second request
-// through the same pool said nothing at all, and the success path carried no
-// proxy field either. Two gateways sharing one database then look identical even
-// when one silently goes direct — the exact failure the egress fix closed.
+// "Did this request use the proxy?" had no answer in the logs. The only proxy
+// line was logProxyOnce, which uses sync.Map.LoadOrStore — once per pool per
+// process — and only at debug level, while LOG_LEVEL defaults to info. A second
+// request through the same pool printed nothing, and the [usage] rows carried no
+// proxy field at all.
 type Egress struct {
 	// Kind is "direct", "http", or "relay".
 	Kind string
 	// PoolID is the assigned pool, empty for a direct request or the legacy
 	// per-connection proxy.
 	PoolID string
+	// PoolName is the operator's name for that pool. Preferred in a log line:
+	// "Vercel Relay" answers the question a bare UUID leaves open, and the
+	// dashboard lists pools by name.
+	PoolName string
 	// Target is the relay deployment or proxy URL the request was sent through.
 	Target string
 }
 
-// LogValue returns the short form for a log line: the pool when there is one,
-// else the target, else "direct". It lands on every usage row, so it stays short.
+// LogValue returns the short form for a log line: the pool's name when it has
+// one, else its id, else the target, else "direct". It lands on every usage row,
+// so it stays short.
 func (e Egress) LogValue() string {
 	switch {
+	case e.PoolName != "":
+		return logLabel(e.PoolName)
 	case e.PoolID != "":
 		return e.PoolID
 	case e.Target != "":
-		return e.Target
+		return logLabel(e.Target)
 	default:
 		return "direct"
 	}
+}
+
+// logLabel collapses a pool name or proxy URL to a single line. The value is
+// operator-supplied and lands in every usage log, so a newline inside a pool
+// name would otherwise forge extra log entries — the log is the audit trail for
+// "which egress served this request".
+func logLabel(s string) string {
+	return strings.Join(strings.FieldsFunc(s, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == '\t'
+	}), " ")
 }
 
 // resolveEgress reports how a request will leave the host, from data already
@@ -44,31 +61,34 @@ func (e Egress) LogValue() string {
 // pool leaves its mark: the upstream in x-relay-target, the relay host in
 // BaseURL. A plain HTTP proxy is invisible there, so it is resolved from the
 // connection's own proxy fields instead.
+//
+// The pool name comes from ConnectionData.ResolvedProxyPool, filled in by the
+// client resolver while it was already reading the pool for the transport.
 func resolveEgress(connData *ConnectionData, cfg *providers.ProviderConfig) Egress {
-	poolID := assignedPoolID(connData)
+	poolID, poolName := assignedPool(connData)
 
 	if cfg != nil {
 		if target := cfg.StaticHeaders["x-relay-target"]; target != "" {
-			return Egress{Kind: "relay", PoolID: poolID, Target: cfg.BaseURL}
+			return Egress{Kind: "relay", PoolID: poolID, PoolName: poolName, Target: cfg.BaseURL}
 		}
 	}
 	if connData == nil {
 		return Egress{Kind: "direct"}
 	}
 	if enabled, proxyURL := legacyProxyFields(connData); enabled {
-		return Egress{Kind: "http", PoolID: poolID, Target: proxyURL}
+		return Egress{Kind: "http", PoolID: poolID, PoolName: poolName, Target: proxyURL}
 	}
 	return Egress{Kind: "direct"}
 }
 
-// assignedPoolID is the pool a request is attributed to. It comes from the
-// connection rather than from Egress so a relay that failed to resolve is still
-// attributable to the pool the operator assigned.
-func assignedPoolID(connData *ConnectionData) string {
+// assignedPool is the pool a request is attributed to, with the name the
+// resolver picked up. Both come from the connection rather than from Egress so a
+// relay that failed to resolve is still attributable to the assigned pool.
+func assignedPool(connData *ConnectionData) (poolID, poolName string) {
 	if connData == nil {
-		return ""
+		return "", ""
 	}
-	return connData.ProxyPoolID
+	return connData.ProxyPoolID, connData.ResolvedProxyPool
 }
 
 // legacyProxyFields reads the pre-pool per-connection proxy, which predates

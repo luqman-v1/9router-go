@@ -32,6 +32,13 @@ type ConnectionData struct {
 	ConnectionNoProxy      string         `json:"connectionNoProxy,omitempty"`
 	StrictProxy            bool           `json:"strictProxy,omitempty"`
 	ProviderSpecificData   map[string]any `json:"providerSpecificData,omitempty"`
+
+	// ResolvedProxyPool is the egress label for this request's pool — the name an
+	// operator gave it in the dashboard ("Vercel Relay"). Filled in by the client
+	// resolver, which already looked the pool up, so a log line can name the pool
+	// instead of printing a UUID nobody recognises. Set per request rather than
+	// persisted, so a rename shows up in the next log line.
+	ResolvedProxyPool string `json:"-"`
 }
 
 // UsageLogInfo holds request context needed to log a usage record. ConnName and

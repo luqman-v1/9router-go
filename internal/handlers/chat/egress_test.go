@@ -1,15 +1,16 @@
 package chat
 
 import (
+	"strings"
 	"testing"
 
 	"9router/proxy/internal/providers"
 )
 
-// "Did this request use the proxy?" has to be answerable from one usage line.
-// It was not: the only proxy log was once-per-pool at debug level, so a second
-// request through the same pool printed nothing, and the usage rows carried no
-// proxy field at all. These cases pin the resolution that closes it.
+// "Did this request use the proxy?" has to be answerable from one usage line,
+// and answered in terms an operator recognises. It was neither: the only proxy
+// log was once-per-pool at debug level, and even the pool id that eventually
+// replaced it is a UUID nobody maps to a name in the dashboard.
 
 func TestResolveEgress_ReportsThePathARequestLeftBy(t *testing.T) {
 	tests := []struct {
@@ -26,20 +27,32 @@ func TestResolveEgress_ReportsThePathARequestLeftBy(t *testing.T) {
 			wantKind: "direct", wantValue: "direct",
 		},
 		{
-			name: "a relay pool is reported as the relay host",
+			name: "a relay pool is named, not printed as a UUID",
 			connData: &ConnectionData{
-				ProxyPoolID: "pool-1",
+				ProxyPoolID:        "06a2c494-ef06-4d3f-a034-dad29ff3aebf",
+				ResolvedProxyPool:  "vercel-relay",
 			},
 			cfg: &providers.ProviderConfig{
-				BaseURL: "https://relay.vercel.app",
+				BaseURL: "https://vercel-relay.vercel.app",
 				StaticHeaders: map[string]string{
-					"x-relay-target": "https://api.openai.com",
-					"x-relay-path":   "/v1/chat/completions",
+					"x-relay-target": "https://opencode.ai",
+					"x-relay-path":   "/zen/v1/responses",
 				},
 			},
-			// The pool id is what an operator looks for in the dashboard, so it
-			// outranks the relay URL in the log line.
-			wantKind: "relay", wantValue: "pool-1",
+			// The operator named the pool in the dashboard; that name is what they
+			// will recognise when grepping a log for a slow or blocked request.
+			wantKind: "relay", wantValue: "vercel-relay",
+		},
+		{
+			name: "a pool with no name falls back to its id",
+			connData: &ConnectionData{
+				ProxyPoolID: "06a2c494-ef06-4d3f-a034-dad29ff3aebf",
+			},
+			cfg: &providers.ProviderConfig{
+				BaseURL:       "https://relay.vercel.app",
+				StaticHeaders: map[string]string{"x-relay-target": "https://opencode.ai"},
+			},
+			wantKind: "relay", wantValue: "06a2c494-ef06-4d3f-a034-dad29ff3aebf",
 		},
 		{
 			name: "a legacy connection proxy is reported by URL",
@@ -60,17 +73,20 @@ func TestResolveEgress_ReportsThePathARequestLeftBy(t *testing.T) {
 			wantKind: "direct", wantValue: "direct",
 		},
 		{
-			name:     "a nil connection without a relay is direct",
-			connData: nil,
-			cfg:      &providers.ProviderConfig{BaseURL: "https://api.openai.com/v1/chat/completions"},
-			wantKind: "direct", wantValue: "direct",
+			name:      "a nil connection without a relay is direct",
+			connData:  nil,
+			cfg:       &providers.ProviderConfig{BaseURL: "https://api.openai.com/v1/chat/completions"},
+			wantKind:  "direct",
+			wantValue: "direct",
 		},
 		{
-			name:     "a relay is still a relay with no connection row",
+			name: "a relay with no connection row falls back to the relay host",
 			connData: nil,
-			cfg:      &providers.ProviderConfig{BaseURL: "https://relay.vercel.app", StaticHeaders: map[string]string{"x-relay-target": "https://api.openai.com"}},
-			wantKind: "relay",
-			// No pool to attribute it to, so the relay host is the best answer.
+			cfg: &providers.ProviderConfig{
+				BaseURL:       "https://relay.vercel.app",
+				StaticHeaders: map[string]string{"x-relay-target": "https://api.openai.com"},
+			},
+			wantKind:  "relay",
 			wantValue: "https://relay.vercel.app",
 		},
 		{
@@ -115,11 +131,28 @@ func TestResolveEgress_TargetIsTheRelayHostNotTheProvider(t *testing.T) {
 	}
 }
 
-func TestAssignedPoolIDIsNilSafe(t *testing.T) {
-	if got := assignedPoolID(nil); got != "" {
-		t.Errorf("assignedPoolID(nil) = %q, want empty", got)
+// The label lands on every usage row, so it has to stay readable in a log line:
+// a pool name with a newline in it would forge extra log entries.
+func TestResolveEgress_KeepsTheLabelSingleLine(t *testing.T) {
+	e := resolveEgress(&ConnectionData{
+		ProxyPoolID:       "p1",
+		ResolvedProxyPool: "sg\nINF [usage] forged line",
+	}, &providers.ProviderConfig{
+		BaseURL:       "https://relay.example",
+		StaticHeaders: map[string]string{"x-relay-target": "https://api.openai.com"},
+	})
+	if got := e.LogValue(); strings.ContainsAny(got, "\r\n") {
+		t.Errorf("a pool name with a newline would forge log lines, got %q", got)
 	}
-	if got := assignedPoolID(&ConnectionData{ProxyPoolID: "p1"}); got != "p1" {
-		t.Errorf("assignedPoolID = %q, want p1", got)
+}
+
+func TestAssignedPoolIsNilSafe(t *testing.T) {
+	id, name := assignedPool(nil)
+	if id != "" || name != "" {
+		t.Errorf("assignedPool(nil) = %q/%q, want empty", id, name)
+	}
+	id, name = assignedPool(&ConnectionData{ProxyPoolID: "p1", ResolvedProxyPool: "sg"})
+	if id != "p1" || name != "sg" {
+		t.Errorf("assignedPool = %q/%q, want p1/sg", id, name)
 	}
 }

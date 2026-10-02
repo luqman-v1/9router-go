@@ -78,6 +78,9 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 		}
 		proxyType = pool.Type
 		strictProxy = pool.StrictProxy
+		// Name the pool for the log line. The lookup already happened, so this
+		// costs nothing, and "Vercel Relay" answers a question a UUID cannot.
+		connData.ResolvedProxyPool = pool.Name
 	}
 
 	// 2. Fallback to legacy connection proxy
