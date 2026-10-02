@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### 🔴 Header password dashboard hanya diodekstrak di satu handler — auth bypass
+
+`RequireAdminAuth` dan `RequireDashboardAuth` mengizinkan request yang membawa
+header `x-9r-password` dengan memeriksa **keberadaan** header itu saja:
+`r.Header.Get(DashboardPasswordHeader) != ""`. Nilai yang dipakai tidak pernah
+diverifikasi di middleware — memang tidak bisa, karena ceknya butuh hash bcrypt
+yang tersimpan di repo yang tidak dipegang gate.
+
+Asumsi di balik itu — "handler di belakang gate memverifikasi sendiri" — hanya
+benar untuk **1 dari 7** path yang dilindungi. Handler lain sama sekali tidak
+memeriksa kredensial apa pun, sehingga siapa pun yang bisa memasang satu header
+acak cukup untuk 지나: `/api/version/shutdown` (`HandleShutdown`),
+`api/version/update` (`HandleTriggerUpdate`), `/admin/health/reset`,
+`/api/oauth/cursor/auto-import`, dan `/api/oauth/kiro/auto-import`.
+
+Yang paling berbahaya `/api/version/shutdown`: `shutdown.RequestStop()`
+dijadwalkan 500 ms setelah response (`internal/handlers/shutdown.go:29-32`),
+jadi efeknya selalu terjadi dan klien melihat 200 yang bersih — DoS remote
+tanpa autentikasi. `/api/version/update` mencapai penggantian binary dan restart.
+
+Pengecualian header kini dibatasi ke `PasswordHeaderCarriesOwnAuth`
+(`/api/settings/database`) — satu-satunya handler yang memanggil
+`verifyDashboardPassword` (`settings.go:374-382`), dan alasannya tetap ada:
+tanpa pengecualian itu, jalur step-up untuk backup hanya hidup di test yang
+mem-mount handler langsung (#47). Kredensial lain tidak berubah: session dan
+CLI token tetap berlaku di semua path.
+
+**Verifikasi:** `TestPasswordHeaderIsHonouredOnlyWhereTheHandlerVerifiesIt`
+menolak header ngawur pada keenam path lain lewat kedua gate, dan memastikan
+header tetap sampai ke handler export. Diuji mutation: mengembalikan
+`allowsPasswordHeader(...)` ke pemeriksaan keberadaan membuat keenam subtest
+gagal dengan 200 di handler yang seharusnya 401.
+`TestPasswordHeaderScopeKeepsOtherCredentialsWorking` mengunci session dan
+CLI token tetap berlaku setelah pembatasan ini. 12 test
+`HandleExportDatabase`/`HandleImportDatabase` lolos tanpa perubahan — #47
+tidak rusak.
+
 ### 🐛 OpenCode Zen (`ocz`) paritas dengan upstream — issue #78
 
 Halaman `/dashboard/providers/opencode-zen` hampir tidak punya perilaku upstream:
