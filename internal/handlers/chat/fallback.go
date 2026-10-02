@@ -556,6 +556,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			ConnectionID: connectionID,
 			APIKey:       apiKey,
 			Endpoint:     endpoint,
+			Egress:       resolveEgress(connData, providerCfg).LogValue(),
 		}
 		logInfo.ConnName, logInfo.ConnEmail = identityNames(h.connIdentityKVOr(f, connectionID))
 		h.logUsage(logInfo, usage, latencyMs, body, metrics)
@@ -571,6 +572,10 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		statusCode = ue.StatusCode
 	}
 	identity := h.connIdentityKVOr(f, connectionID)
+	// Every failure line below carries the egress: a 401/429 from a provider
+	// that rate-limits by IP is only diagnosable if the log says whether the
+	// request actually left through the pool.
+	identity = append(identity, "egress", resolveEgress(connData, providerCfg).LogValue())
 	connName, connEmail := identityNames(identity)
 	h.LogFailure(
 		&UsageLogInfo{
@@ -580,6 +585,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			ConnName:     connName,
 			ConnEmail:    connEmail,
 			Endpoint:     endpoint,
+			Egress:       resolveEgress(connData, providerCfg).LogValue(),
 		},
 		usage,
 		fwdErr,

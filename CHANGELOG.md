@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+### 🐛 Log tidak bisa menjawab "request ini lewat proxy atau bukan"
+
+Setelah kebocoran egress diperbaiki (entri sebelumnya), pertanyaan paling
+natural berikutnya — *apakah request ini benar-benar lewat proxy?* — tetap tidak
+bisa dijawab dari log. Satu-satunya baris proxy (`logProxyOnce`) memakai
+`sync.Map.LoadOrStore`: **sekali per pool per proses**, dan hanya di level
+`debug`. Request kedua dan seterusnya lewat pool yang sama tidak mencetak apa
+pun, dan `LOG_LEVEL` default `info` emballage menyembunyikannya. Baris
+`[usage] logged` juga tidak punya kolom proxy sama sekali.
+
+Dampaknya persis pada kelas masalah yang diperbaiki: dua gateway berbagi satu
+database (branch `main` di `:20130` dan build uji di `:20151`) menghasilkan log
+yang identik meski salah satunya diam-diam keluar direct — dan `429`/blokir
+berbasis IP mustahil dianalisis tanpa tahu egress-nya.
+
+Kini setiap baris `[usage] logged` dan setiap baris kegagalan
+`[fallback] upstream failed` membawa `egress=`. Nilainya adalah pool yang
+ditugaskan (bukan URL relay), karena itulah yang dicari operator di dashboard;
+request tanpa proxy dan tanpa pool lama tercetak `direct`.
+
+Resolver-nya membaca bentuk yang sudah ada di `providerCfg`, jadi tidak ada
+query pool tambahan di hot path: relay terdeteksi dari `x-relay-target`, proxy
+HTTP dari field proxy koneksi (yang tidak terlihat di config).
+
+**Verifikasi:** `TestResolveEgress_ReportsThePathARequestLeftBy` mengunci tujuh
+bentuk (direct, relay, proxy legacy, proxy aktif-tanpa-URL, koneksi nil,
+relay tanpa baris koneksi, `providerSpecificData`). Diuji mutation: mengembalikan
+`Target` ke `x-relay-target` membuat test gagal tepat di assertion "Target must
+be the relay host".
+
+**Live (build di `:20151`, DB sama dengan `main`):**
+
+```
+WRN [fallback] upstream failed provider=opencode-zen model=muse-spark-1.3 status=401
+  … forward to https://vercel-relay-myw8iebf7-legowo.vercel.app/responses …
+  conn=80d9c65d-… connName=yatimrachmawati@paragadis.com 1
+  egress=06a2c494-ef06-4d3f-a034-dad29ff3aebf
+
+INF [usage] logged provider=opencode model=muse-spark-1.3-contributor-free …
+  conn=default egress=direct
+```
+
+Dua baris itu sekaligus membuktikan arahnya: `ocz/muse-spark-1.3` melalui koneksi
+ber-pool dan keluar lewat pool Vercel, sedangkan
+`oc/muse-spark-1.3-contributor-free` memakai fast path no-auth dan memang
+`direct` — jadi log menunjukkan tidak ada kebocoran yang tersisa di jalur free-tier.
+
 ### 🔴 Request yang harus lewat proxy pool dijawab dari IP asli — semua tipe proxy
 
 Audit jalur proxy setelah 503 `service_overloaded` (entri sebelumnya)

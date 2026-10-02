@@ -46,6 +46,11 @@ type UsageLogInfo struct {
 	ConnEmail    string
 	APIKey       string
 	Endpoint     string
+	// Egress is the proxy pool or relay a request left the host through, empty
+	// for a direct one. Without it the log cannot answer "did this turn use the
+	// proxy?", which is the first question asked whenever a provider's rate limit
+	// or block list is tied to an IP.
+	Egress string
 }
 
 // ConnIdentityKV returns the log key/value pairs naming the account behind a
@@ -53,7 +58,7 @@ type UsageLogInfo struct {
 // directly) is reported as "Public / Direct" rather than as an empty field, so
 // a reader can always tell "which account" apart from "no account".
 func (u *UsageLogInfo) ConnIdentityKV() []any {
-	kv := make([]any, 0, 6)
+	kv := make([]any, 0, 8)
 	if u.ConnectionID != "" {
 		kv = append(kv, "conn", u.ConnectionID)
 	}
@@ -62,6 +67,9 @@ func (u *UsageLogInfo) ConnIdentityKV() []any {
 	}
 	if u.ConnEmail != "" {
 		kv = append(kv, "email", u.ConnEmail)
+	}
+	if u.Egress != "" {
+		kv = append(kv, "egress", u.Egress)
 	}
 	if len(kv) == 0 {
 		kv = append(kv, "account", "Public / Direct")
