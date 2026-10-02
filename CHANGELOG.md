@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+### 🔴 Request yang harus lewat proxy pool dijawab dari IP asli — semua tipe proxy
+
+Audit jalur proxy setelah 503 `service_overloaded` (entri sebelumnya)
+memunculkan bug yang berlaku untuk **semua** proxy, bukan cuma Vercel: ada dua
+kebocoran egress, satu di jalur HTTP dan satu di jalur relay.
+
+**1. Pool proxy mati tetap dijawab dari IP sendiri.** `doRequestOnce` me-dial
+ulang secara direct setiap kali proxy menolak tunnel (`isProxyFailure`). Itu
+benar untuk proxy ambient (`HTTP_PROXY`, sandbox lokal) yang tidak pernah dipilih
+operator, dan salah untuk pool yang ditugaskan: request dijawab dari IP asli,
+padahal dashboard masih menampilkan koneksi sebagai "proxied". Dibuktikan
+sebelum diperbaiki:
+
+```
+err=<nil>  directHits=1     ← request lewat pool mati, dijawab dari IP asli
+```
+
+Sekarang `proxiesViaAssignment` membedakan keduanya berdasarkan identitas
+transport: proxy yang nilainya `http.ProxyFromEnvironment` (satu-satunya yang
+dipasang environment) diperlakukan ambient dan boleh jatuh ke direct; pool yang
+ditugaskan **gagal** — pesan errornya menyebut alasannya, bukan diam-diam
+mengambil jalur lain.
+
+**2. "Test Connection" tidak pernah lewat relay.** `probeHTTPClient` mengembalikan
+client `nil` untuk pool `vercel`/`cloudflare`/`deno`, jadi probe berjalan
+langsung ke provider dari IP host. Itu salah dua arah: bisa hijau sementara
+traffic produksi lewat relay gagal, dan bisa merah sementara jalur relay sehat —
+plus membocorkan IP di request yang justru dijalankan untuk memastikan proxy
+pasang. Pool relay kini dapat `probeRelayRoundTripper` yang mengarahkan request
+ke host relay sambil membawa `x-relay-target`/`x-relay-path`, kontrak yang sama
+dengan pipeline chat.
+
+**3. Satu daftar tipe relay, bukan tiga.** `vercel`/`cloudflare`/`deno` tertulis
+ulang di `connections.go`, `proxypools.go`, dan `connection_probe.go`. Runtime
+edge keempat akan diarahkan satu arah di satu tempat dan arah lain di tempat
+lain — persis kelas bug yang menyebabkan #2. Sekarang `ProxyPool.IsEdgeRelay()`
+(`internal/db`) adalah satu-satunya definisi, dan `proxy_egress_test.go` +
+`probe_relay_test.go` mengunci kedua jalur agar tidak bisa berbeda lagi.
+
+**Verifikasi:** `proxy_egress_test.go` membuktikan pool yang ditugaskan tidak
+lagi jatuh ke direct (`directHits=0`) dan proxy ambient tetap boleh fallback
+direct, jadi perbaikan ini tidak mematikan instalasi yang berada di belakang
+proxy sistem. Diuji mutation: menghapus cek `proxiesViaAssignment` mengembalikan
+`directHits=1` dan test gagal tepat di assertion itu. `probe_relay_test.go`
+membuktikan probe benar-benar mendarat di host relay dengan header yang benar
+dan `Host` bukan provider.
+
+**Known limit:** kebocoran #1 menutup jalur yang **sudah terkonfigurasi**. Pool
+yang menyimpan `vercelRelayUrl` di `providerSpecificData` lama tanpa `proxyPoolId`
+tetap relay lewat `getProviderConfig` seperti sebelumnya — jalur itu tidak
+disentuh perubahan ini karena tidak punya flag `strictProxy` untuk dihormati.
+
 ### 🐛 503 `service_overloaded` gagalkan satu turn penuh padahal attempt berikutnya dilayani
 
 Laporan: `opencode-zen`/`muse-spark-1.3-contributor-free` lewat proxy pool Vercel

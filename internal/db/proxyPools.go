@@ -24,6 +24,26 @@ type ProxyPool struct {
 	index       uint64   // atomic counter for round-robin
 }
 
+// IsEdgeRelay reports whether a pool is an edge relay (vercel/cloudflare/deno)
+// rather than a dialable HTTP proxy. A relay is an ordinary HTTPS endpoint that
+// forwards to whichever upstream the x-relay-target / x-relay-path headers name,
+// so it must never be dialed with http.ProxyURL — that produces
+// "malformed HTTP status code".
+//
+// One predicate for all three platforms: they share a contract, and a fourth
+// edge runtime should be added here rather than to every caller's own list.
+func (p *ProxyPool) IsEdgeRelay() bool {
+	if p == nil {
+		return false
+	}
+	switch p.Type {
+	case "vercel", "cloudflare", "deno":
+		return true
+	default:
+		return false
+	}
+}
+
 var proxyPoolCache sync.Map // map[string]*ProxyPool
 
 // GetProxyPool reads a proxy pool from the proxyPools table.

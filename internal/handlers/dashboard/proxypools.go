@@ -196,7 +196,7 @@ func (h *DashboardHandler) HandleTestProxyPool(w http.ResponseWriter, r *http.Re
 	// proxies but plain HTTPS endpoints that forward based on x-relay-*
 	// headers. Dialing them via http.ProxyURL breaks with
 	// "malformed HTTP status code", so they get the upstream relay test.
-	if pool.Type == "vercel" || pool.Type == "cloudflare" || pool.Type == "deno" {
+	if pool.IsEdgeRelay() {
 		h.testRelayPool(w, id, targetURL)
 		return
 	}

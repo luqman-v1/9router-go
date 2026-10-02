@@ -403,7 +403,7 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 
 		if connData.ProxyPoolID != "" {
 			if pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID); err == nil && pool != nil && pool.IsActive {
-				if pool.Type == "vercel" || pool.Type == "cloudflare" || pool.Type == "deno" {
+				if pool.IsEdgeRelay() {
 					relayURL = pool.NextURL()
 					noProxy = pool.NoProxy
 					logProxyOnce(connData.ProxyPoolID, relayURL, pool.Type)

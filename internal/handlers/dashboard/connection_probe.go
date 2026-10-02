@@ -302,20 +302,26 @@ func (h *DashboardHandler) testSingleConnection(ctx context.Context, conn *model
 
 // probeHTTPClient resolves the connection's proxy the way the chat pipeline
 // does (proxy pool first, then the legacy per-connection proxy fields) and
-// returns a client bound to it plus the proxy URL when it is a plain HTTP
-// proxy. Relay pools (vercel/cloudflare/deno) are not dialed as proxies, so
-// they fall back to the default client exactly like chat's resolver.
+// returns the client a probe should dial with plus the proxy URL when it is a
+// plain HTTP proxy worth pre-checking.
+//
+// A relay pool (vercel/cloudflare/deno) is not dialed as an HTTP proxy, so it
+// gets a client that points at the relay host and carries the provider in
+// x-relay-target/x-relay-path — the same contract the chat pipeline uses. It
+// previously returned nil here, which made every "Test Connection" on a
+// relayed connection run straight at the provider from the host's own IP.
 func (h *DashboardHandler) probeHTTPClient(data connectionProbeData, raw map[string]any) (*http.Client, string) {
 	poolID := psdStr(data.ProviderSpecificData, "proxyPoolId")
 	if poolID == "" {
 		poolID = psdStr(raw, "proxyPoolId")
 	}
 
-	var proxyURLStr, proxyType string
+	var proxyURLStr string
+	edgeRelay := false
 	if poolID != "" {
 		if pool, err := h.Repo.GetProxyPool(poolID); err == nil && pool != nil && pool.IsActive {
 			proxyURLStr = pool.NextURL()
-			proxyType = pool.Type
+			edgeRelay = pool.IsEdgeRelay()
 		}
 	}
 	if proxyURLStr == "" {
@@ -331,14 +337,13 @@ func (h *DashboardHandler) probeHTTPClient(data connectionProbeData, raw map[str
 		}
 		if enabled && target != "" {
 			proxyURLStr = target
-			proxyType = "http"
 		}
 	}
 	if proxyURLStr == "" {
 		return nil, ""
 	}
-	if proxyType == "vercel" || proxyType == "cloudflare" || proxyType == "deno" {
-		return nil, ""
+	if edgeRelay {
+		return newProbeRelayClient(proxyURLStr, probeUpstreamURL(data, raw)), ""
 	}
 
 	parsed, err := url.Parse(proxyURLStr)
@@ -349,6 +354,24 @@ func (h *DashboardHandler) probeHTTPClient(data connectionProbeData, raw map[str
 		Transport: &http.Transport{Proxy: http.ProxyURL(parsed)},
 		Timeout:   connectionProbeTimeout,
 	}, proxyURLStr
+}
+
+// probeUpstreamURL is the provider endpoint a probe should be aimed at, from
+// whichever field the connection carries. Empty means the provider's registry
+// default is in play and the probe's own URL stands.
+func probeUpstreamURL(data connectionProbeData, raw map[string]any) string {
+	for _, key := range []string{"baseUrl", "baseURL"} {
+		if v := psdStr(data.ProviderSpecificData, key); v != "" {
+			return v
+		}
+		if v := psdStr(raw, key); v != "" {
+			return v
+		}
+	}
+	if data.ConnectionProxyURL != "" {
+		return data.ConnectionProxyURL
+	}
+	return ""
 }
 
 // probeProxyURL pre-checks a proxy before probing through it (upstream runs

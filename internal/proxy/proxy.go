@@ -84,8 +84,13 @@ func DoRequest(ctx context.Context, client *http.Client, method, url string, hea
 	})
 }
 
-// doRequestOnce performs a single attempt, including the direct-connection
-// fallback for a proxy that refuses the tunnel.
+// doRequestOnce performs a single attempt.
+//
+// A proxy that refuses the tunnel is re-died directly only when the proxy was
+// ambient — HTTP_PROXY or a local sandbox the operator never assigned. When the
+// client routes through a pool the operator chose, the request must fail: the
+// direct re-dial would answer it from the host's own IP while the dashboard
+// still shows the connection as proxied.
 func doRequestOnce(ctx context.Context, client *http.Client, method, url string, headers map[string]string, body []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
@@ -100,6 +105,12 @@ func doRequestOnce(ctx context.Context, client *http.Client, method, url string,
 	}
 	resp, err := client.Do(req)
 	if isProxyFailure(err, resp) {
+		if proxiesViaAssignment(client) {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			return nil, fmt.Errorf("assigned proxy failed, refusing to route direct: %w", err)
+		}
 		if resp != nil {
 			resp.Body.Close()
 		}
