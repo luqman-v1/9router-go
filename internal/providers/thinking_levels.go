@@ -18,11 +18,17 @@ var (
 	levelBase    = []string{"none", "low", "medium", "high"}                     // qwen, step, hunyuan, gemini-budget
 	levelOnOff   = []string{"none", "thinking"}                                  // zai (binary), minimax (adaptive)
 	levelOpenAI  = []string{"none", "minimal", "low", "medium", "high", "xhigh"} // GPT-5.x / o-series (no "max")
-	levelMax     = []string{"none", "low", "medium", "high", "max"}              // claude-adaptive, kimi
-	levelBudgetX = []string{"none", "low", "medium", "high", "xhigh", "max"}     // claude-budget
+	levelMax     = []string{"none", "low", "medium", "high", "max"}              // kimi
+	levelBudgetX = []string{"none", "low", "medium", "high", "xhigh", "max"}     // claude-budget, claude-adaptive
 	levelGemini  = []string{"minimal", "low", "medium", "high"}                  // gemini-3 thinkingLevel (no disable)
 	levelHiMax   = []string{"none", "high", "max"}                               // deepseek (low/med→high, xhigh→max)
 	levelCMDCode = []string{"none", "low", "medium", "high", "xhigh", "max"}     // commandcode
+
+	// Opus/Sonnet 4.6 lack xhigh (Anthropic + Kiro docs) — keep the 4-level+max
+	// set for them. This has to stay paired with the claude-adaptive bump to
+	// levelBudgetX: without the exclusions the picker would offer xhigh on
+	// models that answer 400 for it (upstream decolua/9router 7894f3d3).
+	levelClaudeNoXHigh = []string{"none", "low", "medium", "high", "max"}
 )
 
 // codexGPT56Levels is the shared set for the GPT-5.6 Codex family.
@@ -39,7 +45,7 @@ func codexGPT56UltraLevels() []string {
 // source of truth for the picker's options (thinkingLevels.js:19).
 var formatLevels = map[string][]string{
 	"openai":          levelOpenAI,
-	"claude-adaptive": levelMax,
+	"claude-adaptive": levelBudgetX,
 	"claude-budget":   levelBudgetX,
 	"gemini-level":    levelGemini,
 	"gemini-budget":   levelBase,
@@ -64,6 +70,8 @@ type thinkingPattern struct {
 // patternThinking is ordered; the first match wins
 // (thinkingLevels.js:38).
 var patternThinking = []thinkingPattern{
+	{Pattern: "*claude*4.6*", Levels: levelClaudeNoXHigh},
+	{Pattern: "*claude*4-6*", Levels: levelClaudeNoXHigh},
 	{Provider: "codex", Pattern: "*gpt-6*", Levels: codexGPT56Levels()},
 	{Provider: "codex", Pattern: "*gpt-5.6-sol*", Levels: codexGPT56UltraLevels()},
 	{Provider: "codex", Pattern: "*gpt-5.6-terra*", Levels: codexGPT56UltraLevels()},

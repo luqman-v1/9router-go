@@ -16,10 +16,9 @@ func TestGpt6Astra_Capabilities(t *testing.T) {
 		t.Errorf("custom-gpt-6-test should match *gpt-6* pattern, got %+v", capsPattern)
 	}
 
-	cw, maxOut := GetModelTokenLimits("gpt-6-astra")
-	if cw != 272000 || maxOut != 128000 {
-		t.Errorf("gpt-6-astra limits expected (272000, 128000), got (%d, %d)", cw, maxOut)
-	}
+	// The token window moved upstream (decolua/9router 89ffac5a): gpt-6 is a
+	// 1.05M family, not one gateway's 272k truncation. GetGPTTokenWindows pins
+	// the per-family numbers now.
 }
 
 func TestGpt56Image_Capabilities(t *testing.T) {

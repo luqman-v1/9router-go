@@ -12,8 +12,13 @@ import (
 // makes the test pass while the code is wrong — that is exactly what happened
 // once: the v0.5.91 MiMo pattern rows were missing here and the fixture pinned
 // the older v0.5.86 values, so 15 (provider, model) pairs diverged unnoticed.
-// When upstream moves, re-capture and bump this.
-const upstreamLevelsFixtureVersion = "v0.5.91"
+// When upstream moves, re-capture and bump this:
+//
+//	DUMP_CATALOG_PAIRS=testdata/catalog_pairs.json \
+//	  go test ./internal/providers/ -run TestDumpCatalogPairs -count=1
+//	node scripts/gen-thinking-levels.mjs <upstream-checkout> v0.5.95 \
+//	  internal/providers/testdata/catalog_pairs.json
+const upstreamLevelsFixtureVersion = "v0.5.95"
 
 // upstreamLevelsFixture is what open-sse/providers/thinkingLevels.js returns for
 // every (provider, model) pair in the Go model catalog, captured from the

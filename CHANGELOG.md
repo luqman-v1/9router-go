@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### ⬆️ Tabel capabilities & thinking levels disinkronkan dengan upstream v0.5.95 — issue #97
+
+Ditemukan saat mengaudit range `v0.5.86..v0.5.95`. Fixture paritas yang mengunci thinking level **menyembunyikan** sebagian dari gap ini: `TestGetThinkingLevels_MatchesUpstreamFixture` melaporkan 1547/1547 tanpa error, karena fixture itu masih memakai versi lama.
+
+- **`xhigh` untuk `claude-adaptive`** (`7894f3d3`). Format `claude-adaptive` kini memakai set `budgetX`, bukan `levelMax`. **Kedua separuh ini harus datang bersama:** dua baris pengecualian `CLAUDE_NO_XHIGH` untuk `*claude*4.6*` dan `*claude*4-6*` ditambahkan pada saat yang sama. Tanpa pengecualian tersebut, picker menawarkan `xhigh` pada model yang menjawab 400 untuk itu.
+- **Baris pattern `*claude*sonnet-5*`** (`ccd0677d`). Id berawalan vendor (`anthropic/claude-sonnet-5`, `openrouter/claude-sonnet-5`) tidak punya entri persis dan jatuh ke baris `*claude*sonnet*` → `claude-budget`, yaitu thinking adaptive yang diserialisasi sebagai anggaran token.
+- **`claude-sonnet-5-5`** dan empat varian **`claude-opus-5.5*`** masuk ke tabel persis. `CacheCreationPer1M` `anthropic/claude-sonnet-5` dikoreksi dari 0 ke 2.5; `claude-sonnet-5` dan `claude-sonnet-5-5` ditambahkan ke tabel harga.
+- **Jendela konteks GPT-6 / GPT-5.4+** (`89ffac5a`). `gpt-6` naik dari 272000 ke **1050000** — nilai lama adalah truncasi satu gateway yang bocor ke setiap provider gpt-6 lain lewat pattern generik. `gpt-5.4` / `gpt-5.5` / `gpt-5.6` juga 1050000; `gpt-5.4-mini` / `gpt-5.4-nano` tetap 400000. Ditambah blok 200k khusus `devin-cli`, yang mendeklarasikan jendela sendiri meski modelnya GPT.
+- **Alias `deepseek-v4-1-flash`** (`8a4f4d9d`). Beberapa gateway memaparkannya dengan tanda hubung; tanpa baris ini ia jatuh ke pattern `*deepseek-v4*` dan kehilangan vision serta jendela 1M-nya.
+
+**Bug yang ditemukan lewat regenerate fixture — bukan dari daftar issue:** urutan baris `*gpt-5*image*` salah ada **di belakang** baris `*gpt-5.4*` / `*gpt-5.5*` / `*gpt-5.6*`, padahal first-match-wins. Akibatnya `gpt-5.6-sol-image` cocok ke `*gpt-5.6*` dan terbit sebagai model reasoning — tujuh entri image (`cx/gpt-5.4-image`, `cx/gpt-5.5-image`, `cx/gpt-5.6-{sol,terra,luna}-image`, `codex/gpt-5.5-image`, `codex/gpt-5.4-image`) menawarkan thinking level yang upstream nyatakan `null`. Baris image dipindahkan ke depan, sesuai urutan upstream `capabilities.js:344-352`.
+
+**Fixture di-regenerate dari v0.5.95** — 1588 pasangan (naik dari 1547, mengikuti katalog yang sekarang melayani model baru). Regenerasinya reproducible, bukan hasil ketik tangan:
+
+```
+DUMP_CATALOG_PAIRS=testdata/catalog_pairs.json \
+  go test ./internal/providers/ -run TestDumpCatalogPairs -count=1
+node scripts/gen-thinking-levels.mjs <checkout-upstream> v0.5.95 \
+  internal/providers/testdata/catalog_pairs.json
+```
+
+Generator menjalankan `getThinkingLevels` upstream secara langsung, dan daftar pasangannya diambil dari `ProviderModels` — katalog yang benar-benar dilayani port ini — sehingga provider atau model baru tidak bisa lolos diam-diam dari test paritas. Hasilnya stabil: dua kali jalan menghasilkan byte identik (`fe426f51…`).
+
+**Verifikasi:** `go vet ./...` bersih · `go test ./internal/providers/ -count=1` ok · 19 subtest gagal tanpa perubahan ini (`git stash` pada kode saja, test dipertahankan) dan semuanya hijau dengannya · generator dijalankan ulang oleh integrator dan hasilnya cocok.
+
+
 ### 🐛 Tiga perilaku translator yang hilang, satu yang memang belum ada — parity upstream v0.5.95
 
 **1. Keyword anotasi MCP menolak seluruh request Gemini** (upstream `aafe3002`, #4283).
