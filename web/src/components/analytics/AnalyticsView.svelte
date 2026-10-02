@@ -378,7 +378,7 @@
     </div>
 
     {#if activeTab === 'overview'}
-      <div id="period-dropdown-root" class="relative flex items-center gap-1.5 self-start sm:self-auto">
+      <div id="period-dropdown-root" class="relative flex w-full items-center gap-1.5 sm:w-auto sm:self-auto">
         <button
           type="button"
           disabled={isFetching}
@@ -402,7 +402,7 @@
             role="listbox"
             tabindex="-1"
             onkeydown={onPeriodMenuKeydown}
-            class="absolute right-0 top-full z-30 mt-1 w-64 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)]"
+            class="absolute left-1/2 top-full z-30 mt-1 w-64 -translate-x-1/2 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)] sm:left-auto sm:right-0 sm:translate-x-0"
           >
             {#each PERIODS as p (p.value)}
               <button
