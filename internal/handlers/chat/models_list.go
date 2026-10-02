@@ -24,10 +24,14 @@ type ModelInfoObject struct {
 	// for combo entries — upstream publishes those two shapes with different
 	// key sets, so the field cannot be one concrete type.
 	Capabilities any `json:"capabilities,omitempty"`
-	// encoding/json/v2 keeps zero numbers under `omitempty`; `omitzero` is what
-	// actually drops them, and upstream omits both keys on combo entries.
-	ContextLength       int `json:"context_length,omitzero"`
-	MaxCompletionTokens int `json:"max_completion_tokens,omitzero"`
+	// ContextLength / MaxCompletionTokens are pointers because a combo can
+	// only promise what every seat agrees on, and a combo with no LLM seat
+	// promises nothing at all — it omits the keys rather than publish a zero
+	// the client would read as a real limit. Upstream emits them on combo
+	// entries too (comboSeatLimits in src/app/api/v1/models/route.js), taking
+	// the smallest window in the combo's seat tree.
+	ContextLength       *int `json:"context_length,omitempty"`
+	MaxCompletionTokens *int `json:"max_completion_tokens,omitempty"`
 }
 
 // ConnectionHasCredential reports whether a provider connection carries auth
@@ -565,8 +569,8 @@ func (h *ChatHandler) appendConnectionModels(
 				Object:              "model",
 				OwnedBy:             outputAlias,
 				Capabilities:        live.Capabilities,
-				ContextLength:       ctxLen,
-				MaxCompletionTokens: maxOut,
+				ContextLength:       optionalTokenLimit(ctxLen),
+				MaxCompletionTokens: optionalTokenLimit(maxOut),
 			})
 			continue
 		}
@@ -585,8 +589,8 @@ func (h *ChatHandler) appendConnectionModels(
 			Object:              "model",
 			OwnedBy:             outputAlias,
 			Capabilities:        &caps,
-			ContextLength:       ctxLen,
-			MaxCompletionTokens: maxOut,
+			ContextLength:       optionalTokenLimit(ctxLen),
+			MaxCompletionTokens: optionalTokenLimit(maxOut),
 		})
 	}
 	return data
@@ -657,8 +661,8 @@ func appendStaticModel(data []ModelInfoObject, seen map[string]bool, alias, mode
 		Object:              "model",
 		OwnedBy:             alias,
 		Capabilities:        &caps,
-		ContextLength:       ctxLen,
-		MaxCompletionTokens: maxOut,
+		ContextLength:       optionalTokenLimit(ctxLen),
+		MaxCompletionTokens: optionalTokenLimit(maxOut),
 	})
 }
 
@@ -712,8 +716,8 @@ func (h *ChatHandler) appendLooseCustomModels(
 				Object:              "model",
 				OwnedBy:             prefix,
 				Capabilities:        &caps,
-				ContextLength:       ctxLen,
-				MaxCompletionTokens: maxOut,
+				ContextLength:       optionalTokenLimit(ctxLen),
+				MaxCompletionTokens: optionalTokenLimit(maxOut),
 			})
 		}
 	}
@@ -751,8 +755,131 @@ func (h *ChatHandler) registerCustomModelCaps(prefix, providerID string, cm *db.
 	}
 }
 
+// optionalTokenLimit boxes a token limit for ModelInfoObject: a non-positive
+// value is "nothing known", which the entry omits rather than publishes.
+func optionalTokenLimit(limit int) *int {
+	if limit <= 0 {
+		return nil
+	}
+	return &limit
+}
+
+// comboIndex is the per-request combo catalogue shared by appendCombos and the
+// seat walk. Reading one combo used to be a DB round trip, so a single combo
+// listing issued several of them (one per seat, plus a settings read inside
+// each) and a cyclic definition turned that into an unbounded query loop.
+type comboIndex map[string][]string
+
+// loadComboIndex reads every combo's seat list once. Rows whose models column
+// is not a JSON array contribute no entry: they carry no seats to publish.
+func loadComboIndex(combos []*models.Combo) comboIndex {
+	index := make(comboIndex, len(combos))
+	for _, combo := range combos {
+		if combo == nil || combo.Name == "" {
+			continue
+		}
+		var seats []string
+		if json.Unmarshal([]byte(combo.Models), &seats) != nil {
+			continue
+		}
+		index[combo.Name] = seats
+	}
+	return index
+}
+
+// webSeatSuffixes are the seat suffixes the dashboard uses for the webSearch /
+// webFetch entries it publishes on a provider (web/src/lib/mediaTypes.ts and
+// upstream src/app/api/v1/models/route.js, which appends `<alias>/search` and
+// `<alias>/fetch`). Such a seat is a web tool, not a chat model: it carries no
+// window of its own, and letting one vote on the minimum would publish the
+// capability floor as if the whole combo had it.
+var webSeatSuffixes = [...]string{"/search", "/fetch"}
+
+// isNonLLMComboSeat reports whether a seat names a web search / fetch endpoint
+// rather than a chat model. Mirrors the non-LLM filter /v1/models already
+// applies per provider entry (isLLMModelEntry), which upstream's comboSeatLimits
+// has no equivalent of and which therefore folds the floor into a web seat.
+func isNonLLMComboSeat(seat string) bool {
+	slash := strings.IndexByte(seat, '/')
+	if slash <= 0 {
+		return false
+	}
+	for _, suffix := range webSeatSuffixes {
+		if strings.EqualFold(seat[slash:], suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// comboSeatCapabilities resolves one concrete "provider/model" seat to its
+// capability block, mirroring upstream comboSeatCapabilities: the seat's
+// prefix is a UI alias, and the tables are keyed by provider id, so the alias
+// is mapped first.
+func comboSeatCapabilities(seat string) providers.CapabilitiesDetail {
+	providerID, modelID := "", seat
+	if slash := strings.IndexByte(seat, '/'); slash > 0 {
+		prefix := seat[:slash]
+		modelID = seat[slash+1:]
+		providerID = providers.ResolveAlias(prefix)
+	}
+	return providers.GetCapabilitiesDetailForModel(providerID, modelID)
+}
+
+// comboSeatLimits walks a combo's whole seat tree and returns the smallest
+// context window and the smallest max output any seat in it can serve. A combo
+// can hand the request to any seat, so the only limit it can promise is its
+// narrowest one; upstream takes the same minimum (Math.min over seats), while
+// aggregateComboCapabilities keeps the widest maxOutput for its capabilities
+// block.
+//
+// A seat that is itself a combo name contributes its own leaves' minimum, and
+// cycles are cut: a name already on the walk contributes nothing, which is
+// what bounds a self-referencing combo (upstream's `visiting` set).
+func comboSeatLimits(index comboIndex, comboName string) (contextWindow, maxOutput int) {
+	visiting := make(map[string]bool, 4)
+	visiting[comboName] = true
+	return minComboSeatLimits(index, index[comboName], visiting)
+}
+
+func minComboSeatLimits(index comboIndex, seats []string, visiting map[string]bool) (contextWindow, maxOutput int) {
+	for _, seat := range seats {
+		if !strings.Contains(seat, "/") {
+			nested, ok := index[seat]
+			if !ok || visiting[seat] {
+				continue
+			}
+			visiting[seat] = true
+			nestedWindow, nestedMax := minComboSeatLimits(index, nested, visiting)
+			delete(visiting, seat)
+			contextWindow, maxOutput = foldTokenMinimum(contextWindow, maxOutput, nestedWindow, nestedMax)
+			continue
+		}
+		if isNonLLMComboSeat(seat) {
+			continue
+		}
+		caps := comboSeatCapabilities(seat)
+		contextWindow, maxOutput = foldTokenMinimum(contextWindow, maxOutput, caps.ContextWindow, caps.MaxOutput)
+	}
+	return contextWindow, maxOutput
+}
+
+// foldTokenMinimum keeps the smallest positive value seen for each limit. Zero
+// means "unknown", so it never becomes the minimum and never suppresses a
+// value another seat does know.
+func foldTokenMinimum(currentWindow, currentMax, candidateWindow, candidateMax int) (int, int) {
+	if candidateWindow > 0 && (currentWindow == 0 || candidateWindow < currentWindow) {
+		currentWindow = candidateWindow
+	}
+	if candidateMax > 0 && (currentMax == 0 || candidateMax < currentMax) {
+		currentMax = candidateMax
+	}
+	return currentWindow, currentMax
+}
+
 // appendCombos lists combo names with the union of their leaf capabilities,
-// matching upstream aggregateComboCapabilities.
+// matching upstream aggregateComboCapabilities, plus the combo-wide token
+// limits upstream comboSeatLimits derives.
 func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool) []ModelInfoObject {
 	if h.Repo == nil {
 		return data
@@ -761,6 +888,7 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 	if err != nil {
 		return data
 	}
+	index := loadComboIndex(combos)
 	for _, combo := range combos {
 		if combo == nil || combo.Name == "" || seen[combo.Name] {
 			continue
@@ -781,11 +909,16 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 			Object:  "model",
 			OwnedBy: "combo",
 		}
-		// Upstream combo entries carry capabilities only — no
-		// context_length / max_completion_tokens.
 		if caps, ok := h.aggregateComboCapabilities(combo.Name); ok {
 			entry.Capabilities = caps
 		}
+		// Upstream publishes the combo-wide limits at the top level too (any
+		// seat can serve the request, so the window is the smallest one in the
+		// tree). A combo with no LLM seat at all publishes neither key rather
+		// than a guess.
+		contextWindow, maxOutput := comboSeatLimits(index, combo.Name)
+		entry.ContextLength = optionalTokenLimit(contextWindow)
+		entry.MaxCompletionTokens = optionalTokenLimit(maxOutput)
 		data = append(data, entry)
 	}
 	return data
@@ -811,6 +944,20 @@ func (h *ChatHandler) aggregateComboCapabilities(comboName string) (*providers.C
 
 	caps := make([]providers.CapabilitiesDetail, 0, len(flattened))
 	for _, leaf := range flattened {
+		// Upstream aggregateComboCapabilities takes the provider's per-model
+		// capability block verbatim. A live catalog resolver may publish a
+		// whole block instead (kiro does: {thinking, agentic}), and then the
+		// static table is no longer what describes this model, so its limits
+		// must not be folded in as if they were known.
+		if live, ok := h.liveCapabilityLeaf(leaf); ok {
+			caps = append(caps, providers.CapabilitiesDetail{
+				ThinkingCanDisable: true,
+				Reasoning:          live.Capabilities.Thinking,
+				ContextWindow:      live.ContextLength,
+				MaxOutput:          live.MaxOutput,
+			})
+			continue
+		}
 		providerID, modelID := "", leaf
 		if info := h.resolveModelEntry(leaf); info != nil {
 			providerID, modelID = info.Provider, info.Model
@@ -822,6 +969,35 @@ func (h *ChatHandler) aggregateComboCapabilities(comboName string) (*providers.C
 		return nil, false
 	}
 	return &merged, true
+}
+
+// liveCapabilityLeaf returns the live capability block describing a combo
+// seat, when a live catalog resolver publishes one for it. The connection for
+// the seat's provider is resolved first because the live catalogs are
+// per-connection (kiro: whoami + model list, grok-cli: /models).
+func (h *ChatHandler) liveCapabilityLeaf(seat string) (LiveModel, bool) {
+	if h.Repo == nil {
+		return LiveModel{}, false
+	}
+	info := h.resolveModelEntry(seat)
+	if info == nil {
+		return LiveModel{}, false
+	}
+	conns, err := h.Repo.GetProviderConnections(info.Provider, true)
+	if err != nil || len(conns) == 0 {
+		return LiveModel{}, false
+	}
+	conn := conns[0]
+	var connData shared.ConnectionData
+	if conn.Data != "" {
+		_ = json.Unmarshal([]byte(conn.Data), &connData)
+	}
+	for _, live := range h.resolveLiveCatalog(context.Background(), conn, &connData, info.Provider) {
+		if live.Capabilities != nil && live.ID == info.Model {
+			return live, true
+		}
+	}
+	return LiveModel{}, false
 }
 
 func finalizeModels(data []ModelInfoObject) []ModelInfoObject {

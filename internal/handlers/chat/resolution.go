@@ -68,14 +68,28 @@ func resolveProviderAlias(alias string) string {
 // If the entry has no "/" (i.e. it's a combo name), it resolves the combo
 // and returns its first concrete model with the combined model list.
 func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
+	return h.resolveModelEntryGuarded(entry, nil)
+}
+
+// resolveModelEntryGuarded is resolveModelEntry with the set of combo names
+// already being expanded on this path. A combo that lists itself (directly or
+// through another combo) otherwise re-enters the branch below forever and
+// takes the whole process down with a stack overflow — every single-name hop
+// re-queries the database, so nothing else bounds it.
+func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string]bool) *ModelInfo {
 	if !strings.Contains(entry, "/") {
-		if h.Repo == nil {
+		if h.Repo == nil || visiting[entry] {
 			return nil
 		}
 		if combo, err := h.Repo.GetComboByName(entry); err == nil && combo != nil && combo.Models != "" {
 			var subModels []string
 			if err := json.Unmarshal([]byte(combo.Models), &subModels); err == nil && len(subModels) > 0 {
-				first := h.resolveModelEntry(subModels[0])
+				if visiting == nil {
+					visiting = make(map[string]bool, 4)
+				}
+				visiting[entry] = true
+				first := h.resolveModelEntryGuarded(subModels[0], visiting)
+				delete(visiting, entry)
 				if first != nil {
 					first.ComboModels = subModels
 					strat, sticky, judge := h.resolveComboRouting(combo.Name, combo.Strategy)

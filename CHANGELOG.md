@@ -2,6 +2,432 @@
 
 ## [Unreleased]
 
+### 🐛 Combo publish limit ctx salah total — plus rekursi tak berujung yang menggantung proses — issue #99
+
+Entry combo di `/v1/models` tidak menerbitkan `context_length` / `max_completion_tokens` sama sekali. Komentar di `models_list.go` mengklaim itu parity — v0.5.95 sudah mengizinkannya, jadi catatan itu usang dan dihapus.
+
+Enam perubahan, dua di antaranya di luar daftar file yang diminta dan karena itu dicatat terpisah.
+
+**Yang diminta issue:**
+
+- `comboSeatLimits` di-`/v1/models` — minimum `context_window` dan minimum `max_completion_tokens` di seluruh pohon seat, dengan ekspansi combo bersarang dan deteksi siklus (set `visiting`), setara `src/app/api/v1/models/route.js`.
+- `ContextLength` / `MaxCompletionTokens` berubah dari `int` + `omitzero` ke `*int` + `omitempty` di lima titik producer. Sebuah combo hanya boleh menjanjikan apa yang **semua** seat setuju; combo tanpa seat LLM tidak menjanjikan apa-apa dan **menghilangkan** kedua key, bukan menerbitkan nol yang dibaca client sebagai limit asli. Ini terkait langsung dengan #90: angka tebakan lebih buruk daripada tidak ada.
+- Seat web (`<alias>/search`, `<alias>/fetch`) dilewati. Seat itu alat, bukan model chat, dan membiarkannya ikut suara akan menerbitkan capability floor seolah-olah itu jendela seluruh combo.
+- `comboIndex` membaca daftar seat seluruh combo **sekali per request**. Sebelumnya satu combo dibaca ulang per seat, dan tiap pembacaan membaca settings lagi — saat `aggregateComboCapabilities` juga memanggilnya, satu entry combo bisa menghujan query puluhan query.
+
+**Dua hal di luar daftar file, dilaporkan terpisah:**
+
+- **Rekursi tak berujung.** `resolveModelEntry` memanggil dirinya sendiri untuk setiap seat combo tanpa batas. Combo yang menunjuk dirinya sendiri — langsung (`["self-combo", …]`) atau tidak langsung (`mutual-combo` ⇄ `loop-combo`) — membuat `/v1/models` **gantung selamanya**. Dikonfirmasi di `origin/main`: test dengan seed tersebut menghasilkan 67 frame `resolveModelEntry` berulang sebelum timeout 60 detik, tiap hop query SQLite lagi. Tidak ada yang membatasi selain stack. `resolveModelEntryGuarded` kini membawa set `visiting`; seed yang sama selesai dalam 0.2 detik.
+- **`aggregateComboCapabilities` dan seat live.** Untuk daun yang resolver live-nya menerbitkan blok kapabilitas utuh (kiro: `{thinking, agentic}`), tabel statis bukan lagi deskripsi model itu, jadi limit statisnya tidak ikut dilipat seolah-olah diketahui. Setara upstream yang mengambil blok provider "verbatim".
+
+**Divergence yang disengaja, tercatat:** upstream `comboSeatLimits` tidak punya filter non-LLM, sehingga seat web di dalam combo LLM ikut terhitung ke minimum lewat `DEFAULT_CAPABILITIES` 200k/64k. Melewati seat itu satu-satunya pembacaan yang memenuhi dua syarat issue sekaligus — "seat non-LLM tidak boleh menarik minimum ke bawah" dan "jangan menerbitkan tebakan" — dan menjaga `/v1/models` konsisten dengan gate per-model (`isLLMModelEntry`) yang sudah membuang `<alias>/search` di cabang provider.
+
+**Catatan:** `capabilities.maxOutput` di blok `capabilities` combo tetap **terlebar** (itu `aggregateComboCapabilities` upstream, `capabilities.js:519-520`), sedangkan `max_completion_tokens` top-level adalah **tertipis** (`comboSeatLimits`). Dua angka itu memang berbeda maknanya, jadi agregat bersama tidak diubah — mengubahnya akan diam-diam mengubah blok capabilities yang dibaca pemanggil lain.
+
+**Verifikasi:** `go vet ./...` bersih · `go vet -tags integration ./internal/integration/` bersih · `go test ./internal/handlers/chat/... -count=1` ok · `go test -tags integration ./internal/integration/ -count=1` ok (3.6s) · 6 test baru (5 handler + 1 integrasi lewat router produksi), semuanya gagal tanpa perbaikan — termasuk test siklus yang tidak pernah selesai sebelum · smoke live ke binary di `:29201` dengan `DATA_DIR` sekali pakai: 4 combo dibuat lewat `POST /api/combos`, `GET /v1/models` mengembalikan `wide-combo` 128000/16384, `outer-combo` 128000/8192, combo web-only dan self-loop tanpa kedua key, 1302 entry, 0 provider kehilangan `context_length`.
+
+**Utang teknis yang diketahui:** `models_list.go` kini 1060 baris, sudah melewati anjuran 300/400 sebelum perubahan ini (885). Penambahan netral ~110 baris; ekstraksi ke `combo_limits.go` adalah follow-up mekanis.
+
+**Tidak terkait:** `TestApplyConnectionStrategy_KeepsRotatingPastFirstCycle` gagal intermittent di `origin/main` juga — dipisah ke #107.
+
+### 🐛 Manifest tanpa checksum membuat auto-update mati total — issue #72
+
+#72 membuat digest SHA256 **wajib**: `PerformSelfUpdate` menolak sebelum request
+jaringan apa pun kalau `expectedSHA256` kosong. Tapi `CheckUpdate` mencoba
+manifest lebih dulu dan langsung mengembalikan jawabannya kalau sukses
+(`updater.go:158-163`), sedangkan `version.json` yang benar-benar terbit hanya
+punya tiga key — `downloadUrl`, `latestVersion`, `releaseNotes` — tanpa `sha256`
+sama sekali. Akibatnya `checkManifest` selalu menghasilkan digest kosong,
+`checkGitHubReleases` **tidak pernah dijalankan**, dan `lookupAssetSHA256` yang
+justru menutup gap #72 tidak pernah menyentuh release sungguhan.
+
+Terbukti: dengan manifest berbentuk sama persis seperti yang diterbitkan repo,
+`CheckUpdate` mengembalikan `Source="manifest"`, `SHA256=""`, sementara fallback
+GitHub yang punya `SHA256SUMS.txt` tidak pernah dihubungi. Semua instalasi
+berakhir `release carries no checksum` — fail-closed dan aman, tapi
+`9router-go update` praktis mati.
+
+Manifest kini hanya boleh menjawab kalau memang bisa menghasilkan update yang
+dapat diinstal: digestnya ada, atau memang tidak ada update yang ditawarkan.
+Selain itu ia diperlakukan sebagai petunjuk dan turun ke GitHub Releases API;
+metadata manifest disimpan sebagai fallback supaya catatan rilis tetap tampil
+saat API-nya sedang mati.
+
+**Verifikasi:** `TestCheckUpdate_ManifestWithoutDigestFallsThroughToReleaseDigest`
+menyajikan `version.json` tanpa `sha256` dan menegaskan release API benar-benar
+dihubungi serta digestrelease yang dipakai. Diuji mutation: mengembalikan
+syarat ke "manifest selalu menang" membuat test itu gagal tepat di assertion
+release API tidak pernah ditanya. Dua test lain mengunci agar fallthrough tidak
+menjadi regresi sendiri — manifest yang **sudah** punya digest tetap dijawab
+tanpa menyentuh GitHub, dan manifest yang melaporkan sudah mutakhir tetap
+dijawab walau tanpa digest.
+
+### 🔴 Header password dashboard hanya diverifikasi di satu handler — auth bypass
+
+`RequireAdminAuth` dan `RequireDashboardAuth` mengizinkan request yang membawa
+header `x-9r-password` dengan memeriksa **keberadaan** header itu saja:
+`r.Header.Get(DashboardPasswordHeader) != ""`. Nilai yang dipakai tidak pernah
+diverifikasi di middleware — memang tidak bisa, karena ceknya butuh hash bcrypt
+yang tersimpan di repo yang tidak dipegang gate.
+
+Asumsi di balik itu — "handler di belakang gate memverifikasi sendiri" — hanya
+benar untuk **1 dari 7** path yang dilindungi. Handler lain sama sekali tidak
+memeriksa kredensial apa pun, sehingga siapa pun yang bisa memasang satu header
+acak cukup untuk lewat: `/api/version/shutdown` (`HandleShutdown`),
+`/api/version/update` (`HandleTriggerUpdate`), `/admin/health/reset`,
+`/api/oauth/cursor/auto-import`, dan `/api/oauth/kiro/auto-import`.
+
+Yang paling berbahaya `/api/version/shutdown`: `shutdown.RequestStop()`
+dijadwalkan 500 ms setelah response (`internal/handlers/shutdown.go:29-32`),
+jadi efeknya selalu terjadi dan klien melihat 200 yang bersih — DoS remote
+tanpa autentikasi. `/api/version/update` mencapai penggantian binary dan restart.
+
+Pengecualian header kini dibatasi ke `PasswordHeaderCarriesOwnAuth`
+(`/api/settings/database`) — satu-satunya handler yang memanggil
+`verifyDashboardPassword` (`settings.go:374-382`), dan alasannya tetap ada:
+tanpa pengecualian itu, jalur step-up untuk backup hanya hidup di test yang
+mem-mount handler langsung (#47). Kredensial lain tidak berubah: session dan
+CLI token tetap berlaku di semua path.
+
+**Verifikasi:** `TestPasswordHeaderIsHonouredOnlyWhereTheHandlerVerifiesIt`
+menolak header ngawur pada keenam path lain lewat kedua gate, dan memastikan
+header tetap sampai ke handler export. Diuji mutation: mengembalikan
+`allowsPasswordHeader(...)` ke pemeriksaan keberadaan membuat keenam subtest
+gagal dengan 200 di handler yang seharusnya 401.
+`TestPasswordHeaderScopeKeepsOtherCredentialsWorking` mengunci session dan
+CLI token tetap berlaku setelah pembatasan ini. 12 test
+`HandleExportDatabase`/`HandleImportDatabase` lolos tanpa perubahan — #47
+tidak rusak.
+
+### 🐛 CI gagal karena free tier opencode sedang overload — skip set tidak lengkap
+
+`internal/handlers/chat/muse_spark_e2e_test.go` memanggil endpoint opencode
+sungguhan, jadi status yang datang kapan saja ditentukan beban provider — bukan
+kekurangan gateway. Empat dari lima test di file itu sudah `t.Skip` untuk 429
+dan 403; `TestIntegration_OpenCode_MuseSpark13_ChatCompletions` hanya
+memperlakukan 429, sehingga 503 lolos dan menggagalkan CI #82 dengan:
+
+```
+WRN [fallback] upstream failed provider=opencode model=muse-spark-1.3-contributor-free
+  status=503 ... "Error from provider (Console): The backend is temporarily overloaded"
+expected HTTP 200 for muse-spark-1.3, got 503
+```
+
+Kelimanya kini memakai satu helper `upstreamUnavailable`: 429, 403, dan 503
+berarti "belum sekarang" dan di-skip; 400/401/500 tetap `Fatalf` supaya cacat
+nyata tidak ikut tertutupi. Test yang selama ini bergantung pada ketersediaan
+provider pihak ketiga tidak boleh gagal hanya karena satu status belum dicatat.
+
+**Verifikasi:** `TestUpstreamUnavailable_SkipsOnlyProviderAvailabilityStatuses`
+mengunci isi himpunan itu — memindahkan 500 ke dalamnya akan menggagalkan test
+dengan pesan yang menyebut status itu adalah bug kita. Rerun suite setelah
+perubahan: upstream sudah pulih dan test tersebut kembali 200; `go vet` bersih,
+`go test -race ./internal/handlers/chat/` hijau.
+### 🐛 Refresh kredensial quota: satu percobaan, skip tanpa refresher, tandai grant mati — regresi #83
+
+PR #83 menambah refresh kredensial ke `/api/usage/{id}` dan langsung memunculkan
+dua warning per akun yang setiap kali panel dibuka:
+
+```
+WRN [usage] credential refresh failed         provider=grok-cli … invalid_grant
+WRN [usage] forced credential refresh failed  provider=grok-cli … invalid_grant
+```
+
+Audit upstream (`open-sse/services/tokenRefresh.js isUnrecoverableRefreshError`)
+menunjukkan upstream **juga** retry sekali pada pesan auth-expired
+(`open-sse/services/usage/grok-cli.js:372` mengembalikan "…authentication
+expired. Please re-authorize."), tapi tidak pernah mengulang refresh yang **baru
+saja ditolak** — itu celah yang diisi sendiri oleh #83.
+
+- **Satu percobaan refresh per request.** Retry dipindah ke jalur yang belum
+  mencoba, dan dilewati kalau percobaan yang baru saja gagal. Pair warning dan
+  satu slot `fetchgate` yang terbuang per akun hilang.
+- **Provider tanpa refresher dilewati.** `oauth.Refresh` hanya bisa berhasil
+  untuk provider yang terdaftar di `oauth.Get`; qoder tidak punya satu pun
+  (upstream: `open-sse/executors/qoder.js` → `refreshCredentials() { return null }`),
+  jadi setiap Panel Open sebelumnya dijamin gagal dan masuk log.
+- **Grant yang mati ditandai di DB.** `providers.IsRefreshGrantDead` memperluas
+  `IsRefreshUnauthorized` (401) ke 400 `invalid_grant` /
+  `refresh_token_reused` / `unrecoverable_refresh_error` — bentuk yang
+  dikembalikan xAI untuk refresh token grok-cli yang dicabut. Akun yang ditolak
+  sekarang di-park lewat `RecordConnectionOAuthFailure` sehingga dashboard
+  menampilkan akun yang perlu di-re-auth, bukan warning yang tidak dibaca siapa pun.
+  500/transport error tetap **tidak** di-park: itu bukti provider blip, bukan
+  bukti kredensial mati.
+- **`oauth.Unregister`** ditambahkan untuk 테스트 yang memasang stub di bawah
+  provider id asli; stub yang bocor diam-diam mengubah perilaku kode produksi
+  yang diuji.
+
+### 🐛 Quota tracker tidak fetch semua akun + refresh kredensial Kiro — issue #78 (butir 3 & 4)
+
+#### Audit upstream sebelum/sesudah
+
+| Aspek | Upstream `decolua/9router` | 9router-go sebelum | 9router-go sesudah |
+|:--|:--|:--|:--|
+| Refresh sebelum baca quota | ada (`refreshAndUpdateCredentials`, `src/app/api/usage/[connectionId]/route.js`) | **tidak ada** | ada (`usage_credentials.go`) |
+| Retry saat pesan auth-expired | ada (sekali) | **tidak ada** | ada (sekali) |
+| Pola auth-expired | `["expired","authentication","unauthorized","401","re-authorize"]` | — | identik |
+| Fetch kredensial Kiro | `open-sse/services/usage/kiro.js` | port 1:1 sudah benar | tidak diubah |
+| Throttle fetch quota | **tidak ada** (deliberate gap, lihat `usage.go`) | 250ms + 120ms jitter | tidak diubah |
+| Fan-out di halaman quota | `Promise.all` tanpa batas | `Promise.allSettled` tanpa batas | terikat + bisa dibatalkan |
+
+Butir 4 ternyata **sudah ter-port penuh** di sisi fetcher: `fetchKiroUsage`
+mencoba tiga endpoint (`codewhisperer-get`, `codewhisperer-post`, `q-get`) dengan
+header `tokentype`/`TokenType` dan profil ARN yang benar, dan `sawAuthError`
+menghasilkan pesan yang dilaporkan. Yang hilang adalah **dua langkah yang
+membuat token basi itu pernah sampai ke fetcher**: route `/api/usage/{id}` tidak
+pernah menyegarkan kredensial sebelum membaca, dan tidak pernah mencoba lagi
+saat provider menjawab dengan pesan auth-expired. Keduanya ada di upstream.
+
+#### Perubahan
+
+- **`internal/handlers/dashboard/usage_credentials.go` (baru).** Refresh
+  kredensial OAuth sebelum baca quota bila `expiresAt` sudah melewati lead
+  window 5 menit, penyimpanan token yang sudah dirotasi (OpenAI memutar refresh
+  token tiap refresh), dan satu percobaan ulang setelah refresh paksa bila
+  provider menjawab dengan pola auth-expired upstream.
+- **`apiKey` ikut dirotasi bila ia cerminan `accessToken`.** Login Kiro menulis
+  token OAuth ke kedua field (`HandleKiroAPIKey`, `HandleKiroImport`), jadi
+  hanya mengubah `accessToken` meninggalkan salinan basi untuk pembaca mana pun
+  yang memakai `apiKey`. Koneksi `api_key` dengan key yang berbeda tidak
+  ditimpa.
+- **`web/src/components/quota/fetch.ts` (baru).** Fan-out kuota terikat
+  (6 baca bersamaan — jumlah yang sama dengan yang dijaga browser per origin)
+  dengan `AbortSignal` yang dimiliki pemanggil. Pass yang disusul langsung
+  membatalkan pass sebelumnya, sehingga jawaban yang terlambat tidak lagi
+  menimpa baris halaman baru dan baris yang masih dalam antrean tidak lagi
+  tampil sebagai "selesai tapi kosong".
+
+#### Bukti
+
+- Repro (diulang): 50 koneksi lewat gate produksi butuh **15,07s** dan
+  **50/50** terbaca — jadi pemotongan terjadi di state klien, bukan di server.
+- Smoke live ke binary yang dibangun: 12 koneksi dalam satu pass tracker →
+  **12/12 baris live**, **12 read upstream**, 12 key berbeda. Bundle yang
+  dilayani memuat helper terikat (`Math.min(concurrency, targets.length)`).
+- `go vet ./...` · `go test -race ./internal/...` · `go test -tags=integration -race ./internal/integration/...` · `bun test` 120/120 · `tsc -b` · `oxlint` · `make build`.
+
+### 🐛 OpenCode Zen (`ocz`) paritas dengan upstream — issue #78
+
+Halaman `/dashboard/providers/opencode-zen` hampir tidak punya perilaku upstream:
+`opencode-zen` **tidak terdaftar sebagai executor**, jadi `executor.Get` mengembalikan
+`nil` dan semua request jatuh ke `forwardRequest` generik — satu POST ke
+`/zen/v1/chat/completions` tanpa session/request header, tanpa quartet fingerprint,
+dan tanpa routing per-model. Akibatnya model Claude dan Qwen (yang hanya hidup di
+`/zen/v1/messages`) serta GPT/Grok/Muse Spark (`/zen/v1/responses`) tidak pernah
+menyentuh endpoint yang benar, dan `NoAuth: true` + `DefaultAPIKey: "public"`
+membuat lane PAYG diam-diam memakai key free-tier.
+
+- **Executor `ForwardOpencodeZen` + tiga transport.** `internal/proxy/executor/opencode_zen.go`
+  mengimplementasikan `open-sse/executors/opencode-zen.js`: `/chat/completions`,
+  `/messages` (auth `x-api-key` mentah), `/responses`, plus fingerprint headers,
+  quartet `bash/glob/grep/read`, `stream:true` paksa, dan `store:false`.
+- **Metadata format per model.** `internal/providers/model_formats.go` mem-port
+  `targetFormat` / `supportedFormats` dari registry upstream plus fallback keluarga
+  (`open-sse/providers/models/helpers.js OPENCODE_FAMILIES`) untuk id dari
+  `modelsFetcher`/`passthroughModels` yang belum pernah dilihat. Katalog
+  `web/src/lib/models.ts` untuk `ocz` disinkronkan ke 74 entri (termasuk
+  `union-alpha` yang sebelumnya hilang) dengan medan format yang sama.
+- **Claude client boleh loseless.** `tryForwardWithConnection` hanya mengonversi
+  body `/v1/messages` untuk provider tanpa endpoint Messages
+  (`executor.ServesMessagesEndpoint`), jadi `claude-*` dan `qwen*` kini dikirim
+  apa adanya ke `/zen/v1/messages` alih-alih OpenAI → Claude bolak-balik.
+- **Lane Responses.** `UpstreamSpeaksResponses` kini membedakan
+  `opencode-zen` dan hanya meloloskan passthrough untuk model yang target
+  format-nya `openai-responses`; model chat-lane yang diminta klien Responses
+  diterjemahkan masuk, bukan diteruskan mentah.
+- **Quota tracker.** `GET /zen/v1/usage` (Rolling / Weekly / Monthly, persentase
+  → used/total 0..100) di-port ke `usage_opencode_zen.go`, dan `opencode-zen`
+  masuk `usageSupportedProviders` + `usageApikeyProviders` — sebelumnya tidak
+  eligible sehingga halaman tidak menampilkan akun sama sekali. URL usage
+  diturunkan dari `baseUrl` koneksi, jadi endpoint self-hosted/relay dibaca
+  dari host-nya sendiri.
+- **Konfigurasi provider.** `NoAuth` dan `DefaultAPIKey: "public"` dihapus
+  (koneksi tanpa key kini ditolak, bukan diam-diam memakai free tier), dan
+  `UsageURL` ditambahkan ke `ProviderConfig`.
+- **Verifikasi:** `go vet ./...`, `go test -race ./...`,
+  `go test -tags=integration -race ./internal/integration/...` (7 kasus zen baru
+  lewat router produksi dengan upstream palsu), `bun test` 115/115, `bun run build`,
+  plus smoke live ke binary terhadap upstream palsu ketiga lane.
+
+### 🐛 Console log named the provider but not the account — issue #78 (butir 2)
+
+Pada multi-akun, baris `[usage] logged` hanya menyebut `provider` + `model` + token.
+Tidak ada jejak akun mana yang melayani — padahal itu satu-satunya informasi yang
+berguna saat 20 koneksi berotasi di balik satu provider. `connIdentityKV` sudah
+ada, tapi hanya terpakai di jalur gagal (`upstream failed`, `connection locked`),
+karena `forwardRequestParams` tidak membawa nama akun.
+
+- **`forwardRequestParams.ConnName` / `.ConnEmail`** diisi di ketiga call site
+  picker (pinned, rotasi, combo) dari baris koneksi yang sudah dipegang, jadi
+  jalur sukses tidak perlu query database tambahan untuk format log.
+- **`UsageLogInfo` dapat `ConnName`/`ConnEmail`** plus `ConnIdentityKV()`, dan
+  `connIdentityKVOr()` menyelesaikan identitas sekali per attempt lalu dipakai
+  ulang oleh `logUsage`, `LogFailure`, dan ketiga baris `fallback` — tidak ada
+  permintaan yang membaca baris koneksi dua kali.
+- **Konsekuensi yang terlihat:** baris sukses kini berbunyi
+  `... cost=… conn=conn-a connName=Account A`; permintaan tanpa koneksi tersimpan
+  (no-auth) melapor `account=Public / Direct` alih-alih diam saja.
+- **Verifikasi:** 2 kasus integrasi lewat router produksi (rotasi dua akun harus
+  menghasilkan dua nama berbeda di console log), 3 unit test untuk resolusi
+  identitas, `go vet ./...`, `go test -race ./internal/...`,
+  `go test -tags=integration -race ./internal/integration/...`.
+
+### 🐛 Proxy pool ter-assign tapi tidak pernah dipakai — issue #78 (butir 1)
+
+Pool yang terpasang di dashboard **tidak pernah dipakai** untuk sebagian besar
+provider. UI menulis `proxyPoolId` dan menampilkan badge "Proxy" — request-nya
+tetap keluar lewat IP asli. Tiga sebab, ketiganya diperbaiki.
+
+- **`forwardRequest` mengabaikan client koneksi.** Signature-nya tidak punya
+  client, jadi selalu `h.Client`: **setiap provider tanpa executor kustom**
+  (deepseek, openai, openrouter, groq, mistral, …) melompati proxy. Jalur Gemini
+  native punya masalah yang sama. Client hasil resolusi sekarang diteruskan
+  (`forwardRequest` + `forwardGeminiNativeRequest`).
+- **Pool level provider hanya dibaca koneksi virtual no-auth.**
+  `settings.providerStrategies[...].proxyPoolId` baru dipakai di
+  `getBestConnection` untuk koneksi hasil sintetis, jadi koneksi yang punya API
+  key sendiri keluar langsung. `applyProviderProxyPool` kini menjadikannya
+  fallback ketika koneksi tidak punya binding sendiri (binding eksplisit tetap
+  menang).
+- **Alias vs id kanonik.** UI menyimpan pool di bawah `storageAlias` (mis.
+  `mmf`, `cl`, `ocg`, `ocz`) sedangkan request membawa id kanonik
+  (`mimo-free`, `clinepass`, `opencode-go`, `opencode-zen`).
+  `ResolveProviderProxyPoolID` hanya mengingat tiga pasangan, jadi sisanya
+  membaca "tidak ada". Sekarang kunci dicari lewat `providerStrategyKeys`:
+  id → alias terpublikasi → id kanonik → pasangan upstream (cline ↔ clinepass).
+- **Pool tak terpakai gagal diam-diam.** Pool yang terhapus, nonaktif, tanpa
+  URL, atau URL-nya tidak bisa diparse sebelumnya membuat request pergi
+  langsung. Sekarang `getClientForConnection` mengembalikan error dan
+  `tryForwardWithConnection` gagal **sebelum** ada byte yang terkirim — tidak
+  ada request pertama yang bocor ke IP asli.
+- **Verifikasi:** 4 kasus integrasi lewat router produksi dengan proxy palsu
+  yang menghitung setiap tunnel (termasuk satu yang membuktikan hop lewat
+  header yang di-stamp proxy), 6 unit test untuk resolusi alias pool,
+  `go vet ./...`, `go test -race ./internal/...`,
+  `go test -tags=integration -race ./internal/integration/...`.
+
+### 🐛 Edge relay kehilangan `x-relay-target` di lane Zen
+
+Dengan pool bertipe `vercel`/`cloudflare`/`deno`, `getProviderConfig` menukar
+tujuan upstream menjadi header relay (`BuildEdgeRelayHeaders`) lalu mengganti
+`BaseURL` dengan host relay. `ForwardOpencodeZen` membangun ulang header dari
+nol, jadi `x-relay-target` hilang dan relay menjawab
+`400 {"error":"Missing x-relay-target header"}` — **semua** request gagal begitu
+pool edge dipasang.
+
+- **`zenHeaders` kini membawa `x-relay-target` / `x-relay-path` /
+  `x-opencode-project`** dari config koneksi. Fingerprint UA tetap menang
+  atas `User-Agent` yang dikirim koneksi.
+- **`zenRelayPath` menentukan lane dari satu tempat.** Nilai `x-relay-path`
+  di-stamp dari `baseUrl` koneksi, jadi untuk koneksi default isinya
+  `/zen/v1/chat/completions` — penting saat modelnya butuh lane lain.
+- **Lane `/messages` juga.** Jalur itu membangun set header sendiri
+  (`x-api-key` + `anthropic-version`), jadi ikut kehilangan header relay; sekarang
+  sama seperti dua lane lain, tujuan ada di header dan `BaseURL` yang dipanggil
+  adalah host relay.
+- **Verifikasi:** 5 kasus test memakai relay palsu yang meniru perilaku
+  deployment (`internal/handlers/media/deploy.go`) dan membalas 400 seperti
+  aslinya — ketiganya **gagal dengan pesan yang sama seperti laporan Anda**
+  sebelum fix, lalu hijau sesudahnya.
+
+### 🐛 Batch perbaikan issue terbuka (#72, #73, #74, #75, #76, #77, #78, #79, #47, #61)
+
+Sepuluh issue yang masih terbuka ditutup di satu batch. Yang sudah benar di
+`main` (#48) tidak disentuh; yang butuh PR terpisah masih tercatat di issue.
+
+- 🔴 **Self-update bisa mengganti binary tanpa verifikasi checksum (#72).**
+  `PerformSelfUpdate` hanya memverifikasi SHA256 *kalau* manifest menyediakannya,
+  padahal di jalur yang benar-benar dipakai `expectedSHA256` selalu kosong:
+  `checkManifest` membaca field `sha256` yang tidak ada di `version.json`, dan
+  `checkGitHubReleases` tidak pernah mengisinya. Rangkaian download → tulis →
+  rename menimpa binary yang sedang berjalan tanpa cek integritas. Sekarang
+  checksum **wajib**: tanpa itu `PerformSelfUpdate` menolak sebelum request
+  jaringan apa pun dan binary yang berjalan tidak tersentuh. Untuk menutup
+  gap-nya, `checkGitHubReleases` membaca aset `SHA256SUMS.txt` yang memang
+  sudah diterbitkan `release.yml` (tidak ada kode Go yang membacanya) dan
+  memilih entri yang cocok dengan aset platform aktif. Kegagalan lookup tidak
+  mematikan pengecekan update; `SHA256` kosong dan instalasi ditolak dengan
+  pesan yang menyebut tidak ada checksum.
+- 🔴 **`parseSemver` membuang suffix prerelease (#73).** `1.9.7-rc1` dan
+  `1.9.7` sama-sama jadi `[1,9,7]`, jadi RC tidak pernah ditawarkan sebagai
+  update — dan begitu `1.9.8-rc1` terbit, user di `1.9.7` auto-update ke RC.
+  Precedence semver sebenarnya sekarang dipakai (versi final menang atas
+  prereleasenya sendiri, `rc2 > rc1`, build metadata diabaikan), plus guard
+  kedua di `runCheckCycle`: jalur otomatis tidak pernah memasang tag
+  ber-prerelease ke proses yang sedang berjalan di versi final. RC tetap bisa
+  dipasang manual lewat `9router-go update` maupun tombol dashboard.
+- 🔴 **PID daur-ulang bisa membuat `stop` membunuh proses lain (#74).**
+  `RunningPID` hanya percaya PID telanjang plus `proc.Alive`, jadi file pid
+  yang ditinggalkan daemon yang mati bisa dilaporkan hidup setelah OS memakai
+  ulang nomornya — lalu `Stop` mengirim SIGTERM/SIGKILL ke orang tak
+  bersalah. Klaim pid kini mencatat `<pid> <exe>`, dan `proc.Executable(pid)`
+  (Windows `QueryFullProcessImageName`, Linux `/proc/<pid>/exe`, BSD
+  `kern.proc.pathname`) memverifikasinya sebelum sinyal dikirim. Klaim yang
+  tidak bisa diverifikasi **bukan** daemon yang hidup, jadi tidak pernah
+  berwenang atas sinyal. `Stop` juga tidak lagi menghapus file pid di jalur
+  force-kill, sehingga keadaan "ada klaim tapi prosesnya sudah mati" bisa
+  terwakili.
+- 🔴 **`gateway.log` tumbuh tanpa batas dan dibaca utuh tiap 150 ms (#75).**
+  Log di-append tanpa cap, `LogTail` memuat seluruh file per panggilan
+  `logs`, dan `bindFailureSeen` melakukan `os.ReadFile` + `bytes.Contains`
+  pada setiap iterasi polling 150 ms. Log sekarang di-trim ke 16 MiB saat
+  dibuka (ekor dipertahankan, kepala dipindah ke `gateway.log.1`), `LogTail`
+  hanya membaca jendela 256 KiB dari belakang, dan pemindaian bind failure
+  dibatasi ke ekor log.
+- **`tools[].toolSpec.name` (Bedrock Converse) dilewati dua arah (#77).**
+  `visitTools`/`replaceInTools` hanya mengenal `name`, `function.name`, dan
+  `functionDeclarations`, sehingga request berbentuk Converse tetap membawa
+  nama > 64 karakter ke upstream dan tidak ada apa pun yang memulihkannya di
+  respons. Issue menyebut ini "direkam tapi tidak ditulis"; yang sebenarnya
+  adalah keduanya tidak disentuh —adding `toolSpec` ke sisi request saja
+  akan membuat respons mengembalikan nama yang tidak pernah dideklarasikan.
+  Bentuk Converse kini ditangani simetris di request **dan** respons
+  (`contentBlockStart.start.toolUse` dan `output.message.content[].toolUse`).
+- **`signalSelfShutdown` dead code di kedua varian build (#76) — BELUM dihapus.**
+  Kedua file `signal_unix.go`/`signal_windows.go` memang tidak punya call site
+  sejak rewrite `RestartSelf` pindah ke `shutdown.RestartAfterStop`, dan isinya
+  identik. Penghapusan file-nya **tidak termasuk batch ini**; issue #76 tetap
+  terbuka.
+- **Kredensial Kiro tidak pernah sampai ke quota tracker (#78).**
+  `fetchProviderUsage` mengirim `accessToken` ke `fetchKiroUsage`, padahal
+  koneksi Kiro menyimpan kredensialnya di `apiKey` — jadi request-nya
+  membawa `Authorization: Bearer ` dan dashboard menampilkan *"Kiro quota API
+  rejected the current token. Chat may still work."* sementara chat-nya
+  sendiri sukses memakai kredensial yang tidak pernah dibaca quota path.
+  Presedensinya sekarang sama dengan `resolveProviderAuthToken` di jalur chat,
+  dan token kosong dilaporkan sebagai "kredensial tidak tersimpan" — bukan
+  penolakan token yang menyesatkan.
+- **Antigravityqueue dua kali di gate quota (#78).** `HandleGetConnectionUsage`
+  mengambil slot `quotaFetchGate` sekali sebelum dispatch lalu sekali lagi
+  di cabang Antigravity, jadi tiap akun Antigravity menunggu dua gap 250 ms
+  berturut-turut untuk satu burst request. Slot kedua dihapus.
+- **Dropdown periode usage dengan `all` + window kustom (#79).**
+  Selector periode berupa deretan tombol pill hardcoded yang tidak punya
+>  `all`, padahal backend sudah menerimanya. Sekarang dropdown dengan preset
+>  (Today, 24h, 7D, 30D, 60D, All time) plus input kustom, dan backend
+>  `/api/usage/stats` menerima bentuk `<n>d` / `<n>h` apa pun —
+>  `resolveUsagePeriod` mengganti rantai `if/else` yang diam-diam memakai
+>  365 hari untuk `all` dan 7 hari untuk nilai yang tidak dikenal.
+- **Download database ditolak padahal sudah login (#47).**
+>  `HandleExportDatabase` tidak menerima session dashboard — hanya header
+>  `x-9r-password` atau token CLI — sehingga link browser biasa selalu 401
+>  dan ekspor terlihat permanen terblokir. Session sekarang cukup dengan
+>  sendirinya seperti baca dashboard lain, sementara header password tetap
+>  jalan untuk skrip. Jalur zip yang diminta sudah ada di backend dan kini
+>  bisa dijangkau.
+- **Picker model tidak lagi menyortir ulang seluruh katalog per klik (#61).**
+  `resolveFilteredGroups` menerima `addedModelValues` yang tidak pernah
+  dibaca, tapi karena argumennya ada di signature, Svelte menjadikannya bagian
+  dari graf reaktif: setiap klik satu pill memicu filter + sort ulang seluruh
+  grup dan rekonsiliasi ulang ratusan/ribuan pill. Argumen itu dihapus; logika
+  filter/sort tidak berubah sama sekali.
+
+**Di luar cakupan:** #78 butir 1–2 (executor `opencode-zen`) sudah dikerjakan
+di PR #80 dan #48 sudah benar di `main` (`stripCodexUnsupportedTokenParams`
+berjalan setelah `buildResponsesBody`, bukan sebelumnya) — keduanya tidak
+disentuh di sini.
+
 ### ⬆️ Katalog Codex disinkronkan dengan upstream v0.5.95 — issue #93
 
 Tujuh model yang upstream hapus masih dipublish di `/v1/models`, sementara model yang upstream konfirmasi hidup belum ada sama sekali. Dua-duanya 400.

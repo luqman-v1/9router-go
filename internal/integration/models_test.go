@@ -10,11 +10,15 @@ import (
 	"github.com/samber/lo"
 )
 
-// modelEntry is one advertised model in the /v1/models list.
+// modelEntry is one advertised model in the /v1/models list. The token limits
+// are pointers because a combo that knows no limit omits the keys entirely
+// rather than publishing a zero.
 type modelEntry struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	OwnedBy string `json:"owned_by"`
+	ID                  string `json:"id"`
+	Object              string `json:"object"`
+	OwnedBy             string `json:"owned_by"`
+	ContextLength       *int   `json:"context_length"`
+	MaxCompletionTokens *int   `json:"max_completion_tokens"`
 }
 
 // modelsResponse mirrors the /v1/models envelope: OpenAI's "data" array plus the
@@ -100,6 +104,43 @@ func TestModelsListIncludesCombos(t *testing.T) {
 	}
 	if list.Data[0].OwnedBy != "combo" {
 		t.Errorf("combo owned_by = %q, want \"combo\"", list.Data[0].OwnedBy)
+	}
+}
+
+// TestModelsListComboPublishesSmallestSeatLimit pins the contract a client
+// sizing its compaction threshold depends on: a combo advertises the smallest
+// window any of its seats can serve, and the nested combo in the tree
+// contributes its own leaves to that minimum. Combo entries used to publish no
+// limits at all, leaving the client to guess from the name — and it guesses high.
+func TestModelsListComboPublishesSmallestSeatLimit(t *testing.T) {
+	env, _ := newProviderEnv(t)
+	// deepseek/deepseek-chat is the narrower of the two leaves (131072 against
+	// anthropic/claude-sonnet-4-6's 200000), and the inner combo holds a third
+	// window of its own at 128000 — so only a walk of the whole tree lands on
+	// 128000 with the inner leaf's 16384 max output.
+	env.AddCombo(t, "combo-inner", "inner-seat", []string{"anthropic/claude-sonnet-4-6", "openai/gpt-4o"})
+	env.AddCombo(t, "combo-outer", "wide-combo", []string{"inner-seat", "deepseek/deepseek-chat"})
+
+	res := env.Get(t, "/v1/models")
+	if res.Status != http.StatusOK {
+		t.Fatalf("GET /v1/models = %d, want 200 (body: %s)", res.Status, truncate(res.Body))
+	}
+
+	var list modelsResponse
+	res.Decode(t, &list)
+
+	wide, found := lo.Find(list.Data, func(e modelEntry) bool { return e.ID == "wide-combo" })
+	if !found {
+		t.Fatalf("model list = %v, want it to include the combo \"wide-combo\"", list.ids())
+	}
+	if wide.OwnedBy != "combo" {
+		t.Errorf("wide-combo owned_by = %q, want \"combo\"", wide.OwnedBy)
+	}
+	if wide.ContextLength == nil || *wide.ContextLength != 128000 {
+		t.Errorf("wide-combo context_length = %v, want 128000 (smallest window in the seat tree)", wide.ContextLength)
+	}
+	if wide.MaxCompletionTokens == nil || *wide.MaxCompletionTokens != 8192 {
+		t.Errorf("wide-combo max_completion_tokens = %v, want 8192 (smallest output any seat accepts)", wide.MaxCompletionTokens)
 	}
 }
 
