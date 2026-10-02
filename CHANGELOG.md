@@ -2,6 +2,62 @@
 
 ## [Unreleased]
 
+### 🐛 "Strict Proxy" tidak menahan — upstream decolua/9router#4333 parity
+
+`strictProxy` di pool dan di connection berarti "tidak pernah keluar lewat IP
+asli". Dua tempat di gateway ini tetap meloloskannya: `proxy.DoRequest`
+memutar ulang request yang gagal di proxy lewat `directProxyClient` tanpa
+memperiksa flag sama sekali, dan jalur legacy `getClientForConnection` hanya
+mencatat `strict proxy enabled but proxy url invalid` lalu mengembalikan
+client direct. Keduanya berarti traffic yang seharusnya tidak pernah menyentuh
+IP asli tetap aktif.
+
+Kini `DoRequest` menolak (bukan memutar ulang) saat proxy gagal, baik lewat
+penanda pada context (`proxy.WithStrictProxy`) maupun lewat client yang
+diberikan pool strict (`proxy.ForbidDirectReplay`), dan jalur legacy mengembalikan
+error. `strictProxy` hanya dibaca dari baris connection yang sebenarnya
+disimpan; sebelumnya `var strictProxy bool` menutupi field tersebut sehingga
+flag di level connection tidak pernah berarti apa pun — cabang di
+`connections_proxy.go:117-120` yang memuat pesan `strict proxy enabled but proxy
+url invalid` selama ini tidak pernah dieksekusi.
+
+Gerbang "proxy memang dimaksud" ikut dijaga persis seperti upstream: strict
+hanya menolak bila ada `proxyPoolId`, `enabled`, `connectionProxyEnabled`, atau
+url yang tidak kosong. Executor seperti Qoder memasang `strictProxy` dengan
+tidak ada proxy sama sekali — artinya "jangan putar ulang request ini langsung",
+bukan "proxy wajib ada" — dan tanpa gerbang itu mereka akan mati total.
+
+### 🐛 Fallback TLS insecure untuk sertifikat yang gagal diverifikasi — upstream b58bd804 parity
+
+Kegagalan verifikasi sertifikat (proxy korporat atau antivirus yang
+menerbitkan ulang TLS) kini dicoba satu kali lagi tanpa verifikasi, memakai
+transport `InsecureSkipVerify` yang di-cache per url proxy. Deteksi lewat
+`errors.As` terhadap `x509.UnknownAuthorityError`, `x509.CertificateInvalidError`,
+`x509.HostnameError`, dan `tls.CertificateVerificationError` — bukan pencocokan
+substring seperti `isProxyFailure`, yang akan menandai hampir semua error.
+`STRICT_SSL=true` atau `=1` mematikan fallback ini, mengikuti upstream.
+
+### 🐛 Watchdog 3 detik untuk `response.completed` yang tertunda — upstream fbcaa282 + 7111db35 parity
+
+Translator menahan `response.completed` sampai trailer usage arrives (#4476).
+Bila upstream berhenti setelah `finish_reason` — tanpa trailer dan tanpa
+`[DONE]`, koneksi ditahan terbuka — penundaan itu tidak pernah selesai dan
+client menunggu selamanya. `proxy.ScanStreamWithDeadline` kini membatasi jeda
+antar event hanya setelah event terminal benar-benar tertunda, dan watchdog
+bridge (`executor.completionWatchdog`) mengirim `response.completed` tepat
+sekali ketika batas itu terlampaui. Stream yang masih mengalir tidak pernah
+dipotong, dan event terminal tidak pernah terkirim dua kali.
+
+**Verifikasi:** `TestDoRequestStrictProxyNeverReplaysDirect` (dua jalur StrictProxy) membuktikan tidak ada satu pun request yang sampai ke upstream langsung;
+`TestDoRequestStrictProxyAllowsDirectWhenNothingConfigured`,
+`TestStrictProxyFlagAloneDoesNotBlockDirectUpstream`, dan
+`TestNonStrictPoolStillDegradesToDirect` menjaga gerbang "proxy dimaksud";
+`TestDoRequestRetriesWithInsecureTLS` / `TestDoRequestStrictSSLRefusesInsecureRetry`
+menguji fallback TLS dan opt-out-nya; `TestStreamChatToResponses_WatchdogFlushesStalledCompletion`
+dan `TestScanStreamWithDeadlineReleasesAStalledUpstream` menjalankan batasnya
+melalui variabel paket, bukan tidur 3 detik.
+
+
 ### 🐛 Routing & translator: enabledModels codex, tool DeepSeek ganda, prefill Claude — issue #95
 
 Tiga filter yang upstream terapkan saat memilih akun dan menyusun request tidak ada di sisi kita. Dua di antaranya menjawab 400.

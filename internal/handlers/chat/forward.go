@@ -110,7 +110,18 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 	// Claude client, so this branch is decided by the client format alone. It
 	// runs before the header write because the bridge owns its own writer.
 	if translator.NeedsResponsesBridge(ctx) {
-		return executor.StreamChatToResponses(ctx, w, upstream, startTime, &metrics.TTFT, &metrics.ResponseBuf)
+		// The bridge defers response.completed until the upstream's usage
+		// trailer arrives, so once that wait begins the generic six-minute
+		// stall window is far too generous: an upstream that never sends the
+		// trailer would hold the client that long. One stall reader sized to
+		// the deferral bound ends the wait in step with the watchdog.
+		stream := upstream
+		if pending := executor.PendingCompletionFlushTimeout; pending > 0 {
+			if body, ok := upstream.(io.ReadCloser); ok {
+				stream = internalproxy.NewStallReaderWithContext(ctx, body, pending, "upstream pending completion")
+			}
+		}
+		return executor.StreamChatToResponses(ctx, w, stream, startTime, &metrics.TTFT, &metrics.ResponseBuf)
 	}
 
 	hw := internalproxy.NewHeartbeatWriter(ctx, w, 0)

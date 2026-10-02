@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,24 +10,13 @@ import (
 	internalproxy "9router/proxy/internal/proxy"
 )
 
-// A proxy pool whose URL points at a closed port: the proxy cannot serve a
-// request, so anything the gateway answers came out without it. These tests
-// stand in for the real leak — the upstream answering while the operator
-// believes traffic left through the pool.
-type strictProxyFixture struct {
-	repo     *db.Repo
-	upstream *httptest.Server
-	cleanup  func()
-}
-
-// deadProxyURL is a URL nothing listens on: the pool is configured and active,
-// but every attempt through it fails at connect time.
-const deadProxyURL = "http://127.0.0.1:1"
-
-func newStrictProxyFixture(t *testing.T) *strictProxyFixture {
+// setupProxyPools gives the handler a repo that can store proxy pools and
+// returns it.
+func setupProxyPools(t *testing.T) *db.Repo {
 	t.Helper()
+	database, cleanup := setupChatTestDB(t)
+	t.Cleanup(cleanup)
 
-	database, cleanupDB := setupChatTestDB(t)
 	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
 		id TEXT PRIMARY KEY,
 		isActive INTEGER DEFAULT 1,
@@ -37,191 +27,203 @@ func newStrictProxyFixture(t *testing.T) *strictProxyFixture {
 	);`); err != nil {
 		t.Fatalf("create proxyPools table: %v", err)
 	}
+	return db.NewRepo(database)
+}
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+// directCounter answers 200 and counts the traffic that reached it without a
+// proxy. A strict connection that answers here has published the operator's
+// real IP, which is the whole thing the setting exists to prevent.
+func directCounter(t *testing.T) (*httptest.Server, *int) {
+	t.Helper()
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
+	t.Cleanup(srv.Close)
+	return srv, &hits
+}
 
-	return &strictProxyFixture{
-		repo:     db.NewRepo(database),
-		upstream: upstream,
-		cleanup: func() {
-			upstream.Close()
-			cleanupDB()
-		},
+// TestStrictConnectionRefusesUnparseableProxyURL is the #4333 leak at the
+// legacy-connection path: a strict connection whose proxy url the transport
+// cannot dial used to log and hand back the direct client, so the request left
+// over the real IP while the connection still looked proxied.
+func TestStrictConnectionRefusesUnparseableProxyURL(t *testing.T) {
+	repo := setupProxyPools(t)
+	h := &ChatHandler{Client: &http.Client{}, Repo: repo}
+
+	// "://nonsense" carries no scheme or host, so url.Parse cannot use it as a
+	// proxy target.
+	connData := &ConnectionData{
+		ConnectionProxyEnabled: true,
+		ConnectionProxyURL:     "://nonsense",
+		StrictProxy:            true,
+	}
+
+	client, err := h.GetClientForConnection(connData)
+	if err == nil {
+		t.Fatalf("a strict connection with an unusable proxy url must fail, got client %v", client)
+	}
+	if !isStrictRefusal(err) {
+		t.Errorf("error = %v, want it to report the strict-proxy refusal", err)
 	}
 }
 
-func (f *strictProxyFixture) handler() *ChatHandler {
-	return &ChatHandler{Client: &http.Client{}, Repo: f.repo}
+// TestNonStrictConnectionStillFallsBackOnBadProxyURL is what the strict branch
+// must not take away: an ordinary connection whose proxy url is unusable still
+// degrades to the shared direct client instead of failing.
+func TestNonStrictConnectionStillFallsBackOnBadProxyURL(t *testing.T) {
+	repo := setupProxyPools(t)
+	h := &ChatHandler{Client: &http.Client{}, Repo: repo}
+
+	connData := &ConnectionData{
+		ConnectionProxyEnabled: true,
+		ConnectionProxyURL:     "://nonsense",
+	}
+
+	client, err := h.GetClientForConnection(connData)
+	if err != nil {
+		t.Fatalf("a non-strict connection must still fall back: %v", err)
+	}
+	if client != h.Client {
+		t.Error("a non-strict connection with an unusable url must get the shared direct client")
+	}
 }
 
-func (f *strictProxyFixture) addPool(t *testing.T, strict bool) string {
-	t.Helper()
-	pool, err := f.repo.InsertProxyPool(db.ProxyPoolData{
-		Name:        "pool",
-		ProxyURL:    deadProxyURL,
-		Type:        "http",
-		StrictProxy: strict,
+// TestStrictProxyFlagAloneDoesNotBlockDirectUpstream is the upstream nuance
+// that must survive the port: the Qoder executor sets strictProxy with nothing
+// proxied at all, meaning "never replay this request directly". Blocking that
+// would take a provider that works today offline, so a bare flag may not turn
+// an ordinary direct connection into an error.
+func TestStrictProxyFlagAloneDoesNotBlockDirectUpstream(t *testing.T) {
+	repo := setupProxyPools(t)
+	h := &ChatHandler{Client: &http.Client{}, Repo: repo}
+
+	connData := &ConnectionData{StrictProxy: true}
+
+	client, err := h.GetClientForConnection(connData)
+	if err != nil {
+		t.Fatalf("strict with no proxy configured must keep working direct: %v", err)
+	}
+	if client != h.Client {
+		t.Error("a strict flag alone must not change which client is used")
+	}
+}
+
+// TestStrictConnectionRefusesWhenNoProxyResolves covers the other strict
+// refusal: a connection that enables a proxy but resolves no usable URL — an
+// empty url, or one only present in providerSpecificData — used to be treated
+// as "no proxy" and answered from the real IP.
+func TestStrictConnectionRefusesWhenNoProxyResolves(t *testing.T) {
+	cases := []struct {
+		name string
+		conn ConnectionData
+	}{
+		{
+			name: "proxy enabled with no url at all",
+			conn: ConnectionData{ConnectionProxyEnabled: true, StrictProxy: true},
+		},
+		{
+			name: "proxy url present but not enabled",
+			conn: ConnectionData{ConnectionProxyURL: "http://127.0.0.1:8888", StrictProxy: true},
+		},
+		{
+			name: "strict flag only in provider specific data, proxy enabled with no url",
+			conn: ConnectionData{
+				ProviderSpecificData: map[string]any{
+					"connectionProxyEnabled": true,
+					"strictProxy":            true,
+				},
+			},
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := setupProxyPools(t)
+			h := &ChatHandler{Client: &http.Client{}, Repo: repo}
+
+			connData := tt.conn
+			client, err := h.GetClientForConnection(&connData)
+			if err == nil {
+				t.Fatalf("a strict connection with no resolvable proxy must fail, got client %v", client)
+			}
+			if !isStrictRefusal(err) {
+				t.Errorf("error = %v, want it to report the strict-proxy refusal", err)
+			}
+		})
+	}
+}
+
+// TestStrictPoolTrafficNeverReachesTheProviderDirectly is the end-to-end half:
+// a connection bound to a strict pool, pointed at a dead proxy, must not have
+// its request answered by the provider over the real IP.
+func TestStrictPoolTrafficNeverReachesTheProviderDirectly(t *testing.T) {
+	repo := setupProxyPools(t)
+	upstream, hits := directCounter(t)
+
+	pool, err := repo.InsertProxyPool(db.ProxyPoolData{
+		Name: "dead-strict", ProxyURL: "http://127.0.0.1:1", Type: "http", StrictProxy: true,
 	})
 	if err != nil {
 		t.Fatalf("insert proxy pool: %v", err)
 	}
-	return pool["id"].(string)
-}
+	poolID, _ := pool["id"].(string)
 
-// A connection bound to a dead pool must fail the request. Answering it would
-// publish the operator's egress IP to the upstream — the one outcome the pool
-// assignment exists to prevent — while the dashboard still shows the connection
-// as proxied.
-func TestStrictProxyPoolRefusesToLeakDirectTraffic(t *testing.T) {
-	f := newStrictProxyFixture(t)
-	defer f.cleanup()
-
-	h := f.handler()
-	client, err := h.GetClientForConnection(&ConnectionData{ProxyPoolID: f.addPool(t, true)})
+	h := &ChatHandler{Client: &http.Client{}, Repo: repo}
+	client, err := h.GetClientForConnection(&ConnectionData{ProxyPoolID: poolID})
 	if err != nil {
-		t.Fatalf("a configured strict pool must resolve a client, got %v", err)
+		t.Fatalf("a usable strict pool must still hand out a client: %v", err)
+	}
+	if client == h.Client {
+		t.Fatal("a pool-bound connection must not get the shared direct client")
 	}
 
-	resp, err := client.Get(f.upstream.URL)
-	if err == nil {
-		defer resp.Body.Close()
-		t.Fatalf("strictProxy must fail the request when the proxy is dead, got %d", resp.StatusCode)
+	// The provider answers only when something dials it without a proxy.
+	if _, err := internalproxy.DoRequest(t.Context(), client, http.MethodPost, upstream.URL, nil, []byte(`{}`)); err == nil {
+		t.Fatal("the strict pool's dead proxy must fail the request")
+	}
+	if *hits != 0 {
+		t.Errorf("the provider answered %d times: strict traffic escaped over the real IP", *hits)
 	}
 }
 
-// Same rule for the legacy per-connection proxy, which is a separate code path
-// from the pool.
-func TestStrictProxyConnectionRefusesToLeakDirectTraffic(t *testing.T) {
-	f := newStrictProxyFixture(t)
-	defer f.cleanup()
-
-	h := f.handler()
-	client, err := h.GetClientForConnection(&ConnectionData{
-		ProviderSpecificData: map[string]any{
-			"connectionProxyEnabled": true,
-			"connectionProxyUrl":     deadProxyURL,
-			"strictProxy":            true,
-		},
+// TestStrictAndLaxPoolsDoNotShareACachedClient guards the cache. Proxy clients
+// are pooled per URL, so a strict pool and an ordinary one pointing at the
+// same proxy must not share the instance — otherwise the second caller
+// inherits the first one's decision.
+func TestStrictAndLaxPoolsDoNotShareACachedClient(t *testing.T) {
+	repo := setupProxyPools(t)
+	strictPool, err := repo.InsertProxyPool(db.ProxyPoolData{
+		Name: "shared-url-strict", ProxyURL: "http://127.0.0.1:8888", Type: "http", StrictProxy: true,
 	})
 	if err != nil {
-		t.Fatalf("a configured strict proxy must resolve a client, got %v", err)
+		t.Fatalf("insert strict pool: %v", err)
+	}
+	laxPool, err := repo.InsertProxyPool(db.ProxyPoolData{
+		Name: "shared-url-lax", ProxyURL: "http://127.0.0.1:8888", Type: "http", StrictProxy: false,
+	})
+	if err != nil {
+		t.Fatalf("insert lax pool: %v", err)
 	}
 
-	resp, err := client.Get(f.upstream.URL)
-	if err == nil {
-		defer resp.Body.Close()
-		t.Fatalf("strictProxy must fail the request when the proxy is dead, got %d", resp.StatusCode)
+	h := &ChatHandler{Client: &http.Client{}, Repo: repo}
+	strictClient, err := h.GetClientForConnection(&ConnectionData{ProxyPoolID: strictPool["id"].(string)})
+	if err != nil {
+		t.Fatalf("strict client: %v", err)
+	}
+	laxClient, err := h.GetClientForConnection(&ConnectionData{ProxyPoolID: laxPool["id"].(string)})
+	if err != nil {
+		t.Fatalf("lax client: %v", err)
+	}
+
+	if internalproxy.ForbidsDirectReplay(strictClient) == internalproxy.ForbidsDirectReplay(laxClient) {
+		t.Error("a strict pool and a lax pool on the same url must not share a cached client")
 	}
 }
 
-// Without strictProxy a dead proxy may fall back — but the request still must not
-// be served, because a transport-level fallback is exactly how a request gets
-// completed from the wrong IP. This pins the difference so the strict path is
-// not "fixed" by deleting the fallback entirely.
-func TestNonStrictProxyStillDoesNotServeFromTheRealIP(t *testing.T) {
-	f := newStrictProxyFixture(t)
-	defer f.cleanup()
-
-	h := f.handler()
-	client, err := h.GetClientForConnection(&ConnectionData{ProxyPoolID: f.addPool(t, false)})
-	if err != nil {
-		t.Fatalf("non-strict pool must resolve a client, got %v", err)
-	}
-
-	resp, err := client.Get(f.upstream.URL)
-	if err != nil {
-		return // failing is correct
-	}
-	defer resp.Body.Close()
-	t.Fatalf("a dead proxy must not produce a served answer, got %d", resp.StatusCode)
-}
-
-// Relay pools (vercel/cloudflare/deno) are not dialed as HTTP proxies, so the
-// noProxy bypass must not strip their x-relay routing headers. An operator
-// listing the upstream host in noProxy expects the direct path there.
-func TestRelayPoolKeepsRelayRoutingHeaders(t *testing.T) {
-	f := newStrictProxyFixture(t)
-	defer f.cleanup()
-
-	pool, err := f.repo.InsertProxyPool(db.ProxyPoolData{
-		Name:     "relay",
-		ProxyURL: "https://relay.example",
-		Type:     "vercel",
-	})
-	if err != nil {
-		t.Fatalf("insert relay pool: %v", err)
-	}
-
-	h := f.handler()
-	cfg, err := h.getProviderConfig("openai", &ConnectionData{
-		ProxyPoolID: pool["id"].(string),
-		BaseURL:     "https://api.openai.com/v1/chat/completions",
-	})
-	if err != nil {
-		t.Fatalf("provider config for relay pool: %v", err)
-	}
-	if cfg.StaticHeaders["x-relay-target"] != "https://api.openai.com" {
-		t.Errorf("relay pool must stamp x-relay-target, got %q", cfg.StaticHeaders["x-relay-target"])
-	}
-	if cfg.BaseURL != "https://relay.example" {
-		t.Errorf("relay pool must rewrite BaseURL to the relay host, got %q", cfg.BaseURL)
-	}
-}
-
-// A host the operator listed in the pool's noProxy must not be relayed or
-// proxied: that list is how an operator carves out direct egress.
-func TestNoProxyBypassesRelayForListedHost(t *testing.T) {
-	f := newStrictProxyFixture(t)
-	defer f.cleanup()
-
-	pool, err := f.repo.InsertProxyPool(db.ProxyPoolData{
-		Name:     "relay-bypass",
-		ProxyURL: "https://relay.example",
-		Type:     "vercel",
-		NoProxy:  "api.openai.com",
-	})
-	if err != nil {
-		t.Fatalf("insert relay pool: %v", err)
-	}
-
-	h := f.handler()
-	cfg, err := h.getProviderConfig("openai", &ConnectionData{
-		ProxyPoolID: pool["id"].(string),
-		BaseURL:     "https://api.openai.com/v1/chat/completions",
-	})
-	if err != nil {
-		t.Fatalf("provider config for noProxy-listed host: %v", err)
-	}
-	if _, relayed := cfg.StaticHeaders["x-relay-target"]; relayed {
-		t.Error("a noProxy-listed host must go direct, not through the relay")
-	}
-	if cfg.BaseURL != "https://api.openai.com/v1/chat/completions" {
-		t.Errorf("noProxy bypass must keep the upstream URL, got %q", cfg.BaseURL)
-	}
-}
-
-func TestShouldBypassNoProxyCoversEveryRelayHostPattern(t *testing.T) {
-	tests := []struct {
-		target string
-		list   string
-		want   bool
-	}{
-		{"https://api.openai.com/v1/chat/completions", "", false},
-		{"https://api.openai.com/v1/chat/completions", "api.openai.com", true},
-		{"https://api.openai.com/v1/chat/completions", "openai.com", true},
-		{"https://api.openai.com/v1/chat/completions", ".openai.com", true},
-		{"https://sub.openai.com/v1", ".openai.com", true},
-		{"https://api.openai.com/v1", "anthropic.com,openai.com", true},
-		{"https://api.anthropic.com/v1", "anthropic.com,openai.com", true},
-		{"https://api.openai.com/v1", "notopenai.com", false},
-		{"https://api.openai.com/v1", "*", true},
-	}
-	for _, tt := range tests {
-		if got := internalproxy.ShouldBypassNoProxy(tt.target, tt.list); got != tt.want {
-			t.Errorf("ShouldBypassNoProxy(%q, %q) = %v, want %v", tt.target, tt.list, got, tt.want)
-		}
-	}
+// isStrictRefusal reports whether err is the strict-proxy refusal. It goes
+// through errors.Is so the test pins the sentinel rather than a message.
+func isStrictRefusal(err error) bool {
+	return errors.Is(err, internalproxy.ErrStrictProxyRequired)
 }

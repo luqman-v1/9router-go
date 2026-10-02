@@ -167,6 +167,13 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 		return fmt.Errorf("write to client: %w", writeErr)
 	}
 
+	// The upstream is fully drained here, so the completion watchdog has nothing
+	// left to give up on. Cancelling it before Close keeps the timer from
+	// firing into a writer this function is about to tear down.
+	if bridge != nil {
+		bridge.StopCompletionWatchdog()
+	}
+
 	// A Responses client waits for response.completed, not [DONE], so the bridge
 	// closes before the fallback below can call the stream unfinished.
 	if bridge != nil {

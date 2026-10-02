@@ -71,6 +71,13 @@ type ResponsesState struct {
 	// deferred to the flush without swallowing response.completed entirely.
 	FlushReachesUs bool
 
+	// CompletionPending reports that finish_reason closed the answer but
+	// response.completed is still being held back waiting for the usage
+	// trailer. The stream producer needs the flag to know a terminal event is
+	// owed to the client and has to be flushed on a deadline rather than on
+	// the upstream's cooperation.
+	CompletionPending bool
+
 	MsgTextBuf      map[int]string
 	MsgItemAdded    map[int]bool
 	MsgContentAdded map[int]bool

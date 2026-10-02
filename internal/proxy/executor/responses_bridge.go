@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"9router/proxy/internal/constants"
@@ -69,10 +71,19 @@ func UpstreamSpeaksResponses(provider, model string, cfg *providers.ProviderConf
 // Chat producer — the plain OpenAI stream, the Claude-to-OpenAI translation, or
 // the Gemini-to-OpenAI translation — without any of them knowing it exists.
 type ResponsesBridge struct {
+	// mu guards the translation state against the watchdog timer, which emits
+	// from its own goroutine when the upstream stalls.
+	mu       sync.Mutex
 	state    *translator.ResponsesState
 	write    func([]byte) error
 	finished bool
 	err      error
+	watchdog *completionWatchdog
+	// completionPending mirrors state.CompletionPending as an atomic. The scan
+	// reads it between every line of the upstream, so taking the lock there
+	// would make the watchdog's own emission wait on a lock it needs to break
+	// the stall. feed is the only writer and always holds mu.
+	completionPending atomic.Bool
 }
 
 // NewResponsesBridge builds a bridge that writes Responses SSE frames through
@@ -82,13 +93,24 @@ type ResponsesBridge struct {
 func NewResponsesBridge(model string, customToolNames []string, write func([]byte) error) *ResponsesBridge {
 	state := translator.InitResponsesState(model, true)
 	state.SetCustomToolNames(customToolNames)
-	return &ResponsesBridge{state: state, write: write}
+	b := &ResponsesBridge{state: state, write: write}
+	newCompletionWatchdog(b)
+	return b
 }
 
 // Feed translates one upstream Chat Completions SSE payload. A payload that
 // carries no JSON still has to reach the translator, because the terminal null
 // chunk is what closes the open items and emits response.completed.
 func (b *ResponsesBridge) Feed(payload []byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.feed(payload)
+}
+
+// feed is Feed without the lock, for callers that already hold it. A nil
+// payload flushes the stream, which is how Close and the watchdog both emit
+// the terminal event.
+func (b *ResponsesBridge) feed(payload []byte) {
 	if b.err != nil || b.finished {
 		return
 	}
@@ -97,6 +119,26 @@ func (b *ResponsesBridge) Feed(payload []byte) {
 		return
 	}
 	b.finished = b.state.Completed
+	// The answer is closed but the terminal event is waiting on a usage
+	// trailer: start the deadline that stops the client waiting forever.
+	b.completionPending.Store(b.state.CompletionPending && !b.state.Completed)
+	b.watchdog.arm()
+}
+
+// CompletionPending reports that the terminal event is owed to the client and
+// the watchdog is what will deliver it.
+func (b *ResponsesBridge) CompletionPending() bool {
+	return b.completionPending.Load()
+}
+
+// StopCompletionWatchdog cancels the deferred-completion deadline for a
+// producer that has drained its upstream and is about to close the bridge.
+// A timer left armed would fire into a writer the caller is tearing down.
+func (b *ResponsesBridge) StopCompletionWatchdog() {
+	if b == nil || b.watchdog == nil {
+		return
+	}
+	b.watchdog.stop()
 }
 
 // FeedFrames translates a buffer of ready-made Chat Completions SSE frames
@@ -117,6 +159,11 @@ func (b *ResponsesBridge) FeedFrames(frames []byte) {
 // swallow response.completed: without a terminal event the client waits forever
 // for a turn that already ended.
 func (b *ResponsesBridge) Close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// The producer reached the end of the stream on its own, so the watchdog
+	// has nothing left to give up on — and one of the two must cancel it.
+	b.watchdog.stop()
 	if b.err != nil || b.finished {
 		return
 	}
@@ -141,6 +188,8 @@ func (b *ResponsesBridge) writeEvents(events []translator.ResponsesEvent) error 
 // keeps feeding after a failed write would otherwise spin until the upstream
 // stream ends.
 func (b *ResponsesBridge) Err() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.err
 }
 
@@ -170,6 +219,11 @@ func streamChatToResponses(o sseStreamOpts) error {
 // /v1/responses client as Responses events. Providers without a registered
 // executor stream through the chat handler's own forwarder rather than sseStream,
 // so the entry point is exported rather than reachable from one package only.
+//
+// The upstream may end without ever sending the usage trailer the terminal
+// event is waiting on. The scan is therefore bounded once that event is owed:
+// the bridge's watchdog emits response.completed, and a stalled connection is
+// dropped instead of holding the client for as long as the provider likes.
 func StreamChatToResponses(ctx context.Context, w http.ResponseWriter, upstream io.Reader, startTime time.Time, ttft *int64, buf io.Writer) error {
 	if startTime.IsZero() {
 		startTime = time.Now()
@@ -183,10 +237,11 @@ func StreamChatToResponses(ctx context.Context, w http.ResponseWriter, upstream 
 		translator.CustomToolNamesFrom(ctx),
 		responsesWriter(sseStreamOpts{TTFT: ttft, Buf: buf}, hw, flusher, startTime),
 	)
-	err := proxy.ScanStream(upstream, bridge.Feed)
-	bridge.Close()
-	if bridge.err != nil {
-		return fmt.Errorf("write to client: %w", bridge.err)
+	defer bridge.Close()
+
+	err := proxy.ScanStreamWithDeadline(ctx, upstream, PendingCompletionFlushTimeout, bridge.CompletionPending, bridge.Feed)
+	if bridge.Err() != nil {
+		return fmt.Errorf("write to client: %w", bridge.Err())
 	}
 	return err
 }

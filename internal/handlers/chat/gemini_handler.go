@@ -481,6 +481,9 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 		}
 	})
 	if bridge != nil {
+		// The upstream is fully drained, so the completion watchdog has nothing
+		// left to give up on and must not fire into hw after this returns.
+		bridge.StopCompletionWatchdog()
 		bridge.Close()
 	}
 	if !translateResponse && bridge == nil {

@@ -92,6 +92,7 @@ func TranslateOpenAIToResponses(chunk *OpenAIChunk, s *ResponsesState) []Respons
 		if s.Usage != nil || !s.FlushReachesUs {
 			s.sendCompleted(&out)
 		}
+		s.CompletionPending = !s.Completed
 	}
 
 	return out

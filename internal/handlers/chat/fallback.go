@@ -17,6 +17,7 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
+	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/tokensaver"
 	"9router/proxy/internal/tracing"
@@ -423,6 +424,13 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			StatusCode: http.StatusBadGateway,
 			Body:       []byte(`{"error":{"type":"proxy_error","message":"` + clientErr.Error() + `"}}`),
 		}
+	}
+	// The client carries the strict-proxy marker itself, but the executors'
+	// DoRequest path sees only ctx, so the decision travels on both. A
+	// connection with nothing proxied at all is left unmarked: strict there
+	// means "never replay this request directly", not "a proxy must exist".
+	if connData != nil && (connData.ProxyPoolID != "" || connData.ConnectionProxyEnabled || connData.StrictProxy) {
+		ctx = internalproxy.WithStrictProxy(ctx, true)
 	}
 	sessionID := handlerutil.GetSessionID(ctx)
 

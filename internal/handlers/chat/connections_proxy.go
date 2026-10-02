@@ -2,18 +2,26 @@ package chat
 
 import (
 	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
 
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/log"
-	"net/http"
-	"net/url"
-	"sync"
+	internalproxy "9router/proxy/internal/proxy"
 )
 
 // maxProxyClients caps rotating-proxy growth: each entry pins a Transport
 // plus idle sockets, so unbounded distinct URLs (residential rotation)
 // would leak descriptors without eviction.
 const maxProxyClients = 128
+
+// strictCachePrefix namespaces the InsecureStrict-free, no-direct-replay
+// variants in proxyClients: a strict pool and a lax one may point at the same
+// URL, and sharing a client would leak the strict decision onto whichever
+// connection asked second.
+const strictCachePrefix = "strict\x00"
 
 var (
 	proxyClientsMu sync.RWMutex
@@ -54,7 +62,19 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 
 	var proxyURLStr string
 	var proxyType string
-	var strictProxy bool
+	// The row's own flag, which the pool below may override. Seeding it here is
+	// what makes a legacy connection's strict setting mean anything: the
+	// declaration alone would leave it false for every connection that is not
+	// bound to a pool.
+	strictProxy := connData.StrictProxy
+	// Whether the operator meant this connection to leave through a proxy at
+	// all. Upstream gates its strictProxy refusal on exactly this
+	// (decolua/9router#4333): executors such as Qoder set strictProxy to mean
+	// "do not replay this request directly if the proxy fails" — a replayed
+	// COSY signature answers 403 — not "a proxy must exist". With nothing
+	// configured those callers must keep working direct, so a strict flag
+	// alone may never turn into an error.
+	proxyIntended := connData.ProxyPoolID != ""
 
 	// 1. Resolve from ProxyPool. A pool that cannot serve traffic (deleted,
 	// inactive, or carrying no URL) makes the request fail: silently going
@@ -87,7 +107,7 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 	if proxyURLStr == "" {
 		proxyEnabled := connData.ConnectionProxyEnabled
 		proxyURL := connData.ConnectionProxyURL
-		if !proxyEnabled && connData.ProviderSpecificData != nil {
+		if connData.ProviderSpecificData != nil {
 			if en, ok := connData.ProviderSpecificData["connectionProxyEnabled"].(bool); ok {
 				proxyEnabled = en
 			}
@@ -98,6 +118,9 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 				strictProxy = sp
 			}
 		}
+		if proxyEnabled || strings.TrimSpace(proxyURL) != "" {
+			proxyIntended = true
+		}
 		if proxyEnabled && proxyURL != "" {
 			proxyURLStr = proxyURL
 			proxyType = "http"
@@ -105,13 +128,27 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 	}
 
 	if proxyURLStr == "" {
+		if strictProxy && proxyIntended {
+			// Strict mode means "never leave over the direct IP". A connection
+			// that names a proxy, has one enabled, or is bound to a pool, but
+			// resolves no usable URL, is exactly that case: an empty or
+			// discarded URL would otherwise go straight out from the real
+			// address while the dashboard shows it proxied (#4333).
+			log.Error("proxy", "strict proxy enabled but none resolved", "pool", connData.ProxyPoolID, "proxyUrl", connData.ConnectionProxyURL)
+			return nil, fmt.Errorf("%w: the connection enables a proxy but resolves none", internalproxy.ErrStrictProxyRequired)
+		}
 		return h.Client, nil
 	}
 	logProxyOnce(connData.ProxyPoolID, proxyURLStr, proxyType)
 
 	parsedURL, err := url.Parse(proxyURLStr)
+	if err == nil && (parsedURL.Scheme == "" || parsedURL.Host == "") {
+		err = fmt.Errorf("no scheme or host in %q", proxyURLStr)
+	}
 	if err != nil {
 		log.Warn("proxy", "invalid proxy pool url", "pool", connData.ProxyPoolID, "url", proxyURLStr, "error", err)
+		// The operator named a proxy and the transport cannot dial it. Under a
+		// strict connection that is a refusal, not a reason to leave directly.
 		if connData.ProxyPoolID != "" {
 			// The connection is bound to this pool, so a URL the transport
 			// cannot parse is a broken assignment, not a missing one.
@@ -119,13 +156,18 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 		}
 		if strictProxy {
 			log.Error("proxy", "strict proxy enabled but proxy url invalid", "url", proxyURLStr)
+			return nil, fmt.Errorf("%w: unparseable proxy url %q", internalproxy.ErrStrictProxyRequired, proxyURLStr)
 		}
 		return h.Client, nil
 	}
 
 	if proxyType == "http" || proxyType == "" {
+		cacheKey := proxyURLStr
+		if strictProxy {
+			cacheKey = strictCachePrefix + proxyURLStr
+		}
 		proxyClientsMu.RLock()
-		client, ok := proxyClients[proxyURLStr]
+		client, ok := proxyClients[cacheKey]
 		proxyClientsMu.RUnlock()
 		if ok {
 			return client, nil
@@ -133,7 +175,7 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 
 		proxyClientsMu.Lock()
 		defer proxyClientsMu.Unlock()
-		if client, ok = proxyClients[proxyURLStr]; ok {
+		if client, ok = proxyClients[cacheKey]; ok {
 			return client, nil
 		}
 		// Evict idle sockets of a random victim when over cap (amortized O(1);
@@ -158,7 +200,14 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 			Transport: baseTransport,
 			Timeout:   h.Client.Timeout,
 		}
-		proxyClients[proxyURLStr] = client
+		if strictProxy {
+			// The marker travels with the client, so every caller that dials a
+			// strict pool — the chat forwarder, the media lanes, the executors —
+			// refuses the direct replay in proxy.DoRequest without having to
+			// thread a flag through each of them.
+			client = internalproxy.ForbidDirectReplay(client)
+		}
+		proxyClients[cacheKey] = client
 		return client, nil
 	}
 
