@@ -216,11 +216,11 @@ Sepuluh issue yang masih terbuka ditutup di satu batch. Yang sudah benar di
   akan membuat respons mengembalikan nama yang tidak pernah dideklarasikan.
   Bentuk Converse kini ditangani simetris di request **dan** respons
   (`contentBlockStart.start.toolUse` dan `output.message.content[].toolUse`).
-- **`signalSelfShutdown` dead code di kedua varian build (#76).** Kedua file
-  `signal_unix.go`/`signal_windows.go` tidak punya call site sejak rewrite
-  `RestartSelf` pindah ke `shutdown.RestartAfterStop`; isinya identik dan
-  platform split yang membenarkan file terpisah sudah tidak ada. Keduanya
-  dihapus.
+- **`signalSelfShutdown` dead code di kedua varian build (#76) — BELUM dihapus.**
+  Kedua file `signal_unix.go`/`signal_windows.go` memang tidak punya call site
+  sejak rewrite `RestartSelf` pindah ke `shutdown.RestartAfterStop`, dan isinya
+  identik. Penghapusan file-nya **tidak termasuk batch ini**; issue #76 tetap
+  terbuka.
 - **Kredensial Kiro tidak pernah sampai ke quota tracker (#78).**
   `fetchProviderUsage` mengirim `accessToken` ke `fetchKiroUsage`, padahal
   koneksi Kiro menyimpan kredensialnya di `apiKey` — jadi request-nya
@@ -339,7 +339,7 @@ diuji dengan uji regresi yang gagal bila fix-nya dibalik (*mutation-checked*).
   terbaca lebih baru dari final dan di-auto-apply; `RunningPID` hanya percaya
   PID telanjang sehingga PID daur-ulang bisa membuat `stop` membunuh proses
   lain; `gateway.log` tidak pernah dirotasi dan dibaca utuh tiap 150 ms;
-  `signalSelfShutdown` kini dead code di kedua varian build; `tools[].toolSpec.name`
+  `tools[].toolSpec.name`
   (Bedrock Converse) direkam tapi tidak ditulis.
 
 ### 🐛 MCP tools dengan nama fungsi > 64 karakter mental dengan HTTP 400 (#68)
