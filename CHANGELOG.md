@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### 🐛 Manifest tanpa checksum membuat auto-update mati total — issue #72
+
+#72 membuat digest SHA256 **wajib**: `PerformSelfUpdate` menolak sebelum request
+jaringan apa pun kalau `expectedSHA256` kosong. Tapi `CheckUpdate` mencoba
+manifest lebih dulu dan langsung mengembalikan jawabannya kalau sukses
+(`updater.go:158-163`), sedangkan `version.json` yang benar-benar terbit hanya
+punya tiga key — `downloadUrl`, `latestVersion`, `releaseNotes` — tanpa `sha256`
+sama sekali. Akibatnya `checkManifest` selalu menghasilkan digest kosong,
+`checkGitHubReleases` **tidak pernah dijalankan**, dan `lookupAssetSHA256` yang
+justru menutup gap #72 tidak pernah menyentuh release sungguhan.
+
+Terbukti: dengan manifest berbentuk sama persis seperti yang diterbitkan repo,
+`CheckUpdate` mengembalikan `Source="manifest"`, `SHA256=""`, sementara fallback
+GitHub yang punya `SHA256SUMS.txt` tidak pernah dihubungi. Semua instalasi
+berakhir `release carries no checksum` — fail-closed dan aman, tapi
+`9router-go update` praktis mati.
+
+Manifest kini hanya boleh menjawab kalau memang bisa menghasilkan update yang
+dapat diinstal: digestnya ada, atau memang tidak ada update yang ditawarkan.
+Selain itu ia diperlakukan sebagai petunjuk dan turun ke GitHub Releases API;
+metadata manifest disimpan sebagai fallback supaya catatan rilis tetap tampil
+saat API-nya sedang mati.
+
+**Verifikasi:** `TestCheckUpdate_ManifestWithoutDigestFallsThroughToReleaseDigest`
+menyajikan `version.json` tanpa `sha256` dan menegaskan release API benar-benar
+dihubungi serta digestrelease yang dipakai. Diuji mutation: mengembalikan
+syarat ke "manifest selalu menang" membuat test itu gagal tepat di assertion
+release API tidak pernah ditanya. Dua test lain mengunci agar fallthrough tidak
+menjadi regresi sendiri — manifest yang **sudah** punya digest tetap dijawab
+tanpa menyentuh GitHub, dan manifest yang melaporkan sudah mutakhir tetap
+dijawab walau tanpa digest.
+
 ### 🐛 CI gagal karena free tier opencode sedang overload — skip set tidak lengkap
 
 `internal/handlers/chat/muse_spark_e2e_test.go` memanggil endpoint opencode

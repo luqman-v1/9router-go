@@ -79,12 +79,21 @@ func TestHandleToggleAutoUpdate(t *testing.T) {
 	}
 }
 
+// A digest-less manifest advertising a newer version is a lead, not an answer:
+// since the checksum became mandatory, a manifest that cannot describe its
+// asset with a sha256 cannot produce an installable update, so CheckUpdate
+// falls through to the release API that can. This manifest carries the digest
+// precisely so it still answers on its own — the fallthrough is covered in
+// internal/updater. Without it this test would be asserting the old
+// manifest-always-wins behaviour, where `9router-go update` always failed
+// with "release carries no checksum".
 func TestHandleCheckUpdate_Mock(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		manifest := map[string]any{
 			"latestVersion": "9.9.9",
 			"downloadUrl":   "https://example.com/download",
 			"releaseNotes":  "Test release notes",
+			"sha256":        strings.Repeat("ab", 32),
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.MarshalWrite(w, manifest)

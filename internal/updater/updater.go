@@ -152,14 +152,31 @@ func GetStatus() *UpdaterStatus {
 var githubReleasesAPI = lo.CoalesceOrEmpty(os.Getenv("UPSTREAM_API_BASE"), "https://api.github.com") + "/repos/%s/releases/latest"
 
 // CheckUpdate queries remote version sources (manifest or GitHub Releases API) and compares semver.
+//
+// The manifest is tried first, but it is only allowed to answer when it can
+// actually produce an installable update. Since #72 made the digest mandatory,
+// a manifest that carries no sha256 is a dead end: PerformSelfUpdate refuses
+// every install that reaches it, and the fallback that CAN fill the digest from
+// the release's SHA256SUMS.txt would never run. version.json ships exactly
+// three keys — downloadUrl, latestVersion, releaseNotes — so taking it on trust
+// made the checksum path unreachable in production and broke `9router-go
+// update` outright. A manifest without a digest therefore falls through to the
+// GitHub Releases API, and its version metadata is used only if that fails too.
 func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	updateURL := lo.CoalesceOrEmpty(os.Getenv("UPDATE_URL"), DefaultUpdateURL)
 
 	// 1. Try manifest URL first
-	info, err := checkManifest(ctx, updateURL)
-	if err == nil && info != nil {
-		cacheUpdateInfo(info)
-		return info, nil
+	info, manifestErr := checkManifest(ctx, updateURL)
+	if manifestErr == nil && info != nil {
+		if info.SHA256 != "" || !info.HasUpdate {
+			cacheUpdateInfo(info)
+			return info, nil
+		}
+		// A manifest that advertises an update it cannot describe with a digest
+		// is not an answer, only a lead. Keep it as the fallback so an outage
+		// in the Releases API still shows the notes.
+		log.Debug("updater", "manifest has no sha256, trying github releases", "url", updateURL)
+		manifestErr = fmt.Errorf("manifest carries no sha256 for %s", info.LatestVersion)
 	}
 
 	// 2. Fallback to GitHub Releases API
@@ -173,8 +190,8 @@ func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 		return ghInfo, nil
 	}
 
-	if err != nil {
-		return nil, fmt.Errorf("check update failed: manifest error (%w), github releases error (%w)", err, ghErr)
+	if manifestErr != nil {
+		return nil, fmt.Errorf("check update failed: manifest error (%w), github releases error (%w)", manifestErr, ghErr)
 	}
 	return nil, ghErr
 }
