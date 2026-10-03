@@ -85,6 +85,19 @@ Test baru `TestServer_ConnectionLimitsAreEnforced` boot `ServerModule` lewat fx
 dan menguji batas yang dibangun `ProvideServer` sungguhan — ia gagal di
 `origin/main` dengan ketiga field bernilai nol dan lulus setelah patch ini.
 
+Bukti bahwa batas ini tidak memutus model yang lambat, sekarang jadi test:
+`TestServer_SlowStreamingRequestSurvivesTheLimits` menjalankan handler yang
+mengunggah header dalam lima potongan jeda, diam 400ms sebelum byte pertama,
+lalu meneteskan chunk selama ~2,4 detik — semua harus sampai. Test ini
+diperiksa dua arah: ia **gagal** kalau `WriteTimeout` diisi 2 detik, dengan
+chunk terakhir hilang tepat di tengah stream, dan lulus pada konfigurasi yang
+benar. Versi pertama handler-nya hanya berjalan 1,6 detik sehingga deadline 2
+detik sempat cukup dan negatifnya lolos — durasi stream sekarang sengaja
+melampaui ambang itu.
+
+Jadi batas yang dipasang hanya berlaku **sebelum** dan **sesudah** ada request,
+tidak pernah di tengah stream.
+
 > Catatan: pada satu run `go test ./...`, `TestGateAcquire_SpacesConcurrentCallers`
 > dan dua test di `usage_throttle_test.go` gagal dengan pesan
 > `want >= 40ms`. Keduanya mengukur jarak waktu dengan `time.Sleep`, dan diff ini

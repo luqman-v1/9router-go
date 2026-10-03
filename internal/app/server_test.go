@@ -18,8 +18,15 @@ import (
 // hand-rolled copy of it — then hands back the *http.Server without letting
 // the fx hooks run. Starting them would bind the port and start the updater
 // and catalog-sync loops, none of which this test needs.
-func newTestServer(t *testing.T) *http.Server {
+func newTestServer(t *testing.T, handler http.Handler) *http.Server {
 	t.Helper()
+	if handler == nil {
+		r := chi.NewRouter()
+		r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		handler = r
+	}
 
 	cfg := &config.Config{
 		DatabasePath: t.TempDir() + "/test.sqlite",
@@ -44,19 +51,13 @@ func newTestServer(t *testing.T) *http.Server {
 	}
 	t.Cleanup(func() { _ = dbApp.Stop(context.Background()) })
 
-	router := chi.NewRouter()
-	router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
 	var server *http.Server
 	srvApp := fx.New(
 		fx.Provide(func() *config.Config { return cfg }),
 		fx.Provide(func() *db.Repo { return repo }),
-		fx.Provide(func() http.Handler { return router }),
 		fx.Provide(func() app.CLIParams { return app.CLIParams{} }),
 		fx.Provide(app.ProvideServer),
-		fx.NopLogger,
+		fx.Provide(func() http.Handler { return handler }),
 		fx.Populate(&server),
 	)
 	if err := srvApp.Err(); err != nil {
@@ -81,7 +82,7 @@ func newTestServer(t *testing.T) *http.Server {
 // alongside it: WriteTimeout must stay zero, since internal/proxy/stall.go
 // lets a stream idle for DefaultStallTimeout.
 func TestServer_ConnectionLimitsAreEnforced(t *testing.T) {
-	srv := newTestServer(t)
+	srv := newTestServer(t, nil)
 
 	if srv.ReadHeaderTimeout == 0 {
 		t.Error("ReadHeaderTimeout is 0: a client can hold a connection open by dribbling headers")
