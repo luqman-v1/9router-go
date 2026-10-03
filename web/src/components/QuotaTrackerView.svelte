@@ -742,6 +742,39 @@
       connections = initialConns
     }
 
+  // A filter is not navigation, so the URL is rewritten rather than pushed:
+  // the back button must not walk through every provider the operator clicked
+  // through. 'all' removes the parameter instead of pinning it.
+  $effect(() => {
+    void providerFilter
+    if (!initialLoadDone || typeof window === 'undefined') return
+    const url = new URL(window.location.href)
+    if (providerFilter && providerFilter !== 'all') {
+      url.searchParams.set('provider', providerFilter)
+    } else {
+      url.searchParams.delete('provider')
+    }
+    if (url.href !== window.location.href) {
+      window.history.replaceState(window.history.state, '', url)
+    }
+  })
+
+  // An unknown provider yields an empty list and an empty dropdown, so the
+  // deep link is released once the real option list is known.
+  $effect(() => {
+    if (!initialLoadDone || providerFilter === 'all') return
+    if (providerOptions.length === 0) return
+    if (providerOptions.includes(providerFilter)) return
+    providerFilter = 'all'
+  })
+
+    // A ?provider= deep link must survive a reload and be shareable, so the
+    // filter starts from the URL rather than always 'all'. An unknown value is
+    // kept until the option list arrives, then dropped — ignoring it up front
+    // would silently un-filter the page for anyone holding an old bookmark.
+    const deepLinkProvider = new URLSearchParams(window.location.search).get('provider')
+    if (deepLinkProvider) providerFilter = deepLinkProvider
+
     // Hydrate auto-refresh preference
     const stored = window.localStorage.getItem(AUTO_REFRESH_STORAGE_KEY)
     autoRefresh = stored === null ? true : stored === 'true'

@@ -61,6 +61,55 @@ memakai nilai tabel; `TestCustomModelDeclaredLimitsPublishedVerbatim` dan
 bertipe image yang tidak boleh muncul di peta chat). Ketiga test batas gagal
 identik di `origin/main` (dibuktikan dengan `git stash`).
 
+### ✨ Dashboard: deep link filter quota, filter `hidden`, `recurring` codebuddy-intl — issue #101 (bagian 1–3)
+
+Tiga permukaan dashboard yang tertinggal dari upstream v0.5.95.
+
+**`?provider=` tidak melakukan apa pun.** `providerFilter` di
+`QuotaTrackerView` selalu mulai dari `'all'`; `onMount` membaca localStorage
+dan settings, tidak pernah `window.location.search`, dan perubahan filter
+tidak pernah menulis balik ke URL — jadi deep link dan bookmark mati.
+Sekarang filter diinisialisasi dari URL saat mount, dan setiap perubahan
+menulis balik lewat `history.replaceState`, bukan `pushState`: ini filter,
+bukan navigasi, jadi tombol back tidak boleh menelusuri setiap provider yang
+diklik. Kembali ke `all` menghapus parameternya. Nilai yang tidak dikenal
+dilepas setelah daftar opsi benar-benar tiba — bukan diabaikan di awal —
+supaya bookmark lama tidak pernah menyisakan daftar kosong tanpa jalan keluar.
+
+**`codebuddy-intl` kehilangan `recurring`.** Backend sudah mengirim field itu
+(`usage_providers.go:998` `true`, `:1006` `false`); switch frontend hanya
+punya `case 'codebuddy-cn'`. Akibatnya paket bonus codebuddy-intl tampil dengan
+label "Reset in" alih-alih "Expires in". Kedua provider kini ditangani di
+case yang sama, seperti `ProviderLimits/utils.js:621-635` upstream.
+
+**Flag `hidden` ada di tipe tapi tidak dipakai.** `providers.ts`
+mendeklarasikan dan menyetelnya, dan dua pemakainya sudah benar
+(`ProvidersOverviewGrid` untuk tiap kategori, `providers.ts:2282` untuk
+`supportsKind`) — yang belum adalah peta topologi. Dari lima provider yang
+ditandai tersembunyi, empat hanya TTS dan sudah tersaring oleh
+`supportsKind`; satu-satunya yang tersisa adalah `mmf`/mimo-free,
+provider chat tersembunyi yang satu-satunya di registry. `addProvider` →
+`topologyProviders` di `AnalyticsView` sekarang melewatinya, dengan alasan
+yang sama seperti daftar provider: peta itu dibaca sebagai "siapa yang sedang
+di bus", bukan inventaris lengkap. Halaman detail provider untuk yang
+`hidden` tetap bisa dibuka — itu kontrak field-nya sendiri.
+
+**Soal "satu sumber kebenaran" di sisi Go:** tidak ada, dan tidak dibuat.
+Go tidak punya salinan flag `hidden`; memilikinya berarti menggandakan
+registry yang sudah hidup di `web/src/lib/providers.ts` ke tempat ketiga.
+Yang bisa dijamin Go adalah hal yang benar-benar dimilikinya — daftar
+provider yang dilayani quota tracker. Daftar itu sekarang berisi nol dari
+lima provider tersembunyi, jadi `isUsageEligibleConnection` sudah mengeluarkan
+mereka dari `providerOptions` dan daftar koneksi; hasilnya identik dengan
+penyaringan upstream di `UsageStats.js:242` dan `:250` untuk registry saat
+ini. `TestHiddenProvidersStayOutOfTheQuotaList` mengunci itu, sehingga
+provider tersembunyi yang suatu saat ikut dilayani quota tracker akan
+gagal di test dan diperbaiki di commit yang sama.
+
+**Verifikasi:** `bun test` (127 pass), `tsc -b`, `oxlint`, `bun run build`,
+`go test ./internal/handlers/dashboard/...` (termasuk
+`TestHiddenProvidersStayOutOfTheQuotaList`).
+
 ## [Unreleased]
 
 ### 🎨 Console Log: warna mengikuti level yang benar-benar dieminkan

@@ -683,6 +683,7 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
         break
 
       case 'codebuddy-cn':
+      case 'codebuddy-intl':
         if (d.quotas) {
           Object.entries(d.quotas).forEach(([name, quota]) => {
             normalizedQuotas.push({

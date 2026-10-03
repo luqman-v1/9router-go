@@ -195,3 +195,43 @@ func TestSanitizeProviderConnection_LastErrorString(t *testing.T) {
 		t.Errorf("lastError = %q, want %q", lastErr, "Rate limit reached")
 	}
 }
+
+// The registry marks some providers `hidden`: routable, and their detail page
+// stays reachable, but kept out of the lists a person scans. Go keeps no copy
+// of that flag, so this pins the rule the quota lists already imply — a
+// provider the tracker does not serve has nothing to offer there. A provider
+// that ever becomes usage-supported while hidden needs this revisited in the
+// same commit.
+func TestHiddenProvidersStayOutOfTheQuotaList(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	h := NewDashboardHandler(repo)
+
+	for _, s := range []struct{ id, provider, authType string }{
+		{"c-claude", "claude", "oauth"},
+		{"c-deepseek", "deepseek", "apikey"},
+		// mmf/mimo-free is the registry's one hidden chat provider; the other
+		// four hidden entries are TTS-only.
+		{"c-mmf", "mmf", "apikey"},
+	} {
+		if err := repo.CreateProviderConnection(s.id, s.provider, s.authType, s.id, "sk-"+s.provider); err != nil {
+			t.Fatalf("seed %s: %v", s.provider, err)
+		}
+	}
+
+	out := getProvidersClient(t, setupProvidersClientRouter(h), "")
+	rawOpts, _ := out["providerOptions"].([]any)
+	opts := make([]string, 0, len(rawOpts))
+	for _, o := range rawOpts {
+		s, _ := o.(string)
+		opts = append(opts, s)
+	}
+	for _, p := range opts {
+		if p == "mmf" {
+			t.Errorf("hidden provider mmf reached the quota provider list: %v", opts)
+		}
+	}
+	if len(opts) != 2 {
+		t.Errorf("providerOptions = %v, want the two visible providers only", opts)
+	}
+}

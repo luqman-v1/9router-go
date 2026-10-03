@@ -301,6 +301,10 @@
       if (!provId) return
       const canonical = provId.toLowerCase().trim()
       const cat = PROVIDER_CATALOG.find((p) => p.id.toLowerCase() === canonical || (p.alias && p.alias.toLowerCase() === canonical))
+      // A provider the registry hides stays routable, but it has no place in a
+      // map that reads as "who is on the bus" — the same reason it is kept out
+      // of the provider list.
+      if (cat?.hidden) return
       const targetId = cat?.id || canonical
       if (seen.has(targetId)) return
       seen.add(targetId)
