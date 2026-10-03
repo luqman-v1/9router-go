@@ -28,6 +28,7 @@
   } from '../../lib/oauth-handoff'
   import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from '../../lib/models'
   import { notifyCustomModelsChanged } from '../../lib/customModels'
+  import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   import {
     buildAvailableModels,
     fetchProviderModelsData,
@@ -2876,9 +2877,9 @@
       </div>
     {/if}
 
-    <!-- Select All Checkbox -->
+    <!-- Select All Checkbox & Sensor Email Toggle -->
     {#if providerConnections.length > 0}
-      <div class="mb-3 flex items-center gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
+      <div class="mb-3 flex items-center justify-between gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
         <label class="flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
           <input
             type="checkbox"
@@ -2888,6 +2889,19 @@
           />
           Select All
         </label>
+
+        <!-- Sensor Email Toggle Button -->
+        <button
+          type="button"
+          onclick={() => emailPrivacy.toggle()}
+          class="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors cursor-pointer {$emailPrivacy ? 'border-brand-500/40 bg-brand-500/10 text-brand-500 font-medium' : 'border-border-subtle bg-surface text-text-muted hover:text-text-main hover:bg-surface-2'}"
+          title={$emailPrivacy ? 'Tampilkan email lengkap' : 'Sensor / sembunyikan email'}
+        >
+          <span class="material-symbols-outlined text-[15px]">
+            {$emailPrivacy ? 'visibility_off' : 'visibility'}
+          </span>
+          <span>{$emailPrivacy ? 'Email Disensor' : 'Sensor Email'}</span>
+        </button>
       </div>
     {/if}
 
@@ -3030,13 +3044,13 @@
                   <!-- Title & badges -->
                   <div class="flex-1 min-w-0">
                     <p class="text-sm font-medium truncate">
-                      {conn.name || conn.email || (conn.authType === 'oauth' ? 'OAuth Account' : 'API Key Slot')}
+                      {formatEmailLabel(conn.name || conn.email || (conn.authType === 'oauth' ? 'OAuth Account' : 'API Key Slot'), $emailPrivacy)}
                     </p>
                     <!-- Secondary label: upstream ConnectionRow shows the email
                          under a name, or the displayName when the stored name is
                          the email (which is what the Qoder device flow writes). -->
                     {#if secondaryConnLabel(conn)}
-                      <p class="truncate text-xs text-text-muted">{secondaryConnLabel(conn)}</p>
+                      <p class="truncate text-xs text-text-muted">{formatEmailLabel(secondaryConnLabel(conn), $emailPrivacy)}</p>
                     {/if}
                     <div class="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                       <!-- Status badge (queued/testing/success/failed while a one-by-one run is in flight) -->
@@ -3543,7 +3557,7 @@
             const specific = c.providerSpecificData as Record<string, any> | undefined
             return {
               id: c.id,
-              name: c.name || c.email || 'Freebuff Account',
+              name: formatEmailLabel(c.name || c.email || 'Freebuff Account', $emailPrivacy),
               isActive: c.isActive === 1,
               currentModel: freebuffSessions[c.id]?.currentModel || (specific?.freebuffModel as string) || (specific?.assignedModel as string),
               status: freebuffSessions[c.id]?.status,
@@ -4318,7 +4332,7 @@
         {#if editingConnection.email}
           <div>
             <span class="block text-xs font-medium text-text-muted mb-1">Email</span>
-            <p class="text-xs text-text-main font-medium">{editingConnection.email}</p>
+            <p class="text-xs text-text-main font-medium">{formatEmailLabel(editingConnection.email, $emailPrivacy)}</p>
           </div>
         {/if}
 
