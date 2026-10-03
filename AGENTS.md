@@ -334,6 +334,24 @@ Always use the established design tokens defined in `web/src/index.css` for cons
    - Navigation tabs are managed via `web/src/lib/router.ts` (`ActiveTab` and `TAB_ROUTES`).
    - Modal dialogs should handle `Escape` key and click-outside backdrop dismissals.
 
+
+### E. Svelte Type-Checking (`make vet-svelte`)
+
+`tsconfig.app.json` includes `src`, but **`tsc` cannot parse `.svelte` files at all** — every Svelte `<script lang="ts">` block in this repo went untyped. The consequence is concrete: `bun run build`, `oxlint`, and `vite build` all report success for a component that calls a function it never imported, and the failure only appears when the code runs — a `ReferenceError` in the browser, after the button was clicked. That shipped in `QuotaTrackerView.svelte:300` (commit `3525284c` renamed the mint to `newResetCreditIdempotencyKey` and updated only the import) and was found by a user, not by CI.
+
+`svelte-check` closes the hole but reports ~92 pre-existing type errors, so it runs as a **ratchet** (`web/scripts/svelte-check-ratchet.ts`) rather than a hard gate:
+
+1. **Unresolved identifiers fail the build outright** — `Cannot find name`, `Cannot find module`, missing exports. These are the fatal class: each one is a `ReferenceError` waiting for a user click, and unlike a stylistic type mismatch they take a whole feature down.
+2. **Total error count is pinned** in `web/scripts/svelte-check-baseline.json` and may only shrink. Every new type error fails the build.
+
+Run it on any frontend change. When the count legitimately drops:
+
+```bash
+cd web && bun run ratchet:svelte -- --update
+```
+
+Never widen the baseline to make a failure disappear — fix the error, or split the PR and land the debt reduction on its own. The `--tsconfig tsconfig.app.json` flag is mandatory: the default resolves `tsconfig.json`, which has `files: []`, and silently checks **zero** components.
+
 ---
 
 ## 7. Upstream Sync Workflow (Step-by-Step)
@@ -355,11 +373,13 @@ When tasked with syncing a feature, bugfix, or provider from upstream:
    - Frontend: Convert React logic into Svelte 5 runes (`$state`, `$derived`, `$effect`, `bind:value`).
 4. **Implement & Test**:
    - Backend: Write code in `internal/...` and unit tests in `*_test.go` (table-driven tests using `testing.T`).
-   - Frontend: Write/update components in `web/src/` and verify `cd web && bun run build`.
+   - Frontend: Write/update components in `web/src/`, verify `cd web && bun run build`, **and** run `make vet-svelte`.
+     `tsc -b` cannot read `.svelte` files, so a Svelte script block calling a function it never imported compiles, lints and bundles clean, then throws a `ReferenceError` the first time a user clicks it (issue #130). `make vet-svelte` is the only gate that sees that class of bug.
 5. **Verify**:
    ```bash
    rtk go test ./...
    make build
+   make vet-svelte   # svelte-check ratchet — see §6.E
    ```
 6. **Update Changelog**:
    - Add entry to `CHANGELOG.md` under `[Unreleased]` detailing the parity sync.
@@ -381,6 +401,9 @@ make vet-integration
 make web-build
 # Or directly inside web/
 cd web && bun run build
+
+# Svelte type-check ratchet (blocks unresolved identifiers, pins type debt)
+make vet-svelte
 
 # Build binary (automatically builds web SPA into web/dist first)
 make build

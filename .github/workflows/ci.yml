@@ -33,6 +33,16 @@ jobs:
         working-directory: web
         run: bun test
 
+      # tsc -b cannot read .svelte files, so every Svelte script block in this
+      # repo went untyped until svelte-check was added. That hole shipped a
+      # ReferenceError (issue #130) which `bun run build`, oxlint and every
+      # other gate passed: the undefined name is only resolved when the user
+      # clicks. This blocks the fatal class (unresolved identifiers) outright
+      # and ratchets the remaining type debt so it can only shrink.
+      - name: Svelte check (ratchet)
+        working-directory: web
+        run: bun run ratchet:svelte
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

@@ -109,6 +109,10 @@ test:
 test-short:
 	go test ./...
 
+## vet-svelte — svelte-check ratchet: blocks unresolved identifiers, pins type debt
+vet-svelte:
+	cd web && bun install --frozen-lockfile && bun run ratchet:svelte
+
 # The integration suite imports internal/app -> internal/handlers -> web, and
 # web/embed.go embeds web/dist at compile time. web-build is a no-op once the
 # SPA has been built, so this costs nothing on a warm tree.
