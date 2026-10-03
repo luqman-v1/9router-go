@@ -13,6 +13,11 @@ import (
 	"9router/proxy/internal/handlerutil"
 )
 
+var (
+	proxyPrimaryProbeURL   = "https://www.google.com/generate_204"
+	proxySecondaryProbeURL = "https://cloudflare.com/cdn-cgi/trace"
+)
+
 // countProxyPoolBindings counts provider connections bound to the given pool,
 // checking both the top-level proxyPoolId and providerSpecificData.proxyPoolId.
 func (h *DashboardHandler) countProxyPoolBindings() map[string]int {
@@ -187,6 +192,8 @@ func (h *DashboardHandler) HandleTestProxyPool(w http.ResponseWriter, r *http.Re
 		_ = h.Repo.SetProxyPoolStatus(id, "failed", 0)
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"success": false,
+			"status":  "failed",
+			"latency": int64(0),
 			"error":   "no proxy URLs configured",
 		})
 		return
@@ -207,6 +214,8 @@ func (h *DashboardHandler) HandleTestProxyPool(w http.ResponseWriter, r *http.Re
 		_ = h.Repo.SetProxyPoolStatus(id, "failed", 0)
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"success": false,
+			"status":  "failed",
+			"latency": int64(0),
 			"error":   "invalid proxy URL format",
 		})
 		return
@@ -219,31 +228,59 @@ func (h *DashboardHandler) HandleTestProxyPool(w http.ResponseWriter, r *http.Re
 		Timeout: 5 * time.Second,
 	}
 
-	resp, err := client.Get("https://www.google.com/generate_204")
+	resp, err := client.Get(proxyPrimaryProbeURL)
 	latencyMs := time.Since(start).Milliseconds()
 
-	if err != nil || (resp != nil && resp.StatusCode >= 400) {
-		status := "failed"
-		_ = h.Repo.SetProxyPoolStatus(id, status, latencyMs)
-		errStr := "connection timed out or failed"
-		if err != nil {
-			errStr = err.Error()
-		}
+	// Primary probe succeeded
+	if err == nil && resp != nil && resp.StatusCode < 400 {
+		_ = resp.Body.Close()
+		_ = h.Repo.SetProxyPoolStatus(id, "passed", latencyMs)
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-			"success": false,
-			"status":  status,
+			"success": true,
+			"status":  "passed",
 			"latency": latencyMs,
-			"error":   errStr,
 		})
 		return
 	}
-	defer resp.Body.Close()
 
-	_ = h.Repo.SetProxyPoolStatus(id, "passed", latencyMs)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+
+	// Primary probe failed or timed out. Attempt secondary probe to avoid false negatives when Google is blocked.
+	secStart := time.Now()
+	respSec, errSec := client.Get(proxySecondaryProbeURL)
+	if errSec == nil && respSec != nil && respSec.StatusCode < 400 {
+		_ = respSec.Body.Close()
+		latencyMs = time.Since(secStart).Milliseconds()
+		_ = h.Repo.SetProxyPoolStatus(id, "passed", latencyMs)
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"success": true,
+			"status":  "passed",
+			"latency": latencyMs,
+		})
+		return
+	}
+
+	if respSec != nil && respSec.Body != nil {
+		_ = respSec.Body.Close()
+	}
+
+	// Both probes failed
+	latencyMs = time.Since(start).Milliseconds()
+	status := "failed"
+	_ = h.Repo.SetProxyPoolStatus(id, status, latencyMs)
+	errStr := "connection timed out or failed"
+	if errSec != nil {
+		errStr = errSec.Error()
+	} else if err != nil {
+		errStr = err.Error()
+	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"success": true,
-		"status":  "passed",
+		"success": false,
+		"status":  status,
 		"latency": latencyMs,
+		"error":   errStr,
 	})
 }
 
