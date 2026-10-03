@@ -45,6 +45,11 @@ func (h *ChatHandler) LogFailure(
 		"cached_tokens":               usage.GetCachedTokens(),
 		"cache_creation_input_tokens": usage.CacheCreationInputTokens,
 	}
+	if info.SavedTokens > 0 {
+		tokens["original_input_tokens"] = info.OriginalInputTokens
+		tokens["saved_tokens"] = info.SavedTokens
+		tokens["saved_percent"] = info.SavedPercent
+	}
 	statusCode := http.StatusBadGateway
 	var upstreamErr *upstreamError
 	if errors.As(err, &upstreamErr) && upstreamErr.StatusCode > 0 {
@@ -164,11 +169,15 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 	})
 	metaJSON := fmt.Sprintf(`{"provider":"%s","model":"%s","connectionId":"%s"}`, info.Provider, info.Model, info.ConnectionID)
 
-	log.Info("usage", "logged", append([]any{
+	usageKVs := []any{
 		"provider", info.Provider, "model", info.Model,
 		"prompt", usage.PromptTokens, "completion", usage.CompletionTokens, "cached", cachedTokens,
 		"cache_creation", cacheCreationTokens, "ttft_ms", ttftMs, "latency_ms", latencyMs, "cost", cost,
-	}, info.ConnIdentityKV()...)...)
+	}
+	if info.SavedTokens > 0 {
+		usageKVs = append(usageKVs, "compressed", fmt.Sprintf("%d->%d (%d%% saved)", info.OriginalInputTokens, info.OriginalInputTokens-info.SavedTokens, info.SavedPercent))
+	}
+	log.Info("usage", "logged", append(usageKVs, info.ConnIdentityKV()...)...)
 
 	tokensJSON := fmt.Sprintf(`{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d,"cached_tokens":%d,"cache_creation_input_tokens":%d}`, usage.PromptTokens, usage.CompletionTokens, totalTokens, cachedTokens, cacheCreationTokens)
 	if err := h.Repo.InsertUsageHistory(info.Provider, info.Model, info.ConnectionID, maskAPIKey(info.APIKey), info.Endpoint, usage.PromptTokens, usage.CompletionTokens, cost, "success", totalTokens, metaJSON, tokensJSON); err != nil {
@@ -179,18 +188,30 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 	reqID := fmt.Sprintf("%d-%s", now.UnixMilli(), info.Model)
 	reqMsgs := extractRequestMessages(requestBody)
 
+	tokensMap := map[string]int{
+		"prompt_tokens":               usage.PromptTokens,
+		"completion_tokens":           usage.CompletionTokens,
+		"cached_tokens":               cachedTokens,
+		"cache_creation_input_tokens": cacheCreationTokens,
+		"reasoning_tokens":            usage.ReasoningTokens(),
+	}
+	if info.SavedTokens > 0 {
+		tokensMap["original_input_tokens"] = info.OriginalInputTokens
+		tokensMap["saved_tokens"] = info.SavedTokens
+		tokensMap["saved_percent"] = info.SavedPercent
+	}
+
 	reqData, err := json.Marshal(map[string]any{
-		"id": reqID, "provider": info.Provider, "model": info.Model,
-		"connectionId": info.ConnectionID, "status": "success",
-		"timestamp": now.Format("2006-01-02T15:04:05.000Z"),
-		"latency":   map[string]int64{"ttft": ttftMs, "total": latencyMs},
-		"tokens": map[string]int{
-			"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens,
-			"cached_tokens": cachedTokens, "cache_creation_input_tokens": cacheCreationTokens,
-			"reasoning_tokens": usage.ReasoningTokens(),
-		},
-		"request":  map[string]any{"messages": reqMsgs},
-		"response": map[string]any{"content": respContent},
+		"id":           reqID,
+		"provider":     info.Provider,
+		"model":        info.Model,
+		"connectionId": info.ConnectionID,
+		"status":       "success",
+		"timestamp":    now.Format("2006-01-02T15:04:05.000Z"),
+		"latency":      map[string]int64{"ttft": ttftMs, "total": latencyMs},
+		"tokens":       tokensMap,
+		"request":      map[string]any{"messages": reqMsgs},
+		"response":     map[string]any{"content": respContent},
 	})
 	if err != nil {
 		log.Error("usage", "marshal request detail failed", "error", err)

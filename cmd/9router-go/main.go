@@ -40,6 +40,11 @@ func main() {
 				Usage: "enable Ponytail lazy dev code style (env: PONYTAIL_ENABLED)",
 			},
 			&cli.BoolFlag{
+				Name:  "adhd",
+				Value: os.Getenv("ADHD_ENABLED") == "true",
+				Usage: "enable I have ADHD action-first output style (env: ADHD_ENABLED)",
+			},
+			&cli.BoolFlag{
 				Name:  "auto-update",
 				Value: os.Getenv("AUTO_UPDATE") == "true",
 				Usage: "automatically download and install updates if available (env: AUTO_UPDATE)",

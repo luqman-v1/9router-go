@@ -53,6 +53,10 @@ export interface RequestDetailItem {
     completion_tokens?: number
     cached_tokens?: number
     cache_read_input_tokens?: number
+    reasoning_tokens?: number
+    original_input_tokens?: number
+    saved_tokens?: number
+    saved_percent?: number
   }
   [key: string]: unknown
 }

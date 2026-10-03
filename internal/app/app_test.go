@@ -34,10 +34,22 @@ func TestCLIParams(t *testing.T) {
 	if !defaults.RTK {
 		t.Errorf("expected RTK to be enabled by default")
 	}
+	if defaults.ADHD {
+		t.Errorf("expected ADHD to be disabled by default")
+	}
 
 	fromNil := app.NewCLIParams(nil)
 	if fromNil.RTK != defaults.RTK {
 		t.Errorf("expected NewCLIParams(nil) to equal DefaultCLIParams")
+	}
+	if fromNil.ADHD != defaults.ADHD {
+		t.Errorf("expected fromNil.ADHD to match default")
+	}
+
+	t.Setenv("ADHD_ENABLED", "true")
+	withEnv := app.DefaultCLIParams()
+	if !withEnv.ADHD || !withEnv.ADHDSet {
+		t.Errorf("expected ADHD enabled via env")
 	}
 }
 

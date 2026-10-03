@@ -27,6 +27,7 @@ type Config struct {
 	RTKEnabled      bool
 	CavemanEnabled  bool
 	PonytailEnabled bool
+	ADHDEnabled     bool
 }
 
 // NewViper creates and configures a new Viper instance reading from .env with standard defaults.
@@ -50,6 +51,7 @@ func NewViperWithFile(configFile string) *viper.Viper {
 	v.SetDefault("RTK_ENABLED", true)
 	v.SetDefault("CAVEMAN_ENABLED", false)
 	v.SetDefault("PONYTAIL_ENABLED", false)
+	v.SetDefault("ADHD_ENABLED", false)
 
 	if configFile != "" {
 		if err := v.ReadInConfig(); err != nil {
@@ -200,6 +202,7 @@ func LoadConfigFromViper(v *viper.Viper) *Config {
 	rtkEnabled := v.GetBool("RTK_ENABLED")
 	cavemanEnabled := v.GetBool("CAVEMAN_ENABLED")
 	ponytailEnabled := v.GetBool("PONYTAIL_ENABLED")
+	adhdEnabled := v.GetBool("ADHD_ENABLED")
 
 	return &Config{
 		Host:            host,
@@ -212,6 +215,7 @@ func LoadConfigFromViper(v *viper.Viper) *Config {
 		RTKEnabled:      rtkEnabled,
 		CavemanEnabled:  cavemanEnabled,
 		PonytailEnabled: ponytailEnabled,
+		ADHDEnabled:     adhdEnabled,
 	}
 }
 

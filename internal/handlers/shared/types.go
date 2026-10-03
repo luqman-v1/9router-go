@@ -58,6 +58,11 @@ type UsageLogInfo struct {
 	// proxy?", which is the first question asked whenever a provider's rate limit
 	// or block list is tied to an IP.
 	Egress string
+
+	// RTK token compression metrics
+	OriginalInputTokens int
+	SavedTokens         int
+	SavedPercent        int
 }
 
 // ConnIdentityKV returns the log key/value pairs naming the account behind a

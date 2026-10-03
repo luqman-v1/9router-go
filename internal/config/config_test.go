@@ -153,6 +153,7 @@ MACHINE_ID_SALT=dotenv-salt
 RTK_ENABLED=false
 CAVEMAN_ENABLED=true
 PONYTAIL_ENABLED=true
+ADHD_ENABLED=true
 `
 	envFile := filepath.Join(tempDir, ".env")
 	if err := os.WriteFile(envFile, []byte(envContent), 0600); err != nil {
@@ -190,6 +191,9 @@ PONYTAIL_ENABLED=true
 	if cfg.PonytailEnabled != true {
 		t.Errorf("expected ponytail true from .env, got %v", cfg.PonytailEnabled)
 	}
+	if cfg.ADHDEnabled != true {
+		t.Errorf("expected adhd true from .env, got %v", cfg.ADHDEnabled)
+	}
 }
 
 func TestEnvPrecedenceOverDotEnv(t *testing.T) {
@@ -200,6 +204,7 @@ MACHINE_ID_SALT=dotenv-salt
 RTK_ENABLED=false
 CAVEMAN_ENABLED=false
 PONYTAIL_ENABLED=false
+ADHD_ENABLED=false
 `
 	envFile := filepath.Join(tempDir, ".env")
 	if err := os.WriteFile(envFile, []byte(envContent), 0600); err != nil {
@@ -213,6 +218,7 @@ PONYTAIL_ENABLED=false
 	t.Setenv("RTK_ENABLED", "true")
 	t.Setenv("CAVEMAN_ENABLED", "true")
 	t.Setenv("PONYTAIL_ENABLED", "true")
+	t.Setenv("ADHD_ENABLED", "true")
 
 	v := NewViperWithFile(envFile)
 	cfg := LoadConfigFromViper(v)
@@ -234,6 +240,9 @@ PONYTAIL_ENABLED=false
 	}
 	if cfg.PonytailEnabled != true {
 		t.Errorf("expected OS env PONYTAIL_ENABLED true to override .env, got %v", cfg.PonytailEnabled)
+	}
+	if cfg.ADHDEnabled != true {
+		t.Errorf("expected OS env ADHD_ENABLED true to override .env, got %v", cfg.ADHDEnabled)
 	}
 }
 

@@ -35,6 +35,8 @@ type SettingsData struct {
 	CavemanLevel               string                          `json:"cavemanLevel"`
 	PonytailEnabled            bool                            `json:"ponytailEnabled"`
 	PonytailLevel              string                          `json:"ponytailLevel"`
+	ADHDEnabled                bool                            `json:"adhdEnabled"`
+	ADHDLevel                  string                          `json:"adhdLevel"`
 	HeadroomUrl                string                          `json:"headroomUrl"`
 	HeadroomCodeAware          bool                            `json:"headroomCodeAware"`
 	HeadroomKompress           bool                            `json:"headroomKompress"`
@@ -57,6 +59,8 @@ func DefaultSettings() *SettingsData {
 		CavemanLevel:      "full",
 		PonytailEnabled:   false,
 		PonytailLevel:     "full",
+		ADHDEnabled:       false,
+		ADHDLevel:         "full",
 		HeadroomUrl:       "http://localhost:8787",
 		HeadroomKompress:  true,
 		HeadroomTimeoutMs: 3000,
@@ -96,6 +100,12 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	}
 	if lvl := handlerutil.GetString(raw, "ponytailLevel"); lvl != "" {
 		s.PonytailLevel = lvl
+	}
+	if v, ok := raw["adhdEnabled"].(bool); ok {
+		s.ADHDEnabled = v
+	}
+	if lvl := handlerutil.GetString(raw, "adhdLevel"); lvl != "" {
+		s.ADHDLevel = lvl
 	}
 	if v := handlerutil.GetString(raw, "headroomUrl"); v != "" {
 		s.HeadroomUrl = v

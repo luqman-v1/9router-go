@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { RefreshCw, X } from 'lucide-svelte'
+  import { RefreshCw, X, Zap } from 'lucide-svelte'
   import Badge from '../../lib/ui/Badge.svelte'
   import Button from '../../lib/ui/Button.svelte'
   import Card from '../../lib/ui/Card.svelte'
@@ -113,8 +113,17 @@
               <td class="py-3 px-4 text-right text-text-main font-medium">
                 {item.latency?.total ? `${item.latency.total}ms` : '—'}
               </td>
-              <td class="py-3 px-4 text-right text-brand-500">
-                {fmt(item.tokens?.prompt_tokens)}
+              <td class="py-3 px-4 text-right text-brand-500 whitespace-nowrap">
+                <div class="inline-flex items-center justify-end gap-1.5">
+                  <span>{fmt(item.tokens?.prompt_tokens)}</span>
+                  {#if item.tokens?.saved_tokens && item.tokens.saved_tokens > 0}
+                    <span title={`Saved ${fmt(item.tokens.saved_tokens)} tokens`}>
+                      <Badge variant="success" size="sm" class="text-[10px] px-1.5 py-0 font-semibold">
+                        {item.tokens.saved_percent ? `-${item.tokens.saved_percent}% RTK` : `saved ${fmt(item.tokens.saved_tokens)}`}
+                      </Badge>
+                    </span>
+                  {/if}
+                </div>
               </td>
               <td class="py-3 px-4 text-right text-success">
                 {fmt(item.tokens?.completion_tokens)}
@@ -187,7 +196,20 @@
 
       <!-- Modal Body -->
       <div class="flex-1 overflow-y-auto p-6 space-y-4 font-body text-xs">
-        <!-- Metadata Row -->
+        <!-- Token Saver (RTK) Card -->
+        {#if selectedDetail.tokens?.saved_tokens && selectedDetail.tokens.saved_tokens > 0}
+          <div class="p-3.5 rounded-xl bg-success/10 border border-success/25 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div class="flex items-center gap-2">
+              <Zap class="w-4 h-4 text-success shrink-0" />
+              <Badge variant="success" size="sm" class="font-semibold">Token Saver (RTK)</Badge>
+            </div>
+            <div class="font-code text-xs text-text-main">
+              Compressed: <span class="text-text-muted">{fmt(selectedDetail.tokens.original_input_tokens ?? ((selectedDetail.tokens.prompt_tokens || 0) + (selectedDetail.tokens.saved_tokens || 0)))}</span> → <span class="font-bold text-success">{fmt(selectedDetail.tokens.prompt_tokens)}</span> <span class="text-success font-medium">({selectedDetail.tokens.saved_percent ?? 0}% saved)</span>
+            </div>
+          </div>
+        {/if}
+
+        <!-- Metadata Row / Tokens Grid -->
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div class="p-3 rounded-lg bg-surface-2 border border-border">
             <div class="text-text-muted text-[10px] uppercase font-bold">Latency</div>
@@ -202,21 +224,27 @@
             </div>
           </div>
           <div class="p-3 rounded-lg bg-surface-2 border border-border">
-            <div class="text-text-muted text-[10px] uppercase font-bold">Input Tokens</div>
+            <div class="text-text-muted text-[10px] uppercase font-bold">Total Input</div>
             <div class="font-code text-sm font-bold text-brand-500 mt-1">
               {fmt(selectedDetail.tokens?.prompt_tokens)}
             </div>
           </div>
           <div class="p-3 rounded-lg bg-surface-2 border border-border">
-            <div class="text-text-muted text-[10px] uppercase font-bold">Output Tokens</div>
+            <div class="text-text-muted text-[10px] uppercase font-bold">Total Output</div>
             <div class="font-code text-sm font-bold text-success mt-1">
               {fmt(selectedDetail.tokens?.completion_tokens)}
             </div>
           </div>
-          <div class="p-3 rounded-lg bg-surface-2 border border-border col-span-2 sm:col-span-4">
+          <div class="p-3 rounded-lg bg-surface-2 border border-border col-span-1 sm:col-span-2">
             <div class="text-text-muted text-[10px] uppercase font-bold">Cached Tokens</div>
             <div class="font-code text-sm font-bold text-info mt-1">
               {fmt(cachedTokensFor(selectedDetail))}
+            </div>
+          </div>
+          <div class="p-3 rounded-lg bg-surface-2 border border-border col-span-1 sm:col-span-2">
+            <div class="text-text-muted text-[10px] uppercase font-bold">Reasoning Tokens</div>
+            <div class="font-code text-sm font-bold {(selectedDetail.tokens?.reasoning_tokens || 0) > 0 ? 'text-warning' : 'text-text-muted'} mt-1">
+              {fmt(selectedDetail.tokens?.reasoning_tokens || 0)}
             </div>
           </div>
         </div>

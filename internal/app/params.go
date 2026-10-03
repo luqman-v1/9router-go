@@ -14,6 +14,8 @@ type CLIParams struct {
 	CavemanSet       bool
 	Ponytail         bool
 	PonytailSet      bool
+	ADHD             bool
+	ADHDSet          bool
 	AutoUpdate       bool
 	NoInjectionGuard bool
 }
@@ -30,6 +32,8 @@ func NewCLIParams(cCtx *cli.Context) CLIParams {
 		CavemanSet:       cCtx.IsSet("caveman"),
 		Ponytail:         cCtx.Bool("ponytail"),
 		PonytailSet:      cCtx.IsSet("ponytail"),
+		ADHD:             cCtx.Bool("adhd"),
+		ADHDSet:          cCtx.IsSet("adhd"),
 		AutoUpdate:       cCtx.Bool("auto-update"),
 		NoInjectionGuard: cCtx.Bool("no-injection-guard"),
 	}
@@ -44,6 +48,8 @@ func DefaultCLIParams() CLIParams {
 		CavemanSet:       os.Getenv("CAVEMAN_ENABLED") != "",
 		Ponytail:         os.Getenv("PONYTAIL_ENABLED") == "true",
 		PonytailSet:      os.Getenv("PONYTAIL_ENABLED") != "",
+		ADHD:             os.Getenv("ADHD_ENABLED") == "true",
+		ADHDSet:          os.Getenv("ADHD_ENABLED") != "",
 		AutoUpdate:       os.Getenv("AUTO_UPDATE") == "true",
 		NoInjectionGuard: os.Getenv("INJECTION_GUARD_DISABLED") == "true",
 	}

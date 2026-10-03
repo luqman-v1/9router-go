@@ -189,6 +189,20 @@
             class="w-4 h-4 accent-brand-500 cursor-pointer"
           />
         </div>
+
+        <!-- ADHD -->
+        <div class="flex items-center justify-between p-3 rounded-lg bg-bg border border-border">
+          <div>
+            <div class="font-bold text-text-main">I have ADHD (Action-First)</div>
+            <div class="text-[11px] text-text-muted">Action-first output: command/code first, bounded steps, no fluff</div>
+          </div>
+          <input
+            type="checkbox"
+            checked={!!formData.adhdEnabled}
+            onchange={(e) => (formData.adhdEnabled = e.currentTarget.checked)}
+            class="w-4 h-4 accent-brand-500 cursor-pointer"
+          />
+        </div>
       </div>
     </div>
   </div>

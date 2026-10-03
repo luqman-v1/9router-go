@@ -11,6 +11,8 @@ type TokenSaverConfig struct {
 	cavemanLevel          string
 	ponytailEnabled       bool
 	ponytailLevel         string
+	adhdEnabled           bool
+	adhdLevel             string
 	injectionGuardEnabled bool
 }
 
@@ -22,6 +24,8 @@ func NewTokenSaverConfig(rtk, caveman, ponytail bool) *TokenSaverConfig {
 		cavemanLevel:          "full",
 		ponytailEnabled:       ponytail,
 		ponytailLevel:         "full",
+		adhdEnabled:           false,
+		adhdLevel:             "full",
 		injectionGuardEnabled: true, // on by default; toggle via settings
 	}
 }
@@ -91,6 +95,33 @@ func (c *TokenSaverConfig) SetPonytail(v bool, level ...string) {
 	c.ponytailEnabled = v
 	if len(level) > 0 && level[0] != "" {
 		c.ponytailLevel = level[0]
+	}
+}
+
+// ADHDEnabled reports whether ADHD action-first output style is on.
+func (c *TokenSaverConfig) ADHDEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.adhdEnabled
+}
+
+// ADHDLevel returns the active ADHD level, defaulting to "full".
+func (c *TokenSaverConfig) ADHDLevel() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.adhdLevel == "" {
+		return "full"
+	}
+	return c.adhdLevel
+}
+
+// SetADHD toggles ADHD style and optionally sets its level.
+func (c *TokenSaverConfig) SetADHD(v bool, level ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.adhdEnabled = v
+	if len(level) > 0 && level[0] != "" {
+		c.adhdLevel = level[0]
 	}
 }
 

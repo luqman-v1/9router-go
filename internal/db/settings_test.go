@@ -227,3 +227,38 @@ func TestSetComboAndProviderStrategy_PreservesExistingSettings(t *testing.T) {
 		t.Errorf("unexpected provider strategy: %+v", s.ProviderStrategies["anthropic"])
 	}
 }
+
+func TestSettings_ADHD(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := NewRepo(database)
+
+	// DefaultSettings verification
+	defaults := DefaultSettings()
+	if defaults.ADHDEnabled {
+		t.Errorf("expected default ADHDEnabled=false, got true")
+	}
+	if defaults.ADHDLevel != "full" {
+		t.Errorf("expected default ADHDLevel='full', got %q", defaults.ADHDLevel)
+	}
+
+	// UpdateSettingsRaw with adhdEnabled and adhdLevel
+	if err := repo.UpdateSettingsRaw(map[string]any{
+		"adhdEnabled": true,
+		"adhdLevel":   "lite",
+	}); err != nil {
+		t.Fatalf("UpdateSettingsRaw failed: %v", err)
+	}
+
+	settings, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	if !settings.ADHDEnabled {
+		t.Errorf("expected ADHDEnabled=true, got false")
+	}
+	if settings.ADHDLevel != "lite" {
+		t.Errorf("expected ADHDLevel='lite', got %q", settings.ADHDLevel)
+	}
+}

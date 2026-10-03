@@ -74,6 +74,8 @@
   let cavemanLevel = $state('full')
   let ponytailEnabled = $state(false)
   let ponytailLevel = $state('full')
+  let adhdEnabled = $state(false)
+  let adhdLevel = $state('full')
   let locale = $state('en')
 
   let copiedInstallCmd = $state(false)
@@ -92,6 +94,11 @@
     { id: 'lite', label: 'Lite', desc: 'Build asked, name lazier option' },
     { id: 'full', label: 'Full', desc: 'Ladder enforced: stdlib/native first' },
     { id: 'ultra', label: 'Ultra', desc: 'YAGNI extremist, deletion first' },
+  ]
+
+  const ADHD_LEVELS = [
+    { id: 'full', label: 'Full', desc: '10 Rules' },
+    { id: 'lite', label: 'Lite', desc: 'Compact' },
   ]
 
   let isWenyanLocale = $derived(WENYAN_LOCALES.includes(locale))
@@ -130,6 +137,8 @@
       if (typeof settings.cavemanLevel === 'string' && settings.cavemanLevel) cavemanLevel = settings.cavemanLevel
       if (typeof settings.ponytailEnabled === 'boolean') ponytailEnabled = settings.ponytailEnabled
       if (typeof settings.ponytailLevel === 'string' && settings.ponytailLevel) ponytailLevel = settings.ponytailLevel
+      if (typeof settings.adhdEnabled === 'boolean') adhdEnabled = settings.adhdEnabled
+      if (typeof settings.adhdLevel === 'string' && settings.adhdLevel) adhdLevel = settings.adhdLevel
     }
   })
 
@@ -399,6 +408,16 @@
     patchSetting({ ponytailLevel: levelId })
   }
 
+  function handleToggleADHD(value: boolean) {
+    adhdEnabled = value
+    patchSetting({ adhdEnabled: value })
+  }
+
+  function handleSelectADHDLevel(levelId: string) {
+    adhdLevel = levelId
+    patchSetting({ adhdLevel: levelId })
+  }
+
   function copyInstallCommand() {
     navigator.clipboard.writeText('pip install "headroom-ai[proxy]"')
     copiedInstallCmd = true
@@ -424,6 +443,8 @@
         cavemanLevel = data.cavemanLevel || 'full'
         ponytailEnabled = !!data.ponytailEnabled
         ponytailLevel = data.ponytailLevel || 'full'
+        adhdEnabled = !!data.adhdEnabled
+        adhdLevel = data.adhdLevel || 'full'
       }
     } catch {}
 
@@ -676,6 +697,53 @@
         <Toggle
           checked={ponytailEnabled}
           onChange={() => handleTogglePonytail(!ponytailEnabled)}
+        />
+      </div>
+    </div>
+
+    <!-- 5. Action-first output (I have ADHD) -->
+    <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
+      <div class="min-w-0 flex-1">
+        <p class="font-medium">
+          I have ADHD{' '}
+          <a
+            href="https://github.com/ayghri/i-have-adhd"
+            target="_blank"
+            rel="noreferrer"
+            class="text-xs font-normal text-primary underline hover:opacity-80"
+          >
+            (Action-First)
+          </a>
+        </p>
+        <p class="text-sm text-text-muted">
+          Action-first output style: lead with command/code, numbered bounded steps, one concrete next step under 2 mins, no fluff/preamble.
+        </p>
+      </div>
+      <div class="flex items-center gap-3 shrink-0">
+        {#if adhdEnabled}
+          <div class="flex flex-col items-end gap-1">
+            <div class="flex items-center gap-1.5 flex-wrap">
+              {#each ADHD_LEVELS as lvl (lvl.id)}
+                <button
+                  type="button"
+                  onclick={() => handleSelectADHDLevel(lvl.id)}
+                  class="px-3 py-1.5 rounded text-xs font-medium border transition-colors cursor-pointer {adhdLevel === lvl.id
+                    ? 'bg-primary text-white border-primary'
+                    : 'bg-transparent border-border text-text-muted hover:bg-surface-2'}"
+                  title={lvl.desc}
+                >
+                  {lvl.label}
+                </button>
+              {/each}
+            </div>
+            <p class="text-xs text-primary">
+              {ADHD_LEVELS.find((lvl) => lvl.id === adhdLevel)?.desc || ''}
+            </p>
+          </div>
+        {/if}
+        <Toggle
+          checked={adhdEnabled}
+          onChange={() => handleToggleADHD(!adhdEnabled)}
         />
       </div>
     </div>

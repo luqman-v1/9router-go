@@ -32,9 +32,12 @@ func TestApplyTokenSavers_AllOff(t *testing.T) {
 	defer cleanup()
 
 	body := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
-	got := h.applyTokenSavers(body, false)
+	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(body, false)
 	if string(got) != string(body) {
 		t.Errorf("expected unchanged body when all token savers off")
+	}
+	if origTokens != 0 || savedTokens != 0 || savedPct != 0 {
+		t.Errorf("expected 0 token metrics when off, got orig=%d, saved=%d, pct=%d", origTokens, savedTokens, savedPct)
 	}
 }
 
@@ -59,9 +62,18 @@ func TestApplyTokenSavers_RTKOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal body: %v", err)
 	}
-	got := h.applyTokenSavers(body, false)
+	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(body, false)
 	if string(got) == string(body) {
 		t.Errorf("expected RTK to modify body")
+	}
+	if origTokens <= 0 {
+		t.Errorf("expected origTokens > 0, got %d", origTokens)
+	}
+	if savedTokens <= 0 {
+		t.Errorf("expected savedTokens > 0, got %d", savedTokens)
+	}
+	if savedPct <= 0 {
+		t.Errorf("expected savedPct > 0, got %d", savedPct)
 	}
 }
 
@@ -71,7 +83,7 @@ func TestApplyTokenSavers_CavemanInjects(t *testing.T) {
 	h.TokenSaver.SetCaveman(true)
 
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	got := h.applyTokenSavers(body, false)
+	got, _, _, _ := h.applyTokenSavers(body, false)
 	// Caveman prompt text should now appear in the system message.
 	if !strings.Contains(string(got), "terse") && !strings.Contains(string(got), "caveman") {
 		t.Errorf("expected caveman prompt injected, got %s", got)
@@ -84,9 +96,29 @@ func TestApplyTokenSavers_PonytailInjects(t *testing.T) {
 	h.TokenSaver.SetPonytail(true)
 
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	got := h.applyTokenSavers(body, false)
+	got, _, _, _ := h.applyTokenSavers(body, false)
 	if !strings.Contains(string(got), tokensaver.PonytailPrompt[:20]) {
 		t.Errorf("expected ponytail prompt injected, got %s", got)
+	}
+}
+
+func TestApplyTokenSavers_ADHDInjects(t *testing.T) {
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	h.TokenSaver.SetADHD(true)
+
+	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
+	got, _, _, _ := h.applyTokenSavers(body, false)
+	if !strings.Contains(string(got), "I have ADHD — action-first output") {
+		t.Errorf("expected ADHD full prompt injected, got %s", got)
+	}
+
+	// Test lite mode
+	h.TokenSaver.SetADHD(true, "lite")
+	bodyLite := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
+	gotLite, _, _, _ := h.applyTokenSavers(bodyLite, false)
+	if !strings.Contains(string(gotLite), "I have ADHD (lite)") {
+		t.Errorf("expected ADHD lite prompt injected, got %s", gotLite)
 	}
 }
 

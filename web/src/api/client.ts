@@ -63,6 +63,8 @@ export interface Settings {
   cavemanLevel?: string
   ponytailEnabled?: boolean
   ponytailLevel?: string
+  adhdEnabled?: boolean
+  adhdLevel?: string
   headroomEnabled?: boolean
   headroomUrl?: string
   headroomTimeoutMs?: number

@@ -64,6 +64,35 @@ func TestSetPonytail(t *testing.T) {
 	}
 }
 
+func TestSetADHD(t *testing.T) {
+	c := NewTokenSaverConfig(false, false, false)
+	if c.ADHDEnabled() {
+		t.Error("expected initial ADHD false")
+	}
+	if c.ADHDLevel() != "full" {
+		t.Errorf("expected default ADHD level 'full', got %s", c.ADHDLevel())
+	}
+	c.SetADHD(true)
+	if !c.ADHDEnabled() {
+		t.Error("expected true after SetADHD(true)")
+	}
+	if c.ADHDLevel() != "full" {
+		t.Errorf("expected ADHD level 'full', got %s", c.ADHDLevel())
+	}
+	c.SetADHD(true, "lite")
+	if c.ADHDLevel() != "lite" {
+		t.Errorf("expected ADHD level 'lite', got %s", c.ADHDLevel())
+	}
+	c.SetADHD(false)
+	if c.ADHDEnabled() {
+		t.Error("expected false after SetADHD(false)")
+	}
+	// Level remains lite even when disabled
+	if c.ADHDLevel() != "lite" {
+		t.Errorf("expected ADHD level 'lite', got %s", c.ADHDLevel())
+	}
+}
+
 func TestSnapshot(t *testing.T) {
 	c := NewTokenSaverConfig(true, false, true)
 	rtk, caveman, ponytail := c.Snapshot()
