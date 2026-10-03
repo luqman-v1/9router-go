@@ -1,5 +1,22 @@
 # Changelog
 
+### 🧹 `signalSelfShutdown` mati di kedua varian build dihapus — issue #76
+
+`internal/updater/signal_unix.go` dan `signal_windows.go` mendefinisikan
+`signalSelfShutdown` dengan isi identik (`shutdown.RequestStop()`), dan tidak
+punya call site sejak rewrite `RestartSelf` pindah ke
+`shutdown.RestartAfterStop`. Komentar fallback `os.Exit(0)` yang dibawa keduanya
+mendeskripsikan kode yang sudah tidak ada. Keduanya dihapus: pembatas platform
+yang membenarkan pemisahan file itu sudah hilang, karena
+`shutdown.RequestStop()` adalah satu-satunya jalur shutdown di semua platform.
+
+Entri "BELUM dihapus" yang sebelumnya tertinggal di `[Unreleased]` dan di badan
+rilis v1.9.7 dikoreksi menjadi mencatat penghapusannya.
+
+**Verifikasi:** `go vet ./internal/updater/...` bersih, `go test -race
+./internal/updater/...` bersih, dan `go build ./...` untuk linux, windows, dan
+darwin tetap sukses.
+
 ## [Unreleased]
 
 ### 🎨 Console Log: warna mengikuti level yang benar-benar dieminkan
