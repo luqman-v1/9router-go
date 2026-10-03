@@ -42,6 +42,22 @@ type ServerParams struct {
 	CLIParams CLIParams
 }
 
+// Server timeouts are fixed rather than configurable on purpose: the values
+// below bound how long one client can hold one connection, so making them
+// tunable would put a Slowloris knob in reach of anyone who edits .env.
+const (
+	// serverReadHeaderTimeout caps how long a client may take to finish
+	// sending request headers. Same value as the OAuth callback listener in
+	// internal/proxy/oauth/codex_proxy.go.
+	serverReadHeaderTimeout = 10 * time.Second
+	// serverIdleTimeout closes keep-alive connections with no request in
+	// flight. It does not apply while a request is being served, so SSE and
+	// WebSocket streams run to their natural end.
+	serverIdleTimeout = 120 * time.Second
+	// serverMaxHeaderBytes caps the header block a client can send.
+	serverMaxHeaderBytes = 1 << 20
+)
+
 // ProvideServer creates *http.Server and registers lifecycle hooks.
 func ProvideServer(p ServerParams) *http.Server {
 	var addr string
@@ -53,6 +69,12 @@ func ProvideServer(p ServerParams) *http.Server {
 	server := &http.Server{
 		Addr:    addr,
 		Handler: p.Handler,
+		// WriteTimeout stays unset on purpose: internal/proxy/stall.go lets an
+		// SSE stream idle for DefaultStallTimeout (6 minutes), and a write
+		// deadline would sever those streams mid-response.
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		IdleTimeout:       serverIdleTimeout,
+		MaxHeaderBytes:    serverMaxHeaderBytes,
 	}
 
 	p.Lifecycle.Append(fx.Hook{
