@@ -53,6 +53,48 @@ cap, karena `modelSatisfies` upstream memecah pada `/` dengan cara yang sama. Po
 hanya menerima model vision, bukan combo — jadi combo utama yang tidak mendukung
 vision tidak dialihkan ke "combo vision", dan memang tidak bisa begitu di upstream.
 
+### 🔒 `http.Server` tanpa batas koneksi — rentan Slowloris — issue #124
+
+`ProvideServer` membangun `http.Server` hanya dengan `Addr` dan `Handler`.
+Semua batas koneksi bernilai nol, artinya tidak ada batas sama sekali: klien
+yang membuka soket lalu mengirim header byte-per-byte menahan satu file
+descriptor tanpa ujung, dan koneksi yang ditinggalkan di pool keep-alive tidak
+pernah diserap. Bahaya pada konfigurasi ini bukan hipotesis — repo ini punya
+dua jalur expose ke internet:
+(`internal/auth/tunnel.go` untuk tailscale funnel,
+`internal/handlers/media/deploy.go` untuk deploy Cloudflare tunnel / Vercel /
+Deno), jadi "cuma jalan di localhost" tidak berlaku.
+
+Kini `ReadHeaderTimeout: 10s`, `IdleTimeout: 120s`, dan `MaxHeaderBytes: 1 MiB`.
+Nilai 10 detik bukan angka tebakan: itu sudah dipakai listener OAuth callback
+di `internal/proxy/oauth/codex_proxy.go`, jadi sekarang satu konvensi berlaku
+di kedua tempat. Nilainya sengaja **tidak** dibuat configurable lewat `.env` —
+limit ini yang menahan satu koneksi, jadi membukanya lewat konfigurasi berarti
+menyerahkan kendali Slowloris ke siapa pun yang bisa mengedit file tersebut.
+
+`WriteTimeout` tetap nol dengan alasan yang sekarang tertulis di kode:
+`internal/proxy/stall.go` mengizinkan satu stream SSE diam sampai
+`DefaultStallTimeout` (6 menit), dan deadline pada penulisan akan memutus
+stream tersebut di tengah respons — termasuk SSE usage/console-log untuk
+dashboard dan socket WebSocket Gemini Live. `IdleTimeout` aman karena hanya
+berlaku ke koneksi keep-alive yang **tidak** sedang melayani request.
+
+**Verifikasi:** `go vet ./...` bersih; `go test ./... -count=1` hijau;
+`go test -tags=integration -race -count=1 ./internal/integration/...` hijau.
+Test baru `TestServer_ConnectionLimitsAreEnforced` boot `ServerModule` lewat fx
+dan menguji batas yang dibangun `ProvideServer` sungguhan — ia gagal di
+`origin/main` dengan ketiga field bernilai nol dan lulus setelah patch ini.
+
+> Catatan: pada satu run `go test ./...`, `TestGateAcquire_SpacesConcurrentCallers`
+> dan dua test di `usage_throttle_test.go` gagal dengan pesan
+> `want >= 40ms`. Keduanya mengukur jarak waktu dengan `time.Sleep`, dan diff ini
+> tidak menyentuh `internal/fetchgate` maupun `internal/handlers/dashboard` —
+> `usage_throttle_test.go` memanggil `router.ServeHTTP` dengan
+> `httptest.NewRecorder()`, jadi tidak pernah melewati `http.Server` sama sekali.
+> Run ulang pada branch ini (`-count=3` di `-p 1` dan `-p 16`, plus dua run
+> penuh `go test ./...`) semuanya hijau, jadi ini kontensi CPU pada run paralel,
+> bukan regresi.
+
 ### 🐛 Rotasi round-robin macet: stempel `lastUsedAt` tidak pernah maju — issue #107
 
 Akar masalahnya bukan format stempel, tapi sumber waktunya. Format nanodetik
