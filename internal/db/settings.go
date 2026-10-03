@@ -47,6 +47,7 @@ type SettingsData struct {
 	ComboStrategies            map[string]ComboStrategy        `json:"comboStrategies,omitempty"`
 	ProviderStrategies         map[string]ProviderStrategy     `json:"providerStrategies,omitempty"`
 	CapacityAdapter            map[string]CapacityAdapterEntry `json:"capacityAdapter,omitempty"`
+	ProviderOverrides          map[string]ProviderOverrides    `json:"providerOverrides,omitempty"`
 }
 
 // DefaultSettings returns fallback settings.
@@ -217,6 +218,20 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 		}
 	}
 
+	// Per-provider header overrides. Parsed like the other maps: the settings
+	// blob can arrive from a backup import, so a wrong shape is dropped rather
+	// than trusted.
+	if po, ok := raw["providerOverrides"].(map[string]any); ok {
+		s.ProviderOverrides = make(map[string]ProviderOverrides, len(po))
+		for k, v := range po {
+			entry, ok := v.(map[string]any)
+			if !ok {
+				continue
+			}
+			s.ProviderOverrides[k] = ProviderOverrides{Headers: stringMap(entry["headers"])}
+		}
+	}
+
 	return s, nil
 }
 
@@ -309,4 +324,65 @@ func (r *Repo) SetComboStrategy(comboName string, strat ComboStrategy) error {
 	return r.UpdateSettingsRaw(map[string]any{
 		"comboStrategies": currentMap,
 	})
+}
+
+// GetProviderOverride returns the stored override for one provider, or nil
+// when it has none. It reads the settings blob directly rather than through
+// GetSettings because the request path needs one key, not the whole struct.
+func (r *Repo) GetProviderOverride(provider string) (*ProviderOverrides, error) {
+	raw, err := r.GetSettingsRaw()
+	if err != nil {
+		return nil, err
+	}
+	all, ok := raw["providerOverrides"].(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+	entry, ok := all[provider].(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+	return &ProviderOverrides{Headers: stringMap(entry["headers"])}, nil
+}
+
+// SetProviderOverride stores or clears one provider's override. A nil override
+// deletes the entry, which is how an empty PUT clears it.
+func (r *Repo) SetProviderOverride(provider string, override *ProviderOverrides) error {
+	raw, err := r.GetSettingsRaw()
+	if err != nil || raw == nil {
+		raw = make(map[string]any)
+	}
+	all, ok := raw["providerOverrides"].(map[string]any)
+	if !ok {
+		all = make(map[string]any)
+	}
+	if override == nil || len(override.Headers) == 0 {
+		delete(all, provider)
+	} else {
+		all[provider] = map[string]any{"headers": override.Headers}
+	}
+	if len(all) == 0 {
+		return r.UpdateSettingsRaw(map[string]any{"providerOverrides": nil})
+	}
+	return r.UpdateSettingsRaw(map[string]any{"providerOverrides": all})
+}
+
+// stringMap coerces a decoded JSON value into map[string]string, skipping
+// anything that is not a string. The settings blob is hand-editable through
+// the backup import, so a wrong type there is a real input, not a bug to
+// panic on.
+func stringMap(v any) map[string]string {
+	raw, ok := v.(map[string]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, val := range raw {
+		s, ok := val.(string)
+		if !ok {
+			continue
+		}
+		out[k] = s
+	}
+	return out
 }

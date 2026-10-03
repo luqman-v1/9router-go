@@ -483,11 +483,47 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 			cloned := *baseCfg
 			cloned.StaticHeaders = internalproxy.BuildEdgeRelayHeaders(baseCfg.BaseURL, cloned.StaticHeaders)
 			cloned.BaseURL = relayURL
-			return &cloned, nil
+			return h.applyProviderOverrides(provider, &cloned), nil
 		}
 	}
 
-	return baseCfg, nil
+	return h.applyProviderOverrides(provider, baseCfg), nil
+}
+
+// applyProviderOverrides merges the operator's stored header overrides for a
+// provider into a per-request config.
+//
+// This is the single injection point on purpose: every executor builds its
+// outbound headers from cfg.StaticHeaders, so merging here reaches all of
+// them without each one learning the feature. It is also after the relay
+// rewrite, so a relay's own headers are on the table the override wins over —
+// which is what upstream's executor-level merge does too.
+func (h *ChatHandler) applyProviderOverrides(provider string, cfg *providers.ProviderConfig) *providers.ProviderConfig {
+	if cfg == nil || h.Repo == nil {
+		return cfg
+	}
+	stored, err := h.Repo.GetProviderOverride(ProviderOverrideKey(provider))
+	if err != nil || stored == nil || len(stored.Headers) == 0 {
+		return cfg
+	}
+	merged := *cfg
+	merged.StaticHeaders = providers.MergeHeaderOverrides(cfg.StaticHeaders, stored.Headers)
+	return &merged
+}
+
+// ProviderOverrideKey resolves the settings key one provider's overrides are
+// stored under. The dashboard writes the canonical registry id (upstream keys
+// everything by `resolveProviderAlias(id)`), while the request path knows a
+// connection's provider as the alias a model id carries — `cc/claude-opus-4-5`
+// arrives as `claude`, the alias, not the canonical id. Both sides therefore
+// canonicalize, which is what makes one entry answer for both spellings.
+//
+// A custom provider node's id has no alias mapping, so it resolves to itself.
+func ProviderOverrideKey(provider string) string {
+	if provider == "" {
+		return provider
+	}
+	return providers.ResolveAlias(provider)
 }
 
 // ExtractAPIKey gets the API key from a connection's data.

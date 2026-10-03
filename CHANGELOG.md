@@ -110,6 +110,71 @@ gagal di test dan diperbaiki di commit yang sama.
 `go test ./internal/handlers/dashboard/...` (termasuk
 `TestHiddenProvidersStayOutOfTheQuotaList`).
 
+### ✨ Override header per provider — issue #101 (bagian 4), upstream b3cf3fde parity
+
+Operator akhirnya bisa menyuntik header ke request outbound sebuah provider
+tanpa menyentuh kode. Hilang total dari sisi kita: tidak ada route, tidak ada
+field settings, tidak ada titik injeksi, tidak ada UI.
+
+**Penyimpanan** mengikuti pola settings yang sudah ada, bukan tabel baru:
+`providerOverrides` di blob `settings`, dibaca lewat `db.GetProviderOverride`
+dan ditulis lewat `db.SetProviderOverride`, dengan kunci **canonical provider
+id** — sama seperti upstream yang mengunci `resolveProviderAlias(id)`. Sisi
+request mengkanonicalkan juga (`chat.ProviderOverrideKey`), jadi satu entri
+melayani dua ejaan: dashboard membuka halaman lewat alias, sementara request
+datang sebagai `provider/model`.
+
+**Titik injeksi** cuma satu: `getProviderConfig` memerge override ke
+`cfg.StaticHeaders` sebelum mengembalikan config
+(`chat.applyProviderOverrides`). Itu sengaja — setiap executor menyusun
+header outbound dari `cfg.StaticHeaders`, jadi merge di sini menjangkau
+semuanya tanpa satu pun file executor belajar fitur ini. Upstream sendiri
+melakukan merge di dalam executor, yang di sini berarti menyalinnya ke
+sekitar belasan file. Merge dilakukan **setelah** rewrite relay, jadi header
+relay pun bisa di-override, sama seperti `Object.assign` upstream.
+
+**Presedensi ditulis eksplisit:** override menang atas static header registry
+(`providers.MergeHeaderOverrides`), persis `Object.assign(headers,
+providerOverrides.headers)` di `open-sse/executors/base.js:132`. Operator
+memperbaiki header yang gateway kirim, bukan menambah pendapat kedua.
+
+**Permukaan yang ditolak** — inilah yang membuat fitur ini tidak menjadi
+auth bypass, berbeda dari kalau "override menang atas semua" diterapkan tanpa
+filter. `authorization`, `cookie`, `host`, `content-length`, `content-type`,
+`connection`, dan `transfer-encoding` tidak bisa di-override. Daftar dan
+aturannya milik upstream, dipindah ke `db.NormalizeProviderOverrides` supaya
+tidak bisa dilewati lewat jalur tulis kedua. `Host` yang boleh di-override
+akan mengarahkan traffic ke host lain; `Authorization` yang boleh di-override
+akan mengarahkan traffic ke akun lain. Keduanya ditolak, dan GET
+mengembalikannya ke UI supaya field-nya ditolak **dengan alasan**, bukan
+supaya operator menemukannya lewat 400.
+
+Nama header dibatasi ke subset token RFC 7230 dan nilai dicek bebas CR/LF —
+tanpa itu, satu nilai dengan `\r\n` menyuntik header kedua ke request yang
+keluar.
+
+**UI** `ProviderHeaderOverridesModal.svelte` (padanan `CustomConfigCard`
+upstream), dipasang di toolbar provider detail. Ia menampilkan
+`builtinHeaders` dari registry sebagai baseline — jadi operator melihat
+persis apa yang dikirim gateway, bukan menebak — dan memvalidasi dengan
+aturan yang sama sebelum mengirim, supaya kesalahan ditemukan di field.
+
+**Verifikasi:** `TestProviderHeaderOverrideReachesUpstream` (integration —
+router asli, upstream palsu) membuktikan `X-Tenant: acme` benar-benar diterima
+upstream sementara `Authorization` milik koneksi tetap utuh;
+`TestProviderHeaderOverrideBeatsRegistryHeader` membuktikan override
+mengalahkan `x-opencode-client: desktop` dari registry;
+`TestProviderHeaderOverrideIsScopedToItsProvider` membuktikan override kimi
+tidak bocor ke request deepseek; `TestProviderHeaderOverrideCannotStealCredentials`
+membuktikan penolakan 400 tidak merusak entri yang tersimpan. Plus
+`TestProviderOverridesRoundTrip`,
+`TestProviderOverridesAliasAndCanonicalAreOneEntry`,
+`TestProviderOverridesRejectAuthAndFramingHeaders` (11 subtest), dan
+`TestProviderOverridesRejectedWriteKeepsPrevious`. Test wire gagal identik di
+`origin/main` (`upstream X-Tenant = ""`, dan `x-opencode-client = "desktop"`).
+Disinke juga lewat UI sungguhan: modal dibuka di browser, header disimpan,
+dan nilainya masih ada setelah reload.
+
 ## [Unreleased]
 
 ### 🎨 Console Log: warna mengikuti level yang benar-benar dieminkan

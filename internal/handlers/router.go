@@ -179,6 +179,8 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Delete("/api/provider-nodes/{id}", dashH.HandleDeleteProviderNode)
 	r.Post("/api/provider-nodes/validate", dashH.HandleValidateProviderNode)
 	r.Get("/api/providers/{id}/models", dashH.HandleGetConnectionModels)
+	r.Get("/api/providers/{id}/overrides", dashH.HandleGetProviderOverrides)
+	r.Put("/api/providers/{id}/overrides", dashH.HandleSaveProviderOverrides)
 
 	r.Get("/api/combos", dashH.HandleGetCombos)
 	r.Post("/api/combos", dashH.HandleCreateCombo)

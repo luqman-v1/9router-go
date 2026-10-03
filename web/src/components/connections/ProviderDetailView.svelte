@@ -41,6 +41,7 @@
   import { proxyBadgeInfo } from './proxyBadge'
   import AddConnectionModal from './AddConnectionModal.svelte'
   import AddCustomModelModal from './AddCustomModelModal.svelte'
+  import ProviderHeaderOverridesModal from './ProviderHeaderOverridesModal.svelte'
   import AddCompatibleNodeModal from './AddCompatibleNodeModal.svelte'
   import EditCompatibleNodeModal from './EditCompatibleNodeModal.svelte'
   import FreebuffSessionBanner from './FreebuffSessionBanner.svelte'
@@ -526,6 +527,7 @@
   let addConnectionError = $state('')
   let showAddCustomModelModal = $state(false)
   let showEditNodeModal = $state(false)
+  let showHeaderOverrides = $state(false)
   // Freebuff specific state & session tracking
   let isFreebuff = $derived(
     providerId === 'freebuff' || storageAlias === 'fb' || storageAlias === 'freebuff'
@@ -2871,6 +2873,15 @@
               />
             </div>
           {/if}
+
+          <button
+            type="button"
+            onclick={() => (showHeaderOverrides = true)}
+            class="inline-flex h-7 items-center gap-1.5 rounded-[8px] px-3 text-xs font-medium text-text-muted transition-colors hover:bg-surface-2 hover:text-text-main"
+          >
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">tune</span>
+            Custom headers
+          </button>
         </div>
       </div>
     </div>
@@ -4403,6 +4414,13 @@
   onSave={submitAddCustomModel}
 />
 {/if}
+
+<!-- 5a. Per-provider header overrides (upstream CustomConfigCard parity) -->
+<ProviderHeaderOverridesModal
+  isOpen={showHeaderOverrides}
+  providerId={providerId}
+  onClose={() => (showHeaderOverrides = false)}
+/>
 
 <!-- 5b. Edit Compatible Node Modal (upstream EditCompatibleNodeModal parity) -->
 <EditCompatibleNodeModal

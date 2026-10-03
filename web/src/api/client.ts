@@ -97,6 +97,19 @@ export interface Settings {
   [key: string]: unknown
 }
 
+/**
+ * One provider's outbound header overrides. `builtinHeaders` is what the
+ * registry already sends on this provider's requests; `blockedHeaders` is the
+ * set an override may never carry (credentials, framing, destination), so the
+ * UI can disable those fields instead of discovering them through a 400.
+ */
+export interface ProviderOverridesResponse {
+  provider: string
+  headers: Record<string, string>
+  builtinHeaders: Record<string, string>
+  blockedHeaders: string[]
+}
+
 export interface TunnelStatusResponse {
   tunnel?: {
     enabled?: boolean
@@ -737,6 +750,19 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(settings),
     }),
+  /**
+   * Per-provider outbound header overrides. `builtinHeaders` is what the
+   * registry already sends, so the UI shows the real baseline instead of an
+   * operator guessing; `blockedHeaders` is the set an override may never
+   * carry (auth, framing, destination).
+   */
+  getProviderOverrides: (providerId: string) =>
+    request<ProviderOverridesResponse>(`/api/providers/${encodeURIComponent(providerId)}/overrides`),
+  saveProviderOverrides: (providerId: string, headers: Record<string, string>) =>
+    request<{ provider: string; headers: Record<string, string> }>(
+      `/api/providers/${encodeURIComponent(providerId)}/overrides`,
+      { method: 'PUT', body: JSON.stringify({ headers }) },
+    ),
   // OAuth Flows
   initiateFreebuff: () => request<FreebuffInitiateResponse>('/api/oauth/freebuff/initiate', { method: 'POST' }),
   pollFreebuff: (fingerprintId: string, fingerprintHash: string, expiresAt?: number | string) =>

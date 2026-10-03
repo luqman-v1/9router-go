@@ -171,6 +171,29 @@ func WithHeader(headers map[string]string, key, value string) map[string]string 
 	return res
 }
 
+// MergeHeaderOverrides returns a copy of headers with the operator's
+// per-provider overrides applied on top. It is the Go shape of upstream's
+// `Object.assign(headers, providerOverrides.headers)`
+// (decolua/9router v0.5.95, open-sse/executors/base.js:132) — an override
+// wins over what the registry set, which is the whole point: the operator is
+// correcting a header the gateway sends, not adding a second opinion.
+//
+// The registry's header map is shared by every request, so this copies rather
+// than mutating, for the same reason WithHeader copies.
+func MergeHeaderOverrides(headers, overrides map[string]string) map[string]string {
+	if len(overrides) == 0 {
+		return headers
+	}
+	res := make(map[string]string, len(headers)+len(overrides))
+	for k, v := range headers {
+		res[k] = v
+	}
+	for k, v := range overrides {
+		res[k] = v
+	}
+	return res
+}
+
 // KnownProviders maps provider IDs to their upstream configuration.
 var KnownProviders = map[string]ProviderConfig{
 	"openai": {
