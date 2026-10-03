@@ -128,6 +128,29 @@ func TestApplyConnectionStrategy_SkipsDisabledAccount(t *testing.T) {
 	}
 }
 
+// A handler with no repository still has to advance its in-memory stamps. The
+// rows are not persisted, so the only ordering available is what this call
+// computes — and it has to move past the pool's existing stamps or every pick
+// lands on the same account.
+func TestApplyConnectionStrategy_RotatesWithoutRepo(t *testing.T) {
+	strat := db.ProviderStrategy{RotateStrategy: "round-robin", StickyLimit: 1}
+	h := NewChatHandler(nil)
+
+	// The same row objects are reused across picks, the way the chat path reuses
+	// the candidate set it just stamped: rebuilding them would throw away the
+	// very state the rotation depends on.
+	conns := []*models.ProviderConnection{
+		{ID: "conn-a"}, {ID: "conn-b"}, {ID: "conn-c"},
+	}
+	for pick, want := range []string{"conn-a", "conn-b", "conn-c", "conn-a"} {
+		rotated := h.ApplyConnectionStrategy(conns, strat)
+		if got := rotated[0].ID; got != want {
+			t.Fatalf("pick %d: got %s, want %s", pick+1, got, want)
+		}
+		conns = rotated
+	}
+}
+
 func mustPool(t *testing.T, repo *db.Repo, provider string) []*models.ProviderConnection {
 	t.Helper()
 	conns, err := repo.GetProviderConnections(provider, true)

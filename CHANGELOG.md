@@ -2,6 +2,55 @@
 
 ## [Unreleased]
 
+### 🐛 Rotasi round-robin macet: stempel `lastUsedAt` tidak pernah maju — issue #107
+
+Akar masalahnya bukan format stempel, tapi sumber waktunya. Format nanodetik
+memang sudah benar (`db.RotationTimestampFormat`, lebar tetap). Yang gagal adalah
+`time.Now()`: presisinya mengikuti platform, bukan janji Go. Di host Windows tempat
+masalah ini didiagnostik, jam hanya maju **setiap ~815µs** — 689.900 panggilan
+beruntun menghasilkan 246 nilai berbeda dalam 200ms. Enam pick rotasi di dalam
+satu milidetik karena itu memformat menjadi string yang identik, dan baris dengan
+stempel sama tidak bisa dibedakan oleh tie-break least-recently-used, sehingga
+selector mengembalikan akun yang sama terus-menerus.
+
+`TestApplyConnectionStrategy_KeepsRotatingPastFirstCycle` gagal ~1 dari 3 run di
+`origin/main` yang bersih (`-count=50`), bukan efek samping PR mana pun.
+
+Perbaikannya membuat urutan jadi **properti jalur tulis**, bukan properti jam:
+`db.stampConnection` membaca `MAX(lastUsedAt)` dan menulis nilai yang selalu
+mengurutkan setelahnya, di dalam satu kunci tulis SQLite (`BEGIN IMMEDIATE`).
+Kunci diambil di depan, bukan saat `UPDATE` — transaksi deferred baru mengunci
+sesudah `MAX` dibaca, sehingga dua proses yang berbagi satu database bisa membaca
+maksimum yang sama dan mencetak stempel yang sama untuk dua baris berbeda,
+menghidupkan kembali tie yang tidak bisa diputus selector.
+
+Konsekuensi yang ikut diperbaiki: `TouchConnectionRotation` kini mengembalikan
+nilai yang benar-benar ditulis, sehingga baris in-memory yang dibaca selector
+tidak lagi bisa berbeda dari baris di disk. Selector sebelumnya membaca jam
+*kedua* secara terpisah, jadi nilai in-memory bisa tidak sama dengan yang
+tersimpan.
+
+Satu cacat kedua ketahuan saat menulis testnya: stempel lebar-tetap
+`…:00.000000001Z` ternyata terurut **sesudah** `…:00Z` versi lama saat
+dibandingkan sebagai string, karena `'.'` (0x2E) mengalahkan `'Z'` (0x5A).
+Lonjakan satu nanosecond tidak akan melewati baris legacy itu sama sekali, jadi
+lonjakan melompat satu detik penuh saat nanosecond tidak cukup.
+
+**Verifikasi:** `go test ./internal/...` bersih; `go vet ./internal/...` bersih;
+`go test -race ./internal/db/ ./internal/handlers/chat/` hijau;
+`TestApplyConnectionStrategy_*` hijau di `-count=50` (sebelumnya gagal berkala di
+`origin/main`). Test baru `TestStampConnection_FrozenClockStillOrdersStrictly`
+mematikan jam sepenuhnya — kondisi yang tidak akan pernah kejadian di host dengan
+jam beresolusi rendah, sehingga urutan diuji sebagai kontrak, bukan sebagai
+kebetulan. `TestStampConnection_SurvivesRestartAndClockJump` menutup basis data,
+membukanya lagi, lalu memundurkan jam satu jam untuk membuktikan urutan bertahan
+melewati restart **dan** koreksi NTP. `TestNextRotationStamp_AlwaysSortsAfterPrevious`
+menutup delapan kombinasi posisi jam dan format stempel tersimpan.
+
+> Catatan: `TestGateAcquire_*` di `internal/fetchgate` sesekali gagal karena
+> asumsi `time.Sleep` di environment ini, dan sudah gagal dengan identik di
+> `origin/main` (dibuktikan dengan `git stash`), jadi di luar cakupan issue ini.
+
 ### 🐛 "Strict Proxy" tidak menahan — upstream decolua/9router#4333 parity
 
 `strictProxy` di pool dan di connection berarti "tidak pernah keluar lewat IP

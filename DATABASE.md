@@ -86,14 +86,29 @@ CREATE TABLE providerConnections (
 
 `data` is plaintext JSON. Depending on provider, it can contain `apiKey`, `accessToken`, `refreshToken`, expiry/scope data, provider-specific client secrets, proxy configuration, quota state, and `modelLock_<model>` entries.
 
-Several successful request paths also call `UpdateConnectionLastUsed`, which requires optional Go columns:
+Several successful request paths also call `UpdateConnectionLastUsed`, which requires the Go-only columns below:
 
 ```sql
 lastUsedAt          TEXT
 consecutiveUseCount INTEGER DEFAULT 0
 ```
 
-Those columns are not in the upstream v0.5.85 schema and Go does not add them. On an unmodified upstream DB, this metadata update can fail; several call sites currently ignore/log that error and continue serving traffic.
+They are not in the upstream v0.5.85 schema, but Go **does** add them:
+`EnsureAdditiveColumns` backfills both on every startup, so an upstream database
+gains them rather than failing the update.
+
+`lastUsedAt` carries the round-robin stamp and is compared as a **string**, so it
+is written in a fixed-width format (`internal/db/rotation.go`). Two rules keep
+that comparison meaningful, and both are load-bearing:
+
+- The stamp must sort strictly after the largest stamp already stored. The wall
+  clock does not guarantee this — its resolution is the platform's, and on
+  Windows `time.Now` can repeat across several calls — so `stampConnection`
+  advances the value past the stored maximum inside a `BEGIN IMMEDIATE`
+  transaction.
+- Values written by older builds are plain second-precision RFC3339. `…:00Z`
+  sorts *after* `…:00.000000001Z` because `'.'` (0x2E) beats `'Z'` (0x5A), so a
+  nanosecond bump cannot overtake such a row and must advance a full second.
 
 ### `providerNodes`
 

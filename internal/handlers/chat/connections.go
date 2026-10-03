@@ -708,13 +708,26 @@ func (h *ChatHandler) selectByRecency(conns []*models.ProviderConnection, sticky
 		consecutive = 1
 	}
 
-	if h.Repo != nil {
-		if err := h.Repo.TouchConnectionRotation(conns[winner].ID, consecutive); err != nil {
-			log.Warn("connections", "persist round-robin stamp failed", "conn", conns[winner].ID, "error", err)
+	// Fall back to the largest stamp already in the pool rather than a bare
+	// clock read: if the write fails, the in-memory row still has to advance
+	// past its neighbours, or this same request's rotation would repeat on the
+	// next pick.
+	highest := ""
+	for _, c := range conns {
+		if c != nil && c.LastUsedAt != nil && *c.LastUsedAt > highest {
+			highest = *c.LastUsedAt
 		}
 	}
-	now := time.Now().UTC().Format(db.RotationTimestampFormat)
-	conns[winner].LastUsedAt = &now
+	stamp := db.NextRotationStamp(highest)
+	if h.Repo != nil {
+		persisted, err := h.Repo.TouchConnectionRotation(conns[winner].ID, consecutive)
+		if err != nil {
+			log.Warn("connections", "persist round-robin stamp failed", "conn", conns[winner].ID, "error", err)
+		} else {
+			stamp = persisted
+		}
+	}
+	conns[winner].LastUsedAt = &stamp
 	conns[winner].ConsecutiveUseCount = &consecutive
 
 	rotated := make([]*models.ProviderConnection, 0, len(conns))
