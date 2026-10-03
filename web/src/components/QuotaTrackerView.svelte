@@ -298,7 +298,7 @@
     // the double-redeem this was meant to prevent. Every attempt within one
     // open session then shares a key, so a retried or double-submitted confirm
     // cannot spend a second credit.
-    resetCreditIdempotencyKey = newIdempotencyKey()
+    resetCreditIdempotencyKey = newResetCreditIdempotencyKey()
     resetCreditLoading = true
     try {
       const res = await api.listCodexResetCredits(conn.id)
