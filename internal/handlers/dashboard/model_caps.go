@@ -2,8 +2,10 @@ package dashboard
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 )
@@ -40,6 +42,13 @@ func (h *DashboardHandler) HandleGetModelCaps(w http.ResponseWriter, r *http.Req
 	resolved := providers.ResolveAlias(provider)
 	models := providers.GetProviderModels(resolved)
 	if len(models) == 0 {
+		if custom := h.customModelCaps(provider, resolved); len(custom) > 0 {
+			handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+				"provider": provider,
+				"caps":     custom,
+			})
+			return
+		}
 		if strings.HasPrefix(provider, "openai-compatible") || strings.HasPrefix(provider, "anthropic-compatible") {
 			handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 				"provider": provider,
@@ -80,4 +89,84 @@ func (h *DashboardHandler) HandleGetModelCaps(w http.ResponseWriter, r *http.Req
 		"provider": resolved,
 		"caps":     caps,
 	})
+}
+
+// customModelCaps builds the capability block for the custom models registered
+// on a provider. A provider node carrying only custom rows has no registry
+// catalog at all, so before this the endpoint answered caps: {} and the
+// dashboard never saw the models it had just been given — nor the limits they
+// declare.
+func (h *DashboardHandler) customModelCaps(provider, resolved string) map[string]modelCaps {
+	if h.Repo == nil {
+		return nil
+	}
+	customs, err := h.Repo.GetCustomModels()
+	if err != nil {
+		return nil
+	}
+	aliases := []string{provider, resolved}
+	if node, _, err := h.Repo.GetProviderNodeByPrefix(provider); err == nil && node != nil {
+		aliases = append(aliases, node.ID)
+	}
+	caps := map[string]modelCaps{}
+	for _, cm := range customs {
+		if cm == nil || !isLLMCustomModelType(cm.Type) || !slices.Contains(aliases, cm.ProviderAlias) {
+			continue
+		}
+		// The same publication /v1/models does. Without it the row's saved
+		// flags and limits never reach a capability lookup on this path.
+		publishCustomModelCaps(cm)
+		detail := providers.GetCapabilitiesDetailForModel(cm.ProviderAlias, cm.ID)
+		entry := modelCaps{
+			Vision:        detail.Vision,
+			Search:        detail.Search,
+			Reasoning:     detail.Reasoning,
+			ContextWindow: detail.ContextWindow,
+			MaxOutput:     detail.MaxOutput,
+		}
+		if levels := providers.GetThinkingLevels(cm.ProviderAlias, cm.ID); levels != nil {
+			entry.ThinkingLevels = levels
+		}
+		caps[cm.ID] = entry
+	}
+	return caps
+}
+
+// publishCustomModelCaps registers one custom model's saved block in the
+// capability registry under the provider alias the row is stored against — the
+// same publication /v1/models performs before it resolves a capability, so
+// this endpoint and the discovery list cannot disagree about the same row.
+func publishCustomModelCaps(cm *db.CustomModel) {
+	var caps providers.Capabilities
+	for name, on := range cm.Caps {
+		switch name {
+		case "vision":
+			caps.Vision = on
+		case "reasoning":
+			caps.Reasoning = on
+		case "search":
+			caps.Search = on
+		case "tools":
+			caps.Tools = on
+		case "image", "imageOutput":
+			caps.ImageOutput = on
+		case "audio":
+			caps.AudioInput = on
+		case "pdf":
+			caps.PDF = on
+		}
+	}
+	caps.ContextWindow = cm.ContextWindow
+	caps.MaxOutput = cm.MaxOutput
+	providers.SetCustomModelCaps(cm.ProviderAlias, cm.ID, caps)
+}
+
+// isLLMCustomModelType keeps image/audio/video custom rows out of a chat
+// capability map, matching how /v1/models decides what is an LLM entry.
+func isLLMCustomModelType(modelType string) bool {
+	switch modelType {
+	case "", "llm", "chat", "completion":
+		return true
+	}
+	return false
 }

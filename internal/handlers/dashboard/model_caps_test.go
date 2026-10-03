@@ -148,3 +148,51 @@ func TestHandleGetModelCaps_CompatibleNode(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// A provider node whose models are all custom rows has no registry catalog,
+// so the caps map used to come back empty and the dashboard rendered nothing
+// for the models it had just been given (issue #90).
+func TestHandleGetModelCaps_CustomModelsOnNode(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	if _, err := repo.CreateProviderNode("node-nara", "openai-compatible", "Nara AI",
+		`{"prefix":"nara","apiType":"openai-compatible"}`); err != nil {
+		t.Fatalf("seed providerNode: %v", err)
+	}
+	if err := repo.SetKV("customModels", "node-nara|declared-model|llm",
+		`{"providerAlias":"node-nara","id":"declared-model","type":"llm","name":"declared-model","caps":{"vision":true},"contextWindow":256000,"maxOutput":16000}`); err != nil {
+		t.Fatalf("seed customModels: %v", err)
+	}
+	// An image row is not a chat model and must not appear in a chat caps map.
+	if err := repo.SetKV("customModels", "node-nara|a-drawing|llm",
+		`{"providerAlias":"node-nara","id":"a-drawing","type":"image","name":"a-drawing"}`); err != nil {
+		t.Fatalf("seed image custom model: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/models/caps?provider=nara", nil)
+	rec := httptest.NewRecorder()
+	setupTestRouter(repo).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Caps map[string]modelCaps `json:"caps"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal caps response: %v", err)
+	}
+	entry, ok := body.Caps["declared-model"]
+	if !ok {
+		t.Fatalf("custom model missing from caps map: %s", rec.Body.String())
+	}
+	if !entry.Vision {
+	t.Error("saved vision cap not carried into the caps map")
+	}
+	if entry.ContextWindow != 256000 || entry.MaxOutput != 16000 {
+		t.Errorf("limits = (%d, %d), want (256000, 16000)", entry.ContextWindow, entry.MaxOutput)
+	}
+	if _, present := body.Caps["a-drawing"]; present {
+		t.Error("an image-typed custom row must not appear in a chat capability map")
+	}
+}

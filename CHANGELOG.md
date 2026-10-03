@@ -17,6 +17,50 @@ rilis v1.9.7 dikoreksi menjadi mencatat penghapusannya.
 ./internal/updater/...` bersih, dan `go build ./...` untuk linux, windows, dan
 darwin tetap sukses.
 
+### ✨ Custom model bisa mendeklarasikan `contextWindow` dan `maxOutput` — issue #90
+
+`db.CustomModel` hanya punya lima field, jadi model pada provider node
+OpenAI-compatible tidak punya cara menyatakan jendela konteksnya. Angka yang
+dipublikasikan ke `/v1/models` dan `/v1/models/info` murni hasil tebakan
+substring: `my-custom-model` dan `llama-3.3-70b` selalu jatuh ke `128000 /
+4096` hanya karena id-nya tidak kena pola apa pun. Rantai resolusinya
+(`GetModelTokenLimits` selalu mengembalikan non-nol, jadi lantai 128k praktis
+tidak pernah tercapai) membuat model open-source ber-window besar dilaporkan
+jauh lebih kecil dari kenyataan endpoint.
+
+Dua field opsional ditambahkan:
+
+- `db.CustomModel.ContextWindow` / `MaxOutput`, `omitempty` — nol berarti
+  "tidak dideklarasikan", jadi baris yang tersimpan sebelum field ini ada
+  berperilaku persis seperti sebelumnya.
+- `applyCustomCaps` membaca keduanya sebagai **deklarasi**, bukan penutup
+  celah: angka yang dideklarasikan menggantikan tebakan tabel, sedangkan
+  angka yang nol membiarkan tabel yang bicara. Ini berbeda dari flag
+  modalitas di sekitarnya yang bersifat aditif.
+
+Form "Add Model" punya dua kolom baru (opsional), dan "Import from /models"
+menyimpan `context_length` / `max_completion_tokens` apa yang dilaporkan
+endpoint itu — sumbernya otoritatif, jadi tidak perlu ditebak ulang.
+
+`GET /api/models/caps?provider=<node>` juga diperbaiki: node yang modelnya
+semua custom row tidak punya katalog registry, jadi endpoint itu membalas
+`caps: {}` dan angka yang sama tidak pernah terlihat di dashboard. Sekarang
+custom row ikut di sana, dengan flag dan limit yang dideklarasikan.
+
+Angka ini hanya untuk jalur metadata: `handleSingleModel` meneruskan
+body apa adanya, jadi tidak ada truncasi atau clamp `max_tokens` yang ikut
+berubah.
+
+**Verifikasi:** `TestCustomModelDeclaredLimitsReachEveryDiscoverySurface`
+(integration — router asli, HTTP listener sungguhan, SQLite sementara)
+membuktikan angka 1000000/32000 sampai apa adanya ke `/v1/models`,
+`capabilities`, dan `/v1/models/info`, sementara baris tanpa deklarasi tetap
+memakai nilai tabel; `TestCustomModelDeclaredLimitsPublishedVerbatim` dan
+`TestCustomModelPartialLimitFillsOnlyTheGap` (unit), plus
+`TestHandleGetModelCaps_CustomModelsOnNode` (dashboard, termasuk baris
+bertipe image yang tidak boleh muncul di peta chat). Ketiga test batas gagal
+identik di `origin/main` (dibuktikan dengan `git stash`).
+
 ## [Unreleased]
 
 ### 🎨 Console Log: warna mengikuti level yang benar-benar dieminkan

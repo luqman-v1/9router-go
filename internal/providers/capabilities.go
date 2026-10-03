@@ -599,63 +599,11 @@ func GetCapabilitiesForModel(provider, model string) Capabilities {
 		}
 	}
 
-	// 6. Custom model caps (from kv customModels) — additive, like dynamic
-	if custom, ok := GetCustomModelCaps(provider, model); ok {
-		if custom.Vision {
-			res.Vision = true
-		}
-		if custom.Reasoning {
-			res.Reasoning = true
-		}
-		if custom.Search {
-			res.Search = true
-		}
-		if custom.PDF {
-			res.PDF = true
-		}
-		if custom.AudioInput {
-			res.AudioInput = true
-		}
-		if custom.VideoInput {
-			res.VideoInput = true
-		}
-		if custom.ImageOutput {
-			res.ImageOutput = true
-		}
-		if custom.AudioOutput {
-			res.AudioOutput = true
-		}
-		if custom.Tools {
-			res.Tools = true
-		}
-	} else if custom, ok := GetCustomModelCaps(provider, baseModel); ok {
-		if custom.Vision {
-			res.Vision = true
-		}
-		if custom.Reasoning {
-			res.Reasoning = true
-		}
-		if custom.Search {
-			res.Search = true
-		}
-		if custom.PDF {
-			res.PDF = true
-		}
-		if custom.AudioInput {
-			res.AudioInput = true
-		}
-		if custom.VideoInput {
-			res.VideoInput = true
-		}
-		if custom.ImageOutput {
-			res.ImageOutput = true
-		}
-		if custom.AudioOutput {
-			res.AudioOutput = true
-		}
-		if custom.Tools {
-			res.Tools = true
-		}
+	// 6. Custom model caps (from kv customModels) — additive, like dynamic,
+	// except the token limits: those are a declaration, so a declared number
+	// replaces the table's guess instead of only filling a gap.
+	if custom, ok := lookupCustomModelCaps(provider, model); ok {
+		applyCustomCaps(&res, custom)
 	}
 
 	// Last resort: a model id that names its modality ("qwen3-vl-plus",
@@ -873,5 +821,58 @@ func GetCapabilitiesDetailForModel(provider, model string) CapabilitiesDetail {
 		ThinkingEffortSupported: caps.ThinkingEffortSupported,
 		ContextWindow:           cw,
 		MaxOutput:               maxOut,
+	}
+}
+
+// lookupCustomModelCaps resolves a custom model row by its exact id first and
+// by its bare id second, mirroring the two-key shape SetCustomModelCaps writes.
+func lookupCustomModelCaps(provider, model string) (Capabilities, bool) {
+	if caps, ok := GetCustomModelCaps(provider, model); ok {
+		return caps, true
+	}
+	if _, after, ok := strings.CutLast(model, "/"); ok {
+		return GetCustomModelCaps(provider, after)
+	}
+	return Capabilities{}, false
+}
+
+// applyCustomCaps merges a custom model's saved block. Every modality flag is
+// additive, the same way the synced catalog overlay is: a custom row can only
+// turn a capability on, never off. The token limits are the exception — they
+// are a declaration, so a declared number replaces whatever the substring
+// table guessed, and zero means "not declared" and leaves the table alone.
+func applyCustomCaps(dst *Capabilities, custom Capabilities) {
+	if custom.Vision {
+		dst.Vision = true
+	}
+	if custom.PDF {
+		dst.PDF = true
+	}
+	if custom.AudioInput {
+		dst.AudioInput = true
+	}
+	if custom.VideoInput {
+		dst.VideoInput = true
+	}
+	if custom.ImageOutput {
+		dst.ImageOutput = true
+	}
+	if custom.AudioOutput {
+		dst.AudioOutput = true
+	}
+	if custom.Search {
+		dst.Search = true
+	}
+	if custom.Tools {
+		dst.Tools = true
+	}
+	if custom.Reasoning {
+		dst.Reasoning = true
+	}
+	if custom.ContextWindow != 0 {
+		dst.ContextWindow = custom.ContextWindow
+	}
+	if custom.MaxOutput != 0 {
+		dst.MaxOutput = custom.MaxOutput
 	}
 }

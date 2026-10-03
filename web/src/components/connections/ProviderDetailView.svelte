@@ -2159,13 +2159,19 @@
   }
 
   // Custom Model & Node handlers
-  async function submitAddCustomModel(modelId: string, caps?: { vision?: boolean; reasoning?: boolean }) {
+  async function submitAddCustomModel(
+    modelId: string,
+    caps?: { vision?: boolean; reasoning?: boolean },
+    limits?: { contextWindow?: number; maxOutput?: number },
+  ) {
     try {
       await api.saveCustomModel(`${storageAlias}|${modelId}|llm`, {
         id: modelId,
         providerAlias: storageAlias,
         type: 'llm',
-        ...(caps ? { caps } : {})
+        ...(caps ? { caps } : {}),
+        ...(limits?.contextWindow ? { contextWindow: limits.contextWindow } : {}),
+        ...(limits?.maxOutput ? { maxOutput: limits.maxOutput } : {}),
       })
       showAddCustomModelModal = false
       const modelsData = await fetchProviderModelsData(providerId, storageAlias)
@@ -2395,11 +2401,24 @@
           typeof m.capabilities === 'object'
             ? (m.capabilities as { vision?: boolean; reasoning?: boolean })
             : undefined
+        // An endpoint that reports its own limits is the authoritative source;
+        // saving them means /v1/models keeps publishing them after the row
+        // outlives this import.
+        const declaredCtxLen =
+          typeof m === 'object' && m !== null && 'context_length' in m
+            ? Number(m.context_length) || 0
+            : 0
+        const declaredMaxOut =
+          typeof m === 'object' && m !== null && 'max_completion_tokens' in m
+            ? Number(m.max_completion_tokens) || 0
+            : 0
         await api.saveCustomModel(`${storageAlias}|${modelId}|llm`, {
           id: modelId,
           providerAlias: storageAlias,
           type: 'llm',
           ...(caps ? { caps } : {}),
+          ...(declaredCtxLen > 0 ? { contextWindow: declaredCtxLen } : {}),
+          ...(declaredMaxOut > 0 ? { maxOutput: declaredMaxOut } : {}),
         })
         imported++
       }

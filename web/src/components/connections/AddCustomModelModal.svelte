@@ -10,11 +10,17 @@
     reasoning: boolean
   }
 
+  /** The operator's own declaration of what the endpoint takes. 0 = unknown. */
+  export interface ModelLimits {
+    contextWindow: number
+    maxOutput: number
+  }
+
   interface Props {
     isOpen: boolean
     /** Storage alias of the provider (e.g. "oc") — used to strip the alias prefix and to test. */
     providerAlias: string
-    onSave: (modelId: string, caps: ModelCaps) => Promise<void> | void
+    onSave: (modelId: string, caps: ModelCaps, limits: ModelLimits) => Promise<void> | void
     onClose: () => void
   }
 
@@ -27,18 +33,35 @@
   }
 
   const defaultCaps = (): ModelCaps => ({ vision: false, reasoning: false })
+  const defaultLimits = (): ModelLimits => ({ contextWindow: 0, maxOutput: 0 })
 
   let modelId = $state('')
   let caps = $state<ModelCaps>(defaultCaps())
+  let limits = $state<ModelLimits>(defaultLimits())
   let testStatus = $state<'testing' | 'ok' | 'error' | null>(null)
   let testError = $state('')
   let saving = $state(false)
+
+  function parseLimit(raw: string): number {
+    const n = Number.parseInt(raw, 10)
+    return Number.isFinite(n) && n > 0 ? n : 0
+  }
+
+  // max_output_tokens is drawn from the same window, so declaring both with
+  // the output larger than the window is a contradiction rather than a value
+  // the gateway can publish.
+  let limitsError = $derived(
+    limits.contextWindow > 0 && limits.maxOutput > limits.contextWindow
+      ? 'Max output cannot exceed the context window.'
+      : '',
+  )
 
   // Reset state when modal opens (upstream parity).
   $effect(() => {
     if (isOpen) {
       modelId = ''
       caps = defaultCaps()
+      limits = defaultLimits()
       testStatus = null
       testError = ''
     }
@@ -67,10 +90,10 @@
   }
 
   async function handleSave() {
-    if (!cleanId || saving) return
+    if (!cleanId || saving || limitsError) return
     saving = true
     try {
-      await onSave(cleanId, { ...caps })
+      await onSave(cleanId, { ...caps }, { ...limits })
     } finally {
       saving = false
     }
@@ -142,6 +165,51 @@
       </div>
     </div>
 
+    <div>
+      <label class="text-sm font-medium mb-1.5 block">Token limits (optional)</label>
+      <div class="grid gap-3 sm:grid-cols-2">
+        <div>
+          <label class="text-xs text-text-muted mb-1 block" for="add-custom-model-ctx">Context window</label>
+          <input
+            id="add-custom-model-ctx"
+            type="text"
+            inputmode="numeric"
+            placeholder="e.g. 131072"
+            value={limits.contextWindow || ''}
+            oninput={(e) => {
+              limits = { ...limits, contextWindow: parseLimit((e.target as HTMLInputElement).value) }
+            }}
+            class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
+          />
+        </div>
+        <div>
+          <label class="text-xs text-text-muted mb-1 block" for="add-custom-model-out">Max output</label>
+          <input
+            id="add-custom-model-out"
+            type="text"
+            inputmode="numeric"
+            placeholder="e.g. 8192"
+            value={limits.maxOutput || ''}
+            oninput={(e) => {
+              limits = { ...limits, maxOutput: parseLimit((e.target as HTMLInputElement).value) }
+            }}
+            aria-describedby={limitsError ? 'add-custom-model-limits-error' : undefined}
+            aria-invalid={limitsError ? 'true' : undefined}
+            class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
+          />
+        </div>
+      </div>
+      <p class="text-xs text-text-muted mt-1">
+        Published to <code class="font-mono bg-sidebar px-1 rounded">/v1/models</code> instead of a guessed
+        value. Leave blank to keep the default.
+      </p>
+      {#if limitsError}
+        <p id="add-custom-model-limits-error" class="text-xs text-red-600 dark:text-red-400 mt-1" role="alert">
+          {limitsError}
+        </p>
+      {/if}
+    </div>
+
     {#if testStatus === 'ok'}
       <div class="flex items-center gap-2 text-sm text-green-600">
         <span class="material-symbols-outlined text-base">check_circle</span>
@@ -157,7 +225,7 @@
 
     <div class="flex gap-2 pt-1">
       <Button onclick={onClose} variant="ghost" fullWidth size="sm">Cancel</Button>
-      <Button onclick={handleSave} fullWidth size="sm" disabled={!modelId.trim() || saving}>
+      <Button onclick={handleSave} fullWidth size="sm" disabled={!modelId.trim() || saving || !!limitsError}>
         {saving ? 'Adding...' : 'Add Model'}
       </Button>
     </div>

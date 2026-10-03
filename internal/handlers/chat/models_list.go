@@ -498,6 +498,7 @@ func (h *ChatHandler) appendConnectionModels(
 	merged := make([]string, 0, len(ids))
 	seenID := make(map[string]bool, len(ids))
 	typedCustom := make(map[string]bool, len(ids))
+	typedCustomLimits := make(map[string][2]int)
 	// Upstream strips the outputAlias/staticAlias/providerId qualifier only from
 	// registry + enabledModels ids and from alias targets; a custom row's id is
 	// used verbatim — that is why `openrouter/openrouter/free` stays
@@ -527,6 +528,8 @@ func (h *ChatHandler) appendConnectionModels(
 			// Upstream resolves custom-model capabilities from the saved caps,
 			// so publish them before the capability lookup below.
 			h.registerCustomModelCaps(outputAlias, key, cm)
+			cmCtxLen, cmMaxOut := declaredTokenLimits(cm)
+			typedCustomLimits[cm.ID] = [2]int{cmCtxLen, cmMaxOut}
 			add(cm.ID, true)
 		}
 	}
@@ -555,9 +558,20 @@ func (h *ChatHandler) appendConnectionModels(
 		}
 		seen[fullID] = true
 
-		ctxLen, maxOut := providers.GetModelTokenLimits(modelID)
-		if ctxLen == 0 && maxOut == 0 {
-			ctxLen, maxOut = providers.GetModelTokenLimits(fullID)
+		declaredCtxLen, declaredMaxOut := typedCustomLimits[modelID][0], typedCustomLimits[modelID][1]
+
+		ctxLen, maxOut := declaredCtxLen, declaredMaxOut
+		if ctxLen == 0 || maxOut == 0 {
+			tableCtxLen, tableMaxOut := providers.GetModelTokenLimits(modelID)
+			if tableCtxLen == 0 && tableMaxOut == 0 {
+				tableCtxLen, tableMaxOut = providers.GetModelTokenLimits(fullID)
+			}
+			if ctxLen == 0 {
+				ctxLen = tableCtxLen
+			}
+			if maxOut == 0 {
+				maxOut = tableMaxOut
+			}
 		}
 		caps := providers.GetCapabilitiesDetailForModel(providerID, modelID)
 		if caps.ContextWindow > 0 && ctxLen == 0 {
@@ -707,9 +721,18 @@ func (h *ChatHandler) appendLooseCustomModels(
 				continue
 			}
 			seen[fullID] = true
-			ctxLen, maxOut := providers.GetModelTokenLimits(fullID)
-			if ctxLen == 0 && maxOut == 0 {
-				ctxLen, maxOut = providers.GetModelTokenLimits(cm.ID)
+			ctxLen, maxOut := declaredTokenLimits(cm)
+			if ctxLen == 0 || maxOut == 0 {
+				tableCtxLen, tableMaxOut := providers.GetModelTokenLimits(fullID)
+				if tableCtxLen == 0 && tableMaxOut == 0 {
+					tableCtxLen, tableMaxOut = providers.GetModelTokenLimits(cm.ID)
+				}
+				if ctxLen == 0 {
+					ctxLen = tableCtxLen
+				}
+				if maxOut == 0 {
+					maxOut = tableMaxOut
+				}
 			}
 			caps := providers.GetCapabilitiesDetailForModel(prefix, cm.ID)
 			if caps.ContextWindow > 0 && ctxLen == 0 {
@@ -731,10 +754,12 @@ func (h *ChatHandler) appendLooseCustomModels(
 	return data
 }
 
-// registerCustomModelCaps publishes the capability flags saved on a custom model
-// so capability lookups elsewhere see them, like upstream customModelCaps.
+// registerCustomModelCaps publishes the capability flags and token limits
+// saved on a custom model so capability lookups elsewhere see them, like
+// upstream customModelCaps.
 func (h *ChatHandler) registerCustomModelCaps(prefix, providerID string, cm *db.CustomModel) {
-	if len(cm.Caps) == 0 {
+	ctxLen, maxOut := declaredTokenLimits(cm)
+	if len(cm.Caps) == 0 && ctxLen == 0 && maxOut == 0 {
 		return
 	}
 	var caps providers.Capabilities
@@ -756,10 +781,51 @@ func (h *ChatHandler) registerCustomModelCaps(prefix, providerID string, cm *db.
 	if cm.Caps["audio"] {
 		caps.AudioInput = true
 	}
+	caps.ContextWindow = ctxLen
+	caps.MaxOutput = maxOut
 	providers.SetCustomModelCaps(prefix, cm.ID, caps)
 	if prefix != providerID {
 		providers.SetCustomModelCaps(providerID, cm.ID, caps)
 	}
+}
+
+// declaredTokenLimits reads the limits the operator set on a custom model
+// row. Zero means "not declared" and hands the decision back to the substring
+// table, so a row saved before these fields existed keeps behaving exactly as
+// it did.
+func declaredTokenLimits(cm *db.CustomModel) (contextWindow int, maxOutput int) {
+	if cm == nil {
+		return 0, 0
+	}
+	return cm.ContextWindow, cm.MaxOutput
+}
+
+// declaredTokenLimitsFor returns the limits a custom model row declared for
+// one provider/model pair. The row is addressed by the alias the client sees
+// or by the provider node's storage id, since a custom row is keyed by the
+// latter while /v1/models publishes it under the former. Returns (0, 0) when
+// nothing was declared, which hands the decision back to the substring table.
+func (h *ChatHandler) declaredTokenLimitsFor(provider, modelID string) (contextWindow int, maxOutput int) {
+	if h.Repo == nil || modelID == "" || provider == "" {
+		return 0, 0
+	}
+	bare := modelID
+	if _, after, ok := strings.CutLast(modelID, "/"); ok {
+		bare = after
+	}
+	customs := h.customModelsByProvider()
+	keys := []string{provider}
+	if node, _, err := h.Repo.GetProviderNodeByPrefix(provider); err == nil && node != nil {
+		keys = append(keys, node.ID)
+	}
+	for _, key := range keys {
+		for _, cm := range customs[key] {
+			if cm.ID == bare {
+				return declaredTokenLimits(cm)
+			}
+		}
+	}
+	return 0, 0
 }
 
 // optionalTokenLimit boxes a token limit for ModelInfoObject: a non-positive

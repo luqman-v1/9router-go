@@ -464,7 +464,16 @@ func (h *ChatHandler) HandleModelsInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctxLen, maxOut := providers.GetModelTokenLimits(modelID)
+	ctxLen, maxOut := h.declaredTokenLimitsFor(modelInfo.Provider, modelID)
+	if ctxLen == 0 || maxOut == 0 {
+		tableCtxLen, tableMaxOut := providers.GetModelTokenLimits(modelID)
+		if ctxLen == 0 {
+			ctxLen = tableCtxLen
+		}
+		if maxOut == 0 {
+			maxOut = tableMaxOut
+		}
+	}
 
 	info := map[string]any{
 		"id":                    modelID,

@@ -542,12 +542,20 @@ func (r *Repo) GetComboById(id string) (*models.Combo, error) {
 }
 
 // CustomModel represents a user-defined model stored in kv scope customModels.
+//
+// ContextWindow and MaxOutput are the operator's own declaration of what the
+// endpoint can actually take. Zero means "not declared": a provider node's
+// model id is usually an open-source name that matches no capability pattern,
+// so without these fields /v1/models had nothing better than a substring guess
+// or the 128k floor.
 type CustomModel struct {
 	ProviderAlias string          `json:"providerAlias"`
 	ID            string          `json:"id"`
 	Type          string          `json:"type"`
 	Name          string          `json:"name"`
 	Caps          map[string]bool `json:"caps"`
+	ContextWindow int             `json:"contextWindow,omitempty"`
+	MaxOutput     int             `json:"maxOutput,omitempty"`
 }
 
 // GetCustomModels returns all custom models from kv scope customModels.
