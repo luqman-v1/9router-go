@@ -172,7 +172,7 @@ describe('providers & media separation', () => {
       tokenharbor: { category: 'apikey', models: 6, fetcher: true },
       dahl: { category: 'apikey', models: 3, fetcher: true },
       atria: { category: 'apikey', models: 1, fetcher: false },
-      agnes: { category: 'freeTier', models: 0, fetcher: false },
+      agnes: { category: 'freeTier', models: 4, fetcher: false },
       bai: { category: 'apikey', models: 0, fetcher: true },
     }
     for (const [id, want] of Object.entries(expected)) {
