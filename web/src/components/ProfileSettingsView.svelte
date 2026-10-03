@@ -47,6 +47,7 @@
   let fallbackStrategy = $state('failover')
   let stickyRoundRobinLimit = $state(3)
   let comboStrategy = $state('first-model')
+  let forceFallback = $state(false)
 
   // Password Management State
   let currentPassword = $state('')
@@ -90,6 +91,7 @@
       if (typeof settings.fallbackStrategy === 'string') fallbackStrategy = settings.fallbackStrategy
       if (typeof settings.stickyRoundRobinLimit === 'number') stickyRoundRobinLimit = settings.stickyRoundRobinLimit
       if (typeof settings.comboStrategy === 'string') comboStrategy = settings.comboStrategy
+      if (typeof settings.forceFallback === 'boolean') forceFallback = settings.forceFallback
 
       // SSO
       if (settings.authMode === 'oidc' || settings.authMode === 'saml') authMode = settings.authMode
@@ -116,6 +118,7 @@
         if (s.fallbackStrategy) fallbackStrategy = String(s.fallbackStrategy)
         if (typeof s.stickyRoundRobinLimit === 'number') stickyRoundRobinLimit = s.stickyRoundRobinLimit
         if (s.comboStrategy) comboStrategy = String(s.comboStrategy)
+        if (typeof s.forceFallback === 'boolean') forceFallback = s.forceFallback
 
         if (s.authMode === 'oidc' || s.authMode === 'saml') authMode = s.authMode
         if (s.oidcIssuerUrl) oidcIssuerUrl = String(s.oidcIssuerUrl)
@@ -149,6 +152,7 @@
         fallbackStrategy,
         stickyRoundRobinLimit,
         comboStrategy,
+        forceFallback,
         authMode,
         oidcIssuerUrl,
         oidcClientId,
@@ -691,6 +695,18 @@
             <option value="round-robin">Round Robin (Rotate starting model)</option>
           </select>
         </div>
+
+        <Toggle
+          checked={forceFallback}
+          size="sm"
+          label="Force Fallback (all accounts cooling down)"
+          onChange={(v: boolean) => (forceFallback = v)}
+        />
+        <p class="text-[11px] text-text-subtle">
+          When every account is in cooldown, send the request through the account that
+          frees up first instead of failing. Requests can still be rejected upstream.
+        </p>
+
       </div>
     </Card>
 

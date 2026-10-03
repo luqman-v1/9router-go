@@ -89,6 +89,8 @@ export interface Settings {
   comboStrategy?: string
   stickyRoundRobinLimit?: number
   comboStickyRoundRobinLimit?: number
+  /** Serve requests from the account that frees up first when all are cooling down. */
+  forceFallback?: boolean
   enableObservability?: boolean
   outboundProxyEnabled?: boolean
   outboundProxyUrl?: string

@@ -119,10 +119,13 @@ func (h *ChatHandler) handleAccountFallback(
 				continue
 			}
 		}
-		log.Debug("fallback", "connection", "conn", c.ID, "connObj", connObj.ID)
+		// connObj, not the loop candidate: a candidate in cooldown can resolve
+		// to a different account (force fallback), and the usage row, the logs
+		// and the exclusion below must all name the account that was dialled.
+		log.Debug("fallback", "connection", "conn", connObj.ID, "candidate", c.ID)
 		if err := h.tryForwardWithConnection(forwardRequestParams{
 			Ctx: ctx, W: w, Provider: provider, Model: model,
-			ConnectionID: c.ID, ConnName: connObjName(connObj), ConnEmail: connObjEmail(connObj),
+			ConnectionID: connObj.ID, ConnName: connObjName(connObj), ConnEmail: connObjEmail(connObj),
 			ConnData: connData, Body: body,
 			IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
 		}); err == nil {
@@ -159,7 +162,7 @@ func (h *ChatHandler) handleAccountFallback(
 				"conn", connObj.ID, "provider", provider, "model", model,
 				"lockKey", lockKey, "status", ue.StatusCode, "cooldown_s", cooldownSec,
 			}, connIdentityKV(connObj)...)...)
-			excludeIDs = append(excludeIDs, c.ID)
+			excludeIDs = append(excludeIDs, connObj.ID)
 			continue
 		}
 		return lastErr

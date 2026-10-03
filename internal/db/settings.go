@@ -42,6 +42,7 @@ type SettingsData struct {
 	AutoUpdate                 bool                            `json:"autoUpdate"`
 	FallbackStrategy           string                          `json:"fallbackStrategy,omitempty"`
 	StickyRoundRobinLimit      int                             `json:"stickyRoundRobinLimit,omitempty"`
+	ForceFallback             bool                            `json:"forceFallback,omitempty"`
 	ComboStrategy              string                          `json:"comboStrategy,omitempty"`
 	ComboStickyRoundRobinLimit int                             `json:"comboStickyRoundRobinLimit,omitempty"`
 	ComboStrategies            map[string]ComboStrategy        `json:"comboStrategies,omitempty"`
@@ -122,6 +123,9 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	}
 	if v, ok := raw["stickyRoundRobinLimit"].(float64); ok && v > 0 {
 		s.StickyRoundRobinLimit = int(v)
+	}
+	if v, ok := raw["forceFallback"].(bool); ok {
+		s.ForceFallback = v
 	}
 
 	// Global combo strategy

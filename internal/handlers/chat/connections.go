@@ -211,6 +211,7 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 
 		conn = nil
 		var cooldownUntil time.Time
+		var inCooldown []*models.ProviderConnection
 		now := time.Now()
 		for _, c := range connections {
 			if excludeSet[c.ID] {
@@ -221,6 +222,12 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			if !codexAccountServesModel(c, model) {
 				continue
 			}
+			// Per-model lock and quota cache first: an account parked for
+			// this model carries no cooldown to shorten, so it must not enter
+			// the forced pool either (h.connectionModelBlocked).
+			if h.connectionModelBlocked(c, provider, model) {
+				continue
+			}
 			// Account-scoped cooldown. An account whose quota is spent, or
 			// whose OAuth grant the provider already rejected, is skipped
 			// before it is selected — round-robin otherwise kept handing out
@@ -228,28 +235,26 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			// grant cost a token-endpoint call on every request until the IP
 			// was rate limited. Upstream parity: filterAvailableAccounts.
 			if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
+				inCooldown = append(inCooldown, c)
 				if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
 					cooldownUntil = until
 				}
 				continue
 			}
-			// Skip connections that have an active per-connection model lock
-			if model != "" {
-				lockKey := canonicalLockModel(provider, model)
-				if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, lockKey); locked {
-					continue
-				}
-				if lockKey != model {
-					if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, model); locked {
-						continue
-					}
-				}
-				if quotaCacheBlocked(provider, c.ID, model) {
-					continue
-				}
-			}
 			conn = c
 			break
+		}
+		if conn == nil && forceFallbackEnabled(settings) {
+			// The operator asked for traffic to keep flowing while every
+			// account is cooling down, so take the account that frees up
+			// first instead of failing the client turn outright
+			// (upstream decolua/9router PR #130).
+			forced, until, ok := h.forceMinCooldownConnection(provider, inCooldown, excludeSet, model, settings)
+			if ok {
+				conn = forced
+				log.Warn("connections", "all accounts in cooldown, forcing the soonest to reset",
+					"provider", provider, "conn", forced.ID, "reset", until.UTC().Format(time.RFC3339))
+			}
 		}
 		if conn == nil {
 			// Every candidate was in cooldown, so say when the first one comes
@@ -285,6 +290,26 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 	h.applyProviderProxyPool(&connData, provider)
 
 	return conn, &connData, nil
+}
+
+// connectionModelBlocked reports whether a connection is parked for this
+// specific model — an active per-model lock or a provider quota cache. An
+// empty model means nothing model-scoped applies (upstream parity: the lock
+// filter only runs for a model-bearing request).
+func (h *ChatHandler) connectionModelBlocked(c *models.ProviderConnection, provider, model string) bool {
+	if model == "" {
+		return false
+	}
+	lockKey := canonicalLockModel(provider, model)
+	if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, lockKey); locked {
+		return true
+	}
+	if lockKey != model {
+		if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, model); locked {
+			return true
+		}
+	}
+	return quotaCacheBlocked(provider, c.ID, model)
 }
 
 // applyProviderProxyPool binds a provider-level pool to a connection that has

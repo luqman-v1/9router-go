@@ -177,6 +177,39 @@ dan nilainya masih ada setelah reload.
 
 ## [Unreleased]
 
+### ⚡ Force Fallback: layani akun yang cooldown-nya paling cepat berakhir (issue #130, parity `decolua/9router` PR #130)
+
+Selama ini, kalau **seluruh** akun sebuah provider sedang cooldown, gateway
+gagal seketika — sementara akun yang paling cepat bebas justru bisa menerima
+permintaan hanya beberapa detik kemudian. Operator harus menunggu atau menambah
+akun. PR upstream `decolua/9router#130` menambahkan sakelar "Force Fallback":
+saat tidak ada akun yang tersedia, pakai akun dengan sisa cooldown paling
+kecil, lalu biarkan upstream yang memutuskan menerima atau menolak.
+
+Sumber kebenarannya tetap satu: `getBestConnection` sudah menghitung
+`cooldownUntil` (reset tercepat) untuk pesan error, jadi kandidat yang dipaksa
+hanya perlu diurutkan ulang berdasarkan nilai yang sama. Sakelarnya
+`settings.forceFallback` (toggle Dashboard → Default Routing Strategy) atau env
+`FORCE_FALLBACK_ON_ALL_UNAVAILABLE=true` untuk deployment yang harus bertahan
+sebelum ada yang membuka UI. Default-nya mati: tanpa opt-in, perilaku tidak
+berubah sama sekali.
+
+Kandidat paksa hanya berisi akun yang benar-benar punya cooldown. Akun yang
+kena per-model lock atau quota cache tidak ikut, sebab tidak ada cooldown yang
+bisa dipendekkan — memaksanya berarti membuang kunci yang justru menyingkirkan
+akun tersebut, lalu model's itu dihajar berulang. Blokir per-model dievaluasi
+lebih dulu (`connectionModelBlocked`), dan akun yang dikecualikan client
+(`x-connection-id`/combo) juga disaring seperti upstream. Bila seluruh kandidat
+tersaring habis, error cooldown yang biasa tetap dikembalikan.
+
+Perbaikan yang ikut ditemukan: `handleAccountFallback` mengatribusikan permintaan
+kandidat loop (`c.ID`), bukan ke akun yang benar-benar dipanggil. Begitu
+seleksi paksa aktif, keduanya bisa berbeda — baris usage, log, dan daftar
+exclusion semuanya harus menyebut akun yang benar-benar didial. Integrasi
+`internal/integration/force_fallback_test.go` mengunci kontrak ini lewat router
+produksi dengan upstream palsu.
+
+
 ### 🎨 Console Log: warna mengikuti level yang benar-benar dieminkan
 
 Halaman Console Log menampilkan semua baris hijau. Penyebabnya bukan pilihan
