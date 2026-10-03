@@ -108,17 +108,17 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	requiredCaps := DetectRequiredCapabilities(body)
 
 	if len(modelInfo.ComboModels) > 0 {
-		augmented, comboStrategy := h.applyCapacityAdapter(modelInfo.ComboModels, requiredCaps, modelInfo.Strategy, reqBody.Model)
+		augmented, comboStrategy, injected := h.applyCapacityAdapter(modelInfo.ComboModels, requiredCaps, modelInfo.Strategy, reqBody.Model)
 		if modelInfo.Strategy == "fusion" {
 			bodyJSON, err := json.Marshal(workingBody)
 			if err != nil {
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal request body")
 				return
 			}
-			h.handleFusion(ctx, w, bodyJSON, augmented, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, modelInfo.JudgeModel)
+			h.handleFusion(ctx, w, bodyJSON, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, modelInfo.JudgeModel)
 			return
 		}
-		h.handleMessagesComboFallback(ctx, w, workingBody, augmented, comboStrategy, reqBody.Stream, reqBody.Model, modelInfo.StickyLimit)
+		h.handleMessagesComboFallback(ctx, w, workingBody, augmented, comboStrategy, reqBody.Stream, reqBody.Model, modelInfo.StickyLimit, injected...)
 		return
 	}
 
@@ -128,8 +128,9 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	augmented, strat := h.AugmentModelsWithCapacityAdapter([]string{targetEntry}, requiredCaps)
 	if len(augmented) > 1 {
+		injected := augmented[:len(augmented)-1]
 		log.Info("chat", "capacity adapter auto-switch responses", "target", reqBody.Model, "switched_to", augmented[0], "caps", keysString(requiredCaps))
-		h.handleMessagesComboFallback(ctx, w, workingBody, augmented, strat, reqBody.Stream, reqBody.Model, 0)
+		h.handleMessagesComboFallback(ctx, w, workingBody, augmented, strat, reqBody.Stream, reqBody.Model, 0, injected...)
 		return
 	}
 

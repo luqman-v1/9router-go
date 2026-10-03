@@ -145,7 +145,7 @@ export function parseCapacityAdapterSettings(ca: Record<string, unknown> | undef
     vision: {
       enabled: v?.enabled !== false,
       roundRobin: !!v?.roundRobin,
-      models: Array.isArray(v?.models) ? (v.models as string[]) : ['ag/gemini-3.7-flash-high'],
+      models: Array.isArray(v?.models) ? (v.models as string[]) : [],
     },
     audioInput: {
       enabled: a?.enabled !== false,

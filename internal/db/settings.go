@@ -62,8 +62,10 @@ func DefaultSettings() *SettingsData {
 		HeadroomTimeoutMs: 3000,
 		AutoUpdate:        false,
 		CapacityAdapter: map[string]CapacityAdapterEntry{
-			"vision":     {Enabled: true, RoundRobin: false, Models: []string{"ag/gemini-3.8-flash-high"}},
+			"vision":     {Enabled: true, RoundRobin: false, Models: []string{}},
+			"pdf":        {Enabled: false, RoundRobin: false, Models: []string{}},
 			"audioInput": {Enabled: true, RoundRobin: false, Models: []string{}},
+			"videoInput": {Enabled: false, RoundRobin: false, Models: []string{}},
 		},
 	}
 }

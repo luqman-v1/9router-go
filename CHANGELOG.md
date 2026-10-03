@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+### 🐛 Capacity adapter tidak mengikuti upstream — parity `open-sse/services/capacityAdapter.js`
+
+Adapter input-modality (vision/pdf/audioInput/videoInput) di port ini menyimpang
+dari upstream `decolua/9router` di enam titik, tiga di antaranya mengubah
+perilaku yang diamati klien:
+
+1. **Toggle `enabled: false` diabaikan.** `combo.go` `continue` melewati entri yang
+   dinonaktifkan, lalu blok "default fallback" tetap berjalan karena `len(pool) == 0`
+   — tidak ada pembeda antara pool *dimatikan* dan pool *tidak dikonfigurasi*.
+   Akibatnya request berisi gambar tetap dialihkan ke
+   `ag/gemini-3.8-flash-high` meski operator mematikan adapter-nya. Upstream
+   `normalizeCapEntry` mengembalikan `{enabled:false, models:[]}` dan
+   `getCapacityAdapterModels` melewatkannya, jadi tidak ada yang di-inject.
+2. **Default model salah.** Entri kosong jatuh ke `ag/gemini-3.8-flash-high`;
+   upstream memakai satu konstanta untuk semua kapabilitas,
+   `DEFAULT_FALLBACK_MODEL = "oc/mimo-v2.6-flash-free"`, hanya di dalam cabang
+   `enabled && models.length === 0`.
+3. **Bentuk entri legacy tidak didukung.** Upstream menerima bentuk array lama
+   `[{model, enabled}]`; parse typed hanya mengenali bentuk objek.
+4. **`reorderByCapabilities` dua tier.** Versi ini hanya "penuhi semua kapabilitas"
+   vs "sisanya". Upstream tiga tier: hard+soft, hard saja, lalu sisanya — sehingga
+   di antara dua model yang sama-sama vision, yang juga punya `search`/`tools`
+   didahulukan.
+5. **Deteksi kapabilitas jauh lebih sempit.** Yang port ini punya hanya memindai
+   satu pesan `role: "user"` terakhir; upstream memindai *trailing run* setelah
+   pesan assistant/model terakhir dan juga membaca `contents`/`request.contents`
+   (Gemini/Antigravity), `images` (Ollama/Hermes), `attachments` /
+   `experimental_attachments`, data-URI di dalam string, serta menebak mime pada
+   blok file dari `file_data`/`source.media_type`.
+6. **History tidak dipangkas untuk model adapter.** Upstream
+   `stripHistoryForContext` memotong tengah percakapan agar muat di context window
+   model adapter yang sering jauh lebih kecil. Tanpa itu, percakapan panjang yang
+   dialihkan ke adapter gagal karena panjang di upstream.
+
+Selain itu `detectRequiredCapabilities` kini memakai `trailingUserItems`, jadi
+gambar di turn lama tidak lagi mengunci combo ke model vision — sesuai catatan
+upstream bahwa media history "gets stripped + placeholdered downstream".
+Jalur fusion juga kini menerima model combo apa adanya, bukan daftar yang sudah
+di-augment, sesuai `src/sse/handlers/chat.js` yang mengirim `comboModels` ke
+`handleFusionChat`.
+
+Ditambah `looksLikeVisionModel` (port `open-sse/providers/visionPatterns.js`) sebagai
+heuristik terakhir: id model yang memuat kata modalnya sendiri (`qwen3-vl-plus`,
+`glm-4.6v`) dianggap vision walau belum ada di tabel kapabilitas. Sepperti
+upstream, ini hanya menyalakan vision, tidak pernah mematikannya.
+
+Perilaku yang dipertahankan: nama combo di pool vision tetap tidak memenuhi hard
+cap, karena `modelSatisfies` upstream memecah pada `/` dengan cara yang sama. Pool
+hanya menerima model vision, bukan combo — jadi combo utama yang tidak mendukung
+vision tidak dialihkan ke "combo vision", dan memang tidak bisa begitu di upstream.
+
 ### 🐛 Rotasi round-robin macet: stempel `lastUsedAt` tidak pernah maju — issue #107
 
 Akar masalahnya bukan format stempel, tapi sumber waktunya. Format nanodetik

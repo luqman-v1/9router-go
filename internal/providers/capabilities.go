@@ -658,6 +658,13 @@ func GetCapabilitiesForModel(provider, model string) Capabilities {
 		}
 	}
 
+	// Last resort: a model id that names its modality ("qwen3-vl-plus",
+	// "glm-4.6v") is a vision model even when no table knows it yet. Only
+	// ever turns vision ON.
+	if !res.Vision && looksLikeVisionModel(baseModel) {
+		res.Vision = true
+	}
+
 	capsCacheMu.Lock()
 	capsCache[key] = res
 	capsCacheMu.Unlock()

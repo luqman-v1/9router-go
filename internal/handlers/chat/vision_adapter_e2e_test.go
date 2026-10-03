@@ -45,7 +45,7 @@ func TestVisionAdapter_E2E_ChatCompletions_AutoSwitch(t *testing.T) {
 			},
 		},
 	})
-	_, err := database.Exec(`UPDATE settings SET data = ? WHERE id = 1`, string(settingsJSON))
+	_, err := database.Exec(`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, string(settingsJSON))
 	if err != nil {
 		t.Fatalf("failed to update settings: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestVisionAdapter_E2E_Messages_AutoSwitch(t *testing.T) {
 			},
 		},
 	})
-	_, err := database.Exec(`UPDATE settings SET data = ? WHERE id = 1`, string(settingsJSON))
+	_, err := database.Exec(`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, string(settingsJSON))
 	if err != nil {
 		t.Fatalf("failed to update settings: %v", err)
 	}
