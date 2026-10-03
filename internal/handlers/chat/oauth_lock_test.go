@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	json "encoding/json/v2"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -316,5 +317,53 @@ func TestSuccessfulRefreshReleasesThePark(t *testing.T) {
 	}
 	if got := db.NewRepo(database).GetConnectionOAuthFailures("conn-broken"); got != 0 {
 		t.Errorf("failure count after a successful refresh = %d, want 0", got)
+	}
+}
+
+func TestOAuthRefresh_SingleflightCollapsesConcurrentCalls(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	dropSeededConn(t, database)
+
+	var calls atomic.Int32
+	previous := oauth.Get(oauthLockTestProvider)
+	oauth.Register(oauthLockTestProvider, func(_ context.Context, _ *oauth.Params) (*oauth.TokenResult, error) {
+		calls.Add(1)
+		time.Sleep(30 * time.Millisecond) // simulate remote refresh latency
+		return &oauth.TokenResult{AccessToken: "fresh-token", RefreshToken: "fresh-refresh", ExpiresIn: 3600}, nil
+	})
+	t.Cleanup(func() { oauth.Register(oauthLockTestProvider, previous) })
+
+	insertOAuthConn(t, database, "conn-concurrent", 1, expiredOAuthData(t))
+
+	handler := NewChatHandler(db.NewRepo(database))
+
+	const concurrentCount = 10
+	var wg sync.WaitGroup
+	results := make([]string, concurrentCount)
+	errs := make([]error, concurrentCount)
+
+	wg.Add(concurrentCount)
+	for i := range concurrentCount {
+		go func(idx int) {
+			defer wg.Done()
+			token, _, err := handler.RefreshOAuthTokenIfExpired("conn-concurrent", "stale-token")
+			results[idx] = token
+			errs[idx] = err
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d failed: %v", i, err)
+		}
+		if results[i] != "fresh-token" {
+			t.Errorf("goroutine %d got token %q, want fresh-token", i, results[i])
+		}
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("refresher called %d times, want exactly 1 (singleflight collapse)", got)
 	}
 }

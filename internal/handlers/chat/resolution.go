@@ -125,33 +125,9 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 		}
 	}
 
-	provider = routeModelToOwningProvider(provider, model)
 	return &ModelInfo{Provider: provider, Model: model}
 }
 
-// museSparkOwners are the providers whose upstream registry actually serves the
-// muse-spark family. Upstream open-sse registry lists these ids only under
-// opencode-zen / opencode-go, never under antigravity.
-var museSparkOwners = []string{"opencode", "opencode-go", "opencode-zen"}
-
-// routeModelToOwningProvider corrects a model requested under a provider that
-// does not serve it, so callers that reuse a dashboard-assigned prefix (e.g.
-// "ag/muse-spark-1.3-contributor-free" copied from a combo) reach the executor
-// that owns the model instead of failing upstream with 404/403.
-func routeModelToOwningProvider(provider, model string) string {
-	if provider != "antigravity" && provider != "antigravity-go" {
-		return provider
-	}
-	if !strings.Contains(model, "muse-spark") {
-		return provider
-	}
-	for _, owner := range museSparkOwners {
-		if _, ok := providers.KnownProviders[owner]; ok {
-			return owner
-		}
-	}
-	return provider
-}
 
 // flattenComboModels recursively expands combo-name entries into concrete
 // "provider/model" leaves, keeping order and deduping consecutive identical
@@ -254,7 +230,6 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 				}
 			}
 		}
-		provider = routeModelToOwningProvider(provider, model)
 		return &ModelInfo{Provider: provider, Model: model}, nil
 	}
 

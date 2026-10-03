@@ -70,3 +70,26 @@ func TestRequestLogger_ServesAndPassesThrough(t *testing.T) {
 		t.Errorf("expected body 'ok', got %q", rec.Body.String())
 	}
 }
+
+func TestStatusWriter_FlushAndHeaderCases(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sw := &statusWriter{ResponseWriter: rec}
+
+	// Flush forwards to recorder flusher
+	sw.Flush()
+	if !rec.Flushed {
+		t.Error("expected rec to be flushed")
+	}
+
+	// Write without WriteHeader implicitly sets 200
+	sw.Write([]byte("hello"))
+	if sw.status != http.StatusOK {
+		t.Errorf("expected status 200, got %d", sw.status)
+	}
+
+	// Second WriteHeader does not change status
+	sw.WriteHeader(http.StatusBadRequest)
+	if sw.status != http.StatusOK {
+		t.Errorf("status should remain 200, got %d", sw.status)
+	}
+}

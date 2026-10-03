@@ -581,8 +581,6 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 	_ = json.Unmarshal(req.Body, &reqObj)
 	cleanModel := strings.TrimPrefix(reqObj.Model, "oc/")
 	cleanModel = strings.TrimPrefix(cleanModel, "opencode/")
-	cleanModel = strings.TrimPrefix(cleanModel, "antigravity/")
-	cleanModel = strings.TrimPrefix(cleanModel, "ag/")
 	if parenIdx := strings.IndexByte(cleanModel, '('); parenIdx != -1 {
 		cleanModel = cleanModel[:parenIdx]
 	}
@@ -1155,8 +1153,6 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	cleanModel := strings.TrimPrefix(reqObj.Model, "oc/")
 	cleanModel = strings.TrimPrefix(cleanModel, "opencode-go/")
 	cleanModel = strings.TrimPrefix(cleanModel, "opencode/")
-	cleanModel = strings.TrimPrefix(cleanModel, "antigravity/")
-	cleanModel = strings.TrimPrefix(cleanModel, "ag/")
 	if parenIdx := strings.IndexByte(cleanModel, '('); parenIdx != -1 {
 		cleanModel = cleanModel[:parenIdx]
 	}

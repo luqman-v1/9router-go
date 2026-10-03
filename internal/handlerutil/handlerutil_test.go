@@ -309,3 +309,60 @@ func TestExtractSessionID(t *testing.T) {
 		}
 	})
 }
+
+func TestMaskAPIKey(t *testing.T) {
+	if got := MaskAPIKey("short"); got != "***" {
+		t.Errorf("MaskAPIKey(short) = %q, want ***", got)
+	}
+	if got := MaskAPIKey("12345678"); got != "***" {
+		t.Errorf("MaskAPIKey(8chars) = %q, want ***", got)
+	}
+	key := "sk-machine1234567890abcdef"
+	masked := MaskAPIKey(key)
+	if !strings.HasPrefix(masked, "sk-machi") || !strings.HasSuffix(masked, "cdef") || !strings.Contains(masked, "***") {
+		t.Errorf("MaskAPIKey(%q) = %q", key, masked)
+	}
+}
+
+func TestGetString(t *testing.T) {
+	if got := GetString(nil, "foo"); got != "" {
+		t.Errorf("GetString(nil) = %q, want empty", got)
+	}
+	m := map[string]any{
+		"str": "bar",
+		"num": 42,
+	}
+	if got := GetString(m, "str"); got != "bar" {
+		t.Errorf("GetString(str) = %q, want bar", got)
+	}
+	if got := GetString(m, "num"); got != "" {
+		t.Errorf("GetString(num) = %q, want empty", got)
+	}
+	if got := GetString(m, "absent"); got != "" {
+		t.Errorf("GetString(absent) = %q, want empty", got)
+	}
+}
+
+func TestContextHelpers_SessionAndBeta(t *testing.T) {
+	// Session ID
+	ctx := WithSessionID(nil, "sess-1")
+	if GetSessionID(ctx) != "" {
+		t.Error("nil context should return empty")
+	}
+	ctxWithSess := WithSessionID(t.Context(), "sess-1")
+	if got := GetSessionID(ctxWithSess); got != "sess-1" {
+		t.Errorf("GetSessionID = %q, want sess-1", got)
+	}
+	if got := GetSessionID(t.Context()); got != "" {
+		t.Errorf("plain context GetSessionID = %q, want empty", got)
+	}
+
+	// Anthropic Beta
+	ctxWithBeta := WithClientAnthropicBeta(t.Context(), "prompt-caching-2024-07-31")
+	if got := GetClientAnthropicBeta(ctxWithBeta); got != "prompt-caching-2024-07-31" {
+		t.Errorf("GetClientAnthropicBeta = %q", got)
+	}
+	if got := GetClientAnthropicBeta(nil); got != "" {
+		t.Errorf("nil context GetClientAnthropicBeta = %q, want empty", got)
+	}
+}

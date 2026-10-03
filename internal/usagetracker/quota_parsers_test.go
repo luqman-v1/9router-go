@@ -146,3 +146,63 @@ func TestParseGroqQuotasFromHeaders(t *testing.T) {
 		t.Errorf("expected 0 quotas for empty header, got %d", len(info2.Quotas))
 	}
 }
+
+func TestClampPercentage(t *testing.T) {
+	if got := clampPercentage(-5.0); got != 0 {
+		t.Errorf("clampPercentage(-5) = %f, want 0", got)
+	}
+	if got := clampPercentage(120.0); got != 100 {
+		t.Errorf("clampPercentage(120) = %f, want 100", got)
+	}
+	if got := clampPercentage(42.5); got != 42.5 {
+		t.Errorf("clampPercentage(42.5) = %f, want 42.5", got)
+	}
+}
+
+func TestExtractWindow_AlternateFormats(t *testing.T) {
+	// Case 1: remaining_percentage
+	w1 := extractWindow(map[string]any{"remaining_percentage": 75.0})
+	if w1.RemainingPercentage != 75.0 {
+		t.Errorf("w1 RemainingPercentage = %f, want 75", w1.RemainingPercentage)
+	}
+
+	// Case 2: used_tokens and limit_tokens
+	w2 := extractWindow(map[string]any{
+		"used_tokens":  200.0,
+		"limit_tokens": 1000.0,
+	})
+	if w2.RemainingPercentage != 80.0 {
+		t.Errorf("w2 RemainingPercentage = %f, want 80", w2.RemainingPercentage)
+	}
+	if w2.UsedTokens != 200 || w2.LimitTokens != 1000 {
+		t.Errorf("w2 tokens used=%d, limit=%d", w2.UsedTokens, w2.LimitTokens)
+	}
+}
+
+func TestParseCodexUsageQuotas_ReviewAndInvalid(t *testing.T) {
+	// Invalid JSON returns error
+	if _, err := ParseCodexUsageQuotas([]byte(`{invalid`)); err == nil {
+		t.Fatal("expected error on invalid JSON")
+	}
+
+	// Review windows
+	payload := []byte(`{
+		"plan_type": "Team",
+		"rate_limits_by_limit_id": {
+			"review": {
+				"primary_window": {"remaining_fraction": 0.5, "reset_time": "2026-08-31T20:00:00Z"},
+				"secondary_window": {"remaining_fraction": 0.8, "reset_time": "2026-09-07T00:00:00Z"}
+			}
+		}
+	}`)
+	info, err := ParseCodexUsageQuotas(payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if revSess, ok := info.Quotas["review_session"]; !ok || revSess.RemainingPercentage != 50 {
+		t.Errorf("expected review_session 50%%, got %+v", revSess)
+	}
+	if revWk, ok := info.Quotas["review_weekly"]; !ok || revWk.RemainingPercentage != 80 {
+		t.Errorf("expected review_weekly 80%%, got %+v", revWk)
+	}
+}

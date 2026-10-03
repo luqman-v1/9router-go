@@ -321,3 +321,75 @@ func writeDotEnv(t *testing.T, dir, content string) {
 		t.Fatalf("write .env: %v", err)
 	}
 }
+
+func TestProvideConfig(t *testing.T) {
+	v := ProvideViper()
+	cfg := ProvideConfig(v)
+	if cfg == nil {
+		t.Fatal("expected ProvideConfig to return non-nil Config")
+	}
+	if cfg.Port != 20130 {
+		t.Errorf("expected default port 20130, got %d", cfg.Port)
+	}
+}
+
+func TestLoadConfig_DBPathDirResolution(t *testing.T) {
+	tempDir := t.TempDir()
+	// Test case 1: DB_PATH directory with db/data.sqlite
+	dbDir0 := filepath.Join(tempDir, "db0")
+	_ = os.MkdirAll(filepath.Join(dbDir0, "db"), 0755)
+	_ = os.WriteFile(filepath.Join(dbDir0, "db", "data.sqlite"), []byte(""), 0600)
+	t.Setenv("DB_PATH", dbDir0)
+	cfg0 := LoadConfig()
+	if cfg0.DatabasePath != filepath.Join(dbDir0, "db", "data.sqlite") {
+		t.Errorf("expected db/data.sqlite resolution, got %s", cfg0.DatabasePath)
+	}
+
+	// Test case 2: DB_PATH directory with data.sqlite
+	dbDir1 := filepath.Join(tempDir, "db1")
+	_ = os.MkdirAll(dbDir1, 0755)
+	_ = os.WriteFile(filepath.Join(dbDir1, "data.sqlite"), []byte(""), 0600)
+	t.Setenv("DB_PATH", dbDir1)
+	cfg1 := LoadConfig()
+	if cfg1.DatabasePath != filepath.Join(dbDir1, "data.sqlite") {
+		t.Errorf("expected data.sqlite resolution, got %s", cfg1.DatabasePath)
+	}
+
+	// Test case 3: DB_PATH directory with 9router.db
+	dbDir2 := filepath.Join(tempDir, "db2")
+	_ = os.MkdirAll(dbDir2, 0755)
+	_ = os.WriteFile(filepath.Join(dbDir2, "9router.db"), []byte(""), 0600)
+	t.Setenv("DB_PATH", dbDir2)
+	cfg2 := LoadConfig()
+	if cfg2.DatabasePath != filepath.Join(dbDir2, "9router.db") {
+		t.Errorf("expected 9router.db resolution, got %s", cfg2.DatabasePath)
+	}
+
+	// Test case 4: DB_PATH directory without known files falls back to db/data.sqlite
+	dbDir3 := filepath.Join(tempDir, "db3")
+	_ = os.MkdirAll(dbDir3, 0755)
+	t.Setenv("DB_PATH", dbDir3)
+	cfg3 := LoadConfig()
+	if cfg3.DatabasePath != filepath.Join(dbDir3, "db", "data.sqlite") {
+		t.Errorf("expected default db/data.sqlite fallback, got %s", cfg3.DatabasePath)
+	}
+}
+
+func TestLoadJWTSecret_PersistAndRead(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+	t.Setenv("JWT_SECRET", "")
+
+	// First call should generate and persist secret
+	v := NewViper()
+	cfg1 := LoadConfigFromViper(v)
+	if cfg1.JWTSecret == "" {
+		t.Fatal("expected generated JWT secret")
+	}
+
+	// Second call should read persisted secret
+	cfg2 := LoadConfigFromViper(v)
+	if cfg2.JWTSecret != cfg1.JWTSecret {
+		t.Fatalf("expected persisted JWT secret %q, got %q", cfg1.JWTSecret, cfg2.JWTSecret)
+	}
+}

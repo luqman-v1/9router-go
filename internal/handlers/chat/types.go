@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"sync"
 
+	"golang.org/x/sync/singleflight"
+
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/models"
@@ -24,8 +26,9 @@ type ChatHandler struct {
 	Repo        *db.Repo
 	Client      *http.Client
 	TokenSaver  *shared.TokenSaverConfig
-	stickyMu    sync.Mutex
-	stickyState map[string]*comboStickyState
+	stickyMu            sync.Mutex
+	stickyState         map[string]*comboStickyState
+	oauthRefreshFlight  singleflight.Group
 }
 
 // Type aliases for shared types

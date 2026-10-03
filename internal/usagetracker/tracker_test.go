@@ -175,3 +175,20 @@ func TestTracker_ModelWithSpacesAndConcurrentDirectRequests(t *testing.T) {
 		t.Errorf("expected 0 active requests after cleanup, got %d", len(afterState.ActiveRequests))
 	}
 }
+
+func TestGetTracker_SingletonAndParseModelKey(t *testing.T) {
+	tr := GetTracker()
+	if tr == nil {
+		t.Fatal("expected GetTracker to return non-nil instance")
+	}
+
+	m1, p1 := parseModelKey("gpt-4o (openai)")
+	if m1 != "gpt-4o" || p1 != "openai" {
+		t.Errorf("parseModelKey(gpt-4o (openai)) = %s, %s", m1, p1)
+	}
+
+	m2, p2 := parseModelKey("deepseek-chat")
+	if m2 != "deepseek-chat" || p2 != "unknown" {
+		t.Errorf("parseModelKey(deepseek-chat) = %s, %s", m2, p2)
+	}
+}

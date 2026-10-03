@@ -512,44 +512,22 @@ func TestResolveModel_StandardPrefixes(t *testing.T) {
 	}
 }
 
-func TestRouteModelToOwningProvider(t *testing.T) {
-	tests := []struct {
-		name     string
-		provider string
-		model    string
-		expected string
-	}{
-		{"muse-spark under antigravity routes to opencode", "antigravity", "muse-spark-1.3-contributor-free", "opencode"},
-		{"muse-spark under antigravity-go routes to opencode", "antigravity-go", "muse-spark-1.2-contributor", "opencode"},
-		{"native antigravity model untouched", "antigravity", "gemini-3.8-flash-low", "antigravity"},
-		{"muse-spark already under opencode untouched", "opencode", "muse-spark-1.3-contributor-free", "opencode"},
-		{"unrelated provider untouched", "openai", "gpt-4o", "openai"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := routeModelToOwningProvider(tt.provider, tt.model); got != tt.expected {
-				t.Errorf("routeModelToOwningProvider(%q, %q) = %q, want %q", tt.provider, tt.model, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestResolveModel_AntigravityMuseSparkRoutesToOpencode(t *testing.T) {
+func TestResolveModel_StrictProviderIsolation(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 	h := NewChatHandler(db.NewRepo(database))
 
+	// ag/ prefix must strictly resolve to antigravity, never hijack to opencode
 	info, err := h.resolveModel("ag/muse-spark-1.3-contributor-free")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if info.Provider != "opencode" || info.Model != "muse-spark-1.3-contributor-free" {
-		t.Fatalf("expected opencode/muse-spark-1.3-contributor-free, got %s/%s", info.Provider, info.Model)
+	if info.Provider != "antigravity" || info.Model != "muse-spark-1.3-contributor-free" {
+		t.Fatalf("expected antigravity/muse-spark-1.3-contributor-free, got %s/%s", info.Provider, info.Model)
 	}
 
 	entry := h.resolveModelEntry("ag/muse-spark-1.3-contributor-free")
-	if entry == nil || entry.Provider != "opencode" {
-		t.Fatalf("resolveModelEntry: expected opencode, got %+v", entry)
+	if entry == nil || entry.Provider != "antigravity" {
+		t.Fatalf("resolveModelEntry: expected antigravity, got %+v", entry)
 	}
 }

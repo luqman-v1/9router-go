@@ -79,8 +79,8 @@ func TestExecutable_DeadProcessHasNoPath(t *testing.T) {
 		t.Fatalf("start helper: %v", err)
 	}
 	dead := child.Process.Pid
+	_ = child.Process.Kill()
 	_ = child.Wait()
-
 	if path, err := Executable(dead); err == nil {
 		t.Errorf("Executable(%d) = %q for a dead process, want an error", dead, path)
 	}

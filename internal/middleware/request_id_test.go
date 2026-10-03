@@ -45,3 +45,12 @@ func TestRequestIDMiddleware_Preserved(t *testing.T) {
 		t.Errorf("expected X-Request-ID header %s, got %s", incomingID, headerReqID)
 	}
 }
+
+func TestGetRequestID_EdgeCases(t *testing.T) {
+	if got := GetRequestID(nil); got != "" {
+		t.Errorf("GetRequestID(nil) = %q, want empty", got)
+	}
+	if got := GetRequestIDFromContext(nil); got != "" {
+		t.Errorf("GetRequestIDFromContext(nil) = %q, want empty", got)
+	}
+}

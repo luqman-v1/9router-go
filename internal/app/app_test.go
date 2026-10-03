@@ -15,6 +15,7 @@ import (
 	"9router/proxy/internal/handlers"
 	"github.com/go-chi/chi/v5"
 	"github.com/spf13/viper"
+	"github.com/urfave/cli/v2"
 	"go.uber.org/fx"
 	_ "modernc.org/sqlite"
 )
@@ -39,6 +40,41 @@ func TestCLIParams(t *testing.T) {
 	if fromNil.RTK != defaults.RTK {
 		t.Errorf("expected NewCLIParams(nil) to equal DefaultCLIParams")
 	}
+}
+
+func TestNewCLIParams_WithContext(t *testing.T) {
+	appCLI := cli.NewApp()
+	appCLI.Flags = []cli.Flag{
+		&cli.BoolFlag{Name: "rtk"},
+		&cli.BoolFlag{Name: "caveman"},
+		&cli.BoolFlag{Name: "ponytail"},
+		&cli.BoolFlag{Name: "adhd"},
+		&cli.BoolFlag{Name: "auto-update"},
+		&cli.BoolFlag{Name: "no-injection-guard"},
+	}
+	appCLI.Action = func(cCtx *cli.Context) error {
+		p := app.NewCLIParams(cCtx)
+		if !p.RTK || !p.RTKSet {
+			t.Error("expected RTK true and RTKSet true")
+		}
+		if !p.Caveman || !p.CavemanSet {
+			t.Error("expected Caveman true and CavemanSet true")
+		}
+		if !p.Ponytail || !p.PonytailSet {
+			t.Error("expected Ponytail true and PonytailSet true")
+		}
+		if !p.ADHD || !p.ADHDSet {
+			t.Error("expected ADHD true and ADHDSet true")
+		}
+		if !p.AutoUpdate {
+			t.Error("expected AutoUpdate true")
+		}
+		if !p.NoInjectionGuard {
+			t.Error("expected NoInjectionGuard true")
+		}
+		return nil
+	}
+	_ = appCLI.Run([]string{"9router", "--rtk", "--caveman", "--ponytail", "--adhd", "--auto-update", "--no-injection-guard"})
 }
 
 func TestConfigModule(t *testing.T) {
@@ -194,3 +230,98 @@ func TestNewApp_FullLifecycle(t *testing.T) {
 		t.Errorf("full app Stop failed: %v", err)
 	}
 }
+
+func TestProvideConfigValue_Nil(t *testing.T) {
+	val := app.ProvideConfigValue(nil)
+	if val.Port != 0 {
+		t.Errorf("expected empty config value, got port %d", val.Port)
+	}
+}
+
+func TestDefaultFxLogger_Env(t *testing.T) {
+	t.Setenv("FX_LOGGING", "true")
+	opt := app.DefaultFxLogger()
+	if opt == nil {
+		t.Error("expected non-nil Fx option when FX_LOGGING=true")
+	}
+
+	t.Setenv("FX_LOGGING", "false")
+	optNop := app.DefaultFxLogger()
+	if optNop == nil {
+		t.Error("expected non-nil Fx option when FX_LOGGING=false")
+	}
+}
+
+func TestProvideTokenSaverConfig_EnvOverrides(t *testing.T) {
+	t.Setenv("RTK_ENABLED", "false")
+	t.Setenv("CAVEMAN_ENABLED", "true")
+	t.Setenv("PONYTAIL_ENABLED", "true")
+	t.Setenv("ADHD_ENABLED", "true")
+
+	params := app.CLIParams{
+		RTK:         false,
+		RTKSet:      true,
+		Caveman:     true,
+		CavemanSet:  true,
+		Ponytail:    true,
+		PonytailSet: true,
+		ADHD:        true,
+		ADHDSet:     true,
+	}
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open in-memory db: %v", err)
+	}
+	defer database.Close()
+	repo := db.NewRepo(database)
+	tsc := app.ProvideTokenSaverConfig(repo, params)
+	if tsc.RTKEnabled() != false {
+		t.Errorf("expected RTK false, got %v", tsc.RTKEnabled())
+	}
+	if tsc.CavemanEnabled() != true {
+		t.Errorf("expected Caveman true, got %v", tsc.CavemanEnabled())
+	}
+	if tsc.PonytailEnabled() != true {
+		t.Errorf("expected Ponytail true, got %v", tsc.PonytailEnabled())
+	}
+	if tsc.ADHDEnabled() != true {
+		t.Errorf("expected ADHD true, got %v", tsc.ADHDEnabled())
+	}
+}
+
+func TestRun_StartFailure(t *testing.T) {
+	failingApp := fx.New(
+		fx.NopLogger,
+		fx.Invoke(func(lc fx.Lifecycle) {
+			lc.Append(fx.Hook{
+				OnStart: func(context.Context) error {
+					return os.ErrInvalid
+				},
+			})
+		}),
+	)
+	err := app.Run(failingApp)
+	if err == nil {
+		t.Fatal("expected Run to return startup error")
+	}
+}
+
+func TestProvideServer_WithHost(t *testing.T) {
+	var lc fx.Lifecycle = &fxLifecycleStub{}
+	params := app.ServerParams{
+		Config: &config.Config{
+			Host: "127.0.0.1",
+			Port: 20145,
+		},
+		Lifecycle: lc,
+		Handler:   http.NotFoundHandler(),
+	}
+	srv := app.ProvideServer(params)
+	if srv.Addr != "127.0.0.1:20145" {
+		t.Errorf("expected 127.0.0.1:20145, got %s", srv.Addr)
+	}
+}
+
+type fxLifecycleStub struct{}
+
+func (s *fxLifecycleStub) Append(fx.Hook) {}
