@@ -2,7 +2,10 @@ package db
 
 import (
 	"database/sql"
+	"net/url"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -150,6 +153,77 @@ func TestPooledConnectionsPragma(t *testing.T) {
 	if stats.MaxOpenConnections != 4 {
 		t.Errorf("MaxOpenConnections = %d, want 4", stats.MaxOpenConnections)
 	}
+}
+
+// The DSN is what actually applies the PRAGMAs to every pooled connection, so
+// its shape is a contract: a missing pragma silently reverts that connection to
+// SQLite defaults, and a wrong separator corrupts the whole DSN.
+func TestSQLiteDSN(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		notIn []string
+	}{
+		{
+			name: "plain path gets a question mark separator",
+			path: "/tmp/data.sqlite",
+			// journal_mode must stay a post-open Exec: it is a file-header
+			// property, not connection state.
+			notIn: []string{"journal_mode"},
+		},
+		{
+			name:  "existing query string is extended with an ampersand",
+			path:  "file:/tmp/data.sqlite?mode=rw",
+			notIn: []string{"?_pragma"},
+		},
+	}
+
+	// Order matters only for the busy_timeout-first guarantee; the driver sorts
+	// that itself, so this pins readability rather than behaviour.
+	wantPragmas := []string{
+		"busy_timeout(5000)",
+		"synchronous(NORMAL)",
+		"temp_store(MEMORY)",
+		"mmap_size(30000000)",
+		"cache_size(-64000)",
+		"foreign_keys(ON)",
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sqliteDSN(tt.path)
+
+			if !strings.HasPrefix(got, tt.path+sepFor(tt.path)) {
+				t.Errorf("sqliteDSN(%q) = %q, want it to keep the path and append %q", tt.path, got, sepFor(tt.path))
+			}
+
+			// The first pragma must lead the query string; everything after the
+			// separator is what the driver actually parses.
+			q := got[strings.Index(got, sepFor(tt.path)):][1:]
+			values, err := url.ParseQuery(q)
+			if err != nil {
+				t.Fatalf("query %q did not parse: %v", q, err)
+			}
+
+			gotPragmas := values["_pragma"]
+			if !slices.Equal(gotPragmas, wantPragmas) {
+				t.Errorf("_pragma params = %v, want %v", gotPragmas, wantPragmas)
+			}
+
+			for _, absent := range tt.notIn {
+				if strings.Contains(q, absent) {
+					t.Errorf("query %q must not contain %q", q, absent)
+				}
+			}
+		})
+	}
+}
+
+func sepFor(path string) string {
+	if strings.Contains(path, "?") {
+		return "&"
+	}
+	return "?"
 }
 
 func TestTimeScanningAsString(t *testing.T) {
