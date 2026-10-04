@@ -262,7 +262,12 @@ func TestTimeScanningAsString(t *testing.T) {
 	}
 }
 
+// TestGlobalDatabase is isolated because it asserts on the process-global
+// handle itself: the "not initialized yet" case only holds on a global no
+// other test has already claimed, and any test that ran first and opened one
+// turns it into a false failure.
 func TestGlobalDatabase(t *testing.T) {
+	ResetGlobalDatabaseForTest(t)
 	// 1. GetConnection before initialization should fail
 	_, err := GetConnection()
 	if err == nil {
@@ -291,9 +296,24 @@ func TestGlobalDatabase(t *testing.T) {
 		t.Error("expected non-nil database connection")
 	}
 
-	// 4. Repeated initialization should not return error (sync.Once covers it)
-	err = InitGlobalDatabase(tmpFile.Name())
+	// 4. A repeated init is a no-op: the first handle wins and the second
+	// path is ignored, so a caller that boots twice never gets two pools on
+	// one file.
+	other, err := os.CreateTemp("", "test_global_db_other_*.sqlite")
 	if err != nil {
+		t.Fatalf("failed to create second temp file: %v", err)
+	}
+	defer os.Remove(other.Name())
+	other.Close()
+
+	if err := InitGlobalDatabase(other.Name()); err != nil {
 		t.Errorf("expected no error on repeated InitGlobalDatabase, got %v", err)
+	}
+	same, err := GetConnection()
+	if err != nil {
+		t.Fatalf("GetConnection after repeated init: %v", err)
+	}
+	if same != conn {
+		t.Error("repeated InitGlobalDatabase replaced the open handle; a second boot must reuse it")
 	}
 }

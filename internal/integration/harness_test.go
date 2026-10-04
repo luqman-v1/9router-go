@@ -28,13 +28,13 @@ const testAPIKey = "sk-integration-test-key"
 // listener on a random port.
 //
 // It deliberately does NOT boot app.AppModule. That path goes through
-// db.InitGlobalDatabase, a process-wide sync.Once, so only one database could
-// ever exist per test binary and every test would share it. Constructing the
-// router directly keeps each Env's state isolated while still exercising the
-// production wiring — app.ProvideRouter is the same function the binary uses,
-// so a route registered in the wrong place fails here exactly as it would in
-// production. See bootfx/ for the complementary test that boots the real fx
-// graph end to end.
+// db.InitGlobalDatabase, a process-wide singleton, so only one database could
+// ever exist per test binary without resetting it between tests.
+// Constructing the router directly keeps each Env's state isolated while still
+// exercising the production wiring — app.ProvideRouter is the same function the
+// binary uses, so a route registered in the wrong place fails here exactly as it
+// would in production. See bootfx/ for the complementary test that boots the
+// real fx graph end to end.
 //
 // Env holds no *testing.T on purpose. Every helper takes the test that is
 // currently running: calling FailNow through a stored parent would abort the

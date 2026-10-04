@@ -13,6 +13,7 @@ import (
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers"
+	"9router/proxy/internal/shutdown"
 	"github.com/go-chi/chi/v5"
 	"github.com/spf13/viper"
 	"go.uber.org/fx"
@@ -83,7 +84,20 @@ func TestConfigModule(t *testing.T) {
 	}
 }
 
+// resetProcessGlobals drops the two package-level states a DatabaseModule boot
+// leaves behind. Without this the whole file is order-dependent under
+// `go test -shuffle`: whichever test boots first owns the one global
+// connection, every later boot reuses it, and the fx Stop that closes it makes
+// all of them fail — a shuffle failure that has nothing to do with the code
+// under test.
+func resetProcessGlobals(t *testing.T) {
+	t.Helper()
+	db.ResetGlobalDatabaseForTest(t)
+	shutdown.TestReset()
+}
+
 func TestDatabaseModule(t *testing.T) {
+	resetProcessGlobals(t)
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.sqlite")
 
@@ -127,7 +141,55 @@ func TestDatabaseModule(t *testing.T) {
 	}
 }
 
+// TestDatabaseModule_SecondBootAfterAFirstOneWasClosed is the regression test
+// for the order-dependent failure. Before, `go test -shuffle` on this package
+// failed on TestDatabaseModule whenever another DatabaseModule boot ran first:
+// the process-wide sync.Once handed out one handle, the first test's fx Stop
+// closed it, and this test then pinged a connection that could never open.
+// Two consecutive boots must both get a working database.
+func TestDatabaseModule_SecondBootAfterAFirstOneWasClosed(t *testing.T) {
+	resetProcessGlobals(t)
+
+	boot := func(t *testing.T) *sql.DB {
+		t.Helper()
+		cfg := &config.Config{
+			DatabasePath: filepath.Join(t.TempDir(), "test.sqlite"),
+			Port:         20133,
+		}
+		var conn *sql.DB
+		fxApp := fx.New(
+			fx.Supply(cfg),
+			app.DatabaseModule,
+			fx.NopLogger,
+			fx.Populate(&conn),
+		)
+		if err := fxApp.Start(context.Background()); err != nil {
+			t.Fatalf("DatabaseModule Start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = fxApp.Stop(context.Background()) })
+		return conn
+	}
+
+	first := boot(t)
+	if err := first.Ping(); err != nil {
+		t.Fatalf("first boot is not usable: %v", err)
+	}
+
+	// The first boot's cleanup closed the handle. A second boot must not
+	// inherit that closed one.
+	resetProcessGlobals(t)
+
+	second := boot(t)
+	if err := second.Ping(); err != nil {
+		t.Fatalf("second boot inherited a closed handle: %v", err)
+	}
+	if second == first {
+		t.Error("second boot reused the first handle after it was closed")
+	}
+}
+
 func TestHandlersModule(t *testing.T) {
+	resetProcessGlobals(t)
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.sqlite")
 
@@ -175,6 +237,7 @@ func TestHandlersModule(t *testing.T) {
 }
 
 func TestNewApp_FullLifecycle(t *testing.T) {
+	resetProcessGlobals(t)
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.sqlite")
 

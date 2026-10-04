@@ -13,9 +13,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// The global connection and its open error, guarded by dbMu. OpenDatabase has
+// no meaningful failure mode once the path is validated, so a bool would carry
+// no information the error does not.
 var (
+	dbMu       sync.Mutex
 	dbInstance *sql.DB
-	dbOnce     sync.Once
 	initErr    error
 )
 
@@ -61,16 +64,51 @@ func OpenDatabase(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// InitGlobalDatabase initializes the global database connection instance.
+// InitGlobalDatabase opens the process-wide database connection once. Later
+// calls are a no-op: production boots one gateway per process, and a second
+// boot would silently reopen the same SQLite file behind the first one's
+// pooled connections. Tests are the one place that legitimately needs a fresh
+// handle, which is what ResetGlobalDatabaseForTest is for.
 func InitGlobalDatabase(path string) error {
-	dbOnce.Do(func() {
-		dbInstance, initErr = OpenDatabase(path)
-	})
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	if dbInstance != nil {
+		return initErr
+	}
+	dbInstance, initErr = OpenDatabase(path)
 	return initErr
+}
+
+// ResetGlobalDatabaseForTest closes and forgets the global connection so the
+// next InitGlobalDatabase opens a real one. Without it, a test that boots
+// app.DatabaseModule and stops its fx app closes the handle for good, and
+// every later boot in the same binary inherits the closed handle and an
+// already-cancelled shutdown context — which is exactly what makes
+// `go test -shuffle` fail on internal/app in an order-dependent way.
+//
+// Production never calls this: closing the one real connection mid-process is
+// precisely the failure mode the process-wide singleton exists to prevent. It
+// mirrors shutdown.TestReset, which restores the sibling process-global.
+func ResetGlobalDatabaseForTest(t interface{ Cleanup(func()) }) {
+	t.Cleanup(func() { ResetGlobalDatabaseForTesting() })
+	ResetGlobalDatabaseForTesting()
+}
+
+// ResetGlobalDatabaseForTesting is ResetGlobalDatabaseForTest without the
+// testing.T dependency, for callers that manage their own teardown.
+func ResetGlobalDatabaseForTesting() {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	if dbInstance != nil {
+		_ = dbInstance.Close()
+	}
+	dbInstance, initErr = nil, nil
 }
 
 // GetConnection returns the global database connection.
 func GetConnection() (*sql.DB, error) {
+	dbMu.Lock()
+	defer dbMu.Unlock()
 	if dbInstance == nil {
 		return nil, errors.New("database not initialized, call InitGlobalDatabase first")
 	}

@@ -20,6 +20,10 @@ import (
 // and catalog-sync loops, none of which this test needs.
 func newTestServer(t *testing.T, handler http.Handler) *http.Server {
 	t.Helper()
+	// This boots the real DatabaseModule, so it claims the process-wide
+	// database handle and then closes it on cleanup. Hand the next test a
+	// fresh one instead of a closed handle when the order changes.
+	resetProcessGlobals(t)
 	if handler == nil {
 		r := chi.NewRouter()
 		r.Get("/health", func(w http.ResponseWriter, r *http.Request) {

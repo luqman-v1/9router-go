@@ -1,6 +1,37 @@
 # Changelog
 
 ## [Unreleased]
+### 🐛 `go test -shuffle` gagal di `internal/app` — test order-dependent
+
+`db.InitGlobalDatabase` hanya mengizinkan satu connection database per proses
+lewat `sync.Once`, dan hook `OnStop` dari `app.DatabaseModule` menutup
+connection itu untuk selamanya. Di produksi itu benar: satu proses berarti
+satu gateway, dan boot kedua akan diam-diam membuka file SQLite yang sama di
+balik pool connection yang pertama. Di test, kombinasi itu membuat seluruh
+`internal/app` order-dependent: test yang boot pertama mengklaim satu-satunya
+handle global, hook `OnStop`-nya menutupnya, dan setiap boot berikutnya
+mengambil handle yang sudah tertutup. Di `origin/main`, seed shuffle 1 sampai
+6 semuanya gagal; setelah patch ini, 10 seed hijau.
+
+`sync.Once` diganti dengan mutex plus handle, lalu ditambahkan
+`ResetGlobalDatabaseForTest` untuk mengembalikan keadaan proses ke nol sebelum
+dan sesudah test yang boot `DatabaseModule`. Polanya mengikuti
+`shutdown.TestReset` yang sudah ada di paket sebelah. Reset hanya dipakai
+test; produksi tidak pernah memanggilnya, karena menutup satu-satunya
+connection di tengah proses justru kegagalan yang ada untuk dicegah.
+
+`TestGlobalDatabase` sekarang juga menguji hal yang sebelumnya tidak diuji:
+boot kedua dengan path berbeda harus memakai kembali handle yang sama, bukan
+membuka pool kedua pada satu file. Dan regression test baru
+`TestDatabaseModule_SecondBootAfterAFirstOneWasClosed` melakukan boot dua kali
+berturut-turut; dicoba tanpa reset, ia gagal tepat dengan pesan
+`first boot is not usable: sql: database is closed`.
+
+**Verifikasi:** `go vet ./...` bersih; `go build ./...` bersih;
+`go test ./internal/app/ ./internal/db/ -shuffle=<1..10>` hijau semua;
+`go test -race` pada kedua paket dengan shuffle hijau; `go test ./...` hijau;
+`go test -tags=integration ./internal/integration/...` hijau.
+
 ### 🐛 Deploy Vercel/Deno/Cloudflare Relay dashboard 401 — issue #140
 
 Ketiga endpoint deploy relay didaftarkan di `SetupRoutes`
