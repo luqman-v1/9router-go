@@ -2,6 +2,72 @@
 
 ## [Unreleased]
 
+### 🩹 Pembacaan usage yang gagal diam-diam dilaporkan sebagai nol — dashboard Usage & Analytics
+
+`GetUsageDailyRecent`, `GetUsageHistorySince`, `GetRecentUsageHistory`,
+`GetRequestDetailsPaged`, dan `ListProxyPools` mengiterasi cursor
+`database/sql` tanpa mengecek `rows.Err()`, dan error `rows.Scan()` di
+`continue`-kan. Cursor yang terpotong di tengah, atau baris yang nilainya tidak
+cocok dengan kolom hasil scan, hilang tanpa satu pun jejak — sementara pemanggil
+menerima list yang lebih pendek dengan `err == nil`.
+
+`HandleUsageStats` membaca ketiga sumber usage di balik `if err == nil { ... }`
+tanpa cabang `else`, jadi kegagalan baca apa pun — tabel hilang, file tak
+terbaca, error scan — menghasilkan HTTP 200 berisi `{"totalRequests":0,
+"totalCost":0, ...}`. Dashboard merender itu sebagai "tidak ada traffic pada
+periode ini", dan tidak ada log yang mencatat kesalahannya. Angka nol karena
+sistemnya rusak terlihat identik dengan angka nol karena memang sepi.
+
+Kelima reader kini mengembalikan error yang dibungkus `%w` plus `rows.Err()`,
+dan ketiga pemanggilan di `HandleUsageStats` menulis 500 dengan pesan asalnya.
+`GetRequestDetailsPaged` juga tidak lagi menelan kegagalan `COUNT(*)` menjadi
+`total: 0` — halaman yang berisi baris tetapi melaporkan nol termasuk kelas
+"nol yang berarti rusak" yang sama. Test regresi menutup kedua arah: baris yang
+tidak bisa discan harus menghasilkan error (sebelumnya list terpotong tanpa
+error), dan pembacaan sehat tetap mengagregasi seperti sebelumnya.
+
+Tiga penyesuaian dari review:
+
+1. **`ListProxyPools` tidak gagal pada `testStatus` NULL.** Kolom itu nullable
+   di skema bersama dan database yang sama ditulis dashboard Next.js, jadi
+   pool yang belum pernah diprobe wajar punya NULL. Memindainya sebagai
+   `string` biasa akan membuat seluruh tab Proxy Pools 500 karena satu baris
+   yang hanya belum punya status. Nilainya kini dibaca sebagai `""`; kegagalan
+   scan lain tetap fatal.
+2. **`GetRecentUsageHistory` di `usagetracker` dicatat.** Ring buffer memang
+   best-effort — pembacaan yang gagal membiarkannya kosong dan push berikutnya
+   mengisinya — tapi sekarang menulis `log.Warn`, karena ring kosong tanpa jejak
+   tidak bisa dibedakan dari instalasi baru.
+3. **`rows.Err()` dibungkus dengan konteks pemanggil**, konsisten dengan
+   error `rows.Scan()` di fungsi yang sama (§4.E).
+
+### 🧹 `repos.go` dipecah per tabel; resolusi strategi combo jadi satu helper
+
+`internal/db/repos.go` tumbuh jadi 647 LoC dan melewati batas keras 400 (§4.D).
+Isinya dipecah sesuai tabel yang diquery, supaya setiap file berada di bawah
+target 300 LoC: `apikeys.go` (apiKeys), `connections.go` (providerConnections),
+`providernodes.go` (providerNodes), `combos.go` (combos), dan `aliases.go` (scope
+`kv`: modelAliases, customModels). `repos.go` sendiri kini hanya memegang tipe
+`Repo` beserta daftarnya.
+
+Daftar kolom `providerConnections` yang diulang di tiga literal SELECT dan daftar
+kolom `providerNodes`/`combos` kini menjadi konstanta + satu fungsi scan per
+tabel, dipakai bersama oleh pembaca baris tunggal dan pembaca list, sehingga
+urutan kolom tidak bisa lagi melenceng di satu jalur saja. Empat cabang
+WHERE pada `GetProviderConnections` (provider × activeOnly) diratakan jadi satu
+`switch` alih-alih dua `if` bersarang.
+
+Resolusi strategi combo yang identik diulang tiga kali (`GetComboByName`,
+`GetComboById`, `GetCombos`) kini satu helper `resolveComboStrategy`. Perilaku
+tidak berubah: default `"fallback"`, override per combo menang atas setelan
+global, dan pembacaan setelan yang gagal membiarkan defaultnya tetap.
+
+**Verifikasi:** API package `db` tidak berubah — 100 signature `func`
+sebelum dan sesudah split identik (`go doc -all ./internal/db` di bandingkan
+sebelum/sesudah). `go build ./...` dan `go vet ./...` bersih, `go test ./...`
+hijau, `go test -tags=integration ./internal/integration/...` hijau (69,7s +
+0,2s).
+
 ### 🏷️ Provider kustom bisa memakai URL suffix sendiri — `openai-compatible-chat-<suffix>`, bukan `<uuid>`
 
 Latar (issue #155): setiap node OpenAI/Anthropic-compatible yang dibuat dari

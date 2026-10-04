@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"crypto/rand"
 	json "encoding/json/v2"
 	"fmt"
@@ -183,6 +184,12 @@ func randomID() string {
 }
 
 // ListProxyPools returns all proxy pools with their data unpacked.
+//
+// testStatus is nullable in the shared schema and this database is written by
+// both dashboards, so a pool row can legitimately carry NULL there. Scanning it
+// as a plain string would fail the whole read and blank the tab over one pool
+// that has simply never been probed; the missing value reads as "" here. Any
+// other scan failure still aborts: that is a broken read, not an absent value.
 func (r *Repo) ListProxyPools() ([]map[string]any, error) {
 	rows, err := r.db.Query(`SELECT id, isActive, testStatus, data, createdAt, updatedAt FROM proxyPools ORDER BY createdAt DESC`)
 	if err != nil {
@@ -192,10 +199,11 @@ func (r *Repo) ListProxyPools() ([]map[string]any, error) {
 
 	var list []map[string]any
 	for rows.Next() {
-		var id, testStatus, dataStr, createdAt, updatedAt string
+		var id, dataStr, createdAt, updatedAt string
 		var isActiveInt int
+		var testStatus sql.NullString
 		if err := rows.Scan(&id, &isActiveInt, &testStatus, &dataStr, &createdAt, &updatedAt); err != nil {
-			continue
+			return nil, fmt.Errorf("scan proxyPools: %w", err)
 		}
 		var poolData map[string]any
 		if err := json.Unmarshal([]byte(dataStr), &poolData); err != nil {
@@ -203,10 +211,13 @@ func (r *Repo) ListProxyPools() ([]map[string]any, error) {
 		}
 		poolData["id"] = id
 		poolData["isActive"] = (isActiveInt == 1)
-		poolData["testStatus"] = testStatus
+		poolData["testStatus"] = testStatus.String
 		poolData["createdAt"] = createdAt
 		poolData["updatedAt"] = updatedAt
 		list = append(list, poolData)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate proxyPools: %w", err)
 	}
 	if list == nil {
 		list = []map[string]any{}

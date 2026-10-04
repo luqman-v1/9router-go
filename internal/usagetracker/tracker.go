@@ -9,6 +9,7 @@ import (
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/translator"
+	"9router/proxy/internal/log"
 )
 
 const (
@@ -171,7 +172,12 @@ func (t *Tracker) ensureRingInitialized(repo *db.Repo) {
 		return
 	}
 	t.ringInitialized = true
-	if rows, err := repo.GetRecentUsageHistory(ringCap); err == nil {
+	// The ring is a best-effort seed: a failed read leaves it empty and live
+	// pushes refill it. That is the right behaviour, but it must not be silent
+	// — an empty ring is otherwise indistinguishable from a fresh install.
+	if rows, err := repo.GetRecentUsageHistory(ringCap); err != nil {
+		log.Warn("usage ring seed failed", "err", err)
+	} else {
 		seeded := make([]RecentRequest, 0, len(rows))
 		for _, rh := range rows {
 			seeded = append(seeded, recentFromHistoryRow(rh))

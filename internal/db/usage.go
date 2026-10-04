@@ -86,9 +86,12 @@ func (r *Repo) GetUsageDailyRecent(limit int) ([]string, error) {
 	for rows.Next() {
 		var data string
 		if err := rows.Scan(&data); err != nil {
-			continue
+			return nil, fmt.Errorf("scan usageDaily recent: %w", err)
 		}
 		res = append(res, data)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usageDaily recent: %w", err)
 	}
 	return res, nil
 }
@@ -116,9 +119,12 @@ func (r *Repo) GetUsageHistorySince(cutoff string) ([]UsageHistoryRow, error) {
 			&row.APIKey, &row.Endpoint, &row.PromptTokens, &row.CompletionTokens,
 			&row.Cost, &row.Status, &row.Tokens,
 		); err != nil {
-			continue
+			return nil, fmt.Errorf("scan usageHistory since %s: %w", cutoff, err)
 		}
 		res = append(res, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usageHistory since %s: %w", cutoff, err)
 	}
 	return res, nil
 }
@@ -146,18 +152,26 @@ func (r *Repo) GetRecentUsageHistory(limit int) ([]UsageHistoryRow, error) {
 			&row.APIKey, &row.Endpoint, &row.PromptTokens, &row.CompletionTokens,
 			&row.Cost, &row.Status, &row.Tokens,
 		); err != nil {
-			continue
+			return nil, fmt.Errorf("scan recent usageHistory: %w", err)
 		}
 		res = append(res, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent usageHistory: %w", err)
 	}
 	return res, nil
 }
 
 // GetRequestDetailsPaged returns paged raw json strings and total count from requestDetails.
+//
+// The count is not allowed to fail quietly. Reporting 0 next to a page that
+// does carry rows is the same "zero that means broken" class this reader's
+// siblings were fixed for, and it reaches the caller looking like a coherent
+// empty page.
 func (r *Repo) GetRequestDetailsPaged(limit, offset int) ([]string, int, error) {
 	var total int
 	if err := r.db.QueryRow(`SELECT COUNT(*) FROM requestDetails`).Scan(&total); err != nil {
-		total = 0
+		return nil, 0, fmt.Errorf("count requestDetails: %w", err)
 	}
 
 	rows, err := r.db.Query(`
@@ -174,9 +188,12 @@ func (r *Repo) GetRequestDetailsPaged(limit, offset int) ([]string, int, error) 
 	for rows.Next() {
 		var d string
 		if err := rows.Scan(&d); err != nil {
-			continue
+			return nil, total, fmt.Errorf("scan requestDetails: %w", err)
 		}
 		res = append(res, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, total, fmt.Errorf("iterate requestDetails paged: %w", err)
 	}
 	return res, total, nil
 }
