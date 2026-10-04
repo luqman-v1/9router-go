@@ -55,22 +55,29 @@ vision tidak dialihkan ke "combo vision", dan memang tidak bisa begitu di upstre
 
 ### 🔒 `http.Server` tanpa batas koneksi — rentan Slowloris — issue #124
 
-`ProvideServer` membangun `http.Server` hanya dengan `Addr` dan `Handler`.
-Semua batas koneksi bernilai nol, artinya tidak ada batas sama sekali: klien
-yang membuka soket lalu mengirim header byte-per-byte menahan satu file
-descriptor tanpa ujung, dan koneksi yang ditinggalkan di pool keep-alive tidak
-pernah diserap. Bahaya pada konfigurasi ini bukan hipotesis — repo ini punya
-dua jalur expose ke internet:
-(`internal/auth/tunnel.go` untuk tailscale funnel,
+`ProvideServer` membangun `http.Server` hanya dengan `Addr` dan `Handler`, jadi
+`ReadHeaderTimeout` dan `IdleTimeout` sama-sama nol: klien yang membuka soket
+lalu mengirim header byte-per-byte menahan satu file descriptor tanpa ujung,
+dan koneksi yang ditinggalkan di pool keep-alive tidak pernah diserap. Bahaya
+pada konfigurasi ini bukan hipotesis — repo ini punya dua jalur expose ke
+internet (`internal/auth/tunnel.go` untuk tailscale funnel,
 `internal/handlers/media/deploy.go` untuk deploy Cloudflare tunnel / Vercel /
 Deno), jadi "cuma jalan di localhost" tidak berlaku.
 
-Kini `ReadHeaderTimeout: 10s`, `IdleTimeout: 120s`, dan `MaxHeaderBytes: 1 MiB`.
-Nilai 10 detik bukan angka tebakan: itu sudah dipakai listener OAuth callback
-di `internal/proxy/oauth/codex_proxy.go`, jadi sekarang satu konvensi berlaku
-di kedua tempat. Nilainya sengaja **tidak** dibuat configurable lewat `.env` —
-limit ini yang menahan satu koneksi, jadi membukanya lewat konfigurasi berarti
-menyerahkan kendali Slowloris ke siapa pun yang bisa mengedit file tersebut.
+Kini `ReadHeaderTimeout: 10s` dan `IdleTimeout: 120s`. Nilai 10 detik bukan
+angka tebakan: itu sudah dipakai listener OAuth callback di
+`internal/proxy/oauth/codex_proxy.go`, jadi sekarang satu konvensi berlaku di
+kedua tempat. Nilainya sengaja **tidak** dibuat configurable lewat `.env` —
+limit inilah yang menahan satu koneksi, jadi membukanya lewat konfigurasi
+berarti menyerahkan kendali Slowloris ke siapa pun yang bisa mengedit file
+tersebut.
+
+`MaxHeaderBytes: 1 MiB` ikut dipasang, tapi ia **bukan** bagian dari lubang
+Slowloris: `net/http` sudah menolak blok header tanpa batas, karena `Server`
+yang bernilai nol jatuh ke `http.DefaultMaxHeaderBytes` (1 MiB), jadi nilai
+yang benar-benar ditegakkan sama saja. Mematkannya berfungsi sebagai pernyataan
+— batasnya adalah keputusan repo ini, bukan default stdlib yang belum pernah
+direview di sini.
 
 `WriteTimeout` tetap nol dengan alasan yang sekarang tertulis di kode:
 `internal/proxy/stall.go` mengizinkan satu stream SSE diam sampai
@@ -83,7 +90,8 @@ berlaku ke koneksi keep-alive yang **tidak** sedang melayani request.
 `go test -tags=integration -race -count=1 ./internal/integration/...` hijau.
 Test baru `TestServer_ConnectionLimitsAreEnforced` boot `ServerModule` lewat fx
 dan menguji batas yang dibangun `ProvideServer` sungguhan — ia gagal di
-`origin/main` dengan ketiga field bernilai nol dan lulus setelah patch ini.
+`origin/main` dengan `ReadHeaderTimeout` dan `IdleTimeout` bernilai nol, dan
+lulus setelah patch ini.
 
 Bukti bahwa batas ini tidak memutus model yang lambat, sekarang jadi test:
 `TestServer_SlowStreamingRequestSurvivesTheLimits` menjalankan handler yang

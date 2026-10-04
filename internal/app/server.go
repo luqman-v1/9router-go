@@ -54,7 +54,11 @@ const (
 	// flight. It does not apply while a request is being served, so SSE and
 	// WebSocket streams run to their natural end.
 	serverIdleTimeout = 120 * time.Second
-	// serverMaxHeaderBytes caps the header block a client can send.
+	// serverMaxHeaderBytes states the header limit the gateway intends.
+	// It does not close a hole: net/http falls back to
+	// http.DefaultMaxHeaderBytes (1 MiB) when this is zero, so the enforced
+	// value is the same either way. Pinning it keeps the limit a decision
+	// here rather than a stdlib default this repo never reviewed.
 	serverMaxHeaderBytes = 1 << 20
 )
 

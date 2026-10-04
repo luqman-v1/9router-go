@@ -67,18 +67,25 @@ func newTestServer(t *testing.T, handler http.Handler) *http.Server {
 	return server
 }
 
-// TestServer_ConnectionLimitsAreEnforced pins the three bounds on how long one
-// client can hold one connection. Each was zero on the server this repo
-// shipped until the Slowloris fix, and zero is the value that fails: a client
-// could open a socket, dribble headers a byte at a time, and keep the
-// descriptor until the process died.
+// TestServer_ConnectionLimitsAreEnforced pins the bounds on how long one client
+// can hold one connection. ReadHeaderTimeout and IdleTimeout were both zero on
+// the server this repo shipped until the Slowloris fix, and zero is the value
+// that fails: a client could open a socket, dribble headers a byte at a time,
+// and keep the descriptor until the process died.
+//
+// MaxHeaderBytes is pinned for a different reason and is not part of that
+// hole. net/http already refuses an unbounded header block — Server zero falls
+// back to http.DefaultMaxHeaderBytes (1 MiB), so a zero here caps headers at
+// the same 1 MiB the explicit value does. Setting it states the limit this
+// gateway intends rather than inheriting whatever the stdlib default happens
+// to be, and the test fails if that statement is dropped.
 //
 // These are asserted on the built server rather than re-checked in a
 // behavioural test because the production values are deliberately too large
-// to exercise in a test suite (10s and 120s), and because the failure they
+// to exercise in a test suite (10s and 120s), and because the failure the timeouts
 // guard against is exactly the field silently reverting to its zero value —
 // a re-checked deadline would still pass if someone dropped the field. What is
-// asserted here is the contract the SSE and WebSocket paths depend on
+// asserted here is also the contract the SSE and WebSocket paths depend on
 // alongside it: WriteTimeout must stay zero, since internal/proxy/stall.go
 // lets a stream idle for DefaultStallTimeout.
 func TestServer_ConnectionLimitsAreEnforced(t *testing.T) {
@@ -97,7 +104,8 @@ func TestServer_ConnectionLimitsAreEnforced(t *testing.T) {
 	}
 
 	if srv.MaxHeaderBytes == 0 {
-		t.Error("MaxHeaderBytes is 0: the header block is unbounded")
+		t.Error("MaxHeaderBytes is 0: the gateway no longer states its own header limit" +
+			" (net/http would still apply its 1 MiB default)")
 	} else if srv.MaxHeaderBytes > 4<<20 {
 		t.Errorf("MaxHeaderBytes = %v, want at most 4 MiB", srv.MaxHeaderBytes)
 	}
