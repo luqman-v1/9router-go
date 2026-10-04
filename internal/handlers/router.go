@@ -387,16 +387,6 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	r.Get("/api/settings/require-login", dashH.HandleRequireLogin)
 	r.Get("/api/tunnel/status", dashH.HandleTunnelStatus)
 
-	// Profiling endpoints (pprof) — disabled by default in production for security;
-	// enable explicitly via PPROF_ENABLED=true
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("PPROF_ENABLED")), "true") {
-		r.HandleFunc("/debug/pprof/", pprof.Index)
-		r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		r.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		r.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		r.HandleFunc("/debug/pprof/trace", pprof.Trace)
-		r.HandleFunc("/debug/pprof/*", pprof.Index)
-	}
 	// Admin-only operations (health reset, shutdown, update) - strictly requires session cookie or CLI token.
 	// Standard client API keys are rejected, matching upstream ALWAYS_PROTECTED.
 	r.Group(func(r chi.Router) {
@@ -418,6 +408,18 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 		r.Post("/api/version/update", chatH.HandleTriggerUpdate)
 		r.Post("/api/version/auto-update", chatH.HandleToggleAutoUpdate)
 		r.Post("/api/version/shutdown", HandleShutdown)
+
+		// Profiling endpoints (pprof) — disabled by default in production for security;
+		// enable explicitly via PPROF_ENABLED=true. Gated behind RequireAdminAuth
+		// (issue #126) so debug surface is never exposed publicly.
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("PPROF_ENABLED")), "true") {
+			r.HandleFunc("/debug/pprof/", pprof.Index)
+			r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+			r.HandleFunc("/debug/pprof/profile", pprof.Profile)
+			r.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+			r.HandleFunc("/debug/pprof/trace", pprof.Trace)
+			r.HandleFunc("/debug/pprof/*", pprof.Index)
+		}
 	})
 
 	// API-key protected domain routes

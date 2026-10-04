@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### 🔒 Proteksi pprof di balik `RequireAdminAuth` saat `PPROF_ENABLED=true` — issue #126
+
+Endpoint profiling `/debug/pprof/*` sebelumnya diregistrasikan langsung di root router tanpa auth group, sehingga saat flag `PPROF_ENABLED=true` diaktifkan, debug surface (heap, cmdline, cpu profile, goroutine trace) dapat diakses publik tanpa kredensial. Route pprof kini dipindahkan ke dalam admin tier (`middleware.RequireAdminAuth()`), mewajibkan admin session cookie atau local CLI token (`x-9r-cli-token`), serta menolak request publik maupun standard client API key (`401 Unauthorized`).
+
+**Verifikasi:** `TestSetupServerRouter_PprofUnauthenticated`, `TestSetupServerRouter_PprofAuthenticated`, dan `TestSetupServerRouter_PprofDisabledByDefault` di `internal/handlers/router_test.go` lulus 100%.
+
 
 ## [v1.9.8] - 2026-10-04
 

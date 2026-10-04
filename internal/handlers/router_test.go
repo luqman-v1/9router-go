@@ -88,7 +88,7 @@ func TestSetupRoutes_OAuthEndpointsMounted(t *testing.T) {
 	}
 }
 
-func TestSetupServerRouter_PprofMounted(t *testing.T) {
+func TestSetupServerRouter_PprofUnauthenticated(t *testing.T) {
 	t.Setenv("PPROF_ENABLED", "true")
 	database, cleanup := setupTestDB(t)
 	defer cleanup()
@@ -97,18 +97,41 @@ func TestSetupServerRouter_PprofMounted(t *testing.T) {
 	r := chi.NewRouter()
 	SetupServerRouter(r, repo, nil)
 
-	for _, path := range []string{"/debug/pprof/", "/debug/pprof/heap", "/debug/pprof/goroutine"} {
+	paths := []string{
+		"/debug/pprof/",
+		"/debug/pprof/cmdline",
+		"/debug/pprof/profile",
+		"/debug/pprof/symbol",
+		"/debug/pprof/trace",
+		"/debug/pprof/heap",
+		"/debug/pprof/goroutine",
+	}
+
+	// 1. Anonymous request must be rejected with 401 Unauthorized (issue #126)
+	for _, path := range paths {
 		req := httptest.NewRequest("GET", path, nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Errorf("expected %s to return 200 OK when PPROF_ENABLED=true, got %d", path, w.Code)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected anonymous %s to return 401 Unauthorized when PPROF_ENABLED=true, got %d", path, w.Code)
+		}
+	}
+
+	// 2. Client API key must also be rejected with 401 Unauthorized (RequireAdminAuth rejects API keys)
+	for _, path := range paths {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Authorization", "Bearer sk-test-client-key")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected client API key on %s to return 401 Unauthorized, got %d", path, w.Code)
 		}
 	}
 }
 
-func TestSetupServerRouter_PprofDisabledByDefault(t *testing.T) {
-	t.Setenv("PPROF_ENABLED", "false")
+func TestSetupServerRouter_PprofAuthenticated(t *testing.T) {
+	t.Setenv("PPROF_ENABLED", "true")
+	t.Setenv("JWT_SECRET", "router-test-secret")
 	database, cleanup := setupTestDB(t)
 	defer cleanup()
 
@@ -116,12 +139,67 @@ func TestSetupServerRouter_PprofDisabledByDefault(t *testing.T) {
 	r := chi.NewRouter()
 	SetupServerRouter(r, repo, nil)
 
+	token, err := auth.Sign("router-test-secret", time.Now())
+	if err != nil {
+		t.Fatalf("sign session token: %v", err)
+	}
+
+	paths := []string{"/debug/pprof/", "/debug/pprof/heap", "/debug/pprof/goroutine"}
+
+	// 1. Valid admin session cookie -> 200 OK
+	for _, path := range paths {
+		req := httptest.NewRequest("GET", path, nil)
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected admin session cookie on %s to return 200 OK, got %d", path, w.Code)
+		}
+	}
+
+	// 2. Valid CLI token -> 200 OK
+	for _, path := range paths {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set(auth.CLITokenHeader, auth.CLIToken())
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected CLI token on %s to return 200 OK, got %d", path, w.Code)
+		}
+	}
+}
+
+func TestSetupServerRouter_PprofDisabledByDefault(t *testing.T) {
+	t.Setenv("PPROF_ENABLED", "false")
+	t.Setenv("JWT_SECRET", "router-test-secret")
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	token, err := auth.Sign("router-test-secret", time.Now())
+	if err != nil {
+		t.Fatalf("sign session token: %v", err)
+	}
+
 	for _, path := range []string{"/debug/pprof/", "/debug/pprof/cmdline", "/debug/pprof/profile"} {
+		// Anonymous request -> 404
 		req := httptest.NewRequest("GET", path, nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {
-			t.Errorf("expected %s to return 404 Not Found by default, got %d", path, w.Code)
+			t.Errorf("expected anonymous %s to return 404 Not Found by default, got %d", path, w.Code)
+		}
+
+		// Authenticated request -> 404 (not mounted at all)
+		authReq := httptest.NewRequest("GET", path, nil)
+		authReq.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		authW := httptest.NewRecorder()
+		r.ServeHTTP(authW, authReq)
+		if authW.Code != http.StatusNotFound {
+			t.Errorf("expected authenticated %s to return 404 Not Found by default, got %d", path, authW.Code)
 		}
 	}
 }
