@@ -24,6 +24,12 @@ const (
 	maxBodyLen = 1 << 20 // 1 MiB cap on platform API response bodies
 )
 
+// A Deno build is polled every 2s for at most 60s (upstream maxAttempts: 30).
+const (
+	denoPollInterval = 2 * time.Second
+	denoPollAttempts = 30
+)
+
 // Relay function source code deployed to Vercel.
 // Forwards requests to target URL specified in x-relay-target header.
 const vercelRelayCode = `
@@ -219,7 +225,42 @@ func pollDeployStatus(ctx context.Context, client *http.Client, url, token strin
 	return nil, fmt.Errorf("deployment timed out")
 }
 
-// POST /proxy-pools/vercel-deploy
+// awaitDenoRevision resolves a Deno revision to a terminal status, polling
+// revisionURL only while the work is still in flight. upstreamStatus is
+// whatever the deploy call already reported; upstream deno-deploy/route.js
+// seeds its loop with exactly that value, so a revision Deno answered as
+// failed never costs a single poll.
+//
+// Polling only for "succeeded" (as this handler used to) made a rejected build
+// sit in the loop for the full 60s and then surface "deployment timed out",
+// which reads like a network fault and hides the real status from the user.
+func awaitDenoRevision(ctx context.Context, client *http.Client, revisionURL, token, upstreamStatus string) (string, error) {
+	if isDenoTerminalStatus(upstreamStatus) {
+		return upstreamStatus, nil
+	}
+	terminal := func(data map[string]any) (bool, error) {
+		return isDenoTerminalStatus(handlerutil.GetString(data, "status")), nil
+	}
+	rev, err := pollDeployStatus(ctx, client, revisionURL, token, denoPollInterval, denoPollAttempts, terminal)
+	if err != nil {
+		return "", fmt.Errorf("deploy did not finish: %w", err)
+	}
+	return handlerutil.GetString(rev, "status"), nil
+}
+
+// isDenoTerminalStatus reports whether a revision has stopped moving, so the
+// caller must stop waiting. An empty status is not terminal: it means the
+// field was absent, and polling is the only way to learn the real outcome.
+func isDenoTerminalStatus(status string) bool {
+	switch status {
+	case "succeeded", "failed", "cancelled", "canceled", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+// POST /api/proxy-pools/vercel-deploy
 func (h *MediaHandler) HandleVercelDeploy(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -320,7 +361,7 @@ func (h *MediaHandler) HandleVercelDeploy(w http.ResponseWriter, r *http.Request
 	handlerutil.WriteJSON(w, http.StatusCreated, map[string]any{"proxyPool": pool, "deployUrl": deployURL})
 }
 
-// POST /proxy-pools/deno-deploy
+// POST /api/proxy-pools/deno-deploy
 func (h *MediaHandler) HandleDenoDeploy(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -390,21 +431,20 @@ func (h *MediaHandler) HandleDenoDeploy(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var revision struct {
-		ID string `json:"id"`
+		ID     string `json:"id"`
+		Status string `json:"status"`
 	}
 	json.Unmarshal(raw, &revision)
 
-	rev, err := pollDeployStatus(r.Context(), h.Client, denoV2API+"/revisions/"+revision.ID, denoToken, 2*time.Second, 30, func(data map[string]any) (bool, error) {
-		return handlerutil.GetString(data, "status") == "succeeded", nil
-	})
-	if err != nil {
+	finalStatus, waitErr := awaitDenoRevision(r.Context(), h.Client, denoV2API+"/revisions/"+revision.ID, denoToken, revision.Status)
+	if waitErr != nil {
 		deleteDenoApp(r.Context(), h.Client, denoToken, app.ID)
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, waitErr.Error())
 		return
 	}
-	if handlerutil.GetString(rev, "status") != "succeeded" {
+	if finalStatus != "succeeded" {
 		deleteDenoApp(r.Context(), h.Client, denoToken, app.ID)
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Deploy failed with status: %s", handlerutil.GetString(rev, "status")))
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Deploy failed with status: %s", finalStatus))
 		return
 	}
 
@@ -433,7 +473,7 @@ func deleteDenoApp(ctx context.Context, client *http.Client, token, appID string
 	}
 }
 
-// POST /proxy-pools/cloudflare-deploy
+// POST /api/proxy-pools/cloudflare-deploy
 func (h *MediaHandler) HandleCloudflareDeploy(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {

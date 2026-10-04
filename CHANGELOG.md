@@ -1,6 +1,53 @@
 # Changelog
 
 ## [Unreleased]
+### 🐛 Deploy Vercel/Deno/Cloudflare Relay dashboard 401 — issue #140
+
+Ketiga endpoint deploy relay didaftarkan di `SetupRoutes`
+(`internal/handlers/router.go`) pada path `/proxy-pools/{platform}-deploy`,
+yang terpasang di bawah `RequireApiKey`. Dashboard SPA justru memanggilnya
+dengan cookie sesi dan tanpa engine key (`getAuthHeaders()` hanya mengirim
+`Authorization: Bearer` bila `localStorage['9router_key']` terisi), sehingga
+setiap tombol "Deploy Relay" dijawab `401 Authentication required. Provide an
+API key via Authorization: Bearer <key> ...` — persis laporan issue #140.
+
+Dipindahkan ke `SetupDashboardRoutes` sebagai
+`/api/proxy-pools/{vercel,deno,cloudflare}-deploy` di balik
+`RequireDashboardAuth`, sama dengan CRUD pool di sebelahnya dan dengan upstream
+(`src/app/api/proxy-pools/*-deploy/route.js`, yang memang berada di namespace
+`/api/*`). Prefix `/api` sekaligus menutup celah kedua: `web/vite.config.ts`
+hanya mem-proxy `['/api', '/v1', '/usage', '/translator', '/debug', '/admin']`,
+sehingga path lama juga 404 di mode dev.
+
+Catatan: ini berlaku untuk **Vercel dan Cloudflare juga**, bukan hanya Deno —
+ketiganya berbagi blok registrasi yang sama. Yang menutupi Vercel hanya
+keberadaan API key di `localStorage`; begitu satu 401 terjadi,
+`handleUnauthorized()` menghapus `9router_key` *dan* `9router_auth`, sehingga
+percobaan berikutnya ikut mati.
+
+Bug kedua di handler yang sama: polling status Deno hanya mencari
+`"succeeded"`, sehingga revisi yang sudah ditolak Deno sebagai `failed` tetap
+meng isi anggaran 60 detik dan akhirnya melaporkan `"deployment timed out"` —
+gejala yang terbaca seperti gangguan jaringan, bukan kegagalan build.
+`awaitDenoRevision` kini mengikuti upstream: loop hanya berjalan selama
+`queued`/`building`, dan status terminal yang sudah dilaporkan oleh panggilan
+deploy langsung dikembalikan tanpa satu pun request.
+
+Bagian parity yang **sudah** benar dan tidak diubah: template worker, field
+body, validasi, slug + label, penghapusan app saat deploy gagal, dan
+komposisi `deployUrl`. Badge `deno relay` di daftar pool juga bukan gap —
+upstream tidak punya; dan `0 bound` untuk OpenCode juga bukan bug, karena
+upstream menghitung `boundConnectionCount` hanya dari `providerConnections`
+(`buildUsageMap` di `src/app/api/proxy-pools/route.js:31-41`) sementara
+OpenCode adalah provider noAuth yang tidak punya baris koneksi.
+
+**Verifikasi:** `internal/integration/relay_deploy_test.go` — cookie sesi dan
+API key sama-sama mencapai handler (400 dari validasinya sendiri, bukan 401),
+dan anonymous tetap 401. Test dibuktikan gagal pada wiring lama (405 di kedua
+path). `internal/handlers/media/deploy_test.go` — status terminal melewati
+polling tanpa request, `failed` di tengah poll berhenti di panggilan pertama.
+`go vet ./...` dan `go vet -tags=integration ./internal/integration/...` bersih.
+
 ### 🔒 Proteksi pprof di balik `RequireAdminAuth` saat `PPROF_ENABLED=true` — issue #126
 
 Endpoint profiling `/debug/pprof/*` sebelumnya diregistrasikan langsung di root router tanpa auth group, sehingga saat flag `PPROF_ENABLED=true` diaktifkan, debug surface (heap, cmdline, cpu profile, goroutine trace) dapat diakses publik tanpa kredensial. Route pprof kini dipindahkan ke dalam admin tier (`middleware.RequireAdminAuth()`), mewajibkan admin session cookie atau local CLI token (`x-9r-cli-token`), serta menolak request publik maupun standard client API key (`401 Unauthorized`).
