@@ -2,7 +2,6 @@ package chat
 
 import (
 	"bytes"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -11,28 +10,14 @@ import (
 	"9router/proxy/internal/proxy/executor"
 )
 
-// upstreamUnavailable reports whether a free-tier status from the real
-// opencode endpoint means the provider is unavailable rather than the gateway
-// being wrong: a rate limit (429), a free-tier refusal (403), or a backend
-// overload (503). These tests call the live endpoint, so any of the three can
-// arrive at any moment and none of them is a defect here.
-//
-// 503 was the one still missing: muse-spark-1.3 returned "Error from provider
-// (Console): The backend is temporarily overloaded" and failed CI on #82 while
-// the four sibling tests already skipped on 429/403. A test whose outcome
-// depends on a third party's availability has to skip on every status that
-// means "not right now", or CI fails at the mercy of the provider's load.
-func upstreamUnavailable(code int) bool {
-	switch code {
-	case http.StatusTooManyRequests, http.StatusForbidden, http.StatusServiceUnavailable:
-		return true
-	default:
-		return false
-	}
-}
-
+// Every test in this file reaches the real opencode free tier over the network —
+// setupChatTestDB seeds no opencode connection, so the model resolves straight
+// to the provider. See live_guard_test.go for the opt-in, and run them with
+// make test-live. (opencode_mock_e2e_test.go is the offline counterpart: it seeds
+// its own conn-oc-* rows pointing at a local fake server.)
 
 func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
+	requireLiveUpstream(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -73,19 +58,16 @@ func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
 	t.Logf("Response Code: %d", rec.Code)
 	t.Logf("Response Body: %s", rec.Body.String())
 
-	if upstreamUnavailable(rec.Code) {
-		t.Skipf("opencode free tier unavailable (%d), skipping real upstream test: %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
-	}
+	requireLiveOK(t, rec.Code, rec.Body.String())
 	bodyStr := rec.Body.String()
 	if !strings.Contains(bodyStr, "event: message_start") || (!strings.Contains(bodyStr, "event: content_block_delta") && !strings.Contains(bodyStr, "event: message_delta")) {
 		t.Fatalf("expected Claude SSE format (message_start / message_delta), got: %s", bodyStr)
 	}
 }
 
+
 func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
+	requireLiveUpstream(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -113,12 +95,7 @@ func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
 	t.Logf("Non-streaming Response Code: %d", rec.Code)
 	t.Logf("Non-streaming Response Body: %s", rec.Body.String())
 
-	if upstreamUnavailable(rec.Code) {
-		t.Skipf("opencode free tier unavailable (%d), skipping: %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
-	}
+	requireLiveOK(t, rec.Code, rec.Body.String())
 	contentType := rec.Header().Get("Content-Type")
 	if !strings.Contains(contentType, "application/json") {
 		t.Fatalf("expected application/json content type, got: %s", contentType)
@@ -130,6 +107,7 @@ func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_ChatCompletions(t *testing.T) {
+	requireLiveUpstream(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -173,15 +151,11 @@ func TestIntegration_OpenCode_MuseSpark_ChatCompletions(t *testing.T) {
 	t.Logf("Response Code: %d", rec.Code)
 	t.Logf("Response Body: %s", rec.Body.String())
 
-	if upstreamUnavailable(rec.Code) {
-		t.Skipf("opencode free tier unavailable (%d), skipping: %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
-	}
+	requireLiveOK(t, rec.Code, rec.Body.String())
 }
 
 func TestIntegration_OpenCode_MuseSpark_MultiTurnWithTools(t *testing.T) {
+	requireLiveUpstream(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -244,15 +218,11 @@ func TestIntegration_OpenCode_MuseSpark_MultiTurnWithTools(t *testing.T) {
 	t.Logf("Response Code: %d", rec.Code)
 	t.Logf("Response Body: %s", rec.Body.String())
 
-	if upstreamUnavailable(rec.Code) {
-		t.Skipf("opencode free tier unavailable (%d), skipping: %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
-	}
+	requireLiveOK(t, rec.Code, rec.Body.String())
 }
 
 func TestIntegration_OpenCode_MuseSpark13_ChatCompletions(t *testing.T) {
+	requireLiveUpstream(t)
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -277,43 +247,9 @@ func TestIntegration_OpenCode_MuseSpark13_ChatCompletions(t *testing.T) {
 	t.Logf("1.3 Response Code: %d", rec.Code)
 	t.Logf("1.3 Response Body: %s", rec.Body.String())
 
-	if upstreamUnavailable(rec.Code) {
-		t.Skipf("opencode free tier unavailable (%d), skipping: %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 for muse-spark-1.3, got %d: %s", rec.Code, rec.Body.String())
-	}
+	requireLiveOK(t, rec.Code, rec.Body.String())
 	if strings.Contains(rec.Body.String(), "FreeTierError") {
 		t.Fatalf("unexpected FreeTierError: %s", rec.Body.String())
 	}
 }
 
-// Pins the skip set itself, so the next "not right now" status the free tier
-// starts returning is a one-line change in upstreamUnavailable rather than
-// another red CI run discovered after the fact. A real defect status must stay
-// outside it: 400/500 mean the gateway got something wrong and the test should
-// still fail loudly.
-func TestUpstreamUnavailable_SkipsOnlyProviderAvailabilityStatuses(t *testing.T) {
-	tests := []struct {
-		name string
-		code int
-		want bool
-	}{
-		{name: "rate limited", code: http.StatusTooManyRequests, want: true},
-		{name: "free tier refused", code: http.StatusForbidden, want: true},
-		{name: "backend overloaded", code: http.StatusServiceUnavailable, want: true},
-		{name: "success", code: http.StatusOK, want: false},
-		{name: "bad request is our bug", code: http.StatusBadRequest, want: false},
-		{name: "server error is our bug", code: http.StatusInternalServerError, want: false},
-		{name: "auth failure is a real credential problem", code: http.StatusUnauthorized, want: false},
-		{name: "bad gateway is the upstream path", code: http.StatusBadGateway, want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := upstreamUnavailable(tt.code); got != tt.want {
-				t.Errorf("upstreamUnavailable(%d) = %v, want %v", tt.code, got, tt.want)
-			}
-		})
-	}
-}

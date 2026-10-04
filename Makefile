@@ -39,7 +39,7 @@ AUTO_UPDATE ?= false
 # single-quoted form passed a quoted symbol name straight to the linker.
 LDFLAGS := -s -w -X "9router/proxy/internal/updater.CurrentVersion=$(VERSION)"
 
-.PHONY: build run dev version update test test-short test-integration vet vet-integration bench bench-go cross mitm-enable mitm-disable mitm-status docker docker-build clean help web-build web-dev
+.PHONY: build run dev version update test test-short test-live test-integration vet vet-integration bench bench-go cross mitm-enable mitm-disable mitm-status docker docker-build clean help web-build web-dev
 
 ## web-build — build frontend static assets (Svelte/Vite) into web/dist
 #
@@ -108,6 +108,23 @@ test:
 ## test-short — run tests (quiet)
 test-short:
 	go test ./...
+
+# Live upstream tests hit real providers with your own credentials from
+# ~/.9router/db/data.sqlite. They are skipped everywhere else on purpose: the
+# free-tier models these cover (oc/space-bunny-free, muse-spark-*-contributor-free)
+# are rate limited per IP and shared with other users, so a run that passes today
+# can fail tomorrow for reasons unrelated to this gateway. CI never sets the
+# variable, which keeps `go test ./...` hermetic.
+#
+# Any status that means "not right now" upstream (429/403/402/502/503/504) is
+# reported as a skip carrying the provider's body, not a failure. A 400 or 500
+# still fails, because those are this gateway's fault.
+#
+# Verify a provider before trusting it: an expired OAuth token or a connection
+# left inactive will make every test skip for the wrong reason.
+## test-live — run the live upstream tests against real providers (local only)
+test-live:
+	9ROUTER_LIVE_TESTS=1 go test -count=1 -v ./internal/handlers/chat/ -run 'Live|MuseSpark'
 
 ## vet-svelte — svelte-check ratchet: blocks unresolved identifiers, pins type debt
 vet-svelte:

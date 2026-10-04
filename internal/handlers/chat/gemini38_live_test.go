@@ -2,7 +2,6 @@ package chat
 
 import (
 	"bytes"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -43,12 +42,7 @@ func TestLiveE2E_Antigravity_Gemini38FlashMedium_RealChat(t *testing.T) {
 	t.Logf("Antigravity gemini-3.8-flash-medium response code: %d", rec.Code)
 	t.Logf("Antigravity gemini-3.8-flash-medium response body: %s", rec.Body.String())
 
-	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden || rec.Code == http.StatusTooManyRequests {
-		t.Skipf("Antigravity token expired/rate-limited: %d %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 from Antigravity gemini-3.8-flash-medium, got %d: %s", rec.Code, rec.Body.String())
-	}
+	requireLiveOK(t, rec.Code, rec.Body.String())
 	if !strings.Contains(rec.Body.String(), "choices") {
 		t.Errorf("expected choices in response, got: %s", rec.Body.String())
 	}
@@ -86,13 +80,5 @@ func TestLiveE2E_Antigravity_Gemini38FlashMedium_RealStream(t *testing.T) {
 	t.Logf("Antigravity gemini-3.8-flash-medium stream response code: %d", rec.Code)
 	t.Logf("Antigravity gemini-3.8-flash-medium stream response body:\n%s", rec.Body.String())
 
-	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden || rec.Code == http.StatusTooManyRequests {
-		t.Skipf("Antigravity token expired/rate-limited: %d %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 from Antigravity gemini-3.8-flash-medium stream, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "data:") || !strings.Contains(rec.Body.String(), "[DONE]") {
-		t.Errorf("expected SSE chunks and [DONE], got: %s", rec.Body.String())
-	}
+	requireLiveSSE(t, rec.Code, rec.Body.String())
 }

@@ -1,6 +1,55 @@
 # Changelog
 
 ## [Unreleased]
+### 🩹 Test live upstream dipisah dari CI lewat opt-in eksplisit
+
+19 test di `internal/handlers/chat/` memanggil provider sungguhan dengan
+kredensial asli dari `~/.9router/db/data.sqlite`, dan semuanya ikut
+`go test ./...` yang dijalankan CI. Modelnya free-tier dan dipakai bersama:
+`oc/space-bunny-free` dan `muse-spark-*-contributor-free` membatasi rate per IP
+dan sering sudah habis dipakai pengguna lain. Akibatnya `space-bunny-free`
+gagal di `go test -race ./...` dengan `upstream error: Forward...` — kegagalan
+yang sama sekali tidak ada hubungannya dengan gateway ini. Yang lebih buruk,
+tanpa kredensial CI test itu akan "lolos" sambil tidak membuktikan apa pun.
+
+Sekarang kelas test dibedakan oleh opt-in `9ROUTER_LIVE_TESTS=1`, bukan oleh
+skip per-status. Gerbangnya `requireLiveUpstream`, dipanggil di dalam
+`getRealUserDB` yang sudah dilewati setiap test live — sehingga test live baru
+yang lupa memasang gerbang tetap skip, bukan bocor ke CI. Lima test
+`muse_spark_*` tidak lewat `getRealUserDB` (koneksi opencode-nya tidak di-seed,
+jadi modelnya resolve langsung ke provider) dan memasang gerbangnya sendiri.
+`make test-live` adalah pembungkus untuk menjalankannya lokal.
+
+Sembilan pola `if rec.Code == http.StatusTooManyRequests || ...` yang ditulis
+ulang bergantian per test kini satu helper `requireLiveOK`/`requireLiveSSE`, dan
+`upstreamUnavailable` dilebarkan ke 429/403/402/502/503/504 — status yang berarti
+"belum sekarang", bukan cacat gateway. Setiap skip membawa body jawaban
+provider, jadi run lokal tetap memberi tahu apa sebenarnya yang upstream said.
+400 dan 500 tetap gagal, karena itu kesalahan gateway. 401 sengaja dipisah: itu
+masalah profil lokal, bukan pemadaman provider.
+
+### 🐛 `TestGateAcquire_JitterOnlyWidensTheGap` flaky — floor 30ms tanpa margin
+
+PR #146 memperbaiki `TestGateAcquire_SpacesConcurrentCallers` dengan mengukur
+rentang burst, dan sengaja tidak menyentuh `JitterOnlyWidensTheGap` karena
+"tidak ada bukti ia perlu disentuh". Bukti itu sekarang ada: di branch ini,
+sebelum perubahan, tes itu gagal sendiri —
+
+```
+fetchgate (24 passed, 1 failed)
+  [FAIL] TestGateAcquire_JitterOnlyWidensTheGap
+     gate_test.go:100: slot 2 waited 29.7696ms, want at least 30ms floor
+```
+
+Akar masalahnya sama: floor 30ms diukur dengan stopwatch dan jitter sah
+bernilai 0, jadi grant berikutnya jatuh tepat 30ms — tanpa sisa untuk menyerap
+bangunnya goroutine yang terlambat. Assertion-nya tetap per-gap: span akan
+sembunyikan floor yang setengah — jitter acak yang cukup dermawan bisa
+memperpanjang total melebihi target sementara setiap gap-nya pendek. Tapi
+minGap dinaikkan ke 40ms dengan jitter 60ms supaya ada margin.
+
+`internal/fetchgate/gate.go` tidak tersentuh — nol perubahan produksi.
+
 ### 🐛 `internal/fetchgate` flaky di `go test -p 16` — gap diukur salah
 
 `TestGateAcquire_SpacesConcurrentCallers` gagal 4 dari 5 run pada

@@ -18,7 +18,17 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+
+// getRealUserDB returns a throwaway in-memory database seeded with the
+// operator's real connections and combos, so a live test exercises the same
+// routing and credential handling the installed gateway uses.
+//
+// It is gated on liveUpstreamEnabled, which every caller here needs and no
+// offline test does — so the gate lives here rather than at each call site. A
+// new live test that forgets to call requireLiveUpstream still skips, because
+// it cannot get this far.
 func getRealUserDB(t *testing.T) (*db.Repo, func()) {
+	requireLiveUpstream(t)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("cannot get user home dir")
@@ -138,12 +148,7 @@ func TestLiveE2E_DeepSeek_RealUpstream(t *testing.T) {
 	t.Logf("DeepSeek response code: %d", rec.Code)
 	t.Logf("DeepSeek response body: %s", rec.Body.String())
 
-	if rec.Code == http.StatusPaymentRequired || rec.Code == http.StatusTooManyRequests || rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
-		t.Skipf("DeepSeek balance/quota issue: %s", rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 from DeepSeek, got %d: %s", rec.Code, rec.Body.String())
-	}
+	requireLiveOK(t, rec.Code, rec.Body.String())
 	if !strings.Contains(strings.ToUpper(rec.Body.String()), "PONG") {
 		t.Errorf("expected PONG in DeepSeek response, got: %s", rec.Body.String())
 	}
@@ -179,12 +184,7 @@ func TestLiveE2E_Antigravity_RealChat(t *testing.T) {
 	t.Logf("Antigravity response code: %d", rec.Code)
 	t.Logf("Antigravity response body: %s", rec.Body.String())
 
-	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden || rec.Code == http.StatusTooManyRequests {
-		t.Skipf("Antigravity token expired/rate-limited: %d %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 from Antigravity, got %d: %s", rec.Code, rec.Body.String())
-	}
+	requireLiveOK(t, rec.Code, rec.Body.String())
 }
 
 func TestLiveE2E_Antigravity_RealStream(t *testing.T) {
@@ -217,15 +217,7 @@ func TestLiveE2E_Antigravity_RealStream(t *testing.T) {
 	t.Logf("Antigravity stream response code: %d", rec.Code)
 	t.Logf("Antigravity stream response body:\n%s", rec.Body.String())
 
-	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden || rec.Code == http.StatusTooManyRequests {
-		t.Skipf("Antigravity token expired/rate-limited: %d %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 from Antigravity stream, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "data:") || !strings.Contains(rec.Body.String(), "[DONE]") {
-		t.Errorf("expected SSE chunks and [DONE], got: %s", rec.Body.String())
-	}
+	requireLiveSSE(t, rec.Code, rec.Body.String())
 }
 
 func TestLiveE2E_DeepSeek_RealStream(t *testing.T) {
@@ -258,16 +250,9 @@ func TestLiveE2E_DeepSeek_RealStream(t *testing.T) {
 	t.Logf("DeepSeek stream response code: %d", rec.Code)
 	t.Logf("DeepSeek stream response body:\n%s", rec.Body.String())
 
-	if rec.Code == http.StatusPaymentRequired || rec.Code == http.StatusTooManyRequests || rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
-		t.Skipf("DeepSeek balance/quota issue: %s", rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 from DeepSeek stream, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "data:") || !strings.Contains(rec.Body.String(), "[DONE]") {
-		t.Errorf("expected SSE chunks and [DONE], got: %s", rec.Body.String())
-	}
+	requireLiveSSE(t, rec.Code, rec.Body.String())
 }
+
 func TestLiveE2E_Cline_SmartCombo(t *testing.T) {
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
@@ -293,15 +278,7 @@ func TestLiveE2E_Cline_SmartCombo(t *testing.T) {
 	t.Logf("SmartCombo stream response code: %d", rec.Code)
 	t.Logf("SmartCombo stream response body:\n%s", rec.Body.String())
 
-	if rec.Code == http.StatusPaymentRequired || rec.Code == http.StatusTooManyRequests || rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
-		t.Skipf("SmartCombo upstream balance/quota/auth issue: %d %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 from smart-combo, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "data:") || !strings.Contains(rec.Body.String(), "[DONE]") {
-		t.Errorf("expected SSE chunks and [DONE], got: %s", rec.Body.String())
-	}
+	requireLiveSSE(t, rec.Code, rec.Body.String())
 }
 
 func TestLiveE2E_Antigravity_MultiToolCall(t *testing.T) {
@@ -352,12 +329,7 @@ func TestLiveE2E_Antigravity_MultiToolCall(t *testing.T) {
 	t.Logf("Antigravity MultiToolCall Response Code: %d", rec.Code)
 	t.Logf("Antigravity MultiToolCall Response Body: %s", rec.Body.String())
 
-	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden || rec.Code == http.StatusTooManyRequests {
-		t.Skipf("Antigravity token expired/rate-limited: %d %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 from Antigravity, got %d: %s", rec.Code, rec.Body.String())
-	}
+	requireLiveOK(t, rec.Code, rec.Body.String())
 
 	var resp struct {
 		Choices []struct {
@@ -463,12 +435,7 @@ func TestLiveE2E_DeepSeek_MultiToolCall(t *testing.T) {
 	t.Logf("DeepSeek MultiToolCall Response Code: %d", rec.Code)
 	t.Logf("DeepSeek MultiToolCall Response Body: %s", rec.Body.String())
 
-	if rec.Code == http.StatusPaymentRequired || rec.Code == http.StatusTooManyRequests || rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
-		t.Skipf("DeepSeek balance/quota issue: %s", rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 from DeepSeek, got %d: %s", rec.Code, rec.Body.String())
-	}
+	requireLiveOK(t, rec.Code, rec.Body.String())
 
 	var resp struct {
 		Choices []struct {
@@ -550,12 +517,7 @@ func TestLiveE2E_Gemini38_FlashHigh_MultiToolCall(t *testing.T) {
 	t.Logf("Gemini 3.8 Flash High MultiToolCall Response Code: %d", rec.Code)
 	t.Logf("Gemini 3.8 Flash High MultiToolCall Response Body: %s", rec.Body.String())
 
-	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden || rec.Code == http.StatusTooManyRequests {
-		t.Skipf("Gemini 3.8 rate-limited/quota: %d %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 from Gemini 3.8 Flash High, got %d: %s", rec.Code, rec.Body.String())
-	}
+	requireLiveOK(t, rec.Code, rec.Body.String())
 
 	var resp struct {
 		Choices []struct {
@@ -644,15 +606,7 @@ func TestLiveE2E_Gemini38_FlashHigh_RealStream(t *testing.T) {
 	t.Logf("Gemini 3.8 stream response code: %d", rec.Code)
 	t.Logf("Gemini 3.8 stream response body:\n%s", rec.Body.String())
 
-	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden || rec.Code == http.StatusTooManyRequests {
-		t.Skipf("Gemini 3.8 token expired/rate-limited: %d %s", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 from Gemini 3.8 stream, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "data:") || !strings.Contains(rec.Body.String(), "[DONE]") {
-		t.Errorf("expected SSE chunks and [DONE], got: %s", rec.Body.String())
-	}
+	requireLiveSSE(t, rec.Code, rec.Body.String())
 }
 
 func TestLiveE2E_SpaceBunny_Free(t *testing.T) {
@@ -678,9 +632,7 @@ func TestLiveE2E_SpaceBunny_Free(t *testing.T) {
 	t.Logf("Space bunny response code: %d", rec.Code)
 	t.Logf("Space bunny response body:\n%s", rec.Body.String())
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected HTTP 200 from space-bunny-free, got %d: %s", rec.Code, rec.Body.String())
-	}
+	requireLiveOK(t, rec.Code, rec.Body.String())
 }
 
 func TestLiveE2E_HandleTestModel_SpaceBunny(t *testing.T) {
@@ -698,7 +650,8 @@ func TestLiveE2E_HandleTestModel_SpaceBunny(t *testing.T) {
 		handler.HandleTestModel(rec, req)
 
 		t.Logf("HandleTestModel %s -> %d: %s", modelName, rec.Code, rec.Body.String())
-		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ok":true`) {
+		requireLiveOK(t, rec.Code, rec.Body.String())
+		if !strings.Contains(rec.Body.String(), `"ok":true`) {
 			t.Fatalf("expected ok:true for %s, got: %s", modelName, rec.Body.String())
 		}
 	}

@@ -85,19 +85,34 @@ func TestGateAcquire_SpacesConcurrentCallers(t *testing.T) {
 }
 
 // Jitter must only ever add delay: the floor stays the hard guarantee.
+//
+// Checked gap by gap rather than on the span, because a span can hide a
+// halved floor: jitter is drawn from [0, maxJitter], so enough generous draws
+// still stretch the total past the target while every individual gap is short.
+//
+// The floor is measured with a stopwatch, so it needs margin for a late
+// goroutine wake-up. At 30ms it had none — jitter may legally be 0, making the
+// next grant due exactly 30ms out — and under -race with the rest of the suite
+// loaded that came back as 29.77ms once in five runs with the gate behaving
+// correctly throughout.
 func TestGateAcquire_JitterOnlyWidensTheGap(t *testing.T) {
-	g := New(30*time.Millisecond, 30*time.Millisecond)
+	const (
+		minGap = 40 * time.Millisecond
+		jitter = 60 * time.Millisecond
+		slots  = 6
+	)
+	g := New(minGap, jitter)
 
 	if err := g.Acquire(t.Context()); err != nil {
 		t.Fatalf("first Acquire: %v", err)
 	}
-	for i := range 5 {
+	for i := 1; i < slots; i++ {
 		start := time.Now()
 		if err := g.Acquire(t.Context()); err != nil {
 			t.Fatalf("Acquire %d: %v", i, err)
 		}
-		if elapsed := time.Since(start); elapsed < 30*time.Millisecond {
-			t.Fatalf("slot %d waited %s, want at least the 30ms floor", i, elapsed)
+		if elapsed := time.Since(start); elapsed < minGap {
+			t.Fatalf("slot %d waited %s, want at least the %s floor", i, elapsed, minGap)
 		}
 	}
 }
