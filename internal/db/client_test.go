@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"os"
 	"testing"
 )
@@ -58,6 +59,96 @@ func TestOpenDatabase(t *testing.T) {
 	}
 	if busyTimeout != 5000 {
 		t.Errorf("expected busy_timeout to be 5000, got %d", busyTimeout)
+	}
+}
+
+func TestPooledConnectionsPragma(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "test_db_pool_*.sqlite")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	conn, err := OpenDatabase(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("OpenDatabase failed: %v", err)
+	}
+	defer conn.Close()
+
+	ctx := t.Context()
+	conns := make([]*sql.Conn, 4)
+	for i := range 4 {
+		c, err := conn.Conn(ctx)
+		if err != nil {
+			t.Fatalf("failed to get conn %d: %v", i, err)
+		}
+		defer c.Close()
+		conns[i] = c
+	}
+
+	for i, c := range conns {
+		var bt int
+		if err := c.QueryRowContext(ctx, "PRAGMA busy_timeout;").Scan(&bt); err != nil {
+			t.Fatalf("conn %d query busy_timeout failed: %v", i, err)
+		}
+		if bt != 5000 {
+			t.Errorf("conn %d busy_timeout = %d, want 5000", i, bt)
+		}
+
+		var syncMode int
+		if err := c.QueryRowContext(ctx, "PRAGMA synchronous;").Scan(&syncMode); err != nil {
+			t.Fatalf("conn %d query synchronous failed: %v", i, err)
+		}
+		if syncMode != 1 {
+			t.Errorf("conn %d synchronous = %d, want 1 (NORMAL)", i, syncMode)
+		}
+
+		var fk int
+		if err := c.QueryRowContext(ctx, "PRAGMA foreign_keys;").Scan(&fk); err != nil {
+			t.Fatalf("conn %d query foreign_keys failed: %v", i, err)
+		}
+		if fk != 1 {
+			t.Errorf("conn %d foreign_keys = %d, want 1 (ON)", i, fk)
+		}
+
+		var ts int
+		if err := c.QueryRowContext(ctx, "PRAGMA temp_store;").Scan(&ts); err != nil {
+			t.Fatalf("conn %d query temp_store failed: %v", i, err)
+		}
+		if ts != 2 {
+			t.Errorf("conn %d temp_store = %d, want 2 (MEMORY)", i, ts)
+		}
+
+		var cs int
+		if err := c.QueryRowContext(ctx, "PRAGMA cache_size;").Scan(&cs); err != nil {
+			t.Fatalf("conn %d query cache_size failed: %v", i, err)
+		}
+		if cs != -64000 {
+			t.Errorf("conn %d cache_size = %d, want -64000", i, cs)
+		}
+
+		var mmap int64
+		if err := c.QueryRowContext(ctx, "PRAGMA mmap_size;").Scan(&mmap); err != nil {
+			t.Fatalf("conn %d query mmap_size failed: %v", i, err)
+		}
+		if mmap != 30000000 {
+			t.Errorf("conn %d mmap_size = %d, want 30000000", i, mmap)
+		}
+
+		var jm string
+		if err := c.QueryRowContext(ctx, "PRAGMA journal_mode;").Scan(&jm); err != nil {
+			t.Fatalf("conn %d query journal_mode failed: %v", i, err)
+		}
+		if jm != "wal" {
+			t.Errorf("conn %d journal_mode = %s, want wal", i, jm)
+		}
+	}
+
+	// Also verify connection pool limits
+	stats := conn.Stats()
+	if stats.MaxOpenConnections != 4 {
+		t.Errorf("MaxOpenConnections = %d, want 4", stats.MaxOpenConnections)
 	}
 }
 

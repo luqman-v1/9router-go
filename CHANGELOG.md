@@ -48,6 +48,14 @@ path). `internal/handlers/media/deploy_test.go` — status terminal melewati
 polling tanpa request, `failed` di tengah poll berhenti di panggilan pertama.
 `go vet ./...` dan `go vet -tags=integration ./internal/integration/...` bersih.
 
+### 🐛 PRAGMA SQLite per-connection diaplikasikan via driver DSN — issue #139
+
+Sebelumnya PRAGMA (`busy_timeout`, `synchronous`, `temp_store`, `mmap_size`, `cache_size`, `foreign_keys`) dieksekusi via `db.Exec()`, yang hanya memengaruhi satu koneksi awal. Akibatnya 3 dari 4 koneksi pada pool berjalan dengan pengaturan default (`busy_timeout=0`), sehingga rentan terhadap `SQLITE_BUSY` saat write contention. Pengaturan per-koneksi kini dipindahkan ke driver DSN `modernc.org/sqlite` (`_pragma=...`) agar otomatis berlaku untuk setiap koneksi baru di pool, `PRAGMA journal_mode = WAL;` tetap dipertahankan post-open, dan `SetMaxIdleConns` diselaraskan ke 4.
+
+**Catatan `foreign_keys`:** sebelum perubahan ini `PRAGMA foreign_keys = ON` hanya berlaku pada satu koneksi, sehingga 3 dari 4 koneksi berjalan tanpa enforce. Sekarang seluruh koneksi pool benar-benar menegakkan FK. Schema core upstream v0.5.85 (termasuk `upstream_leases`) tidak mendeklarasikan constraint `FOREIGN KEY` — `grep REFERENCES` di repo nol match — sehingga tidak ada baris yang bisa ditolak oleh perubahan ini. Jika constraint FK ditambahkan di kemudian hari, jalur tulis yang selama ini diam-diam melanggar integritas referensial akan mulai gagal; itu memang hasil yang benar, tetapi harus dicatat sebagai perubahan semantik, bukan sekadar perbaikan konfigurasi.
+
+**Verifikasi:** Unit test `TestPooledConnectionsPragma` di `internal/db/client_test.go` memverifikasi seluruh PRAGMA pada semua (4) koneksi aktif di connection pool. `TestSQLiteDSN` memverifikasi bentuk DSN (daftar `_pragma`, pemisah `?` vs `&`, dan absennya `journal_mode`) tanpa membuka database. Reproduksi konkurensi (8 writer × 40 write, throwaway) gagal 64/320 dengan `SQLITE_BUSY` pada kode lama dan 0/320 pada kode ini, 5× berturut-turut — mode combo lintas provider dengan round-robin memang menghasilkan write paralel seperti itu.
+
 ### 🔒 Proteksi pprof di balik `RequireAdminAuth` saat `PPROF_ENABLED=true` — issue #126
 
 Endpoint profiling `/debug/pprof/*` sebelumnya diregistrasikan langsung di root router tanpa auth group, sehingga saat flag `PPROF_ENABLED=true` diaktifkan, debug surface (heap, cmdline, cpu profile, goroutine trace) dapat diakses publik tanpa kredensial. Route pprof kini dipindahkan ke dalam admin tier (`middleware.RequireAdminAuth()`), mewajibkan admin session cookie atau local CLI token (`x-9r-cli-token`), serta menolak request publik maupun standard client API key (`401 Unauthorized`).

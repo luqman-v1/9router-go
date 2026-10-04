@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,28 +31,26 @@ func OpenDatabase(path string) (*sql.DB, error) {
 	// and its directory private to the owning user.
 	_ = os.Chmod(dbDir, 0700)
 
-	db, err := sql.Open("sqlite", path)
+	// Configure per-connection PRAGMAs in the DSN so modernc.org/sqlite applies
+	// them to every newly opened connection in the pool (issue #139).
+	// busy_timeout is critical in WAL mode to prevent immediate "database is locked" errors during concurrent writes.
+	// foreign_keys is required to enforce relational database integrity.
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	dsn := fmt.Sprintf("%s%s_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(30000000)&_pragma=cache_size(-64000)&_pragma=foreign_keys(ON)", path, sep)
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sql.Open(%s): %w", path, err)
 	}
 
-	// Configure PRAGMAs for performance, safety, and concurrency.
-	// busy_timeout is critical in WAL mode to prevent immediate "database is locked" errors during concurrent writes.
-	// foreign_keys is required to enforce relational database integrity.
-	pragmas := `
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA temp_store = MEMORY;
-PRAGMA mmap_size = 30000000;
-PRAGMA cache_size = -64000;
-PRAGMA foreign_keys = ON;
-PRAGMA busy_timeout = 5000;
-`
-	if _, err = db.Exec(pragmas); err != nil {
+	// Persistent database-level PRAGMA: journal_mode is written to the database file header.
+	if _, err = db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("pragma exec: %w", err)
+		return nil, fmt.Errorf("pragma exec journal_mode: %w", err)
 	}
-
 	// Restrict the DB file to the owning user (it stores plaintext keys).
 	// The file is created by the driver on first open; chmod it now and
 	// again on every open to re-assert the permission.
@@ -62,7 +61,7 @@ PRAGMA busy_timeout = 5000;
 
 	// Configure connection pool limits for SQLite to reduce lock contention
 	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(5)
+	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(time.Hour)
 
 	return db, nil
