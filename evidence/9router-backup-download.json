@@ -1,0 +1,24 @@
+{
+  "providerConnections": [
+    {
+      "apiKey": "sk-evidence-demo",
+      "authType": "apikey",
+      "createdAt": "2026-10-05T15:44:35Z",
+      "email": null,
+      "id": "e1ae9f05-2f6f-48d8-a1a2-2726e95b9660",
+      "isActive": true,
+      "name": "backup-evidence",
+      "priority": 1,
+      "provider": "deepseek",
+      "updatedAt": "2026-10-05T15:44:35Z"
+    }
+  ],
+  "providerNodes": [],
+  "proxyPools": [],
+  "apiKeys": [],
+  "combos": [],
+  "modelAliases": {},
+  "customModels": [],
+  "mitmAlias": {},
+  "pricing": {}
+}
