@@ -30,11 +30,13 @@
     /** Persist the accumulated payload, then let the caller refresh its list. */
     onSave: (payload: ConnectionUpdate) => Promise<void> | void
     /**
-     * How a failed save reaches the user. The Providers tab alerts; the Quota
-     * Tracker swallowed it in the console, which left the user clicking Save on
-     * a modal that silently refused to close.
+     * How a failed save reaches the user. Required on purpose: this prop was
+     * optional, and the Quota Tracker omitted it, so a failed save silently
+     * swallowed the error and left the user clicking Save on a modal that
+     * refused to close. Making it required turns that into a type error at the
+     * call site instead.
      */
-    onSaveError?: (message: string) => void
+    onSaveError: (message: string) => void
     /** Label for the Test Connection action. */
     testLabel?: string
     /** True to show a spinner glyph beside Test while it runs. */
@@ -49,6 +51,16 @@
     testLabel = 'Test Connection',
     testSpinner = true
   }: Props = $props()
+
+  // Upstream Modal parity: Escape dismisses, backdrop click dismisses.
+  $effect(() => {
+    if (typeof window === 'undefined') return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
 
   let name = $state(connection.name || '')
   let priority = $state<number>(connection.priority ?? 1)
@@ -142,7 +154,7 @@
       }
       await onSave(payload)
     } catch (err) {
-      onSaveError?.(`Failed to save connection: ${err instanceof Error ? err.message : String(err)}`)
+      onSaveError(`Failed to save connection: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       isSaving = false
     }

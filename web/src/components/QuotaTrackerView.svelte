@@ -1361,6 +1361,7 @@
     connection={editingConnection}
     onClose={() => (editingConnection = null)}
     onSave={saveEditingConnection}
+    onSaveError={(message) => alert(message)}
     testLabel="Test"
   />
 {/if}

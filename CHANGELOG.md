@@ -132,6 +132,18 @@ varian yang lebih aman, jadi ini refactor yang tidak sepenuhnya netral:
 - **Kegagalan Save di Quota Tracker tidak lagi hilang diam-diam.** Errornya
   hanya masuk `console.error`, jadi user menekan Save pada modal yang menolak
   menutup tanpa penjelasan. Sekarang lewat `onSaveError`.
+
+  `onSaveError` sendiri sengaja dibuat **wajib** di `EditConnectionModal`,
+  bukan opsional. Sempat opsional, dan Quota Tracker melewatkannya — jadi
+  klaim "sudah diperbaiki" di atas benar secara harfiah dan salah secara
+  perilaku: error tetap hilang, dan ini bukan lagi sekadar soal `console`.
+  Wajib di tipe berarti pemanggil yang melewatkannya jadi error kompilasi,
+  bukan satu lagi bug senyap yang lolos review.
+
+- **Escape menutup modal.** `AddConnectionModal` dan delapan modal lain sudah
+  punya ini (parity `Modal` upstream); kedua salinan lama tidak. Sekarang
+  terpusat di satu tempat, jadi keyboard user tidak tersangkut di modal yang
+  tidak bisa ditutup tanpa mouse.
 - **`max="100"` pada input priority Quota Tracker dihapus.** Tidak ada batas
   priority di backend maupun di modal Providers; batas itu hanya menahan form
   di satu tempat dan tidak konsisten dengan tetangganya.
