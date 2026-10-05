@@ -278,6 +278,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
 		Reasoning           any            `json:"reasoning,omitempty"`
 		Tools               jsontext.Value `json:"tools,omitempty"`
+		ResponseFormat      jsontext.Value `json:"response_format,omitempty"`
 	}
 	if err := json.Unmarshal(body, &oreq); err != nil {
 		return nil, "", fmt.Errorf("parse request: %w", err)
@@ -433,12 +434,21 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		respReq["reasoning"] = oreq.Reasoning
 	}
 
+	// Chat Completions' response_format is the Responses API's text.format.
+	// The Codex allowlist strips response_format, so without this mapping a
+	// client asking for structured output silently got free text (#2896).
+	if text, ok := responsesTextFormat(oreq.ResponseFormat); ok {
+		respReq["text"] = map[string]any{"format": text}
+	}
+
 	// Tools
 	if len(oreq.Tools) > 0 {
 		var tools []struct {
-			Type     string         `json:"type"`
-			Function jsontext.Value `json:"function,omitempty"`
-			Name     string         `json:"name,omitempty"`
+			Type       string         `json:"type"`
+			Function   jsontext.Value `json:"function,omitempty"`
+			Name       string         `json:"name,omitempty"`
+			Parameters map[string]any `json:"parameters,omitempty"`
+			Strict     *bool          `json:"strict,omitempty"`
 		}
 		if err := json.Unmarshal(oreq.Tools, &tools); err == nil {
 			var apiTools []map[string]any
@@ -447,11 +457,18 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 					"type": "function",
 					"name": t.Name,
 				}
+				// A flat-shaped tool carries its own parameters; without this
+				// branch the Responses body dropped the schema entirely.
+				if t.Parameters != nil {
+					tool["parameters"] = StripCodexUnsupportedPatterns(t.Parameters)
+				}
+				strict := t.Strict
 				if t.Function != nil {
 					var fn struct {
 						Name        string         `json:"name"`
 						Description string         `json:"description"`
 						Parameters  map[string]any `json:"parameters"`
+						Strict      *bool          `json:"strict"`
 					}
 					if err := json.Unmarshal(t.Function, &fn); err == nil {
 						tool["name"] = fn.Name
@@ -469,7 +486,15 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 							}
 						}
 						tool["parameters"] = StripCodexUnsupportedPatterns(fn.Parameters)
+						// Nested strict (Chat Completions) wins over a flat one
+						// (parity with decolua/9router#4543/#4573).
+						if fn.Strict != nil {
+							strict = fn.Strict
+						}
 					}
+				}
+				if strict != nil {
+					tool["strict"] = *strict
 				}
 				apiTools = append(apiTools, tool)
 			}
@@ -482,6 +507,70 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 	applyCodexModelShape(respReq, cleanModel)
 	reqBody, err := json.Marshal(respReq)
 	return reqBody, cleanModel, err
+}
+
+// responsesTextFormat maps a Chat Completions response_format onto the
+// Responses API's text.format object (#2896). It reports false when the
+// request carries nothing mappable: no response_format at all, an unknown
+// type, or a json_schema with no schema (the Responses API has no way to
+// express strict output without one), in which case no "text" field is added.
+func responsesTextFormat(raw jsontext.Value) (map[string]any, bool) {
+	if isAbsentJSON(raw) {
+		return nil, false
+	}
+	var rf struct {
+		Type       string         `json:"type"`
+		JSONSchema jsontext.Value `json:"json_schema"`
+	}
+	if err := json.Unmarshal(raw, &rf); err != nil {
+		return nil, false
+	}
+
+	switch rf.Type {
+	case "json_object":
+		return map[string]any{"type": "json_object"}, true
+	case "json_schema":
+	default:
+		return nil, false
+	}
+
+	if isAbsentJSON(rf.JSONSchema) {
+		return nil, false
+	}
+	var schema struct {
+		Name   string         `json:"name"`
+		Strict *bool          `json:"strict"`
+		Schema jsontext.Value `json:"schema"`
+	}
+	if err := json.Unmarshal(rf.JSONSchema, &schema); err != nil {
+		return nil, false
+	}
+	if isAbsentJSON(schema.Schema) {
+		return nil, false
+	}
+
+	name := schema.Name
+	if name == "" {
+		name = "response"
+	}
+	// Chat Completions treats a missing strict flag as strict on Codex, so
+	// only an explicit false turns it off.
+	strict := schema.Strict == nil || *schema.Strict
+
+	format := map[string]any{
+		"type":   "json_schema",
+		"name":   name,
+		"strict": strict,
+		"schema": schema.Schema,
+	}
+	return format, true
+}
+
+// isAbsentJSON reports whether raw holds nothing usable: no bytes at all, or
+// an explicit JSON null.
+func isAbsentJSON(raw jsontext.Value) bool {
+	k := raw.Kind()
+	return k == jsontext.KindInvalid || k == jsontext.KindNull
 }
 
 var unicodePropertyEscapeRegex = regexp.MustCompile(`(^|[^\\])(\\\\)*\\[pP]\{`)

@@ -88,6 +88,72 @@ hijau · `bun run build` + `bun run ratchet:svelte` (0 unresolved identifier,
 `agnes/agnes-3.0-flash` dengan `image_url` meneruskan URL gambar utuh ke
 upstream — perilaku yang sebelumnya mustahil karena `Vision:false`.
 
+### 🔧 Semantik deklarasi tool & token reasoning — lima PR upstream digabung
+
+Lima PR open yang semuanya menyentuh jalur yang sama: bagaimana gateway
+menerjemahkan deklarasi tool, pilihan tool, dan mengukur usage. Digabung
+karena memang satu change set yang saling menyentuh, bukan lima.
+
+**1. `strict` pada tool tidak pernah selamat (#4607, #4543, #4573).** Tidak ada
+field `strict` di tipe tool, dan tiga konverter membangun ulang objek tool dari
+nol — flag yang disetel klien hilang diam-diam. Sekarang `strict` diteruskan
+di kedua arah Claude <-> OpenAI dan di pembangun body Responses (dibaca datar
+dan bersarang). `strict:false` yang eksplisit **tetap dikirim**, karena itu
+Instruksi klien; absen berarti absen, bukan `false`.
+
+Satu penyimpangan dari bentuk paling sederhana: `strict` non-boolean
+(`"strict":"yes"`) **tidak** menggagalkan request. Upstream membacanya di balik
+jaring pengaman `typeof === "boolean"`, jadi nilai lain diabaikan diam-diam;
+`*bool` biasa akan menolak seluruh body. `ClaudeTool.UnmarshalJSON` karena itu
+memakai decoder dua tahap yang membuang nilai non-boolean.
+
+**2. Kebijakan satu panggilan tool (#4581).** `parallel_tool_calls:false`
+dipetakan ke `tool_choice.disable_parallel_tool_use` dan sebaliknya, tanpa
+menimpa pilihan tool bernama yang eksplisit (`{"type":"tool",name}` harus tetap
+utuh), dan tanpa efek sama sekali bila tidak ada tool. Field
+`parallel_tool_calls` yang OpenAI-only dihapus sebelum body dikirim ke Claude.
+
+**3. `tool_choice:"none"` berarti "bolos", bukan "auto" (#4577).** Arah
+OpenAI -> Claude menghapus field-nya, sehingga model bebas memanggil tool
+padahal klien melarangnya; arah lain mengembalikan `"auto"`. Dua arah kini
+menjadi `{type:"none"}` <-> `"none"`.
+
+**4. `response_format` hilang diam-diam (#4547, issue #2896).** Saat membuat
+body Responses, `response_format` tidak dipetakan ke `text.format`, dan
+allowlist Codex membuangnya — jadi klien yang meminta keluaran terstruktur
+mendapat teks bebas. Sekarang `json_schema` dipetakan dengan nama, skema, dan
+`strict` yang **default true** (`strict !== false`), `json_object` tetap
+`json_object`, dan kasus tanpa `response_format` tidak menambahkan field
+`text` sama sekali. `json_schema` tanpa `schema` sengaja dibuang — persis
+penjaga upstream.
+
+*Tambahan yang ditemukan saat verifikasi:* jalur tool berbentuk datar di
+builder Responses tidak pernah menyalin `parameters`, sehingga skema tool
+hilang. Diperbaiki di sisi yang sama.
+
+**5. `reasoning_tokens` hilang di tiga titik (#4574, sisa #4551/#4536).**
+Pembaca usage Responses-native tak pernah membaca `OutputTokensDetails` —
+padahal struct-nya sudah ada dan sudah dipancarkan di sisi outbound;
+`ProcessCodexEvent` membangun usage tanpa `completion_tokens_details`; dan
+`tokensJSON` yang ditulis ke `usageHistory` tidak menyertakan token reasoning
+meski sudah ditagih dan sudah ditulis ke `requestDetails`. Ketiga diperbaiki,
+dan build `chunkUsage` diekstrak jadi `codexUsageMap` supaya cabangnya tetap
+ringkas. Sisi cache yang sudah benar tidak disentuh.
+
+Samping itu dua perbaikan yang ikut terbawa:
+- **Nama tool untuk Gemini** (#4589) kini diambil dari panggilan yang
+  dijawabnya sendiri, bukan peta id->nama lintas percakapan. `tool_call_id`
+  hanya unik dalam satu giliran, jadi id yang diulang membuat hasil tool
+  giliran awal membawa nama tool giliran akhir.
+- **Finish reason Gemini** (#4571) dipetakan lewat satu fungsi bersama, jadi
+  `MAX_TOKENS` -> `length` dan `SAFETY`/`RECITATION` -> `content_filter` di
+  jalur streaming maupun non-streaming. Sebelumnya keduanya memetakan
+  `SAFETY` ke `"stop"`.
+
+**Verifikasi:** `go vet ./internal/...` bersih · `go test -count=1 ./...`
+hijau · `bun run build` + `bun run ratchet:svelte` (0 unresolved identifier,
+89 error, sama dengan baseline yang diturunkan #163) · `bun test` 219 pass.
+
 
 
 

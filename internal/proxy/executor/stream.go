@@ -420,27 +420,8 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			}},
 		}
 		if resp, ok := event["response"].(map[string]any); ok {
-			if usage, ok := resp["usage"].(map[string]any); ok {
-				chunkUsage := map[string]any{}
-				if inTok, ok := usage["input_tokens"].(float64); ok {
-					chunkUsage["prompt_tokens"] = int(inTok)
-				}
-				if outTok, ok := usage["output_tokens"].(float64); ok {
-					chunkUsage["completion_tokens"] = int(outTok)
-				}
-				if totTok, ok := usage["total_tokens"].(float64); ok {
-					chunkUsage["total_tokens"] = int(totTok)
-				}
-				if inDetails, ok := usage["input_tokens_details"].(map[string]any); ok {
-					if cTok, ok := inDetails["cached_tokens"].(float64); ok {
-						chunkUsage["prompt_tokens_details"] = map[string]any{
-							"cached_tokens": int(cTok),
-						}
-					}
-				}
-				if len(chunkUsage) > 0 {
-					chunk["usage"] = chunkUsage
-				}
+			if chunkUsage := codexUsageMap(resp); len(chunkUsage) > 0 {
+				chunk["usage"] = chunkUsage
 			}
 		}
 		b, err := json.Marshal(chunk)
@@ -451,6 +432,40 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 	}
 
 	return nil
+}
+
+// codexUsageMap converts the Responses-shaped usage carried by a
+// response.completed event into the Chat Completions usage block that the
+// downstream translators and usage accounting read. Cache reads and reasoning
+// tokens are carried over verbatim: both are billed at their own rate, so
+// losing either under-counts the turn.
+func codexUsageMap(resp map[string]any) map[string]any {
+	usage, ok := resp["usage"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	chunkUsage := map[string]any{}
+	for _, f := range []struct{ from, to string }{
+		{"input_tokens", "prompt_tokens"},
+		{"output_tokens", "completion_tokens"},
+		{"total_tokens", "total_tokens"},
+	} {
+		if v, ok := usage[f.from].(float64); ok {
+			chunkUsage[f.to] = int(v)
+		}
+	}
+	if inDetails, ok := usage["input_tokens_details"].(map[string]any); ok {
+		if cTok, ok := inDetails["cached_tokens"].(float64); ok {
+			chunkUsage["prompt_tokens_details"] = map[string]any{"cached_tokens": int(cTok)}
+		}
+	}
+	if outDetails, ok := usage["output_tokens_details"].(map[string]any); ok {
+		if rTok, ok := outDetails["reasoning_tokens"].(float64); ok {
+			chunkUsage["completion_tokens_details"] = map[string]any{"reasoning_tokens": int(rTok)}
+		}
+	}
+	return chunkUsage
 }
 
 // toolCallIndex returns the OpenAI tool-call id + index for a Codex event.

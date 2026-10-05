@@ -38,5 +38,12 @@ func ParseResponsesUsage(body []byte) *OpenAIUsage {
 	if u.InputTokensDetails != nil && u.InputTokensDetails.CachedTokens > 0 {
 		out.CachedTokens = u.InputTokensDetails.CachedTokens
 	}
+
+	// Reasoning tokens are nested under output_tokens on the Responses wire but
+	// billed apart from the visible output, so dropping them under-counts every
+	// reasoning turn relayed from a Responses-native upstream.
+	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ReasoningTokens > 0 {
+		out.CompletionTokensDetails = &CompletionTokensDetails{ReasoningTokens: u.OutputTokensDetails.ReasoningTokens}
+	}
 	return out
 }

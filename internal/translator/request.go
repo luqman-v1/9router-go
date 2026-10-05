@@ -353,6 +353,10 @@ func convertToolChoice(choiceRaw *jsontext.Value) any {
 			return "auto"
 		case "any":
 			return "required"
+		case "none":
+			// "none" forbids tool calls; folding it into "auto" would hand the
+			// model a permission the client withheld (parity #4577).
+			return "none"
 		case "tool":
 			return map[string]any{
 				"type": "function",
@@ -364,6 +368,17 @@ func convertToolChoice(choiceRaw *jsontext.Value) any {
 	}
 	log.Warn("translator", "convert tool choice failed", "raw", string(*choiceRaw))
 	return "auto"
+}
+
+// claudeDisablesParallelToolUse reports whether a Claude tool_choice object
+// forbids parallel tool calls. The flag is Claude-only, so it never appears on
+// the string form or on a payload without a tool_choice object.
+func claudeDisablesParallelToolUse(choiceRaw jsontext.Value) bool {
+	var choiceObj ClaudeToolChoice
+	if err := json.Unmarshal(choiceRaw, &choiceObj); err != nil {
+		return false
+	}
+	return choiceObj.DisableParallelToolUse
 }
 
 // TranslateClaudeToOpenAI converts a Claude request payload to an OpenAI request payload.
@@ -411,6 +426,7 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 					Name:        tool.Name,
 					Description: tool.Description,
 					Parameters:  tool.InputSchema,
+					Strict:      tool.Strict,
 				},
 			})
 		}
@@ -419,6 +435,12 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 
 	if creq.ToolChoice != nil {
 		oreq.ToolChoice = convertToolChoice(creq.ToolChoice)
+	}
+
+	// Claude states the single-tool-call policy inside tool_choice; OpenAI
+	// states it beside it (parity with decolua/9router#4581).
+	if creq.ToolChoice != nil && claudeDisablesParallelToolUse(*creq.ToolChoice) {
+		oreq.ParallelToolCalls = new(false)
 	}
 
 	// Claude thinking config → OpenAI reasoning_effort

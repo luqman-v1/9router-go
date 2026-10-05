@@ -777,6 +777,17 @@ func ensureMessagesMaxTokens(body []byte, model string) []byte {
 		}
 	}
 
+	// 3b. parallel_tool_calls is OpenAI's single-tool-call policy; Claude
+	// spells it as a flag on tool_choice. Without tools there is nothing to
+	// restrict, so the flag would only add noise (#4581). Either way the
+	// OpenAI-only key is stripped, as step 5 does for other foreign fields.
+	if ptc, hasPTC := reqMap["parallel_tool_calls"]; hasPTC {
+		if ptc == false && hasClaudeTools(reqMap) {
+			reqMap["tool_choice"] = withDisabledParallelToolUse(reqMap["tool_choice"])
+		}
+		delete(reqMap, "parallel_tool_calls")
+	}
+
 	// 4. messages & system
 	if msgs, ok := reqMap["messages"].([]any); ok && len(msgs) > 0 {
 		extractedSys, claudeMsgs := convertOpenAIMessagesToClaude(msgs)
@@ -843,6 +854,9 @@ func convertOpenAIToolsToClaude(tools []any) []any {
 			if cc, ok := m["cache_control"]; ok {
 				cTool["cache_control"] = cc
 			}
+			if strict, ok := toolStrict(m, fn); ok {
+				cTool["strict"] = strict
+			}
 			out = append(out, cTool)
 			continue
 		}
@@ -862,6 +876,21 @@ func convertOpenAIToolsToClaude(tools []any) []any {
 	return out
 }
 
+// toolStrict resolves an explicit tool strict mode, preferring the flat
+// Responses/Codex shape and falling back to the Chat-Completions `function`
+// shape (parity with decolua/9router#4543/#4573). An absent or non-boolean
+// strict stays absent — the flag must never be invented.
+func toolStrict(tool, fn map[string]any) (bool, bool) {
+	if strict, ok := tool["strict"].(bool); ok {
+		return strict, true
+	}
+	if fn == nil {
+		return false, false
+	}
+	strict, ok := fn["strict"].(bool)
+	return strict, ok
+}
+
 func convertToolChoiceToClaude(tc any) any {
 	if tc == nil {
 		return nil
@@ -874,7 +903,9 @@ func convertToolChoiceToClaude(tc any) any {
 		case "required":
 			return map[string]any{"type": "any"}
 		case "none":
-			return nil
+			// Claude has a native "none"; dropping the key instead would hand
+			// the model the tool permission the client withheld (#4577).
+			return map[string]any{"type": "none"}
 		default:
 			return map[string]any{"type": "auto"}
 		}
@@ -890,6 +921,26 @@ func convertToolChoiceToClaude(tc any) any {
 	default:
 		return tc
 	}
+}
+
+// hasClaudeTools reports whether the body still declares at least one tool.
+// A policy about calling tools is meaningless without any.
+func hasClaudeTools(reqMap map[string]any) bool {
+	tools, ok := reqMap["tools"].([]any)
+	return ok && len(tools) > 0
+}
+
+// withDisabledParallelToolUse returns the Claude tool_choice carrying
+// disable_parallel_tool_use. An explicit choice keeps its type and name — the
+// restriction is added, never substituted — and only a missing choice is
+// filled in with Claude's own default, "auto" (parity #4581).
+func withDisabledParallelToolUse(tc any) map[string]any {
+	choice, ok := tc.(map[string]any)
+	if !ok {
+		choice = map[string]any{"type": "auto"}
+	}
+	choice["disable_parallel_tool_use"] = true
+	return choice
 }
 
 // sanitizeToolUseID returns a tool id valid for the Anthropic Messages API
