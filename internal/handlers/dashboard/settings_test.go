@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"archive/zip"
 	"bytes"
 	json "encoding/json/v2"
 	"mime/multipart"
@@ -281,51 +282,83 @@ func TestHandleExportImportDatabase_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestHandleExportImportDatabase_ZipFormat(t *testing.T) {
+// TestHandleExportDatabase_PrettyJSON pins the download the profile page hands
+// the user: a plain JSON file (issue #160), pretty-printed with the same
+// two-space indentation upstream's JSON.stringify(payload, null, 2) produces so
+// a saved backup is readable as-is. The Content-Disposition header must name a
+// .json file, otherwise the browser saves it without the extension the import
+// picker looks for.
+func TestHandleExportDatabase_PrettyJSON(t *testing.T) {
 	repo, cleanup := setupSettingsTestDB(t)
 	defer cleanup()
 	router := setupTestRouter(repo)
 
-	// Seed initial data
 	if _, err := repo.RawDB().Exec(
 		`INSERT INTO providerConnections (id, provider, authType, isActive, priority, data, createdAt, updatedAt)
-		 VALUES ('conn-zip', 'deepseek', 'apikey', 1, 1, '{"apiKey":"sk-zip","model":"deepseek-chat"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		 VALUES ('conn-json', 'deepseek', 'apikey', 1, 1, '{"apiKey":"sk-json","model":"deepseek-chat"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 	); err != nil {
 		t.Fatalf("seed failed: %v", err)
 	}
 
-	// Export with format=zip
-	req := httptest.NewRequest(http.MethodGet, "/api/settings/database?format=zip", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/database", nil)
 	req.Header.Set(cliTokenHeader, auth.CLIToken())
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
+
 	if rec.Code != http.StatusOK {
-		t.Fatalf("export zip failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("export failed: %d %s", rec.Code, rec.Body.String())
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/zip" {
-		t.Errorf("expected Content-Type application/zip, got %q", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected Content-Type application/json, got %q", ct)
 	}
-	zipBytes := rec.Body.Bytes()
-	if len(zipBytes) < 4 || zipBytes[0] != 'P' || zipBytes[1] != 'K' {
-		t.Fatalf("expected zip signature PK, got %v", zipBytes[:4])
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, ".json") {
+		t.Errorf("expected a .json download filename, got Content-Disposition %q", cd)
 	}
-
-	// Wipe
-	if _, err := repo.RawDB().Exec(`DELETE FROM providerConnections`); err != nil {
-		t.Fatalf("wipe failed: %v", err)
+	if !bytes.Contains(rec.Body.Bytes(), []byte("\n  \"")) {
+		t.Error("the download must be indented for reading")
 	}
 
-	// Import the zip archive
-	req = httptest.NewRequest(http.MethodPost, "/api/settings/database", bytes.NewReader(zipBytes))
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode export: %v", err)
+	}
+	connections, _ := payload["providerConnections"].([]any)
+	if len(connections) != 1 {
+		t.Fatalf("expected 1 exported connection, got %d", len(connections))
+	}
+}
+
+// TestHandleImportDatabase_LegacyZipArchive keeps the older .zip backups
+// restorable: a user who downloaded one before the JSON-only export must still
+// be able to load it.
+func TestHandleImportDatabase_LegacyZipArchive(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	payload := `{"settings":{"requireLogin":true},"providerConnections":[{"id":"conn-zip","provider":"deepseek","authType":"apikey","isActive":true,"priority":1,"apiKey":"sk-zip"}],"customModels":[]}`
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	f, err := zw.Create("9router-backup.json")
+	if err != nil {
+		t.Fatalf("create zip entry: %v", err)
+	}
+	if _, err := f.Write([]byte(payload)); err != nil {
+		t.Fatalf("write zip entry: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/database", bytes.NewReader(buf.Bytes()))
 	req.Header.Set(cliTokenHeader, auth.CLIToken())
 	req.Header.Set("Content-Type", "application/zip")
-	rec = httptest.NewRecorder()
+	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("import zip failed: %d %s", rec.Code, rec.Body.String())
 	}
 
-	// Verify restored
 	var data string
 	if err := repo.RawDB().QueryRow(`SELECT data FROM providerConnections WHERE id='conn-zip'`).Scan(&data); err != nil {
 		t.Fatalf("query restored connection: %v", err)

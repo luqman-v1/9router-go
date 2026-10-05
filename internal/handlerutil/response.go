@@ -2,6 +2,7 @@ package handlerutil
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -64,6 +65,18 @@ func WriteJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	w.WriteHeader(status)
 	if err := json.MarshalWrite(w, data, deterministicJSON); err != nil {
+		w.Write([]byte(`{"error":{"message":"internal error","type":"invalid_request_error","code":500}}`))
+	}
+}
+
+// WriteJSONIndented writes a JSON response indented with two spaces — the shape
+// the upstream dashboard's backup download produces with JSON.stringify(payload,
+// null, 2). A handler that hands the body to the user as a file uses it so the
+// saved backup stays human-readable.
+func WriteJSONIndented(w http.ResponseWriter, status int, data any) {
+	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	w.WriteHeader(status)
+	if err := json.MarshalWrite(w, data, deterministicJSON, jsontext.WithIndent("  ")); err != nil {
 		w.Write([]byte(`{"error":{"message":"internal error","type":"invalid_request_error","code":500}}`))
 	}
 }

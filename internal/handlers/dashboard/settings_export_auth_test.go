@@ -28,7 +28,7 @@ func TestHandleExportDatabase_DashboardSessionAuthorizes(t *testing.T) {
 	}
 	session := login.Result().Cookies()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/settings/database?format=zip", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/database", nil)
 	for _, c := range session {
 		req.AddCookie(c)
 	}
@@ -38,8 +38,11 @@ func TestHandleExportDatabase_DashboardSessionAuthorizes(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("a logged-in session must be able to download the backup, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "9router-backup.json") {
-		t.Error("the archive must carry the backup payload")
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("the download must be a plain JSON file, got Content-Type %q", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "providerConnections") {
+		t.Error("the download must carry the backup payload")
 	}
 }
 

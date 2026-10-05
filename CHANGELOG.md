@@ -68,6 +68,33 @@ sebelum/sesudah). `go build ./...` dan `go vet ./...` bersih, `go test ./...`
 hijau, `go test -tags=integration ./internal/integration/...` hijau (69,7s +
 0,2s).
 
+### 🔧 Backup dashboard kembali ke JSON yang dirapikan, seperti 9router upstream
+
+Latar (issue #160): tombol **Download Backup** di Settings menawarkan `.zip`
+berisi JSON. Upstream `9router` mengunduh JSON mentah — `JSON.stringify(payload,
+null, 2)` — dengan nama `9router-backup-<stamp>.json`, jadi backup di sini tidak
+bisa dibaca tanpa ekstrak dulu dan menyimpang dari parity.
+
+- `HandleExportDatabase` (`internal/handlers/dashboard/settings.go`) tidak lagi
+  membungkus payload ke arsip. Responsnya JSON dua-spasi lekukan
+  (`JSON.stringify(x, null, 2)`) dengan
+  `Content-Disposition: attachment; filename="9router-backup-<date>.json"`.
+  Cabang `?format=zip` dan deteksi `Accept: application/zip` dihapus karena
+  export kini hanya punya satu bentuk.
+- `handlerutil.WriteJSONIndented` (baru) menulis JSON berlekuk memakai
+  `jsontext.WithIndent("  ")` sambil tetap memakai `Deterministic(true)` yang
+  sudah dipakai seluruh respons dashboard.
+- `ProfileSettingsView.svelte` mengunduh `/api/settings/database` tanpa
+  `?format=zip`, menamai berkas `.json`, dan teks konfirmasinya menyebut
+  `(.json file)`.
+- **Import tetap menerima arsip `.zip` lama**: `HandleImportDatabase` masih
+  mendeteksi magic `PK\x03\x04` dan mengekstrak `*.json` di dalamnya, jadi
+  backup yang diunduh sebelum perubahan ini tetap bisa dipulihkan.
+- Test: `TestHandleExportDatabase_PrettyJSON` (Content-Type JSON, filename
+  `.json`, ada lekukan) menggantikan round-trip zip, dan
+  `TestHandleImportDatabase_LegacyZipArchive` memastikan import zip lama masih
+  bekerja.
+
 ### 🏷️ Provider kustom bisa memakai URL suffix sendiri — `openai-compatible-chat-<suffix>`, bukan `<uuid>`
 
 Latar (issue #155): setiap node OpenAI/Anthropic-compatible yang dibuat dari

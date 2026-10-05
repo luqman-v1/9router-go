@@ -124,6 +124,11 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 // browser link — or any instance reached through a reverse proxy that strips
 // it — was refused with 401 and the export looked permanently blocked (issue #47).
 // The password header stays as the step-up path for a script that already has it.
+//
+// The payload is shipped as pretty-printed JSON with a download filename, the
+// way upstream answers the profile page's export button, so a saved backup is
+// readable without unzipping it (issue #160). Import still accepts both the JSON
+// download and the older .zip archives.
 func (h *DashboardHandler) HandleExportDatabase(w http.ResponseWriter, r *http.Request) {
 	if !h.exportAuthorized(r) {
 		writePlainError(w, http.StatusUnauthorized, "Invalid password")
@@ -135,36 +140,10 @@ func (h *DashboardHandler) HandleExportDatabase(w http.ResponseWriter, r *http.R
 		writePlainError(w, http.StatusInternalServerError, "Failed to export database")
 		return
 	}
-	if r.URL.Query().Get("format") == "zip" || strings.Contains(r.Header.Get("Accept"), "application/zip") {
-		jsonBytes, err := json.Marshal(payload)
-		if err != nil {
-			writePlainError(w, http.StatusInternalServerError, "Failed to encode database backup")
-			return
-		}
-		var buf bytes.Buffer
-		zw := zip.NewWriter(&buf)
-		f, err := zw.Create("9router-backup.json")
-		if err != nil {
-			writePlainError(w, http.StatusInternalServerError, "Failed to create zip archive")
-			return
-		}
-		if _, err := f.Write(jsonBytes); err != nil {
-			writePlainError(w, http.StatusInternalServerError, "Failed to write backup to zip")
-			return
-		}
-		if err := zw.Close(); err != nil {
-			writePlainError(w, http.StatusInternalServerError, "Failed to finalize zip")
-			return
-		}
-		nowStr := time.Now().Format("2006-01-02")
-		w.Header().Set("Content-Type", "application/zip")
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="9router-backup-%s.zip"`, nowStr))
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(buf.Bytes())
-		return
-	}
 
-	handlerutil.WriteJSON(w, http.StatusOK, payload)
+	nowStr := time.Now().Format("2006-01-02")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="9router-backup-%s.json"`, nowStr))
+	handlerutil.WriteJSONIndented(w, http.StatusOK, payload)
 }
 
 // HandleImportDatabase handles POST /api/settings/database (backup restore).

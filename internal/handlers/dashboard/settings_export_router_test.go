@@ -3,6 +3,7 @@ package dashboard
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"9router/proxy/internal/auth"
@@ -23,7 +24,7 @@ func TestHandleExportDatabase_PasswordHeaderReachesTheRealRoute(t *testing.T) {
 	storePassword(t, repo, "correct-horse")
 
 	t.Run("correct password header is accepted", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/settings/database?format=zip", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/settings/database", nil)
 		req.Header.Set(passwordHeader, "correct-horse")
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
@@ -31,8 +32,11 @@ func TestHandleExportDatabase_PasswordHeaderReachesTheRealRoute(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200 with the password header, got %d: %s", rec.Code, rec.Body.String())
 		}
-		if ct := rec.Header().Get("Content-Type"); ct != "application/zip" {
-			t.Errorf("expected the zip archive, got Content-Type %q", ct)
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("expected the JSON backup, got Content-Type %q", ct)
+		}
+		if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, ".json") {
+			t.Errorf("expected a .json download filename, got Content-Disposition %q", cd)
 		}
 	})
 

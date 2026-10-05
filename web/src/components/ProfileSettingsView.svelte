@@ -229,7 +229,7 @@
     isDownloadingBackup = true
     const password = dbPassword
     try {
-      const res = await fetch('/api/settings/database?format=zip', {
+      const res = await fetch('/api/settings/database', {
         headers: { ...getAuthHeaders(), 'x-9r-password': password },
       })
       if (!res.ok) {
@@ -240,7 +240,7 @@
       const a = document.createElement('a')
       const stamp = new Date().toISOString().replace(/[.:]/g, '-')
       a.href = url
-      a.download = `9router-backup-${stamp}.zip`
+      a.download = `9router-backup-${stamp}.json`
       document.body.appendChild(a)
       a.click()
       setTimeout(() => {
@@ -746,7 +746,7 @@
         <p class="text-text-muted">
           {pendingImportFile
             ? `Import "${pendingImportFile.name}"? This will overwrite existing server data.`
-            : 'Download a full backup of the dashboard database (.zip archive)?'}
+            : 'Download a full backup of the dashboard database (.json file)?'}
         </p>
         <Input
           type="password"
