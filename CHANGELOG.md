@@ -105,6 +105,45 @@ Upstream parity: `decolua/9router` `src/shared/components/EditConnectionModal.js
 — label "Leave blank to keep the current API key.", tombol Check via
 `/api/providers/validate`, dan `testStatus` hanya di-set saat validasi sukses.
 
+### ♻️ `refactor(web): satu modal Edit Connection untuk Providers dan Quota Tracker` (issue #158)
+
+Modal Edit Connection sebelumnya ada dua salinan: inline di
+`ProviderDetailView.svelte` dan inline di `QuotaTrackerView.svelte`,
+masing-masing dengan sembilan variabel `edit*` sendiri.
+`checkReplacementKey()`, `resetKeyCheck()`, blok kolom API, dan struktur
+tombol Test/Save/Cancel-nya sama persis — jadi setiap aturan baru harus
+ditulis dua kali, dan PR #154 memang menulisnya dua kali.
+
+Keduanya sekarang memanggil `EditConnectionModal.svelte`, satu-satunya
+implementasi. Yang tersisa di tiap pemanggil cuma opening dan refresh:
+`onClose` menutup, `onSave` menulis lalu me-refresh. State `edit*`, probe, dan
+markup berpindah ke komponen itu.
+
+Tiga perbedaan yang dulu tersembunyi jadi satu perilaku. Semuanya memilih
+varian yang lebih aman, jadi ini refactor yang tidak sepenuhnya netral:
+
+- **Rename di Quota Tracker tidak lagi diam-diam menulis priority.** Modal itu
+  selalu mengirim `priority`, sehingga baris dengan `priority` NULL (yang
+  di-seed `1` di input) berubah jadi rank 1 hanya karena user mengganti nama —
+  bentrok dengan baris lain yang sudah memegang rank 1, dan resurrecting
+  pasangan yang tidak bisa di-reorder. Modal Providers sudah sejak awal memakai
+  `seededPriority` untuk mengabaikan priority yang tidak berubah; sekarang
+  keduanya.
+- **Kegagalan Save di Quota Tracker tidak lagi hilang diam-diam.** Errornya
+  hanya masuk `console.error`, jadi user menekan Save pada modal yang menolak
+  menutup tanpa penjelasan. Sekarang lewat `onSaveError`.
+- **`max="100"` pada input priority Quota Tracker dihapus.** Tidak ada batas
+  priority di backend maupun di modal Providers; batas itu hanya menahan form
+  di satu tempat dan tidak konsisten dengan tetangganya.
+
+Styling tombol Test disatukan ke paket ikon `science` milik Quota Tracker;
+label teksnya tetap berbeda (`Test` vs `Test Connection`) lewat prop
+`testLabel`, karena kedua halaman memang punya kebiasaan visual sendiri.
+
+Di luar scope, seperti di issue: `MediaProviderDetail.svelte` (modal edit
+koneksi media, tanpa key dan priority) dan `AddConnectionModal.svelte`.
+
+
 ## [v1.9.9] - 2026-10-05
 
 ### 🐛 `TestGateAcquire_JitterOnlyWidensTheGap` masih flaky — stopwatch diukur dari slot sebelumnya

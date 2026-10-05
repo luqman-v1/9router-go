@@ -22,12 +22,7 @@
   import { copyToClipboard } from '../lib/clipboard'
   import Toggle from '../lib/ui/Toggle.svelte'
   import { getIconPath } from './connections/types'
-  import {
-    credentialPlaceholder,
-    credentialUpdate,
-    probeReplacementKey,
-    type CredentialCheck
-  } from './connections/credential'
+  import EditConnectionModal, { type ConnectionUpdate } from './connections/EditConnectionModal.svelte'
   import QuotaTable from './quota/QuotaTable.svelte'
   import {
     ACCOUNT_FILTER_OPTIONS,
@@ -116,20 +111,8 @@
     codex: {},
   })
 
-  // Edit modal state
+  // Edit modal state. The modal itself owns its fields and payload (issue #158).
   let editingConnection = $state<ProviderConnection | null>(null)
-  let editName = $state('')
-  let editPriority = $state(1)
-  let isTestingEdit = $state(false)
-  let editTestStatus = $state<'ok' | 'error' | null>(null)
-  let editTestError = $state<string | null>(null)
-  let isSavingEdit = $state(false)
-  // Issue #154: credential rotation from the account editor. Shares the
-  // helper and the wording with the providers tab's edit modal.
-  let editAPIKey = $state('')
-  let editKeyCheck = $state<CredentialCheck>(null)
-  let editKeyError = $state<string | null>(null)
-  let isCheckingEditKey = $state(false)
   let copiedArnId = $state<string | null>(null)
 
   // Timers
@@ -378,89 +361,17 @@
     }
   }
 
+  // Edit modal. Fields, probe and payload live in EditConnectionModal (issue
+  // #158); this only decides when it opens and who refreshes the list.
   function openEditModal(conn: ProviderConnection) {
     editingConnection = conn
-    editName = conn.name || ''
-    editPriority = conn.priority ?? 1
-    editTestStatus = null
-    editTestError = null
-    editAPIKey = ''
-    editKeyCheck = null
-    editKeyError = null
   }
 
-  /** On-demand probe of the typed key, for the Check button beside the field. */
-  async function checkReplacementKey() {
-    if (!editingConnection || !editAPIKey.trim()) return
-    isCheckingEditKey = true
-    editKeyError = null
-    try {
-      const { check, error } = await probeReplacementKey(editingConnection, editAPIKey)
-      editKeyCheck = check
-      editKeyError = error
-    } finally {
-      isCheckingEditKey = false
-    }
-  }
-
-  function resetKeyCheck() {
-    editKeyCheck = null
-    editKeyError = null
-  }
-
-  async function testEditingConnection() {
+  async function saveEditingConnection(payload: ConnectionUpdate) {
     if (!editingConnection) return
-    isTestingEdit = true
-    editTestStatus = null
-    editTestError = null
-    try {
-      const res = await api.testConnection(editingConnection.id)
-      if (res?.valid) {
-        editTestStatus = 'ok'
-      } else {
-        editTestStatus = 'error'
-        editTestError = res?.error || 'Test failed'
-      }
-    } catch (err) {
-      editTestStatus = 'error'
-      editTestError = err instanceof Error ? err.message : 'Test failed'
-    } finally {
-      isTestingEdit = false
-    }
-  }
-
-  async function saveEditingConnection() {
-    if (!editingConnection) return
-    isSavingEdit = true
-    try {
-      const payload: { name: string; priority: number; apiKey?: string; testStatus?: string } = {
-        name: editName.trim(),
-        priority: editPriority,
-      }
-      const rotation = credentialUpdate(editAPIKey)
-      if (rotation) {
-        // A key the provider rejects is never written: the stored one is the
-        // only thing keeping this account in rotation.
-        const { check, error } = await probeReplacementKey(editingConnection, rotation.apiKey)
-        editKeyCheck = check
-        editKeyError = error
-        if (error) {
-          isSavingEdit = false
-          return
-        }
-        payload.apiKey = rotation.apiKey
-        // Only a provider that actually answered may mark the row active
-        // again; an unsupported probe proves nothing about the new key.
-        if (check === 'valid') payload.testStatus = 'active'
-      }
-      await api.updateConnection(editingConnection.id, payload)
-      editingConnection = null
-      await fetchConnections(page)
-    } catch (err) {
-      console.error('Failed to save connection:', err)
-    } finally {
-      isSavingEdit = false
-    }
+    await api.updateConnection(editingConnection.id, payload)
+    editingConnection = null
+    await fetchConnections(page)
   }
 
   function copyArn(text?: string, id?: string) {
@@ -1446,128 +1357,12 @@
 </div>
 
 {#if editingConnection}
-  <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-    <div
-      class="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
-      onclick={() => (editingConnection = null)}
-      role="presentation"
-    ></div>
-    <div class="relative w-full max-w-md bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-elev)] p-6">
-      <div class="flex items-center justify-between pb-3 border-b border-border-subtle mb-4">
-        <h2 class="text-lg font-semibold text-text-main">Edit Connection</h2>
-        <button
-          type="button"
-          onclick={() => (editingConnection = null)}
-          class="p-1 rounded text-text-muted hover:text-text-main cursor-pointer"
-        >
-          <span class="material-symbols-outlined text-lg">close</span>
-        </button>
-      </div>
-
-      <div class="space-y-4">
-        <div>
-          <label class="block text-xs font-medium text-text-muted mb-1" for="edit-quota-name">Name</label>
-          <input
-            id="edit-quota-name"
-            bind:value={editName}
-            class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background text-text-main focus:outline-none focus:border-primary"
-          />
-        </div>
-
-        {#if editingConnection.authType !== 'oauth'}
-          <div>
-            <label class="block text-xs font-medium text-text-muted mb-1" for="edit-quota-key">
-              API (leave blank to keep the key on file)
-            </label>
-            <div class="flex gap-2">
-              <input
-                id="edit-quota-key"
-                type="password"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder={credentialPlaceholder(editingConnection)}
-                bind:value={editAPIKey}
-                oninput={resetKeyCheck}
-                class="min-w-0 flex-1 px-2.5 py-1.5 text-xs border border-border rounded-md bg-background text-text-main focus:outline-none focus:border-primary"
-              />
-              <button
-                type="button"
-                onclick={checkReplacementKey}
-                disabled={!editAPIKey.trim() || isCheckingEditKey || isSavingEdit}
-                class="shrink-0 px-2.5 py-1.5 text-xs font-medium rounded-md border border-border text-text-main hover:bg-surface-2 transition-colors disabled:opacity-50 cursor-pointer"
-              >
-                {isCheckingEditKey ? 'Checking' : 'Check'}
-              </button>
-            </div>
-            {#if editKeyCheck === 'valid'}
-              <p class="mt-1.5 text-xs text-emerald-600 dark:text-emerald-400">The provider accepted this key.</p>
-            {:else if editKeyCheck === 'unsupported'}
-              <p class="mt-1.5 text-xs text-text-subtle">
-                This provider has no key check, so the new key is saved unverified.
-              </p>
-            {:else if editKeyError}
-              <p class="mt-1.5 text-xs text-red-500">{editKeyError}</p>
-            {/if}
-          </div>
-        {/if}
-
-        <div>
-          <label class="block text-xs font-medium text-text-muted mb-1" for="edit-quota-priority">Priority</label>
-          <input
-            id="edit-quota-priority"
-            type="number"
-            min="1"
-            max="100"
-            bind:value={editPriority}
-            class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background text-text-main focus:outline-none focus:border-primary"
-          />
-        </div>
-
-        {#if editTestStatus === 'ok'}
-          <div class="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
-            <span class="material-symbols-outlined text-sm">check_circle</span>
-            Connection is reachable
-          </div>
-        {:else if editTestStatus === 'error'}
-          <div class="flex items-center gap-1.5 text-xs text-red-500">
-            <span class="material-symbols-outlined text-sm">error</span>
-            {editTestError || 'Test failed'}
-          </div>
-        {/if}
-
-        <div class="flex items-center justify-between pt-2 border-t border-border-subtle">
-          <button
-            type="button"
-            onclick={testEditingConnection}
-            disabled={isTestingEdit}
-            class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border text-text-main hover:bg-surface-2 transition-colors disabled:opacity-50 cursor-pointer"
-          >
-            <span class="material-symbols-outlined text-sm {isTestingEdit ? 'animate-spin' : ''}">
-              {isTestingEdit ? 'progress_activity' : 'science'}
-            </span>
-            {isTestingEdit ? 'Testing...' : 'Test'}
-          </button>
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              onclick={() => (editingConnection = null)}
-              class="px-3 py-1.5 text-xs font-medium rounded-md text-text-muted hover:text-text-main cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onclick={saveEditingConnection}
-              disabled={isSavingEdit}
-              class="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white hover:bg-primary/90 transition-colors disabled:opacity-50 cursor-pointer"
-            >
-              {isSavingEdit ? 'Saving...' : 'Save'}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+  <EditConnectionModal
+    connection={editingConnection}
+    onClose={() => (editingConnection = null)}
+    onSave={saveEditingConnection}
+    testLabel="Test"
+  />
 {/if}
 
 {#if resetCreditConn}
