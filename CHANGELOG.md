@@ -150,9 +150,26 @@ Samping itu dua perbaikan yang ikut terbawa:
   jalur streaming maupun non-streaming. Sebelumnya keduanya memetakan
   `SAFETY` ke `"stop"`.
 
+**Tiga jalur ini dikunci di level integrasi.** Unit test
+`ensureMessagesMaxTokens` membuktikan konverternya benar, tapi tidak
+menyelubungi apa yang terjadi di sekitarnya: pemilihan koneksi,
+`isAnthropicUpstream` (yang hanya true untuk base URL `api.anthropic.com`
+asli atau relay edge), token saver, dan pembentukan URL. Di situlah
+instruksi klien bisa hilang sementara setiap test konverter tetap hijau.
+
+`internal/integration/anthropic_tool_policy_test.go` menutupnya lewat router
+produksi dengan upstream palsu: `parallel_tool_calls:false` harus sampai
+sebagai `disable_parallel_tool_use:true`, pilihan tool bernama harus tetap
+utuh sekaligus pembatasan ikut terpasang, dan `tool_choice:"none"` tidak
+boleh hilang di jalan ke Claude. Ketiganya sudah diverifikasi menangkap
+regresi — dengan `withDisabledParallelToolUse` dinonaktifkan sementara, dua
+pertama gagal dengan pesan yang tepat.
+
+
 **Verifikasi:** `go vet ./internal/...` bersih · `go test -count=1 ./...`
-hijau · `bun run build` + `bun run ratchet:svelte` (0 unresolved identifier,
-89 error, sama dengan baseline yang diturunkan #163) · `bun test` 219 pass.
+hijau · `go test -tags=integration ./internal/integration/...` hijau ·
+`bun run build` + `bun run ratchet:svelte` (0 unresolved identifier, 89 error,
+sama dengan baseline yang diturunkan #163) · `bun test` 219 pass.
 
 
 
