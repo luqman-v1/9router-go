@@ -12,6 +12,8 @@ interface Props {
   detailsPage?: number
   detailsLoading?: boolean
   onPageChange: (page: number) => void
+  /** Set when the read failed, so the table below is not read as current. */
+  detailsError?: string
   onRefresh: () => void
   /** Custom provider nodes, so a synthetic id renders as its configured name. */
   providerNodes?: { id: string; name?: string }[]
@@ -22,6 +24,7 @@ let {
   detailsTotal = 0,
   detailsPage = 1,
   detailsLoading = false,
+  detailsError = '',
   onPageChange,
   onRefresh,
   providerNodes = [],
@@ -43,6 +46,20 @@ let {
     </Button>
   </div>
 
+  {#if detailsError}
+    <!-- The refresh above is the recovery action, so the message points there
+         rather than adding a second button beside it. -->
+    <div role="alert" class="flex items-start gap-2 border-b border-red-500/30 px-5 py-3">
+      <span class="material-symbols-outlined mt-px text-[18px] text-red-600 dark:text-red-400" aria-hidden="true">error</span>
+      <div class="min-w-0">
+        <p class="font-body text-sm font-medium text-text-main">
+          Request details could not be loaded. {#if details.length > 0}The rows below are from the last successful read.{/if}
+        </p>
+        <p class="mt-0.5 break-words font-body text-[11px] text-text-muted">{detailsError}</p>
+      </div>
+    </div>
+  {/if}
+
   {#if detailsLoading}
     <div class="p-12 text-center text-text-muted text-sm flex items-center justify-center gap-2">
       <span class="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin"></span>
@@ -50,7 +67,11 @@ let {
     </div>
   {:else if details.length === 0}
     <div class="p-12 text-center text-text-muted text-sm">
-      No request logs found in the database.
+      {#if detailsError}
+        Nothing to show: the read failed, so the request history is unknown.
+      {:else}
+        No request logs found in the database.
+      {/if}
     </div>
   {:else}
     <div class="overflow-x-auto">

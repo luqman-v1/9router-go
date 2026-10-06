@@ -1,6 +1,54 @@
 # Changelog
 
 ## [Unreleased]
+
+### 🩹 Kegagalan baca usage akhirnya terlihat di Usage & Analytics — bukan hanya di console
+
+Sejak #148 backend menjawab **500** alih-alih body berisi nol, tapi
+`AnalyticsView` masih menangkap kegagalan itu dengan `console.error` saja.
+Akibatnya user melihat angka periode lalu lalu tetap membacanya sebagai angka
+sekarang — persis masalah yang #148 perbaiki di server, belum sampai ke layar.
+
+Kegagalan kini disimpan (`statsError`, `detailsError`) lewat `normalizeLastError`
+yang sudah dipakai `ProviderDetailView`, lalu ditampilkan sebagai `role="alert"`:
+
+- **Overview** — banner di bawah pemilih periode: "Usage could not be loaded. The
+  figures below are from the last successful read." plus pesan asli dari server
+  (`query recent usageDaily: SQL logic error: no such table: usageDaily (1)`),
+  dengan tombol **Retry** yang memanggil `loadStats` yang sama.
+- **Details** — banner di dalam card, tanpa tombol kedua karena **Refresh** di
+  header sudah aksi pemulihannya. Empty state juga berubah: "Nothing to show:
+  the read failed, so the request history is unknown" — bukan "No request logs
+  found", yang menyiratkan database memang kosong.
+
+Pesan sengaja ditampilkan apa adanya: operatorlah yang tahu apa arti "no such
+table: usageDaily", dan menyembunyikannya di balik "Something went wrong" hanya
+membuat #148 mustahir ditelusuri ulang.
+
+**Warna error:** `text-error` / `border-error/40` ternyata **utility mati** —
+tidak ada `--color-error` di CSS hasil build, jadi kelas itu diam-diam jatuh ke
+warna teks yang diwarisi (putih). `TokenSaverView` dan `CreateComboModal` punya
+latent bug yang sama. Warna di banner ini sekarang memakai `red-500/600` yang
+memang terdefinisi, mengikuti konvensi `ProviderDetailView` dan `UpdateModal`.
+
+**Verifikasi:** `bun run build` bersih; `bun test` 219/219; `bun run
+ratchet:svelte` 0 unresolved identifier, 89 error (baseline 89, tidak naik).
+Bukti visual di binary asli dengan DB terisolasi (`DATA_DIR` terpisah, tabel
+di-drop saat server jalan): periode sehat merender TOTAL REQUESTS 7 / $6.50
+tanpa banner; `period=7d` setelah `usageDaily` di-drop menampilkan banner
+dengan pesan server dan tombol Retry; `period=today` tetap 200 dan tidak
+menampilkan banner — jadi error hanya muncul di jalur yang benar-benar rusak.
+Details tab setelah `requestDetails` di-drop menampilkan banner + empty state
+yang benar. Setelah DB dipulihkan, Retry dan Refresh mengembalikan angka dan
+alert hilang.
+
+Kontras diukur dari piksel nyata (CSS di-resolve ke sRGB lewat canvas), bukan
+dari nama token: ikon 5.24:1, heading 12.93:1, pesan 5.96:1 — semua di atas
+AA 4.5:1 untuk teks normal. Tombol Retry adalah `<button type="button">` asli
+yang terjangkau Tab dan punya `focus-visible` 2px; `role="alert"` dibaca
+screen reader saat banner muncul.
+
+
 ### 📝 Template issue & PR — pelapor dan kontributor punya guidenya
 
 Latar: repo ini belum punya `.github/ISSUE_TEMPLATE` maupun
