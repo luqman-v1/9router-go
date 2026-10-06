@@ -46,9 +46,7 @@ jobs:
           set -euo pipefail
           # A manual dispatch has no tag, so VERSION is the only version there
           # is and the tag-vs-file check below is skipped rather than faked.
-          TAGGED=false
           if [ "${GITHUB_REF_TYPE:-tag}" = "tag" ]; then
-            TAGGED=true
             TAG="${GITHUB_REF_NAME}"
             VERSION="${TAG#v}"
             FILE_VERSION="$(cat VERSION)"
