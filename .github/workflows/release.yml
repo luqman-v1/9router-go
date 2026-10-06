@@ -14,8 +14,116 @@ env:
   REGISTRY_IMAGE: luqmenul/9router-go
 
 jobs:
+  # The release channel is derived from the tag and nothing else — not the
+  # branch, not the commit, not an input. That keeps the switch auditable: what
+  # you tag is what you publish.
+  #
+  #   stable       v1.10.0        -> GitHub Release (final)
+  #                                  docker :latest :1.10 :1.10.0
+  #   experimental v1.10.0-exp.1  -> GitHub Release (PRERELEASE)
+  #                                  docker :exp :1.10-exp :1.10.0-exp.1
+  #
+  # Both halves matter for user safety. GitHub excludes prereleases from
+  # /releases/latest, which is the endpoint `internal/updater` falls back to,
+  # so a stable install is never offered an experimental build. And
+  # `docker/metadata-action`'s `type=raw,value=latest,enable={{is_default_branch}}`
+  # was permanently false here — this workflow only ever runs on tags — which is
+  # why :latest had never moved at all. Both are replaced by the explicit
+  # per-channel tag lists computed below.
+  channel:
+    name: Resolve release channel
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.resolve.outputs.channel }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      docker_tags: ${{ steps.resolve.outputs.docker_tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve channel and verify version sources
+        id: resolve
+        run: |
+          set -euo pipefail
+          # A manual dispatch has no tag, so VERSION is the only version there
+          # is and the tag-vs-file check below is skipped rather than faked.
+          TAGGED=false
+          if [ "${GITHUB_REF_TYPE:-tag}" = "tag" ]; then
+            TAGGED=true
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+            FILE_VERSION="$(cat VERSION)"
+            # make cross and the Dockerfile both embed the VERSION file, so a
+            # mismatched tag would publish binaries that report themselves as
+            # $FILE_VERSION while the release is titled $TAG.
+            if [ "$FILE_VERSION" != "$VERSION" ]; then
+              echo "::error::VERSION ($FILE_VERSION) does not match tag $TAG."
+              echo "The release would ship binaries reporting the wrong version."
+              echo "  ./scripts/bump-version.sh $VERSION   # then re-tag"
+              exit 1
+            fi
+          else
+            VERSION="$(cat VERSION)"
+          fi
+
+          MANIFEST_VERSION="$(grep -o '"latestVersion": *"[^"]*"' version.json | cut -d'"' -f4)"
+          if [ -z "$MANIFEST_VERSION" ]; then
+            echo "::error::could not read latestVersion out of version.json"
+            exit 1
+          fi
+          case "$VERSION" in
+            *-*)
+              CHANNEL=experimental
+              PRERELEASE=true
+              # version.json is the manifest `9router-go update` polls from the
+              # main branch, and checkManifest offers whatever it names. An
+              # experimental version sitting in it is pushed to every install,
+              # so this has to fail the release rather than warn.
+              if [ "$MANIFEST_VERSION" = "$VERSION" ]; then
+                echo "::error::version.json advertises $VERSION to every install."
+                echo "version.json is the stable manifest; experimental builds must"
+                echo "not appear there. Restore it to the latest stable release:"
+                echo "  ./scripts/bump-version.sh <latest-stable>"
+                exit 1
+              fi
+              # `%%-*` removes the longest suffix starting at the first dash,
+              # so the core survives regardless of how many dashes the
+              # prerelease identifier has; `%.*` then drops the patch. The
+              # result is the floating tag the matching stable release takes.
+              CORE="${VERSION%%-*}"
+              TAGS="exp ${CORE%.*}-exp $VERSION"
+              ;;
+            *)
+              CHANNEL=stable
+              PRERELEASE=false
+              # The mirror image: publishing a stable release without bumping
+              # the manifest leaves every existing install reporting "up to
+              # date" against the previous version, silently.
+              if [ "$MANIFEST_VERSION" != "$VERSION" ]; then
+                echo "::error::version.json advertises $MANIFEST_VERSION but this tag"
+                echo "is $VERSION. The manifest is what users are offered as an"
+                echo "update, so the release would go out without reaching anyone."
+                echo "  ./scripts/bump-version.sh $VERSION"
+                exit 1
+              fi
+              TAGS="latest ${VERSION%.*} $VERSION"
+              ;;
+          esac
+
+          {
+            echo "channel=$CHANNEL"
+            echo "prerelease=$PRERELEASE"
+            echo "docker_tags<<EOF"
+            for t in $TAGS; do echo "type=raw,value=$t"; done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "channel:  $CHANNEL"
+          echo "version:  $VERSION"
+          echo "docker:   $TAGS"
+
   binaries:
     name: Build release binaries
+    needs: channel
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,30 +149,62 @@ jobs:
         run: make cross
 
       - name: Generate changelog
-        id: changelog
         run: |
+          set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          # Try to extract section for this version tag from CHANGELOG.md
+          NOTES=""
           if [ -f CHANGELOG.md ]; then
             NOTES=$(awk "/## \\[$TAG\\]/{flag=1; next} /## \\[v/{flag=0} flag" CHANGELOG.md)
           fi
-          if [ -n "$NOTES" ]; then
-            echo "$NOTES" > /tmp/changelog.md
-          else
+          if [ -z "$NOTES" ]; then
             # Fallback to git log
             PREV_TAG=$(git tag --sort=-version:refname | grep '^v' | head -2 | tail -1)
-            if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "${GITHUB_REF_NAME}" ]; then
+            if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$TAG" ]; then
               LOG=$(git log --pretty=format:"- %s (%h)" --no-merges)
             else
-              LOG=$(git log --pretty=format:"- %s (%h)" --no-merges ${PREV_TAG}..${GITHUB_REF_NAME})
+              LOG=$(git log --pretty=format:"- %s (%h)" --no-merges ${PREV_TAG}..${TAG})
             fi
-            echo "$LOG" > /tmp/changelog.md
+            NOTES="$LOG"
           fi
-          cat /tmp/changelog.md
+          if [ "${{ needs.channel.outputs.prerelease }}" = "true" ]; then
+            # The banner is the first thing a reader sees on the release page,
+            # so it states the two things that actually differ from a stable
+            # release: it is not on `latest`, and the updater will not offer it
+            # to an install already running a stable version.
+            #
+            # Everything below keeps this step's indentation on purpose.
+            # `run: |` strips the block's common leading indentation, and a
+            # line flush against column 0 would make that indentation zero for
+            # the whole script. The heredoc terminator only looks unindented
+            # after GitHub removes the common prefix.
+            cat > /tmp/notes.md <<BANNER
+          > **Experimental build.** Not published to \`latest\`, and \`9router-go update\`
+          > will not offer it to an install running a stable release. Track it
+          > explicitly:
+          >
+          > \`\`\`sh
+          > docker pull ${REGISTRY_IMAGE}:${GITHUB_REF_NAME#v}
+          > \`\`\`
+          >
+          > Issues found here are still worth reporting — but check the stable
+          > release first, because experimental breakage is usually already
+          > fixed by the next tagged build.
+
+          BANNER
+          else
+            echo "" > /tmp/notes.md
+          fi
+          printf '%s\n' "$NOTES" >> /tmp/notes.md
+          cat /tmp/notes.md
 
       - name: Upload binaries to release
         uses: softprops/action-gh-release@v2
         with:
+          # What marks the GitHub Release itself as experimental, which is what
+          # keeps it out of /releases/latest. The YAML value must be a real
+          # boolean, so it is compared here rather than passed through the
+          # string output of the channel job.
+          prerelease: ${{ needs.channel.outputs.prerelease == 'true' }}
           files: |
             9router-go-linux-amd64
             9router-go-linux-arm64
@@ -72,13 +212,14 @@ jobs:
             9router-go-darwin-arm64
             9router-go-windows-amd64.exe
             SHA256SUMS.txt
-          body_path: /tmp/changelog.md
+          body_path: /tmp/notes.md
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker:
     name: Build and push Docker image
+    needs: channel
     runs-on: ubuntu-latest
     environment: prod
     steps:
@@ -101,10 +242,7 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY_IMAGE }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+          tags: ${{ needs.channel.outputs.docker_tags }}
 
       - name: Build and push
         uses: docker/build-push-action@v7

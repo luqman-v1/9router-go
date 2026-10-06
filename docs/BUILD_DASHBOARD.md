@@ -105,8 +105,38 @@ VERSION="$(cat VERSION)" docker build -t 9router-go .
 
 The runtime image contains the Go binary and CA/time-zone support; it does not require a JavaScript runtime. Persistent application data must be mounted outside the container image and passed with `DATA_DIR`.
 
+## Release channels
+
+The channel is derived from the tag and nothing else, so what you tag is what
+you publish:
+
+| Tag | Channel | GitHub Release | Docker tags |
+|---|---|---|---|
+| `v1.10.0` | stable | final | `latest`, `1.10`, `1.10.0` |
+| `v1.10.0-exp.1` | experimental | **Pre-release** | `exp`, `1.10-exp`, `1.10.0-exp.1` |
+
+GitHub excludes prereleases from `releases/latest`, which is the endpoint
+`internal/updater` falls back to, so a stable install is never offered an
+experimental build. `autoApplyAllowed` in `internal/updater/updater.go` is the
+second guard: even a manual check will not swap a running final release for a
+prerelease unattended.
+
+`version.json` is the stable channel's manifest. `scripts/bump-version.sh`
+leaves it alone for an experimental bump, and `release.yml` fails the release if
+the two disagree in either direction — an experimental version in the manifest
+reaches every install, and a stable release without a manifest bump reaches
+nobody.
+
+```bash
+./scripts/bump-version.sh 1.10.0-exp.1   # experimental: VERSION + updater only
+./scripts/bump-version.sh 1.10.0         # stable: also moves version.json
+```
+
 ## Release and CI notes
 
-CI currently builds the frontend, runs `go vet`, runs `go test ./...`, and builds the Go binary. It does not currently run a frontend test command, race detector, coverage gate, or release-time vulnerability scan. The release workflow builds cross-platform binaries and uploads `SHA256SUMS.txt`; its metadata must still be checked against `VERSION`, `version.json`, the tag, and changelog claims before publication.
+CI runs the frontend build, `bun test`, the `svelte-check` ratchet, `go vet`,
+`go test ./...`, the race detector, the `integration`-tagged suite, and a
+verify-only Docker build. It does not currently run a coverage gate or a
+release-time vulnerability scan.
 
 For a release candidate, reproduce the relevant checks in a clean environment, record toolchain versions and the exact frontend build, and verify the embedded dashboard with a running binary. Do not report a successful frontend build as proof that a Go build, migration, auth boundary, or release artifact succeeded.

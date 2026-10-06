@@ -1,6 +1,60 @@
 # Changelog
 
 ## [Unreleased]
+### 🧪 Rilis split dua channel: stabil & experimental — dipilah dari tag
+
+Selama ini `release.yml` memperlakukan semua tag `v*` sama: tag
+`v1.10.0-exp.1` akan terbit sebagai GitHub Release **non-prerelease**, jadi
+`releases/latest` — endpoint fallback yang dipakai `internal/updater` —
+menunjuk ke build experimental dan menawarkannya ke setiap user stabil. Tag
+Docker `1.10` juga ditimpa binary yang sama.
+
+Channel sekarang diturunkan dari tag itu sendiri — bukan dari branch, bukan
+dari commit, bukan dari input manual — sehingga apa yang di-tag itulah yang
+diterbitkan, dan bisa diaudit.
+
+| Tag | Channel | GitHub Release | Docker |
+|---|---|---|---|
+| `v1.10.0` | stable | final | `latest`, `1.10`, `1.10.0` |
+| `v1.10.0-exp.1` | experimental | **Pre-release** | `exp`, `1.10-exp`, `1.10.0-exp.1` |
+
+Second guard tetap `autoApplyAllowed` (#73): build experimental tidak akan
+dipasang otomatis di atas rilis final yang sedang berjalan, meski dicek manual.
+
+**Job `channel` baru gagal cepat pada ketidaksesuaian sumber versi.** Ketiga
+kasus ini sebelumnya lolos diam-diam:
+
+- `VERSION` tidak sama dengan tag → binary terbit melaporkan versi dirinya
+  sebagai versi lama, karena `make cross` dan Dockerfile sama-sama meng-embed
+  file `VERSION`.
+- Rilis stable tanpa bump `version.json` → rilis terbit tapi **tidak sampai ke
+  siapa pun**; semua install tetap melaporkan "up to date" versi sebelumnya.
+- Versi experimental bocor ke `version.json` → build experimental diblodir ke
+  seluruh install. Manifest itu dipoll `9router-go update` di channel stabil,
+  jadi ini harus menggagalkan rilis, bukan sekadar peringatan.
+
+`scripts/bump-version.sh` menulis `version.json` hanya untuk bump stabil, dan
+menyentuh `updater.CurrentVersion` untuk keduanya. Channel graduate = bump
+stabil menyusul; itulah yang memindahkan `version.json`, tag Docker `:latest`,
+dan penawaran update.
+
+**Bonus yang ketemu di tengah:** cabang `python3` pada `bump-version.sh` rusak
+dari sebelum channel ini ada. Di Windows, `command -v python3` **berhasil** untuk
+stub Microsoft Store, yang lalu keluar non-zero tanpa menjalankan apa pun — dan
+karena `set -e`, skrip **mati setelah `VERSION` ditulis**. `version.json` tetap
+di versi lama, gate versi di atas akan menolaknya, dan tidak ada yang tahu
+kenapa. Jalur `sed` sekarang dipakai langsung, jadi tanpa `python3` pun, dan
+hasilnya diverifikasi ulang dengan `grep` sebelum lanjut.
+
+**Verifikasi:** kedua skrip dieksekusi sungguhan terhadap salinan repo di
+`%TEMP%` — 10 kasus channel (7 lulus, 3 ditolak; termasuk manual dispatch dan
+prerelease multi-dash) dan 19 pemeriksaan `bump-version.sh` (stable,
+experimental, graduate setelah experimental, input tidak valid, dan jalur
+tanpa `python3`). YAML workflow diparse `js-yaml`; banner release note
+experimental juga dicek tidak punya indentasi yang akan merendernya jadi code
+block.
+
+
 ### 🩺 Test throttle quota mengukur sesuatu yang tidak dijamin scheduler
 
 `TestHandleGetConnectionUsage_SpacesBurstAcrossConnections` dan
