@@ -258,7 +258,7 @@
     </div>
 
     {#if saveError}
-      <p class="text-xs text-error break-words" role="alert">{saveError}</p>
+      <p class="text-xs text-danger break-words" role="alert">{saveError}</p>
     {/if}
 
     <!-- Actions -->

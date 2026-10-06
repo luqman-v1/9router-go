@@ -555,7 +555,7 @@
                 {#each stats.recentRequests as req}
                   <tr class="hover:bg-bg-subtle transition-colors">
                     <td class="py-1.5 pl-3 align-middle">
-                      <span class="mx-auto block w-1.5 h-1.5 rounded-full {req.status === 'ok' || req.status === 'success' ? 'bg-success' : 'bg-error'}"></span>
+                      <span class="mx-auto block w-1.5 h-1.5 rounded-full {req.status === 'ok' || req.status === 'success' ? 'bg-success' : 'bg-red-500'}"></span>
                     </td>
                     <td class="py-1.5 pr-2 min-w-0">
                       <span class="block truncate font-mono text-[11px]" title={req.model}>{req.model}</span>

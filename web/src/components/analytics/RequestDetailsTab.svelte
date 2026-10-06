@@ -94,7 +94,7 @@ let {
           {#each details as item}
             <tr class="hover:bg-surface-2 transition-colors cursor-pointer" onclick={() => (selectedDetail = item)}>
               <td class="py-3 px-4">
-                <span class="block w-2 h-2 rounded-full {item.status === 'success' || item.status === 'ok' ? 'bg-success' : 'bg-error'}"></span>
+                <span class="block w-2 h-2 rounded-full {item.status === 'success' || item.status === 'ok' ? 'bg-success' : 'bg-red-500'}"></span>
               </td>
               <td class="py-3 px-4 text-text-muted whitespace-nowrap text-[11px]">
                 {timeAgo(item.timestamp)}
@@ -207,7 +207,7 @@ let {
       <!-- Modal Header -->
       <div class="px-6 py-4 border-b border-border flex items-center justify-between bg-surface-2">
         <div class="flex items-center gap-2">
-          <span class="w-2.5 h-2.5 rounded-full {selectedDetail.status === 'success' ? 'bg-success' : 'bg-error'}"></span>
+          <span class="w-2.5 h-2.5 rounded-full {selectedDetail.status === 'success' ? 'bg-success' : 'bg-red-500'}"></span>
           <h3 class="font-headline text-base font-bold text-text-main">{selectedDetail.model}</h3>
           <span title={selectedDetail.provider || undefined}>
             <Badge variant="neutral" size="sm">{providerDisplayName(selectedDetail.provider, providerNodes)}</Badge>

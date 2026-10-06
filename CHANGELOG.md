@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+### 🩹 `text-error` / `bg-error` adalah utility mati — enam elemen diam-diam kehilangan warna error
+
+Mengganti `text-error` di banner Usage & Analytics (#167) membuat warna
+keluar putih, bukan merah. Ternyata memang begitu: **tidak ada
+`--color-error` di CSS hasil build**, jadi `text-error`, `bg-error`, dan
+`border-error/40` adalah kelas yang tidak pernah menghasilkan deklarasi.
+Browser diam-diam jatuh ke warna teks yang diwarisi — putih di tema gelap.
+Enam elemen menulis "error" tapi tampil tanpanya.
+
+Lokasinya: link **Uninstall** dan pesan error uninstall di `TokenSaverView`,
+tombol konfirmasi `bg-error` di modal yang sama, pesan `saveError` di
+`CreateComboModal`, serta tiga titik status `bg-error` di Usage & Analytics
+(Recent Requests, tabel Details, dan header detail).
+
+**Cakupannya jauh lebih sempit dari dugaan awal.** Audit seluruh utility
+warna di CSS hasil build menunjukkan hanya `error` yang mati — `success`,
+`info`, `warning`, dan `danger` semuanya ada dan dipakai benar di banyak
+tempat. Hanya `error` yang tidak punya token.
+
+Penggantian memakai token yang sudah ada, bukan konvensi `red-600`:
+
+| Site | classes | Alasan |
+|---|---|---|
+| teks error (`TokenSaverView`, `CreateComboModal`) | `text-danger` | token repo, sudah dipakai variant `danger` di `Badge`/`Button` |
+| tombol konfirmasi | `bg-danger hover:bg-danger/80` | teks putih di atasnya 4.77:1 |
+| titik status | `bg-red-500` | lihat paragraf berikut |
+
+Titik status tidak memakai `bg-danger` karena **gagal bar non-teks 3:1**.
+Diukur dari piksel nyata terhadap `bg-surface` yang benar-benar ada di
+belakangnya: `bg-danger` (#cf222e) hanya **2.83:1** — di bawah ambang.
+`bg-red-500` (251,44,54) memberi **3.97:1** dan lolos. Titik sukses
+`bg-success` (16,185,129) memberi 5.97:1, jadi kedua cabang benar-benar
+terpisah dan keduanya terbaca sebagai non-teks.
+
+**Verifikasi:** `bun run build` bersih; `bun test` 219/219; `bun run
+ratchet:svelte` 0 unresolved identifier, 89 error (baseline 89, tidak naik).
+Bukti piksel di binary asli dengan `DATA_DIR` terisolasi: tabel Details dengan
+satu baris `success` dan satu baris `error` menghasilkan titik hijau
+(16,185,129) dan titik merah (251,44,54) — dua cabang benar-benar terpisah.
+
+Catatan: audit pertama sempat menyimpulkan semua titik merah. Seed-nya
+meletakkan `status` di kolom, padahal `chat/usage.go` menyimpannya **di
+dalam blob `data`** — sehingga semua baris jatuh ke cabang gagal. Bukti baru
+memakai bentuk payload yang sama dengan penulis aslinya.
+
 ### 🩹 Kegagalan baca usage akhirnya terlihat di Usage & Analytics — bukan hanya di console
 
 Sejak #148 backend menjawab **500** alih-alih body berisi nol, tapi
