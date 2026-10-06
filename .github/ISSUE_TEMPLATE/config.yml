@@ -1,0 +1,12 @@
+# Blank issues are closed automatically: this repository uses templates so the
+# details a fix needs (reproduction, version, OS, verified commands) are not
+# missing from the report.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Question or support
+    url: https://github.com/luqman-v1/9router-go/issues/new?template=question.yml
+    about: How do I configure, use, or debug the gateway? Use the question template.
+  - name: Report a security issue
+    url: https://github.com/luqman-v1/9router-go/security/advisories/new
+    about: Privilege escalation, auth bypass, or a leaked credential — report privately, not as a public issue.

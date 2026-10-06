@@ -1,0 +1,79 @@
+name: Feature request
+description: Propose a new capability or an improvement to an existing one
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing something. Describe the **user-facing outcome**, not the implementation —
+        a PR is much easier to discuss once the goal is agreed.
+
+        If the feature already exists upstream, file it as a **Upstream parity** issue instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you unable to do today? Concrete beats abstract.
+      placeholder: I cannot rotate an API key per connection without editing the DB by hand.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should the gateway or dashboard do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface does this touch?
+      options:
+        - "Routing / combo fallback (internal/handlers/chat)"
+        - "Proxy executor or SSE translation (internal/proxy, internal/translator)"
+        - "Provider registry / model catalog (internal/providers)"
+        - "Dashboard API (internal/handlers/dashboard)"
+        - "Dashboard UI (web/src)"
+        - "Build, packaging, or CI"
+        - "Documentation only"
+    validations:
+      required: true
+
+  - type: textarea
+    id: upstream
+    attributes:
+      label: Upstream reference
+      description: |
+        Link to a commit, PR, or issue in `decolua/9router` (or in `diegosouzapw/OmniRoute` if that is where
+        the idea comes from). Leave empty if this is original to 9router-go.
+    validations:
+      required: false
+
+  - type: textarea
+    id: breaking
+    attributes:
+      label: Compatibility impact
+      description: Does this change an existing `/v1/*` request, an SSE chunk shape, a dashboard endpoint, or the SQLite schema? If yes, say which.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This does not require aliasing or redirecting one provider to another (see `AGENTS.md` §3).
+        - label: I am willing to send a PR.

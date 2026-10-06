@@ -1,0 +1,82 @@
+name: Upstream parity
+description: decolua/9router has a behaviour 9router-go does not — port it, or record why not
+title: "parity: "
+labels: ["parity"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `9router-go` is a Go port of [`decolua/9router`](https://github.com/decolua/9router) and keeps the same
+        wire contracts, so behaviour that exists upstream and not here is a **gap**, not a feature request.
+
+        Issues sourced from `diegosouzapw/OmniRoute` are welcome too — link the cited file there and note it below.
+
+  - type: textarea
+    id: gap
+    attributes:
+      label: The gap
+      description: What does upstream do that this gateway does not? Be specific about observable behaviour.
+    validations:
+      required: true
+
+  - type: input
+    id: upstream-link
+    attributes:
+      label: Upstream commit / PR / issue
+      description: A link, not just a description.
+      placeholder: https://github.com/decolua/9router/pull/4197
+    validations:
+      required: true
+
+  - type: textarea
+    id: mapped
+    attributes:
+      label: Where it should land in this repo
+      description: |
+        Map by responsibility, not by file path. Common targets:
+
+        | Upstream | 9router-go |
+        | --- | --- |
+        | `open-sse/translator/` | `internal/translator/` |
+        | `open-sse/executors/` | `internal/proxy/executor/`, `internal/proxy/` |
+        | `open-sse/providers/registry/`, `open-sse/config/providerModels.js` | `internal/providers/` |
+        | `open-sse/handlers/chatCore.js`, `src/sse/handlers/chat.js` | `internal/handlers/chat/` |
+        | `open-sse/rtk/` | `internal/tokensaver/` |
+        | `src/app/api/` | `internal/handlers/dashboard/`, `internal/handlers/` |
+        | `src/app/` | `web/src/` (Svelte 5 + Vite) |
+
+        If the upstream change is provider-specific and its protocol differs from ours, say whether that is a
+        genuine divergence or an oversight — a real divergence gets documented in `CHANGELOG.md` instead of ported.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: contract
+    attributes:
+      label: Contract to preserve
+      description: |
+        Endpoints, request/response payloads, SSE chunk shapes, status codes, error semantics (e.g. a typed
+        `409 no_credit` must not collapse into a generic 500), and the SQLite schema at `~/.9router/db/data.sqlite`.
+    validations:
+      required: false
+
+  - type: textarea
+    id: omniroute
+    attributes:
+      label: OmniRoute reference (only if that is the source)
+      description: |
+        Path inside `diegosouzapw/OmniRoute`, e.g. `src/lib/usage/codexResetCredits.ts`, plus the dashboard
+        component under `src/app/` that the port must also match.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked `docs/PARITY-REMAINING.md` and this gap is still open.
+          required: true
+        - label: This keeps providers isolated — no aliasing, model hijacking, or substring-based provider switching (`AGENTS.md` §3).
+        - label: This does not transliterate upstream JS into Go line by line (`AGENTS.md` §4.A).

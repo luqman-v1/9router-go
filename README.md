@@ -317,6 +317,18 @@ Go reads/writes the upstream 9router table/JSON shapes and bootstraps the core s
 
 ---
 
+## 🤝 Contributing
+
+Issues and pull requests use templates, so pick the right one rather than opening a blank report:
+
+- **Bug report** — something behaves incorrectly. Include a reproduction, `9router-go version`, OS, and the log excerpt around the failure.
+- **Feature request** — the problem you cannot solve today, the surface it touches, and whether upstream already has it.
+- **Upstream parity** — a behaviour `decolua/9router` has and this gateway does not; link the upstream commit or PR.
+- **Question** — configuration and usage help.
+
+PRs follow the checks CI runs: `go vet ./...`, `go test -count=1 ./...`, `make test-integration`, plus `cd web && bun test` and `make vet-svelte` for anything touching the dashboard. Before writing code, skim [`AGENTS.md`](AGENTS.md) — provider isolation and the Go/Svelte conventions there are enforced by review.
+
+
 ## 📚 Docs
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — routing, providers, runtime layout

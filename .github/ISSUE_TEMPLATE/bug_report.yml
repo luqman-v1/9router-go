@@ -1,0 +1,105 @@
+name: Bug report
+description: Something in 9router-go behaves incorrectly — routing, proxying, dashboard, or build
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. The short version: **what did you expect, and what happened instead?**
+
+        Before you open: search the [open issues](https://github.com/luqman-v1/9router-go/issues?q=is%3Aissue%20state%3Aopen)
+        and the [`CHANGELOG.md`](https://github.com/luqman-v1/9router-go/blob/main/CHANGELOG.md) — fixed bugs are often already listed there.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences. What breaks?
+      placeholder: Requests routed to the wrong provider when a combo has two accounts of the same provider.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: The smallest set of steps that shows the bug. Include the actual request payload if it matters.
+      placeholder: |
+        1. Add a DeepSeek connection, combo `ds-fallback` = [`ds/deepseek-chat`, `glm/glm-5`]
+        2. Send: `curl -X POST localhost:20130/v1/chat/completions -d '{"model":"ds-fallback","messages":[{"role":"user","content":"hi"}]}'`
+        3. ...
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include the status code and body the gateway returned, verbatim.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Output of `9router-go logs` around the failure, or the **Translator → Console Logs** tab in the dashboard.
+        Redact API keys, OAuth tokens, and cookies.
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `9router-go version`, or the release tag.
+      placeholder: v1.9.9
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Docker
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Setup notes
+      description: |
+        Only what is relevant: which providers/connections are involved, token savers on or off, proxy pools,
+        custom provider nodes. Never paste credentials.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I am on a released version, not a stale build.
+        - label: I removed keys, tokens, and cookies from everything above.
+          required: true

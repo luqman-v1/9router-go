@@ -1,6 +1,43 @@
 # Changelog
 
 ## [Unreleased]
+### 📝 Template issue & PR — pelapor dan kontributor punya guidenya
+
+Latar: repo ini belum punya `.github/ISSUE_TEMPLATE` maupun
+`.github/PULL_REQUEST_TEMPLATE`. Issue yang ada sekarang (#154, #155, #160,
+#165) kosong dari reproduksi, versi, dan OS, jadi triase dimulai dari "¿ini
+bug atau feature?" — dan PR squash-merge tanpa bukti bahwa gerbang yang
+dipakai CI pernah dijalankan lokal.
+
+Perubahan:
+1. Empat template issue berbasis form (`.github/ISSUE_TEMPLATE/`):
+   `bug_report.yml`, `feature_request.yml`, `parity_issue.yml`,
+   `question.yml`. Tiap field yang menentukan tetap punya default berbahasa
+   Inggris (`bug: `, `feat: `, `parity: `, `question: `) dan label yang
+   sudah ada di repo — `bug`, `enhancement`, `parity`, `question`.
+2. `parity_issue.yml` memuat tabel pemetaan upstream → `internal/...`
+   (`open-sse/translator/` → `internal/translator/`, `src/app/api/` →
+   `internal/handlers/dashboard/`, dan seterusnya) plus field khusus
+   OmniRoute, karena keduanya adalah jalur-PR yang berbeda: parity wajib
+   menyertakan tautan commit/PR upstream, sedangkan request orisinal tidak.
+3. `bug_report.yml` meminta `9router-go version`, OS, dan potongan
+   `9router-go logs` / tab Translator → Console Logs, karena ketiganya
+   hampir selalu dibutuhkan untuk reproduksi.
+4. `PULL_REQUEST_TEMPLATE.md` memuat daftar gerbang yang *persis* sama
+   dengan job `test`, `integration`, dan `docker` di `.github/workflows/ci.yml`
+   (`go vet`, `go test -count=1`, `make test-integration`, `bun test`,
+   `make vet-svelte`), ditambah checklist provider-isolation dari
+   `AGENTS.md` §3 dan kewajiban `Closes #<n>` di judul.
+5. `config.yml` mematikan issue kosong (`blank_issues_enabled: false`) dan
+   mengarahkan pertanyaan ke template question serta laporan keamanan ke
+   Security Advisories, bukan issue publik.
+6. Bagian **Contributing** di `README.md` meringkas keempat template dan
+   perintah verifikasinya.
+
+Riset upstream: `decolua/9router` tidak punya template issue maupun PR
+(`gh api repos/decolua/9router/contents/.github` → hanya `dependabot.yml`;
+`contents/CONTRIBUTING.md` → 404), jadi ini tambahan lokal, bukan parity.
+
 ### 🔄 Tujuh perbaikan parity dari PR upstream yang masih terbuka
 
 Tujuh perubahan independen, masing-masing menutup satu PR open di
