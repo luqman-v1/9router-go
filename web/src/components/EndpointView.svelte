@@ -540,7 +540,7 @@
           <button
             type="button"
             onclick={() => (showDisableTunnelModal = true)}
-            class="p-2 hover:bg-danger/10 rounded-lg text-danger transition-colors shrink-0 cursor-pointer border border-danger/20"
+            class="p-2 hover:bg-danger/10 rounded-lg text-red-600 dark:text-red-400 transition-colors shrink-0 cursor-pointer border border-danger/20"
             title="Disable Tunnel"
           >
             <Power class="w-4 h-4" />
@@ -553,7 +553,7 @@
           <button
             type="button"
             onclick={() => (showDisableTunnelModal = true)}
-            class="p-2 hover:bg-danger/10 rounded-lg text-danger transition-colors shrink-0 cursor-pointer border border-danger/20"
+            class="p-2 hover:bg-danger/10 rounded-lg text-red-600 dark:text-red-400 transition-colors shrink-0 cursor-pointer border border-danger/20"
             title="Disable Tunnel"
           >
             <Power class="w-4 h-4" />
@@ -566,13 +566,13 @@
           <button
             type="button"
             onclick={() => (isTunnelLoading = false)}
-            class="p-2 hover:bg-danger/10 rounded-lg text-danger transition-colors shrink-0 cursor-pointer border border-border"
+            class="p-2 hover:bg-danger/10 rounded-lg text-red-600 dark:text-red-400 transition-colors shrink-0 cursor-pointer border border-border"
             title="Cancel"
           >
             <Power class="w-4 h-4" />
           </button>
         {:else if tunnelError}
-          <div class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-danger/30 bg-danger/10 text-sm text-danger">
+          <div class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-danger/30 bg-danger/10 text-sm text-red-600 dark:text-red-400">
             <AlertCircle class="w-4 h-4 shrink-0" />
             <span class="truncate">{tunnelError}</span>
           </div>
@@ -639,7 +639,7 @@
           <button
             type="button"
             onclick={() => (showDisableTailscaleModal = true)}
-            class="p-2 hover:bg-danger/10 rounded-lg text-danger transition-colors shrink-0 cursor-pointer border border-danger/20"
+            class="p-2 hover:bg-danger/10 rounded-lg text-red-600 dark:text-red-400 transition-colors shrink-0 cursor-pointer border border-danger/20"
             title="Disable Tailscale"
           >
             <Power class="w-4 h-4" />
@@ -652,7 +652,7 @@
           <button
             type="button"
             onclick={() => (showDisableTailscaleModal = true)}
-            class="p-2 hover:bg-danger/10 rounded-lg text-danger transition-colors shrink-0 cursor-pointer border border-danger/20"
+            class="p-2 hover:bg-danger/10 rounded-lg text-red-600 dark:text-red-400 transition-colors shrink-0 cursor-pointer border border-danger/20"
             title="Disable Tailscale"
           >
             <Power class="w-4 h-4" />
@@ -675,13 +675,13 @@
           <button
             type="button"
             onclick={() => (isTailscaleLoading = false)}
-            class="p-2 hover:bg-danger/10 rounded-lg text-danger transition-colors shrink-0 cursor-pointer border border-border"
+            class="p-2 hover:bg-danger/10 rounded-lg text-red-600 dark:text-red-400 transition-colors shrink-0 cursor-pointer border border-border"
             title="Cancel"
           >
             <Power class="w-4 h-4" />
           </button>
         {:else if tailscaleError}
-          <div class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-danger/30 bg-danger/10 text-sm text-danger">
+          <div class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-danger/30 bg-danger/10 text-sm text-red-600 dark:text-red-400">
             <AlertCircle class="w-4 h-4 shrink-0" />
             <span class="truncate">{tailscaleError}</span>
           </div>
@@ -909,7 +909,7 @@
               <button
                 type="button"
                 onclick={() => handleDeleteKey(key)}
-                class="p-2 hover:bg-danger/10 rounded-lg text-text-subtle hover:text-danger opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all cursor-pointer"
+                class="p-2 hover:bg-danger/10 rounded-lg text-text-subtle hover:text-red-600 dark:hover:text-red-400 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all cursor-pointer"
                 title="Delete key"
               >
                 <Trash2 class="w-4 h-4" />

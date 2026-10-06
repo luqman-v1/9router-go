@@ -494,7 +494,7 @@
           {#if showPasswordFields}
             <form onsubmit={handleUpdatePassword} class="space-y-2.5 pt-3">
               {#if passwordErrorMessage}
-                <div class="p-2.5 rounded-lg bg-danger/10 border border-danger/20 text-danger text-[11px]">
+                <div class="p-2.5 rounded-lg bg-danger/10 border border-danger/20 text-red-600 dark:text-red-400 text-[11px]">
                   {passwordErrorMessage}
                 </div>
               {/if}

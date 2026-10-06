@@ -172,7 +172,7 @@
                   <button
                     type="button"
                     onclick={() => handleDelete(k.id)}
-                    class="p-1.5 rounded-lg text-text-subtle hover:text-hover:text-danger transition cursor-pointer"
+                    class="p-1.5 rounded-lg text-text-subtle hover:bg-danger/10 hover:text-red-600 dark:hover:text-red-400 transition cursor-pointer"
                     title="Delete"
                   >
                     <Trash2 class="w-3.5 h-3.5" />

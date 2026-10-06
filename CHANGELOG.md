@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+### 🩺 `text-danger` gagal bar kontras di tema gelap — teks error nyaris tak terbaca
+
+Tracing dari #168 menemukan bahwa perbaikannya sendiri belum lolos ukur.
+`text-danger` (#cf222e) menghasilkan **2.83:1** terhadap `bg-surface` di tema
+gelap pada 12px/400 — di bawah bar 4.5:1 untuk teks normal. Di tema terang ia
+**5.36:1** dan benar, jadi membaca nama token atau memeriksa satu tema sama
+sajanya tidak cukup.
+
+Sembilan site teks: `TokenSaverView` (link Uninstall, pesan error uninstall),
+`CreateComboModal` (`saveError`), `Badge.svelte` variant `danger`,
+`EndpointView` (tombol Tunnel/Tailscale ×6, pesan error ×2, hover Delete key),
+`ProfileSettingsView` (pesan error password), dan `ApiKeysView` (hover Delete).
+`ApiKeysView` juga punya class rusak: `hover:text-hover:text-danger`.
+
+Semuanya kini memakai pasangan `text-red-600 dark:text-red-400` yang sudah jadi
+konvensi dominan repo (16 pemakaian, termasuk yang dipakai `ProviderDetailView`
+dan `Toasts`). Diukur dari piksel nyata setelah perbaikan:
+
+| | dark | light |
+|---|---|---|
+| `saveError` | **5.24:1** | **4.77:1** |
+
+Tombol `bg-danger` **tidak** disentuh: teks putih di atasnya 5.36:1, sudah
+lolos. `bg-danger` memang benar untuk fill dan salah untuk teks — dua
+fungsi yang satu token tidak bisa layani. Dihitung dari luminansi terukur:
+teks di permukaan gelap butuh L ≥ 0.258, teks putih di atas fill butuh
+L ≤ 0.183, jadi keduanya saling bertentakan.
+
+**Verifikasi:** `bun run build` bersih; `bun test` 219/219; `bun run
+ratchet:svelte` 0 unresolved identifier, 89 error (baseline 89, tidak naik).
+Bukti piksel di binary asli dengan `DATA_DIR` terisolasi, pada elemen yang
+sama yang tadinya 2.83:1 — `CreateComboModal` `saveError` dipaksa gagal lewat
+POST 409 ke `/api/combos`, lalu kontras diukur di kedua tema dari piksel
+yang di-resolve browser (bukan dari nilai token).
+
+**Guard contrast tidak jadi.** Skrip yang mengecek kelas warna mati dari CSS
+hasil build ditulis lebih dulu, tapi ia menghasilkan 28 → 59 → 666 false
+positive (termasuk `text-brand-500` dan `text-xs` yang jelas ada) karena
+mencocokkan `divide-y`, `border-b-2`, dan awalan varian sebagai warna. Guard
+yang berbohong lebih berbahaya dari tidak ada, karena ia terbaca sebagai
+bukti — jadi dihapus, bukan diperbaiki berulang. Kelas warna mati dicegah
+lewat `bun run build` + review, dan kontras diukur di browser.
+
 ### ⚡ `GET /v1/models` lebih cepat saat provider & model banyak
 
 Build daftar model di endpoint ini CPU-bound per model, bukan DB-bound. Empat hal diubah, tanpa mengubah perilaku:

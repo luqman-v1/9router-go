@@ -29,7 +29,7 @@
     primary: 'bg-brand-500/10 text-brand-600 dark:text-brand-400 border border-brand-500/25',
     success: 'bg-success/10 text-success border border-success/25',
     warning: 'bg-warning/10 text-warning border border-warning/25',
-    danger: 'bg-danger/10 text-danger border border-danger/25',
+    danger: 'bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/25',
     error: 'bg-red-500/10 text-red-500 border border-red-500/25',
     info: 'bg-info/10 text-info border border-info/25',
   }

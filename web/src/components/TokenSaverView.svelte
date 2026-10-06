@@ -555,7 +555,7 @@
                   type="button"
                   onclick={() => handleRemoveExtra(extra)}
                   disabled={removingExtra === extra}
-                  class="ml-1 text-danger underline hover:opacity-80 disabled:opacity-50 cursor-pointer"
+                  class="ml-1 text-red-600 dark:text-red-400 underline hover:opacity-80 disabled:opacity-50 cursor-pointer"
                   title={`Uninstall [${extra}]`}
                 >
                   {removingExtra === extra ? 'Uninstalling…' : 'Uninstall'}
@@ -592,7 +592,7 @@
         </div>
 
         {#if extrasActionError}
-          <p class="text-xs text-danger mt-2">{extrasActionError}</p>
+          <p class="text-xs text-red-600 dark:text-red-400 mt-2">{extrasActionError}</p>
         {/if}
 
         {#if installLog}
