@@ -155,12 +155,31 @@ jobs:
             NOTES=$(awk "/## \\[$TAG\\]/{flag=1; next} /## \\[v/{flag=0} flag" CHANGELOG.md)
           fi
           if [ -z "$NOTES" ]; then
-            # Fallback to git log
-            PREV_TAG=$(git tag --sort=-version:refname | grep '^v' | head -2 | tail -1)
+            # No section named after the tag. Fall back to [Unreleased] before
+            # the git log: writing up an experimental build in [Unreleased]
+            # and tagging it is the normal way this repo works, and a list of
+            # commit subjects is the worst possible release page for the build
+            # people are being asked to help test. The git log stays as the
+            # last resort, for a tag with neither.
+            if [ -f CHANGELOG.md ]; then
+              NOTES=$(awk '/^## \[Unreleased\]/{flag=1; next} /^## \[/{flag=0} flag' CHANGELOG.md)
+            fi
+          fi
+          if [ -z "$NOTES" ]; then
+            # Last resort: the commit log. `grep '^v'` finds nothing before the
+            # first tagged release, and under `set -euo pipefail` that empty
+            # result aborted the whole step — a missing CHANGELOG.md took the
+            # release down instead of degrading to commit subjects.
+            PREV_TAG=$(git tag --sort=-version:refname | { grep '^v' || true; } | head -2 | tail -1)
             if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$TAG" ]; then
-              LOG=$(git log --pretty=format:"- %s (%h)" --no-merges)
+              LOG=$(git log --pretty=format:"- %s (%h)" --no-merges || true)
             else
-              LOG=$(git log --pretty=format:"- %s (%h)" --no-merges ${PREV_TAG}..${TAG})
+              # The range needs both refs to resolve; a tag deleted or never
+              # fetched would otherwise abort the release for its notes.
+              LOG=$(git log --pretty=format:"- %s (%h)" --no-merges "${PREV_TAG}..${TAG}" 2>/dev/null || true)
+              if [ -z "$LOG" ]; then
+                LOG=$(git log --pretty=format:"- %s (%h)" --no-merges || true)
+              fi
             fi
             NOTES="$LOG"
           fi
