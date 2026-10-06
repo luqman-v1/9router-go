@@ -634,25 +634,3 @@ func TestLiveE2E_SpaceBunny_Free(t *testing.T) {
 
 	requireLiveOK(t, rec.Code, rec.Body.String())
 }
-
-func TestLiveE2E_HandleTestModel_SpaceBunny(t *testing.T) {
-	repo, cleanup := getRealUserDB(t)
-	defer cleanup()
-
-	handler := NewChatHandler(repo)
-
-	for _, modelName := range []string{"oc/space-bunny-free"} {
-		body, _ := json.Marshal(map[string]string{"model": modelName})
-		req := httptest.NewRequest("POST", "/api/models/test", bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-
-		handler.HandleTestModel(rec, req)
-
-		t.Logf("HandleTestModel %s -> %d: %s", modelName, rec.Code, rec.Body.String())
-		requireLiveOK(t, rec.Code, rec.Body.String())
-		if !strings.Contains(rec.Body.String(), `"ok":true`) {
-			t.Fatalf("expected ok:true for %s, got: %s", modelName, rec.Body.String())
-		}
-	}
-}

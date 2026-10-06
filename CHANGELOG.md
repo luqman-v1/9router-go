@@ -1,6 +1,75 @@
 # Changelog
 
 ## [Unreleased]
+
+### 🐛 Tombol Test di halaman media provider salah probe — model System One selalu 500
+
+Gejalanya persis seperti yang dilaporkan: di
+`/dashboard/media-providers/systemone/opencode-zen`, tombol labu (Test) pada
+`jev-1.13` dan `jev-1.13-free` selalu gagal dengan
+`ForwardOpencodeZen: forward to https://opencode.ai/zen/v1/chat/completions:
+upstream returned 500`, padahal tombol **Run** di halaman yang sama langsung
+berhasil.
+
+**Penyebabnya bukan lane Zen.** Dua tombol itu memang memanggil dua endpoint
+berbeda: **Run** mem-post ke `/v1/systemone`, sedangkan **Test** memanggil
+`POST /api/models/test` — dan handler lama (`chat.HandleTestModel`) selalu
+membentuk payload Chat Completions apa pun jenis modelnya. Diverifikasi langsung
+ke upstream: `POST /zen/v1/chat/completions` dengan `jev-1.13-free` memang
+membalas `500 {"type":"error",…,"message":"Internal server error"}`, sementara
+`POST /zen/v1/systemone` pada model yang sama membalas `200` beserta `answers`.
+Jadi gateway memang benar meneruskan ke lane yang salah — dan model yang sehat
+ditandai rusak. Berlaku juga untuk model media lain di provider yang sama.
+
+**Perbaikan (parity upstream `decolua/9router#20014b31`, "probe System One models
+through /v1/systemone"):**
+
+- **Probe sekarang mengikuti `kind`, bukan asumsi chat.** File baru
+  `internal/handlers/media/model_test_ping.go` menerima `{model, kind}` lalu
+  meneruskan probe ke handler yang memiliki kind tersebut:
+  `/embeddings`, `/images/generations`, `/audio/speech`,
+  `/audio/transcriptions`, `/videos/generations`, `/systemone`, atau
+  `/chat/completions` bila `kind` kosong (halaman provider biasa, yang modelnya
+  memang chat). `chat.HandleTestModel` dihapus — tidak ada jalur tanpa shim.
+- **Verdict dibaca dari payload, bukan dari status.** Semua endpoint di atas
+  menyalin status upstream apa adanya, jadi HTTP 200 tidak otomatis berarti
+  lulus: `answers` non-kosong untuk System One, `data[].embedding` untuk
+  embedding, `data[]` untuk image, teks untuk STT, job yang ter-create untuk
+  video, dan bytes/base64 untuk TTS. File yang sama juga membaca
+  `{"error":…}` di balik 200, `status`/`msg` yang bukan sukses, dan membongkar
+  amplop `{"success":true,"data":…}` milik Cline — ketiganya akan melaporkan
+  "provider baik-baik saja" untuk upstream yang sedang rusak. Balasan
+  reasoning-only yang habis token tetap lulus (parity issue #3010).
+- **Timeout 15 detik per probe**, turunannya mengikuti konteks request, jadi
+  tombol tidak menggantung pada provider yang tidak menjawab.
+- **Frontend mengirim `kind`.** `api.testModel(model, kind?)` +
+  `MediaProviderDetail.handleTestModel` mengirim kind halaman ini, jadi jenis
+  model dibaca dari halaman yang menampilkannya — bukan dari tebakan nama id.
+- **Hasil test akhirnya tampil.** `modelTestResults` sudah diisi sejak lama tapi
+  tidak pernah dirender; baris model sekarang menampilkan ikon
+  `check_circle`/`cancel`, border hijau/merah, latensi dari pengukuran server,
+  dan pesan error sebagai tooltip — sesuai `ModelsRow` upstream.
+
+**Verifikasi:**
+
+- `internal/integration/model_test_ping_test.go` (baru) mengetes lewat router
+  produksi dengan upstream palsu: probe System One harus mendarat di
+  `/zen/v1/systemone` (dan gagal dengan jalur chat — hasilnya persis string 500
+  dari laporan user), default tanpa `kind` tetap di lane chat dengan
+  `max_tokens:1024`, dan `kind` tak dikenal ditolak 400. Suite `integration`
+  penuh hijau (70 dtk).
+- Smoke run di binary asli dengan DB terisolasi: keenam kind lewat `smokec/`
+  (node `openai-compatible` → upstream palsu) semuanya `ok:true`; yang paling
+  menentukan, `{"model":"oc/jev-1.13-free","kind":"systemone"}` membalas
+  `{"ok":true,"latencyMs":955,"status":200}` ke model yang chat lane-nya
+  terbukti 500, sementara `POST /v1/systemone` yang sama juga 200.
+  `{"model":"ocz/jev-1.13","kind":"systemone"}` kini melaporkan apa adanya
+  `HTTP 401: … Rate-limited Zen models require a workspace` — kredensial yang
+  memang belum siap, bukan model rusak.
+- `go build ./...`, `go vet ./...`, `go test ./...`, suite `integration`,
+  `bun test` 219/219, `bun run build`, dan `bun run ratchet:svelte`
+  (0 unresolved, 89 error = baseline) semuanya hijau.
+
 ### 🧪 Rilis split dua channel: stabil & experimental — dipilah dari tag
 
 Selama ini `release.yml` memperlakukan semua tag `v*` sama: tag

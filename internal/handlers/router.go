@@ -215,8 +215,11 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/models/custom", dashH.HandleSaveCustomModel)
 	r.Delete("/api/models/custom/{key}", dashH.HandleDeleteCustomModel)
 	r.Get("/api/models/disabled", dashH.HandleGetDisabledModels)
-	r.Post("/api/models/test", chatH.HandleTestModel)
-	mediaH := media.NewMediaHandler(repo, nil, nil)
+	// mediaH needs the chat handler every chat-lane probe is forwarded through,
+	// so it is built with chatH — not the nil-chat relay handler below, whose
+	// probes would panic instead of reaching the provider.
+	mediaH := media.NewMediaHandler(repo, nil, chatH)
+	r.Post("/api/models/test", mediaH.HandleTestModel)
 	r.Get("/api/media-providers/tts/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/inworld/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/minimax/voices", mediaH.HandleAudioVoices)

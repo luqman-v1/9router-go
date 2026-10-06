@@ -761,10 +761,16 @@ export const api = {
     request<{ success: boolean }>(`/api/models/alias?alias=${encodeURIComponent(alias)}`, {
       method: 'DELETE',
     }),
-  testModel: (model: string) =>
-    request<{ ok: boolean; error?: string }>('/api/models/test', {
+  /**
+   * Pings one model the way the page lists it. `kind` picks the endpoint the
+   * probe travels on (upstream /api/models/test `kind`): a System One model
+   * answers on /v1/systemone, and a chat probe on it returns 500. Omit `kind`
+   * for a plain LLM model.
+   */
+  testModel: (model: string, kind?: string) =>
+    request<{ ok: boolean; error?: string; note?: string; latencyMs?: number; status?: number }>('/api/models/test', {
       method: 'POST',
-      body: JSON.stringify({ model }),
+      body: JSON.stringify({ model, kind }),
     }),
 
   // Settings

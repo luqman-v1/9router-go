@@ -13,10 +13,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -917,92 +915,4 @@ func (h *ChatHandler) HandleOllamaChat(w http.ResponseWriter, r *http.Request) {
 	newReq, _ := http.NewRequestWithContext(r.Context(), "POST", "/v1/chat/completions", bytes.NewReader(body))
 	newReq.Header = r.Header
 	h.HandleChatCompletions(w, newReq)
-}
-
-// HandleTestModel handles POST /api/models/test to ping a model.
-func (h *ChatHandler) HandleTestModel(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		handlerutil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "failed to read body"})
-		return
-	}
-	defer r.Body.Close()
-
-	var req struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil || req.Model == "" {
-		handlerutil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Model required"})
-		return
-	}
-
-	payload := map[string]any{
-		"model": req.Model,
-		"messages": []map[string]string{
-			{"role": "user", "content": "hi"},
-		},
-		"max_tokens": 1024,
-		"stream":     false,
-	}
-	b, _ := json.Marshal(payload)
-
-	testReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(b))
-	testReq.Header.Set("Content-Type", "application/json")
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		if keys, err := h.Repo.GetApiKeys(); err == nil {
-			for _, k := range keys {
-				if k.IsActive == 1 && k.Key != "" {
-					auth = "Bearer " + k.Key
-					break
-				}
-			}
-		}
-	}
-	if auth != "" {
-		testReq.Header.Set("Authorization", auth)
-	}
-	rec := httptest.NewRecorder()
-	h.HandleChatCompletions(rec, testReq)
-
-	if rec.Code == http.StatusOK {
-		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
-	} else {
-		errMsg := strings.TrimSpace(rec.Body.String())
-		var errObj struct {
-			Error struct {
-				Message string `json:"message"`
-				Code    any    `json:"code"`
-			} `json:"error"`
-			Message string `json:"message"`
-		}
-		trimmed := errMsg
-		if len(trimmed) > 500 {
-			head, tail := trimmed[:200], trimmed[len(trimmed)-200:]
-			trimmed = head + "\n...[truncated " + strconv.Itoa(len(errMsg)-400) + " bytes]...\n" + tail
-		}
-		// Non-JSON upstream bodies (proxied error pages, empty SSE) otherwise
-		// surface as a bare "response bukan JSON" with no diagnostic tail.
-		var probe any
-		if json.Unmarshal([]byte(errMsg), &probe) != nil {
-			errMsg = trimmed
-		} else if json.Unmarshal([]byte(errMsg), &errObj) == nil {
-			if errObj.Error.Message != "" {
-				errMsg = errObj.Error.Message
-			} else if errObj.Message != "" {
-				errMsg = errObj.Message
-			}
-		}
-
-		if rec.Code == http.StatusTooManyRequests && !strings.HasPrefix(errMsg, "429") {
-			errMsg = "429: " + errMsg
-		} else if rec.Code == http.StatusUnauthorized && !strings.HasPrefix(errMsg, "401") {
-			errMsg = "401: " + errMsg
-		} else if rec.Code == http.StatusServiceUnavailable && !strings.HasPrefix(errMsg, "503") {
-			errMsg = "503: " + errMsg
-		} else if rec.Code == http.StatusNotFound && !strings.HasPrefix(errMsg, "404") {
-			errMsg = "404: " + errMsg
-		}
-		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"ok": false, "error": errMsg})
-	}
 }

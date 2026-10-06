@@ -239,7 +239,7 @@
   let sttResponseFormat = $state('json')
   let copiedModelId = $state<string | null>(null)
   let testingModelId = $state<string | null>(null)
-  let modelTestResults = $state<Record<string, { ok: boolean; error?: string; latency?: number }>>({})
+  let modelTestResults = $state<Record<string, { ok: boolean; error?: string; note?: string; latency?: number }>>({})
 
   $effect(() => {
     if (mediaModels.length > 0 && !selectedModelId) {
@@ -268,8 +268,16 @@
     testingModelId = modelId
     const start = performance.now()
     try {
-      const res = await api.testModel(full)
-      modelTestResults[modelId] = { ok: res.ok, error: res.error, latency: Math.round(performance.now() - start) }
+      // The kind picks the endpoint the probe travels on, exactly like the Run
+      // button below it — probing a System One model through chat completions
+      // is what made this button fail while the button beside it worked.
+      const res = await api.testModel(full, kind)
+      modelTestResults[modelId] = {
+        ok: res.ok,
+        error: res.error,
+        note: res.note,
+        latency: res.latencyMs ?? Math.round(performance.now() - start),
+      }
     } catch (err) {
       modelTestResults[modelId] = { ok: false, error: err instanceof Error ? err.message : 'Error', latency: Math.round(performance.now() - start) }
     } finally {
@@ -792,19 +800,38 @@
       {:else}
         <div class="flex flex-wrap gap-3">
           {#each mediaModels as m (m.id)}
-            <div class="group px-3 py-2 rounded-lg border border-border hover:bg-sidebar/50 flex items-center gap-2">
-              <span class="material-symbols-outlined text-base text-text-muted">smart_toy</span>
+            {@const verdict = modelTestResults[m.id]}
+            <div
+              class="group px-3 py-2 rounded-lg border flex items-center gap-2 hover:bg-sidebar/50
+                {verdict?.ok ? 'border-green-500/40' : verdict ? 'border-red-500/40' : 'border-border'}"
+            >
+              <span
+                class="material-symbols-outlined text-base text-text-muted"
+                style="color: {verdict?.ok ? '#22c55e' : verdict ? '#ef4444' : 'inherit'}"
+              >
+                {verdict?.ok ? 'check_circle' : verdict ? 'cancel' : 'smart_toy'}
+              </span>
               <div class="flex flex-col gap-1 min-w-0">
                 <code class="text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded">{m.id}</code>
                 <span class="text-[9px] text-text-muted/70 italic pl-1">{m.name || m.id}</span>
+                {#if verdict}
+                  <span
+                    class="text-[9px] pl-1 max-w-[220px] truncate {verdict.ok ? 'text-green-600 dark:text-green-400' : 'text-red-500'}"
+                    title={verdict.error || verdict.note || ''}
+                  >
+                    {verdict.ok
+                      ? `${verdict.latency ?? 0} ms${verdict.note ? ` · ${verdict.note}` : ''}`
+                      : verdict.error || 'Test failed'}
+                  </span>
+                {/if}
               </div>
               <div class="flex items-center gap-1 ml-2">
                 <button
                   type="button"
                   onclick={() => handleTestModel(m.id)}
                   disabled={testingModelId === m.id}
-                  class="p-1 hover:bg-surface-2 rounded text-text-muted hover:text-primary transition-colors cursor-pointer"
-                  title="Test Model"
+                  class="p-1 hover:bg-surface-2 rounded text-text-muted hover:text-primary transition-colors cursor-pointer disabled:cursor-not-allowed"
+                  title={verdict?.error || (verdict?.ok ? `Test passed in ${verdict.latency ?? 0} ms` : 'Test Model')}
                 >
                   <span class="material-symbols-outlined text-sm {testingModelId === m.id ? 'animate-spin' : ''}">science</span>
                 </button>
