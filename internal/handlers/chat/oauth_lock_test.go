@@ -484,3 +484,32 @@ func TestOAuthRefresh_FailedSharedFlightKeepsEachCallersToken(t *testing.T) {
 		}
 	}
 }
+
+// A refresher can report success and hand back nothing. That is a broken
+// provider, not a reason to take the gateway down: the forced path already
+// guards it, and the lazy path must too — otherwise BuildConnectionUpdate
+// dereferences nil and singleflight re-panics that on every waiter instead of
+// returning an error.
+func TestOAuthRefresh_NilResultIsAnErrorNotAPanic(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	dropSeededConn(t, database)
+
+	previous := oauth.Get(oauthLockTestProvider)
+	oauth.Register(oauthLockTestProvider, func(context.Context, *oauth.Params) (*oauth.TokenResult, error) {
+		return nil, nil
+	})
+	t.Cleanup(func() { oauth.Register(oauthLockTestProvider, previous) })
+
+	insertOAuthConn(t, database, "conn-nil", 1, expiredOAuthData(t))
+	handler := NewChatHandler(db.NewRepo(database))
+
+	// A panic here would take the whole test binary down, which is the point.
+	token, _, err := handler.RefreshOAuthTokenIfExpired("conn-nil", "stale-token")
+	if err == nil {
+		t.Fatal("expected an error when the refresher returns no result")
+	}
+	if token != "stale-token" {
+		t.Errorf("token = %q, want the caller's own token", token)
+	}
+}

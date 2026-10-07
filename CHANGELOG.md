@@ -865,8 +865,10 @@ without a C compiler.
   name alone instead of persisting `l***m@gmail.com` into
   `providerConnections.name`.
 - **Backend test coverage**: unit tests added across `config`, `codexquota`,
-  `usagetracker`, `middleware`, `translator`, `app`, `handlerutil`, and `proc`
-  (7 packages ≥ 85%; `internal/app` 81.7%). `internal/proc` also dropped from
+  `usagetracker`, `middleware`, `translator`, `app`, `handlerutil`, and `proc`.
+  Measured on this tree: config 90.8 · codexquota 87.3 · usagetracker 87.6 ·
+  middleware 89.2 · translator 85.4 · proc 85.9 are at or above 85%;
+  `handlerutil` 80.2 and `app` 82.1 are not. `internal/proc` also dropped from
   ~60s to under a second by killing the child process instead of waiting out
   its lifetime. The two envelope-unwrap tests assert the envelope key is
   gone, so they fail when the unwrap is a no-op.
@@ -878,6 +880,28 @@ handed the leader's. Both are new — no test previously sent a connection whose
 (HMAC platform key plus a separate OAuth token), and that gap is why a token
 substitution in this path passed the full suite while signing iFlow requests
 with the wrong secret.
+
+**Found while reviewing this change, and fixed here.** Each was proven by
+reverting the fix and watching the test fail, not by inspection:
+
+- **A refresher returning no result crashed the gateway.** The lazy path
+  passed the result straight to `BuildConnectionUpdate`, which dereferences it;
+  the forced path already guarded this shape. A provider reporting success
+  with no token therefore panicked — and singleflight re-panicked that on
+  every waiter instead of returning an error.
+- **The write-back guard compared against a freshly derived mask.** Toggling
+  masking in a second window while the modal was open made the untouched
+  masked field compare as a rename, and persisted `l***m@gmail.com`. The
+  comparison is now against the value the field opened with, in
+  `submittedConnectionName`, with both sides trimmed so a stored name padded
+  with whitespace still matches.
+- **A Gemini turn carrying only a tool result skipped the name fit.** The
+  quick-check token list named `functionCall` but not `functionResponse`, so a
+  history-only turn returned unshortened while the declaration beside it was
+  fitted.
+- **`maskEmail` was never tested with two addresses in one label.** The regex
+  is global; dropping `/g` left the second address in the clear and the suite
+  green.
 
 ### 🩹 Failed usage reads silently reported as zero — Usage & Analytics dashboard
 

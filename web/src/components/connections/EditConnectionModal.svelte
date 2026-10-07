@@ -13,7 +13,11 @@
     probeReplacementKey,
     type CredentialCheck
   } from './credential'
-  import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
+  import {
+    emailPrivacy,
+    formatEmailLabel,
+    submittedConnectionName
+  } from '../../lib/privacy'
 
   export interface ConnectionUpdate {
     name?: string
@@ -66,9 +70,13 @@
   // Seeded masked when privacy masking is on, so screen sharing does not
   // reveal the account email in the form. `originalName` keeps the untouched
   // value from the row: a masked label is a rendering, not a rename, and must
-  // never be written back as the connection's name.
+  // never be written back as the connection's name. `seededName` is what the
+  // field actually opened with — save compares against that rather than
+  // re-deriving the mask from live store state, which would go stale the
+  // moment masking is toggled elsewhere while this modal is open.
   let originalName = $state(connection.name || '')
-  let name = $state(formatEmailLabel(connection.name || '', $emailPrivacy))
+  let seededName = $state(formatEmailLabel(connection.name || '', $emailPrivacy))
+  let name = $state(seededName)
   let priority = $state<number>(connection.priority ?? 1)
   // The value the priority field was seeded with. Saving sends priority only
   // when the field actually changed: a NULL-priority row has no number of its
@@ -133,15 +141,7 @@
   async function save() {
     isSaving = true
     try {
-      const trimmed = name.trim()
-      // An unchanged field is a rename of nothing, and a masked label is not a
-      // new name. Either way the row keeps the name it already had — without
-      // this, saving a priority tweak with masking on would persist
-      // "l***m@gmail.com" as the connection's real name.
-      const submitted =
-        trimmed === originalName.trim() || trimmed === formatEmailLabel(originalName, $emailPrivacy)
-          ? undefined
-          : trimmed || undefined
+      const submitted = submittedConnectionName(name, originalName, seededName)
       const payload: ConnectionUpdate = {
         name: submitted
       }

@@ -39,6 +39,30 @@ export function formatEmailLabel(text: string | null | undefined, isMasked: bool
   return isMasked ? maskEmail(text) : text
 }
 
+/**
+ * The name an edit form should submit, given what the field was seeded with.
+ *
+ * A masked label is a rendering, not a rename, so an untouched field must
+ * submit nothing and leave the stored name alone. The comparison is against
+ * the value the field OPENED with, never against a freshly derived mask: if
+ * masking is toggled in another window while the form is open, re-deriving it
+ * turns an untouched masked field into a rename and persists the mask.
+ *
+ * Both sides are trimmed, so a stored name with surrounding whitespace still
+ * compares equal to its own masked form.
+ *
+ * Returns undefined when the field was not meaningfully edited.
+ */
+export function submittedConnectionName(
+  fieldValue: string,
+  originalName: string,
+  seededValue: string
+): string | undefined {
+  const trimmed = fieldValue.trim()
+  if (trimmed === originalName.trim() || trimmed === seededValue.trim()) return undefined
+  return trimmed || undefined
+}
+
 function createEmailPrivacyStore() {
   const initial =
     typeof window !== 'undefined'

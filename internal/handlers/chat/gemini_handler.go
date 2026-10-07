@@ -233,6 +233,15 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 				h.parkRejectedOAuthAccount(connectionID, err)
 				return oauthTokenResult{token: currentToken, projectID: projectID, passthrough: true}, fmt.Errorf("OAuth refresh for %s: %w", provider, err)
 			}
+			if result == nil {
+				// A refresher that reports success but hands back nothing is a
+				// broken provider, not a reason to crash the gateway. The forced
+				// path already guards this shape; without it BuildConnectionUpdate
+				// dereferences nil, and singleflight re-panics that on every waiter.
+				log.Error("oauth", "custom refresh returned no result", "provider", provider, "connection", connectionID)
+				return oauthTokenResult{token: currentToken, projectID: projectID, passthrough: true},
+					fmt.Errorf("OAuth refresh for %s: refresher returned no token", provider)
+			}
 			update := oauth.BuildConnectionUpdate(result)
 			var existing map[string]any
 			if err := json.Unmarshal([]byte(rawData), &existing); err != nil {
