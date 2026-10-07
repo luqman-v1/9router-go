@@ -120,6 +120,17 @@ func (h *ChatHandler) handleAccountFallback(
 			lastErr = err
 		}
 		var ue *upstreamError
+		if errors.As(lastErr, &ue) && providers.IsModelDeprecation(ue.StatusCode, ue.Body) {
+			// A retired model fails on every account of this provider, so the
+			// remaining connections are skipped and the badge the operator
+			// needs is recorded before the client sees the 410 (#179). The
+			// lastErr still returns when every account is out, so a direct
+			// request keeps reporting the upstream's own body.
+			h.recordModelDeprecation(provider, model, connObj.ID, ue)
+			excludeIDs = append(excludeIDs, connObj.ID)
+			lastErr = ue
+			continue
+		}
 		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
 			// Extract error text from upstream body for classification
 			errorText := extractErrorText(ue.Body)
@@ -598,6 +609,9 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		if provider == "codex" {
 			ClearCodexQuotaBlock(connectionID)
 		}
+		// A served request proves the model is alive, so a badge recorded by
+		// an earlier 410 must not outlive it (#179).
+		h.clearModelDeprecation(provider, model)
 		if usage == nil {
 			usage = &translator.OpenAIUsage{}
 		}

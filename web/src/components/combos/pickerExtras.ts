@@ -4,18 +4,22 @@ export interface PickerExtrasSource {
   getModelAliases: () => Promise<{ aliases?: Record<string, string> } | null>
   getCustomModels: () => Promise<unknown>
   getDisabledModels: () => Promise<unknown>
+  getModelDeprecations: () => Promise<{ deprecations?: Record<string, unknown> } | null>
 }
 
 export interface ResolvedPickerExtras {
   modelAliases: Record<string, string>
   customModels: CustomModelEntry[]
   disabledModels: Record<string, string[]>
+  /** Models the gateway saw refuse with a 410, keyed "<provider>/<model>". */
+  deprecations: Record<string, unknown>
 }
 
 export const EMPTY_PICKER_EXTRAS: ResolvedPickerExtras = {
   modelAliases: {},
   customModels: [],
   disabledModels: {},
+  deprecations: {},
 }
 
 /**
@@ -31,15 +35,17 @@ export const EMPTY_PICKER_EXTRAS: ResolvedPickerExtras = {
  * two that succeeded.
  */
 export async function loadPickerExtras(source: PickerExtrasSource): Promise<ResolvedPickerExtras> {
-  const [aliasRes, customRes, disabledRes] = await Promise.all([
+  const [aliasRes, customRes, disabledRes, deprecationRes] = await Promise.all([
     source.getModelAliases().catch(() => null),
     source.getCustomModels().catch(() => null),
     source.getDisabledModels().catch(() => null),
+    source.getModelDeprecations().catch(() => null),
   ])
 
   return {
     modelAliases: aliasRes?.aliases || {},
     customModels: parseCustomModelsResponse(customRes),
     disabledModels: parseDisabledModelsMap(disabledRes),
+    deprecations: deprecationRes?.deprecations || {},
   }
 }

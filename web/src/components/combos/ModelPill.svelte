@@ -13,9 +13,13 @@
     /** One handler for the whole list, so a pill is never handed a fresh
      *  closure per render pass. */
     onToggle: (value: string) => void
+    /** Flattened boolean for the same reason as caps: the picker marks a
+     *  model the gateway saw refuse with a 410, so the operator knows before
+     *  putting it in a combo. */
+    deprecated?: boolean
   }
 
-  let { label, value, isAdded, vision = false, reasoning = false, onToggle }: Props = $props()
+  let { label, value, isAdded, vision = false, reasoning = false, onToggle, deprecated = false }: Props = $props()
 
   function handleClick() {
     onToggle(value)
@@ -41,5 +45,12 @@
   {/if}
   {#if reasoning}
     <Brain class={isAdded ? 'w-3 h-3 text-white/90 shrink-0' : 'w-3 h-3 text-amber-500 shrink-0'} title="Reasoning / Thinking" />
+  {/if}
+  {#if deprecated}
+    <span
+      class="material-symbols-outlined text-[13px] leading-none shrink-0 {isAdded ? 'text-white/90' : 'text-warning'}"
+      title="Deprecated — this model was retired by the provider and cannot serve a request"
+      aria-label="Deprecated"
+    >error</span>
   {/if}
 </button>

@@ -821,6 +821,15 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing connection id")
 		return
 	}
+	h.writeConnectionModels(w, r, id)
+}
+
+// writeConnectionModels is HandleGetConnectionModels with the connection id
+// already resolved. The split exists because model sync (POST
+// /api/models/sync) needs the same discovery for a connection it selected
+// itself, and a second copy of this provider-by-provider chain would be free
+// to drift from the one the dashboard imports models with (#179).
+func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.Request, id string) {
 	conn, err := h.Repo.GetProviderConnectionByID(id)
 	if err != nil || conn == nil {
 		handlerutil.WriteJSONError(w, http.StatusNotFound, "connection not found")

@@ -227,6 +227,8 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Get("/api/media-providers/tts/elevenlabs/voices", mediaH.HandleAudioVoices)
 	r.Put("/api/models/disabled/{provider}", dashH.HandleSaveDisabledModels)
 	r.Get("/api/models/alias", dashH.HandleGetModelAliases)
+	r.Get("/api/models/deprecations", dashH.HandleGetModelDeprecations)
+	r.Post("/api/models/sync", dashH.HandleSyncProviderModels)
 	r.Put("/api/models/alias", dashH.HandleSetModelAlias)
 	r.Delete("/api/models/alias", dashH.HandleDeleteModelAlias)
 

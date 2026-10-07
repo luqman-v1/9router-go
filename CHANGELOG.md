@@ -2,6 +2,79 @@
 
 ## [Unreleased]
 
+### 💀 A retired model fails the request instead of the combo — HTTP 410 now fails over and is badged
+
+When a provider retires a model it answers `HTTP 410 Gone` (`ModelDeprecated`).
+Three things were missing, and an operator had to find all three by reading logs:
+
+1. **The 410 never failed over.** It is in neither `RetryableStatusCodes`
+   (`internal/providers/providers.go:1018`) nor `ErrorRules`
+   (`errorclassify.go:39`), so it fell through the unmatched-4xx branch to
+   `ShouldFallback: false` and locked nothing. A combo led by a dead model
+   spent its whole pass on it.
+2. **Nothing remembered the model was dead.** Every subsequent request redid
+   the discovery, and the dashboard kept listing the model as healthy.
+3. **Nothing told the operator.** No badge, so the only signal was the 410
+   itself.
+
+The status is load-bearing and the payload is a guard. `IsModelDeprecation`
+requires 410 *and* a payload naming the model, because 410 also means an
+expired OAuth device code (`handlers/oauth/device.go:627`) and an expired
+Freebuff session (`proxy/executor/freebuff.go:311`) — badging a model for
+either would blacklist a model that is serving fine.
+
+- `internal/providers/deprecation.go` — `IsModelDeprecation`, `ParseModelDeprecation`, key helpers.
+- `internal/handlers/chat/combo.go` — both combo loops (`handleComboFallback`, `handleMessagesComboFallback`) break to the next entry on a model 410.
+- `internal/handlers/chat/fallback.go` — the single-model path tries the other accounts and keeps the upstream body for a direct request.
+- `internal/handlers/chat/deprecation.go` — records the 410, locks the model 24h, and clears the badge when a request serves again.
+- `internal/db/deprecations.go` — kv-scoped store (`modelDeprecations`), upsert by `<provider>/<model>`.
+- `POST /api/models/sync` — re-reads each connection's upstream catalogue and revives models the provider still lists.
+- `GET /api/models/deprecations` — the badge source, keyed the same way a combo entry is written.
+- Dashboard: `Sync Models` button, per-model `Deprecated` badge with the successor in its tooltip, an "N deprecated" count on the model card, and the marker in the combo model picker.
+
+**A model missing from a catalogue is deliberately not badged.** Catalogues are
+routinely partial — a scoped key, a paginated feed — so absence is weak
+evidence and acting on it would blacklist healthy models. Only a live 410 (or
+a served request, in reverse) changes a badge; a sync can only *revive* one.
+
+**Two defects the end-to-end run caught, both fixed here.** The unit tests
+passed while the running server still failed:
+
+1. **The failover starved the provider it was rescuing.** Excluding the
+   connection from `excludeIDs` looked right — that list is what makes a retry
+   pick a different account — but it spans the whole pass, so on a
+   single-account provider the next combo entry had no account left to try and
+   the client got the 410 anyway: model correctly badged, request still dead.
+   The connection is no longer excluded; the per provider/model lock that
+   `recordModelDeprecation` writes is the scope that matters, and it is what
+   stops the dead model being re-dialled.
+2. **A provider with no catalogue reported a broken sync.** The discovery
+   handler answers 400 for those and sync counted it as a hard failure, so
+   every "Sync Models" click on such a provider returned a 502 with nothing
+   the operator could act on. Those connections now report as `skipped`.
+
+Both are covered by `TestDeprecationFailoverWithSingleAccount` and the sync
+path's `skipped` count.
+
+**Verification:** `go test ./...` and the tagged integration suite
+(`go test -tags=integration ./internal/integration/...`) green; `go vet` clean;
+new table-driven tests cover the classifier (including the two non-model 410s
+that must not badge), the store, the picker's badge propagation, and an
+end-to-end combo failover asserting the client gets the *next* model's response
+plus the recorded deprecation.
+
+Beyond the suite, the feature was driven over real HTTP against the built
+binary with a fake upstream: a combo led by the retired model returned
+**200 `served by qwen3-32b`** instead of the 410, `/api/models/deprecations`
+reported the model `gone` with `successor: qwen3-32b`, and a sync against a
+catalogue still listing the retired model left the badge in place. The
+dashboard was verified in Chromium: the `1 deprecated` count on the model card,
+the `Deprecated` badge on the `ds/deepseek-chat` row carrying the successor in
+its tooltip, and the `Sync Models` button. `bun test` 227/227; `bun run build`
+clean; `bun run ratchet:svelte` 0 unresolved identifiers, 88 errors (baseline
+88, not rising).
+
+
 ### 🎛 `Add Anthropic Compatible` / `Add OpenAI Compatible` merged into one dialog that keeps what you typed
 
 The two buttons over Custom Providers opened two separate modals, so choosing
@@ -24,6 +97,7 @@ Also fixed here: the overview button's `onclick` handed its `MouseEvent` to the
 open handler, so the node type reached the backend as `{"isTrusted":false}` and
 the dialog died on `VARIANT_CONFIG[type].defaultBaseUrl` before the base URL was
 ever populated.
+<ours>
 
 ### 🐛 `TranslateOpenAIToGemini` dropped tool call ids, so Claude on Antigravity 400'd on any tool history
 
