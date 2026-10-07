@@ -1032,6 +1032,8 @@ export const api = {
   getUsageStats: (period = 'today') => request<any>(`/api/usage/stats?period=${encodeURIComponent(period)}`),
   getRequestDetails: (limit = 50, offset = 0) =>
     request<any>(`/api/usage/request-details?limit=${limit}&offset=${offset}`),
+  /** Full stored payload for one request; the list omits request/response bodies. */
+  getRequestDetail: (id: string) => request<any>(`/api/usage/request-details/${encodeURIComponent(id)}`),
   resetHealth: (provider: string, model?: string) =>
     request<{ status: string }>(`/admin/health/reset?provider=${encodeURIComponent(provider)}${model ? `&model=${encodeURIComponent(model)}` : ''}`, {
       method: 'POST',

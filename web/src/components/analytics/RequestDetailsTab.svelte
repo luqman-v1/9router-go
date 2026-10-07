@@ -4,6 +4,7 @@
   import Button from '../../lib/ui/Button.svelte'
   import Card from '../../lib/ui/Card.svelte'
   import { getIconPath } from '../connections/types'
+  import { api, normalizeLastError } from '../../api/client'
   import { cachedTokensFor, fmt, providerDisplayName, timeAgo, type RequestDetailItem } from './types'
 
 interface Props {
@@ -31,6 +32,42 @@ let {
 }: Props = $props()
 
   let selectedDetail = $state<RequestDetailItem | null>(null)
+  let detailLoading = $state(false)
+  let detailError = $state('')
+
+  // The list response carries only what the table renders — the request
+  // messages and response body stay server-side until a row is opened, which
+  // keeps a page at a few KB instead of a few hundred. Clicking View therefore
+  // opens the modal on the summary fields and fills in the rest once the
+  // by-id read lands.
+  async function openDetail(item: RequestDetailItem) {
+    selectedDetail = item
+    detailError = ''
+    const id = item.id
+    if (!id) {
+      detailError = 'This row has no id, so its full payload cannot be loaded.'
+      return
+    }
+    detailLoading = true
+    try {
+      const res = await api.getRequestDetail(id)
+      // A newer row opened while this read was in flight wins.
+      if (selectedDetail?.id === id && res?.detail) {
+        selectedDetail = res.detail as RequestDetailItem
+      }
+    } catch (err) {
+      if (selectedDetail?.id === id) {
+        detailError = normalizeLastError(err) || 'The full payload could not be loaded.'
+      }
+    } finally {
+      detailLoading = false
+    }
+  }
+
+  function closeDetail() {
+    selectedDetail = null
+    detailError = ''
+  }
 
 </script>
 
@@ -92,7 +129,7 @@ let {
         </thead>
         <tbody class="divide-y divide-border/60 font-code text-[11px]">
           {#each details as item}
-            <tr class="hover:bg-surface-2 transition-colors cursor-pointer" onclick={() => (selectedDetail = item)}>
+            <tr class="hover:bg-surface-2 transition-colors cursor-pointer" onclick={() => openDetail(item)}>
               <td class="py-3 px-4">
                 <span class="block w-2 h-2 rounded-full {item.status === 'success' || item.status === 'ok' ? 'bg-success' : 'bg-red-500'}"></span>
               </td>
@@ -162,7 +199,7 @@ let {
                   type="button"
                   onclick={(e) => {
                     e.stopPropagation()
-                    selectedDetail = item
+                    openDetail(item)
                   }}
                   class="text-xs text-brand-500 hover:underline font-semibold cursor-pointer"
                 >
@@ -215,7 +252,7 @@ let {
         </div>
         <button
           type="button"
-          onclick={() => (selectedDetail = null)}
+          onclick={closeDetail}
           class="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-3 transition-colors cursor-pointer"
         >
           <X class="w-5 h-5" />
@@ -277,18 +314,30 @@ let {
           </div>
         </div>
 
-        <!-- Raw JSON details inspector -->
+        <!-- Raw JSON details inspector. The list omits request/response bodies,
+             so this stays a loading state until the by-id read fills it in. -->
         <div class="space-y-1.5">
           <span class="font-semibold text-text-main uppercase text-[10px] tracking-wider">Payload</span>
-          <pre class="p-4 rounded-xl bg-bg border border-border font-code text-[11px] text-text-main overflow-x-auto max-h-80 leading-relaxed">
+          {#if detailError}
+            <div role="alert" class="p-3 rounded-xl bg-red-500/10 border border-red-500/25 font-body text-[11px] text-red-600 dark:text-red-400 break-words">
+              {detailError}
+            </div>
+          {:else if detailLoading}
+            <div class="p-8 rounded-xl bg-bg border border-border flex items-center justify-center gap-2 font-body text-[11px] text-text-muted">
+              <span class="w-3.5 h-3.5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin"></span>
+              Loading full payload...
+            </div>
+          {:else}
+            <pre class="p-4 rounded-xl bg-bg border border-border font-code text-[11px] text-text-main overflow-x-auto max-h-80 leading-relaxed">
 {JSON.stringify(selectedDetail, null, 2)}
-          </pre>
+            </pre>
+          {/if}
         </div>
       </div>
 
       <!-- Modal Footer -->
       <div class="px-6 py-3 border-t border-border bg-surface-2 flex justify-end">
-        <Button variant="secondary" size="sm" onclick={() => (selectedDetail = null)}>
+        <Button variant="secondary" size="sm" onclick={closeDetail}>
           Close
         </Button>
       </div>
