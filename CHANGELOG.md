@@ -23,6 +23,7 @@ Upstream sets both (`id: tc.id` / `id: fid` in
 Both sides now carry the id, stripped of the `__ts__<sig>` suffix — that suffix
 is 9router-go's private thought-signature transport and must not reach the wire
 or desynchronise a call from its response.
+
 ### 🐛 Edit Compatible Node opens with a blank Prefix field (#177)
 
 `EditCompatibleNodeModal` seeded `name`, `urlSuffix`, `apiType` and `baseUrl` from
@@ -43,6 +44,12 @@ and Anthropic variants open with the stored prefix and an enabled Save, a
 renamed prefix round-trips through `PUT /api/provider-nodes/{id}` and is shown
 again on reopen, and a node whose id tail is a random uuid still opens with an
 empty suffix.
+
+Re-verified against a snapshot of a real 16-node database: every stored prefix
+— including the capitalised and multi-character ones (`Arg`, `Id`, `bai`) —
+opens in the field with Save enabled, a rename round-trips through
+`PUT /api/provider-nodes/{id}` and is shown again on reopen, and a node whose
+id tail is a random uuid still opens with an empty suffix.
 
 ## [v1.9.10] - 2026-10-07
 
