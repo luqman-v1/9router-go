@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 
+
 ### 🔐 Per-key governance, credential vault, and guardrails (KeiRouter port, Path C)
 
 Ports the security and governance subset of `docs/keirouter-port-plan.md`. This is the
@@ -123,6 +124,53 @@ it did before.
   was an *upstream* refusing the gateway, and the metrics endpoint was never scraped
   through the router. A limiter mounted in the wrong route group, or an endpoint with a
   correct auth check but no live collector behind it, would have passed everything.
+
+### 🐛 Ollama Cloud dialed `localhost:11434` — every cloud key 502'd before leaving the machine
+
+Gejala: `upstream error: ForwardOpenAI upstream: forward to
+http://localhost:11434/v1/chat/completions: ... dial tcp 127.0.0.1:11434:
+connect: connection refused` pada provider `ollama` (#192). `/v1/models`
+terlihat normal karena daftar model berasal dari katalog, bukan dari address
+yang benar-benar di-dial.
+
+Akar masalah bukan hanya di registry. Dua hal terpisah:
+
+1. **Entry registry `ollama` menunjuk ke daemon self-hosted.** Id `ollama`
+   adalah Ollama **Cloud** — API resmi di ollama.com, dikunci API key dari
+   dashboard — tapi `BaseURL`-nya `http://localhost:11434/v1/chat/completions`,
+   jadi setiap koneksi cloud mendial port loopback yang hanya ada di mesin yang
+   menjalankan `ollama serve`. Upstream memisahkannya juga: registry
+   `ollama.js` mendial `ollama.com`, dan hanya `ollama-local.js` yang menunjuk
+   11434. Sekarang `ollama` → `https://ollama.com/v1/chat/completions`, dan
+   `ollama-local` tetap di 11434 (#192).
+
+   Lane OpenAI-compatible `/v1` di ollama.com diverifikasi live: path tak
+   dikenal 404, `/v1/models` 200, dan API key salah dapat 401 dengan body error
+   berbentuk OpenAI — jadi tidak perlu port translator native untuk perbaikannya.
+
+2. **`providerSpecificData.baseUrl` dibuang, dan host telanjang tidak punya
+   route.** Dashboard menyimpan override endpoint per-koneksi di
+   `providerSpecificData.baseUrl`, sedangkan `ConnectionData.BaseURL` hanya
+   membawa key `baseUrl` tingkat atas — override di-parse lalu dibuang, dan
+   request jatuh ke default registry (yaitu loopback tadi). Second: field host
+   Ollama Local diisi sebagai host telanjang (`http://192.168.1.10:11434`), dan
+   host telanjang tidak menamai route, jadi POST mendarat di root server.
+   Override kini di-hidrate di `getBestConnection` (hanya bila key tingkat atas
+   kosong, jadi penulisan lama menang) dan melengkapi route chat lewat helper
+   `chatCompletionsURL`, yang tidak menyentuh URL yang sudah menamai route —
+   `/v1`, `/v1beta`, dan `/messages` tetap apa adanya.
+
+Test: `internal/handlers/chat/ollama_routing_test.go` (registry tidak boleh
+dial loopback, cloud dan local tidak boleh berbagi address, tabel
+`chatCompletionsURL`, hidrasi override, dan request yang benar-benar mendarat
+di upstream) plus `internal/integration/ollama_routing_test.go` (katalog dan
+proxy lewat router produksi). Semuanya dicek mutasi: mengembalikan `ollama` ke
+11434, atau menghapus hidrasi, membuat masing-masing test gagal dengan gejala
+aslinya.
+
+Catatan: `ollama-local` tetap tanpa katalog model statis — upstream juga begitu,
+modelnya ditemukan live dari daemon (`/api/tags`). Itu kekosongan terpisah,
+bukan bagian #192.
 
 ## [v1.9.10-exp.3] - 2026-10-07
 
@@ -256,7 +304,6 @@ Also fixed here: the overview button's `onclick` handed its `MouseEvent` to the
 open handler, so the node type reached the backend as `{"isTrusted":false}` and
 the dialog died on `VARIANT_CONFIG[type].defaultBaseUrl` before the base URL was
 ever populated.
-<ours>
 
 ### ⚡ Usage page: the delay on "Total recorded" was never the count
 

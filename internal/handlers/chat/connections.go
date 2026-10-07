@@ -339,6 +339,21 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			connData.ProxyPoolID = poolID
 		}
 	}
+
+	// providerSpecificData.baseUrl is where the dashboard stores a per-connection
+	// endpoint override (the Ollama Local host field, an Azure endpoint, the
+	// compatible-node URL). ConnectionData.BaseURL only carries the top-level
+	// baseUrl key, so an override written by the newer writer was parsed and then
+	// discarded — the request silently fell back to the registry default. Upstream
+	// reads the same nested field (open-sse/config/providers.js
+	// resolveOllamaLocalHost), so hydrate it here rather than in each caller.
+	if connData.BaseURL == "" {
+		if override, ok := connData.ProviderSpecificData["baseUrl"].(string); ok {
+			if trimmed := strings.TrimSpace(override); trimmed != "" {
+				connData.BaseURL = trimmed
+			}
+		}
+	}
 	// No per-connection binding: fall back to the pool assigned to the
 	// provider itself. It used to be read only for the synthesized no-auth
 	// connection, so a stored connection carrying its own key went out
@@ -496,13 +511,19 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 	var baseCfg *providers.ProviderConfig
 
 	if connData != nil && connData.BaseURL != "" {
+		// The override is completed to a chat-completions route: the dashboard
+		// stores a bare host for a self-hosted endpoint (the Ollama Local host
+		// field is typed as "http://192.168.1.10:11434"), and a host alone names
+		// no route, so the POST used to land on the server root. A URL that
+		// already names a route is passed through untouched.
+		baseURL := chatCompletionsURL(connData.BaseURL)
 		if cfg, ok := providers.KnownProviders[provider]; ok {
 			cloned := cfg
-			cloned.BaseURL = connData.BaseURL
+			cloned.BaseURL = baseURL
 			baseCfg = &cloned
 		} else {
 			baseCfg = &providers.ProviderConfig{
-				BaseURL:    connData.BaseURL,
+				BaseURL:    baseURL,
 				AuthHeader: constants.HeaderAuthorization,
 				AuthScheme: constants.AuthSchemeBearer,
 			}
@@ -517,16 +538,8 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 			return nil, fmt.Errorf("failed to look up provider node %s: %w", provider, err)
 		}
 		if node != nil && nodeData != nil && nodeData.BaseURL != "" {
-			baseURL := nodeData.BaseURL
-			if !strings.HasSuffix(baseURL, "/chat/completions") {
-				if strings.HasSuffix(baseURL, "/v1") || strings.HasSuffix(baseURL, "/v1/") {
-					baseURL = strings.TrimRight(baseURL, "/") + "/chat/completions"
-				} else {
-					baseURL = strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
-				}
-			}
 			baseCfg = &providers.ProviderConfig{
-				BaseURL:    baseURL,
+				BaseURL:    chatCompletionsURL(nodeData.BaseURL),
 				AuthHeader: constants.HeaderAuthorization,
 				AuthScheme: constants.AuthSchemeBearer,
 			}
@@ -569,6 +582,78 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 	}
 
 	return h.applyProviderOverrides(provider, baseCfg), nil
+}
+
+// chatCompletionsURL completes a configured endpoint into the chat-completions
+// route, and leaves one that already names a route untouched.
+//
+// A configured endpoint arrives in one of two shapes: the full route, or a bare
+// host — the compatible-node baseUrl and the Ollama Local host field both take
+// this form, and a dotted IP is the common case
+// ("http://192.168.1.10:11434"). A bare host names no route upstream, so the
+// gateway's /v1 is what makes it a chat endpoint.
+//
+// Detection is by shape, not by guessing whether the last path segment looks
+// like a filename: an early version did that and exempted exactly the dotted-IP
+// host it existed to fix. A URL whose path is only a version prefix (/v1, and
+// the /v1beta Google uses) is that prefix plus the route; a path that carries
+// any segment beyond it is taken to be an endpoint the operator named, and is
+// left alone rather than having /v1 appended behind it.
+func chatCompletionsURL(baseURL string) string {
+	url := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if url == "" {
+		return baseURL
+	}
+	for _, route := range []string{
+		"/chat/completions", "/messages", "/responses", "/completions",
+		"/chat", "/embeddings", "/api/chat", "/api/generate",
+	} {
+		if strings.HasSuffix(url, route) {
+			return url
+		}
+	}
+	// Split off the scheme and authority, then decide from the path alone: no
+	// path at all, or only a version prefix, means nothing named an endpoint and
+	// the route is appended to the prefix that is there.
+	_, rest, found := strings.Cut(url, "://")
+	if !found {
+		return url + "/v1/chat/completions"
+	}
+	_, path, _ := strings.Cut(rest, "/")
+	switch trimmed := strings.Trim(path, "/"); {
+	case trimmed == "":
+		return url + "/v1/chat/completions"
+	case isVersionPrefix(trimmed):
+		// Already versioned ("https://host/v1"): the lane is the prefix plus the
+		// route, not a second prefix.
+		return url + "/chat/completions"
+	default:
+		// A path carrying a segment beyond the prefix names an endpoint the
+		// operator chose; appending behind it would only produce a 404.
+		return url
+	}
+}
+
+// isVersionPrefix reports whether a path segment is only an API version, as in
+// "/v1", "/v2", or Gemini's "/v1beta". Anything else names an endpoint of its
+// own and must not be treated as a prefix.
+func isVersionPrefix(segment string) bool {
+	rest, ok := strings.CutPrefix(segment, "v")
+	if !ok {
+		return false
+	}
+	digits, _ := strings.CutSuffix(rest, "beta")
+	return isDigits(digits)
+}
+
+// isDigits reports whether s is non-empty and every character is an ASCII digit.
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // applyProviderOverrides merges the operator's stored header overrides for a
