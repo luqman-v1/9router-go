@@ -38,6 +38,12 @@ exception and the per-flavour default base URL. The `urlSuffixGenerated`
 behaviour is unchanged: a random uuid tail is still not offered as editable
 text.
 
+Verified against a running binary on an isolated `DATA_DIR`: both the OpenAI
+and Anthropic variants open with the stored prefix and an enabled Save, a
+renamed prefix round-trips through `PUT /api/provider-nodes/{id}` and is shown
+again on reopen, and a node whose id tail is a random uuid still opens with an
+empty suffix.
+
 ## [v1.9.10] - 2026-10-07
 
 ### 🩺 `text-danger` fails the contrast bar in dark theme — error text is nearly unreadable
