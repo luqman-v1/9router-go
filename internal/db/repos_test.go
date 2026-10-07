@@ -85,6 +85,13 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 		}
 	}
 
+	// Production applies the Go-only columns on every startup; without them a
+	// fixture rejects any query that reads a newer column.
+	if err := EnsureAdditiveColumns(db); err != nil {
+		cleanup()
+		t.Fatalf("failed to apply additive columns: %v", err)
+	}
+
 	return db, cleanup
 }
 

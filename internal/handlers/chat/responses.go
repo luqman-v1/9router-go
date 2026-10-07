@@ -88,6 +88,12 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+
+	// Per-key model policy: 403 before the responses bridge or any connection
+	// selection.
+	if !h.enforceModelAccess(w, r, reqBody.Model) {
+		return
+	}
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
@@ -150,6 +156,8 @@ func (h *ChatHandler) newResponsesContext(r *http.Request, requestedModel string
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
 	ctx = translator.WithClientFormat(ctx, translator.ClientFormatResponses)
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(requestedModel))
+	// The dispatching key decides which guardrail policy governs the response.
+	ctx = withGuardrailKey(ctx, requestKeyID(r))
 
 	providerCfg, err := h.getProviderConfig(modelInfo.Provider, nil)
 	if err == nil && executor.UpstreamSpeaksResponses(modelInfo.Provider, modelInfo.Model, providerCfg) {

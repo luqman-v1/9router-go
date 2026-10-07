@@ -93,6 +93,17 @@ func setupTestDB(t *testing.T) (*db.Repo, func()) {
 		}
 	}
 
+	// Production applies the Go-only columns on every startup; without them a
+	// fixture rejects any query that reads a newer column.
+	if err := db.EnsureKeiRouterTables(database); err != nil {
+		cleanup()
+		t.Fatalf("failed to create keirouter tables: %v", err)
+	}
+	if err := db.EnsureAdditiveColumns(database); err != nil {
+		cleanup()
+		t.Fatalf("failed to apply additive columns: %v", err)
+	}
+
 	return db.NewRepo(database), cleanup
 }
 

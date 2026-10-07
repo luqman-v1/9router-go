@@ -2,6 +2,129 @@
 
 ## [Unreleased]
 
+
+
+### 🔐 Per-key governance, credential vault, and guardrails (KeiRouter port, Path C)
+
+Ports the security and governance subset of `docs/keirouter-port-plan.md`. This is the
+Path C cut — security, observability, and per-key limits — deliberately excluding the
+resale stack (plans, budget engine, usage portal, branding, multi-tenant), which would
+turn a single-operator self-hosted gateway into a billing platform.
+
+Every schema change is an additive Go-only column or table, so the upstream Next.js
+dashboard still reads the database unchanged, and every new limit defaults to `0`/`''`
+meaning unlimited or all-allowed. An install that configures nothing behaves exactly as
+it did before.
+
+**Added**
+
+- Per-key rate limiting (`apiKeys.rateLimitRPM/TPM/Concurrency`) via a sliding-window RPM
+  limiter, token-bucket TPM, and concurrency cap on the API-key route group. A rejected
+  request returns 429 with `Retry-After` and never reaches a provider.
+- API key expiry and usage accounting (`expiresAt`, `lastUsedAt`, `usedCount`, `metadata`).
+  An expired key is rejected with 401 before any dispatch, and a policy write invalidates
+  the verification cache so revocation takes effect immediately rather than at its TTL.
+- Argon2id credential hashing for client API keys: a SHA-256 lookup index plus an argon2id
+  verifier, behind a bounded 5s auth cache. Existing plaintext keys keep authenticating
+  and are upgraded on first use.
+- Credential vault using AES-256-GCM envelope encryption, opted into by setting
+  `ROUTER_MASTER_KEY`. Each secret gets its own data key, so rotating the master key
+  re-wraps the data keys without re-encrypting a single secret. Absent the variable the
+  vault stays disabled and credentials remain plaintext, so boot is never blocked.
+- Per-API-key model access allowlists with `*` segment wildcards, enforced through one
+  shared resolver so dispatch and `/v1/models` listing can never disagree. An empty
+  allowlist allows everything.
+- Guardrails MVP: offline regex detection for PII (email, card via Luhn, IBAN via mod-97,
+  Indonesian national id, globally-routable IPv4) and prompt injection, with
+  `allow`/`log_only`/`warn`/`mask`/`block` actions, global→apikey scope layering, and an
+  audit log. No network call is made. Disabled until a policy exists.
+- Guardrails on responses, not just requests. A buffered answer is scanned whole before a
+  byte is written, so a `mask` rewrites it and a `block` still becomes a real status. A
+  streamed answer is filtered frame by frame over a sliding window of decoded text, which
+  is what catches a value split across two SSE deltas — judging each frame alone sends both
+  halves of an address to the client. A blocked stream is ended with the terminal frames
+  its own client format recognises (`finish_reason` + `[DONE]`, `message_stop`, or
+  `response.failed`) rather than left hanging.
+  The policy travels on the request context, so every provider is covered by the same tap
+  rather than only the ones without a registered executor.
+  A block reports HTTP 451 and ends the turn: it is not in `RetryableStatusCodes`, and the
+  combo loop stops on it, because failing over would hand the refused content to every
+  other account and model the combo names.
+- Prometheus metrics at `/api/metrics` (dashboard-authenticated, private registry).
+- Dashboard: a per-key policy modal (rate limits, expiry, resale metadata, model
+  allowlist), a Policy column on the key table, and a Security view for the vault and
+  guardrails.
+
+- Startup migration for the credential vault. Sealing on write only covered credentials
+  stored after the vault was enabled, so an existing install kept every provider token in
+  plaintext forever while the dashboard reported them as unprotected. Boot now walks the
+  connections still holding a plaintext credential, snapshots the database first, and
+  seals them. The snapshot uses `VACUUM INTO` rather than a file copy: the database runs
+  in WAL mode, so copying the file would capture the older pages and miss the writes the
+  migration is replacing. A row that cannot be sealed keeps working in plaintext and is
+  logged — losing the master key already makes a credential unrecoverable, so a migration
+  that refused to boot would trade a recoverable problem for an outage.
+- `POST /api/keys/{id}/rotate`. Removing "reveal" left an operator with no way to replace a
+  leaked key except deleting the row, which also takes its policy, usage history, and model
+  allowlist with it. Rotation issues a new secret once and invalidates the old one
+  immediately rather than after the auth cache TTL.
+- A global guardrail kill-switch (`settings.guardrailsEnabled`, with a toggle in the
+  Security view). A false positive that blocks real traffic previously required deleting
+  the policy, which took the audit trail explaining why it existed with it. Both the request
+  and response taps read the switch. It defaults to on, so a configured policy is never
+  silently ignored because a setting was never written.
+- Global rate-limit defaults (`settings.rateLimitEnabled`, `defaultRpm`, `defaultTpm`,
+  `defaultConcurrency`, `rateWindowSeconds`) plus the resolution order that makes them safe:
+  a key's own column always wins where it is set, and the global default only fills the
+  columns an operator left at 0. An install that configured nothing is still unlimited,
+  and a key deliberately given a higher budget is never silently capped by a later global
+  change.
+- TPM is charged in two phases. The pre-dispatch reservation is reconciled against the
+  turn's real token count once the response is metered, so the bucket no longer drifts on
+  the estimate forever. Only an under-estimate is corrected — refunding the surplus would
+  let a client bank credit by over-stating its prompt.
+- `GuardrailDecisions` and `GuardrailEval` collectors, and a call site for the
+  `RateLimitRejects` counter that shipped with a field and a helper but no caller, so the
+  series was permanently zero.
+
+**Changed**
+
+- Client API keys are no longer returned in plaintext by any read path, including to a
+  fully authenticated dashboard session. The value is returned exactly once at creation
+  and never again; there is no reveal, only revoke-and-reissue. **This is a breaking
+  change** for anything that read a key back from `GET /api/keys`.
+
+**Fixed**
+
+- `GET /api/keys` omitted the governance columns, so every key rendered as unconstrained
+  in the dashboard regardless of what was configured.
+- The keys tab was unreachable: `TAB_ROUTES` mapped both `cli-tools` and `keys` to
+  `/dashboard/cli-tools`, and the route table resolved `/dashboard/keys` to `cli-tools`,
+  so `App` always rendered `CliToolsView` and the key table had no path to the screen.
+- Revoking a client key did not take effect. Deactivating or deleting a key left its row
+  in the auth verification cache, so `GET /v1/models` kept answering 200 for up to the
+  cache TTL — the window in which an operator who believed they had killed a leaked key
+  had not. Both paths now invalidate the key's cached row on write.
+- The inbound guardrail tap re-marshalled the request body for any non-`allow` action, so
+  a `log_only` policy sent the provider a body with reordered keys — the content was
+  unchanged, but the bytes were not. It now rewrites only when a value actually changed.
+- The TPM rate limiter charged a flat 100 tokens per request, so the limit was not
+  enforced against the traffic it was meant to bound. It now sizes the prompt from the
+  request body, reading it only when a TPM limit is configured and capping the read at
+  4 MiB.
+- `usedCount` and `lastUsedAt` were never written. The repository method existed with no
+  caller, so the resale bookkeeping the key table and policy modal display stayed at zero
+  forever. Both are now recorded on every authenticated request, after every check that can
+  reject, so a request refused for a bad, disabled, or expired key is not counted as usage.
+
+- A rate-limited 429 carried neither `X-RateLimit-Limit` nor `X-RateLimit-Reset`, and its
+  body was a static string, so a client could not back off without guessing the wait. The
+  per-axis headers are now set and the message states the delay.
+- The rate limiter and `/api/metrics` had no integration coverage: every 429 in the suite
+  was an *upstream* refusing the gateway, and the metrics endpoint was never scraped
+  through the router. A limiter mounted in the wrong route group, or an endpoint with a
+  correct auth check but no live collector behind it, would have passed everything.
+
 ### 🐛 Ollama Cloud dialed `localhost:11434` — every cloud key 502'd before leaving the machine
 
 Gejala: `upstream error: ForwardOpenAI upstream: forward to

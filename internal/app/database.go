@@ -9,6 +9,8 @@ import (
 
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/log"
+	"9router/proxy/internal/vault"
 )
 
 // DatabaseModule handles database initialization and provides *sql.DB and *db.Repo.
@@ -17,6 +19,10 @@ var DatabaseModule = fx.Module("database",
 		ProvideDatabase,
 		ProvideRepo,
 	),
+	// An Invoke, not a Provide: the migration produces no value, it is a
+	// startup side effect. As a Provide it would be rejected for returning
+	// only an error.
+	fx.Invoke(MigrateVault),
 )
 
 // ProvideDatabase initializes the global SQLite database and registers an OnStop lifecycle hook to close it cleanly.
@@ -66,5 +72,28 @@ func ProvideDatabase(lc fx.Lifecycle, cfg *config.Config) (*sql.DB, error) {
 
 // ProvideRepo provides *db.Repo using the database connection.
 func ProvideRepo(conn *sql.DB) *db.Repo {
-	return db.NewRepo(conn)
+	repo := db.NewRepo(conn)
+	repo.SetVault(vault.NewFromEnv())
+	return repo
+}
+
+// MigrateVault seals any credential still stored in plaintext.
+//
+// It is a separate provider so it runs after ProvideRepo — the Repo is what
+// carries the vault — and before the server starts accepting traffic, so a
+// connection is never dispatched with a half-migrated credential.
+//
+// Failure is not fatal. The migration takes its own backup first, and a row it
+// cannot seal keeps working in plaintext, which is strictly better than a
+// gateway that refuses to start.
+func MigrateVault(repo *db.Repo, cfg *config.Config) error {
+	result, err := repo.MigratePlaintextCredentials(cfg.DatabasePath)
+	if err != nil {
+		log.Warn("vault", "plaintext credential migration skipped", "error", err)
+		return nil
+	}
+	if result.Sealed > 0 || len(result.Skipped) > 0 {
+		log.Info("vault", "credential migration complete", "sealed", result.Sealed, "skipped", len(result.Skipped))
+	}
+	return nil
 }

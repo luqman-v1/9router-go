@@ -60,6 +60,19 @@ type APIKey struct {
 	MachineID *string `json:"machineId,omitempty"`
 	IsActive  int     `json:"isActive"` // 0 or 1
 	CreatedAt string  `json:"createdAt"`
+	// F-1 Rate Limiting
+	RateLimitRPM         *int `json:"rateLimitRpm,omitempty"`
+	RateLimitTPM         *int `json:"rateLimitTpm,omitempty"`
+	RateLimitConcurrency *int `json:"rateLimitConcurrency,omitempty"`
+	// F-6 Argon2id hashing
+	KeyHash    *string `json:"keyHash,omitempty"`
+	LookupHash *string `json:"lookupHash,omitempty"`
+	KeyDisplay *string `json:"keyDisplay,omitempty"`
+	// F-14 Time-limit + resale metadata
+	ExpiresAt  *string `json:"expiresAt,omitempty"`
+	LastUsedAt *string `json:"lastUsedAt,omitempty"`
+	UsedCount  *int    `json:"usedCount,omitempty"`
+	Metadata   *string `json:"metadata,omitempty"`
 }
 
 // Combo represents a multi-model routing combinated alias.

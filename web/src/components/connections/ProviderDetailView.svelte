@@ -48,6 +48,7 @@
   import AddConnectionModal from './AddConnectionModal.svelte'
   import AddCustomModelModal from './AddCustomModelModal.svelte'
   import ProviderHeaderOverridesModal from './ProviderHeaderOverridesModal.svelte'
+  import AddCompatibleNodeModal from './AddCompatibleNodeModal.svelte'
   import EditCompatibleNodeModal from './EditCompatibleNodeModal.svelte'
   import FreebuffSessionBanner from './FreebuffSessionBanner.svelte'
   import ProviderIcon from './ProviderIcon.svelte'

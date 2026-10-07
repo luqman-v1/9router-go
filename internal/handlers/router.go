@@ -10,6 +10,8 @@ import (
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/handlers/sso"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/guardrails"
+	"9router/proxy/internal/observ"
 	"9router/proxy/internal/middleware"
 	"9router/proxy/web"
 	json "encoding/json/v2"
@@ -18,6 +20,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"strings"
+	"time"
 )
 
 // Re-export TokenSaverConfig for root compatibility
@@ -211,7 +214,18 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/keys", dashH.HandleCreateApiKey)
 	r.Delete("/api/keys/{id}", dashH.HandleDeleteApiKey)
 	r.Put("/api/keys/{id}/toggle", dashH.HandleToggleApiKey)
-
+	r.Post("/api/keys/{id}/rotate", dashH.HandleRotateApiKey)
+	r.Get("/api/keys/{id}/models", dashH.HandleGetApiKeyModels)
+	r.Put("/api/keys/{id}/models", dashH.HandleSetApiKeyModels)
+	r.Put("/api/keys/{id}", dashH.HandleUpdateApiKey)
+	r.Get("/api/metrics", observ.Handler().ServeHTTP)
+	r.Get("/api/vault/status", dashH.HandleGetVaultStatus)
+	r.Get("/api/guardrails/policies", dashH.HandleGetGuardrailPolicies)
+	r.Post("/api/guardrails/policies", dashH.HandleCreateGuardrailPolicy)
+	r.Put("/api/guardrails/policies/{id}", dashH.HandleUpdateGuardrailPolicy)
+	r.Delete("/api/guardrails/policies/{id}", dashH.HandleDeleteGuardrailPolicy)
+	r.Get("/api/guardrails/logs", dashH.HandleListGuardrailLogs)
+	r.Post("/api/vault/rotate", dashH.HandleRotateVault)
 	r.Get("/api/models/custom", dashH.HandleGetCustomModels)
 	r.Get("/api/models/caps", dashH.HandleGetModelCaps)
 	r.Post("/api/models/custom", dashH.HandleSaveCustomModel)
@@ -439,9 +453,34 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 		}
 	})
 
-	// API-key protected domain routes
+	// API-key protected domain routes. The rate limiter sits after
+	// RequireApiKey so it reads the per-key RPM/TPM/concurrency limits off the
+	// authenticated key. Guardrails sit after both: a policy is scoped by API
+	// key, and a caller the limiter already rejected must not be able to make
+	// the gateway scan content either.
+	// The limiter's window is a startup read: every in-memory sliding window is
+	// sized against it, so changing it has to restart the gateway.
+	window := time.Duration(repo.GetRateLimitDefaults().WindowSeconds) * time.Second
+	rateLimiter := middleware.NewRateLimiter(window)
+	// The fallback itself is read per request, so an operator can raise or drop
+	// a global default without a restart. Only the window, which the live
+	// windows already depend on, is pinned at boot.
+	defaults := func() middleware.Limits {
+		d := repo.GetRateLimitDefaults()
+		if !d.Enabled {
+			return middleware.Limits{}
+		}
+		return middleware.Limits{RPM: d.RPM, TPM: d.TPM, Concurrency: d.Concurrency}
+	}
+	guardrailStore := guardrails.NewStore(repo.RawDB())
+	// One switch for both taps. It reads the settings row per request, which is
+	// a single indexed read on an already-loaded connection, and buys an
+	// operator an off switch that does not require deleting their policies.
+	guardrailSwitch := guardrails.Switch(func() bool { return repo.GetGuardrailsEnabled() })
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireApiKey(repo))
+		r.Use(middleware.RequireRateLimit(rateLimiter, defaults))
+		r.Use(guardrails.Inbound(guardrailStore, guardrailAudit(repo), guardrailSwitch))
 		SetupRoutes(r, repo, ts)
 	})
 

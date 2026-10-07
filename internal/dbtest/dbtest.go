@@ -88,14 +88,18 @@ func SchemaStatements() []string {
 }
 
 // CreateTables creates all tables from SchemaStatements in the given database,
-// then applies the Go-only additive columns so a fixture matches the shape of a
-// real database. Without this, queries that read the round-robin bookkeeping
-// columns fail in tests while working in production.
+// then creates the Go-only tables and applies the Go-only additive columns, so
+// a fixture matches the shape of a real database. Without this, queries that read
+// the round-robin bookkeeping columns or the KeiRouter per-key columns fail in
+// tests while working in production.
 func CreateTables(database *sql.DB) error {
 	for _, stmt := range SchemaStatements() {
 		if _, err := database.Exec(stmt); err != nil {
 			return fmt.Errorf("create table: %w\nSQL: %s", err, stmt)
 		}
+	}
+	if err := db.EnsureKeiRouterTables(database); err != nil {
+		return fmt.Errorf("create keirouter tables: %w", err)
 	}
 	return db.EnsureAdditiveColumns(database)
 }

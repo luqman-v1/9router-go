@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    AlertTriangle,
     Check,
     Copy,
     Key,
@@ -12,6 +13,7 @@
   } from 'lucide-svelte'
   import { api, type APIKey } from '../api/client'
   import { copyToClipboard } from '../lib/clipboard'
+  import ApiKeyPolicyModal from './keys/ApiKeyPolicyModal.svelte'
 
   let {
     apiKeys = [],
@@ -25,6 +27,11 @@
   let name = $state('')
   let copiedKey = $state<string | null>(null)
   let isCreating = $state(false)
+  let policyKey = $state<APIKey | null>(null)
+  // The full secret is returned exactly once, by the create call. It is never
+  // readable afterwards, so it is held here for the user to copy immediately
+  // and cleared as soon as the modal closes.
+  let issuedSecret = $state<string | null>(null)
 
   function handleCopy(text: string, id: string) {
     copyToClipboard(text)
@@ -55,7 +62,10 @@
     e.preventDefault()
     try {
       isCreating = true
-      await api.createApiKey({ name: name || 'client-key' })
+      const created = await api.createApiKey({ name: name || 'client-key' })
+      // This is the only moment the secret exists outside the request. Surface
+      // it now, because no later call can recover it.
+      issuedSecret = created.key
       isCreateOpen = false
       name = ''
       onRefresh()
@@ -66,7 +76,26 @@
     }
   }
 
-  let primaryKey = $derived(apiKeys[0]?.key || 'sk-9router-local-token')
+  // A key with any limit or expiry configured is governed. The table surfaces
+  // which control applies so an operator can spot the constrained keys without
+  // opening every row.
+  function hasPolicy(k: APIKey): boolean {
+    return (
+      (k.rateLimitRpm ?? 0) > 0 ||
+      (k.rateLimitTpm ?? 0) > 0 ||
+      (k.rateLimitConcurrency ?? 0) > 0 ||
+      (k.expiresAt ?? '') !== ''
+    )
+  }
+
+  function isExpired(k: APIKey): boolean {
+    if (!k.expiresAt) return false
+    const parsed = new Date(k.expiresAt)
+    return !Number.isNaN(parsed.getTime()) && parsed.getTime() < Date.now()
+  }
+
+  let primaryKey = $derived(apiKeys[0]?.keyDisplay || apiKeys[0]?.key || 'sk-9router-local-token')
+
 </script>
 
 <div class="space-y-6">
@@ -100,6 +129,50 @@
     </button>
   </div>
 
+  {#if issuedSecret}
+    <!-- One-time disclosure. This key is stored as an argon2id verifier, so the
+         secret cannot be shown again — once this banner is dismissed it is gone
+         until the key is revoked and reissued. -->
+    <div class="p-4 rounded-xl bg-success/5 border border-success/30 space-y-3">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <h3 class="font-headline text-xs font-bold text-success flex items-center gap-2">
+            <Check class="w-4 h-4" />
+            <span>Key created — copy it now</span>
+          </h3>
+          <p class="text-text-muted mt-1">
+            For safety it is stored hashed and shown only once. If you lose it, revoke the key and
+            create another.
+          </p>
+        </div>
+        <button
+          type="button"
+          onclick={() => (issuedSecret = null)}
+          class="shrink-0 px-2.5 py-1 rounded-lg border border-border text-[11px] text-text-muted hover:text-text-main transition cursor-pointer"
+        >
+          Dismiss
+        </button>
+      </div>
+      <div class="flex items-center gap-2">
+        <code class="flex-1 px-3 py-2 rounded-lg bg-bg border border-success/30 font-code text-[11px] text-success select-all break-all">
+          {issuedSecret}
+        </code>
+        <button
+          type="button"
+          onclick={() => issuedSecret && handleCopy(issuedSecret, 'issued')}
+          class="p-2 rounded-lg bg-success/10 border border-success/25 text-success hover:bg-success/20 transition cursor-pointer shrink-0"
+          title="Copy key"
+        >
+          {#if copiedKey === 'issued'}
+            <Check class="w-3.5 h-3.5" />
+          {:else}
+            <Copy class="w-3.5 h-3.5" />
+          {/if}
+        </button>
+      </div>
+    </div>
+  {/if}
+
   <!-- Keys Table Card -->
   <div class="bg-surface border border-border rounded-xl overflow-hidden shadow-xl">
     <div class="p-4 border-b border-border flex items-center justify-between">
@@ -116,6 +189,7 @@
           <tr class="border-b border-border text-text-subtle font-code uppercase text-[10px] tracking-wider bg-surface-2">
             <th class="py-2.5 px-4">Label Identity</th>
             <th class="py-2.5 px-4">Bearer Token</th>
+            <th class="py-2.5 px-4">Policy</th>
             <th class="py-2.5 px-4">Status</th>
             <th class="py-2.5 px-4">Created Date</th>
             <th class="py-2.5 px-4 text-right">Actions</th>
@@ -124,26 +198,48 @@
         <tbody class="divide-y divide-border/50 font-code">
           {#each apiKeys as k (k.id)}
             {@const isActive = k.isActive === 1}
+            {@const expired = isExpired(k)}
             <tr class="hover:bg-surface-2/40 transition">
               <td class="py-3 px-4 font-body font-bold text-text-main">{k.name || 'Client Token'}</td>
               <td class="py-3 px-4 text-text-muted">
-                <div class="flex items-center gap-2">
-                  <span class="bg-bg px-2.5 py-1 rounded border border-border text-[11px] text-info">
-                    {k.key}
-                  </span>
-                  <button
-                    type="button"
-                    onclick={() => handleCopy(k.key, k.id)}
-                    class="p-1 rounded text-text-subtle hover:text-text-main cursor-pointer"
-                    title="Copy Key"
-                  >
-                    {#if copiedKey === k.id}
-                      <Check class="w-3.5 h-3.5 text-success" />
-                    {:else}
-                      <Copy class="w-3.5 h-3.5" />
+                <!-- The secret is stored as an argon2id verifier: only the masked
+                     display value exists after creation, so there is nothing to
+                     copy here. The issued secret is offered once, at creation. -->
+                <span class="bg-bg px-2.5 py-1 rounded border border-border text-[11px] text-info">
+                  {k.keyDisplay || k.key}
+                </span>
+              </td>
+              <td class="py-3 px-4">
+                {#if hasPolicy(k)}
+                  <div class="flex flex-wrap gap-1">
+                    {#if (k.rateLimitRpm ?? 0) > 0}
+                      <span class="px-1.5 py-0.5 rounded text-[10px] bg-info/10 text-info border border-info/20">
+                        {k.rateLimitRpm}/min
+                      </span>
                     {/if}
-                  </button>
-                </div>
+                    {#if (k.rateLimitTpm ?? 0) > 0}
+                      <span class="px-1.5 py-0.5 rounded text-[10px] bg-info/10 text-info border border-info/20">
+                        {(k.rateLimitTpm ?? 0).toLocaleString()} tok/min
+                      </span>
+                    {/if}
+                    {#if (k.rateLimitConcurrency ?? 0) > 0}
+                      <span class="px-1.5 py-0.5 rounded text-[10px] bg-info/10 text-info border border-info/20">
+                        {(k.rateLimitConcurrency ?? 0).toLocaleString()} conc
+                      </span>
+                    {/if}
+                    {#if (k.expiresAt ?? '') !== ''}
+                      <span
+                        class="px-1.5 py-0.5 rounded text-[10px] border {expired
+                          ? 'bg-danger/10 text-danger border-danger/20'
+                          : 'bg-warning/10 text-warning border-warning/20'}"
+                      >
+                        {expired ? 'EXPIRED' : 'expires'}
+                      </span>
+                    {/if}
+                  </div>
+                {:else}
+                  <span class="text-text-subtle text-[10px]">unrestricted</span>
+                {/if}
               </td>
               <td class="py-3 px-4">
                 <span
@@ -153,12 +249,27 @@
                 >
                   {isActive ? 'ACTIVE' : 'REVOKED'}
                 </span>
+                {#if (k.usedCount ?? 0) > 0}
+                  <span class="block mt-1 text-[10px] text-text-subtle">
+                    {(k.usedCount ?? 0).toLocaleString()} req
+                  </span>
+                {/if}
               </td>
               <td class="py-3 px-4 text-text-subtle font-body text-[11px]">
                 {k.createdAt ? new Date(k.createdAt).toLocaleDateString() : '—'}
               </td>
               <td class="py-3 px-4 text-right">
                 <div class="flex items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onclick={() => (policyKey = k)}
+                    class="p-1.5 rounded-lg border transition cursor-pointer {hasPolicy(k)
+                      ? 'bg-brand-500/10 border-brand-500/25 text-brand-500'
+                      : 'bg-surface-2 border-border text-text-subtle hover:text-text-main'}"
+                    title="Configure rate limits, expiry, model access"
+                  >
+                    <Shield class="w-3.5 h-3.5" />
+                  </button>
                   <button
                     type="button"
                     onclick={() => handleToggle(k)}
@@ -172,7 +283,7 @@
                   <button
                     type="button"
                     onclick={() => handleDelete(k.id)}
-                    class="p-1.5 rounded-lg text-text-subtle hover:bg-danger/10 hover:text-red-600 dark:hover:text-red-400 transition cursor-pointer"
+                    class="p-1.5 rounded-lg text-text-subtle hover:bg-danger/10 hover:text-danger transition cursor-pointer"
                     title="Delete"
                   >
                     <Trash2 class="w-3.5 h-3.5" />
@@ -207,7 +318,7 @@
           </div>
           <div>
             <span class="text-text-subtle">API Key: </span>
-            <span class="text-brand-400 truncate">{primaryKey}</span>
+            <span class="text-brand-400">{primaryKey}</span>
           </div>
         </div>
       </div>
@@ -224,7 +335,22 @@
         </div>
       </div>
     </div>
+
+    <p class="text-text-subtle text-[11px]">
+      <AlertTriangle class="w-3.5 h-3.5 inline align-text-bottom text-warning" />
+      Keys are stored hashed, so the snippets show the masked form. Paste the value you copied when
+      the key was created.
+    </p>
   </div>
+
+  <!-- Per-key policy: rate limits, expiry, metadata, model allowlist -->
+  {#if policyKey}
+    <ApiKeyPolicyModal
+      apiKey={policyKey}
+      onClose={() => (policyKey = null)}
+      onSaved={onRefresh}
+    />
+  {/if}
 
   <!-- Create Key Modal -->
   {#if isCreateOpen}

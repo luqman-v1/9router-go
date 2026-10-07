@@ -8,6 +8,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/proxy"
@@ -24,9 +25,14 @@ type comboStickyState struct {
 
 // ChatHandler handles /v1/chat/completions (OpenAI) and /v1/messages (Claude) endpoints.
 type ChatHandler struct {
-	Repo        *db.Repo
-	Client      *http.Client
-	TokenSaver  *shared.TokenSaverConfig
+	Repo       *db.Repo
+	Client     *http.Client
+	TokenSaver *shared.TokenSaverConfig
+	// RateLimiter is the process-wide limiter the request path charges against.
+	// The handler holds it so the metering path can reconcile a TPM
+	// reservation once the real usage is known: the estimate is taken
+	// pre-dispatch, but only the response knows what the turn actually cost.
+	RateLimiter *middleware.RateLimiter
 	stickyMu    sync.Mutex
 	stickyState map[string]*comboStickyState
 	// oauthRefreshFlight collapses concurrent OAuth token refreshes for the

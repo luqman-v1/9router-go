@@ -5,10 +5,12 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
+	"9router/proxy/internal/keikey"
 )
 
 // ContextKey is a custom type for context keys to avoid collisions.
@@ -30,7 +32,8 @@ func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 			}
 
 			// Validate via SQLite repository and retrieve details
-			apiKeyObj, err := repo.GetApiKeyByKey(apiKeyString)
+			lookup := keikey.LookupHash(apiKeyString)
+			apiKeyObj, err := resolveApiKey(repo, lookup, apiKeyString)
 			if err != nil {
 				log.Error("auth", "DB lookup error", "error", err)
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, "Internal server error")
@@ -41,9 +44,42 @@ func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 				return
 			}
 
+			if !verifyApiKey(apiKeyString, apiKeyObj) {
+				handlerutil.WriteJSONError(w, http.StatusUnauthorized, "Invalid API key.")
+				return
+			}
+
+			// Only a verified key enters the cache, and only for 5s: a
+			// revoked or deleted key cannot outlive that window.
+			if lookup != "" {
+				keikey.DefaultAuthCache().Set(lookup, apiKeyObj)
+			}
+
 			if apiKeyObj.IsActive != 1 {
 				handlerutil.WriteJSONError(w, http.StatusUnauthorized, "Invalid or inactive API key.")
 				return
+			}
+
+			// F-14: Check key expiry
+			if apiKeyObj.ExpiresAt != nil && *apiKeyObj.ExpiresAt != "" {
+				expires, err := time.Parse(time.RFC3339, *apiKeyObj.ExpiresAt)
+				if err == nil && time.Now().After(expires) {
+					handlerutil.WriteJSONError(w, http.StatusUnauthorized, "API key expired.")
+					return
+				}
+			}
+
+			// F-14 usage accounting. Best-effort: the row write must never turn
+			// a served request into a failure, and a failed write only means the
+			// resale bookkeeping undercounts by one.
+			//
+			// It runs after every check that can reject, so a request refused for
+			// a bad key, a disabled key, or an expired contract is never counted
+			// as usage.
+			if apiKeyObj.ID != "" {
+				if uErr := repo.UpdateApiKeyUsage(apiKeyObj.ID); uErr != nil {
+					log.Warn("auth", "api key usage update failed", "key", apiKeyObj.ID, "error", uErr)
+				}
 			}
 
 			// Inject API Key info into the request context for downstream handlers/logging
@@ -51,6 +87,48 @@ func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// resolveApiKey finds the row for an incoming key in cost order: the argon2
+// verification cache, then the hashed lookup, then the legacy plaintext
+// column. A legacy hit self-heals by hashing the row in place, so an existing
+// plaintext key keeps authenticating across the upgrade.
+func resolveApiKey(repo *db.Repo, lookup, plaintext string) (*models.APIKey, error) {
+	if cached, ok := keikey.DefaultAuthCache().Get(lookup); ok {
+		return cached.(*models.APIKey), nil
+	}
+	apiKey, err := repo.FindApiKeyByLookup(lookup)
+	if err != nil {
+		return nil, err
+	}
+	if apiKey != nil {
+		return apiKey, nil
+	}
+	apiKey, err = repo.GetApiKeyByKey(plaintext)
+	if err != nil || apiKey == nil {
+		return nil, err
+	}
+	hash, err := keikey.Hash(plaintext)
+	if err != nil {
+		log.Warn("auth", "api key hashing failed; keeping legacy row", "error", err)
+		return apiKey, nil
+	}
+	if err := repo.HashApiKeyRow(apiKey.ID, hash, lookup, keikey.Mask(plaintext)); err != nil {
+		log.Warn("auth", "api key row self-heal failed; key still valid", "error", err)
+		return apiKey, nil
+	}
+	apiKey.Key = ""
+	return apiKey, nil
+}
+
+// verifyApiKey checks the secret against the row. Hashed rows are verified
+// with argon2id; a legacy row that still has no verifier matches on lookup
+// alone (the plaintext comparison already happened in the WHERE clause).
+func verifyApiKey(plaintext string, apiKey *models.APIKey) bool {
+	if apiKey.KeyHash == nil || *apiKey.KeyHash == "" {
+		return true
+	}
+	return keikey.Verify(plaintext, *apiKey.KeyHash)
 }
 
 // GetAuthenticatedApiKey retrieves the authenticated APIKey object from the request context.
