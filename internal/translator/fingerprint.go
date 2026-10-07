@@ -187,7 +187,10 @@ func ConcealFingerprintTools(body []byte) ([]byte, map[string]string) {
 			m["tool_choice"] = "none"
 		}
 	}
-	out, err := json.Marshal(m)
+	// Deterministic marshaling keeps the serialized request prefix stable
+	// across the turns of a session, which prefix-caching upstreams
+	// (deepseek) require; json/v2 randomizes map member order by default.
+	out, err := json.Marshal(m, json.Deterministic(true))
 	if err != nil {
 		return body, noop
 	}

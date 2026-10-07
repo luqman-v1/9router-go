@@ -53,7 +53,10 @@ func DedupeToolsDeepSeek(body []byte, model string) []byte {
 		return body
 	}
 	req["tools"] = kept
-	out, err := json.Marshal(req)
+	// Deterministic marshaling keeps the serialized request prefix stable
+	// across turns, which DeepSeek's prefix prompt cache requires;
+	// json/v2 randomizes map member order by default.
+	out, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		return body
 	}

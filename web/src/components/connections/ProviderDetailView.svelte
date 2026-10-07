@@ -30,6 +30,8 @@
   import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from '../../lib/models'
   import { copyToClipboard } from '../../lib/clipboard'
   import { notifyCustomModelsChanged } from '../../lib/customModels'
+  import { loadDeprecations, refreshDeprecations, subscribeDeprecations } from '../../lib/modelDeprecations.svelte'
+  import DeprecatedBadge from '../../lib/ui/DeprecatedBadge.svelte'
   import {
     buildAvailableModels,
     fetchProviderModelsData,
@@ -196,6 +198,8 @@
   let allDisabled = $derived(
     allAvailableModels.length > 0 && disabledModelIds.length >= allAvailableModels.length
   )
+  let isSyncingModels = $state(false)
+  let modelDeprecationCount = $state(0)
 
   // Capabilities + thinking levels are resolved server-side (GET /api/models/caps):
   // the catalog ships as a static bundle, but caps depend on the provider
@@ -2559,6 +2563,52 @@
     }
     await handleDisableModel(modelId)
   }
+
+  // Deprecated models of this provider, so the section can say how many of
+  // the listed models are dead upstream instead of leaving the operator to
+  // count the badges.
+  async function reloadDeprecations() {
+    const pid = providerId
+    const deps = await loadDeprecations()
+    if (pid !== providerId) return
+    modelDeprecationCount = Object.values(deps).filter(
+      (d) => d.provider === providerId && visibleModels.some((m) => m.id === d.model)
+    ).length
+  }
+
+  /**
+   * Re-reads the provider's live catalogue and clears the badge from any model
+   * it still serves. Only revival is decided here: a model missing from the
+   * catalogue is not badged on that evidence, because catalogues are routinely
+   * partial and a healthy model would be blacklisted with it.
+   */
+  async function handleSyncModelDeprecations() {
+    if (isSyncingModels) return
+    const pid = providerId
+    isSyncingModels = true
+    try {
+      const res = await api.syncProviderModels(providerId)
+      if (pid !== providerId) return
+      await refreshDeprecations()
+      if (res.revived > 0) {
+        await reloadDeprecations()
+        alert(`Sync complete — ${res.revived} model(s) are serving again and no longer marked Deprecated.`)
+      } else {
+        await reloadDeprecations()
+        alert('Sync complete. Models the provider no longer serves stay marked until a live request confirms they are gone.')
+      }
+    } catch (err) {
+      alert(`Model sync failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      if (pid === providerId) isSyncingModels = false
+    }
+  }
+
+  $effect(() => {
+    const unsubscribe = subscribeDeprecations(reloadDeprecations)
+    void reloadDeprecations()
+    return unsubscribe
+  })
 </script>
 
 <div class="flex min-w-0 flex-col gap-6 px-1 sm:gap-8 sm:px-0">
@@ -3486,6 +3536,15 @@
     <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
       <div class="flex items-center gap-3">
         <h2 class="text-lg font-semibold">Available Models</h2>
+        {#if modelDeprecationCount > 0}
+          <span
+            class="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning border border-warning/25"
+            title="These models were retired by the provider and cannot serve a request"
+          >
+            <span class="material-symbols-outlined text-[13px] leading-none" aria-hidden="true">error</span>
+            {modelDeprecationCount} deprecated
+          </span>
+        {/if}
         {#if providerThinkingLevels}
         <select
           title="Appends (level) suffix to copied model names"
@@ -3577,6 +3636,7 @@
                     Active Session
                   </span>
                 {/if}
+                <DeprecatedBadge provider={providerId} model={model.id} />
               </div>
               <span class="flex min-w-0 items-center text-[9px] gap-1 pl-1">
                 <span class="truncate text-[9px] italic text-text-muted/70">{model.name}</span>
@@ -3734,6 +3794,21 @@
         >
           <span class="material-symbols-outlined text-sm">{isCheckingLatest ? 'progress_activity' : 'cached'}</span>
           {isCheckingLatest ? 'Checking...' : 'Check Latest Models'}
+        </button>
+      {/if}
+
+      {#if providerConnections.some((c) => c.isActive !== 0)}
+        <button
+          type="button"
+          onclick={handleSyncModelDeprecations}
+          disabled={isSyncingModels}
+          class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface-2 hover:bg-surface-3 px-3 py-2 text-xs text-text-main transition-colors sm:w-auto cursor-pointer disabled:opacity-50"
+          title="Re-read the provider's live catalog and clear the Deprecated badge from any model it still serves"
+        >
+          <span class="material-symbols-outlined text-sm {isSyncingModels ? 'animate-spin' : ''}">
+            {isSyncingModels ? 'progress_activity' : 'sync'}
+          </span>
+          {isSyncingModels ? 'Syncing...' : 'Sync Models'}
         </button>
       {/if}
     </div>

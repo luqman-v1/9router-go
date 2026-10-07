@@ -24,6 +24,8 @@ export interface PickerModel {
   name: string
   value: string
   caps: { vision: boolean; audioInput: boolean; reasoning: boolean }
+  /** True when the gateway confirmed this model is gone upstream. */
+  deprecated?: boolean
 }
 
 export interface PickerGroup {
@@ -37,6 +39,8 @@ export interface PickerExtras {
   modelAliases?: Record<string, string>
   customModels?: Array<{ providerAlias?: string; id: string; name?: string; type?: string }>
   disabledModels?: Record<string, string[]>
+  /** Deprecations keyed "<provider>/<model>", from /api/models/deprecations. */
+  deprecations?: Record<string, unknown>
 }
 
 export function resolveModelPickerGroups(
@@ -105,6 +109,13 @@ export function resolveModelPickerGroups(
 
     const seenModelIds = new Set<string>()
     const models: PickerModel[] = []
+    // A model the gateway saw refused with a 410 is marked, not hidden: the
+    // operator may still want it in a combo while they replace it, and a
+    // picker that silently dropped it would leave them editing JSON to find
+    // out why it disappeared.
+    const isDeprecated = (modelId: string) =>
+      Boolean(extras.deprecations?.[`${catItem.id.toLowerCase()}/${modelId.toLowerCase()}`])
+
 
     for (const m of rawModels || []) {
       if (!m.id || seenModelIds.has(m.id) || !isChatModel(m)) continue
@@ -114,6 +125,7 @@ export function resolveModelPickerGroups(
         name: m.name || m.id,
         value: `${alias}/${m.id}`,
         caps: getModelCaps(m.id, m),
+        deprecated: isDeprecated(m.id),
       })
     }
 
@@ -125,6 +137,7 @@ export function resolveModelPickerGroups(
         name: m.name || m.id,
         value: `${alias}/${m.id}`,
         caps: getModelCaps(m.id),
+        deprecated: isDeprecated(m.id),
       })
     }
 
@@ -137,6 +150,7 @@ export function resolveModelPickerGroups(
         name: aliasName,
         value: fullModel as string,
         caps: getModelCaps(modelId),
+        deprecated: isDeprecated(modelId),
       })
     }
 
@@ -183,6 +197,9 @@ export function resolveModelPickerGroups(
           name: aliasName,
           value: `${nodePrefix}/${modelId}`,
           caps: getModelCaps(modelId),
+          deprecated: Boolean(
+            extras.deprecations?.[`${node.id.toLowerCase()}/${modelId.toLowerCase()}`]
+          ),
         }
       })
     const registeredCustom = (extras.customModels || [])
@@ -192,6 +209,9 @@ export function resolveModelPickerGroups(
         name: m.name || m.id,
         value: `${nodePrefix}/${m.id}`,
         caps: getModelCaps(m.id),
+        deprecated: Boolean(
+          extras.deprecations?.[`${node.id.toLowerCase()}/${m.id.toLowerCase()}`]
+        ),
       }))
     const seen = new Set(nodeModels.map((m) => m.value))
     const mergedModels = [...nodeModels, ...registeredCustom.filter((m) => !seen.has(m.value))]

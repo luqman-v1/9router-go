@@ -240,4 +240,42 @@ describe('pickerData', () => {
       true
     )
   })
+
+  it('marks a model the gateway saw refuse with a 410, and leaves the rest unmarked', () => {
+    const groups = resolveModelPickerGroups(
+      [
+        {
+          id: 'conn-ds',
+          provider: 'deepseek',
+          authType: 'apikey',
+          name: null,
+          email: null,
+          priority: null,
+          isActive: 1,
+          data: '{}',
+          createdAt: '',
+          updatedAt: '',
+        },
+      ],
+      [],
+      {
+        deprecations: {
+          // The backend keys every deprecation by a lowercased
+          // "<provider>/<model>" (providers.DeprecationKey), so the picker
+          // looks that up directly rather than re-normalizing per row.
+          'deepseek/deepseek-chat': { status: 'gone', successor: 'deepseek-v4' },
+        },
+      }
+    )
+
+    const dsGroup = groups.find((g) => g.id === 'deepseek')
+    assert.ok(dsGroup)
+    const chat = dsGroup.models.find((m) => m.id === 'deepseek-chat')
+    assert.ok(chat, 'deepseek-chat must still be listed, not hidden')
+    assert.strictEqual(chat.deprecated, true)
+    assert.strictEqual(
+      dsGroup.models.filter((m) => m.id !== 'deepseek-chat').every((m) => !m.deprecated),
+      true
+    )
+  })
 })

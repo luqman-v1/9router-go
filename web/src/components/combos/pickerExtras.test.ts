@@ -7,6 +7,7 @@ function source(overrides: Partial<PickerExtrasSource> = {}): PickerExtrasSource
     getModelAliases: async () => ({ aliases: { cbcn: 'codebuddy-cn/sonnet' } }),
     getCustomModels: async () => ({ models: [{ id: 'my-model', providerAlias: 'openai' }] }),
     getDisabledModels: async () => ({ disabled: { openai: ['gpt-4-32k'] } }),
+    getModelDeprecations: async () => ({ deprecations: { 'openai/old-model': { status: 'gone' } } }),
     ...overrides,
   }
 }
@@ -21,6 +22,7 @@ describe('loadPickerExtras', () => {
       ['my-model']
     )
     assert.deepEqual(extras.disabledModels, { openai: ['gpt-4-32k'] })
+    assert.deepEqual(extras.deprecations, { 'openai/old-model': { status: 'gone' } })
   })
 
   it('keeps the endpoints that answered when one of them fails', async () => {
@@ -35,6 +37,7 @@ describe('loadPickerExtras', () => {
     assert.deepEqual(extras.modelAliases, { cbcn: 'codebuddy-cn/sonnet' })
     assert.deepEqual(extras.customModels, [])
     assert.deepEqual(extras.disabledModels, { openai: ['gpt-4-32k'] })
+    assert.deepEqual(extras.deprecations, { 'openai/old-model': { status: 'gone' } })
   })
 
   it('returns empty maps when every endpoint fails', async () => {
@@ -42,10 +45,20 @@ describe('loadPickerExtras', () => {
       throw new Error('offline')
     }
     const extras = await loadPickerExtras(
-      source({ getModelAliases: fail, getCustomModels: fail, getDisabledModels: fail })
+      source({
+        getModelAliases: fail,
+        getCustomModels: fail,
+        getDisabledModels: fail,
+        getModelDeprecations: fail,
+      })
     )
 
-    assert.deepEqual(extras, { modelAliases: {}, customModels: [], disabledModels: {} })
+    assert.deepEqual(extras, {
+      modelAliases: {},
+      customModels: [],
+      disabledModels: {},
+      deprecations: {},
+    })
   })
 
   it('accepts the bare map shapes the go port serves', async () => {

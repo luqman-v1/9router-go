@@ -432,7 +432,10 @@ func normalizeZenResponsesBody(body []byte, cleanModel string) ([]byte, error) {
 
 	m["stream"] = true
 	m["store"] = false
-	return json.Marshal(m)
+	// Deterministic marshaling keeps the serialized request prefix stable
+	// across the turns of a session, which prefix-caching upstreams
+	// (deepseek) require.
+	return marshalStable(m)
 }
 
 // withJSONFields merges top-level fields into a JSON object body, leaving it
@@ -448,7 +451,7 @@ func withJSONFields(body []byte, fields map[string]any) []byte {
 		}
 		m[k] = v
 	}
-	out, err := json.Marshal(m)
+	out, err := marshalStable(m)
 	if err != nil {
 		return body
 	}

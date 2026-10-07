@@ -637,6 +637,23 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					}
 					var ue *upstreamError
 					if errors.As(fwdErr, &ue) {
+						// A 410 naming a dead model is a routing fact, not an account
+						// fault: every connection to this provider answers the same
+						// way. Record it, then leave this entry for the next combo
+						// model (#179).
+						//
+						// The connection is deliberately NOT added to excludeIDs:
+						// that list spans the whole pass, so excluding it here would
+						// starve every later entry on a single-account provider —
+						// exactly the case the failover exists to rescue. The model
+						// lock recordModelDeprecation writes is per provider/model,
+						// which is the scope that actually matters.
+						if providers.IsModelDeprecation(ue.StatusCode, ue.Body) {
+							h.recordModelDeprecation(modelInfo.Provider, modelInfo.Model, connID, ue)
+							retry.note(ue)
+							lastErr = ue
+							break
+						}
 						if providers.RetryableStatusCodes[ue.StatusCode] {
 							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
 						}
@@ -821,6 +838,18 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					}
 					var ue *upstreamError
 					if errors.As(fwdErr, &ue) {
+						// Same contract as the OpenAI loop: a 410 naming a dead
+						// model is a provider-wide fact, so it is recorded and
+						// the next combo entry is tried (#179). The connection
+						// stays out of excludeIDs — see the OpenAI loop: that
+						// list spans the pass, and a single-account provider
+						// would have nothing left to fail over to.
+						if providers.IsModelDeprecation(ue.StatusCode, ue.Body) {
+							h.recordModelDeprecation(modelInfo.Provider, modelInfo.Model, connID, ue)
+							retry.note(ue)
+							lastErr = ue
+							break
+						}
 						if providers.RetryableStatusCodes[ue.StatusCode] {
 							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
 						}

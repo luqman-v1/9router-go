@@ -41,6 +41,25 @@ export interface ModelCaps {
   thinkingLevels: string[]
 }
 
+/**
+ * A model the gateway has confirmed is gone upstream.
+ *
+ * `status` is "gone" when a live request drew an HTTP 410 naming the model,
+ * and "retired" when a catalogue sync found it absent from a complete list.
+ */
+export interface ModelDeprecation {
+  provider: string
+  model: string
+  status: 'gone' | 'retired' | ''
+  message?: string
+  /** The upstream's own replacement, when it named one. */
+  successor?: string
+  detectedAt?: string
+}
+
+/** Deprecations keyed "<provider>/<model>" — the same key a combo entry uses. */
+export type ModelDeprecationMap = Record<string, ModelDeprecation>
+
 export interface APIKey {
   id: string
   key: string
@@ -595,10 +614,21 @@ export function normalizeConnection(c: ProviderConnection): ProviderConnection {
     } catch {}
   }
   const wire = c as unknown as Record<string, unknown>
-  const specific =
+  const wireSpecific =
+    c.providerSpecificData && typeof c.providerSpecificData === 'object'
+      ? (c.providerSpecificData as Record<string, unknown>)
+      : undefined
+  const parsedSpecific =
     parsed.providerSpecificData && typeof parsed.providerSpecificData === 'object'
       ? (parsed.providerSpecificData as Record<string, unknown>)
-      : parsed
+      : Object.keys(parsed).length > 0
+        ? parsed
+        : undefined
+
+  const specific = {
+    ...(parsedSpecific || {}),
+    ...(wireSpecific || {}),
+  }
   return {
     ...parsed,
     ...c,
@@ -877,6 +907,25 @@ export const api = {
       method: 'DELETE',
     }),
   /**
+   * Models the gateway has confirmed dead upstream, keyed "<provider>/<model>".
+   *
+   * A client that never sends gateway traffic has no 410s of its own to learn
+   * from, so this endpoint is how its model list finds out a model is gone.
+   */
+  getModelDeprecations: (provider?: string) =>
+    request<{ provider: string; deprecations: ModelDeprecationMap }>(
+      `/api/models/deprecations${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`,
+    ),
+  /**
+   * Re-reads every connection's upstream catalogue and clears the badge of any
+   * model the provider still publishes. Omitting the provider syncs them all.
+   */
+  syncProviderModels: (provider?: string) =>
+    request<{ success: boolean; provider: string; synced: number; failed: number; revived: number; lastError?: string }>(
+      `/api/models/sync${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`,
+      { method: 'POST' },
+    ),
+  /**
    * Pings one model the way the page lists it. `kind` picks the endpoint the
    * probe travels on (upstream /api/models/test `kind`): a System One model
    * answers on /v1/systemone, and a chat probe on it returns 500. Omit `kind`
@@ -1109,6 +1158,8 @@ export const api = {
   getUsageStats: (period = 'today') => request<any>(`/api/usage/stats?period=${encodeURIComponent(period)}`),
   getRequestDetails: (limit = 50, offset = 0) =>
     request<any>(`/api/usage/request-details?limit=${limit}&offset=${offset}`),
+  /** Full stored payload for one request; the list omits request/response bodies. */
+  getRequestDetail: (id: string) => request<any>(`/api/usage/request-details/${encodeURIComponent(id)}`),
   resetHealth: (provider: string, model?: string) =>
     request<{ status: string }>(`/admin/health/reset?provider=${encodeURIComponent(provider)}${model ? `&model=${encodeURIComponent(model)}` : ''}`, {
       method: 'POST',

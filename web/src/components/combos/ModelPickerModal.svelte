@@ -24,6 +24,8 @@
     modelAliases?: Record<string, string>
     customModels?: Array<{ providerAlias?: string; id: string; name?: string; type?: string }>
     disabledModels?: Record<string, string[]>
+    /** Overrides the batched fetch; the provider page passes its own cache. */
+    deprecations?: Record<string, unknown>
     currentComboName?: string
     addedModelValues?: string[]
     onSelect: (modelValue: string) => void
@@ -40,6 +42,7 @@
     modelAliases,
     customModels,
     disabledModels,
+    deprecations,
     currentComboName,
     addedModelValues = [],
     onSelect,
@@ -69,6 +72,7 @@
       modelAliases: modelAliases ?? fetchedExtras.modelAliases,
       customModels: customModels ?? fetchedExtras.customModels,
       disabledModels: disabledModels ?? fetchedExtras.disabledModels,
+      deprecations: deprecations ?? fetchedExtras.deprecations,
     })
   )
   let filteredCombos = $derived(
@@ -204,6 +208,7 @@
                   isAdded={addedModelValues.includes(model.value)}
                   vision={model.caps.vision}
                   reasoning={model.caps.reasoning}
+                  deprecated={model.deprecated}
                   onToggle={handleToggle}
                 />
               {/each}

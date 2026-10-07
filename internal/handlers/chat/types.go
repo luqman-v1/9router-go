@@ -3,6 +3,7 @@ package chat
 import (
 	"net/http"
 	"sync"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
@@ -26,6 +27,11 @@ type ChatHandler struct {
 	TokenSaver  *shared.TokenSaverConfig
 	stickyMu    sync.Mutex
 	stickyState map[string]*comboStickyState
+	// deprecationCache throttles kv writes when a provider retires a model:
+	// every request at a dead combo entry arrives as a fresh 410, and each
+	// one would otherwise upsert the same row.
+	deprecationMu    sync.Mutex
+	deprecationCache map[string]time.Time
 }
 
 // Type aliases for shared types

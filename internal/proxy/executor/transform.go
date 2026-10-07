@@ -829,7 +829,9 @@ func InjectReasoningContent(body []byte, provider string) []byte {
 	}
 
 	reqMap["messages"] = msgs
-	newBody, err := json.Marshal(reqMap)
+	// Deterministic marshaling keeps the serialized prefix stable across the
+	// turns of a session, which DeepSeek's prefix prompt cache requires.
+	newBody, err := marshalStable(reqMap)
 	if err != nil {
 		return body
 	}
