@@ -23,6 +23,20 @@ Upstream sets both (`id: tc.id` / `id: fid` in
 Both sides now carry the id, stripped of the `__ts__<sig>` suffix — that suffix
 is 9router-go's private thought-signature transport and must not reach the wire
 or desynchronise a call from its response.
+### 🐛 Edit Compatible Node opens with a blank Prefix field (#177)
+
+`EditCompatibleNodeModal` seeded `name`, `urlSuffix`, `apiType` and `baseUrl` from
+the node but never `prefix`, so the field rendered empty with only its
+`oc-prod` / `ac-prod` placeholder. The stored prefix is the namespace the
+node's models already resolve under (`oc/<model>`), and the submit guard
+requires it, so opening the modal also left Save disabled until the value was
+retyped by hand.
+
+The seed logic now lives in `nodeFormSeed.ts`, which the modal calls for every
+field, with a regression test covering the prefix, the generated-suffix
+exception and the per-flavour default base URL. The `urlSuffixGenerated`
+behaviour is unchanged: a random uuid tail is still not offered as editable
+text.
 
 ## [v1.9.10] - 2026-10-07
 
