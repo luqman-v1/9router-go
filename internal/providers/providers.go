@@ -367,8 +367,18 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	// Ollama Cloud, not a self-hosted daemon. This entry used to carry
+	// http://localhost:11434, which sent every ollama.com API-key connection to
+	// a loopback port that only exists on a machine running `ollama serve`
+	// (#192). Upstream keeps the two apart as well: registry ollama.js dials
+	// ollama.com and only ollama-local.js points at 11434.
+	//
+	// ollama.com serves the OpenAI-compatible lane at /v1, verified live: an
+	// unknown path 404s, /v1/models answers 200, and a bad key draws a 401 with
+	// an OpenAI-shaped error body. That is the lane ForwardOpenAI already speaks,
+	// so the fix needs no native-translator port.
 	"ollama": {
-		BaseURL:     "http://localhost:11434/v1/chat/completions",
+		BaseURL:     "https://ollama.com/v1/chat/completions",
 		AuthHeader:  "Authorization",
 		AuthScheme:  "bearer",
 		FetchURL:    "https://ollama.com/api/web_fetch",

@@ -1,6 +1,56 @@
 # Changelog
 
 ## [Unreleased]
+
+### 🐛 Ollama Cloud dialed `localhost:11434` — every cloud key 502'd before leaving the machine
+
+Gejala: `upstream error: ForwardOpenAI upstream: forward to
+http://localhost:11434/v1/chat/completions: ... dial tcp 127.0.0.1:11434:
+connect: connection refused` pada provider `ollama` (#192). `/v1/models`
+terlihat normal karena daftar model berasal dari katalog, bukan dari address
+yang benar-benar di-dial.
+
+Akar masalah bukan hanya di registry. Dua hal terpisah:
+
+1. **Entry registry `ollama` menunjuk ke daemon self-hosted.** Id `ollama`
+   adalah Ollama **Cloud** — API resmi di ollama.com, dikunci API key dari
+   dashboard — tapi `BaseURL`-nya `http://localhost:11434/v1/chat/completions`,
+   jadi setiap koneksi cloud mendial port loopback yang hanya ada di mesin yang
+   menjalankan `ollama serve`. Upstream memisahkannya juga: registry
+   `ollama.js` mendial `ollama.com`, dan hanya `ollama-local.js` yang menunjuk
+   11434. Sekarang `ollama` → `https://ollama.com/v1/chat/completions`, dan
+   `ollama-local` tetap di 11434 (#192).
+
+   Lane OpenAI-compatible `/v1` di ollama.com diverifikasi live: path tak
+   dikenal 404, `/v1/models` 200, dan API key salah dapat 401 dengan body error
+   berbentuk OpenAI — jadi tidak perlu port translator native untuk perbaikannya.
+
+2. **`providerSpecificData.baseUrl` dibuang, dan host telanjang tidak punya
+   route.** Dashboard menyimpan override endpoint per-koneksi di
+   `providerSpecificData.baseUrl`, sedangkan `ConnectionData.BaseURL` hanya
+   membawa key `baseUrl` tingkat atas — override di-parse lalu dibuang, dan
+   request jatuh ke default registry (yaitu loopback tadi). Second: field host
+   Ollama Local diisi sebagai host telanjang (`http://192.168.1.10:11434`), dan
+   host telanjang tidak menamai route, jadi POST mendarat di root server.
+   Override kini di-hidrate di `getBestConnection` (hanya bila key tingkat atas
+   kosong, jadi penulisan lama menang) dan melengkapi route chat lewat helper
+   `chatCompletionsURL`, yang tidak menyentuh URL yang sudah menamai route —
+   `/v1`, `/v1beta`, dan `/messages` tetap apa adanya.
+
+Test: `internal/handlers/chat/ollama_routing_test.go` (registry tidak boleh
+dial loopback, cloud dan local tidak boleh berbagi address, tabel
+`chatCompletionsURL`, hidrasi override, dan request yang benar-benar mendarat
+di upstream) plus `internal/integration/ollama_routing_test.go` (katalog dan
+proxy lewat router produksi). Semuanya dicek mutasi: mengembalikan `ollama` ke
+11434, atau menghapus hidrasi, membuat masing-masing test gagal dengan gejala
+aslinya.
+
+Catatan: `ollama-local` tetap tanpa katalog model statis — upstream juga begitu,
+modelnya ditemukan live dari daemon (`/api/tags`). Itu kekosongan terpisah,
+bukan bagian #192.
+
+## [v1.9.10-exp.3] - 2026-10-07
+
 ### 🐛 DeepSeek: body request di-serialize acak — prompt cache miss di tiap request (semua lane)
 
 Semua lane DeepSeek melewati unmarshal → mutasi → marshal pada map generik
@@ -23,7 +73,18 @@ jadi sorted dan stabil, prefix antar-turn konsisten, cache upstream bisa
 hit. Diverifikasi lewat unit test per-lane (200 request identik → tepat 1
 body), tanpa token API.
 
-### 🐛 `internal/fetchgate` flaky di `go test -p 16` — gap diukur salah
+### 🐛 `normalizeConnection` buang `providerSpecificData` — badge dan pilihan proxy pool salah render
+
+Client hanya membaca `providerSpecificData` dari body yang sudah di-decode,
+dan object yang dipakai sebagai fallback adalah seluruh baris hasil parse,
+sehingga field yang dipakai dashboard untuk badge proxy pool, pool yang
+terpilih, dan pengaturan per-koneksi isinya apa pun yang lolos dari
+round-trip itu (#188).
+
+Nilai wire sekarang dibaca terpisah dari nilai hasil parse lalu di-merge di
+atasnya, dan fallback ke baris parse tidak lagi jalan saat object hasil parse
+kosong — itulah yang menghasilkan object non-kosong tanpa satu pun key yang
+diharapkan. Ditutup assertion `client.test.ts` atas bentuk hasil merge.
 
 ### 💀 A retired model fails the request instead of the combo — HTTP 410 now fails over and is badged
 
@@ -120,7 +181,53 @@ Also fixed here: the overview button's `onclick` handed its `MouseEvent` to the
 open handler, so the node type reached the backend as `{"isTrusted":false}` and
 the dialog died on `VARIANT_CONFIG[type].defaultBaseUrl` before the base URL was
 ever populated.
-<ours>
+
+### ⚡ Usage page: the delay on "Total recorded" was never the count
+
+Profiling the Details tab against an 85k-request database turned up three
+separate costs, none of them the row count the header reports.
+
+**`SELECT COUNT(*) FROM requestDetails` was never slow** — it rides a covering
+index and measures 0.5 ms. The delay came from what was transferred behind it.
+The list endpoint returned the whole stored payload per row, which carries up to
+20 truncated request messages and a 10 000-character response body: measured at
+~20 KB per row, so a 20-row page was **409 KB** of JSON, 99% of which the table
+never reads. The list now selects only the values it renders, and the full
+payload is fetched per row by id when a user opens the inspector — **409 KB →
+3.8 KB per page**, and opening a row stays a primary-key lookup.
+
+**`/api/usage/stats` re-read its whole window on every poll.** The dashboard
+polls every five seconds; folding an 85k-row `24h` window measured **356 ms**
+per poll. Pushing the fold into SQL `GROUP BY` was tried and rejected on
+evidence: it measured **178–207 ms**, no better, because the temp b-tree SQLite
+builds for `GROUP BY` costs as much as the Go-side fold, and a covering index
+bought ~8% while adding **+57%** to every insert. Instead the window aggregate is
+built once and advanced from a delta — `MAX(timestamp)` is a covering-index seek
+(O(log n)) — and a sliding window also subtracts the rows that have aged out of
+it. Measured end to end on an 85k-row window: **356 ms cold, 1.0 ms steady
+state**.
+
+That number only appeared after fixing a bug in the first version of this cache:
+it keyed an entry on the window's start. A `24h` window starts 24 hours before
+*now*, so its start moves on every request and the cache missed every single
+time — 347 ms per poll against a 372 ms cold read, which is no cache at all. The
+key describes the window's *shape* now, decided in `resolveUsagePeriod` where
+the difference is actually known: the instant alone cannot tell "starts at
+midnight" from "24 hours ago", and the two must be cached differently.
+
+Float addition is not associative, so the fold runs oldest-first and the
+subtraction newest-first — the exact reverse — leaving cost totals bit-identical
+rather than drifting in their last digits.
+
+**Nothing ever pruned the diagnostic tables.** `requestDetails` is now capped at
+30 days and 500k rows by a background pass that runs `PRAGMA optimize`
+afterwards. `usageHistory` is deliberately **never** pruned: it is the billing
+ledger, the `all` usage period reads it directly, and a day can be settled
+against it after the fact. At the real payload size the diagnostic table was
+1.7 GB at 85k rows, for a tab that renders 20.
+
+No new indexes were added — the existing ones already cover these reads, which
+is what the measurements show.
 
 ### 🐛 `TranslateOpenAIToGemini` dropped tool call ids, so Claude on Antigravity 400'd on any tool history
 
