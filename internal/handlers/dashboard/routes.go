@@ -83,6 +83,7 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/keys", h.HandleCreateApiKey)
 		r.Delete("/keys/{id}", h.HandleDeleteApiKey)
 		r.Put("/keys/{id}/toggle", h.HandleToggleApiKey)
+		r.Post("/keys/{id}/rotate", h.HandleRotateApiKey)
 		r.Put("/keys/{id}", h.HandleUpdateApiKey)
 
 		// F-5 Credential vault: status and master-key rotation.

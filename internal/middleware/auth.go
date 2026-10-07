@@ -69,6 +69,19 @@ func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 				}
 			}
 
+			// F-14 usage accounting. Best-effort: the row write must never turn
+			// a served request into a failure, and a failed write only means the
+			// resale bookkeeping undercounts by one.
+			//
+			// It runs after every check that can reject, so a request refused for
+			// a bad key, a disabled key, or an expired contract is never counted
+			// as usage.
+			if apiKeyObj.ID != "" {
+				if uErr := repo.UpdateApiKeyUsage(apiKeyObj.ID); uErr != nil {
+					log.Warn("auth", "api key usage update failed", "key", apiKeyObj.ID, "error", uErr)
+				}
+			}
+
 			// Inject API Key info into the request context for downstream handlers/logging
 			ctx := context.WithValue(r.Context(), ApiKeyContextKey, apiKeyObj)
 			next.ServeHTTP(w, r.WithContext(ctx))

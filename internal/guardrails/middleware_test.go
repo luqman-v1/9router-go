@@ -41,7 +41,7 @@ func runMiddleware(t *testing.T, store PolicyStore, body string) (status int, se
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := Inbound(store, func(Decision, Target) { audits++ })(next)
+	handler := Inbound(store, func(Decision, Target) { audits++ }, nil)(next)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -167,7 +167,7 @@ func TestInboundRestoresReadableBody(t *testing.T) {
 		reads++
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := Inbound(store, nil)(next)
+	handler := Inbound(store, nil, nil)(next)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		bytes.NewReader([]byte(chatBody("mail bob@corp.io"))))
@@ -176,5 +176,75 @@ func TestInboundRestoresReadableBody(t *testing.T) {
 
 	if reads != 1 {
 		t.Fatalf("downstream handler ran %d times, want 1", reads)
+	}
+}
+// TestInboundKillSwitchStopsEnforcement is the property an operator needs when
+// a false positive starts blocking real traffic: turning the switch off must
+// take effect without deleting the policy, which would take the audit trail
+// with it.
+func TestInboundKillSwitchStopsEnforcement(t *testing.T) {
+	store := jsonStore(`{"detectors":["pii"],"action":"block"}`)
+	body := chatBody("my email is bob@corp.io")
+
+	status, seen, audits := runMiddlewareWithSwitch(t, store, body, func() bool { return false })
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200: a disabled switch must not block", status)
+	}
+	if seen != body {
+		t.Errorf("body was rewritten while disabled:\n got %s\nwant %s", seen, body)
+	}
+	if audits != 0 {
+		t.Errorf("recorded %d decisions while disabled", audits)
+	}
+}
+
+// TestInboundSwitchOnByDefault guards the other direction. A policy row is an
+// explicit operator decision, so a settings row that was never written must not
+// read as "off" and silently discard it.
+func TestInboundSwitchOnByDefault(t *testing.T) {
+	store := jsonStore(`{"detectors":["pii"],"action":"block"}`)
+
+	status, _, audits := runMiddlewareWithSwitch(t, store, chatBody("my email is bob@corp.io"), nil)
+	if status == http.StatusOK {
+		t.Error("a nil switch must mean enabled; a configured policy cannot be ignored by omission")
+	}
+	if audits != 1 {
+		t.Errorf("audits = %d, want 1", audits)
+	}
+}
+
+// runMiddlewareWithSwitch is runMiddleware with the global kill-switch attached.
+func runMiddlewareWithSwitch(t *testing.T, store PolicyStore, body string, sw Switch) (status int, seen string, audits int) {
+	t.Helper()
+
+	var seenBody string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("downstream read: %v", err)
+		}
+		seenBody = string(b)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := Inbound(store, func(Decision, Target) { audits++ }, sw)(next)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec.Code, seenBody, audits
+}
+
+// TestSwitchDefaultsOn covers the Switch contract itself: a nil switch is on,
+// and a reading error never disables enforcement.
+func TestSwitchDefaultsOn(t *testing.T) {
+	if !Switch(nil).Enabled() {
+		t.Error("a nil switch must read as enabled")
+	}
+	if !Switch(func() bool { return true }).Enabled() {
+		t.Error("a switch returning true must read as enabled")
+	}
+	if Switch(func() bool { return false }).Enabled() {
+		t.Error("a switch returning false must read as disabled")
 	}
 }

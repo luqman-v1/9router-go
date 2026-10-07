@@ -142,6 +142,52 @@ func (h *DashboardHandler) HandleCreateApiKey(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// HandleRotateApiKey handles POST /api/keys/{id}/rotate.
+//
+// F-6 removes "reveal", so rotation is the only way an operator can replace a
+// leaked key: the old secret is invalidated at once and the new one is
+// returned exactly once, the same contract as creation. Without it a key that
+// leaks can only be deleted, which is the wrong tool when the caller still
+// needs the row — its policy, its usage history, its allowlist.
+func (h *DashboardHandler) HandleRotateApiKey(w http.ResponseWriter, r *http.Request) {
+	id := getURLParam(r, "id")
+	if id == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing apiKey id")
+		return
+	}
+	existing, err := h.Repo.GetApiKeyByID(id)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing == nil {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+
+	plaintext := "sk-" + strings.ReplaceAll(uuid.New().String(), "-", "")
+	hash, err := keikey.Hash(plaintext)
+	if err != nil {
+		log.Error("apikeys", "rotate: hash failed", "error", err)
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to secure api key")
+		return
+	}
+	if err := h.Repo.HashApiKeyRow(id, hash, keikey.LookupHash(plaintext), keikey.Mask(plaintext)); err != nil {
+		log.Error("apikeys", "rotate: store hash failed", "error", err)
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// The old key is live in the auth cache for its TTL; without this the
+	// leaked secret keeps working after the operator rotated it away.
+	keikey.DefaultAuthCache().InvalidateByID(id)
+
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"id":     id,
+		"key":    plaintext,
+	})
+}
+
 // HandleDeleteApiKey handles DELETE /api/keys/{id}.
 // Deletes client apiKey by ID.
 func (h *DashboardHandler) HandleDeleteApiKey(w http.ResponseWriter, r *http.Request) {

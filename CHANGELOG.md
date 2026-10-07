@@ -54,6 +54,25 @@ it did before.
   allowlist), a Policy column on the key table, and a Security view for the vault and
   guardrails.
 
+- Startup migration for the credential vault. Sealing on write only covered credentials
+  stored after the vault was enabled, so an existing install kept every provider token in
+  plaintext forever while the dashboard reported them as unprotected. Boot now walks the
+  connections still holding a plaintext credential, snapshots the database first, and
+  seals them. The snapshot uses `VACUUM INTO` rather than a file copy: the database runs
+  in WAL mode, so copying the file would capture the older pages and miss the writes the
+  migration is replacing. A row that cannot be sealed keeps working in plaintext and is
+  logged — losing the master key already makes a credential unrecoverable, so a migration
+  that refused to boot would trade a recoverable problem for an outage.
+- `POST /api/keys/{id}/rotate`. Removing "reveal" left an operator with no way to replace a
+  leaked key except deleting the row, which also takes its policy, usage history, and model
+  allowlist with it. Rotation issues a new secret once and invalidates the old one
+  immediately rather than after the auth cache TTL.
+- A global guardrail kill-switch (`settings.guardrailsEnabled`, with a toggle in the
+  Security view). A false positive that blocks real traffic previously required deleting
+  the policy, which took the audit trail explaining why it existed with it. Both the request
+  and response taps read the switch. It defaults to on, so a configured policy is never
+  silently ignored because a setting was never written.
+
 **Changed**
 
 - Client API keys are no longer returned in plaintext by any read path, including to a
@@ -79,6 +98,10 @@ it did before.
   enforced against the traffic it was meant to bound. It now sizes the prompt from the
   request body, reading it only when a TPM limit is configured and capping the read at
   4 MiB.
+- `usedCount` and `lastUsedAt` were never written. The repository method existed with no
+  caller, so the resale bookkeeping the key table and policy modal display stayed at zero
+  forever. Both are now recorded on every authenticated request, after every check that can
+  reject, so a request refused for a bad, disabled, or expired key is not counted as usage.
 
 ## [v1.9.10-exp.3] - 2026-10-07
 

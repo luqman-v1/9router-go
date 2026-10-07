@@ -23,6 +23,28 @@ type Policy struct {
 	Target Target
 }
 
+// disabledCtxKey carries the global kill-switch.
+type disabledCtxKey struct{}
+
+// WithSwitch records the global kill-switch on the context so every tap
+// downstream — including the executors, which never see the router — obeys
+// the same switch.
+func WithSwitch(ctx context.Context, sw Switch) context.Context {
+	if ctx == nil || sw == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, disabledCtxKey{}, sw)
+}
+
+// SwitchFrom returns the recorded kill-switch, or nil (meaning on).
+func SwitchFrom(ctx context.Context) Switch {
+	if ctx == nil {
+		return nil
+	}
+	sw, _ := ctx.Value(disabledCtxKey{}).(Switch)
+	return sw
+}
+
 // WithPolicy records the policy that governs this response.
 //
 // A policy that enables nothing is not recorded at all, so a nil policy is what
@@ -64,6 +86,9 @@ func (p *Policy) AuditDecision(d *Decision) {
 // so a block here is still able to become a real status code. It returns the
 // body to relay, unchanged when no policy applies.
 func ApplyBuffered(ctx context.Context, body []byte) ([]byte, error) {
+	if !SwitchFrom(ctx).Enabled() {
+		return body, nil
+	}
 	p := PolicyFrom(ctx)
 	if p == nil || !p.Engine.Enabled() || len(body) == 0 {
 		return body, nil
@@ -87,6 +112,9 @@ func ApplyBuffered(ctx context.Context, body []byte) ([]byte, error) {
 // un-sent. So the stream is filtered frame by frame, with a window of context
 // held back so a value straddling a frame boundary is still caught.
 func ApplyOutbound(ctx context.Context, w http.ResponseWriter, format StreamFormat) *Outbound {
+	if !SwitchFrom(ctx).Enabled() {
+		return nil
+	}
 	p := PolicyFrom(ctx)
 	if p == nil || !p.Engine.Enabled() {
 		return nil

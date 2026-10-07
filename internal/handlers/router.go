@@ -214,6 +214,7 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/keys", dashH.HandleCreateApiKey)
 	r.Delete("/api/keys/{id}", dashH.HandleDeleteApiKey)
 	r.Put("/api/keys/{id}/toggle", dashH.HandleToggleApiKey)
+	r.Post("/api/keys/{id}/rotate", dashH.HandleRotateApiKey)
 	r.Get("/api/keys/{id}/models", dashH.HandleGetApiKeyModels)
 	r.Put("/api/keys/{id}/models", dashH.HandleSetApiKeyModels)
 	r.Put("/api/keys/{id}", dashH.HandleUpdateApiKey)
@@ -459,10 +460,14 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	// the gateway scan content either.
 	rateLimiter := middleware.NewRateLimiter(time.Minute)
 	guardrailStore := guardrails.NewStore(repo.RawDB())
+	// One switch for both taps. It reads the settings row per request, which is
+	// a single indexed read on an already-loaded connection, and buys an
+	// operator an off switch that does not require deleting their policies.
+	guardrailSwitch := guardrails.Switch(func() bool { return repo.GetGuardrailsEnabled() })
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireApiKey(repo))
 		r.Use(middleware.RequireRateLimit(rateLimiter))
-		r.Use(guardrails.Inbound(guardrailStore, guardrailAudit(repo)))
+		r.Use(guardrails.Inbound(guardrailStore, guardrailAudit(repo), guardrailSwitch))
 		SetupRoutes(r, repo, ts)
 	})
 

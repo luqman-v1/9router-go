@@ -29,9 +29,13 @@ type Audit func(Decision, Target)
 // and nothing else. When it does act, it either rejects the request or hands
 // the next handler a rewritten body — the rewrite is the point of a mask
 // action, so the body must be replaced rather than merely inspected.
-func Inbound(store PolicyStore, audit Audit) func(http.Handler) http.Handler {
+func Inbound(store PolicyStore, audit Audit, sw Switch) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !sw.Enabled() {
+				next.ServeHTTP(w, r)
+				return
+			}
 			target := Target{APIKeyID: apiKeyID(r)}
 			engine, err := Resolve(store, target)
 			if err != nil || !engine.Enabled() {

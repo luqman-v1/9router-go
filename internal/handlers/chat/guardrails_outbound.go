@@ -83,6 +83,11 @@ func guardrailTarget(ctx context.Context) guardrails.Target {
 // into all of them, so the resolved policy travels on it and each response
 // path picks it up where it writes.
 func (h *ChatHandler) withOutboundPolicy(ctx context.Context) context.Context {
+	// The same kill-switch the inbound tap reads. It is installed first and
+	// unconditionally: an operator who turns guardrails off expects the
+	// response path to stop too, and neither tap should be able to outlive the
+	// other's decision.
+	ctx = guardrails.WithSwitch(ctx, h.guardrailSwitch())
 	target := guardrailTarget(ctx)
 	engine := h.resolveGuardrailEngine(target.APIKeyID, target.Model)
 	if engine == nil {
@@ -93,6 +98,16 @@ func (h *ChatHandler) withOutboundPolicy(ctx context.Context) context.Context {
 		Audit:  h.guardrailAudit(),
 		Target: target,
 	})
+}
+
+// guardrailSwitch reads the global kill-switch from settings. It defaults to on
+// when the row cannot be read: an operator who configured a policy would rather
+// eat a transient lookup error than silently lose their filter.
+func (h *ChatHandler) guardrailSwitch() guardrails.Switch {
+	if h == nil || h.Repo == nil {
+		return nil
+	}
+	return func() bool { return h.Repo.GetGuardrailsEnabled() }
 }
 
 // guardrailAudit records an outbound decision. The row is written best-effort:

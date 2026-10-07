@@ -17,6 +17,10 @@
   let logs = $state<GuardrailLog[]>([])
   let isLoading = $state(false)
   let error = $state<string | null>(null)
+  // Mirrors settings.guardrailsEnabled. Default true: a policy row is an
+  // explicit decision, so an unwritten setting must not read as "off".
+  let guardrailsEnabled = $state(true)
+  let isToggling = $state(false)
 
   let scope = $state('global')
   let policyName = $state('')
@@ -49,18 +53,39 @@
     isLoading = true
     error = null
     try {
-      const [vaultRes, policyRes, logRes] = await Promise.all([
+      const [vaultRes, policyRes, logRes, settingsRes] = await Promise.all([
         api.getVaultStatus(),
         api.getGuardrailPolicies(scope),
-        api.getGuardrailLogs(50)
+        api.getGuardrailLogs(50),
+        api.getSettings()
       ])
       vault = vaultRes
       policies = policyRes ?? []
       logs = logRes ?? []
+      const raw = (settingsRes as Record<string, unknown> | undefined)?.guardrailsEnabled
+      guardrailsEnabled = typeof raw === 'boolean' ? raw : true
     } catch (err) {
       error = err instanceof Error ? err.message : String(err)
     } finally {
       isLoading = false
+    }
+  }
+
+  // The kill-switch is the escape hatch for a false positive that is blocking
+  // real traffic. It has to stop enforcement without deleting the policy,
+  // because deleting the policy also deletes the audit trail that explains why
+  // it was turned on in the first place.
+  async function toggleGuardrails() {
+    isToggling = true
+    error = null
+    try {
+      const next = !guardrailsEnabled
+      await api.updateSettings({ guardrailsEnabled: next })
+      guardrailsEnabled = next
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err)
+    } finally {
+      isToggling = false
     }
   }
 
@@ -271,6 +296,39 @@
         Offline regex detection — no external service is contacted. Policies layer from least to
         most specific, so a model-scoped policy overrides a global one.
       </p>
+
+      <!-- Kill-switch: the escape hatch when a policy is blocking real traffic. -->
+      <div
+        class="flex items-center justify-between gap-3 p-3 rounded-lg bg-bg border {guardrailsEnabled
+          ? 'border-border'
+          : 'border-warning/40'}"
+      >
+        <div class="min-w-0">
+          <div class="font-headline text-xs font-bold text-text-main">Enforce guardrails</div>
+          <div class="text-[11px] text-text-subtle mt-0.5">
+            {guardrailsEnabled
+              ? 'Policies are scanning requests and responses.'
+              : 'Policies are kept but not enforced — the escape hatch for a false positive.'}
+          </div>
+        </div>
+        <button
+          type="button"
+          onclick={toggleGuardrails}
+          disabled={isToggling}
+          role="switch"
+          aria-checked={guardrailsEnabled}
+          aria-label="Enforce guardrails"
+          class="relative w-10 h-5 rounded-full transition shrink-0 cursor-pointer disabled:opacity-50 {guardrailsEnabled
+            ? 'bg-brand-500'
+            : 'bg-surface-3'}"
+        >
+          <span
+            class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all {guardrailsEnabled
+              ? 'left-5'
+              : 'left-0.5'}"
+          ></span>
+        </button>
+      </div>
 
       <!-- Scope filter -->
       <div class="flex flex-wrap gap-1.5">

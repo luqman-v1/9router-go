@@ -404,6 +404,37 @@ func (r *Repo) SetProviderOverride(provider string, override *ProviderOverrides)
 	return r.UpdateSettingsRaw(map[string]any{"providerOverrides": all})
 }
 
+// GetGuardrailsEnabled reports whether the guardrail taps are active at all.
+//
+// It reads the settings blob directly rather than through GetSettings because
+// it is consulted on the request path, twice per request, and needs one flag
+// rather than the whole struct.
+//
+// The default is true: a policy row is an explicit decision by the operator,
+// and silently ignoring it because a setting was never written would be the
+// more dangerous reading.
+func (r *Repo) GetGuardrailsEnabled() bool {
+	raw, err := r.GetSettingsRaw()
+	if err != nil || raw == nil {
+		return true
+	}
+	switch v := raw["guardrailsEnabled"].(type) {
+	case bool:
+		return v
+	case string:
+		// The blob is hand-editable through the backup import, so a quoted
+		// "false" is a real input rather than a bug to panic on.
+		return v != "false" && v != "0"
+	default:
+		return true
+	}
+}
+
+// SetGuardrailsEnabled stores the global guardrail kill-switch.
+func (r *Repo) SetGuardrailsEnabled(enabled bool) error {
+	return r.UpdateSettingsRaw(map[string]any{"guardrailsEnabled": enabled})
+}
+
 // stringMap coerces a decoded JSON value into map[string]string, skipping
 // anything that is not a string. The settings blob is hand-editable through
 // the backup import, so a wrong type there is a real input, not a bug to
