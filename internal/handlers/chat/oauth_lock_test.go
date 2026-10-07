@@ -5,14 +5,15 @@ import (
 	"database/sql"
 	json "encoding/json/v2"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/models"
-	"9router/proxy/internal/proxy/oauth"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/oauth"
 )
 
 // oauthLockTestProvider is a provider id no built-in refresher claims, so the
@@ -316,5 +317,170 @@ func TestSuccessfulRefreshReleasesThePark(t *testing.T) {
 	}
 	if got := db.NewRepo(database).GetConnectionOAuthFailures("conn-broken"); got != 0 {
 		t.Errorf("failure count after a successful refresh = %d, want 0", got)
+	}
+}
+
+func TestOAuthRefresh_SingleflightCollapsesConcurrentCalls(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	dropSeededConn(t, database)
+
+	var calls atomic.Int32
+	previous := oauth.Get(oauthLockTestProvider)
+	oauth.Register(oauthLockTestProvider, func(_ context.Context, _ *oauth.Params) (*oauth.TokenResult, error) {
+		calls.Add(1)
+		time.Sleep(30 * time.Millisecond) // simulate remote refresh latency
+		return &oauth.TokenResult{AccessToken: "fresh-token", RefreshToken: "fresh-refresh", ExpiresIn: 3600}, nil
+	})
+	t.Cleanup(func() { oauth.Register(oauthLockTestProvider, previous) })
+
+	insertOAuthConn(t, database, "conn-concurrent", 1, expiredOAuthData(t))
+
+	handler := NewChatHandler(db.NewRepo(database))
+
+	const concurrentCount = 10
+	var wg sync.WaitGroup
+	results := make([]string, concurrentCount)
+	errs := make([]error, concurrentCount)
+
+	wg.Add(concurrentCount)
+	for i := range concurrentCount {
+		go func(idx int) {
+			defer wg.Done()
+			token, _, err := handler.RefreshOAuthTokenIfExpired("conn-concurrent", "stale-token")
+			results[idx] = token
+			errs[idx] = err
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d failed: %v", i, err)
+		}
+		if results[i] != "fresh-token" {
+			t.Errorf("goroutine %d got token %q, want fresh-token", i, results[i])
+		}
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("refresher called %d times, want exactly 1 (singleflight collapse)", got)
+	}
+}
+
+// A connection whose token has not expired must leave the caller's token
+// exactly as it was. iFlow is the case that proves it: it stores an HMAC
+// platform key in `apiKey` and the OAuth access token beside it, and
+// proxy/executor signs the outbound request with `apiKey`. Returning the
+// stored access token here looks like a harmless upgrade and silently breaks
+// every healthy iFlow connection, because the signature is computed over the
+// wrong secret.
+func TestOAuthRefresh_UnexpiredTokenKeepsCallerToken(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	dropSeededConn(t, database)
+
+	data, err := json.Marshal(map[string]any{
+		"apiKey":       "IFLOW-PLATFORM-KEY",
+		"accessToken":  "OAUTH-ACCESS-TOKEN",
+		"refreshToken": "unused-while-valid",
+		"expiresAt":    time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("marshal connection data: %v", err)
+	}
+	insertOAuthConn(t, database, "conn-iflow", 1, string(data))
+
+	handler := NewChatHandler(db.NewRepo(database))
+	got, _, err := handler.RefreshOAuthTokenIfExpired("conn-iflow", "IFLOW-PLATFORM-KEY")
+	if err != nil {
+		t.Fatalf("RefreshOAuthTokenIfExpired: %v", err)
+	}
+	if got != "IFLOW-PLATFORM-KEY" {
+		t.Fatalf("got token %q, want the caller's own token; substituting the stored access token signs iflow requests with the wrong secret", got)
+	}
+}
+
+// Collapsing the refresh is only safe if each waiter still keeps the token it
+// arrived with. When the leader finds the connection healthy its result is a
+// pass-through, and sharing that value would hand the leader's credentials to
+// every other caller in the flight.
+func TestOAuthRefresh_SharedFlightKeepsEachCallersToken(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	dropSeededConn(t, database)
+
+	data, err := json.Marshal(map[string]any{
+		"apiKey":       "IFLOW-PLATFORM-KEY",
+		"accessToken":  "OAUTH-ACCESS-TOKEN",
+		"refreshToken": "unused-while-valid",
+		"expiresAt":    time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("marshal connection data: %v", err)
+	}
+	insertOAuthConn(t, database, "conn-shared", 1, string(data))
+
+	handler := NewChatHandler(db.NewRepo(database))
+
+	tokens := []string{"caller-a", "caller-b", "caller-c"}
+	got := make([]string, len(tokens))
+	var wg sync.WaitGroup
+	wg.Add(len(tokens))
+	for i, token := range tokens {
+		go func(idx int, want string) {
+			defer wg.Done()
+			got[idx], _, _ = handler.RefreshOAuthTokenIfExpired("conn-shared", want)
+		}(i, token)
+	}
+	wg.Wait()
+
+	for i, want := range tokens {
+		if got[i] != want {
+			t.Errorf("caller %s received %q, want its own token; a shared flight must not hand one caller's token to another", want, got[i])
+		}
+	}
+}
+
+// The same rule holds when the shared flight fails. Every caller in the
+// flight gets the error, and each must still receive the token it arrived
+// with — the leader's token is not a fallback for anyone else.
+func TestOAuthRefresh_FailedSharedFlightKeepsEachCallersToken(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	dropSeededConn(t, database)
+
+	var calls atomic.Int32
+	previous := oauth.Get(oauthLockTestProvider)
+	oauth.Register(oauthLockTestProvider, func(_ context.Context, _ *oauth.Params) (*oauth.TokenResult, error) {
+		calls.Add(1)
+		time.Sleep(30 * time.Millisecond)
+		return nil, &providers.OAuthRefreshError{Status: 400, Body: "invalid_grant"}
+	})
+	t.Cleanup(func() { oauth.Register(oauthLockTestProvider, previous) })
+
+	insertOAuthConn(t, database, "conn-shared-fail", 1, expiredOAuthData(t))
+
+	handler := NewChatHandler(db.NewRepo(database))
+
+	tokens := []string{"caller-a", "caller-b", "caller-c"}
+	got := make([]string, len(tokens))
+	var wg sync.WaitGroup
+	wg.Add(len(tokens))
+	for i, token := range tokens {
+		go func(idx int, want string) {
+			defer wg.Done()
+			got[idx], _, _ = handler.RefreshOAuthTokenIfExpired("conn-shared-fail", want)
+		}(i, token)
+	}
+	wg.Wait()
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("refresher called %d times, want exactly 1 (singleflight collapse)", got)
+	}
+	for i, want := range tokens {
+		if got[i] != want {
+			t.Errorf("caller %s received %q after a failed refresh, want its own token", want, got[i])
+		}
 	}
 }

@@ -20,6 +20,7 @@
   } from '../lib/codexResetCredit'
   import { PROVIDER_CATALOG } from '../lib/providers'
   import { copyToClipboard } from '../lib/clipboard'
+  import { emailPrivacy, formatEmailLabel } from '../lib/privacy'
   import Toggle from '../lib/ui/Toggle.svelte'
   import { getIconPath } from './connections/types'
   import EditConnectionModal, { type ConnectionUpdate } from './connections/EditConnectionModal.svelte'
@@ -939,6 +940,22 @@
         </select>
       {/if}
 
+      <!-- Sensor email toggle -->
+      <button
+        type="button"
+        onclick={() => emailPrivacy.toggle()}
+        aria-pressed={$emailPrivacy}
+        class="flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors cursor-pointer {$emailPrivacy
+          ? 'border-brand-500/40 bg-brand-500/10 text-brand-500 font-medium'
+          : 'border-border-subtle bg-surface text-text-main hover:bg-surface-2'}"
+        title={$emailPrivacy ? 'Tampilkan email lengkap' : 'Sensor / sembunyikan email'}
+      >
+        <span class="material-symbols-outlined text-[14px]">
+          {$emailPrivacy ? 'visibility_off' : 'visibility'}
+        </span>
+        <span class="hidden sm:inline">{$emailPrivacy ? 'Email Disensor' : 'Sensor Email'}</span>
+      </button>
+
       <!-- Expiring first -->
       <button
         type="button"
@@ -1082,10 +1099,10 @@
                     {providerLabel(conn.provider)}
                   </h3>
                   {#if getConnectionLabel(conn)}
-                    <p class="truncate text-xs text-text-muted">{getConnectionLabel(conn)}</p>
+                    <p class="truncate text-xs text-text-muted">{formatEmailLabel(getConnectionLabel(conn), $emailPrivacy)}</p>
                   {/if}
                   {#if getConnectionSecondaryLabel(conn)}
-                    <p class="truncate text-[11px] text-text-muted/80">{getConnectionSecondaryLabel(conn)}</p>
+                    <p class="truncate text-[11px] text-text-muted/80">{formatEmailLabel(getConnectionSecondaryLabel(conn), $emailPrivacy)}</p>
                   {/if}
                   {#if conn.provider === 'kiro'}
                     <div class="mt-1 flex flex-wrap items-center gap-1">

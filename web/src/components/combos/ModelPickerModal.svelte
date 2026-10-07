@@ -14,6 +14,7 @@
     resolveModelPickerGroups,
   } from './pickerData'
   import { EMPTY_PICKER_EXTRAS, loadPickerExtras, type ResolvedPickerExtras } from './pickerExtras'
+  import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
 
   interface Props {
     isOpen: boolean
@@ -194,7 +195,7 @@
                 }}
               />
               <span class="text-xs font-medium text-brand-500">
-                {group.name}
+                {formatEmailLabel(group.name, $emailPrivacy)}
               </span>
               <span class="text-[10px] text-text-muted">
                 ({group.models.length})

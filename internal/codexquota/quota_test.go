@@ -2,9 +2,11 @@ package codexquota
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -334,4 +336,80 @@ func withTestURL(t *testing.T, url string) {
 	prev := UsageURL
 	UsageURL = url
 	t.Cleanup(func() { UsageURL = prev })
+}
+
+func TestWindow_Remaining(t *testing.T) {
+	var nilW *Window
+	if nilW.Remaining() != 0 {
+		t.Errorf("expected 0 for nil window, got %f", nilW.Remaining())
+	}
+	w := &Window{UsedPercent: 35.5}
+	if w.Remaining() != 64.5 {
+		t.Errorf("expected 64.5, got %f", w.Remaining())
+	}
+	wOver := &Window{UsedPercent: 110.0}
+	if wOver.Remaining() != 0 {
+		t.Errorf("expected 0 for over-limit window, got %f", wOver.Remaining())
+	}
+}
+
+func TestErrors_StringAndUnwrap(t *testing.T) {
+	se := &StatusError{Status: 404}
+	if se.Error() == "" || !strings.Contains(se.Error(), "404") {
+		t.Errorf("unexpected StatusError.Error(): %s", se.Error())
+	}
+
+	inner := errors.New("connection refused")
+	pre := &ProxyRefusedError{URL: "https://example.com", Err: inner}
+	if pre.Unwrap() != inner {
+		t.Errorf("ProxyRefusedError.Unwrap() = %v, want %v", pre.Unwrap(), inner)
+	}
+	if !strings.Contains(pre.Error(), "https://example.com") {
+		t.Errorf("unexpected ProxyRefusedError.Error(): %s", pre.Error())
+	}
+
+	rce := resetError(409, "no_credit", "no available credits")
+	if !strings.Contains(rce.Error(), "no_credit") || !strings.Contains(rce.Error(), "no available credits") {
+		t.Errorf("unexpected ResetCreditError.Error(): %s", rce.Error())
+	}
+}
+
+func TestFiniteNum_EdgeCases(t *testing.T) {
+	cases := []struct {
+		input any
+		want  float64
+	}{
+		{int(10), 10.0},
+		{"25.5", 25.5},
+		{"invalid", 0.0},
+		{math.NaN(), 0.0},
+		{math.Inf(1), 0.0},
+		{map[string]any{"val": 55.0}, 55.0},
+		{map[string]any{"val": "77.5"}, 77.5},
+		{map[string]any{"other": 1.0}, 0.0},
+		{nil, 0.0},
+	}
+	for _, tc := range cases {
+		got := finiteNum(tc.input)
+		if got != tc.want {
+			t.Errorf("finiteNum(%v) = %f, want %f", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestFetch_SuccessWithDefaultClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":10}}}`))
+	}))
+	defer srv.Close()
+
+	withTestURL(t, srv.URL)
+	u, err := Fetch(t.Context(), srv.Client(), "valid-token")
+	if err != nil {
+		t.Fatalf("unexpected fetch error: %v", err)
+	}
+	if u.Plan != "plus" {
+		t.Errorf("expected plan plus, got %s", u.Plan)
+	}
 }

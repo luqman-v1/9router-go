@@ -58,7 +58,6 @@ func setupDeprecatedModelCombo(t *testing.T, deadBody string) (*ChatHandler, *db
 		t.Fatalf("insert second connection: %v", err)
 	}
 
-
 	comboModels, _ := json.Marshal([]string{"deepseek/deepseek-chat", "deepseek/qwen3-32b"})
 	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
 		('combo-deprecated', 'combo-deprecated', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,

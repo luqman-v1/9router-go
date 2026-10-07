@@ -19,6 +19,7 @@
   import UsageBreakdownTable from './UsageBreakdownTable.svelte'
   import RequestDetailsTab from './RequestDetailsTab.svelte'
   import ProviderTopologyCard from './ProviderTopologyCard.svelte'
+  import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   interface Props {
     connections?: ProviderConnection[]
     providerNodes?: ProviderNode[]
@@ -295,14 +296,16 @@
   })
 
   function topologyName(providerId: string, fallbackName?: string): string {
-    const nodeName = nodeNameById.get(providerId)
+    // The fallback is a connection name, and for OAuth connections that is
+    // the account email — mask it the same way the connection lists do.
+    const nodeName = formatEmailLabel(nodeNameById.get(providerId) ?? '', $emailPrivacy)
     if (nodeName) return nodeName
     const cat = PROVIDER_CATALOG.find((p) => p.id === providerId || p.alias === providerId)
     if (cat?.name) return cat.name
     if (fallbackName && fallbackName !== providerId) {
       // Numeric key names (e.g. "12") are connection labels, not provider names —
       // fall back to the raw provider id so custom nodes never render as "12".
-      if (!/^\d+$/.test(fallbackName.trim())) return fallbackName
+      if (!/^\d+$/.test(fallbackName.trim())) return formatEmailLabel(fallbackName, $emailPrivacy)
       return providerId
     }
     return providerId

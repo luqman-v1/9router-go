@@ -732,6 +732,46 @@ is green; 20 consecutive runs of the formerly flaky test are green. The workflow
 file is run by an ubuntu runner (cgo is available there), not a local machine
 without a C compiler.
 
+### 🔒 OAuth refresh singleflight, email masking, & backend test coverage
+
+- **OAuth refresh singleflight**: `refreshOAuthTokenIfExpired` and
+  `forceRefreshOAuthToken` (`internal/handlers/chat/gemini_handler.go`) run
+  inside a `singleflight.Group` keyed per connection, so an expired token costs
+  one upstream round-trip instead of one per concurrent request. The forced
+  refresh uses a `\x00`-prefixed key, which a connection id can never contain,
+  so the two flights cannot collide.
+- **Routing unchanged**: Antigravity-prefixed models (`ag/muse-spark-*`) still
+  route to their owning executor via `routeModelToOwningProvider` in
+  `internal/handlers/chat/resolution.go`.
+- **Email masking**: `web/src/lib/privacy.ts` adds `maskEmail` /
+  `formatEmailLabel` plus an `emailPrivacy` store persisted to
+  `localStorage['9router_mask_email']`, with a toggle in Quota Tracker,
+  Provider Detail, and the Media views so account emails can be hidden while
+  screen sharing. `maskEmail` is idempotent, the store follows the `storage`
+  event so a second window stays in sync, and the toggle also appears in the
+  Model picker, Analytics topology, and the Media header — the tabs that never
+  mount the Providers view and therefore had no way to reach it.
+- **A masked label can never be written back**: the shared
+  `EditConnectionModal` seeds the name field through `formatEmailLabel` and
+  submits `undefined` unless the field differs from both the raw and the
+  masked value. Saving a priority change with masking on leaves the stored
+  name alone instead of persisting `l***m@gmail.com` into
+  `providerConnections.name`.
+- **Backend test coverage**: unit tests added across `config`, `codexquota`,
+  `usagetracker`, `middleware`, `translator`, `app`, `handlerutil`, and `proc`
+  (7 packages ≥ 85%; `internal/app` 81.7%). `internal/proc` also dropped from
+  ~60s to under a second by killing the child process instead of waiting out
+  its lifetime. The two envelope-unwrap tests assert the envelope key is
+  gone, so they fail when the unwrap is a no-op.
+
+**Regression coverage added with this change:** an unexpired token must return
+the caller's own token, and a waiter sharing a collapsed flight must not be
+handed the leader's. Both are new — no test previously sent a connection whose
+`apiKey` differs from its `accessToken`, which is exactly the iFlow shape
+(HMAC platform key plus a separate OAuth token), and that gap is why a token
+substitution in this path passed the full suite while signing iFlow requests
+with the wrong secret.
+
 ### 🩹 Failed usage reads silently reported as zero — Usage & Analytics dashboard
 
 `GetUsageDailyRecent`, `GetUsageHistorySince`, `GetRecentUsageHistory`,

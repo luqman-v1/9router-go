@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/models"
@@ -27,6 +29,10 @@ type ChatHandler struct {
 	TokenSaver  *shared.TokenSaverConfig
 	stickyMu    sync.Mutex
 	stickyState map[string]*comboStickyState
+	// oauthRefreshFlight collapses concurrent OAuth token refreshes for the
+	// same connection, so an expired token triggers one upstream round-trip
+	// instead of one per in-flight request.
+	oauthRefreshFlight singleflight.Group
 	// deprecationCache throttles kv writes when a provider retires a model:
 	// every request at a dead combo entry arrives as a fresh 410, and each
 	// one would otherwise upsert the same row.
@@ -36,6 +42,7 @@ type ChatHandler struct {
 
 // Type aliases for shared types
 type ModelInfo = shared.ModelInfo
+
 // ProviderConnection is the stored connection row.
 type ProviderConnection = models.ProviderConnection
 type ConnectionData = shared.ConnectionData

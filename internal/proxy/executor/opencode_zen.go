@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
 
@@ -156,7 +156,7 @@ func stripOpenCodePrefix(model string, prefixes ...string) string {
 	for _, p := range prefixes {
 		clean = strings.TrimPrefix(clean, p+"/")
 	}
-	for _, p := range []string{"opencode-go/", "opencode/", "oc/", "antigravity/", "ag/"} {
+	for _, p := range []string{"opencode-go/", "opencode/", "oc/"} {
 		clean = strings.TrimPrefix(clean, p)
 	}
 	if parenIdx := strings.IndexByte(clean, '('); parenIdx != -1 {

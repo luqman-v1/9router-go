@@ -548,6 +548,8 @@ func TestResolveModel_AntigravityMuseSparkRoutesToOpencode(t *testing.T) {
 		t.Fatalf("expected opencode/muse-spark-1.3-contributor-free, got %s/%s", info.Provider, info.Model)
 	}
 
+	// resolveModelEntryGuarded is the path the six combo callers use; without
+	// this the routing fix was only covered through resolveModel.
 	entry := h.resolveModelEntry("ag/muse-spark-1.3-contributor-free")
 	if entry == nil || entry.Provider != "opencode" {
 		t.Fatalf("resolveModelEntry: expected opencode, got %+v", entry)

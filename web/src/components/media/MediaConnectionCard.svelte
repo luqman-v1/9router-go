@@ -3,6 +3,7 @@
   import type { ProviderConnection } from '../../api/client'
   import Card from '../../lib/ui/Card.svelte'
   import Toggle from '../../lib/ui/Toggle.svelte'
+  import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
 
   interface Props {
     conn: ProviderConnection
@@ -20,7 +21,7 @@
     <div class="w-2.5 h-2.5 rounded-full shrink-0 {conn.isActive === 1 ? (conn.lastError ? 'bg-red-500' : 'bg-emerald-500') : 'bg-text-muted/40'}"></div>
     <div class="min-w-0">
       <p class="text-sm font-medium text-text-main truncate">
-        {conn.displayName || conn.name || conn.email || conn.id}
+        {formatEmailLabel(conn.displayName || conn.name || conn.email || conn.id, $emailPrivacy)}
       </p>
       <div class="flex items-center gap-2 text-xs text-text-muted mt-0.5">
         <span class="font-mono text-[11px]">{conn.authType}</span>

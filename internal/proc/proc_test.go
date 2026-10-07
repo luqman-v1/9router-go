@@ -89,3 +89,47 @@ func TestTerminateDeadProcessIsAlreadyDone(t *testing.T) {
 		t.Fatal("Terminate(0) must report success: nothing to stop")
 	}
 }
+
+func TestDetached(t *testing.T) {
+	attr := Detached()
+	if attr == nil {
+		t.Fatal("expected non-nil SysProcAttr from Detached()")
+	}
+}
+
+func TestSelfExecutable(t *testing.T) {
+	p, err := SelfExecutable()
+	if err != nil {
+		t.Fatalf("SelfExecutable failed: %v", err)
+	}
+	if p == "" {
+		t.Fatal("expected non-empty path from SelfExecutable()")
+	}
+}
+
+func TestForceKill_InvalidPIDs(t *testing.T) {
+	if err := ForceKill(0); err == nil {
+		t.Error("expected error for ForceKill(0)")
+	}
+	if err := ForceKill(-1); err == nil {
+		t.Error("expected error for ForceKill(-1)")
+	}
+}
+
+func TestResolveImagePath_EmptyAndEdge(t *testing.T) {
+	if got := resolveImagePath(""); got != "" {
+		t.Errorf("resolveImagePath(\"\") = %q, want empty", got)
+	}
+	if got := resolveImagePath("   "); got != "" {
+		t.Errorf("resolveImagePath(\"   \") = %q, want empty", got)
+	}
+}
+
+func TestWaitExit_Timeout(t *testing.T) {
+	pid := longLivedPID(t)
+	t.Cleanup(func() { _ = ForceKill(pid) })
+	// Wait for 1ms on a live process should time out and return false
+	if waitExit(pid, 1) {
+		t.Error("expected waitExit to return false on timeout")
+	}
+}
