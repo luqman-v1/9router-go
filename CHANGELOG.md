@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### 🐛 `TranslateOpenAIToGemini` dropped tool call ids, so Claude on Antigravity 400'd on any tool history
+
+Every Claude model behind Antigravity (`ag/claude-*`) rejected any request whose
+conversation contained a tool call:
+
+```
+messages.1.content.0.tool_use.id: Field required
+```
+
+The Gemini structs already carried `ID`, but `TranslateOpenAIToGemini` never
+assigned it — neither on `functionCall` (assistant turn) nor on
+`functionResponse` (tool turn). Gemini's own models tolerate a missing id, so
+this only surfaced on Claude: Antigravity hands the Gemini body to Vertex
+Anthropic, which rebuilds a `tool_use` block per `functionCall` and rejects it
+without an id. Combos masked it by silently falling through to the next model.
+
+Upstream sets both (`id: tc.id` / `id: fid` in
+`open-sse/translator/request/openai-to-gemini.js`); this is the matching parity.
+Both sides now carry the id, stripped of the `__ts__<sig>` suffix — that suffix
+is 9router-go's private thought-signature transport and must not reach the wire
+or desynchronise a call from its response.
+
 ## [v1.9.10] - 2026-10-07
 
 ### 🩺 `text-danger` fails the contrast bar in dark theme — error text is nearly unreadable

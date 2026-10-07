@@ -628,3 +628,87 @@ func TestHardenAntigravityRequest_GuardsThinkingBudget(t *testing.T) {
 		t.Errorf("expected maxOutputTokens (%v) > 4096", maxTokens)
 	}
 }
+
+func TestTranslateOpenAIToGemini_CarriesToolCallIDs(t *testing.T) {
+	// Antigravity routes Claude through Vertex Anthropic, which rebuilds a
+	// tool_use block per functionCall and rejects the request with
+	// "tool_use.id: Field required" when the id is missing.
+	openaiJSON := []byte(`{
+		"model": "antigravity/claude-opus-4-6-thinking",
+		"messages": [
+			{"role": "user", "content": "List files."},
+			{"role": "assistant", "content": "", "tool_calls": [
+				{"id": "call_abc123", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}}
+			]},
+			{"role": "tool", "tool_call_id": "call_abc123", "content": "file1.txt"},
+			{"role": "user", "content": "How many files?"}
+		]
+	}`)
+
+	geminiBytes, err := TranslateOpenAIToGemini(openaiJSON)
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini failed: %v", err)
+	}
+
+	var req GeminiRequest
+	if err := json.Unmarshal(geminiBytes, &req); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+
+	var callID, respID string
+	for _, c := range req.Contents {
+		for _, p := range c.Parts {
+			if p.FunctionCall != nil && p.FunctionCall.Name == "bash" {
+				callID = p.FunctionCall.ID
+			}
+			if p.FunctionResponse != nil && p.FunctionResponse.Name == "bash" {
+				respID = p.FunctionResponse.ID
+			}
+		}
+	}
+	if callID != "call_abc123" {
+		t.Errorf("functionCall id = %q, want %q", callID, "call_abc123")
+	}
+	if respID != "call_abc123" {
+		t.Errorf("functionResponse id = %q, want %q", respID, "call_abc123")
+	}
+}
+
+func TestTranslateOpenAIToGemini_ToolCallIDDropsThoughtSigSuffix(t *testing.T) {
+	// The __ts__<sig> suffix is 9router-go's private transport for thought
+	// signatures. It must not reach the wire nor break call/response pairing.
+	openaiJSON := []byte(`{
+		"model": "gemini-3.8-flash",
+		"messages": [
+			{"role": "user", "content": "Run it."},
+			{"role": "assistant", "content": "", "tool_calls": [
+				{"id": "call_get_weather_0__ts__SIG123", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}
+			]},
+			{"role": "tool", "tool_call_id": "call_get_weather_0__ts__SIG123", "content": "sunny"}
+		]
+	}`)
+
+	geminiBytes, err := TranslateOpenAIToGemini(openaiJSON)
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini failed: %v", err)
+	}
+	if strings.Contains(string(geminiBytes), "__ts__") {
+		t.Fatalf("thought-signature transport suffix leaked into the Gemini body: %s", string(geminiBytes))
+	}
+
+	var req GeminiRequest
+	if err := json.Unmarshal(geminiBytes, &req); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+
+	for _, c := range req.Contents {
+		for _, p := range c.Parts {
+			if p.FunctionCall != nil && p.FunctionCall.ID != "call_get_weather_0" {
+				t.Errorf("functionCall id = %q, want %q", p.FunctionCall.ID, "call_get_weather_0")
+			}
+			if p.FunctionResponse != nil && p.FunctionResponse.ID != "call_get_weather_0" {
+				t.Errorf("functionResponse id = %q, want %q", p.FunctionResponse.ID, "call_get_weather_0")
+			}
+		}
+	}
+}
