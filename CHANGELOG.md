@@ -72,6 +72,19 @@ it did before.
   the policy, which took the audit trail explaining why it existed with it. Both the request
   and response taps read the switch. It defaults to on, so a configured policy is never
   silently ignored because a setting was never written.
+- Global rate-limit defaults (`settings.rateLimitEnabled`, `defaultRpm`, `defaultTpm`,
+  `defaultConcurrency`, `rateWindowSeconds`) plus the resolution order that makes them safe:
+  a key's own column always wins where it is set, and the global default only fills the
+  columns an operator left at 0. An install that configured nothing is still unlimited,
+  and a key deliberately given a higher budget is never silently capped by a later global
+  change.
+- TPM is charged in two phases. The pre-dispatch reservation is reconciled against the
+  turn's real token count once the response is metered, so the bucket no longer drifts on
+  the estimate forever. Only an under-estimate is corrected — refunding the surplus would
+  let a client bank credit by over-stating its prompt.
+- `GuardrailDecisions` and `GuardrailEval` collectors, and a call site for the
+  `RateLimitRejects` counter that shipped with a field and a helper but no caller, so the
+  series was permanently zero.
 
 **Changed**
 
@@ -102,6 +115,14 @@ it did before.
   caller, so the resale bookkeeping the key table and policy modal display stayed at zero
   forever. Both are now recorded on every authenticated request, after every check that can
   reject, so a request refused for a bad, disabled, or expired key is not counted as usage.
+
+- A rate-limited 429 carried neither `X-RateLimit-Limit` nor `X-RateLimit-Reset`, and its
+  body was a static string, so a client could not back off without guessing the wait. The
+  per-axis headers are now set and the message states the delay.
+- The rate limiter and `/api/metrics` had no integration coverage: every 429 in the suite
+  was an *upstream* refusing the gateway, and the metrics endpoint was never scraped
+  through the router. A limiter mounted in the wrong route group, or an endpoint with a
+  correct auth check but no live collector behind it, would have passed everything.
 
 ## [v1.9.10-exp.3] - 2026-10-07
 

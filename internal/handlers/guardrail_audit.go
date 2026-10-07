@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	json "encoding/json/v2"
+	"time"
+
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/guardrails"
 	"9router/proxy/internal/log"
-	json "encoding/json/v2"
+	"9router/proxy/internal/observ"
 )
 
 // guardrailAudit persists one guardrail decision per firing.
@@ -14,6 +17,13 @@ import (
 // into a block. The failure is visible in the error log instead.
 func guardrailAudit(repo *db.Repo) guardrails.Audit {
 	return func(d guardrails.Decision, t guardrails.Target) {
+		start := time.Now()
+		observ.RecordGuardrailDecision(
+			firstDetector(d),
+			string(d.Action),
+			string(guardrails.DirectionInbound),
+			time.Since(start),
+		)
 		findings, err := json.Marshal(d.Findings)
 		if err != nil {
 			findings = []byte("[]")

@@ -88,7 +88,7 @@ func TestEstimatePromptTokensScalesWithContent(t *testing.T) {
 func TestRequireRateLimitChargesRealTokens(t *testing.T) {
 	rl := NewRateLimiter(time.Minute)
 	// Room for roughly one small request and nothing for a large one.
-	handler := RequireRateLimit(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireRateLimit(rl, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -121,7 +121,7 @@ func TestRequireRateLimitLeavesBodyReadable(t *testing.T) {
 	const body = `{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`
 
 	var seen string
-	handler := RequireRateLimit(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireRateLimit(rl, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("handler could not read body: %v", err)
@@ -153,7 +153,7 @@ func TestRequireRateLimitDoesNotBufferWhenTPMUnset(t *testing.T) {
 	var reads int
 	guard := &countingBody{inner: io.NopCloser(strings.NewReader(`{"messages":[{"role":"user","content":"hi"}]}`)), reads: &reads}
 
-	handler := RequireRateLimit(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireRateLimit(rl, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

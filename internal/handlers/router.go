@@ -458,7 +458,20 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	// authenticated key. Guardrails sit after both: a policy is scoped by API
 	// key, and a caller the limiter already rejected must not be able to make
 	// the gateway scan content either.
-	rateLimiter := middleware.NewRateLimiter(time.Minute)
+	// The limiter's window is a startup read: every in-memory sliding window is
+	// sized against it, so changing it has to restart the gateway.
+	window := time.Duration(repo.GetRateLimitDefaults().WindowSeconds) * time.Second
+	rateLimiter := middleware.NewRateLimiter(window)
+	// The fallback itself is read per request, so an operator can raise or drop
+	// a global default without a restart. Only the window, which the live
+	// windows already depend on, is pinned at boot.
+	defaults := func() middleware.Limits {
+		d := repo.GetRateLimitDefaults()
+		if !d.Enabled {
+			return middleware.Limits{}
+		}
+		return middleware.Limits{RPM: d.RPM, TPM: d.TPM, Concurrency: d.Concurrency}
+	}
 	guardrailStore := guardrails.NewStore(repo.RawDB())
 	// One switch for both taps. It reads the settings row per request, which is
 	// a single indexed read on an already-loaded connection, and buys an
@@ -466,7 +479,7 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	guardrailSwitch := guardrails.Switch(func() bool { return repo.GetGuardrailsEnabled() })
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireApiKey(repo))
-		r.Use(middleware.RequireRateLimit(rateLimiter))
+		r.Use(middleware.RequireRateLimit(rateLimiter, defaults))
 		r.Use(guardrails.Inbound(guardrailStore, guardrailAudit(repo), guardrailSwitch))
 		SetupRoutes(r, repo, ts)
 	})

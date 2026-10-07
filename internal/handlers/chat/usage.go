@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/usagetracker"
@@ -122,12 +124,12 @@ func sanitizeDetailError(message string) string {
 }
 
 // LogUsage is the exported method to persist a usage record and update connection metadata.
-func (h *ChatHandler) LogUsage(info *UsageLogInfo, usage *translator.OpenAIUsage, latencyMs int64, requestBody []byte, metrics *streamMetrics) {
-	h.logUsage(info, usage, latencyMs, requestBody, metrics)
+func (h *ChatHandler) LogUsage(ctx context.Context, info *UsageLogInfo, usage *translator.OpenAIUsage, latencyMs int64, requestBody []byte, metrics *streamMetrics) {
+	h.logUsage(ctx, info, usage, latencyMs, requestBody, metrics)
 }
 
 // logUsage persists a usage record and updates connection metadata.
-func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage, latencyMs int64, requestBody []byte, metrics *streamMetrics) {
+func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *translator.OpenAIUsage, latencyMs int64, requestBody []byte, metrics *streamMetrics) {
 	if usage == nil {
 		usage = &translator.OpenAIUsage{}
 	}
@@ -182,6 +184,16 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 		usageKVs = append(usageKVs, "compressed", fmt.Sprintf("%d->%d (%d%% saved)", info.OriginalInputTokens, info.OriginalInputTokens-info.SavedTokens, info.SavedPercent))
 	}
 	log.Info("usage", "logged", append(usageKVs, info.ConnIdentityKV()...)...)
+
+	// Reconcile the limiter's TPM reservation against what the turn actually
+	// cost. Without this the bucket is charged an estimate forever: a key whose
+	// prompts are consistently under-estimated spends past the limit that
+	// exists to bound exactly that.
+	//
+	// The reservation was taken before dispatch, from a body the gateway may
+	// since have rewritten, so the real total is the only honest number to
+	// settle against.
+	middleware.SettleTokenUsageFromContext(ctx, totalTokens)
 
 	// reasoning_tokens belongs here for the same reason as the cache figures:
 	// the stored row is what the dashboard bills and charts from, so omitting

@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -11,6 +13,8 @@ import (
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/models"
+	"9router/proxy/internal/observ"
 )
 
 // RateLimiter implements per-key rate limiting with sliding window RPM,
@@ -85,6 +89,34 @@ func (rl *RateLimiter) ReleaseConcurrency(keyID string) {
 	rl.mu.Unlock()
 	if exists && counter != nil {
 		atomic.AddInt32(counter, -1)
+	}
+}
+
+// SettleTokenUsage reconciles a reservation against what the turn actually cost.
+//
+// The pre-dispatch charge is an estimate read off the request body; the real
+// cost is only known once the response has been metered. Without this the bucket
+// drifts in one direction forever: an over-estimate permanently starves a key
+// that is well inside its budget, and an under-estimate lets it spend past the
+// very limit that exists to bound it.
+//
+// Only an under-estimate is corrected. Refunding the surplus would let a client
+// bank credit by over-stating its prompt, which is precisely what a token limit
+// has to resist.
+func (rl *RateLimiter) SettleTokenUsage(keyID string, tpm, reserved, actual int) {
+	if tpm <= 0 || keyID == "" || actual <= reserved {
+		return
+	}
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	bucket, exists := rl.tokens[keyID]
+	if !exists {
+		return
+	}
+	bucket.tokens -= float64(actual - reserved)
+	if bucket.tokens < 0 {
+		bucket.tokens = 0
 	}
 }
 
@@ -223,7 +255,7 @@ func (rl *RateLimiter) evictIfNeeded() {
 // once here to size it and then handed to the next handler intact. Reading it
 // unconditionally would buffer large uploads for every request, so it is only
 // read when a TPM limit is actually configured.
-func RequireRateLimit(rl *RateLimiter) func(http.Handler) http.Handler {
+func RequireRateLimit(rl *RateLimiter, defaults Defaults) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			apiKey := GetAuthenticatedApiKey(r)
@@ -232,46 +264,174 @@ func RequireRateLimit(rl *RateLimiter) func(http.Handler) http.Handler {
 				return
 			}
 
-			rpm := 0
-			tpm := 0
-			concurrency := 0
-			if apiKey.RateLimitRPM != nil {
-				rpm = *apiKey.RateLimitRPM
-			}
-			if apiKey.RateLimitTPM != nil {
-				tpm = *apiKey.RateLimitTPM
-			}
-			if apiKey.RateLimitConcurrency != nil {
-				concurrency = *apiKey.RateLimitConcurrency
-			}
-
+			limits := limitsFor(apiKey, defaults)
 			promptTokens := 0
-			if tpm > 0 {
+			if limits.TPM > 0 {
 				promptTokens = promptTokensForRequest(r)
 			}
 
-			allowed, retryAfter := rl.Check(apiKey.ID, rpm, tpm, concurrency, promptTokens)
+			allowed, retryAfter := rl.Check(apiKey.ID, limits.RPM, limits.TPM, limits.Concurrency, promptTokens)
 			if !allowed {
-				log.Warn("rate limit", "key", apiKey.ID, "retryAfter", retryAfter)
-				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-				if rpm > 0 {
-					w.Header().Set("X-RateLimit-Limit-RPM", strconv.Itoa(rpm))
-				}
-				if tpm > 0 {
-					w.Header().Set("X-RateLimit-Limit-TPM", strconv.Itoa(tpm))
-				}
-				w.Header().Set("X-RateLimit-Remaining", "0")
-				handlerutil.WriteJSONError(w, http.StatusTooManyRequests, "Rate limit exceeded. Retry after a few seconds.")
+				rejectRateLimited(w, apiKey.ID, limits, retryAfter)
 				return
 			}
 
 			// Release concurrency after request completes
-			if concurrency > 0 {
+			if limits.Concurrency > 0 {
 				defer rl.ReleaseConcurrency(apiKey.ID)
+			}
+
+			// A TPM charge is an estimate; the meter reconciles it once the real
+			// usage is known. The reservation travels on the context so the
+			// settle hook is only installed for requests that were actually
+			// charged.
+			if limits.TPM > 0 {
+				r = r.WithContext(withReservedTokens(r.Context(), promptTokens))
 			}
 
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+// EffectiveTPM returns the TPM limit that applies to a key, resolving the
+// key's column against the operator's global default exactly as the limiter
+// does.
+//
+// The metering path needs the same number the limiter charged: reconciling the
+// real usage against a different limit would settle the charge into the wrong
+// bucket.
+func EffectiveTPM(d Defaults, apiKey *models.APIKey) int {
+	return limitsFor(apiKey, d).TPM
+}
+
+// reservedCtxKey carries the TPM charge the limiter took for this request, and
+// tokenSettlerKey the hook that reconciles it once the real usage is known.
+type reservedCtxKey struct{}
+
+type tokenSettlerKey struct{}
+
+// withReservedTokens records the TPM reservation on the context so the metering
+// path can settle it.
+func withReservedTokens(ctx context.Context, reserved int) context.Context {
+	return context.WithValue(ctx, reservedCtxKey{}, reserved)
+}
+
+// ReservedTokensFromContext returns the TPM reservation, or false when no TPM
+// limit applied and therefore nothing was charged.
+func ReservedTokensFromContext(ctx context.Context) (int, bool) {
+	if ctx == nil {
+		return 0, false
+	}
+	v, ok := ctx.Value(reservedCtxKey{}).(int)
+	return v, ok
+}
+
+// WithTokenSettler installs the hook the metering path calls with the turn's
+// real token count.
+func WithTokenSettler(ctx context.Context, settle func(actual int)) context.Context {
+	if ctx == nil || settle == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, tokenSettlerKey{}, settle)
+}
+
+// SettleTokenUsageFromContext reconciles the reservation against actual usage,
+// if this request had one. A request that was never charged, or whose handler
+// never reached the meter, simply has nothing to settle.
+func SettleTokenUsageFromContext(ctx context.Context, actual int) {
+	if ctx == nil {
+		return
+	}
+	if settle, ok := ctx.Value(tokenSettlerKey{}).(func(int)); ok {
+		settle(actual)
+	}
+}
+
+// Defaults supplies the operator's global fallback, read fresh per request so
+// a settings change takes effect without a restart.
+type Defaults func() Limits
+
+// Limits is the effective limit set for one key.
+type Limits struct {
+	RPM         int
+	TPM         int
+	Concurrency int
+}
+
+// limitsFor resolves the effective limits for a key.
+//
+// The key's own column always wins where it is set; the global default only
+// fills a column the operator left at 0. That ordering is what keeps a global
+// default from quietly capping a key that was deliberately given a higher
+// budget, and from lifting one that was deliberately capped. The plan tier the
+// port plan describes sits between the two and is not implemented yet.
+func limitsFor(apiKey *models.APIKey, d Defaults) Limits {
+	// A nil Defaults means the operator configured no global fallback, which
+	// is the same as a fallback of zero. Every install without the settings
+	// keys reaches here, so it must not be a nil call.
+	var out Limits
+	if d != nil {
+		out = d()
+	}
+	if v := derefInt(apiKey.RateLimitRPM); v > 0 {
+		out.RPM = v
+	}
+	if v := derefInt(apiKey.RateLimitTPM); v > 0 {
+		out.TPM = v
+	}
+	if v := derefInt(apiKey.RateLimitConcurrency); v > 0 {
+		out.Concurrency = v
+	}
+	return out
+}
+
+func derefInt(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+// rejectRateLimited answers a refused request.
+//
+// The headers name which limit was hit rather than a single X-RateLimit-Limit,
+// because a key can be bounded on three independent axes at once and a client
+// that has to guess cannot back off correctly. X-RateLimit-Limit still carries
+// RPM for the clients that only read the standard name.
+func rejectRateLimited(w http.ResponseWriter, keyID string, limits Limits, retryAfter int) {
+	log.Warn("rate limit", "key", keyID, "retryAfter", retryAfter)
+	observ.IncRateLimitReject(rateLimitScope(limits), keyID)
+
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	if limits.RPM > 0 {
+		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limits.RPM))
+		w.Header().Set("X-RateLimit-Limit-RPM", strconv.Itoa(limits.RPM))
+	}
+	if limits.TPM > 0 {
+		w.Header().Set("X-RateLimit-Limit-TPM", strconv.Itoa(limits.TPM))
+	}
+	if limits.Concurrency > 0 {
+		w.Header().Set("X-RateLimit-Limit-Concurrency", strconv.Itoa(limits.Concurrency))
+	}
+	w.Header().Set("X-RateLimit-Remaining", "0")
+	w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Duration(retryAfter)*time.Second).Unix(), 10))
+
+	handlerutil.WriteJSONError(w, http.StatusTooManyRequests,
+		fmt.Sprintf("Rate limit exceeded. Retry after %ds.", retryAfter))
+}
+
+// rateLimitScope names which axis refused the request, for the metric label.
+// The label is bounded to these five values so a key id can never become a
+// metric cardinality explosion.
+func rateLimitScope(l Limits) string {
+	switch {
+	case l.Concurrency > 0 && l.RPM == 0 && l.TPM == 0:
+		return "concurrency"
+	case l.TPM > 0 && l.RPM == 0:
+		return "tpm"
+	default:
+		return "rpm"
 	}
 }
 

@@ -39,6 +39,8 @@ type Metrics struct {
 	Fallbacks        *prometheus.CounterVec
 	UpstreamErrors   *prometheus.CounterVec
 	RateLimitRejects *prometheus.CounterVec
+	GuardrailDecisions *prometheus.CounterVec
+	GuardrailEval      *prometheus.HistogramVec
 }
 
 // latencyBuckets span a fast cached token (50ms) to a very slow streamed turn
@@ -90,11 +92,20 @@ func New() *Metrics {
 			Name: "router_rate_limit_rejects_total",
 			Help: "Requests rejected by a rate limiter before reaching an upstream, by limiter scope.",
 		}, []string{"scope", "key"}),
+		GuardrailDecisions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "router_guardrail_decisions_total",
+			Help: "Guardrail decisions by detector, action and direction.",
+		}, []string{"detector", "action", "direction"}),
+		GuardrailEval: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "router_guardrail_eval_seconds",
+			Help:    "Time spent scanning content against the guardrail detectors.",
+			Buckets: []float64{0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.1, 1},
+		}, []string{"direction"}),
 	}
 	reg.MustRegister(
 		m.RequestsTotal, m.RequestDuration, m.TimeToFirstToken,
 		m.TokensTotal, m.CostMicros, m.Fallbacks, m.UpstreamErrors,
-		m.RateLimitRejects,
+		m.RateLimitRejects, m.GuardrailDecisions, m.GuardrailEval,
 	)
 	return m
 }
@@ -199,6 +210,23 @@ func IncRateLimitReject(scope, keyID string) {
 
 func (m *Metrics) IncRateLimitReject(scope, keyID string) {
 	m.RateLimitRejects.WithLabelValues(Label(scope), KeyRef(keyID)).Inc()
+}
+
+// RecordGuardrailDecision counts one guardrail decision and observes how long
+// the scan took.
+//
+// The detector, action, and direction labels are all closed vocabularies the
+// guardrail package defines, and the buckets span a regex scan (microseconds)
+// to a pathological one. Keeping them bounded is the whole point: an operator
+// watches these on a VPS, and a cardinality explosion there costs memory the
+// gateway needs.
+func RecordGuardrailDecision(detector, action, direction string, elapsed time.Duration) {
+	Default().RecordGuardrailDecision(detector, action, direction, elapsed)
+}
+
+func (m *Metrics) RecordGuardrailDecision(detector, action, direction string, elapsed time.Duration) {
+	m.GuardrailDecisions.WithLabelValues(Label(detector), Label(action), Label(direction)).Inc()
+	m.GuardrailEval.WithLabelValues(Label(direction)).Observe(elapsed.Seconds())
 }
 
 // RecordUsage is the single call the request-completion path makes: one

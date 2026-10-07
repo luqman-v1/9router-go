@@ -6,11 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/guardrails"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/models"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/observ"
 	"9router/proxy/internal/translator"
 )
 
@@ -117,6 +120,13 @@ func (h *ChatHandler) guardrailAudit() guardrails.Audit {
 		return nil
 	}
 	return func(d guardrails.Decision, target guardrails.Target) {
+		start := time.Now()
+		observ.RecordGuardrailDecision(
+			detectorsOf(d),
+			string(d.Action),
+			string(guardrails.DirectionOutbound),
+			time.Since(start),
+		)
 		findings, err := json.Marshal(d.Findings)
 		if err != nil {
 			findings = []byte("[]")
@@ -148,6 +158,36 @@ func streamFormat(ctx context.Context, endpoint string) guardrails.StreamFormat 
 		return guardrails.FormatClaude
 	default:
 		return guardrails.FormatOpenAI
+	}
+}
+
+// requestKeyFromContext returns the authenticated client key for a request in
+// flight, or nil on a route with no API-key middleware.
+//
+// The metering path needs it to reconcile a token reservation against the key
+// that was charged, and the key is already on the context from RequireApiKey.
+func requestKeyFromContext(ctx context.Context) *models.APIKey {
+	if ctx == nil {
+		return nil
+	}
+	key, _ := ctx.Value(middleware.ApiKeyContextKey).(*models.APIKey)
+	return key
+}
+
+// rateLimitDefaults reads the operator's global rate-limit fallback.
+//
+// The TPM settle hook needs the same limit the limiter charged against, or a
+// reconcile would compare the real usage to a different number.
+func (h *ChatHandler) rateLimitDefaults() middleware.Defaults {
+	if h == nil || h.Repo == nil {
+		return nil
+	}
+	return func() middleware.Limits {
+		d := h.Repo.GetRateLimitDefaults()
+		if !d.Enabled {
+			return middleware.Limits{}
+		}
+		return middleware.Limits{RPM: d.RPM, TPM: d.TPM, Concurrency: d.Concurrency}
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/providers"
 	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
@@ -495,6 +496,23 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		defer gtap.Close()
 	}
 
+	// Hand the usage meter a way to reconcile the limiter's TPM reservation
+	// against what the turn actually cost.
+	//
+	// The reservation is read back off the context rather than recomputed: the
+	// limiter estimated from the body it had already read, and estimating twice
+	// from a body that may have been rewritten since would settle the charge
+	// against a number that was never charged.
+	if reserved, ok := middleware.ReservedTokensFromContext(ctx); ok && h.RateLimiter != nil {
+		if clientKey := requestKeyFromContext(ctx); clientKey != nil {
+			ctx = middleware.WithTokenSettler(ctx, func(actual int) {
+				if limit := middleware.EffectiveTPM(h.rateLimitDefaults(), clientKey); limit > 0 {
+					h.RateLimiter.SettleTokenUsage(clientKey.ID, limit, reserved, actual)
+				}
+			})
+		}
+	}
+
 	if exec := executor.Get(provider); exec != nil {
 		execReq := &executor.Request{
 			Ctx:            ctx,
@@ -657,7 +675,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			SavedPercent:        savedPct,
 		}
 		logInfo.ConnName, logInfo.ConnEmail = identityNames(h.connIdentityKVOr(f, connectionID))
-		h.logUsage(logInfo, usage, latencyMs, body, metrics)
+		h.logUsage(ctx, logInfo, usage, latencyMs, body, metrics)
 		fwdErr = nil
 		return nil
 	}

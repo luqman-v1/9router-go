@@ -435,6 +435,81 @@ func (r *Repo) SetGuardrailsEnabled(enabled bool) error {
 	return r.UpdateSettingsRaw(map[string]any{"guardrailsEnabled": enabled})
 }
 
+// RateLimitDefaults is the operator's fallback for keys that set no limit of
+// their own.
+//
+// The defaults apply only where a key's column is 0, so configuring a global
+// default never silently caps a key that was deliberately given a higher or
+// unlimited budget — and never lifts one that was capped. Resolution order is
+// key column, then plan (not ported yet), then this.
+type RateLimitDefaults struct {
+	// Enabled is the master switch. False leaves every key enforcing only what
+	// its own columns say.
+	Enabled     bool
+	RPM         int
+	TPM         int
+	Concurrency int
+	// WindowSeconds is the RPM/TPM window. Zero means the 60s default.
+	WindowSeconds int
+}
+
+// DefaultRateLimitSeconds is the sliding window used when the operator has not
+// chosen one. It matches the in-memory limiter's own default.
+const DefaultRateLimitSeconds = 60
+
+// GetRateLimitDefaults reads the global fallback from the settings blob.
+//
+// It is read on the request path, so it goes straight to the raw blob rather
+// than through GetSettings: a failed read must not stop a key's own limits from
+// being enforced, so every field falls back to the zero value rather than
+// erroring.
+func (r *Repo) GetRateLimitDefaults() RateLimitDefaults {
+	out := RateLimitDefaults{WindowSeconds: DefaultRateLimitSeconds}
+	raw, err := r.GetSettingsRaw()
+	if err != nil || raw == nil {
+		return out
+	}
+	if v, ok := raw["rateLimitEnabled"].(bool); ok {
+		out.Enabled = v
+	}
+	out.RPM = settingsInt(raw["defaultRpm"])
+	out.TPM = settingsInt(raw["defaultTpm"])
+	out.Concurrency = settingsInt(raw["defaultConcurrency"])
+	if w := settingsInt(raw["rateWindowSeconds"]); w > 0 {
+		out.WindowSeconds = w
+	}
+	return out
+}
+
+// SetRateLimitDefaults stores the global fallback.
+func (r *Repo) SetRateLimitDefaults(d RateLimitDefaults) error {
+	return r.UpdateSettingsRaw(map[string]any{
+		"rateLimitEnabled":   d.Enabled,
+		"defaultRpm":         d.RPM,
+		"defaultTpm":         d.TPM,
+		"defaultConcurrency": d.Concurrency,
+		"rateWindowSeconds":  d.WindowSeconds,
+	})
+}
+
+// settingsInt coerces a settings value to a non-negative int, treating a
+// missing or wrongly-typed entry as unset. The blob is hand-editable through
+// the backup import, so a string where a number belongs is a real input.
+func settingsInt(v any) int {
+	switch t := v.(type) {
+	case float64:
+		if t > 0 {
+			return int(t)
+		}
+	case int:
+		if t > 0 {
+			return t
+		}
+	}
+	return 0
+}
+
+
 // stringMap coerces a decoded JSON value into map[string]string, skipping
 // anything that is not a string. The settings blob is hand-editable through
 // the backup import, so a wrong type there is a real input, not a bug to
