@@ -561,10 +561,21 @@ export function normalizeConnection(c: ProviderConnection): ProviderConnection {
     } catch {}
   }
   const wire = c as unknown as Record<string, unknown>
-  const specific =
+  const wireSpecific =
+    c.providerSpecificData && typeof c.providerSpecificData === 'object'
+      ? (c.providerSpecificData as Record<string, unknown>)
+      : undefined
+  const parsedSpecific =
     parsed.providerSpecificData && typeof parsed.providerSpecificData === 'object'
       ? (parsed.providerSpecificData as Record<string, unknown>)
-      : parsed
+      : Object.keys(parsed).length > 0
+        ? parsed
+        : undefined
+
+  const specific = {
+    ...(parsedSpecific || {}),
+    ...(wireSpecific || {}),
+  }
   return {
     ...parsed,
     ...c,
