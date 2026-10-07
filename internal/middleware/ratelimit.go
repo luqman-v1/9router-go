@@ -1,13 +1,16 @@
 package middleware
 
 import (
-	"9router/proxy/internal/handlerutil"
-	"9router/proxy/internal/log"
+	"bytes"
+	"io"
 	"net/http"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
 )
 
 // RateLimiter implements per-key rate limiting with sliding window RPM,
@@ -215,6 +218,11 @@ func (rl *RateLimiter) evictIfNeeded() {
 }
 
 // RequireRateLimit creates a middleware that enforces per-key rate limits.
+//
+// TPM is charged against the request's own prompt tokens, so the body is read
+// once here to size it and then handed to the next handler intact. Reading it
+// unconditionally would buffer large uploads for every request, so it is only
+// read when a TPM limit is actually configured.
 func RequireRateLimit(rl *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -237,14 +245,21 @@ func RequireRateLimit(rl *RateLimiter) func(http.Handler) http.Handler {
 				concurrency = *apiKey.RateLimitConcurrency
 			}
 
-			// Estimate prompt tokens (rough estimate: 4 chars per token)
-			promptTokens := 100 // default estimate
+			promptTokens := 0
+			if tpm > 0 {
+				promptTokens = promptTokensForRequest(r)
+			}
 
 			allowed, retryAfter := rl.Check(apiKey.ID, rpm, tpm, concurrency, promptTokens)
 			if !allowed {
 				log.Warn("rate limit", "key", apiKey.ID, "retryAfter", retryAfter)
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-				w.Header().Set("X-RateLimit-Limit-RPM", strconv.Itoa(rpm))
+				if rpm > 0 {
+					w.Header().Set("X-RateLimit-Limit-RPM", strconv.Itoa(rpm))
+				}
+				if tpm > 0 {
+					w.Header().Set("X-RateLimit-Limit-TPM", strconv.Itoa(tpm))
+				}
 				w.Header().Set("X-RateLimit-Remaining", "0")
 				handlerutil.WriteJSONError(w, http.StatusTooManyRequests, "Rate limit exceeded. Retry after a few seconds.")
 				return
@@ -258,4 +273,35 @@ func RequireRateLimit(rl *RateLimiter) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// maxTokenScanBody caps how much of a body the limiter buffers to size a TPM
+// charge. A prompt past this is charged from its declared length instead of
+// being read, so a large multimodal or base64 payload cannot make every
+// request hold two copies of itself in memory.
+const maxTokenScanBody = 4 << 20 // 4 MiB
+
+// promptTokensForRequest sizes the prompt for the TPM charge, leaving r.Body
+// readable for the next handler.
+func promptTokensForRequest(r *http.Request) int {
+	if r.Body == nil || r.Body == http.NoBody {
+		return 0
+	}
+	// A body too large to buffer is charged from the declared length, which
+	// over-counts relative to a real tokenizer. Biasing high is the safe
+	// direction for a limit: it can reject a request that would have fit,
+	// never admit one that would not.
+	if r.ContentLength > maxTokenScanBody {
+		return int(r.ContentLength/4) + 1
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxTokenScanBody))
+	if err != nil {
+		// The body is consumed on error and cannot be handed on. Charging the
+		// request and letting the handler see a closed body would turn a
+		// limiter problem into a request failure, so the limiter declines to
+		// judge it.
+		return 0
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return estimatePromptTokens(body)
 }

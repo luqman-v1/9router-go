@@ -464,6 +464,26 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	}
 	sessionID := handlerutil.GetSessionID(ctx)
 
+	// The outbound guardrail tap goes here, not inside a response handler:
+	// this is the one point every dispatch path shares, so a provider with a
+	// registered executor is covered by exactly the same policy as one
+	// without. Placing it per handler left every executor-backed provider —
+	// which is most of the catalog — completely unfiltered, while the unit
+	// tests, which exercise a provider with no executor, still passed.
+	//
+	// The resolved policy goes on the context so the executors pick it up
+	// where they write, and a stream is tapped at the writer itself, because a
+	// buffered body could still be judged whole but a stream cannot be taken
+	// back once its first byte is out.
+	ctx = h.withOutboundPolicy(ctx)
+	gtapWriter, gtap := guardrailTap(ctx, w, endpoint, isStream)
+	if gtap != nil {
+		// Closed on the way out so the held window is discharged on the error
+		// paths below as well as the success one.
+		w = gtapWriter
+		defer gtap.Close()
+	}
+
 	if exec := executor.Get(provider); exec != nil {
 		execReq := &executor.Request{
 			Ctx:            ctx,
@@ -498,6 +518,11 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	} else {
 		fwdErr = h.forwardRequest(ctx, w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics, httpClient)
 	}
+
+	// A tap that cut the stream must win over whatever the dispatch returned:
+	// the dispatch succeeded as far as it knew, so a blocked stream would
+	// otherwise be logged, billed, and cooled down as a served turn.
+	fwdErr = guardrailStreamOutcome(gtap, fwdErr)
 
 	var ue *upstreamError
 	if errors.As(fwdErr, &ue) && ue.StatusCode == http.StatusUnauthorized && connectionID != "" {

@@ -78,6 +78,16 @@ func Inbound(store PolicyStore, audit Audit) func(http.Handler) http.Handler {
 				)
 				return
 			}
+			if !decision.WasMutated() {
+				// A log_only or warn policy fires without changing any value, and
+				// re-marshalling an unchanged payload is not free: the JSON is
+				// re-encoded from a Go map, so key order follows map iteration and
+				// the provider receives a body that differs from the client's byte
+				// for byte even though nothing was masked.
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				next.ServeHTTP(w, r)
+				return
+			}
 
 			rewritten, err := json.Marshal(scanned)
 			if err != nil {

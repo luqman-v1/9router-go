@@ -63,6 +63,9 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
 	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
+	// Record the dispatching key so the outbound guardrail tap can resolve the
+	// right policy. A keyless caller leaves it unset and the tap stays inert.
+	ctx = withGuardrailKey(ctx, requestKeyID(r))
 	requiredCaps := DetectRequiredCapabilities(body)
 
 	if len(modelInfo.ComboModels) > 0 {
@@ -220,9 +223,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	workingBody["stream"] = reqBody.Stream
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
-	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
-	// Store requested model for streaming echo (PR #3693) and for [1m] marker handling
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	// Record the dispatching key so the outbound guardrail tap can resolve the
+	// policy scoped to it. A keyless caller leaves it unset and the tap stays
+	// inert.
+	ctx = withGuardrailKey(ctx, requestKeyID(r))
 
 	requiredCaps := DetectRequiredCapabilities(body)
 

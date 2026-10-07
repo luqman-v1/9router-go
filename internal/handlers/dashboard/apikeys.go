@@ -156,6 +156,10 @@ func (h *DashboardHandler) HandleDeleteApiKey(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// The auth cache holds the verified row for its TTL, so without this a key
+	// deleted here keeps authenticating until the entry expires.
+	keikey.DefaultAuthCache().InvalidateByID(id)
+
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})
 }
 
@@ -206,6 +210,11 @@ func (h *DashboardHandler) HandleToggleApiKey(w http.ResponseWriter, r *http.Req
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// Same reason as the delete path: the cached row would otherwise keep the
+	// key authenticating after it was deactivated, and deactivating is exactly
+	// what an operator does when they believe a key has leaked.
+	keikey.DefaultAuthCache().InvalidateByID(id)
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":   "ok",
