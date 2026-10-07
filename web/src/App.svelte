@@ -27,6 +27,7 @@
   import QuotaTrackerView from './components/QuotaTrackerView.svelte'
   import SkillsView from './components/SkillsView.svelte'
   import SettingsView from './components/SettingsView.svelte'
+  import SecurityPanel from './components/security/SecurityPanel.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import UpdateModal from './components/UpdateModal.svelte'
   import type { SystemVersionInfo } from './api/client'
@@ -548,6 +549,8 @@
               <TerminalView />
             {:else if activeTab === 'settings'}
               <ProfileSettingsView {settings} onRefresh={loadData} />
+            {:else if activeTab === 'security'}
+              <SecurityPanel />
             {/if}
           {/if}
         </div>

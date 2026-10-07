@@ -21,6 +21,7 @@ import (
 	"9router/proxy/internal/tokensaver"
 	"9router/proxy/internal/tracing"
 	"9router/proxy/internal/translator"
+	"9router/proxy/internal/observ"
 	"9router/proxy/internal/usagetracker"
 )
 
@@ -59,6 +60,8 @@ func (h *ChatHandler) handleAccountFallback(
 		return fmt.Errorf("provider %s/%s is unhealthy", provider, model)
 	}
 
+	observ.IncFallback(provider, model, observ.FallbackReasonUnhealthy)
+
 	allConns, err := h.Repo.GetProviderConnections(provider, true)
 	if err != nil || len(allConns) == 0 {
 		if cfg, ok := providers.KnownProviders[provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
@@ -73,6 +76,7 @@ func (h *ChatHandler) handleAccountFallback(
 				IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
 			})
 		}
+		observ.IncFallback(provider, model, observ.FallbackReasonNoConnection)
 		return fmt.Errorf("no active connections for provider: %s", provider)
 	}
 
@@ -118,6 +122,7 @@ func (h *ChatHandler) handleAccountFallback(
 			return nil
 		} else {
 			lastErr = err
+			observ.IncFallback(provider, model, observ.FallbackReasonUpstreamError)
 		}
 		var ue *upstreamError
 		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
@@ -664,6 +669,8 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			"status", statusCode, "error", fwdErr,
 		}, identity...)...)
 	}
+
+	observ.IncUpstreamError(provider, model, statusCode)
 	return fwdErr
 }
 func isClientCanceled(ctx context.Context, err error) bool {

@@ -48,6 +48,59 @@ export interface APIKey {
   machineId: string | null
   isActive: number
   createdAt: string
+  /** Masked secret, e.g. `sk-6…008f`. `key` carries the same value. */
+  keyDisplay?: string
+  /** Rate limits. 0 means unlimited. */
+  rateLimitRpm?: number
+  rateLimitTpm?: number
+  rateLimitConcurrency?: number
+  /** RFC3339 UTC. Empty means the key never expires. */
+  expiresAt?: string
+  lastUsedAt?: string
+  usedCount?: number
+  /** Free-form JSON object, e.g. { customerId, priceCents }. */
+  metadata?: string
+}
+
+export interface APIKeyPolicy {
+  rateLimitRpm?: number
+  rateLimitTpm?: number
+  rateLimitConcurrency?: number
+  expiresAt?: string
+  metadata?: string
+}
+
+export interface GuardrailPolicy {
+  id: string
+  tenantId: string
+  scope: string
+  scopeId: string
+  name: string
+  enabled: boolean
+  config: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface GuardrailLog {
+  id: string
+  tenantId: string
+  apiKeyId?: string
+  provider?: string
+  model?: string
+  detector: string
+  direction: string
+  action: string
+  severity?: string
+  reason?: string
+  findings?: string
+  createdAt: string
+}
+
+export interface VaultStatus {
+  enabled: boolean
+  sealedCount: number
+  plaintextCount: number
 }
 
 export interface ProviderStrategyConfig {
@@ -719,6 +772,68 @@ export const api = {
     request<{ success: boolean; isActive: boolean }>(`/api/keys/${encodeURIComponent(id)}/toggle`, {
       method: 'PUT',
     }),
+
+  // F-1/F-14 per-key governance. Omitted fields are left unchanged server-side,
+  // so a partial update never resets a limit the operator did not touch.
+  updateApiKeyPolicy: (id: string, policy: APIKeyPolicy) =>
+    request<{ status: string; id: string }>(`/api/keys/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(policy),
+    }),
+  getApiKeyModels: (id: string) =>
+    request<{ id: string; models: string[] }>(`/api/keys/${encodeURIComponent(id)}/models`),
+  setApiKeyModels: (id: string, models: string[]) =>
+    request<{ id: string; models: string[] }>(`/api/keys/${encodeURIComponent(id)}/models`, {
+      method: 'PUT',
+      body: JSON.stringify({ models }),
+    }),
+
+  // F-5 credential vault
+  getVaultStatus: () => request<VaultStatus>('/api/vault/status'),
+  rotateVault: (masterKey: string) =>
+    request<{ status: string; rewrapped: number; failures: string[] }>('/api/vault/rotate', {
+      method: 'POST',
+      body: JSON.stringify({ masterKey }),
+    }),
+
+  // F-4 guardrails
+  getGuardrailPolicies: (scope: string, scopeId = '') =>
+    request<GuardrailPolicy[]>(
+      `/api/guardrails/policies?scope=${encodeURIComponent(scope)}&scopeId=${encodeURIComponent(scopeId)}`
+    ),
+  createGuardrailPolicy: (payload: {
+    name: string
+    scope: string
+    scopeId?: string
+    enabled?: boolean
+    config: string
+  }) =>
+    request<GuardrailPolicy>('/api/guardrails/policies', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateGuardrailPolicy: (
+    id: string,
+    payload: {
+      name: string
+      scope: string
+      scopeId?: string
+      enabled?: boolean
+      config: string
+    }
+  ) =>
+    request<GuardrailPolicy>(`/api/guardrails/policies/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  deleteGuardrailPolicy: (id: string) =>
+    request<{ status: string; id: string }>(
+      `/api/guardrails/policies/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    ),
+  getGuardrailLogs: (limit = 100) =>
+    request<GuardrailLog[]>(`/api/guardrails/logs?limit=${encodeURIComponent(String(limit))}`),
+  getMetrics: () => request<string>('/api/metrics'),
 
   // Models — upstream parity: GET /api/models/custom -> { models: [...] },
   // GET /api/models/disabled -> { disabled: {...} } (full map) or { ids: [...] } (per-provider).

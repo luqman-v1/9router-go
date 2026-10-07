@@ -77,6 +77,13 @@ func setupDashboardTestDB(t *testing.T) (*Repo, func()) {
 		}
 	}
 
+	// Production adds the Go-only columns on every startup; a fixture that
+	// skips this fails on any query that reads them.
+	if err := EnsureAdditiveColumns(db); err != nil {
+		cleanup()
+		t.Fatalf("failed to apply additive columns: %v", err)
+	}
+
 	return NewRepo(db), cleanup
 }
 

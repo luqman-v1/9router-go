@@ -47,6 +47,14 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Per-key model policy runs after the bypass path — synthetic warmup and
+	// keepalive traffic never reaches a provider, so it is not an access
+	// request — and before resolveModel, so a denied model never reaches
+	// connection selection.
+	if !h.enforceModelAccess(w, r, reqBody.Model) {
+		return
+	}
+
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
@@ -168,6 +176,12 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	if reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
+		return
+	}
+
+	// Per-key model policy: 403 before any translation work or connection
+	// selection.
+	if !h.enforceModelAccess(w, r, reqBody.Model) {
 		return
 	}
 
@@ -438,7 +452,12 @@ func queryFlagEnabled(v string) bool {
 func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	mode := modelsListModeFromQuery(r)
 	result := h.buildModelsListResult(r.Context(), mode)
-	modelsJSON, err := json.Marshal(result.Models)
+	visible, err := h.filterModelsByAccess(requestKey(r), result.Models)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	modelsJSON, err := json.Marshal(visible)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to encode models")
 		return
@@ -456,6 +475,13 @@ func (h *ChatHandler) HandleModelsInfo(w http.ResponseWriter, r *http.Request) {
 	modelID := r.URL.Query().Get("id")
 	if modelID == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing id query parameter")
+		return
+	}
+
+	// Per-key policy: a key that cannot dispatch the model gets no metadata
+	// for it either, so /v1/models/info cannot be used to probe the catalog.
+	if err := h.checkModelAccess(requestKey(r), modelID); err != nil {
+		writeModelAccessError(w, err)
 		return
 	}
 
@@ -508,8 +534,6 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 	var data []map[string]any
 	now := time.Now().Unix()
 
-	endpoint := "/v1/chat/completions"
-
 	for id, cfg := range providers.KnownProviders {
 		var match bool
 		switch kind {
@@ -531,37 +555,24 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 		if !match {
 			continue
 		}
-		if kind == "web" {
-			endpoint = "/v1/search"
-		}
-		if kind == "image" {
-			endpoint = "/v1/images/generations"
-		}
-		if kind == "tts" {
-			endpoint = "/v1/audio/speech"
-		}
-		if kind == "stt" {
-			endpoint = "/v1/audio/transcriptions"
-		}
-		if kind == "embedding" {
-			endpoint = "/v1/embeddings"
-		}
-		if kind == "systemone" {
-			endpoint = "/v1/systemone"
-		}
-		if kind == "image-to-text" {
-			endpoint = "/v1/chat/completions"
-		}
-
 		data = append(data, map[string]any{
 			"id":       id,
 			"object":   "model",
 			"kind":     kind,
 			"owned_by": id,
-			"endpoint": endpoint,
+			"endpoint": kindEndpoint(kind),
 			"created":  now,
 		})
 	}
+
+	// Per-key policy applies to the kind listing too — it is the same
+	// catalogue under a different filter, so it goes through the same filter.
+	visible, err := h.filterModelsByAccess(requestKey(r), kindEntriesAsModelInfo(data))
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	data = kindEntriesFromModelInfo(visible, kind, now)
 
 	if data == nil {
 		data = []map[string]any{}
@@ -629,6 +640,13 @@ func (h *ChatHandler) HandleModelLookup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+
+	// Per-key policy before the lookup, so a denied model answers 403 instead
+	// of the 404 the client could not act on.
+	if err := h.checkModelAccess(requestKey(r), suffix); err != nil {
+		writeModelAccessError(w, err)
+		return
+	}
 	// Otherwise treat as provider/model ID lookup.
 	if m, ok := h.findModelForLookup(r.Context(), suffix); ok {
 		handlerutil.WriteJSON(w, http.StatusOK, m)

@@ -11,8 +11,8 @@
     providerNodes: ProviderNode[]
     onSelectProvider: (id: string) => void
     onToggleAll: (id: string, active: boolean) => void
-    /** Opens the unified add-custom-provider dialog; the modal owns the type. */
-    onAddCustom: () => void
+    onAddAnthropic: () => void
+    onAddOpenAI: () => void
   }
 
   let {
@@ -20,7 +20,8 @@
     providerNodes = [],
     onSelectProvider,
     onToggleAll,
-    onAddCustom,
+    onAddAnthropic,
+    onAddOpenAI,
   }: Props = $props()
 
   let searchQuery = $state('')
@@ -96,17 +97,22 @@
   <div class="flex flex-col gap-4">
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <h2 class="text-lg sm:text-xl font-semibold leading-tight text-text-main">
-        Custom Providers (OpenAI, Anthropic, Embedding)
+        Custom Providers (OpenAI/Anthropic Compatible)
       </h2>
-      <Button size="sm" onclick={onAddCustom} class="w-full sm:w-auto">
-        <Plus class="w-4 h-4 mr-1" /> Add Custom Provider
-      </Button>
+      <div class="grid grid-cols-1 gap-2 sm:flex sm:w-auto">
+        <Button size="sm" onclick={onAddAnthropic} class="w-full sm:w-auto bg-[#E56A4A] text-white hover:bg-[#D45939] border-none">
+          <Plus class="w-4 h-4 mr-1" /> Add Anthropic Compatible
+        </Button>
+        <Button size="sm" variant="secondary" onclick={onAddOpenAI} class="w-full sm:w-auto !bg-white !text-black hover:!bg-gray-100 border border-border shadow-xs">
+          <Plus class="w-4 h-4 mr-1" /> Add OpenAI Compatible
+        </Button>
+      </div>
     </div>
 
     {#if customNodes.length === 0}
       <div class="flex items-center justify-center gap-2 py-4 border border-dashed border-border rounded-xl text-text-muted text-xs">
         <Server class="w-4 h-4" />
-        <span>No custom providers — use “Add Custom Provider” to register an OpenAI, Anthropic, or embedding endpoint</span>
+        <span>No custom providers — use buttons above to add OpenAI/Anthropic compatible endpoints</span>
       </div>
     {:else}
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">

@@ -2,6 +2,61 @@
 
 ## [Unreleased]
 
+
+### 🔐 Per-key governance, credential vault, and guardrails (KeiRouter port, Path C)
+
+Ports the security and governance subset of `docs/keirouter-port-plan.md`. This is the
+Path C cut — security, observability, and per-key limits — deliberately excluding the
+resale stack (plans, budget engine, usage portal, branding, multi-tenant), which would
+turn a single-operator self-hosted gateway into a billing platform.
+
+Every schema change is an additive Go-only column or table, so the upstream Next.js
+dashboard still reads the database unchanged, and every new limit defaults to `0`/`''`
+meaning unlimited or all-allowed. An install that configures nothing behaves exactly as
+it did before.
+
+**Added**
+
+- Per-key rate limiting (`apiKeys.rateLimitRPM/TPM/Concurrency`) via a sliding-window RPM
+  limiter, token-bucket TPM, and concurrency cap on the API-key route group. A rejected
+  request returns 429 with `Retry-After` and never reaches a provider.
+- API key expiry and usage accounting (`expiresAt`, `lastUsedAt`, `usedCount`, `metadata`).
+  An expired key is rejected with 401 before any dispatch, and a policy write invalidates
+  the verification cache so revocation takes effect immediately rather than at its TTL.
+- Argon2id credential hashing for client API keys: a SHA-256 lookup index plus an argon2id
+  verifier, behind a bounded 5s auth cache. Existing plaintext keys keep authenticating
+  and are upgraded on first use.
+- Credential vault using AES-256-GCM envelope encryption, opted into by setting
+  `ROUTER_MASTER_KEY`. Each secret gets its own data key, so rotating the master key
+  re-wraps the data keys without re-encrypting a single secret. Absent the variable the
+  vault stays disabled and credentials remain plaintext, so boot is never blocked.
+- Per-API-key model access allowlists with `*` segment wildcards, enforced through one
+  shared resolver so dispatch and `/v1/models` listing can never disagree. An empty
+  allowlist allows everything.
+- Guardrails MVP: offline regex detection for PII (email, card via Luhn, IBAN via mod-97,
+  Indonesian national id, globally-routable IPv4) and prompt injection, with
+  `allow`/`log_only`/`warn`/`mask`/`block` actions, global→apikey scope layering, and an
+  audit log. No network call is made. Disabled until a policy exists.
+- Prometheus metrics at `/api/metrics` (dashboard-authenticated, private registry).
+- Dashboard: a per-key policy modal (rate limits, expiry, resale metadata, model
+  allowlist), a Policy column on the key table, and a Security view for the vault and
+  guardrails.
+
+**Changed**
+
+- Client API keys are no longer returned in plaintext by any read path, including to a
+  fully authenticated dashboard session. The value is returned exactly once at creation
+  and never again; there is no reveal, only revoke-and-reissue. **This is a breaking
+  change** for anything that read a key back from `GET /api/keys`.
+
+**Fixed**
+
+- `GET /api/keys` omitted the governance columns, so every key rendered as unconstrained
+  in the dashboard regardless of what was configured.
+- The keys tab was unreachable: `TAB_ROUTES` mapped both `cli-tools` and `keys` to
+  `/dashboard/cli-tools`, and the route table resolved `/dashboard/keys` to `cli-tools`,
+  so `App` always rendered `CliToolsView` and the key table had no path to the screen.
+
 ### 🎛 `Add Anthropic Compatible` / `Add OpenAI Compatible` merged into one dialog that keeps what you typed
 
 The two buttons over Custom Providers opened two separate modals, so choosing

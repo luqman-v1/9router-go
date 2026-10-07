@@ -19,6 +19,7 @@ export type ActiveTab =
   | 'console-log'
   | 'terminal'
   | 'settings'
+  | 'security'
   | 'keys'
 
 export const TAB_ROUTES: Record<ActiveTab, string> = {
@@ -42,11 +43,11 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   'console-log': '/dashboard/console-log',
   terminal: '/dashboard/console-log',
   settings: '/dashboard/profile',
-  keys: '/dashboard/cli-tools',
+  security: '/dashboard/security',
+  keys: '/dashboard/keys',
 }
 
 const ROUTE_TO_TAB: Record<string, ActiveTab> = {
-  // login
   '/login': 'login',
 
   // endpoint
@@ -81,9 +82,14 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
 
   // cli-tools
   '/dashboard/cli-tools': 'cli-tools',
-  '/dashboard/keys': 'cli-tools',
   '/cli-tools': 'cli-tools',
-  '/keys': 'cli-tools',
+
+  // client API keys. This must resolve to 'keys', not 'cli-tools': App
+  // renders CliToolsView for 'cli-tools' and ApiKeysView for 'keys', and both
+  // previously pointed at /dashboard/cli-tools, so the keys table was
+  // unreachable from any route.
+  '/dashboard/keys': 'keys',
+  '/keys': 'keys',
 
   // media providers
   '/dashboard/media-providers/embedding': 'media-embedding',
@@ -134,6 +140,10 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   '/dashboard/settings': 'settings',
   '/profile': 'settings',
   '/settings': 'settings',
+
+  // security: vault + guardrails
+  '/dashboard/security': 'security',
+  '/security': 'security',
 }
 
 export function pathToTab(pathname: string): ActiveTab {
@@ -167,6 +177,8 @@ export function pathToTab(pathname: string): ActiveTab {
   if (normalized.includes('usage') || normalized.includes('analytics')) return 'analytics'
   if (normalized.includes('combos')) return 'combos'
   if (normalized.includes('providers') || normalized.includes('connections')) return 'connections'
+  if (normalized.includes('keys')) return 'keys'
+  if (normalized.includes('security')) return 'security'
   if (normalized.includes('profile') || normalized.includes('settings')) return 'settings'
   return 'endpoint'
 }

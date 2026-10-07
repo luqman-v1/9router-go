@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/dbtest"
 )
 
 func setupTestDB(t *testing.T) (*sql.DB, func()) {
@@ -28,26 +29,12 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 		os.Remove(tmpFile.Name())
 	}
 
-	schema := []string{
-		`CREATE TABLE apiKeys (
-			id TEXT PRIMARY KEY,
-			key TEXT UNIQUE NOT NULL,
-			name TEXT,
-			machineId TEXT,
-			isActive INTEGER DEFAULT 1,
-			createdAt TEXT NOT NULL
-		);`,
-		`CREATE TABLE settings (
-			id INTEGER PRIMARY KEY CHECK (id = 1),
-			data TEXT NOT NULL
-		);`,
-	}
-
-	for _, query := range schema {
-		if _, err := database.Exec(query); err != nil {
-			cleanup()
-			t.Fatalf("failed to create table: %v", err)
-		}
+	// dbtest.CreateTables builds every table and then applies the Go-only
+	// additive columns, so the fixture matches a real database. A hand-rolled
+	// schema here drifts and fails any query that reads a newer column.
+	if err := dbtest.CreateTables(database); err != nil {
+		cleanup()
+		t.Fatalf("failed to create tables: %v", err)
 	}
 
 	// Seed key data
@@ -170,12 +157,14 @@ func TestGetAuthenticatedApiKey(t *testing.T) {
 	middleware := RequireApiKey(repo)
 
 	var retrievedKey string
+	var retrievedID string
 	var hasKey bool
 
 	mockHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiKeyObj := GetAuthenticatedApiKey(r)
 		if apiKeyObj != nil {
 			retrievedKey = apiKeyObj.Key
+			retrievedID = apiKeyObj.ID
 			hasKey = true
 		}
 		w.WriteHeader(http.StatusOK)
@@ -197,8 +186,15 @@ func TestGetAuthenticatedApiKey(t *testing.T) {
 		t.Error("expected context to contain authenticated API key")
 	}
 
-	if retrievedKey != "valid-token" {
-		t.Errorf("expected key 'valid-token', got '%s'", retrievedKey)
+	// F-6: the authenticated object carries the caller's identity, never the
+	// secret. The seeded row is plaintext, so RequireApiKey self-heals it into
+	// a hashed row on first use and the plaintext is stripped from the object
+	// the rest of the request sees.
+	if retrievedID != "1" {
+		t.Errorf("expected authenticated key id '1', got %q", retrievedID)
+	}
+	if retrievedKey != "" {
+		t.Errorf("the authenticated key object still carries the plaintext %q", retrievedKey)
 	}
 
 	// Test case where no key is injected (directly calling mockHandler without middleware)

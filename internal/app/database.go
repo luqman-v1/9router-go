@@ -9,6 +9,7 @@ import (
 
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/vault"
 )
 
 // DatabaseModule handles database initialization and provides *sql.DB and *db.Repo.
@@ -66,5 +67,7 @@ func ProvideDatabase(lc fx.Lifecycle, cfg *config.Config) (*sql.DB, error) {
 
 // ProvideRepo provides *db.Repo using the database connection.
 func ProvideRepo(conn *sql.DB) *db.Repo {
-	return db.NewRepo(conn)
+	repo := db.NewRepo(conn)
+	repo.SetVault(vault.NewFromEnv())
+	return repo
 }

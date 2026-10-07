@@ -15,6 +15,7 @@ import (
 	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/usagetracker"
+	"9router/proxy/internal/observ"
 )
 
 var dailyUsageMu sync.Mutex
@@ -101,6 +102,9 @@ func (h *ChatHandler) LogFailure(
 	); insertErr != nil {
 		log.Error("usage", "insert failed request detail failed", "error", insertErr)
 	}
+
+	observ.RecordRequest(info.Provider, info.Model, info.Endpoint, statusCode)
+	observ.RecordDuration(info.Provider, info.Model, time.Duration(latencyMs)*time.Millisecond)
 }
 
 func metricsTTFT(metrics *streamMetrics) int64 {
@@ -186,6 +190,16 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 	if err := h.Repo.InsertUsageHistory(info.Provider, info.Model, info.ConnectionID, maskAPIKey(info.APIKey), info.Endpoint, usage.PromptTokens, usage.CompletionTokens, cost, "success", totalTokens, metaJSON, tokensJSON); err != nil {
 		log.Error("usage", "insert failed", "error", err)
 	}
+
+	// Prometheus mirrors the row that was just inserted: a request is counted
+	// once, labelled with the provider/model the usage row names, and never
+	// with the caller's API key.
+	observ.RecordUsage(
+		info.Provider, info.Model, info.Endpoint, http.StatusOK,
+		time.Duration(latencyMs)*time.Millisecond,
+		usage.PromptTokens, usage.CompletionTokens,
+		cost*1_000_000, ttftMs,
+	)
 
 	now := time.Now().UTC()
 	reqID := fmt.Sprintf("%d-%s", now.UnixMilli(), info.Model)

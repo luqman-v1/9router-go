@@ -88,6 +88,12 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+
+	// Per-key model policy: 403 before the responses bridge or any connection
+	// selection.
+	if !h.enforceModelAccess(w, r, reqBody.Model) {
+		return
+	}
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)

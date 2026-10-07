@@ -219,7 +219,6 @@
       <AddCompatibleNodeModal
         isOpen={showCustomModal}
         type="custom-embedding"
-        allowedTypes={['custom-embedding']}
         onClose={() => (showCustomModal = false)}
         onSubmit={handleCreateCustomNode}
       />

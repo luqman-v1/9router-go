@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	json "encoding/json/v2"
 	"fmt"
-	"time"
 
 	"9router/proxy/internal/models"
 )
@@ -37,12 +36,23 @@ func (r *Repo) CreateProviderConnection(id, provider, authType, name string, api
 	if err != nil {
 		return fmt.Errorf("marshal provider connection data: %w", err)
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 	if _, err = r.db.Exec(
 		`INSERT INTO providerConnections (id, provider, authType, name, isActive, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
 		id, provider, authType, name, string(data), now, now,
 	); err != nil {
 		return fmt.Errorf("create provider connection: %w", err)
+	}
+	// Seal after the insert: the sealed columns are written with one UPDATE per
+	// slot, which needs the row to exist.
+	sealed, err := r.sealOnWrite(id, string(data))
+	if err != nil {
+		return err
+	}
+	if sealed != string(data) {
+		if _, err = r.db.Exec(`UPDATE providerConnections SET data = ? WHERE id = ?`, sealed, id); err != nil {
+			return fmt.Errorf("create provider connection: redact data: %w", err)
+		}
 	}
 	return nil
 }
@@ -62,13 +72,25 @@ func (r *Repo) CreateProviderConnectionFull(id, provider, authType, name string,
 	} else if next, err := r.NextConnectionPriority(provider); err == nil && next > 0 {
 		priorityVal = next
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 	_, err := r.db.Exec(
 		`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`,
 		id, provider, authType, name, priorityVal, dataJSON, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create provider connection: %w", err)
+	}
+	// Seal after the insert so the credentials land in their own columns and
+	// the stored payload keeps only what the model resolver must read.
+	sealed, err := r.sealOnWrite(id, dataJSON)
+	if err != nil {
+		return err
+	}
+	if sealed == dataJSON {
+		return nil
+	}
+	if _, err = r.db.Exec(`UPDATE providerConnections SET data = ? WHERE id = ?`, sealed, id); err != nil {
+		return fmt.Errorf("create provider connection: redact data: %w", err)
 	}
 	return nil
 }
@@ -110,6 +132,7 @@ func (r *Repo) GetProviderConnectionByName(provider, authType, name string) (*mo
 	if err != nil {
 		return nil, fmt.Errorf("get provider connection by name for %s: %w", provider, err)
 	}
+	r.hydrate(&conn)
 	return &conn, nil
 }
 
@@ -127,6 +150,7 @@ func (r *Repo) GetProviderConnectionByID(id string) (*models.ProviderConnection,
 	if err != nil {
 		return nil, err
 	}
+	r.hydrate(&conn)
 	return &conn, nil
 }
 
@@ -135,10 +159,17 @@ func (r *Repo) GetProviderConnectionByID(id string) (*models.ProviderConnection,
 // explicit overwrite does: the caller asked to change the key behind a name
 // they already own, not to add a second row with the same name.
 func (r *Repo) ReplaceProviderConnectionPayload(id, name, dataJSON string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
+	// Seal first: this is the dashboard's overwrite path, so the new key must
+	// never land in `data` in the clear even for the moment between the two
+	// statements.
+	sealed, err := r.sealOnWrite(id, dataJSON)
+	if err != nil {
+		return err
+	}
+	now := nowUTC()
 	res, err := r.db.Exec(
 		`UPDATE providerConnections SET name = ?, data = ?, updatedAt = ? WHERE id = ?`,
-		name, dataJSON, now, id,
+		name, sealed, now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("replace provider connection %s: %w", id, err)
