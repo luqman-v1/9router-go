@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### 🎛 `Add Anthropic Compatible` / `Add OpenAI Compatible` merged into one dialog that keeps what you typed
+
+The two buttons over Custom Providers opened two separate modals, so choosing
+the wrong protocol was expensive: the user fills name, prefix, suffix and base
+URL, discovers their endpoint actually speaks the other protocol, and has to
+close, reopen the other modal and retype everything.
+
+Both are now a single **Add Custom Provider** button over a dialog that carries a
+Provider Type switch. Switching type keeps every field the user already entered
+and moves only what belongs to the protocol: the base URL follows the new
+default when it still holds the old one, the `API Type` select appears only for
+OpenAI, the id preview updates, and a stale Check result is dropped rather than
+left claiming validity. Picking the wrong protocol is now one click, not a
+retype.
+
+The Custom Embedding dialog (Media Providers) passes `allowedTypes`, so it still
+shows only its own single option.
+
+Also fixed here: the overview button's `onclick` handed its `MouseEvent` to the
+open handler, so the node type reached the backend as `{"isTrusted":false}` and
+the dialog died on `VARIANT_CONFIG[type].defaultBaseUrl` before the base URL was
+ever populated.
+
 ### 🐛 `TranslateOpenAIToGemini` dropped tool call ids, so Claude on Antigravity 400'd on any tool history
 
 Every Claude model behind Antigravity (`ag/claude-*`) rejected any request whose
