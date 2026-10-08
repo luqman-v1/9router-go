@@ -1,15 +1,16 @@
 <!--
-  SectionNav — the Usage page's section picker.
+  SectionMenu — the Usage page's section picker, refactored out of AnalyticsView so
+  a section can put it in its own header row.
 
-  The pill row this replaces grew to four sections (Overview, Cache Analytics,
-  Compression Analytics, Details), and four labels in one
-  `inline-flex rounded-xl p-1` strip do not fit a 374px-wide phone: the strip
-  either wraps or overflows (issue #200). A dropdown keeps one control in the
-  header at every width, and the closed control shows the current section's
-  label, so the section stays identifiable.
+  SectionNav (which this replaces) rendered the pill row itself, so AnalyticsView
+  could only place it in the one fixed row above the sections. Cache Analytics and
+  Compression Analytics each need that row for their own controls — the cache
+  sub-view picker, the window selector — so the picker moved down into the
+  section that uses it and AnalyticsView hands it down as a snippet (issue #209).
 
-  Navigation stays with the caller: this component knows nothing about router
-  state, it only reports the section that was picked.
+  The closed control shows the current section's label, so the section stays
+  identifiable at every width. Navigation stays with the caller: this component
+  knows nothing about router state, it only reports the section that was picked.
 -->
 <script lang="ts">
   import { USAGE_SECTIONS, type UsageSection } from '../../lib/router'
@@ -53,24 +54,20 @@
   })
 </script>
 
-<div class="relative" bind:this={root}>
+<div class="relative shrink-0" bind:this={root}>
   <button
     type="button"
     aria-haspopup="listbox"
     aria-expanded={open}
     onclick={() => (open = !open)}
     onkeydown={onKeydown}
-    class="inline-flex w-full items-center justify-between gap-2 rounded-xl border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text-main shadow-sm transition-colors hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 sm:w-auto sm:text-sm"
+    class="inline-flex max-w-full items-center gap-2 rounded-xl border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text-main shadow-sm transition-colors hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 sm:text-sm"
   >
-    <span class="flex min-w-0 items-center gap-2">
-      <span class="material-symbols-outlined text-[18px] text-brand-500" aria-hidden="true">
-        {current.icon}
-      </span>
-      <span class="truncate">{current.label}</span>
+    <span class="material-symbols-outlined text-[18px] text-brand-500" aria-hidden="true">
+      {current.icon}
     </span>
-    <span class="material-symbols-outlined text-[16px] text-text-muted" aria-hidden="true">
-      {open ? 'expand_less' : 'expand_more'}
-    </span>
+    <span class="truncate">{current.label}</span>
+    <span class="material-symbols-outlined text-[16px] text-text-muted" aria-hidden="true">expand_more</span>
   </button>
 
   {#if open}
@@ -79,7 +76,7 @@
       aria-label="Usage section"
       tabindex="-1"
       onkeydown={onKeydown}
-      class="absolute left-0 top-full z-30 mt-1 w-64 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)] sm:right-0"
+      class="absolute left-0 top-full z-30 mt-1 w-60 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)] sm:right-0"
     >
       {#each USAGE_SECTIONS as s (s.value)}
         <button

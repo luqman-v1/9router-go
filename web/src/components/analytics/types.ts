@@ -8,6 +8,14 @@ export type Period = PeriodPreset | (string & {})
 export type TableView = 'model' | 'account' | 'apiKey' | 'endpoint'
 export type ViewMode = 'costs' | 'tokens'
 
+// ViewOption names one entry of a section's sub-view picker. The option carries
+// its own icon so the closed control and the open list show the same mark.
+export interface ViewOption {
+  value: string
+  label: string
+  icon: string
+}
+
 export interface UsageItem {
   requests?: number
   promptTokens?: number
