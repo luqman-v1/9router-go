@@ -2,6 +2,94 @@
 
 ## [Unreleased]
 
+### 🐛 Halaman Cache Analytics balas 503 — agregasi 35 detik untuk 82.143 baris
+
+- **Gejala**: `/dashboard/usage/cache` gagal total. Di browser endpoint-nya
+  503 dari proxy hulu; lewat `curl` langsung dengan cookie sesi yang valid
+  `/api/cache?trendHours=24` menjawab **200 setelah 35,5 detik**. Halamannya
+  gagal bukan karena datanya — backend menjawab benar, hanya telat.
+- **Penyebab**: `GetPromptCacheMetrics` berjalan dengan **empat** statement,
+  masing-masing mem-parse dan menyisir seluruh `usageHistory`: satu agregat
+  total, satu agregat harga `GROUP BY provider, model`, lalu satu agregat
+  `GROUP BY provider` dan satu lagi `GROUP BY model`. Dua yang terakhir
+  mengurai JSON `tokens` untuk kedua kalinya dan ketiga kalinya atas baris
+  yang sama. `usageHistory` adalah ledger yang tidak pernah di-prune, jadi
+  biayanya tumbuh tanpa batas: 82.143 baris = 1.235 ms.
+- **Fiks**: satu pemindaian, dilipat di Go. Baris dipindai sekali dengan
+  JSON `tokens` sudah ter-resolve di SQL, lalu provider, model, dan pasangan
+  provider/model — beserta totalKeseluruhan — dijumlahkan dari baris yang
+  sama. Satu baris dipindai bukan empat.
+
+  Diukur terhadap 82.143 baris dengan bentuk sama seperti database produksi,
+  tiap strategi di Benchmark di proses terpisah (supaya tidak saling
+  menghangatkan page cache):
+
+  | Strategi | Median |
+  |---|---|
+  | Empat statement (sebelumnya) | 1.235 ms |
+  | Satu `GROUP BY provider, model` | 403 ms |
+  | **Satu pindai, lipat di Go (sekarang)** | **269 ms** |
+
+  `GROUP BY` memang bentuk yang salah untuk tabel yang kardinalitasnya
+  beberapa provider: ia membangun `USE TEMP B-TREE FOR GROUP BY` per request.
+  Index yang diawali kunci grup menghilangkan B-tree itu, tapi memaksa pemindaian
+  penuh karena predikat rentang jadi tidak bisa dipakai index, dan keduanya
+  terukur sama saja dalam noise. Index `(tokens)` maupun `(provider, tokens)`
+  juga tidak mengubah apa pun — semua plan yang diuji tetap
+  `SEARCH ... USING INDEX idx_uh_provider`, yang tetap satu lintasan penuh.
+
+  Hasil pada binary yang sama, database 82.143 baris, lewat HTTP sungguhan:
+  **35,5 s → 289 ms**, payload utuh (`totalRequests: 82143`,
+  `totalCachedTokens: 74329933`, `byProvider` terisi).
+
+- **Catatan**: ekspresi `CASE` yang menulis ulang `cachedRequests` di query
+  trend sempat ditulis tanpa kurung — `CASE ... END > 0`, yang SQLite parse
+  sebagai `CASE ... (END > 0)` sehingga selalu jatuh ke cabang `ELSE` dan
+  melaporkan **nol** cache hit untuk setiap bucket. Seluruh baris trend punya
+  angka nol. `TestGetPromptCacheTrend_CountsBothCacheTokenSources` menjaga
+  ini: satu baris read-back, satu baris creation-only, satu payload kosong,
+  satu payload bukan-JSON — dua pertama harus terhitung.
+
+### 🖼️ `/providers/*.png` 404 dan peringatan autofocus di console
+
+- **`muse.png` 404**: `muse` ada di katalog (`web/src/lib/providers.ts`) tapi
+  repo ini tidak pernah meng-ship `web/public/providers/muse.png` saat provider
+  itu ditambahkan di #100 — dan `getIconPath` menebak URL dari katalog, jadi
+  setiap tile meminta aset yang memang tidak ada. Katalog punya **16 entri
+  tanpa artwork**; `muse`, `tinyfish`, `zai-search` dan `anthropic-version`
+  adalah yang terlihat di dashboard. Penyebabnya struktural: menambahkan
+  provider ke katalog adalah langkah terpisah dari meng-ship logonya, dan
+  tidak ada yang mengikat keduanya.
+
+- **Fiks**: satu komponen, `ProviderArtwork.svelte`, yang menangani fallback
+  untuk semua permukaan sekaligus. Dipromosikan dari `ProviderIcon` yang
+  sudah menyediakannya, dibuat event-driven (state-nya di-key dari `src`),
+  dan **tujuh** call site yang menulis handler `onerror` sendiri — media card,
+  media detail, media web view, request details, usage breakdown, model
+  picker, topology card — sekarang memakainya. Fallback-nya adalah initials
+  badge berwarna merek provider, sama seperti yang sudah ada.
+
+  Yang penting: `onerror` milik `<img>` hanya terpicu untuk `src` yang sudah
+  terpasang saat elemen dirender. Call site sebelumnya semuanya memanggil
+  `getIconPath(...)` inline, jadi kalau `src` berubah setelah mount — baris
+  analytics yang lazy, combo yang diedit — galat tidak pernah terpicu dan aset
+  yang gagal hanya disembunyikan. Sekarang kunci gagalnya adalah `src` itu
+  sendiri, jadi berganti provider berarti mencoba ulang, bukan mewarisi
+  kegagalan provider sebelumnya.
+
+- **Autofocus**: `LoginView` memakai atribut `autofocus`, dan Chrome mencatat
+  "Autofocus processing was blocked because a document already has a focused
+  element." Atribut itu diproses per dokumen; ketika halaman `/dashboard`
+  bounce ke `/login` (tanpa sesi) view itu dimount di samping halaman yang
+  sudah tampil, dan body sudah memegang fokus, jadi atributnya ditolak.
+  Diganti fokus eksplisit setelah `hasPassword` membuka form — cara yang
+  sama tanpa meminta browser jadi arbiter.
+
+  Detail yang penting: `/api/auth/login` yang 401 di laporan itu **bukan**
+  bug. Itu respons yang benar untuk password yang salah, dan hanya muncul
+  setelah ada percobaan login. Yang terbukti dari sini: satu kali
+  `POST /api/auth/login` per submit, baik yang gagal maupun yang berhasil.
+
 ### 📊 Cache & Compression Analytics Moved Into the Usage Page — Section Dropdown
 
 Cache Analytics dan Compression Analytics bukan lagi dua entri sidebar

@@ -3,7 +3,7 @@
   import Badge from '../../lib/ui/Badge.svelte'
   import Button from '../../lib/ui/Button.svelte'
   import Card from '../../lib/ui/Card.svelte'
-  import { getIconPath } from '../connections/types'
+  import ProviderArtwork from '../providers/ProviderArtwork.svelte'
   import { api, normalizeLastError, type ProviderConnection } from '../../api/client'
   import { copyToClipboard } from '../../lib/clipboard'
   import {
@@ -212,14 +212,10 @@
               <td class="py-3 px-4">
                 <div class="flex items-center gap-1.5">
                   {#if item.provider}
-                    <img
-                      src={getIconPath(item.provider)}
+                    <ProviderArtwork
+                      id={item.provider}
                       alt={item.provider}
                       class="w-3.5 h-3.5 object-contain rounded shrink-0"
-                      onerror={(e) => {
-                        (e.currentTarget as HTMLElement).style.display = 'none'
-                      }}
-                      loading="lazy"
                     />
                   {/if}
                   <span title={item.provider || undefined} class="font-sans">

@@ -182,3 +182,48 @@ func TestGetPromptCacheTrend(t *testing.T) {
 		t.Errorf("totalCached across trend = %d, want 900", totalCached)
 	}
 }
+
+// The trend buckets a row into "used a cache" from two different columns of the
+// tokens JSON — the read-back count and the creation count. A rewrite of that
+// CASE expression can silently collapse to a constant, which would report the
+// same cachedRequests for an hour that cached everything and an hour that
+// cached nothing.
+func TestGetPromptCacheTrend_CountsBothCacheTokenSources(t *testing.T) {
+	repo, cleanup := setupAnalyticsTestDB(t)
+	defer cleanup()
+
+	seed := func(tokens string) {
+		t.Helper()
+		if err := repo.InsertUsageHistory(
+			"anthropic", "claude-3-5", "conn_1", "key_1", "/v1/messages",
+			500, 100, 0.01, "success", 600, "{}", tokens,
+		); err != nil {
+			t.Fatalf("seed row: %v", err)
+		}
+	}
+	seed(`{"cached_tokens":300}`)
+	seed(`{"cache_creation_input_tokens":120}`)
+	seed(`{}`)
+	// A payload that is not JSON must not be counted as a cache hit, and must
+	// not fail the aggregate either.
+	seed(`raw_non_json_string`)
+
+	points, err := repo.GetPromptCacheTrend(context.Background(), 24)
+	if err != nil {
+		t.Fatalf("GetPromptCacheTrend error = %v", err)
+	}
+
+	var requests, cachedRequests int64
+	for _, p := range points {
+		requests += p.Requests
+		cachedRequests += p.CachedRequests
+	}
+	if requests != 4 {
+		t.Errorf("requests across trend = %d, want 4", requests)
+	}
+	// A read-back row and a creation-only row both count as cache traffic; the
+	// empty payload and the non-JSON one must not.
+	if cachedRequests != 2 {
+		t.Errorf("cachedRequests across trend = %d, want 2: a creation-only row is a cache hit too", cachedRequests)
+	}
+}
