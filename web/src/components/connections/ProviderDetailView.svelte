@@ -43,6 +43,14 @@
     type SuggestedModel
   } from './types'
   import { proxyBadgeInfo } from './proxyBadge'
+  import {
+    badgeFor,
+    canProbeRow,
+    probeOutcomeFrom,
+    probeOutcomeFromError,
+    testingStatus,
+    type ProbeStatus
+  } from './connectionProbe'
   import EditConnectionModal, { type ConnectionUpdate } from './EditConnectionModal.svelte'
   import AddConnectionModal from './AddConnectionModal.svelte'
   import AddCustomModelModal from './AddCustomModelModal.svelte'
@@ -288,9 +296,9 @@
   let oneByOneSummary = $state<
     { total: number; completed: number; passed: number; failed: number; stopped: boolean } | null
   >(null)
-  let oneByOneStatuses = $state<
-    Record<string, { state: 'queued' | 'testing' | 'success' | 'failed'; error?: string | null }>
-  >({})
+  // Written by both the sweep and the per-row refresh (PR #196); the shared
+  // ProbeStatus keeps those two writers from drifting apart.
+  let oneByOneStatuses = $state<Record<string, ProbeStatus>>({})
 
   // Row UI state
   let activeProxyDropdownId = $state<string | null>(null)
@@ -1020,29 +1028,19 @@
 
         const conn = providerConnections[index]
         oneByOneCurrentId = conn.id
-        oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: { state: 'testing', error: null } }
+        oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: testingStatus() }
 
         try {
           const res = await api.testConnection(conn.id)
           if (res?.valid) {
             passed += 1
-            oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: { state: 'success', error: null } }
           } else {
             failed += 1
-            oneByOneStatuses = {
-              ...oneByOneStatuses,
-              [conn.id]: { state: 'failed', error: res?.error || 'Test failed' }
-            }
           }
+          oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: probeOutcomeFrom(res) }
         } catch (err) {
           failed += 1
-          oneByOneStatuses = {
-            ...oneByOneStatuses,
-            [conn.id]: {
-              state: 'failed',
-              error: err instanceof Error ? err.message : 'Test failed'
-            }
-          }
+          oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: probeOutcomeFromError(err) }
         }
 
         oneByOneSummary = {
@@ -1076,21 +1074,13 @@
   // opening the edit modal. Reuses the one-by-one badge state so the row
   // shows the live testing/success/failed indicator for free.
   async function refreshOneConnection(conn: ProviderConnection) {
-    if (isTestingOneByOne || oneByOneStatuses[conn.id]?.state === 'testing') return
-    oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: { state: 'testing', error: null } }
+    if (!canProbeRow(isTestingOneByOne, oneByOneStatuses[conn.id])) return
+    oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: testingStatus() }
     try {
       const res = await api.testConnection(conn.id)
-      oneByOneStatuses = {
-        ...oneByOneStatuses,
-        [conn.id]: res?.valid
-          ? { state: 'success', error: null }
-          : { state: 'failed', error: res?.error || 'Test failed' }
-      }
+      oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: probeOutcomeFrom(res) }
     } catch (err) {
-      oneByOneStatuses = {
-        ...oneByOneStatuses,
-        [conn.id]: { state: 'failed', error: err instanceof Error ? err.message : 'Test failed' }
-      }
+      oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: probeOutcomeFromError(err) }
     } finally {
       onRefresh()
     }
@@ -3053,6 +3043,10 @@
           {@const priorityNum = conn.priority ?? idx + 1}
           {@const isConnActive = conn.isActive === 1}
           {@const cooldownInfo = getCooldownInfo(conn)}
+          <!-- badgeFor owns the precedence between the live probe and the
+               connection's persisted testStatus; the markup below only renders
+               the verdict it returns. -->
+          {@const connBadge = badgeFor(status, conn.testStatus, lastErr)}
           <div class="flex min-w-0 items-stretch">
             <!-- Multi-select checkbox -->
             <div class="flex shrink-0 items-center pl-1 sm:pl-2">
@@ -3110,8 +3104,7 @@
                       <p class="truncate text-xs text-text-muted">{secondaryConnLabel(conn)}</p>
                     {/if}
                     <div class="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
-                      <!-- Status badge (queued/testing/success/failed while a one-by-one run is in flight) -->
-                      {#if status?.state === 'queued'}
+                      {#if connBadge === 'queued'}
                         <span
                           class="inline-flex items-center gap-1.5 rounded-full font-semibold bg-surface-2 text-text-muted px-2 py-0.5 text-[10px]"
                           title="Waiting for its turn"
@@ -3119,12 +3112,12 @@
                           <span class="size-1.5 rounded-full bg-text-muted/50"></span>
                           queued
                         </span>
-                      {:else if status?.state === 'testing'}
+                      {:else if connBadge === 'testing'}
                         <span class="inline-flex items-center gap-1.5 rounded-full font-semibold bg-blue-500/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 text-[10px]">
                           <span class="material-symbols-outlined text-[10px] animate-spin">progress_activity</span>
                           testing
                         </span>
-                      {:else if (status?.state === 'failed' && status.error !== 'Provider test not supported') || ((conn.testStatus === 'failed' || conn.testStatus === 'error') && lastErr !== 'Provider test not supported')}
+                      {:else if connBadge === 'error'}
                         <span
                           class="inline-flex items-center gap-1.5 rounded-full font-semibold bg-red-500/10 text-red-600 dark:text-red-400 px-2 py-0.5 text-[10px]"
                           title={status?.state === 'failed' && status.error ? `failed: ${status.error}` : undefined}
@@ -3135,7 +3128,7 @@
                       {:else}
                         <span
                           class="inline-flex items-center gap-1.5 rounded-full font-semibold bg-green-500/10 text-green-600 dark:text-green-400 px-2 py-0.5 text-[10px]"
-                          title={status?.state === 'success' ? 'last one-by-one probe passed' : undefined}
+                          title={status?.state === 'success' ? 'last probe passed' : undefined}
                         >
                           <span class="size-1.5 rounded-full bg-green-500"></span>
                           active
@@ -3260,7 +3253,11 @@
 
                 <!-- Right actions -->
                 <div class="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
-                  <div class="grid flex-1 grid-cols-3 gap-1 sm:flex sm:flex-none">
+                  <!-- One implicit column per action (proxy / refresh / edit /
+                       delete, plus Session for Freebuff). auto-cols-fr keeps them
+                       on a single row as buttons are added; a fixed
+                       grid-cols-N silently wrapped once a fourth button landed. -->
+                  <div class="grid flex-1 grid-flow-col auto-cols-fr gap-1 sm:flex sm:flex-none">
                     <!-- Proxy dropdown -->
                     <div class="relative">
                       <button

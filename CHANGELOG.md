@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+### 🐛 Tombol Refresh per-baris membungkus baris aksi ke dua baris di mobile
+
+Susulan review PR #196 (`feat(connections): per-row refresh button to test a single
+account`, sudah merge). Perubahan yang sama tidak merusak apa pun secara fungsional,
+tetapi memunculkan tiga hal yang tidak terlihat di desktop:
+
+- **Baris aksi membungkus.** Container-nya `grid-cols-3` dan memang berisi tepat tiga
+  sel (proxy / edit / delete). Sel keempat dari tombol Refresh membuat Delete turun ke
+  baris kedua sendiri sementara separuh kanan grid kosong, dan tiap baris koneksi tumbuh
+  ±49px. Diukur di 390px: `gridH` 45px → 93px. Sekarang `grid-flow-col auto-cols-fr`,
+  jadi setiap aksi mendapat satu kolom implisit dan tidak membungkus meski jumlah tombol
+  bertambah — termasuk tombol Session milik Freebuff (lima sel), yang sebelumnya juga
+  membungkus.
+- **Tooltip menyesatkan.** Badge sukses berbunyi `last one-by-one probe passed`, padahal
+  kini juga bisa muncul dari probe per-baris. Sekarang `last probe passed`.
+
+`probeOutcomeFrom`, `probeOutcomeFromError` dan `badgeFor` dipindah ke
+`web/src/components/connections/connectionProbe.ts` beserta `canProbeRow`, sehingga sweep
+dan probe per-baris memakai satu implementasi, dan连锁 badge precedence — yang
+sebelumnya restated di markup — punya test.
+
+### ❌ Yang ditemukan tapi TIDAK diperbaiki: `testStatus` dari Edit modal hilang
+
+Ditemukan saat memverifikasi PR #196, di luar cakupan perubahan ini (backend). Dicatat di
+sini karena menjelaskan batas apa yang benar-benar bisa dilakukan di sisi web.
+
+- **Gejala.** `EditConnectionModal` mengirim `payload.testStatus = 'active'` setelah
+  mengganti credential (`EditConnectionModal.svelte:153`), tapi `HandleUpdateConnection`
+  **tidak pernah membacanya** — `testStatus` tidak ada di allowlist branch `hasData`
+  (`connections.go:635-712`), dan `PUT` tidak menjalankan probe. Diverifikasi langsung:
+  `PUT {apiKey:'sk-fake-1', testStatus:'active'}` menjawab 200, lalu
+  `GET /api/connections` tetap melaporkan `testStatus=error`. Jadi **rotasi key lewat
+  Edit modal tidak pernah mengembalikan baris ke hijau**; satu-satunya jalan adalah
+  *Refresh* per-baris dari PR #196.
+- **Akibatnya.** Badge `error` pada akun yang kredensialnya sudah diperbaiki hanya bisa
+  hilang lewat probe yang benar-benar berjalan. Klaim "entri `failed` bisa basi lalu
+  menutupi `testStatus` yang sudah diperbaiki" **tidak terbukti** dan tidak berlaku di
+  backend ini: tidak ada jalur yang menulis `testStatus='active'` tanpa probe. Karena
+  itu sinkronisasi badge sisi-klien **sengaja tidak** ikut di PR ini — ia akan menambah
+  `$effect` yang menulis state pada setiap render tanpa efek nyata yang bisa dibuktikan.
+- **Perbaikan yang benar ada di backend**, di `HandleUpdateConnection`: terapkan
+  `testStatus` (dan clearing `lastError`) hanya ketika modal sudah memvalidasi key baru,
+  atau jalankan probe bila tidak ada bukti. Itu perubahan handler, bukan UI, dan perlu
+  regression test di `connections_test.go`.
+
+**Verifikasi**: `bun test` 252/252 (21 kasus baru di `connectionProbe.test.ts`, mencakup
+guard sweep PR #196 dan precedence badge), `bun run build` bersih, `svelte-check` ratchet
+88 = baseline dengan 0 unresolved identifier, `go vet ./...` bersih. Grid diukur langsung
+di browser pada 390px dan 1400px: 4 sel satu baris, `gridH` 45px (sebelumnya 93px), dan
+siklus badge `testing` → `active`/`error` masih jalan setelah refactor.
+
 ### 🐛 Lonjakan RAM idle ~100 MB+ setelah pruning `requestDetails`
 
 - **Gejala**: sejak `db.StartRetentionLoop` masuk (#187, ikut rilis di v1.9.11-exp.1),
