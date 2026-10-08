@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -77,7 +77,7 @@ func TestE2E_FitToolNames_OpenAI_NonStreaming(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		_ = json.MarshalWrite(w, resp)
 	}))
 	defer upstream.Close()
 
@@ -292,7 +292,7 @@ func TestE2E_FitToolNames_MultiTurn_Conversation(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		_ = json.MarshalWrite(w, resp)
 	}))
 	defer upstream.Close()
 

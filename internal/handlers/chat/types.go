@@ -8,10 +8,11 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"9router/proxy/internal/db"
-	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/handlers/shared"
+	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/semanticcache"
 )
 
 type comboStickyState struct {
@@ -32,9 +33,10 @@ type ChatHandler struct {
 	// The handler holds it so the metering path can reconcile a TPM
 	// reservation once the real usage is known: the estimate is taken
 	// pre-dispatch, but only the response knows what the turn actually cost.
-	RateLimiter *middleware.RateLimiter
-	stickyMu    sync.Mutex
-	stickyState map[string]*comboStickyState
+RateLimiter   *middleware.RateLimiter
+	SemanticCache *semanticcache.Cache
+	stickyMu      sync.Mutex
+	stickyState   map[string]*comboStickyState
 	// oauthRefreshFlight collapses concurrent OAuth token refreshes for the
 	// same connection, so an expired token triggers one upstream round-trip
 	// instead of one per in-flight request.

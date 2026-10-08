@@ -22,6 +22,12 @@ const (
 // CompressMessages compresses tool_result content in LLM request bodies in-place.
 // Returns modified body and true if any compression was applied.
 func CompressMessages(body []byte) ([]byte, bool) {
+	return CompressMessagesWithConfig(body, DefaultRTKConfig())
+}
+
+// CompressMessagesWithConfig compresses tool_result content in LLM request bodies in-place using RTKConfig.
+// Returns modified body and true if any compression was applied.
+func CompressMessagesWithConfig(body []byte, cfg RTKConfig) ([]byte, bool) {
 	var rawMap map[string]jsontext.Value
 	if err := json.Unmarshal(body, &rawMap); err != nil {
 		return body, false
@@ -53,7 +59,7 @@ func CompressMessages(body []byte) ([]byte, bool) {
 		// OpenAI Responses: function_call_output
 		if msg["type"] == "function_call_output" {
 			if output, ok := msg["output"].(string); ok && len(output) > MinCompressSize {
-				msg["output"] = CompressText(output)
+				msg["output"] = CompressTextWithConfig(output, cfg)
 				compressed = true
 			}
 			continue
@@ -62,7 +68,7 @@ func CompressMessages(body []byte) ([]byte, bool) {
 		// OpenAI tool message
 		if msg["role"] == "tool" {
 			if content, ok := msg["content"].(string); ok && len(content) > MinCompressSize {
-				msg["content"] = CompressText(content)
+				msg["content"] = CompressTextWithConfig(content, cfg)
 				compressed = true
 			}
 			continue
@@ -80,13 +86,13 @@ func CompressMessages(body []byte) ([]byte, bool) {
 			}
 			if block["type"] == "tool_result" {
 				if text, ok := block["text"].(string); ok && len(text) > MinCompressSize {
-					block["text"] = CompressText(text)
+					block["text"] = CompressTextWithConfig(text, cfg)
 					compressed = true
 				}
 			}
 			if block["type"] == "text" {
 				if text, ok := block["text"].(string); ok && len(text) > MinCompressSize {
-					block["text"] = CompressText(text)
+					block["text"] = CompressTextWithConfig(text, cfg)
 					compressed = true
 				}
 			}

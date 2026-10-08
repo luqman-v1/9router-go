@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	json "encoding/json/v2"
+	json "9router/proxy/internal/fastjson"
 
 	"9router/proxy/internal/providers"
 )

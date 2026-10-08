@@ -1,14 +1,15 @@
 package chat
 
 import (
+	json "9router/proxy/internal/fastjson"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/semanticcache"
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/updater"
 	"bytes"
 	"context"
-	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,27 @@ import (
 	"strings"
 	"time"
 )
+
+type cacheCaptureWriter struct {
+	http.ResponseWriter
+	body       bytes.Buffer
+	statusCode int
+}
+
+func (c *cacheCaptureWriter) WriteHeader(code int) {
+	c.statusCode = code
+	c.ResponseWriter.WriteHeader(code)
+}
+
+func (c *cacheCaptureWriter) Write(b []byte) (int, error) {
+	if c.statusCode == 0 {
+		c.statusCode = http.StatusOK
+	}
+	if c.statusCode == http.StatusOK {
+		c.body.Write(b)
+	}
+	return c.ResponseWriter.Write(b)
+}
 
 // HandleChatCompletions handles POST /v1/chat/completions (OpenAI format requests).
 func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -55,17 +77,46 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
+	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	// Record the dispatching key so the outbound guardrail tap can resolve the
+	// right policy. A keyless caller leaves it unset and the tap stays inert.
+	ctx = withGuardrailKey(ctx, requestKeyID(r))
+
+	// Check prompt/response cache for non-streaming requests before model
+	// resolution: a hit answers the turn without touching a provider, so it
+	// must not depend on the model resolving. resolveModel below is what turns
+	// an unknown model into a 400, and a cached answer for a model that has
+	// since been retired is still the answer this client already paid for.
+	if !reqBody.Stream && h.SemanticCache != nil && h.SemanticCache.Enabled() {
+		var openAIReq translator.OpenAIRequest
+		if err := json.Unmarshal(body, &openAIReq); err == nil {
+			if entry, score, hit := h.SemanticCache.Lookup(ctx, &openAIReq); hit {
+				w.Header().Set("Content-Type", entry.ContentType)
+				w.Header().Set("X-Cache", "HIT")
+				w.Header().Set("X-Semantic-Similarity", fmt.Sprintf("%.4f", score))
+				w.WriteHeader(http.StatusOK)
+				w.Write(entry.ResponseBody)
+				log.Info("chat", "semantic cache hit", "model", reqBody.Model, "similarity", fmt.Sprintf("%.4f", score))
+				return
+			}
+			capture := &cacheCaptureWriter{ResponseWriter: w}
+			w = capture
+			defer func() {
+				if capture.statusCode == http.StatusOK && capture.body.Len() > 0 {
+					_ = h.SemanticCache.Store(ctx, &openAIReq, capture.body.Bytes(), "application/json")
+				}
+			}()
+			ctx = semanticcache.WithCachedRequest(ctx, &openAIReq)
+		}
+	}
+
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
-	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
-	// Record the dispatching key so the outbound guardrail tap can resolve the
-	// right policy. A keyless caller leaves it unset and the tap stays inert.
-	ctx = withGuardrailKey(ctx, requestKeyID(r))
 	requiredCaps := DetectRequiredCapabilities(body)
 
 	if len(modelInfo.ComboModels) > 0 {
@@ -644,7 +695,6 @@ func (h *ChatHandler) HandleModelLookup(w http.ResponseWriter, r *http.Request) 
 		h.HandleModelsByKind(w, r)
 		return
 	}
-
 
 	// Per-key policy before the lookup, so a denied model answers 403 instead
 	// of the 404 the client could not act on.

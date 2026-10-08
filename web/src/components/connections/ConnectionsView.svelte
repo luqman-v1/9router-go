@@ -22,8 +22,13 @@
     onBackToOverview
   }: Props = $props()
 
-  let showAddOpenAIModal = $state(false)
-  let showAddAnthropicModal = $state(false)
+  let showAddNodeModal = $state(false)
+
+  // The dialog owns the protocol choice now (#182), so opening it takes no
+  // argument — passing one through onclick would hand this a MouseEvent.
+  function openAddNodeModal() {
+    showAddNodeModal = true
+  }
 
   async function handleToggleAll(providerId: string, newActive: boolean) {
     const conns = connections.filter((c) => c.provider === providerId)
@@ -50,8 +55,7 @@
         type: data.type as unknown as string,
         urlSuffix: data.urlSuffix || undefined
       })
-      showAddOpenAIModal = false
-      showAddAnthropicModal = false
+      showAddNodeModal = false
       onRefresh()
       selectedProviderId = node.id
       onSelectProvider?.(node.id)
@@ -82,20 +86,14 @@
       onSelectProvider?.(id)
     }}
     onToggleAll={handleToggleAll}
-    onAddAnthropic={() => (showAddAnthropicModal = true)}
-    onAddOpenAI={() => (showAddOpenAIModal = true)}
+    onAddCustom={openAddNodeModal}
   />
 {/if}
 
 <AddCompatibleNodeModal
-  isOpen={showAddOpenAIModal}
+  isOpen={showAddNodeModal}
   type="openai-compatible"
-  onClose={() => (showAddOpenAIModal = false)}
-  onSubmit={handleCreateNode}
-/>
-<AddCompatibleNodeModal
-  isOpen={showAddAnthropicModal}
-  type="anthropic-compatible"
-  onClose={() => (showAddAnthropicModal = false)}
+  allowedTypes={['openai-compatible', 'anthropic-compatible']}
+  onClose={() => (showAddNodeModal = false)}
   onSubmit={handleCreateNode}
 />

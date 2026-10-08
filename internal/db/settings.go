@@ -47,8 +47,21 @@ type CapacityAdapterEntry struct {
 // SettingsData represents token saver, combo routing, and general settings stored in the settings table.
 type SettingsData struct {
 	RTKEnabled                 bool                            `json:"rtkEnabled"`
+	RTKMode                    string                          `json:"rtkMode,omitempty"`
+	RTKIntensity               string                          `json:"rtkIntensity,omitempty"`
+	RTKMaxLines                int                             `json:"rtkMaxLines,omitempty"`
+	RTKMaxChars                int                             `json:"rtkMaxChars,omitempty"`
+	RTKDeduplicate             bool                            `json:"rtkDeduplicate,omitempty"`
+	RTKCategories              map[string]bool                 `json:"rtkCategories,omitempty"`
+	RTKFilters                 map[string]bool                 `json:"rtkFilters,omitempty"`
+	RTKRawRetention            string                          `json:"rtkRawRetention,omitempty"`
 	CavemanEnabled             bool                            `json:"cavemanEnabled"`
+	CavemanMode                string                          `json:"cavemanMode,omitempty"`
 	CavemanLevel               string                          `json:"cavemanLevel"`
+	CavemanAutoClarity         bool                            `json:"cavemanAutoClarity,omitempty"`
+	CavemanLanguage            string                          `json:"cavemanLanguage,omitempty"`
+	CavemanInputMode           bool                            `json:"cavemanInputMode,omitempty"`
+	CavemanPreserveKeywords    string                          `json:"cavemanPreserveKeywords,omitempty"`
 	PonytailEnabled            bool                            `json:"ponytailEnabled"`
 	PonytailLevel              string                          `json:"ponytailLevel"`
 	ADHDEnabled                bool                            `json:"adhdEnabled"`
@@ -57,6 +70,9 @@ type SettingsData struct {
 	HeadroomCodeAware          bool                            `json:"headroomCodeAware"`
 	HeadroomKompress           bool                            `json:"headroomKompress"`
 	HeadroomTimeoutMs          int                             `json:"headroomTimeoutMs"`
+	SemanticCacheEnabled       bool                            `json:"semanticCacheEnabled"`
+	SemanticCacheTTL           int                             `json:"semanticCacheTTL,omitempty"`
+	SemanticCacheMaxEntries    int                             `json:"semanticCacheMaxEntries,omitempty"`
 	AutoUpdate                 bool                            `json:"autoUpdate"`
 	FallbackStrategy           string                          `json:"fallbackStrategy,omitempty"`
 	StickyRoundRobinLimit      int                             `json:"stickyRoundRobinLimit,omitempty"`
@@ -73,15 +89,37 @@ type SettingsData struct {
 func DefaultSettings() *SettingsData {
 	return &SettingsData{
 		RTKEnabled:        true,
-		CavemanEnabled:    false,
-		CavemanLevel:      "full",
-		PonytailEnabled:   false,
-		PonytailLevel:     "full",
-		ADHDEnabled:       false,
-		ADHDLevel:         "full",
+		RTKMode:           "simple",
+		RTKIntensity:      "standard",
+		RTKMaxLines:       100,
+		RTKMaxChars:       8000,
+		RTKDeduplicate:    true,
+		RTKCategories: map[string]bool{
+			"git":     true,
+			"build":   true,
+			"test":    true,
+			"package": true,
+			"docker":  true,
+			"system":  true,
+		},
+		RTKRawRetention:         "never",
+		CavemanEnabled:          false,
+		CavemanMode:             "simple",
+		CavemanLevel:            "full",
+		CavemanAutoClarity:      true,
+		CavemanLanguage:         "en",
+		CavemanInputMode:        false,
+		CavemanPreserveKeywords: "",
+		PonytailEnabled:         false,
+		PonytailLevel:           "full",
+		ADHDEnabled:             false,
+		ADHDLevel:               "full",
 		HeadroomUrl:       "http://localhost:8787",
 		HeadroomKompress:  true,
 		HeadroomTimeoutMs: 3000,
+		SemanticCacheEnabled:     false,
+		SemanticCacheTTL:         1440,
+		SemanticCacheMaxEntries:  1000,
 		AutoUpdate:        false,
 		CapacityAdapter: map[string]CapacityAdapterEntry{
 			"vision":     {Enabled: true, RoundRobin: false, Models: []string{}},
@@ -109,11 +147,60 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	if v, ok := raw["rtkEnabled"].(bool); ok {
 		s.RTKEnabled = v
 	}
+	if v := handlerutil.GetString(raw, "rtkMode"); v != "" {
+		s.RTKMode = v
+	}
+	if v := handlerutil.GetString(raw, "rtkIntensity"); v != "" {
+		s.RTKIntensity = v
+	}
+	if v, ok := raw["rtkMaxLines"].(float64); ok && v > 0 {
+		s.RTKMaxLines = int(v)
+	}
+	if v, ok := raw["rtkMaxChars"].(float64); ok && v > 0 {
+		s.RTKMaxChars = int(v)
+	}
+	if v, ok := raw["rtkDeduplicate"].(bool); ok {
+		s.RTKDeduplicate = v
+	}
+	if cats, ok := raw["rtkCategories"].(map[string]any); ok {
+		s.RTKCategories = make(map[string]bool, len(cats))
+		for k, cv := range cats {
+			if b, ok := cv.(bool); ok {
+				s.RTKCategories[k] = b
+			}
+		}
+	}
+	if filts, ok := raw["rtkFilters"].(map[string]any); ok {
+		s.RTKFilters = make(map[string]bool, len(filts))
+		for k, fv := range filts {
+			if b, ok := fv.(bool); ok {
+				s.RTKFilters[k] = b
+			}
+		}
+	}
+	if v := handlerutil.GetString(raw, "rtkRawRetention"); v != "" {
+		s.RTKRawRetention = v
+	}
 	if v, ok := raw["cavemanEnabled"].(bool); ok {
 		s.CavemanEnabled = v
 	}
+	if v := handlerutil.GetString(raw, "cavemanMode"); v != "" {
+		s.CavemanMode = v
+	}
 	if lvl := handlerutil.GetString(raw, "cavemanLevel"); lvl != "" {
 		s.CavemanLevel = lvl
+	}
+	if v, ok := raw["cavemanAutoClarity"].(bool); ok {
+		s.CavemanAutoClarity = v
+	}
+	if v := handlerutil.GetString(raw, "cavemanLanguage"); v != "" {
+		s.CavemanLanguage = v
+	}
+	if v, ok := raw["cavemanInputMode"].(bool); ok {
+		s.CavemanInputMode = v
+	}
+	if v := handlerutil.GetString(raw, "cavemanPreserveKeywords"); v != "" {
+		s.CavemanPreserveKeywords = v
 	}
 	if v, ok := raw["ponytailEnabled"].(bool); ok {
 		s.PonytailEnabled = v
@@ -138,6 +225,15 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	}
 	if v, ok := raw["headroomTimeoutMs"].(float64); ok && v > 0 {
 		s.HeadroomTimeoutMs = int(v)
+	}
+	if v, ok := raw["semanticCacheEnabled"].(bool); ok {
+		s.SemanticCacheEnabled = v
+	}
+	if v, ok := raw["semanticCacheTTL"].(float64); ok && v > 0 {
+		s.SemanticCacheTTL = int(v)
+	}
+	if v, ok := raw["semanticCacheMaxEntries"].(float64); ok && v > 0 {
+		s.SemanticCacheMaxEntries = int(v)
 	}
 	if v, ok := raw["autoUpdate"].(bool); ok {
 		s.AutoUpdate = v

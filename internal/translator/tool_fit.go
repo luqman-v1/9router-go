@@ -37,9 +37,8 @@ func FitToolNames(body []byte) ([]byte, map[string]string) {
 		!bytes.Contains(body, []byte(`"function_call"`)) &&
 		!bytes.Contains(body, []byte(`"tool_use"`)) &&
 		!bytes.Contains(body, []byte(`"functionCall"`)) &&
-		!bytes.Contains(body, []byte(`"functionResponse"`)) &&
+!bytes.Contains(body, []byte(`"functionResponse"`)) &&
 		!bytes.Contains(body, []byte(`"tool_choice"`)) {
-		return body, nil
 	}
 
 	var req map[string]any

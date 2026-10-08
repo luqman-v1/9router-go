@@ -2,12 +2,13 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 )
 
@@ -266,7 +267,7 @@ func normalizeKiroUserMessage(uim map[string]any) {
 
 func cleanKiroBody(body []byte) []byte {
 	var m map[string]any
-	if err := json.Unmarshal(body, &m); err != nil {
+	if err := json.Unmarshal(body, &m, handlerutil.UpstreamBody); err != nil {
 		return body
 	}
 	delete(m, "systemPrompt")

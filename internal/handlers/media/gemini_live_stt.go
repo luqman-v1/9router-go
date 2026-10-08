@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"github.com/gorilla/websocket"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -15,8 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/gorilla/websocket"
 
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
@@ -185,7 +184,7 @@ func (s *liveSTTSession) converse(ctx context.Context, socket *websocket.Conn, r
 		}
 
 		var frame liveFrame
-		if err := json.Unmarshal(data, &frame); err != nil {
+		if err := json.Unmarshal(data, &frame, handlerutil.UpstreamBody); err != nil {
 			continue // non-JSON frames carry no Live API semantics
 		}
 

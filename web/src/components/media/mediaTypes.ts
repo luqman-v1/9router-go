@@ -84,7 +84,7 @@ export function getMediaProviderStats(
 ): MediaProviderStats {
   const list = connections.filter((c) => c.provider === providerId)
   const activeList = list.filter((c) => c.isActive === 1)
-  const errorList = list.filter((c) => c.testStatus === 'error' || Boolean(c.lastError))
+  const errorList = list.filter((c) => c.testStatus === 'error' || (c.testStatus !== 'active' && c.testStatus !== 'passed' && Boolean(c.lastError)))
   const allDisabled = list.length > 0 && activeList.length === 0
 
   let status: 'connected' | 'ready' | 'error' | 'none' | 'disabled' = 'none'

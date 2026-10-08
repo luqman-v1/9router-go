@@ -29,6 +29,7 @@ func ProvideTokenSaverConfig(repo *db.Repo, params CLIParams) *handlers.TokenSav
 		ts.SetADHD(params.ADHD)
 	}
 	if settings, err := repo.GetSettings(); err == nil && settings != nil {
+		ts.UpdateFromSettings(settings)
 		rtk := settings.RTKEnabled
 		if params.RTKSet {
 			rtk = params.RTK

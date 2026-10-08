@@ -2,10 +2,13 @@ package proxy
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 // defaultInbandErrorStatus is reported when a provider-injected error event
@@ -78,17 +81,17 @@ func inbandPayload(line []byte) []byte {
 
 // inbandEnvelope reads only the field that decides failure.
 type inbandEnvelope struct {
-	Error json.RawMessage `json:"error"`
+	Error jsontext.Value `json:"error"`
 }
 
 // inbandErrorObject reads the failure detail out of an error object. Code
 // and Status stay raw: providers disagree on the key and on number-vs-string,
 // and httpStatusFromJSON normalizes both.
 type inbandErrorObject struct {
-	Message string          `json:"message"`
-	Type    string          `json:"type"`
-	Code    json.RawMessage `json:"code"`
-	Status  json.RawMessage `json:"status"`
+	Message string         `json:"message"`
+	Type    string         `json:"type"`
+	Code    jsontext.Value `json:"code"`
+	Status  jsontext.Value `json:"status"`
 }
 
 // parseInbandError classifies the payload inbandPayload extracted. Any
@@ -96,7 +99,7 @@ type inbandErrorObject struct {
 // unknown — no successful stream ever carries an `error` key.
 func parseInbandError(payload []byte) (int, string, bool) {
 	var env inbandEnvelope
-	if err := json.Unmarshal(payload, &env); err != nil {
+	if err := json.Unmarshal(payload, &env, handlerutil.UpstreamBody); err != nil {
 		return 0, "", false
 	}
 	raw := bytes.TrimSpace(env.Error)
@@ -105,7 +108,7 @@ func parseInbandError(payload []byte) (int, string, bool) {
 	}
 	if raw[0] == '"' {
 		var msg string
-		if err := json.Unmarshal(raw, &msg); err != nil || strings.TrimSpace(msg) == "" {
+		if err := json.Unmarshal(raw, &msg, handlerutil.UpstreamBody); err != nil || strings.TrimSpace(msg) == "" {
 			return 0, "", false
 		}
 		return defaultInbandErrorStatus, inbandMessage(msg), true
@@ -114,7 +117,7 @@ func parseInbandError(payload []byte) (int, string, bool) {
 		return defaultInbandErrorStatus, inbandMessage(""), true
 	}
 	var obj inbandErrorObject
-	if err := json.Unmarshal(raw, &obj); err != nil {
+	if err := json.Unmarshal(raw, &obj, handlerutil.UpstreamBody); err != nil {
 		return defaultInbandErrorStatus, inbandMessage(""), true
 	}
 	msg := obj.Message
@@ -136,7 +139,7 @@ func inbandMessage(providerMsg string) string {
 // inbandStatusCode returns the first usable HTTP status from the candidates,
 // defaulting to 502. Non-numeric codes (gateway-style `"upstream_error"`,
 // `"overloaded_error"`) and out-of-range numbers never pass through.
-func inbandStatusCode(candidates ...json.RawMessage) int {
+func inbandStatusCode(candidates ...jsontext.Value) int {
 	for _, raw := range candidates {
 		if code := httpStatusFromJSON(bytes.TrimSpace(raw)); code != 0 {
 			return code
@@ -152,14 +155,14 @@ func httpStatusFromJSON(raw []byte) int {
 		return 0
 	}
 	var num float64
-	if err := json.Unmarshal(raw, &num); err == nil {
+	if err := json.Unmarshal(raw, &num, handlerutil.UpstreamBody); err == nil {
 		if num >= 400 && num < 600 {
 			return int(num)
 		}
 		return 0
 	}
 	var str string
-	if err := json.Unmarshal(raw, &str); err != nil {
+	if err := json.Unmarshal(raw, &str, handlerutil.UpstreamBody); err != nil {
 		return 0
 	}
 	if n, err := strconv.Atoi(strings.TrimSpace(str)); err == nil && n >= 400 && n < 600 {

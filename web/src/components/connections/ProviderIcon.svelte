@@ -1,13 +1,12 @@
 <script lang="ts">
   // Provider icon with a graceful fallback.
   //
-  // Every provider tile resolves its artwork through getIconPath, which points
-  // at /providers/<id>.png. A provider added to the catalog without shipping a
-  // PNG therefore 404s; the call sites hid the failed <img>, which left an
-  // empty 32px box. Handling the error here instead means any missing or
-  // renamed asset degrades to an initials badge in the provider's brand colour,
-  // and one component covers every surface rather than ten onerror handlers.
-  import { getIconPath, getProviderGlyph } from './types'
+  // The artwork itself is ProviderArtwork's job, so every surface shares one
+  // fallback: a provider added to the catalog without shipping a PNG under
+  // /providers/<id>.png degrades to an initials badge in the provider's brand
+  // colour instead of a 404 plus an empty box.
+  import ProviderArtwork from '../providers/ProviderArtwork.svelte'
+  import { getProviderGlyph } from './types'
 
   interface Props {
     id?: string | null
@@ -18,13 +17,12 @@
 
   let { id, apiType, size = 'sm', class: klass = '' }: Props = $props()
 
-  let failed = $state(false)
   const glyph = $derived(getProviderGlyph(id))
-  const src = $derived(getIconPath(id, apiType))
 
   const box = $derived(
     size === 'lg' ? 'w-10 h-10' : size === 'md' ? 'w-8 h-8' : 'w-6 h-6'
   )
+  const art = $derived(size === 'lg' ? 'w-6 h-6' : size === 'md' ? 'w-5 h-5' : 'w-4 h-4')
   const text = $derived(size === 'lg' ? 'text-sm' : size === 'md' ? 'text-[11px]' : 'text-[9px]')
 </script>
 
@@ -34,17 +32,5 @@
   aria-label={glyph.name}
   title={glyph.name}
 >
-  {#if failed}
-    <span
-      class="font-semibold {text} leading-none"
-      style="color: {glyph.color}"
-    >{glyph.initials}</span>
-  {:else}
-    <img
-      {src}
-      alt={glyph.name}
-      class="w-[60%] h-[60%] object-contain"
-      onerror={() => (failed = true)}
-    />
-  {/if}
+  <ProviderArtwork {id} {apiType} class="{art} {text} object-contain leading-none font-semibold" />
 </div>

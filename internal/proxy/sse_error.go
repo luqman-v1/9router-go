@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"net/http"
 )
@@ -69,4 +69,3 @@ func ClassifyStreamAbort(cause error) (int, string) {
 	}
 	return http.StatusBadGateway, "upstream connection lost"
 }
-

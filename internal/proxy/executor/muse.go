@@ -3,12 +3,13 @@ package executor
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 )
@@ -69,7 +70,7 @@ func museModel(body []byte) string {
 	var reqObj struct {
 		Model string `json:"model"`
 	}
-	if err := json.Unmarshal(body, &reqObj); err != nil {
+	if err := json.Unmarshal(body, &reqObj, handlerutil.ClientBody); err != nil {
 		return ""
 	}
 	return stripOpenCodePrefix(reqObj.Model, "muse")

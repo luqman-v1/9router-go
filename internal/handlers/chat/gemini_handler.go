@@ -206,12 +206,20 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		if oauthData != nil {
 			projectID = oauthData.ProjectID
 		}
+// The token is usable, so there is nothing to refresh. Hand back exactly
+		// the credential the caller passed in, untouched: the stored accessToken
+		// is not interchangeable with it, and the request path picks the right
+		// one deliberately.
+		//
+		// for iflow the connection stores an HMAC platform key in apiKey and the
+		// OAuth access token alongside it, and the request is signed with apiKey
+		// (proxy/executor/providers.go) — substituting here would sign every
+		// healthy connection with the wrong secret.
+		//
+		// Same for Kiro: upstream (open-sse/executors/kiro.js buildHeaders) uses
+		// the apiKey for `authMethod: "api_key"` connections even when an
+		// accessToken is present, and sending the other one answers 403.
 		if oauthData == nil || oauthData.RefreshToken == "" || !oauthData.IsExpired() {
-			// Pass the caller's token through untouched. The stored
-			// accessToken is not interchangeable with it: for iflow the
-			// connection stores an HMAC platform key in apiKey and the OAuth
-			// access token alongside it, and the request is signed with
-			// apiKey — substituting here would sign with the wrong secret.
 			return oauthTokenResult{token: currentToken, projectID: projectID, passthrough: true}, nil
 		}
 
@@ -231,7 +239,8 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 			})
 			if err != nil {
 				h.parkRejectedOAuthAccount(connectionID, err)
-				return oauthTokenResult{token: currentToken, projectID: projectID, passthrough: true}, fmt.Errorf("OAuth refresh for %s: %w", provider, err)
+return oauthTokenResult{token: currentToken, projectID: projectID, passthrough: true},
+					fmt.Errorf("OAuth refresh for %s: %w", provider, err)
 			}
 			if result == nil {
 				// A refresher that reports success but hands back nothing is a
@@ -306,7 +315,7 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		return oauthTokenResult{token: tokenResp.AccessToken, projectID: projectID}, nil
 	})
 
-	// A shared flight must not hand one caller's token to another: when the
+// A shared flight must not hand one caller's token to another: when the
 	// leader found the connection healthy, it returned its own token as a
 	// pass-through, and that value belongs to the leader alone.
 	if err != nil {
@@ -318,7 +327,10 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		return token, r.projectID, err
 	}
 	r, ok := res.(oauthTokenResult)
-	if !ok || r.passthrough {
+	if !ok {
+		return currentToken, "", nil
+	}
+	if r.passthrough {
 		return currentToken, r.projectID, nil
 	}
 	return r.token, r.projectID, nil

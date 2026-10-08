@@ -4,7 +4,7 @@ import (
 	"9router/proxy/internal/log"
 	"bytes"
 	"context"
-	json "encoding/json/v2"
+	json "9router/proxy/internal/fastjson"
 	"io"
 	"net/http"
 	"os"

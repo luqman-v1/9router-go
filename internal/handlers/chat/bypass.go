@@ -1,7 +1,7 @@
 package chat
 
 import (
-	json "encoding/json/v2"
+	json "9router/proxy/internal/fastjson"
 	"net/http"
 	"strings"
 	"time"

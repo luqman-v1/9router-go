@@ -2,10 +2,13 @@ package proxy
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 // A 200 response is not proof of an answer. Upstreams return 200 with an
@@ -71,7 +74,7 @@ func EmptyUpstreamError(body []byte) error {
 	}
 
 	var probe completionProbe
-	if err := json.Unmarshal(trimmed, &probe); err != nil {
+	if err := json.Unmarshal(trimmed, &probe, handlerutil.UpstreamBody); err != nil {
 		return UpstreamFailure(http.StatusBadGateway, "upstream returned an unparseable body with status 200")
 	}
 	if msg := errorEnvelopeMessage(probe.Error); msg != "" {
@@ -88,11 +91,11 @@ func EmptyUpstreamError(body []byte) error {
 // Completions, Claude Messages and Responses — and each carries its content
 // under a different key.
 type completionProbe struct {
-	Error   json.RawMessage `json:"error"`
-	Choices json.RawMessage `json:"choices"`
-	Content json.RawMessage `json:"content"`
-	Output  json.RawMessage `json:"output"`
-	Status  string          `json:"status"`
+	Error   jsontext.Value `json:"error"`
+	Choices jsontext.Value `json:"choices"`
+	Content jsontext.Value `json:"content"`
+	Output  jsontext.Value `json:"output"`
+	Status  string         `json:"status"`
 }
 
 type choiceProbe struct {
@@ -102,12 +105,12 @@ type choiceProbe struct {
 }
 
 type messageProbe struct {
-	Content          json.RawMessage `json:"content"`
-	ToolCalls        json.RawMessage `json:"tool_calls"`
-	FunctionCall     json.RawMessage `json:"function_call"`
-	ReasoningContent json.RawMessage `json:"reasoning_content"`
-	Reasoning        json.RawMessage `json:"reasoning"`
-	Refusal          json.RawMessage `json:"refusal"`
+	Content          jsontext.Value `json:"content"`
+	ToolCalls        jsontext.Value `json:"tool_calls"`
+	FunctionCall     jsontext.Value `json:"function_call"`
+	ReasoningContent jsontext.Value `json:"reasoning_content"`
+	Reasoning        jsontext.Value `json:"reasoning"`
+	Refusal          jsontext.Value `json:"refusal"`
 }
 
 // carriesAnswer reports whether a message holds anything a client can act
@@ -125,7 +128,7 @@ func missingCompletion(p completionProbe) string {
 	switch {
 	case p.Choices != nil:
 		var choices []choiceProbe
-		if err := json.Unmarshal(p.Choices, &choices); err != nil {
+		if err := json.Unmarshal(p.Choices, &choices, handlerutil.UpstreamBody); err != nil {
 			return "" // a shape this probe does not model: relay, do not guess
 		}
 		if len(choices) == 0 {
@@ -144,8 +147,8 @@ func missingCompletion(p completionProbe) string {
 		}
 		return "content is empty"
 	case p.Output != nil:
-		var output []json.RawMessage
-		if err := json.Unmarshal(p.Output, &output); err != nil {
+		var output []jsontext.Value
+		if err := json.Unmarshal(p.Output, &output, handlerutil.UpstreamBody); err != nil {
 			return ""
 		}
 		if len(output) == 0 && !terminalOutputStatus(p.Status) {
@@ -168,7 +171,7 @@ func terminalOutputStatus(status string) bool {
 
 // carriesValue reports whether a raw JSON value holds content rather than
 // null, an empty string, or an empty array/object.
-func carriesValue(raw json.RawMessage) bool {
+func carriesValue(raw jsontext.Value) bool {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return false
@@ -176,19 +179,19 @@ func carriesValue(raw json.RawMessage) bool {
 	switch trimmed[0] {
 	case '"':
 		var s string
-		if err := json.Unmarshal(trimmed, &s); err != nil {
+		if err := json.Unmarshal(trimmed, &s, handlerutil.UpstreamBody); err != nil {
 			return false
 		}
 		return strings.TrimSpace(s) != ""
 	case '[':
-		var items []json.RawMessage
-		if err := json.Unmarshal(trimmed, &items); err != nil {
+		var items []jsontext.Value
+		if err := json.Unmarshal(trimmed, &items, handlerutil.UpstreamBody); err != nil {
 			return false
 		}
 		return len(items) > 0
 	case '{':
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(trimmed, &fields); err != nil {
+		var fields map[string]jsontext.Value
+		if err := json.Unmarshal(trimmed, &fields, handlerutil.UpstreamBody); err != nil {
 			return false
 		}
 		return len(fields) > 0
@@ -199,7 +202,7 @@ func carriesValue(raw json.RawMessage) bool {
 // errorEnvelopeMessage returns a human-readable message from an `error`
 // field, or "" when there is no error to report. A JSON null is not an
 // error, so it reads as absent.
-func errorEnvelopeMessage(raw json.RawMessage) string {
+func errorEnvelopeMessage(raw jsontext.Value) string {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return ""
@@ -208,7 +211,7 @@ func errorEnvelopeMessage(raw json.RawMessage) string {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	}
-	if err := json.Unmarshal(trimmed, &envelope); err == nil {
+	if err := json.Unmarshal(trimmed, &envelope, handlerutil.UpstreamBody); err == nil {
 		switch {
 		case envelope.Message != "":
 			return envelope.Message
@@ -218,7 +221,7 @@ func errorEnvelopeMessage(raw json.RawMessage) string {
 		return "error object"
 	}
 	var message string
-	if err := json.Unmarshal(trimmed, &message); err == nil && message != "" {
+	if err := json.Unmarshal(trimmed, &message, handlerutil.UpstreamBody); err == nil && message != "" {
 		return message
 	}
 	return "error object"

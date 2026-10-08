@@ -2,9 +2,11 @@ package executor
 
 import (
 	"bytes"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"strings"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 // Claude OAuth tool-cloak response decloaking (mirrors decloakToolNames /
@@ -60,7 +62,7 @@ func DecloakClaudeResponseBody(body []byte, toolNameMap map[string]string) []byt
 	// An empty map is not a reason to give up: the suffix fallback below can
 	// still recover the name, which is what makes a retry or a reconnect safe.
 	var resp map[string]any
-	if err := json.Unmarshal(body, &resp); err != nil {
+	if err := json.Unmarshal(body, &resp, handlerutil.UpstreamBody); err != nil {
 		return body
 	}
 	content, ok := resp["content"].([]any)
@@ -217,7 +219,7 @@ func (d *ClaudeStreamDecloaker) Events(chunk []byte) []SSEEvent {
 		return []SSEEvent{{Type: eventType, Payload: []byte(payload)}}
 	}
 	var event map[string]any
-	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+	if err := json.Unmarshal([]byte(payload), &event, handlerutil.UpstreamBody); err != nil {
 		return []SSEEvent{{Type: eventType, Payload: []byte(payload)}}
 	}
 	if t, ok := event["type"].(string); ok && t != "" {

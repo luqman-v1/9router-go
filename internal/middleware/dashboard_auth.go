@@ -74,6 +74,25 @@ func RequireConsoleLogAuth(repo *db.Repo) func(http.Handler) http.Handler {
 	}
 }
 
+// CallerIsDashboardPrivileged reports whether the request should be served
+// secret material, as opposed to an engine client key.
+//
+// The dashboard gate admits three kinds of caller: a valid session cookie, the
+// local CLI token, and — when requireLogin is off — anything at all. The first
+// two are operator credentials. The third is not a credential, but it is the
+// default local install reaching its own dashboard over loopback and the only
+// way that install could manage keys at all; excluding it would show an
+// operator with login disabled a table of masks and no way to reveal one.
+// An engine client key is the single excluded caller: it is handed to a client
+// app, and F-6 existed so it could not dump the rest of the key set.
+func CallerIsDashboardPrivileged(repo *db.Repo, r *http.Request) bool {
+	if !auth.RequireLogin(repo) {
+		return true
+	}
+	return auth.SessionValid(r) ||
+		auth.ValidCLIToken(r.Header.Get(auth.CLITokenHeader))
+}
+
 // RequireAdminAuth ensures that only requests with a valid dashboard session
 // (auth_token cookie) or local CLI token (x-9r-cli-token) can proceed. Client
 // API keys are rejected.

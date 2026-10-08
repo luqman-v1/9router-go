@@ -89,41 +89,29 @@ func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 	}
 }
 
-// resolveApiKey finds the row for an incoming key in cost order: the argon2
-// verification cache, then the hashed lookup, then the legacy plaintext
-// column. A legacy hit self-heals by hashing the row in place, so an existing
-// plaintext key keeps authenticating across the upgrade.
+// resolveApiKey finds the row for an incoming key. Since issue #199 the
+// plaintext column is the primary path again, matching upstream; the argon2id
+// lookup remains only so a row created under F-6 keeps authenticating after the
+// upgrade. There is no self-heal in either direction: rewriting a row would
+// destroy the one property the dashboard now depends on, which is that the
+// secret can be read back.
 func resolveApiKey(repo *db.Repo, lookup, plaintext string) (*models.APIKey, error) {
 	if cached, ok := keikey.DefaultAuthCache().Get(lookup); ok {
 		return cached.(*models.APIKey), nil
 	}
-	apiKey, err := repo.FindApiKeyByLookup(lookup)
-	if err != nil {
-		return nil, err
-	}
-	if apiKey != nil {
-		return apiKey, nil
-	}
-	apiKey, err = repo.GetApiKeyByKey(plaintext)
+	apiKey, err := repo.GetApiKeyByKey(plaintext)
 	if err != nil || apiKey == nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		return repo.FindApiKeyByLookup(lookup)
 	}
-	hash, err := keikey.Hash(plaintext)
-	if err != nil {
-		log.Warn("auth", "api key hashing failed; keeping legacy row", "error", err)
-		return apiKey, nil
-	}
-	if err := repo.HashApiKeyRow(apiKey.ID, hash, lookup, keikey.Mask(plaintext)); err != nil {
-		log.Warn("auth", "api key row self-heal failed; key still valid", "error", err)
-		return apiKey, nil
-	}
-	apiKey.Key = ""
 	return apiKey, nil
 }
 
-// verifyApiKey checks the secret against the row. Hashed rows are verified
-// with argon2id; a legacy row that still has no verifier matches on lookup
-// alone (the plaintext comparison already happened in the WHERE clause).
+// verifyApiKey checks the secret against the row. A row written before issue
+// #199 carries an argon2id verifier and is confirmed with it; every other row
+// was matched on the plaintext column itself, so there is nothing left to check.
 func verifyApiKey(plaintext string, apiKey *models.APIKey) bool {
 	if apiKey.KeyHash == nil || *apiKey.KeyHash == "" {
 		return true

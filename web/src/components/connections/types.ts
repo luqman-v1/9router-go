@@ -98,10 +98,15 @@ export function getProviderStats(
   })
 
   const total = list.length
-  const connected = list.filter((c) => c.isActive === 1 && c.testStatus !== 'error' && !c.lastError).length
-  const errorCount = list.filter((c) => c.testStatus === 'error' || !!c.lastError).length
+  const isConnError = (c: ProviderConnection) =>
+    c.testStatus === 'error' || c.testStatus === 'failed' || (c.testStatus !== 'active' && c.testStatus !== 'passed' && !!c.lastError)
+  const isConnConnected = (c: ProviderConnection) =>
+    c.isActive === 1 && (c.testStatus === 'active' || c.testStatus === 'passed' || (c.testStatus !== 'error' && c.testStatus !== 'failed' && !c.lastError))
+
+  const connected = list.filter(isConnConnected).length
+  const errorCount = list.filter(isConnError).length
   const allDisabled = total > 0 && list.every((c) => c.isActive === 0)
-  const latestError = list.find((c) => !!c.lastError)?.lastError
+  const latestError = list.find(isConnError)?.lastError
 
   return { total, connected, errorCount, allDisabled, latestError, connections: list }
 }

@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	json "encoding/json/v2"
+	json "9router/proxy/internal/fastjson"
 	"fmt"
 	"strings"
 

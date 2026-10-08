@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/shared"
+
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/middleware"
@@ -50,6 +53,7 @@ func (h *ChatHandler) LogFailure(
 	}
 	if info.SavedTokens > 0 {
 		tokens["original_input_tokens"] = info.OriginalInputTokens
+		tokens["compressed_input_tokens"] = info.OriginalInputTokens - info.SavedTokens
 		tokens["saved_tokens"] = info.SavedTokens
 		tokens["saved_percent"] = info.SavedPercent
 	}
@@ -79,10 +83,28 @@ func (h *ChatHandler) LogFailure(
 			responseContent = responseContent[:constants.MaxResponseContentLen] + "...[truncated]"
 		}
 	}
+	startedAt := info.StartedAt
+	if startedAt.IsZero() {
+		startedAt = now.Add(-time.Duration(latencyMs) * time.Millisecond)
+	}
+
 	reqData, marshalErr := json.Marshal(map[string]any{
-		"id": reqID, "provider": info.Provider, "model": info.Model,
-		"connectionId": info.ConnectionID, "status": "error",
-		"timestamp": now.Format("2006-01-02T15:04:05.000Z"),
+		"id":             reqID,
+		"provider":       info.Provider,
+		"model":          info.Model,
+		"requestedModel": info.RequestedModel,
+		"connectionId":   info.ConnectionID,
+		"connName":       info.ConnName,
+		"connEmail":      info.ConnEmail,
+		"account":        info.AccountLabel(),
+		"apiKey":         maskAPIKey(info.APIKey),
+		"combo":          info.ComboName,
+		"protocol":       info.Protocol,
+		"cacheSource":    info.CacheSource,
+		"status":         "error",
+		"timestamp":      now.Format("2006-01-02T15:04:05.000Z"),
+		"startedAt":      startedAt.Format("2006-01-02T15:04:05.000Z"),
+		"endedAt":        now.Format("2006-01-02T15:04:05.000Z"),
 		"latency": map[string]int64{
 			"ttft":  metricsTTFT(metrics),
 			"total": latencyMs,
@@ -215,6 +237,31 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 
 	now := time.Now().UTC()
 	reqID := fmt.Sprintf("%d-%s", now.UnixMilli(), info.Model)
+
+	if h.Repo != nil && (info.SavedTokens > 0 || info.OriginalInputTokens > 0) {
+		mode := resolveCompressionMode(h.TokenSaver, info.SavedTokens)
+		skipReason := ""
+		if info.SavedTokens == 0 {
+			skipReason = "no_savings"
+		}
+		_ = h.Repo.InsertCompressionAnalytics(context.Background(), db.CompressionAnalyticsRecord{
+			Timestamp:              now.Format(time.RFC3339),
+			Provider:               info.Provider,
+			Model:                  info.Model,
+			Mode:                   mode,
+			OriginalTokens:         info.OriginalInputTokens,
+			CompressedTokens:       info.OriginalInputTokens - info.SavedTokens,
+			TokensSaved:            info.SavedTokens,
+			DurationMs:             int(latencyMs),
+			RequestID:              reqID,
+			ActualPromptTokens:     usage.PromptTokens,
+			ActualCompletionTokens: usage.CompletionTokens,
+			ActualTotalTokens:      totalTokens,
+			ActualCacheReadTokens:  cachedTokens,
+			ActualCacheWriteTokens: cacheCreationTokens,
+			SkipReason:             skipReason,
+		})
+	}
 	reqMsgs := extractRequestMessages(requestBody)
 
 	tokensMap := map[string]int{
@@ -226,21 +273,38 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 	}
 	if info.SavedTokens > 0 {
 		tokensMap["original_input_tokens"] = info.OriginalInputTokens
+		tokensMap["compressed_input_tokens"] = info.OriginalInputTokens - info.SavedTokens
 		tokensMap["saved_tokens"] = info.SavedTokens
 		tokensMap["saved_percent"] = info.SavedPercent
 	}
 
+	startedAtUsage := info.StartedAt
+	if startedAtUsage.IsZero() {
+		startedAtUsage = now.Add(-time.Duration(latencyMs) * time.Millisecond)
+	}
+
 	reqData, err := json.Marshal(map[string]any{
-		"id":           reqID,
-		"provider":     info.Provider,
-		"model":        info.Model,
-		"connectionId": info.ConnectionID,
-		"status":       "success",
-		"timestamp":    now.Format("2006-01-02T15:04:05.000Z"),
-		"latency":      map[string]int64{"ttft": ttftMs, "total": latencyMs},
-		"tokens":       tokensMap,
-		"request":      map[string]any{"messages": reqMsgs},
-		"response":     map[string]any{"content": respContent},
+		"id":             reqID,
+		"provider":       info.Provider,
+		"model":          info.Model,
+		"requestedModel": info.RequestedModel,
+		"connectionId":   info.ConnectionID,
+		"connName":       info.ConnName,
+		"connEmail":      info.ConnEmail,
+		"account":        info.AccountLabel(),
+		"apiKey":         maskAPIKey(info.APIKey),
+		"combo":          info.ComboName,
+		"protocol":       info.Protocol,
+		"cacheSource":    info.CacheSource,
+		"status":         "success",
+		"timestamp":      now.Format("2006-01-02T15:04:05.000Z"),
+		"startedAt":      startedAtUsage.Format("2006-01-02T15:04:05.000Z"),
+		"endedAt":        now.Format("2006-01-02T15:04:05.000Z"),
+		"latency":        map[string]int64{"ttft": ttftMs, "total": latencyMs},
+		"tokens":         tokensMap,
+		"cost":           cost,
+		"request":        map[string]any{"messages": reqMsgs},
+		"response":       map[string]any{"content": respContent},
 	})
 	if err != nil {
 		log.Error("usage", "marshal request detail failed", "error", err)
@@ -484,4 +548,48 @@ func getJSONMap(m map[string]any, key string) map[string]any {
 // same mask from a stored row to recover the key's name.
 func maskAPIKey(key string) string {
 	return handlerutil.MaskAPIKey(key)
+}
+
+func resolveCompressionMode(ts *shared.TokenSaverConfig, savedTokens int) string {
+	hasRTK := savedTokens > 0
+	hasCaveman := false
+	hasPonytail := false
+	hasADHD := false
+
+	if ts != nil {
+		if ts.RTKEnabled() {
+			hasRTK = true
+		}
+		hasCaveman = ts.CavemanEnabled()
+		hasPonytail = ts.PonytailEnabled()
+		hasADHD = ts.ADHDEnabled()
+	}
+
+	personaCount := 0
+	if hasCaveman {
+		personaCount++
+	}
+	if hasPonytail {
+		personaCount++
+	}
+	if hasADHD {
+		personaCount++
+	}
+
+	if (hasRTK && personaCount > 0) || personaCount > 1 {
+		return "stacked"
+	}
+	if hasRTK {
+		return "rtk"
+	}
+	if hasCaveman {
+		return "caveman"
+	}
+	if hasADHD {
+		return "adhd"
+	}
+	if hasPonytail {
+		return "ponytail"
+	}
+	return "rtk"
 }

@@ -186,15 +186,15 @@ func TestGetAuthenticatedApiKey(t *testing.T) {
 		t.Error("expected context to contain authenticated API key")
 	}
 
-	// F-6: the authenticated object carries the caller's identity, never the
-	// secret. The seeded row is plaintext, so RequireApiKey self-heals it into
-	// a hashed row on first use and the plaintext is stripped from the object
-	// the rest of the request sees.
+	// Issue #199 reverted the F-6 self-heal, so the authenticated object now
+	// carries the row as stored — including the secret. That is the deliberate
+	// trade-off: the dashboard can read a key back, at the cost of a database
+	// dump exposing every client key.
 	if retrievedID != "1" {
 		t.Errorf("expected authenticated key id '1', got %q", retrievedID)
 	}
-	if retrievedKey != "" {
-		t.Errorf("the authenticated key object still carries the plaintext %q", retrievedKey)
+	if retrievedKey != "valid-token" {
+		t.Errorf("authenticated key = %q, want the stored secret %q", retrievedKey, "valid-token")
 	}
 
 	// Test case where no key is injected (directly calling mockHandler without middleware)

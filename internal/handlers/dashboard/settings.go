@@ -108,6 +108,12 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	if h.TokenSaver != nil {
+		if s, err := h.Repo.GetSettings(); err == nil && s != nil {
+			h.TokenSaver.UpdateFromSettings(s)
+		}
+	}
+
 	updated, err := h.Repo.GetSettingsRaw()
 	if err != nil {
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})

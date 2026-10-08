@@ -5,7 +5,7 @@ import (
 	"9router/proxy/internal/translator"
 	"bytes"
 	"context"
-	json "encoding/json/v2"
+	json "9router/proxy/internal/fastjson"
 	"fmt"
 	"io"
 	"math"

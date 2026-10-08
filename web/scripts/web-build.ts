@@ -104,8 +104,10 @@ export function fingerprint(root: string = webRoot): string {
 
 function buildSpa(): number {
   console.log('Building web SPA assets...')
-  const install = spawnSync('bun', ['install', '--frozen-lockfile'], { cwd: webRoot, stdio: 'inherit' })
-  if (install.status !== 0) return install.status ?? 1
+  if (!existsSync(join(webRoot, 'node_modules'))) {
+    const install = spawnSync('bun', ['install'], { cwd: webRoot, stdio: 'inherit' })
+    if (install.status !== 0) return install.status ?? 1
+  }
   return spawnSync('bun', ['run', 'build'], { cwd: webRoot, stdio: 'inherit' }).status ?? 1
 }
 

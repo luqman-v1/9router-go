@@ -62,12 +62,17 @@ export type ModelDeprecationMap = Record<string, ModelDeprecation>
 
 export interface APIKey {
   id: string
+  /**
+   * The stored secret. Empty for a caller authenticated with an engine client
+   * key, and for rows created before #199, whose plaintext was hashed away and
+   * cannot be recovered — the UI falls back to `keyDisplay` in both cases.
+   */
   key: string
   name: string | null
   machineId: string | null
   isActive: number
   createdAt: string
-  /** Masked secret, e.g. `sk-6…008f`. `key` carries the same value. */
+  /** Masked secret, e.g. `sk-6…008f`. Always present. */
   keyDisplay?: string
   /** Rate limits. 0 means unlimited. */
   rateLimitRpm?: number
@@ -133,8 +138,21 @@ export interface Settings {
   requireApiKey?: boolean
   tunnelDashboardAccess?: boolean
   rtkEnabled?: boolean
+  rtkMode?: 'simple' | 'advance' | string
+  rtkIntensity?: 'minimal' | 'standard' | 'aggressive' | string
+  rtkMaxLines?: number
+  rtkMaxChars?: number
+  rtkDeduplicate?: boolean
+  rtkCategories?: Record<string, boolean>
+  rtkFilters?: Record<string, boolean>
+  rtkRawRetention?: 'never' | 'failures' | 'always' | string
   cavemanEnabled?: boolean
+  cavemanMode?: 'simple' | 'advance' | string
   cavemanLevel?: string
+  cavemanAutoClarity?: boolean
+  cavemanLanguage?: string
+  cavemanInputMode?: boolean
+  cavemanPreserveKeywords?: string
   ponytailEnabled?: boolean
   ponytailLevel?: string
   adhdEnabled?: boolean
@@ -143,6 +161,9 @@ export interface Settings {
   headroomUrl?: string
   headroomTimeoutMs?: number
   headroomKompress?: boolean
+  semanticCacheEnabled?: boolean
+  semanticCacheTTL?: number
+  semanticCacheMaxEntries?: number
   autoUpdate?: boolean
   /** Dashboard security & SSO (profile page, Next parity). */
   requireLogin?: boolean
@@ -434,6 +455,145 @@ export interface LoginResponse {
   retryAfter?: number
   resetHint?: string
   remainingBeforeLock?: number
+}
+
+export interface SemanticCacheStats {
+  memoryEntries: number
+  dbEntries: number
+  hits: number
+  misses: number
+  hitRate: string
+  tokensSaved: number
+}
+
+export interface PromptCacheProviderStats {
+  requests: number
+  totalRequests?: number
+  cachedRequests?: number
+  inputTokens: number
+  cachedTokens: number
+  cacheCreationTokens: number
+}
+
+export interface PromptCacheMetrics {
+  totalRequests: number
+  requestsWithCacheControl: number
+  totalInputTokens: number
+  totalCachedTokens: number
+  totalCacheCreationTokens: number
+  tokensSaved: number
+  estimatedCostSaved: number
+  byProvider: Record<string, PromptCacheProviderStats>
+  byModel?: Record<string, PromptCacheProviderStats>
+  lastUpdated: string
+}
+
+export interface CacheTrendPoint {
+  timestamp: string
+  requests: number
+  cachedRequests: number
+  inputTokens: number
+  cachedTokens: number
+  cacheCreationTokens: number
+}
+
+export interface CacheStatsResponse {
+  semanticCache: SemanticCacheStats
+  promptCache: PromptCacheMetrics | null
+  trend: CacheTrendPoint[]
+  idempotency: {
+    activeKeys: number
+    windowMs: number
+  }
+  config?: {
+    semanticCacheEnabled: boolean
+  }
+}
+
+export interface CacheEntryMeta {
+  id: string
+  signature: string
+  model: string
+  hit_count: number
+  tokens_saved: number
+  created_at: string
+  expires_at: string
+}
+
+export interface CacheEntriesResponse {
+  entries: CacheEntryMeta[]
+  pagination: {
+    page: number
+    limit: number
+    total: number
+    totalPages: number
+  }
+}
+
+export interface CompressionModeStats {
+  count: number
+  tokensSaved: number
+  avgSavingsPct: number
+  skipped?: number
+}
+
+export interface CompressionProviderStats {
+  count: number
+  tokensSaved: number
+}
+
+export interface CompressionModelStats {
+  count: number
+  tokensSaved: number
+  avgSavingsPct: number
+}
+
+export interface CompressionHourBucket {
+  hour: string
+  count: number
+  tokensSaved: number
+}
+
+export interface CompressionRealUsage {
+  requestsWithReceipts: number
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  estimatedUsdSaved: number
+  bySource?: Record<string, number>
+}
+
+export interface CompressionTopSaver {
+  requestId: string
+  timestamp: string
+  provider: string
+  model: string
+  mode: string
+  originalTokens: number
+  compressedTokens: number
+  tokensSaved: number
+  savingsPct: number
+  durationMs: number
+  estimatedUsd: number
+}
+
+export interface CompressionAnalyticsSummary {
+  totalRequests: number
+  totalTokensSaved: number
+  avgSavingsPct: number
+  avgDurationMs: number
+  byMode: Record<string, CompressionModeStats>
+  byProvider: Record<string, CompressionProviderStats>
+  byModel?: Record<string, CompressionModelStats>
+  last24h: CompressionHourBucket[]
+  totalSkipped?: number
+  bySkipReason?: Record<string, number>
+  validationFallbacks: number
+  realUsage: CompressionRealUsage
+  roiTokensPerMs?: number
+  topSavers?: CompressionTopSaver[]
 }
 
 export function isAuthenticated(): boolean {
@@ -803,6 +963,17 @@ export const api = {
       method: 'PUT',
     }),
 
+  /** Mints a replacement secret, keeping the row's id, policy and history. */
+  rotateApiKey: (id: string) =>
+    request<{ status: string; id: string; key: string }>(`/api/keys/${encodeURIComponent(id)}/rotate`, {
+      method: 'POST',
+    }),
+  setApiKeyActive: (id: string, isActive: boolean) =>
+    request<{ status: string; id: string; isActive: boolean }>(
+      `/api/keys/${encodeURIComponent(id)}/toggle`,
+      { method: 'PUT', body: JSON.stringify({ isActive }) },
+    ),
+
   // F-1/F-14 per-key governance. Omitted fields are left unchanged server-side,
   // so a partial update never resets a limit the operator did not touch.
   updateApiKeyPolicy: (id: string, policy: APIKeyPolicy) =>
@@ -948,6 +1119,40 @@ export const api = {
     request<Record<string, unknown>>('/api/settings', {
       method: 'PATCH',
       body: JSON.stringify(settings),
+    }),
+  testRtk: (data: { text: string; config?: Record<string, unknown> }) =>
+    request<{
+      originalTokens: number
+      compressedTokens: number
+      savedTokens: number
+      savedPct: number
+      text: string
+      detectedCategory: string
+      techniquesUsed: string[]
+    }>('/api/tokensaver/rtk/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getRTKFilters: () =>
+    request<{
+      filters: Array<{
+        id: string
+        label: string
+        category: string
+        description: string
+        priority: number
+        enabled: boolean
+      }>
+    }>('/api/tokensaver/rtk/filters'),
+  testCaveman: (data: { text: string; level?: string; language?: string; mode?: string; preserveKeywords?: string }) =>
+    request<{
+      text: string
+      originalTokens: number
+      compressedTokens: number
+      savedPct: number
+    }>('/api/tokensaver/caveman/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
     }),
   /**
    * Per-provider outbound header overrides. `builtinHeaders` is what the
@@ -1390,6 +1595,44 @@ export const api = {
     err.mustChangePassword = mustChangePassword
     throw err
   },
+    // Cache Analytics
+    getCacheStats: (trendHours = 24) =>
+      request<CacheStatsResponse>(`/api/cache?trendHours=${trendHours}`),
+    deleteCache: (params?: { model?: string; signature?: string; staleMs?: number }) => {
+      const sp = new URLSearchParams()
+      if (params?.model) sp.set('model', params.model)
+      if (params?.signature) sp.set('signature', params.signature)
+      if (params?.staleMs) sp.set('staleMs', String(params.staleMs))
+      const qs = sp.toString()
+      return request<{ success: boolean; count?: number }>(`/api/cache${qs ? `?${qs}` : ''}`, {
+        method: 'DELETE',
+      })
+    },
+    getCacheEntries: (params?: {
+      page?: number
+      limit?: number
+      search?: string
+      model?: string
+      sortBy?: string
+      sortOrder?: string
+    }) => {
+      const sp = new URLSearchParams()
+      if (params?.page) sp.set('page', String(params.page))
+      if (params?.limit) sp.set('limit', String(params.limit))
+      if (params?.search) sp.set('search', params.search)
+      if (params?.model) sp.set('model', params.model)
+      if (params?.sortBy) sp.set('sortBy', params.sortBy)
+      if (params?.sortOrder) sp.set('sortOrder', params.sortOrder)
+      const qs = sp.toString()
+      return request<CacheEntriesResponse>(`/api/cache/entries${qs ? `?${qs}` : ''}`)
+    },
+    deleteCacheEntry: (id: string) =>
+      request<{ success: boolean }>(`/api/cache/entries?id=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+    // Compression Analytics
+    getCompressionAnalytics: (since = '24h') =>
+      request<CompressionAnalyticsSummary>(`/api/analytics/compression?since=${since}`),
   logout: async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' })

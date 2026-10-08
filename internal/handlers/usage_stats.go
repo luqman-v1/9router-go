@@ -461,6 +461,10 @@ type detailListItem struct {
 	Status       string           `json:"status"`
 	Latency      map[string]int64 `json:"latency"`
 	Tokens       map[string]any   `json:"tokens"`
+	Account      string           `json:"account,omitempty"`
+	Cost         float64          `json:"cost,omitempty"`
+	Combo        string           `json:"combo,omitempty"`
+	Protocol     string           `json:"protocol,omitempty"`
 }
 
 // HandleRequestDetails returns paged request detail objects for the Details tab.
@@ -516,6 +520,18 @@ func newDetailListItem(row db.RequestDetailListRow) detailListItem {
 	if rawTokens, err := json.Marshal(tokens); err == nil {
 		tokens["cached_tokens"] = float64(translator.CachedTokensFromJSON(rawTokens))
 	}
+	account := row.Account
+	if account == "" {
+		if row.ConnectionID != "" {
+			account = row.ConnectionID
+		} else {
+			account = "Default"
+		}
+	}
+	protocol := row.Protocol
+	if protocol == "" {
+		protocol = "OpenAI-Chat"
+	}
 	return detailListItem{
 		ID:           row.ID,
 		Timestamp:    row.Timestamp,
@@ -525,6 +541,10 @@ func newDetailListItem(row db.RequestDetailListRow) detailListItem {
 		Status:       row.Status,
 		Latency:      map[string]int64{"ttft": row.LatencyTTFT, "total": row.LatencyTotal},
 		Tokens:       tokens,
+		Account:      account,
+		Cost:         row.Cost,
+		Combo:        row.Combo,
+		Protocol:     protocol,
 	}
 }
 

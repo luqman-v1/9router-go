@@ -63,11 +63,13 @@ func GetADHDPrompt(level string) string {
 
 // GetCavemanPrompt returns the caveman system prompt for the specified level.
 func GetCavemanPrompt(level string) string {
-	switch level {
+	switch strings.ToLower(level) {
 	case "lite":
 		return CavemanLite
 	case "ultra":
 		return CavemanUltra
+	case "adhd":
+		return GetADHDPrompt("full")
 	case "full":
 		return CavemanFull
 	default:

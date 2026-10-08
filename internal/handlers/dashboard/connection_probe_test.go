@@ -260,6 +260,22 @@ func TestTestConnection_UnknownProviderIsUnsupported(t *testing.T) {
 	if body["valid"] != false || body["error"] != "Provider test not supported" {
 		t.Errorf("unexpected body: %v", body)
 	}
+
+	// Verify DB row persistence via persistProbeResult: testStatus should be active, lastError cleared
+	conn, err := repo.GetProviderConnectionByID("conn-unknown")
+	if err != nil {
+		t.Fatalf("fetch connection: %v", err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(conn.Data), &data); err != nil {
+		t.Fatalf("unmarshal conn data: %v", err)
+	}
+	if data["testStatus"] != "active" {
+		t.Errorf("testStatus = %v, want active for unsupported probe", data["testStatus"])
+	}
+	if data["lastError"] != nil {
+		t.Errorf("lastError = %v, want nil for unsupported probe", data["lastError"])
+	}
 }
 
 func TestTestConnection_OAuthTokenExists(t *testing.T) {

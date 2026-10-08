@@ -3,10 +3,11 @@ package dashboard
 import (
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/observ"
+	"9router/proxy/internal/semanticcache"
+	"github.com/go-chi/chi/v5"
 )
 
 // Default probe URLs for proxy pool health checks.
@@ -20,15 +21,21 @@ type DashboardHandler struct {
 	Repo              *db.Repo
 	PrimaryProbeURL   string
 	SecondaryProbeURL string
+	TokenSaver        *shared.TokenSaverConfig
+	SemanticCache     *semanticcache.Cache
 }
 
 // NewDashboardHandler initializes a DashboardHandler with the provided Repo.
-func NewDashboardHandler(repo *db.Repo) *DashboardHandler {
-	return &DashboardHandler{
+func NewDashboardHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *DashboardHandler {
+	h := &DashboardHandler{
 		Repo:              repo,
 		PrimaryProbeURL:   DefaultPrimaryProbeURL,
 		SecondaryProbeURL: DefaultSecondaryProbeURL,
 	}
+	if len(ts) > 0 && ts[0] != nil {
+		h.TokenSaver = ts[0]
+	}
+	return h
 }
 
 // getURLParam retrieves a route parameter from Chi URLParam or standard PathValue.
@@ -113,6 +120,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/settings/database", h.HandleImportDatabase)
 		r.Post("/settings/proxy-test", h.HandleProxyTest)
 
+		// Token Saver Testing Benches
+		r.Post("/tokensaver/rtk/test", h.HandleTestRTK)
+		r.Post("/tokensaver/caveman/test", h.HandleTestCaveman)
+
 		// Tunnel & Tailscale
 		r.Get("/tunnel/status", h.HandleTunnelStatus)
 		r.Post("/tunnel/enable", h.HandleTunnelEnable)
@@ -128,5 +139,14 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		// before-parameter ordering that /usage/providers needs.
 		r.Get("/usage/{connectionId}/reset-credits", h.HandleListCodexResetCredits)
 		r.Post("/usage/{connectionId}/reset-credits/consume", h.HandleConsumeCodexResetCredit)
+
+		// Cache Analytics & Management
+		r.Get("/cache", h.HandleGetCache)
+		r.Delete("/cache", h.HandleDeleteCache)
+		r.Get("/cache/entries", h.HandleGetCacheEntries)
+		r.Delete("/cache/entries", h.HandleDeleteCacheEntry)
+
+		// Compression Analytics
+		r.Get("/analytics/compression", h.HandleGetCompressionAnalytics)
 	})
 }

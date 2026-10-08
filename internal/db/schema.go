@@ -147,6 +147,8 @@ func coreSchema() []tableDef {
 				"CREATE INDEX IF NOT EXISTS idx_uh_provider ON usageHistory(provider)",
 				"CREATE INDEX IF NOT EXISTS idx_uh_model ON usageHistory(model)",
 				"CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
+				"CREATE INDEX IF NOT EXISTS idx_uh_ts_prov ON usageHistory(timestamp DESC, provider)",
+				"CREATE INDEX IF NOT EXISTS idx_uh_ts_model ON usageHistory(timestamp DESC, model)",
 			},
 		},
 		{
@@ -172,6 +174,53 @@ func coreSchema() []tableDef {
 				"CREATE INDEX IF NOT EXISTS idx_rd_provider ON requestDetails(provider)",
 				"CREATE INDEX IF NOT EXISTS idx_rd_model ON requestDetails(model)",
 				"CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
+			},
+		},
+		{
+			name: "compressionAnalytics",
+			columns: [][2]string{
+				{"id", "INTEGER PRIMARY KEY AUTOINCREMENT"},
+				{"timestamp", "TEXT NOT NULL"},
+				{"provider", "TEXT"},
+				{"model", "TEXT"},
+				{"mode", "TEXT NOT NULL"},
+				{"originalTokens", "INTEGER NOT NULL"},
+				{"compressedTokens", "INTEGER NOT NULL"},
+				{"tokensSaved", "INTEGER NOT NULL"},
+				{"durationMs", "INTEGER DEFAULT 0"},
+				{"requestId", "TEXT"},
+				{"actualPromptTokens", "INTEGER DEFAULT 0"},
+				{"actualCompletionTokens", "INTEGER DEFAULT 0"},
+				{"actualTotalTokens", "INTEGER DEFAULT 0"},
+				{"actualCacheReadTokens", "INTEGER DEFAULT 0"},
+				{"actualCacheWriteTokens", "INTEGER DEFAULT 0"},
+				{"estimatedUsdSaved", "REAL DEFAULT 0"},
+				{"skipReason", "TEXT"},
+			},
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS idx_ca_ts ON compressionAnalytics(timestamp DESC)",
+				"CREATE INDEX IF NOT EXISTS idx_ca_provider ON compressionAnalytics(provider)",
+				"CREATE INDEX IF NOT EXISTS idx_ca_model ON compressionAnalytics(model)",
+				"CREATE INDEX IF NOT EXISTS idx_ca_mode ON compressionAnalytics(mode)",
+				"CREATE INDEX IF NOT EXISTS idx_ca_req ON compressionAnalytics(requestId)",
+				"CREATE INDEX IF NOT EXISTS idx_ca_ts_prov ON compressionAnalytics(timestamp DESC, provider)",
+				"CREATE INDEX IF NOT EXISTS idx_ca_ts_model ON compressionAnalytics(timestamp DESC, model)",
+			},
+		},
+		{
+			name: "semanticCacheEntries",
+			columns: [][2]string{
+				{"key", "TEXT PRIMARY KEY"},
+				{"model", "TEXT NOT NULL"},
+				{"responseBody", "BLOB NOT NULL"},
+				{"contentType", "TEXT"},
+				{"storedAt", "TEXT NOT NULL"},
+				{"hitCount", "INTEGER DEFAULT 0"},
+				{"tokensSaved", "INTEGER DEFAULT 0"},
+			},
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS idx_sce_model ON semanticCacheEntries(model)",
+				"CREATE INDEX IF NOT EXISTS idx_sce_stored ON semanticCacheEntries(storedAt)",
 			},
 		},
 	}
@@ -289,6 +338,9 @@ func EnsureCoreSchema(db *sql.DB) error {
 		`INSERT OR IGNORE INTO settings(id, data) VALUES(1, '{}')`,
 	); err != nil {
 		return fmt.Errorf("core schema: seed settings: %w", err)
+	}
+	if err := BackfillCompressionAnalytics(db); err != nil {
+		return err
 	}
 	return nil
 }

@@ -3,7 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
@@ -200,7 +201,7 @@ func parseChatChunk(payload []byte) *translator.OpenAIChunk {
 		return nil
 	}
 	var chunk translator.OpenAIChunk
-	if err := json.Unmarshal(trimmed, &chunk); err != nil {
+	if err := json.Unmarshal(trimmed, &chunk, handlerutil.UpstreamBody); err != nil {
 		log.Warn("responses bridge", "skip unparsable chat chunk", "error", err)
 		return nil
 	}

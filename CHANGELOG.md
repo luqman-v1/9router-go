@@ -2,6 +2,496 @@
 
 ## [Unreleased]
 
+### 🐛 Modal policy key: allowlist tidak tampil dan pattern baru tidak tersimpan (Closes #216)
+
+- **Latar belakang**: report #216 — API balas `200 ok`, tapi `model access`
+  di modal policy tidak menyimpan dan tidak menampilkan kembali nilai yang
+  disimpan, dan tombol `load` juga tidak memuat apa pun.
+- **Backend-nya benar, jadi tidak ada perubahan Go.** Direproduksi lewat
+  `app.ProvideRouter` (router produksi, DB SQLite sungguhan): `PUT
+  /api/keys/{id}/models` menulis baris ke `api_key_model_access`, dan `GET
+  /api/keys/{id}/models` membacanya kembali. `resale metadata`, rate limit,
+  dan expiry sudah benar sejak awal — diverifikasi lewat UI, tidak diubah.
+- **Akar masalahnya di `ApiKeyPolicyModal.svelte`, di dua tempat.**
+  1. Allowlist tidak pernah dimuat saat modal dibuka. Listanya dimulai kosong
+     dan baru terisi setelah tombol `Load` ditekan, sehingga untuk key yang
+     sebenarnya dibatasi modal tetap menulis *"every model is allowed"*.
+  2. Tombol **Save Policy** hanya menulis kolom policy; allowlist disimpan lewat
+     endpoint terpisah yang tidak pernah dipanggil dari alur utama. Pattern
+     yang diketik lalu di-`Save` akan diterima `200` lalu hilang.
+  Kedua bug itu saling mengunci: draft kosong dari (1) menimpa daftar yang
+  tersimpan begitu operator menyimpan policy lain.
+- **Fiks**: allowlist diambil saat modal dibuka, dan **Save Policy** sekarang
+  menulis allowlist juga — satu aksi menyimpan satu policy utuh. Tombol `Load`
+  jadi `Reload`, dan `Save allowlist only` dihapus karena sudah tercakup;
+  `saveModels()` dan `isSavingModels` ikut dibersihkan karena tidak ada
+  pemanggilnya lagi.
+- **Penulisan allowlist dikunci sampai daftarnya benar-benar dibaca.** Kalau
+  hanya dilewati saat request berjalan, ada dua keadaan berbeda dengan hasil
+  identik — `models` kosong — dan keduanya berarti "hapus allowlist": request
+  yang masih berjalan, dan request yang **gagal**. Versi pertama hanya menutup
+  yang pertama; pada yang kedua `hasLoadedModels` sempat bernilai true di
+  `finally`, sehingga `Save Policy` menulis daftar kosong di atas daftar yang
+  tersimpan — persis kelas kehilangan data yang sedang diperbaiki di sini.
+  Sekarang penulisan hanya boleh jalan setelah allowlist benar-benar termuat;
+  selain itu simpan ditolak dengan pesan yang menyebut alasannya, dan modal
+  tetap terbuka supaya operator tidak mengira policy utuh sudah tersimpan.
+- **Regresi dijaga** di `internal/integration/keys_policy_test.go`:
+  `TestKeyPolicyRoundTrip`, `TestKeyModelAllowlistRoundTrip`, dan
+  `TestKeyPolicySavePreservesAllowlist` — semuanya membaca ulang lewat router
+  produksi setelah `GET` baru, bukan dari respons write yang selalu sukses.
+  Skor `svelte-check` turun 84 → 83 (`web/scripts/svelte-check-baseline.json`).
+
+### 🔀 Seluruh `encoding/json` v1 pindah ke `encoding/json/v2`
+
+- **Latar belakang**: repo sudah migrasiMayor ke `encoding/json/v2`, tapi 50
+  file masih tertinggal di `encoding/json` v1 — 25 di antaranya file produksi.
+  Akibatnya satu binary memakai **dua** mesin JSON dengan semantik berbeda di
+  jalur yang sama: v1 mencocokkan nama field tanpa membedakan huruf
+  besar/kecil, v2 secara default membedakannya; v1 menerima UTF-8 rusak, v2
+  menolaknya.
+- **Fiks**: seluruh file kini mengimpor `encoding/json/v2`. Empat API v1 yang
+  tidak ada di v2 dipetakan ke padanannya, bukan dibungkus:
+  `json.RawMessage` → `jsontext.Value` (perilaku `MarshalJSON`/`UnmarshalJSON`
+  dan ketiadaan nilai untuk member yang absen identik — sudah diverifikasi),
+  `json.Valid` → `jsontext.Value.IsValid()`,
+  `json.NewEncoder(w).Encode(v)` → `json.MarshalWrite(w, v)`,
+  `json.NewDecoder(r).Decode(&v)` → `json.UnmarshalRead(r, &v)`.
+- **Body dari provider dan dari client dibaca lenient, bukan strict.** v2
+  menolak nama member yang berulang di satu objek, menolak UTF-8 rusak di
+  string (v1 diam-diam mengganti U+FFFD), dan mencocokkan nama member secara
+  case-sensitive. Untuk JSON yang dihasilkan gateway sendiri itu benar, tapi body
+  dari provider atau client bukan JSON milik gateway — dan `internal/handlerutil`
+  kini menyediakan satu set opsi (`UpstreamBody` / `ClientBody`) yang melonggarkan
+  ketiganya. Tanpa itu, `proxy.EmptyUpstreamError` akan mengubah jawaban yang sah
+  menjadi 502 (body dengan key berulang, byte non-UTF-8, atau kunci `Content`),
+  `parseInbandError` tidak akan melihat error yang diinjeksi provider,
+  `parseChatChunk` akan membuang chunk yang membawa content delta, dan
+  `museModel` akan menolak body `{"Model": ...}`.
+  `TestEmptyUpstreamError_LenientAboutProviderBodies`,
+  `TestDetectInbandSSEError_LenientAboutProviderFrames`,
+  `TestParseChatChunk_LenientAboutProviderChunks` dan
+  `TestMuseModel_LenientAboutClientBodies` menjaga tiap arah.
+- **`internal/fastjson` sekarang tipis di atas v2.** Shim ini sebelumnya
+  membungkus `bytedance/sonic`; kedua backend (sonic dan std) dihapus, dan
+  `github.com/bytedance/sonic` beserta 6 dependensi transitifnya dicabut dari
+  `go.mod`. Panggilan dari 12 file chat/semanticcache tidak berubah.
+- **Determinisme tetap terjaga.** `fastjson.Marshal` memasang
+  `json.Deterministic(true)` karena prompt cache hulu (DeepSeek, Anthropic)
+  mengunci kunci pada byte request yang persis, dan v2 tidak mengurutkan member
+  map kecuali diminta. (Sonic yang lama juga tidak mengurutkannya — sebab itu
+  `marshalStable`, fingerprint, dan dedupe tool memasang opsi Deterministic
+  masing-masing sejak #186.) `TestMarshalIsDeterministic` menjaga kontrak
+  seam ini; call site yang sudah punya opsi sendiri tidak tersentuh.
+- **Biaya pada payload request 6,5 KB**: marshal 16,2 µs (v1) → 15,3 µs
+  (v2 deterministik), unmarshal 26,1 µs → 23,3 µs. Tidak ada regresi.
+
+### 🐛 Halaman Cache Analytics balas 503 — agregasi 35 detik untuk 82.143 baris
+
+- **Gejala**: `/dashboard/usage/cache` gagal total. Di browser endpoint-nya
+  503 dari proxy hulu; lewat `curl` langsung dengan cookie sesi yang valid
+  `/api/cache?trendHours=24` menjawab **200 setelah 35,5 detik**. Halamannya
+  gagal bukan karena datanya — backend menjawab benar, hanya telat.
+- **Penyebab**: `GetPromptCacheMetrics` berjalan dengan **empat** statement,
+  masing-masing mem-parse dan menyisir seluruh `usageHistory`: satu agregat
+  total, satu agregat harga `GROUP BY provider, model`, lalu satu agregat
+  `GROUP BY provider` dan satu lagi `GROUP BY model`. Dua yang terakhir
+  mengurai JSON `tokens` untuk kedua kalinya dan ketiga kalinya atas baris
+  yang sama. `usageHistory` adalah ledger yang tidak pernah di-prune, jadi
+  biayanya tumbuh tanpa batas: 82.143 baris = 1.235 ms.
+- **Fiks**: satu pemindaian, dilipat di Go. Baris dipindai sekali dengan
+  JSON `tokens` sudah ter-resolve di SQL, lalu provider, model, dan pasangan
+  provider/model — beserta totalKeseluruhan — dijumlahkan dari baris yang
+  sama. Satu baris dipindai bukan empat.
+
+  Diukur terhadap 82.143 baris dengan bentuk sama seperti database produksi,
+  tiap strategi di Benchmark di proses terpisah (supaya tidak saling
+  menghangatkan page cache):
+
+  | Strategi | Median |
+  |---|---|
+  | Empat statement (sebelumnya) | 1.235 ms |
+  | Satu `GROUP BY provider, model` | 403 ms |
+  | **Satu pindai, lipat di Go (sekarang)** | **269 ms** |
+
+  `GROUP BY` memang bentuk yang salah untuk tabel yang kardinalitasnya
+  beberapa provider: ia membangun `USE TEMP B-TREE FOR GROUP BY` per request.
+  Index yang diawali kunci grup menghilangkan B-tree itu, tapi memaksa pemindaian
+  penuh karena predikat rentang jadi tidak bisa dipakai index, dan keduanya
+  terukur sama saja dalam noise. Index `(tokens)` maupun `(provider, tokens)`
+  juga tidak mengubah apa pun — semua plan yang diuji tetap
+  `SEARCH ... USING INDEX idx_uh_provider`, yang tetap satu lintasan penuh.
+
+  Hasil pada binary yang sama, database 82.143 baris, lewat HTTP sungguhan:
+  **35,5 s → 289 ms**, payload utuh (`totalRequests: 82143`,
+  `totalCachedTokens: 74329933`, `byProvider` terisi).
+
+- **Bug lama yang ikut ketahuan, bukan berasal dari rewrite ini**:
+  `cachedRequests` di query trend sejak port OmniRoute (#110) menaruh
+  perbandingan JSON di dalam `AND (...)`, jadi `json_valid` menutup kedua
+  cabang dan memfilter baris yang justru punya cache token. Akibatnya
+  `cachedRequests` **selalu nol** — kurva "Cached Requests" kosong sejak fitur
+  itu ada. Test `TestGetPromptCacheTrend_CountsBothCacheTokenSources` menjaga
+  ini: satu baris read-back, satu baris creation-only, satu payload kosong,
+  satu payload bukan-JSON — dua pertama harus terhitung.
+
+### 🐛 fix(chat): do not lock entire account on model-specific 429 quota exhaustion so unrelated healthy models remain available (#205)
+
+Previously when a 429 quota exhaustion occurred for a specific model (such as claude-sonnet-4-6), the system would lock the entire account connection, blocking other models (such as gemini-3.8-flash-high) on the same connection even when they were healthy. This fix adds a check to determine if a retryable error is model-scoped (like quota exhaustion) vs. account-scoped (like authentication issues), and only applies the account-level rate limit cooldown for account-scoped errors.
+
+### 🖼️ `/providers/*.png` 404 dan peringatan autofocus di console
+
+- **`muse.png` 404**: `muse` ada di katalog (`web/src/lib/providers.ts`) tapi
+  repo ini tidak pernah meng-ship `web/public/providers/muse.png` saat provider
+  itu ditambahkan di #100 — dan `getIconPath` menebak URL dari katalog, jadi
+  setiap tile meminta aset yang memang tidak ada. Katalog punya **16 entri
+  tanpa artwork**; `muse`, `tinyfish`, `zai-search` dan `anthropic-version`
+  adalah yang terlihat di dashboard. Penyebabnya struktural: menambahkan
+  provider ke katalog adalah langkah terpisah dari meng-ship logonya, dan
+  tidak ada yang mengikat keduanya.
+
+- **Fiks**: satu komponen, `ProviderArtwork.svelte`, yang menangani fallback
+untuk semua permukaan sekaligus. Dipromosikan dari `ProviderIcon` yang
+  sudah menyediakannya, dibuat event-driven (state-nya di-key dari `src`),
+  dan **tujuh** call site yang menulis handler `onerror` sendiri — media card,
+  media detail, media web view, request details, usage breakdown, model
+  picker, topology card — sekarang memakainya. Fallback-nya adalah initials
+  badge berwarna merek provider, sama seperti yang sudah ada.
+
+  Yang penting: `onerror` milik `<img>` hanya terpicu untuk `src` yang sudah
+  terpasang saat elemen dirender. Call site sebelumnya semuanya memanggil
+  `getIconPath(...)` inline, jadi kalau `src` berubah setelah mount — baris
+  analytics yang lazy, combo yang diedit — galat tidak pernah terpicu dan aset
+  yang gagal hanya disembunyikan. Sekarang kunci gagalnya adalah `src` itu
+  sendiri, jadi berganti provider berarti mencoba ulang, bukan mewarisi
+  kegagalan provider sebelumnya.
+
+- **Autofocus**: `LoginView` memakai atribut `autofocus`, dan Chrome mencatat
+  "Autofocus processing was blocked because a document already has a focused
+  element." Atribut itu diproses per dokumen; ketika halaman `/dashboard`
+  bounce ke `/login` (tanpa sesi) view itu dimount di samping halaman yang
+  sudah tampil, dan body sudah memegang fokus, jadi atributnya ditolak.
+  Diganti fokus eksplisit setelah `hasPassword` membuka form — cara yang
+  sama tanpa meminta browser jadi arbiter.
+
+  Detail yang penting: `/api/auth/login` yang 401 di laporan itu **bukan**
+  bug. Itu respons yang benar untuk password yang salah, dan hanya muncul
+  setelah ada percobaan login. Yang terbukti dari sini: satu kali
+  `POST /api/auth/login` per submit, baik yang gagal maupun yang berhasil.
+
+### 🎛️ Header Cache & Compression Analytics: Kontrol Pindah ke Dropdown Menu
+
+Layout header kedua section itu sekarang mengikuti halaman **Usage**: section
+picker di kiri, kontrol milik section di sebelahnya, tombol **Menu** di kanan,
+dan deskripsi section di bawah baris kontrol (#209). Sebelumnya tiap section
+menumpuk lima sampai enam kontrol dalam satu baris — pemilih section, strip
+sub-view, tombol Auto, tombol Refresh, dan sepasang tombol export CSV/JSON —
+dan baris itu wrap di jendela sempit.
+
+- **Tombol Menu** (`web/src/components/analytics/ActionsMenu.svelte` dan
+  `MenuItem.svelte`): Auto-refresh (dengan keterangan `15s` dan tanda centang
+  saat aktif), Refresh now, Export CSV, dan Export JSON dipindahkan ke satu
+  dropdown `role="menu"`. Pemicu memakai ikon `menu` dengan chevron
+  `expand_more`, bukan `expanded_more` seperti pada picker section, dan tetap
+  berlabel "Menu" — ikon tunggal tidak memberi apa pun untuk diumumkan screen
+  reader, dan labelnya disembunyikan hanya di lebar terkecil. Menu menutup saat
+  item dipilih, saat `Escape`, saat `Tab`, dan saat klik di luar.
+- **Section picker turun ke section-nya** (`web/src/components/analytics/SectionMenu.svelte`,
+  menggantikan `SectionNav.svelte`): `AnalyticsView` pernah merender picker di
+  satu baris tetap di atas semua section, sehingga section tidak bisa menaruh
+  kontrolnya di sebelah picker itu. Sekarang picker didefinisikan sekali sebagai
+  snippet di `AnalyticsView` dan diteruskan ke Cache dan Compression Analytics
+  lewat prop `headerLeft`; keduanya menaruhnya di header mereka sendiri. Overview
+  dan Details tetap memakai baris `AnalyticsView`, jadi picker tidak pernah
+  tampil dua kali di satu layar.
+- **Sub-view jadi dropdown** (`web/src/components/analytics/ViewSelect.svelte`):
+  strip pill Prompt Cache / Semantic Cache adalah kontrol lebar-tetap terakhir
+  di header Cache Analytics, sekarang menjadi dropdown yang menampilkan ikon dan
+  label view aktif pada tombol tertutup. Memilih Semantic Cache tetap memuat
+  daftar entry-nya.
+- **Judul section dihapus dari panel**: picker di header sudah menyebut nama
+  section, jadi `h2` "Cache Analytics" / "Compression Analytics" di dalam panel
+  hanya mengulanginya; yang tersisa deskripsi apa yang dilaporkan angkanya.
+- Tidak ada perubahan API: `GET /api/cache`, `GET /api/analytics/compression`,
+  dan `GET /api/cache/entries` tetap sama, termasuk `trendHours` dan `since`.
+
+### 📊 Cache & Compression Analytics Moved Into the Usage Page — Section Dropdown
+
+Cache Analytics dan Compression Analytics bukan lagi dua entri sidebar
+tersendiri; keduanya menjadi section dari halaman **Usage**, bersama Overview
+dan Details (#200). Alasannya: keduanya melaporkan trafik yang sama dengan
+Overview, dan sebagai menu top-level keduanya terbaca sebagai produk terpisah.
+
+- **Routing** (`web/src/lib/router.ts`): tab baru `usage-cache`
+  (`/dashboard/usage/cache`) dan `usage-compression`
+  (`/dashboard/usage/compression`) supaya tiap section punya path sendiri dan
+  tetap bisa di-bookmark serta bertahan setelah reload. Path lama
+  (`/dashboard/cache`, `/dashboard/analytics/compression`, dan alias `/cache`,
+  `/analytics/compression`) tetap dipetakan ke section yang sama, sehingga tab
+  yang terbuka saat upgrade tidak mendarat di halaman lain.
+- **Section picker** (`web/src/components/analytics/SectionNav.svelte`): strip
+  pill `inline-flex rounded-xl p-1` yang sebelumnya memuat dua label tidak muat
+  di layar 374px bersama empat section; diganti dropdown yang menampilkan label
+  section aktif pada tombol tertutup, dengan `role="listbox"`, `Escape`, `Tab`,
+  dan klik di luar yang menutup menu.
+- **Window selector bersama** (`web/src/components/analytics/PeriodSelect.svelte`):
+  dropdown periode yang sebelumnya hanya ada di Overview sekarang dipakai
+  Compression Analytics juga, sehingga dua section itu tidak lagi punya dua
+  kontrol periode yang berbeda bentuk. Endpoint `/api/analytics/compression`
+  hanya mengenali `24h|7d|30d|all` (nilai lain diam-diam dijawab `24h`), jadi
+  section itu meneruskan `showCustom={false}` — input window kustom di sana akan
+  menampilkan angka untuk periode yang tidak benar-benar dipakai.
+- **Hero grid Compression Analytics**: kartu ROI Speed berada di luar
+  `grid ... lg:grid-cols-7` sehingga tidak pernah menjadi sel grid dan
+  menyisakan kolom kosong di layar lebar. Sekarang ketujuhnya berada di dalam
+  grid yang jumlah kolomnya membagi tujuh (`2 / 3 / 4 / 7`), dan kartu ROI
+  memakai `lg:col-span-2 xl:col-span-1` untuk tetap utuh di lebar 4 kolom.
+- **Sidebar**: entri Cache/Compression dihapus; entri Usage tetap aktif ketika
+  salah satu section-nya terbuka.
+- **Test**: `web/src/lib/router.test.ts` memverifikasi keempat section, pasangan
+  tab ⇄ path, dan kedua alias lama; `internal/integration/usage_sections_test.go`
+  (build tag `integration`) menjalankan gateway sungguhan dan memeriksa bahwa
+  setiap endpoint yang dipakai section masih serves window yang dipilih dan
+  ketiga path `/dashboard/usage[...]` menyajikan shell SPA.
+
+### 👤 Paritas Request Details Ala OmniRoute (Kolom Akun, Combo, Protokol, & Modal Detail)
+
+- **Backend Telemetri Akun**:
+  - `internal/handlers/chat/fallback.go` & `usage.go`: Mencatat metadata lengkap akun (`account`, `connName`, `connEmail`, `apiKey`, `combo`, `requestedModel`, `protocol`, `cacheSource`, `startedAt`, `endedAt`, `cost`) ke dalam JSON `requestDetails.data`.
+  - `internal/handlers/usage_stats.go`: Menambahkan fallback resolver otomatis pada `HandleRequestDetails` agar riwayat lama yang belum memiliki field akun otomatis terisi dari tabel `providerConnections`.
+- **Frontend Request Details Tab**:
+  - `web/src/components/analytics/RequestDetailsTab.svelte`:
+    - Menambahkan kolom **Account** di tabel utama dengan badge ikon akun/email developer.
+    - Menambahkan kolom **Cost ($)** di tabel.
+    - Menambahkan input filter/pencarian real-time (berdasarkan Model, Provider, Akun, atau ID).
+    - Memperbarui modal inspeksi request agar 100% identik dengan OmniRoute: badge Akun & Combo di header, rincian waktu (Started/Ended At), rincian Token Input (Total In, Cache Read %, Cache Write, Compressed RTK), Token Output (Total Out, Reasoning Tokens), serta rincian routing (Requested Model, Protocol, Cache Source, API Key, dan tombol copy Request ID).
+
+### 🏆 Top 10 Savers, ROI Speed Metric, & Tombol Export Report (CSV & JSON)
+
+- **Tabel Top 10 Savers**: Menambahkan query dan tabel interaktif "Top 10 Biggest Token Savers" di dashboard Compression Analytics untuk menginspeksi request spesifik paling hemat token (Request ID, provider, model, tokens saved, savings %, durasi, estimasi USD, dan tombol copy ID).
+- **Net ROI Efficiency Score**: Menambahkan metrik kecepatan pemangkasan token `roiTokensPerMs` (tokens saved per ms overhead kompresi) dan kartu visual ROI Speed di dashboard Compression Analytics.
+- **Tombol Export Report**: Menambahkan tombol download laporan instan format CSV dan JSON pada dashboard Cache Analytics dan Compression Analytics.
+
+### ⚡ Optimasi SQLite Indexes, Fallback Creation Tokens, & TTL Janitor Semantic Cache
+
+- **Composite Indexes**: Menambahkan indeks komposit di `internal/db/schema.go` (`idx_uh_ts_prov`, `idx_uh_ts_model`, `idx_ca_ts_prov`, `idx_ca_ts_model`) untuk mempercepat agregasi time-series dashboard secara signifikan.
+- **Fallback Creation Tokens**: Menambahkan formula fallback di `internal/db/cache_analytics.go` untuk menangkap token pembuatan prompt cache pada provider Antigravity/Gemini yang tidak mengirim key eksplisit (`cache_creation_input_tokens`).
+- **Background TTL Janitor**: Menambahkan ticker background berkala di `internal/semanticcache/persistent_store.go` untuk membersihkan entri kadaluarsa di RAM dan SQLite secara otomatis, mencegah database membengkak seiring waktu.
+
+### 🐛 Delapan cacat yang ditemukan saat review PR #193 (sudah diperbaiki di branch ini)
+
+1. **Cache key multimodal bertabrakan — dua klien saling menerima respons.**
+   `BuildCacheKey` hanya hashed blok `type == "text"`, sehingga pesan berisi
+   gambar/file menuliskan role + pemisah tanpa payload apa pun. Dua request yang
+   hanya berbeda pada byte gambarnya menghasilkan key identik, dan `Lookup`
+   mengembalikan body milik request lain. `internal/semanticcache/key.go` kini
+   hashed seluruh payload blok (teks, `image_url`, `file_data`, baik jalur typed
+   maupun `[]any`), diuji dengan dua gambar berbeda yang kini menghasilkan key
+   berbeda.
+2. **TTL janitor tidak pernah memangkas apa pun.** Expiry dievaluasi di SQL
+   (`WHERE storedAt < ?`), jadi itu perbandingan *string* — dan `time.RFC3339`
+   memotong ke detik, sehingga baris yang ditulis pada detik yang sama dengan
+   cutoff menghasilkan string identik, tidak pernah_lt, dan tidak pernah
+   terhapus. `TestPersistentLRUStore_Janitor` memang gagal di branch ini.
+   `storedAt` kini ditulis dengan lebar tetap nanosecond
+   (`internal/semanticcache/persistent_store.go`), pola yang sama dengan
+   `db.rotationTimestampFormat` dan alasan yang sama; nilai second-precision dari
+   build lama tetap terbaca (eksit satu detik, wajar untuk cache).
+3. **Dashboard membaca instance cache yang berbeda dari engine.**
+   `SetupServerRouter` menempelkan dashboard ke handler milik `/version`, yang
+   dibangun sebelum ada traffic, jadi `PersistentStore`-nya punya LRU sendiri
+   yang tidak pernah terisi: `/api/cache/entries` melaporkan 0 entri padahal
+   engine melayani hit, dan `DELETE /api/cache` menghapus baris SQLite tanpa
+   menghentikan engine. `SetupRoutes` kini mengembalikan handler engine-nya dan
+   grup dashboard dipasang pada instance itu.
+4. **Filter RTK merusak JSON yang struktur.** `gh.json`, `kubectl.json`, dan
+   `git-diff.json` memakai negative lookahead Perl yang RE2 tolak, sehingga
+   `compileRegexSafe` membuangnya diam-diam dan filter termuat dengan pola
+   kurang. Lebih jauh, karena `MatchFilter` dipanggil dengan command kosong, hanya
+   content pattern yang tersisa — body `gh api` yang memuat URL github.com cocok
+   ke `gh.json` lalu dilewatkan filter baris, dan `json-output` ikut membuang
+   baris data sehingga JSON-nya rusak. Pola lookahead diganti bentuk yang valid
+   RE2 dan `MatchFilter` kini mengembalikan `nil` untuk dokumen JSON utuh.
+5. **Sisipan kompresi live tidak pernah mengisi `Model`.** `InsertCompressionAnalytics`
+   dipanggil tanpa `Model`, sementara query `ByModel` memfilter
+   `model != ''`, jadi seluruh breakdown per-model di dashboard kosong.
+   Test lama tidak menangkap ini karena fixture-nya juga tidak mengeset `Model`.
+6. **`classifyHistoricalMode` punya cabang mati.** Predikatnya
+   `(savedTokens > 0 && personaCount > 0) || personaCount > 1` menyederhanakan
+   diri menjadi `personaCount > 0`, sehingga `caveman`/`adhd`/`ponytail` tak
+   pernah tercapai dan mode backfill selalu `stacked`, berbeda dari
+   `resolveCompressionMode` yang dipakai jalur live.
+7. **Cache key mengabaikan parameter yang mengubah jawaban.**
+   `BuildCacheKey` hanya hashed model, messages, tools, tool_choice, dan
+   temperature. `max_tokens`, `max_completion_tokens`, `reasoning_effort`, dan
+   `parallel_tool_calls` semuanya mengubah completion sementara prompt-nya
+   byte-identik, jadi request kedua menerima body milik request pertama —
+   jawaban lebih pendek dari yang diminta, tanpa error. Semuanya kini masuk hash.
+8. **Refresh OAuth menimpa kredensial yang sengaja dipilih.**
+   Cabang "token belum kedaluwarsa" mengembalikan `oauthData.AccessToken` dari
+   baris koneksi, bukan token yang diberikan pemanggil, dan pemanggilnya
+   (`fallback.go`) melakukan `apiKey = rekey`. Untuk Kiro itu merusak: `resolveProviderAuthToken`
+   memang memilih `apiKey` untuk koneksi `authMethod: "api_key"` meski
+   `accessToken` tersedia (upstream `kiro.js buildHeaders` hanya memakai apiKey
+   di mode itu), dan yang lain menjawab 403 "The bearer token included in the
+   request is invalid." Cabang tersebut kini mengembalikan kredensial pemanggil
+   apa adanya.
+
+Verifikasi: `go build ./...`, `go vet ./...`, `go test ./...` hijau,
+`go test -tags=integration ./internal/integration/...` hijau, `bun test` 238/238,
+`bun run build`, dan `bun run ratchet:svelte` (0 unresolved, 88 = baseline).
+
+### 🐛 fix(web): do not flag active connections as error in provider stats when soft warning or unsupported model probe lastError is present (#207)
+
+### 🔑 issue #199: halaman API Key menyatu ke Endpoint & Key, secret bisa di-reveal lagi
+
+Halaman **Endpoint & Key** sekarang jadi satu-satunya tempat mengelola token klien: tab
+`API Keys` yang duplikat dihapus, dan `ApiKeysTable.svelte` (baru) merender tabel bergaya
+KeiRouter (`mydisha/keirouter`, MIT) — empat kolom `Key | Token | Policy & Created |
+Actions`, tanpa kolom Status dan Created-date terpisah. Status, policy, dan tanggal
+created jadi **satu sel multi-baris**, sesuai permintaan issue. Action bar memakai empat
+kontrol: Policy (modal rate limit/expiry/allowlist), Rotate, Pause/Resume, Delete.
+
+**Tombol show/hide dan copy secret sekarang benar-benar bekerja.** Sebelumnya keduanya
+melakukan sesuatu yang berbeda dari yang dijanjikan UI: `EndpointView` membaca `key.key`,
+padahal sejak F-6 (argon2id) kolom itu berisi sentinel, bukan secret — sehingga show
+"membuka" nilai yang sudah ter-mask, dan copy menyalin mask tersebut.
+
+#### ⚠️ Penyimpanan secret dikembalikan ke plaintext — dan apa risikonya
+
+Issue meminta "matikan hashed stored key". Itu **membalikkan** keputusan F-6 (#176/PR #185,
+3 hari lalu) yang memang sengaja membuat key tidak bisa dibaca ulang. Konsekuensinya nyata
+dan tercatat di sini, bukan disembunyikan:
+
+- `POST /api/keys` dan `POST /api/keys/{id}/rotate` kini menyimpan secret apa adanya di
+  `apiKeys.key`. **Dump database = seluruh key klien terekspos** (DB-02 di
+  `TECHNICAL_DEBT.md` kembali terbuka).
+- `RequireApiKey` tidak lagi *self-heal* — baris plaintext tidak di-hash-kan diam-diam
+  saat dipakai, karena itu akan menghapus tepat properti yang sekarang dashboard andalkan.
+- **Batas yang tetap dijaga:** `GET /api/keys` hanya mengembalikan secret penuh untuk
+  caller dashboard (session cookie, CLI token, atau `requireLogin=false` untuk install
+  lokal). Engine client key — credential yang diberikan ke Cursor/Claude Code — tetap
+  menerima `key` kosong + `keyDisplay` tersamar. Tanpa ini, satu key yang bocor bisa
+  mencuri seluruh key set, persis yang F-6 tutup. Diuji di unit, integration, dan E2E.
+- **Baris lama tidak bisa dipulihkan.** Key yang dibuat sebelum upgrade hanya punya
+  verifier argon2id; plaintext-nya sudah hilang. Daftar mengembalikan `key` kosong dan UI
+  jatuh ke `keyDisplay`. Satu-satunya jalan adalah Rotate.
+
+Alternatif yang ditolak di PR: memakai credential vault AES-256-GCM yang sudah ada
+(F-5) sehingga secret tetap bisa dibaca tanpa menyimpan plaintext. Vault itu butuh
+master key (`ROUTER_MASTER_KEY`) dan tidak ada yang mengaktifkannya secara default,
+sedangkan issue meminta parity penuh dengan upstream `decolua/9router`, yang memang
+menyimpan plaintext.
+
+#### Kesocokan dengan sumber KeiRouter
+
+Acuan visual diambil dari `D:/coding/project/keirouter` (`mydisha/keirouter`, commit
+`3d8b702`, MIT). Yang cocok persis: `StatusPill` (dot + label, bukan badge), urutan
+`Key | Token | ... | Actions`, baris aksi empat kontrol, dan ritme sel multi-baris
+(baris konten dulu, `Created …` muted di bawahnya — `Keys.tsx:193-198`).
+
+Sengaja menyimpang, dan alasannya:
+
+- **Bentuk tabel.** KeiRouter memakai CSS-grid `<article>` tanpa header row sama sekali
+  (`Keys.tsx:178-182`) — tidak ada label kolom yang bisa disalin. Issue #199 minta tabel
+  dengan kolom Status dan Created-date dibuang lalu digabung, jadi header di sini
+  ditetapkan sendiri.
+- **Show/hide & copy.** KeiRouter **tidak punya** tombol eye di UI key — `grep -c Eye
+  frontend/src/pages/Keys.tsx` = 0, dan `adminListKeys` (`admin.go:359-384`) hanya
+  mengembalikan `display` tersamar. Pola ini orisinal untuk issue, bukan tiruan.
+- **Storage.** `crypto/apikey.go:37-39` tegas: *"Plaintext is shown to the user exactly
+  once and never persisted"*. Jadi bagian "matikan hashed stored key" adalah divergensi
+  dari KeiRouter, bukan tiruan — lihat catatan risiko di atas.
+- **Gabungan halaman.** KeiRouter justru memisahkannya: `Endpoints.tsx:132-138` hanya
+  menaut ke `/keys` lewat tombol "Manage keys". Merge di sini mengikuti permintaan issue.
+
+### 🐛 Tombol Refresh per-baris membungkus baris aksi ke dua baris di mobile
+
+Susulan review PR #196 (`feat(connections): per-row refresh button to test a single
+account`, sudah merge). Perubahan yang sama tidak merusak apa pun secara fungsional,
+tetapi memunculkan tiga hal yang tidak terlihat di desktop:
+
+- **Baris aksi membungkus.** Container-nya `grid-cols-3` dan memang berisi tepat tiga
+  sel (proxy / edit / delete). Sel keempat dari tombol Refresh membuat Delete turun ke
+  baris kedua sendiri sementara separuh kanan grid kosong, dan tiap baris koneksi tumbuh
+  ±49px. Diukur di 390px: `gridH` 45px → 93px. Sekarang `grid-flow-col auto-cols-fr`,
+  jadi setiap aksi mendapat satu kolom implisit dan tidak membungkus meski jumlah tombol
+  bertambah — termasuk tombol Session milik Freebuff (lima sel), yang sebelumnya juga
+  membungkus.
+- **Tooltip menyesatkan.** Badge sukses berbunyi `last one-by-one probe passed`, padahal
+  kini juga bisa muncul dari probe per-baris. Sekarang `last probe passed`.
+
+`probeOutcomeFrom`, `probeOutcomeFromError` dan `badgeFor` dipindah ke
+`web/src/components/connections/connectionProbe.ts` beserta `canProbeRow`, sehingga sweep
+dan probe per-baris memakai satu implementasi, dan连锁 badge precedence — yang
+sebelumnya restated di markup — punya test.
+
+### ❌ Yang ditemukan tapi TIDAK diperbaiki: `testStatus` dari Edit modal hilang
+
+Ditemukan saat memverifikasi PR #196, di luar cakupan perubahan ini (backend). Dicatat di
+sini karena menjelaskan batas apa yang benar-benar bisa dilakukan di sisi web.
+
+- **Gejala.** `EditConnectionModal` mengirim `payload.testStatus = 'active'` setelah
+  mengganti credential (`EditConnectionModal.svelte:153`), tapi `HandleUpdateConnection`
+  **tidak pernah membacanya** — `testStatus` tidak ada di allowlist branch `hasData`
+  (`connections.go:635-712`), dan `PUT` tidak menjalankan probe. Diverifikasi langsung:
+  `PUT {apiKey:'sk-fake-1', testStatus:'active'}` menjawab 200, lalu
+  `GET /api/connections` tetap melaporkan `testStatus=error`. Jadi **rotasi key lewat
+  Edit modal tidak pernah mengembalikan baris ke hijau**; satu-satunya jalan adalah
+  *Refresh* per-baris dari PR #196.
+- **Akibatnya.** Badge `error` pada akun yang kredensialnya sudah diperbaiki hanya bisa
+  hilang lewat probe yang benar-benar berjalan. Klaim "entri `failed` bisa basi lalu
+  menutupi `testStatus` yang sudah diperbaiki" **tidak terbukti** dan tidak berlaku di
+  backend ini: tidak ada jalur yang menulis `testStatus='active'` tanpa probe. Karena
+  itu sinkronisasi badge sisi-klien **sengaja tidak** ikut di PR ini — ia akan menambah
+  `$effect` yang menulis state pada setiap render tanpa efek nyata yang bisa dibuktikan.
+- **Perbaikan yang benar ada di backend**, di `HandleUpdateConnection`: terapkan
+  `testStatus` (dan clearing `lastError`) hanya ketika modal sudah memvalidasi key baru,
+  atau jalankan probe bila tidak ada bukti. Itu perubahan handler, bukan UI, dan perlu
+  regression test di `connections_test.go`.
+
+**Verifikasi**: `bun test` 252/252 (21 kasus baru di `connectionProbe.test.ts`, mencakup
+guard sweep PR #196 dan precedence badge), `bun run build` bersih, `svelte-check` ratchet
+88 = baseline dengan 0 unresolved identifier, `go vet ./...` bersih. Grid diukur langsung
+di browser pada 390px dan 1400px: 4 sel satu baris, `gridH` 45px (sebelumnya 93px), dan
+siklus badge `testing` → `active`/`error` masih jalan setelah refactor.
+
+### 🐛 Bug Fixes
+
+- fix(chat): preserve selector cooldown errors in fallback loop instead of returning bare "no available connections" (#201)
+
+### 🐛 Lonjakan RAM idle ~100 MB+ setelah pruning `requestDetails`
+
+- **Gejala**: sejak `db.StartRetentionLoop` masuk (#187, ikut rilis di v1.9.11-exp.1),
+  working set proses melonjak dari ~28 MB ke ~100 MB+ dan tidak pernah kembali,
+  tepat 60 detik setelah boot — durasi `retentionInitialDelay`.
+- **Penyebab**: `cache_size(-64000)` adalah batas **per koneksi**, dan pool dibuka
+  4 koneksi, sehingga plafon page cache SQLite 256 MB. `requestDetails` menyimpan
+  ~20 KB payload per baris; saat retention prune menghapus 20k baris dalam chunk
+  5000, page cache terisi penuh. Halaman yang sudah dibebaskan diserahkan ke OS
+  secara lazy, jadi gateway yang sudah prune sekali menyimpan high-water mark itu
+  seumur proses. Bukan leak Go — `heapAlloc` tetap 0.2 MB sepanjang proses; ini
+  alokasi di layer C (`modernc.org/libc`). Fiks #137 yang menambah prune ini
+  justru memunculkan cacatRAM-nya.
+- **Perbaikan**: `internal/db/client.go` — page cache diturunkan ke 8 MB per
+  koneksi (32 MB total) lewat konstanta `sqliteCacheSizeKB`, dengan
+  `sqliteMaxOpenConns` sebagai konstanta dari mana budget dihitung.
+- **Biaya yang diukur**: fold window 24h di ledger 400k baris (poll dashboard tiap
+  5 detik) 113 ms cold / 35 ms warm pada `-64000`, menjadi 83 ms cold / 72 ms warm
+  pada `-8000` — cold justru lebih cepat karena cache 64 MB harus diisi dulu sebelum
+  hangat. Append tidak terpengaruh (6.1 ms vs 6.7 ms per transaksi 100 baris, di
+  dalam noise). Seek watermark `MAX(timestamp)` tetap 0.0 ms di keduanya karena itu
+  covering-index seek.
+- **Hasil**: binary yang sama, DB yang sama (40k baris × 20 KB), puncak working set
+  setelah prune turun dari **161.6 MB ke 63.4 MB** dan stabil.
+- **Test**: `TestSQLiteCacheSizeCeiling` mengunci plafon 32 MB dan gagal keras bila
+  nilai dikembalikan ke `-64000` (terverifikasi: test gagal dengan
+  "pooled page cache = 252 MB").
+
+### 🐛 Tombol "Add Custom Provider" kembali terpecah di v1.9.11-exp.1
+
+- **Penyebab**: `736136c` — commit pertama PR #185 di branch `feat/keirouter-port`, dibuat 12 menit setelah `079de66` (#183) — menulis ulang `AddCompatibleNodeModal.svelte`, `ConnectionsView.svelte`, `ProvidersOverviewGrid.svelte`, dan `MediaKindView.svelte` ke kondisi sebelum #182/#183, sehingga membatalkan dialog tunggal. Keempat file byte-identik dengan `d729b43` (sebelum penggabungan), terbukti lewat `git rev-parse`. PR #185 sendiri tidak menyentuh fitur ini: revert-nya ikut ter-carry oleh squash merge `9b553e7`.
+- **Perbaikan**: keempat file dipulihkan ke versi unified; `ProvidersOverviewGrid` kembali ke satu tombol **Add Custom Provider** dengan switch Provider Type di dalam dialog (field yang sudah diisi pengguna tetap utuh saat ganti protokol); dialog Custom Embedding tetap `allowedTypes={['custom-embedding']}` sehingga hanya menawarkan satu opsi. Import `AddCompatibleNodeModal` yang tertinggal di `ProviderDetailView.svelte` ikut dibersihkan.
 
 
 ### 🔐 Per-key governance, credential vault, and guardrails (KeiRouter port, Path C)
@@ -1026,6 +1516,64 @@ reverting the fix and watching the test fail, not by inspection:
   is global; dropping `/g` left the second address in the clear and the suite
   green.
 
+Job baru `race` menjalankan `go test -race -count=1 -timeout 10m ./...`.
+Dipisah dari job `test`, bukan menambah step, supaya laporan race bernama sendiri
+di daftar check dan dua kegagalan (assertion flaky vs race asli) tidak saling
+menutupi di satu log. Target lokal `make test-race` menjalankan perintah yang
+sama; `-race` butuh cgo, jadi sengaja tidak ikut `make test`/`test-short`.
+
+Dua hal yang membuat ini mungkin sekarang: test live upstream sudah dipisah dari
+CI lewat opt-in `9ROUTER_LIVE_TESTS=1` (#150) — sebelumnya `go test -race
+./...` gagal karena `space-bunny-free` kena rate limit, bukan karena gateway —
+dan `web/dist` dibangun lebih dulu di step yang sama seperti job `integration`,
+karena `internal/app` → `web` → `web/embed.go` gagal compile tanpa SPA.
+
+Menambah gerbang ini langsung membongkar satu bug:
+`TestTranscribeGeminiLive_PartialTranscriptOnClose` gagal sekitar **1 dari 12
+run**. Fake server-nya menutup socket begitu saja setelah membaca satu frame,
+padahal client masih menulis chunk audio-nya — jadi close bisa mendahului delta
+transkripsi yang baru dikirim, dan kasus yang harusnya lulus jadi `socket
+closed before completion`. Fake server kini membaca sampai frame
+`clientContent.turnComplete` (titik di mana client sudah menunggu di read loop)
+sebelum mengirim delta dan menutup. Deterministik gagal di `-count=3`, dan
+sekarang 0 gagal di 20 run beruntun. Tidak ada kode produksi yang berubah.
+
+**Verifikasi:** `go build ./...` dan `go vet ./...` bersih; `go test ./...`
+hijau; `go test -count=8 -run TestTranscribeGeminiLive ./internal/handlers/media/`
+hijau; 20 run beruntun test yang tadinya flaky hijau. Berkas workflow
+dijalankan runner ubuntu (cgo tersedia di sana), bukan mesin lokal tanpa C
+compiler.
+
+### 🚀 Analytics Improvements: Model Breakdown, Dynamic Pricing, & Semantic Cache Persistence
+
+- **Durasi Kompresi Murni**: Memperbaiki pengukuran `CompressionDurationMs` di `internal/handlers/chat/fallback.go` yang sebelumnya salah mencatat total latensi streaming LLM (~7.5s) menjadi durasi murni eksekusi kompresi (~1–15ms).
+- **Model-Level Breakdown**: Menambahkan rincian per-model di backend (`ByModel`) dan frontend tabel `Breakdown by Model` untuk dashboard Cache dan Compression.
+- **Dynamic Pricing**: Menggantikan hardcode $3.0/M dengan kalkulasi harga riil per-model dari `internal/pricing` (`pricing.GetPricingForModel`).
+- **Persistensi SQLite Semantic Cache**: Menambahkan tabel `semanticCacheEntries` dan `PersistentLRUStore` di `internal/semanticcache/` sehingga cache tidak hilang saat container restart, lengkap dengan preloading/hydration otomatis saat boot.
+
+### 📉 Compression Analytics Dashboard (port OmniRoute `/dashboard/analytics/compression`)
+
+- **Backend**:
+  - `internal/db/schema.go`: Menambahkan tabel `compressionAnalytics` untuk mencatat telemetri setiap kali pipeline kompresi (RTK, Caveman, Ponytail) dijalankan.
+  - `internal/db/compression_analytics.go`: Menambahkan fungsi `InsertCompressionAnalytics` dan agregator `GetCompressionAnalyticsSummary` (mendukung filter `since=24h|7d|30d|all`, rincian per mode, per provider, grafik per jam, dan fallback otomatis ke data historis `usageHistory`).
+  - `internal/handlers/chat/usage.go`: Mencatat telemetri setiap eksekusi kompresi (mode, overhead latensi, token awal vs hasil kompresi, dan skip reason).
+  - `internal/handlers/dashboard/compression_analytics.go`: Menambahkan REST API endpoint `GET /api/analytics/compression`.
+  - `internal/db/compression_analytics.go`: Menambahkan 1x migrasi idempotensi `BackfillCompressionAnalytics` yang mengekstrak riwayat dari `requestDetails` & `usageHistory`, dengan klasifikasi cerdas untuk mode `stacked` (RTK + Caveman/ADHD/Ponytail), `rtk`, `caveman`, `adhd`, dan `ponytail`.
+  - `internal/handlers/chat/usage.go`: Menambahkan fungsi `resolveCompressionMode` di live pipeline agar eksekusi kombinasi secara akurat dilabeli `stacked`.
+- **Frontend**:
+  - `web/src/components/CompressionAnalyticsView.svelte`: UI Svelte 5 runes dengan 6 hero stat cards (Total Requests, Tokens Saved, Avg Savings %, Avg Duration, Receipts, Est. Cost Saved), filter rentang waktu, grafik trend per jam, serta progress bar rincian mode dan provider.
+  - Integrasi tab `/dashboard/analytics/compression` di router SPA, `Sidebar.svelte`, dan `App.svelte`.
+
+### ⚡ Cache Analytics & Tracking Dashboard (port OmniRoute `/dashboard/cache`)
+
+- **Backend**:
+  - `internal/db/cache_analytics.go`: Menambahkan `GetPromptCacheMetrics` dan `GetPromptCacheTrend` untuk agregasi data prompt caching dari tabel `usageHistory` (`cached_tokens` dan `cache_creation_input_tokens`).
+  - `internal/semanticcache/`: Menambahkan atomic metrics counter (`hits`, `misses`, `tokensSaved`), paginated entry listing (`ListEntries`), invalidasi berdasarkan model/stale TTL, serta penanganan delete single entry.
+  - `internal/handlers/dashboard/cache.go`: Menambahkan endpoint REST API `GET /api/cache`, `DELETE /api/cache`, `GET /api/cache/entries`, dan `DELETE /api/cache/entries`.
+- **Frontend**:
+  - `web/src/components/CacheAnalyticsView.svelte`: UI Svelte 5 runes untuk Prompt Cache (5 hero metrics cards, interactive hourly trend chart, breakdown per provider) dan Semantic Cache (hits/misses meter, invalidasi model, tabel cached entries dengan filter dan paginasi).
+  - Integrasi tab `/dashboard/cache` di `web/src/lib/router.ts`, `web/src/components/Sidebar.svelte`, dan `web/src/App.svelte`.
+
 ### 🩹 Failed usage reads silently reported as zero — Usage & Analytics dashboard
 
 `GetUsageDailyRecent`, `GetUsageHistorySince`, `GetRecentUsageHistory`,
@@ -1877,6 +2425,12 @@ numeric keypad with no letter keys, so mobile users simply cannot type `14d` or
 empty makes the page fall back to the 7-day preset. `inputmode="numeric"` was
 removed; `normalizeCustomPeriod` already rejects absurdly large numbers with an
 error message, so validation is unchanged.
+
+### 🔒 Penegakan Strict Provider Isolation & Concurrency Singleflight
+
+- **Strict Provider Isolation**: Menghapus jalan pintas `routeModelToOwningProvider` di `internal/handlers/chat/resolution.go` dan prefix silang `antigravity/` / `ag/` di executor OpenCode (`internal/proxy/executor/opencode_zen.go` & `providers.go`). Seluruh model di-route secara seragam berdasarkan katalog dan alias resmi, mematuhi kontrak arsitektur di `AGENTS.md`.
+- **OAuth Refresh Singleflight**: Membungkus refresh token OAuth kedaluwarsa (`refreshOAuthTokenIfExpired` & `forceRefreshOAuthToken` di `internal/handlers/chat/gemini_handler.go`) dengan `singleflight.Group` per `connectionID` untuk mencegah thundering-herd dan race condition pada request paralel.
+- **Test Coverage Backend $\ge$ 85%**: Menambahkan unit test komprehensif pada 8 paket backend (`config`, `codexquota`, `usagetracker`, `middleware`, `translator`, `app`, `handlerutil`, `proc`), serta mengeliminasi bottleneck sleep 60s pada `proc_test.go` sehingga suite berjalan instan (< 1s).
 
 ### 🎨 Console Log: colors follow the level actually emitted
 

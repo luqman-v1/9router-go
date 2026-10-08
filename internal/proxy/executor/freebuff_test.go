@@ -2,7 +2,7 @@ package executor
 
 import (
 	"context"
-	stdjson "encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"io"
 	"net/http"
@@ -155,7 +155,7 @@ func TestForwardFreebuff_FullCycle(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = stdjson.NewEncoder(w).Encode(map[string]any{
+			_ = json.MarshalWrite(w, map[string]any{
 				"status":     "active",
 				"instanceId": "fb-inst-999",
 				"expiresAt":  "2030-01-01T00:00:00Z",
@@ -163,12 +163,12 @@ func TestForwardFreebuff_FullCycle(t *testing.T) {
 
 		case r.URL.Path == freebuffRunPath:
 			var req map[string]any
-			_ = stdjson.NewDecoder(r.Body).Decode(&req)
+			_ = json.UnmarshalRead(r.Body, &req)
 			action, _ := req["action"].(string)
 			if action == "START" {
 				atomic.AddInt64(&startRunCalls, 1)
 				w.Header().Set("Content-Type", "application/json")
-				_ = stdjson.NewEncoder(w).Encode(map[string]any{
+				_ = json.MarshalWrite(w, map[string]any{
 					"runId": "run-xyz-123",
 				})
 			} else if action == "FINISH" {
@@ -180,7 +180,7 @@ func TestForwardFreebuff_FullCycle(t *testing.T) {
 			atomic.AddInt64(&chatCalls, 1)
 			bodyBytes, _ := io.ReadAll(r.Body)
 			var body map[string]any
-			_ = stdjson.Unmarshal(bodyBytes, &body)
+			_ = json.Unmarshal(bodyBytes, &body)
 
 			// Assert codebuff_metadata
 			meta, ok := body["codebuff_metadata"].(map[string]any)
@@ -212,7 +212,7 @@ func TestForwardFreebuff_FullCycle(t *testing.T) {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			_ = stdjson.NewEncoder(w).Encode(map[string]any{
+			_ = json.MarshalWrite(w, map[string]any{
 				"id":      "chatcmpl-fb-1",
 				"object":  "chat.completion",
 				"created": 12345678,
@@ -293,7 +293,7 @@ func TestForwardFreebuff_FullCycle(t *testing.T) {
 			_, _ = w.Write([]byte(`{"status":"active","instanceId":"fb-inst-999","expiresAt":"2030-01-01T00:00:00Z"}`))
 		case r.URL.Path == freebuffRunPath:
 			var req map[string]any
-			_ = stdjson.NewDecoder(r.Body).Decode(&req)
+			_ = json.UnmarshalRead(r.Body, &req)
 			if action, _ := req["action"].(string); action == "START" {
 				_, _ = w.Write([]byte(`{"runId":"run-xyz-123"}`))
 			} else {
@@ -302,7 +302,7 @@ func TestForwardFreebuff_FullCycle(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/chat/completions"):
 			bodyBytes, _ := io.ReadAll(r.Body)
 			var body map[string]any
-			_ = stdjson.Unmarshal(bodyBytes, &body)
+			_ = json.Unmarshal(bodyBytes, &body)
 			meta, _ := body["codebuff_metadata"].(map[string]any)
 			cloakedClientID, _ = meta["client_id"].(string)
 			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
@@ -437,7 +437,7 @@ func TestFreebuff_RequestSession_ModelLocked_ConflictError(t *testing.T) {
 			CurrentModel string `json:"currentModel"`
 		} `json:"error"`
 	}
-	if err := stdjson.Unmarshal(ue.Body, &errJson); err != nil {
+	if err := json.Unmarshal(ue.Body, &errJson); err != nil {
 		t.Fatalf("failed to unmarshal error body %s: %v", string(ue.Body), err)
 	}
 
@@ -501,7 +501,7 @@ func TestForwardFreebuff_ModelLocked_Writes409(t *testing.T) {
 			CurrentModel string `json:"currentModel"`
 		} `json:"error"`
 	}
-	if err := stdjson.Unmarshal(rec.Body.Bytes(), &errJson); err != nil {
+	if err := json.Unmarshal(rec.Body.Bytes(), &errJson); err != nil {
 		t.Fatalf("failed to unmarshal recorder body %s: %v", rec.Body.String(), err)
 	}
 

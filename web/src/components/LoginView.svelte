@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import { api } from '../api/client'
 
   let {
@@ -42,9 +42,11 @@
     fetch('/api/auth/status', { signal: controller.signal })
       .then(async (res) => {
         clearTimeout(timeoutId)
+
         if (!res.ok) {
           // Safe fallback to avoid an infinite loading state.
           hasPassword = true
+          tick().then(focusPasswordField)
           return
         }
         const data = await res.json()
@@ -63,12 +65,29 @@
         oidcLoginLabel = data.oidcLoginLabel || 'Sign in with OIDC'
         samlConfigured = data.samlConfigured === true
         samlLoginLabel = data.samlLoginLabel || 'Sign in with SAML SSO'
+        // The form only exists once hasPassword has left null, so focus it as
+        // soon as the state that reveals it has been applied.
+        tick().then(focusPasswordField)
       })
       .catch(() => {
         clearTimeout(timeoutId)
         hasPassword = true
+        tick().then(focusPasswordField)
       })
   })
+
+  // Focus the field the user has to type into, once the form is on screen.
+  //
+  // The `autofocus` attribute was the obvious way to do this and it warned in
+  // the console: "Autofocus processing was blocked because a document already
+  // has a focused element." Reached from /dashboard without a session the app
+  // mounts this view beside the page it was already showing, and the browser
+  // resolves autofocus per document — the body had already taken focus, so the
+  // attribute was refused. Asking for focus after mount gets the same result
+  // without asking the browser to arbitrate.
+  function focusPasswordField() {
+    document.querySelector<HTMLElement>('#login-password')?.focus()
+  }
 
   type LoginFailure = Error & {
     retryAfter?: number
@@ -195,7 +214,7 @@
                 placeholder="Enter new password"
                 bind:value={newPassword}
                 required
-                autofocus
+                data-login-focus
                 class="w-full py-2.5 px-3 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
               />
               {#if errorMessage}
@@ -264,7 +283,7 @@
                       placeholder="Enter password"
                       bind:value={password}
                       required
-                      autofocus={!oidcAvailable}
+                      data-login-focus
                       class="w-full py-2.5 px-3 pr-10 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent placeholder-text-muted/70 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-colors"
                     />
                     <button

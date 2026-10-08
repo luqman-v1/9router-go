@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/translator"
 )
 
@@ -276,5 +277,94 @@ func TestTryForwardWithConnection_RTKEndToEnd(t *testing.T) {
 	}
 	if detail.Tokens["saved_percent"] <= 0 {
 		t.Errorf("expected saved_percent > 0, got %d", detail.Tokens["saved_percent"])
+	}
+}
+
+func TestResolveCompressionMode(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupConfig func(ts *shared.TokenSaverConfig)
+		savedTokens int
+		wantMode    string
+	}{
+		{
+			name: "RTK only with savings",
+			setupConfig: func(ts *shared.TokenSaverConfig) {
+				ts.SetRTK(true)
+			},
+			savedTokens: 100,
+			wantMode:    "rtk",
+		},
+		{
+			name: "RTK + Caveman -> stacked",
+			setupConfig: func(ts *shared.TokenSaverConfig) {
+				ts.SetRTK(true)
+				ts.SetCaveman(true)
+			},
+			savedTokens: 100,
+			wantMode:    "stacked",
+		},
+		{
+			name: "RTK + ADHD -> stacked",
+			setupConfig: func(ts *shared.TokenSaverConfig) {
+				ts.SetRTK(true)
+				ts.SetADHD(true)
+			},
+			savedTokens: 100,
+			wantMode:    "stacked",
+		},
+		{
+			name: "RTK + Ponytail -> stacked",
+			setupConfig: func(ts *shared.TokenSaverConfig) {
+				ts.SetRTK(true)
+				ts.SetPonytail(true)
+			},
+			savedTokens: 100,
+			wantMode:    "stacked",
+		},
+		{
+			name: "Caveman only without RTK",
+			setupConfig: func(ts *shared.TokenSaverConfig) {
+				ts.SetCaveman(true)
+			},
+			savedTokens: 0,
+			wantMode:    "caveman",
+		},
+		{
+			name: "ADHD only without RTK",
+			setupConfig: func(ts *shared.TokenSaverConfig) {
+				ts.SetADHD(true)
+			},
+			savedTokens: 0,
+			wantMode:    "adhd",
+		},
+		{
+			name: "Ponytail only without RTK",
+			setupConfig: func(ts *shared.TokenSaverConfig) {
+				ts.SetPonytail(true)
+			},
+			savedTokens: 0,
+			wantMode:    "ponytail",
+		},
+		{
+			name: "Multiple personas without RTK -> stacked",
+			setupConfig: func(ts *shared.TokenSaverConfig) {
+				ts.SetCaveman(true)
+				ts.SetADHD(true)
+			},
+			savedTokens: 0,
+			wantMode:    "stacked",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := shared.NewTokenSaverConfig(false, false, false)
+			tt.setupConfig(ts)
+			got := resolveCompressionMode(ts, tt.savedTokens)
+			if got != tt.wantMode {
+				t.Errorf("resolveCompressionMode() = %q, want %q", got, tt.wantMode)
+			}
+		})
 	}
 }

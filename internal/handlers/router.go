@@ -3,6 +3,7 @@ package handlers
 import (
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/guardrails"
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlers/dashboard"
 	"9router/proxy/internal/handlers/media"
@@ -10,9 +11,8 @@ import (
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/handlers/sso"
 	"9router/proxy/internal/handlerutil"
-	"9router/proxy/internal/guardrails"
-	"9router/proxy/internal/observ"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/observ"
 	"9router/proxy/web"
 	json "encoding/json/v2"
 	"github.com/go-chi/chi/v5"
@@ -31,7 +31,13 @@ func NewTokenSaverConfig(rtk, caveman, ponytail bool) *TokenSaverConfig {
 	return shared.NewTokenSaverConfig(rtk, caveman, ponytail)
 }
 
-// SetupRoutes mounts all domain handlers on the provided router.
+// SetupRoutes mounts all domain handlers on the provided router. It returns the
+// engine's chat handler, which owns the semantic cache the engine actually
+// reads and writes. The caller must pass that same handler to
+// SetupDashboardRoutes: a second NewChatHandler builds a second
+// PersistentStore over the same SQLite file with its own in-memory LRU, so the
+// dashboard would report zero entries while the engine served hits, and
+// clearing entries from the dashboard would leave the engine still serving them.
 func SetupRoutes(r interface {
 	Get(pattern string, handlerFn http.HandlerFunc)
 	Post(pattern string, handlerFn http.HandlerFunc)
@@ -39,12 +45,15 @@ func SetupRoutes(r interface {
 	Patch(pattern string, handlerFn http.HandlerFunc)
 	Delete(pattern string, handlerFn http.HandlerFunc)
 	HandleFunc(pattern string, handlerFn http.HandlerFunc)
-}, repo *db.Repo, ts *TokenSaverConfig) {
+}, repo *db.Repo, ts *TokenSaverConfig) *chat.ChatHandler {
 	chatH := chat.NewChatHandler(repo, ts)
 	mediaH := media.NewMediaHandler(repo, ts, chatH)
 	oauthH := oauth.NewOAuthHandler(repo)
 
-	dashH := dashboard.NewDashboardHandler(repo)
+	dashH := dashboard.NewDashboardHandler(repo, ts)
+	if chatH != nil {
+		dashH.SemanticCache = chatH.SemanticCache
+	}
 	// Chat & Models Domain (no version here: the four version GETs are
 	// public in SetupServerRouter, upstream PUBLIC_API_PATHS parity).
 	r.Get("/changelog", chatH.HandleChangelog)
@@ -142,6 +151,7 @@ func SetupRoutes(r interface {
 
 	// Debug Tracing Domain (p50/p95 latency per provider+model)
 	r.Get("/debug/traces", HandleDebugTraces)
+	return chatH
 }
 
 // SetupDashboardRoutes mounts the dashboard REST API. It is wrapped in
@@ -149,7 +159,14 @@ func SetupRoutes(r interface {
 // browser session, a valid API key or the local CLI token through when login is
 // enabled (upstream dashboardGuard).
 func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) {
-	dashH := dashboard.NewDashboardHandler(repo)
+	var ts *TokenSaverConfig
+	if chatH != nil {
+		ts = chatH.TokenSaver
+	}
+	dashH := dashboard.NewDashboardHandler(repo, ts)
+	if chatH != nil {
+		dashH.SemanticCache = chatH.SemanticCache
+	}
 	ssoH := sso.NewHandler(repo)
 
 	r.Get("/api/connections", dashH.HandleGetConnections)
@@ -178,6 +195,15 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 
 	r.Get("/api/usage/{connectionId}/reset-credits", dashH.HandleListCodexResetCredits)
 	r.Post("/api/usage/{connectionId}/reset-credits/consume", dashH.HandleConsumeCodexResetCredit)
+
+	// Cache Analytics & Management
+	r.Get("/api/cache", dashH.HandleGetCache)
+	r.Delete("/api/cache", dashH.HandleDeleteCache)
+	r.Get("/api/cache/entries", dashH.HandleGetCacheEntries)
+	r.Delete("/api/cache/entries", dashH.HandleDeleteCacheEntry)
+
+	// Compression Analytics
+	r.Get("/api/analytics/compression", dashH.HandleGetCompressionAnalytics)
 
 	r.Get("/api/provider-nodes", dashH.HandleGetProviderNodes)
 	r.Post("/api/provider-nodes", dashH.HandleCreateProviderNode)
@@ -258,6 +284,11 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Get("/api/settings/database", dashH.HandleExportDatabase)
 	r.Post("/api/settings/database", dashH.HandleImportDatabase)
 	r.Post("/api/settings/proxy-test", dashH.HandleProxyTest)
+
+	// Token saver testing benches & filter catalog
+	r.Get("/api/tokensaver/rtk/filters", dashH.HandleGetRTKFilters)
+	r.Post("/api/tokensaver/rtk/test", dashH.HandleTestRTK)
+	r.Post("/api/tokensaver/caveman/test", dashH.HandleTestCaveman)
 
 	// Headroom token-compression proxy management (dashboard parity)
 	headroomH := media.NewHeadroomHandler(repo)
@@ -411,7 +442,10 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	})
 	// Dashboard login session. status/login/logout/require-login are public so
 	// the login page can load before a cookie exists (upstream PUBLIC_API_PATHS).
-	dashH := dashboard.NewDashboardHandler(repo)
+	dashH := dashboard.NewDashboardHandler(repo, ts)
+	if versionH != nil {
+		dashH.SemanticCache = versionH.SemanticCache
+	}
 	r.Get("/api/auth/status", dashH.HandleAuthStatus)
 	r.Post("/api/auth/login", dashH.HandleAuthLogin)
 	r.Post("/api/auth/logout", dashH.HandleAuthLogout)
@@ -477,18 +511,21 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	// a single indexed read on an already-loaded connection, and buys an
 	// operator an off switch that does not require deleting their policies.
 	guardrailSwitch := guardrails.Switch(func() bool { return repo.GetGuardrailsEnabled() })
+	var engineChatH *chat.ChatHandler
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireApiKey(repo))
 		r.Use(middleware.RequireRateLimit(rateLimiter, defaults))
 		r.Use(guardrails.Inbound(guardrailStore, guardrailAudit(repo), guardrailSwitch))
-		SetupRoutes(r, repo, ts)
+		engineChatH = SetupRoutes(r, repo, ts)
 	})
 
 	// Dashboard management API: login-gated when requireLogin is on, but still
 	// reachable with a valid API key or the local CLI token (upstream parity).
+	// It reads the cache through the engine's chat handler: versionH was built
+	// before any traffic, so the cache on that instance never fills.
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireDashboardAuth(repo))
-		SetupDashboardRoutes(r, repo, versionH)
+		SetupDashboardRoutes(r, repo, engineChatH)
 	})
 
 	// CLI Tools status is a dashboard read: the SPA calls it with the session

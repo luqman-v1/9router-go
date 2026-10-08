@@ -388,3 +388,26 @@ func TestExtractErrorText_CloudflareHTML(t *testing.T) {
 		t.Errorf("expected Cloudflare WAF challenge in error text, got %q", got)
 	}
 }
+
+func TestHandleAccountFallback_AllInCooldownReportsEarliestReset(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	dropSeededConn(t, database)
+	inTenMinutes := time.Now().UTC().Add(10 * time.Minute)
+	insertDeepseekConn(t, database, "conn-cooling", 1, cooldownData(t, &inTenMinutes))
+
+	h := NewChatHandler(db.NewRepo(database))
+	body := []byte(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`)
+	rec := httptest.NewRecorder()
+	err := h.handleAccountFallback(context.Background(), rec, "deepseek", "deepseek-chat", "", body, false, false, "/v1/chat/completions")
+	if err == nil {
+		t.Fatal("expected error when all connections are in cooldown")
+	}
+	if !strings.Contains(err.Error(), "all in cooldown") {
+		t.Errorf("expected error to contain 'all in cooldown', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), inTenMinutes.UTC().Format(time.RFC3339)) {
+		t.Errorf("expected error to contain earliest reset %s, got: %v", inTenMinutes.UTC().Format(time.RFC3339), err)
+	}
+}

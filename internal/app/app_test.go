@@ -76,6 +76,9 @@ func TestNewCLIParams_WithContext(t *testing.T) {
 		if !p.Ponytail || !p.PonytailSet {
 			t.Error("expected Ponytail true and PonytailSet true")
 		}
+		if !p.ADHD || !p.ADHDSet {
+			t.Error("expected ADHD true and ADHDSet true")
+		}
 		if !p.AutoUpdate {
 			t.Error("expected AutoUpdate true")
 		}
@@ -84,7 +87,7 @@ func TestNewCLIParams_WithContext(t *testing.T) {
 		}
 		return nil
 	}
-	_ = appCLI.Run([]string{"9router", "--rtk", "--caveman", "--ponytail", "--auto-update", "--no-injection-guard"})
+	_ = appCLI.Run([]string{"9router", "--rtk", "--caveman", "--ponytail", "--adhd", "--auto-update", "--no-injection-guard"})
 }
 
 func TestConfigModule(t *testing.T) {
@@ -337,6 +340,8 @@ func TestProvideTokenSaverConfig_EnvOverrides(t *testing.T) {
 		CavemanSet:  true,
 		Ponytail:    true,
 		PonytailSet: true,
+		ADHD:        true,
+		ADHDSet:     true,
 	}
 	database, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -353,6 +358,9 @@ func TestProvideTokenSaverConfig_EnvOverrides(t *testing.T) {
 	}
 	if tsc.PonytailEnabled() != true {
 		t.Errorf("expected Ponytail true, got %v", tsc.PonytailEnabled())
+	}
+	if tsc.ADHDEnabled() != true {
+		t.Errorf("expected ADHD true, got %v", tsc.ADHDEnabled())
 	}
 }
 
