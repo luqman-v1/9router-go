@@ -23,6 +23,16 @@
   berhasil juga dilewati, karena satu klik "Test" akan menghapus backoff yang dicatat traffic
   produksi. `UpdateConnectionLastUsed` tetap berjalan — probe memang memakai koneksi tersebut.
 
+### 🎨 feat(dashboard): Check All Models tri-state status (passed, failed, blocked) dan retry blocked models (#222)
+
+- **Latar belakang**: tombol sweep "Check All Models" sebelumnya memperlakukan semua hasil non-ok sebagai
+  warna merah "Error". Ketika koneksi memasuki masa cooldown, semua model berikutnya yang belum sempat diuji
+  langsung ditandai merah sama persis seperti model yang benar-benar gagal di upstream.
+- **Fiks**: UI kini membedakan status tri-state: hijau `Passed`, merah `Failed` (upstream merespons gagal),
+  dan amber `Blocked` (terhalang cooldown, menyertakan estimasi waktu `resetAt`). Banner ringkasan menampilkan
+  `X passed · Y failed · Z blocked` serta menyediakan tombol "Retry blocked" untuk menguji ulang hanya model
+  yang sebelumnya terhalang cooldown.
+
 ### 🐛 fix(chat): error model-gated (402 funds, 401 unsupported) tidak mengunci seluruh akun (#218)
 
 - **Latar belakang**: pada provider multi-model seperti OpenCode Zen (atau Antigravity), request ke model
