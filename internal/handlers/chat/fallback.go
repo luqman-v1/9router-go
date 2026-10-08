@@ -1102,6 +1102,35 @@ func claudeSessionIDFromBody(body []byte) string {
 	return extractClaudeSessionIdFromUserId(userID)
 }
 
+func isAccountAuthFailure(lower string) bool {
+	return strings.Contains(lower, "no credentials") ||
+		strings.Contains(lower, "invalid_grant") ||
+		strings.Contains(lower, "invalid token") ||
+		strings.Contains(lower, "token type is not supported") ||
+		strings.Contains(lower, "authentication expired") ||
+		strings.Contains(lower, "token expired") ||
+		strings.Contains(lower, "account suspended") ||
+		strings.Contains(lower, "account disabled") ||
+		strings.Contains(lower, "incorrect api key") ||
+		strings.Contains(lower, "invalid api key") ||
+		strings.Contains(lower, "organization is not supported") ||
+		strings.Contains(lower, "insufficient funds for organization")
+}
+
+func isModelQuotaText(errorText string) bool {
+	upper := strings.ToUpper(errorText)
+	return strings.Contains(upper, "QUOTA_EXHAUSTED") ||
+		strings.Contains(errorText, "Individual quota reached") ||
+		strings.Contains(upper, "MODEL_CAPACITY_EXHAUSTED")
+}
+
+func mentionsGate(lower string) bool {
+	return strings.Contains(lower, "is not supported") ||
+		strings.Contains(lower, "not supported") ||
+		strings.Contains(lower, "model access is disabled") ||
+		strings.Contains(lower, "endpoint is unavailable")
+}
+
 // isModelScopedError reports whether an upstream retryable error is
 // specific to the requested model (e.g. 429 model quota, 402 insufficient funds
 // for paid models, or 401 "model is not supported") rather than an account-scoped
@@ -1113,39 +1142,41 @@ func isModelScopedError(statusCode int, errorText string, model string) bool {
 		return false
 	}
 	lower := strings.ToLower(errorText)
-
-	// Genuine auth failures are always account-scoped
-	if strings.Contains(lower, "no credentials") ||
-		strings.Contains(lower, "invalid_grant") ||
-		strings.Contains(lower, "invalid token") ||
-		strings.Contains(lower, "authentication expired") ||
-		strings.Contains(lower, "token expired") ||
-		strings.Contains(lower, "account suspended") ||
-		strings.Contains(lower, "account disabled") {
+	if isAccountAuthFailure(lower) {
 		return false
 	}
 
-	// 402 Payment Required (e.g. Zen "Insufficient account funds" on paid models while free models work)
-	if statusCode == http.StatusPaymentRequired || strings.Contains(lower, "insufficient account funds") || strings.Contains(lower, "insufficient funds") {
-		return true
-	}
-
-	// Model not supported (e.g. "Model ... is not supported", "Endpoint is unavailable")
-	if strings.Contains(lower, "is not supported") ||
-		strings.Contains(lower, "not supported") ||
-		strings.Contains(lower, "endpoint is unavailable") ||
-		strings.Contains(lower, "model access is disabled") {
-		return true
-	}
-
-	// Quota / rate limit exhaustion on specific model
+	// 1. Quota exhaustion markers (Antigravity Claude, etc.) on 429/403/503
 	if statusCode == http.StatusTooManyRequests || statusCode == http.StatusForbidden || statusCode == http.StatusServiceUnavailable {
-		upper := strings.ToUpper(errorText)
-		if strings.Contains(upper, "QUOTA_EXHAUSTED") ||
-			strings.Contains(errorText, "Individual quota reached") ||
-			strings.Contains(upper, "MODEL_CAPACITY_EXHAUSTED") {
+		if isModelQuotaText(errorText) {
 			return true
 		}
 	}
+
+	// 2. Model-gate verdicts only ever arrive on 400/401/402/403.
+	// A 5xx that merely says "not supported" is a node fault, not a model gate.
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden:
+	default:
+		return false
+	}
+
+	// 402 Insufficient account funds on providers serving tiered models (e.g. Zen paid models)
+	if statusCode == http.StatusPaymentRequired {
+		if (strings.Contains(lower, "insufficient account funds") || strings.Contains(lower, "insufficient funds")) &&
+			!strings.Contains(lower, "credits are exhausted") && !strings.Contains(lower, "spending limit") {
+			return true
+		}
+	}
+
+	// 401/400/403: Body must name the requested model AND mention that the model is unsupported/disabled
+	cleanModel := strings.ToLower(model)
+	if idx := strings.LastIndex(cleanModel, "/"); idx != -1 {
+		cleanModel = cleanModel[idx+1:]
+	}
+	if (strings.Contains(lower, cleanModel) || strings.Contains(lower, strings.ToLower(model))) && mentionsGate(lower) {
+		return true
+	}
+
 	return false
 }
