@@ -36,8 +36,12 @@
 
   function getStats(providerId: string, noAuth = false) {
     const list = connections.filter((c) => c.provider === providerId)
-    const connected = list.filter((c) => (c.testStatus === 'active' || c.testStatus === 'success' || !c.testStatus) && c.isActive === 1 && !c.lastError).length
-    const error = list.filter((c) => c.testStatus === 'error' || !!c.lastError).length
+    const isConnError = (c: ProviderConnection) =>
+      c.testStatus === 'error' || c.testStatus === 'failed' || (c.testStatus !== 'active' && c.testStatus !== 'passed' && c.testStatus !== 'success' && !!c.lastError)
+    const isConnConnected = (c: ProviderConnection) =>
+      c.isActive === 1 && (c.testStatus === 'active' || c.testStatus === 'passed' || c.testStatus === 'success' || (c.testStatus !== 'error' && c.testStatus !== 'failed' && !c.lastError))
+    const connected = list.filter(isConnConnected).length
+    const error = list.filter(isConnError).length
     return { total: list.length, connected, error, allDisabled: list.length > 0 && list.every((c) => c.isActive === 0), noAuth }
   }
 
