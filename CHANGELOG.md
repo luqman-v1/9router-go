@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+### 📊 Cache & Compression Analytics Moved Into the Usage Page — Section Dropdown
+
+Cache Analytics dan Compression Analytics bukan lagi dua entri sidebar
+tersendiri; keduanya menjadi section dari halaman **Usage**, bersama Overview
+dan Details (#200). Alasannya: keduanya melaporkan trafik yang sama dengan
+Overview, dan sebagai menu top-level keduanya terbaca sebagai produk terpisah.
+
+- **Routing** (`web/src/lib/router.ts`): tab baru `usage-cache`
+  (`/dashboard/usage/cache`) dan `usage-compression`
+  (`/dashboard/usage/compression`) supaya tiap section punya path sendiri dan
+  tetap bisa di-bookmark serta bertahan setelah reload. Path lama
+  (`/dashboard/cache`, `/dashboard/analytics/compression`, dan alias `/cache`,
+  `/analytics/compression`) tetap dipetakan ke section yang sama, sehingga tab
+  yang terbuka saat upgrade tidak mendarat di halaman lain.
+- **Section picker** (`web/src/components/analytics/SectionNav.svelte`): strip
+  pill `inline-flex rounded-xl p-1` yang sebelumnya memuat dua label tidak muat
+  di layar 374px bersama empat section; diganti dropdown yang menampilkan label
+  section aktif pada tombol tertutup, dengan `role="listbox"`, `Escape`, `Tab`,
+  dan klik di luar yang menutup menu.
+- **Window selector bersama** (`web/src/components/analytics/PeriodSelect.svelte`):
+  dropdown periode yang sebelumnya hanya ada di Overview sekarang dipakai
+  Compression Analytics juga, sehingga dua section itu tidak lagi punya dua
+  kontrol periode yang berbeda bentuk. Endpoint `/api/analytics/compression`
+  hanya mengenali `24h|7d|30d|all` (nilai lain diam-diam dijawab `24h`), jadi
+  section itu meneruskan `showCustom={false}` — input window kustom di sana akan
+  menampilkan angka untuk periode yang tidak benar-benar dipakai.
+- **Hero grid Compression Analytics**: kartu ROI Speed berada di luar
+  `grid ... lg:grid-cols-7` sehingga tidak pernah menjadi sel grid dan
+  menyisakan kolom kosong di layar lebar. Sekarang ketujuhnya berada di dalam
+  grid yang jumlah kolomnya membagi tujuh (`2 / 3 / 4 / 7`), dan kartu ROI
+  memakai `lg:col-span-2 xl:col-span-1` untuk tetap utuh di lebar 4 kolom.
+- **Sidebar**: entri Cache/Compression dihapus; entri Usage tetap aktif ketika
+  salah satu section-nya terbuka.
+- **Test**: `web/src/lib/router.test.ts` memverifikasi keempat section, pasangan
+  tab ⇄ path, dan kedua alias lama; `internal/integration/usage_sections_test.go`
+  (build tag `integration`) menjalankan gateway sungguhan dan memeriksa bahwa
+  setiap endpoint yang dipakai section masih serves window yang dipilih dan
+  ketiga path `/dashboard/usage[...]` menyajikan shell SPA.
+
 ### 👤 Paritas Request Details Ala OmniRoute (Kolom Akun, Combo, Protokol, & Modal Detail)
 
 - **Backend Telemetri Akun**:

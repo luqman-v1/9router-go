@@ -1,20 +1,25 @@
 <script lang="ts">
   import { api, getAuthHeaders, normalizeLastError, type ProviderConnection, type ProviderNode } from '../../api/client'
   import { PROVIDER_CATALOG } from '../../lib/providers'
-  import Card from '../../lib/ui/Card.svelte'
+  import {
+    USAGE_SECTION_BY_TAB,
+    USAGE_SECTION_BY_VALUE,
+    type ActiveTab,
+    type UsageSection,
+  } from '../../lib/router'
   import {
     fmt,
     timeAgo,
-    PERIODS,
-    periodLabel,
-    normalizeCustomPeriod,
-    type MainTab,
     type Period,
     type StatsData,
     type RequestDetailItem,
     type ActiveRequestItem,
     type RecentRequestItem
   } from './types'
+  import CacheAnalyticsView from '../CacheAnalyticsView.svelte'
+  import CompressionAnalyticsView from '../CompressionAnalyticsView.svelte'
+  import PeriodSelect from './PeriodSelect.svelte'
+  import SectionNav from './SectionNav.svelte'
   import SummaryKpiCards from './SummaryKpiCards.svelte'
   import UsageBreakdownTable from './UsageBreakdownTable.svelte'
   import RequestDetailsTab from './RequestDetailsTab.svelte'
@@ -22,58 +27,29 @@
   interface Props {
     connections?: ProviderConnection[]
     providerNodes?: ProviderNode[]
+    tab?: ActiveTab
+    onNavigate?: (tab: ActiveTab) => void
   }
 
-  let { connections = [], providerNodes = [] }: Props = $props()
+  let { connections = [], providerNodes = [], tab = 'analytics', onNavigate = () => {} }: Props = $props()
 
-  let activeTab = $state<MainTab>('overview')
+  // Cache and Compression Analytics became sections of this page (issue #200),
+  // each with a tab of its own, so a reload on /dashboard/usage/cache restores
+  // that section. Overview and Details share one path and keep their state
+  // here instead.
+  // The initial value is read once, on purpose: `tab` is the tab the router
+  // resolved on mount, and re-reading it later would yank the user off a
+  // section they picked after a browser-back navigation restored the old path.
+  // svelte-ignore state_referenced_locally
+  let section = $state<UsageSection>(USAGE_SECTION_BY_TAB[tab] ?? 'overview')
   let period = $state<Period>('today')
   let isFetching = $state(false)
 
-  let showPeriodMenu = $state(false)
-  let customPeriodInput = $state('')
-  let customPeriodError = $state('')
-  let periodMenuRoot: HTMLDivElement | null = $state(null)
-
-  const isPresetPeriod = $derived(PERIODS.some((p) => p.value === period))
-  const selectedLabel = $derived(periodLabel(period))
-
-  function selectPeriod(next: Period) {
-    period = next
-    showPeriodMenu = false
-    customPeriodError = ''
-  }
-
-  function applyCustomPeriod() {
-    const normalized = normalizeCustomPeriod(customPeriodInput)
-    if (!normalized) {
-      customPeriodError = 'Enter a number of days or hours, like 14d or 12h.'
-      return
-    }
-    selectPeriod(normalized)
-  }
-
-  function onPeriodMenuKeydown(event: KeyboardEvent) {
-    if (event.key === 'Escape') {
-      showPeriodMenu = false
-      return
-    }
-    if (event.key !== 'Tab') return
-    // A menu that stays open behind the next control leaves the following
-    // focusable element unreachable, so Tab closes it instead.
-    showPeriodMenu = false
-  }
-
+  // Choosing a section has to move the URL when that section owns one, or the
+  // next reload silently drops back to Overview.
   $effect(() => {
-    if (!showPeriodMenu) return
-    function handleDocClick(e: MouseEvent): void {
-      const target = e.target as HTMLElement | null
-      if (!target?.closest('#period-dropdown-root')) {
-        showPeriodMenu = false
-      }
-    }
-    document.addEventListener('click', handleDocClick)
-    return () => document.removeEventListener('click', handleDocClick)
+    const desired = USAGE_SECTION_BY_VALUE[section]
+    if (desired && desired !== tab) onNavigate(desired)
   })
 
   let stats = $state<StatsData>({})
@@ -174,14 +150,15 @@
     }
   }
 
+  // The usage and details fetches follow the Overview and Details sections.
+  // The moved Cache and Compression sections load their own data, so the
+  // Overview's read must not run behind them.
   $effect(() => {
-    loadStats(period)
+    if (section === 'overview') loadStats(period)
   })
 
   $effect(() => {
-    if (activeTab === 'details') {
-      loadDetails(detailsPage)
-    }
+    if (section === 'details') loadDetails(detailsPage)
   })
 
   // SSE real-time updates for activeRequests, recentRequests and error notifications
@@ -273,7 +250,7 @@
 
     // Auto-poll stats every 5s so KPI counters smoothly increment in real time
     const pollTimer = setInterval(() => {
-      if (activeTab === 'overview' && (typeof document === 'undefined' || !document.hidden)) {
+      if (section === 'overview' && (typeof document === 'undefined' || !document.hidden)) {
         loadStats(period)
       }
     }, 5000)
@@ -380,114 +357,21 @@
 </script>
 
 <div class="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
-  <!-- Tabs + Period Selector Row -->
+  <!-- Section picker. The Overview adds its window selector here; the other
+       three sections carry their own controls in their own header, so the row
+       would otherwise show two pickers stacked next to the section name. -->
   <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-    <div class="inline-flex rounded-xl bg-surface border border-border p-1 shadow-sm">
-      <button
-        type="button"
-        onclick={() => (activeTab = 'overview')}
-        class="rounded-lg px-4 py-1.5 text-xs sm:text-sm font-medium transition-colors cursor-pointer {activeTab === 'overview'
-          ? 'bg-brand-500 text-white font-semibold shadow-sm'
-          : 'text-text-muted hover:text-text-main'}"
-      >
-        Overview
-      </button>
-      <button
-        type="button"
-        onclick={() => (activeTab = 'details')}
-        class="rounded-lg px-4 py-1.5 text-xs sm:text-sm font-medium transition-colors cursor-pointer {activeTab === 'details'
-          ? 'bg-brand-500 text-white font-semibold shadow-sm'
-          : 'text-text-muted hover:text-text-main'}"
-      >
-        Details
-      </button>
-    </div>
+    <SectionNav {section} onSectionChange={(next) => (section = next)} />
 
-    {#if activeTab === 'overview'}
-      <div id="period-dropdown-root" class="relative flex w-full items-center gap-1.5 sm:w-auto sm:self-auto">
-        <button
-          type="button"
-          disabled={isFetching}
-          aria-haspopup="listbox"
-          aria-expanded={showPeriodMenu}
-          onclick={() => (showPeriodMenu = !showPeriodMenu)}
-          onkeydown={onPeriodMenuKeydown}
-          class="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text-main shadow-sm transition-colors hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 disabled:opacity-50 sm:text-sm"
-        >
-          <span>{selectedLabel}</span>
-          {#if !isPresetPeriod}
-            <span class="rounded-md bg-surface-3 px-1.5 py-0.5 font-code text-[10px] text-text-muted">{period}</span>
-          {/if}
-          <span class="material-symbols-outlined text-[16px] text-text-muted" aria-hidden="true">
-            {showPeriodMenu ? 'expand_less' : 'expand_more'}
-          </span>
-        </button>
-
-        {#if showPeriodMenu}
-          <div
-            role="listbox"
-            tabindex="-1"
-            onkeydown={onPeriodMenuKeydown}
-            class="absolute left-1/2 top-full z-30 mt-1 w-64 -translate-x-1/2 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)] sm:left-auto sm:right-0 sm:translate-x-0"
-          >
-            {#each PERIODS as p (p.value)}
-              <button
-                type="button"
-                role="option"
-                aria-selected={period === p.value}
-                onclick={() => selectPeriod(p.value)}
-                class="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs text-text-main transition-colors hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 sm:text-sm"
-              >
-                <span>{p.label}</span>
-                {#if period === p.value}
-                  <span class="material-symbols-outlined text-[16px] text-brand-500" aria-hidden="true">check</span>
-                {/if}
-              </button>
-            {/each}
-
-            <div class="mt-1 border-t border-border-subtle px-3 pt-2 pb-1">
-              <label for="custom-period" class="text-[11px] font-medium text-text-muted">Custom window</label>
-              <div class="mt-1.5 flex items-center gap-1.5">
-                <input
-                  id="custom-period"
-                  type="text"
-                  placeholder="14d"
-                  bind:value={customPeriodInput}
-                  onkeydown={(e) => e.key === 'Enter' && applyCustomPeriod()}
-                  aria-describedby={customPeriodError ? 'custom-period-error' : undefined}
-                  aria-invalid={customPeriodError ? 'true' : undefined}
-                  class="min-w-0 flex-1 rounded-lg border border-border bg-bg px-2 py-1.5 font-code text-xs text-text-main outline-none transition-colors placeholder:text-text-subtle focus:border-brand-500"
-                />
-                <button
-                  type="button"
-                  onclick={applyCustomPeriod}
-                  class="shrink-0 rounded-lg bg-brand-500 px-2.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-primary-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50"
-                >
-                  Set
-                </button>
-              </div>
-              {#if customPeriodError}
-                <p id="custom-period-error" class="mt-1.5 text-[11px] text-red-600 dark:text-red-400" role="alert">
-                  {customPeriodError}
-                </p>
-              {:else}
-                <p class="mt-1.5 text-[11px] text-text-muted">Days or hours, for example 14d or 12h.</p>
-              {/if}
-            </div>
-          </div>
-        {/if}
-
-        {#if isFetching}
-          <span class="w-2 h-2 rounded-full bg-brand-500 animate-ping"></span>
-        {/if}
-      </div>
+    {#if section === 'overview'}
+      <PeriodSelect value={period} busy={isFetching} onChange={(next) => (period = next)} />
     {/if}
   </div>
 
   <!-- A failed read leaves the previous period's numbers below, so say what
        happened and mark them stale rather than let them read as current. The
        retry is the same load the refresh button already calls. -->
-  {#if activeTab === 'overview' && statsError}
+  {#if section === 'overview' && statsError}
     <div
       role="alert"
       class="flex flex-col gap-2 rounded-[14px] border border-red-500/30 bg-surface px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
@@ -510,7 +394,7 @@
     </div>
   {/if}
 
-  {#if activeTab === 'overview'}
+  {#if section === 'overview'}
     <!-- 5 Overview KPI Cards -->
     <SummaryKpiCards {stats} />
 
@@ -578,6 +462,10 @@
 
     <!-- Breakdown Table -->
     <UsageBreakdownTable {stats} />
+  {:else if section === 'cache'}
+    <CacheAnalyticsView />
+  {:else if section === 'compression'}
+    <CompressionAnalyticsView />
   {:else}
     <RequestDetailsTab
       {details}

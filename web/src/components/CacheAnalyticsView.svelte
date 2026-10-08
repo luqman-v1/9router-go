@@ -229,10 +229,10 @@
   <!-- Header & View Switcher -->
   <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
     <div>
-      <h1 class="text-2xl font-bold tracking-tight text-text-main flex items-center gap-2">
+      <h2 class="text-2xl font-bold tracking-tight text-text-main flex items-center gap-2">
         <span class="material-symbols-outlined text-[26px] text-brand-500">cached</span>
         Cache Analytics
-      </h1>
+      </h2>
       <p class="text-sm text-text-muted mt-1">
         Prompt caching and semantic deduplication tracking across all AI providers.
       </p>

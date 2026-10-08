@@ -33,8 +33,6 @@
   import Toasts from './lib/ui/Toasts.svelte'
   import TerminalView from './components/TerminalView.svelte'
   import TokenSaverView from './components/TokenSaverView.svelte'
-  import CacheAnalyticsView from './components/CacheAnalyticsView.svelte'
-  import CompressionAnalyticsView from './components/CompressionAnalyticsView.svelte'
   import TopBar from './components/TopBar.svelte'
   import { parseMediaProvider, parseProviderId, pathToTab, providerPath, mediaProviderPath, TAB_ROUTES, type ActiveTab, type MediaProviderRoute } from './lib/router'
   import { PROVIDER_CATALOG } from './lib/providers'
@@ -233,6 +231,10 @@
     endpoint: { title: 'Endpoint & Key', description: 'API endpoint and key configuration' },
     connections: { title: 'Providers & Endpoints', description: 'Manage your AI provider connections' },
     combos: { title: 'Combo & Routing', description: 'Model combos and failover strategies' },
+    // The two moved tabs are sections of the Usage page, so the TopBar keeps
+    // the Usage title and the section's own header below it names the section.
+    'usage-cache': { title: 'Usage & Analytics', description: 'Monitor your API usage, token consumption, and request logs' },
+    'usage-compression': { title: 'Usage & Analytics', description: 'Monitor your API usage, token consumption, and request logs' },
     analytics: { title: 'Usage & Analytics', description: 'Monitor your API usage, token consumption, and request logs' },
     quota: { title: 'Quota Tracker', description: 'Track and manage your API quota limits' },
     'token-saver': { title: 'Token Saver', description: 'Compress prompts and outputs to save tokens' },
@@ -360,16 +362,14 @@
               />
             {:else if activeTab === 'combos'}
               <CombosView {combos} {connections} {providerNodes} onRefresh={loadData} bind:isCreatingOpen={isCreateComboOpen} />
-            {:else if activeTab === 'analytics'}
-              <AnalyticsView {connections} {providerNodes} />
+            {:else if activeTab === 'analytics' || activeTab === 'usage-cache' || activeTab === 'usage-compression'}
+              <!-- Cache and Compression Analytics are Usage sections (#200);
+                   AnalyticsView renders all four sections under one header. -->
+              <AnalyticsView {connections} {providerNodes} tab={activeTab} onNavigate={(next) => navigate(next)} />
             {:else if activeTab === 'quota'}
               <QuotaTrackerView {connections} />
             {:else if activeTab === 'token-saver'}
               <TokenSaverView {settings} onRefresh={loadData} />
-            {:else if activeTab === 'cache'}
-              <CacheAnalyticsView />
-            {:else if activeTab === 'compression-analytics'}
-              <CompressionAnalyticsView />
             {:else if activeTab === 'cli-tools'}
               <CliToolsView {apiKeys} onRefresh={loadData} />
             {:else if activeTab === 'keys'}

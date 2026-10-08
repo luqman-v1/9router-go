@@ -85,8 +85,6 @@
     { tab: 'analytics' as ActiveTab, label: 'Usage', icon: 'bar_chart' },
     { tab: 'quota' as ActiveTab, label: 'Quota Tracker', icon: 'data_usage' },
     { tab: 'token-saver' as ActiveTab, label: 'Token Saver', icon: 'savings' },
-    { tab: 'cache' as ActiveTab, label: 'Cache Analytics', icon: 'cached' },
-    { tab: 'compression-analytics' as ActiveTab, label: 'Compression Analytics', icon: 'compress' },
     { tab: 'cli-tools' as ActiveTab, label: 'CLI Tools', icon: 'terminal' },
   ] as const
 
@@ -112,6 +110,15 @@
     }
     if (tab === 'console-log') {
       return activeTab === 'console-log' || activeTab === 'terminal'
+    }
+    // Cache and Compression Analytics are Usage sections (#200): they left the
+    // sidebar, so the Usage entry has to stay lit while one of them is open.
+    if (tab === 'analytics') {
+      return (
+        activeTab === 'analytics' ||
+        activeTab === 'usage-cache' ||
+        activeTab === 'usage-compression'
+      )
     }
     return activeTab === tab
   }

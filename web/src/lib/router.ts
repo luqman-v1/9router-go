@@ -6,8 +6,11 @@ export type ActiveTab =
   | 'analytics'
   | 'quota'
   | 'token-saver'
-  | 'cache'
-  | 'compression-analytics'
+// Cache Analytics and Compression Analytics are sections of the Usage page
+// (issue #200), not sidebar destinations. They keep their own paths so a
+// section stays linkable and survives a reload.
+  | 'usage-cache'
+  | 'usage-compression'
   | 'cli-tools'
   | 'media-embedding'
   | 'media-image'
@@ -31,8 +34,8 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   analytics: '/dashboard/usage',
   quota: '/dashboard/quota',
   'token-saver': '/dashboard/token-saver',
-  cache: '/dashboard/cache',
-  'compression-analytics': '/dashboard/analytics/compression',
+  'usage-cache': '/dashboard/usage/cache',
+  'usage-compression': '/dashboard/usage/compression',
   'cli-tools': '/dashboard/cli-tools',
   'media-embedding': '/dashboard/media-providers/embedding',
   'media-image': '/dashboard/media-providers/image',
@@ -75,9 +78,17 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   '/usage': 'analytics',
   '/analytics': 'analytics',
 
-  // compression analytics
-  '/dashboard/analytics/compression': 'compression-analytics',
-  '/analytics/compression': 'compression-analytics',
+  // Cache + compression analytics, sections of the Usage page (issue #200).
+  '/dashboard/usage/cache': 'usage-cache',
+  '/dashboard/usage/compression': 'usage-compression',
+
+  // The pre-move paths stay resolvable so an old bookmark or a tab left open
+  // across the upgrade lands on the Usage section instead of the endpoint view
+  // the substring fallback would otherwise pick.
+  '/dashboard/cache': 'usage-cache',
+  '/dashboard/analytics/compression': 'usage-compression',
+  '/cache': 'usage-cache',
+  '/analytics/compression': 'usage-compression',
 
   // quota tracker
   '/dashboard/quota': 'quota',
@@ -86,10 +97,6 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   // token saver
   '/dashboard/token-saver': 'token-saver',
   '/token-saver': 'token-saver',
-
-  // cache analytics
-  '/dashboard/cache': 'cache',
-  '/cache': 'cache',
 
   // cli-tools
   '/dashboard/cli-tools': 'cli-tools',
@@ -146,6 +153,36 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   '/dashboard/settings': 'settings',
   '/profile': 'settings',
   '/settings': 'settings',
+}
+
+// The Usage page's sections. Cache Analytics and Compression Analytics joined
+// Overview and Details as sections (issue #200): they report on the same
+// traffic as the Overview, and as top-level sidebar entries they read as
+// separate products. Each section that owns a path gets its own tab, so the
+// section is linkable and survives a reload.
+export type UsageSection = 'overview' | 'cache' | 'compression' | 'details'
+
+export const USAGE_SECTIONS: { value: UsageSection; label: string; icon: string }[] = [
+  { value: 'overview', label: 'Overview', icon: 'bar_chart' },
+  { value: 'cache', label: 'Cache Analytics', icon: 'cached' },
+  { value: 'compression', label: 'Compression Analytics', icon: 'compress' },
+  { value: 'details', label: 'Details', icon: 'receipt_long' },
+]
+
+// USAGE_SECTION_BY_VALUE is partial on purpose: Overview and Details share the
+// 'analytics' tab, so the page owns their path and only the two moved sections
+// need a tab of their own.
+export const USAGE_SECTION_BY_VALUE: Partial<Record<UsageSection, ActiveTab>> = {
+  cache: 'usage-cache',
+  compression: 'usage-compression',
+}
+
+// USAGE_SECTION_BY_TAB is the reverse lookup, and is deliberately absent for
+// 'analytics': one path serves both Overview and Details, so only the two moved
+// sections can be recovered from a URL.
+export const USAGE_SECTION_BY_TAB: Partial<Record<ActiveTab, UsageSection>> = {
+  'usage-cache': 'cache',
+  'usage-compression': 'compression',
 }
 
 export function pathToTab(pathname: string): ActiveTab {
