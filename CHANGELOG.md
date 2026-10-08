@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 🐛 Tombol "Add Custom Provider" kembali terpecah di v1.9.11-exp.1
+
+- **Penyebab**: `736136c` — commit pertama PR #185 di branch `feat/keirouter-port`, dibuat 12 menit setelah `079de66` (#183) — menulis ulang `AddCompatibleNodeModal.svelte`, `ConnectionsView.svelte`, `ProvidersOverviewGrid.svelte`, dan `MediaKindView.svelte` ke kondisi sebelum #182/#183, sehingga membatalkan dialog tunggal. Keempat file byte-identik dengan `d729b43` (sebelum penggabungan), terbukti lewat `git rev-parse`. PR #185 sendiri tidak menyentuh fitur ini: revert-nya ikut ter-carry oleh squash merge `9b553e7`.
+- **Perbaikan**: keempat file dipulihkan ke versi unified; `ProvidersOverviewGrid` kembali ke satu tombol **Add Custom Provider** dengan switch Provider Type di dalam dialog (field yang sudah diisi pengguna tetap utuh saat ganti protokol); dialog Custom Embedding tetap `allowedTypes={['custom-embedding']}` sehingga hanya menawarkan satu opsi. Import `AddCompatibleNodeModal` yang tertinggal di `ProviderDetailView.svelte` ikut dibersihkan.
 
 
 ### 🔐 Per-key governance, credential vault, and guardrails (KeiRouter port, Path C)
