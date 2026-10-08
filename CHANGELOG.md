@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### 🐛 fix(chat): error model-gated (402 funds, 401 unsupported) tidak mengunci seluruh akun (#218)
+
+- **Latar belakang**: pada provider multi-model seperti OpenCode Zen (atau Antigravity), request ke model
+  berbayar yang gagal (`402 Insufficient account funds`) atau model unsupported (`401 Model ... is not supported`)
+  malah mengunci seluruh akun koneksi via `rateLimitedUntil` selama ~2 menit. Karena loop fallback mencoba
+  seluruh koneksi pada provider tersebut, satu model yang gagal melumpuhkan seluruh akun sehingga model-model
+  gratis/sehat lainnya (`space-bunny-free`, `mimo-v2.6-flash-free`, dll.) ikut mati terkena error 502
+  "no available connections (all in cooldown)".
+- **Akar masalah**: `isModelScopedQuotaError` sebelumnya hanya mencocokkan status 429/403/503 dengan string
+  kuota spesifik. Error 402 dana dan 401 model-unsupported jatuh ke `LockConnectionRateLimit` akun secara global.
+- **Fiks**: `isModelScopedError` diperluas dan di-gate positif: status dibatasi pada 400/401/402/403, body
+  harus menyebutkan nama model yang bersangkutan atau membawa pesan dana ("insufficient account funds"),
+  dan error autentikasi akun asli (invalid API key, token expired, account suspended) tetap mengunci akun
+  secara global. Status 402 juga ditambahkan ke `RetryableStatusCodes`.
+
 ### 🐛 Modal policy key: allowlist tidak tampil dan pattern baru tidak tersimpan (Closes #216)
 
 - **Latar belakang**: report #216 — API balas `200 ok`, tapi `model access`

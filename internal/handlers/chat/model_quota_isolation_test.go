@@ -193,3 +193,103 @@ func TestAccountScoped401_BlocksAllModelsOnSameAccount(t *testing.T) {
 		t.Error("expected getBestConnection to fail because account is cooling down")
 	}
 }
+
+func TestModelScoped402_FundsRequiredDoesNotBlockFreeModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPaymentRequired)
+		w.Write([]byte(`{"error":{"message":"Insufficient account funds","type":"insufficient_funds"}}`))
+	}))
+	defer srv.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	dropSeededConn(t, database)
+
+	connData, _ := json.Marshal(map[string]any{
+		"apiKey":  "sk-zen-key",
+		"baseUrl": srv.URL,
+	})
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES ('conn-zen', 'opencode-zen', 'apikey', 'Zen Conn', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(connData)); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// Request paid model that returns 402
+	body := []byte(`{"model":"claude-3-7-sonnet","messages":[{"role":"user","content":"hi"}]}`)
+	rec := httptest.NewRecorder()
+	_ = h.handleAccountFallback(context.Background(), rec, "opencode-zen", "claude-3-7-sonnet", "", body, false, false, "/v1/chat/completions")
+
+	// Paid model should be locked
+	locked, err := repo.IsConnectionModelLocked("conn-zen", "claude-3-7-sonnet")
+	if err != nil || !locked {
+		t.Errorf("expected claude-3-7-sonnet to be locked, err=%v, locked=%v", err, locked)
+	}
+
+	// rateLimitedUntil must NOT be set on conn-zen
+	var rawData string
+	_ = database.QueryRow(`SELECT data FROM providerConnections WHERE id = 'conn-zen'`).Scan(&rawData)
+	if _, ok := db.ConnectionCooldownUntil(rawData); ok {
+		t.Error("expected rateLimitedUntil to NOT be set for model-scoped 402")
+	}
+
+	// Next request for free model space-bunny-free must still select conn-zen!
+	conn, _, err := h.getBestConnection("opencode-zen", "", nil, "space-bunny-free")
+	if err != nil {
+		t.Fatalf("getBestConnection for free model failed: %v", err)
+	}
+	if conn == nil || conn.ID != "conn-zen" {
+		t.Errorf("expected conn-zen to be selected for free model, got: %v", conn)
+	}
+}
+
+func TestModelScoped401_UnsupportedModelDoesNotBlockAccount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"message":"Model mimo-v2.5-free is not supported"}}`))
+	}))
+	defer srv.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	dropSeededConn(t, database)
+
+	connData, _ := json.Marshal(map[string]any{
+		"apiKey":  "sk-zen-key",
+		"baseUrl": srv.URL,
+	})
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES ('conn-zen', 'opencode-zen', 'apikey', 'Zen Conn', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(connData)); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// Request unsupported model that returns 401 Model ... is not supported
+	body := []byte(`{"model":"mimo-v2.5-free","messages":[{"role":"user","content":"hi"}]}`)
+	rec := httptest.NewRecorder()
+	_ = h.handleAccountFallback(context.Background(), rec, "opencode-zen", "mimo-v2.5-free", "", body, false, false, "/v1/chat/completions")
+
+	// mimo-v2.5-free must be locked
+	locked, err := repo.IsConnectionModelLocked("conn-zen", "mimo-v2.5-free")
+	if err != nil || !locked {
+		t.Errorf("expected mimo-v2.5-free to be locked, err=%v, locked=%v", err, locked)
+	}
+
+	// rateLimitedUntil must NOT be set on conn-zen
+	var rawData string
+	_ = database.QueryRow(`SELECT data FROM providerConnections WHERE id = 'conn-zen'`).Scan(&rawData)
+	if _, ok := db.ConnectionCooldownUntil(rawData); ok {
+		t.Error("expected rateLimitedUntil to NOT be set for model-scoped 401 unsupported")
+	}
+
+	// Next request for another model must still select conn-zen!
+	conn, _, err := h.getBestConnection("opencode-zen", "", nil, "space-bunny-free")
+	if err != nil {
+		t.Fatalf("getBestConnection for another model failed: %v", err)
+	}
+	if conn == nil || conn.ID != "conn-zen" {
+		t.Errorf("expected conn-zen to be selected, got: %v", conn)
+	}
+}

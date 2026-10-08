@@ -164,7 +164,7 @@ func (h *ChatHandler) handleAccountFallback(
 			// selector can skip this account before spending a request
 			// (upstream applyErrorState). Only lock if error is account-scoped,
 			// not model-scoped (e.g. 401 auth issues), so unrelated models stay available.
-			if isModelScopedQuotaError(ue.StatusCode, errorText, model) {
+			if isModelScopedError(ue.StatusCode, errorText, model) {
 				if recErr := h.Repo.RecordConnectionError(connObj.ID, ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
 					log.Warn("fallback", "record connection error failed", "conn", connObj.ID, "error", recErr)
 				}
@@ -1102,23 +1102,50 @@ func claudeSessionIDFromBody(body []byte) string {
 	return extractClaudeSessionIdFromUserId(userID)
 }
 
-// isModelScopedQuotaError reports whether an upstream retryable error is
-// a model-specific quota exhaustion (e.g. Antigravity Claude QUOTA_EXHAUSTED)
-// rather than an account-scoped rate limit or credential failure.
-// For model-scoped quota exhaustion, only LockConnectionModel should be set
-// so that unrelated healthy models (e.g. Gemini) on the same account remain available.
-func isModelScopedQuotaError(statusCode int, errorText string, model string) bool {
+// isModelScopedError reports whether an upstream retryable error is
+// specific to the requested model (e.g. 429 model quota, 402 insufficient funds
+// for paid models, or 401 "model is not supported") rather than an account-scoped
+// credential failure. For model-scoped errors, only LockConnectionModel and
+// RecordConnectionError are set so that unrelated healthy models on the same account
+// remain available.
+func isModelScopedError(statusCode int, errorText string, model string) bool {
 	if model == "" {
 		return false
 	}
-	if statusCode != http.StatusTooManyRequests && statusCode != http.StatusForbidden && statusCode != http.StatusServiceUnavailable {
+	lower := strings.ToLower(errorText)
+
+	// Genuine auth failures are always account-scoped
+	if strings.Contains(lower, "no credentials") ||
+		strings.Contains(lower, "invalid_grant") ||
+		strings.Contains(lower, "invalid token") ||
+		strings.Contains(lower, "authentication expired") ||
+		strings.Contains(lower, "token expired") ||
+		strings.Contains(lower, "account suspended") ||
+		strings.Contains(lower, "account disabled") {
 		return false
 	}
-	upper := strings.ToUpper(errorText)
-	if strings.Contains(upper, "QUOTA_EXHAUSTED") ||
-		strings.Contains(errorText, "Individual quota reached") ||
-		strings.Contains(upper, "MODEL_CAPACITY_EXHAUSTED") {
+
+	// 402 Payment Required (e.g. Zen "Insufficient account funds" on paid models while free models work)
+	if statusCode == http.StatusPaymentRequired || strings.Contains(lower, "insufficient account funds") || strings.Contains(lower, "insufficient funds") {
 		return true
+	}
+
+	// Model not supported (e.g. "Model ... is not supported", "Endpoint is unavailable")
+	if strings.Contains(lower, "is not supported") ||
+		strings.Contains(lower, "not supported") ||
+		strings.Contains(lower, "endpoint is unavailable") ||
+		strings.Contains(lower, "model access is disabled") {
+		return true
+	}
+
+	// Quota / rate limit exhaustion on specific model
+	if statusCode == http.StatusTooManyRequests || statusCode == http.StatusForbidden || statusCode == http.StatusServiceUnavailable {
+		upper := strings.ToUpper(errorText)
+		if strings.Contains(upper, "QUOTA_EXHAUSTED") ||
+			strings.Contains(errorText, "Individual quota reached") ||
+			strings.Contains(upper, "MODEL_CAPACITY_EXHAUSTED") {
+			return true
+		}
 	}
 	return false
 }

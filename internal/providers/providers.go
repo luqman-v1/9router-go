@@ -1027,6 +1027,7 @@ var KnownProviders = map[string]ProviderConfig{
 // RetryableStatusCodes are HTTP status codes that trigger account fallback.
 var RetryableStatusCodes = map[int]bool{
 	http.StatusUnauthorized:       true, // 401
+	http.StatusPaymentRequired:    true, // 402 (insufficient funds on paid models)
 	http.StatusForbidden:          true, // 403 (Gemini/antigravity daily-quota errors can come as 403)
 	http.StatusTooManyRequests:    true, // 429
 	http.StatusBadGateway:         true, // 502
