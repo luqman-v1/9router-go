@@ -115,6 +115,10 @@ guard sweep PR #196 dan precedence badge), `bun run build` bersih, `svelte-check
 di browser pada 390px dan 1400px: 4 sel satu baris, `gridH` 45px (sebelumnya 93px), dan
 siklus badge `testing` → `active`/`error` masih jalan setelah refactor.
 
+### 🐛 Bug Fixes
+
+- fix(chat): preserve selector cooldown errors in fallback loop instead of returning bare "no available connections" (#201)
+
 ### 🐛 Lonjakan RAM idle ~100 MB+ setelah pruning `requestDetails`
 
 - **Gejala**: sejak `db.StartRetentionLoop` masuk (#187, ikut rilis di v1.9.11-exp.1),

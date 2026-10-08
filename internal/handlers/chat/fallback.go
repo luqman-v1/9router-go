@@ -99,6 +99,9 @@ func (h *ChatHandler) handleAccountFallback(
 		}
 		connObj, connData, err := h.getBestConnection(provider, c.ID, nil, model)
 		if err != nil || connObj == nil {
+			if lastErr == nil && err != nil {
+				lastErr = err
+			}
 			continue
 		}
 		apiKey := extractAPIKey(connData)
@@ -107,6 +110,9 @@ func (h *ChatHandler) handleAccountFallback(
 			if pErr == nil && providerCfg.DefaultAPIKey != "" {
 				apiKey = providerCfg.DefaultAPIKey
 			} else {
+				if lastErr == nil {
+					lastErr = fmt.Errorf("connection %s has no API key", connObj.ID)
+				}
 				continue
 			}
 		}
