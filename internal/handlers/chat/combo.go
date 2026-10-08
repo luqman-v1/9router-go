@@ -656,7 +656,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 							break
 						}
 						if providers.RetryableStatusCodes[ue.StatusCode] {
-							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
+							h.comboLockRetryable(ctx, &excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
 						}
 						if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
 							// In combo loops, fail over immediately to the next connection/model without blocking the client turn
@@ -857,7 +857,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 							break
 						}
 						if providers.RetryableStatusCodes[ue.StatusCode] {
-							h.comboLockRetryable(&excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
+							h.comboLockRetryable(ctx, &excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
 						}
 						if ue.StatusCode == http.StatusServiceUnavailable || ue.StatusCode == http.StatusBadGateway || ue.StatusCode == http.StatusGatewayTimeout {
 							// In combo loops, fail over immediately to the next connection/model without blocking the client turn
@@ -921,7 +921,11 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 // combo models on the same account, and Google rate-limited it forever. The
 // connection is also appended to excludeIDs so the remaining combo models in
 // this request skip it instead of re-hitting the same quota bucket.
-func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider, model string, ue *upstreamError) {
+func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]string, connID, provider, model string, ue *upstreamError) {
+	if handlerutil.IsProbeContext(ctx) {
+		*excludeIDs = append(*excludeIDs, connID)
+		return
+	}
 	if connID == "" {
 		return
 	}

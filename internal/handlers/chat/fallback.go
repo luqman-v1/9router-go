@@ -43,7 +43,7 @@ func (h *ChatHandler) handleAccountFallback(
 ) error {
 	body = repairToolCallIDsInJSON(body)
 	if pinnedConnectionID != "" {
-		connObj, connData, err := h.getBestConnection(provider, pinnedConnectionID, nil, model)
+		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, pinnedConnectionID, nil, model)
 		if err != nil {
 			return fmt.Errorf("pinned connection %s: %w", pinnedConnectionID, err)
 		}
@@ -97,7 +97,7 @@ func (h *ChatHandler) handleAccountFallback(
 		if slices.Contains(excludeIDs, c.ID) {
 			continue
 		}
-		connObj, connData, err := h.getBestConnection(provider, c.ID, nil, model)
+		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, c.ID, nil, model)
 		if err != nil || connObj == nil {
 			if lastErr == nil && err != nil {
 				lastErr = err
@@ -144,6 +144,14 @@ func (h *ChatHandler) handleAccountFallback(
 			continue
 		}
 		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
+			if handlerutil.IsProbeContext(ctx) {
+				excludeIDs = append(excludeIDs, connObj.ID)
+				continue
+			}
+			if handlerutil.IsProbeContext(ctx) {
+				excludeIDs = append(excludeIDs, connObj.ID)
+				continue
+			}
 			// Extract error text from upstream body for classification
 			errorText := extractErrorText(ue.Body)
 			// Get current backoff level from this connection

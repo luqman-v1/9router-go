@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### 🐛 fix(models): /api/models/test read-only terhadap cooldown produksi agar sweep tidak memicu cascade (#220)
+
+- **Latar belakang**: `POST /api/models/test` (tombol Test dan sweep "Check All Models")
+  menjalankan probe lewat handler chat produksi (`HandleChatCompletions`). Ketika sebuah
+  model gagal diuji, loop fallback menulis cooldown produksi (`LockConnectionModel`,
+  `RecordConnectionError`, `LockConnectionRateLimit`, dan menaikkan backoff level). Akibatnya,
+  pada sweep puluhan model, beberapa model awal yang gagal mengunci seluruh koneksi akun,
+  sehingga sisa model lainnya langsung 502 "all in cooldown" tanpa pernah mencapai upstream.
+- **Akar masalah**: request probe tidak membawa pembeda konteks, sehingga diperlakukan identik
+  dengan traffic produksi yang memicu state locking.
+- **Fiks**: `WithProbeContext` disuntikkan ke dalam probe request context (`internal/handlerutil/probe.go`).
+  `handleAccountFallback` dan `comboLockRetryable` melewati penulisan cooldown dan bump backoff
+  ketika mendeteksi probe context. `getBestConnectionWithContext` mengizinkan probe menembus cooldown
+  agar dapat menguji pemulihan upstream yang sebenarnya. Hasil probe juga menyertakan field terstruktur
+  `blocked` dan `resetAt`.
+
 ### 🐛 fix(chat): error model-gated (402 funds, 401 unsupported) tidak mengunci seluruh akun (#218)
 
 - **Latar belakang**: pada provider multi-model seperti OpenCode Zen (atau Antigravity), request ke model

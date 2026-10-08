@@ -81,6 +81,7 @@ func (h *MediaHandler) probeModel(r *http.Request, model, kind string) testModel
 	payload := probeFor(kind, model)
 	ctx, cancel := context.WithTimeout(r.Context(), testModelTimeout)
 	defer cancel()
+	ctx = handlerutil.WithProbeContext(ctx)
 
 	probe, err := http.NewRequestWithContext(ctx, http.MethodPost, probePath(kind), payload.body)
 	if err != nil {
@@ -246,6 +247,8 @@ type testModelResult struct {
 	Status    int    `json:"status,omitempty"`
 	Note      string `json:"note,omitempty"`
 	Error     string `json:"error,omitempty"`
+	Blocked   bool   `json:"blocked,omitempty"`
+	ResetAt   string `json:"resetAt,omitempty"`
 }
 
 // readProbeResult decides pass or fail from the probe response.
@@ -255,10 +258,23 @@ func readProbeResult(rec *httptest.ResponseRecorder, kind string) testModelResul
 	parsed := parseProbeBody(body)
 
 	if status != http.StatusOK {
-		return testModelResult{
+		errText := probeErrorText(body, parsed)
+		res := testModelResult{
 			Status: status,
-			Error:  "HTTP " + strconv.Itoa(status) + probeDetail(probeErrorText(body, parsed)),
+			Error:  "HTTP " + strconv.Itoa(status) + probeDetail(errText),
 		}
+		if status == http.StatusBadGateway && strings.Contains(errText, "all in cooldown") {
+			res.Blocked = true
+			if idx := strings.Index(errText, "earliest reset "); idx != -1 {
+				resetPart := errText[idx+len("earliest reset "):]
+				if endIdx := strings.IndexAny(resetPart, ") \r\n"); endIdx != -1 {
+					res.ResetAt = resetPart[:endIdx]
+				} else {
+					res.ResetAt = strings.TrimRight(resetPart, ")")
+				}
+			}
+		}
+		return res
 	}
 	return verdictForKind(kind, parsed, status)
 }
