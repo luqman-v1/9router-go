@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### 🐛 Modal policy key: allowlist tidak tampil dan pattern baru tidak tersimpan (Closes #216)
+
+- **Latar belakang**: report #216 — API balas `200 ok`, tapi `model access`
+  di modal policy tidak menyimpan dan tidak menampilkan kembali nilai yang
+  disimpan, dan tombol `load` juga tidak memuat apa pun.
+- **Backend-nya benar, jadi tidak ada perubahan Go.** Direproduksi lewat
+  `app.ProvideRouter` (router produksi, DB SQLite sungguhan): `PUT
+  /api/keys/{id}/models` menulis baris ke `api_key_model_access`, dan `GET
+  /api/keys/{id}/models` membacanya kembali. `resale metadata`, rate limit,
+  dan expiry sudah benar sejak awal — diverifikasi lewat UI, tidak diubah.
+- **Akar masalahnya di `ApiKeyPolicyModal.svelte`, di dua tempat.**
+  1. Allowlist tidak pernah dimuat saat modal dibuka. Listanya dimulai kosong
+     dan baru terisi setelah tombol `Load` ditekan, sehingga untuk key yang
+     sebenarnya dibatasi modal tetap menulis *"every model is allowed"*.
+  2. Tombol **Save Policy** hanya menulis kolom policy; allowlist disimpan lewat
+     endpoint terpisah yang tidak pernah dipanggil dari alur utama. Pattern
+     yang diketik lalu di-`Save` akan diterima `200` lalu hilang.
+  Kedua bug itu saling mengunci: draft kosong dari (1) menimpa daftar yang
+  tersimpan begitu operator menyimpan policy lain.
+- **Fiks**: allowlist diambil saat modal dibuka, dan **Save Policy** sekarang
+  menulis allowlist juga — satu aksi menyimpan satu policy utuh. Penulisan
+  allowlist dilewati hanya selagi fetch masih berjalan, ketika `models` belum
+  berisi apa pun dan akan menghapus daftar yang ada (race yang destruktif).
+  Tombol `Load` jadi `Reload`, dan `Save allowlist only` dihapus karena sudah
+  tercakup, dan sisa kode mati dibersihkan sekalian.
+- **Regresi dijaga** di `internal/integration/keys_policy_test.go`:
+  `TestKeyPolicyRoundTrip`, `TestKeyModelAllowlistRoundTrip`, dan
+  `TestKeyPolicySavePreservesAllowlist` — semuanya membaca ulang lewat router
+  produksi setelah `GET` baru, bukan dari respons write yang selalu sukses.
+  Skor `svelte-check` turun 84 → 83 (`web/scripts/svelte-check-baseline.json`).
+
 ### 🔀 Seluruh `encoding/json` v1 pindah ke `encoding/json/v2`
 
 - **Latar belakang**: repo sudah migrasiMayor ke `encoding/json/v2`, tapi 50

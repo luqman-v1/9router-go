@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, type APIKey, type APIKeyPolicy } from '../../api/client'
-  import { Check, Loader2, Save, X } from 'lucide-svelte'
+  import { Loader2, Save, X } from 'lucide-svelte'
 
   interface Props {
     apiKey: APIKey
@@ -21,13 +21,15 @@
   // instead of asking the operator to type a timezone.
   let expiresLocal = $state(toLocalInput(apiKey.expiresAt))
   let metadata = $state(apiKey.metadata ?? '')
-
   let models = $state<string[]>([])
   let modelDraft = $state('')
   let isLoadingModels = $state(false)
   let isSaving = $state(false)
-  let isSavingModels = $state(false)
   let error = $state<string | null>(null)
+  // Whether the stored allowlist has been fetched. A key's allowlist is part of
+  // the policy this modal edits, so it has to be present on open rather than
+  // behind a button press.
+  let hasLoadedModels = $state(false)
 
   function toLocalInput(rfc3339?: string): string {
     if (!rfc3339) return ''
@@ -56,9 +58,22 @@
     } catch (err) {
       error = `Failed to load model allowlist: ${err instanceof Error ? err.message : String(err)}`
     } finally {
+      // Marked even on failure: the auto-load effect must not retry in a loop,
+      // and a failed fetch leaves the empty list plus a visible error, which the
+      // operator can still recover from with the Load button.
+      hasLoadedModels = true
       isLoadingModels = false
     }
   }
+
+  // An existing allowlist is part of the policy this modal edits, exactly like
+  // the rate limits, so it has to be fetched on open. The list used to start
+  // empty and only filled after "Load" was pressed, so the modal claimed "every
+  // model is allowed" for a key that was in fact restricted — and the empty
+  // draft that resulted then overwrote the stored list on the next save.
+  $effect(() => {
+    if (!hasLoadedModels) loadModels()
+  })
 
   async function save(e: SubmitEvent) {
     e.preventDefault()
@@ -87,6 +102,16 @@
         metadata: metadataValue
       }
       await api.updateApiKeyPolicy(apiKey.id, policy)
+      // The allowlist is part of the same policy the operator pressed Save for.
+      // Leaving it out meant a pattern added in this dialog was accepted with a
+      // 200 and then never stored, and — because the list started empty — the
+      // very next save also wiped whatever was already configured.
+      //
+      // Skipped only while the fetch is still in flight, where `models` holds
+      // nothing yet and would clear a real allowlist.
+      if (hasLoadedModels && !isLoadingModels) {
+        await api.setApiKeyModels(apiKey.id, models)
+      }
       onSaved()
       onClose()
     } catch (err) {
@@ -101,19 +126,6 @@
     if (!value || models.includes(value)) return
     models = [...models, value]
     modelDraft = ''
-  }
-
-  async function saveModels() {
-    error = null
-    try {
-      isSavingModels = true
-      await api.setApiKeyModels(apiKey.id, models)
-      onSaved()
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err)
-    } finally {
-      isSavingModels = false
-    }
   }
 
   // Escape closes the dialog, matching every other modal in this dashboard.
@@ -250,7 +262,7 @@
             {#if isLoadingModels}
               <Loader2 class="w-3.5 h-3.5 animate-spin inline" />
             {:else}
-              Load
+              Reload
             {/if}
           </button>
         </div>
@@ -291,21 +303,11 @@
             {/each}
           </div>
         {:else}
-          <p class="text-text-subtle font-code text-[11px]">No allowlist loaded — every model is allowed.</p>
+          <p class="text-text-subtle font-code text-[11px]">
+            {#if isLoadingModels}Loading allowlist…{:else}No allowlist — every model is allowed.{/if}
+          </p>
         {/if}
 
-        <button
-          type="button"
-          onclick={saveModels}
-          disabled={isSavingModels}
-          class="px-3 py-2 rounded-lg border border-brand-500/40 text-[11px] text-brand-500 hover:bg-brand-500/10 transition cursor-pointer disabled:opacity-50"
-        >
-          {#if isSavingModels}
-            <Loader2 class="w-3.5 h-3.5 animate-spin inline" /> Saving…
-          {:else}
-            Save allowlist only
-          {/if}
-        </button>
       </section>
 
       {#if error}
