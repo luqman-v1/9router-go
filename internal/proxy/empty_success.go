@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 // A 200 response is not proof of an answer. Upstreams return 200 with an
@@ -72,7 +74,7 @@ func EmptyUpstreamError(body []byte) error {
 	}
 
 	var probe completionProbe
-	if err := json.Unmarshal(trimmed, &probe); err != nil {
+	if err := json.Unmarshal(trimmed, &probe, handlerutil.UpstreamBody); err != nil {
 		return UpstreamFailure(http.StatusBadGateway, "upstream returned an unparseable body with status 200")
 	}
 	if msg := errorEnvelopeMessage(probe.Error); msg != "" {
@@ -126,7 +128,7 @@ func missingCompletion(p completionProbe) string {
 	switch {
 	case p.Choices != nil:
 		var choices []choiceProbe
-		if err := json.Unmarshal(p.Choices, &choices); err != nil {
+		if err := json.Unmarshal(p.Choices, &choices, handlerutil.UpstreamBody); err != nil {
 			return "" // a shape this probe does not model: relay, do not guess
 		}
 		if len(choices) == 0 {
@@ -146,7 +148,7 @@ func missingCompletion(p completionProbe) string {
 		return "content is empty"
 	case p.Output != nil:
 		var output []jsontext.Value
-		if err := json.Unmarshal(p.Output, &output); err != nil {
+		if err := json.Unmarshal(p.Output, &output, handlerutil.UpstreamBody); err != nil {
 			return ""
 		}
 		if len(output) == 0 && !terminalOutputStatus(p.Status) {
@@ -177,19 +179,19 @@ func carriesValue(raw jsontext.Value) bool {
 	switch trimmed[0] {
 	case '"':
 		var s string
-		if err := json.Unmarshal(trimmed, &s); err != nil {
+		if err := json.Unmarshal(trimmed, &s, handlerutil.UpstreamBody); err != nil {
 			return false
 		}
 		return strings.TrimSpace(s) != ""
 	case '[':
 		var items []jsontext.Value
-		if err := json.Unmarshal(trimmed, &items); err != nil {
+		if err := json.Unmarshal(trimmed, &items, handlerutil.UpstreamBody); err != nil {
 			return false
 		}
 		return len(items) > 0
 	case '{':
 		var fields map[string]jsontext.Value
-		if err := json.Unmarshal(trimmed, &fields); err != nil {
+		if err := json.Unmarshal(trimmed, &fields, handlerutil.UpstreamBody); err != nil {
 			return false
 		}
 		return len(fields) > 0
@@ -209,7 +211,7 @@ func errorEnvelopeMessage(raw jsontext.Value) string {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	}
-	if err := json.Unmarshal(trimmed, &envelope); err == nil {
+	if err := json.Unmarshal(trimmed, &envelope, handlerutil.UpstreamBody); err == nil {
 		switch {
 		case envelope.Message != "":
 			return envelope.Message
@@ -219,7 +221,7 @@ func errorEnvelopeMessage(raw jsontext.Value) string {
 		return "error object"
 	}
 	var message string
-	if err := json.Unmarshal(trimmed, &message); err == nil && message != "" {
+	if err := json.Unmarshal(trimmed, &message, handlerutil.UpstreamBody); err == nil && message != "" {
 		return message
 	}
 	return "error object"

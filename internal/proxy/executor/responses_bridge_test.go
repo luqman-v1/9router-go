@@ -11,6 +11,53 @@ import (
 	"9router/proxy/internal/translator"
 )
 
+// encoding/json/v2 rejects a repeated member name and invalid UTF-8, so a
+// chunk carrying one is skipped by parseChatChunk and its content delta never
+// reaches the client. v1 accepted both; the option set restores that.
+func TestParseChatChunk_LenientAboutProviderChunks(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "repeated member name",
+			payload: `{"id":"c1","id":"c2","choices":[{"index":0,"delta":{"content":"hi"}}]}`,
+			want:    "hi",
+		},
+		{
+			name:    "invalid utf-8 in the delta",
+			payload: "{\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"caf\xc3\xa9 \xff\"}}]}",
+			want:    "caf\u00e9 \ufffd",
+		},
+		{
+			name:    "unpaired surrogate escape",
+			payload: `{"id":"c1","choices":[{"index":0,"delta":{"content":"ok \ud83d"}}]}`,
+			want:    "ok \ufffd",
+		},
+		{
+			name:    "member key spelled with different casing",
+			payload: `{"Id":"c1","Choices":[{"Index":0,"Delta":{"Content":"hi"}}]}`,
+			want:    "hi",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chunk := parseChatChunk([]byte(tt.payload))
+			if chunk == nil {
+				t.Fatalf("parseChatChunk(%s) = nil, want a chunk: the provider sent an answer", tt.payload)
+			}
+			if len(chunk.Choices) != 1 {
+				t.Fatalf("parseChatChunk(%s) produced %d choices, want 1", tt.payload, len(chunk.Choices))
+			}
+			if got := chunk.Choices[0].Delta.Content; got != tt.want {
+				t.Errorf("delta content = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 const chatStreamWithAnswer = "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hel\"}}]}\n\n" +
 	"data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"}}]}\n\n" +
 	"data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n\n" +

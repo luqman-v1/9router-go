@@ -137,6 +137,49 @@ func TestDetectInbandSSEError(t *testing.T) {
 	}
 }
 
+// A provider that injects an error into a stream must have that error seen.
+// encoding/json/v2 rejects a repeated member name and invalid UTF-8 where v1
+// accepted them, so a frame carrying both an error key and such a payload would
+// otherwise parse as nothing and the turn would end as a truncated success.
+func TestDetectInbandSSEError_LenientAboutProviderFrames(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+	}{
+		{
+			name: "repeated member name beside the error",
+			line: `data: {"error":{"message":"dead"},"error":{"message":"dead"}}`,
+		},
+		{
+			name: "invalid utf-8 beside the error",
+			line: "data: {\"content\":\"x\xff\",\"error\":{\"message\":\"dead\",\"code\":503}}",
+		},
+		{
+			name: "unpaired surrogate escape beside the error",
+			line: `data: {"error":{"message":"dead"},"delta":"\ud83d"}`,
+		},
+		{
+			name: "error key spelled with different casing",
+			line: `data: {"error":{"Message":"dead","Code":503}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, msg, found := DetectInbandSSEError([]byte(tt.line))
+			if !found {
+				t.Fatal("DetectInbandSSEError() found = false, want true: the frame carries an error")
+			}
+			if code < 400 || code >= 600 {
+				t.Errorf("code = %d, want a usable error status", code)
+			}
+			if !strings.Contains(msg, "dead") {
+				t.Errorf("message = %q, want it to carry the provider text", msg)
+			}
+		})
+	}
+}
+
 func TestIsEventErrorLine(t *testing.T) {
 	tests := []struct {
 		name string

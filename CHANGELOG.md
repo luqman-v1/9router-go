@@ -17,6 +17,21 @@
   `json.Valid` → `jsontext.Value.IsValid()`,
   `json.NewEncoder(w).Encode(v)` → `json.MarshalWrite(w, v)`,
   `json.NewDecoder(r).Decode(&v)` → `json.UnmarshalRead(r, &v)`.
+- **Body dari provider dan dari client dibaca lenient, bukan strict.** v2
+  menolak nama member yang berulang di satu objek, menolak UTF-8 rusak di
+  string (v1 diam-diam mengganti U+FFFD), dan mencocokkan nama member secara
+  case-sensitive. Untuk JSON yang dihasilkan gateway sendiri itu benar, tapi body
+  dari provider atau client bukan JSON milik gateway — dan `internal/handlerutil`
+  kini menyediakan satu set opsi (`UpstreamBody` / `ClientBody`) yang melonggarkan
+  ketiganya. Tanpa itu, `proxy.EmptyUpstreamError` akan mengubah jawaban yang sah
+  menjadi 502 (body dengan key berulang, byte non-UTF-8, atau kunci `Content`),
+  `parseInbandError` tidak akan melihat error yang diinjeksi provider,
+  `parseChatChunk` akan membuang chunk yang membawa content delta, dan
+  `museModel` akan menolak body `{"Model": ...}`.
+  `TestEmptyUpstreamError_LenientAboutProviderBodies`,
+  `TestDetectInbandSSEError_LenientAboutProviderFrames`,
+  `TestParseChatChunk_LenientAboutProviderChunks` dan
+  `TestMuseModel_LenientAboutClientBodies` menjaga tiap arah.
 - **`internal/fastjson` sekarang tipis di atas v2.** Shim ini sebelumnya
   membungkus `bytedance/sonic`; kedua backend (sonic dan std) dihapus, dan
   `github.com/bytedance/sonic` beserta 6 dependensi transitifnya dicabut dari
