@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount, onDestroy, type Snippet } from 'svelte'
   import {
     api,
     type CacheStatsResponse,
@@ -7,8 +7,29 @@
   } from '../api/client'
   import { notifications } from '../lib/notifications'
   import { copyToClipboard } from '../lib/clipboard'
+  import ActionsMenu from './analytics/ActionsMenu.svelte'
+
+  import MenuItem from './analytics/MenuItem.svelte'
+  import ViewSelect from './analytics/ViewSelect.svelte'
+  import type { ViewOption } from './analytics/types'
 
   type CacheView = 'prompt' | 'semantic'
+
+  interface Props {
+    /**
+     * The Usage section picker, rendered in the left of the header so this
+     * section's own controls sit beside it instead of in a row above
+     * (issue #209).
+     */
+    headerLeft?: Snippet
+  }
+
+  let { headerLeft }: Props = $props()
+
+  const VIEW_OPTIONS: ViewOption[] = [
+    { value: 'prompt', label: 'Prompt Cache', icon: 'bolt' },
+    { value: 'semantic', label: 'Semantic Cache', icon: 'psychology' },
+  ]
 
   let activeView = $state<CacheView>('prompt')
   let loading = $state(true)
@@ -109,6 +130,20 @@
     loadEntries()
   }
 
+  // Picking Semantic Cache has to load its entry list, which the Prompt view
+  // never reads; the reverse needs nothing extra.
+  function selectView(next: CacheView) {
+    activeView = next
+    if (next === 'semantic') loadEntries()
+  }
+
+  // One refresh for both halves of the section: the entries list is what the
+  // Semantic view shows, the stats what everything else on this section reads.
+  function refreshAll() {
+    loadStats()
+    if (activeView === 'semantic') loadEntries()
+  }
+
   onMount(() => {
     loadStats()
     loadEntries()
@@ -152,10 +187,7 @@
   $effect(() => {
     if (autoRefresh) {
       if (!refreshTimer) {
-        refreshTimer = setInterval(() => {
-          loadStats()
-          if (activeView === 'semantic') loadEntries()
-        }, 15000)
+        refreshTimer = setInterval(refreshAll, 15000)
       }
     } else {
       if (refreshTimer) {
@@ -226,101 +258,50 @@
 </script>
 
 <div class="space-y-6">
-  <!-- Header & View Switcher -->
-  <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-    <div>
-      <h2 class="text-2xl font-bold tracking-tight text-text-main flex items-center gap-2">
-        <span class="material-symbols-outlined text-[26px] text-brand-500">cached</span>
-        Cache Analytics
-      </h2>
-      <p class="text-sm text-text-muted mt-1">
-        Prompt caching and semantic deduplication tracking across all AI providers.
-      </p>
-    </div>
+  <!-- Section picker and sub-view picker on the left, the action menu on the
+       right, and what the section reports under them. Auto-refresh, manual
+       refresh, and both exports were four more controls in this row, which is
+       what made it wrap on a narrow window; they moved into one menu
+       (issue #209). -->
+  <div class="space-y-2">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="flex min-w-0 flex-wrap items-center gap-2">
+        {@render headerLeft?.()}
 
-    <div class="flex flex-wrap items-center gap-2">
-      <!-- Tab Buttons -->
-      <div class="flex items-center rounded-xl bg-surface-2 p-1 border border-border">
-        <button
-          type="button"
-          onclick={() => (activeView = 'prompt')}
-          class={`flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
-            activeView === 'prompt'
-              ? 'bg-primary text-white shadow-sm'
-              : 'text-text-muted hover:text-text-main'
-          }`}
-        >
-          <span class="material-symbols-outlined text-[16px]">bolt</span>
-          Prompt Cache
-        </button>
-        <button
-          type="button"
-          onclick={() => {
-            activeView = 'semantic'
-            loadEntries()
-          }}
-          class={`flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
-            activeView === 'semantic'
-              ? 'bg-primary text-white shadow-sm'
-              : 'text-text-muted hover:text-text-main'
-          }`}
-        >
-          <span class="material-symbols-outlined text-[16px]">psychology</span>
-          Semantic Cache
-        </button>
+        <ViewSelect
+          value={activeView}
+          options={VIEW_OPTIONS}
+          ariaLabel="Cache view"
+          onChange={(next) => selectView(next as CacheView)}
+        />
       </div>
 
-      <!-- Auto Refresh Toggle -->
-      <button
-        type="button"
-        onclick={() => (autoRefresh = !autoRefresh)}
-        class={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors ${
-          autoRefresh
-            ? 'border-brand-500/30 bg-brand-500/10 text-brand-500'
-            : 'border-border bg-surface text-text-muted hover:text-text-main'
-        }`}
-        title="Auto-refresh every 15s"
-      >
-        <span class="material-symbols-outlined text-[16px] {autoRefresh ? 'animate-spin' : ''}">sync</span>
-        Auto
-      </button>
-
-      <!-- Manual Refresh -->
-      <button
-        type="button"
-        onclick={() => {
-          loadStats()
-          if (activeView === 'semantic') loadEntries()
-        }}
-        disabled={loading}
-        class="flex items-center gap-1.5 rounded-xl border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text-main hover:bg-surface-2 transition-colors disabled:opacity-50"
-      >
-        <span class="material-symbols-outlined text-[16px] {loading ? 'animate-spin' : ''}">refresh</span>
-        Refresh
-      </button>
-      <!-- Export Buttons -->
-      <div class="flex items-center rounded-xl bg-surface-2 p-1 border border-border">
-        <button
-          type="button"
-          onclick={exportCSV}
-          class="rounded-lg px-2.5 py-1 text-xs font-medium text-text-muted hover:text-text-main transition-colors flex items-center gap-1"
-          title="Export CSV"
-        >
-          <span class="material-symbols-outlined text-[14px]">download</span>
-          CSV
-        </button>
-        <button
-          type="button"
-          onclick={exportJSON}
-          class="rounded-lg px-2.5 py-1 text-xs font-medium text-text-muted hover:text-text-main transition-colors flex items-center gap-1"
-          title="Export JSON"
-        >
-          <span class="material-symbols-outlined text-[14px]">data_object</span>
-          JSON
-        </button>
+      <div class="flex items-center gap-2">
+        <ActionsMenu label="Cache analytics actions">
+          <MenuItem
+            label="Auto-refresh"
+            icon="sync"
+            checkbox
+            note="15s"
+            pressed={autoRefresh}
+            onSelect={() => (autoRefresh = !autoRefresh)}
+          />
+          <MenuItem
+            label="Refresh now"
+            icon="refresh"
+            disabled={loading}
+            onSelect={refreshAll}
+          />
+          <div class="my-1 border-t border-border-subtle" role="separator"></div>
+          <MenuItem label="Export CSV" icon="download" onSelect={exportCSV} />
+          <MenuItem label="Export JSON" icon="data_object" onSelect={exportJSON} />
+        </ActionsMenu>
       </div>
-
     </div>
+
+    <p class="text-sm text-text-muted">
+      Prompt caching and semantic deduplication tracking across all AI providers.
+    </p>
   </div>
 
   {#if activeView === 'prompt'}

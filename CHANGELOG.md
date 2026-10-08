@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### 🎛️ Header Cache & Compression Analytics: Kontrol Pindah ke Dropdown Menu
+
+Layout header kedua section itu sekarang mengikuti halaman **Usage**: section
+picker di kiri, kontrol milik section di sebelahnya, tombol **Menu** di kanan,
+dan deskripsi section di bawah baris kontrol (#209). Sebelumnya tiap section
+menumpuk lima sampai enam kontrol dalam satu baris — pemilih section, strip
+sub-view, tombol Auto, tombol Refresh, dan sepasang tombol export CSV/JSON —
+dan baris itu wrap di jendela sempit.
+
+- **Tombol Menu** (`web/src/components/analytics/ActionsMenu.svelte` dan
+  `MenuItem.svelte`): Auto-refresh (dengan keterangan `15s` dan tanda centang
+  saat aktif), Refresh now, Export CSV, dan Export JSON dipindahkan ke satu
+  dropdown `role="menu"`. Pemicu memakai ikon `menu` dengan chevron
+  `expand_more`, bukan `expanded_more` seperti pada picker section, dan tetap
+  berlabel "Menu" — ikon tunggal tidak memberi apa pun untuk diumumkan screen
+  reader, dan labelnya disembunyikan hanya di lebar terkecil. Menu menutup saat
+  item dipilih, saat `Escape`, saat `Tab`, dan saat klik di luar.
+- **Section picker turun ke section-nya** (`web/src/components/analytics/SectionMenu.svelte`,
+  menggantikan `SectionNav.svelte`): `AnalyticsView` pernah merender picker di
+  satu baris tetap di atas semua section, sehingga section tidak bisa menaruh
+  kontrolnya di sebelah picker itu. Sekarang picker didefinisikan sekali sebagai
+  snippet di `AnalyticsView` dan diteruskan ke Cache dan Compression Analytics
+  lewat prop `headerLeft`; keduanya menaruhnya di header mereka sendiri. Overview
+  dan Details tetap memakai baris `AnalyticsView`, jadi picker tidak pernah
+  tampil dua kali di satu layar.
+- **Sub-view jadi dropdown** (`web/src/components/analytics/ViewSelect.svelte`):
+  strip pill Prompt Cache / Semantic Cache adalah kontrol lebar-tetap terakhir
+  di header Cache Analytics, sekarang menjadi dropdown yang menampilkan ikon dan
+  label view aktif pada tombol tertutup. Memilih Semantic Cache tetap memuat
+  daftar entry-nya.
+- **Judul section dihapus dari panel**: picker di header sudah menyebut nama
+  section, jadi `h2` "Cache Analytics" / "Compression Analytics" di dalam panel
+  hanya mengulanginya; yang tersisa deskripsi apa yang dilaporkan angkanya.
+- Tidak ada perubahan API: `GET /api/cache`, `GET /api/analytics/compression`,
+  dan `GET /api/cache/entries` tetap sama, termasuk `trendHours` dan `since`.
+
 ### 📊 Cache & Compression Analytics Moved Into the Usage Page — Section Dropdown
 
 Cache Analytics dan Compression Analytics bukan lagi dua entri sidebar

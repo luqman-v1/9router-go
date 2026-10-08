@@ -19,11 +19,12 @@
   import CacheAnalyticsView from '../CacheAnalyticsView.svelte'
   import CompressionAnalyticsView from '../CompressionAnalyticsView.svelte'
   import PeriodSelect from './PeriodSelect.svelte'
-  import SectionNav from './SectionNav.svelte'
+  import SectionMenu from './SectionMenu.svelte'
   import SummaryKpiCards from './SummaryKpiCards.svelte'
   import UsageBreakdownTable from './UsageBreakdownTable.svelte'
   import RequestDetailsTab from './RequestDetailsTab.svelte'
   import ProviderTopologyCard from './ProviderTopologyCard.svelte'
+
   interface Props {
     connections?: ProviderConnection[]
     providerNodes?: ProviderNode[]
@@ -356,17 +357,27 @@
   })
 </script>
 
-<div class="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
-  <!-- Section picker. The Overview adds its window selector here; the other
-       three sections carry their own controls in their own header, so the row
-       would otherwise show two pickers stacked next to the section name. -->
-  <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-    <SectionNav {section} onSectionChange={(next) => (section = next)} />
+<!-- The section picker, defined once here and handed to the sections that put
+     it in their own header row beside their own controls (issue #209). -->
+{#snippet sectionMenu()}
+  <SectionMenu {section} onSectionChange={(next) => (section = next)} />
+{/snippet}
 
-    {#if section === 'overview'}
-      <PeriodSelect value={period} busy={isFetching} onChange={(next) => (period = next)} />
-    {/if}
-  </div>
+
+<div class="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
+  <!-- The section picker and the window selector the Overview needs. Cache
+       Analytics and Compression Analytics each put the picker in their own
+       header, beside the controls they own (issue #209); Details reads its
+       window from the shared Usage page. -->
+  {#if section === 'overview' || section === 'details'}
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {@render sectionMenu()}
+
+      {#if section === 'overview'}
+        <PeriodSelect value={period} busy={isFetching} onChange={(next) => (period = next)} />
+      {/if}
+    </div>
+  {/if}
 
   <!-- A failed read leaves the previous period's numbers below, so say what
        happened and mark them stale rather than let them read as current. The
@@ -463,9 +474,17 @@
     <!-- Breakdown Table -->
     <UsageBreakdownTable {stats} />
   {:else if section === 'cache'}
-    <CacheAnalyticsView />
+    <CacheAnalyticsView>
+      {#snippet headerLeft()}
+        {@render sectionMenu?.()}
+      {/snippet}
+    </CacheAnalyticsView>
   {:else if section === 'compression'}
-    <CompressionAnalyticsView />
+    <CompressionAnalyticsView>
+      {#snippet headerLeft()}
+        {@render sectionMenu?.()}
+      {/snippet}
+    </CompressionAnalyticsView>
   {:else}
     <RequestDetailsTab
       {details}
