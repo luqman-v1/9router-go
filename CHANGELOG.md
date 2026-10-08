@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### 🐛 Lonjakan RAM idle ~100 MB+ setelah pruning `requestDetails`
+
+- **Gejala**: sejak `db.StartRetentionLoop` masuk (#187, ikut rilis di v1.9.11-exp.1),
+  working set proses melonjak dari ~28 MB ke ~100 MB+ dan tidak pernah kembali,
+  tepat 60 detik setelah boot — durasi `retentionInitialDelay`.
+- **Penyebab**: `cache_size(-64000)` adalah batas **per koneksi**, dan pool dibuka
+  4 koneksi, sehingga plafon page cache SQLite 256 MB. `requestDetails` menyimpan
+  ~20 KB payload per baris; saat retention prune menghapus 20k baris dalam chunk
+  5000, page cache terisi penuh. Halaman yang sudah dibebaskan diserahkan ke OS
+  secara lazy, jadi gateway yang sudah prune sekali menyimpan high-water mark itu
+  seumur proses. Bukan leak Go — `heapAlloc` tetap 0.2 MB sepanjang proses; ini
+  alokasi di layer C (`modernc.org/libc`). Fiks #137 yang menambah prune ini
+  justru memunculkan cacatRAM-nya.
+- **Perbaikan**: `internal/db/client.go` — page cache diturunkan ke 8 MB per
+  koneksi (32 MB total) lewat konstanta `sqliteCacheSizeKB`, dengan
+  `sqliteMaxOpenConns` sebagai konstanta dari mana budget dihitung.
+- **Biaya yang diukur**: fold window 24h di ledger 400k baris (poll dashboard tiap
+  5 detik) 113 ms cold / 35 ms warm pada `-64000`, menjadi 83 ms cold / 72 ms warm
+  pada `-8000` — cold justru lebih cepat karena cache 64 MB harus diisi dulu sebelum
+  hangat. Append tidak terpengaruh (6.1 ms vs 6.7 ms per transaksi 100 baris, di
+  dalam noise). Seek watermark `MAX(timestamp)` tetap 0.0 ms di keduanya karena itu
+  covering-index seek.
+- **Hasil**: binary yang sama, DB yang sama (40k baris × 20 KB), puncak working set
+  setelah prune turun dari **161.6 MB ke 63.4 MB** dan stabil.
+- **Test**: `TestSQLiteCacheSizeCeiling` mengunci plafon 32 MB dan gagal keras bila
+  nilai dikembalikan ke `-64000` (terverifikasi: test gagal dengan
+  "pooled page cache = 252 MB").
+
 ### 🐛 Tombol "Add Custom Provider" kembali terpecah di v1.9.11-exp.1
 
 - **Penyebab**: `736136c` — commit pertama PR #185 di branch `feat/keirouter-port`, dibuat 12 menit setelah `079de66` (#183) — menulis ulang `AddCompatibleNodeModal.svelte`, `ConnectionsView.svelte`, `ProvidersOverviewGrid.svelte`, dan `MediaKindView.svelte` ke kondisi sebelum #182/#183, sehingga membatalkan dialog tunggal. Keempat file byte-identik dengan `d729b43` (sebelum penggabungan), terbukti lewat `git rev-parse`. PR #185 sendiri tidak menyentuh fitur ini: revert-nya ikut ter-carry oleh squash merge `9b553e7`.
