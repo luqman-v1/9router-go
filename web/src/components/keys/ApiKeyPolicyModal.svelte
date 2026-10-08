@@ -55,13 +55,16 @@
     try {
       const res = await api.getApiKeyModels(apiKey.id)
       models = res.models ?? []
-    } catch (err) {
-      error = `Failed to load model allowlist: ${err instanceof Error ? err.message : String(err)}`
-    } finally {
-      // Marked even on failure: the auto-load effect must not retry in a loop,
-      // and a failed fetch leaves the empty list plus a visible error, which the
-      // operator can still recover from with the Load button.
+      // Only a fetch that actually returned may unblock the save. Marking it
+      // on failure too would leave `models` empty while the save believed the
+      // list was authoritative — and "Save Policy" would then write that empty
+      // list, deleting a real allowlist. A failed load must block the write and
+      // say so, not silently replace a restriction with "allow everything".
       hasLoadedModels = true
+      error = null
+    } catch (err) {
+      error = `Could not load the model allowlist: ${err instanceof Error ? err.message : String(err)}. Saving the policy will not change the allowlist — press Reload first.`
+    } finally {
       isLoadingModels = false
     }
   }
@@ -92,6 +95,19 @@
       }
     }
 
+    // The allowlist may only be written once it has actually been read back.
+    // That covers both an in-flight fetch (nothing loaded yet) and a failed one
+    // (the list is empty because we never got it, not because the key is
+    // unrestricted). In either case writing `models` would replace a real
+    // restriction with an empty list, so the save is refused and the operator is
+    // told to retry rather than being shown a success that lost data.
+    if (!hasLoadedModels) {
+      error = isLoadingModels
+        ? 'Still loading the model allowlist — try Save again in a moment.'
+        : 'The model allowlist could not be read, so saving now could erase it. Press Reload, then Save.'
+      return
+    }
+
     try {
       isSaving = true
       const policy: APIKeyPolicy = {
@@ -106,12 +122,7 @@
       // Leaving it out meant a pattern added in this dialog was accepted with a
       // 200 and then never stored, and — because the list started empty — the
       // very next save also wiped whatever was already configured.
-      //
-      // Skipped only while the fetch is still in flight, where `models` holds
-      // nothing yet and would clear a real allowlist.
-      if (hasLoadedModels && !isLoadingModels) {
-        await api.setApiKeyModels(apiKey.id, models)
-      }
+      await api.setApiKeyModels(apiKey.id, models)
       onSaved()
       onClose()
     } catch (err) {

@@ -22,11 +22,20 @@
   Kedua bug itu saling mengunci: draft kosong dari (1) menimpa daftar yang
   tersimpan begitu operator menyimpan policy lain.
 - **Fiks**: allowlist diambil saat modal dibuka, dan **Save Policy** sekarang
-  menulis allowlist juga — satu aksi menyimpan satu policy utuh. Penulisan
-  allowlist dilewati hanya selagi fetch masih berjalan, ketika `models` belum
-  berisi apa pun dan akan menghapus daftar yang ada (race yang destruktif).
-  Tombol `Load` jadi `Reload`, dan `Save allowlist only` dihapus karena sudah
-  tercakup, dan sisa kode mati dibersihkan sekalian.
+  menulis allowlist juga — satu aksi menyimpan satu policy utuh. Tombol `Load`
+  jadi `Reload`, dan `Save allowlist only` dihapus karena sudah tercakup;
+  `saveModels()` dan `isSavingModels` ikut dibersihkan karena tidak ada
+  pemanggilnya lagi.
+- **Penulisan allowlist dikunci sampai daftarnya benar-benar dibaca.** Kalau
+  hanya dilewati saat request berjalan, ada dua keadaan berbeda dengan hasil
+  identik — `models` kosong — dan keduanya berarti "hapus allowlist": request
+  yang masih berjalan, dan request yang **gagal**. Versi pertama hanya menutup
+  yang pertama; pada yang kedua `hasLoadedModels` sempat bernilai true di
+  `finally`, sehingga `Save Policy` menulis daftar kosong di atas daftar yang
+  tersimpan — persis kelas kehilangan data yang sedang diperbaiki di sini.
+  Sekarang penulisan hanya boleh jalan setelah allowlist benar-benar termuat;
+  selain itu simpan ditolak dengan pesan yang menyebut alasannya, dan modal
+  tetap terbuka supaya operator tidak mengira policy utuh sudah tersimpan.
 - **Regresi dijaga** di `internal/integration/keys_policy_test.go`:
   `TestKeyPolicyRoundTrip`, `TestKeyModelAllowlistRoundTrip`, dan
   `TestKeyPolicySavePreservesAllowlist` — semuanya membaca ulang lewat router
