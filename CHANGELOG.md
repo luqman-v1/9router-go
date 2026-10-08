@@ -42,6 +42,28 @@ master key (`ROUTER_MASTER_KEY`) dan tidak ada yang mengaktifkannya secara defau
 sedangkan issue meminta parity penuh dengan upstream `decolua/9router`, yang memang
 menyimpan plaintext.
 
+#### Kesocokan dengan sumber KeiRouter
+
+Acuan visual diambil dari `D:/coding/project/keirouter` (`mydisha/keirouter`, commit
+`3d8b702`, MIT). Yang cocok persis: `StatusPill` (dot + label, bukan badge), urutan
+`Key | Token | ... | Actions`, baris aksi empat kontrol, dan ritme sel multi-baris
+(baris konten dulu, `Created …` muted di bawahnya — `Keys.tsx:193-198`).
+
+Sengaja menyimpang, dan alasannya:
+
+- **Bentuk tabel.** KeiRouter memakai CSS-grid `<article>` tanpa header row sama sekali
+  (`Keys.tsx:178-182`) — tidak ada label kolom yang bisa disalin. Issue #199 minta tabel
+  dengan kolom Status dan Created-date dibuang lalu digabung, jadi header di sini
+  ditetapkan sendiri.
+- **Show/hide & copy.** KeiRouter **tidak punya** tombol eye di UI key — `grep -c Eye
+  frontend/src/pages/Keys.tsx` = 0, dan `adminListKeys` (`admin.go:359-384`) hanya
+  mengembalikan `display` tersamar. Pola ini orisinal untuk issue, bukan tiruan.
+- **Storage.** `crypto/apikey.go:37-39` tegas: *"Plaintext is shown to the user exactly
+  once and never persisted"*. Jadi bagian "matikan hashed stored key" adalah divergensi
+  dari KeiRouter, bukan tiruan — lihat catatan risiko di atas.
+- **Gabungan halaman.** KeiRouter justru memisahkannya: `Endpoints.tsx:132-138` hanya
+  menaut ke `/keys` lewat tombol "Manage keys". Merge di sini mengikuti permintaan issue.
+
 ### 🐛 Tombol Refresh per-baris membungkus baris aksi ke dua baris di mobile
 
 Susulan review PR #196 (`feat(connections): per-row refresh button to test a single

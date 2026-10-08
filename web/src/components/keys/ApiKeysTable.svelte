@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Check, Copy, Eye, EyeOff, Key, Plus, Power, RefreshCw, Shield, Trash2 } from 'lucide-svelte'
+  import { Check, Copy, Eye, EyeOff, Key, Plus, RefreshCw, Shield, ToggleLeft, ToggleRight, Trash2 } from 'lucide-svelte'
   import { api, type APIKey } from '../../api/client'
   import { copyToClipboard } from '../../lib/clipboard'
   import Card from '../../lib/ui/Card.svelte'
@@ -178,7 +178,13 @@
             {@const badges = policyBadges(k)}
             <tr class="align-top transition hover:bg-surface-2/40 {active ? '' : 'opacity-70'}">
               <td class="py-3 px-3">
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 min-w-0">
+                  <p class="text-sm font-semibold text-text-main truncate max-w-[150px]">
+                    {k.name || 'Client Token'}
+                  </p>
+                  <!-- KeiRouter's StatusPill: a bare dot plus a label, not a
+                       filled badge. A paused key reads at a glance without
+                       spending a column on it. -->
                   <span
                     class="inline-flex items-center gap-1.5 text-[11px] font-medium {active
                       ? 'text-success'
@@ -188,9 +194,6 @@
                     {active ? 'Active' : 'Paused'}
                   </span>
                 </div>
-                <p class="mt-0.5 text-sm font-semibold text-text-main truncate max-w-[180px]">
-                  {k.name || 'Client Token'}
-                </p>
               </td>
 
               <td class="py-3 px-3">
@@ -233,6 +236,11 @@
                 </div>
               </td>
 
+              <!-- Issue #199 collapses status, policy and created date into one
+                   multi-line cell. KeiRouter keeps plan/access as a single
+                   middot-separated line (Keys.tsx:206-212); the stacked layout
+                   here is the requested divergence, with the same rhythm:
+                   content line first, muted `Created …` beneath. -->
               <td class="py-3 px-3">
                 <div class="flex flex-wrap items-center gap-1">
                   {#if badges.length === 0}
@@ -249,7 +257,7 @@
                     {/each}
                   {/if}
                 </div>
-                <p class="mt-1 text-[11px] text-text-subtle">
+                <p class="mt-0.5 text-[11px] text-text-subtle">
                   Created {k.createdAt ? new Date(k.createdAt).toLocaleDateString() : '—'}
                   {#if (k.usedCount ?? 0) > 0}
                     · {(k.usedCount ?? 0).toLocaleString()} req
@@ -280,12 +288,17 @@
                     type="button"
                     onclick={() => handleToggle(k)}
                     disabled={busyId !== null}
+                    aria-label={active ? 'Pause key' : 'Resume key'}
                     class="p-1.5 rounded-lg border transition cursor-pointer disabled:opacity-50 {active
                       ? 'bg-success/10 border-success/20 text-success'
                       : 'bg-surface-2 border-border text-text-subtle hover:text-text-main'}"
                     title={active ? 'Pause key' : 'Resume key'}
                   >
-                    <Power class="w-3.5 h-3.5" />
+                    {#if active}
+                      <ToggleRight class="w-3.5 h-3.5" />
+                    {:else}
+                      <ToggleLeft class="w-3.5 h-3.5" />
+                    {/if}
                   </button>
                   <button
                     type="button"
