@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### 🖼️ `/providers/*.png` 404 dan peringatan autofocus di console
+
+- **`muse.png` 404**: `muse` ada di katalog (`web/src/lib/providers.ts`) tapi
+  repo ini tidak pernah meng-ship `web/public/providers/muse.png` saat provider
+  itu ditambahkan di #100 — dan `getIconPath` menebak URL dari katalog, jadi
+  setiap tile meminta aset yang memang tidak ada. Katalog punya **16 entri
+  tanpa artwork**; `muse`, `tinyfish`, `zai-search` dan `anthropic-version`
+  adalah yang terlihat di dashboard. Penyebabnya struktural: menambahkan
+  provider ke katalog adalah langkah terpisah dari meng-ship logonya, dan
+  tidak ada yang mengikat keduanya.
+
+- **Fiks**: satu komponen, `ProviderArtwork.svelte`, yang menangani fallback
+  untuk semua permukaan sekaligus. Berasal dari `ProviderIcon` yang sudah
+  menyediakannya, dibuat event-driven (state-nya di-key dari `src`), dan
+  menggantikan call site yang menulis handler `onerror` sendiri — media card,
+  media detail, media web view, usage breakdown, model picker, topology card —
+  sekarang memakainya. Fallback-nya adalah initials badge berwarna merek
+  provider, sama seperti yang sudah ada.
+
+  Yang penting: `onerror` milik `<img>` hanya terpicu untuk `src` yang sudah
+  terpasang saat elemen dirender. Call site sebelumnya semuanya memanggil
+  `getIconPath(...)` inline, jadi kalau `src` berubah setelah mount — baris
+  analytics yang lazy, combo yang diedit — galat tidak pernah terpicu dan aset
+  yang gagal hanya disembunyikan. Sekarang kunci gagalnya adalah `src` itu
+  sendiri, jadi berganti provider berarti mencoba ulang, bukan mewarisi
+  kegagalan provider sebelumnya.
+
+- **Autofocus**: `LoginView` memakai atribut `autofocus`, dan Chrome mencatat
+  "Autofocus processing was blocked because a document already has a focused
+  element." Atribut itu diproses per dokumen; ketika halaman `/dashboard`
+  bounce ke `/login` (tanpa sesi) view itu dimount di samping halaman yang
+  sudah tampil, dan body sudah memegang fokus, jadi atributnya ditolak.
+  Diganti fokus eksplisit setelah `hasPassword` membuka form — cara yang
+  sama tanpa meminta browser jadi arbiter.
+
+  Detail yang penting: `/api/auth/login` yang 401 di laporan itu **bukan**
+  bug. Itu respons yang benar untuk password yang salah, dan hanya muncul
+  setelah ada percobaan login. Yang terbukti dari sini: satu kali
+  `POST /api/auth/login` per submit, baik yang gagal maupun yang berhasil.
+
 ### 🐛 fix(web): do not flag active connections as error in provider stats when soft warning or unsupported model probe lastError is present (#207)
 
 ### 🔑 issue #199: halaman API Key menyatu ke Endpoint & Key, secret bisa di-reveal lagi

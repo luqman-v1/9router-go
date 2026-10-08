@@ -1,7 +1,7 @@
 <script lang="ts">
   import Badge from '../../lib/ui/Badge.svelte'
   import Card from '../../lib/ui/Card.svelte'
-  import { getIconPath } from '../connections/types'
+  import ProviderArtwork from '../providers/ProviderArtwork.svelte'
   import {
     fmt,
     fmtCost,
@@ -111,14 +111,10 @@
                 <td class="py-3 px-4 font-mono font-medium text-text-main text-xs">
                   <div class="flex items-center gap-2">
                     {#if row.provider}
-                      <img
-                        src={getIconPath(row.provider)}
+                      <ProviderArtwork
+                        id={row.provider}
                         alt={row.provider}
-                        class="w-4 h-4 object-contain rounded shrink-0 bg-surface-2 p-0.5 border border-border/40"
-                        onerror={(e) => {
-                          (e.currentTarget as HTMLElement).style.display = 'none'
-                        }}
-                        loading="lazy"
+                        class="w-4 h-4 object-contain rounded shrink-0 bg-surface-2 p-0.5 border border-border/40 text-[9px] leading-none font-semibold"
                       />
                     {/if}
                     <span class="truncate">{row.rawModel || row.accountName || row.keyName || row.endpoint || row.key}</span>
@@ -127,14 +123,10 @@
                 <td class="py-3 px-4">
                   <div class="flex items-center gap-1.5">
                     {#if row.provider}
-                      <img
-                        src={getIconPath(row.provider)}
+                      <ProviderArtwork
+                        id={row.provider}
                         alt={row.provider}
-                        class="w-3.5 h-3.5 object-contain rounded shrink-0"
-                        onerror={(e) => {
-                          (e.currentTarget as HTMLElement).style.display = 'none'
-                        }}
-                        loading="lazy"
+                        class="w-3.5 h-3.5 object-contain rounded shrink-0 text-[9px] leading-none font-semibold"
                       />
                     {/if}
                     <Badge variant="neutral" size="sm">{row.provider || 'unknown'}</Badge>

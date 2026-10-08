@@ -3,6 +3,7 @@
   import { api, type Combo, type ProviderConnection } from '../../api/client'
   import { getProvidersByKind, type ProviderCatalogItem } from '../../lib/providers'
   import Badge from '../../lib/ui/Badge.svelte'
+  import ProviderArtwork from '../providers/ProviderArtwork.svelte'
   import Button from '../../lib/ui/Button.svelte'
   interface Props {
     connections?: ProviderConnection[]
@@ -36,12 +37,8 @@
 
   function getStats(providerId: string, noAuth = false) {
     const list = connections.filter((c) => c.provider === providerId)
-    const isConnError = (c: ProviderConnection) =>
-      c.testStatus === 'error' || c.testStatus === 'failed' || (c.testStatus !== 'active' && c.testStatus !== 'passed' && c.testStatus !== 'success' && !!c.lastError)
-    const isConnConnected = (c: ProviderConnection) =>
-      c.isActive === 1 && (c.testStatus === 'active' || c.testStatus === 'passed' || c.testStatus === 'success' || (c.testStatus !== 'error' && c.testStatus !== 'failed' && !c.lastError))
-    const connected = list.filter(isConnConnected).length
-    const error = list.filter(isConnError).length
+    const connected = list.filter((c) => (c.testStatus === 'active' || c.testStatus === 'success' || !c.testStatus) && c.isActive === 1 && !c.lastError).length
+    const error = list.filter((c) => c.testStatus === 'error' || !!c.lastError).length
     return { total: list.length, connected, error, allDisabled: list.length > 0 && list.every((c) => c.isActive === 0), noAuth }
   }
 
@@ -148,7 +145,7 @@
                 {#each models.slice(0, 6) as model}
                   {@const pid = model.includes('/') ? model.split('/')[0] : model}
                   <div class="size-5 rounded flex items-center justify-center bg-black/5 dark:bg-white/5 border border-border/40 overflow-hidden" title={pid}>
-                    <img src="/providers/{pid}.png" alt={pid} class="size-3.5 object-contain" onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none' }} />
+                    <ProviderArtwork id={pid} alt={pid} class="size-3.5 object-contain text-[8px] leading-none font-semibold" />
                   </div>
                 {/each}
                 {#if models.length > 6}
@@ -179,7 +176,7 @@
           <div class="p-3 rounded-xl border border-border bg-surface hover:border-brand-500/40 hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-all {stats.allDisabled ? 'opacity-50' : ''}">
             <div class="flex min-w-0 items-center gap-3">
               <div class="size-8 rounded-lg flex items-center justify-center shrink-0 border border-border/40 overflow-hidden" style="background-color: {p.color && p.color.length > 7 ? p.color : (p.color ?? '#888') + '15'}">
-                <img src="/providers/{p.id}.png" alt={p.name} class="size-5 object-contain rounded" onerror={(e) => { const img = e.currentTarget as HTMLImageElement; if (!img.dataset.fallback) { img.dataset.fallback = '1'; img.src = '/providers/oai-cc.png' } else { (e.currentTarget as HTMLElement).style.display = 'none' } }} />
+                <ProviderArtwork id={p.id} alt={p.name} class="size-5 object-contain rounded text-[10px] leading-none font-semibold" />
               </div>
               <div class="min-w-0 flex-1">
                 <h3 class="font-semibold text-sm text-text-main group-hover:text-brand-500 transition-colors truncate">{p.name}</h3>
