@@ -1073,6 +1073,30 @@
     isStoppingOneByOne = true
   }
 
+  // Per-row refresh: probe one account straight from its row instead of
+  // opening the edit modal. Reuses the one-by-one badge state so the row
+  // shows the live testing/success/failed indicator for free.
+  async function refreshOneConnection(conn: ProviderConnection) {
+    if (isTestingOneByOne || oneByOneStatuses[conn.id]?.state === 'testing') return
+    oneByOneStatuses = { ...oneByOneStatuses, [conn.id]: { state: 'testing', error: null } }
+    try {
+      const res = await api.testConnection(conn.id)
+      oneByOneStatuses = {
+        ...oneByOneStatuses,
+        [conn.id]: res?.valid
+          ? { state: 'success', error: null }
+          : { state: 'failed', error: res?.error || 'Test failed' }
+      }
+    } catch (err) {
+      oneByOneStatuses = {
+        ...oneByOneStatuses,
+        [conn.id]: { state: 'failed', error: err instanceof Error ? err.message : 'Test failed' }
+      }
+    } finally {
+      onRefresh()
+    }
+  }
+
   // Priority reordering.
   // Single server-side transactional call instead of two independent PUTs:
   // a partial failure between those two writes left two rows sharing a
@@ -3322,6 +3346,18 @@
                       <span class="text-[10px] leading-tight">Session</span>
                     </button>
                     {/if}
+
+                    <!-- Refresh (single-account test) button -->
+                    <button
+                      type="button"
+                      onclick={() => refreshOneConnection(conn)}
+                      disabled={isTestingOneByOne || status?.state === 'testing'}
+                      title="Test this account and refresh its status"
+                      class="flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      <span class="material-symbols-outlined text-[18px] {status?.state === 'testing' ? 'animate-spin' : ''}">sync</span>
+                      <span class="text-[10px] leading-tight">Refresh</span>
+                    </button>
 
                     <!-- Edit button -->
                     <button
