@@ -66,7 +66,7 @@ padahal sejak F-6 (argon2id) kolom itu berisi sentinel, bukan secret — sehingg
 
 Issue meminta "matikan hashed stored key". Itu **membalikkan** keputusan F-6 (#176/PR #185,
 3 hari lalu) yang memang sengaja membuat key tidak bisa dibaca ulang. Konsekuensinya nyata
- dan tercatat di sini, bukan disembunyikan:
+dan tercatat di sini, bukan disembunyikan:
 
 - `POST /api/keys` dan `POST /api/keys/{id}/rotate` kini menyimpan secret apa adanya di
   `apiKeys.key`. **Dump database = seluruh key klien terekspos** (DB-02 di

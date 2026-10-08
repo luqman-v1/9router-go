@@ -164,7 +164,11 @@ func (h *ChatHandler) handleAccountFallback(
 			// selector can skip this account before spending a request
 			// (upstream applyErrorState). Only lock if error is account-scoped,
 			// not model-scoped (e.g. 401 auth issues), so unrelated models stay available.
-			if !isModelScopedQuotaError(ue.StatusCode, errorText, model) {
+			if isModelScopedQuotaError(ue.StatusCode, errorText, model) {
+				if recErr := h.Repo.RecordConnectionError(connObj.ID, ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
+					log.Warn("fallback", "record connection error failed", "conn", connObj.ID, "error", recErr)
+				}
+			} else {
 				until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
 				if lockErr := h.Repo.LockConnectionRateLimit(connObj.ID, until, classification.NewBackoffLevel, ue.StatusCode, errorText); lockErr != nil {
 					log.Warn("fallback", "rate limit lock failed", "conn", connObj.ID, "error", lockErr)

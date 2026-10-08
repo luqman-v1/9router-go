@@ -939,7 +939,11 @@ func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider,
 	// can skip this account before spending a request (upstream applyErrorState).
 	// Only lock if error is account-scoped, not model-scoped (e.g. 401 auth issues),
 	// so unrelated models stay available.
-	if !isModelScopedQuotaError(ue.StatusCode, extractErrorText(ue.Body), model) {
+	if isModelScopedQuotaError(ue.StatusCode, extractErrorText(ue.Body), model) {
+		if recErr := h.Repo.RecordConnectionError(connID, ue.StatusCode, extractErrorText(ue.Body), cls.NewBackoffLevel); recErr != nil {
+			log.Warn("combo", "record connection error failed", "conn", connID, "error", recErr)
+		}
+	} else {
 		until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
 		if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, extractErrorText(ue.Body)); err != nil {
 			log.Warn("combo", "rate limit lock failed", "conn", connID, "error", err)
