@@ -111,53 +111,39 @@ func TestRequireApiKey_HashedKey(t *testing.T) {
 	}
 }
 
-// TestRequireApiKey_LegacyPlaintextSelfHeals is the single most important
-// property of this slice: a key created before F-6 keeps authenticating, and
-// the row upgrades itself on first use.
-func TestRequireApiKey_LegacyPlaintextSelfHeals(t *testing.T) {
+// TestRequireApiKey_PlaintextRowIsNotRewritten guards the property issue #199
+// depends on. F-6 hashed a plaintext row in place on first use; doing that
+// again would destroy the one thing the dashboard now relies on — reading a
+// key back — the first time the key was used.
+func TestRequireApiKey_PlaintextRowIsNotRewritten(t *testing.T) {
 	repo, database, cleanup := newHashTestRepo(t)
 	defer cleanup()
 
 	const secret = "sk-legacy-plaintext-key-99"
 	insertKey(t, database, "legacy-1", secret, 1)
 
-	// The row starts out exactly as an un-upgraded install leaves it.
-	found, err := repo.GetApiKeyByKey(secret)
-	if err != nil || found == nil {
-		t.Fatalf("legacy lookup = %+v, %v; want the row", found, err)
-	}
-	if found.KeyHash != nil && *found.KeyHash != "" {
-		t.Fatal("fixture row already carries a verifier")
-	}
-
 	code, _ := authRequest(t, repo, secret)
 	if code != http.StatusOK {
-		t.Fatalf("legacy plaintext key rejected with %d", code)
+		t.Fatalf("plaintext key rejected with %d", code)
 	}
 
-	// The row must now be hashed and the plaintext gone.
+	// The row must still be readable by its secret after authenticating.
 	after, err := repo.GetApiKeyByKey(secret)
-	if err != nil {
-		t.Fatalf("post-auth GetApiKeyByKey: %v", err)
+	if err != nil || after == nil {
+		t.Fatalf("post-auth GetApiKeyByKey = %+v, %v; want the row", after, err)
 	}
-	if after != nil {
-		t.Fatal("legacy row still stores the plaintext after authenticating")
+	if after.KeyHash != nil && *after.KeyHash != "" {
+		t.Error("plaintext row was hashed on use; its secret is no longer readable")
 	}
-	healed, err := repo.FindApiKeyByLookup(keikey.LookupHash(secret))
-	if err != nil || healed == nil {
-		t.Fatalf("self-healed row not found by lookup hash: %+v, %v", healed, err)
-	}
-	if healed.KeyHash == nil || !keikey.Verify(secret, *healed.KeyHash) {
-		t.Fatal("self-healed row does not verify against its own plaintext")
-	}
-	if healed.KeyDisplay == nil || *healed.KeyDisplay == "" {
-		t.Fatal("self-healed row has no display value")
+	if got, err := repo.FindApiKeyByLookup(keikey.LookupHash(secret)); err != nil {
+		t.Fatalf("FindApiKeyByLookup: %v", err)
+	} else if got != nil {
+		t.Error("plaintext row was indexed by lookup hash; it should have been left alone")
 	}
 
-	// And it keeps working on the now-hashed path.
-	code, _ = authRequest(t, repo, secret)
-	if code != http.StatusOK {
-		t.Fatalf("self-healed key rejected on second use with %d", code)
+	// And it keeps working.
+	if code, _ := authRequest(t, repo, secret); code != http.StatusOK {
+		t.Fatalf("key rejected on second use with %d", code)
 	}
 }
 

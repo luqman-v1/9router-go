@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"9router/proxy/internal/models"
 )
@@ -141,6 +142,14 @@ func hashedKeySentinel(lookupHash string) string {
 	return hashedKeyPrefix + lookupHash
 }
 
+// IsHashedKeyRow reports whether a row is a pre-#199 hashed row: its `key`
+// column holds the sentinel rather than a secret, so the plaintext is
+// unrecoverable. Such a row still authenticates through its argon2id verifier
+// (see middleware.resolveApiKey) but cannot be revealed in the dashboard.
+func IsHashedKeyRow(k *models.APIKey) bool {
+	return k != nil && strings.HasPrefix(k.Key, hashedKeyPrefix)
+}
+
 // HashApiKeyRow fills the F-6 hash columns for a row and replaces the
 // plaintext `key` column with the hashed-row sentinel. A sentinel `key` is how
 // a hashed row is recognised; legacy rows keep their plaintext and
@@ -165,4 +174,38 @@ func (r *Repo) HashApiKeyRow(id, keyHash, lookupHash, keyDisplay string) error {
 // values without ever touching the credential columns.
 func (r *Repo) GetApiKeyByID(id string) (*models.APIKey, error) {
 	return r.queryApiKey("FROM apiKeys WHERE id = ? LIMIT 1", id)
+}
+
+// RotateApiKeySecret replaces a row's secret with a new plaintext value and
+// refreshes its masked display.
+//
+// The hash columns are cleared rather than left stale: a row that still carried
+// a verifier from before issue #199 would keep being resolved through the
+// argon2id path, so its new secret would never be found and the key would
+// appear dead to every client holding it.
+func (r *Repo) RotateApiKeySecret(id, plaintext, keyDisplay string) error {
+	res, err := r.db.Exec(
+		`UPDATE apiKeys SET key = ?, keyDisplay = ?, keyHash = '', lookupHash = '' WHERE id = ?`,
+		plaintext, keyDisplay, id,
+	)
+	if err != nil {
+		return fmt.Errorf("rotate api key secret %s: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("rotate api key secret %s: %w", id, errNoSuchApiKey)
+	}
+	return nil
+}
+
+// SetApiKeyDisplay records the masked form of a row's secret without touching
+// the secret itself.
+func (r *Repo) SetApiKeyDisplay(id, keyDisplay string) error {
+	res, err := r.db.Exec(`UPDATE apiKeys SET keyDisplay = ? WHERE id = ?`, keyDisplay, id)
+	if err != nil {
+		return fmt.Errorf("set api key display %s: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("set api key display %s: %w", id, errNoSuchApiKey)
+	}
+	return nil
 }

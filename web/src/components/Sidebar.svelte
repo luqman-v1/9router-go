@@ -86,7 +86,6 @@
     { tab: 'quota' as ActiveTab, label: 'Quota Tracker', icon: 'data_usage' },
     { tab: 'token-saver' as ActiveTab, label: 'Token Saver', icon: 'savings' },
     { tab: 'cli-tools' as ActiveTab, label: 'CLI Tools', icon: 'terminal' },
-    { tab: 'keys' as ActiveTab, label: 'API Keys', icon: 'key' },
   ] as const
 
   const mediaNavLinks = [

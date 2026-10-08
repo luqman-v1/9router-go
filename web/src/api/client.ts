@@ -62,12 +62,17 @@ export type ModelDeprecationMap = Record<string, ModelDeprecation>
 
 export interface APIKey {
   id: string
+  /**
+   * The stored secret. Empty for a caller authenticated with an engine client
+   * key, and for rows created before #199, whose plaintext was hashed away and
+   * cannot be recovered — the UI falls back to `keyDisplay` in both cases.
+   */
   key: string
   name: string | null
   machineId: string | null
   isActive: number
   createdAt: string
-  /** Masked secret, e.g. `sk-6…008f`. `key` carries the same value. */
+  /** Masked secret, e.g. `sk-6…008f`. Always present. */
   keyDisplay?: string
   /** Rate limits. 0 means unlimited. */
   rateLimitRpm?: number
@@ -802,6 +807,17 @@ export const api = {
     request<{ success: boolean; isActive: boolean }>(`/api/keys/${encodeURIComponent(id)}/toggle`, {
       method: 'PUT',
     }),
+
+  /** Mints a replacement secret, keeping the row's id, policy and history. */
+  rotateApiKey: (id: string) =>
+    request<{ status: string; id: string; key: string }>(`/api/keys/${encodeURIComponent(id)}/rotate`, {
+      method: 'POST',
+    }),
+  setApiKeyActive: (id: string, isActive: boolean) =>
+    request<{ status: string; id: string; isActive: boolean }>(
+      `/api/keys/${encodeURIComponent(id)}/toggle`,
+      { method: 'PUT', body: JSON.stringify({ isActive }) },
+    ),
 
   // F-1/F-14 per-key governance. Omitted fields are left unchanged server-side,
   // so a partial update never resets a limit the operator did not touch.

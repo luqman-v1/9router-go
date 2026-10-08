@@ -20,7 +20,7 @@ export type ActiveTab =
   | 'terminal'
   | 'settings'
   | 'security'
-  | 'keys'
+  | 'keys' // legacy alias for the endpoint tab; see ROUTE_TO_TAB below
 
 export const TAB_ROUTES: Record<ActiveTab, string> = {
   login: '/login',
@@ -44,7 +44,9 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   terminal: '/dashboard/console-log',
   settings: '/dashboard/profile',
   security: '/dashboard/security',
-  keys: '/dashboard/keys',
+  // Legacy alias: keys are managed on the endpoint tab (issue #199), so both
+  // tabs resolve to the same route rather than leaving one unreachable.
+  keys: '/dashboard/endpoint',
 }
 
 const ROUTE_TO_TAB: Record<string, ActiveTab> = {
@@ -84,12 +86,11 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   '/dashboard/cli-tools': 'cli-tools',
   '/cli-tools': 'cli-tools',
 
-  // client API keys. This must resolve to 'keys', not 'cli-tools': App
-  // renders CliToolsView for 'cli-tools' and ApiKeysView for 'keys', and both
-  // previously pointed at /dashboard/cli-tools, so the keys table was
-  // unreachable from any route.
-  '/dashboard/keys': 'keys',
-  '/keys': 'keys',
+  // Client API keys now live on the endpoint tab (issue #199), so the old key
+  // URLs resolve there instead of to a tab that no longer renders. Keeping the
+  // mapping means a bookmarked /dashboard/keys still lands on the key table.
+  '/dashboard/keys': 'endpoint',
+  '/keys': 'endpoint',
 
   // media providers
   '/dashboard/media-providers/embedding': 'media-embedding',
@@ -177,7 +178,7 @@ export function pathToTab(pathname: string): ActiveTab {
   if (normalized.includes('usage') || normalized.includes('analytics')) return 'analytics'
   if (normalized.includes('combos')) return 'combos'
   if (normalized.includes('providers') || normalized.includes('connections')) return 'connections'
-  if (normalized.includes('keys')) return 'keys'
+  if (normalized.includes('keys')) return 'endpoint'
   if (normalized.includes('security')) return 'security'
   if (normalized.includes('profile') || normalized.includes('settings')) return 'settings'
   return 'endpoint'

@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### 🔑 issue #199: halaman API Key menyatu ke Endpoint & Key, secret bisa di-reveal lagi
+
+Halaman **Endpoint & Key** sekarang jadi satu-satunya tempat mengelola token klien: tab
+`API Keys` yang duplikat dihapus, dan `ApiKeysTable.svelte` (baru) merender tabel bergaya
+KeiRouter (`mydisha/keirouter`, MIT) — empat kolom `Key | Token | Policy & Created |
+Actions`, tanpa kolom Status dan Created-date terpisah. Status, policy, dan tanggal
+created jadi **satu sel multi-baris**, sesuai permintaan issue. Action bar memakai empat
+kontrol: Policy (modal rate limit/expiry/allowlist), Rotate, Pause/Resume, Delete.
+
+**Tombol show/hide dan copy secret sekarang benar-benar bekerja.** Sebelumnya keduanya
+melakukan sesuatu yang berbeda dari yang dijanjikan UI: `EndpointView` membaca `key.key`,
+padahal sejak F-6 (argon2id) kolom itu berisi sentinel, bukan secret — sehingga show
+"membuka" nilai yang sudah ter-mask, dan copy menyalin mask tersebut.
+
+#### ⚠️ Penyimpanan secret dikembalikan ke plaintext — dan apa risikonya
+
+Issue meminta "matikan hashed stored key". Itu **membalikkan** keputusan F-6 (#176/PR #185,
+3 hari lalu) yang memang sengaja membuat key tidak bisa dibaca ulang. Konsekuensinya nyata
+dan tercatat di sini, bukan disembunyikan:
+
+- `POST /api/keys` dan `POST /api/keys/{id}/rotate` kini menyimpan secret apa adanya di
+  `apiKeys.key`. **Dump database = seluruh key klien terekspos** (DB-02 di
+  `TECHNICAL_DEBT.md` kembali terbuka).
+- `RequireApiKey` tidak lagi *self-heal* — baris plaintext tidak di-hash-kan diam-diam
+  saat dipakai, karena itu akan menghapus tepat properti yang sekarang dashboard andalkan.
+- **Batas yang tetap dijaga:** `GET /api/keys` hanya mengembalikan secret penuh untuk
+  caller dashboard (session cookie, CLI token, atau `requireLogin=false` untuk install
+  lokal). Engine client key — credential yang diberikan ke Cursor/Claude Code — tetap
+  menerima `key` kosong + `keyDisplay` tersamar. Tanpa ini, satu key yang bocor bisa
+  mencuri seluruh key set, persis yang F-6 tutup. Diuji di unit, integration, dan E2E.
+- **Baris lama tidak bisa dipulihkan.** Key yang dibuat sebelum upgrade hanya punya
+  verifier argon2id; plaintext-nya sudah hilang. Daftar mengembalikan `key` kosong dan UI
+  jatuh ke `keyDisplay`. Satu-satunya jalan adalah Rotate.
+
+Alternatif yang ditolak di PR: memakai credential vault AES-256-GCM yang sudah ada
+(F-5) sehingga secret tetap bisa dibaca tanpa menyimpan plaintext. Vault itu butuh
+master key (`ROUTER_MASTER_KEY`) dan tidak ada yang mengaktifkannya secara default,
+sedangkan issue meminta parity penuh dengan upstream `decolua/9router`, yang memang
+menyimpan plaintext.
+
 ### 🐛 Tombol Refresh per-baris membungkus baris aksi ke dua baris di mobile
 
 Susulan review PR #196 (`feat(connections): per-row refresh button to test a single

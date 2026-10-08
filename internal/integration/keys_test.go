@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"9router/proxy/internal/auth"
+
 	"github.com/samber/lo"
 )
 
@@ -100,9 +102,11 @@ func TestApiKeyLifecycle(t *testing.T) {
 	})
 }
 
-// TestApiKeysAreMaskedForApiKeyCallers pins the leak guard on GET /api/keys.
-// A low-privilege client key is accepted for CLI compatibility, so returning
-// full secrets there would let one leaked key dump the whole key set.
+// TestApiKeysAreMaskedForApiKeyCallers pins the half of issue #199 that must
+// not regress. GET /api/keys now returns full secrets so the dashboard can
+// reveal and copy them, but only for a dashboard credential. An engine client
+// key is handed to a client app, so it must still get the masked value —
+// otherwise one leaked key dumps every other key.
 func TestApiKeysAreMaskedForApiKeyCallers(t *testing.T) {
 	env := newEnv(t)
 
@@ -117,9 +121,24 @@ func TestApiKeysAreMaskedForApiKeyCallers(t *testing.T) {
 	// secret below would prove nothing.
 	requireApiKey(t, listApiKeys(t, env), "other-key")
 
-	res := env.Get(t, "/api/keys")
+	res := env.Get(t, "/api/keys", WithAPIKey("sk-other-secret-value"))
+	if res.Status != http.StatusOK {
+		t.Fatalf("GET /api/keys as an api-key caller = %d, want 200: %s", res.Status, truncate(res.Body))
+	}
 	if strings.Contains(string(res.Body), "sk-other-secret-value") {
 		t.Errorf("GET /api/keys leaked a full key to an api-key caller: %s", truncate(res.Body))
+	}
+
+	// The same route with the local CLI token — an operator credential — does
+	// return the secret. That is what the endpoint table's reveal and copy
+	// buttons read; WithoutAPIKey is required because Env.Do otherwise
+	// authenticates every request as the seeded client key.
+	privileged := env.Get(t, "/api/keys",
+		WithoutAPIKey(),
+		WithHeader(auth.CLITokenHeader, auth.CLIToken()),
+	)
+	if !strings.Contains(string(privileged.Body), "sk-other-secret-value") {
+		t.Errorf("CLI-token caller did not receive the full key: %s", truncate(privileged.Body))
 	}
 }
 

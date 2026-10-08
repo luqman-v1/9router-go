@@ -12,7 +12,6 @@
     type Settings
   } from './api/client'
   import AnalyticsView from './components/analytics/AnalyticsView.svelte'
-  import ApiKeysView from './components/ApiKeysView.svelte'
   import CliToolsView from './components/CliToolsView.svelte'
   import CombosView from './components/combos/CombosView.svelte'
   import ConnectionsView from './components/connections/ConnectionsView.svelte'
@@ -247,7 +246,6 @@
     'console-log': { title: 'Console Log', description: 'Live server console output' },
     terminal: { title: 'Console Log', description: 'Live server console output' },
     settings: { title: 'Settings', description: 'Manage your preferences and configuration' },
-    keys: { title: 'CLI & Remote Access', description: 'API keys for your CLI tools' },
   }
 
   function handleOpenNewCombo() {
@@ -367,8 +365,6 @@
               <TokenSaverView {settings} onRefresh={loadData} />
             {:else if activeTab === 'cli-tools'}
               <CliToolsView {apiKeys} onRefresh={loadData} />
-            {:else if activeTab === 'keys'}
-              <ApiKeysView {apiKeys} onRefresh={loadData} />
             {:else if activeTab === 'media-embedding'}
               {#if selectedMedia && selectedMediaCatalogItem}
                 <MediaProviderDetail
