@@ -162,10 +162,13 @@ func (h *ChatHandler) handleAccountFallback(
 			}
 			// Account-scoped cooldown alongside the per-model locks, so the
 			// selector can skip this account before spending a request
-			// (upstream applyErrorState).
-			until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
-			if lockErr := h.Repo.LockConnectionRateLimit(connObj.ID, until, classification.NewBackoffLevel, ue.StatusCode, errorText); lockErr != nil {
-				log.Warn("fallback", "rate limit lock failed", "conn", connObj.ID, "error", lockErr)
+			// (upstream applyErrorState). Only lock if error is account-scoped,
+			// not model-scoped (e.g. 401 auth issues), so unrelated models stay available.
+			if !isModelScopedQuotaError(ue.StatusCode, errorText, model) {
+				until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
+				if lockErr := h.Repo.LockConnectionRateLimit(connObj.ID, until, classification.NewBackoffLevel, ue.StatusCode, errorText); lockErr != nil {
+					log.Warn("fallback", "rate limit lock failed", "conn", connObj.ID, "error", lockErr)
+				}
 			}
 			log.Warn("fallback", "connection locked", append([]any{
 				"conn", connObj.ID, "provider", provider, "model", model,
@@ -1008,4 +1011,25 @@ func claudeSessionIDFromBody(body []byte) string {
 	}
 	userID, _ := meta["user_id"].(string)
 	return extractClaudeSessionIdFromUserId(userID)
+}
+
+// isModelScopedQuotaError reports whether an upstream retryable error is
+// a model-specific quota exhaustion (e.g. Antigravity Claude QUOTA_EXHAUSTED)
+// rather than an account-scoped rate limit or credential failure.
+// For model-scoped quota exhaustion, only LockConnectionModel should be set
+// so that unrelated healthy models (e.g. Gemini) on the same account remain available.
+func isModelScopedQuotaError(statusCode int, errorText string, model string) bool {
+	if model == "" {
+		return false
+	}
+	if statusCode != http.StatusTooManyRequests && statusCode != http.StatusForbidden && statusCode != http.StatusServiceUnavailable {
+		return false
+	}
+	upper := strings.ToUpper(errorText)
+	if strings.Contains(upper, "QUOTA_EXHAUSTED") ||
+		strings.Contains(errorText, "Individual quota reached") ||
+		strings.Contains(upper, "MODEL_CAPACITY_EXHAUSTED") {
+		return true
+	}
+	return false
 }

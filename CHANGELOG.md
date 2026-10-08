@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 🐛 fix(chat): do not lock entire account on model-specific 429 quota exhaustion so unrelated healthy models remain available (#205)
+
+Previously when a 429 quota exhaustion occurred for a specific model (such as claude-sonnet-4-6), the system would lock the entire account connection, blocking other models (such as gemini-3.8-flash-high) on the same connection even when they were healthy. This fix adds a check to determine if a retryable error is model-scoped (like quota exhaustion) vs. account-scoped (like authentication issues), and only applies the account-level rate limit cooldown for account-scoped errors.
+
 ### 🖼️ `/providers/*.png` 404 dan peringatan autofocus di console
 
 - **`muse.png` 404**: `muse` ada di katalog (`web/src/lib/providers.ts`) tapi
@@ -62,7 +66,7 @@ padahal sejak F-6 (argon2id) kolom itu berisi sentinel, bukan secret — sehingg
 
 Issue meminta "matikan hashed stored key". Itu **membalikkan** keputusan F-6 (#176/PR #185,
 3 hari lalu) yang memang sengaja membuat key tidak bisa dibaca ulang. Konsekuensinya nyata
-dan tercatat di sini, bukan disembunyikan:
+ dan tercatat di sini, bukan disembunyikan:
 
 - `POST /api/keys` dan `POST /api/keys/{id}/rotate` kini menyimpan secret apa adanya di
   `apiKeys.key`. **Dump database = seluruh key klien terekspos** (DB-02 di

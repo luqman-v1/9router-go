@@ -937,9 +937,13 @@ func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider,
 	}
 	// Account-scoped cooldown alongside the per-model locks, so the selector
 	// can skip this account before spending a request (upstream applyErrorState).
-	until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
-	if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, extractErrorText(ue.Body)); err != nil {
-		log.Warn("combo", "rate limit lock failed", "conn", connID, "error", err)
+	// Only lock if error is account-scoped, not model-scoped (e.g. 401 auth issues),
+	// so unrelated models stay available.
+	if !isModelScopedQuotaError(ue.StatusCode, extractErrorText(ue.Body), model) {
+		until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
+		if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, extractErrorText(ue.Body)); err != nil {
+			log.Warn("combo", "rate limit lock failed", "conn", connID, "error", err)
+		}
 	}
 	*excludeIDs = append(*excludeIDs, connID)
 	log.Warn("combo", "locked on retryable error", "provider", provider, "model", model, "lockKey", lockKey, "conn", connID, "status", ue.StatusCode, "cooldown_s", cooldownSec)
