@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+### 🐛 fix(web): do not flag active connections as error in provider stats when soft warning or unsupported model probe lastError is present (#207)
+
 ### 🔑 issue #199: halaman API Key menyatu ke Endpoint & Key, secret bisa di-reveal lagi
 
 Halaman **Endpoint & Key** sekarang jadi satu-satunya tempat mengelola token klien: tab

@@ -920,12 +920,12 @@ func (h *DashboardHandler) persistProbeResult(conn *models.ProviderConnection, r
 			raw["lastError"] = nil
 			raw["lastErrorAt"] = nil
 		}
-	} else if out.message == "Provider test not supported" {
-		// Do not mark connection as broken in DB when probe is unsupported
+	} else if out.message == "Provider test not supported" || strings.Contains(out.message, "is not supported") {
+		// Do not mark connection as broken in DB when probe or model is unsupported
 		if curStatus, _ := raw["testStatus"].(string); curStatus == "" || curStatus == "error" {
 			raw["testStatus"] = "active"
 		}
-		if curErr, _ := raw["lastError"].(string); curErr == "Provider test not supported" {
+		if curErr, _ := raw["lastError"].(string); curErr == "Provider test not supported" || strings.Contains(curErr, "is not supported") {
 			raw["lastError"] = nil
 			raw["lastErrorAt"] = nil
 		}
