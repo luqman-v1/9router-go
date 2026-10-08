@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"io"
 	"strings"
@@ -88,5 +88,5 @@ func TestSSECopy_AbortEmitsInBandErrorFrame(t *testing.T) {
 				t.Errorf("stream must still close with [DONE], got %q", out)
 			}
 		})
-}
+	}
 }

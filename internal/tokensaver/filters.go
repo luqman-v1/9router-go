@@ -2,7 +2,8 @@ package tokensaver
 
 import (
 	"embed"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"fmt"
 	"regexp"
 	"sort"
@@ -15,13 +16,13 @@ var filtersFS embed.FS
 
 // RawFilterJSON represents the JSON schema of a filter in filters/*.json.
 type RawFilterJSON struct {
-	ID          string          `json:"id"`
-	Label       string          `json:"label"`
-	Description string          `json:"description"`
-	Category    string          `json:"category"`
-	Priority    int             `json:"priority"`
-	Match       RawFilterMatch  `json:"match"`
-	Rules       RawFilterRules  `json:"rules"`
+	ID          string            `json:"id"`
+	Label       string            `json:"label"`
+	Description string            `json:"description"`
+	Category    string            `json:"category"`
+	Priority    int               `json:"priority"`
+	Match       RawFilterMatch    `json:"match"`
+	Rules       RawFilterRules    `json:"rules"`
 	Preserve    RawFilterPreserve `json:"preserve"`
 }
 
@@ -57,26 +58,26 @@ type RawFilterPreserve struct {
 
 // RTKFilter represents a loaded and compiled RTK filter.
 type RTKFilter struct {
-	ID              string
-	Label           string
-	Description     string
-	RawCategory     string
-	Category        string // Normalized category: git, build, test, package, docker, system
-	Priority        int
-	Commands        []*regexp.Regexp
-	Patterns        []*regexp.Regexp
-	IncludePatterns []*regexp.Regexp
-	DropPatterns    []*regexp.Regexp
+	ID               string
+	Label            string
+	Description      string
+	RawCategory      string
+	Category         string // Normalized category: git, build, test, package, docker, system
+	Priority         int
+	Commands         []*regexp.Regexp
+	Patterns         []*regexp.Regexp
+	IncludePatterns  []*regexp.Regexp
+	DropPatterns     []*regexp.Regexp
 	CollapsePatterns []*regexp.Regexp
-	MatchOutputs    []CompiledMatchOutput
-	ErrorPatterns   []*regexp.Regexp
-	SummaryPatterns []*regexp.Regexp
-	StripAnsi       bool
-	Deduplicate     bool
-	MaxLines        int
-	HeadLines       int
-	TailLines       int
-	OnEmpty         string
+	MatchOutputs     []CompiledMatchOutput
+	ErrorPatterns    []*regexp.Regexp
+	SummaryPatterns  []*regexp.Regexp
+	StripAnsi        bool
+	Deduplicate      bool
+	MaxLines         int
+	HeadLines        int
+	TailLines        int
+	OnEmpty          string
 }
 
 type CompiledMatchOutput struct {
@@ -274,12 +275,18 @@ var reStructuredJSON = regexp.MustCompile(`\A\s*[[{][\s\S]*[\]}]\s*\z`)
 
 // isStructuredOutput reports whether text is a single JSON document, i.e. the
 // kind of payload a line-based filter would corrupt.
+//
+// The check stays deliberately permissive. This gate exists so a body v2 would
+// reject still reaches the model intact rather than being filtered line by line,
+// so duplicate names and invalid UTF-8 must not fail it; IsValid rejects both
+// by default. AllowDuplicateNames and AllowInvalidUTF8 restore what a lenient
+// reader accepts, leaving only genuine syntax errors to reject the payload.
 func isStructuredOutput(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if !reStructuredJSON.MatchString(trimmed) {
 		return false
 	}
-	return json.Valid([]byte(trimmed))
+	return jsontext.Value(trimmed).IsValid(jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true))
 }
 
 // MatchFilter finds the highest priority matching enabled filter for the given text or command.
@@ -327,7 +334,6 @@ func MatchFilter(text string, command string, cfg RTKConfig) *RTKFilter {
 		}
 	}
 
-
 	// Fall back to generic-output if enabled
 	for _, f := range filters {
 		if f.ID == "generic-output" && IsFilterEnabled(f, cfg) {
@@ -337,7 +343,6 @@ func MatchFilter(text string, command string, cfg RTKConfig) *RTKFilter {
 
 	return nil
 }
-
 
 // ApplyRTKFilter applies the filter rules to text.
 func ApplyRTKFilter(f *RTKFilter, text string, maxLinesLimit int) (string, []string) {

@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### 🔀 Seluruh `encoding/json` v1 pindah ke `encoding/json/v2`
+
+- **Latar belakang**: repo sudah migrasiMayor ke `encoding/json/v2`, tapi 50
+  file masih tertinggal di `encoding/json` v1 — 25 di antaranya file produksi.
+  Akibatnya satu binary memakai **dua** mesin JSON dengan semantik berbeda di
+  jalur yang sama: v1 mencocokkan nama field tanpa membedakan huruf
+  besar/kecil, v2 secara default membedakannya; v1 menerima UTF-8 rusak, v2
+  menolaknya.
+- **Fiks**: seluruh file kini mengimpor `encoding/json/v2`. Empat API v1 yang
+  tidak ada di v2 dipetakan ke padanannya, bukan dibungkus:
+  `json.RawMessage` → `jsontext.Value` (perilaku `MarshalJSON`/`UnmarshalJSON`
+  dan ketiadaan nilai untuk member yang absen identik — sudah diverifikasi),
+  `json.Valid` → `jsontext.Value.IsValid()`,
+  `json.NewEncoder(w).Encode(v)` → `json.MarshalWrite(w, v)`,
+  `json.NewDecoder(r).Decode(&v)` → `json.UnmarshalRead(r, &v)`.
+- **`internal/fastjson` sekarang tipis di atas v2.** Shim ini sebelumnya
+  membungkus `bytedance/sonic`; kedua backend (sonic dan std) dihapus, dan
+  `github.com/bytedance/sonic` beserta 6 dependensi transitifnya dicabut dari
+  `go.mod`. Panggilan dari 12 file chat/semanticcache tidak berubah.
+- **Determinisme tetap terjaga.** `fastjson.Marshal` memasang
+  `json.Deterministic(true)` karena prompt cache hulu (DeepSeek, Anthropic)
+  mengunci kunci pada byte request yang persis, dan v2 tidak mengurutkan member
+  map kecuali diminta. (Sonic yang lama juga tidak mengurutkannya — sebab itu
+  `marshalStable`, fingerprint, dan dedupe tool memasang opsi Deterministic
+  masing-masing sejak #186.) `TestMarshalIsDeterministic` menjaga kontrak
+  seam ini; call site yang sudah punya opsi sendiri tidak tersentuh.
+- **Biaya pada payload request 6,5 KB**: marshal 16,2 µs (v1) → 15,3 µs
+  (v2 deterministik), unmarshal 26,1 µs → 23,3 µs. Tidak ada regresi.
+
 ### 🐛 Halaman Cache Analytics balas 503 — agregasi 35 detik untuk 82.143 baris
 
 - **Gejala**: `/dashboard/usage/cache` gagal total. Di browser endpoint-nya

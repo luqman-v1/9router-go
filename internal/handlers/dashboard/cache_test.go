@@ -2,16 +2,16 @@ package dashboard
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/semanticcache"
 	"9router/proxy/internal/translator"
+	"github.com/go-chi/chi/v5"
 )
 
 func TestHandleGetCache(t *testing.T) {

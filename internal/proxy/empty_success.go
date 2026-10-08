@@ -2,7 +2,8 @@ package proxy
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"strings"
@@ -88,11 +89,11 @@ func EmptyUpstreamError(body []byte) error {
 // Completions, Claude Messages and Responses — and each carries its content
 // under a different key.
 type completionProbe struct {
-	Error   json.RawMessage `json:"error"`
-	Choices json.RawMessage `json:"choices"`
-	Content json.RawMessage `json:"content"`
-	Output  json.RawMessage `json:"output"`
-	Status  string          `json:"status"`
+	Error   jsontext.Value `json:"error"`
+	Choices jsontext.Value `json:"choices"`
+	Content jsontext.Value `json:"content"`
+	Output  jsontext.Value `json:"output"`
+	Status  string         `json:"status"`
 }
 
 type choiceProbe struct {
@@ -102,12 +103,12 @@ type choiceProbe struct {
 }
 
 type messageProbe struct {
-	Content          json.RawMessage `json:"content"`
-	ToolCalls        json.RawMessage `json:"tool_calls"`
-	FunctionCall     json.RawMessage `json:"function_call"`
-	ReasoningContent json.RawMessage `json:"reasoning_content"`
-	Reasoning        json.RawMessage `json:"reasoning"`
-	Refusal          json.RawMessage `json:"refusal"`
+	Content          jsontext.Value `json:"content"`
+	ToolCalls        jsontext.Value `json:"tool_calls"`
+	FunctionCall     jsontext.Value `json:"function_call"`
+	ReasoningContent jsontext.Value `json:"reasoning_content"`
+	Reasoning        jsontext.Value `json:"reasoning"`
+	Refusal          jsontext.Value `json:"refusal"`
 }
 
 // carriesAnswer reports whether a message holds anything a client can act
@@ -144,7 +145,7 @@ func missingCompletion(p completionProbe) string {
 		}
 		return "content is empty"
 	case p.Output != nil:
-		var output []json.RawMessage
+		var output []jsontext.Value
 		if err := json.Unmarshal(p.Output, &output); err != nil {
 			return ""
 		}
@@ -168,7 +169,7 @@ func terminalOutputStatus(status string) bool {
 
 // carriesValue reports whether a raw JSON value holds content rather than
 // null, an empty string, or an empty array/object.
-func carriesValue(raw json.RawMessage) bool {
+func carriesValue(raw jsontext.Value) bool {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return false
@@ -181,13 +182,13 @@ func carriesValue(raw json.RawMessage) bool {
 		}
 		return strings.TrimSpace(s) != ""
 	case '[':
-		var items []json.RawMessage
+		var items []jsontext.Value
 		if err := json.Unmarshal(trimmed, &items); err != nil {
 			return false
 		}
 		return len(items) > 0
 	case '{':
-		var fields map[string]json.RawMessage
+		var fields map[string]jsontext.Value
 		if err := json.Unmarshal(trimmed, &fields); err != nil {
 			return false
 		}
@@ -199,7 +200,7 @@ func carriesValue(raw json.RawMessage) bool {
 // errorEnvelopeMessage returns a human-readable message from an `error`
 // field, or "" when there is no error to report. A JSON null is not an
 // error, so it reads as absent.
-func errorEnvelopeMessage(raw json.RawMessage) string {
+func errorEnvelopeMessage(raw jsontext.Value) string {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return ""

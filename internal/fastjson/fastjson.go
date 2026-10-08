@@ -1,70 +1,43 @@
-// Package fastjson provides a drop-in replacement for encoding/json backed by
-// github.com/bytedance/sonic on supported platforms (amd64, arm64 on linux/darwin/windows)
-// and falling back to encoding/json elsewhere.
+// Package fastjson is a thin seam over encoding/json/v2 shared by the proxy
+// hot paths: chat request/response translation, upstream payload repair, and
+// the semantic cache key builder.
 //
-// All public functions have identical signatures to their encoding/json
-// counterparts, so migration is a one-line import swap.
+// It exists so callers depend on one place for the option set those paths need
+// instead of repeating it per call site. Two properties are non-negotiable:
+//
+//   - Deterministic output. Prompt-prefix caches upstream (DeepSeek, Anthropic)
+//     key on the exact request bytes, so serializing the same value twice must
+//     produce the same bytes. encoding/json/v2 leaves map members in Go's
+//     randomized iteration order unless asked to sort them, so the option is
+//     set explicitly here rather than left to each call site's discretion.
+//     (The backend this replaced, sonic's ConfigDefault, left them unsorted
+//     too — #186 wanted sorting and never got it, which is why marshalStable
+//     and the fingerprint/dedupe paths carry their own Deterministic option.)
+//   - Identical error surface. Errors are wrapped by the caller, so the
+//     underlying encoding/json/v2 error type is what propagates; there is no
+//     translation layer.
 package fastjson
 
 import (
-	"bytes"
-	"encoding/json"
 	"io"
+
+	json "encoding/json/v2"
 )
 
-// Common type aliases for drop-in compatibility with encoding/json.
-type (
-	RawMessage            = json.RawMessage
-	Number                = json.Number
-	Marshaler             = json.Marshaler
-	Unmarshaler           = json.Unmarshaler
-	Decoder               = json.Decoder
-	Encoder               = json.Encoder
-	Delim                 = json.Delim
-	Token                 = json.Token
-	InvalidUTF8Error      = json.InvalidUTF8Error
-	InvalidUnmarshalError = json.InvalidUnmarshalError
-	MarshalerError        = json.MarshalerError
-	SyntaxError           = json.SyntaxError
-	UnmarshalFieldError   = json.UnmarshalFieldError
-	UnmarshalTypeError    = json.UnmarshalTypeError
-	UnsupportedTypeError  = json.UnsupportedTypeError
-	UnsupportedValueError = json.UnsupportedValueError
-)
+// Deterministic marshaling: map members are sorted by name.
+var marshalOpts = json.Deterministic(true)
 
-// NewDecoder returns a streaming JSON decoder reading from r.
-// Identical to json.NewDecoder.
-func NewDecoder(r io.Reader) *Decoder {
-	return json.NewDecoder(r)
+// Marshal serializes v to JSON, sorting map members by name.
+func Marshal(v any) ([]byte, error) {
+	return json.Marshal(v, marshalOpts)
 }
 
-// NewEncoder returns a streaming JSON encoder writing to w.
-// Identical to json.NewEncoder.
-func NewEncoder(w io.Writer) *Encoder {
-	return json.NewEncoder(w)
+// Unmarshal deserializes data into v.
+func Unmarshal(data []byte, v any) error {
+	return json.Unmarshal(data, v)
 }
 
-// Compact appends to dst the JSON-encoded src with insignificant space characters elided.
-func Compact(dst *bytes.Buffer, src []byte) error {
-	return json.Compact(dst, src)
-}
-
-// Indent appends to dst an indented form of the JSON-encoded src.
-func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {
-	return json.Indent(dst, src, prefix, indent)
-}
-
-// HTMLEscape appends to dst the JSON-encoded src with <, >, &, U+2028, and U+2029
-// characters escaped inside string literals.
-func HTMLEscape(dst *bytes.Buffer, src []byte) {
-	json.HTMLEscape(dst, src)
-}
-
-// UnmarshalRead reads from r and unmarshals into v.
+// UnmarshalRead deserializes a single JSON value read from r into v.
 func UnmarshalRead(r io.Reader, v any) error {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-	return Unmarshal(data, v)
+	return json.UnmarshalRead(r, v)
 }

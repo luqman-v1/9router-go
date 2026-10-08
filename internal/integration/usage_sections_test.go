@@ -4,7 +4,7 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"net/http"
 	"strings"
 	"testing"
@@ -65,7 +65,7 @@ func TestUsageSectionsServeTheirOwnAnalytics(t *testing.T) {
 		}
 		var cache struct {
 			PromptCache *db.PromptCacheMetrics `json:"promptCache"`
-			Trend       []db.CacheTrendPoint  `json:"trend"`
+			Trend       []db.CacheTrendPoint   `json:"trend"`
 		}
 		res.Decode(t, &cache)
 		// A null promptCache leaves every Cache section card reading 0, which is
@@ -95,7 +95,7 @@ func TestUsageSectionsServeTheirOwnAnalytics(t *testing.T) {
 			t.Fatalf("GET /api/cache/entries = %d, want 200 (body: %s)", res.Status, truncate(res.Body))
 		}
 		var page struct {
-			Entries []map[string]any `json:"entries"`
+			Entries    []map[string]any `json:"entries"`
 			Pagination struct {
 				Page  int `json:"page"`
 				Limit int `json:"limit"`
@@ -197,7 +197,7 @@ func TestUsageSectionsServeTheirOwnAnalytics(t *testing.T) {
 		// A malformed window must not be accepted silently: the server answers
 		// with its 7-day fallback, so the payload shape is the only signal. The
 		// assertion here is that the response is the stats document at all.
-		var stats map[string]json.RawMessage
+		var stats map[string]jsontext.Value
 		res := env.Get(t, "/api/usage/stats?period=all")
 		res.Decode(t, &stats)
 		if _, ok := stats["byProvider"]; !ok {

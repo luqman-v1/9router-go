@@ -3,7 +3,7 @@
 package integration
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"strings"
@@ -37,6 +37,7 @@ func lastRequestBody(t *testing.T, up *Upstream) string {
 	t.Helper()
 	return string(up.Last(t).Body)
 }
+
 // addAntigravityConnection stores an OAuth-shaped antigravity connection
 // pointed at up. AddConnection cannot be reused here: it hardcodes the
 // apikey auth type and an OpenAI-style baseUrl, and antigravity is forwarded
@@ -60,7 +61,6 @@ func addAntigravityConnection(t *testing.T, env *Env, up *Upstream) {
 	}
 }
 
-
 // TestGeminiToolSchemaDropsTupleKeywords pins #52 end to end: a draft-07 schema
 // carrying additionalItems reached Google's generateContent endpoint verbatim
 // before, which answers 400 "Unknown name additionalItems at
@@ -79,14 +79,14 @@ func TestGeminiToolSchemaDropsTupleKeywords(t *testing.T) {
 				"name":        "write_rows",
 				"description": "append rows",
 				"parameters": map[string]any{
-					"type":             "object",
-					"additionalItems":  map[string]any{"type": "string"},
-					"prefixItems":      []any{map[string]any{"type": "object"}},
+					"type":                 "object",
+					"additionalItems":      map[string]any{"type": "string"},
+					"prefixItems":          []any{map[string]any{"type": "object"}},
 					"additionalProperties": false,
 					"properties": map[string]any{
 						"rows": map[string]any{
-							"type":       "array",
-							"items":      map[string]any{"type": "string"},
+							"type":            "array",
+							"items":           map[string]any{"type": "string"},
 							"additionalItems": map[string]any{"type": "string"},
 						},
 					},

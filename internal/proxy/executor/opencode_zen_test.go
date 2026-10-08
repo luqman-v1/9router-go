@@ -2,7 +2,7 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -42,10 +42,10 @@ func newZenProbe(t *testing.T, reply func(w http.ResponseWriter)) *zenProbe {
 
 func zenConfig(probe *zenProbe) *providers.ProviderConfig {
 	return &providers.ProviderConfig{
-		BaseURL:      probe.server.URL + "/zen/v1/chat/completions",
-		AuthHeader:   "Authorization",
-		AuthScheme:   "bearer",
-		UsageURL:     providers.KnownProviders["opencode-zen"].UsageURL,
+		BaseURL:    probe.server.URL + "/zen/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		UsageURL:   providers.KnownProviders["opencode-zen"].UsageURL,
 		StaticHeaders: map[string]string{
 			"x-opencode-client": "desktop",
 			"User-Agent":        "opencode/1.18.31",
@@ -74,11 +74,11 @@ func TestForwardOpencodeZen_ChatLane(t *testing.T) {
 	probe := newZenProbe(t, zenChatReply)
 	rec := httptest.NewRecorder()
 	req := &Request{
-		Ctx:    context.Background(),
-		Client: probe.server.Client(),
-		Config: zenConfig(probe),
-		APIKey: "sk-zen",
-		Body:   []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+		Ctx:      context.Background(),
+		Client:   probe.server.Client(),
+		Config:   zenConfig(probe),
+		APIKey:   "sk-zen",
+		Body:     []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"stream":true}`),
 		IsStream: true,
 	}
 	if err := ForwardOpencodeZen(rec, req); err != nil {
@@ -130,11 +130,11 @@ func TestForwardOpencodeZen_MessagesLaneFromChatClient(t *testing.T) {
 	probe := newZenProbe(t, zenMessagesReply)
 	rec := httptest.NewRecorder()
 	req := &Request{
-		Ctx:    context.Background(),
-		Client: probe.server.Client(),
-		Config: zenConfig(probe),
-		APIKey: "sk-zen",
-		Body:   []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+		Ctx:      context.Background(),
+		Client:   probe.server.Client(),
+		Config:   zenConfig(probe),
+		APIKey:   "sk-zen",
+		Body:     []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":true}`),
 		IsStream: true,
 	}
 	if err := ForwardOpencodeZen(rec, req); err != nil {
@@ -185,11 +185,11 @@ func TestForwardOpencodeZen_ChatLaneFromResponsesClient(t *testing.T) {
 	rec := httptest.NewRecorder()
 	ctx := translator.WithClientFormat(context.Background(), translator.ClientFormatResponses)
 	req := &Request{
-		Ctx:    ctx,
-		Client: probe.server.Client(),
-		Config: zenConfig(probe),
-		APIKey: "sk-zen",
-		Body:   []byte(`{"model":"deepseek-v4-pro","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`),
+		Ctx:      ctx,
+		Client:   probe.server.Client(),
+		Config:   zenConfig(probe),
+		APIKey:   "sk-zen",
+		Body:     []byte(`{"model":"deepseek-v4-pro","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`),
 		IsStream: true,
 	}
 	if err := ForwardOpencodeZen(rec, req); err != nil {

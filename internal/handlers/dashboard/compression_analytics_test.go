@@ -2,14 +2,14 @@ package dashboard
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"9router/proxy/internal/db"
+	"github.com/go-chi/chi/v5"
 )
 
 func TestHandleGetCompressionAnalytics(t *testing.T) {

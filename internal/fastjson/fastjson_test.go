@@ -1,7 +1,6 @@
 package fastjson
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 )
@@ -28,7 +27,6 @@ func TestMarshalUnmarshalRoundTrip(t *testing.T) {
 }
 
 func TestMarshalNoHTMLEscape(t *testing.T) {
-	// Matches encoding/json config: no HTML escaping.
 	data, err := Marshal(map[string]string{"expr": "1 < 2 && 3 > 2"})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -38,38 +36,26 @@ func TestMarshalNoHTMLEscape(t *testing.T) {
 	}
 }
 
-func TestMarshalIndent(t *testing.T) {
-	data, err := MarshalIndent(sample{Name: "x", Count: 1}, "", "  ")
+// Upstream prompt caches key on exact request bytes, so two marshals of the
+// same value must be byte-identical regardless of map iteration order.
+func TestMarshalIsDeterministic(t *testing.T) {
+	v := map[string]int{"z": 1, "a": 2, "m": 3, "b": 4}
+	first, err := Marshal(v)
 	if err != nil {
-		t.Fatalf("MarshalIndent: %v", err)
+		t.Fatalf("Marshal: %v", err)
 	}
-	if !strings.Contains(string(data), "\n  ") {
-		t.Fatalf("MarshalIndent output not indented: %s", data)
+	want := `{"a":2,"b":4,"m":3,"z":1}`
+	if string(first) != want {
+		t.Fatalf("Marshal = %s, want %s", first, want)
 	}
-}
-
-func TestValid(t *testing.T) {
-	if !Valid([]byte(`{"a":1}`)) {
-		t.Fatal("Valid returned false for valid JSON")
-	}
-	if Valid([]byte(`{"a":}`)) {
-		t.Fatal("Valid returned true for invalid JSON")
-	}
-}
-
-func TestNewEncoderDecoder(t *testing.T) {
-	var buf bytes.Buffer
-	enc := NewEncoder(&buf)
-	if err := enc.Encode(sample{Name: "stream", Count: 7}); err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
-	dec := NewDecoder(&buf)
-	var out sample
-	if err := dec.Decode(&out); err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
-	if out.Name != "stream" || out.Count != 7 {
-		t.Fatalf("decoded %+v, want {stream 7}", out)
+	for range 50 {
+		again, err := Marshal(v)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if string(again) != string(first) {
+			t.Fatalf("Marshal not deterministic: %s then %s", first, again)
+		}
 	}
 }
 
@@ -77,19 +63,6 @@ func TestUnmarshalError(t *testing.T) {
 	var out sample
 	if err := Unmarshal([]byte(`{"count": "not-an-int"}`), &out); err == nil {
 		t.Fatal("expected error unmarshaling wrong type")
-	}
-}
-
-func TestRawMessage(t *testing.T) {
-	type wrapper struct {
-		Payload RawMessage `json:"payload"`
-	}
-	var w wrapper
-	if err := Unmarshal([]byte(`{"payload":{"nested":true}}`), &w); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if !strings.Contains(string(w.Payload), "nested") {
-		t.Fatalf("RawMessage = %s, want raw nested object", w.Payload)
 	}
 }
 

@@ -2,7 +2,8 @@ package dashboard
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +31,7 @@ func stubOllamaUsage(t *testing.T, usageURL, meURL string) {
 // test asserts on the reading instead of on a raw JSON substring.
 func hasQuotaRow(body, name string) bool {
 	var payload struct {
-		Quotas map[string]json.RawMessage `json:"quotas"`
+		Quotas map[string]jsontext.Value `json:"quotas"`
 	}
 	if err := json.Unmarshal([]byte(body), &payload); err != nil {
 		return false

@@ -1,6 +1,6 @@
 package translator
 
-import "encoding/json"
+import json "encoding/json/v2"
 
 // ParseResponsesUsage reads the usage a Responses-native upstream reports,
 // which counts input_tokens/output_tokens instead of the Chat Completions

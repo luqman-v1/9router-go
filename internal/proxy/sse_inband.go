@@ -2,7 +2,8 @@ package proxy
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -78,17 +79,17 @@ func inbandPayload(line []byte) []byte {
 
 // inbandEnvelope reads only the field that decides failure.
 type inbandEnvelope struct {
-	Error json.RawMessage `json:"error"`
+	Error jsontext.Value `json:"error"`
 }
 
 // inbandErrorObject reads the failure detail out of an error object. Code
 // and Status stay raw: providers disagree on the key and on number-vs-string,
 // and httpStatusFromJSON normalizes both.
 type inbandErrorObject struct {
-	Message string          `json:"message"`
-	Type    string          `json:"type"`
-	Code    json.RawMessage `json:"code"`
-	Status  json.RawMessage `json:"status"`
+	Message string         `json:"message"`
+	Type    string         `json:"type"`
+	Code    jsontext.Value `json:"code"`
+	Status  jsontext.Value `json:"status"`
 }
 
 // parseInbandError classifies the payload inbandPayload extracted. Any
@@ -136,7 +137,7 @@ func inbandMessage(providerMsg string) string {
 // inbandStatusCode returns the first usable HTTP status from the candidates,
 // defaulting to 502. Non-numeric codes (gateway-style `"upstream_error"`,
 // `"overloaded_error"`) and out-of-range numbers never pass through.
-func inbandStatusCode(candidates ...json.RawMessage) int {
+func inbandStatusCode(candidates ...jsontext.Value) int {
 	for _, raw := range candidates {
 		if code := httpStatusFromJSON(bytes.TrimSpace(raw)); code != 0 {
 			return code
