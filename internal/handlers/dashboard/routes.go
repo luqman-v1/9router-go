@@ -3,10 +3,11 @@ package dashboard
 import (
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
+	"9router/proxy/internal/observ"
 	"9router/proxy/internal/semanticcache"
+	"github.com/go-chi/chi/v5"
 )
 
 // Default probe URLs for proxy pool health checks.
@@ -89,6 +90,20 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/keys", h.HandleCreateApiKey)
 		r.Delete("/keys/{id}", h.HandleDeleteApiKey)
 		r.Put("/keys/{id}/toggle", h.HandleToggleApiKey)
+		r.Post("/keys/{id}/rotate", h.HandleRotateApiKey)
+		r.Put("/keys/{id}", h.HandleUpdateApiKey)
+
+		// F-5 Credential vault: status and master-key rotation.
+		r.Get("/vault/status", h.HandleGetVaultStatus)
+		r.Post("/vault/rotate", h.HandleRotateVault)
+		r.Get("/metrics", observ.Handler().ServeHTTP)
+
+		// Guardrails: policy CRUD and the audit log.
+		r.Get("/guardrails/policies", h.HandleGetGuardrailPolicies)
+		r.Post("/guardrails/policies", h.HandleCreateGuardrailPolicy)
+		r.Put("/guardrails/policies/{id}", h.HandleUpdateGuardrailPolicy)
+		r.Delete("/guardrails/policies/{id}", h.HandleDeleteGuardrailPolicy)
+		r.Get("/guardrails/logs", h.HandleListGuardrailLogs)
 
 		// Models
 		r.Get("/models/custom", h.HandleGetCustomModels)

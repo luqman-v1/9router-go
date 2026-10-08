@@ -16,9 +16,11 @@ import (
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/usagetracker"
+	"9router/proxy/internal/observ"
 )
 
 var dailyUsageMu sync.Mutex
@@ -124,6 +126,9 @@ func (h *ChatHandler) LogFailure(
 	); insertErr != nil {
 		log.Error("usage", "insert failed request detail failed", "error", insertErr)
 	}
+
+	observ.RecordRequest(info.Provider, info.Model, info.Endpoint, statusCode)
+	observ.RecordDuration(info.Provider, info.Model, time.Duration(latencyMs)*time.Millisecond)
 }
 
 func metricsTTFT(metrics *streamMetrics) int64 {
@@ -141,12 +146,12 @@ func sanitizeDetailError(message string) string {
 }
 
 // LogUsage is the exported method to persist a usage record and update connection metadata.
-func (h *ChatHandler) LogUsage(info *UsageLogInfo, usage *translator.OpenAIUsage, latencyMs int64, requestBody []byte, metrics *streamMetrics) {
-	h.logUsage(info, usage, latencyMs, requestBody, metrics)
+func (h *ChatHandler) LogUsage(ctx context.Context, info *UsageLogInfo, usage *translator.OpenAIUsage, latencyMs int64, requestBody []byte, metrics *streamMetrics) {
+	h.logUsage(ctx, info, usage, latencyMs, requestBody, metrics)
 }
 
 // logUsage persists a usage record and updates connection metadata.
-func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage, latencyMs int64, requestBody []byte, metrics *streamMetrics) {
+func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *translator.OpenAIUsage, latencyMs int64, requestBody []byte, metrics *streamMetrics) {
 	if usage == nil {
 		usage = &translator.OpenAIUsage{}
 	}
@@ -202,6 +207,16 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 	}
 	log.Info("usage", "logged", append(usageKVs, info.ConnIdentityKV()...)...)
 
+	// Reconcile the limiter's TPM reservation against what the turn actually
+	// cost. Without this the bucket is charged an estimate forever: a key whose
+	// prompts are consistently under-estimated spends past the limit that
+	// exists to bound exactly that.
+	//
+	// The reservation was taken before dispatch, from a body the gateway may
+	// since have rewritten, so the real total is the only honest number to
+	// settle against.
+	middleware.SettleTokenUsageFromContext(ctx, totalTokens)
+
 	// reasoning_tokens belongs here for the same reason as the cache figures:
 	// the stored row is what the dashboard bills and charts from, so omitting
 	// it makes every reasoning turn look cheaper than it was.
@@ -209,6 +224,16 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 	if err := h.Repo.InsertUsageHistory(info.Provider, info.Model, info.ConnectionID, maskAPIKey(info.APIKey), info.Endpoint, usage.PromptTokens, usage.CompletionTokens, cost, "success", totalTokens, metaJSON, tokensJSON); err != nil {
 		log.Error("usage", "insert failed", "error", err)
 	}
+
+	// Prometheus mirrors the row that was just inserted: a request is counted
+	// once, labelled with the provider/model the usage row names, and never
+	// with the caller's API key.
+	observ.RecordUsage(
+		info.Provider, info.Model, info.Endpoint, http.StatusOK,
+		time.Duration(latencyMs)*time.Millisecond,
+		usage.PromptTokens, usage.CompletionTokens,
+		cost*1_000_000, ttftMs,
+	)
 
 	now := time.Now().UTC()
 	reqID := fmt.Sprintf("%d-%s", now.UnixMilli(), info.Model)

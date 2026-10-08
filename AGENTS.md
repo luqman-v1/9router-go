@@ -384,6 +384,39 @@ When tasked with syncing a feature, bugfix, or provider from upstream:
 6. **Update Changelog**:
    - Add entry to `CHANGELOG.md` under `[Unreleased]` detailing the parity sync.
 
+7. **Branch & PR Targeting (`main` ONLY — MANDATORY)**:
+   - **Every pull request in this repository targets `main`.** Never open a PR
+     into `dev`, and never merge into `dev`. This is the operator's standing
+     decision, not a convention to weigh per-PR.
+   - `dev` is the **integration** branch: work accumulates there and is merged
+     onward into `main` through a single `dev` → `main` PR. It is not a merge
+     target for feature branches.
+   - **Branch from clean `origin/main`**, never from `dev`, a release tag, or
+     another feature branch:
+     ```bash
+     rtk git fetch origin
+     rtk git worktree add ../9router-go-<slug> -b fix/<slug> origin/main
+     ```
+   - Set the base explicitly, and pass the repo when creating the PR so a
+     mismatched default cannot silently redirect it:
+     ```bash
+     gh pr create --repo luqman-v1/9router-go --base main --head fix/<slug> \
+       --title "..." --body "..."
+     ```
+   - **A file that does not exist on `main` blocks the PR, not the branch.** If
+     the code you need to fix only exists on `dev`, the PR targeting `main`
+     cannot carry that fix: pointing at `main` drags every `dev` commit into
+     the diff (45 commits / 169 files on the fix for the Cache Analytics 503)
+     and leaves the PR `CONFLICTING`. Split instead — land the part that applies
+     to `main`, and hold the rest on a branch until the `dev` → `main` PR
+     lands, after which it is a one-commit cherry-pick. Say so explicitly in
+     the PR body rather than quietly widening the base.
+   - **Check the diff size before opening.** `gh pr view <n> --json changedFiles,
+     additions` must show only the files you touched. If it shows more than
+     that, the branch was cut from the wrong place — see the previous rule.
+   - Resolve `CHANGELOG.md` `[Unreleased]` conflicts **additively**: two entries
+     side by side, newest information appended, never one dropped.
+
 ---
 
 ## 8. Daily Commands Cheat-Sheet

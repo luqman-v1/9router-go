@@ -24,7 +24,8 @@ export type ActiveTab =
   | 'console-log'
   | 'terminal'
   | 'settings'
-  | 'keys'
+  | 'security'
+  | 'keys' // legacy alias for the endpoint tab; see ROUTE_TO_TAB below
 
 export const TAB_ROUTES: Record<ActiveTab, string> = {
   login: '/login',
@@ -49,11 +50,13 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   'console-log': '/dashboard/console-log',
   terminal: '/dashboard/console-log',
   settings: '/dashboard/profile',
-  keys: '/dashboard/cli-tools',
+  security: '/dashboard/security',
+  // Legacy alias: keys are managed on the endpoint tab (issue #199), so both
+  // tabs resolve to the same route rather than leaving one unreachable.
+  keys: '/dashboard/endpoint',
 }
 
 const ROUTE_TO_TAB: Record<string, ActiveTab> = {
-  // login
   '/login': 'login',
 
   // endpoint
@@ -100,9 +103,13 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
 
   // cli-tools
   '/dashboard/cli-tools': 'cli-tools',
-  '/dashboard/keys': 'cli-tools',
   '/cli-tools': 'cli-tools',
-  '/keys': 'cli-tools',
+
+  // Client API keys now live on the endpoint tab (issue #199), so the old key
+  // URLs resolve there instead of to a tab that no longer renders. Keeping the
+  // mapping means a bookmarked /dashboard/keys still lands on the key table.
+  '/dashboard/keys': 'endpoint',
+  '/keys': 'endpoint',
 
   // media providers
   '/dashboard/media-providers/embedding': 'media-embedding',
@@ -153,6 +160,10 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   '/dashboard/settings': 'settings',
   '/profile': 'settings',
   '/settings': 'settings',
+
+  // security: vault + guardrails
+  '/dashboard/security': 'security',
+  '/security': 'security',
 }
 
 // The Usage page's sections. Cache Analytics and Compression Analytics joined
@@ -216,6 +227,8 @@ export function pathToTab(pathname: string): ActiveTab {
   if (normalized.includes('usage') || normalized.includes('analytics')) return 'analytics'
   if (normalized.includes('combos')) return 'combos'
   if (normalized.includes('providers') || normalized.includes('connections')) return 'connections'
+  if (normalized.includes('keys')) return 'endpoint'
+  if (normalized.includes('security')) return 'security'
   if (normalized.includes('profile') || normalized.includes('settings')) return 'settings'
   return 'endpoint'
 }

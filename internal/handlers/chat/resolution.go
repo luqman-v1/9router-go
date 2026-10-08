@@ -5,6 +5,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
@@ -65,6 +66,18 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 		TokenSaver:  cfg,
 		SemanticCache: sc,
 		stickyState: make(map[string]*comboStickyState),
+	}
+}
+
+// SetRateLimiter attaches the process-wide rate limiter so the metering path
+// can reconcile a TPM reservation against the turn's real token count.
+//
+// It is a setter rather than a constructor argument because the limiter is
+// built by the router (it needs the configured window), while the handler is
+// constructed by several call sites that do not care about rate limiting.
+func (h *ChatHandler) SetRateLimiter(rl *middleware.RateLimiter) {
+	if h != nil {
+		h.RateLimiter = rl
 	}
 }
 

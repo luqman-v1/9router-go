@@ -57,6 +57,36 @@ func ConnectionCooldownUntil(rawData string) (time.Time, bool) {
 	return readTimestampField(raw, "rateLimitedUntil")
 }
 
+// RecordConnectionError stores the error message, status, and backoffLevel on
+// the connection row for dashboard visibility without setting an account-level
+// rateLimitedUntil cooldown.
+func (r *Repo) RecordConnectionError(connID string, status int, errText string, backoffLevel int) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	lastError := map[string]any{
+		"status":    status,
+		"message":   errText,
+		"timestamp": now,
+	}
+	payload, err := json.Marshal(lastError)
+	if err != nil {
+		return fmt.Errorf("marshal last error for %s: %w", connID, err)
+	}
+	_, err = r.db.Exec(
+		`UPDATE providerConnections
+		 SET data = json_set(data,
+		   '$.backoffLevel', ?,
+		   '$.lastError', json(?),
+		   '$.status', 'error'),
+		     updatedAt = ?
+		 WHERE id = ?`,
+		backoffLevel, string(payload), now, connID,
+	)
+	if err != nil {
+		return fmt.Errorf("record connection error %s: %w", connID, err)
+	}
+	return nil
+}
+
 // LockConnectionRateLimit stores the account-scoped cooldown and the error
 // that caused it, mirroring upstream applyErrorState
 // (open-sse/services/accountFallback.js:216). The dashboard already reads

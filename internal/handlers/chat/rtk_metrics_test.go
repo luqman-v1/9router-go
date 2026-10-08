@@ -96,7 +96,7 @@ func TestUsageLogging_WithCompressionMetrics(t *testing.T) {
 		CompletionTokens: 50,
 	}
 
-	h.LogUsage(info, usage, 150, []byte(`{"messages":[{"role":"user","content":"test"}]}`), nil)
+	h.LogUsage(context.Background(), info, usage, 150, []byte(`{"messages":[{"role":"user","content":"test"}]}`), nil)
 
 	logOutput := logBuf.String()
 	if !strings.Contains(logOutput, "[usage] logged") {
@@ -155,7 +155,7 @@ func TestUsageLogging_WithoutCompressionMetrics(t *testing.T) {
 		CompletionTokens: 20,
 	}
 
-	h.LogUsage(info, usage, 120, []byte(`{"messages":[{"role":"user","content":"test"}]}`), nil)
+	h.LogUsage(context.Background(), info, usage, 120, []byte(`{"messages":[{"role":"user","content":"test"}]}`), nil)
 
 	logOutput := logBuf.String()
 	if strings.Contains(logOutput, "compressed=") {

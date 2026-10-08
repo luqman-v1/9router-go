@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -127,8 +128,8 @@ func TestPooledConnectionsPragma(t *testing.T) {
 		if err := c.QueryRowContext(ctx, "PRAGMA cache_size;").Scan(&cs); err != nil {
 			t.Fatalf("conn %d query cache_size failed: %v", i, err)
 		}
-		if cs != -64000 {
-			t.Errorf("conn %d cache_size = %d, want -64000", i, cs)
+		if cs != sqliteCacheSizeKB {
+			t.Errorf("conn %d cache_size = %d, want %d", i, cs, sqliteCacheSizeKB)
 		}
 
 		var mmap int64
@@ -185,7 +186,7 @@ func TestSQLiteDSN(t *testing.T) {
 		"synchronous(NORMAL)",
 		"temp_store(MEMORY)",
 		"mmap_size(30000000)",
-		"cache_size(-64000)",
+		"cache_size(" + strconv.Itoa(sqliteCacheSizeKB) + ")",
 		"foreign_keys(ON)",
 	}
 
@@ -315,5 +316,38 @@ func TestGlobalDatabase(t *testing.T) {
 	}
 	if same != conn {
 		t.Error("repeated InitGlobalDatabase replaced the open handle; a second boot must reuse it")
+	}
+}
+
+// TestSQLiteCacheSizeCeiling pins the page-cache budget, which is a memory
+// limit and not a tuning knob: the value is asserted rather than merely
+// reported, because raising it back to the old -64000 costs a gateway that has
+// run its retention pass once ~120 MB of resident memory it never gives back.
+// See sqliteCacheSizeKB for the measurements behind the number.
+func TestSQLiteCacheSizeCeiling(t *testing.T) {
+
+	if sqliteCacheSizeKB >= 0 {
+		t.Fatalf("sqliteCacheSizeKB = %d, want a negative value so SQLite reads it as kibibytes", sqliteCacheSizeKB)
+	}
+
+	// 64 MB per connection, multiplied out by the pool, is what this change
+	// exists to undo. Fail loudly rather than let it drift back.
+	if sqliteCacheSizeKB <= -64000 {
+		t.Errorf("sqliteCacheSizeKB = %d, want more than -64000: a per-connection page cache that large pins a high resident-memory mark after the retention prune runs", sqliteCacheSizeKB)
+	}
+
+	// Round up: SQLite allocates whole pages, so the real ceiling is the next
+	// megabyte up, not the truncated figure below.
+	perConnMB := (-sqliteCacheSizeKB + 1023) / 1024
+	totalMB := perConnMB * sqliteMaxOpenConns
+	if totalMB > 64 {
+		t.Errorf("pooled page cache = %d MB across %d connections, want at most 64 MB", totalMB, sqliteMaxOpenConns)
+	}
+	if totalMB != 32 {
+		t.Errorf("pooled page cache = %d MB, want 32 MB", totalMB)
+	}
+
+	if sqliteMaxOpenConns != 4 {
+		t.Errorf("sqliteMaxOpenConns = %d, want 4; the per-connection cache budget is derived from it", sqliteMaxOpenConns)
 	}
 }

@@ -625,6 +625,17 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
 						break
 					}
+					if isGuardrailBlock(fwdErr) {
+						// A policy refusal is final: every other connection and
+						// model in the combo would receive the same prompt and
+						// answer with the same refused content, so continuing
+						// would spread it across every provider the combo names.
+						log.Warn("combo", "guardrail block, stopping turn", "provider", modelInfo.Provider, "conn", connID)
+						var ue *upstreamError
+						errors.As(fwdErr, &ue)
+						lastErr = ue
+						break
+					}
 					var ue *upstreamError
 					if errors.As(fwdErr, &ue) {
 						// A 410 naming a dead model is a routing fact, not an account
@@ -672,6 +683,15 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}
+			if isGuardrailBlock(lastErr) {
+				// A policy refusal ends the whole turn, not just this entry: the
+				// next model would be sent the same prompt and answer with the
+				// same refused content.
+				break
+			}
+		}
+		if isGuardrailBlock(lastErr) {
+			break
 		}
 
 		// All entries failed. Retry once only if a bounded wait is available;
@@ -813,6 +833,15 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(`{"error":{"message":"client closed request","type":"client_closed_request","code":499}}`)}
 						break
 					}
+					if isGuardrailBlock(fwdErr) {
+						// See the chat branch above: a policy refusal stops the
+						// turn instead of being replayed against the next model.
+						log.Warn("combo", "guardrail block, stopping turn", "provider", modelInfo.Provider, "conn", connID)
+						var blocked *upstreamError
+						errors.As(fwdErr, &blocked)
+						lastErr = blocked
+						break
+					}
 					var ue *upstreamError
 					if errors.As(fwdErr, &ue) {
 						// Same contract as the OpenAI loop: a 410 naming a dead
@@ -855,6 +884,13 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}
+			if isGuardrailBlock(lastErr) {
+				// See handleComboFallback: a policy refusal ends the turn.
+				break
+			}
+		}
+		if isGuardrailBlock(lastErr) {
+			break
 		}
 
 		// All entries failed. Retry once only if a bounded wait is available;
@@ -907,9 +943,17 @@ func (h *ChatHandler) comboLockRetryable(excludeIDs *[]string, connID, provider,
 	}
 	// Account-scoped cooldown alongside the per-model locks, so the selector
 	// can skip this account before spending a request (upstream applyErrorState).
-	until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
-	if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, extractErrorText(ue.Body)); err != nil {
-		log.Warn("combo", "rate limit lock failed", "conn", connID, "error", err)
+	// Only lock if error is account-scoped, not model-scoped (e.g. 401 auth issues),
+	// so unrelated models stay available.
+	if isModelScopedQuotaError(ue.StatusCode, extractErrorText(ue.Body), model) {
+		if recErr := h.Repo.RecordConnectionError(connID, ue.StatusCode, extractErrorText(ue.Body), cls.NewBackoffLevel); recErr != nil {
+			log.Warn("combo", "record connection error failed", "conn", connID, "error", recErr)
+		}
+	} else {
+		until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
+		if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, extractErrorText(ue.Body)); err != nil {
+			log.Warn("combo", "rate limit lock failed", "conn", connID, "error", err)
+		}
 	}
 	*excludeIDs = append(*excludeIDs, connID)
 	log.Warn("combo", "locked on retryable error", "provider", provider, "model", model, "lockKey", lockKey, "conn", connID, "status", ue.StatusCode, "cooldown_s", cooldownSec)

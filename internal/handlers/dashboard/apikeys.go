@@ -8,53 +8,96 @@ import (
 
 	"github.com/google/uuid"
 
-	"9router/proxy/internal/auth"
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/keikey"
+	"9router/proxy/internal/log"
+	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/models"
 )
 
 // HandleGetApiKeys handles GET /api/keys.
-// Upstream parity: the Next dashboard returns full key values here and the
-// media example cards use them directly as Bearer credentials for Run.
-// Full secrets are returned only to fully authenticated dashboard callers
-// (login session cookie, local CLI token, or requireLogin=false which
-// upstream treats as authenticated). Callers presenting only a low-privilege
-// client API key get masked display values: unlike upstream (which rejects
-// them at the guard), this router lets API keys through dashboard auth for
-// CLI compat, so listing full secrets there would let one leaked key dump
-// them all. Creation still returns the full value once.
+//
+// Issue #199 makes the secret readable again so the dashboard can reveal and
+// copy it, which reverses the F-6 contract. That reversal is scoped to
+// dashboard credentials: a caller holding only an engine client key — the
+// credential handed to Cursor or Claude Code — still gets the masked value, so
+// one leaked key cannot dump the whole key set.
 func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Request) {
-	reveal := auth.SessionValid(r) ||
-		auth.ValidCLIToken(r.Header.Get(auth.CLITokenHeader)) ||
-		!auth.RequireLogin(h.Repo)
 	keys, err := h.Repo.GetApiKeys()
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	privileged := middleware.CallerIsDashboardPrivileged(h.Repo, r)
 	sanitized := make([]map[string]any, 0, len(keys))
 	for _, k := range keys {
 		if k == nil {
 			continue
 		}
-		key := k.Key
-		if !reveal {
-			key = maskClientKey(key)
-		}
 		sanitized = append(sanitized, map[string]any{
-			"id": k.ID, "key": key, "name": k.Name,
+			"id": k.ID, "key": apiKeySecretFor(k, privileged), "keyDisplay": apiKeyDisplay(k), "name": k.Name,
 			"machineId": k.MachineID, "isActive": k.IsActive, "createdAt": k.CreatedAt,
+			// The governance columns belong in the list, not only behind a
+			// per-key fetch: the dashboard has to tell a constrained key from
+			// an unconstrained one at a glance, and omitting them here made
+			// every row read as "unrestricted" no matter what was set.
+			"rateLimitRpm":         intOrZero(k.RateLimitRPM),
+			"rateLimitTpm":         intOrZero(k.RateLimitTPM),
+			"rateLimitConcurrency": intOrZero(k.RateLimitConcurrency),
+			"expiresAt":            stringOrEmpty(k.ExpiresAt),
+			"lastUsedAt":           stringOrEmpty(k.LastUsedAt),
+			"usedCount":            intOrZero(k.UsedCount),
+			"metadata":             stringOrEmpty(k.Metadata),
 		})
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, sanitized)
 }
 
+// apiKeySecretFor returns the stored secret to a dashboard credential and the
+// masked value to everyone else. Rows written before issue #199 hold only an
+// argon2id verifier, so their plaintext is unrecoverable and the caller gets an
+// empty string; the row falls back to its masked display in the UI.
+func apiKeySecretFor(k *models.APIKey, privileged bool) string {
+	if !privileged || db.IsHashedKeyRow(k) {
+		return ""
+	}
+	return k.Key
+}
+
+// apiKeyDisplay returns the masked value for a key, falling back to masking
+// the plaintext on the fly for a row that never recorded one.
+func apiKeyDisplay(k *models.APIKey) string {
+	if k.KeyDisplay != nil && *k.KeyDisplay != "" {
+		return *k.KeyDisplay
+	}
+	return maskClientKey(k.Key)
+}
+
 // maskClientKey shows the first/last few chars of a client key (dashboard
-// display only); the full value is returned once at creation.
+// display only).
 func maskClientKey(key string) string {
 	if len(key) <= 12 {
 		return "***"
 	}
 	return key[:6] + "…" + key[len(key)-4:]
+}
+
+// intOrZero unwraps an optional int column, treating NULL and 0 alike: both
+// mean "no limit configured".
+func intOrZero(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+// stringOrEmpty unwraps an optional text column, normalizing NULL to "".
+func stringOrEmpty(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
 }
 
 // HandleCreateApiKey handles POST /api/keys.
@@ -92,10 +135,61 @@ func (h *DashboardHandler) HandleCreateApiKey(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// The secret is stored in the clear so the dashboard can reveal and copy
+	// it again later (issue #199). This reopens the F-6/DB-02 trade-off — a
+	// database dump exposes every client key — but an operator who cannot
+	// read a key back cannot use the row they just created either.
+
+	// The masked value is kept alongside it: the list still renders a compact
+	// identifier, and a row that predates this change has no plaintext to show.
+	if err := h.Repo.SetApiKeyDisplay(req.ID, keikey.Mask(req.Key)); err != nil {
+		log.Error("apikeys", "store api key display failed", "error", err)
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
 		"id":     req.ID,
 		"key":    req.Key,
+	})
+}
+
+// HandleRotateApiKey handles POST /api/keys/{id}/rotate.
+//
+// Rotation mints a replacement secret in place: the row keeps its id, policy,
+// usage history and allowlist, so a leaked key can be replaced without
+// deleting the record.
+func (h *DashboardHandler) HandleRotateApiKey(w http.ResponseWriter, r *http.Request) {
+	id := getURLParam(r, "id")
+	if id == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing apiKey id")
+		return
+	}
+	existing, err := h.Repo.GetApiKeyByID(id)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing == nil {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+
+	plaintext := "sk-" + strings.ReplaceAll(uuid.New().String(), "-", "")
+	if err := h.Repo.RotateApiKeySecret(id, plaintext, keikey.Mask(plaintext)); err != nil {
+		log.Error("apikeys", "rotate: store secret failed", "error", err)
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// The old key is live in the auth cache for its TTL; without this the
+	// leaked secret keeps working after the operator rotated it away.
+	keikey.DefaultAuthCache().InvalidateByID(id)
+
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"id":     id,
+		"key":    plaintext,
 	})
 }
 
@@ -112,6 +206,10 @@ func (h *DashboardHandler) HandleDeleteApiKey(w http.ResponseWriter, r *http.Req
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// The auth cache holds the verified row for its TTL, so without this a key
+	// deleted here keeps authenticating until the entry expires.
+	keikey.DefaultAuthCache().InvalidateByID(id)
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})
 }
@@ -163,6 +261,11 @@ func (h *DashboardHandler) HandleToggleApiKey(w http.ResponseWriter, r *http.Req
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// Same reason as the delete path: the cached row would otherwise keep the
+	// key authenticating after it was deactivated, and deactivating is exactly
+	// what an operator does when they believe a key has leaked.
+	keikey.DefaultAuthCache().InvalidateByID(id)
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":   "ok",

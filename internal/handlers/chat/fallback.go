@@ -15,12 +15,14 @@ import (
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/providers"
 	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/tokensaver"
 	"9router/proxy/internal/tracing"
 	"9router/proxy/internal/translator"
+	"9router/proxy/internal/observ"
 	"9router/proxy/internal/usagetracker"
 )
 
@@ -59,6 +61,8 @@ func (h *ChatHandler) handleAccountFallback(
 		return fmt.Errorf("provider %s/%s is unhealthy", provider, model)
 	}
 
+	observ.IncFallback(provider, model, observ.FallbackReasonUnhealthy)
+
 	allConns, err := h.Repo.GetProviderConnections(provider, true)
 	if err != nil || len(allConns) == 0 {
 		if cfg, ok := providers.KnownProviders[provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
@@ -73,6 +77,7 @@ func (h *ChatHandler) handleAccountFallback(
 				IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
 			})
 		}
+		observ.IncFallback(provider, model, observ.FallbackReasonNoConnection)
 		return fmt.Errorf("no active connections for provider: %s", provider)
 	}
 
@@ -94,6 +99,9 @@ func (h *ChatHandler) handleAccountFallback(
 		}
 		connObj, connData, err := h.getBestConnection(provider, c.ID, nil, model)
 		if err != nil || connObj == nil {
+			if lastErr == nil && err != nil {
+				lastErr = err
+			}
 			continue
 		}
 		apiKey := extractAPIKey(connData)
@@ -102,6 +110,9 @@ func (h *ChatHandler) handleAccountFallback(
 			if pErr == nil && providerCfg.DefaultAPIKey != "" {
 				apiKey = providerCfg.DefaultAPIKey
 			} else {
+				if lastErr == nil {
+					lastErr = fmt.Errorf("connection %s has no API key", connObj.ID)
+				}
 				continue
 			}
 		}
@@ -118,6 +129,7 @@ func (h *ChatHandler) handleAccountFallback(
 			return nil
 		} else {
 			lastErr = err
+			observ.IncFallback(provider, model, observ.FallbackReasonUpstreamError)
 		}
 		var ue *upstreamError
 		if errors.As(lastErr, &ue) && providers.IsModelDeprecation(ue.StatusCode, ue.Body) {
@@ -150,10 +162,17 @@ func (h *ChatHandler) handleAccountFallback(
 			}
 			// Account-scoped cooldown alongside the per-model locks, so the
 			// selector can skip this account before spending a request
-			// (upstream applyErrorState).
-			until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
-			if lockErr := h.Repo.LockConnectionRateLimit(connObj.ID, until, classification.NewBackoffLevel, ue.StatusCode, errorText); lockErr != nil {
-				log.Warn("fallback", "rate limit lock failed", "conn", connObj.ID, "error", lockErr)
+			// (upstream applyErrorState). Only lock if error is account-scoped,
+			// not model-scoped (e.g. 401 auth issues), so unrelated models stay available.
+			if isModelScopedQuotaError(ue.StatusCode, errorText, model) {
+				if recErr := h.Repo.RecordConnectionError(connObj.ID, ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
+					log.Warn("fallback", "record connection error failed", "conn", connObj.ID, "error", recErr)
+				}
+			} else {
+				until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
+				if lockErr := h.Repo.LockConnectionRateLimit(connObj.ID, until, classification.NewBackoffLevel, ue.StatusCode, errorText); lockErr != nil {
+					log.Warn("fallback", "rate limit lock failed", "conn", connObj.ID, "error", lockErr)
+				}
 			}
 			log.Warn("fallback", "connection locked", append([]any{
 				"conn", connObj.ID, "provider", provider, "model", model,
@@ -479,6 +498,43 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	}
 	sessionID := handlerutil.GetSessionID(ctx)
 
+	// The outbound guardrail tap goes here, not inside a response handler:
+	// this is the one point every dispatch path shares, so a provider with a
+	// registered executor is covered by exactly the same policy as one
+	// without. Placing it per handler left every executor-backed provider —
+	// which is most of the catalog — completely unfiltered, while the unit
+	// tests, which exercise a provider with no executor, still passed.
+	//
+	// The resolved policy goes on the context so the executors pick it up
+	// where they write, and a stream is tapped at the writer itself, because a
+	// buffered body could still be judged whole but a stream cannot be taken
+	// back once its first byte is out.
+	ctx = h.withOutboundPolicy(ctx)
+	gtapWriter, gtap := guardrailTap(ctx, w, endpoint, isStream)
+	if gtap != nil {
+		// Closed on the way out so the held window is discharged on the error
+		// paths below as well as the success one.
+		w = gtapWriter
+		defer gtap.Close()
+	}
+
+	// Hand the usage meter a way to reconcile the limiter's TPM reservation
+	// against what the turn actually cost.
+	//
+	// The reservation is read back off the context rather than recomputed: the
+	// limiter estimated from the body it had already read, and estimating twice
+	// from a body that may have been rewritten since would settle the charge
+	// against a number that was never charged.
+	if reserved, ok := middleware.ReservedTokensFromContext(ctx); ok && h.RateLimiter != nil {
+		if clientKey := requestKeyFromContext(ctx); clientKey != nil {
+			ctx = middleware.WithTokenSettler(ctx, func(actual int) {
+				if limit := middleware.EffectiveTPM(h.rateLimitDefaults(), clientKey); limit > 0 {
+					h.RateLimiter.SettleTokenUsage(clientKey.ID, limit, reserved, actual)
+				}
+			})
+		}
+	}
+
 	if exec := executor.Get(provider); exec != nil {
 		execReq := &executor.Request{
 			Ctx:            ctx,
@@ -513,6 +569,11 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	} else {
 		fwdErr = h.forwardRequest(ctx, w, providerCfg, apiKey, pipedBody, isStream, translateResponse, metrics, httpClient)
 	}
+
+	// A tap that cut the stream must win over whatever the dispatch returned:
+	// the dispatch succeeded as far as it knew, so a blocked stream would
+	// otherwise be logged, billed, and cooled down as a served turn.
+	fwdErr = guardrailStreamOutcome(gtap, fwdErr)
 
 	var ue *upstreamError
 	if errors.As(fwdErr, &ue) && ue.StatusCode == http.StatusUnauthorized && connectionID != "" {
@@ -658,7 +719,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			CompressionDurationMs: compressDurMs,
 		}
 		logInfo.ConnName, logInfo.ConnEmail = identityNames(h.connIdentityKVOr(f, connectionID))
-		h.logUsage(logInfo, usage, latencyMs, body, metrics)
+		h.logUsage(ctx, logInfo, usage, latencyMs, body, metrics)
 		fwdErr = nil
 		return nil
 	}
@@ -731,6 +792,8 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			"status", statusCode, "error", fwdErr,
 		}, identity...)...)
 	}
+
+	observ.IncUpstreamError(provider, model, statusCode)
 	return fwdErr
 }
 func isClientCanceled(ctx context.Context, err error) bool {
@@ -1037,4 +1100,25 @@ func claudeSessionIDFromBody(body []byte) string {
 	}
 	userID, _ := meta["user_id"].(string)
 	return extractClaudeSessionIdFromUserId(userID)
+}
+
+// isModelScopedQuotaError reports whether an upstream retryable error is
+// a model-specific quota exhaustion (e.g. Antigravity Claude QUOTA_EXHAUSTED)
+// rather than an account-scoped rate limit or credential failure.
+// For model-scoped quota exhaustion, only LockConnectionModel should be set
+// so that unrelated healthy models (e.g. Gemini) on the same account remain available.
+func isModelScopedQuotaError(statusCode int, errorText string, model string) bool {
+	if model == "" {
+		return false
+	}
+	if statusCode != http.StatusTooManyRequests && statusCode != http.StatusForbidden && statusCode != http.StatusServiceUnavailable {
+		return false
+	}
+	upper := strings.ToUpper(errorText)
+	if strings.Contains(upper, "QUOTA_EXHAUSTED") ||
+		strings.Contains(errorText, "Individual quota reached") ||
+		strings.Contains(upper, "MODEL_CAPACITY_EXHAUSTED") {
+		return true
+	}
+	return false
 }

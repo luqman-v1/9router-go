@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/guardrails"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/shutdown"
@@ -305,6 +306,18 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 	if err := proxy.EmptyUpstreamError(body); err != nil {
 		return err
 	}
+
+	// Outbound guardrails. The body is whole in hand and nothing has been
+	// written yet, so a block can still become a real status code rather than
+	// a cut stream, and a mask can rewrite the answer before any of it is
+	// relayed. The policy travels on the context, which every executor already
+	// carries, so this covers every provider without threading an engine
+	// through every call site that ends up here.
+	filtered, gerr := guardrails.ApplyBuffered(ctx, body)
+	if gerr != nil {
+		return guardrailBlockFailure(gerr)
+	}
+	body = filtered
 
 	if buf != nil {
 		buf.Write(body)

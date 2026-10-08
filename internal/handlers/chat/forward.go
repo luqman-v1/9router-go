@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/guardrails"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/semanticcache"
 	"9router/proxy/internal/log"
@@ -390,6 +391,16 @@ func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWri
 	if metrics != nil {
 		metrics.ResponseBuf.Write(body)
 	}
+
+	// Outbound guardrails: the last point before the answer reaches the client.
+	// It sits after the empty-response check so a blocked body is not mistaken
+	// for a provider failure, and before the translate step so the policy sees
+	// the model's own words rather than a reshaped envelope.
+	filtered, gerr := guardrails.ApplyBuffered(ctx, body)
+	if gerr != nil {
+		return guardrailBlockedError()
+	}
+	body = filtered
 
 	// A /v1/responses client on a Chat Completions upstream needs the answer in
 	// the Responses shape; translate marks a Claude client, which it is not.

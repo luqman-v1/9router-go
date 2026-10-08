@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"testing"
 
@@ -70,7 +71,7 @@ func TestUsageHistoryStoresReasoningTokens(t *testing.T) {
 				Model:        "test-model",
 				ConnectionID: "conn-reasoning-tokens",
 			}
-			h.LogUsage(info, &usage, 120, []byte(`{"messages":[{"role":"user","content":"test"}]}`), nil)
+			h.LogUsage(context.Background(), info, &usage, 120, []byte(`{"messages":[{"role":"user","content":"test"}]}`), nil)
 
 			var tokensJSON string
 			err := database.QueryRow(`

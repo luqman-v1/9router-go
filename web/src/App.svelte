@@ -12,7 +12,6 @@
     type Settings
   } from './api/client'
   import AnalyticsView from './components/analytics/AnalyticsView.svelte'
-  import ApiKeysView from './components/ApiKeysView.svelte'
   import CliToolsView from './components/CliToolsView.svelte'
   import CombosView from './components/combos/CombosView.svelte'
   import ConnectionsView from './components/connections/ConnectionsView.svelte'
@@ -27,6 +26,7 @@
   import QuotaTrackerView from './components/QuotaTrackerView.svelte'
   import SkillsView from './components/SkillsView.svelte'
   import SettingsView from './components/SettingsView.svelte'
+  import SecurityPanel from './components/security/SecurityPanel.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import UpdateModal from './components/UpdateModal.svelte'
   import type { SystemVersionInfo } from './api/client'
@@ -250,7 +250,6 @@
     'console-log': { title: 'Console Log', description: 'Live server console output' },
     terminal: { title: 'Console Log', description: 'Live server console output' },
     settings: { title: 'Settings', description: 'Manage your preferences and configuration' },
-    keys: { title: 'CLI & Remote Access', description: 'API keys for your CLI tools' },
   }
 
   function handleOpenNewCombo() {
@@ -372,8 +371,6 @@
               <TokenSaverView {settings} onRefresh={loadData} />
             {:else if activeTab === 'cli-tools'}
               <CliToolsView {apiKeys} onRefresh={loadData} />
-            {:else if activeTab === 'keys'}
-              <ApiKeysView {apiKeys} onRefresh={loadData} />
             {:else if activeTab === 'media-embedding'}
               {#if selectedMedia && selectedMediaCatalogItem}
                 <MediaProviderDetail
@@ -554,6 +551,8 @@
               <TerminalView />
             {:else if activeTab === 'settings'}
               <ProfileSettingsView {settings} onRefresh={loadData} />
+            {:else if activeTab === 'security'}
+              <SecurityPanel />
             {/if}
           {/if}
         </div>

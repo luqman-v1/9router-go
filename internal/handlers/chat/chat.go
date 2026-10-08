@@ -1,6 +1,7 @@
 package chat
 
 import (
+	json "9router/proxy/internal/fastjson"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
@@ -9,7 +10,6 @@ import (
 	"9router/proxy/internal/updater"
 	"bytes"
 	"context"
-	json "9router/proxy/internal/fastjson"
 	"errors"
 	"fmt"
 	"io"
@@ -69,11 +69,26 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Per-key model policy runs after the bypass path — synthetic warmup and
+	// keepalive traffic never reaches a provider, so it is not an access
+	// request — and before resolveModel, so a denied model never reaches
+	// connection selection.
+	if !h.enforceModelAccess(w, r, reqBody.Model) {
+		return
+	}
+
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
 	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	// Record the dispatching key so the outbound guardrail tap can resolve the
+	// right policy. A keyless caller leaves it unset and the tap stays inert.
+	ctx = withGuardrailKey(ctx, requestKeyID(r))
 
-	// Check prompt/response cache for non-streaming requests before model resolution
+	// Check prompt/response cache for non-streaming requests before model
+	// resolution: a hit answers the turn without touching a provider, so it
+	// must not depend on the model resolving. resolveModel below is what turns
+	// an unknown model into a 400, and a cached answer for a model that has
+	// since been retired is still the answer this client already paid for.
 	if !reqBody.Stream && h.SemanticCache != nil && h.SemanticCache.Enabled() {
 		var openAIReq translator.OpenAIRequest
 		if err := json.Unmarshal(body, &openAIReq); err == nil {
@@ -102,7 +117,6 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
 	requiredCaps := DetectRequiredCapabilities(body)
 
 	if len(modelInfo.ComboModels) > 0 {
@@ -219,6 +233,12 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-key model policy: 403 before any translation work or connection
+	// selection.
+	if !h.enforceModelAccess(w, r, reqBody.Model) {
+		return
+	}
+
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
@@ -254,9 +274,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	workingBody["stream"] = reqBody.Stream
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
-	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
-	// Store requested model for streaming echo (PR #3693) and for [1m] marker handling
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	// Record the dispatching key so the outbound guardrail tap can resolve the
+	// policy scoped to it. A keyless caller leaves it unset and the tap stays
+	// inert.
+	ctx = withGuardrailKey(ctx, requestKeyID(r))
 
 	requiredCaps := DetectRequiredCapabilities(body)
 
@@ -486,7 +508,12 @@ func queryFlagEnabled(v string) bool {
 func (h *ChatHandler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	mode := modelsListModeFromQuery(r)
 	result := h.buildModelsListResult(r.Context(), mode)
-	modelsJSON, err := json.Marshal(result.Models)
+	visible, err := h.filterModelsByAccess(requestKey(r), result.Models)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	modelsJSON, err := json.Marshal(visible)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to encode models")
 		return
@@ -504,6 +531,13 @@ func (h *ChatHandler) HandleModelsInfo(w http.ResponseWriter, r *http.Request) {
 	modelID := r.URL.Query().Get("id")
 	if modelID == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing id query parameter")
+		return
+	}
+
+	// Per-key policy: a key that cannot dispatch the model gets no metadata
+	// for it either, so /v1/models/info cannot be used to probe the catalog.
+	if err := h.checkModelAccess(requestKey(r), modelID); err != nil {
+		writeModelAccessError(w, err)
 		return
 	}
 
@@ -556,8 +590,6 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 	var data []map[string]any
 	now := time.Now().Unix()
 
-	endpoint := "/v1/chat/completions"
-
 	for id, cfg := range providers.KnownProviders {
 		var match bool
 		switch kind {
@@ -579,37 +611,24 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 		if !match {
 			continue
 		}
-		if kind == "web" {
-			endpoint = "/v1/search"
-		}
-		if kind == "image" {
-			endpoint = "/v1/images/generations"
-		}
-		if kind == "tts" {
-			endpoint = "/v1/audio/speech"
-		}
-		if kind == "stt" {
-			endpoint = "/v1/audio/transcriptions"
-		}
-		if kind == "embedding" {
-			endpoint = "/v1/embeddings"
-		}
-		if kind == "systemone" {
-			endpoint = "/v1/systemone"
-		}
-		if kind == "image-to-text" {
-			endpoint = "/v1/chat/completions"
-		}
-
 		data = append(data, map[string]any{
 			"id":       id,
 			"object":   "model",
 			"kind":     kind,
 			"owned_by": id,
-			"endpoint": endpoint,
+			"endpoint": kindEndpoint(kind),
 			"created":  now,
 		})
 	}
+
+	// Per-key policy applies to the kind listing too — it is the same
+	// catalogue under a different filter, so it goes through the same filter.
+	visible, err := h.filterModelsByAccess(requestKey(r), kindEntriesAsModelInfo(data))
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	data = kindEntriesFromModelInfo(visible, kind, now)
 
 	if data == nil {
 		data = []map[string]any{}
@@ -677,6 +696,12 @@ func (h *ChatHandler) HandleModelLookup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Per-key policy before the lookup, so a denied model answers 403 instead
+	// of the 404 the client could not act on.
+	if err := h.checkModelAccess(requestKey(r), suffix); err != nil {
+		writeModelAccessError(w, err)
+		return
+	}
 	// Otherwise treat as provider/model ID lookup.
 	if m, ok := h.findModelForLookup(r.Context(), suffix); ok {
 		handlerutil.WriteJSON(w, http.StatusOK, m)

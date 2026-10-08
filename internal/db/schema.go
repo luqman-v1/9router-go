@@ -231,6 +231,82 @@ func coreSchema() []tableDef {
 var goOnlyColumns = [][3]string{
 	{"providerConnections", "lastUsedAt", "TEXT"},
 	{"providerConnections", "consecutiveUseCount", "INTEGER DEFAULT 0"},
+	// F-5 Credential Vault: sealed credential columns
+	{"providerConnections", "secretWrappedDEK", "TEXT DEFAULT ''"},
+	{"providerConnections", "secretCiphertext", "TEXT DEFAULT ''"},
+	{"providerConnections", "tokenWrappedDEK", "TEXT DEFAULT ''"},
+	{"providerConnections", "tokenCiphertext", "TEXT DEFAULT ''"},
+	{"providerConnections", "refreshWrappedDEK", "TEXT DEFAULT ''"},
+	{"providerConnections", "refreshCiphertext", "TEXT DEFAULT ''"},
+	// F-1 Rate Limiting per-key
+	{"apiKeys", "rateLimitRPM", "INTEGER DEFAULT 0"},
+	{"apiKeys", "rateLimitTPM", "INTEGER DEFAULT 0"},
+	{"apiKeys", "rateLimitConcurrency", "INTEGER DEFAULT 0"},
+	// F-6 Argon2id key hashing
+	{"apiKeys", "keyHash", "TEXT DEFAULT ''"},
+	{"apiKeys", "lookupHash", "TEXT DEFAULT ''"},
+	{"apiKeys", "keyDisplay", "TEXT DEFAULT ''"},
+	// F-14 Time-limit keys + resale metadata
+	{"apiKeys", "expiresAt", "TEXT DEFAULT ''"},
+	{"apiKeys", "lastUsedAt", "TEXT DEFAULT ''"},
+	{"apiKeys", "usedCount", "INTEGER DEFAULT 0"},
+	{"apiKeys", "metadata", "TEXT DEFAULT ''"},
+}
+
+// keiRouterTables are Go-only tables for KeiRouter port features.
+// All use IF NOT EXISTS and are additive-only.
+var keiRouterTables = []tableDef{
+	{
+		name: "api_key_model_access",
+		columns: [][2]string{
+			{"api_key_id", "TEXT NOT NULL"},
+			{"model", "TEXT NOT NULL"},
+			{"created_at", "TEXT NOT NULL"},
+		},
+		primaryKey: "PRIMARY KEY (api_key_id, model)",
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_akma_key ON api_key_model_access(api_key_id)",
+		},
+	},
+	{
+		name: "guardrail_policies",
+		columns: [][2]string{
+			{"id", "TEXT PRIMARY KEY"},
+			{"tenant_id", "TEXT NOT NULL DEFAULT 'default'"},
+			{"scope", "TEXT NOT NULL"},
+			{"scope_id", "TEXT NOT NULL DEFAULT ''"},
+			{"name", "TEXT NOT NULL"},
+			{"enabled", "INTEGER NOT NULL DEFAULT 1"},
+			{"config", "TEXT NOT NULL DEFAULT '{}'"},
+			{"created_at", "TEXT NOT NULL"},
+			{"updated_at", "TEXT NOT NULL"},
+		},
+		indexes: []string{
+			"CREATE UNIQUE INDEX IF NOT EXISTS idx_grp_scope ON guardrail_policies(tenant_id, scope, scope_id)",
+		},
+	},
+	{
+		name: "guardrail_logs",
+		columns: [][2]string{
+			{"id", "TEXT PRIMARY KEY"},
+			{"tenant_id", "TEXT NOT NULL"},
+			{"request_id", "TEXT DEFAULT ''"},
+			{"api_key_id", "TEXT DEFAULT ''"},
+			{"provider", "TEXT DEFAULT ''"},
+			{"model", "TEXT DEFAULT ''"},
+			{"chain_id", "TEXT DEFAULT ''"},
+			{"detector", "TEXT NOT NULL"},
+			{"direction", "TEXT NOT NULL"},
+			{"action", "TEXT NOT NULL"},
+			{"severity", "TEXT DEFAULT ''"},
+			{"reason", "TEXT DEFAULT ''"},
+			{"findings", "TEXT DEFAULT '[]'"},
+			{"created_at", "TEXT NOT NULL"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_grl_ts ON guardrail_logs(created_at DESC)",
+		},
+	},
 }
 
 // EnsureCoreSchema creates the upstream core tables/indexes when absent,
@@ -246,6 +322,9 @@ func EnsureCoreSchema(db *sql.DB) error {
 		if err := ensureTable(db, t); err != nil {
 			return err
 		}
+	}
+	if err := EnsureKeiRouterTables(db); err != nil {
+		return err
 	}
 	if err := EnsureAdditiveColumns(db); err != nil {
 		return err
@@ -268,11 +347,55 @@ func EnsureCoreSchema(db *sql.DB) error {
 
 // EnsureAdditiveColumns adds the Go-only columns to a database whose tables
 // were created from the upstream core schema alone. Exported so test fixtures
-// built from dbtest.CreateTables get the same shape as a real database instead
-// of silently missing the round-robin bookkeeping columns.
+// get the same shape as a real database instead of silently missing the
+// round-robin bookkeeping columns or the KeiRouter per-key columns.
+//
+// A column whose table does not exist is skipped rather than treated as an
+// error. In production EnsureCoreSchema has created every core table before
+// this runs, so nothing is ever skipped; a test fixture that deliberately
+// builds only the tables it exercises has no use for the other columns, and
+// failing the whole pass over them would break fixtures testing unrelated
+// behaviour.
 func EnsureAdditiveColumns(db *sql.DB) error {
 	for _, c := range goOnlyColumns {
+		exists, err := tableExistsOnDB(db, c[0])
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
 		if err := addColumnIfMissing(db, c[0], c[1], c[2]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// tableExistsOnDB reports whether a table is present, probed through sqlite_master
+// so the answer does not depend on rewordable driver error strings.
+func tableExistsOnDB(db *sql.DB, table string) (bool, error) {
+	var count int
+	err := db.QueryRow(
+		`SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?`, table,
+	).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("core schema: inspect table %s: %w", table, err)
+	}
+	return count > 0, nil
+}
+
+
+// EnsureKeiRouterTables creates the Go-only tables backing the KeiRouter port
+// (per-key model access, guardrail policies, guardrail audit logs). Exported so
+// a test fixture that only builds the upstream core tables still gets the full
+// runtime shape instead of failing on a missing table at the first query.
+func EnsureKeiRouterTables(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("keirouter tables: nil db")
+	}
+	for _, t := range keiRouterTables {
+		if err := ensureTable(db, t); err != nil {
 			return err
 		}
 	}
