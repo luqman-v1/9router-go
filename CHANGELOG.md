@@ -42,11 +42,12 @@
   **35,5 s → 289 ms**, payload utuh (`totalRequests: 82143`,
   `totalCachedTokens: 74329933`, `byProvider` terisi).
 
-- **Catatan**: ekspresi `CASE` yang menulis ulang `cachedRequests` di query
-  trend sempat ditulis tanpa kurung — `CASE ... END > 0`, yang SQLite parse
-  sebagai `CASE ... (END > 0)` sehingga selalu jatuh ke cabang `ELSE` dan
-  melaporkan **nol** cache hit untuk setiap bucket. Seluruh baris trend punya
-  angka nol. `TestGetPromptCacheTrend_CountsBothCacheTokenSources` menjaga
+- **Bug lama yang ikut ketahuan, bukan berasal dari rewrite ini**:
+  `cachedRequests` di query trend sejak port OmniRoute (#110) menaruh
+  perbandingan JSON di dalam `AND (...)`, jadi `json_valid` menutup kedua
+  cabang dan memfilter baris yang justru punya cache token. Akibatnya
+  `cachedRequests` **selalu nol** — kurva "Cached Requests" kosong sejak fitur
+  itu ada. Test `TestGetPromptCacheTrend_CountsBothCacheTokenSources` menjaga
   ini: satu baris read-back, satu baris creation-only, satu payload kosong,
   satu payload bukan-JSON — dua pertama harus terhitung.
 
