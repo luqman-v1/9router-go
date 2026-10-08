@@ -4,7 +4,7 @@
   import Badge from '../../lib/ui/Badge.svelte'
   import Card from '../../lib/ui/Card.svelte'
   import Toggle from '../../lib/ui/Toggle.svelte'
-  import { getIconPath } from '../connections/types'
+  import ProviderArtwork from '../providers/ProviderArtwork.svelte'
 
   interface Props {
     provider: ProviderCatalogItem
@@ -48,7 +48,6 @@
   let total = $derived(providerConns.length)
   let allDisabled = $derived(total > 0 && providerConns.every((c) => c.isActive === 0 || c.isActive === false))
 
-  let icon = $derived(getIconPath(provider.id))
   let bgColor = $derived(
     provider.color && provider.color.length > 7
       ? provider.color
@@ -84,16 +83,9 @@
           class="size-8 rounded-lg flex items-center justify-center shrink-0"
           style="background-color: {bgColor}"
         >
-          <img
-            src={icon}
-            alt={provider.name}
-            width="30"
-            height="30"
+          <ProviderArtwork
+            id={provider.id}
             class="object-contain rounded-lg max-w-[30px] max-h-[30px]"
-            onerror={(e) => {
-              const target = e.currentTarget as HTMLElement
-              target.style.display = 'none'
-            }}
           />
         </div>
         <div class="min-w-0">

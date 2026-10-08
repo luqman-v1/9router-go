@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import type { ActiveRequestItem } from './types'
-  import { getIconPath } from '../connections/types'
+  import ProviderArtwork from '../providers/ProviderArtwork.svelte'
 
   interface ProviderNodeItem {
     id: string
@@ -488,16 +488,7 @@
           style="background-color: {node.color}15;"
         >
           {#if !imageErrors[node.id]}
-            <img
-              src={getIconPath(node.id)}
-              alt={node.name}
-              class="w-6 h-6 rounded-sm object-contain"
-              onerror={() => {
-                imageErrors = { ...imageErrors, [node.id]: true }
-              }}
-              loading="lazy"
-              decoding="async"
-            />
+            <ProviderArtwork id={node.id} class="w-6 h-6 rounded-sm object-contain" />
           {:else}
             <span class="text-sm font-bold" style="color: {node.color};">
               {node.textIcon}

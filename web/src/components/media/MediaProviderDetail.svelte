@@ -6,7 +6,7 @@
   import { parseCustomModelsResponse, subscribeCustomModelsChanged } from '../../lib/customModels'
   import type { ProviderCatalogItem } from '../../lib/providers'
   import Badge from '../../lib/ui/Badge.svelte'
-  import { getIconPath } from '../connections/types'
+  import ProviderArtwork from '../providers/ProviderArtwork.svelte'
   import { type MediaKind, MEDIA_KIND_INFO } from './mediaTypes'
   import NoAuthProxyCard from './NoAuthProxyCard.svelte'
   import TtsExampleCard from './TtsExampleCard.svelte'
@@ -599,7 +599,6 @@
     }
   }
 
-  let icon = $derived(getIconPath(provider.id))
 </script>
 
 <div class="flex flex-col gap-8 animate-fade-in max-w-7xl mx-auto">
@@ -618,13 +617,10 @@
         class="size-12 rounded-lg flex items-center justify-center shrink-0 border border-border/40 overflow-hidden"
         style="background-color: {provider.color ? provider.color + '15' : '#88888815'}"
       >
-        <img
-          src={icon}
+        <ProviderArtwork
+          id={provider.id}
           alt={provider.name}
-          width="48"
-          height="48"
-          class="object-contain size-8 rounded"
-          onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none' }}
+          class="object-contain size-8 rounded text-sm leading-none font-semibold"
         />
       </div>
       <div class="min-w-0 flex-1">
