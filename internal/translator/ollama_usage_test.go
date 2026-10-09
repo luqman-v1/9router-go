@@ -37,14 +37,14 @@ func TestParseOllamaUsage(t *testing.T) {
 			wantDone:   20,
 		},
 		{
-			// An intermediate NDJSON line is not the completion. Reading it
-			// would log a usage record for every chunk of a streamed turn.
+			// An intermediate NDJSON line with no counters at all: the flag
+			// alone already rules it out, so this guards the cheap path.
 			name:    "an intermediate chunk is not usage",
 			in:      `{"done":false,"response":"partial"}`,
 			wantNil: true,
 		},
 		{
-			// An intermediate NDJSON line is not the completion. This chunk
+			// An intermediate NDJSON line is not the completion. This one
 			// carries partial counters on purpose: without the `done` check it
 			// would be indistinguishable from a real usage record, and every
 			// chunk of a streamed turn would be logged.

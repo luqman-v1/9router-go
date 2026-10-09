@@ -523,7 +523,7 @@ func (u *toolCallIDUniquifier) next(id string) string {
 // readability and the call's index for uniqueness — two parts in one chunk are
 // emitted inside a single clock tick, so UnixNano alone collides and the client
 // cannot match a result to its call.
-// Parity with `functionCall.id || \`${name}-${Date.now()}-${index}\“ in
+// Parity with `functionCall.id || \`${name}-${Date.now()}-${index}\`` in
 // open-sse/translator/response/gemini-to-openai.js.
 func geminiToolCallID(geminiID, name string, index int) string {
 	if geminiID != "" {
