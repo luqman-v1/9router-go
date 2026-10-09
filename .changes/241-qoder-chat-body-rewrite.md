@@ -16,7 +16,7 @@ were all correct, which is why the failure read as an account problem rather
 than a gateway one. Upstream's Node build answers the same request 200,
 because it rewrites the body first.
 
-**What changed**
+**What changed (request side)**
 
 - `qoder_request.go` (new) — maps the OpenAI chat body onto Qoder's payload:
   `chat_task`, `session_type`, `agent_id`, `task_id`, `chat_context`,
@@ -27,10 +27,10 @@ because it rewrites the body first.
 - `qoder_encoding.go` (new) — Qoder's WAF-bypass body encoding (base64 →
   third-rotation → character substitution). The encoded bytes are what the
   COSY signature covers; signing the plaintext is a signature error.
-- `qoder_catalog.go` (new) — `model_config` comes from the live
-  COSY-signed model list, cached per credential for an hour and coalesced
-  through `singleflight`. A model the catalogue does not publish now fails
-  with a message naming it instead of reaching Qoder as an unroutable payload.
+- `qoder_catalog.go` (new) — `model_config` comes from the live COSY-signed
+  model list, cached per credential for an hour and coalesced through
+  `singleflight`. A model the catalogue does not publish now fails with a
+  message naming it instead of reaching Qoder as an unroutable payload.
 - `qoder_credentials.go` (new) — a Personal Access Token is exchanged for a
   short-lived job token before chat, since a PAT cannot sign COSY requests.
 - `qoder_context_tier.go` (new) — the 200K/400K/1M context-window escalation
@@ -45,6 +45,27 @@ because it rewrites the body first.
 - A connection missing `userId` or a token now answers a clean 401 naming the
   fix, rather than an opaque failure from inside the signer.
 
+**What changed (response side)**
+
+With the request accepted, every reply still failed as HTTP 502
+`upstream answered 200 without a completion`. Qoder's event stream is not
+plain SSE: every frame is an envelope whose `body` holds the real chunk as an
+escaped JSON *string*.
+
+```json
+data: {"headers":{...},"body":"{\"choices\":[{\"delta\":{...}}]}",
+        "statusCodeValue":200,"statusCode":"OK"}
+```
+
+Feeding those frames to the shared SSE folder finds no `choices`, so a
+perfectly good upstream looked empty. `qoder_sse.go` (new) peels the envelope
+and re-emits plain OpenAI chunks, and coalesces the empty finish chunk with
+the later `choices: []` usage frame into one terminal chunk carrying both —
+downstream reads usage off the finish chunk and drops `choices: []`. A billing
+or quota refusal becomes a `quota_error` rather than assistant text, and any
+other upstream failure is marked so the non-streaming path raises its status
+instead of answering 200 with the error text (issue #41).
+
 **Scope beyond the literal report**
 
 Upstream's attachments rewrite (uploading inlined images to
@@ -56,9 +77,17 @@ credential exchange rather than keeping a second copy that could drift.
 **Verification**
 
 `go test -race ./internal/proxy/executor/ ./internal/handlers/dashboard/` —
-707 passed. `qoder_body_test.go` captures the outbound request at a fake
+726 passed. `qoder_body_test.go` captures the outbound request at a fake
 upstream, decodes the Qoder encoding, and pins the payload keys, the derived
 identities (stable across turns, fresh per request), `Encode=1`, the header
 set, and that `Cosy-Bodyhash` covers the encoded bytes actually sent.
+`qoder_sse_test.go` pins the response side: envelope unwrapping, the escaped
+wire form verbatim, finish+usage coalescing, billing blocks not becoming
+assistant text, and the dropped `event:finish` timings frame.
+
 Before this change the same probe showed the client's OpenAI body on the wire
 with no `Encode=1`, no `X-Model-Key`, and `Accept-Encoding: gzip`.
+
+Verified against a live Qoder account: `qd/qfmodel` answers 200 with
+`content: "pong"` in both streaming and non-streaming mode, with usage
+attributed on the terminal chunk.

@@ -281,10 +281,19 @@ func ForwardQoder(w http.ResponseWriter, req *Request) error {
 	}
 	defer resp.Body.Close()
 
+	// Qoder wraps every chunk in a {statusCodeValue, body} envelope, so the
+	// stream is peeled before it reaches the shared SSE folder — otherwise a
+	// perfectly good upstream looks like "200 without a completion".
+	rewoundR, rewoundW := io.Pipe()
+	go func() {
+		_ = rewoundW.CloseWithError(qoderSSERewrite(resp.Body, rewoundW, built.QoderKey))
+	}()
+
+
 	if req.IsStream {
-		return execSSEStream(w, resp.Body, req)
+		return execSSEStream(w, rewoundR, req)
 	}
-	return qoderNonStream(w, req, resp.Body)
+	return qoderNonStream(w, req, rewoundR)
 }
 
 // qoderEndpoint is the request's configured chat endpoint, falling back to the
@@ -463,38 +472,39 @@ func qoderNonStream(w http.ResponseWriter, req *Request, upstream io.Reader) err
 	if err != nil {
 		return fmt.Errorf("ForwardQoder read response: %w", err)
 	}
-	if err := qoderSSEUpstreamError(body); err != nil {
+	// The envelope is already unwrapped by this point, so a failure now
+	// arrives as an error chunk the rewriter marked.
+	if err := qoderRewoundStreamError(body); err != nil {
 		return err
 	}
 	return jsonResponse(req.Ctx, w, bytes.NewReader(body), req.TranslateResp, req.ResponseBuf)
 }
 
-// qoderSSEUpstreamError surfaces the failure Qoder hides inside its
-// always-SSE response. A `data:` frame carries an envelope shaped
-// {"statusCodeValue":400,"statusCode":"BAD_REQUEST","body":"{...}"} that used
-// to be written verbatim under an `application/json` header: the client got
-// HTTP 200, JSON.parse failed on the SSE text, and the real upstream error was
-// never readable. Only a non-streaming request is affected — a streaming one
-// passes the frames through and the client sees them.
-func qoderSSEUpstreamError(body []byte) error {
+// qoderRewoundStreamError surfaces a failure Qoder reported inside its
+// always-SSE response.
+//
+// A non-200 envelope becomes an error chunk carrying `qoder_error`, and the
+// envelope is gone by the time this sees the stream — so the unwrapped chunk
+// is what has to be recognized. Folding it as a completion would hand the
+// client a 200 with the error text as the answer (issue #41).
+func qoderRewoundStreamError(body []byte) error {
 	for _, frame := range sseDataFrames(body) {
-		var envelope struct {
-			StatusCodeValue int    `json:"statusCodeValue"`
-			Body            string `json:"body"`
-		}
-		if err := json.Unmarshal(frame, &envelope); err != nil {
+		var chunk map[string]any
+		if err := json.Unmarshal(frame, &chunk); err != nil {
 			continue
 		}
-		if envelope.StatusCodeValue < 400 {
+		marker, ok := chunk["qoder_error"].(map[string]any)
+		if !ok {
 			continue
 		}
-		message := strings.TrimSpace(envelope.Body)
+		status, _ := marker["status"].(float64)
+		message, _ := marker["message"].(string)
 		if message == "" {
 			message = "qoder upstream error"
 		}
 		return &proxy.UpstreamError{
-			StatusCode: envelope.StatusCodeValue,
-			Body:       qoderErrorBody(message, envelope.StatusCodeValue),
+			StatusCode: int(status),
+			Body:       qoderErrorBody(message, int(status)),
 		}
 	}
 	return nil

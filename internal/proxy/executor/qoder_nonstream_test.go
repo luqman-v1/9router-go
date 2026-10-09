@@ -47,15 +47,43 @@ func qoderRequest(t *testing.T, srv *httptest.Server) *Request {
 	}
 }
 
-// qoderSSE joins frames the way an event stream is written on the wire.
-func qoderSSE(frames ...string) string {
+// qoderSSE writes frames the way Qoder does: each `data:` line is a
+// {statusCodeValue, body} envelope whose `body` is a JSON *string* holding the
+// chunk. Each chunk is passed in already serialized, so the map must carry it
+// as a Go string — marshaling it again would escape it twice and produce an
+// envelope no decoder can peel.
+func qoderSSE(chunks ...string) string {
 	var b strings.Builder
-	for _, f := range frames {
-		b.WriteString("data: " + f + "\n\n")
+	for _, chunk := range chunks {
+		frame, err := json.Marshal(map[string]any{
+			"headers":         map[string]any{"Content-Type": []string{"application/json"}},
+			"body":            chunk,
+			"statusCodeValue": 200,
+			"statusCode":      "OK",
+		})
+		if err != nil {
+			continue
+		}
+		b.WriteString("data: " + string(frame) + "\n\n")
 	}
+	b.WriteString("event:finish\n")
+	b.WriteString("data: {\"firstTokenDuration\":10,\"totalDuration\":20,\"serverDuration\":5}\n\n")
 	return b.String()
 }
 
+// qoderEnvelopeError writes one non-200 envelope, the shape Qoder uses to
+// report a failure inside an otherwise-successful stream.
+func qoderEnvelopeError(status int, body string) string {
+	frame, _ := json.Marshal(map[string]any{
+		"headers":         map[string]any{"Content-Type": []string{"application/json"}},
+		"body":            body,
+		"statusCodeValue": status,
+		"statusCode":      "BAD_REQUEST",
+	})
+	return "data: " + string(frame) + "\n\n"
+}
+
+// qoderChunk is one OpenAI chat-completion chunk, to be wrapped by qoderSSE.
 func qoderChunk(delta, finish string) string {
 	return fmt.Sprintf(
 		`{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":%s,"finish_reason":%s}]}`,
@@ -103,24 +131,16 @@ func TestForwardQoder_NonStreamFoldsSSEIntoJSON(t *testing.T) {
 	}
 }
 
-// Qoder reports failures inside the event stream. Folding alone would turn a
-// real upstream error into a successful empty completion, so the envelope has
-// to surface as a status the fallback layer can act on (issue #41).
+// Qoder reports failures inside the event stream as a non-200 envelope. Folding
+// alone would turn a real upstream error into a successful empty completion,
+// so the envelope has to surface as a status the fallback layer can act on
+// (issue #41).
 func TestForwardQoder_NonStreamSurfacesHiddenUpstreamError(t *testing.T) {
 	inner := `{"code":"400","message":"[FAIL]node:agent_router flow nodes not found"}`
-	frame, err := json.Marshal(map[string]any{
-		"headers":         map[string]any{"Content-Type": []string{"application/json"}},
-		"body":            inner,
-		"statusCodeValue": 400,
-		"statusCode":      "BAD_REQUEST",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := qoderTestServer(t, qoderSSE(string(frame), `{"firstTokenDuration":1,"totalDuration":2}`))
+	srv := qoderTestServer(t, qoderEnvelopeError(400, inner))
 
 	rec := httptest.NewRecorder()
-	err = ForwardQoder(rec, qoderRequest(t, srv))
+	err := ForwardQoder(rec, qoderRequest(t, srv))
 	if err == nil {
 		t.Fatalf("expected an error, got a 200 with body: %s", rec.Body.String())
 	}
@@ -131,7 +151,6 @@ func TestForwardQoder_NonStreamSurfacesHiddenUpstreamError(t *testing.T) {
 	if upErr.StatusCode != 400 {
 		t.Errorf("StatusCode = %d, want 400", upErr.StatusCode)
 	}
-
 	if !strings.Contains(string(upErr.Body), "flow nodes not found") {
 		t.Errorf("upstream message not readable by the client: %s", upErr.Body)
 	}
