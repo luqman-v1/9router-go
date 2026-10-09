@@ -144,6 +144,10 @@
   }
 
   function handleRotate(k: APIKey) {
+    // Rotating invalidates the current secret immediately, so it is confirmed
+    // rather than fired from a menu click.
+    if (!confirm(`Replace the secret for "${keyLabel(k)}"? The current key stops working immediately.`))
+      return
     return runExclusive(k.id, async () => {
       await api.rotateApiKey(k.id)
       // The row's displayed secret is stale the moment it is replaced; drop the
@@ -154,6 +158,7 @@
   }
 
   async function handleDelete(k: APIKey) {
+    if (!confirm(`Permanently delete "${keyLabel(k)}"? This cannot be undone.`)) return
     await runExclusive(k.id, async () => {
       await api.deleteApiKey(k.id)
       onRefresh?.()
