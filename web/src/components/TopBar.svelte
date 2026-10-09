@@ -25,6 +25,11 @@
     onLogout?: () => void
   } = $props()
 
+  // The group invite rotates. Everything user-facing points at the redirect
+  // page instead, so a revoked link is repaired by editing site/tg.html alone
+  // and every already-installed dashboard follows the new one.
+  const TELEGRAM_GROUP_URL = 'https://luqman-v1.github.io/9router-go/tg'
+
   // Theme state
   let isDark = $state(true)
   let isDonateOpen = $state(false)
@@ -284,13 +289,17 @@
   </div>
 </header>
 
+<!-- Escape closes the modal from anywhere on the page. The handler used to sit
+     on the backdrop, which never receives focus, so it never fired; a
+     <svelte:window> binding is the only place it actually runs. -->
+<svelte:window onkeydown={(e) => e.key === 'Escape' && (isDonateOpen = false)} />
+
 <!-- Donate Modal -->
 {#if isDonateOpen}
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
     <div
       class="absolute inset-0 bg-black/40 backdrop-blur-sm"
       onclick={() => (isDonateOpen = false)}
-      onkeydown={(e) => e.key === 'Escape' && (isDonateOpen = false)}
       role="button"
       tabindex="-1"
       aria-label="Close background"
@@ -318,12 +327,15 @@
         9router-go is a fast, lightweight and open-source high-throughput AI gateway in Go. If 9router-go saves you time and tokens, consider supporting the project!
       </p>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <!-- Three destinations, stacked rather than tiled: a 2-column grid leaves
+           the third card alone on its own row, and a full-width row per link
+           reads as a list, which is what these are. -->
+      <div class="flex flex-col gap-2.5">
         <a
           href="https://github.com/luqman-v1/9router-go"
           target="_blank"
           rel="noopener noreferrer"
-          class="flex items-center gap-3 p-3.5 rounded-xl border border-border-subtle bg-surface-2 hover:border-brand-500/40 transition-all group"
+          class="flex items-center gap-3 p-3.5 rounded-xl border border-border-subtle bg-surface-2 hover:border-brand-500/40 transition-colors group"
         >
           <div class="size-10 rounded-full flex items-center justify-center bg-brand-500/10 text-brand-500">
             <span class="material-symbols-outlined text-[22px]">star</span>
@@ -340,7 +352,7 @@
           href="https://github.com/luqman-v1/9router-go/releases"
           target="_blank"
           rel="noopener noreferrer"
-          class="flex items-center gap-3 p-3.5 rounded-xl border border-border-subtle bg-surface-2 hover:border-pink-500/40 transition-all group"
+          class="flex items-center gap-3 p-3.5 rounded-xl border border-border-subtle bg-surface-2 hover:border-pink-500/40 transition-colors group"
         >
           <div class="size-10 rounded-full flex items-center justify-center bg-pink-500/10 text-pink-500">
             <span class="material-symbols-outlined text-[22px]">rocket_launch</span>
@@ -350,6 +362,26 @@
               Releases & Updates
             </div>
             <div class="text-xs text-text-muted">Latest releases & changelog</div>
+          </div>
+        </a>
+
+        <!-- Points at the redirect page, not the invite, so a rotated or revoked
+             group link is fixed in site/tg.html without shipping a new binary to
+             everyone already running one. -->
+        <a
+          href={TELEGRAM_GROUP_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="flex items-center gap-3 p-3.5 rounded-xl border border-border-subtle bg-surface-2 hover:border-sky-600/50 dark:hover:border-sky-400/50 transition-colors group"
+        >
+          <div class="size-10 rounded-full flex items-center justify-center bg-sky-500/10 text-sky-600 dark:text-sky-400">
+            <span class="material-symbols-outlined text-[22px]">send</span>
+          </div>
+          <div class="min-w-0">
+            <div class="text-sm font-semibold text-text-main group-hover:text-sky-700 dark:group-hover:text-sky-400 transition-colors">
+              Telegram Group
+            </div>
+            <div class="text-xs text-text-muted">Release notes, questions, provider issues</div>
           </div>
         </a>
       </div>

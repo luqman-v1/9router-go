@@ -1,0 +1,103 @@
+name: Deploy site
+
+# The project page (https://luqman-v1.github.io/9router-go) is the README plus
+# a redirect stub, so it is regenerated on every push that can change either
+# one. Nothing else in this workflow is allowed to fail silently: a broken link
+# rewrite or a missing screenshot has to fail here rather than ship.
+on:
+  push:
+    branches: [main]
+    paths:
+      - README.md
+      - docs/screenshots/**
+      - site/**
+      - tools/sitegen/**
+      - .github/workflows/pages.yml
+  pull_request:
+    paths:
+      - README.md
+      - docs/screenshots/**
+      - site/**
+      - tools/sitegen/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+
+      # The generator is the site. Running its tests here means a bad rewrite of
+      # a relative README link fails the deploy instead of publishing a page of
+      # 404s.
+      - name: Test site generator
+        run: go test ./tools/sitegen/...
+
+      - name: Generate site
+        run: go run ./tools/sitegen -out _site
+
+      # Guards the one promise the redirect makes: every path a client can ask
+      # for must resolve to the current invite, and the invite must appear in
+      # the file that is documented as holding it.
+      - name: Assert Telegram redirect
+        run: |
+          set -euo pipefail
+          for f in _site/tg.html _site/tg/index.html; do
+            test -f "$f" || { echo "::error::$f was not generated"; exit 1; }
+            grep -q 't\.me/' "$f" || { echo "::error::$f has no invite link"; exit 1; }
+            grep -q 'http-equiv="refresh"' "$f" || { echo "::error::$f has no meta refresh"; exit 1; }
+          done
+          grep -q 't\.me/' site/tg.html || {
+            echo "::error::site/tg.html holds no invite link; update it when the group rotates."
+            exit 1
+          }
+          echo "redirect ok: $(grep -o 'https://t\.me/[^"]*' site/tg.html | head -1)"
+
+      # GitHub Pages would serve these as text/plain or 404, so the generator
+      # writes them as real paths. A rename that drops one is invisible until a
+      # visitor hits it.
+      - name: Assert site entry points
+        run: |
+          set -euo pipefail
+          for f in _site/index.html _site/style.css _site/tg.html _site/tg/index.html; do
+            test -f "$f" || { echo "::error::$f missing from the site output"; exit 1; }
+          done
+          grep -q 'href="style.css"' _site/index.html || {
+            echo "::error::index.html does not link the stylesheet"
+            exit 1
+          }
+
+      - uses: actions/configure-pages@v5
+        id: pages
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

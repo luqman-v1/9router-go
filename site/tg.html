@@ -1,0 +1,99 @@
+---
+# 9router-go Telegram redirect
+#
+# This file is the single place the Telegram invite link lives. Everything that
+# points at the community does NOT hardcode the invite:
+#
+#   - the Telegram badge in README.md      -> https://luqman-v1.github.io/9router-go/tg
+#   - the "Telegram Group" card in the dashboard Support modal -> same URL
+#
+# So when the group invite is rotated or revoked, change the ONE href below and
+# every existing installation and README still lands in the right place.
+#
+# The three hops are deliberate: <meta> covers clients that never run the
+# script below, the script avoids leaving this URL in the user's history, and
+# the visible link is the fallback when both are blocked.
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Join the 9router-go Telegram group</title>
+    <meta name="robots" content="noindex" />
+    <link rel="canonical" href="https://t.me/+09wMec_Dc8A0Mzhl" />
+    <meta http-equiv="refresh" content="0; url=https://t.me/+09wMec_Dc8A0Mzhl" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #fdfaf6;
+        --text: #0a0a0a;
+        --muted: #6b7280;
+        --link: #a64027;
+        --border: #e5e7eb;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1a1a1a;
+          --text: #ededed;
+          --muted: #9ca3af;
+          --link: #ee8d6a;
+          --border: #333333;
+        }
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        gap: 0.75rem;
+        padding: 2rem 1.25rem;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        text-align: center;
+      }
+
+      p {
+        margin: 0;
+        max-width: 34rem;
+        line-height: 1.6;
+      }
+
+      .muted {
+        color: var(--muted);
+        font-size: 0.9375rem;
+      }
+
+      a {
+        color: var(--link);
+        font-weight: 600;
+        text-decoration-thickness: 1px;
+        text-underline-offset: 3px;
+      }
+
+      a:hover {
+        text-decoration-thickness: 2px;
+      }
+
+      a:focus-visible {
+        outline: 2px solid var(--link);
+        outline-offset: 3px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Taking you to Telegram</h1>
+    <p class="muted">
+      If nothing happens,
+      <a href="https://t.me/+09wMec_Dc8A0Mzhl">open the 9router-go group</a> directly.
+    </p>
+    <script>
+      window.location.replace("https://t.me/+09wMec_Dc8A0Mzhl");
+    </script>
+  </body>
+</html>

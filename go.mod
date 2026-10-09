@@ -11,6 +11,7 @@ require (
 	github.com/samber/lo v1.53.0
 	github.com/spf13/viper v1.21.0
 	github.com/urfave/cli/v2 v2.27.7
+	github.com/yuin/goldmark v1.7.8
 	go.uber.org/fx v1.24.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/sync v0.23.0

@@ -1,0 +1,339 @@
+/*
+ * 9router-go project page.
+ *
+ * The palette is lifted from the dashboard's own tokens (web/src/index.css):
+ * warm paper light theme, charcoal dark theme, terracotta brand. Reason: a
+ * visitor who opens the docs and then the dashboard should see one product, and
+ * a second invented palette would read as a different tool.
+ *
+ * Terracotta appears exactly three times: the wordmark plate, the focus ring,
+ * and link hover. Brand-500 fails 4.5:1 as link text on paper (3.2:1), so links
+ * use brand-700 light / brand-300 dark, both above 5.9:1.
+ */
+
+:root {
+  color-scheme: light;
+  --bg: #fdfaf6;
+  --bg-alt: #f7f3ee;
+  --surface: #ffffff;
+  --border: #e5e7eb;
+  --border-subtle: #f1f1f3;
+  --text: #0a0a0a;
+  --text-muted: #6b7280;
+  --link: #a64027;
+  --link-hover: #7a2f1d;
+  --brand: #e56a4a;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --font-body: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #1a1a1a;
+    --bg-alt: #1f1f1e;
+    --surface: #262626;
+    --border: #333333;
+    --border-subtle: #2a2a2a;
+    --text: #ededed;
+    --text-muted: #9ca3af;
+    --link: #ee8d6a;
+    --link-hover: #f4b59c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  /* The sticky masthead must not cover the heading an anchor link targets. */
+  scroll-padding-top: 5.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--link);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  color: var(--link-hover);
+  text-decoration-thickness: 2px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  padding: 0.6rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  z-index: 10;
+}
+
+.skip-link:focus {
+  left: 1rem;
+  top: 1rem;
+}
+
+/* Masthead: flat, with a hairline instead of a shadow. The page scrolls under
+   it constantly, so elevation would be noise on every screen. */
+.masthead {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.masthead-inner {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 0.85rem 1.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+}
+
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+  letter-spacing: -0.01em;
+}
+
+.wordmark-mark {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 7px;
+  background: var(--brand);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.masthead nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.15rem;
+  font-size: 0.9375rem;
+}
+
+.masthead nav a {
+  color: var(--text-muted);
+  text-decoration: none;
+  /* 44px tall target without a 44px tall bar. */
+  padding: 0.6rem 0;
+  display: inline-block;
+}
+
+.masthead nav a:hover {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+}
+
+.prose {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 1rem;
+}
+
+.prose > div[align="center"] {
+  text-align: center;
+}
+
+.prose > div[align="center"] img {
+  margin: 0.4rem 0.2rem;
+  vertical-align: middle;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  margin: 2.4rem 0 0.9rem;
+  scroll-margin-top: 5.5rem;
+}
+
+.prose > div[align="center"] h1 {
+  margin-top: 0;
+  font-size: clamp(1.75rem, 5vw, 2.4rem);
+}
+
+h2 {
+  font-size: 1.5rem;
+  padding-top: 1.4rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+h3 {
+  font-size: 1.2rem;
+}
+
+h4 {
+  font-size: 1.05rem;
+}
+
+.prose p,
+.prose li {
+  color: var(--text);
+  /* Long env-var lines such as ANTHROPIC_BASE_URL are one unbreakable token.
+     Without this they push the page wider than a 360px viewport (R-03). */
+  overflow-wrap: break-word;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.4rem;
+}
+
+.prose li + li {
+  margin-top: 0.3rem;
+}
+
+.prose li::marker {
+  color: var(--text-muted);
+}
+
+.prose hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 2rem 0;
+}
+
+.prose img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.prose blockquote {
+  margin: 1.25rem 0;
+  padding: 0.85rem 1.1rem;
+  border-left: 3px solid var(--brand);
+  background: var(--bg-alt);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--text-muted);
+}
+
+.prose blockquote p {
+  color: var(--text-muted);
+}
+
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--bg-alt);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 0.12em 0.38em;
+}
+
+.prose pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  overflow-x: auto;
+  line-height: 1.55;
+}
+
+.prose pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 0.8125rem;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.25rem 0;
+  font-size: 0.9375rem;
+  display: block;
+  overflow-x: auto;
+}
+
+.prose th,
+.prose td {
+  border: 1px solid var(--border);
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.prose th {
+  background: var(--bg-alt);
+  font-weight: 600;
+}
+
+.prose details {
+  margin: 1.25rem 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 0.85rem 1.1rem;
+}
+
+.prose summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.2rem 0;
+}
+
+.prose summary:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.colophon {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3.5rem;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.colophon code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
