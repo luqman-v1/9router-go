@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### 🐛 fix(dashboard): Check All Models hanya memeriksa model yang aktif/visible (#230)
+
+- **Latar belakang**: tombol "Check All Models" sebelumnya mengumpulkan target dari `allAvailableModels`
+  sehingga model-model yang sudah di-disable oleh operator tetap ikut diuji di upstream. Hasil pengujian
+  model disabled juga tidak memiliki baris di tabel (karena tabel hanya merender `visibleModels`).
+- **Fiks**: `handleCheckAllModels` dan label tombol kini di-scope ke `visibleModels`, sehingga
+  sweep hanya menguji model yang memang diaktifkan di tampilan.
+
 ### ✨ feat(dashboard): satukan enam baris kontrol menjadi satu menu (Closes #224)
 
 - **Latar belakang**: report #224 — enam surface dashboard punya deretan
