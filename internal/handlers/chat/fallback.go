@@ -169,7 +169,7 @@ func (h *ChatHandler) handleAccountFallback(
 			// (upstream applyErrorState). Only lock if error is account-scoped,
 			// not model-scoped (e.g. 401 auth issues), so unrelated models stay available.
 			if isModelScopedError(ue.StatusCode, errorText, model) {
-				if recErr := h.Repo.RecordConnectionError(connObj.ID, ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
+				if recErr := h.Repo.RecordConnectionScopedError(connObj.ID, model, "chat", ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
 					log.Warn("fallback", "record connection error failed", "conn", connObj.ID, "error", recErr)
 				}
 			} else {

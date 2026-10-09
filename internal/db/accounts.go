@@ -61,11 +61,23 @@ func ConnectionCooldownUntil(rawData string) (time.Time, bool) {
 // the connection row for dashboard visibility without setting an account-level
 // rateLimitedUntil cooldown.
 func (r *Repo) RecordConnectionError(connID string, status int, errText string, backoffLevel int) error {
+	return r.RecordConnectionScopedError(connID, "", "", status, errText, backoffLevel)
+}
+
+// RecordConnectionScopedError stores the error message, status, model, and source
+// on the connection row for dashboard visibility without setting rateLimitedUntil.
+func (r *Repo) RecordConnectionScopedError(connID, model, source string, status int, errText string, backoffLevel int) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	lastError := map[string]any{
 		"status":    status,
 		"message":   errText,
 		"timestamp": now,
+	}
+	if model != "" {
+		lastError["model"] = model
+	}
+	if source != "" {
+		lastError["source"] = source
 	}
 	payload, err := json.Marshal(lastError)
 	if err != nil {

@@ -950,7 +950,7 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 	// Only lock if error is account-scoped, not model-scoped (e.g. 401 auth issues),
 	// so unrelated models stay available.
 	if isModelScopedError(ue.StatusCode, extractErrorText(ue.Body), model) {
-		if recErr := h.Repo.RecordConnectionError(connID, ue.StatusCode, extractErrorText(ue.Body), cls.NewBackoffLevel); recErr != nil {
+		if recErr := h.Repo.RecordConnectionScopedError(connID, model, "chat", ue.StatusCode, extractErrorText(ue.Body), cls.NewBackoffLevel); recErr != nil {
 			log.Warn("combo", "record connection error failed", "conn", connID, "error", recErr)
 		}
 	} else {

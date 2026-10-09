@@ -15,6 +15,8 @@ export interface ProviderConnection {
   apiKeyMasked?: string
   testStatus?: string | null
   lastError?: string | null
+  lastErrorModel?: string | null
+  lastErrorSource?: 'chat' | null
   displayName?: string | null
   assignedModel?: string | null
   providerSpecificData?: { assignedModel?: string | null; [key: string]: unknown }
@@ -801,6 +803,8 @@ export function normalizeConnection(c: ProviderConnection): ProviderConnection {
     rateLimitedUntil: stringField(parsed, 'rateLimitedUntil') ?? stringField(wire, 'rateLimitedUntil'),
     testStatus: stringField(wire, 'testStatus') || stringField(parsed, 'testStatus'),
     expiresAt: stringField(parsed, 'expiresAt'),
+    lastErrorModel: stringField(parsed, 'lastErrorModel') ?? stringField(wire, 'lastErrorModel'),
+    lastErrorSource: stringField(parsed, 'lastErrorSource') ?? stringField(wire, 'lastErrorSource'),
   } as ProviderConnection
 }
 

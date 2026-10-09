@@ -312,6 +312,12 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 					} else {
 						safe[f] = fmt.Sprintf("%v", v)
 					}
+					if mdl, ok := m["model"].(string); ok && mdl != "" {
+						safe["lastErrorModel"] = mdl
+					}
+					if src, ok := m["source"].(string); ok && src != "" {
+						safe["lastErrorSource"] = src
+					}
 				} else if s, isStr := v.(string); isStr {
 					safe[f] = s
 				} else {

@@ -134,3 +134,55 @@ func TestConnectionCooldownUntil_FailsOpen(t *testing.T) {
 		})
 	}
 }
+
+func TestRecordConnectionScopedError_StoresModelAndSource(t *testing.T) {
+	repo, cleanup := setupHealthConnTestDB(t)
+	defer cleanup()
+	insertTestConn(t, repo)
+
+	if err := repo.RecordConnectionScopedError("conn-1", "mimo-v2.5-free", "chat", 401, "Model is not supported", 1); err != nil {
+		t.Fatalf("RecordConnectionScopedError: %v", err)
+	}
+
+	raw := readConnData(t, repo, "conn-1")
+	var data map[string]any
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		t.Fatalf("decode data: %v", err)
+	}
+	lastError, ok := data["lastError"].(map[string]any)
+	if !ok {
+		t.Fatalf("lastError missing from connection data: %s", raw)
+	}
+	if lastError["model"] != "mimo-v2.5-free" {
+		t.Errorf("lastError.model = %v, want mimo-v2.5-free", lastError["model"])
+	}
+	if lastError["source"] != "chat" {
+		t.Errorf("lastError.source = %v, want chat", lastError["source"])
+	}
+	if lastError["message"] != "Model is not supported" {
+		t.Errorf("lastError.message = %v, want Model is not supported", lastError["message"])
+	}
+	// Test that empty model and source are omitted from lastError map
+	if err := repo.RecordConnectionScopedError("conn-1", "", "", 401, "Invalid API key", 1); err != nil {
+		t.Fatalf("RecordConnectionScopedError with empty model: %v", err)
+	}
+	rawEmpty := readConnData(t, repo, "conn-1")
+	var dataEmpty map[string]any
+	if err := json.Unmarshal([]byte(rawEmpty), &dataEmpty); err != nil {
+		t.Fatalf("decode data: %v", err)
+	}
+	lastErrEmpty, ok := dataEmpty["lastError"].(map[string]any)
+	if !ok {
+		t.Fatalf("lastError missing from connection data: %s", rawEmpty)
+	}
+	if _, present := lastErrEmpty["model"]; present {
+		t.Errorf("lastError.model must be absent when empty, got %v", lastErrEmpty["model"])
+	}
+	if _, present := lastErrEmpty["source"]; present {
+		t.Errorf("lastError.source must be absent when empty, got %v", lastErrEmpty["source"])
+	}
+	if lastErrEmpty["message"] != "Invalid API key" {
+		t.Errorf("lastError.message = %v, want Invalid API key", lastErrEmpty["message"])
+	}
+
+}

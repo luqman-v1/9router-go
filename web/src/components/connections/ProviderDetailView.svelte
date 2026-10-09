@@ -3249,9 +3249,19 @@
                       {/if}
                       <!-- Last error tooltip -->
                       {#if lastErr && lastErr !== 'Provider test not supported'}
-                        <span class="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]" title={lastErr}>
-                          {lastErr.length > 50 ? lastErr.slice(0, 50) + '...' : lastErr}
-                        </span>
+                        {@const isModelScoped = Boolean(conn.lastErrorModel)}
+                        {@const isHealthy = connBadge !== 'error'}
+                        <div
+                          class="flex items-center gap-1 min-w-0 max-w-full sm:max-w-[360px]"
+                          title={isModelScoped ? `[${conn.lastErrorModel}] ${lastErr}` : lastErr}
+                        >
+                          {#if isModelScoped}
+                            <span class="font-mono text-[11px] text-text-muted shrink-0">[{conn.lastErrorModel}]</span>
+                          {/if}
+                          <span class="truncate text-xs {isHealthy ? 'text-text-muted' : 'text-red-500'}">
+                            {lastErr.length > 50 ? lastErr.slice(0, 50) + '...' : lastErr}
+                          </span>
+                        </div>
                       {/if}
 
                       <!-- Priority tag -->
@@ -3261,7 +3271,12 @@
                     {#if lastErr && lastErr !== 'Provider test not supported' && (status?.state === 'failed' || conn.testStatus === 'failed' || conn.testStatus === 'error')}
                       <div class="mt-1.5 flex items-start gap-1.5 text-xs text-red-500 bg-red-500/10 px-2.5 py-1.5 rounded-md border border-red-500/20 max-w-full">
                         <span class="material-symbols-outlined text-sm shrink-0 mt-0.5">error</span>
-                        <span class="break-words font-medium leading-relaxed">{lastErr}</span>
+                        <span class="break-words font-medium leading-relaxed">
+                          {#if conn.lastErrorModel}
+                            <span class="font-mono text-[11px] mr-1">[{conn.lastErrorModel}]</span>
+                          {/if}
+                          {lastErr}
+                        </span>
                       </div>
                     {/if}
                     <!-- Proxy detail line: pool/legacy label, masked endpoint, no_proxy -->
