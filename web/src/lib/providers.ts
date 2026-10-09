@@ -576,7 +576,8 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "noAuth": false,
     "serviceKinds": [
       "llm",
-      "image"
+      "image",
+      "systemone"
     ]
   },
   {

@@ -80,7 +80,9 @@ func TestExtractResetDuration_ClampingSafety(t *testing.T) {
 func TestBlockAntigravityModelUntil_Safety(t *testing.T) {
 	ClearAntigravityQuotaCache()
 	connID := "test-conn-123"
-	model := "gemini-3.8-flash-low"
+	// The 3.7 family shares one backend id across its tiers, so a block on one
+	// tier must block the whole family.
+	model := "gemini-3.7-flash-low"
 
 	// Initially not blocked
 	if IsAntigravityModelBlocked(connID, model) {
@@ -96,15 +98,15 @@ func TestBlockAntigravityModelUntil_Safety(t *testing.T) {
 		t.Errorf("expected model %s to be blocked", model)
 	}
 
-	// Synonyms (e.g. gemini-3.8-flash-tiered) should also be blocked
-	if !IsAntigravityModelBlocked(connID, "gemini-3.8-flash-tiered") {
-		t.Errorf("expected canonical model gemini-3.8-flash-tiered to also be blocked")
+	// Its canonical backend must also be blocked
+	if !IsAntigravityModelBlocked(connID, "gemini-3.7-flash-tiered") {
+		t.Errorf("expected canonical model gemini-3.7-flash-tiered to also be blocked")
 	}
 
 	// An expired resetAt should not block
 	pastResetAt := time.Now().UTC().Add(-1 * time.Minute)
-	BlockAntigravityModelUntil(connID, "gemini-3.8-flash-high", pastResetAt)
-	if IsAntigravityModelBlocked(connID, "gemini-3.8-flash-high") {
+	BlockAntigravityModelUntil(connID, "gemini-3.7-flash-high", pastResetAt)
+	if IsAntigravityModelBlocked(connID, "gemini-3.7-flash-high") {
 		t.Errorf("expected expired resetAt not to block")
 	}
 }

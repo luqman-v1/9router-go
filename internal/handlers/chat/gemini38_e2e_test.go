@@ -27,12 +27,14 @@ func TestE2E_Gemini38_FlashHigh_NonStream_ToolCall(t *testing.T) {
 		t.Fatalf("gemini-3.8-flash-high should support tools")
 	}
 
-	// Verify synonym normalization
-	if got := translator.NormalizeAntigravityModel("gemini-3.8-flash-high"); got != "gemini-3.8-flash-tiered" {
-		t.Fatalf("NormalizeAntigravityModel(3.8-high) = %q, want gemini-3.8-flash-tiered", got)
+	// Upstream v0.5.99 serves one backend id per 3.8 tier (3.7/3.6 share a
+	// single "-tiered" id, 3.8 does not) and carries the effort in a
+	// parenthesised suffix on the wire id.
+	if got := translator.NormalizeAntigravityModel("gemini-3.8-flash-high"); got != "gemini-3.8-flash-high" {
+		t.Fatalf("NormalizeAntigravityModel(3.8-high) = %q, want gemini-3.8-flash-high", got)
 	}
-	if got := translator.NormalizeAntigravityModel("gemini-3.8-flash"); got != "gemini-3.8-flash-tiered" {
-		t.Fatalf("NormalizeAntigravityModel(3.8) = %q, want gemini-3.8-flash-tiered", got)
+	if got := translator.NormalizeAntigravityModel("gemini-3.8-flash"); got != "gemini-3.8-flash-medium" {
+		t.Fatalf("NormalizeAntigravityModel(3.8) = %q, want gemini-3.8-flash-medium", got)
 	}
 
 	// Mock Antigravity upstream that validates the translated Gemini request
@@ -57,8 +59,8 @@ func TestE2E_Gemini38_FlashHigh_NonStream_ToolCall(t *testing.T) {
 			t.Fatalf("unmarshal antigravity wrapper: %v", err)
 		}
 		capturedModel = agReq.Model
-		if agReq.Model != "gemini-3.8-flash-tiered" {
-			t.Errorf("expected wrapped model gemini-3.8-flash-tiered, got %q", agReq.Model)
+		if agReq.Model != "gemini-3.8-flash-high(high)" {
+			t.Errorf("expected wrapped model gemini-3.8-flash-high(high), got %q", agReq.Model)
 		}
 		if agReq.Project != "test-proj-38" {
 			t.Errorf("expected project test-proj-38, got %q", agReq.Project)
@@ -217,7 +219,7 @@ func TestE2E_Gemini38_FlashHigh_NonStream_ToolCall(t *testing.T) {
 	}
 
 	// Verify the mock saw correct wrapped model
-	if capturedModel != "gemini-3.8-flash-tiered" {
+	if capturedModel != "gemini-3.8-flash-high(high)" {
 		t.Errorf("mock did not see correct model, got %q", capturedModel)
 	}
 	if len(capturedBody) == 0 {
@@ -374,8 +376,8 @@ func TestTranslator_Gemini38_ToolSchema_PrefixItems(t *testing.T) {
 	if err := json.Unmarshal(wrapped, &agReq); err != nil {
 		t.Fatalf("unmarshal ag: %v", err)
 	}
-	if agReq.Model != "gemini-3.8-flash-tiered" {
-		t.Errorf("expected gemini-3.8-flash-tiered, got %q", agReq.Model)
+	if agReq.Model != "gemini-3.8-flash-high(high)" {
+		t.Errorf("expected gemini-3.8-flash-high(high), got %q", agReq.Model)
 	}
 }
 

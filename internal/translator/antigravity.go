@@ -335,27 +335,35 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 	return &res
 }
 
-// AntigravityModelSynonyms maps client/UI model names to internal Google Antigravity backend model IDs.
-// Upstream Google Antigravity uses "gemini-3.7-flash-tiered" / "gemini-3.6-flash-tiered" as backend model names.
+// AntigravityModelSynonyms maps client/UI model names to the bare Antigravity
+// backend model name of their family.
+//
+// It is deliberately NOT the wire-id table: the lock and quota paths key on
+// this value, so it must stay family-shaped. Only AntigravityUpstreamModel
+// applies the effort suffix the backend actually needs.
 var AntigravityModelSynonyms = map[string]string{
-	"gemini-default":             "gemini-3-flash-agent",
-	"gemini-3.5-flash":           "gemini-3-flash-agent",
-	"gemini-3.5-flash-high":      "gemini-3-flash-agent",
-	"gemini-3.5-flash-medium":    "gemini-3-flash-agent",
-	"gemini-3.5-flash-low":       "gemini-3-flash-agent",
-	"gemini-3.5-flash-extra-low": "gemini-3-flash-agent",
-	"gemini-3.5-flash-agent":     "gemini-3-flash-agent",
+	// Upstream decolua/9router#24034f69 retired the gemini-3.5 family and
+	// gemini-3-flash; the default moved to the 3.8 medium tier.
+	"gemini-default":             "gemini-3.8-flash-medium",
+	"gemini-3.5-flash":           "gemini-3.8-flash-medium",
+	"gemini-3.5-flash-high":      "gemini-3.8-flash-high",
+	"gemini-3.5-flash-medium":    "gemini-3.8-flash-medium",
+	"gemini-3.5-flash-low":       "gemini-3.8-flash-low",
+	"gemini-3.5-flash-extra-low": "gemini-3.8-flash-low",
+	"gemini-3-flash-agent":       "gemini-3.8-flash-high",
+	"gemini-3-flash":             "gemini-3.8-flash-high",
 	"gemini-3.1-pro-high":        "gemini-pro-agent",
 	"gemini-3.1-pro":             "gemini-pro-agent",
 	"gemini-3-pro-high":          "gemini-pro-agent",
 	"gemini-3-pro-low":           "gemini-3.1-pro-low",
-	// 3.8 flash tiered models -> backend model: gemini-3.8-flash-tiered
-	"gemini-3.8-flash":          "gemini-3.8-flash-tiered",
-	"gemini-3.8-flash-high":     "gemini-3.8-flash-tiered",
-	"gemini-3.8-flash-medium":   "gemini-3.8-flash-tiered",
-	"gemini-3.8-flash-low":      "gemini-3.8-flash-tiered",
-	"gemini-3.8-flash-agent":    "gemini-3.8-flash-tiered",
-	"gemini-3.8-flash-thinking": "gemini-3.8-flash-tiered",
+	// 3.8 serves one backend id per tier (unlike 3.7/3.6, which share one
+	// "-tiered" id for the whole family).
+	"gemini-3.8-flash":          "gemini-3.8-flash-medium",
+	"gemini-3.8-flash-high":     "gemini-3.8-flash-high",
+	"gemini-3.8-flash-medium":   "gemini-3.8-flash-medium",
+	"gemini-3.8-flash-low":      "gemini-3.8-flash-low",
+	"gemini-3.8-flash-agent":    "gemini-3.8-flash-high",
+	"gemini-3.8-flash-thinking": "gemini-3.8-flash-high",
 	// 3.7 flash tiered models -> backend model: gemini-3.7-flash-tiered
 	"gemini-3.7-flash":           "gemini-3.7-flash-tiered",
 	"gemini-3.7-flash-high":      "gemini-3.7-flash-tiered",
@@ -382,6 +390,87 @@ func NormalizeAntigravityModel(model string) string {
 		return canonical
 	}
 	return m
+}
+
+// antigravityUpstreamModelIDs is the Go form of the registry's
+// `upstreamModelId` column: the id Google actually serves, which for the
+// tiered and effort-suffixed families is NOT the catalog id.
+//
+// These rows deliberately stay out of AntigravityModelSynonyms. That map is
+// shared with the lock and quota paths, which key on a bare model family and
+// must never see a "(high)"-suffixed value — such a key would 404 on the wire
+// and never match a quota entry. Only the wire wants the suffix, and only the
+// wire goes through AntigravityUpstreamModel.
+//
+// Port of open-sse/providers/registry/antigravity.js (upstream
+// decolua/9router#a07ed95b, refreshed by #24034f69).
+var antigravityUpstreamModelIDs = map[string]string{
+	// The 3.8 family serves one backend id per tier and takes the effort in
+	// parentheses. The bare catalog id is the medium tier.
+	"gemini-3.8-flash":        "gemini-3.8-flash-medium(medium)",
+	"gemini-3.8-flash-high":   "gemini-3.8-flash-high(high)",
+	"gemini-3.8-flash-medium": "gemini-3.8-flash-medium(medium)",
+	"gemini-3.8-flash-low":    "gemini-3.8-flash-low(low)",
+	// 3.7 and 3.6 share one tiered backend id per family.
+	"gemini-3.7-flash":        "gemini-3.7-flash-tiered(medium)",
+	"gemini-3.7-flash-high":   "gemini-3.7-flash-tiered(high)",
+	"gemini-3.7-flash-medium": "gemini-3.7-flash-tiered(medium)",
+	"gemini-3.7-flash-low":    "gemini-3.7-flash-tiered(low)",
+	"gemini-3.6-flash":        "gemini-3.6-flash-tiered(medium)",
+	"gemini-3.6-flash-high":   "gemini-3.6-flash-tiered(high)",
+	"gemini-3.6-flash-medium": "gemini-3.6-flash-tiered(medium)",
+	"gemini-3.6-flash-low":    "gemini-3.6-flash-tiered(low)",
+	// Pro is not tiered; only the low variant takes an effort suffix.
+	"gemini-3.1-pro-high": "gemini-pro-agent",
+	"gemini-3.1-pro-low":  "gemini-3.1-pro-low(low)",
+	// Claude 5.5: the bare id is the thinking tier and the three suffixed ids
+	// are the effort tiers. The bare one maps to high rather than to itself
+	// because the backend serves no un-efforted Claude 5.5.
+	"claude-sonnet-5-5":        "claude-sonnet-5-5-high(high)",
+	"claude-sonnet-5-5-high":   "claude-sonnet-5-5-high(high)",
+	"claude-sonnet-5-5-medium": "claude-sonnet-5-5-medium(medium)",
+	"claude-sonnet-5-5-low":    "claude-sonnet-5-5-low(low)",
+	"claude-opus-5-5":          "claude-opus-5-5-high(high)",
+	"claude-opus-5-5-high":     "claude-opus-5-5-high(high)",
+	"claude-opus-5-5-medium":   "claude-opus-5-5-medium(medium)",
+	"claude-opus-5-5-low":      "claude-opus-5-5-low(low)",
+}
+
+// AntigravityUpstreamModel resolves a catalog model id to the id the Antigravity
+// backend expects, applying the registry's upstreamModelId column.
+//
+// A "(level)" suffix the CLIENT appended wins over the id's own preset suffix,
+// so `claude-sonnet-5-5-medium(low)` overrides the medium preset rather than
+// producing two suffixes. The lookup runs on the suffix-stripped id, exactly as
+// upstream getModelUpstreamId does.
+//
+// An id with no registry row is returned unchanged, which keeps a model this
+// port has never heard of routable instead of silently blanking it.
+func AntigravityUpstreamModel(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	suffix := ""
+	base := m
+	if idx := strings.Index(m, "("); idx != -1 && strings.HasSuffix(m, ")") {
+		suffix = strings.TrimSpace(m[idx:])
+		base = strings.TrimSpace(m[:idx])
+	}
+
+	resolved, ok := antigravityUpstreamModelIDs[base]
+	if !ok {
+		resolved = NormalizeAntigravityModel(base)
+	}
+	if suffix != "" {
+		return stripParenthesisedSuffix(resolved) + suffix
+	}
+	return resolved
+}
+
+// stripParenthesisedSuffix removes a trailing "(level)" from an id, if any.
+func stripParenthesisedSuffix(id string) string {
+	if idx := strings.Index(id, "("); idx != -1 && strings.HasSuffix(id, ")") {
+		return strings.TrimSpace(id[:idx])
+	}
+	return id
 }
 
 // antigravityUUIDFromSeed derives a deterministic RFC-4122-style UUID (v5-like)
@@ -601,7 +690,12 @@ func fixAntigravityContents(req *GeminiRequest) bool {
 
 // WrapForAntigravity wraps a standard Gemini request in Antigravity API envelope.
 func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte, error) {
-	modelName = NormalizeAntigravityModel(modelName)
+	// The wire id is the registry's upstreamModelId, not the bare synonym the
+	// lock and quota paths share. proxy.ForwardGemini normalises the model
+	// before calling this, so the synonym lookup inside AntigravityUpstreamModel
+	// is idempotent and the two layers cannot disagree on the id that reaches
+	// Google.
+	modelName = AntigravityUpstreamModel(modelName)
 
 	contentCount := 1
 	var geminiReq GeminiRequest

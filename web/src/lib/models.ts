@@ -331,20 +331,8 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "upstreamModelId": "gemini-3.6-flash-tiered(low)"
     },
     {
-      "id": "gemini-3.5-flash-high",
-      "name": "Gemini 3.5 Flash (High)"
-    },
-    {
-      "id": "gemini-3-flash-agent",
-      "name": "Gemini 3.5 Flash (High)"
-    },
-    {
-      "id": "gemini-3.5-flash-low",
-      "name": "Gemini 3.5 Flash (Medium)"
-    },
-    {
-      "id": "gemini-3.5-flash-extra-low",
-      "name": "Gemini 3.5 Flash (Low)"
+      "id": "gemini-3.1-pro-high",
+      "name": "Gemini 3.1 Pro (High)"
     },
     {
       "id": "gemini-pro-agent",
@@ -353,6 +341,46 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "gemini-3.1-pro-low",
       "name": "Gemini 3.1 Pro (Low)"
+    },
+    {
+      "id": "claude-sonnet-5-5-high",
+      "name": "Claude Sonnet 5.5 (High)",
+      "upstreamModelId": "claude-sonnet-5-5-high(high)"
+    },
+    {
+      "id": "claude-sonnet-5-5-medium",
+      "name": "Claude Sonnet 5.5 (Medium)",
+      "upstreamModelId": "claude-sonnet-5-5-medium(medium)"
+    },
+    {
+      "id": "claude-sonnet-5-5-low",
+      "name": "Claude Sonnet 5.5 (Low)",
+      "upstreamModelId": "claude-sonnet-5-5-low(low)"
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "name": "Claude Sonnet 5.5 (Thinking)",
+      "upstreamModelId": "claude-sonnet-5-5-high(high)"
+    },
+    {
+      "id": "claude-opus-5-5-high",
+      "name": "Claude Opus 5.5 (High)",
+      "upstreamModelId": "claude-opus-5-5-high(high)"
+    },
+    {
+      "id": "claude-opus-5-5-medium",
+      "name": "Claude Opus 5.5 (Medium)",
+      "upstreamModelId": "claude-opus-5-5-medium(medium)"
+    },
+    {
+      "id": "claude-opus-5-5-low",
+      "name": "Claude Opus 5.5 (Low)",
+      "upstreamModelId": "claude-opus-5-5-low(low)"
+    },
+    {
+      "id": "claude-opus-5-5",
+      "name": "Claude Opus 5.5 (Thinking)",
+      "upstreamModelId": "claude-opus-5-5-high(high)"
     },
     {
       "id": "claude-sonnet-4-6",
@@ -365,11 +393,6 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "gpt-oss-120b-medium",
       "name": "GPT-OSS 120B (Medium)"
-    },
-    {
-      "id": "gemini-3-flash",
-      "name": "Gemini 3 Flash",
-      "thinking": false
     },
     {
       "id": "gemini-3.1-flash-image",
@@ -713,6 +736,11 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     }
   ],
   "cloudflare-ai": [
+    {
+      "id": "@cf/cloudflare/clef-flash",
+      "name": "Clef Flash",
+      "kind": "systemone"
+    },
     {
       "id": "@cf/meta/llama-3.2-1b-instruct",
       "name": "Llama 3.2 1B Instruct"

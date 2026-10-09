@@ -246,20 +246,25 @@ func TestNormalizeAntigravityModel(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"gemini-3.5-flash-high", "gemini-3-flash-agent"},
-		{"gemini-3.5-flash-medium", "gemini-3-flash-agent"},
-		{"gemini-3.5-flash-extra-low", "gemini-3-flash-agent"},
+		// Upstream decolua/9router#24034f69 retired the 3.5 family: these
+		// aliases now resolve into the 3.8 tiers rather than gemini-3-flash-agent.
+		{"gemini-3.5-flash-high", "gemini-3.8-flash-high"},
+		{"gemini-3.5-flash-medium", "gemini-3.8-flash-medium"},
+		{"gemini-3.5-flash-extra-low", "gemini-3.8-flash-low"},
 		{"gemini-3.1-pro-high", "gemini-pro-agent"},
 		{"gemini-3-pro-high", "gemini-pro-agent"},
 		{"gemini-3-pro-low", "gemini-3.1-pro-low"},
-		{"gemini-default", "gemini-3-flash-agent"},
+		{"gemini-default", "gemini-3.8-flash-medium"},
 		{"gemini-3.7-flash-high", "gemini-3.7-flash-tiered"},
 		{"gemini-3.7-flash", "gemini-3.7-flash-tiered"},
 		{"gemini-3.7-flash-low", "gemini-3.7-flash-tiered"},
 		{"gemini-3.6-flash-high", "gemini-3.6-flash-tiered"},
 		{"gemini-3.7-flash-tiered(high)", "gemini-3.7-flash-tiered"},
 		{"claude-sonnet-4-6", "claude-sonnet-4-6"},
-		{"gemini-3-flash-agent", "gemini-3-flash-agent"},
+		{"gemini-3-flash-agent", "gemini-3.8-flash-high"},
+		// The 3.8 family serves one backend id per tier.
+		{"gemini-3.8-flash-high", "gemini-3.8-flash-high"},
+		{"gemini-3.8-flash", "gemini-3.8-flash-medium"},
 	}
 
 	for _, tt := range tests {
@@ -463,24 +468,94 @@ func TestWrapForAntigravity_NormalizesTriggerSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestNormalizeAntigravityModel_AllSynonymsValid(t *testing.T) {
-	validBackendModels := map[string]bool{
-		"gemini-3-flash-agent":     true,
-		"gemini-pro-agent":         true,
-		"gemini-3.1-pro-low":       true,
-		"gemini-3.8-flash-tiered":  true,
-		"gemini-3.7-flash-tiered":  true,
-		"gemini-3.6-flash-tiered":  true,
-		"claude-sonnet-4-6":        true,
-		"claude-opus-4-6-thinking": true,
-		"gpt-oss-120b-medium":      true,
-		"gemini-3-flash":           true,
-		"gemini-3.1-flash-image":   true,
+// antigravityBackendModels is the set of ids the Antigravity backend actually
+// serves. A synonym or an upstreamModelId row pointing outside it is a 404 in
+// production, and both tables are hand-maintained, so the invariant is checked
+// rather than trusted.
+var antigravityBackendModels = map[string]bool{
+	"gemini-pro-agent":         true,
+	"gemini-3.1-pro-low":       true,
+	"gemini-3.8-flash-high":    true,
+	"gemini-3.8-flash-medium":  true,
+	"gemini-3.8-flash-low":     true,
+	"gemini-3.7-flash-tiered":  true,
+	"gemini-3.6-flash-tiered":  true,
+	"claude-sonnet-5-5-high":   true,
+	"claude-sonnet-5-5-medium": true,
+	"claude-sonnet-5-5-low":    true,
+	"claude-opus-5-5-high":     true,
+	"claude-opus-5-5-medium":   true,
+	"claude-opus-5-5-low":      true,
+	"claude-sonnet-4-6":        true,
+	"claude-opus-4-6-thinking": true,
+	"gpt-oss-120b-medium":      true,
+	"gemini-3.1-flash-image":   true,
+}
+
+func TestAntigravityModelIDsResolveToServedBackends(t *testing.T) {
+	for alias, target := range translator.AntigravityModelSynonyms {
+		if !antigravityBackendModels[target] {
+			t.Errorf("Antigravity synonym %q maps to invalid upstream model %q (will cause 404)", alias, target)
+		}
+	}
+}
+
+// TestAntigravityUpstreamModel pins the wire id. The parenthesised effort is
+// what Google reads to pick the tier, and it only ever appears through
+// AntigravityUpstreamModel: on the lock and quota paths such a key would be
+// silently unmatchable.
+func TestAntigravityUpstreamModel(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// Claude 5.5: the bare catalog id is the thinking tier.
+		{"claude-sonnet-5-5", "claude-sonnet-5-5-high(high)"},
+		{"claude-sonnet-5-5-high", "claude-sonnet-5-5-high(high)"},
+		{"claude-sonnet-5-5-medium", "claude-sonnet-5-5-medium(medium)"},
+		{"claude-sonnet-5-5-low", "claude-sonnet-5-5-low(low)"},
+		{"claude-opus-5-5", "claude-opus-5-5-high(high)"},
+		{"claude-opus-5-5-low", "claude-opus-5-5-low(low)"},
+		// A client-supplied effort overrides the id's preset instead of
+		// producing two suffixes.
+		{"claude-sonnet-5-5-medium(low)", "claude-sonnet-5-5-medium(low)"},
+		{"claude-sonnet-5-5(high)", "claude-sonnet-5-5-high(high)"},
+		// The tiered Gemini families.
+		{"gemini-3.8-flash", "gemini-3.8-flash-medium(medium)"},
+		{"gemini-3.8-flash-low", "gemini-3.8-flash-low(low)"},
+		{"gemini-3.7-flash-high", "gemini-3.7-flash-tiered(high)"},
+		{"gemini-3.6-flash-medium", "gemini-3.6-flash-tiered(medium)"},
+		{"gemini-3.1-pro-high", "gemini-pro-agent"},
+		{"gemini-3.1-pro-low", "gemini-3.1-pro-low(low)"},
+		// A retired id resolves through its synonym family first, so the 3.5
+		// high tier lands on the 3.8 high backend rather than on medium.
+		{"gemini-3.5-flash-high", "gemini-3.8-flash-high"},
+		// An unknown id passes through untouched.
+		{"claude-sonnet-4-6", "claude-sonnet-4-6"},
+		{"some-model-this-port-never-saw", "some-model-this-port-never-saw"},
 	}
 
-	for alias, targetModel := range translator.AntigravityModelSynonyms {
-		if !validBackendModels[targetModel] {
-			t.Errorf("Antigravity synonym %q maps to invalid upstream model %q (will cause 404)", alias, targetModel)
+	for _, tt := range tests {
+		if got := translator.AntigravityUpstreamModel(tt.input); got != tt.want {
+			t.Errorf("AntigravityUpstreamModel(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestAntigravityUpstreamModel_SuffixesAreServedBackends closes the loop: every
+// id AntigravityUpstreamModel can emit must name a backend the service has.
+func TestAntigravityUpstreamModel_SuffixesAreServedBackends(t *testing.T) {
+	for _, model := range []string{
+		"gemini-3.8-flash", "gemini-3.7-flash-high", "gemini-3.6-flash-low",
+		"gemini-3.1-pro-low", "claude-sonnet-5-5", "claude-opus-5-5-low",
+	} {
+		got := translator.AntigravityUpstreamModel(model)
+		base := got
+		if idx := strings.Index(got, "("); idx != -1 {
+			base = got[:idx]
+		}
+		if !antigravityBackendModels[base] {
+			t.Errorf("AntigravityUpstreamModel(%q) = %q, whose backend %q is not served", model, got, base)
 		}
 	}
 }
@@ -511,8 +586,10 @@ func TestWrapForAntigravity_CapAndRequestID(t *testing.T) {
 	if err := json.Unmarshal(wrapped, &req); err != nil {
 		t.Fatalf("unmarshal wrapper: %v", err)
 	}
-	if req.Model != "gemini-3.7-flash-tiered" {
-		t.Errorf("expected model gemini-3.7-flash-tiered, got %s", req.Model)
+	// The wire id carries the effort in parentheses (upstream #24034f69); the
+	// tier is chosen by the backend from that suffix, not by a body field.
+	if req.Model != "gemini-3.7-flash-tiered(high)" {
+		t.Errorf("expected model gemini-3.7-flash-tiered(high), got %s", req.Model)
 	}
 	if !antigravityRequestIDRe.MatchString(req.RequestID) {
 		t.Errorf("request ID %q does not match UUID format", req.RequestID)

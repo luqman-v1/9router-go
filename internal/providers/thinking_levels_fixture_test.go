@@ -16,22 +16,41 @@ import (
 //
 //	DUMP_CATALOG_PAIRS=testdata/catalog_pairs.json \
 //	  go test ./internal/providers/ -run TestDumpCatalogPairs -count=1
-//	node scripts/gen-thinking-levels.mjs <upstream-checkout> v0.5.95 \
+//	node scripts/gen-thinking-levels.mjs <upstream-checkout> v0.5.99 \
 //	  internal/providers/testdata/catalog_pairs.json
-const upstreamLevelsFixtureVersion = "v0.5.95"
+const upstreamLevelsFixtureVersion = "v0.5.99"
 
 // pendingUpstreamDivergences lists (provider, model) pairs where the Go
-// resolver intentionally answers differently from the captured tag, because a
-// NOT-YET-MERGED upstream PR fixes it there first. Each entry names the PR so
-// the exemption can be deleted the moment the fix ships in a tag and the
-// fixture is re-captured.
+// resolver intentionally answers differently from the captured tag. Each entry
+// names why, so the exemption can be deleted the moment it no longer holds.
 //
 // decolua/9router#4614 hoists the provider-qualified codebuddy-cn rows above
 // the unqualified `*deepseek-v4.*` glob, which changes what
 // codebuddy-cn/deepseek-v4.1-flash resolves to: the tag's answer is the
 // generic set, the PR's is codebuddy-cn's published set.
 var pendingUpstreamDivergences = map[string]map[string][]string{
-	"codebuddy-cn": {"deepseek-v4.1-flash": {"low", "high", "max"}},
+	// Upstream #4614 also dropped glm-5v-turbo / kimi-k2.7 / kimi-k2.6 from
+	// the codebuddy-cn capability table, and v0.5.99 keeps them dropped. Go
+	// keeps the rows so a saved combo naming one stays routable, which leaves
+	// it on the openai format default instead of the zai/kimi set upstream
+	// no longer publishes for them. See the comment on those rows in
+	// capabilities.go. These are Go-intentional, not pending.
+	"codebuddy-cn": {
+		"deepseek-v4.1-flash": {"low", "high", "max"},
+		"glm-5v-turbo":        {"minimal", "low", "medium", "high", "xhigh"},
+		"kimi-k2.7":           {"minimal", "low", "medium", "high", "xhigh"},
+		"kimi-k2.6":           {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	// Upstream has no agnes entry in capabilities.js at all, so it publishes
+	// no reasoning levels for the provider. Go declares agnes-3.0-pro and
+	// agnes-3.0-flash as reasoning models (they stream reasoning_content), so
+	// the picker offers the openai format default. Publishing reasoning to a
+	// client that would rather have no levels is a worse outcome than
+	// diverging here.
+	"agnes": {
+		"agnes-3.0-pro":   {"none", "minimal", "low", "medium", "high", "xhigh"},
+		"agnes-3.0-flash": {"none", "minimal", "low", "medium", "high", "xhigh"},
+	},
 }
 
 // divergentFromPending reports whether a mismatch is one of the documented

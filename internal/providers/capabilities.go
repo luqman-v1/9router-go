@@ -145,6 +145,24 @@ var modelCapabilities = map[string]Capabilities{
 	"claude-opus-5.5-thinking":         {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
 	"claude-opus-5.5-agentic":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
 	"claude-opus-5.5-thinking-agentic": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
+	// Opus 5.5 on Antigravity (upstream v0.5.99, a07ed95b): all five
+	// effort spellings, 1M window / 128K output. thinkingCanDisable:false is
+	// representable here — without it canDisableThinking defaults to true and
+	// the translator drops thinking on any turn that asked for no reasoning,
+	// which Anthropic answers with a 400 on the thinking.type field.
+	//
+	// DEFERRED, not forgotten: upstream's forcedToolChoice:false has no
+	// Capabilities field and nothing on the request path reads it, so it
+	// cannot be expressed. It marks these models as rejecting tool_choice
+	// "any"/forced pinning — a request that forces a tool choice on them is
+	// answered with a 400 from the upstream provider. Adding the field means
+	// adding it to the Anthropic request builder too; until then these entries
+	// are knowingly incomplete on that one flag.
+	"claude-opus-5-5":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-5-5-thinking": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-5-5-high":     {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-5-5-medium":   {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-5-5-low":      {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
 	"claude-opus-4.6":                  {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
 	"claude-opus-4.7":                  {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
 	"claude-opus-4-7":                  {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
@@ -155,7 +173,27 @@ var modelCapabilities = map[string]Capabilities{
 	"claude-opus-4-8-thinking":         {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
 	"claude-sonnet-4.6":                {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
 	"claude-sonnet-4-6":                {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-sonnet-5-5":                {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
+	// Sonnet 5.5 on Antigravity (upstream v0.5.99, a07ed95b): the bare id
+	// already had a row, but only the base spelling — the four effort
+	// variants fell through to the *claude*sonnet* pattern and lost the 1M
+	// window. Extended in place rather than duplicated.
+	//
+	// DEFERRED, not forgotten: upstream sets thinkingOffType:"between_tools"
+	// and forcedToolChoice:false on these five ids, and Capabilities has no
+	// field for either — nothing on the request path reads them. Lost means:
+	//   - thinkingOffType — these models only end a thinking block between
+	//     tool calls; a turn that closes thinking at the end of the turn gets
+	//     a 400 from Anthropic on the thinking block shape.
+	//   - forcedToolChoice:false — the models reject forced tool_choice
+	//     pinning ("any"/a named tool); a pinned choice gets a 400 from the
+	//     upstream provider.
+	// Adding either field means teaching the Anthropic request builder to
+	// emit them, so these entries are knowingly incomplete on those flags.
+	"claude-sonnet-5-5":                {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-sonnet-5-5-thinking":       {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-sonnet-5-5-high":           {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-sonnet-5-5-medium":         {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-sonnet-5-5-low":            {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
 	"claude-sonnet-5":                  {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
 	"claude-sonnet-5-thinking":         {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
 	"claude-sonnet-5-agentic":          {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
@@ -173,7 +211,15 @@ var modelCapabilities = map[string]Capabilities{
 	// id this provider ships (see the pattern-ownership rule).
 	"agnes-3.0-pro":                    {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 512000, MaxOutput: 65536},
 	"agnes-3.0-flash":                  {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 512000, MaxOutput: 65536},
-	"glm-5.3-flash":                    {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "zai"},
+	// GLM-5.3-FLASH is the multimodal z.ai line and it carries the full 1M
+	// window. Upstream decolua/9router#4656: z.ai's docs state that "GLM-5.3
+	// and GLM-5.3-FLASH no longer support disabling thinking (an error will
+	// occur if the thinking.type parameter is set to disabled)". Left unset,
+	// canDisableThinking reports true and the translator emits
+	// enable_thinking:false on any turn that asked for no reasoning — z.ai
+	// answers 400 code 1210 "Invalid API parameter". It looked intermittent
+	// because only some turns ask.
+	"glm-5.3-flash":                {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingCanDisable: new(false)},
 	"claude-fable-5-1":                 {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false)},
 	"glm-5.2":                          {Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingCanDisable: new(false)},
 	"glm-4.6v":                         {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "zai"},
@@ -271,10 +317,12 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"minimax-m2.7":        {Reasoning: true, Tools: true},
 		"kimi-k2.5":           {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 164000, MaxOutput: 32000},
 		// Upstream #4614 drops glm-5v-turbo / kimi-k2.7 / kimi-k2.6 from the
-		// published server list. They stay here on purpose: the thinking-level
-		// parity fixture is captured from a released upstream tag where they
-		// still exist, and an unmerged PR is no reason to make a shipped
-		// model unroutable. The limits are the server's own figures.
+		// published server list, and v0.5.99 keeps them dropped. They stay here
+		// on purpose: a saved combo or connection naming one of them is still
+		// routable here, and dropping the row would make a shipped model
+		// unroutable for no user-visible gain. The level divergence this
+		// causes is recorded in thinking_levels_fixture_test.go. The limits
+		// are the server's own figures.
 		"glm-5v-turbo":        {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 200000, MaxOutput: 64000},
 		"kimi-k2.7":           {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 256000, MaxOutput: 32000},
 		"kimi-k2.6":           {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 256000, MaxOutput: 32000},
@@ -466,8 +514,17 @@ var patternCapabilities = []patternCapability{
 	{pattern: "*kimi*k2*", caps: Capabilities{Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi"}},
 	{pattern: "*kimi*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "kimi"}},
 
-	{pattern: "*glm-5.3*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingEffortSupported: true}},
-	{pattern: "*glm-5.2*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingEffortSupported: true}},
+	// GLM-5.2/5.3 carry a 1M window; the `*glm-5*` catch-all below is 200k, so
+	// both versions need their own row (upstream #4544). The thinking
+	// disable rule is set on the pattern rather than only on the exact
+	// glm-5.3-flash entry above, so plain `glm-5.3` gets it too.
+	//
+	// glm-5.2 deliberately keeps no ThinkingCanDisable: the exact entry at
+	// line 178 already declares it false and that predates #4656. Upstream
+	// considers that entry probably wrong — z.ai's docs suggest 5.2 can
+	// disable thinking — but left it out of scope; don't "fix" it here.
+	{pattern: "*glm-5.3*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingEffortSupported: true, ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000}},
+	{pattern: "*glm-5.2*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingEffortSupported: true, ContextWindow: 1000000, MaxOutput: 128000}},
 	{pattern: "*glm-5*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai"}},
 	{pattern: "*glm-4.7*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai"}},
 	{pattern: "*glm-4*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "zai"}},
