@@ -7,8 +7,27 @@ import (
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/providers"
 )
+
+// isModelFree evaluates whether a model is free by combining suffix heuristic
+// (IsFreeTierModel) and zero-cost pricing entries.
+//
+// Suffix precedence: a model explicitly identified with :free, /free, or -free
+// in the catalog or registry is treated as free, even if the generic vendor table
+// lists a fallback rate for the unadorned model name (e.g. deepseek-v4-flash-free).
+func isModelFree(provider, modelID string) bool {
+	if providers.IsFreeTierModel(modelID) {
+		return true
+	}
+	if p, ok := pricing.GetPricingForModel(provider, modelID); ok {
+		if p.InputPer1M == 0 && p.OutputPer1M == 0 {
+			return true
+		}
+	}
+	return false
+}
 
 // modelCaps is the per-model capability block the dashboard needs to render the
 // icons next to a model row and to decide which thinking levels apply. It is the
@@ -22,6 +41,7 @@ type modelCaps struct {
 	ContextWindow  int      `json:"contextWindow"`
 	MaxOutput      int      `json:"maxOutput"`
 	ThinkingLevels []string `json:"thinkingLevels"`
+	Free           bool     `json:"free"`
 }
 
 // HandleGetModelCaps handles GET /api/models/caps?provider=<id>.
@@ -78,6 +98,7 @@ func (h *DashboardHandler) HandleGetModelCaps(w http.ResponseWriter, r *http.Req
 			Reasoning:     detail.Reasoning,
 			ContextWindow: detail.ContextWindow,
 			MaxOutput:     detail.MaxOutput,
+			Free:          isModelFree(resolved, model),
 		}
 		if levels := providers.GetThinkingLevels(resolved, model); levels != nil {
 			entry.ThinkingLevels = levels
@@ -123,6 +144,7 @@ func (h *DashboardHandler) customModelCaps(provider, resolved string) map[string
 			Reasoning:     detail.Reasoning,
 			ContextWindow: detail.ContextWindow,
 			MaxOutput:     detail.MaxOutput,
+			Free:          isModelFree(cm.ProviderAlias, cm.ID),
 		}
 		if levels := providers.GetThinkingLevels(cm.ProviderAlias, cm.ID); levels != nil {
 			entry.ThinkingLevels = levels

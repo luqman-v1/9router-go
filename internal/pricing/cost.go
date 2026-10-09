@@ -27,16 +27,26 @@ type TokenCounts struct {
 // GetPricingForModel would otherwise turn "cline-free/deepseek-v4.1-flash" into
 // a priced "deepseek-v4.1-flash". Upstream: FREE_MODEL_NAMESPACES in
 // open-sse/providers/pricing.js (v0.5.91).
-var freeModelNamespaces = []string{"cline-free/"}
+var (
+	freeModelNamespaces = []string{"cline-free/"}
+	// KnownFreeModels holds model IDs billed at zero that lack a standard
+	// -free suffix. Canonical list shared with suggested-models filtering.
+	KnownFreeModels     = []string{"big-pickle"}
+)
 
 // zeroPricing is what a free-namespace model costs.
 var zeroPricing = ModelPricing{}
 
-// IsFreeModel reports whether a model id sits in a namespace billed at zero.
+// IsFreeModel reports whether a model id sits in a namespace or is a known model billed at zero.
 func IsFreeModel(model string) bool {
 	lower := strings.ToLower(model)
 	for _, ns := range freeModelNamespaces {
 		if strings.HasPrefix(lower, ns) {
+			return true
+		}
+	}
+	for _, id := range KnownFreeModels {
+		if lower == id {
 			return true
 		}
 	}

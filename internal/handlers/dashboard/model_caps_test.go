@@ -196,3 +196,35 @@ func TestHandleGetModelCaps_CustomModelsOnNode(t *testing.T) {
 		t.Error("an image-typed custom row must not appear in a chat capability map")
 	}
 }
+
+func TestHandleGetModelCaps_FreeTier(t *testing.T) {
+	code, caps := fetchCaps(t, "opencode-zen")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+
+	tests := []struct {
+		model    string
+		wantFree bool
+	}{
+		{model: "mimo-v2.6-flash-free", wantFree: true},
+		{model: "nemotron-3-ultra-free", wantFree: true},
+		{model: "deepseek-v4-flash-free", wantFree: true}, // suffix precedence over table rate (0.14/0.28)
+		{model: "big-pickle", wantFree: true},             // zero pricing path via KnownFreeModels
+		{model: "gpt-5.5", wantFree: false},
+		{model: "kimi-k3", wantFree: false},
+		{model: "claude-opus-5", wantFree: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			entry, ok := caps[tt.model]
+			if !ok {
+				t.Fatalf("model %q missing from caps", tt.model)
+			}
+			if entry.Free != tt.wantFree {
+				t.Errorf("model %q Free = %v, want %v", tt.model, entry.Free, tt.wantFree)
+			}
+		})
+	}
+}

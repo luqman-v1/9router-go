@@ -14,6 +14,8 @@ func TestIsFreeModel(t *testing.T) {
 	}{
 		{model: "cline-free/deepseek-v4.1-flash", free: true},
 		{model: "CLINE-FREE/DeepSeek-V4.1-Flash", free: true},
+		{model: "big-pickle", free: true},
+		{model: "BIG-PICKLE", free: true},
 		{model: "cline-free/unknown-model", free: true},
 		{model: "deepseek/deepseek-v4.1-flash", free: false},
 		{model: "gpt-4o", free: false},

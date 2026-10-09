@@ -39,6 +39,7 @@ export interface ModelCaps {
   maxOutput: number
   /** Selectable thinking levels, or empty for a model without reasoning. */
   thinkingLevels: string[]
+  free?: boolean
 }
 
 /**

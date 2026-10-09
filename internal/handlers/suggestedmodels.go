@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/proxy"
 )
 
@@ -23,7 +24,7 @@ type suggestedModel struct {
 // Port of the FILTERS map in
 // src/app/api/providers/suggested-models/filters.js (upstream 9router).
 var (
-	knownFreeOpencodeModels = []string{"big-pickle"}
+	knownFreeOpencodeModels = pricing.KnownFreeModels
 	deadFreeOpencodeModels  = map[string]bool{"deepseek-v4-flash-free": true}
 )
 

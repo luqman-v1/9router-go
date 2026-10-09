@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### ✨ feat(dashboard): sertakan flag free pada GET /api/models/caps (#232)
+
+- **Latar belakang**: daftar model di dashboard menampilkan campuran model free dan berbayar
+  tanpa pembeda visual. Data klasifikasi free di backend sudah ada (`IsFreeTierModel` dan tabel pricing),
+  namun `GET /api/models/caps` sebelumnya belum mengirimkan flag `free` ke frontend.
+- **Fiks**: menambahkan field `free` pada struct `modelCaps`, menggabungkan sinyal suffix
+  (`:free`, `/free`, `-free`) dan rate pricing nol (`InputPer1M == 0 && OutputPer1M == 0`).
+
 ### ✨ feat(dashboard): satukan enam baris kontrol menjadi satu menu (Closes #224)
 
 - **Latar belakang**: report #224 — enam surface dashboard punya deretan
