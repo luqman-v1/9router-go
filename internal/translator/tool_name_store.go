@@ -31,26 +31,34 @@ var globalToolNameStore = &toolNameStore{
 	order:   make([]string, 0, maxMemorySignatures),
 }
 
+// pruneLocked drops expired entries and rebuilds order so it never holds a key
+// that entries no longer has. The rebuild is gated on `pruned`, not only on
+// capacity: an id that expires and is later reused is appended again, so without
+// it order accumulates duplicates forever whenever traffic stays under the cap
+// and the capacity branch never runs. Invariant: len(order) <= len(entries).
 func (s *toolNameStore) pruneLocked(now time.Time) {
+	pruned := false
 	for k, v := range s.entries {
 		if now.After(v.expiresAt) {
 			delete(s.entries, k)
+			pruned = true
 		}
 	}
-	if len(s.entries) > maxMemorySignatures {
-		newOrder := make([]string, 0, len(s.entries))
-		for _, k := range s.order {
-			if _, ok := s.entries[k]; ok {
-				newOrder = append(newOrder, k)
-			}
-		}
-		for len(newOrder) > maxMemorySignatures {
-			oldest := newOrder[0]
-			newOrder = newOrder[1:]
-			delete(s.entries, oldest)
-		}
-		s.order = newOrder
+	if !pruned && len(s.entries) <= maxMemorySignatures {
+		return
 	}
+	newOrder := make([]string, 0, len(s.entries))
+	for _, k := range s.order {
+		if _, ok := s.entries[k]; ok {
+			newOrder = append(newOrder, k)
+		}
+	}
+	for len(newOrder) > maxMemorySignatures {
+		oldest := newOrder[0]
+		newOrder = newOrder[1:]
+		delete(s.entries, oldest)
+	}
+	s.order = newOrder
 }
 
 // toolCallStoreKeys returns every key a tool_call id resolves under: the raw

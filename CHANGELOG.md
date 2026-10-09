@@ -68,41 +68,21 @@
   - **Bukti**: mengembalikan `TopBar.svelte` ke kondisi pra-#224 membuat **6 dari
     10 test** di file itu gagal, sementara keempat gate lama tetap hijau.
 
-### 🐛 fix(ci): `bun test` ikut menjalankan suite E2E sebelum binary ada
+### 🐛 fix(translator): `tool_call.id` paralel dari Gemini bertabrakan, dan nama tool tidak lagi dibaca dari id (#229)
 
-- **Gejala**: job `test` gagal dengan 6 fail + 3 unhandled error, padahal 325 test
-  lain lulus. Baris pertama log sudah menyebut penyebabnya:
-  `ENOENT ... posix_spawn '/home/runner/work/9router-go/9router-go/9router-go'`.
-- **Akar masalah**: step `Test web` memakai `bun test` polos, yang ikut memindai
-  `web/e2e/*.test.ts`. Suite itu boot binary gateway asli, yang baru dibangun
-  **dua step kemudian** di `Build binary for E2E`. Semua file E2E mati di
-  `beforeAll`, lalu `afterAll` menabrak `app.stop()` pada handle yang belum
-  terisi — satu binary hilang terbaca sebagai enam kegagalan.
-- **Perbaikan**: step unit di-scope ke `bun test src scripts`, sehingga unit test
-  tidak lagi bergantung pada biner yang belum ada. `web/e2e` tetap punya
-  jalurnya sendiri lewat `bun run e2e`, setelah binary dan Chromium siap.
-- **Diagnostik**: `web/e2e/harness.ts` kini mengecek keberadaan binary sebelum
-  spawn, jadi lingkungan yang salah konfigurasi menyebut dirinya sendiri
-  (path biner yang dicari) alih-alih muncul sebagai hook timeout.
-- **Bukti**: `bun test src scripts` → 321 pass / 0 fail; `bun test e2e/` →
-  20 pass / 0 fail setelah binary dibangun dan Chromium terinstal;
-  `bun run ratchet:svelte` → 0 unresolved identifier, 83 error = baseline.
-
-### 🐛 fix(translator): `tool_call.id` paralel dari Gemini bertabrakan, dan nama tool tidak lagi dibaca dari id
-
- **Latar belakang**: streaming translator membuat id tool call dari
+- **Latar belakang**: streaming translator membuat id tool call dari
   `fmt.Sprintf("call_%s_%d", fnName, time.Now().UnixNano())`. Dua `functionCall`
   dalam satu chunk dipancarkan berjarak <1 ms, sedangkan `UnixNano()` hanya
   berubah setiap ~0,5–1 ms pada mesin dev — sehingga dua panggilan paralel
   mendapat **id yang identik**. Klien yang mencocokkan hasil tool dengan
   `tool_call_id` tidak bisa membedakan keduanya.
- **Akar masalah**: `time.Now().UnixNano()` tidak men-tick di dalam satu chunk,
+- **Akar masalah**: `time.Now().UnixNano()` tidak men-tick di dalam satu chunk,
   dan id tidak membawa indeks panggilan. Selain itu, fallback nama tool di
   `TranslateOpenAIToGemini` membaca nama dari id dengan memotong segmen setelah
   underscore terakhir — logika itu hanya benar untuk id format `call_<nama>_...`,
   dan akan salah jika gateway memakai `functionCall.id` milik Gemini sendiri
   (token opaque seperti `call_abc123`).
- **Fiks**: id memakai `functionCall.id` milik Gemini bila ada (satu-satunya id
+- **Fiks**: id memakai `functionCall.id` milik Gemini bila ada (satu-satunya id
   yang akan dicocokkan Gemini untuk functionResponse); jika tidak, id hasil
   generator membawa indeks panggilan sehingga paralel tetap berbeda. Pasangan
   id→tool dicatat saat tool call dipancarkan (`toolNameStore`, sejajar dengan
@@ -110,9 +90,9 @@
   suffix `__ts__` dan namespace sesi), dan fallback membaca penyimpanan itu.
   Id tidak pernah di-parse lagi: id yang tidak dikenal dijawab apa adanya,
   bukan dengan nama tool yang dikarang.
- **Parity**: `open-sse/translator/response/gemini-to-openai.js`
+- **Parity**: `open-sse/translator/response/gemini-to-openai.js`
   (`functionCall.id || \`${name}-${Date.now()}-${index}\``).
- **Catatan**: id ganda ini sudah ada sebelum #228 dan tidak diperparah olehnya;
+- **Catatan**: id ganda ini sudah ada sebelum #228 dan tidak diperparah olehnya;
   perlakuannya sudah aman karena `tcID2Names`/`nextToolNameForID` (
   `gemini.go`, parity #4273/#4589) mengantre nama per id. PR ini menutup celah
   id opaque dan membuat id paralel benar-benar unik.

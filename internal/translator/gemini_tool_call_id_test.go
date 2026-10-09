@@ -1,7 +1,9 @@
 package translator
 
 import (
-	json "encoding/json/v2"
+	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -13,13 +15,11 @@ import (
 // looks like a tool.
 func TestGeminiOpaqueToolCallIDRoundTrip(t *testing.T) {
 	tests := []struct {
-		name       string
-		geminiID   string
-		wantTool   string
-		wantHasIdx bool // generated ids end in _<index>
+		name     string
+		geminiID string
 	}{
-		{name: "gemini supplied id is used verbatim", geminiID: "call_abc123", wantTool: "read_file"},
-		{name: "absent id falls back to a generated one", geminiID: "", wantTool: "read_file", wantHasIdx: true},
+		{name: "gemini supplied id is used verbatim", geminiID: "call_abc123"},
+		{name: "absent id falls back to a generated one", geminiID: ""},
 	}
 
 	for _, tt := range tests {
@@ -36,30 +36,149 @@ func TestGeminiOpaqueToolCallIDRoundTrip(t *testing.T) {
 
 			id := streamedToolCallID(t, chunk, state)
 
-			if tt.geminiID != "" && id != tt.geminiID {
-				t.Fatalf("id = %q, want the id Gemini sent (%q)", id, tt.geminiID)
-			}
-			if tt.geminiID == "" && !endsWithIndex(id, state.ToolCallCount-1) {
-				t.Errorf("generated id %q must end in the call index %d", id, state.ToolCallCount-1)
+			if tt.geminiID != "" {
+				if id != tt.geminiID {
+					t.Fatalf("id = %q, want the id Gemini sent (%q)", id, tt.geminiID)
+				}
+			} else if !strings.HasSuffix(id, "_"+strconv.Itoa(0)) {
+				// The first call in a stream is index 0, whatever the counter
+				// has been incremented to by the time the assertion runs.
+				t.Errorf("generated id %q must end in the first call's index _0", id)
 			}
 
 			// The client echoes only the result, as many do.
-			body := `{"model":"gemini-test","messages":[
-				{"role":"tool","tool_call_id":"` + id + `","content":"contents of a.go"}
-			]}`
-			out, err := TranslateOpenAIToGemini([]byte(body))
-			if err != nil {
-				t.Fatalf("TranslateOpenAIToGemini: %v", err)
-			}
-
-			resp := firstFunctionResponse(t, out)
-			if resp.Name != tt.wantTool {
-				t.Errorf("functionResponse name = %q, want %q (id %q)", resp.Name, tt.wantTool, id)
+			resp := firstFunctionResponse(t, translateToolOnlyResult(t, id))
+			if resp.Name != "read_file" {
+				t.Errorf("functionResponse name = %q, want read_file (id %q)", resp.Name, id)
 			}
 			if resp.ID != id {
 				t.Errorf("functionResponse id = %q, want %q", resp.ID, id)
 			}
 		})
+	}
+}
+
+// The non-stream translator mints ids too, and the reverse direction has to
+// resolve them: a client that answers a streamed-then-buffered turn echoes only
+// role:"tool", so without this the fallback degrades to using the id as the
+// tool name — the exact defect the store exists to prevent.
+func TestGeminiNonStreamToolCallIDRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		geminiID string
+	}{
+		{name: "gemini supplied id", geminiID: "call_abc123"},
+		{name: "generated id", geminiID: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ClearGeminiToolCallNames()
+
+			part := `{"functionCall":{"name":"read_file","args":{"path":"a.go"}`
+			if tt.geminiID != "" {
+				part += `,"id":"` + tt.geminiID + `"`
+			}
+			part += `}}`
+			body := `{"candidates":[{"content":{"parts":[` + part + `]},"finishReason":"STOP"}]}`
+
+			out, _, err := TranslateGeminiResponseToOpenAI([]byte(body))
+			if err != nil {
+				t.Fatalf("TranslateGeminiResponseToOpenAI: %v", err)
+			}
+			id := firstToolCallID(t, out)
+			if tt.geminiID != "" && id != tt.geminiID {
+				t.Errorf("id = %q, want %q", id, tt.geminiID)
+			}
+
+			resp := firstFunctionResponse(t, translateToolOnlyResult(t, id))
+			if resp.Name != "read_file" {
+				t.Errorf("functionResponse name = %q, want read_file (id %q)", resp.Name, id)
+			}
+			if resp.ID != id {
+				t.Errorf("functionResponse id = %q, want %q", resp.ID, id)
+			}
+		})
+	}
+}
+
+// An id leaving the gateway carries a "__ts__<sig>" suffix whenever the call had
+// a thought signature, and that is the id the client echoes back. The name must
+// still resolve through the suffix — this is the Antigravity thinking turn, and
+// the one path where a session-scoped store entry is the only record of the
+// tool that was called.
+func TestGeminiToolCallNameResolvesThroughThoughtSignatureSuffix(t *testing.T) {
+	ClearGeminiToolCallNames()
+
+	state := &GeminiStreamState{MessageId: "msg", Model: "gemini-test"}
+	chunk := `{"candidates":[{"content":{"parts":[
+		{"thoughtSignature":"SIG123","functionCall":{"name":"read_file","args":{"path":"a.go"}}}
+	]},"finishReason":"STOP"}]}`
+
+	id := streamedToolCallID(t, chunk, state)
+	if !strings.Contains(id, "__ts__") {
+		t.Fatalf("id %q should carry a __ts__ transport suffix for a signed call", id)
+	}
+
+	resp := firstFunctionResponse(t, translateToolOnlyResult(t, id))
+	if resp.Name != "read_file" {
+		t.Errorf("functionResponse name = %q, want read_file (suffixed id %q)", resp.Name, id)
+	}
+	// The suffix is a 9router-go transport encoding and must not reach Gemini,
+	// so the response carries the id with it stripped — the same id the client
+	// sees on the functionCall half of the pair.
+	if resp.ID != geminiCleanToolCallID(id) {
+		t.Errorf("functionResponse id = %q, want %q (the __ts__ suffix stripped)", resp.ID, geminiCleanToolCallID(id))
+	}
+}
+
+// The assistant turn in the request is the strongest evidence of which tool a
+// result answers, so it outranks this gateway's own record of the id. Swapping
+// the two would answer a result from process-wide state instead of from the turn
+// the client actually sent, which matters when a client replays an id against a
+// different tool.
+func TestGeminiToolResultNamePrefersTheRequestOverTheStore(t *testing.T) {
+	ClearGeminiToolCallNames()
+
+	// The gateway once minted this id for read_file.
+	StoreGeminiToolCallName("call_abc123", "read_file", "")
+
+	// The client's own turn says the id is write_file now.
+	body := `{"model":"gemini-test","messages":[
+		{"role":"assistant","content":"","tool_calls":[
+			{"id":"call_abc123","type":"function","function":{"name":"write_file","arguments":"{}"}}
+		]},
+		{"role":"tool","tool_call_id":"call_abc123","content":"written"}
+	]}`
+	out, err := TranslateOpenAIToGemini([]byte(body))
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini: %v", err)
+	}
+	if got := firstFunctionResponse(t, out).Name; got != "write_file" {
+		t.Errorf("functionResponse name = %q, want write_file — the request outranks the stored name", got)
+	}
+}
+
+// An id this gateway never minted, arriving while the request does carry
+// tool_calls, must fall past the request pairing and the store to the id itself.
+// The tool-name parsing that used to sit here turned call_nope into "nope",
+// inventing a tool that was never declared; Gemini matches a response by name,
+// so that is a silent mis-pair rather than an honest unknown.
+func TestGeminiUnknownToolCallIDFallsThroughToTheID(t *testing.T) {
+	ClearGeminiToolCallNames()
+
+	body := `{"model":"gemini-test","messages":[
+		{"role":"assistant","content":"","tool_calls":[
+			{"id":"call_9_alpha","type":"function","function":{"name":"alpha","arguments":"{}"}}
+		]},
+		{"role":"tool","tool_call_id":"call_nope","content":"1"}
+	]}`
+	out, err := TranslateOpenAIToGemini([]byte(body))
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini: %v", err)
+	}
+	if got := firstFunctionResponse(t, out).Name; got != "call_nope" {
+		t.Errorf("functionResponse name = %q, want the id verbatim — an unknown id has no tool name", got)
 	}
 }
 
@@ -89,58 +208,71 @@ func TestGeminiParallelToolCallIDsAreDistinct(t *testing.T) {
 		seen[id] = i
 	}
 
-	// Each name still answers its own id.
+	// Each result must still reach its own tool.
 	want := []string{"read_file", "write_file", "read_file"}
 	for i, id := range ids {
-		if got := GetGeminiToolCallName(id, "msg"); got != want[i] {
-			t.Errorf("name for %q = %q, want %q", id, got, want[i])
+		if got := firstFunctionResponse(t, translateToolOnlyResult(t, id)).Name; got != want[i] {
+			t.Errorf("result for %q named %q, want %q", id, got, want[i])
 		}
 	}
 }
 
-// The store must resolve an id through the "__ts__" transport suffix and the
-// session namespace, the same way the thought signature store does, or an
-// Antigravity thinking turn cannot recover the tool it minted.
-func TestGeminiToolCallNameStoreResolvesTransportSuffix(t *testing.T) {
+// Expiring an entry must not leave its key in the FIFO slice. A key that is
+// pruned from entries and later reused is appended again, so a rebuild gated
+// only on capacity lets order grow without bound while traffic stays under the
+// cap — the regime in which the trim never runs and the leak is invisible.
+func TestGeminiToolCallNameStoreOrderNeverExceedsEntries(t *testing.T) {
 	ClearGeminiToolCallNames()
 
-	StoreGeminiToolCallName("call_read_file_1_0", "read_file", "msg")
+	for i := range 50 {
+		StoreGeminiToolCallName("call_"+strconv.Itoa(i), "read_file", "msg")
+	}
 
-	if got := GetGeminiToolCallName("call_read_file_1_0__ts__SIG", "msg"); got != "read_file" {
-		t.Errorf("name via __ts__ suffix = %q, want read_file", got)
+	// Expire everything, then write the same ids again.
+	globalToolNameStore.mu.Lock()
+	for k, v := range globalToolNameStore.entries {
+		v.expiresAt = v.expiresAt.Add(-2 * memoryTTL)
+		globalToolNameStore.entries[k] = v
 	}
-	if got := GetGeminiToolCallName("call_read_file_1_0", ""); got != "read_file" {
-		t.Errorf("name via global lookup = %q, want read_file", got)
-	}
-	if got := GetGeminiToolCallName("call_unknown_2_0", "msg"); got != "" {
-		t.Errorf("unknown id = %q, want empty", got)
-	}
-}
+	globalToolNameStore.mu.Unlock()
 
-// A result for an id this gateway never minted must not be given an invented
-// tool name. Gemini matches responses by name, so a wrong name is a silent
-// mis-pair; the id is the honest answer.
-func TestGeminiUnknownToolCallIDIsNotParsedIntoAName(t *testing.T) {
-	ClearGeminiToolCallNames()
-
-	body := `{"model":"gemini-test","messages":[
-		{"role":"tool","tool_call_id":"call_read_file_1791515128_0","content":"x"}
-	]}`
-	out, err := TranslateOpenAIToGemini([]byte(body))
-	if err != nil {
-		t.Fatalf("TranslateOpenAIToGemini: %v", err)
+	for i := range 50 {
+		StoreGeminiToolCallName("call_"+strconv.Itoa(i), "read_file", "msg")
 	}
-	if got := firstFunctionResponse(t, out).Name; got != "call_read_file_1791515128_0" {
-		t.Errorf("name = %q, want the id verbatim — an unknown id has no tool name", got)
+
+	globalToolNameStore.mu.RLock()
+	entries, order := len(globalToolNameStore.entries), len(globalToolNameStore.order)
+	globalToolNameStore.mu.RUnlock()
+
+	if order > entries {
+		t.Errorf("order holds %d keys for %d entries: expired keys leaked into the FIFO slice", order, entries)
 	}
 }
 
 // ─── helpers ───
 
+// translateToolOnlyResult sends the shape a client produces when it answers a
+// tool call: the result alone, with no assistant turn repeating the call.
+func translateToolOnlyResult(t *testing.T, toolCallID string) []byte {
+	t.Helper()
+	body := `{"model":"gemini-test","messages":[
+		{"role":"tool","tool_call_id":"` + toolCallID + `","content":"result"}
+	]}`
+	out, err := TranslateOpenAIToGemini([]byte(body))
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini: %v", err)
+	}
+	return out
+}
+
 func streamedToolCallIDs(t *testing.T, chunk string, state *GeminiStreamState) []string {
 	t.Helper()
+	out, err := TranslateGeminiChunkToOpenAI([]byte(chunk), state)
+	if err != nil {
+		t.Fatalf("TranslateGeminiChunkToOpenAI: %v", err)
+	}
 	var ids []string
-	for _, chunkJSON := range decodeSSEChunks(t, chunk, state) {
+	for _, chunkJSON := range decodeOpenAISSE(t, out) {
 		choices, _ := chunkJSON["choices"].([]any)
 		for _, c := range choices {
 			choice, _ := c.(map[string]any)
@@ -160,39 +292,27 @@ func streamedToolCallID(t *testing.T, chunk string, state *GeminiStreamState) st
 	t.Helper()
 	ids := streamedToolCallIDs(t, chunk, state)
 	if len(ids) != 1 {
-		t.Fatalf("want 1 tool_call id, got %d", len(ids))
+		t.Fatalf("want 1 tool_call id, got %d: %v", len(ids), ids)
 	}
 	return ids[0]
 }
 
-func decodeSSEChunks(t *testing.T, chunk string, state *GeminiStreamState) []map[string]any {
+func firstToolCallID(t *testing.T, openaiResponse []byte) string {
 	t.Helper()
-	out, err := TranslateGeminiChunkToOpenAI([]byte(chunk), state)
-	if err != nil {
-		t.Fatalf("TranslateGeminiChunkToOpenAI: %v", err)
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				ToolCalls []struct{ ID string } `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
 	}
-	var chunks []map[string]any
-	for _, line := range decodeOpenAISSE(t, out) {
-		chunks = append(chunks, line)
+	if err := json.Unmarshal(openaiResponse, &resp); err != nil {
+		t.Fatalf("parse translated response: %v", err)
 	}
-	return chunks
-}
-
-func endsWithIndex(id string, index int) bool {
-	want := "_" + itoa(index)
-	return len(id) > len(want) && id[len(id)-len(want):] == want
-}
-
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
+	if len(resp.Choices) == 0 || len(resp.Choices[0].Message.ToolCalls) == 0 {
+		t.Fatalf("no tool_calls in translated response: %s", openaiResponse)
 	}
-	var b []byte
-	for i > 0 {
-		b = append([]byte{byte('0' + i%10)}, b...)
-		i /= 10
-	}
-	return string(b)
+	return resp.Choices[0].Message.ToolCalls[0].ID
 }
 
 func firstFunctionResponse(t *testing.T, geminiBody []byte) GeminiFunctionResp {
