@@ -28,13 +28,20 @@ func qoderTestServer(t *testing.T, sse string) *httptest.Server {
 
 // qoderRequest builds a request that satisfies the COSY signer: Qoder verifies
 // the signature against the real account, so a request without a user id can
-// never be sent.
-func qoderRequest(srv *httptest.Server) *Request {
+// never be sent. It also seeds the model catalogue, because chat resolves
+// model_config from the live model list before it will send anything.
+func qoderRequest(t *testing.T, srv *httptest.Server) *Request {
+	t.Helper()
+	creds := QoderCosyCreds{UserID: "user-1", AuthToken: "auth-token"}
+	qoderSeedCatalog(t, creds, QoderRegionIntl, map[string]map[string]any{
+		"model": {"key": "model", "max_input_tokens": 131072.0, "max_output_tokens": 8192.0},
+	})
 	return &Request{
+		Ctx:      t.Context(),
 		Client:   srv.Client(),
 		Config:   &providers.ProviderConfig{BaseURL: srv.URL},
-		APIKey:   "auth-token",
-		ConnData: map[string]any{"userId": "user-1"},
+		APIKey:   creds.AuthToken,
+		ConnData: map[string]any{"userId": creds.UserID},
 		Body:     []byte(`{"model":"qd/model","messages":[{"role":"user","content":"hi"}],"stream":false}`),
 		IsStream: false,
 	}
@@ -67,7 +74,7 @@ func TestForwardQoder_NonStreamFoldsSSEIntoJSON(t *testing.T) {
 	)
 	srv := qoderTestServer(t, sse)
 	rec := httptest.NewRecorder()
-	if err := ForwardQoder(rec, qoderRequest(srv)); err != nil {
+	if err := ForwardQoder(rec, qoderRequest(t, srv)); err != nil {
 		t.Fatalf("ForwardQoder: %v", err)
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
@@ -113,7 +120,7 @@ func TestForwardQoder_NonStreamSurfacesHiddenUpstreamError(t *testing.T) {
 	srv := qoderTestServer(t, qoderSSE(string(frame), `{"firstTokenDuration":1,"totalDuration":2}`))
 
 	rec := httptest.NewRecorder()
-	err = ForwardQoder(rec, qoderRequest(srv))
+	err = ForwardQoder(rec, qoderRequest(t, srv))
 	if err == nil {
 		t.Fatalf("expected an error, got a 200 with body: %s", rec.Body.String())
 	}

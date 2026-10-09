@@ -51,36 +51,35 @@ const qoderDefaultContextLength = 131_072
 // fetchQoderCatalogModels returns the enabled models for a Qoder connection.
 // token is the stored credential (dt-…, jt-… or pt-…); psd is the
 // connection's providerSpecificData, which carries the signing user id.
+//
+// The endpoint table, PAT exchange and COSY signing live in the executor
+// package: chat resolves model_config from the very same catalogue, so both
+// paths must agree on which host a token kind is served from.
 func fetchQoderCatalogModels(ctx context.Context, provider, token string, psd map[string]any) ([]QoderModel, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return nil, fmt.Errorf("Qoder credential is empty")
 	}
-	ep := qoderEndpointsFor(provider)
+	endpoints := executor.QoderEndpointsFor(provider)
 	userID := psdStr(psd, "userId", "user_id", "id")
+	do := qoderProbeDoer(ctx)
 
 	// A PAT cannot sign COSY requests — trade it for a job token first.
-	if isQoderPAT(token) {
-		jobToken, err := exchangeQoderJobToken(ctx, ep.jobTokenExchangeURL, token)
+	if executor.IsQoderPAT(token) {
+		jobToken, err := executor.ExchangeQoderJobToken(ctx, do, endpoints.JobTokenExchangeURL, token)
 		if err != nil {
 			return nil, err
 		}
 		token = jobToken
 		if userID == "" {
-			userID = fetchQoderUserID(ctx, ep.userinfoURL, jobToken)
+			userID = executor.FetchQoderUserID(ctx, do, endpoints.UserInfoURL, jobToken)
 		}
 	}
 	if userID == "" {
 		return nil, fmt.Errorf("Qoder user id is missing — re-authorize this connection")
 	}
 
-	modelListURL := ep.modelListURL
-	// Job-token traffic is rejected by the primary host ("Login expired" 403);
-	// the official CLI serves it from the alt host.
-	if strings.HasPrefix(token, "jt-") && ep.modelListURLAlt != "" {
-		modelListURL = ep.modelListURLAlt
-	}
-
+	modelListURL := endpoints.ModelListURLForToken(token)
 	headers, err := executor.BuildQoderCosyHeaders(nil, modelListURL, executor.QoderCosyCreds{
 		UserID:    userID,
 		AuthToken: token,
@@ -92,7 +91,7 @@ func fetchQoderCatalogModels(ctx context.Context, provider, token string, psd ma
 	headers["Accept"] = "application/json"
 	headers["Accept-Encoding"] = "identity"
 
-	status, body, err := validateProbeDo(ctx, http.MethodGet, modelListURL, headers, nil)
+	status, body, err := do(ctx, http.MethodGet, modelListURL, headers, nil)
 	if err != nil {
 		return nil, err
 	}
