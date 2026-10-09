@@ -62,6 +62,12 @@
   `232 > 200`; dengan `confirm()` dihapus, 4 dari 5 test API key gagal —
   sementara keempat gate lama tetap hijau.
 
+- **Empat surface lain (#224)** — top bar, header Quota Tracker, dialog Add Proxy
+  Pools bertab, dan halaman Providers — ditutup di
+  `web/e2e/unifiedControls.test.ts`, sehingga suite-nya 20 test.
+  - **Bukti**: mengembalikan `TopBar.svelte` ke kondisi pra-#224 membuat **6 dari
+    10 test** di file itu gagal, sementara keempat gate lama tetap hijau.
+
 ### 🐛 fix(chat): error model-gated (402 funds, 401 unsupported) tidak mengunci seluruh akun (#218)
 
 - **Latar belakang**: pada provider multi-model seperti OpenCode Zen (atau Antigravity), request ke model
