@@ -287,7 +287,11 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 
 	if h.Repo != nil {
 		h.Repo.UpdateConnectionLastUsed(conn.ID)
-		_ = h.Repo.UnlockConnectionModel(conn.ID, model)
+		// Probes read production state; they never clear it (see
+		// tts_forward.go for the same reasoning on the failure path).
+		if !handlerutil.IsProbeContext(r.Context()) {
+			_ = h.Repo.UnlockConnectionModel(conn.ID, model)
+		}
 	}
 	usagetracker.GetTracker().PushRecent(usagetracker.RecentRequest{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),

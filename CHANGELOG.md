@@ -17,6 +17,11 @@
   ketika mendeteksi probe context. `getBestConnectionWithContext` mengizinkan probe menembus cooldown
   agar dapat menguji pemulihan upstream yang sebenarnya. Hasil probe juga menyertakan field terstruktur
   `blocked` dan `resetAt`.
+  Jalur media (embedding, image, tts, stt, video, systemone) memakai
+  `GetBestConnectionWithContext`, sehingga probe juga menembus cooldown di sana. Probe tidak
+  menulis cooldown pada jalur gagal maupun jalur sukses: `UnlockConnectionModel` setelah probe
+  berhasil juga dilewati, karena satu klik "Test" akan menghapus backoff yang dicatat traffic
+  produksi. `UpdateConnectionLastUsed` tetap berjalan — probe memang memakai koneksi tersebut.
 
 ### 🐛 fix(chat): error model-gated (402 funds, 401 unsupported) tidak mengunci seluruh akun (#218)
 

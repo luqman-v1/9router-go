@@ -494,8 +494,12 @@ func (h *MediaHandler) tryAntigravitySearchConn(w http.ResponseWriter, r *http.R
 
 	if h.Repo != nil {
 		h.Repo.UpdateConnectionLastUsed(conn.ID)
-		_ = h.Repo.UnlockConnectionModel(conn.ID, model)
-		_ = h.Repo.UnlockConnectionModel(conn.ID, translator.NormalizeAntigravityModel(model))
+		// Probes read production state; they never clear it (see
+		// tts_forward.go for the same reasoning on the failure path).
+		if !handlerutil.IsProbeContext(r.Context()) {
+			_ = h.Repo.UnlockConnectionModel(conn.ID, model)
+			_ = h.Repo.UnlockConnectionModel(conn.ID, translator.NormalizeAntigravityModel(model))
+		}
 	}
 	log.Info("request", "POST /v1/search", "provider", "antigravity", "model", model, "query", query, "results", len(results), "conn", conn.ID[:min(8, len(conn.ID))], "tokens", tokens)
 	responseTimeMs := time.Since(startTime).Milliseconds()

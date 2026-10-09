@@ -219,7 +219,11 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 
 	if h.Repo != nil {
 		h.Repo.UpdateConnectionLastUsed(conn.ID)
-		_ = h.Repo.UnlockConnectionModel(conn.ID, cleanModel)
+		// Probes read production state; they never clear it (see
+		// tts_forward.go for the same reasoning on the failure path).
+		if !handlerutil.IsProbeContext(r.Context()) {
+			_ = h.Repo.UnlockConnectionModel(conn.ID, cleanModel)
+		}
 	}
 	usagetracker.GetTracker().PushRecent(usagetracker.RecentRequest{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),

@@ -266,7 +266,11 @@ func (h *MediaHandler) tryXquikSearchConn(w http.ResponseWriter, r *http.Request
 	upstreamLatencyMs := time.Since(upstreamStart).Milliseconds()
 	if h.Repo != nil {
 		h.Repo.UpdateConnectionLastUsed(conn.ID)
-		_ = h.Repo.UnlockConnectionModel(conn.ID, model)
+		// Probes read production state; they never clear it (see
+		// tts_forward.go for the same reasoning on the failure path).
+		if !handlerutil.IsProbeContext(r.Context()) {
+			_ = h.Repo.UnlockConnectionModel(conn.ID, model)
+		}
 	}
 
 	var nextCursor any

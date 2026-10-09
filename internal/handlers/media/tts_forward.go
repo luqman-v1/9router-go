@@ -229,7 +229,13 @@ func (h *MediaHandler) tryNvidiaTTSConn(w http.ResponseWriter, r *http.Request, 
 
 	if h.Repo != nil {
 		h.Repo.UpdateConnectionLastUsed(conn.ID)
-		_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+		// A probe must not clear production state: the lock belongs to a real
+		// failure, and one click of Test would erase the backoff the
+		// operator is relying on. UpdateConnectionLastUsed still runs — the
+		// probe really did reach the provider.
+		if !handlerutil.IsProbeContext(r.Context()) {
+			_ = h.Repo.UnlockConnectionModel(conn.ID, modelInfo.Model)
+		}
 	}
 	h.trackTTSUsage("nvidia", modelInfo.Model)
 	h.writeTTSResponse(w, r, respFmt, audioBytes, "audio/wav", "wav")
