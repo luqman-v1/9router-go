@@ -640,7 +640,7 @@ func TestAugmentModelsWithCapacityAdapter(t *testing.T) {
 
 	t.Run("no repo means no pool", func(t *testing.T) {
 		models := []string{"deepseek/deepseek-chat"}
-		augmented, strat := h.AugmentModelsWithCapacityAdapter(models, map[string]bool{"vision": true})
+		augmented, strat := h.AugmentModelsWithCapacityAdapter(models, map[string]bool{"vision": true}, "")
 		if len(augmented) != 1 || augmented[0] != "deepseek/deepseek-chat" {
 			t.Errorf("expected original models, got %v", augmented)
 		}
@@ -651,7 +651,7 @@ func TestAugmentModelsWithCapacityAdapter(t *testing.T) {
 
 	t.Run("soft-only requirement never triggers the pool", func(t *testing.T) {
 		models := []string{"deepseek/deepseek-chat"}
-		augmented, _ := h.AugmentModelsWithCapacityAdapter(models, map[string]bool{"tools": true})
+		augmented, _ := h.AugmentModelsWithCapacityAdapter(models, map[string]bool{"tools": true}, "")
 		if len(augmented) != 1 {
 			t.Errorf("tools must not pull in an adapter pool, got %v", augmented)
 		}
@@ -753,7 +753,7 @@ func TestAugmentModelsWithCapacityAdapter_Pool(t *testing.T) {
 			}
 			h := NewChatHandler(db.NewRepo(database))
 
-			got, strat := h.AugmentModelsWithCapacityAdapter(tt.models, tt.required)
+			got, strat := h.AugmentModelsWithCapacityAdapter(tt.models, tt.required, "")
 			if !slices.Equal(got, tt.wantModels) {
 				t.Errorf("AugmentModelsWithCapacityAdapter() = %v, want %v", got, tt.wantModels)
 			}
@@ -780,7 +780,7 @@ func TestApplyCapacityAdapter_DoesNotFoldAdapterIntoComboRotation(t *testing.T) 
 	comboModels := []string{"oc/space-bunny-free"}
 
 	t.Run("vision turn is governed by the adapter strategy, not the combo's", func(t *testing.T) {
-		augmented, strategy, injected := h.applyCapacityAdapter(comboModels, map[string]bool{"vision": true}, "round-robin", "combo-wombo")
+		augmented, strategy, injected := h.applyCapacityAdapter(comboModels, map[string]bool{"vision": true}, "round-robin", "combo-wombo", "")
 
 		if !slices.Equal(augmented, []string{"ag/gemini-3.8-flash-high", "oc/space-bunny-free"}) {
 			t.Fatalf("expected the vision adapter model prepended, got %v", augmented)
@@ -806,7 +806,7 @@ func TestApplyCapacityAdapter_DoesNotFoldAdapterIntoComboRotation(t *testing.T) 
 	})
 
 	t.Run("text-only turn keeps the combo's own strategy and list", func(t *testing.T) {
-		augmented, strategy, injected := h.applyCapacityAdapter(comboModels, map[string]bool{"tools": true}, "round-robin", "combo-wombo")
+		augmented, strategy, injected := h.applyCapacityAdapter(comboModels, map[string]bool{"tools": true}, "round-robin", "combo-wombo", "")
 
 		if len(augmented) != 1 || augmented[0] != "oc/space-bunny-free" {
 			t.Fatalf("expected an untouched list, got %v", augmented)

@@ -61,6 +61,22 @@ func (h *ChatHandler) effectiveAllowedModels(key *models.APIKey) ([]string, erro
 	return patterns, nil
 }
 
+// allowedModelPatterns is effectiveAllowedModels for callers that hold a key id
+// rather than the key itself — the capacity-adapter pool filter runs deep in
+// dispatch, long after the request context is gone. It returns nil for an
+// empty id, which modelAllowed reads as "no allowlist".
+func (h *ChatHandler) allowedModelPatterns(keyID string) []string {
+	if h == nil || keyID == "" || h.Repo == nil {
+		return nil
+	}
+	patterns, err := h.Repo.GetAllowedModels(keyID)
+	if err != nil {
+		log.Warn("chat", "model allowlist read failed, allowing all", "error", err, "apiKeyId", keyID)
+		return nil
+	}
+	return patterns
+}
+
 // modelAllowed is the single allow/deny decision. An empty pattern set allows
 // everything; otherwise some pattern must match some candidate id.
 //
@@ -153,6 +169,16 @@ func (h *ChatHandler) enforceModelAccess(w http.ResponseWriter, r *http.Request,
 	}
 	writeModelAccessError(w, err)
 	return false
+}
+
+// EnforceModelAccess is the exported entry to the same gate
+// enforceModelAccess applies inside the chat lane. The media endpoints call
+// it: they sit behind the same RequireApiKey middleware, so a restricted key
+// that reached them unauthenticated-in-policy was being served anyway. Sharing
+// the one decision function is what keeps a model an operator allowed to be
+// the same model a client can actually reach, whichever endpoint it uses.
+func (h *ChatHandler) EnforceModelAccess(w http.ResponseWriter, r *http.Request, modelID string) bool {
+	return h.enforceModelAccess(w, r, modelID)
 }
 
 // filterModelsByAccess narrows a published model list to what the calling key

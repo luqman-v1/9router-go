@@ -88,14 +88,48 @@ func parseModelAllowlist(body []byte) ([]string, error) {
 		Models []string `json:"models"`
 	}
 	if err := json.Unmarshal(body, &wrapped); err == nil && wrapped.Models != nil {
-		return cleanModelPatterns(wrapped.Models), nil
+		return validateModelAllowlist(cleanModelPatterns(wrapped.Models))
 	}
 
 	var bare []string
 	if err := json.Unmarshal(body, &bare); err != nil {
 		return nil, fmt.Errorf("models must be a string array")
 	}
-	return cleanModelPatterns(bare), nil
+	return validateModelAllowlist(cleanModelPatterns(bare))
+}
+
+// maxAllowlistEntries and maxAllowlistEntryLength bound one key's allowlist.
+// Every entry is matched against every candidate id on every request, so an
+// unbounded list is a load a single dashboard call can set up. Upstream applies
+// the same 200/256 limits in validateKeyAccessInput.
+const (
+	maxAllowlistEntries     = 200
+	maxAllowlistEntryLength = 256
+)
+
+// validateModelAllowlist rejects an oversized allowlist with a message naming
+// the limit, so the dashboard can show the operator what to fix rather than a
+// generic 400.
+func validateModelAllowlist(models []string) ([]string, error) {
+	if len(models) > maxAllowlistEntries {
+		return nil, fmt.Errorf("too many model patterns: %d, maximum is %d", len(models), maxAllowlistEntries)
+	}
+	for _, m := range models {
+		if len(m) > maxAllowlistEntryLength {
+			return nil, fmt.Errorf("model pattern exceeds %d characters: %q", maxAllowlistEntryLength, truncateForError(m))
+		}
+	}
+	return models, nil
+}
+
+// truncateForError keeps a rejected pattern readable in an error message
+// instead of echoing an arbitrarily long operator paste back at them.
+func truncateForError(s string) string {
+	const head = 32
+	if len(s) <= head {
+		return s
+	}
+	return s[:head] + "…"
 }
 
 // cleanModelPatterns trims entries and drops blanks, so a trailing comma or a

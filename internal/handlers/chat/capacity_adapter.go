@@ -207,7 +207,17 @@ func capabilityFlag(caps providers.Capabilities, cap string) bool {
 // capabilities. The original list is returned untouched when it already covers
 // them (ReorderByCapabilities handles that case), when no pool is enabled, or
 // when no pool member is itself capable.
-func (h *ChatHandler) AugmentModelsWithCapacityAdapter(models []string, required map[string]bool) ([]string, string) {
+//
+// A pool model the calling key may not dispatch is never injected. The gate
+// that admitted the request only covers the model the CLIENT named, and this
+// pool is invisible to it — without the filter below an operator restricting a
+// key to one model would still have its traffic silently rerouted to a pool
+// model it never allowed. keyID may be empty, which means "no allowlist".
+func (h *ChatHandler) AugmentModelsWithCapacityAdapter(models []string, required map[string]bool, keyID string) ([]string, string) {
+	return h.augmentModelsWithCapacityAdapter(models, required, keyID)
+}
+
+func (h *ChatHandler) augmentModelsWithCapacityAdapter(models []string, required map[string]bool, keyID string) ([]string, string) {
 	hard := requiredHardCaps(required)
 	if len(hard) == 0 || len(models) == 0 {
 		return models, "fallback"
@@ -221,11 +231,17 @@ func (h *ChatHandler) AugmentModelsWithCapacityAdapter(models []string, required
 
 	pools := h.capacityAdapterPools()
 	pool := h.adapterModels(pools)
+	patterns := h.allowedModelPatterns(keyID)
 	injected := make([]string, 0, len(pool))
 	for _, m := range pool {
-		if !slices.Contains(models, m) && modelSatisfiesHard(m, hard) {
-			injected = append(injected, m)
+		if slices.Contains(models, m) || !modelSatisfiesHard(m, hard) {
+			continue
 		}
+		if !modelAllowed(patterns, h.accessCandidates(m)...) {
+			log.Info("chat", "capacity adapter skipped, model not permitted for this api key", "model", m)
+			continue
+		}
+		injected = append(injected, m)
 	}
 	if len(injected) == 0 {
 		return models, "fallback"

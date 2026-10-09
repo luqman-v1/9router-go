@@ -35,6 +35,13 @@ func (h *MediaHandler) forwardTTSRequest(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	// Gate here, not in forwardMediaRequest: the edge-tts and google-tts
+	// branches below resolve the model and synthesise locally, never reaching
+	// the shared funnel. Gating only the funnel would leave those two paths
+	// serving a restricted key.
+	if !h.ChatH.EnforceModelAccess(w, r, req.Model) {
+		return
+	}
 	modelInfo, err := h.ChatH.ResolveModel(req.Model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())

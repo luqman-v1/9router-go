@@ -88,6 +88,9 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if !h.ChatH.EnforceModelAccess(w, r, reqBody.Model) {
+		return
+	}
 	modelInfo, err := h.ChatH.ResolveModel(reqBody.Model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
@@ -193,6 +196,9 @@ func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.Unmarshal(body, &reqBody); err != nil || reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
+		return
+	}
+	if !h.ChatH.EnforceModelAccess(w, r, reqBody.Model) {
 		return
 	}
 	h.forwardSystemoneRequest(w, r, body, reqBody.Model)
@@ -611,6 +617,13 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				}
 			}
 		}
+	}
+	// Per-API-key access control. This is the single funnel for images, TTS,
+	// STT, video, search, scrape and fetch, so gating here covers all of them
+	// with the same decision the chat lane uses. It runs before any connection
+	// selection so a denied model never reaches a provider.
+	if !h.ChatH.EnforceModelAccess(w, r, model) {
+		return
 	}
 	modelInfo, err := h.ChatH.ResolveModel(model)
 	if err != nil {

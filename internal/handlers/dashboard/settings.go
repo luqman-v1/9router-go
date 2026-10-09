@@ -495,8 +495,29 @@ func (h *DashboardHandler) exportDatabase() (*databaseExport, error) {
 		`SELECT id, key, name, machineId, isActive, createdAt FROM apiKeys`); err != nil {
 		return nil, err
 	}
+	// The per-key model allowlist is a separate table, so selecting apiKeys
+	// alone drops it. A restored key would then silently allow every model
+	// again — the one outcome a restriction exists to prevent.
+	access, err := selectRows(db,
+		`SELECT api_key_id, model FROM api_key_model_access ORDER BY api_key_id, model`)
+	if err != nil {
+		return nil, err
+	}
+	allowlists := make(map[string][]string)
+	for _, row := range access {
+		keyID, _ := row["api_key_id"].(string)
+		model, _ := row["model"].(string)
+		if keyID != "" && model != "" {
+			allowlists[keyID] = append(allowlists[keyID], model)
+		}
+	}
 	for _, row := range out.APIKeys {
 		normalizeBool(row, "isActive")
+		if id, _ := row["id"].(string); id != "" {
+			if models := allowlists[id]; len(models) > 0 {
+				row["allowedModels"] = models
+			}
+		}
 	}
 
 	if out.Combos, err = selectRows(db,
@@ -537,6 +558,9 @@ func (h *DashboardHandler) importDatabase(payload map[string]any) error {
 		`DELETE FROM providerNodes`,
 		`DELETE FROM proxyPools`,
 		`DELETE FROM apiKeys`,
+		// Without this the access rows outlive their key and accumulate as
+		// orphans after every import.
+		`DELETE FROM api_key_model_access`,
 		`DELETE FROM combos`,
 		`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`,
 	}
@@ -627,12 +651,29 @@ func (h *DashboardHandler) importDatabase(payload map[string]any) error {
 		if !ok {
 			continue
 		}
+		keyID, _ := k["id"].(string)
+		if keyID == "" {
+			continue
+		}
 		if _, err := tx.Exec(
 			`INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt) VALUES(?, ?, ?, ?, ?, ?)`,
 			k["id"], k["key"], stringDefault(k["name"], nil), stringDefault(k["machineId"], nil),
 			boolToInt(k["isActive"]), stringDefault(k["createdAt"], nowISO()),
 		); err != nil {
 			return err
+		}
+		models, _ := k["allowedModels"].([]any)
+		for _, raw := range models {
+			model, _ := raw.(string)
+			if model == "" {
+				continue
+			}
+			if _, err := tx.Exec(
+				`INSERT OR REPLACE INTO api_key_model_access(api_key_id, model) VALUES(?, ?)`,
+				keyID, model,
+			); err != nil {
+				return err
+			}
 		}
 	}
 

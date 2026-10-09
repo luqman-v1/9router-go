@@ -114,7 +114,7 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	requiredCaps := DetectRequiredCapabilities(body)
 
 	if len(modelInfo.ComboModels) > 0 {
-		augmented, comboStrategy, injected := h.applyCapacityAdapter(modelInfo.ComboModels, requiredCaps, modelInfo.Strategy, reqBody.Model)
+		augmented, comboStrategy, injected := h.applyCapacityAdapter(modelInfo.ComboModels, requiredCaps, modelInfo.Strategy, reqBody.Model, requestKeyID(r))
 		if modelInfo.Strategy == "fusion" {
 			bodyJSON, err := json.Marshal(workingBody)
 			if err != nil {
@@ -132,7 +132,7 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	if !strings.Contains(targetEntry, "/") && modelInfo.Provider != "" {
 		targetEntry = modelInfo.Provider + "/" + modelInfo.Model
 	}
-	augmented, strat := h.AugmentModelsWithCapacityAdapter([]string{targetEntry}, requiredCaps)
+	augmented, strat := h.AugmentModelsWithCapacityAdapter([]string{targetEntry}, requiredCaps, requestKeyID(r))
 	if len(augmented) > 1 {
 		injected := augmented[:len(augmented)-1]
 		log.Info("chat", "capacity adapter auto-switch responses", "target", reqBody.Model, "switched_to", augmented[0], "caps", keysString(requiredCaps))
