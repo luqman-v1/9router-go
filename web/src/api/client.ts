@@ -259,7 +259,7 @@ export interface HeadroomExtrasResponse {
 export interface ProxyPool {
   id: string
   name: string
-  type: 'http' | 'socks5' | 'vercel' | 'cloudflare' | 'deno' | string
+  type: 'http' | 'socks5' | 'vercel' | 'cloudflare' | 'deno' | 'netlify' | string
   proxyUrl?: string
   urls?: string[]
   noProxy?: string
@@ -1527,6 +1527,11 @@ export const api = {
     }),
   deployDenoRelay: (payload: { denoToken: string; orgDomain: string; projectName?: string }) =>
     request<{ success?: boolean; proxyUrl?: string; deployUrl?: string; error?: string }>('/api/proxy-pools/deno-deploy', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  deployNetlifyRelay: (payload: { netlifyToken: string; projectName?: string }) =>
+    request<{ success?: boolean; proxyUrl?: string; deployUrl?: string; error?: string }>('/api/proxy-pools/netlify-deploy', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),

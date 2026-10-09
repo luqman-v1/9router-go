@@ -20,26 +20,26 @@ type ProxyPool struct {
 	IsActive    bool     `json:"isActive"`
 	URLs        []string `json:"urls"`
 	Strategy    string   `json:"strategy"` // "round-robin" or "random"
-	Type        string   `json:"type"`     // "http", "vercel", "cloudflare", "deno"
+	Type        string   `json:"type"`     // "http", "vercel", "cloudflare", "deno", "netlify"
 	NoProxy     string   `json:"noProxy"`
 	StrictProxy bool     `json:"strictProxy"`
 	index       uint64   // atomic counter for round-robin
 }
 
-// IsEdgeRelay reports whether a pool is an edge relay (vercel/cloudflare/deno)
-// rather than a dialable HTTP proxy. A relay is an ordinary HTTPS endpoint that
-// forwards to whichever upstream the x-relay-target / x-relay-path headers name,
-// so it must never be dialed with http.ProxyURL — that produces
+// IsEdgeRelay reports whether a pool is an edge relay (vercel/cloudflare/deno/
+// netlify) rather than a dialable HTTP proxy. A relay is an ordinary HTTPS
+// endpoint that forwards to whichever upstream the x-relay-target / x-relay-path
+// headers name, so it must never be dialed with http.ProxyURL — that produces
 // "malformed HTTP status code".
 //
-// One predicate for all three platforms: they share a contract, and a fourth
-// edge runtime should be added here rather than to every caller's own list.
+// One predicate for all four platforms: they share a contract, so a fifth edge
+// runtime belongs here rather than in every caller's own list.
 func (p *ProxyPool) IsEdgeRelay() bool {
 	if p == nil {
 		return false
 	}
 	switch p.Type {
-	case "vercel", "cloudflare", "deno":
+	case "vercel", "cloudflare", "deno", "netlify":
 		return true
 	default:
 		return false

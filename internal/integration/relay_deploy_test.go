@@ -10,7 +10,7 @@ import (
 	"9router/proxy/internal/auth"
 )
 
-// TestRelayDeployRoutesAcceptDashboardSession pins that the three relay-deploy
+// TestRelayDeployRoutesAcceptDashboardSession pins that the four relay-deploy
 // endpoints are reachable the way the dashboard SPA actually calls them.
 //
 // They were mounted under RequireApiKey at /proxy-pools/{platform}-deploy while
@@ -60,6 +60,13 @@ func TestRelayDeployRoutesAcceptDashboardSession(t *testing.T) {
 			name:             "cloudflare",
 			path:             "/api/proxy-pools/cloudflare-deploy",
 			wantMissingField: "Cloudflare Account ID and API Token are required",
+		},
+		{
+			// Netlify has a single credential, so its guard matches upstream
+			// netlify-deploy/route.js:36-38.
+			name:             "netlify",
+			path:             "/api/proxy-pools/netlify-deploy",
+			wantMissingField: "Netlify API token is required",
 		},
 	}
 

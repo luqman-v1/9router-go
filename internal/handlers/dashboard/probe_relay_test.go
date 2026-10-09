@@ -128,11 +128,11 @@ func TestNewProbeRelayClient_RejectsUnusableInput(t *testing.T) {
 }
 
 // The pool-type test endpoint and the connection probe must agree on what a
-// relay is. Both now read ProxyPool.IsEdgeRelay, so a fourth edge platform is
+// relay is. Both now read ProxyPool.IsEdgeRelay, so a fifth edge platform is
 // added in one place rather than to every caller's own list — and the two paths
-// cannot drift apart again.
+// cannot drift apart again. netlify joined in issue #250.
 func TestEdgeRelayPoolTypesAreClassifiedOnce(t *testing.T) {
-	for _, poolType := range []string{"vercel", "cloudflare", "deno"} {
+	for _, poolType := range []string{"vercel", "cloudflare", "deno", "netlify"} {
 		pool := &db.ProxyPool{Type: poolType}
 		if !pool.IsEdgeRelay() {
 			t.Errorf("pool type %q is an edge relay and must not be dialed as an HTTP proxy", poolType)
