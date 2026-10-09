@@ -9,7 +9,8 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "check:svelte": "svelte-check --tsconfig tsconfig.app.json --output machine",
-    "ratchet:svelte": "bun scripts/svelte-check-ratchet.ts"
+    "ratchet:svelte": "bun scripts/svelte-check-ratchet.ts",
+    "e2e": "bun test e2e/"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -19,12 +20,14 @@
     "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.5.1",
     "autoprefixer": "^10.6.0",
     "lucide-svelte": "^1.0.1",
     "oxlint": "^1.81.0",
+    "playwright": "^1.64.0",
     "postcss": "^8.5.28",
     "svelte": "^5.57.0",
     "svelte-check": "^4.7.6",

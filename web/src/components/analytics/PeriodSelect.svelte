@@ -50,6 +50,9 @@
   let panel: HTMLDivElement | null = $state(null)
   let panelStyle = $state('')
 
+/** The panel's preferred width, capped against the viewport at placement. */
+const MIN_WIDTH_PX = 256
+
   const selectedLabel = $derived(periodLabel(value))
   const isPreset = $derived(options.some((o) => o.value === value))
 
@@ -75,6 +78,7 @@
         align: 'right',
         rect: trigger.getBoundingClientRect(),
         panelWidth: panel.offsetWidth,
+        minWidth: MIN_WIDTH_PX,
       }),
     )
   }
@@ -143,7 +147,6 @@
       aria-label="Time window"
       tabindex="-1"
       style={panelStyle}
-      style:min-width="16rem"
       onkeydown={onKeydown}
       class="fixed z-50 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)]"
     >

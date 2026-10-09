@@ -81,14 +81,55 @@ describe('placePanel', () => {
 
 describe('placementStyle', () => {
   it('emits top for a downward panel', () => {
-    expect(placementStyle({ left: 10, top: 144, bottom: null, width: 224 })).toBe(
+    expect(placementStyle({ left: 10, top: 144, bottom: null, width: 224, minWidth: 0 })).toBe(
       'left:10px;width:224px;top:144px',
     )
   })
 
   it('emits bottom instead of top for a flipped panel', () => {
-    expect(placementStyle({ left: 10, top: 0, bottom: 44, width: 224 })).toBe(
+    expect(placementStyle({ left: 10, top: 0, bottom: 44, width: 224, minWidth: 0 })).toBe(
       'left:10px;width:224px;bottom:44px',
     )
+  })
+})
+
+describe('minimum width', () => {
+  // CSS `min-width` beats `width`, so an uncapped floor renders a panel wider
+  // than the clamp computed. On a 200px viewport a 224px floor overflowed by
+  // 32px regardless of what the measured width said.
+  it('caps the floor at the clamped width on a narrow viewport', () => {
+    const placement = placePanel({
+      rect: rect({ left: 28, right: 200 }),
+      panelWidth: 224,
+      minWidth: 224,
+      viewport: { width: 200, height: 600 },
+    })
+    expect(placement.minWidth).toBeLessThanOrEqual(placement.width)
+    expect(placement.width).toBeLessThanOrEqual(200 - 16)
+  })
+
+  it('keeps the floor when the viewport has room', () => {
+    const placement = placePanel({
+      rect: rect(),
+      panelWidth: 224,
+      minWidth: 224,
+      viewport: DESKTOP,
+    })
+    expect(placement.minWidth).toBe(224)
+  })
+
+  it('omits the floor entirely when none is requested', () => {
+    const placement = placePanel({ rect: rect(), panelWidth: 224, viewport: DESKTOP })
+    expect(placementStyle(placement)).not.toContain('min-width')
+  })
+
+  it('emits the capped floor so the clamp actually holds in CSS', () => {
+    const placement = placePanel({
+      rect: rect({ left: 28, right: 200 }),
+      panelWidth: 224,
+      minWidth: 224,
+      viewport: { width: 200, height: 600 },
+    })
+    expect(placementStyle(placement)).toContain(`min-width:${Math.round(placement.minWidth)}px`)
   })
 })

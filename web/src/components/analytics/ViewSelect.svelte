@@ -109,7 +109,6 @@
       aria-label={ariaLabel}
       tabindex="-1"
       style={panelStyle}
-      style:min-width="14rem"
       onkeydown={onKeydown}
       class="fixed z-50 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)]"
     >

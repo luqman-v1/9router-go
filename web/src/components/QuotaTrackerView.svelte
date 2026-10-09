@@ -99,6 +99,9 @@
   let providerDropdownPanel: HTMLDivElement | null = $state(null)
   let providerPanelStyle = $state('')
 
+/** The panel's preferred width, capped against the viewport at placement. */
+const PROVIDER_PANEL_MIN_WIDTH_PX = 256
+
   function placeProviderPanel(): void {
     const trigger = providerDropdownRoot?.querySelector('button')
     if (!trigger || !providerDropdownPanel) return
@@ -107,6 +110,7 @@
         align: 'left',
         rect: trigger.getBoundingClientRect(),
         panelWidth: providerDropdownPanel.offsetWidth,
+        minWidth: PROVIDER_PANEL_MIN_WIDTH_PX,
       }),
     )
   }
@@ -909,7 +913,6 @@
           <div
             bind:this={providerDropdownPanel}
             style={providerPanelStyle}
-            style:min-width="16rem"
             class="fixed z-50 overflow-hidden rounded-2xl border border-border-subtle bg-surface p-1.5 shadow-xl"
           >
             <button

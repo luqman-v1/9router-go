@@ -73,6 +73,24 @@ jobs:
           }
           go version -m /tmp/9router-go | grep -- '-pgo='
 
+      # Every gate above is structurally blind to the DOM. `tsc` reads types,
+      # `vite build` bundles, the ratchet counts diagnostics, and `go test`
+      # exercises the HTTP API without rendering a component — so a destructive
+      # action losing its confirmation dialog passes all of them. That is not
+      # hypothetical: collapsing the API-key row controls into a menu (#224)
+      # dropped the confirm() on delete and regenerate, and every gate stayed
+      # green. This job drives the real binary in a real browser.
+      - name: Build binary for E2E
+        run: go build -o 9router-go ./cmd/9router-go/
+
+      - name: Install Chromium
+        working-directory: web
+        run: bunx playwright install --with-deps chromium
+
+      - name: Dashboard E2E
+        working-directory: web
+        run: bun run e2e
+
   # The `test` job above runs `go test ./...` without -race, so a data race
   # could merge green and only surface on a user's machine under load. The
   # gateway's shared state is exactly the kind that races: the in-memory usage

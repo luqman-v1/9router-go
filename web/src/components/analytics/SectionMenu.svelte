@@ -31,6 +31,10 @@
   let panel: HTMLDivElement | null = $state(null)
   let panelStyle = $state('')
 
+
+/** The panel's preferred width, capped against the viewport at placement. */
+const MIN_WIDTH_PX = 240
+
   const current = $derived(
     USAGE_SECTIONS.find((s) => s.value === section) ?? USAGE_SECTIONS[0]
   )
@@ -47,6 +51,7 @@
         align: 'left',
         rect: trigger.getBoundingClientRect(),
         panelWidth: panel.offsetWidth,
+        minWidth: MIN_WIDTH_PX,
       }),
     )
   }
@@ -112,7 +117,6 @@
       aria-label="Usage section"
       tabindex="-1"
       style={panelStyle}
-      style:min-width="15rem"
       onkeydown={onKeydown}
       class="fixed z-50 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)]"
     >

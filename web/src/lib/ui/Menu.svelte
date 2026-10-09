@@ -60,8 +60,20 @@
         align,
         rect: trigger.getBoundingClientRect(),
         panelWidth: panel.offsetWidth,
+        minWidth: minWidthPx(),
       }),
     )
+  }
+
+  /**
+   * The caller's `minWidth` prop as pixels, so the helper can cap it against
+   * the viewport. CSS `min-width` beats `width`, so an uncapped floor would
+   * render a wider panel than the clamp computed on a narrow screen.
+   */
+  function minWidthPx(): number {
+    const match = /^([\d.]+)(rem|px)$/.exec(minWidth.trim())
+    if (!match) return 0
+    return match[2] === 'px' ? Number(match[1]) : Number(match[1]) * 16
   }
 
   function close(): void {
@@ -141,7 +153,6 @@
       aria-label={label}
       tabindex="-1"
       style={panelStyle}
-      style:min-width={minWidth}
       onkeydown={onKeydown}
       onclick={(e) => {
         // Every entry is a verb that runs and is done, so the menu closes on

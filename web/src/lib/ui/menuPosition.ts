@@ -27,6 +27,9 @@ export interface PanelPlacementOptions {
   rect: DOMRect
   /** The panel's natural width, measured after it renders. */
   panelWidth: number
+  /** The panel's preferred minimum width. Capped so it can never exceed the
+   * viewport. */
+  minWidth?: number
   /**
    * The window the panel is placed inside. Defaults to `window`, which is what
    * every caller wants; the tests pass an explicit viewport because a test
@@ -45,6 +48,7 @@ export interface PanelPlacement {
   top: number
   bottom: number | null
   width: number
+  minWidth: number
 }
 
 /** The current window size, or `null` where there is no window at all. */
@@ -59,6 +63,7 @@ export function placePanel({
   rect,
   panelWidth,
   viewport = currentViewport(),
+  minWidth = 0,
 }: PanelPlacementOptions): PanelPlacement {
   const viewportWidth = viewport?.width ?? 0
   const viewportHeight = viewport?.height ?? 0
@@ -70,7 +75,6 @@ export function placePanel({
     Math.max(anchored, GUTTER),
     Math.max(GUTTER, viewportWidth - width - GUTTER),
   )
-
   const spaceBelow = viewportHeight - rect.bottom
   const flipAbove = spaceBelow < MIN_SPACE_BELOW && rect.top > spaceBelow
 
@@ -79,6 +83,9 @@ export function placePanel({
     top: flipAbove ? 0 : rect.bottom + 4,
     bottom: flipAbove ? viewportHeight - rect.top + 4 : null,
     width,
+    // CSS `min-width` beats `width`, so a hard min-width on a narrow viewport
+    // would render wider than the clamp computed and overflow anyway.
+    minWidth: Math.min(minWidth, width),
   }
 }
 
@@ -95,6 +102,9 @@ export function placementStyle(placement: PanelPlacement): string {
     parts.push(`top:${Math.round(placement.top)}px`)
   } else {
     parts.push(`bottom:${Math.round(placement.bottom)}px`)
+  }
+  if (placement.minWidth > 0) {
+    parts.push(`min-width:${Math.round(placement.minWidth)}px`)
   }
   return parts.join(';')
 }

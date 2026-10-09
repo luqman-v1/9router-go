@@ -40,6 +40,28 @@
   pada 1440px dan 390px — rename tersimpan, batch pause menandai kedua key,
   dan kedua dropdown Cache Analytics tampil utuh di 390px.
 
+### ✅ test(dashboard): E2E suite yang menutup celah tsc/vite/svelte-check/go-test
+
+- **Latar belakang**: collapsing action API key jadi satu menu (#224) menghapus
+  `confirm()` pada delete dan regenerate — dan **semua gate tetap hijau**.
+  `tsc` membaca type, `vite build` membundel, ratchet svelte-check menghitung
+  diagnostic, `go test` menguji HTTP API tanpa pernah merender komponen.
+  Tidak satu pun melihat DOM.
+- **Perubahan**: `web/e2e/` (Playwright + Chromium) menjalankan binary Go asli
+  terhadap SQLite sementara, lalu menguji konsekuensi yang bisa diamati:
+  - dismiss dialog delete → baris **tetap ada**; accept → baris hilang
+  - dismiss dialog regenerate → secret **tidak berubah**
+  - prompt delete **menyebut nama key** yang akan dihapus
+  - batch bar mengubah semua key terpilih jadi `Paused`
+  - panel dropdown di 390px dan di viewport 200px **tetap di dalam layar**
+- **Bug tersembunyi yang ketahuan**: `style:min-width` pada panel mengalahkan
+  `width` hasil clamp, sehingga di viewport 200px panel 224px tetap meluber
+  32px. `placePanel` kini ikut meng-cap `minWidth`, dan semua panel meneruskan
+  nilai tersebut alih-alih menulis `min-width` sendiri.
+- **Bukti test menangkap regresi**: dengan clamp dimatikan, test mobile gagal
+  `232 > 200`; dengan `confirm()` dihapus, 4 dari 5 test API key gagal —
+  sementara keempat gate lama tetap hijau.
+
 ### 🐛 fix(chat): error model-gated (402 funds, 401 unsupported) tidak mengunci seluruh akun (#218)
 
 - **Latar belakang**: pada provider multi-model seperti OpenCode Zen (atau Antigravity), request ke model
