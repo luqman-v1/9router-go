@@ -22,6 +22,9 @@
   import { copyToClipboard } from '../lib/clipboard'
   import { emailPrivacy, formatEmailLabel } from '../lib/privacy'
   import Toggle from '../lib/ui/Toggle.svelte'
+  import Menu from '../lib/ui/Menu.svelte'
+  import MenuItem from '../lib/ui/MenuItem.svelte'
+  import { placePanel, placementStyle } from '../lib/ui/menuPosition'
   import { getIconPath } from './connections/types'
   import EditConnectionModal, { type ConnectionUpdate } from './connections/EditConnectionModal.svelte'
   import QuotaTable from './quota/QuotaTable.svelte'
@@ -89,9 +92,34 @@
   let providerFilter = $state('all')
   let providerOptions = $state<string[]>([])
   let providerMenuOpen = $state(false)
+  // The provider panel is `position: fixed` so it cannot be clipped by the
+  // page's scroll container; measuring it against the trigger keeps it on
+  // screen at phone widths (issue #224).
+  let providerDropdownRoot: HTMLDivElement | null = $state(null)
+  let providerDropdownPanel: HTMLDivElement | null = $state(null)
+  let providerPanelStyle = $state('')
+
+  function placeProviderPanel(): void {
+    const trigger = providerDropdownRoot?.querySelector('button')
+    if (!trigger || !providerDropdownPanel) return
+    providerPanelStyle = placementStyle(
+      placePanel({
+        align: 'left',
+        rect: trigger.getBoundingClientRect(),
+        panelWidth: providerDropdownPanel.offsetWidth,
+      }),
+    )
+  }
+
   let accountFilter = $state('all')
   let quotaSortMode = $state('default')
   let expiringFirst = $state(false)
+
+  // The panel's width is only known once it renders, so placement runs on the
+  // render that opens it rather than on the click.
+  $effect(() => {
+    if (providerMenuOpen && providerDropdownPanel) placeProviderPanel()
+  })
 
   // Pagination
   let page = $state(1)
@@ -776,19 +804,33 @@
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)
 
-    // Close provider dropdown on outside click
+    // The provider filter closes when a click lands outside either the trigger
+    // or the panel. The panel is `position: fixed` and detached from the
+    // trigger's subtree, so `closest()` on an ancestor id would no longer
+    // cover it (issue #224).
     function handleDocClick(e: MouseEvent): void {
       const target = e.target as HTMLElement | null
-      if (!target?.closest('#provider-dropdown-container')) {
+      if (
+        !providerDropdownRoot?.contains(target) &&
+        !providerDropdownPanel?.contains(target)
+      ) {
         providerMenuOpen = false
       }
     }
     document.addEventListener('click', handleDocClick)
 
+    function repositionProviderPanel(): void {
+      placeProviderPanel()
+    }
+    window.addEventListener('resize', repositionProviderPanel)
+    window.addEventListener('scroll', repositionProviderPanel, true)
+
     return () => {
       stopTimers()
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       document.removeEventListener('click', handleDocClick)
+      window.removeEventListener('resize', repositionProviderPanel)
+      window.removeEventListener('scroll', repositionProviderPanel, true)
     }
   })
 
@@ -819,14 +861,24 @@
   function handleAccountFilterChange(): void {
     page = 1
   }
+
+  function selectProviderFilter(next: string): void {
+    if (shouldResetPage(providerFilter, next)) page = 1
+    providerFilter = next
+    providerMenuOpen = false
+  }
 </script>
 
 <div class="space-y-6">
   <!-- Header Controls -->
-  <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-end">
+  <!-- Header Controls: what the operator filters by stays visible, and every
+       verb moves into one menu. Email masking, expiring-first ordering, both
+       bulk toggles, auto-refresh and refresh were six more controls in this
+       row, which is what made it wrap onto a second line (issue #224). -->
+  <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
     <div class="flex flex-wrap items-center gap-1.5">
       <!-- Provider filter dropdown -->
-      <div class="relative" id="provider-dropdown-container">
+      <div class="relative" bind:this={providerDropdownRoot}>
         <button
           type="button"
           onclick={() => (providerMenuOpen = !providerMenuOpen)}
@@ -854,22 +906,15 @@
         </button>
 
         {#if providerMenuOpen}
-          <button
-            type="button"
-            class="fixed inset-0 z-30 cursor-default bg-transparent"
-            aria-label="Close provider filter"
-            onclick={() => (providerMenuOpen = false)}
-          ></button>
           <div
-            class="absolute left-0 top-full z-40 mt-2 w-64 overflow-hidden rounded-2xl border border-border-subtle bg-surface p-1.5 shadow-xl sm:w-72"
+            bind:this={providerDropdownPanel}
+            style={providerPanelStyle}
+            style:min-width="16rem"
+            class="fixed z-50 overflow-hidden rounded-2xl border border-border-subtle bg-surface p-1.5 shadow-xl"
           >
             <button
               type="button"
-              onclick={() => {
-                if (shouldResetPage(providerFilter, 'all')) page = 1
-                providerFilter = 'all'
-                providerMenuOpen = false
-              }}
+              onclick={() => selectProviderFilter('all')}
               class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors {providerFilter ===
               'all'
                 ? 'bg-brand-500/10 text-brand-500'
@@ -886,11 +931,7 @@
               {#each providerOptions as prov (prov)}
                 <button
                   type="button"
-                  onclick={() => {
-                    if (shouldResetPage(providerFilter, prov)) page = 1
-                    providerFilter = prov
-                    providerMenuOpen = false
-                  }}
+                  onclick={() => selectProviderFilter(prov)}
                   class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors {providerFilter ===
                   prov
                     ? 'bg-brand-500/10 text-brand-500'
@@ -940,92 +981,52 @@
         </select>
       {/if}
 
-      <!-- Sensor email toggle -->
-      <button
-        type="button"
-        onclick={() => emailPrivacy.toggle()}
-        aria-pressed={$emailPrivacy}
-        class="flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors cursor-pointer {$emailPrivacy
-          ? 'border-brand-500/40 bg-brand-500/10 text-brand-500 font-medium'
-          : 'border-border-subtle bg-surface text-text-main hover:bg-surface-2'}"
-        title={$emailPrivacy ? 'Tampilkan email lengkap' : 'Sensor / sembunyikan email'}
-      >
-        <span class="material-symbols-outlined text-[14px]">
-          {$emailPrivacy ? 'visibility_off' : 'visibility'}
-        </span>
-        <span class="hidden sm:inline">{$emailPrivacy ? 'Email Disensor' : 'Sensor Email'}</span>
-      </button>
+      <Menu label="Quota tracker actions" triggerIcon="tune" minWidth="17rem">
+        <MenuItem
+          label={$emailPrivacy ? 'Show full emails' : 'Mask emails'}
+          icon={$emailPrivacy ? 'visibility' : 'visibility_off'}
+          onSelect={() => emailPrivacy.toggle()}
+        />
+        <MenuItem
+          label="Expiring first"
+          icon="hourglass_top"
+          checkbox
+          pressed={expiringFirst}
+          onSelect={() => (expiringFirst = !expiringFirst)}
+        />
 
-      <!-- Expiring first -->
-      <button
-        type="button"
-        onclick={() => (expiringFirst = !expiringFirst)}
-        aria-pressed={expiringFirst}
-        class="flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors {expiringFirst
-          ? 'border-amber-500/40 bg-amber-500/10 text-amber-500'
-          : 'border-border-subtle bg-surface text-text-main hover:bg-surface-2'}"
-        title="Sort accounts by earliest quota reset time"
-      >
-        <span class="material-symbols-outlined text-[14px]">hourglass_top</span>
-        <span class="hidden sm:inline">Expiring first</span>
-      </button>
+        <div class="my-1 border-t border-border-subtle" role="separator"></div>
 
-      <!-- Bulk: disable depleted -->
-      <button
-        type="button"
-        onclick={handleDisableDepleted}
-        disabled={bulkToggling}
-        class="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-red-500/30 px-2 text-xs text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
-        title="Disable connections with depleted quota on the current page"
-      >
-        <span class="material-symbols-outlined text-[14px]">block</span>
-        <span class="hidden sm:inline">Turn off Empty</span>
-      </button>
+        <MenuItem
+          label="Disable depleted accounts"
+          icon="block"
+          disabled={bulkToggling}
+          onSelect={handleDisableDepleted}
+        />
+        <MenuItem
+          label="Enable accounts with quota"
+          icon="check_circle"
+          disabled={bulkToggling}
+          onSelect={handleEnableAvailable}
+        />
 
-      <!-- Bulk: enable available -->
-      <button
-        type="button"
-        onclick={handleEnableAvailable}
-        disabled={bulkToggling}
-        class="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-emerald-500/30 px-2 text-xs text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
-        title="Enable connections that still have quota on the current page"
-      >
-        <span class="material-symbols-outlined text-[14px]">check_circle</span>
-        <span class="hidden sm:inline">Turn on Available</span>
-      </button>
+        <div class="my-1 border-t border-border-subtle" role="separator"></div>
 
-      <!-- Auto-refresh toggle -->
-      <button
-        type="button"
-        onclick={() => (autoRefresh = !autoRefresh)}
-        class="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border-subtle bg-surface px-2 text-xs transition-colors hover:bg-surface-2"
-        title={autoRefresh ? 'Disable auto-refresh' : 'Enable auto-refresh'}
-      >
-        <span
-          class="material-symbols-outlined text-[14px] {autoRefresh
-            ? 'text-brand-500'
-            : 'text-text-muted'}"
-        >
-          {autoRefresh ? 'toggle_on' : 'toggle_off'}
-        </span>
-        <span class="hidden text-text-main sm:inline">Auto-refresh</span>
-        {#if autoRefresh}
-          <span class="text-[10px] tabular-nums text-text-muted">({countdown}s)</span>
-        {/if}
-      </button>
-
-      <!-- Refresh all -->
-      <button
-        type="button"
-        onclick={() => refreshAll(true)}
-        disabled={refreshingAll}
-        class="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border-subtle bg-surface px-2 text-xs text-text-main transition-colors hover:bg-surface-2 disabled:opacity-50"
-        title="Refresh all"
-      >
-        <span class="material-symbols-outlined text-[14px] {refreshingAll ? 'animate-spin' : ''}">
-          refresh
-        </span>
-      </button>
+        <MenuItem
+          label="Auto-refresh"
+          icon="sync"
+          checkbox
+          pressed={autoRefresh}
+          note={autoRefresh ? `${countdown}s` : ''}
+          onSelect={() => (autoRefresh = !autoRefresh)}
+        />
+        <MenuItem
+          label="Refresh all"
+          icon="refresh"
+          disabled={refreshingAll}
+          onSelect={() => refreshAll(true)}
+        />
+      </Menu>
     </div>
   </div>
 

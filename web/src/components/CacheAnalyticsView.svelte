@@ -7,9 +7,9 @@
   } from '../api/client'
   import { notifications } from '../lib/notifications'
   import { copyToClipboard } from '../lib/clipboard'
-  import ActionsMenu from './analytics/ActionsMenu.svelte'
+  import Menu from '../lib/ui/Menu.svelte'
 
-  import MenuItem from './analytics/MenuItem.svelte'
+  import MenuItem from '../lib/ui/MenuItem.svelte'
   import ViewSelect from './analytics/ViewSelect.svelte'
   import type { ViewOption } from './analytics/types'
 
@@ -277,7 +277,7 @@
       </div>
 
       <div class="flex items-center gap-2">
-        <ActionsMenu label="Cache analytics actions">
+        <Menu label="Cache analytics actions" minWidth="14rem">
           <MenuItem
             label="Auto-refresh"
             icon="sync"
@@ -295,7 +295,7 @@
           <div class="my-1 border-t border-border-subtle" role="separator"></div>
           <MenuItem label="Export CSV" icon="download" onSelect={exportCSV} />
           <MenuItem label="Export JSON" icon="data_object" onSelect={exportJSON} />
-        </ActionsMenu>
+        </Menu>
       </div>
     </div>
 

@@ -1,0 +1,157 @@
+<!--
+  Menu — the overflow menu this dashboard puts in place of a row of buttons.
+
+  Six screens had the same problem: a header or a table row grew a control per
+  verb until it wrapped on a narrow window (issue #224). Each collapsed into one
+  "Menu" trigger, so this component carries the behaviour they share rather than
+  each screen hand-rolling its own open/close.
+
+  The panel is `position: fixed` and placed against the trigger's measured rect
+  rather than `position: absolute` inside the trigger's wrapper. An absolute
+  panel is clipped by any ancestor with `overflow` set, and these menus sit
+  inside `overflow-x-auto` tables and an `overflow-y-auto` page — which is what
+  pushed the Cache Analytics dropdown off the right edge on a phone.
+
+  The trigger is labelled "Menu" rather than icon-only: an icon alone gives a
+  screen reader nothing to announce, and several different verbs hide behind it.
+  The label collapses away from the glyph at the smallest widths, where the
+  header is tightest.
+-->
+<script lang="ts">
+  import type { Snippet } from 'svelte'
+  import { placePanel, placementStyle } from './menuPosition'
+
+  interface Props {
+    /** Names the menu for assistive technology; the visible label is "Menu". */
+    label?: string
+    disabled?: boolean
+    /** Panel alignment against the trigger. Defaults to the right edge. */
+    align?: 'left' | 'right'
+    /** Smallest panel width; the panel grows past this to fit its content. */
+    minWidth?: string
+    /** Trigger glyph. Defaults to the "menu" glyph. */
+    triggerIcon?: string
+    /** Hides the "Menu" text even at desktop widths, for a tight row. */
+    hideLabel?: boolean
+    children?: Snippet
+  }
+
+  let {
+    label = 'Actions',
+    disabled = false,
+    align = 'right',
+    minWidth = '13rem',
+    triggerIcon = 'menu',
+    hideLabel = false,
+    children,
+  }: Props = $props()
+
+  let open = $state(false)
+  let trigger: HTMLButtonElement | null = $state(null)
+  let panel: HTMLDivElement | null = $state(null)
+  let panelStyle = $state('')
+
+  // The panel's natural width is only known after it renders, so placement runs
+  // on every render while the menu is open rather than once on open.
+  function place(): void {
+    if (!trigger || !panel) return
+    panelStyle = placementStyle(
+      placePanel({
+        align,
+        rect: trigger.getBoundingClientRect(),
+        panelWidth: panel.offsetWidth,
+      }),
+    )
+  }
+
+  function close(): void {
+    open = false
+  }
+
+  function onKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      close()
+      // Return focus to the trigger so the keyboard path resumes where it left off.
+      trigger?.focus()
+      return
+    }
+    // A menu left open behind the next control makes the following focusable
+    // element unreachable, so Tab closes it instead.
+    if (event.key === 'Tab') close()
+  }
+
+  $effect(() => {
+    if (!open) return
+
+    function handleDocClick(e: MouseEvent): void {
+      const target = e.target as HTMLElement | null
+      if (!trigger?.contains(target) && !panel?.contains(target)) close()
+    }
+    // A scroll or a resize moves the trigger out from under a panel placed
+    // against the old rect, so both re-measure while the menu is open.
+    function reposition(): void {
+      place()
+    }
+
+    document.addEventListener('click', handleDocClick)
+    document.addEventListener('keydown', onKeydown)
+    window.addEventListener('resize', reposition)
+    window.addEventListener('scroll', reposition, true)
+
+    return () => {
+      document.removeEventListener('click', handleDocClick)
+      document.removeEventListener('keydown', onKeydown)
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
+  })
+
+  $effect(() => {
+    if (open && panel) place()
+  })
+</script>
+
+<div class="relative shrink-0">
+  <button
+    bind:this={trigger}
+    type="button"
+    aria-haspopup="menu"
+    aria-expanded={open}
+    aria-label={label}
+    disabled={disabled}
+    onclick={() => (open = !open)}
+    onkeydown={onKeydown}
+    class="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-text-main shadow-sm transition-colors hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 disabled:opacity-50 sm:px-3 sm:text-sm"
+  >
+    <span class="material-symbols-outlined text-[18px] text-text-muted" aria-hidden="true">
+      {triggerIcon}
+    </span>
+    {#if !hideLabel}
+      <span class="hidden sm:inline">Menu</span>
+      <span class="material-symbols-outlined text-[16px] text-text-muted" aria-hidden="true">
+        expand_more
+      </span>
+    {/if}
+  </button>
+
+  {#if open}
+    <div
+      bind:this={panel}
+      role="menu"
+      aria-label={label}
+      tabindex="-1"
+      style={panelStyle}
+      style:min-width={minWidth}
+      onkeydown={onKeydown}
+      onclick={(e) => {
+        // Every entry is a verb that runs and is done, so the menu closes on
+        // pick. Delegating here rather than in each item keeps the entries
+        // plain buttons that do not need to know about the menu above them.
+        if ((e.target as HTMLElement).closest('button')) close()
+      }}
+      class="fixed z-50 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)]"
+    >
+      {@render children?.()}
+    </div>
+  {/if}
+</div>

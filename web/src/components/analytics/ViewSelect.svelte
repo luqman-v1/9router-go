@@ -7,8 +7,13 @@
   the header, so it became a dropdown here like the pickers it sits beside
   (issue #209). The closed control keeps the active view's icon and label, so the
   section still says which view is on screen.
+
+  The panel is placed by lib/ui/menuPosition: measured against the trigger and
+  clamped to the viewport, so it stays on screen inside the section's scrolling
+  header (issue #224).
 -->
 <script lang="ts">
+  import { placePanel, placementStyle } from '../../lib/ui/menuPosition'
   import type { ViewOption } from './types'
 
   interface Props {
@@ -21,7 +26,9 @@
   let { value, options, ariaLabel = 'View', onChange = () => {} }: Props = $props()
 
   let open = $state(false)
-  let root: HTMLDivElement | null = $state(null)
+  let trigger: HTMLButtonElement | null = $state(null)
+  let panel: HTMLDivElement | null = $state(null)
+  let panelStyle = $state('')
 
   const current = $derived(options.find((o) => o.value === value) ?? options[0])
 
@@ -30,9 +37,21 @@
     open = false
   }
 
-  function onKeydown(event: KeyboardEvent) {
+  function place(): void {
+    if (!trigger || !panel) return
+    panelStyle = placementStyle(
+      placePanel({
+        align: 'right',
+        rect: trigger.getBoundingClientRect(),
+        panelWidth: panel.offsetWidth,
+      }),
+    )
+  }
+
+  function onKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
       open = false
+      trigger?.focus()
       return
     }
     // A menu left open behind the next control makes the following focusable
@@ -43,15 +62,32 @@
   $effect(() => {
     if (!open) return
     function handleDocClick(e: MouseEvent): void {
-      if (!root?.contains(e.target as HTMLElement | null)) open = false
+      const target = e.target as HTMLElement | null
+      if (!trigger?.contains(target) && !panel?.contains(target)) open = false
+    }
+    function reposition(): void {
+      place()
     }
     document.addEventListener('click', handleDocClick)
-    return () => document.removeEventListener('click', handleDocClick)
+    document.addEventListener('keydown', onKeydown)
+    window.addEventListener('resize', reposition)
+    window.addEventListener('scroll', reposition, true)
+    return () => {
+      document.removeEventListener('click', handleDocClick)
+      document.removeEventListener('keydown', onKeydown)
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
+  })
+
+  $effect(() => {
+    if (open && panel) place()
   })
 </script>
 
-<div class="relative shrink-0" bind:this={root}>
+<div class="relative shrink-0">
   <button
+    bind:this={trigger}
     type="button"
     aria-haspopup="listbox"
     aria-expanded={open}
@@ -68,11 +104,14 @@
 
   {#if open}
     <div
+      bind:this={panel}
       role="listbox"
       aria-label={ariaLabel}
       tabindex="-1"
+      style={panelStyle}
+      style:min-width="14rem"
       onkeydown={onKeydown}
-      class="absolute right-0 top-full z-30 mt-1 w-56 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)]"
+      class="fixed z-50 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)]"
     >
       {#each options as o (o.value)}
         <button

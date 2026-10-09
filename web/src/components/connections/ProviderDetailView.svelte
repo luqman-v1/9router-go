@@ -33,6 +33,8 @@
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   import { loadDeprecations, refreshDeprecations, subscribeDeprecations } from '../../lib/modelDeprecations.svelte'
   import DeprecatedBadge from '../../lib/ui/DeprecatedBadge.svelte'
+  import Menu from '../../lib/ui/Menu.svelte'
+  import MenuItem from '../../lib/ui/MenuItem.svelte'
   import {
     buildAvailableModels,
     fetchProviderModelsData,
@@ -3267,10 +3269,11 @@
 
                 <!-- Right actions -->
                 <div class="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
-                  <!-- One implicit column per action (proxy / refresh / edit /
-                       delete, plus Session for Freebuff). auto-cols-fr keeps them
-                       on a single row as buttons are added; a fixed
-                       grid-cols-N silently wrapped once a fourth button landed. -->
+                  <!-- The proxy picker stays a control of its own: it is a
+                       two-tap choice between pools, not a verb. Everything that
+                       runs and is done moved into one menu, because four to five
+                       labelled buttons in a row left the connection name almost
+                       no width (issue #224). -->
                   <div class="grid flex-1 grid-flow-col auto-cols-fr gap-1 sm:flex sm:flex-none">
                     <!-- Proxy dropdown -->
                     <div class="relative">
@@ -3344,50 +3347,33 @@
                         </div>
                       {/if}
                     </div>
-                    <!-- Freebuff session manage button -->
-                    {#if isFreebuff}
-                    <button
-                      type="button"
-                      onclick={() => selectFreebuffAccount(conn.id)}
-                      class="flex flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 {targetFreebuffConn?.id === conn.id ? 'text-primary font-medium' : 'text-text-muted hover:text-primary'} cursor-pointer"
-                      title="Manage session for this account"
+                    <Menu
+                      label="Actions for this connection"
+                      triggerIcon="more_horiz"
+                      hideLabel
+                      minWidth="13rem"
                     >
-                      <span class="material-symbols-outlined text-[18px]">lock_clock</span>
-                      <span class="text-[10px] leading-tight">Session</span>
-                    </button>
-                    {/if}
+                      {#if isFreebuff}
+                        <MenuItem
+                          label="Manage session"
+                          icon="lock_clock"
+                          onSelect={() => selectFreebuffAccount(conn.id)}
+                        />
+                        <div class="my-1 border-t border-border-subtle" role="separator"></div>
+                      {/if}
 
-                    <!-- Refresh (single-account test) button -->
-                    <button
-                      type="button"
-                      onclick={() => refreshOneConnection(conn)}
-                      disabled={isTestingOneByOne || status?.state === 'testing'}
-                      title="Test this account and refresh its status"
-                      class="flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-                    >
-                      <span class="material-symbols-outlined text-[18px] {status?.state === 'testing' ? 'animate-spin' : ''}">sync</span>
-                      <span class="text-[10px] leading-tight">Refresh</span>
-                    </button>
+                      <MenuItem
+                        label="Refresh"
+                        icon="sync"
+                        disabled={isTestingOneByOne || status?.state === 'testing'}
+                        onSelect={() => refreshOneConnection(conn)}
+                      />
+                      <MenuItem label="Edit" icon="edit" onSelect={() => openEditConnection(conn)} />
 
-                    <!-- Edit button -->
-                    <button
-                      type="button"
-                      onclick={() => openEditConnection(conn)}
-                      class="flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5 cursor-pointer"
-                    >
-                      <span class="material-symbols-outlined text-[18px]">edit</span>
-                      <span class="text-[10px] leading-tight">Edit</span>
-                    </button>
+                      <div class="my-1 border-t border-border-subtle" role="separator"></div>
 
-                    <!-- Delete button -->
-                    <button
-                      type="button"
-                      onclick={() => handleDeleteConnection(conn)}
-                      class="flex flex-col items-center rounded px-2 py-1 text-red-500 hover:bg-red-500/10 cursor-pointer"
-                    >
-                      <span class="material-symbols-outlined text-[18px]">delete</span>
-                      <span class="text-[10px] leading-tight">Delete</span>
-                    </button>
+                      <MenuItem label="Delete" icon="delete" danger onSelect={() => handleDeleteConnection(conn)} />
+                    </Menu>
                   </div>
 
                   <!-- Active toggle switch -->

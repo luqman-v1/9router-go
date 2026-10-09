@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### ✨ feat(dashboard): satukan enam baris kontrol menjadi satu menu (Closes #224)
+
+- **Latar belakang**: report #224 — enam surface dashboard punya deretan
+  kontrol yang membuat baris header atau baris tabel wrap di layar sempit, dan
+  dropdown Cache Analytics keluar dari layar di lebar ponsel.
+- **Akibat**: operator harus menggulir ke baris kedua di Quota Tracker, dan
+  tombol `Delete` pada baris API key bisa terdorong keluar viewport sehingga
+  tidak bisa ditekan di ponsel.
+- **Perubahan UI**:
+  - **Top bar**: donate, install, theme, language, changelog, dan logout —
+    enam kontrol — kini satu tombol `Menu` (`TopBar.svelte`). Dropdown language
+    dan app-drawer yang sebelumnya terpisah dihapus.
+  - **Quota Tracker**: provider filter + account filter tetap terlihat; email
+    masking, expiring-first, disable/enable massal, auto-refresh, dan refresh
+    pindah ke satu `Menu`.
+  - **Proxy Pools**: dua modal (single add dan batch import) menjadi satu dialog
+    bertab `Single` / `Bulk Add`; tombol `Batch Import` membuka tab yang sama.
+  - **Provider connections**: refresh / edit / delete per baris menjadi satu
+    `more_horiz` menu. Tombol proxy tetap kontrol tersendiri karena itu pilihan
+    nilai, bukan verb.
+  - **API keys**: action per baris menjadi satu `more_horiz` menu; checkbox per
+    baris menambah **batch bar** (enable / pause / delete) untuk banyak key
+    sekaligus.
+- **Fix mobile dropdown**: panel menu kini `position: fixed` dan diposisikan
+  dari `getBoundingClientRect()` trigger, lalu di-clamp ke viewport
+  (`lib/ui/menuPosition.ts`). Sebelumnya `absolute` di dalam wrapper, sehingga
+  terpotong oleh ancestor `overflow-x-auto` — inilah penyebab dropdown Cache
+  Analytics keluar layar di ponsel. `ViewSelect`, `SectionMenu`, `PeriodSelect`,
+  dan provider filter Quota Tracker semuanya memakai penempatan yang sama.
+- **Rename API key**: `PUT /api/keys/{id}` menerima field `name` (partial
+  update; string kosong = hapus nama). Field rename ada di dialog policy yang
+  sama dengan rate limit/expiry/allowlist, jadi mengedit satu key = satu
+  dialog. Dibatasi 200 karakter.
+- **Verifikasi**: `bun run build`, `make vet-svelte` (0 unresolved identifier,
+  83 error = baseline), `go test ./...` (3650 pass), plus smoke check di browser
+  pada 1440px dan 390px — rename tersimpan, batch pause menandai kedua key,
+  dan kedua dropdown Cache Analytics tampil utuh di 390px.
+
 ### 🐛 fix(chat): error model-gated (402 funds, 401 unsupported) tidak mengunci seluruh akun (#218)
 
 - **Latar belakang**: pada provider multi-model seperti OpenCode Zen (atau Antigravity), request ke model

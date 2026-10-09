@@ -92,6 +92,8 @@ export interface APIKeyPolicy {
   rateLimitConcurrency?: number
   expiresAt?: string
   metadata?: string
+  /** Renames the key. An empty string clears the stored name. */
+  name?: string
 }
 
 export interface GuardrailPolicy {

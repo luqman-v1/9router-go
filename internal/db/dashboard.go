@@ -381,6 +381,20 @@ func (r *Repo) SetApiKeyMetadata(keyID, metadata string) error {
 	return nil
 }
 
+// SetApiKeyName renames an API key. The name is operator-facing only — it never
+// reaches the wire — so an empty value clears it and the UI falls back to the
+// masked display.
+func (r *Repo) SetApiKeyName(keyID, name string) error {
+	_, err := r.db.Exec(
+		`UPDATE apiKeys SET name = ? WHERE id = ?`,
+		name, keyID,
+	)
+	if err != nil {
+		return fmt.Errorf("set api key name %s: %w", keyID, err)
+	}
+	return nil
+}
+
 // GetKVScope retrieves all key-value pairs for a given scope.
 func (r *Repo) GetKVScope(scope string) (map[string]string, error) {
 	rows, err := r.db.Query(`SELECT key, value FROM kv WHERE scope = ?`, scope)

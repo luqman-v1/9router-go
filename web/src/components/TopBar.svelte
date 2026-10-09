@@ -2,6 +2,8 @@
   import { api } from '../api/client'
   import ProviderIcon from './connections/ProviderIcon.svelte'
   import ChangelogModal from './ChangelogModal.svelte'
+  import Menu from '../lib/ui/Menu.svelte'
+  import MenuItem from '../lib/ui/MenuItem.svelte'
   import { type ActiveTab } from '../lib/router'
   import { promptInstall, subscribeInstallPrompt } from '../lib/pwa'
 
@@ -26,8 +28,6 @@
   // Theme state
   let isDark = $state(true)
   let isDonateOpen = $state(false)
-  let isAppDrawerOpen = $state(false)
-  let isLangMenuOpen = $state(false)
   let isChangelogOpen = $state(false)
   let canInstall = $state(false)
 
@@ -63,7 +63,6 @@
   }
 
   async function handleLogout() {
-    isAppDrawerOpen = false
     try {
       await api.logout()
     } catch {}
@@ -254,142 +253,33 @@
     {/if}
   </div>
 
-  <!-- Right action buttons: Donate, Theme, Language flag, App drawer -->
+  <!-- Right: one menu. Donate, install, theme, language, changelog and logout
+       were six controls competing for the same strip, and on a phone they
+       wrapped into two rows (issue #224). They now live behind a single
+       trigger, which is why the separate language dropdown and app-drawer
+       dropdown this file used to own are gone. -->
   <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
-    <!-- 1. Donate button -->
-    <button
-      type="button"
-      onclick={() => (isDonateOpen = true)}
-      class="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-pink-500/30 bg-pink-500/10 text-pink-600 dark:text-pink-400 hover:bg-pink-500/20 transition-colors text-xs sm:text-sm font-medium cursor-pointer"
-      aria-label="Donate"
-    >
-      <span class="material-symbols-outlined text-[18px]">volunteer_activism</span>
-      <span class="hidden sm:inline">Donate</span>
-    </button>
+    <Menu label="Account and display options" triggerIcon="account_circle" minWidth="15rem">
+      <MenuItem label="Donate" icon="volunteer_activism" onSelect={() => (isDonateOpen = true)} />
 
-    <!-- PWA Install Button (visible when install prompt is available) -->
-    {#if canInstall}
-      <button
-        type="button"
-        onclick={promptInstall}
-        class="flex items-center gap-1.5 px-2.5 h-8 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors text-xs font-medium cursor-pointer"
-        title="Install 9router-go Desktop App"
-        aria-label="Install App"
-      >
-        <span class="material-symbols-outlined text-[18px]">install_desktop</span>
-        <span class="hidden md:inline">Install</span>
-      </button>
-    {/if}
-
-    <!-- 2. Light/Dark theme toggle -->
-    <button
-      type="button"
-      onclick={toggleTheme}
-      class="flex items-center justify-center size-8 rounded-lg text-text-muted hover:text-text-main hover:bg-black/5 dark:hover:bg-white/5 transition-all cursor-pointer"
-      title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-      aria-label="Toggle theme"
-    >
-      <span class="material-symbols-outlined text-[20px]">
-        {isDark ? 'light_mode' : 'dark_mode'}
-      </span>
-    </button>
-
-    <!-- 3. Language flag button -->
-    <div class="relative">
-      <button
-        type="button"
-        onclick={() => (isLangMenuOpen = !isLangMenuOpen)}
-        class="flex items-center justify-center size-8 rounded-lg text-text-muted hover:text-text-main hover:bg-black/5 dark:hover:bg-white/5 transition-all cursor-pointer"
-        title="Language"
-        aria-label="Language selection"
-      >
-        <span class="text-base leading-none select-none">🇺🇸</span>
-      </button>
-
-      {#if isLangMenuOpen}
-        <div
-          class="absolute right-0 top-full mt-2 w-36 bg-surface border border-border-subtle rounded-xl shadow-2xl z-50 py-1"
-        >
-          <button
-            type="button"
-            onclick={() => (isLangMenuOpen = false)}
-            class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-          >
-            <span>🇺🇸</span>
-            <span>English</span>
-          </button>
-        </div>
+      {#if canInstall}
+        <MenuItem label="Install App" icon="install_desktop" onSelect={promptInstall} />
       {/if}
-    </div>
 
-    <!-- 4. App drawer launcher icon (grid_view) -->
-    <div class="relative">
-      <button
-        type="button"
-        onclick={() => (isAppDrawerOpen = !isAppDrawerOpen)}
-        class="flex items-center justify-center size-8 rounded-lg text-text-muted hover:text-text-main hover:bg-black/5 dark:hover:bg-white/5 transition-all cursor-pointer"
-        title="Menu"
-        aria-label="App drawer"
-      >
-        <span class="material-symbols-outlined text-[20px]">grid_view</span>
-      </button>
+      <div class="my-1 border-t border-border-subtle" role="separator"></div>
 
-      {#if isAppDrawerOpen}
-        <div
-          class="absolute right-0 top-full mt-2 w-56 bg-surface border border-border-subtle rounded-xl shadow-2xl z-50 py-1 animate-in fade-in zoom-in-95 duration-150"
-        >
-          <button
-            type="button"
-            onclick={() => {
-              isAppDrawerOpen = false
-              toggleTheme()
-            }}
-            class="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-          >
-            <span class="material-symbols-outlined text-[20px] text-text-muted">
-              {isDark ? 'light_mode' : 'dark_mode'}
-            </span>
-            <span class="flex-1 text-left">Theme</span>
-          </button>
+      <MenuItem
+        label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+        icon={isDark ? 'light_mode' : 'dark_mode'}
+        onSelect={toggleTheme}
+      />
+      <MenuItem label="Language" icon="translate" note="English" onSelect={() => {}} />
+      <MenuItem label="Change Log" icon="history" onSelect={() => (isChangelogOpen = true)} />
 
-          <button
-            type="button"
-            onclick={() => {
-              isAppDrawerOpen = false
-              isChangelogOpen = true
-            }}
-            class="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-          >
-            <span class="material-symbols-outlined text-[20px] text-text-muted">history</span>
-            <span class="flex-1 text-left">Change Log</span>
-          </button>
-          {#if canInstall}
-            <button
-              type="button"
-              onclick={() => {
-                isAppDrawerOpen = false
-                promptInstall()
-              }}
-              class="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-primary hover:bg-primary/10 transition-colors cursor-pointer"
-            >
-              <span class="material-symbols-outlined text-[20px] text-primary">install_desktop</span>
-              <span class="flex-1 text-left font-medium">Install App</span>
-            </button>
-          {/if}
+      <div class="my-1 border-t border-border-subtle" role="separator"></div>
 
-          <div class="h-px bg-border-subtle my-1"></div>
-
-          <button
-            type="button"
-            onclick={handleLogout}
-            class="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"
-          >
-            <span class="material-symbols-outlined text-[20px] text-red-500">logout</span>
-            <span class="flex-1 text-left">Logout</span>
-          </button>
-        </div>
-      {/if}
-    </div>
+      <MenuItem label="Logout" icon="logout" danger onSelect={handleLogout} />
+    </Menu>
   </div>
 </header>
 

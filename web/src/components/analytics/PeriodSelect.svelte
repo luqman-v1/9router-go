@@ -11,8 +11,14 @@
   /api/analytics/compression resolves only 24h/7d/30d/all and answers anything
   else with its 24h default — so compression passes showCustom={false} rather
   than offering a control that would silently lie.
+
+  The panel used to be centred on the trigger with `-translate-x-1/2`, which
+  pushed it past both viewport edges once the header wrapped on a phone. It is
+  measured against the trigger and clamped to the viewport by
+  lib/ui/menuPosition instead (issue #224).
 -->
 <script lang="ts">
+  import { placePanel, placementStyle } from '../../lib/ui/menuPosition'
   import {
     PERIODS,
     normalizeCustomPeriod,
@@ -40,7 +46,9 @@
   let open = $state(false)
   let customInput = $state('')
   let customError = $state('')
-  let root: HTMLDivElement | null = $state(null)
+  let trigger: HTMLButtonElement | null = $state(null)
+  let panel: HTMLDivElement | null = $state(null)
+  let panelStyle = $state('')
 
   const selectedLabel = $derived(periodLabel(value))
   const isPreset = $derived(options.some((o) => o.value === value))
@@ -60,9 +68,21 @@
     select(normalized)
   }
 
+  function place(): void {
+    if (!trigger || !panel) return
+    panelStyle = placementStyle(
+      placePanel({
+        align: 'right',
+        rect: trigger.getBoundingClientRect(),
+        panelWidth: panel.offsetWidth,
+      }),
+    )
+  }
+
   function onKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape') {
       open = false
+      trigger?.focus()
       return
     }
     // A menu left open behind the next control makes the following focusable
@@ -73,18 +93,32 @@
   $effect(() => {
     if (!open) return
     function handleDocClick(e: MouseEvent): void {
-      if (!root?.contains(e.target as HTMLElement | null)) open = false
+      const target = e.target as HTMLElement | null
+      if (!trigger?.contains(target) && !panel?.contains(target)) open = false
+    }
+    function reposition(): void {
+      place()
     }
     document.addEventListener('click', handleDocClick)
-    return () => document.removeEventListener('click', handleDocClick)
+    document.addEventListener('keydown', onKeydown)
+    window.addEventListener('resize', reposition)
+    window.addEventListener('scroll', reposition, true)
+    return () => {
+      document.removeEventListener('click', handleDocClick)
+      document.removeEventListener('keydown', onKeydown)
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
+  })
+
+  $effect(() => {
+    if (open && panel) place()
   })
 </script>
 
-<div
-  class="relative flex w-full items-center gap-1.5 sm:w-auto sm:self-auto"
-  bind:this={root}
->
+<div class="relative flex w-full items-center gap-1.5 sm:w-auto sm:self-auto">
   <button
+    bind:this={trigger}
     type="button"
     disabled={busy}
     aria-haspopup="listbox"
@@ -104,11 +138,14 @@
 
   {#if open}
     <div
+      bind:this={panel}
       role="listbox"
       aria-label="Time window"
       tabindex="-1"
+      style={panelStyle}
+      style:min-width="16rem"
       onkeydown={onKeydown}
-      class="absolute left-1/2 top-full z-30 mt-1 w-64 -translate-x-1/2 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)] sm:left-auto sm:right-0 sm:translate-x-0"
+      class="fixed z-50 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)]"
     >
       {#each options as o (o.value)}
         <button

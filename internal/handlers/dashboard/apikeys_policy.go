@@ -13,9 +13,20 @@ import (
 // HandleUpdateApiKey handles PUT /api/keys/{id}.
 //
 // It applies a partial update to the per-key governance columns: rate limits,
-// expiry, and resale metadata. Every field is a pointer so an omitted field is
-// left alone rather than silently reset to zero — an operator editing only the
-// expiry must not wipe the rate limits.
+// expiry, resale metadata and the key's display name. Every field is a pointer
+// so an omitted field is left alone rather than silently reset to zero — an
+// operator editing only the expiry must not wipe the rate limits.
+//
+// The secret is not reachable from here: the key is an argon2id verifier plus
+// a lookup hash, and there is no field that reads or rewrites them.
+
+// maxAPIKeyNameLen bounds the operator-facing key name. The name is echoed in
+// every /api/keys response and rendered in the dashboard list, so a pasted
+// megabyte would ride along on each call.
+const maxAPIKeyNameLen = 200
+
+// HandleUpdateApiKey handles PUT /api/keys/{id}, a partial update: an omitted
+// field is left as stored rather than reset.
 //
 // The secret is not reachable from here: the key is an argon2id verifier plus
 // a lookup hash, and there is no field that reads or rewrites them.
@@ -39,6 +50,11 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		RateLimitConcurrency *int    `json:"rateLimitConcurrency"`
 		ExpiresAt            *string `json:"expiresAt"`
 		Metadata             *string `json:"metadata"`
+		// Renaming a key. `name` is a pointer so an omitted field leaves the
+		// stored name alone; an empty string is a deliberate "clear the name",
+		// which is what the dashboard's edit dialog sends when the operator
+		// blanks the field.
+		Name *string `json:"name"`
 	}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -104,6 +120,20 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	if req.Name != nil {
+		// A name is operator-facing only, but an unbounded one is stored in the
+		// dashboard's list and in the auth cache, so cap it rather than let a
+		// pasted megabyte ride along in every response.
+		name := strings.TrimSpace(*req.Name)
+		if len(name) > maxAPIKeyNameLen {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "name is too long")
+			return
+		}
+		if err := h.Repo.SetApiKeyName(id, name); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	// The auth cache holds a verified key row for a few seconds so argon2
 	// does not run on every request. A policy change is not a latency trade-off:
 	// the operator just revoked access, so the cached row must go now — an

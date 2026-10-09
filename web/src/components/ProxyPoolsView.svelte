@@ -56,7 +56,10 @@
   let proxyPools = $state<ProxyPool[]>([])
   let loading = $state(true)
   let showFormModal = $state(false)
-  let showBatchImportModal = $state(false)
+  // Which half of the add dialog is showing. Adding one pool by hand and adding
+  // a pasted list were two separate modals opened by two separate buttons; they
+  // are one task, so they became one dialog with two tabs (issue #224).
+  let formTab = $state<'single' | 'bulk'>('single')
   let showVercelModal = $state(false)
   let showCloudflareModal = $state(false)
   let showDenoModal = $state(false)
@@ -179,30 +182,28 @@
     formData = normalizeFormData()
   }
 
-  function openCreateModal() {
+  function openCreateModal(tab: 'single' | 'bulk' = 'single') {
     resetForm()
+    batchImportText = ''
+    formTab = tab
     showFormModal = true
   }
 
   function openEditModal(pool: ProxyPool) {
     editingPool = pool
     formData = normalizeFormData(pool)
+    formTab = 'single'
     showFormModal = true
   }
 
   function closeFormModal() {
+    // A save or a bulk import already running writes rows, so dismissing the
+    // dialog mid-flight would leave the operator with no view of what landed.
+    if (saving || importing) return
     showFormModal = false
     resetForm()
-  }
-
-  function openBatchImportModal() {
     batchImportText = ''
-    showBatchImportModal = true
-  }
-
-  function closeBatchImportModal() {
-    if (importing) return
-    showBatchImportModal = false
+    formTab = 'single'
   }
 
   function openVercelModal() {
@@ -607,7 +608,12 @@
       }
 
       await fetchProxyPools()
-      showBatchImportModal = false
+      // The import ran to completion, so the dialog can close now. closeFormModal
+      // refuses while `importing` is still true, which is why this clears the
+      // draft directly instead of going through it.
+      showFormModal = false
+      batchImportText = ''
+      formTab = 'single'
       notifications.success(
         `Batch import completed: Created ${created}, Skipped ${skipped}, Failed ${failed}`
       )
@@ -678,6 +684,49 @@
     }
   }
 </script>
+
+<!-- The one-pool form is shared by the Single tab and the edit dialog, so the
+     fields live in one snippet rather than being written twice. -->
+{#snippet singleFields()}
+  <Input label="Name" bind:value={formData.name} placeholder="Office Proxy" />
+  <Input label="Proxy URL" bind:value={formData.proxyUrl} placeholder="http://127.0.0.1:7897" />
+  <Input
+    label="No Proxy"
+    bind:value={formData.noProxy}
+    placeholder="localhost,127.0.0.1,.internal"
+    hint="Comma-separated hosts/domains to bypass proxy"
+  />
+
+  <div
+    class="flex flex-col gap-3 rounded-lg border border-border/50 p-3 sm:flex-row sm:items-center sm:justify-between"
+  >
+    <div>
+      <p class="font-medium text-sm">Active</p>
+      <p class="text-xs text-text-muted">Inactive pools are ignored by runtime resolution.</p>
+    </div>
+    <Toggle
+      checked={formData.isActive === true}
+      onChange={() => (formData.isActive = !formData.isActive)}
+      disabled={saving}
+    />
+  </div>
+
+  <div
+    class="flex flex-col gap-3 rounded-lg border border-border/50 p-3 sm:flex-row sm:items-center sm:justify-between"
+  >
+    <div>
+      <p class="font-medium text-sm">Strict Proxy</p>
+      <p class="text-xs text-text-muted">
+        Fail request if proxy is unreachable instead of falling back to direct.
+      </p>
+    </div>
+    <Toggle
+      checked={formData.strictProxy === true}
+      onChange={() => (formData.strictProxy = !formData.strictProxy)}
+      disabled={saving}
+    />
+  </div>
+{/snippet}
 
 {#if loading}
   <div class="mx-auto flex w-full max-w-5xl flex-col gap-4 px-1 sm:gap-6 sm:px-0">
@@ -763,11 +812,11 @@
           {/if}
         </div>
 
-        <Button size="sm" variant="secondary" onclick={openBatchImportModal}>
+        <Button size="sm" variant="secondary" onclick={() => openCreateModal('bulk')}>
           <span class="material-symbols-outlined text-[18px]">upload</span>
           Batch Import
         </Button>
-        <Button size="sm" onclick={openCreateModal}>
+        <Button size="sm" onclick={() => openCreateModal('single')}>
           <span class="material-symbols-outlined text-[18px]">add</span>
           Add Proxy Pool
         </Button>
@@ -918,7 +967,7 @@
           <p class="text-sm text-text-muted mb-4">
             Create a proxy pool entry, then assign it to connections.
           </p>
-          <Button onclick={openCreateModal}>
+          <Button onclick={() => openCreateModal('single')}>
             <span class="material-symbols-outlined text-[18px]">add</span>
             Add Proxy Pool
           </Button>
@@ -1025,37 +1074,6 @@
         </div>
       {/if}
     </Card>
-
-    <Modal
-      isOpen={showBatchImportModal}
-      title="Batch Import Proxies"
-      onClose={closeBatchImportModal}
-    >
-      <div class="flex flex-col gap-4">
-        <div>
-          <label class="text-sm font-medium text-text-main mb-1 block">
-            Paste Proxy List (One per line)
-          </label>
-          <textarea
-            bind:value={batchImportText}
-            placeholder={'http://user:pass@127.0.0.1:7897\n127.0.0.1:7897:user:pass'}
-            class="w-full min-h-[180px] py-2 px-3 text-sm text-text-main bg-surface-2 border border-transparent rounded-[10px] focus:ring-1 focus:ring-primary/30 focus:border-primary/50 focus:outline-none transition-all font-mono"
-          ></textarea>
-          <p class="text-xs text-text-muted mt-1">
-            Supported formats: protocol://user:pass@host:port, host:port:user:pass
-          </p>
-        </div>
-
-        <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <Button fullWidth onclick={handleBatchImport} disabled={!batchImportText.trim() || importing}>
-            {importing ? 'Importing...' : 'Import'}
-          </Button>
-          <Button fullWidth variant="ghost" onclick={closeBatchImportModal} disabled={importing}>
-            Cancel
-          </Button>
-        </div>
-      </div>
-    </Modal>
 
     <Modal isOpen={showVercelModal} title="Deploy Vercel Relay" onClose={closeVercelModal}>
       <div class="flex flex-col gap-4">
@@ -1264,61 +1282,86 @@
 
     <Modal
       isOpen={showFormModal}
-      title={editingPool ? 'Edit Proxy Pool' : 'Add Proxy Pool'}
+      title={editingPool ? 'Edit Proxy Pool' : 'Add Proxy Pools'}
       onClose={closeFormModal}
     >
       <div class="flex flex-col gap-4">
-        <Input label="Name" bind:value={formData.name} placeholder="Office Proxy" />
-        <Input label="Proxy URL" bind:value={formData.proxyUrl} placeholder="http://127.0.0.1:7897" />
-        <Input
-          label="No Proxy"
-          bind:value={formData.noProxy}
-          placeholder="localhost,127.0.0.1,.internal"
-          hint="Comma-separated hosts/domains to bypass proxy"
-        />
-
-        <div
-          class="flex flex-col gap-3 rounded-lg border border-border/50 p-3 sm:flex-row sm:items-center sm:justify-between"
-        >
-          <div>
-            <p class="font-medium text-sm">Active</p>
-            <p class="text-xs text-text-muted">Inactive pools are ignored by runtime resolution.</p>
+        {#if editingPool}
+          {@render singleFields()}
+          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <Button
+              fullWidth
+              onclick={handleSave}
+              disabled={!formData.name.trim() || !formData.proxyUrl.trim() || saving}
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </Button>
+            <Button fullWidth variant="ghost" onclick={closeFormModal} disabled={saving}>
+              Cancel
+            </Button>
           </div>
-          <Toggle
-            checked={formData.isActive === true}
-            onChange={() => (formData.isActive = !formData.isActive)}
-            disabled={saving}
-          />
-        </div>
-
-        <div
-          class="flex flex-col gap-3 rounded-lg border border-border/50 p-3 sm:flex-row sm:items-center sm:justify-between"
-        >
-          <div>
-            <p class="font-medium text-sm">Strict Proxy</p>
-            <p class="text-xs text-text-muted">
-              Fail request if proxy is unreachable instead of falling back to direct.
-            </p>
+        {:else}
+          <!-- Adding one pool by hand and adding a pasted list were two modals
+               behind two buttons (issue #224). They are one task, so they are
+               one dialog with two tabs: the Batch Import button opens this same
+               dialog on the Bulk Add tab rather than a second window. -->
+          <div class="flex gap-1 rounded-lg border border-border/50 bg-surface-2 p-1">
+            {#each [{ value: 'single', label: 'Single' }, { value: 'bulk', label: 'Bulk Add' }] as tab (tab.value)}
+              <button
+                type="button"
+                role="tab"
+                aria-selected={formTab === tab.value}
+                onclick={() => (formTab = tab.value as 'single' | 'bulk')}
+                class="flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors {formTab ===
+                tab.value
+                  ? 'bg-brand-500 text-white shadow-sm'
+                  : 'text-text-muted hover:text-text-main'}"
+              >
+                {tab.label}
+              </button>
+            {/each}
           </div>
-          <Toggle
-            checked={formData.strictProxy === true}
-            onChange={() => (formData.strictProxy = !formData.strictProxy)}
-            disabled={saving}
-          />
-        </div>
 
-        <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <Button
-            fullWidth
-            onclick={handleSave}
-            disabled={!formData.name.trim() || !formData.proxyUrl.trim() || saving}
-          >
-            {saving ? 'Saving...' : 'Save'}
-          </Button>
-          <Button fullWidth variant="ghost" onclick={closeFormModal} disabled={saving}>
-            Cancel
-          </Button>
-        </div>
+          {#if formTab === 'single'}
+            {@render singleFields()}
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <Button
+                fullWidth
+                onclick={handleSave}
+                disabled={!formData.name.trim() || !formData.proxyUrl.trim() || saving}
+              >
+                {saving ? 'Saving...' : 'Save'}
+              </Button>
+              <Button fullWidth variant="ghost" onclick={closeFormModal} disabled={saving}>
+                Cancel
+              </Button>
+            </div>
+          {:else}
+            <div>
+              <label for="bulk-proxies" class="text-sm font-medium text-text-main mb-1 block">
+                Paste Proxy List (One per line)
+              </label>
+              <textarea
+                id="bulk-proxies"
+                bind:value={batchImportText}
+                placeholder={'http://user:pass@127.0.0.1:7897\n127.0.0.1:7897:user:pass'}
+                class="w-full min-h-[180px] py-2 px-3 text-sm text-text-main bg-surface-2 border border-transparent rounded-[10px] focus:ring-1 focus:ring-primary/30 focus:border-primary/50 focus:outline-none transition-all font-mono"
+              ></textarea>
+              <p class="text-xs text-text-muted mt-1">
+                Supported formats: protocol://user:pass@host:port, host:port:user:pass
+              </p>
+            </div>
+
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <Button fullWidth onclick={handleBatchImport} disabled={!batchImportText.trim() || importing}>
+                {importing ? 'Importing...' : 'Import'}
+              </Button>
+              <Button fullWidth variant="ghost" onclick={closeFormModal} disabled={importing}>
+                Cancel
+              </Button>
+            </div>
+          {/if}
+        {/if}
       </div>
     </Modal>
 

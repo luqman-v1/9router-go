@@ -11,8 +11,12 @@
   The closed control shows the current section's label, so the section stays
   identifiable at every width. Navigation stays with the caller: this component
   knows nothing about router state, it only reports the section that was picked.
+
+  The panel is placed by lib/ui/menuPosition so it is measured against the trigger
+  and clamped to the viewport (issue #224).
 -->
 <script lang="ts">
+  import { placePanel, placementStyle } from '../../lib/ui/menuPosition'
   import { USAGE_SECTIONS, type UsageSection } from '../../lib/router'
 
   interface Props {
@@ -23,7 +27,9 @@
   let { section = 'overview', onSectionChange = () => {} }: Props = $props()
 
   let open = $state(false)
-  let root: HTMLDivElement | null = $state(null)
+  let trigger: HTMLButtonElement | null = $state(null)
+  let panel: HTMLDivElement | null = $state(null)
+  let panelStyle = $state('')
 
   const current = $derived(
     USAGE_SECTIONS.find((s) => s.value === section) ?? USAGE_SECTIONS[0]
@@ -34,9 +40,21 @@
     open = false
   }
 
-  function onKeydown(event: KeyboardEvent) {
+  function place(): void {
+    if (!trigger || !panel) return
+    panelStyle = placementStyle(
+      placePanel({
+        align: 'left',
+        rect: trigger.getBoundingClientRect(),
+        panelWidth: panel.offsetWidth,
+      }),
+    )
+  }
+
+  function onKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
       open = false
+      trigger?.focus()
       return
     }
     // A menu left open behind the next control makes the following focusable
@@ -47,15 +65,32 @@
   $effect(() => {
     if (!open) return
     function handleDocClick(e: MouseEvent): void {
-      if (!root?.contains(e.target as HTMLElement | null)) open = false
+      const target = e.target as HTMLElement | null
+      if (!trigger?.contains(target) && !panel?.contains(target)) open = false
+    }
+    function reposition(): void {
+      place()
     }
     document.addEventListener('click', handleDocClick)
-    return () => document.removeEventListener('click', handleDocClick)
+    document.addEventListener('keydown', onKeydown)
+    window.addEventListener('resize', reposition)
+    window.addEventListener('scroll', reposition, true)
+    return () => {
+      document.removeEventListener('click', handleDocClick)
+      document.removeEventListener('keydown', onKeydown)
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
+  })
+
+  $effect(() => {
+    if (open && panel) place()
   })
 </script>
 
-<div class="relative shrink-0" bind:this={root}>
+<div class="relative shrink-0">
   <button
+    bind:this={trigger}
     type="button"
     aria-haspopup="listbox"
     aria-expanded={open}
@@ -72,11 +107,14 @@
 
   {#if open}
     <div
+      bind:this={panel}
       role="listbox"
       aria-label="Usage section"
       tabindex="-1"
+      style={panelStyle}
+      style:min-width="15rem"
       onkeydown={onKeydown}
-      class="absolute left-0 top-full z-30 mt-1 w-60 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)] sm:right-0"
+      class="fixed z-50 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)]"
     >
       {#each USAGE_SECTIONS as s (s.value)}
         <button

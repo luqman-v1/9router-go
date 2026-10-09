@@ -21,6 +21,10 @@
   // instead of asking the operator to type a timezone.
   let expiresLocal = $state(toLocalInput(apiKey.expiresAt))
   let metadata = $state(apiKey.metadata ?? '')
+  // Renaming lives here rather than in the table's row menu: the issue asked
+  // for one dialog per key that edits the name and shows the policy, so
+  // splitting it across two dialogs would undo that.
+  let name = $state(apiKey.name ?? '')
   let models = $state<string[]>([])
   let modelDraft = $state('')
   let isLoadingModels = $state(false)
@@ -115,7 +119,8 @@
         rateLimitTpm: nonNegative(tpm),
         rateLimitConcurrency: nonNegative(concurrency),
         expiresAt: toRFC3339(expiresLocal),
-        metadata: metadataValue
+        metadata: metadataValue,
+        name: name.trim(),
       }
       await api.updateApiKeyPolicy(apiKey.id, policy)
       // The allowlist is part of the same policy the operator pressed Save for.
@@ -167,6 +172,27 @@
     </div>
 
     <form onsubmit={save} class="px-6 py-5 space-y-6 font-body text-xs">
+
+      <!-- Rename. The name is dashboard-only, and an empty value clears it so
+           the row falls back to the masked token. -->
+      <section class="space-y-3">
+        <div>
+          <h3 class="font-headline text-xs font-bold text-text-main">Name</h3>
+          <p class="text-text-subtle mt-0.5">
+            Shown in this dashboard only. Clearing it falls back to the masked token.
+          </p>
+        </div>
+        <input
+          id="key-name"
+          type="text"
+          bind:value={name}
+          maxlength="200"
+          placeholder="Client Token"
+          aria-label="Key name"
+          class="w-full bg-surface border border-border rounded-lg px-3 py-2 text-xs text-text-main focus:outline-none focus:border-brand-500"
+        />
+      </section>
+
       <!-- Rate limits -->
       <section class="space-y-3">
         <div>
