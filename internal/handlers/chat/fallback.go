@@ -43,7 +43,7 @@ func (h *ChatHandler) handleAccountFallback(
 ) error {
 	body = repairToolCallIDsInJSON(body)
 	if pinnedConnectionID != "" {
-		connObj, connData, err := h.getBestConnection(provider, pinnedConnectionID, nil, model)
+		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, pinnedConnectionID, nil, model)
 		if err != nil {
 			return fmt.Errorf("pinned connection %s: %w", pinnedConnectionID, err)
 		}
@@ -56,7 +56,7 @@ func (h *ChatHandler) handleAccountFallback(
 		})
 	}
 
-	if !h.Repo.IsProviderAvailable(provider, model) {
+	if !handlerutil.IsProbeContext(ctx) && !h.Repo.IsProviderAvailable(provider, model) {
 		log.Warn("fallback", "skip unhealthy", "provider", provider, "model", model)
 		return fmt.Errorf("provider %s/%s is unhealthy", provider, model)
 	}
@@ -97,7 +97,7 @@ func (h *ChatHandler) handleAccountFallback(
 		if slices.Contains(excludeIDs, c.ID) {
 			continue
 		}
-		connObj, connData, err := h.getBestConnection(provider, c.ID, nil, model)
+		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, c.ID, nil, model)
 		if err != nil || connObj == nil {
 			if lastErr == nil && err != nil {
 				lastErr = err
@@ -138,12 +138,16 @@ func (h *ChatHandler) handleAccountFallback(
 			// needs is recorded before the client sees the 410 (#179). The
 			// lastErr still returns when every account is out, so a direct
 			// request keeps reporting the upstream's own body.
-			h.recordModelDeprecation(provider, model, connObj.ID, ue)
+			h.recordModelDeprecation(ctx, provider, model, connObj.ID, ue)
 			excludeIDs = append(excludeIDs, connObj.ID)
 			lastErr = ue
 			continue
 		}
 		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
+			if handlerutil.IsProbeContext(ctx) {
+				excludeIDs = append(excludeIDs, connObj.ID)
+				continue
+			}
 			// Extract error text from upstream body for classification
 			errorText := extractErrorText(ue.Body)
 			// Get current backoff level from this connection
@@ -660,8 +664,9 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 
 	usage := translator.GetAndClearUsage(ctx)
 	if completed {
-		// Clear any existing model lock on success (matching Next.js clearAccountError).
-		lockKey := canonicalLockModel(provider, model)
+		if !handlerutil.IsProbeContext(ctx) {
+			// Clear any existing model lock on success (matching Next.js clearAccountError).
+			lockKey := canonicalLockModel(provider, model)
 		if unlockErr := h.Repo.UnlockConnectionModel(connectionID, lockKey); unlockErr != nil {
 			log.Warn("fallback", "unlock failed", "provider", provider, "model", lockKey, "error", unlockErr)
 		}
@@ -682,6 +687,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		// A served request proves the model is alive, so a badge recorded by
 		// an earlier 410 must not outlive it (#179).
 		h.clearModelDeprecation(provider, model)
+		}
 		if usage == nil {
 			usage = &translator.OpenAIUsage{}
 		}

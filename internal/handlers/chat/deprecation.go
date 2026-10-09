@@ -1,7 +1,9 @@
 package chat
 
 import (
+	"context"
 	"time"
+	"9router/proxy/internal/handlerutil"
 
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
@@ -25,7 +27,10 @@ const deprecationRecordTTL = time.Minute
 // lock is deliberately NOT the account cooldown LockConnectionRateLimit sets —
 // the credential is healthy, and locking it would shrink the pool for requests
 // to models that still work.
-func (h *ChatHandler) recordModelDeprecation(provider, model, connID string, ue *upstreamError) {
+func (h *ChatHandler) recordModelDeprecation(ctx context.Context, provider, model, connID string, ue *upstreamError) {
+	if handlerutil.IsProbeContext(ctx) {
+		return
+	}
 	if h.Repo == nil || provider == "" || model == "" {
 		return
 	}

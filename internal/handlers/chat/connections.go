@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"fmt"
 	"math/rand/v2"
@@ -12,6 +13,7 @@ import (
 
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -165,13 +167,23 @@ func (h *ChatHandler) GetBestConnection(provider string, connectionID string, ex
 	return h.getBestConnection(provider, connectionID, excludeIDs, model)
 }
 
+// GetBestConnectionWithContext is the context-aware variant of GetBestConnection.
+func (h *ChatHandler) GetBestConnectionWithContext(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
+	return h.getBestConnectionWithContext(ctx, provider, connectionID, excludeIDs, model)
+}
+
 func (h *ChatHandler) getBestConnection(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
+	return h.getBestConnectionWithContext(context.Background(), provider, connectionID, excludeIDs, model)
+}
+
+func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
 	if model != "" && !h.Repo.IsProviderAvailable(provider, model) {
 		log.Warn("health", "unhealthy provider", "provider", provider, "model", model)
 	}
 
 	var conn *models.ProviderConnection
 	var err error
+	isProbe := handlerutil.IsProbeContext(ctx)
 
 	if connectionID != "" {
 		conn, err = h.Repo.GetProviderConnectionByID(connectionID)
@@ -195,6 +207,13 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 		// strategy. Honouring the pin unconditionally made the dashboard's
 		// enable/disable toggle a no-op for every pinned request.
 		ineligible, reason := h.pinnedConnectionIneligible(conn, excludeIDs, model)
+		if ineligible && isProbe && conn.IsActive == 1 && !slices.Contains(excludeIDs, conn.ID) {
+			if strings.HasPrefix(reason, "account cooldown") || strings.HasPrefix(reason, "model lock") || reason == "quota cache" {
+				// Probes bypass cooldown / locks to test actual upstream reachability,
+				// but must still honor model enablement, disabled accounts, and strict assignment.
+				ineligible = false
+			}
+		}
 		if ineligible {
 			log.Warn("connections", "pinned connection ineligible, falling back to strategy",
 				"provider", provider, "conn", conn.ID, "reason", reason)
@@ -281,21 +300,23 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 			// Per-model lock and quota cache first: an account parked for
 			// this model carries no cooldown to shorten, so it must not enter
 			// the forced pool either (h.connectionModelBlocked).
-			if h.connectionModelBlocked(c, provider, model) {
-				continue
-			}
-			// Account-scoped cooldown. An account whose quota is spent, or
-			// whose OAuth grant the provider already rejected, is skipped
-			// before it is selected — round-robin otherwise kept handing out
-			// dead accounts until a live 429/401 locked them, and a rejected
-			// grant cost a token-endpoint call on every request until the IP
-			// was rate limited. Upstream parity: filterAvailableAccounts.
-			if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
-				inCooldown = append(inCooldown, c)
-				if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
-					cooldownUntil = until
+			if !isProbe {
+				if h.connectionModelBlocked(c, provider, model) {
+					continue
 				}
-				continue
+				// Account-scoped cooldown. An account whose quota is spent, or
+				// whose OAuth grant the provider already rejected, is skipped
+				// before it is selected — round-robin otherwise kept handing out
+				// dead accounts until a live 429/401 locked them, and a rejected
+				// grant cost a token-endpoint call on every request until the IP
+				// was rate limited. Upstream parity: filterAvailableAccounts.
+				if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
+					inCooldown = append(inCooldown, c)
+					if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
+						cooldownUntil = until
+					}
+					continue
+				}
 			}
 			conn = c
 			break

@@ -116,7 +116,7 @@ func TestComboFallback_ModelScoped429_PinsLockAndPreservesUnrelatedModel(t *test
 	}
 
 	// Call comboLockRetryable directly
-	h.comboLockRetryable(&excludeIDs, "conn-combo", "antigravity", "claude-sonnet-4-6", reqErr)
+	h.comboLockRetryable(context.Background(), &excludeIDs, "conn-combo", "antigravity", "claude-sonnet-4-6", reqErr)
 
 	// 1. claude-sonnet-4-6 must be locked
 	locked, err := repo.IsConnectionModelLocked("conn-combo", "claude-sonnet-4-6")
@@ -392,7 +392,7 @@ func TestComboFallback_ModelScoped402And401_PinsComboLock(t *testing.T) {
 		StatusCode: http.StatusPaymentRequired,
 		Body:       []byte(`{"error":{"message":"Insufficient account funds"}}`),
 	}
-	h.comboLockRetryable(&excludeIDs, "conn-combo-zen", "opencode-zen", "claude-3-7-sonnet", ue402)
+	h.comboLockRetryable(context.Background(), &excludeIDs, "conn-combo-zen", "opencode-zen", "claude-3-7-sonnet", ue402)
 
 	locked, _ := repo.IsConnectionModelLocked("conn-combo-zen", "claude-3-7-sonnet")
 	if !locked {
@@ -409,7 +409,7 @@ func TestComboFallback_ModelScoped402And401_PinsComboLock(t *testing.T) {
 		StatusCode: http.StatusUnauthorized,
 		Body:       []byte(`{"error":{"message":"Model mimo-v2.5-free is not supported"}}`),
 	}
-	h.comboLockRetryable(&excludeIDs, "conn-combo-zen", "opencode-zen", "mimo-v2.5-free", ue401)
+	h.comboLockRetryable(context.Background(), &excludeIDs, "conn-combo-zen", "opencode-zen", "mimo-v2.5-free", ue401)
 
 	locked401, _ := repo.IsConnectionModelLocked("conn-combo-zen", "mimo-v2.5-free")
 	if !locked401 {

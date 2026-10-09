@@ -1105,7 +1105,7 @@ export const api = {
    * for a plain LLM model.
    */
   testModel: (model: string, kind?: string) =>
-    request<{ ok: boolean; error?: string; note?: string; latencyMs?: number; status?: number }>('/api/models/test', {
+    request<{ ok: boolean; error?: string; note?: string; latencyMs?: number; status?: number; blocked?: boolean; resetAt?: string }>('/api/models/test', {
       method: 'POST',
       body: JSON.stringify({ model, kind }),
     }),

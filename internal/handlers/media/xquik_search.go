@@ -93,7 +93,7 @@ func (h *MediaHandler) handleXquikSearch(w http.ResponseWriter, r *http.Request,
 	usePinned := modelInfo.ConnectionID != ""
 	var lastErr *searchUpstreamError
 	for {
-		conn, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 		if err != nil || conn == nil {
 			if lastErr != nil {
 				return lastErr
@@ -182,7 +182,7 @@ func (h *MediaHandler) tryXquikSearchConn(w http.ResponseWriter, r *http.Request
 			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
 		}
 		classification := providers.ClassifyError(resp.StatusCode, errText, backoff)
-		if classification.ShouldFallback && h.Repo != nil {
+		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
 			cooldownSec := max(classification.CooldownMs/1000, 1)
 			_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)
 			log.Warn("search", "xquik account locked, trying next", "conn", conn.ID[:min(8, len(conn.ID))], "status", resp.StatusCode, "cooldown_s", cooldownSec)
@@ -266,7 +266,11 @@ func (h *MediaHandler) tryXquikSearchConn(w http.ResponseWriter, r *http.Request
 	upstreamLatencyMs := time.Since(upstreamStart).Milliseconds()
 	if h.Repo != nil {
 		h.Repo.UpdateConnectionLastUsed(conn.ID)
-		_ = h.Repo.UnlockConnectionModel(conn.ID, model)
+		// Probes read production state; they never clear it (see
+		// tts_forward.go for the same reasoning on the failure path).
+		if !handlerutil.IsProbeContext(r.Context()) {
+			_ = h.Repo.UnlockConnectionModel(conn.ID, model)
+		}
 	}
 
 	var nextCursor any

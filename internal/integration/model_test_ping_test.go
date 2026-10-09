@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"9router/proxy/internal/db"
 )
 
 // The dashboard's Test button pings a model through the endpoint its kind
@@ -125,5 +128,145 @@ func TestModelTestRejectsAnUnknownKind(t *testing.T) {
 	})
 	if res.Status != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", res.Status, truncate(res.Body))
+	}
+}
+
+// TestModelTestReachesUpstreamEvenWhenConnectionIsPreCooled asserts that
+// calling /api/models/test can still probe a pre-cooled connection so operators
+// can verify whether an upstream model has recovered.
+func TestModelTestReachesUpstreamEvenWhenConnectionIsPreCooled(t *testing.T) {
+	env, up := newProviderEnv(t)
+
+	// Pre-cool the connection
+	until := time.Now().UTC().Add(10 * time.Minute)
+	if err := env.Repo.LockConnectionRateLimit("conn-deepseek", until, 1, http.StatusTooManyRequests, "rate limited"); err != nil {
+		t.Fatalf("pre-cooling connection: %v", err)
+	}
+
+	res := env.Post(t, "/api/models/test", map[string]string{"model": "ds/deepseek-chat"})
+	if res.Status != http.StatusOK {
+		t.Fatalf("status = %d, body %s", res.Status, truncate(res.Body))
+	}
+
+	var verdict struct {
+		OK bool `json:"ok"`
+	}
+	res.Decode(t, &verdict)
+	if !verdict.OK {
+		t.Fatal("probe should reach upstream even when connection is pre-cooled")
+	}
+
+	if up.Count() != 1 {
+		t.Errorf("upstream count = %d, want 1", up.Count())
+	}
+}
+
+// TestModelTestFailingProbeDoesNotMutateCooldownState ensures that a failing
+// test probe is read-only w.r.t. production cooldowns and strike counters.
+func TestModelTestFailingProbeDoesNotMutateCooldownState(t *testing.T) {
+	env := newEnv(t)
+	up := env.NewUpstream(t, JSONResponder(http.StatusTooManyRequests, `{"error":{"message":"Rate limit exceeded"}}`))
+	env.AddConnection(t, "conn-fail", "deepseek", "DeepSeek Test", up, "sk-test")
+
+	res := env.Post(t, "/api/models/test", map[string]string{"model": "ds/deepseek-chat"})
+	if res.Status != http.StatusOK {
+		t.Fatalf("status = %d, body %s", res.Status, truncate(res.Body))
+	}
+
+	var verdict struct {
+		OK bool `json:"ok"`
+	}
+	res.Decode(t, &verdict)
+	if verdict.OK {
+		t.Fatal("expected probe to fail on upstream 429")
+	}
+
+	// Verify DB cooldown state is untouched
+	conn, err := env.Repo.GetProviderConnectionByID("conn-fail")
+	if err != nil {
+		t.Fatalf("get connection: %v", err)
+	}
+	if until, ok := db.ConnectionCooldownUntil(conn.Data); ok {
+		t.Errorf("rateLimitedUntil should not be set by probe, got: %v", until)
+	}
+	if locked, _ := env.Repo.IsConnectionModelLocked("conn-fail", "deepseek-chat"); locked {
+		t.Error("modelLock should not be set by probe")
+	}
+	if level := env.Repo.GetConnectionBackoffLevel("conn-fail"); level != 0 {
+		t.Errorf("backoffLevel = %d, want 0", level)
+	}
+}
+
+// TestModelTestPassingProbeDoesNotEraseProductionCooldownState ensures that
+// a successful probe does not reset production backoffLevel or clear rateLimitedUntil.
+func TestModelTestPassingProbeDoesNotEraseProductionCooldownState(t *testing.T) {
+	env, _ := newProviderEnv(t)
+
+	// Pre-cool connection with specific backoffLevel
+	until := time.Now().UTC().Add(time.Hour)
+	if err := env.Repo.LockConnectionRateLimit("conn-deepseek", until, 3, http.StatusTooManyRequests, "quota exhausted"); err != nil {
+		t.Fatalf("lock connection: %v", err)
+	}
+
+	res := env.Post(t, "/api/models/test", map[string]string{"model": "ds/deepseek-chat"})
+	if res.Status != http.StatusOK {
+		t.Fatalf("status = %d, body %s", res.Status, truncate(res.Body))
+	}
+
+	var verdict struct {
+		OK bool `json:"ok"`
+	}
+	res.Decode(t, &verdict)
+	if !verdict.OK {
+		t.Fatal("expected probe to pass")
+	}
+
+	// Verify cooldown and backoff were NOT cleared by probe success
+	conn, err := env.Repo.GetProviderConnectionByID("conn-deepseek")
+	if err != nil {
+		t.Fatalf("get connection: %v", err)
+	}
+	gotUntil, ok := db.ConnectionCooldownUntil(conn.Data)
+	if !ok || gotUntil.Before(time.Now()) {
+		t.Error("probe success should not clear production rateLimitedUntil")
+	}
+	if level := env.Repo.GetConnectionBackoffLevel("conn-deepseek"); level != 3 {
+		t.Errorf("backoffLevel = %d, want 3 (probe should not reset backoffLevel)", level)
+	}
+}
+
+// TestModelTest410DoesNotRecordDeprecationOr24HourLock asserts that a 410 probe
+// failure does not record a permanent model deprecation or write a 24h model lock.
+func TestModelTest410DoesNotRecordDeprecationOr24HourLock(t *testing.T) {
+	env := newEnv(t)
+	up := env.NewUpstream(t, JSONResponder(http.StatusGone, `{"error":{"type":"ModelDeprecated","message":"model retired"}}`))
+	env.AddConnection(t, "conn-410", "deepseek", "DeepSeek 410", up, "sk-410")
+
+	res := env.Post(t, "/api/models/test", map[string]string{"model": "ds/deepseek-chat"})
+	if res.Status != http.StatusOK {
+		t.Fatalf("status = %d, body %s", res.Status, truncate(res.Body))
+	}
+
+	var verdict struct {
+		OK     bool `json:"ok"`
+		Status int  `json:"status"`
+	}
+	res.Decode(t, &verdict)
+	if verdict.OK || verdict.Status != http.StatusGone {
+		t.Errorf("verdict = %+v, want status 410 and not OK", verdict)
+	}
+
+	// Verify no modelLock written on conn-410
+	if locked, _ := env.Repo.IsConnectionModelLocked("conn-410", "deepseek-chat"); locked {
+		t.Error("probe 410 should not write modelLock")
+	}
+
+	// Verify no deprecation row in db
+	deps, err := env.Repo.ListModelDeprecations("deepseek")
+	if err != nil {
+		t.Fatalf("get deprecations: %v", err)
+	}
+	if len(deps) > 0 {
+		t.Errorf("expected 0 deprecation rows, got %d", len(deps))
 	}
 }

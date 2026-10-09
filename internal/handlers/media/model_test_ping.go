@@ -81,6 +81,7 @@ func (h *MediaHandler) probeModel(r *http.Request, model, kind string) testModel
 	payload := probeFor(kind, model)
 	ctx, cancel := context.WithTimeout(r.Context(), testModelTimeout)
 	defer cancel()
+	ctx = handlerutil.WithProbeContext(ctx)
 
 	probe, err := http.NewRequestWithContext(ctx, http.MethodPost, probePath(kind), payload.body)
 	if err != nil {
@@ -246,6 +247,8 @@ type testModelResult struct {
 	Status    int    `json:"status,omitempty"`
 	Note      string `json:"note,omitempty"`
 	Error     string `json:"error,omitempty"`
+	Blocked   bool   `json:"blocked,omitempty"`
+	ResetAt   string `json:"resetAt,omitempty"`
 }
 
 // readProbeResult decides pass or fail from the probe response.
@@ -255,12 +258,78 @@ func readProbeResult(rec *httptest.ResponseRecorder, kind string) testModelResul
 	parsed := parseProbeBody(body)
 
 	if status != http.StatusOK {
-		return testModelResult{
+		errText := probeErrorText(body, parsed)
+		res := testModelResult{
 			Status: status,
-			Error:  "HTTP " + strconv.Itoa(status) + probeDetail(probeErrorText(body, parsed)),
+			Error:  "HTTP " + strconv.Itoa(status) + probeDetail(errText),
 		}
+		if resetAt, blocked := cooldownVerdict(errText); blocked {
+			res.Blocked = true
+			res.ResetAt = resetAt
+		}
+		return res
 	}
 	return verdictForKind(kind, parsed, status)
+}
+
+// cooldownMarkers are the exact sentences the gateway itself emits when every
+// account for a provider is parked. Both are produced by this codebase and
+// neither is a provider's wording, so matching on them cannot sweep in an
+// upstream quota message.
+var cooldownMarkers = []string{
+	// getBestConnection, when no account is selectable and none is excluded
+	// for another reason (internal/handlers/chat/connections.go).
+	"(all in cooldown, earliest reset ",
+	// The combo lane, when every combo entry came back retryable
+	// (internal/handlers/chat/combo.go).
+	"all connections for this provider are rate-limited",
+}
+
+// cooldownVerdict reports whether a probe error means "this account is parked,
+// nothing was ever asked of the model", and when the park lifts.
+//
+// The classification is deliberately a whitelist of gateway-authored sentences
+// and is status-agnostic: the same selector error reaches the dashboard as a
+// 502 on the chat lane and as a 404 on every media lane, because the media
+// handlers answer their own pre-forward failures. Gating on one status would
+// leave embedding, image, tts, stt, video and systemone providers painting
+// untested models red while the account is in cooldown.
+//
+// It is also deliberately NOT a deny-list of rate-limit-ish words. A
+// model-scoped quota refusal (a 429 the router records per-model rather than
+// account-wide) never clears by waiting, and labelling it "blocked" would
+// promise the operator a reset that cannot come.
+func cooldownVerdict(errText string) (resetAt string, blocked bool) {
+	for _, marker := range cooldownMarkers {
+		if !strings.Contains(errText, marker) {
+			continue
+		}
+		return extractEarliestReset(errText), true
+	}
+	return "", false
+}
+
+// extractEarliestReset pulls the RFC3339 stamp out of the selector's cooldown
+// sentence. It returns "" when the text carries no stamp, which is the honest
+// answer: the operator learns the account is parked, not when it frees up.
+//
+// The parse is the real validation. A bare token cut would hand back whatever
+// ran up to the next delimiter, and probeDetail truncates at probeTextLimit,
+// so a long provider name can leave a half-written stamp at the end of the
+// body. Anything that does not parse is discarded rather than displayed.
+func extractEarliestReset(errText string) string {
+	const marker = "earliest reset "
+	idx := strings.Index(errText, marker)
+	if idx == -1 {
+		return ""
+	}
+	for _, field := range strings.Fields(errText[idx+len(marker):]) {
+		candidate := strings.Trim(field, ");,\r\n\t")
+		if _, err := time.Parse(time.RFC3339, candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // verdictForKind answers "did this endpoint return the thing it is for".

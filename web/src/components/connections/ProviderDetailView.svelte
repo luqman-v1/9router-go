@@ -47,6 +47,13 @@
   } from './types'
   import { proxyBadgeInfo } from './proxyBadge'
   import {
+    formatCheckAllSummary,
+    getBlockedModelIds,
+    parseModelTestVerdict,
+    type CheckAllSummary,
+    type ModelTestStatus,
+  } from './modelCheckAll'
+  import {
     badgeFor,
     canProbeRow,
     probeOutcomeFrom,
@@ -308,9 +315,10 @@
   let dropdownPos = $state<{ top: number; right: number }>({ top: 0, right: 0 })
   let updatingProxyConnId = $state<string | null>(null)
   let copiedModelId = $state<string | null>(null)
-  let modelTestStatuses = $state<Record<string, 'ok' | 'error' | 'testing'>>({})
+  let modelTestStatuses = $state<Record<string, ModelTestStatus>>({})
   let modelTestErrors = $state<Record<string, string | null>>({})
   let activeModelTestError = $state<string | null>(null)
+  let checkAllSummary = $state<CheckAllSummary | null>(null)
 
   // Modals state
   let showRiskNoticeModal = $state(false)
@@ -2076,14 +2084,11 @@
     try {
       const res = await api.testModel(`${storageAlias}/${modelId}`)
       if (pid !== providerId) return
-      if (res.ok) {
-        modelTestStatuses[modelId] = 'ok'
-        modelTestErrors[modelId] = null
-      } else {
-        modelTestStatuses[modelId] = 'error'
-        const err = res.error || 'Model test failed'
-        modelTestErrors[modelId] = err
-        if (!silent) activeModelTestError = `${modelId}: ${err}`
+      const verdict = parseModelTestVerdict(res)
+      modelTestStatuses[modelId] = verdict.status
+      modelTestErrors[modelId] = verdict.error
+      if (!silent && verdict.error) {
+        activeModelTestError = `${modelId}: ${verdict.error}`
       }
     } catch (err) {
       if (pid !== providerId) return
@@ -2444,6 +2449,7 @@
     checkAllProgress = { done: 0, total: 0 }
     modelTestStatuses = {}
     modelTestErrors = {}
+    checkAllSummary = null
     activeModelTestError = null
   })
 
@@ -2529,15 +2535,13 @@
   // the browser (a ~30-model provider fires 30 simultaneous fetches).
   const TEST_CONCURRENCY = 6
 
-  async function handleCheckAllModels() {
-    if (isCheckingAll) return
+  // Runs ids through the bounded pool, then publishes the sweep summary. A
+  // run that outlives its provider panel publishes nothing: the verdicts it
+  // produced belong to a provider this panel no longer shows.
+  async function runModelSweep(ids: string[]) {
     const pid = providerId
     isCheckingAll = true
-    const ids = allAvailableModels.map((m) => m.id)
     checkAllProgress = { done: 0, total: ids.length }
-    // Reset previous verdicts so the run is not confused with stale ones.
-    modelTestStatuses = {}
-    modelTestErrors = {}
     try {
       let cursor = 0
       const workers = Array.from({ length: Math.min(TEST_CONCURRENCY, ids.length) }, async () => {
@@ -2550,15 +2554,34 @@
       })
       await Promise.allSettled(workers)
       if (pid !== providerId) return
-      const failed = Object.values(modelTestStatuses).filter((s) => s === 'error')
-      if (failed.length > 0) {
-        activeModelTestError = `${failed.length} of ${ids.length} model(s) failed — see per-row status. Delete unusable models individually.`
-      } else {
-        activeModelTestError = null
-      }
+      const summary = formatCheckAllSummary(modelTestStatuses)
+      checkAllSummary = summary
+      activeModelTestError = summary.message
     } finally {
       if (pid === providerId) isCheckingAll = false
     }
+  }
+
+  async function handleCheckAllModels() {
+    if (isCheckingAll) return
+    // Reset previous verdicts so the run is not confused with stale ones.
+    // Only the full sweep clears them — a retry must keep the passed and
+    // failed verdicts it is not re-testing.
+    modelTestStatuses = {}
+    modelTestErrors = {}
+    checkAllSummary = null
+    await runModelSweep(allAvailableModels.map((m) => m.id))
+  }
+
+  // A blocked model was never asked anything, so re-testing only those is
+  // cheap. It reuses the same bounded pool: a serial loop would leave the
+  // button looking hung for as long as the cooldown, which is exactly the
+  // wait the operator is sitting through.
+  async function handleRetryBlockedModels() {
+    if (isCheckingAll) return
+    const blockedIds = getBlockedModelIds(modelTestStatuses)
+    if (blockedIds.length === 0) return
+    await runModelSweep(blockedIds)
   }
 
   // Delete is only real for custom models; registry models are static, so an
@@ -3604,15 +3627,27 @@
     </div>
 
     {#if activeModelTestError}
-      <div class="mb-3 flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-400">
-        <span class="material-symbols-outlined shrink-0 text-base">error</span>
-        <div class="flex-1 font-medium leading-relaxed">
-          {activeModelTestError}
+      {@const isBlockedSeverity = checkAllSummary?.severity === 'blocked'}
+      {@const blockedCount = getBlockedModelIds(modelTestStatuses).length}
+      <div class="mb-3 flex items-start gap-2.5 rounded-lg border {isBlockedSeverity ? 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400' : 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400'} p-3 text-xs">
+        <span class="material-symbols-outlined shrink-0 text-base">{isBlockedSeverity ? 'schedule' : 'error'}</span>
+        <div class="flex-1 font-medium leading-relaxed flex items-center justify-between gap-2 flex-wrap">
+          <span>{activeModelTestError}</span>
+          {#if blockedCount > 0}
+            <button
+              type="button"
+              onclick={handleRetryBlockedModels}
+              disabled={isCheckingAll}
+              class="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 dark:text-amber-300 font-semibold text-xs cursor-pointer disabled:opacity-50"
+            >
+              Retry blocked ({blockedCount})
+            </button>
+          {/if}
         </div>
         <button
           type="button"
-          onclick={() => (activeModelTestError = null)}
-          class="text-red-600 dark:text-red-400 hover:opacity-75 cursor-pointer"
+          onclick={() => { activeModelTestError = null; checkAllSummary = null; }}
+          class="hover:opacity-75 cursor-pointer shrink-0"
           title="Dismiss"
         >
           <span class="material-symbols-outlined text-sm">close</span>
@@ -3653,7 +3688,7 @@
         {@const isTestingThis = testStatus === 'testing'}
         {@const isSessionActive = checkIsActiveSession(model.id)}
         <div
-          class="group min-w-0 max-w-full rounded-lg border px-3 py-2 {testStatus === 'ok' ? 'border-green-500/40' : testStatus === 'error' ? 'border-red-500/40' : 'border-border'} hover:bg-sidebar/50 transition-colors"
+          class="group min-w-0 max-w-full rounded-lg border px-3 py-2 {testStatus === 'ok' ? 'border-green-500/40' : testStatus === 'blocked' ? 'border-amber-500/40' : testStatus === 'error' ? 'border-red-500/40' : 'border-border'} hover:bg-sidebar/50 transition-colors"
         >
           <div class="flex min-w-0 items-start gap-2 sm:items-center">
             <span class="material-symbols-outlined shrink-0 text-base text-text-muted">smart_toy</span>
@@ -3693,7 +3728,7 @@
               </span>
             </div>
               {#if modelTestErrors[model.id]}
-                <span class="text-[9px] text-red-500 dark:text-red-400 font-medium pl-1 truncate max-w-[280px]" title={modelTestErrors[model.id]}>
+                <span class="text-[9px] {testStatus === 'blocked' ? 'text-amber-500 dark:text-amber-400' : 'text-red-500 dark:text-red-400'} font-medium pl-1 truncate max-w-[280px]" title={modelTestErrors[model.id]}>
                   {modelTestErrors[model.id]}
                 </span>
               {/if}
@@ -3711,6 +3746,8 @@
                   <span class="material-symbols-outlined text-sm animate-spin text-primary">progress_activity</span>
                 {:else if testStatus === 'ok'}
                   <span class="material-symbols-outlined text-sm text-green-500">check</span>
+                {:else if testStatus === 'blocked'}
+                  <span class="material-symbols-outlined text-sm text-amber-500">schedule</span>
                 {:else if testStatus === 'error'}
                   <span class="material-symbols-outlined text-sm text-red-500">error</span>
                 {:else}
@@ -3722,6 +3759,8 @@
                   Testing...
                 {:else if testStatus === 'ok'}
                   Passed
+                {:else if testStatus === 'blocked'}
+                  {modelTestErrors[model.id] || 'Blocked — account in cooldown'}
                 {:else if testStatus === 'error'}
                   {modelTestErrors[model.id] || 'Failed'}
                 {:else}
