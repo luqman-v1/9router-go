@@ -59,8 +59,10 @@ func TestE2E_Gemini38_FlashHigh_NonStream_ToolCall(t *testing.T) {
 			t.Fatalf("unmarshal antigravity wrapper: %v", err)
 		}
 		capturedModel = agReq.Model
-		if agReq.Model != "gemini-3.8-flash-high(high)" {
-			t.Errorf("expected wrapped model gemini-3.8-flash-high(high), got %q", agReq.Model)
+		// The effort notation never reaches Cloud Code: "gemini-3.8-flash-high(high)"
+		// is 404 NOT_FOUND, the bare tier id is 200.
+		if agReq.Model != "gemini-3.8-flash-high" {
+			t.Errorf("expected wrapped model gemini-3.8-flash-high, got %q", agReq.Model)
 		}
 		if agReq.Project != "test-proj-38" {
 			t.Errorf("expected project test-proj-38, got %q", agReq.Project)
@@ -219,7 +221,7 @@ func TestE2E_Gemini38_FlashHigh_NonStream_ToolCall(t *testing.T) {
 	}
 
 	// Verify the mock saw correct wrapped model
-	if capturedModel != "gemini-3.8-flash-high(high)" {
+	if capturedModel != "gemini-3.8-flash-high" {
 		t.Errorf("mock did not see correct model, got %q", capturedModel)
 	}
 	if len(capturedBody) == 0 {
@@ -376,8 +378,8 @@ func TestTranslator_Gemini38_ToolSchema_PrefixItems(t *testing.T) {
 	if err := json.Unmarshal(wrapped, &agReq); err != nil {
 		t.Fatalf("unmarshal ag: %v", err)
 	}
-	if agReq.Model != "gemini-3.8-flash-high(high)" {
-		t.Errorf("expected gemini-3.8-flash-high(high), got %q", agReq.Model)
+	if agReq.Model != "gemini-3.8-flash-high" {
+		t.Errorf("expected gemini-3.8-flash-high, got %q", agReq.Model)
 	}
 }
 

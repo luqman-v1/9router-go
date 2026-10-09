@@ -500,33 +500,36 @@ func TestAntigravityModelIDsResolveToServedBackends(t *testing.T) {
 	}
 }
 
-// TestAntigravityUpstreamModel pins the wire id. The parenthesised effort is
-// what Google reads to pick the tier, and it only ever appears through
-// AntigravityUpstreamModel: on the lock and quota paths such a key would be
-// silently unmatchable.
+// TestAntigravityUpstreamModel pins the wire id. Google serves none of the
+// parenthesised ids the registry carries — probed live 2026-10-09, every
+// "id(tier)" form is 404 NOT_FOUND while its bare base is 200 — so the effort
+// notation must never survive this function. A test that asserts a suffix here
+// is asserting a 404.
 func TestAntigravityUpstreamModel(t *testing.T) {
 	tests := []struct {
 		input string
 		want  string
 	}{
-		// Claude 5.5: the bare catalog id is the thinking tier.
-		{"claude-sonnet-5-5", "claude-sonnet-5-5-high(high)"},
-		{"claude-sonnet-5-5-high", "claude-sonnet-5-5-high(high)"},
-		{"claude-sonnet-5-5-medium", "claude-sonnet-5-5-medium(medium)"},
-		{"claude-sonnet-5-5-low", "claude-sonnet-5-5-low(low)"},
-		{"claude-opus-5-5", "claude-opus-5-5-high(high)"},
-		{"claude-opus-5-5-low", "claude-opus-5-5-low(low)"},
-		// A client-supplied effort overrides the id's preset instead of
-		// producing two suffixes.
-		{"claude-sonnet-5-5-medium(low)", "claude-sonnet-5-5-medium(low)"},
-		{"claude-sonnet-5-5(high)", "claude-sonnet-5-5-high(high)"},
+		// Claude 5.5: the bare catalog id is the thinking tier, and the
+		// registry's own "(high)" preset is 9router notation, not wire.
+		{"claude-sonnet-5-5", "claude-sonnet-5-5-high"},
+		{"claude-sonnet-5-5-high", "claude-sonnet-5-5-high"},
+		{"claude-sonnet-5-5-medium", "claude-sonnet-5-5-medium"},
+		{"claude-sonnet-5-5-low", "claude-sonnet-5-5-low"},
+		{"claude-opus-5-5", "claude-opus-5-5-high"},
+		{"claude-opus-5-5-low", "claude-opus-5-5-low"},
+		// A client-supplied effort narrows the id to its own base rather than
+		// being appended on top of the id's preset.
+		{"claude-sonnet-5-5-medium(low)", "claude-sonnet-5-5-medium"},
+		{"claude-sonnet-5-5(high)", "claude-sonnet-5-5-high"},
 		// The tiered Gemini families.
-		{"gemini-3.8-flash", "gemini-3.8-flash-medium(medium)"},
-		{"gemini-3.8-flash-low", "gemini-3.8-flash-low(low)"},
-		{"gemini-3.7-flash-high", "gemini-3.7-flash-tiered(high)"},
-		{"gemini-3.6-flash-medium", "gemini-3.6-flash-tiered(medium)"},
+		{"gemini-3.8-flash", "gemini-3.8-flash-medium"},
+		{"gemini-3.8-flash-low", "gemini-3.8-flash-low"},
+		{"gemini-3.8-flash-high", "gemini-3.8-flash-high"},
+		{"gemini-3.7-flash-high", "gemini-3.7-flash-tiered"},
+		{"gemini-3.6-flash-medium", "gemini-3.6-flash-tiered"},
 		{"gemini-3.1-pro-high", "gemini-pro-agent"},
-		{"gemini-3.1-pro-low", "gemini-3.1-pro-low(low)"},
+		{"gemini-3.1-pro-low", "gemini-3.1-pro-low"},
 		// A retired id resolves through its synonym family first, so the 3.5
 		// high tier lands on the 3.8 high backend rather than on medium.
 		{"gemini-3.5-flash-high", "gemini-3.8-flash-high"},
@@ -542,20 +545,31 @@ func TestAntigravityUpstreamModel(t *testing.T) {
 	}
 }
 
-// TestAntigravityUpstreamModel_SuffixesAreServedBackends closes the loop: every
-// id AntigravityUpstreamModel can emit must name a backend the service has.
-func TestAntigravityUpstreamModel_SuffixesAreServedBackends(t *testing.T) {
+// TestAntigravityUpstreamModel_NeverEmitsEffortSuffix is the invariant the live
+// 404 turned on: whatever the registry row says, the id handed to Cloud Code
+// must be bare. Google rejects "gemini-3.8-flash-low(low)" outright.
+func TestAntigravityUpstreamModel_NeverEmitsEffortSuffix(t *testing.T) {
+	for alias := range translator.AntigravityModelSynonyms {
+		got := translator.AntigravityUpstreamModel(alias)
+		if strings.Contains(got, "(") {
+			t.Errorf("AntigravityUpstreamModel(%q) = %q, which carries the effort suffix and 404s on the wire", alias, got)
+		}
+		if !antigravityBackendModels[got] {
+			t.Errorf("AntigravityUpstreamModel(%q) = %q, which is not a served backend", alias, got)
+		}
+	}
+}
+
+// TestAntigravityUpstreamModel_ServesABackend closes the loop: every id
+// AntigravityUpstreamModel can emit must name a backend the service serves.
+func TestAntigravityUpstreamModel_ServesABackend(t *testing.T) {
 	for _, model := range []string{
 		"gemini-3.8-flash", "gemini-3.7-flash-high", "gemini-3.6-flash-low",
 		"gemini-3.1-pro-low", "claude-sonnet-5-5", "claude-opus-5-5-low",
 	} {
 		got := translator.AntigravityUpstreamModel(model)
-		base := got
-		if idx := strings.Index(got, "("); idx != -1 {
-			base = got[:idx]
-		}
-		if !antigravityBackendModels[base] {
-			t.Errorf("AntigravityUpstreamModel(%q) = %q, whose backend %q is not served", model, got, base)
+		if !antigravityBackendModels[got] {
+			t.Errorf("AntigravityUpstreamModel(%q) = %q, which is not a served backend", model, got)
 		}
 	}
 }
@@ -586,10 +600,10 @@ func TestWrapForAntigravity_CapAndRequestID(t *testing.T) {
 	if err := json.Unmarshal(wrapped, &req); err != nil {
 		t.Fatalf("unmarshal wrapper: %v", err)
 	}
-	// The wire id carries the effort in parentheses (upstream #24034f69); the
-	// tier is chosen by the backend from that suffix, not by a body field.
-	if req.Model != "gemini-3.7-flash-tiered(high)" {
-		t.Errorf("expected model gemini-3.7-flash-tiered(high), got %s", req.Model)
+	// The wire id is the family backend: the "(high)" the registry carries is
+	// 9router's thinking notation, not a Google model id, and 404s on the wire.
+	if req.Model != "gemini-3.7-flash-tiered" {
+		t.Errorf("expected model gemini-3.7-flash-tiered, got %s", req.Model)
 	}
 	if !antigravityRequestIDRe.MatchString(req.RequestID) {
 		t.Errorf("request ID %q does not match UUID format", req.RequestID)
