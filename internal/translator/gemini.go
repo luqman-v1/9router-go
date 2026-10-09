@@ -298,17 +298,16 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		case "tool":
 			content := extractContentString(msg.Content)
 			cleanID := geminiCleanToolCallID(msg.ToolCallID)
+			// Prefer what the request itself proves (the assistant turn that
+			// made the call), then this gateway's own record of ids it minted.
+			// The id is never parsed: it may be Gemini's opaque token, in which
+			// case a "call_<name>_<n>" reading would invent a tool name.
 			name := nextToolNameForID(tcID2Names, tcID2Name, tcNameCursor, msg.ToolCallID, cleanID)
 			if name == "" {
+				name = GetGeminiToolCallName(msg.ToolCallID, "")
+			}
+			if name == "" {
 				name = cleanID
-				if strings.HasPrefix(name, "call_") {
-					rest := strings.TrimPrefix(name, "call_")
-					if lastUnderscore := strings.LastIndex(rest, "_"); lastUnderscore > 0 {
-						name = rest[:lastUnderscore]
-					} else {
-						name = rest
-					}
-				}
 			}
 			// Tool result content may be plain text or JSON.
 			// Gemini requires the result to be valid JSON.
@@ -442,6 +441,21 @@ func geminiCleanToolCallID(id string) string {
 	return id
 }
 
+// geminiToolCallID resolves the tool_call id for a functionCall part. Gemini's
+// own id wins when present: it is the only id Gemini will match a
+// functionResponse against. The generated form carries the tool name for
+// readability and the call's index for uniqueness — two parts in one chunk are
+// emitted inside a single clock tick, so UnixNano alone collides and the client
+// cannot match a result to its call.
+// Parity with `functionCall.id || \`${name}-${Date.now()}-${index}\`` in
+// open-sse/translator/response/gemini-to-openai.js.
+func geminiToolCallID(geminiID, name string, index int) string {
+	if geminiID != "" {
+		return geminiID
+	}
+	return fmt.Sprintf("call_%s_%d_%d", name, time.Now().UnixNano(), index)
+}
+
 // effortToBudget converts reasoning_effort string to thinking budget tokens.
 func effortToBudget(effort string) int {
 	switch effort {
@@ -496,7 +510,8 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 					args = []byte("{}")
 				}
 				fnName := UncloakToolName(part.FunctionCall.Name, nil)
-				id := fmt.Sprintf("call_%s_%d", fnName, len(toolCalls))
+				id := geminiToolCallID(part.FunctionCall.ID, fnName, len(toolCalls))
+				StoreGeminiToolCallName(id, fnName, "")
 				sig := part.ThoughtSignature
 				if sig == "" {
 					sig = lastSig
@@ -651,7 +666,14 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 						args = []byte("{}")
 					}
 					fnName := UncloakToolName(part.FunctionCall.Name, nil)
-					id := fmt.Sprintf("call_%s_%d", fnName, time.Now().UnixNano())
+					id := geminiToolCallID(part.FunctionCall.ID, fnName, state.ToolCallCount)
+					// The id is opaque (it may be Gemini's own token), so the tool
+					// it belongs to is recorded rather than encoded in it: a client
+					// that echoes only role:"tool" messages leaves the reverse
+					// direction with nothing else to pair the result by. The index
+					// in the generated form keeps parallel calls distinct —
+					// UnixNano alone does not, it does not tick within a chunk.
+					StoreGeminiToolCallName(id, fnName, state.MessageId)
 					sig := part.ThoughtSignature
 					if sig == "" {
 						sig = state.LastThoughtSignature

@@ -7,10 +7,10 @@
 - **Latar belakang**: report #224 — enam surface dashboard punya deretan
   kontrol yang membuat baris header atau baris tabel wrap di layar sempit, dan
   dropdown Cache Analytics keluar dari layar di lebar ponsel.
-- **Akibat**: operator harus menggulir ke baris kedua di Quota Tracker, dan
+ **Akibat**: operator harus menggulir ke baris kedua di Quota Tracker, dan
   tombol `Delete` pada baris API key bisa terdorong keluar viewport sehingga
   tidak bisa ditekan di ponsel.
-- **Perubahan UI**:
+ **Perubahan UI**:
   - **Top bar**: donate, install, theme, language, changelog, dan logout —
     enam kontrol — kini satu tombol `Menu` (`TopBar.svelte`). Dropdown language
     dan app-drawer yang sebelumnya terpisah dihapus.
@@ -25,44 +25,44 @@
   - **API keys**: action per baris menjadi satu `more_horiz` menu; checkbox per
     baris menambah **batch bar** (enable / pause / delete) untuk banyak key
     sekaligus.
-- **Fix mobile dropdown**: panel menu kini `position: fixed` dan diposisikan
+ **Fix mobile dropdown**: panel menu kini `position: fixed` dan diposisikan
   dari `getBoundingClientRect()` trigger, lalu di-clamp ke viewport
   (`lib/ui/menuPosition.ts`). Sebelumnya `absolute` di dalam wrapper, sehingga
   terpotong oleh ancestor `overflow-x-auto` — inilah penyebab dropdown Cache
   Analytics keluar layar di ponsel. `ViewSelect`, `SectionMenu`, `PeriodSelect`,
   dan provider filter Quota Tracker semuanya memakai penempatan yang sama.
-- **Rename API key**: `PUT /api/keys/{id}` menerima field `name` (partial
+ **Rename API key**: `PUT /api/keys/{id}` menerima field `name` (partial
   update; string kosong = hapus nama). Field rename ada di dialog policy yang
   sama dengan rate limit/expiry/allowlist, jadi mengedit satu key = satu
   dialog. Dibatasi 200 karakter.
-- **Verifikasi**: `bun run build`, `make vet-svelte` (0 unresolved identifier,
+ **Verifikasi**: `bun run build`, `make vet-svelte` (0 unresolved identifier,
   83 error = baseline), `go test ./...` (3650 pass), plus smoke check di browser
   pada 1440px dan 390px — rename tersimpan, batch pause menandai kedua key,
   dan kedua dropdown Cache Analytics tampil utuh di 390px.
 
 ### ✅ test(dashboard): E2E suite yang menutup celah tsc/vite/svelte-check/go-test
 
-- **Latar belakang**: collapsing action API key jadi satu menu (#224) menghapus
+ **Latar belakang**: collapsing action API key jadi satu menu (#224) menghapus
   `confirm()` pada delete dan regenerate — dan **semua gate tetap hijau**.
   `tsc` membaca type, `vite build` membundel, ratchet svelte-check menghitung
   diagnostic, `go test` menguji HTTP API tanpa pernah merender komponen.
   Tidak satu pun melihat DOM.
-- **Perubahan**: `web/e2e/` (Playwright + Chromium) menjalankan binary Go asli
+ **Perubahan**: `web/e2e/` (Playwright + Chromium) menjalankan binary Go asli
   terhadap SQLite sementara, lalu menguji konsekuensi yang bisa diamati:
   - dismiss dialog delete → baris **tetap ada**; accept → baris hilang
   - dismiss dialog regenerate → secret **tidak berubah**
   - prompt delete **menyebut nama key** yang akan dihapus
   - batch bar mengubah semua key terpilih jadi `Paused`
   - panel dropdown di 390px dan di viewport 200px **tetap di dalam layar**
-- **Bug tersembunyi yang ketahuan**: `style:min-width` pada panel mengalahkan
+ **Bug tersembunyi yang ketahuan**: `style:min-width` pada panel mengalahkan
   `width` hasil clamp, sehingga di viewport 200px panel 224px tetap meluber
   32px. `placePanel` kini ikut meng-cap `minWidth`, dan semua panel meneruskan
   nilai tersebut alih-alih menulis `min-width` sendiri.
-- **Bukti test menangkap regresi**: dengan clamp dimatikan, test mobile gagal
+ **Bukti test menangkap regresi**: dengan clamp dimatikan, test mobile gagal
   `232 > 200`; dengan `confirm()` dihapus, 4 dari 5 test API key gagal —
   sementara keempat gate lama tetap hijau.
 
-- **Empat surface lain (#224)** — top bar, header Quota Tracker, dialog Add Proxy
+ **Empat surface lain (#224)** — top bar, header Quota Tracker, dialog Add Proxy
   Pools bertab, dan halaman Providers — ditutup di
   `web/e2e/unifiedControls.test.ts`, sehingga suite-nya 20 test.
   - **Bukti**: mengembalikan `TopBar.svelte` ke kondisi pra-#224 membuat **6 dari
@@ -87,6 +87,35 @@
 - **Bukti**: `bun test src scripts` → 321 pass / 0 fail; `bun test e2e/` →
   20 pass / 0 fail setelah binary dibangun dan Chromium terinstal;
   `bun run ratchet:svelte` → 0 unresolved identifier, 83 error = baseline.
+
+### 🐛 fix(translator): `tool_call.id` paralel dari Gemini bertabrakan, dan nama tool tidak lagi dibaca dari id
+
+ **Latar belakang**: streaming translator membuat id tool call dari
+  `fmt.Sprintf("call_%s_%d", fnName, time.Now().UnixNano())`. Dua `functionCall`
+  dalam satu chunk dipancarkan berjarak <1 ms, sedangkan `UnixNano()` hanya
+  berubah setiap ~0,5–1 ms pada mesin dev — sehingga dua panggilan paralel
+  mendapat **id yang identik**. Klien yang mencocokkan hasil tool dengan
+  `tool_call_id` tidak bisa membedakan keduanya.
+ **Akar masalah**: `time.Now().UnixNano()` tidak men-tick di dalam satu chunk,
+  dan id tidak membawa indeks panggilan. Selain itu, fallback nama tool di
+  `TranslateOpenAIToGemini` membaca nama dari id dengan memotong segmen setelah
+  underscore terakhir — logika itu hanya benar untuk id format `call_<nama>_...`,
+  dan akan salah jika gateway memakai `functionCall.id` milik Gemini sendiri
+  (token opaque seperti `call_abc123`).
+ **Fiks**: id memakai `functionCall.id` milik Gemini bila ada (satu-satunya id
+  yang akan dicocokkan Gemini untuk functionResponse); jika tidak, id hasil
+  generator membawa indeks panggilan sehingga paralel tetap berbeda. Pasangan
+  id→tool dicatat saat tool call dipancarkan (`toolNameStore`, sejajar dengan
+  `thoughtSignatureStore` yang sudah memakai skema key yang sama, termasuk
+  suffix `__ts__` dan namespace sesi), dan fallback membaca penyimpanan itu.
+  Id tidak pernah di-parse lagi: id yang tidak dikenal dijawab apa adanya,
+  bukan dengan nama tool yang dikarang.
+ **Parity**: `open-sse/translator/response/gemini-to-openai.js`
+  (`functionCall.id || \`${name}-${Date.now()}-${index}\``).
+ **Catatan**: id ganda ini sudah ada sebelum #228 dan tidak diperparah olehnya;
+  perlakuannya sudah aman karena `tcID2Names`/`nextToolNameForID` (
+  `gemini.go`, parity #4273/#4589) mengantre nama per id. PR ini menutup celah
+  id opaque dan membuat id paralel benar-benar unik.
 
 ### 🐛 fix(models): /api/models/test read-only terhadap cooldown produksi agar sweep tidak memicu cascade (#220)
 
