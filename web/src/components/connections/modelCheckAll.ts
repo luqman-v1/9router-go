@@ -17,23 +17,26 @@ export function parseModelTestVerdict(res: {
   }
   const err = res.error || 'Model test failed'
 
-  // Classify cooldown-blocked probes either from backend structured flag
-  // or by status + cooldown message signature.
-  const isCooldownSignature =
-    (res.status === 502 && err.includes('all in cooldown')) ||
-    (res.status === 429 && (err.includes('cooldown') || err.includes('rate limit')))
-
-  if (res.blocked || isCooldownSignature) {
-    let reset = res.resetAt
-    if (!reset && err.includes('earliest reset ')) {
-      const match = err.match(/earliest reset ([^\s\)]+)/)
-      if (match) reset = match[1]
-    }
-    const msg = reset ? `Blocked (cooldown until ${reset})` : err
-    return { status: 'blocked', error: msg }
+  // The backend owns this verdict. It knows whether the account was parked
+  // (temporary, resolves on its own) or whether the model was actually asked
+  // and refused — a distinction no amount of string matching in the SPA can
+  // make reliably, since the gateway's own wording differs from a provider's
+  // and a model-scoped quota refusal never clears by waiting.
+  if (res.blocked) {
+    const reset = formatResetAt(res.resetAt)
+    return { status: 'blocked', error: reset ? `Blocked (cooldown until ${reset})` : err }
   }
 
   return { status: 'error', error: err }
+}
+
+// The gateway speaks RFC3339; operators read local time. Every other reset in
+// this view (quota rows at :860) is rendered the same way, and a raw
+// "2026-10-09T03:00:00Z" on a dashboard row is not something a human can act on.
+function formatResetAt(resetAt?: string): string {
+  if (!resetAt) return ''
+  const parsed = new Date(resetAt)
+  return Number.isNaN(parsed.getTime()) ? resetAt : parsed.toLocaleString()
 }
 
 export interface CheckAllSummary {

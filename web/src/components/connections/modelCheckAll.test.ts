@@ -12,34 +12,53 @@ describe('parseModelTestVerdict', () => {
     expect(res.error).toBeNull()
   })
 
-  test('returns blocked with resetAt when res.blocked is true', () => {
+  test('renders the reset time as local time, not a raw RFC3339 stamp', () => {
     const res = parseModelTestVerdict({
       ok: false,
       blocked: true,
       resetAt: '2026-10-09T02:00:00Z',
     })
     expect(res.status).toBe('blocked')
-    expect(res.error).toBe('Blocked (cooldown until 2026-10-09T02:00:00Z)')
+    expect(res.error).toBe(`Blocked (cooldown until ${new Date('2026-10-09T02:00:00Z').toLocaleString()})`)
   })
 
-  test('returns blocked and extracts resetAt from 502 all in cooldown message', () => {
+  test('keeps the gateway error verbatim when the backend sent no stamp', () => {
+    const res = parseModelTestVerdict({
+      ok: false,
+      blocked: true,
+      error: 'HTTP 502: upstream error: no available connections for provider: deepseek (all in cooldown)',
+    })
+    expect(res.status).toBe('blocked')
+    expect(res.error).toBe('HTTP 502: upstream error: no available connections for provider: deepseek (all in cooldown)')
+  })
+
+  test('falls back to the raw stamp when it is not parseable', () => {
+    const res = parseModelTestVerdict({ ok: false, blocked: true, resetAt: 'soon' })
+    expect(res.status).toBe('blocked')
+    expect(res.error).toBe('Blocked (cooldown until soon)')
+  })
+
+  // The backend decides what "blocked" means. Re-deriving it from the error
+  // text here is how a model-scoped quota refusal — which never clears by
+  // waiting — used to get painted as a cooldown, and how a cooldown worded
+  // "rate-limited" or answered with a 404 was missed entirely.
+  test('a cooldown sentence without the backend flag stays a failure', () => {
     const res = parseModelTestVerdict({
       ok: false,
       status: 502,
       error: 'HTTP 502: upstream error: no available connections for provider: deepseek (all in cooldown, earliest reset 2026-10-09T03:00:00Z)',
     })
-    expect(res.status).toBe('blocked')
-    expect(res.error).toBe('Blocked (cooldown until 2026-10-09T03:00:00Z)')
+    expect(res.status).toBe('error')
   })
 
-  test('returns blocked without resetAt when res.blocked is true but resetAt absent', () => {
+  test('a model-scoped quota 429 stays a failure, not a blocked cooldown', () => {
     const res = parseModelTestVerdict({
       ok: false,
-      blocked: true,
-      error: 'all in cooldown',
+      status: 429,
+      error: 'HTTP 429: Rate limit reached for gpt-4 on this account',
     })
-    expect(res.status).toBe('blocked')
-    expect(res.error).toBe('all in cooldown')
+    expect(res.status).toBe('error')
+    expect(res.error).toBe('HTTP 429: Rate limit reached for gpt-4 on this account')
   })
 
   test('returns error for standard failure', () => {

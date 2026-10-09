@@ -2533,16 +2533,13 @@
   // the browser (a ~30-model provider fires 30 simultaneous fetches).
   const TEST_CONCURRENCY = 6
 
-  async function handleCheckAllModels() {
-    if (isCheckingAll) return
+  // Runs ids through the bounded pool, then publishes the sweep summary. A
+  // run that outlives its provider panel publishes nothing: the verdicts it
+  // produced belong to a provider this panel no longer shows.
+  async function runModelSweep(ids: string[]) {
     const pid = providerId
     isCheckingAll = true
-    const ids = allAvailableModels.map((m) => m.id)
     checkAllProgress = { done: 0, total: ids.length }
-    // Reset previous verdicts so the run is not confused with stale ones.
-    modelTestStatuses = {}
-    modelTestErrors = {}
-    checkAllSummary = null
     try {
       let cursor = 0
       const workers = Array.from({ length: Math.min(TEST_CONCURRENCY, ids.length) }, async () => {
@@ -2563,22 +2560,26 @@
     }
   }
 
+  async function handleCheckAllModels() {
+    if (isCheckingAll) return
+    // Reset previous verdicts so the run is not confused with stale ones.
+    // Only the full sweep clears them — a retry must keep the passed and
+    // failed verdicts it is not re-testing.
+    modelTestStatuses = {}
+    modelTestErrors = {}
+    checkAllSummary = null
+    await runModelSweep(allAvailableModels.map((m) => m.id))
+  }
+
+  // A blocked model was never asked anything, so re-testing only those is
+  // cheap. It reuses the same bounded pool: a serial loop would leave the
+  // button looking hung for as long as the cooldown, which is exactly the
+  // wait the operator is sitting through.
   async function handleRetryBlockedModels() {
+    if (isCheckingAll) return
     const blockedIds = getBlockedModelIds(modelTestStatuses)
-    if (blockedIds.length === 0 || isCheckingAll) return
-    isCheckingAll = true
-    checkAllProgress = { done: 0, total: blockedIds.length }
-    try {
-      for (const id of blockedIds) {
-        await testModel(id, true)
-        checkAllProgress = { ...checkAllProgress, done: checkAllProgress.done + 1 }
-      }
-      const summary = formatCheckAllSummary(modelTestStatuses)
-      checkAllSummary = summary
-      activeModelTestError = summary.message
-    } finally {
-      isCheckingAll = false
-    }
+    if (blockedIds.length === 0) return
+    await runModelSweep(blockedIds)
   }
 
   // Delete is only real for custom models; registry models are static, so an
@@ -3772,6 +3773,8 @@
                   Testing...
                 {:else if testStatus === 'ok'}
                   Passed
+                {:else if testStatus === 'blocked'}
+                  {modelTestErrors[model.id] || 'Blocked — account in cooldown'}
                 {:else if testStatus === 'error'}
                   {modelTestErrors[model.id] || 'Failed'}
                 {:else}

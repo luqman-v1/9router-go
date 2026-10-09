@@ -51,6 +51,22 @@ func NewMediaHandler(repo *db.Repo, ts *shared.TokenSaverConfig, chatH *chat.Cha
 	}
 }
 
+// mediaConnectionError renders why a media lane found no usable account.
+//
+// GetBestConnection already distinguishes the cases that matter: "every
+// account is parked in cooldown until <stamp>" is a temporary condition that
+// resolves on its own, while "all excluded" or a parse failure is not. The
+// generic "no active connections" text this replaced collapsed both into one
+// sentence, so an operator whose account was merely cooling down read it as a
+// broken credential — and the dashboard's model sweep had no way to tell the
+// untested models from the genuinely broken ones.
+func mediaConnectionError(err error, provider string) string {
+	if err != nil && err.Error() != "" {
+		return err.Error()
+	}
+	return fmt.Sprintf("no active connections for provider: %s", provider)
+}
+
 // HandleEmbeddings forwards /v1/embeddings requests to upstream providers.
 func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -202,7 +218,12 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 				ProxyPoolID: h.ChatH.ResolveProviderProxyPoolID(modelInfo.Provider),
 			}
 		} else {
-			handlerutil.WriteJSONError(w, http.StatusNotFound, fmt.Sprintf("no active connections for provider: %s", modelInfo.Provider))
+			// The selector's own error says whether the provider is simply
+			// parked in cooldown and when it frees up. Substituting a generic
+			// "no active connections" here throws that away, and the
+			// dashboard's model sweep then cannot tell a cooldown from a
+			// broken account.
+			handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
 			return
 		}
 	}
@@ -801,7 +822,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 		} else {
 			log.Warn("media", "no connection", "endpoint", endpoint, "provider", modelInfo.Provider, "model", modelInfo.Model, "error", err)
-			handlerutil.WriteJSONError(w, http.StatusNotFound, fmt.Sprintf("no active connections for provider: %s", modelInfo.Provider))
+			handlerutil.WriteJSONError(w, http.StatusNotFound, mediaConnectionError(err, modelInfo.Provider))
 			return
 		}
 	}

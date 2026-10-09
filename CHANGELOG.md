@@ -33,6 +33,19 @@
   `X passed · Y failed · Z blocked` serta menyediakan tombol "Retry blocked" untuk menguji ulang hanya model
   yang sebelumnya terhalang cooldown.
 
+- **Perbaikan review**: verdict `Blocked` kini dihitung di backend pada semua lane, bukan hanya `/v1/chat/completions`.
+  Error cooldown dari `GetBestConnection` sampai ke dashboard sebagai 502 pada lane chat tetapi sebagai 404 pada lane
+  media (embeddings, image, tts, stt, video, systemone), sehingga provider non-chat masih menandai seluruh model
+  yang belum diuji sebagai merah. `media.go` juga tidak lagi menimpa pesan selector dengan
+  `"no active connections for provider: %s"`, yang membuang informasi jam mulai cooldown.
+- **Perbaikan review**: klasifikasi 429 dipindahkan sepenuhnya ke backend melalui whitelist kalimat milik gateway
+  sendiri. Pencocokan substring di SPA (`'cooldown'`, `'rate limit'`) tidak pernah aktif karena gateway menulis
+  `rate-limited` dengan tanda hubung, dan berisiko menandai error kuota model-scoped sebagai `Blocked` padahal
+  verdict tersebut tidak pernah selesai dengan menunggu. `resetAt` kini dirender sebagai waktu lokal.
+- **Perbaikan review**: "Retry blocked" memakai bounded worker pool yang sama dengan sweep (6 konkuren) plus guard
+  `providerId`, menggantikan loop serial yang membuat tombol tampak macet selama masa cooldown.
+
+
 ### 🐛 fix(chat): error model-gated (402 funds, 401 unsupported) tidak mengunci seluruh akun (#218)
 
 - **Latar belakang**: pada provider multi-model seperti OpenCode Zen (atau Antigravity), request ke model
