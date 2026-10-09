@@ -22,6 +22,16 @@ describe('parseModelTestVerdict', () => {
     expect(res.error).toBe('Blocked (cooldown until 2026-10-09T02:00:00Z)')
   })
 
+  test('returns blocked and extracts resetAt from 502 all in cooldown message', () => {
+    const res = parseModelTestVerdict({
+      ok: false,
+      status: 502,
+      error: 'HTTP 502: upstream error: no available connections for provider: deepseek (all in cooldown, earliest reset 2026-10-09T03:00:00Z)',
+    })
+    expect(res.status).toBe('blocked')
+    expect(res.error).toBe('Blocked (cooldown until 2026-10-09T03:00:00Z)')
+  })
+
   test('returns blocked without resetAt when res.blocked is true but resetAt absent', () => {
     const res = parseModelTestVerdict({
       ok: false,
@@ -35,6 +45,7 @@ describe('parseModelTestVerdict', () => {
   test('returns error for standard failure', () => {
     const res = parseModelTestVerdict({
       ok: false,
+      status: 404,
       error: 'HTTP 404 Model not found',
     })
     expect(res.status).toBe('error')
@@ -51,10 +62,11 @@ describe('formatCheckAllSummary', () => {
     expect(summary.passed).toBe(2)
     expect(summary.failed).toBe(0)
     expect(summary.blocked).toBe(0)
+    expect(summary.severity).toBe('ok')
     expect(summary.message).toBeNull()
   })
 
-  test('formats failed models correctly', () => {
+  test('formats failed models correctly with error severity', () => {
     const summary = formatCheckAllSummary({
       m1: 'ok',
       m2: 'error',
@@ -62,20 +74,35 @@ describe('formatCheckAllSummary', () => {
     expect(summary.passed).toBe(1)
     expect(summary.failed).toBe(1)
     expect(summary.blocked).toBe(0)
+    expect(summary.severity).toBe('error')
     expect(summary.message).toBe('1 passed · 1 failed — see per-row status.')
   })
 
-  test('formats tri-state with blocked models correctly', () => {
+  test('formats blocked models correctly with blocked severity and no failed mention', () => {
+    const summary = formatCheckAllSummary({
+      m1: 'ok',
+      m2: 'blocked',
+      m3: 'blocked',
+    })
+    expect(summary.passed).toBe(1)
+    expect(summary.failed).toBe(0)
+    expect(summary.blocked).toBe(2)
+    expect(summary.severity).toBe('blocked')
+    expect(summary.message).toBe('1 passed · 2 blocked — see per-row status.')
+    expect(summary.message?.includes('failed')).toBe(false)
+  })
+
+  test('formats tri-state with both failed and blocked models', () => {
     const summary = formatCheckAllSummary({
       m1: 'ok',
       m2: 'error',
       m3: 'blocked',
-      m4: 'blocked',
     })
     expect(summary.passed).toBe(1)
     expect(summary.failed).toBe(1)
-    expect(summary.blocked).toBe(2)
-    expect(summary.message).toBe('1 passed · 1 failed · 2 blocked — see per-row status.')
+    expect(summary.blocked).toBe(1)
+    expect(summary.severity).toBe('error')
+    expect(summary.message).toBe('1 passed · 1 failed · 1 blocked — see per-row status.')
   })
 })
 

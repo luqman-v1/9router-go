@@ -48,6 +48,7 @@
     formatCheckAllSummary,
     getBlockedModelIds,
     parseModelTestVerdict,
+    type CheckAllSummary,
     type ModelTestStatus,
   } from './modelCheckAll'
   import {
@@ -315,6 +316,7 @@
   let modelTestStatuses = $state<Record<string, ModelTestStatus>>({})
   let modelTestErrors = $state<Record<string, string | null>>({})
   let activeModelTestError = $state<string | null>(null)
+  let checkAllSummary = $state<CheckAllSummary | null>(null)
 
   // Modals state
   let showRiskNoticeModal = $state(false)
@@ -2445,6 +2447,7 @@
     checkAllProgress = { done: 0, total: 0 }
     modelTestStatuses = {}
     modelTestErrors = {}
+    checkAllSummary = null
     activeModelTestError = null
   })
 
@@ -2539,6 +2542,7 @@
     // Reset previous verdicts so the run is not confused with stale ones.
     modelTestStatuses = {}
     modelTestErrors = {}
+    checkAllSummary = null
     try {
       let cursor = 0
       const workers = Array.from({ length: Math.min(TEST_CONCURRENCY, ids.length) }, async () => {
@@ -2552,6 +2556,7 @@
       await Promise.allSettled(workers)
       if (pid !== providerId) return
       const summary = formatCheckAllSummary(modelTestStatuses)
+      checkAllSummary = summary
       activeModelTestError = summary.message
     } finally {
       if (pid === providerId) isCheckingAll = false
@@ -2569,6 +2574,7 @@
         checkAllProgress = { ...checkAllProgress, done: checkAllProgress.done + 1 }
       }
       const summary = formatCheckAllSummary(modelTestStatuses)
+      checkAllSummary = summary
       activeModelTestError = summary.message
     } finally {
       isCheckingAll = false
@@ -3634,9 +3640,10 @@
     </div>
 
     {#if activeModelTestError}
+      {@const isBlockedSeverity = checkAllSummary?.severity === 'blocked'}
       {@const blockedCount = getBlockedModelIds(modelTestStatuses).length}
-      <div class="mb-3 flex items-start gap-2.5 rounded-lg border {blockedCount > 0 && !activeModelTestError.includes('failed') ? 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400' : 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400'} p-3 text-xs">
-        <span class="material-symbols-outlined shrink-0 text-base">{blockedCount > 0 && !activeModelTestError.includes('failed') ? 'schedule' : 'error'}</span>
+      <div class="mb-3 flex items-start gap-2.5 rounded-lg border {isBlockedSeverity ? 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400' : 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400'} p-3 text-xs">
+        <span class="material-symbols-outlined shrink-0 text-base">{isBlockedSeverity ? 'schedule' : 'error'}</span>
         <div class="flex-1 font-medium leading-relaxed flex items-center justify-between gap-2 flex-wrap">
           <span>{activeModelTestError}</span>
           {#if blockedCount > 0}
@@ -3652,7 +3659,7 @@
         </div>
         <button
           type="button"
-          onclick={() => (activeModelTestError = null)}
+          onclick={() => { activeModelTestError = null; checkAllSummary = null; }}
           class="hover:opacity-75 cursor-pointer shrink-0"
           title="Dismiss"
         >
