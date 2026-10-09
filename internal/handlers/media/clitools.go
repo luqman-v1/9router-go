@@ -55,6 +55,8 @@ var cliTools = []toolDef{
 	{id: "jcode", bin: "jcode"},
 	{id: "grok-build", bin: "grok"},
 	{id: "devin", bin: "devin", hasVer: true},
+	{id: "pi", bin: "pi"},
+	{id: "omp", bin: "omp", hasVer: true},
 }
 
 // CLIToolsHandler aggregates per-tool CLI install/version status for the

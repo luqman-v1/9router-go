@@ -70,6 +70,7 @@
     color: string
     image?: string
     icon?: string
+    abbr?: string
     configType: 'env' | 'settings' | 'guide' | 'mitm'
     envVars?: Record<string, string>
     instructions?: string[]
@@ -395,6 +396,37 @@
         `Inherits host agent's model config via 9router-go.`,
       ],
     },
+    {
+      id: 'pi',
+      name: 'Pi',
+      category: 'cli',
+      color: '#111827',
+      description: 'pi coding agent — point ~/.pi/agent/models.json at the 9router-go gateway',
+      configType: 'guide',
+      instructions: [
+        `Add a 9router-go provider to ~/.pi/agent/models.json (Windows: %USERPROFILE%\\.pi\\agent\\models.json):`,
+        `{"providers":{"9router":{"baseUrl":"${localOrigin}/v1","api":"openai-completions","apiKey":"${effectiveApiKey}","models":[{"id":"kr/claude-sonnet-4.5","name":"9router kr/claude-sonnet-4.5","reasoning":true,"contextWindow":200000,"maxTokens":64000}]}}}`,
+        `Run 'pi', then /model to pick the model — models.json is re-read without a restart.`,
+        `If the model does not show up, set "api" to "openai-responses"; the gateway serves both lanes.`,
+        `List every routable id with: curl -s ${localOrigin}/v1/models -H "Authorization: Bearer ${effectiveApiKey}"`,
+      ],
+    },
+    {
+      id: 'omp',
+      name: 'Oh My Pi',
+      category: 'cli',
+      color: '#7C3AED',
+      abbr: 'omp',
+      description: 'omp coding agent — register the gateway in ~/.omp/agent/models.yml',
+      configType: 'guide',
+      instructions: [
+        `Add a 9router-go provider to ~/.omp/agent/models.yml (profiles live in ~/.omp/profiles/<name>/agent/):`,
+        `providers:\n  9router:\n    baseUrl: ${localOrigin}/v1\n    api: openai-completions\n    authHeader: true\n    apiKey: 9ROUTER_API_KEY\n    models:\n      - id: kr/claude-sonnet-4.5\n        name: 9router kr/claude-sonnet-4.5\n        reasoning: true\n        contextWindow: 200000\n        maxTokens: 64000`,
+        `export 9ROUTER_API_KEY="${effectiveApiKey}" before starting 'omp' — the key is read from the environment first, and an unset variable is sent as its literal name.`,
+        `Run 'omp', then /model to select the model. 'omp models' lists everything the gateway exposes.`,
+        `Use api: openai-responses instead if a model does not stream correctly over Chat Completions.`,
+      ],
+    },
   ])
   let filteredTools = $derived(
     toolsCatalog.filter((tool) => {
@@ -408,6 +440,12 @@
   )
 
   let effectiveApiKey = $derived(apiKeys[0]?.key || 'sk-8b71f86e0a1f2fb5-nhz496-cfa1c800')
+
+  // Initials badge: fall back to the first two characters of the name unless a
+  // tool spells out its own monogram ("Oh My Pi" must read "omp", not "OH").
+  function initials(tool: ToolItem) {
+    return (tool.abbr || tool.name.slice(0, 2)).toUpperCase()
+  }
 
   function copyText(text: string, id: string) {
     copyToClipboard(text)
@@ -550,7 +588,7 @@
                     class="size-8 rounded-lg hidden items-center justify-center font-bold text-white text-xs shadow-sm"
                     style="background-color: {tool.color}"
                   >
-                    {tool.name.slice(0, 2).toUpperCase()}
+                    {initials(tool)}
                   </div>
                 {:else if tool.icon}
                   <span class="material-symbols-outlined text-[24px]" style="color: {tool.color}">
@@ -561,7 +599,7 @@
                     class="size-8 rounded-lg flex items-center justify-center font-bold text-white text-xs shadow-sm"
                     style="background-color: {tool.color}"
                   >
-                    {tool.name.slice(0, 2).toUpperCase()}
+                    {initials(tool)}
                   </div>
                 {/if}
               </div>
@@ -627,7 +665,7 @@
                 class="size-9 rounded-lg hidden items-center justify-center font-bold text-white text-sm shadow-sm"
                 style="background-color: {selectedTool.color}"
               >
-                {selectedTool.name.slice(0, 2).toUpperCase()}
+                {initials(selectedTool)}
               </div>
             {:else if selectedTool.icon}
               <span class="material-symbols-outlined text-[28px]" style="color: {selectedTool.color}">
@@ -638,7 +676,7 @@
                 class="size-9 rounded-lg flex items-center justify-center font-bold text-white text-sm shadow-sm"
                 style="background-color: {selectedTool.color}"
               >
-                {selectedTool.name.slice(0, 2).toUpperCase()}
+                {initials(selectedTool)}
               </div>
             {/if}
           </div>
