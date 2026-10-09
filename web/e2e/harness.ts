@@ -138,14 +138,34 @@ export function keyRow(page: Page, keyName: string) {
   return page.getByRole('row').filter({ hasText: keyName })
 }
 
-/** Creates a key through the UI and waits for its row to appear. */
+/**
+ * Creates a key through the UI and waits for it to appear in whichever list
+ * the current viewport renders.
+ *
+ * Below `md` that list is cards rather than table rows (issue #224), so waiting
+ * on `keyRow` alone timed out on every phone-width test.
+ */
 export async function createKey(page: Page, name: string): Promise<string> {
   await page.getByRole('button', { name: 'Create Key' }).click()
   await page.getByLabel('Key Name').fill(name)
   await page.getByLabel('Key Name').press('Enter')
   await page.getByRole('button', { name: 'Done' }).click()
-  await keyRow(page, name).waitFor()
+  await keyCard(page, name)
+    .or(keyRow(page, name))
+    .first()
+    .waitFor()
   return name
+}
+
+/**
+ * The card for one key, in the list rendered below `md` (issue #224).
+ *
+ * The counterpart of `keyRow` for the phone-width layout: the list swaps the
+ * table for `<li>` cards there, so a test that only knew `keyRow` found
+ * nothing at 390px and passed vacuously.
+ */
+export function keyCard(page: Page, keyName: string) {
+  return page.getByRole('listitem').filter({ hasText: keyName })
 }
 
 /** Opens the overflow menu on one key row. */

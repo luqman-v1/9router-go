@@ -196,7 +196,8 @@
     if (!confirm(`Delete ${names.length} key(s)? ${names.join(', ')}. This cannot be undone.`)) return
     return runBatchAction('deleted', (id) => api.deleteApiKey(id))
   }
-</script>
+
+ </script>
 
 <Card padding="md" class="space-y-4">
   <div class="flex items-center justify-between gap-4">
@@ -275,7 +276,166 @@
       </div>
     {/if}
 
-    <div class="overflow-x-auto">
+    <!--
+      Below `md` this renders as cards, not a table. A row is five columns wide
+      by construction, so at a phone width (390px, ~292px of card width) the
+      table's scroll box held 500px of content: the policy and actions columns
+      sat outside the viewport with no way to reach them, and the secret cell
+      broke one character per line. The card stacks the same facts in the width
+      a phone actually has.
+
+      The pieces both layouts render are snippets, so a card cannot drift from
+      its table row.
+    -->
+    {#snippet secretCell(k: APIKey)}
+      {@const shown = shownKeyIds.has(k.id)}
+      <div class="flex items-center gap-1 min-w-0">
+        <code
+          class="font-mono text-[11px] text-text-muted bg-surface-2 px-2 py-1 rounded border border-border/50 select-all truncate"
+        >
+          {shown ? renderedKey(k) : maskSecret(renderedKey(k))}
+        </code>
+
+        {#if isRevealable(k)}
+          <button
+            type="button"
+            onclick={() => toggleShow(k.id)}
+            class="shrink-0 p-1.5 rounded hover:bg-surface-2 text-text-muted hover:text-text-main transition-colors cursor-pointer"
+            aria-label={shown ? `Hide key ${k.name || ''}` : `Show key ${k.name || ''}`}
+            title="Hide key"
+          >
+            {#if shown}
+              <EyeOff class="w-3.5 h-3.5" />
+            {:else}
+              <Eye class="w-3.5 h-3.5" />
+            {/if}
+          </button>
+        {/if}
+
+        <button
+          type="button"
+          onclick={() => copy(renderedKey(k), k.id)}
+          class="shrink-0 p-1.5 rounded hover:bg-surface-2 text-text-muted hover:text-brand-500 transition-colors cursor-pointer"
+          aria-label={`Copy key ${k.name || ''}`}
+          title="Copy key"
+        >
+          {#if copiedId === k.id}
+            <Check class="w-3.5 h-3.5 text-success" />
+          {:else}
+            <Copy class="w-3.5 h-3.5" />
+          {/if}
+        </button>
+      </div>
+    {/snippet}
+
+    {#snippet keyActions(k: APIKey, fullWidth = false)}
+      {@const active = isActive(k)}
+      <Menu
+        label={`Actions for ${keyLabel(k)}`}
+        triggerIcon="more_horiz"
+        hideLabel={!fullWidth}
+        {fullWidth}
+        minWidth="13rem"
+      >
+        <MenuItem label="Edit key &amp; policy" icon="tune" onSelect={() => (policyKey = k)} />
+        <MenuItem
+          label="Regenerate secret"
+          icon="autorenew"
+          disabled={busyId !== null}
+          onSelect={() => handleRotate(k)}
+        />
+
+        <div class="my-1 border-t border-border-subtle" role="separator"></div>
+
+        <MenuItem
+          label={active ? 'Pause key' : 'Resume key'}
+          icon={active ? 'pause' : 'play_arrow'}
+          disabled={busyId !== null}
+          onSelect={() => handleToggle(k)}
+        />
+
+        <div class="my-1 border-t border-border-subtle" role="separator"></div>
+
+        <MenuItem
+          label="Delete key"
+          icon="delete"
+          danger
+          disabled={busyId !== null}
+          onSelect={() => handleDelete(k)}
+        />
+      </Menu>
+    {/snippet}
+
+    <!-- Issue #199 collapses status, policy and created date into one
+         multi-line cell. KeiRouter keeps plan/access as a single
+         middot-separated line (Keys.tsx:206-212); the stacked layout here is
+         the requested divergence, with the same rhythm: content line first,
+         muted `Created …` beneath. -->
+    {#snippet policyCell(k: APIKey)}
+      {@const badges = policyBadges(k)}
+      <div class="flex flex-wrap items-center gap-1">
+        {#if badges.length === 0}
+          <span class="text-text-subtle text-[11px]">unrestricted</span>
+        {:else}
+          {#each badges as badge (badge.label)}
+            <span
+              class="px-1.5 py-0.5 rounded text-[10px] border {badge.tone === 'danger'
+                ? 'bg-danger/10 text-danger border-danger/20'
+                : 'bg-info/10 text-info border-info/20'}"
+            >
+              {badge.label}
+            </span>
+          {/each}
+        {/if}
+      </div>
+      <p class="mt-0.5 text-[11px] text-text-subtle">
+        Created {k.createdAt ? new Date(k.createdAt).toLocaleDateString() : '—'}
+        {#if (k.usedCount ?? 0) > 0}
+          · {(k.usedCount ?? 0).toLocaleString()} req
+        {/if}
+      </p>
+    {/snippet}
+
+    <!-- Mobile: one card per key. -->
+    <ul class="md:hidden space-y-3">
+      {#each apiKeys as k (k.id)}
+        {@const active = isActive(k)}
+        <li class="rounded-xl border border-border bg-surface-2/40 p-3 space-y-2.5 {active
+          ? ''
+          : 'opacity-70'}">
+          <div class="flex items-center gap-2 min-w-0">
+            <input
+              type="checkbox"
+              checked={selectedIds.includes(k.id)}
+              aria-label={`Select ${keyLabel(k)}`}
+              onchange={() => (selectedIds = toggleOne(selectedIds, k.id))}
+              class="mt-1 size-3.5 shrink-0 rounded border-border/60 accent-[var(--primary)] cursor-pointer"
+            />
+            <p class="text-sm font-semibold text-text-main truncate">
+              {k.name || 'Client Token'}
+            </p>
+            <!-- KeiRouter's StatusPill: a bare dot plus a label, not a
+                 filled badge. A paused key reads at a glance without
+                 spending a column on it. -->
+            <span
+              class="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium {active
+                ? 'text-success'
+                : 'text-text-muted'}"
+            >
+              <span class="w-1.5 h-1.5 rounded-full {active ? 'bg-success' : 'bg-danger opacity-60'}"></span>
+              {active ? 'Active' : 'Paused'}
+            </span>
+          </div>
+
+          {@render secretCell(k)}
+          {@render policyCell(k)}
+          {@render keyActions(k, true)}
+        </li>
+      {/each}
+    </ul>
+
+    <!-- Desktop: the table. -->
+    <div class="hidden md:block overflow-x-auto">
       <table class="w-full text-left text-xs">
         <thead>
           <tr class="border-b border-border text-text-subtle font-code uppercase text-[10px] tracking-wider">
@@ -297,14 +457,12 @@
         <tbody class="divide-y divide-border/40">
           {#each apiKeys as k (k.id)}
             {@const active = isActive(k)}
-            {@const revealable = isRevealable(k)}
-            {@const badges = policyBadges(k)}
             <tr class="align-top transition hover:bg-surface-2/40 {active ? '' : 'opacity-70'}">
               <td class="py-3 pl-3">
                 <input
                   type="checkbox"
                   checked={selectedIds.includes(k.id)}
-                  aria-label="Select {keyLabel(k)}"
+                  aria-label={`Select ${keyLabel(k)}`}
                   onchange={() => (selectedIds = toggleOne(selectedIds, k.id))}
                   class="mt-1 size-3.5 rounded border-border/60 accent-[var(--primary)] cursor-pointer"
                 />
@@ -315,9 +473,6 @@
                   <p class="text-sm font-semibold text-text-main truncate max-w-[150px]">
                     {k.name || 'Client Token'}
                   </p>
-                  <!-- KeiRouter's StatusPill: a bare dot plus a label, not a
-                       filled badge. A paused key reads at a glance without
-                       spending a column on it. -->
                   <span
                     class="inline-flex items-center gap-1.5 text-[11px] font-medium {active
                       ? 'text-success'
@@ -330,108 +485,16 @@
               </td>
 
               <td class="py-3 px-3">
-                <div class="flex items-center gap-1">
-                  <code
-                    class="font-mono text-[11px] text-text-muted bg-surface-2 px-2 py-1 rounded border border-border/50 select-all break-all"
-                  >
-                    {shownKeyIds.has(k.id) ? renderedKey(k) : maskSecret(renderedKey(k))}
-                  </code>
-
-                  {#if revealable}
-                    <button
-                      type="button"
-                      onclick={() => toggleShow(k.id)}
-                      class="p-1.5 rounded hover:bg-surface-2 text-text-muted hover:text-text-main transition-colors cursor-pointer"
-                      aria-label={shownKeyIds.has(k.id) ? `Hide key ${k.name || ''}` : `Show key ${k.name || ''}`}
-                      title="Hide key"
-                    >
-                      {#if shownKeyIds.has(k.id)}
-                        <EyeOff class="w-3.5 h-3.5" />
-                      {:else}
-                        <Eye class="w-3.5 h-3.5" />
-                      {/if}
-                    </button>
-                  {/if}
-
-                  <button
-                    type="button"
-                    onclick={() => copy(renderedKey(k), k.id)}
-                    class="p-1.5 rounded hover:bg-surface-2 text-text-muted hover:text-brand-500 transition-colors cursor-pointer"
-                    aria-label={`Copy key ${k.name || ''}`}
-                    title="Copy key"
-                  >
-                    {#if copiedId === k.id}
-                      <Check class="w-3.5 h-3.5 text-success" />
-                    {:else}
-                      <Copy class="w-3.5 h-3.5" />
-                    {/if}
-                  </button>
-                </div>
+                {@render secretCell(k)}
               </td>
 
-              <!-- Issue #199 collapses status, policy and created date into one
-                   multi-line cell. KeiRouter keeps plan/access as a single
-                   middot-separated line (Keys.tsx:206-212); the stacked layout
-                   here is the requested divergence, with the same rhythm:
-                   content line first, muted `Created …` beneath. -->
               <td class="py-3 px-3">
-                <div class="flex flex-wrap items-center gap-1">
-                  {#if badges.length === 0}
-                    <span class="text-text-subtle text-[11px]">unrestricted</span>
-                  {:else}
-                    {#each badges as badge (badge.label)}
-                      <span
-                        class="px-1.5 py-0.5 rounded text-[10px] border {badge.tone === 'danger'
-                          ? 'bg-danger/10 text-danger border-danger/20'
-                          : 'bg-info/10 text-info border-info/20'}"
-                      >
-                        {badge.label}
-                      </span>
-                    {/each}
-                  {/if}
-                </div>
-                <p class="mt-0.5 text-[11px] text-text-subtle">
-                  Created {k.createdAt ? new Date(k.createdAt).toLocaleDateString() : '—'}
-                  {#if (k.usedCount ?? 0) > 0}
-                    · {(k.usedCount ?? 0).toLocaleString()} req
-                  {/if}
-                </p>
+                {@render policyCell(k)}
               </td>
 
               <td class="py-3 px-3">
                 <div class="flex items-center justify-end">
-                  <Menu label="Actions for {keyLabel(k)}" triggerIcon="more_horiz" hideLabel minWidth="13rem">
-                    <MenuItem
-                      label="Edit key &amp; policy"
-                      icon="tune"
-                      onSelect={() => (policyKey = k)}
-                    />
-                    <MenuItem
-                      label="Regenerate secret"
-                      icon="autorenew"
-                      disabled={busyId !== null}
-                      onSelect={() => handleRotate(k)}
-                    />
-
-                    <div class="my-1 border-t border-border-subtle" role="separator"></div>
-
-                    <MenuItem
-                      label={active ? 'Pause key' : 'Resume key'}
-                      icon={active ? 'pause' : 'play_arrow'}
-                      disabled={busyId !== null}
-                      onSelect={() => handleToggle(k)}
-                    />
-
-                    <div class="my-1 border-t border-border-subtle" role="separator"></div>
-
-                    <MenuItem
-                      label="Delete key"
-                      icon="delete"
-                      danger
-                      disabled={busyId !== null}
-                      onSelect={() => handleDelete(k)}
-                    />
-                  </Menu>
+                  {@render keyActions(k)}
                 </div>
               </td>
             </tr>

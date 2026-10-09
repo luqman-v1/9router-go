@@ -39,6 +39,14 @@
     triggerIcon?: string
     /** Hides the "Menu" text even at desktop widths, for a tight row. */
     hideLabel?: boolean
+    /**
+     * Stretches the trigger to fill its row and keeps the "Menu" label at
+     * every width. The API-key list renders a card instead of a table below
+     * `md` (issue #224), and a card row has no room for anything but a
+     * full-width button — an icon-only glyph that small is an ambiguous tap
+     * target with several different verbs behind it.
+     */
+    fullWidth?: boolean
     children?: Snippet
   }
 
@@ -49,6 +57,7 @@
     minWidth = '13rem',
     triggerIcon = 'menu',
     hideLabel = false,
+    fullWidth = false,
     children,
   }: Props = $props()
 
@@ -129,7 +138,7 @@
   })
 </script>
 
-<div class="relative shrink-0">
+<div class="relative shrink-0 {fullWidth ? 'w-full' : ''}">
   <button
     bind:this={trigger}
     type="button"
@@ -139,16 +148,23 @@
     disabled={disabled}
     onclick={() => (open = !open)}
     onkeydown={onKeydown}
-    class="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-text-main shadow-sm transition-colors hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 disabled:opacity-50 sm:px-3 sm:text-sm"
+    class="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-text-main shadow-sm transition-colors hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 disabled:opacity-50 sm:px-3 sm:text-sm {fullWidth
+      ? 'w-full justify-center py-2.5 text-sm'
+      : ''}"
   >
     <span class="material-symbols-outlined text-[18px] text-text-muted" aria-hidden="true">
       {triggerIcon}
     </span>
     {#if !hideLabel}
-      <span class="hidden sm:inline">Menu</span>
-      <span class="material-symbols-outlined text-[16px] text-text-muted" aria-hidden="true">
-        expand_more
-      </span>
+      <!-- Below `sm` a table row has no room for the label, so it collapses to
+           the glyph. A full-width trigger is a card's whole row: the space is
+           there, and an unlabelled glyph there would be a bare tap target. -->
+      <span class={fullWidth ? '' : 'hidden sm:inline'}>Menu</span>
+      {#if !fullWidth}
+        <span class="material-symbols-outlined text-[16px] text-text-muted" aria-hidden="true">
+          expand_more
+        </span>
+      {/if}
     {/if}
   </button>
 
