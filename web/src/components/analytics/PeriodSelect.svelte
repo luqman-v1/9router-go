@@ -19,6 +19,7 @@
 -->
 <script lang="ts">
   import { placePanel, placementStyle } from '../../lib/ui/menuPosition'
+  import { portal } from '../../lib/ui/portal'
   import {
     PERIODS,
     normalizeCustomPeriod,
@@ -142,6 +143,7 @@ const MIN_WIDTH_PX = 256
 
   {#if open}
     <div
+      use:portal
       bind:this={panel}
       role="listbox"
       aria-label="Time window"

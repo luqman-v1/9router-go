@@ -17,6 +17,7 @@
 -->
 <script lang="ts">
   import { placePanel, placementStyle } from '../../lib/ui/menuPosition'
+  import { portal } from '../../lib/ui/portal'
   import { USAGE_SECTIONS, type UsageSection } from '../../lib/router'
 
   interface Props {
@@ -112,6 +113,7 @@ const MIN_WIDTH_PX = 240
 
   {#if open}
     <div
+      use:portal
       bind:this={panel}
       role="listbox"
       aria-label="Usage section"

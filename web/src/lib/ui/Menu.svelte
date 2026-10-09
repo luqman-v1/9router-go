@@ -12,6 +12,11 @@
   inside `overflow-x-auto` tables and an `overflow-y-auto` page — which is what
   pushed the Cache Analytics dropdown off the right edge on a phone.
 
+  The panel is also portalled to `<body>` while it is open: `position: fixed`
+  resolves against the nearest ancestor that establishes a containing block,
+  and the top bar's `backdrop-blur-xl` `<header>` is exactly that, so its panel
+  was laid out from the header's box and rendered off-screen (issue #235).
+
   The trigger is labelled "Menu" rather than icon-only: an icon alone gives a
   screen reader nothing to announce, and several different verbs hide behind it.
   The label collapses away from the glyph at the smallest widths, where the
@@ -19,6 +24,7 @@
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte'
+  import { portal } from './portal'
   import { placePanel, placementStyle } from './menuPosition'
 
   interface Props {
@@ -148,6 +154,7 @@
 
   {#if open}
     <div
+      use:portal
       bind:this={panel}
       role="menu"
       aria-label={label}
