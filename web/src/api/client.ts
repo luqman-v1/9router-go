@@ -185,8 +185,7 @@ export interface Settings {
   samlLoginLabel?: string
   samlAttributeEmail?: string
   samlAttributeName?: string
-  /** Language, routing and network preferences (profile page). */
-  language?: string
+  /** Routing and network preferences (profile page). */
   fallbackStrategy?: string
   comboStrategy?: string
   stickyRoundRobinLimit?: number

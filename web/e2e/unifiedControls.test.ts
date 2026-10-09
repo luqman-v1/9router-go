@@ -43,17 +43,16 @@ describe('top bar', () => {
       await menu.waitFor()
 
       // These were six buttons in the header strip before #224. Donate, theme,
-      // language, changelog and logout are the ones that must not have been
-      // dropped in the move.
-      for (const label of [
-        'Donate',
-        /Switch to (light|dark) mode/,
-        'Language',
-        'Change Log',
-        'Logout',
-      ]) {
+      // changelog and logout are the ones that must not have been dropped in
+      // the move.
+      for (const label of ['Donate', /Switch to (light|dark) mode/, 'Change Log', 'Logout']) {
         await menu.getByRole('menuitem', { name: label }).waitFor()
       }
+
+      // Language is the one that went the other way (#240): the dashboard ships
+      // English only, and the item's handler was an empty function, so the menu
+      // offered a control that could not do anything.
+      expect(await menu.getByRole('menuitem', { name: 'Language' }).count()).toBe(0)
 
       // Leaving the menu open would stack a second panel over the next test's
       // click target, so the inspection closes what it opened.

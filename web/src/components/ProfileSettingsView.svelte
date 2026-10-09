@@ -7,7 +7,6 @@
     Download,
     Eye,
     EyeOff,
-    Globe,
     Key,
     Laptop,
     Loader2,
@@ -40,7 +39,6 @@
   // General Settings State
   let requireLogin = $state(false)
   let sessionTimeout = $state('24h')
-  let selectedLanguage = $state('en')
   let enableObservability = $state(false)
 
   // Routing Strategy State
@@ -87,7 +85,6 @@
       requireLogin = !!settings.requireLogin
       enableObservability = !!settings.enableObservability
       if (typeof settings.sessionTimeout === 'string') sessionTimeout = settings.sessionTimeout
-      if (typeof settings.language === 'string') selectedLanguage = settings.language
       if (typeof settings.fallbackStrategy === 'string') fallbackStrategy = settings.fallbackStrategy
       if (typeof settings.stickyRoundRobinLimit === 'number') stickyRoundRobinLimit = settings.stickyRoundRobinLimit
       if (typeof settings.comboStrategy === 'string') comboStrategy = settings.comboStrategy
@@ -114,7 +111,6 @@
         requireLogin = !!s.requireLogin
         enableObservability = !!s.enableObservability
         if (s.sessionTimeout) sessionTimeout = String(s.sessionTimeout)
-        if (s.language) selectedLanguage = String(s.language)
         if (s.fallbackStrategy) fallbackStrategy = String(s.fallbackStrategy)
         if (typeof s.stickyRoundRobinLimit === 'number') stickyRoundRobinLimit = s.stickyRoundRobinLimit
         if (s.comboStrategy) comboStrategy = String(s.comboStrategy)
@@ -147,7 +143,6 @@
       await api.updateSettings({
         requireLogin,
         sessionTimeout,
-        language: selectedLanguage,
         enableObservability,
         fallbackStrategy,
         stickyRoundRobinLimit,
@@ -413,37 +408,7 @@
       </div>
     </Card>
 
-    <!-- SECTION 2: Language & Region -->
-    <Card padding="md" class="space-y-4">
-      <div class="flex items-center gap-2 pb-2 border-b border-border">
-        <Globe class="w-4 h-4 text-brand-500" />
-        <h2 class="text-sm font-bold text-text-main">Language & Display</h2>
-      </div>
-
-      <div class="space-y-3 text-xs">
-        <div class="space-y-1">
-          <label for="lang-select" class="block font-semibold text-text-main">Dashboard Language</label>
-          <select
-            id="lang-select"
-            bind:value={selectedLanguage}
-            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-xs text-text-main focus:outline-none focus:border-brand-500"
-          >
-            <option value="en">English (US)</option>
-            <option value="zh-CN">简体中文 (Simplified Chinese)</option>
-            <option value="zh-TW">繁體中文 (Traditional Chinese)</option>
-            <option value="ja">日本語 (Japanese)</option>
-            <option value="ko">한국어 (Korean)</option>
-            <option value="es">Español</option>
-            <option value="de">Deutsch</option>
-          </select>
-          <p class="text-[11px] text-text-subtle">
-            Select the primary interface language for the 9router-go web dashboard.
-          </p>
-        </div>
-      </div>
-    </Card>
-
-    <!-- SECTION 3: Security & Master Password -->
+    <!-- SECTION 2: Security & Master Password -->
     <Card padding="md" class="space-y-4">
       <div class="flex items-center justify-between pb-2 border-b border-border">
         <div class="flex items-center gap-2">
@@ -553,7 +518,7 @@
       </div>
     </Card>
 
-    <!-- SECTION 4: Single Sign-On (SSO) -->
+    <!-- SECTION 3: Single Sign-On (SSO) -->
     <Card padding="md" class="space-y-4">
       <div class="flex items-center justify-between pb-2 border-b border-border">
         <div class="flex items-center gap-2">
@@ -646,7 +611,7 @@
       </div>
     </Card>
 
-    <!-- SECTION 5: Routing Strategy & Limits -->
+    <!-- SECTION 4: Routing Strategy & Limits -->
     <Card padding="md" class="space-y-4">
       <div class="flex items-center gap-2 pb-2 border-b border-border">
         <Sliders class="w-4 h-4 text-brand-500" />
@@ -710,7 +675,7 @@
       </div>
     </Card>
 
-    <!-- SECTION 6: Observability & Tracing -->
+    <!-- SECTION 5: Observability & Tracing -->
     <Card padding="md" class="space-y-4">
       <div class="flex items-center justify-between pb-2 border-b border-border">
         <div class="flex items-center gap-2">

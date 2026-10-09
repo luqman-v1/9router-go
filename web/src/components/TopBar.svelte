@@ -253,11 +253,13 @@
     {/if}
   </div>
 
-  <!-- Right: one menu. Donate, install, theme, language, changelog and logout
-       were six controls competing for the same strip, and on a phone they
-       wrapped into two rows (issue #224). They now live behind a single
-       trigger, which is why the separate language dropdown and app-drawer
-       dropdown this file used to own are gone. -->
+  <!-- Right: one menu. Donate, install, theme, changelog and logout were five
+       controls competing for the same strip, and on a phone they wrapped into
+       two rows (issue #224). They now live behind a single trigger, which is
+       why the separate language dropdown and app-drawer dropdown this file
+       used to own are gone. The Language item is gone too: the dashboard ships
+       English only, and the item's handler was an empty function, so clicking
+       it did nothing (issue #240). -->
   <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
     <Menu label="Account and display options" triggerIcon="account_circle" minWidth="15rem">
       <MenuItem label="Donate" icon="volunteer_activism" onSelect={() => (isDonateOpen = true)} />
@@ -273,7 +275,6 @@
         icon={isDark ? 'light_mode' : 'dark_mode'}
         onSelect={toggleTheme}
       />
-      <MenuItem label="Language" icon="translate" note="English" onSelect={() => {}} />
       <MenuItem label="Change Log" icon="history" onSelect={() => (isChangelogOpen = true)} />
 
       <div class="my-1 border-t border-border-subtle" role="separator"></div>
