@@ -414,6 +414,10 @@ func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWri
 		// providers). ParseResponseUsage handles both formats.
 		if usage := translator.ParseResponseUsage(body); usage != nil {
 			translator.SetUsage(ctx, usage)
+		} else if usage := translator.ParseOllamaUsage(body); usage != nil {
+			// Ollama's native shape carries its counters at the top level, not
+			// under `usage`, so ParseResponseUsage finds nothing there.
+			translator.SetUsage(ctx, usage)
 		}
 		if h.SemanticCache != nil && h.SemanticCache.Enabled() {
 			if cachedReq := semanticcache.CachedRequestFromContext(ctx); cachedReq != nil {

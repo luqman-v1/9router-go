@@ -50,7 +50,13 @@ func CachedTokensFromJSON(raw []byte) int {
 	var usage struct {
 		CachedTokens         *float64 `json:"cached_tokens"`
 		CacheReadInputTokens *float64 `json:"cache_read_input_tokens"`
-		PromptTokensDetails  *struct {
+		// Ollama's native shape: prompt_eval_cached_count is a cache-read
+		// SUBSET of prompt_eval_count, which Ollama reports cache-INCLUSIVE
+		// — the same convention OpenAI and Gemini use. It is not subtracted
+		// from the prompt total here; recording it is what lets the cache
+		// analytics and the pricing tables see a real cache hit rate.
+		PromptEvalCachedCount *float64 `json:"prompt_eval_cached_count"`
+		PromptTokensDetails   *struct {
 			CachedTokens *float64 `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
 		InputTokensDetails *struct {
@@ -73,6 +79,7 @@ func CachedTokensFromJSON(raw []byte) int {
 		usage.CacheReadInputTokens,
 		promptCached,
 		inputCached,
+		usage.PromptEvalCachedCount,
 	} {
 		if candidate != nil && *candidate >= 0 {
 			return int(*candidate)
@@ -143,6 +150,45 @@ func ParseResponseUsage(body []byte) *OpenAIUsage {
 	usage.CachedTokens = CachedTokensFromJSON(raw.Usage)
 	usage.PromptCacheIncluded = true
 	return &usage
+}
+
+// ParseOllamaUsage extracts usage from an Ollama native response body, whose
+// counters sit at the TOP level rather than under `usage`.
+//
+// It returns nil for a body that is not an Ollama completion: the `done` flag is
+// what distinguishes the final chunk from the intermediate NDJSON lines, and a
+// false positive here would fabricate a usage record for an OpenAI-shaped body.
+func ParseOllamaUsage(body []byte) *OpenAIUsage {
+	var raw struct {
+		Done                  bool `json:"done"`
+		PromptEvalCount       *int `json:"prompt_eval_count"`
+		EvalCount             *int `json:"eval_count"`
+		PromptEvalCachedCount *int `json:"prompt_eval_cached_count"`
+	}
+	if json.Unmarshal(body, &raw) != nil || !raw.Done {
+		return nil
+	}
+	if raw.PromptEvalCount == nil && raw.EvalCount == nil {
+		// `done` also ends a turn that published no counters at all. Nothing
+		// to account for.
+		return nil
+	}
+	prompt, completion := 0, 0
+	if raw.PromptEvalCount != nil {
+		prompt = *raw.PromptEvalCount
+	}
+	if raw.EvalCount != nil {
+		completion = *raw.EvalCount
+	}
+	usage := &OpenAIUsage{
+		PromptTokens:        prompt,
+		CompletionTokens:    completion,
+		PromptCacheIncluded: true,
+	}
+	if raw.PromptEvalCachedCount != nil {
+		usage.CachedTokens = *raw.PromptEvalCachedCount
+	}
+	return usage
 }
 
 func stopThinkingBlock(state *StreamState, results *[]map[string]any) {
