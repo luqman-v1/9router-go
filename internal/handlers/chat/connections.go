@@ -167,6 +167,11 @@ func (h *ChatHandler) GetBestConnection(provider string, connectionID string, ex
 	return h.getBestConnection(provider, connectionID, excludeIDs, model)
 }
 
+// GetBestConnectionWithContext is the context-aware variant of GetBestConnection.
+func (h *ChatHandler) GetBestConnectionWithContext(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
+	return h.getBestConnectionWithContext(ctx, provider, connectionID, excludeIDs, model)
+}
+
 func (h *ChatHandler) getBestConnection(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
 	return h.getBestConnectionWithContext(context.Background(), provider, connectionID, excludeIDs, model)
 }
@@ -203,8 +208,11 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 		// enable/disable toggle a no-op for every pinned request.
 		ineligible, reason := h.pinnedConnectionIneligible(conn, excludeIDs, model)
 		if ineligible && isProbe && conn.IsActive == 1 && !slices.Contains(excludeIDs, conn.ID) {
-			// Probes bypass cooldown to test actual upstream reachability
-			ineligible = false
+			if strings.HasPrefix(reason, "account cooldown") || strings.HasPrefix(reason, "model lock") || reason == "quota cache" {
+				// Probes bypass cooldown / locks to test actual upstream reachability,
+				// but must still honor model enablement, disabled accounts, and strict assignment.
+				ineligible = false
+			}
 		}
 		if ineligible {
 			log.Warn("connections", "pinned connection ineligible, falling back to strategy",

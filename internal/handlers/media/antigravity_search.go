@@ -157,7 +157,7 @@ func (h *MediaHandler) handleAntigravitySearch(w http.ResponseWriter, r *http.Re
 	usePinned := modelInfo.ConnectionID != ""
 	var lastErr *searchUpstreamError
 	for {
-		conn, connData, err := h.ChatH.GetBestConnection("antigravity", modelInfo.ConnectionID, excludeIDs, model)
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), "antigravity", modelInfo.ConnectionID, excludeIDs, model)
 		if err != nil || conn == nil {
 			if lastErr != nil {
 				return searchError(lastErr.Status, fmt.Sprintf("all antigravity accounts failed, last error: %s", lastErr.Message))
@@ -303,7 +303,7 @@ func (h *MediaHandler) tryAntigravitySearchConn(w http.ResponseWriter, r *http.R
 			backoff = h.Repo.GetConnectionBackoffLevel(conn.ID)
 		}
 		classification := providers.ClassifyError(resp.StatusCode, errText, backoff)
-		if classification.ShouldFallback && h.Repo != nil {
+		if classification.ShouldFallback && h.Repo != nil && !handlerutil.IsProbeContext(r.Context()) {
 			lockModel := translator.NormalizeAntigravityModel(model)
 			cooldownSec := max(classification.CooldownMs/1000, 1)
 			_ = h.Repo.LockConnectionModel(conn.ID, lockModel, cooldownSec, classification.NewBackoffLevel)

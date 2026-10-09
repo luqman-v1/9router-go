@@ -78,7 +78,7 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	conn, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
 		return
@@ -190,7 +190,7 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	conn, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 	if err != nil || connData == nil {
 		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
 			apiKey := cfg.DefaultAPIKey
@@ -352,7 +352,7 @@ func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request,
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	_, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+	_, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
 		return
@@ -653,7 +653,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				}
 			}
 
-			conn, connData, err := h.ChatH.GetBestConnection(subInfo.Provider, subInfo.ConnectionID, nil, subInfo.Model)
+			conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), subInfo.Provider, subInfo.ConnectionID, nil, subInfo.Model)
 			if err != nil || conn == nil {
 				lastErr = fmt.Sprintf("no connection for %s", subInfo.Provider)
 				continue
@@ -788,7 +788,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	if preferredConnID == "" {
 		preferredConnID = modelInfo.ConnectionID
 	}
-	conn, connData, err := h.ChatH.GetBestConnection(modelInfo.Provider, preferredConnID, nil, modelInfo.Model)
+	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, preferredConnID, nil, modelInfo.Model)
 	if err != nil || connData == nil {
 		if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
 			apiKey := cfg.DefaultAPIKey

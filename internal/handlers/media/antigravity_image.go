@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/handlers/chat"
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -56,7 +57,7 @@ func (h *MediaHandler) handleAntigravityImage(w http.ResponseWriter, r *http.Req
 	excludeIDs := []string{}
 	var lastErr error
 	for {
-		conn, connData, err := h.ChatH.GetBestConnection("antigravity", pinned, excludeIDs, cleanModel)
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), "antigravity", pinned, excludeIDs, cleanModel)
 		if err != nil || conn == nil {
 			if lastErr != nil {
 				return lastErr
@@ -187,6 +188,7 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 		log.Warn("media", "antigravity image error", "status", resp.StatusCode, "body", errText)
 		if h.Repo != nil {
 			backoff := h.Repo.GetConnectionBackoffLevel(conn.ID)
+		if !handlerutil.IsProbeContext(r.Context()) {
 			if classification := providers.ClassifyError(resp.StatusCode, errText, backoff); classification.ShouldFallback {
 				cooldownSec := max(classification.CooldownMs/1000, 1)
 				_ = h.Repo.LockConnectionModel(conn.ID, cleanModel, cooldownSec, classification.NewBackoffLevel)
@@ -201,6 +203,7 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 					_ = h.Repo.LockConnectionModel(conn.ID, rawModel, cooldownSec, classification.NewBackoffLevel)
 				}
 			}
+		}
 		}
 		return fmt.Errorf("antigravity image failed with status %d: %s", resp.StatusCode, string(respBody[:min(300, len(respBody))]))
 	}

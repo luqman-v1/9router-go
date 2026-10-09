@@ -570,7 +570,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				} else {
 					var cData *ConnectionData
 					var err error
-					picked, cData, err = h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+					picked, cData, err = h.getBestConnectionWithContext(ctx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
 						break
 					}
@@ -650,7 +650,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						// lock recordModelDeprecation writes is per provider/model,
 						// which is the scope that actually matters.
 						if providers.IsModelDeprecation(ue.StatusCode, ue.Body) {
-							h.recordModelDeprecation(modelInfo.Provider, modelInfo.Model, connID, ue)
+							h.recordModelDeprecation(ctx, modelInfo.Provider, modelInfo.Model, connID, ue)
 							retry.note(ue)
 							lastErr = ue
 							break
@@ -787,7 +787,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				} else {
 					var cData *ConnectionData
 					var err error
-					picked, cData, err = h.getBestConnection(modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+					picked, cData, err = h.getBestConnectionWithContext(ctx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
 						break
 					}
@@ -851,7 +851,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						// list spans the pass, and a single-account provider
 						// would have nothing left to fail over to.
 						if providers.IsModelDeprecation(ue.StatusCode, ue.Body) {
-							h.recordModelDeprecation(modelInfo.Provider, modelInfo.Model, connID, ue)
+							h.recordModelDeprecation(ctx, modelInfo.Provider, modelInfo.Model, connID, ue)
 							retry.note(ue)
 							lastErr = ue
 							break
