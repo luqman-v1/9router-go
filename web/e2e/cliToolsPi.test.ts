@@ -86,9 +86,21 @@ describe('CLI Tools page lists the pi / Oh My Pi agents (#165)', () => {
     })
   }
 
-  test('Oh My Pi badges as its own monogram, not "OH"', async () => {
+  test('both cards ship artwork that actually loads', async () => {
     await page.goto(`${app.baseURL}/dashboard/cli-tools`)
-    // "Oh My Pi".slice(0, 2) reads "OH"; the tool declares `abbr: 'omp'`.
-    expect((await card('Oh My Pi').locator('.size-8').first().innerText()).trim()).toBe('OMP')
+
+    for (const { card: cardName, id } of AGENTS) {
+      const img = card(cardName).locator('img').first()
+      await img.waitFor()
+      // A missing /providers/<id>.png falls back to the initials badge via
+      // onerror, which still looks like a working card. naturalWidth is what
+      // distinguishes the two.
+      const rendered = await img.evaluate((el) => ({
+        src: (el as HTMLImageElement).getAttribute('src'),
+        naturalWidth: (el as HTMLImageElement).naturalWidth,
+      }))
+      expect(rendered.src).toBe(`/providers/${id}.png`)
+      expect(rendered.naturalWidth).toBeGreaterThan(0)
+    }
   })
-})
+ })

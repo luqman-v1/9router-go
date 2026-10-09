@@ -70,7 +70,6 @@
     color: string
     image?: string
     icon?: string
-    abbr?: string
     configType: 'env' | 'settings' | 'guide' | 'mitm'
     envVars?: Record<string, string>
     instructions?: string[]
@@ -400,6 +399,7 @@
       id: 'pi',
       name: 'Pi',
       category: 'cli',
+      image: '/providers/pi.png',
       color: '#111827',
       description: 'pi coding agent — point ~/.pi/agent/models.json at the 9router-go gateway',
       configType: 'guide',
@@ -416,7 +416,7 @@
       name: 'Oh My Pi',
       category: 'cli',
       color: '#7C3AED',
-      abbr: 'omp',
+      image: '/providers/omp.png',
       description: 'omp coding agent — register the gateway in ~/.omp/agent/models.yml',
       configType: 'guide',
       instructions: [
@@ -440,12 +440,6 @@
   )
 
   let effectiveApiKey = $derived(apiKeys[0]?.key || 'sk-8b71f86e0a1f2fb5-nhz496-cfa1c800')
-
-  // Initials badge: fall back to the first two characters of the name unless a
-  // tool spells out its own monogram ("Oh My Pi" must read "omp", not "OH").
-  function initials(tool: ToolItem) {
-    return (tool.abbr || tool.name.slice(0, 2)).toUpperCase()
-  }
 
   function copyText(text: string, id: string) {
     copyToClipboard(text)
@@ -588,7 +582,7 @@
                     class="size-8 rounded-lg hidden items-center justify-center font-bold text-white text-xs shadow-sm"
                     style="background-color: {tool.color}"
                   >
-                    {initials(tool)}
+                    {tool.name.slice(0, 2).toUpperCase()}
                   </div>
                 {:else if tool.icon}
                   <span class="material-symbols-outlined text-[24px]" style="color: {tool.color}">
@@ -599,7 +593,7 @@
                     class="size-8 rounded-lg flex items-center justify-center font-bold text-white text-xs shadow-sm"
                     style="background-color: {tool.color}"
                   >
-                    {initials(tool)}
+                    {tool.name.slice(0, 2).toUpperCase()}
                   </div>
                 {/if}
               </div>
@@ -665,7 +659,7 @@
                 class="size-9 rounded-lg hidden items-center justify-center font-bold text-white text-sm shadow-sm"
                 style="background-color: {selectedTool.color}"
               >
-                {initials(selectedTool)}
+                {selectedTool.name.slice(0, 2).toUpperCase()}
               </div>
             {:else if selectedTool.icon}
               <span class="material-symbols-outlined text-[28px]" style="color: {selectedTool.color}">
@@ -676,7 +670,7 @@
                 class="size-9 rounded-lg flex items-center justify-center font-bold text-white text-sm shadow-sm"
                 style="background-color: {selectedTool.color}"
               >
-                {initials(selectedTool)}
+                {selectedTool.name.slice(0, 2).toUpperCase()}
               </div>
             {/if}
           </div>

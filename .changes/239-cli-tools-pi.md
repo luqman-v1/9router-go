@@ -16,16 +16,19 @@
   untuk Oh My Pi (path default `~/.omp/agent/models.yml`, dengan catatan direktori
   profil `~/.omp/profiles/<name>/agent/`). Keduanya menyebut fallback
   `openai-responses` karena gateway menyajikan dua lane.
-- **Detail kecil**: kartu "Oh My Pi" tanpa perubahan lain akan memakai monogram
-  `name.slice(0, 2)` → "OH". `ToolItem` sekarang punya `abbr` opsional dan sebuah
-  helper `initials()`, jadi kartu tersebut terbaca "OMP" di grid maupun di modal.
+- **Ikon**: `web/public/providers/pi.png` dan `omp.png` (128px, diturunkan dari
+  `pi.dev/logo.svg` dan `omp.sh/favicon.svg`) ditambahkan dan dirujuk lewat `image:`
+  di kedua kartu, jadi keduanya tampil penuh seperti tool lain — bukan badge
+  monogram hasil fallback.
 - **Verifikasi**: `web/e2e/cliToolsPi.test.ts` baru menjalankan gateway sungguhan dan
   memeriksa (a) id `pi`/`omp` benar-benar ada di payload `all-statuses` dengan
   `installed` bertipe boolean — bukan `null`, yang akan membuat badge jatuh ke
   "Guide", (b) teks modal memuat path konfigurasi yang benar, `{origin}/v1`, kedua
   nilai `api`, dan tidak pernah memuat fallback SSR `localhost:20130` atau
-  `<your-api-key>`, (c) monogram Oh My Pi = "OMP". Diuji gagal sebelum fix (2 dari 5
-  gagal saat `clitools.go` dikembalikan ke keadaan semula) dan lolos sesudahnya.
-  `go test ./internal/handlers/...` (1528 pass), `bun test` (351 pass), `bun run build`
-  dan `make vet-svelte` (0 unresolved, 83 error = baseline) hijau. Halaman juga dicek
-  langsung di Chromium terhadap binary yang baru dibangun.
+  `<your-api-key>`, (c) kedua ikon benar-benar termuat (`naturalWidth > 0`) — file
+  yang hilang hanya akan memicu badge monogram lewat `onerror`, jadi itu yang
+  diuji, bukan keberadaan tag `<img>`. Diuji gagal sebelum fix (2 dari 5 gagal saat
+  `clitools.go` dikembalikan ke keadaan semula; 1 gagal saat `pi.png` dihapus) dan
+  lolos sesudahnya. `go test ./internal/handlers/...` (1528 pass), `bun test`,
+  `bun run build` dan `make vet-svelte` (0 unresolved, 83 error = baseline) hijau.
+  Halaman juga dicek langsung di Chromium terhadap binary yang baru dibangun.
