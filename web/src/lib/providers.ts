@@ -887,18 +887,6 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
-    "id": "anthropic-version",
-    "name": "anthropic-version",
-    "category": "apikey",
-    "alias": "anthropic-version",
-    "color": "#888888",
-    "icon": "dns",
-    "noAuth": false,
-    "serviceKinds": [
-      "llm"
-    ]
-  },
-  {
     "id": "assemblyai",
     "name": "AssemblyAI",
     "category": "apikey",
@@ -1676,18 +1664,6 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
-    "id": "openai-intent",
-    "name": "openai-intent",
-    "category": "apikey",
-    "alias": "openai-intent",
-    "color": "#888888",
-    "icon": "dns",
-    "noAuth": false,
-    "serviceKinds": [
-      "llm"
-    ]
-  },
-  {
     "id": "opencode-go",
     "name": "OpenCode Go",
     "category": "apikey",
@@ -1726,18 +1702,6 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
       "systemone"
     ],
     "modelsFetcher": {"url":"https://opencode.ai/zen/v1/models","type":"opencode-free"}
-  },
-  {
-    "id": "originator",
-    "name": "originator",
-    "category": "apikey",
-    "alias": "originator",
-    "color": "#888888",
-    "icon": "dns",
-    "noAuth": false,
-    "serviceKinds": [
-      "llm"
-    ]
   },
   {
     "id": "perplexity",
@@ -2022,18 +1986,6 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
-    "id": "user-agent",
-    "name": "user-agent",
-    "category": "apikey",
-    "alias": "user-agent",
-    "color": "#888888",
-    "icon": "dns",
-    "noAuth": false,
-    "serviceKinds": [
-      "llm"
-    ]
-  },
-  {
     "id": "v1m",
     "name": "v1m (System One)",
     "category": "apikey",
@@ -2149,54 +2101,6 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
-    "id": "x-codebuddy-request",
-    "name": "x-codebuddy-request",
-    "category": "apikey",
-    "alias": "x-codebuddy-request",
-    "color": "#888888",
-    "icon": "dns",
-    "noAuth": false,
-    "serviceKinds": [
-      "llm"
-    ]
-  },
-  {
-    "id": "x-github-api-version",
-    "name": "x-github-api-version",
-    "category": "apikey",
-    "alias": "x-github-api-version",
-    "color": "#888888",
-    "icon": "dns",
-    "noAuth": false,
-    "serviceKinds": [
-      "llm"
-    ]
-  },
-  {
-    "id": "x-requested-with",
-    "name": "x-requested-with",
-    "category": "apikey",
-    "alias": "x-requested-with",
-    "color": "#888888",
-    "icon": "dns",
-    "noAuth": false,
-    "serviceKinds": [
-      "llm"
-    ]
-  },
-  {
-    "id": "x-vscode-user-agent-library-version",
-    "name": "x-vscode-user-agent-library-version",
-    "category": "apikey",
-    "alias": "x-vscode-user-agent-library-version",
-    "color": "#888888",
-    "icon": "dns",
-    "noAuth": false,
-    "serviceKinds": [
-      "llm"
-    ]
-  },
-  {
     "id": "xiaomi-tokenplan",
     "name": "Xiaomi MiMo (Token Plan)",
     "category": "apikey",
@@ -2259,14 +2163,18 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
   },
   {
     "id": "zai-search",
-    "name": "zai-search",
+    "name": "Z.ai Web Search",
     "category": "apikey",
     "alias": "zai-search",
-    "color": "#888888",
-    "icon": "dns",
+    "color": "#2563EB",
+    "icon": "search",
+    "website": "https://z.ai",
+    "notice": {"text":"Web search via the Z.ai MCP endpoint. Reuses the API key from the GLM (Zhipu) provider.","apiKeyUrl":"https://z.ai/manage-apikey/apikey-list"},
+    "authType": "apikey",
     "noAuth": false,
+    "priority": 999,
     "serviceKinds": [
-
+      "webSearch"
     ]
   },
   {

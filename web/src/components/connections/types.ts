@@ -46,6 +46,18 @@ export interface CustomModelData {
   caps?: { vision?: boolean; reasoning?: boolean }
 }
 
+// Artwork is filed under another provider's id when the two genuinely share a
+// brand. `zai-search` is a Go registry entry with no upstream counterpart: it is
+// a web-search seat on the GLM/Zhipu account pool (CredentialFallbacks maps it
+// to `glm`), so it wears GLM's mark. Without this the tile asks for a file that
+// is never shipped and pays a 404 before the badge fallback hides it. Upstream
+// aliases several other ids the same way (`perplexity-agent`, `vercel-ai-gateway`,
+// `minimax-code`, `opencode-zen`, `ollama-search`) but this repo ships distinct
+// artwork for all of those, so aliasing them here would throw away a real logo.
+const ICON_ALIASES: Record<string, string> = {
+  'zai-search': 'glm',
+}
+
 export function getIconPath(id?: string | null, apiType?: string): string {
   if (!id) return '/providers/oai-cc.png'
   const clean = id.trim()
@@ -55,12 +67,12 @@ export function getIconPath(id?: string | null, apiType?: string): string {
   if (clean.startsWith('anthropic-compatible') || clean.includes('anthropic')) {
     return '/providers/anthropic-m.png'
   }
-  if (PROVIDER_CATALOG_MAP.has(clean)) {
-    return `/providers/${clean}.png`
-  }
-  const byAlias = PROVIDER_CATALOG.find((p) => p.alias === clean)
-  if (byAlias) {
-    return `/providers/${byAlias.id}.png`
+  // A catalog id or a uiAlias both resolve to the id the artwork is filed
+  // under; neither matching is the signal to use the generic OpenAI glyph.
+  const fileId = ICON_ALIASES[clean]
+    ?? (PROVIDER_CATALOG_MAP.has(clean) ? clean : PROVIDER_CATALOG.find((p) => p.alias === clean)?.id)
+  if (fileId) {
+    return `/providers/${fileId}.png`
   }
   return apiType === 'responses' ? '/providers/oai-r.png' : '/providers/oai-cc.png'
 }

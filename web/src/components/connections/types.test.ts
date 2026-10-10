@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { getProviderStats } from './types'
+import { getIconPath, getProviderStats } from './types'
 import type { ProviderConnection } from '../../api/client'
 
 function conn(overrides: Partial<ProviderConnection> = {}): ProviderConnection {
@@ -47,5 +47,26 @@ describe('getProviderStats', () => {
     expect(stats.allDisabled).toBe(true)
     expect(stats.connected).toBe(0)
     expect(stats.errorCount).toBe(0)
+  })
+})
+
+describe('getIconPath', () => {
+  test('resolves a catalog alias to the id its artwork is filed under', () => {
+    expect(getIconPath('ag')).toBe('/providers/antigravity.png')
+    expect(getIconPath('antigravity')).toBe('/providers/antigravity.png')
+  })
+
+  test('borrows another provider mark for an id that shares its brand', () => {
+    // zai-search is a Go registry entry with no upstream counterpart, so
+    // /providers/zai-search.png 404s; it resolves to GLM's mark instead.
+    expect(getIconPath('zai-search')).toBe('/providers/glm.png')
+  })
+
+  test('keeps the generic glyphs for compatible nodes and unknown ids', () => {
+    expect(getIconPath('openai-compatible-chat-x')).toBe('/providers/oai-cc.png')
+    expect(getIconPath('openai-compatible-chat-x', 'responses')).toBe('/providers/oai-r.png')
+    expect(getIconPath('anthropic-compatible-x')).toBe('/providers/anthropic-m.png')
+    expect(getIconPath('my-reverse-proxy')).toBe('/providers/oai-cc.png')
+    expect(getIconPath(undefined)).toBe('/providers/oai-cc.png')
   })
 })

@@ -157,12 +157,18 @@ by-design); `go test ./internal/providers/` hijau.
 
 ## Bukan TODO (sengaja dibiarkan beda)
 
-- **8 entri header semu** di katalog (`x-codebuddy-request`, `x-github-api-version`,
+- ~~**8 entri header semu**~~ (`x-codebuddy-request`, `x-github-api-version`,
   `x-requested-with`, `x-vscode-user-agent-library-version`, `anthropic-version`,
-  `openai-intent`, `originator`, `user-agent`) — cerminan `StaticHeaders` backend
-  untuk form koneksi custom. JANGAN dihapus tanpa mengganti UI custom-header.
-  Tapi JANGAN juga dipakai membuat koneksi (resolusi backend pasti gagal,
-  `resolution.go:311`) — pertimbangkan guard di `HandleCreateConnection`.
+  `openai-intent`, `originator`, `user-agent`) — SUDAH DIHAPUS (2026-10-10).
+  Catatan lama "jangan dihapus tanpa mengganti UI custom-header" sudah usang:
+  `ProviderHeaderOverridesModal` membaca `builtinHeaders` dari
+  `GET /api/providers/{id}/overrides`, yang diturunkan dari
+  `cfg.StaticHeaders` via `builtinProviderHeaders`
+  (`internal/handlers/dashboard/provider_overrides.go`) — bukan dari katalog.
+  Sementara entri semu itu ada, setiap tile header tersebut meminta
+  `/providers/<nama-header>.png` yang memang tidak pernah di-ship: 8 × 404 per
+  buka dashboard, plus 8 kartu provider palsu yang connect-nya mustahil
+  (`resolution.go:311`).
 - **`selfhosted-tts` / `selfhosted-stt` / `selfhosted-embedding`** — ada di FE +
   `ProviderModels`, tapi tanpa `KnownProviders` / handler. Membuat koneksi dengan
   id ini mati di resolusi. TODO lanjutan (belum dipecah): definisikan endpoint

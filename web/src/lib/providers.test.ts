@@ -1,4 +1,6 @@
 import assert from 'node:assert'
+import { readdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import {
   getProvidersByKind,
@@ -109,24 +111,9 @@ describe('providers & media separation', () => {
   })
 
   it('carries upstream display links (website/notice) for all registry providers', () => {
-    // No upstream registry counterpart (Go-only or pseudo header entries),
-    // or no display link upstream by design (mimo-free, mmf, opencode).
-    const exempt = new Set([
-      'freebuff',
-      'kimi-coding',
-      'mimo-free',
-      'mmf',
-      'opencode',
-      'zai-search',
-      'x-codebuddy-request',
-      'x-github-api-version',
-      'x-requested-with',
-      'x-vscode-user-agent-library-version',
-      'anthropic-version',
-      'openai-intent',
-      'originator',
-      'user-agent',
-    ])
+    // No upstream registry counterpart (Go-only entries), or no display link
+    // upstream by design (mimo-free, mmf, opencode).
+    const exempt = new Set(['freebuff', 'kimi-coding', 'mimo-free', 'mmf', 'opencode'])
     for (const p of PROVIDER_CATALOG) {
       if (exempt.has(p.id)) continue
       assert.ok(
@@ -191,5 +178,17 @@ describe('providers & media separation', () => {
       (id) => !PROVIDER_CATALOG.some((p) => p.id === id || p.alias === id)
     )
     assert.deepStrictEqual(missing, [])
+  })
+
+  it('ships artwork for every provider the dashboard can render', () => {
+    // getIconPath derives the URL from the catalog id, so a catalog entry
+    // without an asset under web/public/providers is a 404 on every surface
+    // that draws it. Only the alias table may point at another provider's file.
+    const assets = new Set(readdirSync(join(import.meta.dir, '../../public/providers')))
+    const shared = new Set(['zai-search'])
+    const missing = PROVIDER_CATALOG.filter(
+      (p) => !shared.has(p.id) && !assets.has(`${p.id}.png`) && !assets.has(`${p.id}.svg`)
+    ).map((p) => p.id)
+    assert.deepStrictEqual(missing, [], `providers without artwork: ${missing.join(', ')}`)
   })
 })
