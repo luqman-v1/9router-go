@@ -1,6 +1,10 @@
 package dashboard
 
 import (
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/models"
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/updater"
 	"context"
 	json "encoding/json/v2"
 	"fmt"
@@ -13,10 +17,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/samber/lo"
-
-	"9router/proxy/internal/handlerutil"
-	"9router/proxy/internal/models"
-	"9router/proxy/internal/providers"
 )
 
 // HandleGetConnections handles GET /api/connections.
@@ -274,7 +274,6 @@ func connectionSecretHint(data map[string]any) string {
 // sanitizeProviderConnection mirrors upstream sanitize(): only safe fields,
 // secrets in data JSON never leave the server.
 func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
-
 	safe := map[string]any{
 		"id": c.ID, "provider": c.Provider, "authType": c.AuthType,
 		"isActive": c.IsActive, "createdAt": c.CreatedAt, "updatedAt": c.UpdatedAt,
@@ -1029,14 +1028,20 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no valid token found")
 			return
 		}
+		// OAuth connections present the 9Router identity plus the WorkOS
+		// bearer (upstream buildModelListHeaders); API-key connections send
+		// only Accept + Authorization.
+		var headers map[string]string
+		if connData.AccessToken != "" {
+			headers = providers.ClineIdentityHeaders(updater.CurrentVersion, map[string]string{"Accept": "application/json"})
+		} else {
+			headers = map[string]string{"Accept": "application/json"}
+		}
 		authHeaderVal := token
 		if strings.HasPrefix(token, "eyJ") {
 			authHeaderVal = "workos:" + token
 		}
-		headers := map[string]string{
-			"Authorization": "Bearer " + authHeaderVal,
-			"User-Agent":    "Cline/3.0.0",
-		}
+		headers["Authorization"] = "Bearer " + authHeaderVal
 		status, body, err := validateProbeDo(r.Context(), http.MethodGet, "https://api.cline.bot/api/v1/models", headers, nil)
 		if err != nil {
 			statusCode, _, errMsg := ClassifyUpstreamNetworkError(err)

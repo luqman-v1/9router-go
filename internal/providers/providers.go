@@ -636,17 +636,10 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://api.cline.bot/api/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
-		StaticHeaders: map[string]string{
-			"HTTP-Referer":       "https://cline.bot",
-			"X-Title":            "Cline",
-			"User-Agent":         "Cline/3.0.61",
-			"X-PLATFORM":         "cli",
-			"X-PLATFORM-VERSION": "3.0.61",
-			"X-CLIENT-TYPE":      "cline-cli",
-			"X-CLIENT-VERSION":   "3.0.61",
-			"X-CORE-VERSION":     "3.0.61",
-			"X-IS-MULTIROOT":     "false",
-		},
+		// No StaticHeaders: the 9Router client identity (upstream
+		// buildClineHeaders) carries the linked version, which a registry
+		// literal cannot see (import cycle). getProviderConfig injects it
+		// per request via ClineIdentityHeaders.
 	},
 	"alicode": {
 		BaseURL:    "https://coding.dashscope.aliyuncs.com/v1/chat/completions",
@@ -763,17 +756,7 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://api.cline.bot/api/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
-		StaticHeaders: map[string]string{
-			"HTTP-Referer":       "https://cline.bot",
-			"X-Title":            "Cline",
-			"User-Agent":         "Cline/3.0.61",
-			"X-PLATFORM":         "cli",
-			"X-PLATFORM-VERSION": "3.0.61",
-			"X-CLIENT-TYPE":      "cline-cli",
-			"X-CLIENT-VERSION":   "3.0.61",
-			"X-CORE-VERSION":     "3.0.61",
-			"X-IS-MULTIROOT":     "false",
-		},
+		// No StaticHeaders: see "cline" above.
 	},
 	"perplexity-agent": {
 		BaseURL:    "https://api.perplexity.ai/v1/responses",

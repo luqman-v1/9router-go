@@ -146,9 +146,10 @@ func TestHandleValidateProvider_ClinepassProbesRegistryModelsEndpoint(t *testing
 	if got := probe.headers.Get("Authorization"); got != "Bearer sk-test" {
 		t.Errorf("expected bearer auth header, got %q", got)
 	}
-	// Registry static headers are part of the upstream contract (Cline expects them).
-	if got := probe.headers.Get("X-Title"); got != "Cline" {
-		t.Errorf("expected registry static header X-Title=Cline, got %q", got)
+	// API-key probes carry only Accept + Authorization (upstream
+	// buildModelListHeaders); the 9Router identity goes on OAuth probes.
+	if got := probe.headers.Get("User-Agent"); got != "" {
+		t.Errorf("expected no identity User-Agent on API-key probe, got %q", got)
 	}
 }
 

@@ -1,6 +1,10 @@
 package oauth
 
 import (
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/updater"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -11,9 +15,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"9router/proxy/internal/handlerutil"
-	"9router/proxy/internal/log"
 )
 
 var (
@@ -288,12 +289,9 @@ func exchangeClineCode(ctx context.Context, tokenURL, code, verifier, redirectUR
 	}
 	tokenReq.Header.Set("Content-Type", "application/json")
 	tokenReq.Header.Set("Accept", "application/json")
-	tokenReq.Header.Set("User-Agent", "Cline/3.0.61")
-	tokenReq.Header.Set("X-CLIENT-TYPE", "cline-cli")
-	tokenReq.Header.Set("X-CLIENT-VERSION", "3.0.61")
-	tokenReq.Header.Set("X-CORE-VERSION", "3.0.61")
-	tokenReq.Header.Set("X-PLATFORM", "cli")
-	tokenReq.Header.Set("X-PLATFORM-VERSION", "3.0.61")
+	for k, v := range providers.ClineIdentityHeaders(updater.CurrentVersion, nil) {
+		tokenReq.Header.Set(k, v)
+	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	tokenResp, err := client.Do(tokenReq)
