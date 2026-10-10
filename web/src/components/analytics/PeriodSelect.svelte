@@ -18,7 +18,7 @@
   lib/ui/menuPosition instead (issue #224).
 -->
 <script lang="ts">
-  import { placePanel, placementStyle } from '../../lib/ui/menuPosition'
+  import { maxPanelWidth, placePanel, placementStyle } from '../../lib/ui/menuPosition'
   import { portal } from '../../lib/ui/portal'
   import {
     PERIODS,
@@ -51,8 +51,8 @@
   let panel: HTMLDivElement | null = $state(null)
   let panelStyle = $state('')
 
-/** The panel's preferred width, capped against the viewport at placement. */
-const MIN_WIDTH_PX = 256
+  /** The panel's preferred width, capped against the viewport at placement. */
+  const MIN_WIDTH = '16rem'
 
   const selectedLabel = $derived(periodLabel(value))
   const isPreset = $derived(options.some((o) => o.value === value))
@@ -74,14 +74,13 @@ const MIN_WIDTH_PX = 256
 
   function place(): void {
     if (!trigger || !panel) return
-    panelStyle = placementStyle(
+    panelStyle = `${placementStyle(
       placePanel({
         align: 'right',
         rect: trigger.getBoundingClientRect(),
         panelWidth: panel.offsetWidth,
-        minWidth: MIN_WIDTH_PX,
       }),
-    )
+    )};max-width:${maxPanelWidth()};min-width:min(${MIN_WIDTH}, ${maxPanelWidth()})`
   }
 
   function onKeydown(event: KeyboardEvent) {

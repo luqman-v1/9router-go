@@ -16,7 +16,7 @@
   and clamped to the viewport (issue #224).
 -->
 <script lang="ts">
-  import { placePanel, placementStyle } from '../../lib/ui/menuPosition'
+  import { maxPanelWidth, placePanel, placementStyle } from '../../lib/ui/menuPosition'
   import { portal } from '../../lib/ui/portal'
   import { USAGE_SECTIONS, type UsageSection } from '../../lib/router'
 
@@ -34,7 +34,7 @@
 
 
 /** The panel's preferred width, capped against the viewport at placement. */
-const MIN_WIDTH_PX = 240
+  const MIN_WIDTH = '15rem'
 
   const current = $derived(
     USAGE_SECTIONS.find((s) => s.value === section) ?? USAGE_SECTIONS[0]
@@ -47,14 +47,13 @@ const MIN_WIDTH_PX = 240
 
   function place(): void {
     if (!trigger || !panel) return
-    panelStyle = placementStyle(
+    panelStyle = `${placementStyle(
       placePanel({
         align: 'left',
         rect: trigger.getBoundingClientRect(),
         panelWidth: panel.offsetWidth,
-        minWidth: MIN_WIDTH_PX,
       }),
-    )
+    )};max-width:${maxPanelWidth()};min-width:min(${MIN_WIDTH}, ${maxPanelWidth()})`
   }
 
   function onKeydown(event: KeyboardEvent): void {

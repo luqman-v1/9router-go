@@ -16,6 +16,20 @@ import type { Page } from '@playwright/test'
 import { startDashboard, type Dashboard } from './harness'
 
 /**
+ * Opens the proxy-pool actions menu and picks one entry.
+ *
+ * Test All, Add Proxy Pool and Batch Import were three header buttons before
+ * issue #261; they now sit behind one trigger, so a test that still clicked
+ * them by name would find nothing and fail on the wait rather than on the
+ * behaviour it is about.
+ */
+async function pickProxyAction(page: Page, entry: string) {
+  await page.getByRole('button', { name: 'Proxy pool actions' }).click()
+  await page.getByRole('menu').waitFor()
+  await page.getByRole('menuitem', { name: entry }).click()
+}
+
+/**
  * Each assertion waits on a real page transition and the binary's first fetch,
  * so bun's 5s default is not enough on a cold CI runner.
  */
@@ -171,7 +185,7 @@ describe('proxy pool add dialog', () => {
     // the previously mounted view when the path is entered directly, so a URL
     // navigation would silently assert against the wrong page.
     await page.getByRole('link', { name: 'Proxy Pools' }).click()
-    await page.getByRole('button', { name: 'Add Proxy Pool' }).first().waitFor()
+    await page.getByRole('button', { name: 'Proxy pool actions' }).waitFor()
   }, SLOW)
 
   test(
@@ -180,7 +194,7 @@ describe('proxy pool add dialog', () => {
       // Before #224 these were two modals behind two buttons. Opening Batch
       // Import has to land on the Bulk Add tab of the one dialog, not a second
       // window with its own title.
-      await page.getByRole('button', { name: 'Batch Import' }).click()
+      await pickProxyAction(page, 'Batch Import')
 
       const bulkTab = page.getByRole('tab', { name: 'Bulk Add' })
       await bulkTab.waitFor()
@@ -193,7 +207,7 @@ describe('proxy pool add dialog', () => {
   test(
     'the add button opens the same dialog on the single tab',
     async () => {
-      await page.getByRole('button', { name: 'Add Proxy Pool' }).first().click()
+      await pickProxyAction(page, 'Add Proxy Pool')
 
       const singleTab = page.getByRole('tab', { name: 'Single' })
       expect(await singleTab.getAttribute('aria-selected')).toBe('true')
@@ -206,7 +220,7 @@ describe('proxy pool add dialog', () => {
   test(
     'switching tabs swaps the form without reopening the dialog',
     async () => {
-      await page.getByRole('button', { name: 'Add Proxy Pool' }).first().click()
+      await pickProxyAction(page, 'Add Proxy Pool')
       await page.getByRole('tab', { name: 'Bulk Add' }).click()
       // The bulk half is a pasted list, not a form: the proxy URL field must be
       // gone, and the Import button present.

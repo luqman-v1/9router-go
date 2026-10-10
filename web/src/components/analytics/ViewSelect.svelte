@@ -13,7 +13,7 @@
   header (issue #224).
 -->
 <script lang="ts">
-  import { placePanel, placementStyle } from '../../lib/ui/menuPosition'
+  import { maxPanelWidth, placePanel, placementStyle } from '../../lib/ui/menuPosition'
   import type { ViewOption } from './types'
 
   interface Props {
@@ -39,13 +39,13 @@
 
   function place(): void {
     if (!trigger || !panel) return
-    panelStyle = placementStyle(
+    panelStyle = `${placementStyle(
       placePanel({
         align: 'right',
         rect: trigger.getBoundingClientRect(),
         panelWidth: panel.offsetWidth,
       }),
-    )
+    )};max-width:${maxPanelWidth()}`
   }
 
   function onKeydown(event: KeyboardEvent): void {

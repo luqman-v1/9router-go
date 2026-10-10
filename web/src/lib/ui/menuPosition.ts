@@ -10,6 +10,13 @@
  *
  * The panel also flips above its trigger when the space below is too short,
  * so a menu opened near the bottom of a short viewport stays on screen.
+ *
+ * This module places a panel; it does not size one. Sizing belongs to the
+ * panel's own CSS (`w-max` plus the `max-width` from `maxPanelWidth`), and the
+ * two are deliberately separate: `panelWidth` is read back from the rendered
+ * panel, so writing it out again as an inline width pinned the panel to
+ * whatever width it had when measured, and every label wider than that floor
+ * ellipsised without ever recovering (issue #261).
  */
 
 /** Viewport gap between a panel and the edge of the window, in CSS pixels. */
@@ -25,11 +32,11 @@ export interface PanelPlacementOptions {
   align?: 'left' | 'right'
   /** The trigger's viewport rect. */
   rect: DOMRect
-  /** The panel's natural width, measured after it renders. */
+  /**
+   * The panel's rendered width, used to keep the panel on screen. It decides
+   * the anchor and the flip, never the width that is written back.
+   */
   panelWidth: number
-  /** The panel's preferred minimum width. Capped so it can never exceed the
-   * viewport. */
-  minWidth?: number
   /**
    * The window the panel is placed inside. Defaults to `window`, which is what
    * every caller wants; the tests pass an explicit viewport because a test
@@ -46,9 +53,8 @@ export interface ViewportSize {
 export interface PanelPlacement {
   left: number
   top: number
+  /** Set instead of `top` when the panel opens upward. */
   bottom: number | null
-  width: number
-  minWidth: number
 }
 
 /** The current window size, or `null` where there is no window at all. */
@@ -57,18 +63,16 @@ function currentViewport(): ViewportSize | null {
   return { width: window.innerWidth, height: window.innerHeight }
 }
 
-/** The CSS `left`/`top`/`bottom`/`width` for a panel placed at `rect`. */
+/** Where a panel of `panelWidth` sits when placed against `rect`. */
 export function placePanel({
   align = 'right',
   rect,
   panelWidth,
   viewport = currentViewport(),
-  minWidth = 0,
 }: PanelPlacementOptions): PanelPlacement {
   const viewportWidth = viewport?.width ?? 0
   const viewportHeight = viewport?.height ?? 0
-  const availableWidth = Math.max(0, viewportWidth - GUTTER * 2)
-  const width = Math.min(Math.max(panelWidth, 1), availableWidth)
+  const width = Math.min(Math.max(panelWidth, 1), Math.max(0, viewportWidth - GUTTER * 2))
 
   const anchored = align === 'right' ? rect.right - width : rect.left
   const left = Math.min(
@@ -82,10 +86,6 @@ export function placePanel({
     left,
     top: flipAbove ? 0 : rect.bottom + 4,
     bottom: flipAbove ? viewportHeight - rect.top + 4 : null,
-    width,
-    // CSS `min-width` beats `width`, so a hard min-width on a narrow viewport
-    // would render wider than the clamp computed and overflow anyway.
-    minWidth: Math.min(minWidth, width),
   }
 }
 
@@ -94,17 +94,18 @@ export function placePanel({
  * contributes nothing, which is how a downward panel keeps `top` as its anchor.
  */
 export function placementStyle(placement: PanelPlacement): string {
-  const parts = [
-    `left:${Math.round(placement.left)}px`,
-    `width:${Math.round(placement.width)}px`,
-  ]
-  if (placement.bottom === null) {
-    parts.push(`top:${Math.round(placement.top)}px`)
-  } else {
-    parts.push(`bottom:${Math.round(placement.bottom)}px`)
-  }
-  if (placement.minWidth > 0) {
-    parts.push(`min-width:${Math.round(placement.minWidth)}px`)
-  }
-  return parts.join(';')
+  const left = `left:${Math.round(placement.left)}px`
+  return placement.bottom === null
+    ? `${left};top:${Math.round(placement.top)}px`
+    : `${left};bottom:${Math.round(placement.bottom)}px`
+}
+
+/**
+ * The widest a panel may render, as a CSS length, leaving a viewport gutter on
+ * both sides. This is the clamp that `placePanel` no longer applies by writing
+ * a width: a 224px panel on a 200px window used to report right=232, and a
+ * panel must never again be wider than the window showing it.
+ */
+export function maxPanelWidth(viewport: ViewportSize | null = currentViewport()): string {
+  return `${Math.max(0, (viewport?.width ?? 0) - GUTTER * 2)}px`
 }

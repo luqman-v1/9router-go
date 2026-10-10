@@ -25,7 +25,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { portal } from './portal'
-  import { placePanel, placementStyle } from './menuPosition'
+  import { maxPanelWidth, placePanel, placementStyle } from './menuPosition'
 
   interface Props {
     /** Names the menu for assistive technology; the visible label is "Menu". */
@@ -75,20 +75,16 @@
         align,
         rect: trigger.getBoundingClientRect(),
         panelWidth: panel.offsetWidth,
-        minWidth: minWidthPx(),
       }),
     )
   }
-
   /**
-   * The caller's `minWidth` prop as pixels, so the helper can cap it against
-   * the viewport. CSS `min-width` beats `width`, so an uncapped floor would
-   * render a wider panel than the clamp computed on a narrow screen.
+   * The floor the caller asked for, capped against the window. CSS `min-width`
+   * beats `width`, so an uncapped floor would render wider than the clamp and
+   * overflow anyway — which is what `placePanel` used to compute in JS.
    */
-  function minWidthPx(): number {
-    const match = /^([\d.]+)(rem|px)$/.exec(minWidth.trim())
-    if (!match) return 0
-    return match[2] === 'px' ? Number(match[1]) : Number(match[1]) * 16
+  function panelMinWidth(): string {
+    return `min(${minWidth}, ${maxPanelWidth()})`
   }
 
   function close(): void {
@@ -169,13 +165,18 @@
   </button>
 
   {#if open}
+    <!-- The panel sizes itself: `w-max` to its labels, `max-width` to whatever
+         the window can show. `placePanel` deliberately writes no width — see
+         lib/ui/menuPosition — because the width it would write is the one it
+         just measured, which pins the panel shut and ellipsises every label
+         past that floor. That is what "Add Proxy P…" was on issue #261. -->
     <div
       use:portal
       bind:this={panel}
       role="menu"
       aria-label={label}
       tabindex="-1"
-      style={panelStyle}
+      style="{panelStyle};max-width:{maxPanelWidth()};min-width:{panelMinWidth()}"
       onkeydown={onKeydown}
       onclick={(e) => {
         // Every entry is a verb that runs and is done, so the menu closes on
@@ -183,7 +184,7 @@
         // plain buttons that do not need to know about the menu above them.
         if ((e.target as HTMLElement).closest('button')) close()
       }}
-      class="fixed z-50 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)]"
+      class="fixed z-50 w-max max-w-[calc(100vw-1rem)] rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-elev)]"
     >
       {@render children?.()}
     </div>
