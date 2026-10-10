@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"encoding/binary"
 	json "encoding/json/v2"
 	"errors"
 	"io"
@@ -107,25 +106,10 @@ func TestKiroUpstreamBody_StripsProviderPrefixAndSuffixes(t *testing.T) {
 	}
 }
 
-// kiroEventFrame builds one AWS EventStream frame. The reader in
-// internal/providers skips both CRCs, so only the prelude lengths and the
-// header encoding have to be right.
+// kiroEventFrame builds one AWS EventStream frame. The reader in internal/providers
+// verifies both CRCs, so the fixture has to write them.
 func kiroEventFrame(eventType, payload string) []byte {
-	name := ":event-type"
-	headers := make([]byte, 0, 32)
-	headers = append(headers, byte(len(name)))
-	headers = append(headers, name...)
-	headers = append(headers, 7) // string value type
-	headers = append(headers, byte(len(eventType)>>8), byte(len(eventType)))
-	headers = append(headers, eventType...)
-
-	total := 12 + len(headers) + len(payload) + 4
-	frame := binary.BigEndian.AppendUint32(make([]byte, 0, total), uint32(total))
-	frame = binary.BigEndian.AppendUint32(frame, uint32(len(headers)))
-	frame = binary.BigEndian.AppendUint32(frame, 0) // prelude CRC, not validated
-	frame = append(frame, headers...)
-	frame = append(frame, payload...)
-	return binary.BigEndian.AppendUint32(frame, 0) // message CRC, not validated
+	return providers.EncodeEventFrame(map[string]string{":event-type": eventType}, []byte(payload))
 }
 
 // A `stream:false` request must be answered with JSON. Kiro is EventStream

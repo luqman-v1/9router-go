@@ -30,9 +30,23 @@ const AGENTS = [
 let app: Dashboard
 let page: Page
 
+let seededKey = ''
+
 beforeAll(async () => {
   app = await startDashboard(20419)
   page = app.page
+  // A fresh instance has no key, so the card would render its placeholder and
+  // every paste-shaped assertion below would pass against the placeholder
+  // rather than against a real credential. Mint one first.
+  seededKey = await page.evaluate(async () => {
+    const res = await fetch('/api/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'E2E Pi Snippet' }),
+    })
+    return (await res.json()).key as string
+  })
+  await page.goto(`${app.baseURL}/dashboard/cli-tools`)
 }, 20_000)
 
 afterAll(async () => {
@@ -81,8 +95,12 @@ describe('CLI Tools page lists the pi / Oh My Pi agents (#165)', () => {
       expect(text).toMatch(/openai-completions/)
       // Both lanes are served; the fallback for a model missing from /model.
       expect(text).toContain('openai-responses')
+      // Never a placeholder: the instance has a key, so a pasteable card must
+      // carry it. This is the guard that failed while a literal key was
+      // compiled into the bundle as a fallback for the empty case.
+      expect(text).not.toContain('<your-9router-api-key>')
+      expect(text).toContain(seededKey)
       expect(text).not.toContain('localhost:20130')
-      expect(text).not.toContain('<your-api-key>')
     })
   }
 
@@ -95,6 +113,19 @@ describe('CLI Tools page lists the pi / Oh My Pi agents (#165)', () => {
       // A missing /providers/<id>.png falls back to the initials badge via
       // onerror, which still looks like a working card. naturalWidth is what
       // distinguishes the two.
+      //
+      // `complete` has to be awaited first: waitFor() only guarantees the
+      // element is attached, and naturalWidth stays 0 for every image still in
+      // flight. Asserting on an undecoded image makes this test pass or fail
+      // on network timing rather than on the asset.
+      await img.evaluate(
+        (el) =>
+          new Promise<void>((resolve, reject) => {
+            if ((el as HTMLImageElement).complete) return resolve()
+            el.addEventListener('load', () => resolve(), { once: true })
+            el.addEventListener('error', () => reject(new Error('image failed to load')), { once: true })
+          })
+      )
       const rendered = await img.evaluate((el) => ({
         src: (el as HTMLImageElement).getAttribute('src'),
         naturalWidth: (el as HTMLImageElement).naturalWidth,
@@ -102,5 +133,49 @@ describe('CLI Tools page lists the pi / Oh My Pi agents (#165)', () => {
       expect(rendered.src).toBe(`/providers/${id}.png`)
       expect(rendered.naturalWidth).toBeGreaterThan(0)
     }
+  })
+
+  test('the empty-key case renders a placeholder and says so', async () => {
+    // Delete the seeded key through the API, then confirm the card stops
+    // pretending a credential exists. Without this, a future fallback literal
+    // would sail past the pasteable-snippet test above, which only runs with a
+    // key present.
+    const removed = await page.evaluate(async () => {
+      const list = await (await fetch('/api/keys', { credentials: 'include' })).json()
+      const del = await fetch(`/api/keys/${encodeURIComponent(list[0].id)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      })
+      return del.status
+    })
+    expect(removed).toBe(200)
+
+    const dialog = await openTool('Pi')
+    const text = (await dialog.innerText()).replace(/\s+/g, ' ')
+    expect(text).toContain('<your-9router-api-key>')
+    // An empty apiKey is not a placeholder: pi would send the provider without
+    // auth and fail at runtime with a far less obvious error.
+    expect(text).not.toContain('"apiKey":""')
+    expect(text).toContain('No API key exists yet')
+    expect(text).toContain('none created')
+  })
+
+  test('no compiled bundle ships a sk- key literal', async () => {
+    // The regression that motivated this: CliToolsView fell back to a real
+    // machine-minted key when the instance had none, which baked a working
+    // credential into web/dist and handed it to every dashboard visitor. A
+    // unit test cannot see that, so assert on the served bytes.
+    const leaked = await page.evaluate(async (base) => {
+      const html = await (await fetch(base)).text()
+      const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^"]+\.js)"/g)].map((m) => m[1])
+      const hits: string[] = []
+      for (const asset of assets) {
+        const body = await (await fetch(asset)).text()
+        for (const m of body.matchAll(/sk-[a-zA-Z0-9]{16,}/g)) hits.push(`${asset}: ${m[0]}`)
+      }
+      return hits
+    }, app.baseURL)
+
+    expect(leaked).toEqual([])
   })
  })

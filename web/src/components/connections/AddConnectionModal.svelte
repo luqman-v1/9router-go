@@ -60,6 +60,9 @@
   let isXaiApiKey = $derived(providerId === 'xai' && !isCookie)
   let isAzure = $derived(providerId === 'azure')
   let isCloudflareAi = $derived(providerId === 'cloudflare-ai')
+  // Gate on the catalog flag, not the provider id: keying off `providerId === 'bedrock'`
+  // silently left every later AWS entry with no way to enter a profile at all.
+  let usesAwsCredentialForm = $derived(catalogItem?.credentialForm === 'aws')
   let providerRegions = $derived(catalogItem?.regions || null)
 
   let credentialLabel = $derived(
@@ -74,7 +77,9 @@
         ? 'xai-...'
         : providerId === 'qoder'
           ? 'pt-...'
-          : ''
+          : usesAwsCredentialForm
+            ? 'AWS secret access key'
+            : ''
   )
   let modalTitle = $derived(`Add ${providerName || providerId} ${credentialLabel}`)
 
@@ -94,6 +99,15 @@
   })
   let cloudflareAccountId = $state('')
   let region = $state('')
+  // The AWS region lives here rather than in the shared `region` state: it is a
+  // credential-scoped setting, not one of the catalog's fixed region choices, and the
+  // AWS form has to keep working for a provider that declares no `regions` list.
+  let awsData = $state({ accessKeyId: '', sessionToken: '', profile: '', region: '' })
+  // In profile/SSO mode the connection carries no API key at all — the credential lives
+  // in the local AWS config. Declared after awsData so the dependency is real rather
+  // than a forward reference.
+  let apiKeyOptionalWith = $derived(catalogItem?.apiKeyOptionalWith || '')
+  let credentialIsOptional = $derived(apiKeyOptionalWith === 'profile' && awsData.profile.trim())
 
   let validating = $state(false)
   let validation = $state<'success' | 'failed' | null>(null)
@@ -140,6 +154,7 @@
     azureData = { azureEndpoint: '', apiVersion: '2024-10-01-preview', deployment: '', organization: '' }
     cloudflareAccountId = ''
     region = catalogItem?.defaultRegion || catalogItem?.regions?.[0]?.id || ''
+    awsData = { accessKeyId: '', sessionToken: '', profile: '', region: region }
     validating = false
     validation = null
     validationNote = ''
@@ -158,6 +173,16 @@
         apiVersion: azureData.apiVersion,
         deployment: azureData.deployment,
         organization: azureData.organization,
+      }
+    }
+    if (usesAwsCredentialForm) {
+      return {
+        accessKeyId: awsData.accessKeyId.trim(),
+        profile: awsData.profile.trim(),
+        // The session token is a credential, so it is written but never echoed back to
+        // the edit form. A static ASIA… key without it fails with a clear message.
+        ...(awsData.sessionToken.trim() ? { sessionToken: awsData.sessionToken.trim() } : {}),
+        ...(awsData.region.trim() ? { region: awsData.region.trim() } : {}),
       }
     }
     if (isCloudflareAi) {
@@ -207,13 +232,24 @@
     await runValidation()
   }
 
-  /** Save is blocked the same way upstream blocks it. */
+  /**
+   * Save is blocked the same way upstream blocks it. The API key is required except when
+   * the provider declares a `profile` stand-in and one was typed: in that mode the key
+   * lives in the local AWS config and there is nothing to paste.
+   */
   let saveDisabled = $derived(
     saving ||
-      (!isOllamaLocal && (!formName.trim() || !formApiKey.trim())) ||
+      (!isOllamaLocal && !formName.trim()) ||
+      (!credentialIsOptional && !formApiKey.trim()) ||
       (isCompatible && !formDefaultModel.trim()) ||
       (isAzure && (!azureData.azureEndpoint || !azureData.deployment || !azureData.organization)) ||
-      (isCloudflareAi && !cloudflareAccountId.trim())
+      (isCloudflareAi && !cloudflareAccountId.trim()) ||
+      // Static mode needs both halves of the key pair; profile mode needs a name to
+      // resolve, and the API key becomes optional there.
+      (usesAwsCredentialForm &&
+        (credentialIsOptional
+          ? !awsData.profile.trim() || !awsData.region.trim()
+          : !awsData.accessKeyId.trim() || !awsData.region.trim()))
   )
 
   async function handleSubmit(e: SubmitEvent) {
@@ -398,11 +434,13 @@
             {:else}
               <div class="flex gap-2">
                 <div class="flex-1">
-                  <label for="connApiKey" class={labelCls}>{credentialLabel}</label>
+                  <label for="connApiKey" class={labelCls}>
+                    {credentialLabel}{#if credentialIsOptional}<span class="text-text-muted text-xs font-normal"> (optional in profile mode)</span>{/if}
+                  </label>
                   <input
                     id="connApiKey"
                     type={isCookie ? 'text' : 'password'}
-                    required
+                    required={!credentialIsOptional}
                     bind:value={formApiKey}
                     placeholder={credentialPlaceholder}
                     class="{inputCls} font-mono"
@@ -417,6 +455,59 @@
                     {validating ? 'Checking...' : 'Check'}
                   </Button>
                 </div>
+              </div>
+            {/if}
+
+            {#if usesAwsCredentialForm}
+              <div class="bg-sidebar/50 p-4 rounded-lg border border-accent/20 flex flex-col gap-3">
+                <h3 class="font-semibold text-sm">AWS Bedrock Credentials</h3>
+                <div>
+                  <label for="awsAccessKeyId" class={labelCls}>Access Key ID</label>
+                  <input
+                    id="awsAccessKeyId"
+                    type="text"
+                    bind:value={awsData.accessKeyId}
+                    placeholder="AKIA… / ASIA…"
+                    class="{inputCls} font-mono"
+                  />
+                </div>
+                <div>
+                  <label for="awsSessionToken" class={labelCls}>Session Token</label>
+                  <input
+                    id="awsSessionToken"
+                    type="password"
+                    bind:value={awsData.sessionToken}
+                    placeholder="Only for temporary (ASIA…) keys"
+                    class="{inputCls} font-mono"
+                  />
+                </div>
+                <div>
+                  <label for="awsProfile" class={labelCls}>Profile</label>
+                  <input
+                    id="awsProfile"
+                    type="text"
+                    bind:value={awsData.profile}
+                    placeholder="Name from ~/.aws/config"
+                    class="{inputCls} font-mono"
+                  />
+                </div>
+                <div>
+                  <label for="awsRegion" class={labelCls}>Region</label>
+                  <input
+                    id="awsRegion"
+                    type="text"
+                    bind:value={awsData.region}
+                    placeholder="us-east-1"
+                    class="{inputCls} font-mono"
+                  />
+                </div>
+                <p class="text-xs text-text-muted mt-2">
+                  SSO / profile (recommended): fill in Profile and Region, leave the API key empty,
+                  then run <code>aws sso login --profile &lt;name&gt;</code> — credentials refresh
+                  automatically. Static keys: put the AWS secret access key above and the key id
+                  here, adding a Session Token for temporary keys. A profile, if set, takes
+                  precedence over static keys.
+                </p>
               </div>
             {/if}
 

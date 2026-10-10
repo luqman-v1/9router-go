@@ -4,6 +4,7 @@ import (
 	json "encoding/json/v2"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/translator"
@@ -216,6 +217,44 @@ func TestExtractRequestMessages(t *testing.T) {
 				len(msgs[0]["content"]), len(expected))
 		}
 	})
+
+	// A byte cut through a multi-byte rune used to hand json/v2 an invalid
+	// string, which failed the whole request-detail marshal — the row, the
+	// daily aggregate and the recent-requests entry all silently vanished
+	// for any request whose text happened to straddle the limit.
+	t.Run("rune straddling the byte limit stays marshalable", func(t *testing.T) {
+		for _, tt := range []struct {
+			name string
+			body string
+		}{
+			{"3-byte CJK", strings.Repeat("日", 200)},
+			{"2-byte latin-1 supplement", strings.Repeat("é", 300)},
+			{"4-byte emoji", strings.Repeat("🙂", 150)},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				body := buildRequestBody([]translator.OpenAIMessage{
+					{Role: "user", Content: tt.body},
+				})
+				msgs := extractRequestMessages(body)
+				if len(msgs) != 1 {
+					t.Fatalf("expected 1 message, got %d", len(msgs))
+				}
+				got := msgs[0]["content"]
+				if !utf8.ValidString(got) {
+					t.Errorf("truncated content is not valid UTF-8: %q", got)
+				}
+				if !strings.HasSuffix(got, "...") {
+					t.Errorf("truncated content lost its marker: %q", got)
+				}
+				// The stored messages must survive a real marshal of the
+				// payload, which is what failed in production.
+				if _, err := json.Marshal(map[string]any{"messages": msgs}); err != nil {
+					t.Errorf("marshal request detail payload: %v", err)
+				}
+			})
+		}
+	})
+
 
 	t.Run("exceeds max logged messages", func(t *testing.T) {
 		msgs := make([]translator.OpenAIMessage, constants.MaxLoggedMessages+5)

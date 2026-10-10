@@ -63,6 +63,11 @@ func RegisterAll() {
 	Register("iflow", func() Executor { return ForwardIflow })
 	Register("kimchi", func() Executor { return ForwardKimchi })
 	Register("kiro", func() Executor { return ForwardKiro })
+	// One executor serves both Bedrock entries: the registry entry's Format picks the
+	// wire shape (Anthropic Messages vs OpenAI Chat Completions), the way one Vertex
+	// executor serves vertex and vertex-partner.
+	Register("bedrock", func() Executor { return ForwardBedrock })
+	Register("bedrock-xai", func() Executor { return ForwardBedrock })
 	Register("azure", func() Executor { return ForwardAzure })
 	Register("commandcode", func() Executor { return ForwardCommandcode })
 	Register("qoder", func() Executor { return ForwardQoder })

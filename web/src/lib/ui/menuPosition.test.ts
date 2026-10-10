@@ -1,7 +1,7 @@
 // menuPosition is DOM-dependent by design, so the suite hands it the viewports
 // and rects it needs rather than reaching for a real layout engine.
 import { describe, expect, it } from 'bun:test'
-import { placePanel, placementStyle } from './menuPosition'
+import { maxPanelWidth, placePanel, placementStyle } from './menuPosition'
 
 const DESKTOP = { width: 1200, height: 800 }
 const PHONE = { width: 375, height: 700 }
@@ -43,7 +43,7 @@ describe('placePanel', () => {
       panelWidth: 224,
       viewport: PHONE,
     })
-    expect(placement.left + placement.width).toBeLessThanOrEqual(PHONE.width - 8)
+    expect(placement.left + 224).toBeLessThanOrEqual(PHONE.width - 8)
     expect(placement.left).toBeGreaterThanOrEqual(8)
   })
 
@@ -57,9 +57,16 @@ describe('placePanel', () => {
     expect(placement.left).toBe(8)
   })
 
-  it('shrinks the panel rather than overflowing a narrow viewport', () => {
-    const placement = placePanel({ rect: rect(), panelWidth: 224, viewport: { width: 200, height: 700 } })
-    expect(placement.width).toBe(200 - 16)
+  // A panel the window cannot show has to be anchored from the gutter, not
+  // from a rect that assumes room for it: a 224px panel at left=200 on a 200px
+  // window otherwise sits entirely off-screen to the right.
+  it('anchors a panel wider than the viewport against the right gutter', () => {
+    const placement = placePanel({
+      rect: rect({ left: 200, right: 260 }),
+      panelWidth: 224,
+      viewport: { width: 200, height: 700 },
+    })
+    expect(placement.left).toBe(8)
   })
 
   it('flips above the trigger when there is no room below', () => {
@@ -81,55 +88,36 @@ describe('placePanel', () => {
 
 describe('placementStyle', () => {
   it('emits top for a downward panel', () => {
-    expect(placementStyle({ left: 10, top: 144, bottom: null, width: 224, minWidth: 0 })).toBe(
-      'left:10px;width:224px;top:144px',
-    )
+    expect(placementStyle({ left: 10, top: 144, bottom: null })).toBe('left:10px;top:144px')
   })
 
   it('emits bottom instead of top for a flipped panel', () => {
-    expect(placementStyle({ left: 10, top: 0, bottom: 44, width: 224, minWidth: 0 })).toBe(
-      'left:10px;width:224px;bottom:44px',
-    )
+    expect(placementStyle({ left: 10, top: 0, bottom: 44 })).toBe('left:10px;bottom:44px')
+  })
+
+  // `panelWidth` is read back from the rendered panel, so writing it out again
+  // as an inline width pinned the panel to whatever width it had when
+  // measured, and every label wider than that floor ellipsised for good
+  // (issue #261). Sizing is the panel's own CSS; this helper places it.
+  it('never pins a width the panel would have to grow out of', () => {
+    const style = placementStyle({ left: 10, top: 144, bottom: null })
+    expect(style).not.toContain('width')
+    expect(style).not.toContain('min-width')
   })
 })
 
-describe('minimum width', () => {
-  // CSS `min-width` beats `width`, so an uncapped floor renders a panel wider
-  // than the clamp computed. On a 200px viewport a 224px floor overflowed by
-  // 32px regardless of what the measured width said.
-  it('caps the floor at the clamped width on a narrow viewport', () => {
-    const placement = placePanel({
-      rect: rect({ left: 28, right: 200 }),
-      panelWidth: 224,
-      minWidth: 224,
-      viewport: { width: 200, height: 600 },
-    })
-    expect(placement.minWidth).toBeLessThanOrEqual(placement.width)
-    expect(placement.width).toBeLessThanOrEqual(200 - 16)
+describe('maxPanelWidth', () => {
+  it('caps a panel to the viewport minus both gutters', () => {
+    expect(maxPanelWidth(DESKTOP)).toBe('1184px')
   })
 
-  it('keeps the floor when the viewport has room', () => {
-    const placement = placePanel({
-      rect: rect(),
-      panelWidth: 224,
-      minWidth: 224,
-      viewport: DESKTOP,
-    })
-    expect(placement.minWidth).toBe(224)
+  // The clamp that placePanel used to apply by writing an inline width has to
+  // survive as CSS: a 224px panel on a 200px window reported right=232.
+  it('keeps a panel that cannot be shown inside the window', () => {
+    expect(maxPanelWidth({ width: 200, height: 600 })).toBe('184px')
   })
 
-  it('omits the floor entirely when none is requested', () => {
-    const placement = placePanel({ rect: rect(), panelWidth: 224, viewport: DESKTOP })
-    expect(placementStyle(placement)).not.toContain('min-width')
-  })
-
-  it('emits the capped floor so the clamp actually holds in CSS', () => {
-    const placement = placePanel({
-      rect: rect({ left: 28, right: 200 }),
-      panelWidth: 224,
-      minWidth: 224,
-      viewport: { width: 200, height: 600 },
-    })
-    expect(placementStyle(placement)).toContain(`min-width:${Math.round(placement.minWidth)}px`)
+  it('is zero rather than negative with no viewport at all', () => {
+    expect(maxPanelWidth(null)).toBe('0px')
   })
 })

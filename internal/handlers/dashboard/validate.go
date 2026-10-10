@@ -19,6 +19,7 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
 )
 
@@ -418,6 +419,12 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validateQoder(ctx, provider, apiKey, psd)
 	case "v1m":
 		return validateV1M(ctx, apiKey)
+	case "bedrock", "bedrock-xai":
+		// A signed ListFoundationModels call. The registry's BaseURL carries a
+		// {region} placeholder, so the generic probe would dial a literal "{region}"
+		// host — this entry signs its own request against the resolved region.
+		valid, message := proxy.BedrockProbe(ctx, http.DefaultClient, apiKey, psd)
+		return validateOutcome{valid: valid, supported: true, message: message}
 	}
 
 	if isAnthropicProbe(cfg) {

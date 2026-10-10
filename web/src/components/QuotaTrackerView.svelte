@@ -24,7 +24,7 @@
   import Toggle from '../lib/ui/Toggle.svelte'
   import Menu from '../lib/ui/Menu.svelte'
   import MenuItem from '../lib/ui/MenuItem.svelte'
-  import { placePanel, placementStyle } from '../lib/ui/menuPosition'
+  import { maxPanelWidth, placePanel, placementStyle } from '../lib/ui/menuPosition'
   import { getIconPath } from './connections/types'
   import EditConnectionModal, { type ConnectionUpdate } from './connections/EditConnectionModal.svelte'
   import QuotaTable from './quota/QuotaTable.svelte'
@@ -99,20 +99,19 @@
   let providerDropdownPanel: HTMLDivElement | null = $state(null)
   let providerPanelStyle = $state('')
 
-/** The panel's preferred width, capped against the viewport at placement. */
-const PROVIDER_PANEL_MIN_WIDTH_PX = 256
+  /** The panel's preferred width, capped against the viewport at placement. */
+  const PROVIDER_PANEL_MIN_WIDTH = '16rem'
 
   function placeProviderPanel(): void {
     const trigger = providerDropdownRoot?.querySelector('button')
     if (!trigger || !providerDropdownPanel) return
-    providerPanelStyle = placementStyle(
+    providerPanelStyle = `${placementStyle(
       placePanel({
         align: 'left',
         rect: trigger.getBoundingClientRect(),
         panelWidth: providerDropdownPanel.offsetWidth,
-        minWidth: PROVIDER_PANEL_MIN_WIDTH_PX,
       }),
-    )
+    )};max-width:${maxPanelWidth()};min-width:min(${PROVIDER_PANEL_MIN_WIDTH}, ${maxPanelWidth()})`
   }
 
   let accountFilter = $state('all')
@@ -913,7 +912,6 @@ const PROVIDER_PANEL_MIN_WIDTH_PX = 256
           <div
             bind:this={providerDropdownPanel}
             style={providerPanelStyle}
-            class="fixed z-50 overflow-hidden rounded-2xl border border-border-subtle bg-surface p-1.5 shadow-xl"
           >
             <button
               type="button"
