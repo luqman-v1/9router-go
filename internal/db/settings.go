@@ -1,9 +1,8 @@
 package db
 
 import (
-	json "encoding/json/v2"
-
 	"9router/proxy/internal/handlerutil"
+	json "encoding/json/v2"
 )
 
 // ComboStrategy defines routing strategy, sticky limit, and judge model for a combo.
@@ -128,7 +127,14 @@ type SettingsData struct {
 	//
 	// 0 means "keep forever", which is the default: the ledger is only pruned
 	// when an operator asks for it. See usage_retention_ledger.go.
-	UsageHistoryRetentionDays int `json:"usageHistoryRetentionDays,omitempty"`
+	UsageHistoryRetentionDays int             `json:"usageHistoryRetentionDays,omitempty"`
+	ProviderThinking          map[string]ProviderThinking `json:"providerThinking,omitempty"`
+}
+
+// ProviderThinking is one provider's operator reasoning override, mirroring
+// upstream chatSettings.providerThinking (chatCore.js:117-131).
+type ProviderThinking struct {
+	Mode string `json:"mode"` // "on" | "off" | "auto" | a thinking level
 }
 
 // DefaultSettings returns fallback settings.
@@ -411,6 +417,18 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 					strat.StrictModelAssignment = sma
 				}
 				s.ProviderStrategies[k] = strat
+			}
+		}
+	}
+	// Per-provider reasoning overrides (dashboard provider card). Non-empty
+	// mode strings only; the same setting drives the UI's copied-model suffix.
+	if pt, ok := raw["providerThinking"].(map[string]any); ok {
+		s.ProviderThinking = make(map[string]ProviderThinking, len(pt))
+		for k, v := range pt {
+			if vm, ok := v.(map[string]any); ok {
+				if mode := handlerutil.GetString(vm, "mode"); mode != "" {
+					s.ProviderThinking[k] = ProviderThinking{Mode: mode}
+				}
 			}
 		}
 	}

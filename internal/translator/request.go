@@ -593,7 +593,6 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 		}
 	}
 
-
 	// Third pass: drop messages whose content carries nothing Anthropic accepts
 	// and repair a tail the removal promoted to an assistant turn. The rule
 	// lives in one place because the OpenAI→Claude conversion path needs it too
