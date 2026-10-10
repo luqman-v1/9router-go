@@ -84,4 +84,6 @@ func RegisterAll() {
 	Register("trae", func() Executor { return ForwardTrae })
 	Register("windsurf", func() Executor { return ForwardWindsurf })
 	Register("zed", func() Executor { return ForwardOpenAI })
+	Register("minimax-code", func() Executor { return ForwardMinimaxCode })
+	Register("minimax-code-global", func() Executor { return ForwardMinimaxCode })
 }

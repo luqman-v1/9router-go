@@ -1439,6 +1439,44 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "minimax-code",
+    "name": "MiniMax Code",
+    "category": "oauth",
+    "alias": "mmc",
+    "color": "#FF4D4F",
+    "icon": "smart_toy",
+    "website": "https://agent.minimax.cn",
+    "notice": {"text": "MiniMax Code coding subscription. Sign in with your MiniMax account; ~/.minimax is never touched, so this login does not sign the CLI out."},
+    "authType": "oauth",
+    "noAuth": false,
+    "authModes": ["oauth"],
+    "priority": 80,
+    "usage": true,
+    "serviceKinds": [
+      "llm"
+    ],
+    "modelsFetcher": {"url":"https://agent.minimax.cn/mavis/api/v1/models?region=cn&buildEnv=prod","type":"minimax-code"}
+  },
+  {
+    "id": "minimax-code-global",
+    "name": "MiniMax Code (Global)",
+    "category": "oauth",
+    "alias": "mmg",
+    "color": "#FF4D4F",
+    "icon": "smart_toy",
+    "website": "https://agent.minimax.io",
+    "notice": {"text": "The international MiniMax Code site. Sign-ins are per site: an account on agent.minimax.cn says nothing about agent.minimax.io."},
+    "authType": "oauth",
+    "noAuth": false,
+    "authModes": ["oauth"],
+    "priority": 80,
+    "usage": true,
+    "serviceKinds": [
+      "llm"
+    ],
+    "modelsFetcher": {"url":"https://agent.minimax.io/mavis/api/v1/models?region=en&buildEnv=prod","type":"minimax-code"}
+  },
+  {
     "id": "minimax-cn",
     "name": "Minimax (China)",
     "category": "apikey",

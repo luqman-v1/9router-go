@@ -248,7 +248,18 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	translateResponse := true
 	var workingBody map[string]any
-	if modelInfo.Provider == "claude" || modelInfo.Provider == "anthropic" {
+	// A provider whose registry entry declares the Claude Messages format is
+	// answered in that format, so a /v1/messages client is forwarded as-is
+	// instead of being converted to OpenAI first. Anthropic itself is the
+	// historical case; minimax-code serves the same wire on MiniMax's mavis
+	// gateway (open-sse/config/providers.js transport.format).
+	claudeNative := modelInfo.Provider == "claude" || modelInfo.Provider == "anthropic"
+	if !claudeNative {
+		if cfg, err := h.GetProviderConfig(modelInfo.Provider, nil); err == nil {
+			claudeNative = cfg != nil && cfg.Format == providers.FormatClaude
+		}
+	}
+	if claudeNative {
 		translateResponse = false
 		body = translator.SanitizeClaudePassthrough(body, translator.ClaudeIntentionalPrefill(body))
 		if modelInfo.Provider == "minimax" || modelInfo.Provider == "minimax-cn" {

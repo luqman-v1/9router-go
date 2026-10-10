@@ -361,6 +361,18 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"gpt-5.5-medium":  devinCLIGPTCaps,
 		"gpt-5.5-low":     devinCLIGPTCaps,
 	},
+	// MiniMax Code (mcode) credits lane — Anthropic messages on the mavis
+	// gateway, thinking as adaptive effort via output_config.effort
+	// (claude-adaptive). Limits are the static catalog magpie's minimax plugin
+	// ships; the M2.7 pair always thinks and takes no effort knob in MiniMax
+	// Code itself, hence thinkingCanDisable:false. Port of upstream
+	// decolua/9router open-sse/providers/capabilities.js.
+	"minimax-code": {
+		"MiniMax-M3.1-Flash-Preview": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 512000, MaxOutput: 128000},
+		"MiniMax-M3":                 {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 512000, MaxOutput: 128000},
+		"MiniMax-M2.7":               {Reasoning: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 200000, MaxOutput: 128000},
+		"MiniMax-M2.7-highspeed":     {Reasoning: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 200000, MaxOutput: 128000},
+	},
 }
 
 func init() {
@@ -397,6 +409,11 @@ func init() {
 	// upstream does (open-sse/providers/capabilities.js:
 	// PROVIDER_CAPABILITIES.cx = PROVIDER_CAPABILITIES.codex).
 	providerCapabilities["cx"] = providerCapabilities["codex"]
+
+	// The global mcode site serves the identical catalog, so it shares the
+	// table rather than restating it (upstream
+	// PROVIDER_CAPABILITIES["minimax-code-global"] = PROVIDER_CAPABILITIES["minimax-code"]).
+	providerCapabilities["minimax-code-global"] = providerCapabilities["minimax-code"]
 
 	initPatternIndex()
 }

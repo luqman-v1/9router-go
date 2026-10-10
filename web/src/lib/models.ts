@@ -82,6 +82,8 @@ export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
   "mimo-free": "mmf",
   "minimax": "minimax",
   "minimax-cn": "minimax-cn",
+  "minimax-code": "mmc",
+  "minimax-code-global": "mmg",
   "mistral": "mistral",
   "mmf": "mmf",
   "muse": "muse",
@@ -2931,6 +2933,58 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "id": "speech-01-turbo",
       "name": "Speech 01 Turbo",
       "kind": "tts"
+    }
+  ],
+  "minimax-code": [
+    {
+      "id": "MiniMax-M3.1-Flash-Preview",
+      "name": "MiniMax M3.1 Flash Preview",
+      "targetFormat": "claude",
+      "supportedFormats": ["claude"]
+    },
+    {
+      "id": "MiniMax-M3",
+      "name": "MiniMax M3",
+      "targetFormat": "claude",
+      "supportedFormats": ["claude"]
+    },
+    {
+      "id": "MiniMax-M2.7",
+      "name": "MiniMax M2.7",
+      "targetFormat": "claude",
+      "supportedFormats": ["claude"]
+    },
+    {
+      "id": "MiniMax-M2.7-highspeed",
+      "name": "MiniMax M2.7 Highspeed",
+      "targetFormat": "claude",
+      "supportedFormats": ["claude"]
+    }
+  ],
+  "minimax-code-global": [
+    {
+      "id": "MiniMax-M3.1-Flash-Preview",
+      "name": "MiniMax M3.1 Flash Preview",
+      "targetFormat": "claude",
+      "supportedFormats": ["claude"]
+    },
+    {
+      "id": "MiniMax-M3",
+      "name": "MiniMax M3",
+      "targetFormat": "claude",
+      "supportedFormats": ["claude"]
+    },
+    {
+      "id": "MiniMax-M2.7",
+      "name": "MiniMax M2.7",
+      "targetFormat": "claude",
+      "supportedFormats": ["claude"]
+    },
+    {
+      "id": "MiniMax-M2.7-highspeed",
+      "name": "MiniMax M2.7 Highspeed",
+      "targetFormat": "claude",
+      "supportedFormats": ["claude"]
     }
   ],
   "mistral": [

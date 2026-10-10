@@ -58,6 +58,11 @@ const (
 	// the provider's chat base URL).
 	v1mProbeURL   = "https://v1m.ir/v1/systemone"
 	v1mProbeModel = "rev-latest"
+	// MiniMax Code publishes its model catalogue on the agent gateway (the
+	// same endpoint the dashboard imports from), so a connection probe is a
+	// plain bearer call there: a 401/403 is the only invalid answer.
+	miniMaxCodeCatalogURL       = "https://agent.minimax.cn/mavis/api/v1/models?region=cn&buildEnv=prod"
+	miniMaxCodeGlobalCatalogURL = "https://agent.minimax.io/mavis/api/v1/models?region=en&buildEnv=prod"
 	// Upstream accepts any non-401/403 answer as proof the credentials work.
 	connectionBrowserUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
@@ -195,6 +200,11 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 	"qoder-cn":       {url: "https://openapi.qoder.com.cn/api/v1/userinfo", method: http.MethodGet, authHeader: "Authorization", authPrefix: "Bearer "},
 	"kimi":           {checkExpiry: true, refreshable: true},
 	"kimi-coding":    {checkExpiry: true, refreshable: true},
+	// MiniMax Code publishes its own catalogue on the agent gateway, so the
+	// probe proves the credential the same way the quota read does — and the
+	// token is refreshable, unlike the API-key MiniMax providers.
+	"minimax-code":        {url: miniMaxCodeCatalogURL, method: http.MethodGet, authHeader: "Authorization", authPrefix: "Bearer ", checkExpiry: true, refreshable: true},
+	"minimax-code-global": {url: miniMaxCodeGlobalCatalogURL, method: http.MethodGet, authHeader: "Authorization", authPrefix: "Bearer ", checkExpiry: true, refreshable: true},
 	// A Muse Code subscription stores the minted Model API key as its bearer
 	// token, so the catalogue call proves the credential exactly the same way
 	// it does for a pasted dev.meta.ai key — and there is nothing to refresh,

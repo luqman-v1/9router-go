@@ -107,6 +107,20 @@ var patternThinking = []thinkingPattern{
 	{Provider: "codebuddy-cn", Pattern: "hy4-preview", Levels: []string{"high"}},
 	// codebuddy-intl rides the same gateway catalog, so its deepseek levels match.
 	{Provider: "codebuddy-intl", Pattern: "deepseek-v4*", Levels: []string{"low", "high", "xhigh"}},
+	// MiniMax Code (mcode) — adaptive effort via output_config.effort. M3.1
+	// always thinks (no none) and offers the five efforts; M3 is switchable
+	// with none/high only. The M2.7 pair takes no pattern and falls through to
+	// the claude-adaptive set minus none, because canDisable is false.
+	// Provider-qualified and case-insensitive glob matching, so both the
+	// canonical id and the published alias resolve to the same set.
+	{Provider: "minimax-code", Pattern: "MiniMax-M3.1*", Levels: []string{"low", "medium", "high", "xhigh", "max"}},
+	{Provider: "minimax-code", Pattern: "MiniMax-M3", Levels: []string{"none", "high"}},
+	{Provider: "minimax-code-global", Pattern: "MiniMax-M3.1*", Levels: []string{"low", "medium", "high", "xhigh", "max"}},
+	{Provider: "minimax-code-global", Pattern: "MiniMax-M3", Levels: []string{"none", "high"}},
+	{Provider: "mmc", Pattern: "MiniMax-M3.1*", Levels: []string{"low", "medium", "high", "xhigh", "max"}},
+	{Provider: "mmc", Pattern: "MiniMax-M3", Levels: []string{"none", "high"}},
+	{Provider: "mmg", Pattern: "MiniMax-M3.1*", Levels: []string{"low", "medium", "high", "xhigh", "max"}},
+	{Provider: "mmg", Pattern: "MiniMax-M3", Levels: []string{"none", "high"}},
 }
 
 // codexModelThinkingLevels mirrors the per-model `thinkingLevels` field of the

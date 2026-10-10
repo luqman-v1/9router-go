@@ -614,6 +614,41 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	// MiniMax Code (mcode) — the coding-subscription credits lane, served as a
+	// provider. Anthropic Messages on MiniMax's agent gateway, signed in with
+	// MiniMax Code's own OAuth device flow (PKCE S256, client mcode-public) but
+	// with tokens of our own: ~/.minimax is never touched, so a sign-in here
+	// neither signs the CLI out nor collides with another account.
+	//
+	// Global is the same protocol on different hosts, and sign-ins are per
+	// site — an account on agent.minimax.cn says nothing about
+	// agent.minimax.io. The two are never aliased onto each other
+	// (AGENTS.md §3.A). Port of upstream decolua/9router registry
+	// minimax-code.js / minimax-code-global.js.
+	"minimax-code": {
+		BaseURL:    "https://agent.minimax.cn/mavis/api/v1/llm/v1/messages",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		Format:     "claude",
+		StaticHeaders: map[string]string{
+			"User-Agent":      "MiniMaxAgent",
+			"X-Mavis-Agent-Id": "main",
+			// MiniMax requires the anthropic-version header on its Messages
+			// endpoint; the bearer carries the real credential.
+			"anthropic-version": "2023-06-01",
+		},
+	},
+	"minimax-code-global": {
+		BaseURL:    "https://agent.minimax.io/mavis/api/v1/llm/v1/messages",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		Format:     "claude",
+		StaticHeaders: map[string]string{
+			"User-Agent":      "MiniMaxAgent",
+			"X-Mavis-Agent-Id": "main",
+			"anthropic-version": "2023-06-01",
+		},
+	},
 	"kimi-coding": {
 		BaseURL:    "https://api.kimi.com/coding/v1/chat/completions",
 		AuthHeader: "Authorization",

@@ -21,7 +21,7 @@ import (
 // kimi-coding aliases to kimi (dual-auth merge, like upstream).
 var deviceProviders = []string{
 	"qoder", "qoder-cn", "kilocode", "grok-cli", "github", "kiro", "kimi", "kimi-coding",
-	"codebuddy-cn", "codebuddy-intl", "muse",
+	"codebuddy-cn", "codebuddy-intl", "muse", "minimax-code", "minimax-code-global",
 }
 
 func deviceSupported(p string) bool {
@@ -200,6 +200,8 @@ func deviceStart(provider, region, startURL, authMethod string) (map[string]any,
 		return codebuddyStart(provider)
 	case "muse":
 		return museStart()
+	case "minimax-code", "minimax-code-global":
+		return minimaxCodeStart(provider)
 	default:
 		return nil, fmt.Errorf("unsupported provider")
 	}
@@ -468,6 +470,8 @@ func devicePoll(provider, code string, session map[string]any) (deviceTokens, st
 		t, err = codebuddyPoll(provider, code)
 	case "muse":
 		t, err = musePoll(code)
+	case "minimax-code", "minimax-code-global":
+		t, err = minimaxCodePoll(provider, code, session)
 	default:
 		return t, "error", "unsupported provider"
 	}

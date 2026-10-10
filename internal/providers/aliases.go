@@ -59,6 +59,12 @@ var ProviderAliasMap = map[string]string{
 	"kr":             "kiro",
 	"mimo":           "xiaomi-mimo",
 	"mm":             "minimax",
+	// MiniMax Code (mcode). Upstream publishes the China entry as "mm", which
+	// this table already carries for the API-key `minimax` provider and which
+	// therefore keeps resolving there; `mmc` is the unambiguous prefix for the
+	// credits lane. `mmg` is upstream's own alias for the global site.
+	"mmc":            "minimax-code",
+	"mmg":            "minimax-code-global",
 	"mmf":            "mimo-free",
 	"nb":             "nanobanana",
 	"muse-ai":           "muse",

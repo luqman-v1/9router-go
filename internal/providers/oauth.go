@@ -124,6 +124,10 @@ var RefreshLeadMs = map[string]time.Duration{
 	// Legacy id after the kimi-coding → kimi merge; upstream's getRefreshLeadMs
 	// maps it onto kimi's entry rather than dropping back to the default.
 	"kimi-coding": 5 * time.Minute,
+	// MiniMax Code access tokens live ~1h; upstream renews 10 minutes early
+	// (registry `oauth.refreshLeadMs`, decolua/9router minimax-code.js).
+	"minimax-code":        10 * time.Minute,
+	"minimax-code-global": 10 * time.Minute,
 }
 
 // RefreshLead reports how long before expiresAt a connection is refreshed.

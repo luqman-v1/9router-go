@@ -92,6 +92,8 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 		return fetchCodexUsage(ctx, firstNonEmptyStr(accessToken, apiKey)), true
 	case "opencode-zen":
 		return fetchOpenCodeZenUsage(ctx, apiKey, connectionBaseURL(data)), true
+	case "minimax-code", "minimax-code-global":
+		return fetchMiniMaxCodeUsage(ctx, provider, accessToken, psdStr(psd, "realUserID")), true
 	default:
 		return usageResult{}, false
 	}

@@ -213,6 +213,19 @@ func isAnthropicUpstream(provider string, cfg *providers.ProviderConfig) bool {
 		strings.HasPrefix(targetURL, "https://api.anthropic.com/v1/messages?")
 }
 
+// servesClaudeMessages reports whether the provider's own endpoint speaks
+// Anthropic Messages, so the body reaches it in Claude format and the reply
+// comes back Claude-shaped.
+//
+// That is a different question from isAnthropicUpstream: Anthropic's own API
+// additionally needs the beta query, the OAuth cloaking and the beta-flag
+// merge below, none of which a third-party Messages endpoint wants. A provider
+// declares the wire format on its registry entry (Format: "claude"), which is
+// the same field the /v1/models metadata publishes.
+func servesClaudeMessages(provider string, cfg *providers.ProviderConfig) bool {
+	return cfg != nil && cfg.Format == providers.FormatClaude
+}
+
 func appendBetaQuery(u string) string {
 	if strings.Contains(u, "beta=true") {
 		return u
@@ -320,17 +333,28 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// requests for non-Anthropic providers (DeepSeek, OpenAI-compatible) to
 	// OpenAI format before the fallback, and passing endpoint "/v1/v1/messages"
 	// alone would wrongly inject a top-level "system" the upstream ignores.
-	claudeNative := isAnthropic && (endpoint == "/v1/v1/messages" || endpoint == "/v1/messages")
+	//
 	// A /v1/messages client is only converted away from Claude format when the
-	// upstream cannot answer in it. opencode-zen routes the Claude and Qwen
-	// models to its own /zen/v1/messages endpoint, so those requests keep the
-	// client's own wire format end to end (upstream resolveTransport picks the
-	// sourceFormat-matched transport and skips translation).
-	if endpoint == "/v1/v1/messages" || endpoint == "/v1/messages" {
-		if executor.ServesMessagesEndpoint(provider, model) {
-			claudeNative = true
-		}
-	}
+	// upstream cannot answer in it. That is true of two kinds of provider: one
+	// routing some of its models to a Messages endpoint (opencode-zen's Claude
+	// and Qwen lanes), and one whose own endpoint speaks Messages outright
+	// (minimax-code on MiniMax's mavis gateway). Both keep the client's own
+	// wire format end to end — upstream resolveTransport picks the
+	// sourceFormat-matched transport and skips translation.
+	messagesClient := endpoint == "/v1/v1/messages" || endpoint == "/v1/messages"
+	// A Messages-speaking provider answers a Messages client in its own wire
+	// format, whichever of the two ways it earns that: a model routed to a
+	// Messages endpoint (opencode-zen's Claude and Qwen lanes), or an endpoint
+	// that speaks Messages outright (minimax-code on the mavis gateway).
+	claudeNative := messagesClient && (isAnthropic ||
+		executor.ServesMessagesEndpoint(provider, model) ||
+		servesClaudeMessages(provider, providerCfg))
+
+	// upstreamClaude is what the executor needs to translate the Claude reply
+	// back for a Chat Completions client. Anthropic's own API and a third-party
+	// Messages endpoint both answer in Claude, but only Anthropic's wants the
+	// beta query, the OAuth cloaking and the beta-flag merge below.
+	upstreamClaude := isAnthropic || servesClaudeMessages(provider, providerCfg)
 	compressStart := time.Now()
 	pipedBody, origTokens, savedTokens, savedPct := h.applyTokenSavers(body, claudeNative)
 	compressDurMs := int(time.Since(compressStart).Milliseconds())
@@ -338,7 +362,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		compressDurMs = 1
 	}
 	var claudeToolMap map[string]string
-	if isAnthropic {
+	if upstreamClaude {
 		if !claudeNative {
 			// Raw OpenAI-format body would be invalid at the Messages API:
 			// convert to a spec-compliant Claude payload (top-level system,
@@ -552,7 +576,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			ConnectionID:   connectionID,
 			SessionID:      sessionID,
 			ToolNameMap:    claudeToolMap,
-			UpstreamClaude: isAnthropic && !claudeNative,
+			UpstreamClaude: upstreamClaude && !claudeNative,
 			ResponseBuf:    &metrics.ResponseBuf,
 			StartTime:      start,
 			TTFT:           &metrics.TTFT,
@@ -598,7 +622,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 					ConnectionID:   connectionID,
 					SessionID:      sessionID,
 					ToolNameMap:    claudeToolMap,
-					UpstreamClaude: isAnthropic && !claudeNative,
+					UpstreamClaude: upstreamClaude && !claudeNative,
 					ResponseBuf:    &metrics.ResponseBuf,
 					StartTime:      start,
 					TTFT:           &metrics.TTFT,

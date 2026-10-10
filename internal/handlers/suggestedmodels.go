@@ -155,6 +155,56 @@ func filterAirforceFree(models []map[string]any) []suggestedModel {
 	return out
 }
 
+// filterMinimaxCode reads MiniMax Code's live catalogue. Its shape is an
+// object, not a model list:
+//
+//	{providers:[{providerId:"minimax", config:{models:{<id>:{name, limit, …}}}}]}
+//
+// so the payload is unwrapped here rather than in the fetch, where every other
+// provider's filter receives a flat array.
+func filterMinimaxCode(envelopes []map[string]any) []suggestedModel {
+	for _, env := range envelopes {
+		providers, _ := env["providers"].([]any)
+		for _, raw := range providers {
+			p, ok := raw.(map[string]any)
+			if !ok || getString(p, "providerId") != "minimax" {
+				continue
+			}
+			config, _ := p["config"].(map[string]any)
+			models, _ := config["models"].(map[string]any)
+			out := make([]suggestedModel, 0, len(models))
+			for id, rawModel := range models {
+				m, ok := rawModel.(map[string]any)
+				if !ok || id == "" {
+					continue
+				}
+				sm := suggestedModel{ID: id, Name: getString(m, "name")}
+				if sm.Name == "" {
+					sm.Name = id
+				}
+				if limit, ok := m["limit"].(map[string]any); ok {
+					if clen, ok := getFloat(limit, "context"); ok && clen > 0 {
+						n := int64(clen)
+						sm.ContextLength = &n
+					}
+				}
+				out = append(out, sm)
+			}
+			sort.Slice(out, func(i, j int) bool { return contextLengthOf(out[i]) > contextLengthOf(out[j]) })
+			return out
+		}
+	}
+	return []suggestedModel{}
+}
+
+// contextLengthOf reads an optional context window for sorting.
+func contextLengthOf(m suggestedModel) int64 {
+	if m.ContextLength == nil {
+		return 0
+	}
+	return *m.ContextLength
+}
+
 // HandleSuggestedModels serves GET /api/providers/suggested-models?url=..&type=..,
 // proxying a provider's public model catalog through one of the upstream
 // FILTERS and returning { data: [...] } (empty array on any failure).
@@ -176,6 +226,8 @@ func HandleSuggestedModels(w http.ResponseWriter, r *http.Request) {
 		filter = filterMimoFree
 	case "airforce-free":
 		filter = filterAirforceFree
+	case "minimax-code":
+		filter = filterMinimaxCode
 	default:
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Unknown filter type")
 		return
@@ -208,6 +260,11 @@ func HandleSuggestedModels(w http.ResponseWriter, r *http.Request) {
 			raw = d
 		} else if d, ok := obj["models"].([]any); ok {
 			raw = d
+		} else if _, isEnvelope := obj["providers"]; isEnvelope {
+			// MiniMax Code's catalogue is an object, not a model list. It rides
+			// in as a single-element array so every filter keeps the same
+			// array-in contract and only this one unwraps it.
+			raw = []any{obj}
 		}
 	} else if arr, ok := payload.([]any); ok {
 		raw = arr
