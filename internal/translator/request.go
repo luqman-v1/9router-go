@@ -2,6 +2,7 @@ package translator
 
 import (
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/thinking"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
@@ -329,17 +330,6 @@ func fixMissingToolResponsesOpenAI(messages []OpenAIMessage) []OpenAIMessage {
 	return result
 }
 
-func budgetToEffort(budget int) string {
-	switch {
-	case budget >= 20000:
-		return "high"
-	case budget >= 5000:
-		return "medium"
-	default:
-		return "low"
-	}
-}
-
 func convertToolChoice(choiceRaw *jsontext.Value) any {
 	if choiceRaw == nil {
 		return "auto"
@@ -445,10 +435,14 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		oreq.ParallelToolCalls = new(false)
 	}
 
-	// Claude thinking config → OpenAI reasoning_effort
+	// Claude thinking config → OpenAI reasoning_effort (unified maps).
 	if creq.Thinking != nil {
 		if creq.Thinking.Type == "enabled" {
-			oreq.ReasoningEffort = budgetToEffort(creq.Thinking.Budget)
+			if lvl := thinking.BudgetToLevel(creq.Thinking.Budget); lvl != "" {
+				oreq.ReasoningEffort = lvl
+			} else {
+				oreq.ReasoningEffort = "medium"
+			}
 		} else if creq.Thinking.Type == "adaptive" {
 			effort := "high"
 			if creq.OutputConfig != nil && creq.OutputConfig.Effort != "" {
@@ -598,6 +592,7 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 			}
 		}
 	}
+
 
 	// Third pass: drop messages whose content carries nothing Anthropic accepts
 	// and repair a tail the removal promoted to an assistant turn. The rule

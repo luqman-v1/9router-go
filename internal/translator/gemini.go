@@ -1,6 +1,8 @@
 package translator
 
 import (
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/thinking"
 	"bytes"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -439,24 +441,31 @@ func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]
 		maxTokens = oreq.MaxCompletionTokens
 	}
 
-	thinkingBudget := 0
+	// Unified thinking intent, same precedence the old chain used
+	// (reasoning_effort, then thinking object, then thinking_budget).
+	probe := map[string]any{}
 	if oreq.ReasoningEffort != "" {
-		thinkingBudget = effortToBudget(oreq.ReasoningEffort)
-	} else if oreq.Thinking != nil && oreq.Thinking.BudgetTokens > 0 {
-		thinkingBudget = oreq.Thinking.BudgetTokens
-	} else if oreq.ThinkingBudget != nil && *oreq.ThinkingBudget > 0 {
-		thinkingBudget = *oreq.ThinkingBudget
+		probe["reasoning_effort"] = oreq.ReasoningEffort
 	}
-
-	if thinkingBudget > 0 {
-		genConfig["thinkingConfig"] = map[string]any{
-			"thinkingBudget":  thinkingBudget,
-			"includeThoughts": true,
+	if oreq.Thinking != nil {
+		probe["thinking"] = map[string]any{"type": oreq.Thinking.Type, "budget_tokens": oreq.Thinking.BudgetTokens}
+	}
+	if oreq.ThinkingBudget != nil {
+		probe["thinking_budget"] = *oreq.ThinkingBudget
+		probe["enable_thinking"] = true
+	}
+	intent := thinking.Extract(probe)
+	// Gemini capability rows are model patterns; provider-agnostic by design.
+	caps := providers.GetCapabilitiesForModel("", oreq.Model)
+	if tc, floor := thinking.GeminiConfig(intent, caps.ThinkingFormat, caps); tc != nil {
+		genConfig["thinkingConfig"] = tc
+		// Raise maxOutputTokens to the floor, never above caps.MaxOutput.
+		target := floor
+		if caps.MaxOutput > 0 && caps.MaxOutput < target {
+			target = caps.MaxOutput
 		}
-		// Ensure maxOutputTokens strictly exceeds thinkingBudget to prevent 400 INVALID_ARGUMENT
-		if maxTokens == nil || *maxTokens <= thinkingBudget {
-			adjustedMax := thinkingBudget + thinkingHeadroomTokens
-			maxTokens = &adjustedMax
+		if maxTokens == nil || *maxTokens < target {
+			maxTokens = &target
 		}
 	}
 	if maxTokens != nil {
@@ -561,25 +570,13 @@ func (u *toolCallIDUniquifier) next(id string) string {
 // readability and the call's index for uniqueness — two parts in one chunk are
 // emitted inside a single clock tick, so UnixNano alone collides and the client
 // cannot match a result to its call.
-// Parity with `functionCall.id || \`${name}-${Date.now()}-${index}\`` in
+// Parity with `functionCall.id || \`${name}-${Date.now()}-${index}\“ in
 // open-sse/translator/response/gemini-to-openai.js.
 func geminiToolCallID(geminiID, name string, index int) string {
 	if geminiID != "" {
 		return geminiID
 	}
 	return fmt.Sprintf("call_%s_%d_%d", name, time.Now().UnixNano(), index)
-}
-
-// effortToBudget converts reasoning_effort string to thinking budget tokens.
-func effortToBudget(effort string) int {
-	switch effort {
-	case "high":
-		return 32000
-	case "medium":
-		return 16000
-	default:
-		return 8000
-	}
 }
 
 // ─── Gemini Response → OpenAI ───
