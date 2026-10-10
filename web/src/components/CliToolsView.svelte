@@ -53,6 +53,14 @@
     loadStatuses()
   })
 
+  // What the guide cards paste. With no key on the instance the snippet still
+  // has to be shaped like a real config, so it carries an explicit
+  // placeholder rather than an empty string (an empty apiKey makes pi treat
+  // the provider as unauthenticated) and the card says why it is a placeholder.
+  const API_KEY_PLACEHOLDER = '<your-9router-api-key>'
+  let snippetApiKey = $derived(apiKeys[0]?.key || API_KEY_PLACEHOLDER)
+  let noApiKey = $derived(!apiKeys[0]?.key)
+
   async function loadStatuses() {
     isLoading = true
     try {
@@ -405,10 +413,12 @@
       configType: 'guide',
       instructions: [
         `Add a 9router-go provider to ~/.pi/agent/models.json (Windows: %USERPROFILE%\\.pi\\agent\\models.json):`,
-        `{"providers":{"9router":{"baseUrl":"${localOrigin}/v1","api":"openai-completions","apiKey":"${effectiveApiKey}","models":[{"id":"kr/claude-sonnet-4.5","name":"9router kr/claude-sonnet-4.5","reasoning":true,"contextWindow":200000,"maxTokens":64000}]}}}`,
-        `Run 'pi', then /model to pick the model — models.json is re-read without a restart.`,
+        `{"providers":{"9router":{"baseUrl":"${localOrigin}/v1","api":"openai-completions","apiKey":"${snippetApiKey}","models":[{"id":"kr/claude-sonnet-4.5","name":"9router kr/claude-sonnet-4.5","reasoning":true,"contextWindow":200000,"maxTokens":64000}]}}}`,
+        noApiKey
+          ? `No API key exists yet — open API Keys, create one, then reopen this card. Pasting the line as-is will send "<your-9router-api-key>" upstream and get 401.`
+          : `Run 'pi', then /model to pick the model — models.json is re-read without a restart.`,
         `If the model does not show up, set "api" to "openai-responses"; the gateway serves both lanes.`,
-        `List every routable id with: curl -s ${localOrigin}/v1/models -H "Authorization: Bearer ${effectiveApiKey}"`,
+        `List every routable id with: curl -s ${localOrigin}/v1/models -H "Authorization: Bearer ${snippetApiKey}"`,
       ],
     },
     {
@@ -422,7 +432,9 @@
       instructions: [
         `Add a 9router-go provider to ~/.omp/agent/models.yml (profiles live in ~/.omp/profiles/<name>/agent/):`,
         `providers:\n  9router:\n    baseUrl: ${localOrigin}/v1\n    api: openai-completions\n    authHeader: true\n    apiKey: 9ROUTER_API_KEY\n    models:\n      - id: kr/claude-sonnet-4.5\n        name: 9router kr/claude-sonnet-4.5\n        reasoning: true\n        contextWindow: 200000\n        maxTokens: 64000`,
-        `export 9ROUTER_API_KEY="${effectiveApiKey}" before starting 'omp' — the key is read from the environment first, and an unset variable is sent as its literal name.`,
+        noApiKey
+          ? `No API key exists yet — open API Keys, create one, then reopen this card; 9ROUTER_API_KEY has to be set to that key before 'omp' can authenticate.`
+          : `export 9ROUTER_API_KEY="${snippetApiKey}" before starting 'omp' — the key is read from the environment first, and an unset variable is sent as its literal name.`,
         `Run 'omp', then /model to select the model. 'omp models' lists everything the gateway exposes.`,
         `Use api: openai-responses instead if a model does not stream correctly over Chat Completions.`,
       ],
@@ -439,7 +451,7 @@
     })
   )
 
-  let effectiveApiKey = $derived(apiKeys[0]?.key || 'sk-8b71f86e0a1f2fb5-nhz496-cfa1c800')
+  let effectiveApiKey = $derived(apiKeys[0]?.key || '')
 
   function copyText(text: string, id: string) {
     copyToClipboard(text)
@@ -703,7 +715,7 @@
               type="button"
               onclick={() => {
                 const lines = Object.entries(selectedTool?.envVars || {})
-                  .map(([k, v]) => `export ${k}="${k.includes('KEY') ? effectiveApiKey : v}"`)
+                  .map(([k, v]) => `export ${k}="${k.includes('KEY') ? snippetApiKey : v}"`)
                   .join('\n')
                 copyText(lines, 'all-env')
               }}
@@ -722,10 +734,10 @@
           <div class="p-3 rounded-xl bg-bg border border-border font-mono text-xs text-text-main space-y-1.5 select-all">
             {#each Object.entries(selectedTool.envVars) as [key, val]}
               <div class="flex items-center justify-between gap-2">
-                <span class="text-text-muted">export {key}="<span class="text-brand-400">{key.includes('KEY') ? effectiveApiKey : val}</span>"</span>
+                <span class="text-text-muted">export {key}="<span class="text-brand-400">{key.includes('KEY') ? snippetApiKey : val}</span>"</span>
                 <button
                   type="button"
-                  onclick={() => copyText(`export ${key}="${key.includes('KEY') ? effectiveApiKey : val}"`, key)}
+                  onclick={() => copyText(`export ${key}="${key.includes('KEY') ? snippetApiKey : val}"`, key)}
                   class="p-1 text-text-subtle hover:text-text-main cursor-pointer"
                   title="Copy single variable"
                 >
@@ -764,7 +776,7 @@
       <div class="flex items-center justify-between pt-3 border-t border-border">
         <div class="flex items-center gap-1.5 text-xs text-text-subtle font-mono">
           <Key class="w-3.5 h-3.5 text-brand-500" />
-          <span>Active Token: {effectiveApiKey.slice(0, 10)}••••</span>
+          <span>Active Token: {noApiKey ? 'none created' : `${effectiveApiKey.slice(0, 10)}••••`}</span>
         </div>
 
         <button
