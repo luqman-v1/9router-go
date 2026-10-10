@@ -284,3 +284,103 @@ func TestApplyDisplay(t *testing.T) {
 		t.Fatalf("display lost: %+v", out["thinking"])
 	}
 }
+
+// TestApplyZaiPorted pins every expectation the retired ForwardZai rewrite
+// (internal/proxy/executor/zai.go) encoded, now owned by the unified writer.
+func TestApplyZaiPorted(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		in    string
+		want  map[string]any
+	}{
+		{
+			"glm-5.3 clamps none to low", "glm-5.3",
+			`{"model":"glm-5.3","reasoning_effort":"none"}`,
+			map[string]any{"reasoning_effort": "low", "thinking": map[string]any{"type": "enabled"}},
+		},
+		{
+			"glm-5.3-flash clamps none, drops effort", "glm-5.3-flash",
+			`{"model":"glm-5.3-flash","reasoning_effort":"none"}`,
+			map[string]any{"thinking": map[string]any{"type": "enabled"}},
+		},
+		{
+			"glm-5.2 clamps none", "glm-5.2",
+			`{"model":"glm-5.2","reasoning_effort":"none"}`,
+			map[string]any{"thinking": map[string]any{"type": "enabled"}},
+		},
+		{
+			"switchable model disables via enable_thinking", "glm-4.6v",
+			`{"model":"glm-4.6v","reasoning_effort":"none"}`,
+			map[string]any{"enable_thinking": false},
+		},
+		{
+			"off reads as none", "glm-4.6v",
+			`{"model":"glm-4.6v","reasoning_effort":"off"}`,
+			map[string]any{"enable_thinking": false},
+		},
+		{
+			"medium maps to high", "glm-5.3",
+			`{"model":"glm-5.3","reasoning_effort":"medium"}`,
+			map[string]any{"reasoning_effort": "high", "thinking": map[string]any{"type": "enabled"}},
+		},
+		{
+			"xhigh becomes max", "glm-5.3",
+			`{"model":"glm-5.3","reasoning_effort":"xhigh"}`,
+			map[string]any{"reasoning_effort": "max", "thinking": map[string]any{"type": "enabled"}},
+		},
+		{
+			"older model drops reasoning_effort", "glm-4.6v",
+			`{"model":"glm-4.6v","reasoning_effort":"high"}`,
+			map[string]any{"thinking": map[string]any{"type": "enabled"}},
+		},
+		{
+			"claude disabled becomes enable_thinking", "glm-4.6v",
+			`{"model":"glm-4.6v","thinking":{"type":"disabled"}}`,
+			map[string]any{"enable_thinking": false},
+		},
+		{
+			"nested reasoning consumed", "glm-5.3",
+			`{"model":"glm-5.3","reasoning":{"effort":"high"}}`,
+			map[string]any{"reasoning": nil, "reasoning_effort": "high", "thinking": map[string]any{"type": "enabled"}},
+		},
+		{
+			"output_config wins", "glm-5.3",
+			`{"model":"glm-5.3","output_config":{"effort":"low"},"reasoning_effort":"high"}`,
+			map[string]any{"reasoning_effort": "low", "thinking": map[string]any{"type": "enabled"}},
+		},
+		{
+			"non reasoning stripped", "gpt-4o",
+			`{"model":"gpt-4o","reasoning_effort":"high"}`,
+			map[string]any{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := apply("openai", "", tt.model, mustUnmarshal(t, tt.in), nil)
+			for _, key := range []string{"thinking", "reasoning_effort", "enable_thinking", "reasoning"} {
+				if !sameValue(out[key], tt.want[key]) {
+					t.Errorf("%s = %#v, want %#v (full: %#v)", key, out[key], tt.want[key], out)
+				}
+			}
+		})
+	}
+}
+
+func mustUnmarshal(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return m
+}
+
+func sameValue(a, b any) bool {
+	ab, errA := json.Marshal(a)
+	bb, errB := json.Marshal(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return string(ab) == string(bb)
+}
