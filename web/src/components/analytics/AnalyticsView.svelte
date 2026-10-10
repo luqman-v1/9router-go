@@ -279,10 +279,13 @@
     if (nodeName) return nodeName
     const cat = PROVIDER_CATALOG.find((p) => p.id === providerId || p.alias === providerId)
     if (cat?.name) return cat.name
+    // Only fall back to the connection label if it isn't a numeric ID (a
+    // connection label like "12") and isn't an OAuth account email: an email
+    // is the connection's identity, not the provider's name, so it must never
+    // stand in as the topology node label even with privacy masking off.
     if (fallbackName && fallbackName !== providerId) {
-      // Numeric key names (e.g. "12") are connection labels, not provider names —
-      // fall back to the raw provider id so custom nodes never render as "12".
-      if (!/^\d+$/.test(fallbackName.trim())) return formatEmailLabel(fallbackName, $emailPrivacy)
+      const trimmed = fallbackName.trim()
+      if (!/^\d+$/.test(trimmed) && !trimmed.includes('@')) return formatEmailLabel(fallbackName, $emailPrivacy)
       return providerId
     }
     return providerId

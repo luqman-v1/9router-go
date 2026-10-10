@@ -49,6 +49,12 @@ func ProvideDatabase(lc fx.Lifecycle, cfg *config.Config) (*sql.DB, error) {
 		}
 	}
 
+	// Best-effort: a row stuck on a provider id the catalog dropped should
+	// not block startup, it should just keep failing the way it already was.
+	if err := db.MigrateLegacyProviderIDs(conn); err != nil {
+		log.Warn("db", "legacy provider id migration failed", "error", err)
+	}
+
 	// Cross-process lease table for upstream coordination (Freebuff
 	// sessions, future scopes). Idempotent: no-op when already present,
 	// invisible to dashboards that do not know the table. Best-effort:
