@@ -234,6 +234,104 @@ export interface TunnelStatusResponse {
   }
 }
 
+// --- Hermes per-profile configuration (upstream decolua/9router#4660) ---
+
+/** One Hermes profile as reported by `GET /api/cli-tools/hermes-profiles`. */
+export interface HermesProfile {
+  name: string
+  dir: string
+  isDefault: boolean
+  displayName: string | null
+  command: string
+  alias: string | null
+  model: string | null
+  baseUrl: string | null
+  has9Router: boolean
+}
+
+export interface HermesProfilesResponse {
+  profiles: HermesProfile[]
+}
+
+/** The top-level `model:` block of `~/.hermes/config.yaml`. */
+export interface HermesModelBlock {
+  default: string
+  provider: string
+  base_url: string
+  api_key: string
+}
+
+/** The top-level `delegation:` block. */
+export interface HermesDelegationBlock {
+  model: string
+  provider: string
+  base_url: string
+}
+
+/** One entry of the `auxiliary:` map, keyed by role id. */
+export interface HermesAuxRole {
+  model: string
+  provider: string
+  base_url: string
+}
+
+export interface HermesSettings {
+  model: HermesModelBlock | null
+  delegation: HermesDelegationBlock | null
+  auxiliary: Record<string, HermesAuxRole>
+}
+
+export interface HermesSettingsResponse {
+  installed: boolean
+  profile?: { name: string; dir: string; isDefault: boolean }
+  settings: HermesSettings | null
+  has9Router?: boolean
+  configPath?: string
+  message?: string
+}
+
+/** One `{ role, model }` pair in an apply payload. `default` is the main block. */
+export interface HermesSelection {
+  role: string
+  model: string
+}
+
+export interface HermesApplyPayload {
+  profile?: string
+  baseUrl: string
+  apiKey?: string | null
+  model?: string
+  selections?: HermesSelection[]
+  applyToAll?: boolean
+}
+
+export interface HermesApplyResult {
+  profile: string
+  status: 'updated' | 'skipped' | 'failed'
+  reason?: string
+}
+
+export interface HermesApplyResponse {
+  success: boolean
+  bulk?: boolean
+  results?: HermesApplyResult[]
+  updated?: number
+  skipped?: number
+  message?: string
+  error?: string
+  profile?: { name: string; dir: string; isDefault: boolean }
+  configPath?: string
+}
+
+export interface HermesResetResponse {
+  success: boolean
+  profile?: string
+  removed?: { model: boolean; delegation: boolean; auxiliary: string[] }
+  kept?: string[]
+  message?: string
+  error?: string
+}
+
 export interface HeadroomStatusResponse {
   installed?: boolean
   running?: boolean
@@ -729,6 +827,21 @@ export function handleUnauthorized(path?: string) {
   }, 50)
 }
 
+/**
+ * A non-2xx API response. `status` rides along with the message because a
+ * caller branching on 404 (a vanished resource) cannot recover the code from
+ * the text — the message is written for humans and can change.
+ */
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = {
     ...getAuthHeaders(),
@@ -738,7 +851,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (res.status === 401) {
     handleUnauthorized(path)
   }
-  if (!res.ok) throw new Error(await responseErrorMessage(res))
+  if (!res.ok) throw new ApiError(await responseErrorMessage(res), res.status)
   return res.json()
 }
 
@@ -1541,6 +1654,36 @@ export const api = {
     request<Record<string, { installed?: boolean; version?: string | null; has9Router?: boolean } | null>>(
       '/api/cli-tools/all-statuses'
     ).catch(() => ({})),
+
+  // Hermes per-profile configuration.
+  // Hermes is usually absent, so the profile list degrades to an empty list
+  // exactly like the status map above — the card hides its profile picker then.
+  getHermesProfiles: () =>
+    request<HermesProfilesResponse>('/api/cli-tools/hermes-profiles').catch(() => ({ profiles: [] })),
+  getHermesSettings: (profile?: string) =>
+    request<HermesSettingsResponse>(
+      `/api/cli-tools/hermes-settings${profile ? `?profile=${encodeURIComponent(profile)}` : ''}`
+    ),
+  // `applyToAll` carries the endpoint to every 9router-wired profile; the
+  // client splits it out because the two shapes share one endpoint.
+  applyHermesSettings: (payload: HermesApplyPayload) =>
+    request<HermesApplyResponse>('/api/cli-tools/hermes-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  applyHermesToAll: (payload: HermesApplyPayload) =>
+    request<HermesApplyResponse>('/api/cli-tools/hermes-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, applyToAll: true }),
+    }),
+  resetHermesSettings: (profile?: string) =>
+    request<HermesResetResponse>('/api/cli-tools/hermes-settings', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(profile ? { profile } : {}),
+    }),
   // Auth
   checkRequireLogin: async (): Promise<RequireLoginResponse> => {
     try {

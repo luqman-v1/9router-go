@@ -22,6 +22,7 @@
   import Card from '../lib/ui/Card.svelte'
   import { copyToClipboard } from '../lib/clipboard'
   import { api, type APIKey } from '../api/client'
+  import HermesToolCard from './cli-tools/HermesToolCard.svelte'
 
   interface Props {
     apiKeys?: APIKey[]
@@ -706,70 +707,75 @@
         </button>
       </div>
 
-      <!-- Quick Copy Snippet (if env variables available) -->
-      {#if selectedTool.envVars}
-        <div class="space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-bold text-text-main">One-Click Environment Setup</span>
-            <button
-              type="button"
-              onclick={() => {
-                const lines = Object.entries(selectedTool?.envVars || {})
-                  .map(([k, v]) => `export ${k}="${k.includes('KEY') ? snippetApiKey : v}"`)
-                  .join('\n')
-                copyText(lines, 'all-env')
-              }}
-              class="flex items-center gap-1 text-xs font-semibold text-brand-500 hover:opacity-80 cursor-pointer"
-            >
-              {#if copiedSnippetId === 'all-env'}
-                <Check class="w-3.5 h-3.5 text-success" />
-                <span>Copied!</span>
-              {:else}
-                <Copy class="w-3.5 h-3.5" />
-                <span>Copy Export Commands</span>
-              {/if}
-            </button>
-          </div>
+      <!-- Hermes has per-profile settings the generic env snippet cannot express. -->
+      {#if selectedTool.id === 'hermes'}
+        <HermesToolCard installed={!!statuses.hermes?.installed} {apiKeys} />
+      {:else}
+        <!-- Quick Copy Snippet (if env variables available) -->
+        {#if selectedTool.envVars}
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-text-main">One-Click Environment Setup</span>
+              <button
+                type="button"
+                onclick={() => {
+                  const lines = Object.entries(selectedTool?.envVars || {})
+                    .map(([k, v]) => `export ${k}="${k.includes('KEY') ? snippetApiKey : v}"`)
+                    .join('\n')
+                  copyText(lines, 'all-env')
+                }}
+                class="flex items-center gap-1 text-xs font-semibold text-brand-500 hover:opacity-80 cursor-pointer"
+              >
+                {#if copiedSnippetId === 'all-env'}
+                  <Check class="w-3.5 h-3.5 text-success" />
+                  <span>Copied!</span>
+                {:else}
+                  <Copy class="w-3.5 h-3.5" />
+                  <span>Copy Export Commands</span>
+                {/if}
+              </button>
+            </div>
 
-          <div class="p-3 rounded-xl bg-bg border border-border font-mono text-xs text-text-main space-y-1.5 select-all">
-            {#each Object.entries(selectedTool.envVars) as [key, val]}
-              <div class="flex items-center justify-between gap-2">
-                <span class="text-text-muted">export {key}="<span class="text-brand-400">{key.includes('KEY') ? snippetApiKey : val}</span>"</span>
-                <button
-                  type="button"
-                  onclick={() => copyText(`export ${key}="${key.includes('KEY') ? snippetApiKey : val}"`, key)}
-                  class="p-1 text-text-subtle hover:text-text-main cursor-pointer"
-                  title="Copy single variable"
-                >
-                  {#if copiedSnippetId === key}
-                    <Check class="w-3 h-3 text-success" />
-                  {:else}
-                    <Copy class="w-3 h-3" />
-                  {/if}
-                </button>
-              </div>
-            {/each}
+            <div class="p-3 rounded-xl bg-bg border border-border font-mono text-xs text-text-main space-y-1.5 select-all">
+              {#each Object.entries(selectedTool.envVars) as [key, val]}
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-text-muted">export {key}="<span class="text-brand-400">{key.includes('KEY') ? snippetApiKey : val}</span>"</span>
+                  <button
+                    type="button"
+                    onclick={() => copyText(`export ${key}="${key.includes('KEY') ? snippetApiKey : val}"`, key)}
+                    class="p-1 text-text-subtle hover:text-text-main cursor-pointer"
+                    title="Copy single variable"
+                  >
+                    {#if copiedSnippetId === key}
+                      <Check class="w-3 h-3 text-success" />
+                    {:else}
+                      <Copy class="w-3 h-3" />
+                    {/if}
+                  </button>
+                </div>
+              {/each}
+            </div>
           </div>
-        </div>
-      {/if}
+        {/if}
 
-      <!-- Step-by-Step Instructions -->
-      {#if selectedTool.instructions}
-        <div class="space-y-2">
-          <span class="text-xs font-bold text-text-main">Setup Instructions</span>
-          <div class="space-y-2 text-xs">
-            {#each selectedTool.instructions as step, idx}
-              <div class="flex items-start gap-2.5 p-2.5 rounded-lg bg-surface-2 border border-border/60">
-                <span class="w-5 h-5 rounded-full bg-brand-500/10 text-brand-500 font-bold flex items-center justify-center text-[10px] shrink-0 mt-0.5">
-                  {idx + 1}
-                </span>
-                <span class="text-text-muted leading-relaxed select-text flex-1">
-                  {step}
-                </span>
-              </div>
-            {/each}
+        <!-- Step-by-Step Instructions -->
+        {#if selectedTool.instructions}
+          <div class="space-y-2">
+            <span class="text-xs font-bold text-text-main">Setup Instructions</span>
+            <div class="space-y-2 text-xs">
+              {#each selectedTool.instructions as step, idx}
+                <div class="flex items-start gap-2.5 p-2.5 rounded-lg bg-surface-2 border border-border/60">
+                  <span class="w-5 h-5 rounded-full bg-brand-500/10 text-brand-500 font-bold flex items-center justify-center text-[10px] shrink-0 mt-0.5">
+                    {idx + 1}
+                  </span>
+                  <span class="text-text-muted leading-relaxed select-text flex-1">
+                    {step}
+                  </span>
+                </div>
+              {/each}
+            </div>
           </div>
-        </div>
+        {/if}
       {/if}
 
       <!-- Footer -->
