@@ -75,6 +75,10 @@ var ProviderModels = map[string][]string{
 	"featherless":          {"deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Flash", "zai-org/GLM-5.2", "zai-org/GLM-5.1", "moonshotai/Kimi-K2.7-Code", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.5"},
 	"fireworks":            {"accounts/fireworks/models/deepseek-v3p1", "accounts/fireworks/models/llama-v3p3-70b-instruct", "accounts/fireworks/models/qwen3-235b-a22b", "nomic-ai/nomic-embed-text-v1.5"},
 	"fl":                   {"deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Flash", "zai-org/GLM-5.2", "zai-org/GLM-5.1", "moonshotai/Kimi-K2.7-Code", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.5"},
+	// ElevenLabs declares one catalogue for both service kinds, so the STT ids
+	// sit beside the TTS ones (open-sse/providers/registry/elevenlabs.js models[]).
+	"elevenlabs": {"eleven_multilingual_v2", "eleven_turbo_v2_5", "scribe_v1", "scribe_v2"},
+	"el":         {"eleven_multilingual_v2", "eleven_turbo_v2_5", "scribe_v1", "scribe_v2"},
 	"gc":                   {"gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"},
 	"gcli":                 {"grok-build", "grok-4.5", "grok-4.5-high", "grok-4.5-medium", "grok-4.5-low"},
 	"gemini":               {"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemma-4-31b-it", "gemini-embedding-2-preview", "gemini-embedding-001", "text-embedding-005", "text-embedding-004", "gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview", "gemini-2.5-flash-image", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash-native-audio-preview-09-17", "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts", "embedding-001"},
@@ -276,6 +280,16 @@ var ProviderModelKinds = map[string]map[string]string{
 		"nova-2":        "stt",
 		"nova-3":        "stt",
 		"whisper-large": "stt",
+	},
+	// Only the STT ids appear here: this map covers the non-chat kinds, and the
+	// TTS ids are resolved through their own catalogue key upstream.
+	"elevenlabs": {
+		"scribe_v1": "stt",
+		"scribe_v2": "stt",
+	},
+	"el": {
+		"scribe_v1": "stt",
+		"scribe_v2": "stt",
 	},
 	"fal": {
 		"fal-ai/flux-pro/v1.1":              "image",

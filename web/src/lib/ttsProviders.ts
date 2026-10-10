@@ -6,7 +6,7 @@ export interface TTSProviderConfig {
   hasStyleInput?: boolean
   hasLanguageHint?: boolean
   languageOptions?: string[]
-  voiceSource?: 'hardcoded' | 'api-language' | 'config'
+  voiceSource?: 'hardcoded' | 'api-language' | 'config' | 'manual'
   modelKey?: string
   voiceKey?: string
   voicesPerModel?: boolean
@@ -53,6 +53,13 @@ export const TTS_PROVIDER_CONFIG: Record<string, TTSProviderConfig> = {
     hasModelSelector: false,
     hasBrowseButton: true,
     voiceSource: 'api-language',
+  },
+  'selfhosted-tts': {
+    hasModelSelector: true,
+    hasVoiceIdInput: true,
+    hasBrowseButton: false,
+    // model and voice are typed by hand; the connected server decides what exists
+    voiceSource: 'manual',
   },
   'local-device': {
     hasLanguageDropdown: false,

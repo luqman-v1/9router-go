@@ -1,0 +1,17 @@
+### Features
+
+- **Kimi**: a `/v1/responses` client now reaches Kimi Code's native `/coding/v1/responses` lane instead of being downgraded to the single Chat Completions URL. Kimi serves the OpenAI Responses API on the same key as chat, so the transport is picked per request — the lane the client already speaks when the model declares it, the model's target lane otherwise — mirroring upstream's `transports[]` table (`3125ac2b`). The lane URL is derived from the registry entry or a connection override, so a custom base URL keeps working.
+
+- **Codex images**: `/v1/images/generations` for a Codex image model is answered from the Responses API. The catalogued `gpt-image-*` and `*-image` ids were unroutable: the request was forwarded to an `/v1/images/generations` endpoint the ChatGPT backend does not serve, and the turn was recorded with zero tokens. The lane now posts an `image_generation` tool call, streams the result frame by frame, and records the exact `input_tokens`/`output_tokens`/`cached_tokens`/`reasoning_tokens` the upstream reported — on both the collecting and the streaming path, which is what `e10da160` fixed upstream. A turn that yields no image is an error and records nothing, rather than a zero row indistinguishable from a free one.
+
+- **ElevenLabs Scribe STT**: `scribe_v1` and `scribe_v2` are usable through `/v1/audio/transcriptions`. ElevenLabs speaks its own multipart protocol (`model_id`, `xi-api-key`, `language_code`, diarization, `additional_formats` renderings) and rejected the generic OpenAI-compatible body, so the provider now has a dedicated lane with the Scribe parameter rules: a blank language is omitted so the vendor auto-detects, `timestamps_granularity` only for `word|character|none`, and `diarize` wins over `num_speakers` because upstream treats them as mutually exclusive. Requested srt/vtt/segment renders are served verbatim and never synthesized (`2f827bcf`, #4537). The example card gained the four matching controls.
+
+### Fixes
+
+- **Gemini**: a tool result carrying a JSON Schema or OpenAPI document is no longer rejected. Gemini reads a `$ref` key inside `functionResponse.response` as a pointer into `functionResponse.parts` and answers 400 `INVALID_ARGUMENT` when the name does not resolve, so an ordinary webfetch or MCP result failed the whole turn. The key is now renamed on the way out, recursively and only where it occurs; every other field is untouched (`625df74b`).
+
+- **Strict Responses reasoning**: an explicit `reasoning_effort: "none"` is expressed by removing the `reasoning` field rather than by sending an effort named `none`, which asks a model to think at the lowest level instead of not to think — and is billable. The top-level `reasoning_effort` is still folded into the nested `reasoning: {effort, summary}` shape the Muse and OpenCode-Zen lanes require (`b00ba1aa`).
+
+- **Combo picker**: a compatible provider node that has user-added custom models is now selectable even without a stored connection. Local and self-hosted endpoints do not always need an API key, so gating on connections hid models the user had already added. A node with nothing to show is still hidden, and the exception applies only to the LLM half of the picker (`6a1573eb`, #4659).
+
+- **Self-hosted TTS example**: the model and voice are typed by hand instead of picked from a catalogue, because a self-hosted server decides what it serves. The voice is optional and appended only when non-empty (`ee323400`).

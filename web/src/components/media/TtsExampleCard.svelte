@@ -146,6 +146,13 @@
 
   let modelFull = $derived.by(() => {
     const alias = providerId
+    // Upstream parity (ee323400): a self-hosted server decides which models and
+    // voices exist, so both halves are typed by hand and the voice is optional.
+    if (providerId === 'selfhosted-tts') {
+      const model = selectedModel.trim()
+      const voice = activeVoiceId.trim()
+      return model ? `${alias}/${model}${voice ? `/${voice}` : ''}` : ''
+    }
     if (config.hasModelSelector && selectedModel && activeVoiceId) return `${alias}/${selectedModel}/${activeVoiceId}`
     if (config.hasModelSelector && selectedModel) return `${alias}/${selectedModel}`
     if (activeVoiceId) return `${alias}/${activeVoiceId}`
@@ -260,7 +267,18 @@
     </div>
 
     <!-- Model Selector (if supported) -->
-    {#if config.hasModelSelector}
+    {#if providerId === 'selfhosted-tts'}
+      <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+        <span class="w-full text-xs font-medium text-text-muted sm:w-24 sm:shrink-0">Model</span>
+        <div class="w-full min-w-0 flex-1">
+          <input
+            bind:value={selectedModel}
+            placeholder="e.g. kokoro or Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16"
+            class="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main font-mono"
+          />
+        </div>
+      </div>
+    {:else if config.hasModelSelector}
       <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
         <span class="w-full text-xs font-medium text-text-muted sm:w-24 sm:shrink-0">Model</span>
         <div class="w-full min-w-0 flex-1">
@@ -333,7 +351,7 @@
         <div class="w-full min-w-0 flex-1">
           <input
             bind:value={voiceId}
-            placeholder="Custom voice ID or name..."
+            placeholder={providerId === 'selfhosted-tts' ? 'e.g. af_heart or vivian (optional)' : 'Custom voice ID or name...'}
             class="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main font-mono"
           />
         </div>

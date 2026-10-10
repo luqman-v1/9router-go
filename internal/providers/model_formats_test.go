@@ -58,3 +58,36 @@ func TestGetModelFormats_CuratedDeepSeekIsChatOnly(t *testing.T) {
 		t.Errorf("an unfetched deepseek id keeps the family fallback, got %+v", fallback)
 	}
 }
+
+// Kimi Code serves both lanes off one key, so a /v1/responses client is routed
+// to /responses instead of being downgraded to the single chat URL.
+func TestGetModelFormats_KimiDeclaresResponsesLane(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		model    string
+	}{
+		{"flagship", "kimi", "kimi-k3"},
+		{"code subscription id", "kimi", "k3"},
+		{"pay-as-you-go id", "kimi", "kimi-k2.5"},
+		{"thinking suffix hits the base entry", "kimi", "kimi-k2.5-thinking(max)"},
+		{"legacy provider id", "kimi-coding", "kimi-for-coding"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, declared := GetModelFormats(tt.provider, tt.model)
+			if !declared {
+				t.Fatalf("kimi models must declare a format contract")
+			}
+			if got.TargetFormat != FormatOpenAIResponses {
+				t.Errorf("TargetFormat = %q, want %q", got.TargetFormat, FormatOpenAIResponses)
+			}
+			if !got.SupportsFormat(FormatOpenAIResponses) {
+				t.Errorf("expected %q among supported formats %v", FormatOpenAIResponses, got.SupportedFormats)
+			}
+			if !got.SupportsFormat(FormatOpenAI) {
+				t.Errorf("a chat client must keep its own lane, got %v", got.SupportedFormats)
+			}
+		})
+	}
+}

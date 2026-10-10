@@ -728,7 +728,11 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "xi-api-key",
 		AuthScheme: "raw",
 		TTSURL:     "https://api.elevenlabs.io/v1/text-to-speech",
-		VoicesURL:  "https://api.elevenlabs.io/v1/voices",
+		// Scribe STT is a multipart endpoint with its own auth header and its own
+		// render formats, so it cannot ride the OpenAI-compatible transcriptions
+		// lane the rest of the media handlers use.
+		STTURL:    "https://api.elevenlabs.io/v1/speech-to-text",
+		VoicesURL: "https://api.elevenlabs.io/v1/voices",
 	},
 	"deepgram": {
 		BaseURL:    "https://api.deepgram.com",

@@ -238,3 +238,89 @@ func TestNormalizeZenResponsesBody_StripsReasoningContinuity(t *testing.T) {
 		t.Errorf("muse-spark-1.3 must send an explicit auto tool_choice: %s", out)
 	}
 }
+
+// The strict Responses APIs upstream of this lane reject a top-level
+// reasoning_effort, so every effort has to be nested — and "none" has no nested
+// form, so it must remove the field rather than send an effort the model would
+// happily charge for.
+func TestNormalizeZenResponsesBody_ReasoningShapes(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantEff string
+		wantSum any
+		wantNo  bool
+	}{
+		{
+			name:    "chat effort nests with an auto summary",
+			input:   `{"model":"muse-spark-1.3","reasoning_effort":"high"}`,
+			wantEff: "high",
+			wantSum: "auto",
+		},
+		{
+			name:    "none removes the reasoning field entirely",
+			input:   `{"model":"muse-spark-1.3","reasoning_effort":"none"}`,
+			wantNo:  true,
+			wantSum: nil,
+		},
+		{
+			name:    "none is case and space insensitive",
+			input:   `{"model":"muse-spark-1.3","reasoning_effort":" None "}`,
+			wantNo:  true,
+			wantSum: nil,
+		},
+		{
+			name:    "an existing summary is preserved",
+			input:   `{"model":"muse-spark-1.3","reasoning_effort":"low","reasoning":{"summary":"detailed"}}`,
+			wantEff: "low",
+			wantSum: "detailed",
+		},
+		{
+			name:    "none drops a reasoning object the client had set too",
+			input:   `{"model":"muse-spark-1.3","reasoning_effort":"none","reasoning":{"effort":"max","summary":"auto"}}`,
+			wantNo:  true,
+			wantSum: nil,
+		},
+		{
+			name:    "a request with no effort is left alone",
+			input:   `{"model":"muse-spark-1.3"}`,
+			wantSum: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := normalizeZenResponsesBody([]byte(tt.input), "muse-spark-1.3")
+			if err != nil {
+				t.Fatalf("normalize: %v", err)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(out, &m); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if _, ok := m["reasoning_effort"]; ok {
+				t.Fatalf("a top-level reasoning_effort must never reach a strict Responses lane: %s", out)
+			}
+			reasoning, present := m["reasoning"]
+			if tt.wantNo {
+				if present {
+					t.Fatalf("reasoning must be removed for effort none, got %v: %s", reasoning, out)
+				}
+				return
+			}
+			if tt.wantEff == "" {
+				return
+			}
+			rm, ok := reasoning.(map[string]any)
+			if !ok {
+				t.Fatalf("reasoning = %v, want a nested object: %s", reasoning, out)
+			}
+			if rm["effort"] != tt.wantEff {
+				t.Errorf("reasoning.effort = %v, want %q", rm["effort"], tt.wantEff)
+			}
+			if rm["summary"] != tt.wantSum {
+				t.Errorf("reasoning.summary = %v, want %v", rm["summary"], tt.wantSum)
+			}
+		})
+	}
+}

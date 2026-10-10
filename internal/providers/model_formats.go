@@ -18,6 +18,8 @@ const (
 // transport its base URL already names.
 var ProviderModelFormats = map[string]map[string]ModelFormats{
 	"muse":        museModelFormats,
+	"kimi":        kimiModelFormats,
+	"kimi-coding": kimiModelFormats,
 	"ocz":         openCodeZenModelFormats,
 	"opencode-zen": openCodeZenModelFormats,
 }
@@ -32,6 +34,34 @@ var museModelFormats = map[string]ModelFormats{
 	"muse-spark-1.1":           {TargetFormat: FormatOpenAIResponses, SupportedFormats: []string{FormatOpenAIResponses}},
 	"muse-spark-1.3-contributor": {TargetFormat: FormatOpenAIResponses, SupportedFormats: []string{FormatOpenAIResponses}},
 	"muse-spark-1.2-contributor": {TargetFormat: FormatOpenAIResponses, SupportedFormats: []string{FormatOpenAIResponses}},
+}
+
+// kimiFormats is the contract every Kimi Code model declares. Kimi Code
+// natively serves the OpenAI Responses API (Codex wire_api = "responses") off
+// the same key as Chat Completions, so a client speaking either lane is
+// forwarded to it untouched; Responses is the target lane for a client whose
+// format matches neither. Upstream's registry models[] entries carry no
+// supportedFormats, which is why the sourceFormat-matched transport wins for
+// both lanes here (open-sse/handlers/chatCore.js resolveTransport).
+func kimiFormats() ModelFormats {
+	return ModelFormats{
+		TargetFormat:     FormatOpenAIResponses,
+		SupportedFormats: []string{FormatOpenAI, FormatOpenAIResponses},
+	}
+}
+
+// kimiModelFormats mirrors open-sse/providers/registry/kimi.js models[].
+var kimiModelFormats = map[string]ModelFormats{
+	"kimi-k3":                   kimiFormats(),
+	"k3":                        kimiFormats(),
+	"kimi-for-coding":           kimiFormats(),
+	"kimi-for-coding-highspeed": kimiFormats(),
+	"kimi-k2.7-code":            kimiFormats(),
+	"kimi-k2.7-code-highspeed":  kimiFormats(),
+	"kimi-k2.6":                 kimiFormats(),
+	"kimi-k2.5":                 kimiFormats(),
+	"kimi-k2.5-thinking":        kimiFormats(),
+	"kimi-latest":               kimiFormats(),
 }
 
 // ModelFormats is one registry model's declared format contract.

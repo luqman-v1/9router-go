@@ -1018,7 +1018,7 @@ func NormalizeGeminiContents(contents []GeminiContent) []GeminiContent {
 			if isGeminiPartEmpty(p) {
 				continue
 			}
-			validParts = append(validParts, p)
+			validParts = append(validParts, sanitizeGeminiFunctionResponsePart(p))
 		}
 		if len(validParts) == 0 {
 			continue

@@ -666,8 +666,27 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					continue
 				}
 			}
+			// Codex image models are Responses-API models, not an image endpoint.
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (subInfo.Provider == "codex" || subInfo.Provider == "cx") {
+				if err := h.handleCodexImage(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					lastErr = err.Error()
+					continue
+				}
+			}
 			if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (subInfo.Provider == "antigravity" || subInfo.Provider == "ag") {
 				if err := h.handleAntigravitySTT(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					lastErr = err.Error()
+					continue
+				}
+			}
+			// ElevenLabs Scribe: the vendor rejects the generic OpenAI-compatible
+			// multipart body (model_id / language_code / xi-api-key).
+			if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (subInfo.Provider == "elevenlabs" || subInfo.Provider == "el") {
+				if err := h.handleElevenLabsSTT(w, r, body, subInfo); err == nil {
 					return
 				} else {
 					lastErr = err.Error()
@@ -798,8 +817,24 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
+	// Codex image models are Responses-API models, not an image endpoint.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (modelInfo.Provider == "codex" || modelInfo.Provider == "cx") {
+		if err := h.handleCodexImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
 	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
 		if err := h.handleAntigravitySTT(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+
+	// ElevenLabs Scribe: the vendor rejects the generic OpenAI-compatible
+	// multipart body (model_id / language_code / xi-api-key).
+	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (modelInfo.Provider == "elevenlabs" || modelInfo.Provider == "el") {
+		if err := h.handleElevenLabsSTT(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
 		return

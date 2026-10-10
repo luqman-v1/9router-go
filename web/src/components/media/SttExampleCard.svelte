@@ -33,6 +33,10 @@
   let prompt = $state('')
   let responseFormat = $state('json')
   let temperature = $state('')
+  let granularity = $state('')
+  let tagAudioEvents = $state(false)
+  let diarize = $state(false)
+  let numSpeakers = $state('')
   let useTunnel = $state(false)
   let localEndpoint = $state(typeof window !== 'undefined' ? window.location.origin : 'http://localhost:20130')
   let tunnelEndpoint = $state('')
@@ -95,6 +99,18 @@
     if (allowedParams.includes('prompt') && prompt) {
       s += ` \\\n  -F "prompt=${prompt}"`
     }
+    if (allowedParams.includes('timestamps_granularity') && granularity) {
+      s += ` \\\n  -F "timestamps_granularity=${granularity}"`
+    }
+    if (allowedParams.includes('tag_audio_events') && tagAudioEvents) {
+      s += ` \\\n  -F "tag_audio_events=true"`
+    }
+    // diarize and num_speakers are mutually exclusive upstream — only one goes out.
+    if (allowedParams.includes('diarize') && diarize) {
+      s += ` \\\n  -F "diarize=true"`
+    } else if (allowedParams.includes('num_speakers') && numSpeakers) {
+      s += ` \\\n  -F "num_speakers=${numSpeakers}"`
+    }
     return s
   })
 
@@ -125,6 +141,14 @@
       if (allowedParams.includes('response_format')) fd.append('response_format', responseFormat)
       if (allowedParams.includes('temperature') && temperature) fd.append('temperature', temperature)
       if (allowedParams.includes('prompt') && prompt) fd.append('prompt', prompt)
+      if (allowedParams.includes('timestamps_granularity') && granularity) fd.append('timestamps_granularity', granularity)
+      if (allowedParams.includes('tag_audio_events') && tagAudioEvents) fd.append('tag_audio_events', 'true')
+      // diarize and num_speakers are mutually exclusive upstream — only one goes out.
+      if (allowedParams.includes('diarize') && diarize) {
+        fd.append('diarize', 'true')
+      } else if (allowedParams.includes('num_speakers') && numSpeakers) {
+        fd.append('num_speakers', numSpeakers)
+      }
 
       const headers: Record<string, string> = {}
       if (activeApiKey) headers['Authorization'] = `Bearer ${activeApiKey}`
@@ -307,6 +331,74 @@
             <option value="verbose_json">verbose_json</option>
             <option value="vtt">vtt</option>
           </select>
+        </div>
+      </div>
+    {/if}
+
+    <!-- Scribe-style extras — shown only when the model declares the param -->
+    {#if allowedParams.includes('timestamps_granularity')}
+      <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+        <span class="w-full text-xs font-medium text-text-muted sm:w-24 sm:shrink-0">Timestamps</span>
+        <div class="w-full min-w-0 flex-1">
+          <select
+            bind:value={granularity}
+            class="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main"
+          >
+            <option value="">provider default</option>
+            <option value="word">word</option>
+            <option value="character">character</option>
+            <option value="none">none</option>
+          </select>
+        </div>
+      </div>
+    {/if}
+
+    {#if allowedParams.includes('tag_audio_events')}
+      <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+        <span class="w-full text-xs font-medium text-text-muted sm:w-24 sm:shrink-0">Tag audio events</span>
+        <div class="w-full min-w-0 flex-1">
+          <label class="flex items-center gap-2 text-sm text-text-muted">
+            <input
+              type="checkbox"
+              bind:checked={tagAudioEvents}
+              class="accent-primary"
+            />
+            Label non-speech sounds as [laughter], [applause], ...
+          </label>
+        </div>
+      </div>
+    {/if}
+
+    {#if allowedParams.includes('diarize')}
+      <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+        <span class="w-full text-xs font-medium text-text-muted sm:w-24 sm:shrink-0">Speaker labels</span>
+        <div class="w-full min-w-0 flex-1">
+          <label class="flex items-center gap-2 text-sm text-text-muted">
+            <input
+              type="checkbox"
+              bind:checked={diarize}
+              class="accent-primary"
+            />
+            Detect speakers automatically (overrides speaker count)
+          </label>
+        </div>
+      </div>
+    {/if}
+
+    {#if allowedParams.includes('num_speakers')}
+      <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+        <span class="w-full text-xs font-medium text-text-muted sm:w-24 sm:shrink-0">Speaker count</span>
+        <div class="w-full min-w-0 flex-1">
+          <input
+            type="number"
+            step="1"
+            min="1"
+            max="32"
+            bind:value={numSpeakers}
+            disabled={diarize}
+            placeholder="auto-detect"
+            class="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary text-text-main disabled:opacity-50"
+          />
         </div>
       </div>
     {/if}

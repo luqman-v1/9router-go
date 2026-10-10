@@ -173,20 +173,40 @@ export function resolveModelPickerGroups(
     }
   }
 
-  // 2. Custom (openai/anthropic-compatible) nodes — LLM-only, always shown
-  // when connected. Upstream parity (ModelSelectModal.js isCustomProvider):
-  // aliases filtered by raw providerId, values use the display prefix, plus
-  // custom models registered for the node id; placeholder when empty.
+  // 2. Custom (openai/anthropic-compatible) nodes — LLM-only. Upstream parity
+  // (ModelSelectModal.js isCustomProvider): aliases filtered by raw providerId,
+  // values use the display prefix, plus custom models registered for the node id;
+  // placeholder when connected but empty.
   for (const node of providerNodes) {
     if (!node.id || seenGroupIds.has(node.id)) continue
     const conn = connections.find((c) => c.provider === node.id)
-    // providerNodes lists all nodes; only ones with a connection row are
-    // usable as picker values (matches upstream activeProviders, which holds
-    // all connections regardless of isActive).
-    if (!conn) continue
-    const psd = (conn.providerSpecificData || {}) as Record<string, unknown>
+    const psd = (conn?.providerSpecificData || {}) as Record<string, unknown>
     const nodePrefix = (psd.prefix as string) || node.prefix || node.id
-    const displayName = node.name || conn.name || node.id
+    const displayName = node.name || conn?.name || node.id
+    const isCompatibleNode = node.type === 'openai-compatible' || node.type === 'anthropic-compatible'
+
+    const registeredCustom = (extras.customModels || [])
+      .filter((m) => m.providerAlias === node.id && m.id)
+      .map((m) => ({
+        id: m.id,
+        name: m.name || m.id,
+        value: `${nodePrefix}/${m.id}`,
+        caps: getModelCaps(m.id),
+        deprecated: Boolean(
+          extras.deprecations?.[`${node.id.toLowerCase()}/${m.id.toLowerCase()}`]
+        ),
+      }))
+
+    // providerNodes lists every node; ones with a connection row are usable as
+    // picker values (matches upstream activeProviders, which holds all
+    // connections regardless of isActive). Upstream parity (ModelSelectModal.js
+    // 6a1573eb): a compatible node that already has user-added custom models is
+    // selectable WITHOUT a connection — local / self-hosted endpoints don't
+    // always need a stored key, so gating on connections hid models the user had
+    // added. Such nodes are LLM-only, which is why they are unioned here, in the
+    // LLM-only half of the picker, instead of behind a kind filter. With custom
+    // models present there is always something to show, so no placeholder group.
+    if (!conn && (!isCompatibleNode || registeredCustom.length === 0)) continue
 
     const nodeModels = Object.entries(extras.modelAliases || {})
       .filter(([, fullModel]) => typeof fullModel === 'string' && fullModel.startsWith(`${node.id}/`))
@@ -202,17 +222,6 @@ export function resolveModelPickerGroups(
           ),
         }
       })
-    const registeredCustom = (extras.customModels || [])
-      .filter((m) => m.providerAlias === node.id && m.id)
-      .map((m) => ({
-        id: m.id,
-        name: m.name || m.id,
-        value: `${nodePrefix}/${m.id}`,
-        caps: getModelCaps(m.id),
-        deprecated: Boolean(
-          extras.deprecations?.[`${node.id.toLowerCase()}/${m.id.toLowerCase()}`]
-        ),
-      }))
     const seen = new Set(nodeModels.map((m) => m.value))
     const mergedModels = [...nodeModels, ...registeredCustom.filter((m) => !seen.has(m.value))]
 

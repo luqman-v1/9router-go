@@ -6033,6 +6033,32 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "id": "eleven_turbo_v2_5",
       "name": "Eleven Turbo v2.5",
       "kind": "tts"
+    },
+    {
+      "id": "scribe_v1",
+      "name": "Scribe v1",
+      "params": [
+        "language",
+        "response_format",
+        "timestamps_granularity",
+        "tag_audio_events",
+        "diarize",
+        "num_speakers"
+      ],
+      "kind": "stt"
+    },
+    {
+      "id": "scribe_v2",
+      "name": "Scribe v2",
+      "params": [
+        "language",
+        "response_format",
+        "timestamps_granularity",
+        "tag_audio_events",
+        "diarize",
+        "num_speakers"
+      ],
+      "kind": "stt"
     }
   ],
   "elevenlabs-tts-models": [
