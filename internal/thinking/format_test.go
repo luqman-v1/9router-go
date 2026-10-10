@@ -260,6 +260,12 @@ func TestApplyJSON(t *testing.T) {
 	if got := ApplyJSON(plain, "openai", "openai", "m", nil); string(got) != string(plain) {
 		t.Fatalf("fast path changed: %s", got)
 	}
+	// Body-carried suffix strips even when the passed model is already clean
+	// (dispatch callers write the requested id into the body).
+	suffixed := []byte(`{"model":"step-5-preview(none)","messages":[]}`)
+	if got := ApplyJSON(suffixed, "openai", "deepseek", "step-5-preview", nil); strings.Contains(string(got), "(none)") {
+		t.Fatalf("body suffix kept: %s", got)
+	}
 	// Malformed: unchanged.
 	bad := []byte(`{nope`)
 	if got := ApplyJSON(bad, "openai", "openai", "m(none)", nil); string(got) != string(bad) {

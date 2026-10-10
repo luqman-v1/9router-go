@@ -44,10 +44,13 @@ func Apply(body map[string]any, target, provider, model string, override *Intent
 		return body
 	}
 	clean, suffix := ParseSuffix(model)
-	// Gap B: the suffix is a request override, not the model id.
-	if clean != model {
-		if m, _ := body["model"].(string); m == model {
-			body["model"] = clean
+	// Gap B: the suffix is a request override, not the model id. The
+	// dispatch callers write the suffixed id into body["model"]; strip it
+	// whenever present. (`model` may be the already-stripped wireModel, so
+	// gate on the body value, not on clean != model.)
+	if m, _ := body["model"].(string); m != "" {
+		if stripped := StripSuffix(m); stripped != m {
+			body["model"] = stripped
 		}
 	}
 	cfg := override
@@ -85,11 +88,12 @@ func Apply(body map[string]any, target, provider, model string, override *Intent
 }
 
 // ApplyJSON is Apply over raw bytes. Fast path returns the input unchanged
-// when no suffix and no thinking key is present; decode/marshal errors also
-// return the input unchanged. Idempotent (strip-then-write), so
-// combo/rotation re-entry is safe.
+// when the body's own model carries no suffix and no thinking key is present;
+// decode/marshal errors also return the input unchanged. Idempotent
+// (strip-then-write), so combo/rotation re-entry is safe.
 func ApplyJSON(body []byte, target, provider, model string, override *Intent) []byte {
-	if !strings.Contains(model, "(") && !BodyMentionsThinking(body) {
+	if override == nil && !strings.Contains(model, "(") &&
+		!BodyMentionsThinking(body) && !bodyModelHasSuffix(body) {
 		return body
 	}
 	var m map[string]any
@@ -102,6 +106,33 @@ func ApplyJSON(body []byte, target, provider, model string, override *Intent) []
 		return body
 	}
 	return out
+}
+
+// bodyModelHasSuffix reports whether the body's own "model" value carries a
+// "(…)" suffix. It scans the raw bytes for the model key instead of decoding:
+// the first ")" before the next quote/comma/brace after "model" indicates one.
+func bodyModelHasSuffix(body []byte) bool {
+	s := string(body)
+	for _, key := range []string{`"model"`, `"modelId"`, `"model_id"`} {
+		idx := strings.Index(s, key)
+		for idx != -1 {
+			rest := s[idx+len(key):]
+			rest = strings.TrimLeft(rest, " \t\n\r:")
+			if len(rest) > 0 && rest[0] == '"' {
+				end := strings.IndexByte(rest[1:], '"')
+				if end != -1 && strings.Contains(rest[1:1+end], "(") && strings.HasSuffix(strings.TrimSpace(rest[1:1+end]), ")") {
+					return true
+				}
+				break
+			}
+			next := strings.Index(s[idx+len(key):], key)
+			if next == -1 {
+				break
+			}
+			idx += len(key) + next
+		}
+	}
+	return false
 }
 
 // resolveFormat ports resolveFormat verbatim.
