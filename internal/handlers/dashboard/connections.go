@@ -341,7 +341,7 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 			"connectionProxyEnabled", "connectionProxyUrl", "connectionNoProxy",
 			"githubLogin", "githubName", "githubEmail", "githubUserId",
 			"username", "firstName", "lastName", "authMethod", "authKind",
-			"profileArn",
+			"profileArn", "accessKeyId", "profile",
 		} {
 			if v, ok := psd[f]; ok && v != nil {
 				out[f] = v

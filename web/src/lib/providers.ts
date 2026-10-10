@@ -30,6 +30,14 @@ export interface ProviderCatalogItem {
   systemoneConfig?: { baseUrl?: string; format?: string; headers?: Record<string, string> }
   /** Upstream registry passthroughModels: unknown ids are accepted unvalidated. */
   passthroughModels?: boolean
+  /** Upstream registry credentialForm: which credential form the dashboard renders. */
+  credentialForm?: string
+  /**
+   * Upstream registry apiKeyOptionalWith: the providerSpecificData field that stands in
+   * for an API key, so the create and validate routes accept an empty key rather than
+   * rejecting a documented setup.
+   */
+  apiKeyOptionalWith?: string
   /** Upstream registry features.usage: the quota tracker can read this provider. */
   usage?: boolean
   searchConfig?: Record<string, any>
@@ -920,6 +928,36 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "serviceKinds": [
       "tts"
     ]
+  },
+  {
+    "id": "bedrock",
+    "name": "AWS Bedrock",
+    "category": "apikey",
+    "alias": "br",
+    "color": "#FF9900",
+    "icon": "cloud",
+    "website": "https://aws.amazon.com/bedrock/",
+    "notice": {"text":"Two ways to authenticate, both entered in the AWS Bedrock Credentials section below. SSO / profile (recommended): fill in Profile and Region, leave the API key empty, then run `aws sso login --profile <name>` — credentials refresh automatically. Static keys: put the AWS secret access key in the API Key field and the key id in Access Key ID, adding Session Token if they are temporary (ASIA…) keys. A profile, if set, takes precedence over static keys.","apiKeyUrl":"https://console.aws.amazon.com/iam/home#/security_credentials"},
+    "authType": "apikey",
+    "noAuth": false,
+    "credentialForm": "aws",
+    "apiKeyOptionalWith": "profile",
+    "passthroughModels": true
+  },
+  {
+    "id": "bedrock-xai",
+    "name": "AWS Bedrock (xAI)",
+    "category": "apikey",
+    "alias": "brx",
+    "color": "#FF9900",
+    "icon": "cloud",
+    "website": "https://aws.amazon.com/bedrock/",
+    "notice": {"text":"xAI Grok models hosted on AWS Bedrock. Authenticate exactly like the AWS Bedrock provider: fill in Profile and Region and leave the API key empty, then run `aws sso login --profile <name>`; or use static keys with the AWS secret access key as the API key. Note Grok is a reasoning model and spends output budget thinking before it answers — a small max_tokens returns finish_reason \"length\" with empty content, so allow a few thousand tokens.","apiKeyUrl":"https://console.aws.amazon.com/iam/home#/security_credentials"},
+    "authType": "apikey",
+    "noAuth": false,
+    "credentialForm": "aws",
+    "apiKeyOptionalWith": "profile",
+    "passthroughModels": true
   },
   {
     "id": "azure",

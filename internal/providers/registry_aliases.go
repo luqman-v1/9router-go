@@ -14,6 +14,8 @@ var RegistryAliases = map[string]string{
 	"aws-polly":         "polly",
 	"baidu":             "qianfan",
 	"bazaarlink":        "bzl",
+	"bedrock":           "br",
+	"bedrock-xai":       "brx",
 	"black-forest-labs": "bfl",
 	"blackbox":          "bb",
 	"bluesminds":        "bm",

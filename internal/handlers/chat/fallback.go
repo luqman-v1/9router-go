@@ -16,13 +16,13 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/observ"
 	"9router/proxy/internal/providers"
 	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/tokensaver"
 	"9router/proxy/internal/tracing"
 	"9router/proxy/internal/translator"
-	"9router/proxy/internal/observ"
 	"9router/proxy/internal/usagetracker"
 )
 
@@ -197,6 +197,12 @@ func (h *ChatHandler) handleAccountFallback(
 // isAnthropicUpstream reports whether the request is headed to Anthropic's
 // native Messages API (as opposed to an anthropic-compatible custom node).
 func isAnthropicUpstream(provider string, cfg *providers.ProviderConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.UpstreamIsAnthropic {
+		return true
+	}
 	if provider != "claude" && provider != "anthropic" {
 		return false
 	}
@@ -245,6 +251,7 @@ type forwardRequestParams struct {
 	TranslateResponse bool
 	Endpoint          string
 }
+
 func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	ctx, w := f.Ctx, f.W
 	provider, model := f.Provider, f.Model
@@ -472,16 +479,16 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		connName, connEmail := identityNames(h.connIdentityKVOr(f, connectionID))
 		h.LogFailure(
 			&UsageLogInfo{
-				Provider:            provider,
-				Model:               model,
-				ConnectionID:        connectionID,
-				ConnName:            connName,
-				ConnEmail:           connEmail,
-				Endpoint:            endpoint,
-				Egress:              resolveEgress(connData, providerCfg).LogValue(),
-				OriginalInputTokens: origTokens,
-				SavedTokens:         savedTokens,
-				SavedPercent:        savedPct,
+				Provider:              provider,
+				Model:                 model,
+				ConnectionID:          connectionID,
+				ConnName:              connName,
+				ConnEmail:             connEmail,
+				Endpoint:              endpoint,
+				Egress:                resolveEgress(connData, providerCfg).LogValue(),
+				OriginalInputTokens:   origTokens,
+				SavedTokens:           savedTokens,
+				SavedPercent:          savedPct,
 				CompressionDurationMs: compressDurMs,
 			},
 			nil,
@@ -667,26 +674,26 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		if !handlerutil.IsProbeContext(ctx) {
 			// Clear any existing model lock on success (matching Next.js clearAccountError).
 			lockKey := canonicalLockModel(provider, model)
-		if unlockErr := h.Repo.UnlockConnectionModel(connectionID, lockKey); unlockErr != nil {
-			log.Warn("fallback", "unlock failed", "provider", provider, "model", lockKey, "error", unlockErr)
-		}
-		if lockKey != model {
-			_ = h.Repo.UnlockConnectionModel(connectionID, model)
-		}
-		// A served request also clears the account-scoped cooldown, so an
-		// account that recovered is not kept out of rotation until the
-		// cooldown expires on its own.
-		if clearErr := h.Repo.ClearConnectionRateLimit(connectionID); clearErr != nil {
-			log.Warn("fallback", "rate limit clear failed", "conn", connectionID, "error", clearErr)
-		}
-		// A served request proves the account is usable again, so drop any
-		// cached quota block rather than leaving it to expire on its own.
-		if provider == "codex" {
-			ClearCodexQuotaBlock(connectionID)
-		}
-		// A served request proves the model is alive, so a badge recorded by
-		// an earlier 410 must not outlive it (#179).
-		h.clearModelDeprecation(provider, model)
+			if unlockErr := h.Repo.UnlockConnectionModel(connectionID, lockKey); unlockErr != nil {
+				log.Warn("fallback", "unlock failed", "provider", provider, "model", lockKey, "error", unlockErr)
+			}
+			if lockKey != model {
+				_ = h.Repo.UnlockConnectionModel(connectionID, model)
+			}
+			// A served request also clears the account-scoped cooldown, so an
+			// account that recovered is not kept out of rotation until the
+			// cooldown expires on its own.
+			if clearErr := h.Repo.ClearConnectionRateLimit(connectionID); clearErr != nil {
+				log.Warn("fallback", "rate limit clear failed", "conn", connectionID, "error", clearErr)
+			}
+			// A served request proves the account is usable again, so drop any
+			// cached quota block rather than leaving it to expire on its own.
+			if provider == "codex" {
+				ClearCodexQuotaBlock(connectionID)
+			}
+			// A served request proves the model is alive, so a badge recorded by
+			// an earlier 410 must not outlive it (#179).
+			h.clearModelDeprecation(provider, model)
 		}
 		if usage == nil {
 			usage = &translator.OpenAIUsage{}
@@ -708,17 +715,17 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		}
 
 		logInfo := &UsageLogInfo{
-			Provider:               provider,
-			Model:                  model,
-			RequestedModel:         reqModel,
-			ComboName:              f.ComboName,
-			Protocol:               protocol,
-			CacheSource:            resolveCacheSource(usage),
-			StartedAt:              startedAt,
-			ConnectionID:           connectionID,
-			APIKey:                 apiKey,
-			Endpoint:               endpoint,
-			Egress:                 resolveEgress(connData, providerCfg).LogValue(),
+			Provider:              provider,
+			Model:                 model,
+			RequestedModel:        reqModel,
+			ComboName:             f.ComboName,
+			Protocol:              protocol,
+			CacheSource:           resolveCacheSource(usage),
+			StartedAt:             startedAt,
+			ConnectionID:          connectionID,
+			APIKey:                apiKey,
+			Endpoint:              endpoint,
+			Egress:                resolveEgress(connData, providerCfg).LogValue(),
 			OriginalInputTokens:   origTokens,
 			SavedTokens:           savedTokens,
 			SavedPercent:          savedPct,
@@ -761,18 +768,18 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 
 	h.LogFailure(
 		&UsageLogInfo{
-			Provider:               provider,
-			Model:                  model,
-			RequestedModel:         reqModel,
-			ComboName:              f.ComboName,
-			Protocol:               protocol,
-			StartedAt:              startedAt,
-			ConnectionID:           connectionID,
-			ConnName:               connName,
-			ConnEmail:              connEmail,
-			APIKey:                 apiKey,
-			Endpoint:               endpoint,
-			Egress:                 resolveEgress(connData, providerCfg).LogValue(),
+			Provider:              provider,
+			Model:                 model,
+			RequestedModel:        reqModel,
+			ComboName:             f.ComboName,
+			Protocol:              protocol,
+			StartedAt:             startedAt,
+			ConnectionID:          connectionID,
+			ConnName:              connName,
+			ConnEmail:             connEmail,
+			APIKey:                apiKey,
+			Endpoint:              endpoint,
+			Egress:                resolveEgress(connData, providerCfg).LogValue(),
 			OriginalInputTokens:   origTokens,
 			SavedTokens:           savedTokens,
 			SavedPercent:          savedPct,
