@@ -27,6 +27,10 @@ type ProviderConfig struct {
 	SearchURL     string            // /v1/search endpoint. Empty means the provider has no search lane.
 	SearchMethod  string            // HTTP method for search: GET or POST (default POST)
 	UsageURL      string            // override /usage endpoint (quota tracker)
+	// ThinkingFormat mirrors the upstream registry's transport.thinkingFormat:
+	// the wire dialect this provider expects for reasoning fields ("" = the
+	// model's capability decides). Consumed by internal/thinking.resolveFormat.
+	ThinkingFormat string
 
 	// UpstreamIsAnthropic marks an entry whose upstream speaks Anthropic Messages while
 	// the client may speak OpenAI, on a host that is not api.anthropic.com. The existing
@@ -402,12 +406,13 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"openrouter": {
-		BaseURL:      "https://openrouter.ai/api/v1/chat/completions",
-		AuthHeader:   "Authorization",
-		AuthScheme:   "bearer",
-		ImageURL:     "https://openrouter.ai/api/v1/images/generations",
-		VideoURL:     "https://openrouter.ai/api/v1/videos",
-		SystemoneURL: "https://openrouter.ai/api/v1/systemone",
+		BaseURL:        "https://openrouter.ai/api/v1/chat/completions",
+		AuthHeader:     "Authorization",
+		AuthScheme:     "bearer",
+		ThinkingFormat: "openai",
+		ImageURL:       "https://openrouter.ai/api/v1/images/generations",
+		VideoURL:       "https://openrouter.ai/api/v1/videos",
+		SystemoneURL:   "https://openrouter.ai/api/v1/systemone",
 		StaticHeaders: map[string]string{
 			"HTTP-Referer": "https://endpoint-proxy.local",
 			"X-Title":      "Endpoint Proxy",
@@ -539,9 +544,10 @@ var KnownProviders = map[string]ProviderConfig{
 		SystemoneURL: "https://ollama.com/v1/systemone",
 	},
 	"siliconflow": {
-		BaseURL:    "https://api.siliconflow.com/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:        "https://api.siliconflow.com/v1/chat/completions",
+		AuthHeader:     "Authorization",
+		AuthScheme:     "bearer",
+		ThinkingFormat: "openai",
 	},
 	"sensenova": {
 		BaseURL:    "https://token.sensenova.cn/v1/chat/completions",
@@ -550,9 +556,10 @@ var KnownProviders = map[string]ProviderConfig{
 		ImageURL:   "https://token.sensenova.cn/v1/images/generations",
 	},
 	"cloudflare-ai": {
-		BaseURL:    "https://api.cloudflare.com/client/v4/accounts/" + os.Getenv("CLOUDFLARE_ACCOUNT_ID") + "/ai/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:        "https://api.cloudflare.com/client/v4/accounts/" + os.Getenv("CLOUDFLARE_ACCOUNT_ID") + "/ai/v1/chat/completions",
+		AuthHeader:     "Authorization",
+		AuthScheme:     "bearer",
+		ThinkingFormat: "openai",
 	},
 	"mimo-free": {
 		BaseURL:       "https://api.xiaomimimimo.com/api/free-ai/openai/chat",
@@ -563,9 +570,10 @@ var KnownProviders = map[string]ProviderConfig{
 		Hidden:        true,
 	},
 	"blackbox": {
-		BaseURL:    "https://api.blackbox.ai/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:        "https://api.blackbox.ai/v1/chat/completions",
+		AuthHeader:     "Authorization",
+		AuthScheme:     "bearer",
+		ThinkingFormat: "openai",
 	},
 	"featherless": {
 		BaseURL:    "https://api.featherless.ai/v1/chat/completions",
@@ -593,14 +601,16 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"venice": {
-		BaseURL:    "https://api.venice.ai/api/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:        "https://api.venice.ai/api/v1/chat/completions",
+		AuthHeader:     "Authorization",
+		AuthScheme:     "bearer",
+		ThinkingFormat: "openai",
 	},
 	"vercel-ai-gateway": {
-		BaseURL:    "https://ai-gateway.vercel.sh/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:        "https://ai-gateway.vercel.sh/v1/chat/completions",
+		AuthHeader:     "Authorization",
+		AuthScheme:     "bearer",
+		ThinkingFormat: "openai",
 	},
 	"volcengine-ark": {
 		BaseURL:    "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
@@ -657,9 +667,10 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"codebuddy-cn": {
-		BaseURL:    "https://copilot.tencent.com/v2/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:        "https://copilot.tencent.com/v2/chat/completions",
+		AuthHeader:     "Authorization",
+		AuthScheme:     "bearer",
+		ThinkingFormat: "openai",
 		StaticHeaders: map[string]string{
 			"User-Agent":          "CLI/2.108.1 CodeBuddy/2.108.1",
 			"X-Product":           "SaaS",
@@ -670,9 +681,10 @@ var KnownProviders = map[string]ProviderConfig{
 		},
 	},
 	"codebuddy-intl": {
-		BaseURL:    "https://www.codebuddy.ai/v2/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:        "https://www.codebuddy.ai/v2/chat/completions",
+		AuthHeader:     "Authorization",
+		AuthScheme:     "bearer",
+		ThinkingFormat: "openai",
 		StaticHeaders: map[string]string{
 			"User-Agent":          "CLI/2.108.1 CodeBuddy/2.108.1",
 			"X-Product":           "SaaS",
@@ -707,10 +719,11 @@ var KnownProviders = map[string]ProviderConfig{
 		},
 	},
 	"iflow": {
-		BaseURL:    "https://apis.iflow.cn/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
-		Hidden:     true,
+		BaseURL:        "https://apis.iflow.cn/v1/chat/completions",
+		AuthHeader:     "Authorization",
+		AuthScheme:     "bearer",
+		ThinkingFormat: "openai",
+		Hidden:         true,
 	},
 	"alitp-intl": {
 		// Token Plan is served from the .maas host under the compatible-mode
@@ -808,6 +821,7 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:               "https://agent.minimax.cn/mavis/api/v1/llm/v1/messages",
 		AuthHeader:            "Authorization",
 		AuthScheme:            "bearer",
+		ThinkingFormat:        "claude-adaptive",
 		Format:                "claude",
 		RequireClaudeToolType: true,
 		StaticHeaders: map[string]string{
@@ -822,6 +836,7 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:               "https://agent.minimax.io/mavis/api/v1/llm/v1/messages",
 		AuthHeader:            "Authorization",
 		AuthScheme:            "bearer",
+		ThinkingFormat:        "claude-adaptive",
 		Format:                "claude",
 		RequireClaudeToolType: true,
 		StaticHeaders: map[string]string{
@@ -1304,9 +1319,10 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"tokenrouter": {
-		BaseURL:    "https://api.tokenrouter.com/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:        "https://api.tokenrouter.com/v1/chat/completions",
+		AuthHeader:     "Authorization",
+		AuthScheme:     "bearer",
+		ThinkingFormat: "tokenrouter",
 	},
 	"trae": {
 		BaseURL:    "https://core-normal.trae.ai/api/remote/v1",
