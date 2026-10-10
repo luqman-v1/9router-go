@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -105,6 +106,79 @@ func TestHandleGetCache(t *testing.T) {
 	// Verify Trend
 	if len(resp.Trend) == 0 {
 		t.Fatal("expected non-empty trend")
+	}
+}
+
+// The window a client asks for has to bound the numbers AND the trend. They
+// used to be independent parameters — the metrics had no window at all and the
+// trend took trendHours — so a page could render all-time cards beside a 24h
+// chart and both read as correct.
+func TestHandleGetCache_PeriodBoundsTotalsAndTrend(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	if err := db.EnsureCoreSchema(database.RawDB()); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+	now := time.Now().UTC()
+	seed := func(age time.Duration, prompt, cached int) {
+		t.Helper()
+		if _, err := database.RawDB().Exec(
+			`INSERT INTO usageHistory (timestamp, provider, model, promptTokens, completionTokens, tokens)
+			 VALUES (?, 'anthropic', 'claude', ?, 0, ?)`,
+			now.Add(-age).Format(time.RFC3339), prompt,
+			`{"cached_tokens":`+strconv.Itoa(cached)+`}`,
+		); err != nil {
+			t.Fatalf("seed row at %s: %v", age, err)
+		}
+	}
+	seed(2*time.Hour, 1000, 400)
+	seed(72*time.Hour, 1000, 400)
+
+	h := NewDashboardHandler(database)
+	read := func(t *testing.T, query string) CacheStatsResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/cache"+query, nil)
+		rec := httptest.NewRecorder()
+		h.HandleGetCache(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/cache%s = %d, body %s", query, rec.Code, rec.Body.String())
+		}
+		var resp CacheStatsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal %s: %v", query, err)
+		}
+		return resp
+	}
+
+	day := read(t, "?period=24h")
+	if day.PromptCache == nil {
+		t.Fatal("promptCache missing")
+	}
+	if day.PromptCache.TotalRequests != 1 {
+		t.Errorf("period=24h totalRequests = %d, want 1", day.PromptCache.TotalRequests)
+	}
+	if day.PromptCache.Period != "24h" {
+		t.Errorf("echoed period = %q, want \"24h\"", day.PromptCache.Period)
+	}
+	var dayTrendRequests int64
+	for _, p := range day.Trend {
+		dayTrendRequests += p.Requests
+	}
+	if dayTrendRequests != 1 {
+		t.Errorf("period=24h trend covers %d requests, want 1 — the chart ignored the window", dayTrendRequests)
+	}
+
+	week := read(t, "?period=7d")
+	if week.PromptCache == nil || week.PromptCache.TotalRequests != 2 {
+		t.Errorf("period=7d totalRequests = %v, want 2", week.PromptCache)
+	}
+
+	// The names this endpoint answered before still work, so an older SPA or a
+	// saved link keeps asking for the window it means.
+	legacy := read(t, "?trendHours=24")
+	if legacy.PromptCache == nil || legacy.PromptCache.TotalRequests != 1 {
+		t.Errorf("trendHours=24 totalRequests = %v, want 1", legacy.PromptCache)
 	}
 }
 

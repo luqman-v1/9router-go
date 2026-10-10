@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"9router/proxy/internal/analyticsrange"
 )
 
 func TestCompressionAnalytics_InsertAndSummary(t *testing.T) {
@@ -51,7 +53,7 @@ func TestCompressionAnalytics_InsertAndSummary(t *testing.T) {
 		t.Fatalf("insert rec2: %v", err)
 	}
 
-	summary, err := repo.GetCompressionAnalyticsSummary(ctx, "24h")
+	summary, err := repo.GetCompressionAnalyticsSummary(ctx, analyticsrange.Resolve("all", time.Now()))
 	if err != nil {
 		t.Fatalf("get summary: %v", err)
 	}
@@ -127,7 +129,7 @@ func TestCompressionAnalytics_UsageHistoryBackfill(t *testing.T) {
 		}
 	}
 
-	summary, err := repo.GetCompressionAnalyticsSummary(ctx, "24h")
+	summary, err := repo.GetCompressionAnalyticsSummary(ctx, analyticsrange.Resolve("all", time.Now()))
 	if err != nil {
 		t.Fatalf("get summary backfill: %v", err)
 	}
@@ -140,6 +142,148 @@ func TestCompressionAnalytics_UsageHistoryBackfill(t *testing.T) {
 	}
 	if summary.AvgSavingsPct != 40 {
 		t.Errorf("avgSavingsPct = %f, want 40", summary.AvgSavingsPct)
+	}
+}
+
+// Every card on this section has to describe the window the operator picked.
+// The regression this pins: with a 24h window and no telemetry inside it, the
+// summary fell back to a usageHistory aggregate that was itself unbounded, so
+// "Last 24 hours" rendered all-time totals — and the provider and model
+// breakdowns, which carried their own copy of the cutoff, disagreed with it.
+func TestCompressionAnalytics_SummaryHonoursWindow(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	if err := EnsureCoreSchema(database); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+	repo := NewRepo(database)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	seed := func(age time.Duration, provider, model string, saved int) {
+		t.Helper()
+		rec := CompressionAnalyticsRecord{
+			Timestamp:        now.Add(-age).Format(time.RFC3339),
+			Provider:         provider,
+			Model:            model,
+			Mode:             "rtk",
+			OriginalTokens:   1000,
+			CompressedTokens: 1000 - saved,
+			TokensSaved:      saved,
+			DurationMs:       25,
+			RequestID:        provider + "-" + model + "-" + age.String(),
+		}
+		if err := repo.InsertCompressionAnalytics(ctx, rec); err != nil {
+			t.Fatalf("seed %s/%s at %s: %v", provider, model, age, err)
+		}
+	}
+
+	seed(2*time.Hour, "anthropic", "claude", 400)
+	seed(6*time.Hour, "openai", "gpt-4o", 150)
+	seed(72*time.Hour, "deepseek", "deepseek-chat", 900)
+
+	day, err := repo.GetCompressionAnalyticsSummary(ctx, analyticsrange.Resolve("24h", now))
+	if err != nil {
+		t.Fatalf("summary(24h): %v", err)
+	}
+	if day.TotalRequests != 2 {
+		t.Errorf("24h totalRequests = %d, want 2", day.TotalRequests)
+	}
+	if day.TotalTokensSaved != 550 {
+		t.Errorf("24h totalTokensSaved = %d, want 550", day.TotalTokensSaved)
+	}
+	if _, ok := day.ByProvider["deepseek"]; ok {
+		t.Error("the provider breakdown listed a run 72h old under a 24h window")
+	}
+	if _, ok := day.ByModel["deepseek-chat"]; ok {
+		t.Error("the model breakdown listed a run 72h old under a 24h window")
+	}
+	if len(day.Trend) == 0 {
+		t.Error("24h window produced no hourly trend")
+	}
+
+	week, err := repo.GetCompressionAnalyticsSummary(ctx, analyticsrange.Resolve("7d", now))
+	if err != nil {
+		t.Fatalf("summary(7d): %v", err)
+	}
+	if week.TotalRequests != 3 {
+		t.Errorf("7d totalRequests = %d, want 3", week.TotalRequests)
+	}
+
+	// An unbounded window has no hourly series: it would be one bucket per hour
+	// since the ledger began, drawn beside all-time totals.
+	all, err := repo.GetCompressionAnalyticsSummary(ctx, analyticsrange.Resolve("all", now))
+	if err != nil {
+		t.Fatalf("summary(all): %v", err)
+	}
+	if all.TotalRequests != 3 {
+		t.Errorf("all totalRequests = %d, want 3", all.TotalRequests)
+	}
+	if len(all.Trend) != 0 {
+		t.Errorf("all-time window returned %d trend buckets, want none", len(all.Trend))
+	}
+}
+
+// The usageHistory fallback is consulted whenever the window holds no
+// compression telemetry — the normal case on an instance whose runs predate
+// BackfillCompressionAnalytics. It used to carry its own copy of the cutoff,
+// and that copy was dropped whenever the window was unbounded, so
+// "Last 24 hours" could answer with all-time usageHistory totals.
+func TestCompressionAnalytics_BackfillHonoursWindow(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	if err := EnsureCoreSchema(database); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+	repo := NewRepo(database)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	seedHistory := func(age time.Duration, provider string, saved int) {
+		t.Helper()
+		if _, err := repo.RawDB().Exec(
+			`INSERT INTO usageHistory (timestamp, provider, model, promptTokens, completionTokens, tokens)
+			 VALUES (?, ?, 'm', 1000, 200, ?)`,
+			now.Add(-age).Format(time.RFC3339), provider,
+			`{"saved_tokens":`+itoa(saved)+`,"saved_percent":40}`,
+		); err != nil {
+			t.Fatalf("seed usageHistory %s at %s: %v", provider, age, err)
+		}
+	}
+
+	seedHistory(2*time.Hour, "anthropic", 400)
+	seedHistory(72*time.Hour, "openai", 900)
+
+	day, err := repo.GetCompressionAnalyticsSummary(ctx, analyticsrange.Resolve("24h", now))
+	if err != nil {
+		t.Fatalf("summary(24h): %v", err)
+	}
+	if day.TotalRequests != 1 {
+		t.Errorf("24h totalRequests = %d, want 1", day.TotalRequests)
+	}
+	if day.TotalTokensSaved != 400 {
+		t.Errorf("24h totalTokensSaved = %d, want 400", day.TotalTokensSaved)
+	}
+	if _, ok := day.ByProvider["openai"]; ok {
+		t.Error("the provider breakdown listed a usageHistory row 72h old under a 24h window")
+	}
+
+	week, err := repo.GetCompressionAnalyticsSummary(ctx, analyticsrange.Resolve("7d", now))
+	if err != nil {
+		t.Fatalf("summary(7d): %v", err)
+	}
+	if week.TotalRequests != 2 {
+		t.Errorf("7d totalRequests = %d, want 2", week.TotalRequests)
+	}
+
+	all, err := repo.GetCompressionAnalyticsSummary(ctx, analyticsrange.Resolve("all", now))
+	if err != nil {
+		t.Fatalf("summary(all): %v", err)
+	}
+	if all.TotalRequests != 2 {
+		t.Errorf("all totalRequests = %d, want 2", all.TotalRequests)
 	}
 }
 

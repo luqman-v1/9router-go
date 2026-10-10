@@ -8,9 +8,10 @@
   import { notifications } from '../lib/notifications'
   import { copyToClipboard } from '../lib/clipboard'
   import Menu from '../lib/ui/Menu.svelte'
-
   import MenuItem from '../lib/ui/MenuItem.svelte'
   import ViewSelect from './analytics/ViewSelect.svelte'
+  import PeriodSelect from './analytics/PeriodSelect.svelte'
+  import { periodLabel, type Period } from './analytics/types'
   import type { ViewOption } from './analytics/types'
 
   type CacheView = 'prompt' | 'semantic'
@@ -34,7 +35,10 @@
   let activeView = $state<CacheView>('prompt')
   let loading = $state(true)
   let stats = $state<CacheStatsResponse | null>(null)
-  let trendHours = $state(24)
+  // One window for the whole section. The trend used to have its own
+  // 12/24/48/72h pill row while the cards above it were always all-time, so
+  // the chart and the numbers beside it never described the same period.
+  let period = $state<Period>('24h')
   let autoRefresh = $state(false)
   let refreshTimer: ReturnType<typeof setInterval> | null = null
 
@@ -52,7 +56,7 @@
   async function loadStats() {
     loading = true
     try {
-      stats = await api.getCacheStats(trendHours)
+      stats = await api.getCacheStats(period)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       notifications.error(msg, 'Failed to load cache stats')
@@ -159,7 +163,7 @@
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `cache-analytics-${trendHours}h.json`
+    a.download = `cache-analytics-${period}.json`
     a.click()
     URL.revokeObjectURL(url)
     notifications.success('Exported JSON successfully')
@@ -178,7 +182,7 @@
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `cache-analytics-${trendHours}h.csv`
+    a.download = `cache-analytics-${period}.csv`
     a.click()
     URL.revokeObjectURL(url)
     notifications.success('Exported CSV successfully')
@@ -273,6 +277,17 @@
           options={VIEW_OPTIONS}
           ariaLabel="Cache view"
           onChange={(next) => selectView(next as CacheView)}
+        />
+
+        <!-- Window picker: the shared Usage dropdown, so this section scopes
+             the cards, the breakdowns and the trend to one period. -->
+        <PeriodSelect
+          value={period}
+          busy={loading}
+          onChange={(next) => {
+            period = next
+            loadStats()
+          }}
         />
       </div>
 
@@ -376,39 +391,26 @@
       </div>
     </div>
 
-    <!-- 24h Trend Chart -->
+    <!-- Hourly trend. The window picker moved up into the section header: it
+         chooses the period for the cards, the breakdowns and this chart at
+         once, so it can no longer sit here scoping only the chart. -->
     <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm">
-      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-4">
-        <div>
-          <h3 class="text-sm font-semibold text-text-main flex items-center gap-1.5">
-            <span class="material-symbols-outlined text-[18px] text-brand-500">monitoring</span>
-            Hourly Cache Trend
-          </h3>
-          <p class="text-xs text-text-subtle">Requests and cached tokens over time.</p>
-        </div>
-        <div class="flex items-center gap-1 text-xs">
-          {#each [12, 24, 48, 72] as h}
-            <button
-              type="button"
-              onclick={() => {
-                trendHours = h
-                loadStats()
-              }}
-              class={`rounded-lg px-2.5 py-1 font-medium transition-colors ${
-                trendHours === h
-                  ? 'bg-primary text-white'
-                  : 'bg-surface-2 text-text-muted hover:text-text-main'
-              }`}
-            >
-              {h}h
-            </button>
-          {/each}
-        </div>
+      <div class="mb-4">
+        <h3 class="text-sm font-semibold text-text-main flex items-center gap-1.5">
+          <span class="material-symbols-outlined text-[18px] text-brand-500">monitoring</span>
+          Hourly Cache Trend
+        </h3>
+        <p class="text-xs text-text-subtle">Requests and cached tokens over time.</p>
       </div>
 
-      {#if !stats?.trend || stats.trend.length === 0}
+      {#if period === 'all'}
         <div class="py-12 text-center text-xs text-text-subtle">
-          No cache activity recorded in the last {trendHours} hours.
+          The hourly trend needs a bounded window — it is one bucket per hour
+          since the ledger began over "All time". Pick a shorter period to see it.
+        </div>
+      {:else if !stats?.trend || stats.trend.length === 0}
+        <div class="py-12 text-center text-xs text-text-subtle">
+          No cache activity recorded in the {periodLabel(period).toLowerCase()}.
         </div>
       {:else}
         <div class="h-44 w-full flex items-end gap-1.5 pt-4 overflow-x-auto">
@@ -455,7 +457,7 @@
               <span class="w-2.5 h-2.5 rounded-sm bg-emerald-500"></span> Cached Requests
             </span>
           </div>
-          <span>Past {trendHours} Hours</span>
+          <span>{periodLabel(period)}</span>
         </div>
       {/if}
     </div>
@@ -508,6 +510,12 @@
           </table>
         </div>
       {/if}
+        {#if (pc?.truncatedProviders ?? 0) > 0}
+          <p class="mt-2 text-xs text-text-subtle">
+            Top {providerRows.length} of {providerRows.length + (pc?.truncatedProviders ?? 0)} providers by cached
+            tokens. Narrow the period to see the rest.
+          </p>
+        {/if}
     </div>
 
     <!-- Model Breakdown Table -->
@@ -557,6 +565,12 @@
           </table>
         </div>
       {/if}
+        {#if (pc?.truncatedModels ?? 0) > 0}
+          <p class="mt-2 text-xs text-text-subtle">
+            Top {modelRows.length} of {modelRows.length + (pc?.truncatedModels ?? 0)} models by cached tokens.
+            Narrow the period to see the rest.
+          </p>
+        {/if}
     </div>
 
   {:else if activeView === 'semantic'}

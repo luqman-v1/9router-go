@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
+	"9router/proxy/internal/analyticsrange"
 	"9router/proxy/internal/pricing"
 )
 
@@ -42,6 +44,15 @@ type PromptCacheMetrics struct {
 	ByProvider               map[string]PromptCacheProviderStats `json:"byProvider"`
 	ByModel                  map[string]PromptCacheModelStats    `json:"byModel"`
 	LastUpdated              string                              `json:"lastUpdated"`
+	// Period is the window these numbers describe, echoed from the request so a
+	// client can tell an empty window from one the server answered for a
+	// different period.
+	Period string `json:"period"`
+	// TruncatedProviders and TruncatedModels report how many distinct values
+	// were dropped from each breakdown to stay under maxBreakdownGroups. Zero
+	// means the breakdown is complete.
+	TruncatedProviders int `json:"truncatedProviders"`
+	TruncatedModels    int `json:"truncatedModels"`
 }
 
 // CacheTrendPoint holds a bucketed hourly cache trend point.
@@ -63,7 +74,7 @@ const (
 		ELSE 0 END`
 	defaultAvgInputPricePerMillion = 3.0
 	defaultCacheSavingsDiscount    = 0.9
-	sqlCacheCreationTokensExpr = `CASE
+	sqlCacheCreationTokensExpr     = `CASE
 		WHEN tokens IS NOT NULL AND json_valid(tokens) AND CAST(COALESCE(json_extract(tokens, '$.cache_creation_input_tokens'), json_extract(tokens, '$.cache_creation_tokens'), 0) AS INTEGER) > 0
 		THEN CAST(COALESCE(json_extract(tokens, '$.cache_creation_input_tokens'), json_extract(tokens, '$.cache_creation_tokens'), 0) AS INTEGER)
 		WHEN tokens IS NOT NULL AND json_valid(tokens) AND promptTokens > CAST(COALESCE(json_extract(tokens, '$.cached_tokens'), json_extract(tokens, '$.cache_read_input_tokens'), 0) AS INTEGER)
@@ -116,7 +127,7 @@ func (b *cacheBucket) add(row cacheScanRow) {
 // leading with the group key removes that B-tree but turns the scan back into a
 // full table walk, which measured the same to within noise. GROUP BY is the
 // wrong shape for a table whose cardinality is a handful of providers.
-func (r *Repo) GetPromptCacheMetrics(ctx context.Context) (*PromptCacheMetrics, error) {
+func (r *Repo) GetPromptCacheMetrics(ctx context.Context, win analyticsrange.Window) (*PromptCacheMetrics, error) {
 	metrics := &PromptCacheMetrics{
 		ByProvider:  make(map[string]PromptCacheProviderStats),
 		ByModel:     make(map[string]PromptCacheModelStats),
@@ -129,6 +140,11 @@ func (r *Repo) GetPromptCacheMetrics(ctx context.Context) (*PromptCacheMetrics, 
 	// exactly the grouping the model and provider breakdowns can share.
 	byPair := map[[2]string]*cacheBucket{}
 
+	// win bounds the read. A zero cutoff — the unbounded window — drops the
+	// WHERE clause entirely rather than comparing against a zero timestamp,
+	// which as a string sorts before every RFC3339 row and would match nothing.
+	whereClause, args := historyWindowWhere(win)
+
 	rows, err := r.db.QueryContext(ctx, `
 SELECT
 	COALESCE(provider, 'unknown'),
@@ -136,7 +152,8 @@ SELECT
 	COALESCE(promptTokens, 0),
 	COALESCE(`+sqlCachedTokensExpr+`, 0),
 	COALESCE(`+sqlCacheCreationTokensExpr+`, 0)
-FROM usageHistory`)
+FROM usageHistory
+`+whereClause, args...)
 	if err != nil {
 		return nil, fmt.Errorf("Repo.GetPromptCacheMetrics scan: %w", err)
 	}
@@ -171,12 +188,11 @@ FROM usageHistory`)
 	metrics.TokensSaved = metrics.TotalCachedTokens
 	metrics.EstimatedCostSaved = estimateCacheSavings(byPair, metrics.TotalCachedTokens)
 
-	for provider, bucket := range byProvider {
-		metrics.ByProvider[provider] = providerStats(bucket)
-	}
-	for model, bucket := range byModel {
-		metrics.ByModel[model] = modelStats(bucket)
-	}
+	// Ranking by cached tokens keeps the truncation meaningful: the providers a
+	// table would push off its last visible row are the ones that cached
+	// nothing, which is what an operator reading this page is not looking for.
+	metrics.ByProvider, metrics.TruncatedProviders = topProviderStats(byProvider, maxBreakdownGroups)
+	metrics.ByModel, metrics.TruncatedModels = topModelStats(byModel, maxBreakdownGroups)
 
 	return metrics, nil
 }
@@ -189,6 +205,52 @@ func accumulate[K comparable](buckets map[K]*cacheBucket, key K, row cacheScanRo
 		buckets[key] = b
 	}
 	b.add(row)
+}
+
+// topProviderStats returns the limit largest contributors to the provider
+// breakdown, and how many were left out.
+//
+// Ties break on name so the same window always yields the same list: an
+// unstable cut makes the row an operator was looking at disappear between two
+// refreshes of identical data.
+func topProviderStats(buckets map[string]*cacheBucket, limit int) (map[string]PromptCacheProviderStats, int) {
+	names := rankedBucketNames(buckets, limit)
+	out := make(map[string]PromptCacheProviderStats, len(names))
+	for _, name := range names {
+		out[name] = providerStats(buckets[name])
+	}
+	return out, len(buckets) - len(names)
+}
+
+// topModelStats returns the limit largest contributors to the model breakdown,
+// and how many were left out.
+func topModelStats(buckets map[string]*cacheBucket, limit int) (map[string]PromptCacheModelStats, int) {
+	names := rankedBucketNames(buckets, limit)
+	out := make(map[string]PromptCacheModelStats, len(names))
+	for _, name := range names {
+		out[name] = modelStats(buckets[name])
+	}
+	return out, len(buckets) - len(names)
+}
+
+// rankedBucketNames orders keys by cached tokens descending, name ascending,
+// and truncates to limit.
+func rankedBucketNames(buckets map[string]*cacheBucket, limit int) []string {
+	names := make([]string, 0, len(buckets))
+	for name := range buckets {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		a, b := buckets[names[i]], buckets[names[j]]
+		if a.cachedTokens != b.cachedTokens {
+			return a.cachedTokens > b.cachedTokens
+		}
+		return names[i] < names[j]
+	})
+	if len(names) > limit {
+		names = names[:limit]
+	}
+	return names
 }
 
 func providerStats(b *cacheBucket) PromptCacheProviderStats {
@@ -241,16 +303,15 @@ func estimateCacheSavings(byPair map[[2]string]*cacheBucket, totalCachedTokens i
 	return math.Round(savedDollars*100) / 100
 }
 
-// GetPromptCacheTrend returns hourly cache metrics bucketed over the requested hours (1 to 720, default 24).
-func (r *Repo) GetPromptCacheTrend(ctx context.Context, hours int) ([]CacheTrendPoint, error) {
-	if hours < 1 {
-		hours = 24
-	}
-	if hours > 720 {
-		hours = 720
-	}
-
-	cutoff := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339)
+// GetPromptCacheTrend returns hourly cache metrics bucketed over the window.
+//
+// It takes the same window as GetPromptCacheMetrics rather than an hour count
+// of its own: the trend and the cards above it sit on one screen, and a trend
+// over a different window than its own totals is the exact reading the page
+// cannot label away. The bucket is still an hour, so a window narrower than
+// one hour yields at most one point.
+func (r *Repo) GetPromptCacheTrend(ctx context.Context, win analyticsrange.Window) ([]CacheTrendPoint, error) {
+	whereClause, args := historyWindowWhere(win)
 
 	// The parentheses around each CASE are load-bearing: SQLite binds `> 0`
 	// tighter than `CASE ... END`, so `CASE ... END > 0` takes the ELSE branch
@@ -265,11 +326,11 @@ SELECT
 	COALESCE(SUM(` + sqlCachedTokensExpr + `), 0) as cachedTokens,
 	COALESCE(SUM(` + sqlCacheCreationTokensExpr + `), 0) as cacheCreationTokens
 FROM usageHistory
-WHERE timestamp >= ?
+` + whereClause + `
 GROUP BY bucket
 ORDER BY bucket ASC`
 
-	rows, err := r.db.QueryContext(ctx, trendQuery, cutoff)
+	rows, err := r.db.QueryContext(ctx, trendQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("Repo.GetPromptCacheTrend: %w", err)
 	}
@@ -309,4 +370,18 @@ ORDER BY bucket ASC`
 	}
 
 	return points, nil
+}
+
+// historyWindowWhere renders a window's cutoff as a WHERE fragment bound to its
+// argument, or an empty string for the unbounded window.
+//
+// One helper rather than a conditional at each of the dozen call sites: a
+// caller that inlined `if cutoff != ""` and then forgot to append the argument
+// produces a query that either fails or silently scans everything, and the
+// failure is invisible on an empty ledger.
+func historyWindowWhere(win analyticsrange.Window) (string, []any) {
+	if win.Unbounded() {
+		return "", nil
+	}
+	return "WHERE timestamp >= ?", []any{win.Cutoff().Format(time.RFC3339)}
 }

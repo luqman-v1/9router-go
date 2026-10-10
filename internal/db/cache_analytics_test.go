@@ -3,6 +3,9 @@ package db
 import (
 	"context"
 	"testing"
+	"time"
+
+	"9router/proxy/internal/analyticsrange"
 )
 
 func setupAnalyticsTestDB(t *testing.T) (*Repo, func()) {
@@ -18,7 +21,7 @@ func TestGetPromptCacheMetrics_EmptyDB(t *testing.T) {
 	repo, cleanup := setupAnalyticsTestDB(t)
 	defer cleanup()
 
-	metrics, err := repo.GetPromptCacheMetrics(context.Background())
+	metrics, err := repo.GetPromptCacheMetrics(context.Background(), analyticsrange.Window{})
 	if err != nil {
 		t.Fatalf("GetPromptCacheMetrics error = %v, want nil", err)
 	}
@@ -87,7 +90,7 @@ func TestGetPromptCacheMetrics_WithData(t *testing.T) {
 		t.Fatalf("seed row 4: %v", err)
 	}
 
-	metrics, err := repo.GetPromptCacheMetrics(context.Background())
+	metrics, err := repo.GetPromptCacheMetrics(context.Background(), analyticsrange.Window{})
 	if err != nil {
 		t.Fatalf("GetPromptCacheMetrics error = %v", err)
 	}
@@ -166,7 +169,7 @@ func TestGetPromptCacheTrend(t *testing.T) {
 		}
 	}
 
-	points, err := repo.GetPromptCacheTrend(context.Background(), 24)
+	points, err := repo.GetPromptCacheTrend(context.Background(), analyticsrange.Resolve("24h", time.Now()))
 	if err != nil {
 		t.Fatalf("GetPromptCacheTrend error = %v", err)
 	}
@@ -208,7 +211,7 @@ func TestGetPromptCacheTrend_CountsBothCacheTokenSources(t *testing.T) {
 	// not fail the aggregate either.
 	seed(`raw_non_json_string`)
 
-	points, err := repo.GetPromptCacheTrend(context.Background(), 24)
+	points, err := repo.GetPromptCacheTrend(context.Background(), analyticsrange.Resolve("24h", time.Now()))
 	if err != nil {
 		t.Fatalf("GetPromptCacheTrend error = %v", err)
 	}

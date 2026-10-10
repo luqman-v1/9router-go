@@ -588,6 +588,11 @@ export interface PromptCacheMetrics {
   byProvider: Record<string, PromptCacheProviderStats>
   byModel?: Record<string, PromptCacheProviderStats>
   lastUpdated: string
+  /** The window these numbers describe, echoed from the request. */
+  period?: string
+  /** Distinct providers/models left out of the breakdowns by the server cap. */
+  truncatedProviders?: number
+  truncatedModels?: number
 }
 
 export interface CacheTrendPoint {
@@ -689,7 +694,13 @@ export interface CompressionAnalyticsSummary {
   byMode: Record<string, CompressionModeStats>
   byProvider: Record<string, CompressionProviderStats>
   byModel?: Record<string, CompressionModelStats>
-  last24h: CompressionHourBucket[]
+  /** The window these numbers describe, echoed from the request. */
+  period?: string
+  /** Hourly series over `period`. */
+  trend: CompressionHourBucket[]
+  /** Distinct providers/models left out of the breakdowns by the server cap. */
+  truncatedProviders?: number
+  truncatedModels?: number
   totalSkipped?: number
   bySkipReason?: Record<string, number>
   validationFallbacks: number
@@ -1750,8 +1761,13 @@ export const api = {
     throw err
   },
     // Cache Analytics
-    getCacheStats: (trendHours = 24) =>
-      request<CacheStatsResponse>(`/api/cache?trendHours=${trendHours}`),
+    /**
+     * `period` bounds the totals, the breakdowns and the hourly trend together.
+     * It was `trendHours` before, which bounded only the trend — the cards above
+     * the chart were always all-time, whatever the chart was showing.
+     */
+    getCacheStats: (period = '24h') =>
+      request<CacheStatsResponse>(`/api/cache?period=${encodeURIComponent(period)}`),
     deleteCache: (params?: { model?: string; signature?: string; staleMs?: number }) => {
       const sp = new URLSearchParams()
       if (params?.model) sp.set('model', params.model)
@@ -1785,8 +1801,10 @@ export const api = {
         method: 'DELETE',
       }),
     // Compression Analytics
-    getCompressionAnalytics: (since = '24h') =>
-      request<CompressionAnalyticsSummary>(`/api/analytics/compression?since=${since}`),
+    getCompressionAnalytics: (period = '24h') =>
+      request<CompressionAnalyticsSummary>(
+        `/api/analytics/compression?period=${encodeURIComponent(period)}`
+      ),
   logout: async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' })
