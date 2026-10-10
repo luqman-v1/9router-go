@@ -232,26 +232,38 @@ func windowArgs(win analyticsrange.Window) []any {
 const maxBreakdownGroups = 50
 
 // countGroups counts the distinct groups a breakdown query would produce, so
-// the response can say how many were left out by its LIMIT. It re-runs the
-// query without the LIMIT: an extra grouped count per breakdown, but only on
-// the paths that cap a list, and it keeps the count exact instead of reporting
-// "more than 50" forever.
+// the response can say what a LIMIT left out.
+//
+// It re-runs the breakdown without the LIMIT and wraps it in an outer
+// COUNT(*). Wrapping rather than folding the breakdown's own columns is
+// deliberate: its first column is the group's aggregate, so summing what comes
+// back would answer a different question.
+//
+// Call this only once a breakdown has actually come back full. An uncapped
+// count is a second grouped pass over the same rows for a number that is only
+// ever read when something was dropped, and measured against a 300k-run ledger
+// it duplicated the whole cost of the breakdown it was counting.
 func countGroups(ctx context.Context, database *sql.DB, query string, args ...any) int {
 	uncapped := query
 	if i := strings.LastIndex(uncapped, "\nLIMIT "); i >= 0 {
 		uncapped = uncapped[:i]
 	}
-
-	// Counting rows, not the groups they came from: the original statement
-	// projects a group's aggregate as its first column, and folding those into
-	// one number here would need the aggregate to be the only column. A
-	// wrapped COUNT(*) around the same SELECT is both exact and independent of
-	// which columns the breakdown happens to project.
 	var n int
 	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM (`+uncapped+`)`, args...).Scan(&n); err != nil {
 		return 0
 	}
 	return n
+}
+
+// droppedGroups reports how many groups a capped breakdown left out, paying for
+// the count only when the cap was actually reached: a breakdown that came back
+// short dropped nothing, and a count on that path is a second pass over the
+// window for an answer already known to be zero.
+func droppedGroups(ctx context.Context, database *sql.DB, query string, args []any, kept int) int {
+	if kept < maxBreakdownGroups {
+		return 0
+	}
+	return dropCount(countGroups(ctx, database, query, args...), kept)
 }
 
 // dropCount reports how many groups a capped breakdown left out: the distinct
@@ -358,7 +370,7 @@ LIMIT %d`, provWhere, maxBreakdownGroups)
 			}
 		}
 	}
-	summary.TruncatedProviders = dropCount(countGroups(ctx, r.db, provQuery, args...), len(summary.ByProvider))
+	summary.TruncatedProviders = droppedGroups(ctx, r.db, provQuery, args, len(summary.ByProvider))
 
 	// By Model, bounded and ranked for the same reason.
 	modelWhere := "WHERE model IS NOT NULL AND model != ''"
@@ -393,7 +405,7 @@ LIMIT %d`, modelWhere, maxBreakdownGroups)
 			}
 		}
 	}
-	summary.TruncatedModels = dropCount(countGroups(ctx, r.db, modelQuery, args...), len(summary.ByModel))
+	summary.TruncatedModels = droppedGroups(ctx, r.db, modelQuery, args, len(summary.ByModel))
 
 	// Hourly trend over the same window as everything else.
 	//
@@ -608,7 +620,7 @@ LIMIT %d`, whereClause, maxBreakdownGroups)
 			}
 		}
 	}
-	summary.TruncatedProviders = dropCount(countGroups(ctx, r.db, provQuery, args...), len(summary.ByProvider))
+	summary.TruncatedProviders = droppedGroups(ctx, r.db, provQuery, args, len(summary.ByProvider))
 
 	// Hourly trend, bounded by the same window and skipping the unbounded one
 	// for the same reason the table path does.

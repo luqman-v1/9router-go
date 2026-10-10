@@ -95,7 +95,7 @@ func TestGetPromptCacheTrend_UsesTheGivenWindow(t *testing.T) {
 		}
 	}
 	seed(90 * time.Minute)
-	seed(30 * 24 * time.Hour)
+	seed(48 * time.Hour)
 
 	day, err := repo.GetPromptCacheTrend(context.Background(), analyticsrange.Resolve("24h", now))
 	if err != nil {
@@ -109,16 +109,27 @@ func TestGetPromptCacheTrend_UsesTheGivenWindow(t *testing.T) {
 		t.Errorf("24h trend covers %d requests, want 1", dayRequests)
 	}
 
-	month, err := repo.GetPromptCacheTrend(context.Background(), analyticsrange.Resolve("all", now))
+	// An unbounded window draws no trend at all: one hourly bucket per hour
+	// since the ledger began is not renderable, and a chart of some other
+	// period beside all-time cards is two wrong things rather than one.
+	all, err := repo.GetPromptCacheTrend(context.Background(), analyticsrange.Resolve("all", now))
 	if err != nil {
 		t.Fatalf("GetPromptCacheTrend(all): %v", err)
 	}
-	var monthRequests int64
-	for _, p := range month {
-		monthRequests += p.Requests
+	if len(all) != 0 {
+		t.Errorf("all-time trend returned %d buckets, want none", len(all))
 	}
-	if monthRequests != 2 {
-		t.Errorf("all-time trend covers %d requests, want 2", monthRequests)
+
+	week, err := repo.GetPromptCacheTrend(context.Background(), analyticsrange.Resolve("7d", now))
+	if err != nil {
+		t.Fatalf("GetPromptCacheTrend(7d): %v", err)
+	}
+	var weekRequests int64
+	for _, p := range week {
+		weekRequests += p.Requests
+	}
+	if weekRequests != 2 {
+		t.Errorf("7d trend covers %d requests, want 2", weekRequests)
 	}
 }
 

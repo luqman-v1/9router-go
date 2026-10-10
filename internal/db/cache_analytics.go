@@ -311,6 +311,14 @@ func estimateCacheSavings(byPair map[[2]string]*cacheBucket, totalCachedTokens i
 // cannot label away. The bucket is still an hour, so a window narrower than
 // one hour yields at most one point.
 func (r *Repo) GetPromptCacheTrend(ctx context.Context, win analyticsrange.Window) ([]CacheTrendPoint, error) {
+	if win.Unbounded() {
+		// "All time" is one hourly bucket per hour since the ledger began. The
+		// breakdowns keep their whole window, but the chart here is about 170px
+		// wide: a year of hourly buckets cannot be read at any resolution, and
+		// an empty card would read as "no traffic" rather than as a window this
+		// view cannot draw. The page says which window it cannot chart.
+		return []CacheTrendPoint{}, nil
+	}
 	whereClause, args := historyWindowWhere(win)
 
 	// The parentheses around each CASE are load-bearing: SQLite binds `> 0`

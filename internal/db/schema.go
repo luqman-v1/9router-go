@@ -203,8 +203,37 @@ func coreSchema() []tableDef {
 				"CREATE INDEX IF NOT EXISTS idx_ca_model ON compressionAnalytics(model)",
 				"CREATE INDEX IF NOT EXISTS idx_ca_mode ON compressionAnalytics(mode)",
 				"CREATE INDEX IF NOT EXISTS idx_ca_req ON compressionAnalytics(requestId)",
-				"CREATE INDEX IF NOT EXISTS idx_ca_ts_prov ON compressionAnalytics(timestamp DESC, provider)",
-				"CREATE INDEX IF NOT EXISTS idx_ca_ts_model ON compressionAnalytics(timestamp DESC, model)",
+				// The four indexes below exist for the analytics page, and the shape
+				// of each one is forced by a measured plan rather than by what looks
+				// natural. Against a 300k-run ledger the statements they serve fell
+				// from 4944 ms to 129 ms combined; every one of them was previously
+				// reading the table once per matching row.
+				//
+				// The breakdowns lead with the group key rather than with timestamp.
+				// A timestamp-led index can only serve a range predicate by seeking,
+				// and since timestamp is not the rowid it then has to return to the
+				// table for every column the SELECT reads — the index removes the
+				// scan and adds a lookup per row. Leading with the group key instead
+				// puts the timestamp inside the key, so the window filter still
+				// applies, the groups come out already clustered, and carrying the
+				// read columns makes the pass index-only: 1659 ms -> 50 ms for the
+				// model breakdown, 351 ms -> 37 ms for the provider one.
+				//
+				// idx_ca_ts_prov and idx_ca_ts_model, which led with timestamp, are
+				// gone: SQLite never chose them over the single-column index it was
+				// reaching for instead, so they only cost every insert.
+				"CREATE INDEX IF NOT EXISTS idx_ca_stat_p ON compressionAnalytics(provider, timestamp, tokensSaved, originalTokens, durationMs)",
+				"CREATE INDEX IF NOT EXISTS idx_ca_stat_m ON compressionAnalytics(model, timestamp, tokensSaved, originalTokens, durationMs)",
+				// Top 10 savers orders the window by tokensSaved, which nothing
+				// carried, so SQLite sorted every matching row to return ten. The
+				// sort column leads because SQLite has to walk the index to answer the
+				// ORDER BY either way: 971 ms -> under a millisecond, returning the
+				// same ten rows.
+				"CREATE INDEX IF NOT EXISTS idx_ca_saved ON compressionAnalytics(tokensSaved, timestamp)",
+				// The receipts aggregate filters on the actual-token columns and
+				// reads neither of them, so the timestamp index sent it to the table
+				// once per row: 940 ms -> 17 ms.
+				"CREATE INDEX IF NOT EXISTS idx_ca_receipt ON compressionAnalytics(timestamp, actualPromptTokens, actualTotalTokens)",
 			},
 		},
 		{
@@ -309,6 +338,20 @@ var keiRouterTables = []tableDef{
 	},
 }
 
+// supersededIndexes are dropped on every boot: each was replaced by an index
+// whose shape a measured query plan chose, and keeping the old ones would leave
+// SQLite with candidates it never picks while every write still updates them.
+//
+// idx_ca_ts_prov and idx_ca_ts_model are timestamp-led composites built for the
+// analytics breakdowns before those breakdowns carried their group key first.
+// Against a 300k-run ledger neither appeared in a single plan — SQLite reached
+// for the single-column index instead — while the breakdown they were named
+// for was still reading the table once per matching row.
+var supersededIndexes = []string{
+	"DROP INDEX IF EXISTS idx_ca_ts_prov",
+	"DROP INDEX IF EXISTS idx_ca_ts_model",
+}
+
 // EnsureCoreSchema creates the upstream core tables/indexes when absent,
 // backfills missing columns on existing databases, and seeds the minimal
 // rows a fresh dashboard needs. Safe to call on every startup: every
@@ -321,6 +364,21 @@ func EnsureCoreSchema(db *sql.DB) error {
 	for _, t := range coreSchema() {
 		if err := ensureTable(db, t); err != nil {
 			return err
+		}
+	}
+
+	// Indexes that a measured plan replaced. This is the one destructive
+	// statement in the bootstrap, and it is here because leaving them costs
+	// every insert to maintain an index SQLite never reads: against a 300k-run
+	// ledger the timestamp-led composites were not chosen for any analytics
+	// statement, while each of them still had to be updated on every write.
+	//
+	// It drops only indexes this build created and no query references any
+	// more. A user's rows, columns and every other index are untouched — this
+	// is a schema object, not data.
+	for _, superseded := range supersededIndexes {
+		if _, err := db.Exec(superseded); err != nil {
+			return fmt.Errorf("core schema: drop superseded index: %w", err)
 		}
 	}
 	if err := EnsureKeiRouterTables(db); err != nil {
@@ -384,7 +442,6 @@ func tableExistsOnDB(db *sql.DB, table string) (bool, error) {
 	}
 	return count > 0, nil
 }
-
 
 // EnsureKeiRouterTables creates the Go-only tables backing the KeiRouter port
 // (per-key model access, guardrail policies, guardrail audit logs). Exported so
