@@ -1,10 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-  <rect width="48" height="48" rx="12" fill="#181D27"/>
-  <rect x="0.5" y="0.5" width="47" height="47" rx="11.5" stroke="#2B3245"/>
-  <circle cx="24" cy="24" r="7" fill="#FF5C35"/>
-  <circle cx="14" cy="16" r="3.5" fill="#FF8469"/>
-  <circle cx="34" cy="16" r="3.5" fill="#38BDF8"/>
-  <circle cx="14" cy="32" r="3.5" fill="#34D399"/>
-  <circle cx="34" cy="32" r="3.5" fill="#A78BFA"/>
-  <path d="M16.5 18L21 21.5M31.5 18L27 21.5M16.5 30L21 26.5M31.5 30L27 26.5" stroke="#94A3B8" stroke-width="1.75" stroke-linecap="round"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 48 48"><rect width="48" height="48" fill="#181D27" rx="12"/><rect width="47" height="47" x=".5" y=".5" stroke="#2B3245" rx="11.5"/><circle cx="24" cy="24" r="7" fill="#FF5C35"/><circle cx="14" cy="16" r="3.5" fill="#FF8469"/><circle cx="34" cy="16" r="3.5" fill="#38BDF8"/><circle cx="14" cy="32" r="3.5" fill="#34D399"/><circle cx="34" cy="32" r="3.5" fill="#A78BFA"/><path stroke="#94A3B8" stroke-linecap="round" stroke-width="1.75" d="M16.5 18L21 21.5M31.5 18L27 21.5M16.5 30L21 26.5M31.5 30L27 26.5"/></svg>
