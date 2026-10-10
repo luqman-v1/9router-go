@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/analyticsrange"
 	"9router/proxy/internal/pricing"
 )
 
@@ -68,20 +69,32 @@ type CompressionRealUsage struct {
 
 // CompressionAnalyticsSummary matches the OmniRoute summary payload.
 type CompressionAnalyticsSummary struct {
-	TotalRequests       int64                               `json:"totalRequests"`
-	TotalTokensSaved    int64                               `json:"totalTokensSaved"`
-	AvgSavingsPct       float64                             `json:"avgSavingsPct"`
-	AvgDurationMs       int64                               `json:"avgDurationMs"`
-	ByMode              map[string]CompressionModeStats     `json:"byMode"`
-	ByProvider          map[string]CompressionProviderStats `json:"byProvider"`
-	ByModel             map[string]CompressionModelStats    `json:"byModel"`
-	Last24h             []CompressionHourBucket             `json:"last24h"`
-	TotalSkipped        int64                               `json:"totalSkipped"`
-	BySkipReason        map[string]int64                    `json:"bySkipReason,omitempty"`
-	ValidationFallbacks int64                               `json:"validationFallbacks"`
-	RealUsage           CompressionRealUsage                `json:"realUsage"`
-	RoiTokensPerMs      float64                             `json:"roiTokensPerMs"`
-	TopSavers           []CompressionTopSaver               `json:"topSavers"`
+	TotalRequests    int64                               `json:"totalRequests"`
+	TotalTokensSaved int64                               `json:"totalTokensSaved"`
+	AvgSavingsPct    float64                             `json:"avgSavingsPct"`
+	AvgDurationMs    int64                               `json:"avgDurationMs"`
+	ByMode           map[string]CompressionModeStats     `json:"byMode"`
+	ByProvider       map[string]CompressionProviderStats `json:"byProvider"`
+	ByModel          map[string]CompressionModelStats    `json:"byModel"`
+	// Trend is the hourly series over the selected window. Named for what it
+	// is rather than the length it had when the window was hardcoded to 24h:
+	// the series now covers whatever the operator picked.
+	Trend        []CompressionHourBucket `json:"trend"`
+	TotalSkipped int64                   `json:"totalSkipped"`
+	BySkipReason map[string]int64        `json:"bySkipReason,omitempty"`
+	// Period is the window these numbers describe, echoed from the request so a
+	// client can tell an empty window from one the server answered for a
+	// different period.
+	Period string `json:"period"`
+	// TruncatedProviders and TruncatedModels report how many distinct values
+	// were dropped from each breakdown to stay under maxBreakdownGroups. Zero
+	// means the breakdown is complete.
+	TruncatedProviders  int                   `json:"truncatedProviders"`
+	TruncatedModels     int                   `json:"truncatedModels"`
+	ValidationFallbacks int64                 `json:"validationFallbacks"`
+	RealUsage           CompressionRealUsage  `json:"realUsage"`
+	RoiTokensPerMs      float64               `json:"roiTokensPerMs"`
+	TopSavers           []CompressionTopSaver `json:"topSavers"`
 }
 
 // CompressionAnalyticsRecord represents a single run to record in compressionAnalytics table.
@@ -153,56 +166,107 @@ INSERT INTO compressionAnalytics (
 	return nil
 }
 
-// GetCompressionAnalyticsSummary returns aggregated metrics from compressionAnalytics (or usageHistory backfill).
-func (r *Repo) GetCompressionAnalyticsSummary(ctx context.Context, since string) (*CompressionAnalyticsSummary, error) {
+// GetCompressionAnalyticsSummary returns aggregated metrics from
+// compressionAnalytics (or a usageHistory backfill) over the given window.
+//
+// win rather than a since string: the window is decided once, in
+// analyticsrange, so the two analytics sections and the Usage Overview cannot
+// disagree about what "7d" means. Every statement below reads the same window,
+// so the trend chart and the cards above it always describe one period.
+func (r *Repo) GetCompressionAnalyticsSummary(ctx context.Context, win analyticsrange.Window) (*CompressionAnalyticsSummary, error) {
 	summary := &CompressionAnalyticsSummary{
 		ByMode:       make(map[string]CompressionModeStats),
 		ByProvider:   make(map[string]CompressionProviderStats),
 		ByModel:      make(map[string]CompressionModelStats),
-		Last24h:      make([]CompressionHourBucket, 0),
+		Trend:        make([]CompressionHourBucket, 0),
 		BySkipReason: make(map[string]int64),
 		RealUsage: CompressionRealUsage{
 			BySource: make(map[string]int64),
 		},
-		TopSavers:    make([]CompressionTopSaver, 0),
+		TopSavers: make([]CompressionTopSaver, 0),
 	}
 
-	cutoff := ""
-	now := time.Now().UTC()
-	switch since {
-	case "7d":
-		cutoff = now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)
-	case "30d":
-		cutoff = now.Add(-30 * 24 * time.Hour).Format(time.RFC3339)
-	case "all":
-		cutoff = ""
-	default: // "24h"
-		cutoff = now.Add(-24 * time.Hour).Format(time.RFC3339)
-	}
-
-	// 1. Check if compressionAnalytics has records
+	// Which source to aggregate from is decided by whether the window holds any
+	// telemetry at all, not by whether the table holds any: an instance whose
+	// only runs are older than the selected window reads as empty rather than
+	// falling back to a second source and reporting numbers for a different
+	// period. That fallback is what made a narrow window show all-time totals.
 	var caCount int64
-	if cutoff != "" {
-		_ = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM compressionAnalytics WHERE timestamp >= ?`, cutoff).Scan(&caCount)
-	} else {
-		_ = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM compressionAnalytics`).Scan(&caCount)
+	countQuery := `SELECT COUNT(*) FROM compressionAnalytics` + windowPredicate(win)
+	if err := r.db.QueryRowContext(ctx, countQuery, windowArgs(win)...).Scan(&caCount); err != nil {
+		return nil, fmt.Errorf("Repo.GetCompressionAnalyticsSummary count: %w", err)
 	}
 
 	if caCount > 0 {
-		return r.queryCompressionAnalyticsTable(ctx, summary, cutoff)
+		return r.queryCompressionAnalyticsTable(ctx, summary, win)
 	}
 
-	// Fallback/backfill: aggregate from usageHistory where saved_tokens > 0
-	return r.queryUsageHistoryBackfill(ctx, summary, cutoff)
+	return r.queryUsageHistoryBackfill(ctx, summary, win)
 }
 
-func (r *Repo) queryCompressionAnalyticsTable(ctx context.Context, summary *CompressionAnalyticsSummary, cutoff string) (*CompressionAnalyticsSummary, error) {
-	whereClause := ""
-	args := []any{}
-	if cutoff != "" {
-		whereClause = "WHERE timestamp >= ?"
-		args = append(args, cutoff)
+// windowPredicate renders a window's lower bound as a WHERE fragment, or the
+// empty string for the unbounded window.
+func windowPredicate(win analyticsrange.Window) string {
+	if win.Unbounded() {
+		return ""
 	}
+	return " WHERE timestamp >= ?"
+}
+
+// windowArgs returns the bound arguments for a windowPredicate fragment. It
+// returns nil for the unbounded window, which pairs with an empty predicate —
+// passing an argument to a query that has no placeholder is an error, and
+// omitting one that has a placeholder reads every row instead of none.
+func windowArgs(win analyticsrange.Window) []any {
+	if win.Unbounded() {
+		return nil
+	}
+	return []any{win.Cutoff().Format(time.RFC3339)}
+}
+
+// maxBreakdownGroups caps how many providers or models one breakdown returns.
+// A ledger that has seen thousands of model strings would otherwise produce a
+// response no table renders and no operator reads. What is dropped is the
+// smallest contributor, and the response reports how many were left out rather
+// than presenting a truncated list as the whole one.
+const maxBreakdownGroups = 50
+
+// countGroups counts the distinct groups a breakdown query would produce, so
+// the response can say how many were left out by its LIMIT. It re-runs the
+// query without the LIMIT: an extra grouped count per breakdown, but only on
+// the paths that cap a list, and it keeps the count exact instead of reporting
+// "more than 50" forever.
+func countGroups(ctx context.Context, database *sql.DB, query string, args ...any) int {
+	uncapped := query
+	if i := strings.LastIndex(uncapped, "\nLIMIT "); i >= 0 {
+		uncapped = uncapped[:i]
+	}
+
+	// Counting rows, not the groups they came from: the original statement
+	// projects a group's aggregate as its first column, and folding those into
+	// one number here would need the aggregate to be the only column. A
+	// wrapped COUNT(*) around the same SELECT is both exact and independent of
+	// which columns the breakdown happens to project.
+	var n int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM (`+uncapped+`)`, args...).Scan(&n); err != nil {
+		return 0
+	}
+	return n
+}
+
+// dropCount reports how many groups a capped breakdown left out: the distinct
+// count minus the rows the LIMIT let through. A failed count returns 0 rather
+// than a negative number, because "we could not tell" must not read as more.
+func dropCount(total, kept int) int {
+	if total <= kept {
+		return 0
+	}
+	return total - kept
+}
+
+func (r *Repo) queryCompressionAnalyticsTable(ctx context.Context, summary *CompressionAnalyticsSummary, win analyticsrange.Window) (*CompressionAnalyticsSummary, error) {
+	whereClause := windowPredicate(win)
+	args := windowArgs(win)
 
 	// Scalars
 	scalarQuery := fmt.Sprintf(`
@@ -260,12 +324,14 @@ GROUP BY mode`, whereClause)
 		}
 	}
 
-	// By Provider
+	// By Provider. The blank-provider filter is kept because a run with no
+	// provider is not a provider to report, but it is now composed with the
+	// window instead of replacing it — the two used to be written as separate
+	// branches, which is where a breakdown can end up unbounded while its
+	// neighbouring totals are not.
 	provWhere := "WHERE provider IS NOT NULL AND provider != ''"
-	provArgs := []any{}
-	if cutoff != "" {
+	if !win.Unbounded() {
 		provWhere += " AND timestamp >= ?"
-		provArgs = append(provArgs, cutoff)
 	}
 	provQuery := fmt.Sprintf(`
 SELECT
@@ -274,9 +340,11 @@ SELECT
 	COALESCE(SUM(tokensSaved), 0) as saved
 FROM compressionAnalytics
 %s
-GROUP BY prov`, provWhere)
+GROUP BY prov
+ORDER BY saved DESC
+LIMIT %d`, provWhere, maxBreakdownGroups)
 
-	provRows, err := r.db.QueryContext(ctx, provQuery, provArgs...)
+	provRows, err := r.db.QueryContext(ctx, provQuery, args...)
 	if err == nil {
 		defer provRows.Close()
 		for provRows.Next() {
@@ -290,13 +358,12 @@ GROUP BY prov`, provWhere)
 			}
 		}
 	}
+	summary.TruncatedProviders = dropCount(countGroups(ctx, r.db, provQuery, args...), len(summary.ByProvider))
 
-	// By Model
+	// By Model, bounded and ranked for the same reason.
 	modelWhere := "WHERE model IS NOT NULL AND model != ''"
-	modelArgs := []any{}
-	if cutoff != "" {
+	if !win.Unbounded() {
 		modelWhere += " AND timestamp >= ?"
-		modelArgs = append(modelArgs, cutoff)
 	}
 	modelQuery := fmt.Sprintf(`
 SELECT
@@ -306,9 +373,11 @@ SELECT
 	COALESCE(AVG(CASE WHEN originalTokens > 0 THEN (tokensSaved * 100.0) / originalTokens ELSE 0 END), 0) as avgPct
 FROM compressionAnalytics
 %s
-GROUP BY mdl`, modelWhere)
+GROUP BY mdl
+ORDER BY saved DESC
+LIMIT %d`, modelWhere, maxBreakdownGroups)
 
-	modelRows, err := r.db.QueryContext(ctx, modelQuery, modelArgs...)
+	modelRows, err := r.db.QueryContext(ctx, modelQuery, args...)
 	if err == nil {
 		defer modelRows.Close()
 		for modelRows.Next() {
@@ -324,44 +393,47 @@ GROUP BY mdl`, modelWhere)
 			}
 		}
 	}
+	summary.TruncatedModels = dropCount(countGroups(ctx, r.db, modelQuery, args...), len(summary.ByModel))
 
-	// Hourly trend
-	trendCutoff := cutoff
-	if trendCutoff == "" {
-		trendCutoff = time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
-	}
+	// Hourly trend over the same window as everything else.
+	//
+	// This used to fall back to 24h when the window was unbounded, so choosing
+	// "All time" drew a one-day chart above all-time totals. An unbounded
+	// window now returns no trend rather than a differently-scoped one: the
+	// series would be one bucket per hour since the ledger began, which no
+	// chart here can render, and a chart of some other period beside the cards
+	// is worse than none.
 	trendQuery := `
 SELECT
 	strftime('%Y-%m-%dT%H:00:00Z', timestamp) as hr,
 	COUNT(*) as cnt,
 	COALESCE(SUM(tokensSaved), 0) as saved
-FROM compressionAnalytics
-WHERE timestamp >= ?
+FROM compressionAnalytics` + windowPredicate(win) + `
 GROUP BY hr
 ORDER BY hr ASC`
 
-	trendRows, err := r.db.QueryContext(ctx, trendQuery, trendCutoff)
-	if err == nil {
-		defer trendRows.Close()
-		for trendRows.Next() {
-			var hr string
-			var cnt, saved sql.NullInt64
-			if err := trendRows.Scan(&hr, &cnt, &saved); err == nil {
-				summary.Last24h = append(summary.Last24h, CompressionHourBucket{
-					Hour:        hr,
-					Count:       cnt.Int64,
-					TokensSaved: saved.Int64,
-				})
+	if !win.Unbounded() {
+		trendRows, err := r.db.QueryContext(ctx, trendQuery, args...)
+		if err == nil {
+			defer trendRows.Close()
+			for trendRows.Next() {
+				var hr string
+				var cnt, saved sql.NullInt64
+				if err := trendRows.Scan(&hr, &cnt, &saved); err == nil {
+					summary.Trend = append(summary.Trend, CompressionHourBucket{
+						Hour:        hr,
+						Count:       cnt.Int64,
+						TokensSaved: saved.Int64,
+					})
+				}
 			}
 		}
 	}
 
-	// Real Usage Receipts
+	// Real Usage Receipts, bounded by the window alongside their own filter.
 	receiptWhere := "WHERE actualPromptTokens > 0 OR actualTotalTokens > 0"
-	receiptArgs := []any{}
-	if cutoff != "" {
+	if !win.Unbounded() {
 		receiptWhere += " AND timestamp >= ?"
-		receiptArgs = append(receiptArgs, cutoff)
 	}
 	receiptQuery := fmt.Sprintf(`
 SELECT
@@ -377,7 +449,7 @@ FROM compressionAnalytics
 	var (
 		rReceipts, rPrompt, rComp, rTotal, rRead, rWrite sql.NullInt64
 	)
-	if err := r.db.QueryRowContext(ctx, receiptQuery, receiptArgs...).Scan(&rReceipts, &rPrompt, &rComp, &rTotal, &rRead, &rWrite); err == nil {
+	if err := r.db.QueryRowContext(ctx, receiptQuery, args...).Scan(&rReceipts, &rPrompt, &rComp, &rTotal, &rRead, &rWrite); err == nil {
 		summary.RealUsage.RequestsWithReceipts = rReceipts.Int64
 		summary.RealUsage.PromptTokens = rPrompt.Int64
 		summary.RealUsage.CompletionTokens = rComp.Int64
@@ -393,7 +465,9 @@ SELECT
 FROM compressionAnalytics
 %s
 GROUP BY p, m
-HAVING s > 0`, whereClause)
+HAVING s > 0
+ORDER BY s DESC
+LIMIT %d`, whereClause, maxBreakdownGroups)
 		pRows, pErr := r.db.QueryContext(ctx, pQuery, args...)
 		if pErr == nil {
 			defer pRows.Close()
@@ -470,12 +544,14 @@ LIMIT 10`, whereClause)
 	return summary, nil
 }
 
-func (r *Repo) queryUsageHistoryBackfill(ctx context.Context, summary *CompressionAnalyticsSummary, cutoff string) (*CompressionAnalyticsSummary, error) {
+func (r *Repo) queryUsageHistoryBackfill(ctx context.Context, summary *CompressionAnalyticsSummary, win analyticsrange.Window) (*CompressionAnalyticsSummary, error) {
+	// The saved-token filter is what distinguishes a compressed row, so it
+	// leads; the window is appended to it rather than replacing it, for the same
+	// reason the provider breakdown above composes its two conditions.
 	whereClause := `WHERE tokens IS NOT NULL AND json_valid(tokens) AND CAST(COALESCE(json_extract(tokens, '$.saved_tokens'), 0) AS INTEGER) > 0`
-	args := []any{}
-	if cutoff != "" {
+	args := windowArgs(win)
+	if !win.Unbounded() {
 		whereClause += " AND timestamp >= ?"
-		args = append(args, cutoff)
 	}
 
 	scalarQuery := fmt.Sprintf(`
@@ -514,7 +590,9 @@ SELECT
 	COUNT(*) as cnt,
 	COALESCE(SUM(CAST(json_extract(tokens, '$.saved_tokens') AS INTEGER)), 0) as saved
 FROM usageHistory %s
-GROUP BY prov`, whereClause)
+GROUP BY prov
+ORDER BY saved DESC
+LIMIT %d`, whereClause, maxBreakdownGroups)
 
 	provRows, err := r.db.QueryContext(ctx, provQuery, args...)
 	if err == nil {
@@ -530,36 +608,34 @@ GROUP BY prov`, whereClause)
 			}
 		}
 	}
+	summary.TruncatedProviders = dropCount(countGroups(ctx, r.db, provQuery, args...), len(summary.ByProvider))
 
-	// Hourly trend
-	trendCutoff := cutoff
-	if trendCutoff == "" {
-		trendCutoff = time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
-	}
-	trendQuery := `
+	// Hourly trend, bounded by the same window and skipping the unbounded one
+	// for the same reason the table path does.
+	trendQuery := fmt.Sprintf(`
 SELECT
-	strftime('%Y-%m-%dT%H:00:00Z', timestamp) as hr,
+	strftime('%%Y-%%m-%%dT%%H:00:00Z', timestamp) as hr,
 	COUNT(*) as cnt,
 	COALESCE(SUM(CAST(json_extract(tokens, '$.saved_tokens') AS INTEGER)), 0) as saved
 FROM usageHistory
-WHERE tokens IS NOT NULL AND json_valid(tokens)
-  AND CAST(COALESCE(json_extract(tokens, '$.saved_tokens'), 0) AS INTEGER) > 0
-  AND timestamp >= ?
+%s
 GROUP BY hr
-ORDER BY hr ASC`
+ORDER BY hr ASC`, whereClause)
 
-	trendRows, err := r.db.QueryContext(ctx, trendQuery, trendCutoff)
-	if err == nil {
-		defer trendRows.Close()
-		for trendRows.Next() {
-			var hr string
-			var cnt, saved sql.NullInt64
-			if err := trendRows.Scan(&hr, &cnt, &saved); err == nil {
-				summary.Last24h = append(summary.Last24h, CompressionHourBucket{
-					Hour:        hr,
-					Count:       cnt.Int64,
-					TokensSaved: saved.Int64,
-				})
+	if !win.Unbounded() {
+		trendRows, err := r.db.QueryContext(ctx, trendQuery, args...)
+		if err == nil {
+			defer trendRows.Close()
+			for trendRows.Next() {
+				var hr string
+				var cnt, saved sql.NullInt64
+				if err := trendRows.Scan(&hr, &cnt, &saved); err == nil {
+					summary.Trend = append(summary.Trend, CompressionHourBucket{
+						Hour:        hr,
+						Count:       cnt.Int64,
+						TokensSaved: saved.Int64,
+					})
+				}
 			}
 		}
 	}
@@ -674,8 +750,8 @@ WHERE NOT EXISTS (SELECT 1 FROM compressionAnalytics ca WHERE ca.requestId = ?)`
 			defer insertStmt.Close()
 			for rows.Next() {
 				var (
-					id, ts, prov, mdl, data                     string
-					origTok, compTok, savedTok, durMs           int
+					id, ts, prov, mdl, data                    string
+					origTok, compTok, savedTok, durMs          int
 					promptTok, compTok2, cachedTok, cacheWrTok int
 				)
 				if scanErr := rows.Scan(
@@ -739,8 +815,8 @@ WHERE NOT EXISTS (
 			defer uhInsertStmt.Close()
 			for uhRows.Next() {
 				var (
-					ts, prov, mdl                                string
-					origTok, compTok, savedTok                   int
+					ts, prov, mdl                              string
+					origTok, compTok, savedTok                 int
 					promptTok, compTok2, cachedTok, cacheWrTok int
 				)
 				if scanErr := uhRows.Scan(

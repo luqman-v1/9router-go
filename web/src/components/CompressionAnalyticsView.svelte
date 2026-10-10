@@ -7,7 +7,7 @@
   import { notifications } from '../lib/notifications'
   import { copyToClipboard } from '../lib/clipboard'
   import PeriodSelect from './analytics/PeriodSelect.svelte'
-  import type { PeriodPreset } from './analytics/types'
+  import { periodLabel, type Period } from './analytics/types'
   import Menu from '../lib/ui/Menu.svelte'
   import MenuItem from '../lib/ui/MenuItem.svelte'
 
@@ -22,20 +22,11 @@
 
   let { headerLeft }: Props = $props()
 
-  type SinceOption = '24h' | '7d' | '30d' | 'all'
-
-  // The endpoint resolves exactly these four windows (see
-  // DashboardHandler.HandleGetCompressionAnalytics) and answers anything else
-  // with its 24h default, so the dropdown offers no custom input here: an
-  // arbitrary window would be accepted and then silently read as 24h.
-  const SINCE_OPTIONS: { value: PeriodPreset; label: string }[] = [
-    { value: '24h', label: 'Last 24 hours' },
-    { value: '7d', label: 'Last 7 days' },
-    { value: '30d', label: 'Last 30 days' },
-    { value: 'all', label: 'All time' },
-  ]
-
-  let since = $state<SinceOption>('24h')
+  // The same period vocabulary the rest of the Usage page uses, resolved by
+  // analyticsrange on the server. This section used to accept only four fixed
+  // windows while the Overview beside it accepted custom ones, which put two
+  // dropdowns with different vocabularies on one page.
+  let since = $state<Period>('24h')
   let loading = $state(true)
   let stats = $state<CompressionAnalyticsSummary | null>(null)
   let autoRefresh = $state(false)
@@ -172,13 +163,17 @@
   })
 
   let maxTrendTokens = $derived.by(() => {
-    if (!stats?.last24h || stats.last24h.length === 0) return 1
+    if (!stats?.trend || stats.trend.length === 0) return 1
     let m = 1
-    for (const b of stats.last24h) {
+    for (const b of stats.trend) {
       if (b.tokensSaved > m) m = b.tokensSaved
     }
     return m
   })
+
+  // The server sends no trend for an unbounded window: it would be one bucket
+  // per hour since the ledger began. Say why rather than showing "no activity".
+  let trendUnavailable = $derived(since === 'all')
 </script>
 
 <div class="space-y-6">
@@ -192,14 +187,14 @@
       <div class="flex min-w-0 flex-wrap items-center gap-2">
         {@render headerLeft?.()}
 
-        <!-- Window selector: the shared Usage dropdown, not a second strip -->
+        <!-- Window selector: the shared Usage dropdown, with the custom input
+             enabled now that the endpoint resolves <n>d / <n>h like the
+             Overview does. -->
         <PeriodSelect
           value={since}
-          options={SINCE_OPTIONS}
-          showCustom={false}
           busy={loading}
           onChange={(next) => {
-            since = next as SinceOption
+            since = next
             loadData()
           }}
         />
@@ -343,13 +338,18 @@
       <p class="text-xs text-text-subtle">Tokens saved over recent hours.</p>
     </div>
 
-    {#if !stats?.last24h || stats.last24h.length === 0}
+    {#if trendUnavailable}
       <div class="py-12 text-center text-xs text-text-subtle">
-        No compression activity recorded for the selected window.
+        The hourly trend needs a bounded window — over "All time" it is one
+        bucket per hour since the ledger began. Pick a shorter period to see it.
+      </div>
+    {:else if !stats?.trend || stats.trend.length === 0}
+      <div class="py-12 text-center text-xs text-text-subtle">
+        No compression activity recorded in the {periodLabel(since).toLowerCase()}.
       </div>
     {:else}
       <div class="h-44 w-full flex items-end gap-1.5 pt-4 overflow-x-auto">
-        {#each stats.last24h as b}
+        {#each stats.trend as b}
           {@const heightPct = Math.max(8, Math.round((b.tokensSaved / maxTrendTokens) * 100))}
           <div class="flex-1 min-w-[20px] h-full flex flex-col justify-end items-center group relative">
             <!-- Tooltip -->
@@ -432,7 +432,11 @@
           <span class="material-symbols-outlined text-[18px] text-brand-500">dns</span>
           Breakdown by Provider
         </h3>
-        <span class="text-xs text-text-muted">{providerList.length} provider(s)</span>
+        <span class="text-xs text-text-muted">
+          {providerList.length} provider(s){(stats?.truncatedProviders ?? 0) > 0
+            ? ` of ${providerList.length + (stats?.truncatedProviders ?? 0)}`
+            : ''}
+        </span>
       </div>
 
       {#if providerList.length === 0}
@@ -472,7 +476,11 @@
           <span class="material-symbols-outlined text-[18px] text-brand-500">model_training</span>
           Breakdown by Model
         </h3>
-        <span class="text-xs text-text-muted">{modelList.length} model(s)</span>
+        <span class="text-xs text-text-muted">
+          {modelList.length} model(s){(stats?.truncatedModels ?? 0) > 0
+            ? ` of ${modelList.length + (stats?.truncatedModels ?? 0)}`
+            : ''}
+        </span>
       </div>
 
       {#if modelList.length === 0}

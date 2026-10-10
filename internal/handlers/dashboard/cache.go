@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"9router/proxy/internal/analyticsrange"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/semanticcache"
@@ -47,25 +48,43 @@ func (h *DashboardHandler) getSemanticCache() *semanticcache.Cache {
 	return semanticcache.New(semanticcache.Config{Enabled: false}, nil)
 }
 
-// HandleGetCache returns aggregated prompt cache metrics, hourly trend, and semantic cache stats.
+// HandleGetCache returns aggregated prompt cache metrics, hourly trend, and
+// semantic cache stats.
+//
+// One window drives both the metrics and the trend, taken from the `period`
+// parameter the rest of the Usage page uses. They used to be independent — the
+// metrics had no window at all and the trend had its own `trendHours` — so the
+// cards above the chart and the chart itself could describe different periods
+// on one screen. `trendHours` is still read as a fallback, because it was the
+// only window this endpoint ever accepted.
 func (h *DashboardHandler) HandleGetCache(w http.ResponseWriter, r *http.Request) {
-	trendHours := 24
-	if rawHours := r.URL.Query().Get("trendHours"); rawHours != "" {
-		if val, err := strconv.Atoi(rawHours); err == nil && val > 0 {
-			trendHours = min(720, max(1, val))
-		}
+	// `period` is the name the rest of the Usage page uses; `since` and
+	// `trendHours` are the names this endpoint has accepted before, kept so an
+	// older SPA or a saved link keeps asking for the window it means.
+	raw := r.URL.Query().Get("period")
+	if raw == "" {
+		raw = r.URL.Query().Get("since")
 	}
+	if raw == "" {
+		hours := 24
+		if v, err := strconv.Atoi(r.URL.Query().Get("trendHours")); err == nil && v > 0 {
+			hours = min(720, v)
+		}
+		raw = strconv.Itoa(hours) + "h"
+	}
+	win := analyticsrange.Resolve(raw, time.Now())
 
 	sc := h.getSemanticCache()
 	semanticStats := sc.Stats()
 
-	promptMetrics, err := h.Repo.GetPromptCacheMetrics(r.Context())
+	promptMetrics, err := h.Repo.GetPromptCacheMetrics(r.Context(), win)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	promptMetrics.Period = win.Label(raw)
 
-	trend, err := h.Repo.GetPromptCacheTrend(r.Context(), trendHours)
+	trend, err := h.Repo.GetPromptCacheTrend(r.Context(), win)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
