@@ -97,22 +97,36 @@ func commandcodeParseToolArguments(v any) any {
 	return parsed
 }
 
-// commandcodeToolResultMessage converts an OpenAI role:"tool" turn into the AI-SDK
-// tool-result block CommandCode requires. Two things go wrong without this: the
-// provider rejects the request with 400 "Invalid input: expected \"tool-result\"
-// at params.messages[N].content[0].type" and "expected string, received undefined
-// at …content[0].toolCallId".
+// commandcodeToolResultMessage converts an OpenAI role:"tool" turn into the
+// tool-result block the provider accepts, on a role:"tool" message.
 //
-// Deliberate divergence from upstream: the emitted role is "user", not "tool".
-// Upstream openai-to-commandcode.js:120-123 emits `role: ROLE.TOOL`, but its own
-// schema header — verified live with curl 2026-05-07 — documents
-// `tool_result blocks (role=user)` (JS:10), and the provider validates
-// `role ∈ {"user","assistant"}`. Emitting "tool" reproduces the 400.
+// The provider validates params.messages[*] against a union of
+//
+//	{role: "user"|"assistant", content: string | <anthropic-style blocks>}
+//	{role: "tool",              content: [{type:"tool-result", toolCallId, toolName, output}]}
+//
+// so a tool-result block is only valid under role "tool". Verified live
+// 2026-10-12 against provider commandcode: with role "user" the request answered
+// 400 with, per tool turn,
+//
+//	Invalid input: expected string, received array at "params.messages[N].content"
+//
+// and, on the tool branch, the only remaining complaint
+//
+//	Invalid input: expected "tool" at "params.messages[N].role"
+//
+// while the tool-result fields themselves validated. Upstream parity:
+// openai-to-commandcode.js:120-129 emits role ROLE.TOOL with this exact block.
+//
+// Superseded (2026-05-07): this used to emit role "user" on the strength of a
+// curl probe that read the schema header's "tool_result blocks (role=user)"
+// note as proof that "tool" is rejected. That read one union branch as the whole
+// schema; every tool turn was rejected as a result.
 func commandcodeToolResultMessage(msg map[string]any) map[string]any {
 	toolCallID, _ := msg["tool_call_id"].(string)
 	toolName, _ := msg["name"].(string)
 	return map[string]any{
-		"role": "user",
+		"role": "tool",
 		"content": []any{map[string]any{
 			"type":       "tool-result",
 			"toolCallId": toolCallID,
