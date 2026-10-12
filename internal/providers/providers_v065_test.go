@@ -68,6 +68,28 @@ func TestMuseSpark_Capabilities(t *testing.T) {
 		t.Errorf("pattern muse-spark should have Vision+Reasoning, got %+v", caps)
 	}
 }
+func TestMuseSparkContributor_MandatoryReasoning(t *testing.T) {
+	models := []struct{ provider, model string }{
+		{"cline", "muse-spark-1.2-contributor"},
+		{"cline", "muse-spark-1.3-contributor"},
+		{"cline", "cline-free/muse-spark-1.2-contributor"},
+		{"cline", "cline-free/muse-spark-1.3-contributor"},
+		{"opencode", "muse-spark-1.2-contributor-free"},
+		{"opencode", "muse-spark-1.3-contributor-free"},
+	}
+	for _, m := range models {
+		caps := GetCapabilitiesForModel(m.provider, m.model)
+		if !caps.Reasoning {
+			t.Errorf("%s: Reasoning=false, want true", m.model)
+		}
+		if caps.ThinkingFormat != "openai" {
+			t.Errorf("%s: ThinkingFormat=%q, want openai", m.model, caps.ThinkingFormat)
+		}
+		if caps.ThinkingCanDisable == nil || *caps.ThinkingCanDisable {
+			t.Errorf("%s: thinking must not be disableable (got %+v)", m.model, caps.ThinkingCanDisable)
+		}
+	}
+}
 
 func TestCodeBuddyCN_Catalog(t *testing.T) {
 	// New models should be present

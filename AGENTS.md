@@ -665,3 +665,208 @@ make changelog-merge TAG=v1.9.11
 rtk git status
 rtk git diff
 ```
+
+---
+
+## Code Exploration (Mandatory)
+
+This project is indexed by **CodeGraph** (source files) and **GitNexus** (call graph). You MUST use them for all source code exploration — `read`/`grep`/`glob` are only needed for **non-code files** (markdown, JSON data, config files).
+
+CodeGraph (preferred method) — call by writing JSON args to `xd://mcp__codegraph_<tool>`:
+All CodeGraph tools are **MCP virtual devices** — invoke them by writing JSON to the `xd://` path using the `write` tool, NOT as bare tool names:
+
+```
+write path="xd://mcp__codegraph_explore" content='{"query": "how does X work"}'
+write path="xd://mcp__codegraph_node"    content='{"file": "app/src/App.tsx","offset":130,"limit":30}'
+write path="xd://mcp__codegraph_callers" content='{"symbol": "functionName"}'
+write path="xd://mcp__codegraph_search"  content='{"query": "symbolName"}'
+```
+
+
+| Task                                                | `xd://` route                 | Key arg                                    |
+| --------------------------------------------------- | ----------------------------- | ------------------------------------------ |
+| **"How does X work?" / Architecture / Bug tracing** | `xd://mcp__codegraph_explore` | `query` (natural-language or symbol names) |
+| **"What calls this?" / Blast radius**               | `xd://mcp__codegraph_callers` | `symbol`                                   |
+| **Reading a file**                                  | `xd://mcp__codegraph_node`    | `file` (with optional `offset`/`limit`)    |
+| **"What is this symbol?"**                          | `xd://mcp__codegraph_search`  | `query`                                    |
+
+
+`codegraph_node` with a `symbol` returns the verbatim source (`includeCode: true`) plus caller/callee trail — use it BEFORE editing any symbol you can name.
+
+### GitNexus (secondary)
+
+Use when CodeGraph doesn't cover the query, or for impact analysis before edits. Invoke by writing JSON to `xd://mcp__gitnexus_<tool>`:
+
+
+| Task                                | `xd://` route                       | Key arg                                                 |
+| ----------------------------------- | ----------------------------------- | ------------------------------------------------------- |
+| **Blast radius before edits**       | `xd://mcp__gitnexus_impact`         | `target`, `direction`                                   |
+| **Verify changes before commit**    | `xd://mcp__gitnexus_detect_changes` | `scope` (or `scope`, `base_ref` for regression)         |
+| **Find execution flows by concept** | `xd://mcp__gitnexus_query`          | `search_query`                                          |
+| **Full 360° symbol context**        | `xd://mcp__gitnexus_context`        | `name`                                                  |
+| **Security taint analysis**         | `xd://mcp__gitnexus_explain`        | `target`                                                |
+| **Safe symbol rename**              | `xd://mcp__gitnexus_rename`         | `symbol`, `newName` (dry-run first with `dryRun: true`) |
+
+
+> CodeGraph index auto-syncs via file watcher. GitNexus index is at `.gitnexus/` — if stale, run `node .gitnexus/run.cjs analyze` from the project root.
+> **When `read` is still needed**: non-indexed files — `model-data.json`, markdown docs, `package.json`, `tsconfig.json`, `vite.config.ts` (Vite configs aren't parsed by CodeGraph), `yarn.lock`, and any other non-source artifacts.
+
+---
+
+### Agent-specific tooling
+
+- **CodeGraph** — `xd://mcp__codegraph_explore` for questions; `xd://mcp__codegraph_node` for file/symbol source with blast radius. Auto-syncs.
+- **GitNexus** — `xd://mcp__gitnexus_impact` before edits, `xd://mcp__gitnexus_detect_changes` before commits. `xd://mcp__gitnexus_query`/`xd://mcp__gitnexus_context` for flows. Never find-and-replace — use `xd://mcp__gitnexus_rename`.
+- **Agentmemory** — Persistent long-term memory for agent sessions. Recall past decisions (`memory_recall` / `memory_smart_search`), save durable facts (`memory_save`), check file history (`memory_file_history`) and sessions (`memory_sessions`). Stdio MCP server (`command: agentmemory`, `args: ["mcp"]`, enabled in `.omp/mcp.json`); Hindsight disabled.
+- **Context7** — Live library documentation lookup. Query API docs for React, Next.js, Prisma, Express, and 200+ libraries via `xd://mcp__context_query_docs`. Resolve library names to Context7 IDs via `xd://mcp__context_resolve_library_id`.
+- **GitHub Code Search (gh_grep)** — Find real-world code examples from public GitHub repos via `xd://mcp__gh_grep_searchgithub`. Use when library docs or repos don't provide enough usage context.
+
+---
+
+## Additional MCP Tools
+
+### Agentmemory — Agent Memory
+
+Agentmemory is the persistent long-term memory backend for agent sessions. It stores facts, observations, and decisions that survive across sessions.
+
+**Core workflow:** `recall` -> `save`
+
+Config (`./.omp/mcp.json`): `agentmemory` stdio server (`command: agentmemory`, `args: ["mcp"]`, `enabled: true`); `hindsight` HTTP server (`enabled: false`, retired — drop all `xd://mcp__hindsight_*` routes).
+
+**Primary tools:**
+
+| Tool | Purpose |
+| --------------------- | ------------------------------------------------- |
+| `memory_recall` | Search past session observations for relevant context (decisions, preferences, bugs, workflows) |
+| `memory_smart_search` | Hybrid semantic+keyword search with progressive disclosure |
+| `memory_save` | Save durable facts, decisions, and learnings |
+| `memory_file_history` | Past observations about specific files |
+| `memory_sessions` | List recent sessions with status and observation counts |
+| `memory_timeline` | Chronological observations around an anchor point |
+
+Call tools directly with JSON args, e.g.:
+
+```
+memory_recall({"query": "how was libghostty-vt patch index verified"})
+memory_save({"content": "libghostty-vt patch files must be listed in vendor index", "type": "pattern"})
+```
+
+> Agentmemory memories are referenced automatically at session start via recall. Use `memory_save` proactively to preserve decisions and context for future sessions.
+
+---
+
+### Context7 - Live Library Documentation
+
+[Context7](https://context7.com) provides up-to-date API documentation, code examples, and setup guides for 200+ libraries and frameworks. It resolves library names, then fetches real documentation rather than relying on training data.
+
+**Two-step workflow:** `resolve_library_id` -&gt; `query_docs`
+
+```
+write path="xd://mcp__context_resolve_library_id" content='{"name": "react", "version": "19"}'
+write path="xd://mcp__context_query_docs" content='{"libraryId": "react", "query": "how to create a portal", "maxResults": 5}'
+```
+
+
+| Step               | `xd://` route                          | Purpose                                                               |
+| ------------------ | -------------------------------------- | --------------------------------------------------------------------- |
+| 1. Resolve library | `xd://mcp__context_resolve_library_id` | Map a package name to a Context7 library ID (optional version filter) |
+| 2. Query docs      | `xd://mcp__context_query_docs`         | Retrieve documentation snippets for a specific question               |
+
+
+**When to use Context7:**
+
+- Frameworks: React, Next.js, Prisma, Express, Tailwind, Django, Spring Boot
+- SDKs and CLIs: Setup instructions, configuration options, version migration
+- API syntax questions: Signatures, parameter docs, return types
+- Library-specific debugging: Known patterns, configuration gotchas
+
+> Use Context7 **instead of web search** for library/framework documentation. Training data may be stale; Context7 returns current API surfaces. Use `resolve_library_id` first if unsure of the exact library ID.
+
+---
+
+### GitHub Code Search (gh_grep)
+
+[gh_grep](https://github.com/1771-Technologies/gh-grep) searches over a million public GitHub repositories to find real-world code examples demonstrating how libraries, patterns, and APIs are used in practice.
+
+```
+write path="xd://mcp__gh_grep_searchgithub" content='{"query": "express rate-limit slowapi in:file extension:py", "limit": 10}'
+```
+
+
+| Tool          | `xd://` route                    | Key arg                                         |
+| ------------- | -------------------------------- | ----------------------------------------------- |
+| Search GitHub | `xd://mcp__gh_grep_searchgithub` | `query` (search query with qualifiers), `limit` |
+
+
+**Query tips:**
+
+- Use `in:file` for file contents, `in:path` for file names
+- Use `extension:py` / `extension:ts` / `extension:js` to narrow by language
+- Use `owner:org/repo` to scope to a specific repository
+- Use `path:src/` to scope to a directory
+
+**When to use gh_grep:**
+
+- Library usage patterns not covered by official docs
+- Real-world examples of configuration, setup, or error handling
+- Verifying that an approach is idiomatic
+- Finding reference implementations
+
+> Prefer Context7 for official API docs and web search for general information. Use gh_grep when you need to see how a library or pattern is actually used in production codebases.
+
+<!-- agentmemory:start -->
+## Agent memory (agentmemory)
+
+You have persistent long-term memory via the agentmemory MCP server. Tools: `memory_recall`, `memory_smart_search`, `memory_save`, `memory_sessions`.
+
+- At the START of a task, call `memory_recall` (or `memory_smart_search`) with the task context to load relevant past decisions, fixes, and preferences before asking the user to repeat anything.
+- When you learn something durable (a decision, a fix, a gotcha, a user preference, a project convention), call `memory_save` to persist it.
+- Prefer recalling over re-deriving, and save concise reusable facts rather than transcripts.
+<!-- agentmemory:end -->
+
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **9router-go** (15682 symbols, 55803 relationships, 649 execution flows).
+
+> Index stale? Run `node .gitnexus/run.cjs analyze --index-only` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? Bootstrap with `npx`, `bunx`, or `pnpm dlx` — e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).
+
+## Always Do
+
+- **MUST run impact analysis before editing.** Use `impact({target: "symbolName", direction: "upstream"})` (MCP) or `node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo .` (CLI fallback); report callers, processes, and risk. Never substitute grep for graph analysis.
+- **MUST analyze graph changes before committing.** Use `detect_changes({scope: "all"})` (MCP) or `node .gitnexus/run.cjs detect-changes --scope all --repo .` (CLI fallback). `partial: true` or `truncated: true` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: `detect_changes({scope: "compare", base_ref: "main"})` or `node .gitnexus/run.cjs detect-changes --scope compare --base-ref "main" --repo .`.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- **MUST treat `risk: UNKNOWN` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). `impact` pairs `UNKNOWN` with a `riskNote` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
+- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
+- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
+
+## Never Do
+
+- NEVER edit a function, class, or method before MCP/CLI impact analysis.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read `UNKNOWN` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
+- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
+- NEVER commit before MCP/CLI graph change analysis.
+
+## Resources
+
+| Resource | Use for |
+| --- | --- |
+| `gitnexus://repo/9router-go/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/9router-go/clusters` | All functional areas |
+| `gitnexus://repo/9router-go/processes` | All execution flows |
+| `gitnexus://repo/9router-go/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+| --- | --- |
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->
