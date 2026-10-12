@@ -71,6 +71,7 @@ stitch-screenshots/
 /GEMINI.md
 /QWEN.md
 /COPILOT.md
+
 # Local agent-tooling config (not part of the product). The .claude/ and
 # .agents/ trees are already covered by the harness block above.
 .omo/run-continuation/

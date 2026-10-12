@@ -1,11 +1,12 @@
 package thinking
 
 import (
-	"9router/proxy/internal/providers"
 	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
+
+	"9router/proxy/internal/providers"
 )
 
 // apply builds a fresh body, runs Apply, and returns it.
@@ -23,6 +24,26 @@ func mustAbsent(t *testing.T, body map[string]any, keys ...string) {
 	for _, k := range keys {
 		if _, ok := body[k]; ok {
 			t.Fatalf("expected no %q in %+v", k, body)
+		}
+	}
+}
+
+func TestMuseSparkContributorClamp(t *testing.T) {
+	cases := []struct {
+		name     string
+		model    string
+		body     map[string]any
+		override *Intent
+	}{
+		{"effort-none", "muse-spark-1.3-contributor", map[string]any{"model": "muse-spark-1.3-contributor", "reasoning_effort": "none"}, nil},
+		{"thinking-disabled", "muse-spark-1.3-contributor", map[string]any{"model": "muse-spark-1.3-contributor", "thinking": map[string]any{"type": "disabled"}}, nil},
+		{"none-suffix", "muse-spark-1.3-contributor(none)", map[string]any{"model": "muse-spark-1.3-contributor"}, nil},
+		{"override-off", "muse-spark-1.3-contributor", map[string]any{"model": "muse-spark-1.3-contributor"}, &Intent{Mode: ModeNone}},
+	}
+	for _, tc := range cases {
+		out := apply("openai", "cline", tc.model, tc.body, tc.override)
+		if out["reasoning_effort"] != "minimal" {
+			t.Fatalf("%s: reasoning_effort = %v, want minimal (full body: %+v)", tc.name, out["reasoning_effort"], out)
 		}
 	}
 }

@@ -62,6 +62,38 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"gemini-argon":          {"low", "medium", "high"},
 		"gemini-3.1-flash-lite": nil,
 	},
+	// Muse-spark contributor models reject reasoning disablement upstream
+	// ("Reasoning is mandatory for this endpoint"), so Go declares
+	// ThinkingCanDisable=false and the level list drops "none". Upstream
+	// capabilities.js omits the flag; converge if upstream adds it.
+	"opencode": {
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"opencode-go": {
+		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"opencode-zen": {
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"oc": {
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"ocz": {
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"ocg": {
+		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"muse": {
+		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	},
 }
 
 // divergentFromPending reports whether a mismatch is one of the documented
