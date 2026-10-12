@@ -8,12 +8,18 @@ passed both through untranslated, so CommandCode answered
 "expected string, received undefined at …toolCallId") for every request following a
 tool call (`z-ai/glm-5.3-flash`, `xiaomi/mimo-v2.6-flash`).
 
-- tool-result turns are emitted as `role:"user"`, **not** upstream's
-  `role:"tool"`: the provider validates `role ∈ {"user","assistant"}` and
-  upstream's own schema header — "verified live with curl 2026-05-07" — documents
-  `tool_result blocks (role=user)` (openai-to-commandcode.js:10). Upstream's
-  JS:120-123 `role:ROLE.TOOL` contradicts its own header and is itself the bug;
-  mirroring it reproduces the 400
+- tool-result turns are emitted as `role:"tool"`, matching upstream
+  `JS:120-123 role:ROLE.TOOL`: the provider validates `params.messages[*]`
+  against a union of `{role:"user"|"assistant", content: string |
+  anthropic-style blocks}` and `{role:"tool", content:[tool-result blocks]}`, so
+  a tool-result block is only valid under role `"tool"` (live-verified
+  2026-10-12: with `role:"user"` every tool turn answered 400
+  `expected "tool" at "params.messages[N].role"` on the tool branch while its
+  fields validated). An earlier revision of this fix emitted `role:"user"` on
+  the strength of the header's `tool_result blocks (role=user)` note
+  (curl-verified 2026-05-07); that read one union branch as the whole schema and
+  kept the 400 alive — corrected by `fix(executor): commandcode tool turns emit
+  role tool (provider union parity)`
 - new `internal/proxy/executor/commandcode_request.go` ports `flattenText`,
   `toContentBlocks`, `safeParseJson` and `convertMessages`
 - `buildCommandcodeBody` builds `params` from a whitelist instead of copying every
