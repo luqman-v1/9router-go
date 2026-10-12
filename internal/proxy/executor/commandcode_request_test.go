@@ -33,7 +33,7 @@ func TestCommandcodeConvertMessages(t *testing.T) {
 		wantSystem   string
 	}{
 		{
-			name: "tool result becomes tool-result block",
+			name: "tool result becomes a role:tool tool-result block",
 			messages: `[
 				{"role":"user","content":"weather?"},
 				{"role":"assistant","tool_calls":[
@@ -49,8 +49,32 @@ func TestCommandcodeConvertMessages(t *testing.T) {
 					map[string]any{"type": "reasoning", "text": " "},
 					map[string]any{"type": "tool-call", "toolCallId": "call_1", "toolName": "get_weather", "input": map[string]any{"city": "Nairobi"}},
 				}},
-				map[string]any{"role": "user", "content": []any{
+				map[string]any{"role": "tool", "content": []any{
 					map[string]any{"type": "tool-result", "toolCallId": "call_1", "toolName": "get_weather", "output": map[string]any{"type": "text", "value": "24C sunny"}},
+				}},
+			},
+		},
+		{
+			name: "consecutive tool turns keep role tool and string ids",
+			messages: `[
+				{"role":"user","content":"go"},
+				{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"ls","arguments":"{\"path\":\".\"}"}}]},
+				{"role":"tool","tool_call_id":"call_1","name":"ls","content":"a.txt"},
+				{"role":"tool","content":"{\"output\":\"README.md\"}"}
+			]`,
+			wantMessages: []any{
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "text", "text": "go"},
+				}},
+				map[string]any{"role": "assistant", "content": []any{
+					map[string]any{"type": "reasoning", "text": " "},
+					map[string]any{"type": "tool-call", "toolCallId": "call_1", "toolName": "ls", "input": map[string]any{"path": "."}},
+				}},
+				map[string]any{"role": "tool", "content": []any{
+					map[string]any{"type": "tool-result", "toolCallId": "call_1", "toolName": "ls", "output": map[string]any{"type": "text", "value": "a.txt"}},
+				}},
+				map[string]any{"role": "tool", "content": []any{
+					map[string]any{"type": "tool-result", "toolCallId": "", "toolName": "", "output": map[string]any{"type": "text", "value": "{\"output\":\"README.md\"}"}},
 				}},
 			},
 		},
