@@ -1,0 +1,196 @@
+package executor
+
+import (
+	json "encoding/json/v2"
+	"reflect"
+	"testing"
+)
+
+// commandcodeParamsForTest runs buildCommandcodeBody and returns payload["params"]
+// as a map. It fails the test when the wrapper or params object is missing.
+func commandcodeParamsForTest(t *testing.T, body string) map[string]any {
+	t.Helper()
+	out, err := buildCommandcodeBody([]byte(body), "")
+	if err != nil {
+		t.Fatalf("buildCommandcodeBody() error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	params, ok := payload["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected params object, got %T", payload["params"])
+	}
+	return params
+}
+
+func TestCommandcodeConvertMessages(t *testing.T) {
+	tests := []struct {
+		name         string
+		messages     string
+		wantMessages []any
+		wantSystem   string
+	}{
+		{
+			name: "tool result becomes tool-result block",
+			messages: `[
+				{"role":"user","content":"weather?"},
+				{"role":"assistant","tool_calls":[
+					{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Nairobi\"}"}}
+				]},
+				{"role":"tool","tool_call_id":"call_1","name":"get_weather","content":"24C sunny"}
+			]`,
+			wantMessages: []any{
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "text", "text": "weather?"},
+				}},
+				map[string]any{"role": "assistant", "content": []any{
+					map[string]any{"type": "reasoning", "text": " "},
+					map[string]any{"type": "tool-call", "toolCallId": "call_1", "toolName": "get_weather", "input": map[string]any{"city": "Nairobi"}},
+				}},
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "tool-result", "toolCallId": "call_1", "toolName": "get_weather", "output": map[string]any{"type": "text", "value": "24C sunny"}},
+				}},
+			},
+		},
+		{
+			name: "assistant reasoning text wins over placeholder",
+			messages: `[
+				{"role":"user","content":"hi"},
+				{"role":"assistant","reasoning_content":"thinking","content":"answer"}
+			]`,
+			wantMessages: []any{
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "text", "text": "hi"},
+				}},
+				map[string]any{"role": "assistant", "content": []any{
+					map[string]any{"type": "reasoning", "text": "thinking"},
+					map[string]any{"type": "text", "text": "answer"},
+				}},
+			},
+		},
+		{
+			name: "system content array flattens to one string",
+			messages: `[
+				{"role":"system","content":[{"type":"text","text":"be terse"},{"type":"text","text":"no filler"}]},
+				{"role":"system","content":"second block"},
+				{"role":"user","content":"go"}
+			]`,
+			wantSystem: "be terse\nno filler\n\nsecond block",
+			wantMessages: []any{
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "text", "text": "go"},
+				}},
+			},
+		},
+		{
+			name:     "user nil content becomes empty text block",
+			messages: `[{"role":"user","content":null}]`,
+			wantMessages: []any{
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "text", "text": ""},
+				}},
+			},
+		},
+		{
+			name:     "unknown role routes to user",
+			messages: `[{"role":"nobody","content":"orphan"}]`,
+			wantMessages: []any{
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "text", "text": "orphan"},
+				}},
+			},
+		},
+		{
+			name:     "empty assistant emits one empty text block",
+			messages: `[{"role":"assistant","content":null}]`,
+			wantMessages: []any{
+				map[string]any{"role": "assistant", "content": []any{
+					map[string]any{"type": "text", "text": ""},
+				}},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := commandcodeParamsForTest(t, `{"model":"z-ai/glm-5.3-flash","messages":`+tt.messages+`}`)
+			// marshalStable, not json.Marshal: default json/v2 randomizes map
+			// member order per call, so a byte comparison would flake.
+			got, _ := marshalStable(params["messages"])
+			want, _ := marshalStable(tt.wantMessages)
+			if string(got) != string(want) {
+				t.Errorf("messages mismatch\n got: %s\nwant: %s", got, want)
+			}
+			if system, _ := params["system"].(string); system != tt.wantSystem {
+				t.Errorf("system = %q, want %q", system, tt.wantSystem)
+			}
+		})
+	}
+}
+
+func TestBuildCommandcodeBody_ConvertsToolsToAnthropicShape(t *testing.T) {
+	params := commandcodeParamsForTest(t, `{
+		"model":"z-ai/glm-5.3-flash",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{
+			"type":"function",
+			"function":{"name":"get_weather","description":"Weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}
+		}]
+	}`)
+	tools, ok := params["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d (%v)", len(tools), params["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	if _, stillOpenAI := tool["type"]; stillOpenAI {
+		t.Errorf("tool still OpenAI shaped: %v", tool)
+	}
+	if tool["name"] != "get_weather" {
+		t.Errorf("tool name = %v, want get_weather", tool["name"])
+	}
+	if !reflect.DeepEqual(tool["input_schema"], map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}}) {
+		t.Errorf("input_schema = %v, want the request parameters object", tool["input_schema"])
+	}
+}
+
+func TestBuildCommandcodeBody_ParamsWhitelist(t *testing.T) {
+	params := commandcodeParamsForTest(t, `{
+		"model":"z-ai/glm-5.3-flash",
+		"messages":[{"role":"user","content":"hi"}],
+		"stream_options":{"include_usage":true},
+		"store":true,
+		"metadata":{"k":"v"},
+		"tool_choice":"auto",
+		"max_output_tokens":2048,
+		"reasoning_effort":"medium",
+		"top_p":0.9
+	}`)
+	for _, leak := range []string{"stream_options", "store", "metadata", "tool_choice", "max_output_tokens"} {
+		if v, ok := params[leak]; ok {
+			t.Errorf("params leaked OpenAI-only key %q = %v", leak, v)
+		}
+	}
+	if _, ok := params["reasoning_effort"]; !ok {
+		t.Error("params.reasoning_effort missing — the thinking pipeline depends on it")
+	}
+	if params["top_p"] != 0.9 {
+		t.Error("params.top_p missing")
+	}
+	if params["max_tokens"] != 2048.0 {
+		t.Errorf("params.max_tokens = %v, want 2048 from max_output_tokens", params["max_tokens"])
+	}
+	if params["temperature"] != 0.3 {
+		t.Errorf("params.temperature = %v, want 0.3 default", params["temperature"])
+	}
+	if params["stream"] != true {
+		t.Error("params.stream missing")
+	}
+}
+
+func TestBuildCommandcodeBody_NoToolsKeyWhenAbsent(t *testing.T) {
+	params := commandcodeParamsForTest(t, `{"model":"z-ai/glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}`)
+	if v, ok := params["tools"]; ok {
+		t.Errorf("params.tools must be absent when the request has no tools, got %v", v)
+	}
+}
