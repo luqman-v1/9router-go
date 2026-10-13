@@ -37,6 +37,48 @@ func TestStepModelOmitsDisabledReasoning(t *testing.T) {
 	}
 }
 
+// TestStepModelOmitsReasoningEnabledFalse pins the enabled:false dialect on
+// the step wire: no reasoning field may reach the fake upstream.
+func TestStepModelOmitsReasoningEnabledFalse(t *testing.T) {
+	env, upstream := newProviderEnv(t)
+
+	body := ChatBody("deepseek/step-5-preview", false)
+	body["reasoning"] = map[string]any{"enabled": false}
+	res := env.Post(t, "/v1/chat/completions", body)
+	if res.Status != http.StatusOK {
+		t.Fatalf("POST = %d, want 200 (body: %s)", res.Status, truncate(res.Body))
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(upstream.Last(t).Body, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, k := range []string{"reasoning_effort", "thinking", "enable_thinking", "reasoning"} {
+		if _, has := wire[k]; has {
+			t.Errorf("reasoning field %q reached the upstream: %s", k, truncate(upstream.Last(t).Body))
+		}
+	}
+}
+
+// TestStepModelMapsReasoningEnabledTrueToAuto pins the enabled:true dialect
+// on the step wire: reasoning_effort:"auto" must reach the fake upstream.
+func TestStepModelMapsReasoningEnabledTrueToAuto(t *testing.T) {
+	env, upstream := newProviderEnv(t)
+
+	body := ChatBody("deepseek/step-5-preview", false)
+	body["reasoning"] = map[string]any{"enabled": true}
+	res := env.Post(t, "/v1/chat/completions", body)
+	if res.Status != http.StatusOK {
+		t.Fatalf("POST = %d, want 200 (body: %s)", res.Status, truncate(res.Body))
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(upstream.Last(t).Body, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if wire["reasoning_effort"] != "auto" {
+		t.Errorf("reasoning_effort = %v, want auto", wire["reasoning_effort"])
+	}
+}
+
 // TestStepModelClampsMaxToHigh pins the step writer clamp (xhigh|max → high).
 func TestStepModelClampsMaxToHigh(t *testing.T) {
 	env, upstream := newProviderEnv(t)

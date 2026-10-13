@@ -2,6 +2,7 @@ package executor
 
 import (
 	json "encoding/json/v2"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -328,5 +329,119 @@ func TestEnsureClaudeMessagesFor_zedHaikuUsesAdaptive(t *testing.T) {
 	}
 	if _, hasBudget := oth["budget_tokens"]; !hasBudget {
 		t.Errorf("anthropic thinking lacks budget_tokens; the override leaked (%s)", otherOut)
+	}
+}
+
+// TestOpenAIThinkingDisplaySecondCopy dispositions every client key read by the
+// executor's own copy of the display reader (claude_thinking.go), which the
+// Claude path keeps because it runs during translation, before the OpenAI-only
+// keys are stripped. The fall-through rows differ from
+// thinking.TestOpenAIThinkingDisplayDialects, which short-circuits once a
+// `reasoning` object is present: the divergence is documented as tested, not
+// changed.
+func TestOpenAIThinkingDisplaySecondCopy(t *testing.T) {
+	tests := []struct {
+		name   string
+		reqMap map[string]any
+		want   string
+	}{
+		{"reasoning.summary detailed", map[string]any{"reasoning": map[string]any{"summary": "detailed"}}, "summarized"},
+		{"reasoning.summary auto", map[string]any{"reasoning": map[string]any{"summary": "auto"}}, "summarized"},
+		{"reasoning.summary none alone is not a request", map[string]any{"reasoning": map[string]any{"summary": "none"}}, ""},
+		{"reasoning empty summary falls through to effort", map[string]any{"reasoning": map[string]any{"summary": ""}, "reasoning_effort": "high"}, "summarized"},
+		{"reasoning summary none falls through to effort", map[string]any{"reasoning": map[string]any{"summary": "none"}, "reasoning_effort": "high"}, "summarized"},
+		{"reasoning.effort only falls through to top-level effort", map[string]any{"reasoning": map[string]any{"effort": "high"}, "reasoning_effort": "high"}, "summarized"},
+		{"reasoning non-map falls through to effort", map[string]any{"reasoning": "x", "reasoning_effort": "high"}, "summarized"},
+		{"reasoning_effort high", map[string]any{"reasoning_effort": "high"}, "summarized"},
+		{"reasoning_effort minimal still asks for reasoning", map[string]any{"reasoning_effort": "minimal"}, "summarized"},
+		{"reasoning_effort none opts out", map[string]any{"reasoning_effort": "none"}, ""},
+		{"reasoning_effort NONE opts out case-insensitively", map[string]any{"reasoning_effort": "NONE"}, ""},
+		{"reasoning_effort off opts out", map[string]any{"reasoning_effort": "off"}, ""},
+		{"reasoning_effort minimal_off opts out", map[string]any{"reasoning_effort": "minimal_off"}, ""},
+		{"reasoning_effort empty is not a request", map[string]any{"reasoning_effort": ""}, ""},
+		{"reasoning_effort non-string is not a request", map[string]any{"reasoning_effort": 5.0}, ""},
+		{"claude-native thinking block asks for nothing", map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": 1000.0}}, ""},
+		{"body without reasoning keys asks for nothing", map[string]any{"model": "m"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := openAIThinkingDisplay(tt.reqMap); got != tt.want {
+				t.Fatalf("openAIThinkingDisplay() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestApplyClaudeThinkingDisplayDialectKeys dispositions how the second copy
+// writes its result back: an explicit `thinking.display` is client-owned and
+// survives, and no block is created unless the body actually asked.
+func TestApplyClaudeThinkingDisplayDialectKeys(t *testing.T) {
+	tests := []struct {
+		name     string
+		reqMap   map[string]any
+		wantKeys map[string]any // top-level keys that must remain absent
+		want     map[string]any // full expected body, when non-nil
+	}{
+		{
+			name: "explicit summarized display wins",
+			reqMap: map[string]any{"thinking": map[string]any{"display": "summarized"},
+				"reasoning_effort": "high"},
+			want: map[string]any{"thinking": map[string]any{"display": "summarized"}, "reasoning_effort": "high"},
+		},
+		{
+			name: "explicit none display is not overwritten",
+			reqMap: map[string]any{"thinking": map[string]any{"display": "none"},
+				"reasoning_effort": "high"},
+			want: map[string]any{"thinking": map[string]any{"display": "none"}, "reasoning_effort": "high"},
+		},
+		{
+			name:   "empty display counts as unset",
+			reqMap: map[string]any{"thinking": map[string]any{"display": ""}, "reasoning_effort": "high"},
+			want:   map[string]any{"thinking": map[string]any{"display": "summarized"}, "reasoning_effort": "high"},
+		},
+		{
+			name:   "non-string display counts as unset",
+			reqMap: map[string]any{"thinking": map[string]any{"display": 5.0}, "reasoning_effort": "high"},
+			want:   map[string]any{"thinking": map[string]any{"display": "summarized"}, "reasoning_effort": "high"},
+		},
+		{
+			name:   "thinking non-map is replaced",
+			reqMap: map[string]any{"thinking": "x", "reasoning_effort": "high"},
+			want:   map[string]any{"thinking": map[string]any{"display": "summarized"}, "reasoning_effort": "high"},
+		},
+		{
+			name:   "claude-native thinking fields survive untouched",
+			reqMap: map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": 1000.0}},
+			want:   map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": 1000.0}},
+		},
+		{
+			name:     "no ask creates no thinking block",
+			reqMap:   map[string]any{"model": "m"},
+			wantKeys: map[string]any{"thinking": true},
+		},
+		{
+			name:     "opt-out effort creates no thinking block",
+			reqMap:   map[string]any{"model": "m", "reasoning_effort": "none"},
+			wantKeys: map[string]any{"thinking": true},
+		},
+		{
+			name:   "responses summary ask writes the display",
+			reqMap: map[string]any{"reasoning": map[string]any{"effort": "high", "summary": "auto"}},
+			want: map[string]any{"reasoning": map[string]any{"effort": "high", "summary": "auto"},
+				"thinking": map[string]any{"display": "summarized"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			applyClaudeThinkingDisplay(tt.reqMap)
+			for k := range tt.wantKeys {
+				if _, has := tt.reqMap[k]; has {
+					t.Errorf("%q written: %+v", k, tt.reqMap)
+				}
+			}
+			if tt.want != nil && !reflect.DeepEqual(tt.reqMap, tt.want) {
+				t.Errorf("body = %+v, want %+v", tt.reqMap, tt.want)
+			}
+		})
 	}
 }

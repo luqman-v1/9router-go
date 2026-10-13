@@ -119,6 +119,53 @@ func TestFilterToOpenAIFormat(t *testing.T) {
 			t.Fatalf("parts = %+v", parts)
 		}
 	})
+	// Sweep dispositions: this filter normalises messages and tools only.
+	// Removing request-level dialect keys is thinking.Strip's job, so every
+	// client reasoning dialect must pass through it unchanged.
+	t.Run("top-level dialect keys pass through", func(t *testing.T) {
+		out := filterBody(t, map[string]any{
+			"model":            "m",
+			"reasoning_effort": "high",
+			"thinking":         map[string]any{"type": "enabled"},
+			"reasoning":        map[string]any{"effort": "high"},
+			"output_config":    map[string]any{"effort": "high"},
+			"enable_thinking":  true,
+			"params":           map[string]any{"reasoning_effort": "high"},
+			"messages":         []any{map[string]any{"role": "user", "content": "hi"}},
+		})
+		for _, k := range []string{"reasoning_effort", "thinking", "reasoning", "output_config", "enable_thinking", "params"} {
+			if _, has := out[k]; !has {
+				t.Errorf("%q dropped by the OpenAI filter", k)
+			}
+		}
+		if _, has := out["params"].(map[string]any)["reasoning_effort"]; !has {
+			t.Errorf("params.reasoning_effort dropped by the OpenAI filter")
+		}
+	})
+	t.Run("assistant tool_calls shortcut keeps thinking blocks", func(t *testing.T) {
+		out := filterBody(t, map[string]any{"messages": []any{
+			map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"id": "1"}},
+				"content": []any{
+					map[string]any{"type": "thinking", "thinking": "hmm"},
+					map[string]any{"type": "text", "text": "hi"},
+				}},
+		}})
+		parts := out["messages"].([]any)[0].(map[string]any)["content"].([]any)
+		if len(parts) != 2 || parts[0].(map[string]any)["type"] != "thinking" {
+			t.Fatalf("parts = %+v, want the thinking block kept on the tool_calls shortcut", parts)
+		}
+	})
+	t.Run("user thinking-only message dropped", func(t *testing.T) {
+		out := filterBody(t, map[string]any{"messages": []any{
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "thinking", "thinking": "hmm"},
+				map[string]any{"type": "redacted_thinking", "data": "d"},
+			}},
+		}})
+		if msgs := out["messages"].([]any); len(msgs) != 0 {
+			t.Fatalf("messages = %+v, want the emptied message removed", msgs)
+		}
+	})
 }
 
 func TestStripContentTypes(t *testing.T) {

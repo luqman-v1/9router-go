@@ -67,6 +67,12 @@ func Extract(body map[string]any) *Intent {
 		if s, ok := r["effort"].(string); ok && s != "" {
 			return effortString(s)
 		}
+		if en, ok := r["enabled"].(bool); ok {
+			if !en {
+				return &Intent{Mode: ModeNone}
+			}
+			return &Intent{Mode: ModeAuto}
+		}
 	}
 
 	// 3. Claude shape.

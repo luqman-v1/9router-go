@@ -48,6 +48,43 @@ func TestMuseSparkContributorClamp(t *testing.T) {
 	}
 }
 
+func TestApplyReasoningEnabledFalseEqualsEffortNone(t *testing.T) {
+	cases := []struct {
+		name     string
+		target   string
+		provider string
+		model    string
+	}{
+		{"openai", "openai", "openai", "gpt-5.3-codex"},
+		{"openai-responses", "openai-responses", "muse", "muse-spark-1.3-contributor"},
+		{"claude-adaptive", "claude", "claude", "claude-opus-4.7"},
+		{"claude-budget", "claude", "claude", "claude-haiku-4.5"},
+		{"gemini-level", "openai", "gemini", "gemini-3-pro"},
+		{"gemini-budget", "openai", "gemini", "gemini-2.5-pro"},
+		{"zai", "openai", "glm", "glm-4.6"},
+		{"qwen", "openai", "qwen", "qwen3-max"},
+		{"deepseek", "openai", "deepseek", "deepseek-v4-pro"},
+		{"kimi", "openai", "kimi", "kimi-k2.6"},
+		{"minimax", "claude", "minimax", "MiniMax-M3"},
+		{"hunyuan", "openai", "hunyuan", "hunyuan-turbos"},
+		{"step", "openai", "deepseek", "step-5-preview"},
+		{"tokenrouter", "openai", "tokenrouter", "step-5-preview"},
+		{"kiro", "openai", "kiro", "claude-sonnet-4.6"},
+		{"commandcode", "commandcode", "commandcode", "deepseek-v4-pro"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			enabled := apply(tc.target, tc.provider, tc.model,
+				map[string]any{"model": tc.model, "reasoning": map[string]any{"enabled": false}}, nil)
+			effortNone := apply(tc.target, tc.provider, tc.model,
+				map[string]any{"model": tc.model, "reasoning_effort": "none"}, nil)
+			if !reflect.DeepEqual(enabled, effortNone) {
+				t.Fatalf("reasoning:{enabled:false} = %+v, want reasoning_effort:none = %+v", enabled, effortNone)
+			}
+		})
+	}
+}
+
 func TestApplyStepOmitsDisable(t *testing.T) {
 	out := apply("openai", "cline", "step-5-preview",
 		map[string]any{"model": "step-5-preview", "reasoning_effort": "none"}, nil)
