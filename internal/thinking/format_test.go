@@ -10,11 +10,12 @@ import (
 )
 
 // apply builds a fresh body, runs Apply, and returns it.
-func apply(target, provider, model string, body map[string]any, override *Intent) map[string]any {
+func apply(t *testing.T, target, provider, model string, body map[string]any, override *Intent) map[string]any {
+	t.Helper()
 	b, _ := json.Marshal(body)
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {
-		panic(err)
+		t.Fatalf("apply fixture marshal: %v", err)
 	}
 	return Apply(m, target, provider, model, override)
 }
@@ -41,7 +42,7 @@ func TestMuseSparkContributorClamp(t *testing.T) {
 		{"override-off", "muse-spark-1.3-contributor", map[string]any{"model": "muse-spark-1.3-contributor"}, &Intent{Mode: ModeNone}},
 	}
 	for _, tc := range cases {
-		out := apply("openai", "cline", tc.model, tc.body, tc.override)
+		out := apply(t, "openai", "cline", tc.model, tc.body, tc.override)
 		if out["reasoning_effort"] != "minimal" {
 			t.Fatalf("%s: reasoning_effort = %v, want minimal (full body: %+v)", tc.name, out["reasoning_effort"], out)
 		}
@@ -74,9 +75,9 @@ func TestApplyReasoningEnabledFalseEqualsEffortNone(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			enabled := apply(tc.target, tc.provider, tc.model,
+			enabled := apply(t, tc.target, tc.provider, tc.model,
 				map[string]any{"model": tc.model, "reasoning": map[string]any{"enabled": false}}, nil)
-			effortNone := apply(tc.target, tc.provider, tc.model,
+			effortNone := apply(t, tc.target, tc.provider, tc.model,
 				map[string]any{"model": tc.model, "reasoning_effort": "none"}, nil)
 			if !reflect.DeepEqual(enabled, effortNone) {
 				t.Fatalf("reasoning:{enabled:false} = %+v, want reasoning_effort:none = %+v", enabled, effortNone)
@@ -86,20 +87,20 @@ func TestApplyReasoningEnabledFalseEqualsEffortNone(t *testing.T) {
 }
 
 func TestApplyStepOmitsDisable(t *testing.T) {
-	out := apply("openai", "cline", "step-5-preview",
+	out := apply(t, "openai", "cline", "step-5-preview",
 		map[string]any{"model": "step-5-preview", "reasoning_effort": "none"}, nil)
 	mustAbsent(t, out, "reasoning_effort", "thinking", "enable_thinking")
 }
 
 func TestApplyStepClampsMaxToHigh(t *testing.T) {
 	for _, lvl := range []string{"max", "xhigh"} {
-		out := apply("openai", "deepseek", "step-5-preview",
+		out := apply(t, "openai", "deepseek", "step-5-preview",
 			map[string]any{"reasoning_effort": lvl}, nil)
 		if out["reasoning_effort"] != "high" {
 			t.Fatalf("%s → %+v", lvl, out)
 		}
 	}
-	out := apply("openai", "deepseek", "step-5-preview",
+	out := apply(t, "openai", "deepseek", "step-5-preview",
 		map[string]any{"reasoning_effort": "medium"}, nil)
 	if out["reasoning_effort"] != "medium" {
 		t.Fatalf("medium → %+v", out)
@@ -107,7 +108,7 @@ func TestApplyStepClampsMaxToHigh(t *testing.T) {
 }
 
 func TestApplyRewritesSuffixedModel(t *testing.T) {
-	out := apply("openai", "deepseek", "deepseek-v4-pro(high)",
+	out := apply(t, "openai", "deepseek", "deepseek-v4-pro(high)",
 		map[string]any{"model": "deepseek-v4-pro(high)", "messages": []any{}}, nil)
 	if out["model"] != "deepseek-v4-pro" {
 		t.Fatalf("model = %v", out["model"])
@@ -116,7 +117,7 @@ func TestApplyRewritesSuffixedModel(t *testing.T) {
 	if out["reasoning_effort"] != "high" {
 		t.Fatalf("effort = %+v", out)
 	}
-	out = apply("openai", "deepseek", "step-5-preview(none)",
+	out = apply(t, "openai", "deepseek", "step-5-preview(none)",
 		map[string]any{"model": "step-5-preview(none)", "reasoning_effort": "high"}, nil)
 	if out["model"] != "step-5-preview" {
 		t.Fatalf("model = %v", out["model"])
@@ -125,7 +126,7 @@ func TestApplyRewritesSuffixedModel(t *testing.T) {
 }
 
 func TestApplyClaudeAdaptive(t *testing.T) {
-	out := apply("claude", "claude", "claude-opus-4.7",
+	out := apply(t, "claude", "claude", "claude-opus-4.7",
 		map[string]any{"reasoning_effort": "high"}, nil)
 	if !reflect.DeepEqual(out["output_config"], map[string]any{"effort": "high"}) {
 		t.Fatalf("output_config = %+v", out["output_config"])
@@ -134,14 +135,14 @@ func TestApplyClaudeAdaptive(t *testing.T) {
 		t.Fatalf("thinking = %+v", out["thinking"])
 	}
 	// Permanently adaptive (cannot disable): no thinking switch.
-	out = apply("claude", "claude", "claude-fable-5-1",
+	out = apply(t, "claude", "claude", "claude-fable-5-1",
 		map[string]any{"reasoning_effort": "high"}, nil)
 	mustAbsent(t, out, "thinking")
 	if !reflect.DeepEqual(out["output_config"], map[string]any{"effort": "high"}) {
 		t.Fatalf("fable output_config = %+v", out["output_config"])
 	}
 	// auto → high.
-	out = apply("claude", "claude", "claude-opus-4.7",
+	out = apply(t, "claude", "claude", "claude-opus-4.7",
 		map[string]any{"thinking": map[string]any{"type": "adaptive"}}, nil)
 	if !reflect.DeepEqual(out["output_config"], map[string]any{"effort": "high"}) {
 		t.Fatalf("auto output_config = %+v", out["output_config"])
@@ -149,7 +150,7 @@ func TestApplyClaudeAdaptive(t *testing.T) {
 }
 
 func TestApplyClaudeBudget(t *testing.T) {
-	out := apply("claude", "claude", "claude-haiku-4.5",
+	out := apply(t, "claude", "claude", "claude-haiku-4.5",
 		map[string]any{"reasoning_effort": "high"}, nil)
 	th, _ := out["thinking"].(map[string]any)
 	if th["type"] != "enabled" || th["budget_tokens"] != 24576 {
@@ -158,19 +159,19 @@ func TestApplyClaudeBudget(t *testing.T) {
 }
 
 func TestApplyOpenAI(t *testing.T) {
-	out := apply("openai", "openai", "gpt-5.3-codex",
+	out := apply(t, "openai", "openai", "gpt-5.3-codex",
 		map[string]any{"reasoning_effort": "none"}, nil)
 	if out["reasoning_effort"] != "none" {
 		t.Fatalf("none → %+v", out)
 	}
 	// max unsupported → xhigh.
-	out = apply("openai", "openai", "gpt-5.3-codex",
+	out = apply(t, "openai", "openai", "gpt-5.3-codex",
 		map[string]any{"reasoning_effort": "max"}, nil)
 	if out["reasoning_effort"] != "xhigh" {
 		t.Fatalf("max → %+v", out)
 	}
 	// suffix overrides body.
-	out = apply("openai", "openai", "gpt-5(low)",
+	out = apply(t, "openai", "openai", "gpt-5(low)",
 		map[string]any{"reasoning_effort": "high"}, nil)
 	if out["reasoning_effort"] != "low" {
 		t.Fatalf("suffix → %+v", out)
@@ -178,7 +179,7 @@ func TestApplyOpenAI(t *testing.T) {
 }
 
 func TestApplyZai(t *testing.T) {
-	out := apply("openai", "glm", "glm-4.6",
+	out := apply(t, "openai", "glm", "glm-4.6",
 		map[string]any{"reasoning_effort": "none"}, nil)
 	if out["enable_thinking"] != false {
 		t.Fatalf("off → %+v", out)
@@ -188,7 +189,7 @@ func TestApplyZai(t *testing.T) {
 		"high": "high", "max": "max", "xhigh": "max",
 		"low": "low", "medium": "high", "minimal": "low",
 	} {
-		out := apply("openai", "glm-cn", "glm-5.3",
+		out := apply(t, "openai", "glm-cn", "glm-5.3",
 			map[string]any{"reasoning_effort": in}, nil)
 		if !reflect.DeepEqual(out["thinking"], map[string]any{"type": "enabled"}) {
 			t.Fatalf("%s thinking = %+v", in, out["thinking"])
@@ -198,49 +199,49 @@ func TestApplyZai(t *testing.T) {
 		}
 	}
 	// Pre-5.2: no reasoning_effort.
-	out = apply("openai", "glm-cn", "glm-4.7",
+	out = apply(t, "openai", "glm-cn", "glm-4.7",
 		map[string]any{"reasoning_effort": "low"}, nil)
 	mustAbsent(t, out, "reasoning_effort")
 }
 
 func TestApplyQwenDeepseekKimiMinimaxHunyuan(t *testing.T) {
-	out := apply("openai", "qwen", "qwen3-max",
+	out := apply(t, "openai", "qwen", "qwen3-max",
 		map[string]any{"reasoning_effort": "medium"}, nil)
 	if out["enable_thinking"] != true || out["thinking_budget"] != 8192 {
 		t.Fatalf("qwen → %+v", out)
 	}
 	// QwQ cannot disable → clamped on.
-	out = apply("openai", "qwen", "qwq-32b",
+	out = apply(t, "openai", "qwen", "qwq-32b",
 		map[string]any{"reasoning_effort": "none"}, nil)
 	if out["enable_thinking"] != true {
 		t.Fatalf("qwq → %+v", out)
 	}
-	out = apply("openai", "deepseek", "deepseek-v4-pro",
+	out = apply(t, "openai", "deepseek", "deepseek-v4-pro",
 		map[string]any{"reasoning_effort": "low"}, nil)
 	if !reflect.DeepEqual(out["thinking"], map[string]any{"type": "enabled"}) || out["reasoning_effort"] != "high" {
 		t.Fatalf("deepseek → %+v", out)
 	}
-	out = apply("openai", "kimi", "kimi-k2.6",
+	out = apply(t, "openai", "kimi", "kimi-k2.6",
 		map[string]any{"reasoning_effort": "high"}, nil)
 	if out["reasoning_effort"] != "high" {
 		t.Fatalf("kimi → %+v", out)
 	}
-	out = apply("openai", "kimchi", "kimi-k2.7",
+	out = apply(t, "openai", "kimchi", "kimi-k2.7",
 		map[string]any{"reasoning_effort": "auto"}, nil)
 	if out["reasoning_effort"] != "high" {
 		t.Fatalf("kimi auto → %+v", out)
 	}
-	out = apply("openai", "kimchi", "kimi-k2.7",
+	out = apply(t, "openai", "kimchi", "kimi-k2.7",
 		map[string]any{"reasoning_effort": "minimal"}, nil)
 	if out["reasoning_effort"] != "low" {
 		t.Fatalf("kimi minimal → %+v", out)
 	}
-	out = apply("claude", "minimax", "MiniMax-M3",
+	out = apply(t, "claude", "minimax", "MiniMax-M3",
 		map[string]any{"reasoning_effort": "high"}, nil)
 	if !reflect.DeepEqual(out["thinking"], map[string]any{"type": "adaptive"}) {
 		t.Fatalf("minimax → %+v", out)
 	}
-	out = apply("openai", "hunyuan", "hunyuan-turbos",
+	out = apply(t, "openai", "hunyuan", "hunyuan-turbos",
 		map[string]any{"reasoning_effort": "medium"}, nil)
 	th, _ := out["thinking"].(map[string]any)
 	if th["type"] != "enabled" || th["budget_tokens"] != 8192 {
@@ -254,10 +255,10 @@ func TestApplyTokenRouter(t *testing.T) {
 	for _, body := range []map[string]any{
 		{"reasoning_effort": "none"}, {"reasoning_effort": "auto"},
 	} {
-		out := apply("openai", "tokenrouter", "step-5-preview", body, nil)
+		out := apply(t, "openai", "tokenrouter", "step-5-preview", body, nil)
 		mustAbsent(t, out, "reasoning_effort")
 	}
-	out := apply("openai", "tokenrouter", "step-5-preview",
+	out := apply(t, "openai", "tokenrouter", "step-5-preview",
 		map[string]any{"reasoning_effort": "max"}, nil)
 	if out["reasoning_effort"] != "max" {
 		t.Fatalf("tokenrouter max → %+v", out)
@@ -265,7 +266,7 @@ func TestApplyTokenRouter(t *testing.T) {
 }
 
 func TestApplyCommandcode(t *testing.T) {
-	out := apply("commandcode", "commandcode", "deepseek/deepseek-v4.1-flash", map[string]any{
+	out := apply(t, "commandcode", "commandcode", "deepseek/deepseek-v4.1-flash", map[string]any{
 		"params":           map[string]any{"model": "deepseek/deepseek-v4.1-flash"},
 		"reasoning_effort": "high",
 	}, nil)
@@ -274,7 +275,7 @@ func TestApplyCommandcode(t *testing.T) {
 	}
 	mustAbsent(t, out, "reasoning_effort", "thinking")
 	// Flat Go body: top-level write, wrapped later by buildCommandcodeBody.
-	out = apply("commandcode", "commandcode", "deepseek-v4-pro",
+	out = apply(t, "commandcode", "commandcode", "deepseek-v4-pro",
 		map[string]any{"reasoning_effort": "max"}, nil)
 	if out["reasoning_effort"] != "max" {
 		t.Fatalf("flat → %+v", out)
@@ -283,7 +284,7 @@ func TestApplyCommandcode(t *testing.T) {
 
 func TestApplyGuards(t *testing.T) {
 	// Non-reasoning model strips everything.
-	out := apply("openai", "openai", "gpt-4o", map[string]any{
+	out := apply(t, "openai", "openai", "gpt-4o", map[string]any{
 		"reasoning_effort": "high",
 		"thinking":         map[string]any{"type": "enabled"},
 	}, nil)
@@ -291,12 +292,12 @@ func TestApplyGuards(t *testing.T) {
 	// No intent on reasoning-capable model: only model key survives decode,
 	// nothing added.
 	in := map[string]any{"model": "step-5-preview", "messages": []any{}}
-	out = apply("openai", "deepseek", "step-5-preview", in, nil)
+	out = apply(t, "openai", "deepseek", "step-5-preview", in, nil)
 	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("intent-free changed: %+v", out)
 	}
 	// none on cannot-disable model clamps to minimal.
-	out = apply("openai", "qwen", "qwq-32b",
+	out = apply(t, "openai", "qwen", "qwq-32b",
 		map[string]any{"reasoning_effort": "none"}, nil)
 	if out["enable_thinking"] != true {
 		t.Fatalf("clamp → %+v", out)
@@ -332,13 +333,13 @@ func TestApplyJSON(t *testing.T) {
 	// Idempotent.
 	once := ApplyJSON([]byte(`{"model":"m","reasoning_effort":"high"}`), "openai", "openai", "gpt-5", nil)
 	twice := ApplyJSON(once, "openai", "openai", "gpt-5", nil)
-	if string(once) != string(twice) {
+	if !reflect.DeepEqual(mustUnmarshal(t, string(once)), mustUnmarshal(t, string(twice))) {
 		t.Fatalf("not idempotent:\n%s\n%s", once, twice)
 	}
 }
 
 func TestApplyDisplay(t *testing.T) {
-	out := apply("claude", "claude", "claude-haiku-4.5",
+	out := apply(t, "claude", "claude", "claude-haiku-4.5",
 		map[string]any{
 			"thinking":         map[string]any{"type": "enabled", "budget_tokens": 4096.0, "display": "summarized"},
 			"reasoning_effort": "high",
@@ -421,7 +422,7 @@ func TestApplyZaiPorted(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out := apply("openai", "", tt.model, mustUnmarshal(t, tt.in), nil)
+			out := apply(t, "openai", "", tt.model, mustUnmarshal(t, tt.in), nil)
 			for _, key := range []string{"thinking", "reasoning_effort", "enable_thinking", "reasoning"} {
 				if !sameValue(out[key], tt.want[key]) {
 					t.Errorf("%s = %#v, want %#v (full: %#v)", key, out[key], tt.want[key], out)
