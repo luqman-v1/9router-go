@@ -29,7 +29,7 @@ func TestExtract(t *testing.T) {
 		{"reasoning.enabled true", map[string]any{"reasoning": map[string]any{"enabled": true}}, auto},
 		{"reasoning effort high + enabled false", map[string]any{"reasoning": map[string]any{"effort": "high", "enabled": false}}, level("high")},
 		{"reasoning effort xhigh + enabled false", map[string]any{"reasoning": map[string]any{"effort": "xhigh", "enabled": false}}, level("xhigh")},
-		{"reasoning effort empty + enabled false", map[string]any{"reasoning": map[string]any{"enabled": false}}, none},
+		{"reasoning effort empty + enabled false", map[string]any{"reasoning": map[string]any{"effort": "", "enabled": false}}, none},
 		{"reasoning empty object", map[string]any{"reasoning": map[string]any{}}, nil},
 		{"reasoning.enabled string false", map[string]any{"reasoning": map[string]any{"enabled": "false"}}, nil},
 		{"reasoning_effort beats thinking", map[string]any{
