@@ -101,7 +101,7 @@ func ApplyJSON(body []byte, target, provider, model string, override *Intent) []
 		return body
 	}
 	Apply(m, target, provider, model, override)
-	out, err := json.Marshal(m)
+	out, err := json.Marshal(m, json.Deterministic(true))
 	if err != nil {
 		return body
 	}
