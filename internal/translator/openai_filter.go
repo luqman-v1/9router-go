@@ -239,7 +239,7 @@ func FilterToOpenAIFormatJSON(body []byte) []byte {
 		return body
 	}
 	FilterToOpenAIFormat(m)
-	out, err := json.Marshal(m)
+	out, err := json.Marshal(m, json.Deterministic(true))
 	if err != nil {
 		return body
 	}
