@@ -397,28 +397,3 @@ func TestForwardDeepSeekWebRejectsMissingCredential(t *testing.T) {
 		t.Errorf("no upstream call should be made without a credential, got %v", calls)
 	}
 }
-
-// TestForwardGeminiWebFailsClosed proves gemini-web refuses rather than
-// forwarding a request that cannot succeed.
-//
-// gemini.google.com only answers from inside its own web client, so the
-// forwarded request would return a 401 that reads as an expired cookie. Saying
-// the provider is not routable in this build is the answer the operator can act
-// on.
-func TestForwardGeminiWebFailsClosed(t *testing.T) {
-	rec := httptest.NewRecorder()
-	err := ForwardGeminiWeb(rec, &Request{
-		Ctx:    context.Background(),
-		Config: &providers.ProviderConfig{BaseURL: "https://gemini.google.com/app"},
-	})
-	if err == nil {
-		t.Fatal("gemini-web must refuse a chat request in a build with no browser")
-	}
-	status, ok := deepSeekUpstreamStatus(err)
-	if !ok || status != http.StatusNotImplemented {
-		t.Fatalf("error = %v (status %d), want 501", err, status)
-	}
-	if !strings.Contains(err.Error(), "no browser") {
-		t.Errorf("error should name the reason; got %v", err)
-	}
-}

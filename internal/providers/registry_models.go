@@ -90,11 +90,23 @@ var ProviderModels = map[string][]string{
 	"gcli":       {"grok-build", "grok-4.5", "grok-4.5-high", "grok-4.5-medium", "grok-4.5-low"},
 	"gemini":     {"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemma-4-31b-it", "gemini-embedding-2-preview", "gemini-embedding-001", "text-embedding-005", "text-embedding-004", "gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview", "gemini-2.5-flash-image", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash-native-audio-preview-09-17", "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts", "embedding-001"},
 	"gemini-cli": {"gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"},
-	// gemini-web mirrors OmniRoute
-	// open-sse/config/providers/registry/gemini/web/index.ts, whose entries all
-	// declare toolCalling:false and supportsReasoning:false: the upstream
-	// executor drives the web UI rather than an API, so it can set neither.
-	"gemini-web":           {"gemini-3.1-pro", "gemini-3.7-flash", "gemini-3.1-flash-lite"},
+	// gemini-web lists both naming forms the site's own registry produces, so a
+	// request written either way resolves. The registry names a model after its
+	// category ("Pro", "Flash", "Argon") and its display label carries the
+	// version ("3.1 Pro", "4 Argon"), so the same model is reachable as
+	// gemini-argon and as gemini-4-argon. Both are catalogued rather than one
+	// plus an alias table: the version moves with every release and would have
+	// to be re-typed here each time, while the category does not.
+	//
+	// Which of these a session can actually be served is decided live, not here:
+	// an anonymous session reaches the Flash-Lite entry only, and the executor
+	// refuses a request for a model the session does not offer rather than
+	// letting the site substitute another and file it under the requested name.
+	"gemini-web": {
+		"gemini-3.1-pro", "gemini-3.7-flash", "gemini-3.1-flash-lite",
+		"gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon",
+		"gemini-3-pro", "gemini-4-argon",
+	},
 	"gh":                   {"gpt-5.2", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "claude-haiku-4.5", "claude-opus-4.5", "claude-sonnet-4.5", "claude-sonnet-4.6", "claude-opus-4.6", "claude-opus-4.7", "gemini-2.5-pro", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "grok-code-fast-1", "oswe-vscode-prime", "goldeneye-free-auto", "text-embedding-3-small", "text-embedding-3-large"},
 	"github":               {"gpt-5.2", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "claude-haiku-4.5", "claude-opus-4.5", "claude-sonnet-4.5", "claude-sonnet-4.6", "claude-opus-4.6", "claude-opus-4.7", "gemini-2.5-pro", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "grok-code-fast-1", "oswe-vscode-prime", "goldeneye-free-auto", "text-embedding-3-small", "text-embedding-3-large"},
 	"glm":                  {"glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.6v"},

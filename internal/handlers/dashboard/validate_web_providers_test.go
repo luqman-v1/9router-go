@@ -154,24 +154,101 @@ func TestValidateDeepSeekWebSendsBrowserFingerprint(t *testing.T) {
 	}
 }
 
-// TestValidateGeminiWebExplainsItCannotCheck proves the gemini-web probe reports
-// why it cannot answer rather than calling the site.
+// TestValidateGeminiWebProbesTheSessionAndReportsAStaleCookie proves the
+// gemini-web probe distinguishes a working cookie from a refused one.
 //
-// gemini.google.com issues its tokens from inside the browser, so any probe
-// that called it would report a valid cookie as invalid. Saying so is the only
-// answer the user can act on.
-func TestValidateGeminiWebExplainsItCannotCheck(t *testing.T) {
-	calls := withProbeStub(t, func(_ int, _ capturedProbe) (int, []byte, error) {
-		t.Fatal("gemini-web must not probe the site from a build with no browser")
-		return 0, nil, nil
+// The site reports a rejected session inside an HTTP-200 body, so a probe that
+// read the status alone would call every dead cookie valid — the failure the
+// user then sees is a chat request that returns nothing.
+func TestValidateGeminiWebProbesTheSessionAndReportsAStaleCookie(t *testing.T) {
+	calls := withProbeStub(t, func(call int, p capturedProbe) (int, []byte, error) {
+		if !strings.Contains(p.url, "batchexecute") {
+			t.Errorf("probe url = %q, want the model registry RPC", p.url)
+		}
+		if !strings.Contains(p.body, "otAQ7b") {
+			t.Errorf("probe body = %q, want the otAQ7b RPC", p.body)
+		}
+		if got := p.headers.Get("Cookie"); !strings.Contains(got, "__Secure-1PSID=cookie-value") {
+			t.Errorf("probe cookie = %q, want the pasted credential", got)
+		}
+		return http.StatusOK, []byte(`[null,false,false,1016]`), nil
 	})
 
-	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":"__Secure-1PSID=abc"}`)
+	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":"__Secure-1PSID=cookie-value"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
 	}
 	if out["valid"] != false {
-		t.Errorf("valid = %v, want false: this build cannot prove the cookie works", out["valid"])
+		t.Errorf("valid = %v, want false for a session the site refuses", out["valid"])
+	}
+	if msg := errorMessage(t, out); !strings.Contains(msg, "__Secure-1PSID") {
+		t.Errorf("message = %q, want it to name the cookie to re-copy", msg)
+	}
+	if len(*calls) != 1 {
+		t.Errorf("probes = %d, want 1", len(*calls))
+	}
+}
+
+// TestValidateGeminiWebDoesNotMistakeTheRegistryConstantForARejection is the
+// regression test for a real bug: a live anonymous registry carries the value
+// 1016 — the same number the site's failure envelope uses — so a probe that
+// scanned the body for it reported every working session as a refused one.
+//
+// Caught by probing the live site, which is the only place it showed.
+func TestValidateGeminiWebDoesNotMistakeTheRegistryConstantForARejection(t *testing.T) {
+	withProbeStub(t, func(_ int, _ capturedProbe) (int, []byte, error) {
+		// The head of a live anonymous registry: the constant is at index 14 of
+		// the payload and the model list follows.
+		return http.StatusOK, []byte(`[["wrb.fr","otAQ7b","[6,[false,null,false],false,null,null,null,false,null,null,null,null,null,false,false,1016,[[\"cf41b0e0dd7d53e5\",\"Flash-Lite\"]]]"]]`), nil
+	})
+
+	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":"__Secure-1PSID=cookie-value"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != true {
+		t.Errorf("valid = %v, want true: 1016 is an ordinary value inside a healthy registry (error: %v)",
+			out["valid"], out["error"])
+	}
+}
+
+// TestValidateGeminiWebAcceptsAWorkingCookie proves a model registry is read as a
+// valid credential rather than as an unparsed body.
+func TestValidateGeminiWebAcceptsAWorkingCookie(t *testing.T) {
+	withProbeStub(t, func(_ int, _ capturedProbe) (int, []byte, error) {
+		return http.StatusOK, []byte(`[["wrb.fr","otAQ7b","[6,[],[],[[\"cf41b0e0dd7d53e5\",\"Flash-Lite\"]]]"]]`), nil
+	})
+
+	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":"__Secure-1PSID=cookie-value"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != true {
+		t.Errorf("valid = %v, want true for a session the site answers (error: %v)", out["valid"], out["error"])
+	}
+}
+
+// TestValidateGeminiWebWithoutACookieSaysItStillWorks proves an empty credential
+// is reported as usable rather than as a missing one.
+//
+// The site serves an anonymous visitor, so a connection with no cookie routes
+// fine. Reporting it as "missing credential" would send the user looking for one
+// they do not need.
+func TestValidateGeminiWebWithoutACookieSaysItStillWorks(t *testing.T) {
+	calls := withProbeStub(t, func(_ int, _ capturedProbe) (int, []byte, error) {
+		t.Fatal("an empty credential has nothing to probe")
+		return 0, nil, nil
+	})
+
+	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != true {
+		t.Errorf("valid = %v, want true: gemini-web works without a cookie", out["valid"])
+	}
+	if msg := errorMessage(t, out); msg != "" {
+		t.Errorf("an anonymous connection must not be reported as an error; got %q", msg)
 	}
 	if len(*calls) != 0 {
 		t.Errorf("expected no outbound probe, got %d", len(*calls))

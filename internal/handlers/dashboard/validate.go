@@ -421,6 +421,15 @@ func (h *DashboardHandler) validateProviderNodeConnection(
 // (GET /models, falling back to a minimal chat request).
 func validateProviderKey(ctx context.Context, provider string, cfg providers.ProviderConfig, apiKey string, psd map[string]any) validateOutcome {
 	if cfg.NoAuth {
+		// gemini-web is the one NoAuth provider whose credential is optional
+		// rather than absent: the site serves an anonymous visitor, and a pasted
+		// cookie only raises the set of models the session may be served. So it
+		// is still probed when one is supplied — "Check" has to be able to tell
+		// a working cookie from a stale one — but an empty credential is not an
+		// error and is not probed.
+		if provider == "gemini-web" && strings.TrimSpace(apiKey) != "" {
+			return validateGeminiWeb(ctx, apiKey)
+		}
 		return validateOutcome{valid: true, supported: true}
 	}
 

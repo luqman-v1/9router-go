@@ -1,10 +1,12 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"9router/proxy/internal/proxy/executor"
@@ -133,20 +135,65 @@ func deepSeekEnvelopeHasToken(body []byte) bool {
 	return json.Unmarshal(data, &flat) == nil && flat.Token != ""
 }
 
-// validateGeminiWeb reports why gemini-web cannot be validated here.
+// validateGeminiWeb checks a pasted cookie against the site's model registry.
 //
-// gemini.google.com has no credential endpoint to call: it authenticates the
-// page with __Secure-1PSID and issues its API tokens from inside the browser,
-// so the only honest answer to "is this cookie usable" is a completed request
-// through a real browser — which this build does not ship. Probing the site
-// here would report a session as invalid when it may be perfectly valid, which
-// is worse than saying so.
-func validateGeminiWeb(_ context.Context, apiKey string) validateOutcome {
+// `otAQ7b` is the RPC the page itself calls on load to ask which models the
+// session may use, so it answers the credential question and nothing else: a
+// valid session returns a model list, a rejected one returns the site's
+// unauthenticated code. That keeps "Check" read-only rather than a billable
+// completion — the same constraint the deepseek-web probe is built to.
+//
+// With no cookie there is nothing to check and nothing to complain about: the
+// site answers an anonymous visitor, which is why the executor does not
+// require a credential at all.
+func validateGeminiWeb(ctx context.Context, apiKey string) validateOutcome {
 	if strings.TrimSpace(apiKey) == "" {
-		return validateOutcome{supported: true,
-			message: "Missing Gemini cookies — paste __Secure-1PSID (and __Secure-1PSIDTS when available) from gemini.google.com"}
+		return validateOutcome{valid: true, supported: true,
+			message: "No cookie configured — gemini-web still works, an anonymous session reaches one model. " +
+				"Paste __Secure-1PSID from a signed-in gemini.google.com tab to reach the others."}
 	}
-	return validateOutcome{supported: true,
-		message: "gemini-web cannot be validated: gemini.google.com issues its tokens from inside the web client, " +
-			"which this build does not ship. The cookie may still be valid — a chat request will be refused with the same reason."}
+
+	body, err := json.Marshal([]any{[]any{[]any{"otAQ7b", "[]", nil, "generic"}}})
+	if err != nil {
+		return validateOutcome{supported: true, message: "could not build the probe request: " + err.Error()}
+	}
+	status, response, err := validateProbeDo(ctx, http.MethodPost,
+		"https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=otAQ7b&source-path=%2Fapp&hl=en&rt=c",
+		geminiWebProbeHeaders(apiKey), []byte("f.req="+url.QueryEscape(string(body))))
+	if err != nil {
+		return validateOutcome{supported: true, message: err.Error()}
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return validateOutcome{supported: true, message: geminiWebStaleCookieAdvice}
+	}
+	if status != http.StatusOK {
+		return validateOutcome{supported: true,
+			message: "gemini.google.com returned HTTP " + http.StatusText(status)}
+	}
+	// The site reports a rejected session inside an HTTP-200 body, so the status
+	// alone proves nothing. What distinguishes the two is the content: a usable
+	// session gets a model registry back. The body is not scanned for a status
+	// code, because 1016 also occurs as a constant inside a healthy registry and
+	// matching on it reported every working session as a refused one.
+	if !bytes.Contains(response, []byte("wrb.fr")) {
+		return validateOutcome{supported: true, message: geminiWebStaleCookieAdvice}
+	}
+	return validateOutcome{valid: true, supported: true}
+}
+
+// geminiWebStaleCookieAdvice is the one wording for a cookie the site refuses.
+const geminiWebStaleCookieAdvice = "gemini.google.com refused this cookie — re-copy __Secure-1PSID " +
+	"(and __Secure-1PSIDTS when present) from a signed-in gemini.google.com tab"
+
+// geminiWebProbeHeaders mirrors what the executor sends, so a probe that passes
+// is evidence about the credential rather than about the header set.
+func geminiWebProbeHeaders(apiKey string) map[string]string {
+	return map[string]string{
+		"Content-Type":  "application/x-www-form-urlencoded;charset=UTF-8",
+		"Cookie":        executor.GeminiWebCookieHeader(apiKey),
+		"Origin":        "https://gemini.google.com",
+		"Referer":       "https://gemini.google.com/app",
+		"X-Same-Domain": "1",
+		"User-Agent":    executor.GeminiWebUserAgent(),
+	}
 }

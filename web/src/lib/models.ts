@@ -2251,6 +2251,30 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "gemini-3.1-flash-lite",
       "name": "Gemini 3.1 Flash-Lite"
+    },
+    {
+      "id": "gemini-pro",
+      "name": "Gemini Pro"
+    },
+    {
+      "id": "gemini-flash",
+      "name": "Gemini Flash"
+    },
+    {
+      "id": "gemini-flash-lite",
+      "name": "Gemini Flash-Lite"
+    },
+    {
+      "id": "gemini-argon",
+      "name": "Gemini Argon"
+    },
+    {
+      "id": "gemini-3-pro",
+      "name": "Gemini 3 Pro"
+    },
+    {
+      "id": "gemini-4-argon",
+      "name": "Gemini 4 Argon"
     }
   ],
   "gh": [

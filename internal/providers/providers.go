@@ -402,17 +402,22 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 		Format:     "gemini-openai",
 	},
-	// Gemini Web: catalog-only, mirroring OmniRoute
-	// open-sse/config/providers/registry/gemini/web/index.ts. gemini.google.com
-	// has no API the web client calls directly — the answer only exists in the
-	// XHR response the page receives — so upstream drives it with an embedded
-	// Chromium. This build ships no browser, so the entry exists to make the
-	// models listable and credentials manageable; the executor refuses a chat
-	// request with that reason instead of failing as a bad cookie.
+	// Gemini Web: gemini.google.com reached directly over HTTP, the way the
+	// page's own JavaScript reaches it. This was never an API — but it is an
+	// HTTP surface, and the executor drives it without a browser.
+	//
+	// NoAuth because the site answers an anonymous visitor: one model is served
+	// with no credential at all. A pasted __Secure-1PSID cookie is honored when
+	// one is configured, and the only thing it buys is the choice of model — an
+	// anonymous session is served one, a signed-in one several. Requiring a
+	// cookie would turn a plug-and-play provider into one that is not, for no
+	// gain.
 	"gemini-web": {
-		BaseURL:    "https://gemini.google.com/app",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:       "https://gemini.google.com/app",
+		AuthHeader:    "Authorization",
+		AuthScheme:    "bearer",
+		DefaultAPIKey: "anonymous",
+		NoAuth:        true,
 	},
 	"antigravity": {
 		BaseURL:    "https://daily-cloudcode-pa.googleapis.com",
