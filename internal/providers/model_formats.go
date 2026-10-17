@@ -10,6 +10,7 @@ const (
 	FormatOpenAI          = "openai"
 	FormatClaude          = "claude"
 	FormatOpenAIResponses = "openai-responses"
+	FormatGemini          = "gemini"
 )
 
 // ProviderModelFormats is the per-model wire-format metadata upstream carries on
@@ -22,6 +23,8 @@ var ProviderModelFormats = map[string]map[string]ModelFormats{
 	"kimi-coding":  kimiModelFormats,
 	"ocz":          openCodeZenModelFormats,
 	"opencode-zen": openCodeZenModelFormats,
+	"ocg":          openCodeGoModelFormats,
+	"opencode-go":  openCodeGoModelFormats,
 }
 
 // museModelFormats mirrors open-sse/providers/registry/muse.js models[]: Meta
@@ -164,6 +167,15 @@ var openCodeZenModelFormats = map[string]ModelFormats{
 	"muse-spark-1.2-contributor-free": openCodeZenResponsesFormat,
 }
 
+// openCodeGoModelFormats mirrors open-sse/providers/registry/opencode-go.js models[].
+var openCodeGoModelFormats = map[string]ModelFormats{
+	"claude-haiku-5-5":           openCodeZenFormats(FormatClaude, FormatClaude),
+	"gemini-4-argon-contributor": openCodeZenFormats(FormatGemini, FormatGemini),
+	"longcat-2.5-preview-free":   openCodeZenFormats(FormatOpenAI, FormatOpenAI),
+	"step-5-preview":             openCodeZenFormats(FormatOpenAI, FormatOpenAI),
+	"beam-free":                  openCodeZenFormats(FormatOpenAI, FormatOpenAI),
+}
+
 var openCodeZenResponsesFormat = openCodeZenFormats(FormatOpenAIResponses, FormatOpenAIResponses)
 
 // openCodeFamilyFormats is the unknown-id fallback for the OpenCode endpoint
@@ -183,6 +195,7 @@ var openCodeFamilyFormats = []struct {
 	{"minimax", openCodeZenFormats(FormatOpenAI, FormatOpenAI, FormatClaude)},
 	{"qwen", openCodeZenFormats(FormatOpenAI, FormatOpenAI, FormatClaude)},
 	{"claude-", openCodeZenFormats(FormatClaude, FormatClaude)},
+	{"gemini-", openCodeZenFormats(FormatGemini, FormatGemini)},
 }
 
 // isOpenCodeProvider reports whether a provider id/alias is one of the OpenCode

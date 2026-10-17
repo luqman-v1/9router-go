@@ -1,10 +1,8 @@
 package chat
 
 import (
-	"9router/proxy/internal/log"
 	"bytes"
 	"context"
-	json "9router/proxy/internal/fastjson"
 	"io"
 	"net/http"
 	"os"
@@ -12,6 +10,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	json "9router/proxy/internal/fastjson"
+	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
 )
 
 // vars (not consts) so tests can point them at a local server.
@@ -20,7 +22,7 @@ import (
 var loadCodeAssistURL = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 var onboardUserURL = "https://cloudcode-pa.googleapis.com/v1internal:onboardUser"
 
-const antigravityIDEUserAgent = "antigravity/ide/2.11.0 darwin/arm64"
+const antigravityIDEUserAgent = providers.AntigravityCLIUserAgent
 
 var lcaMetadata = map[string]any{
 	"ideType":    9, // ANTIGRAVITY

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"9router/proxy/internal/providers"
 )
 
 // TestFetchAntigravityProjectID_outcomes pins the classification that drives the
@@ -146,8 +148,8 @@ func TestAntigravityProbe_HeadersAndMetadata(t *testing.T) {
 		t.Fatalf("unexpected result: pid=%q, auth=%v, noProj=%v", pid, auth, noProj)
 	}
 
-	if gotUA != "antigravity/ide/2.11.0 darwin/arm64" {
-		t.Errorf("User-Agent = %q, want %q", gotUA, "antigravity/ide/2.11.0 darwin/arm64")
+	if gotUA != providers.AntigravityCLIUserAgent {
+		t.Errorf("User-Agent = %q, want %q", gotUA, providers.AntigravityCLIUserAgent)
 	}
 	if gotGoogClient != "" {
 		t.Errorf("X-Goog-Api-Client = %q, want empty", gotGoogClient)

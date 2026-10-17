@@ -315,3 +315,23 @@ func ClampDeepseekEffort(provider, model, level string) string {
 	}
 	return want
 }
+
+// ClampGeminiLevel clamps a gemini-level thinking level to the nearest level
+// advertised by the model's declared thinking levels (e.g. Gemini 4 Argon accepts
+// only low|medium|high, so minimal is clamped to low).
+func ClampGeminiLevel(provider, model, level string) string {
+	levels := GetThinkingLevels(provider, model)
+	if len(levels) == 0 {
+		return level
+	}
+	if slices.Contains(levels, level) {
+		return level
+	}
+	if level == "minimal" {
+		return "low"
+	}
+	if slices.Contains(levels, "high") {
+		return "high"
+	}
+	return levels[len(levels)-1]
+}

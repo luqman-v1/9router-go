@@ -220,9 +220,9 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	httpReq.Header.Set("User-Agent", "antigravity/ide/2.11.0 darwin/arm64")
+	httpReq.Header.Set("User-Agent", providers.AntigravityCLIUserAgent)
 	httpReq.Header.Set("X-Client-Name", "antigravity")
-	httpReq.Header.Set("X-Client-Version", "2.11.0")
+	httpReq.Header.Set("X-Client-Version", providers.AntigravityIDEVersion)
 
 	client, clientErr := h.ChatH.GetClientForConnection(connData)
 	if clientErr != nil {

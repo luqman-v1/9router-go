@@ -156,6 +156,9 @@ func IsAntigravityModelBlocked(connectionID, model string) bool {
 	if canonical, exists := translator.AntigravityModelSynonyms[model]; exists && canonical != model {
 		checkModels = append(checkModels, canonical)
 	}
+	if model == "gemini-4-argon" {
+		checkModels = append(checkModels, "gemini-4-argon-high", "gemini-4-argon-medium")
+	}
 
 	now := time.Now().UTC()
 	for _, m := range checkModels {
@@ -170,7 +173,16 @@ func IsAntigravityModelBlocked(connectionID, model string) bool {
 	// Check family weekly + 5h-session quotas (parity with
 	// decolua/9router#4209: session exhaustion blocks the family even when
 	// weekly remains).
-	if strings.HasPrefix(model, "gemini-") {
+	if strings.Contains(model, "argon") {
+		for _, key := range []string{"argon_weekly", "argon_session"} {
+			if wq, exists := modelsMap[key]; exists {
+				if quotaEntryExhausted(wq, now) {
+					agQuotaMu.RUnlock()
+					return true
+				}
+			}
+		}
+	} else if strings.HasPrefix(model, "gemini-") {
 		for _, key := range []string{"gemini_weekly", "gemini_session"} {
 			if wq, exists := modelsMap[key]; exists {
 				if quotaEntryExhausted(wq, now) {
@@ -514,9 +526,10 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 	result := make(map[string]AntigravityWeeklyQuota)
 	for _, g := range groups {
 		gName := g.DisplayName
-		isGemini := strings.Contains(strings.ToLower(gName), "gemini")
+		isArgon := strings.Contains(strings.ToLower(gName), "argon")
+		isGemini := !isArgon && strings.Contains(strings.ToLower(gName), "gemini")
 		isClaudeGPT := strings.Contains(strings.ToLower(gName), "claude") || strings.Contains(strings.ToLower(gName), "gpt")
-		if !isGemini && !isClaudeGPT {
+		if !isArgon && !isGemini && !isClaudeGPT {
 			continue
 		}
 
@@ -564,12 +577,18 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 
 			key := "gemini_weekly"
 			dName := "Gemini (Weekly)"
-			if isClaudeGPT {
+			if isArgon {
+				key = "argon_weekly"
+				dName = "Gemini 4 Argon (Weekly)"
+			} else if isClaudeGPT {
 				key = "claude_gpt_weekly"
 				dName = "Claude & GPT (Weekly)"
 			}
 			if !isWeekly {
-				if strings.HasPrefix(key, "gemini") {
+				if isArgon {
+					key = "argon_session"
+					dName = "Gemini 4 Argon (5h)"
+				} else if strings.HasPrefix(key, "gemini") {
 					key = "gemini_session"
 					dName = "Gemini (5h)"
 				} else {

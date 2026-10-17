@@ -517,6 +517,57 @@ func TestForwardOpencodeGo_SpaceBunnyFreeTakesInferenceGate(t *testing.T) {
 	}
 }
 
+func TestForwardOpencodeGo_GeminiWire(t *testing.T) {
+	var capturedPath string
+	var capturedAPIKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path + "?" + r.URL.RawQuery
+		capturedAPIKey = r.Header.Get("x-goog-api-key")
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"candidates": [{
+				"content": {
+					"parts": [{"text": "Hello from Gemini 4 Argon on OpenCode Go"}],
+					"role": "model"
+				},
+				"finishReason": "STOP",
+				"index": 0
+			}],
+			"usageMetadata": {
+				"promptTokenCount": 5,
+				"candidatesTokenCount": 8,
+				"totalTokenCount": 13
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL + "/inference/go/v1/models"}
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Client: srv.Client(), Config: cfg, APIKey: "test-goog-key",
+		Body:     []byte(`{"model":"opencode-go/gemini-4-argon-contributor","messages":[{"role":"user","content":"hi"}]}`),
+		IsStream: false, TranslateResp: false,
+	}
+	if err := ForwardOpencodeGo(rec, req); err != nil {
+		t.Fatalf("ForwardOpencodeGo failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rec.Code)
+	}
+	if !strings.Contains(capturedPath, "/gemini-4-argon-contributor:generateContent") {
+		t.Errorf("expected path to contain /gemini-4-argon-contributor:generateContent, got %s", capturedPath)
+	}
+	if capturedAPIKey != "test-goog-key" {
+		t.Errorf("expected x-goog-api-key test-goog-key, got %s", capturedAPIKey)
+	}
+	if !strings.Contains(rec.Body.String(), "Hello from Gemini 4 Argon on OpenCode Go") {
+		t.Errorf("expected response to contain translated text, got %s", rec.Body.String())
+	}
+}
+
 func TestForwardOpencode_MuseSpark_OCPrefix(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/responses") {

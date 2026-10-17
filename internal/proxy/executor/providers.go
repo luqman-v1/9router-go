@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
@@ -762,6 +763,7 @@ func isOpencodeFreeModel(cleanModel string) bool {
 }
 
 var opencodeGoMessagesModels = map[string]bool{
+	"claude-haiku-5-5": true,
 	"minimax-m3":    true,
 	"minimax-m2.7":  true,
 	"minimax-m2.5":  true,
@@ -1494,6 +1496,64 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 	return jsonResponse(req.Ctx, w, bytes.NewReader(data), req.TranslateResp, req.ResponseBuf)
 }
 
+func isOpencodeGoGeminiModel(cleanModel string) bool {
+	if mf, ok := providers.GetModelFormats("opencode-go", cleanModel); ok {
+		return mf.TargetFormat == providers.FormatGemini
+	}
+	return strings.HasPrefix(strings.ToLower(cleanModel), "gemini-")
+}
+
+func forwardOpencodeGoGemini(w http.ResponseWriter, req *Request, cleanModel, sessionHeader string) error {
+	action := "generateContent"
+	if req.IsStream {
+		action = "streamGenerateContent?alt=sse"
+	}
+
+	geminiURL := fmt.Sprintf("https://opencode.ai/inference/go/v1/models/%s:%s", cleanModel, action)
+	if req.Config != nil && req.Config.BaseURL != "" && !strings.Contains(req.Config.BaseURL, "opencode.ai") {
+		base := strings.TrimRight(req.Config.BaseURL, "/")
+		if strings.HasSuffix(base, "/chat/completions") {
+			base = strings.TrimSuffix(base, "/chat/completions")
+		}
+		geminiURL = fmt.Sprintf("%s/%s:%s", base, cleanModel, action)
+	}
+
+	geminiBody, err := translator.TranslateOpenAIToGemini(req.Body)
+	if err != nil {
+		return fmt.Errorf("translate to Gemini for opencode-go: %w", err)
+	}
+
+	headers := map[string]string{
+		"Content-Type":       "application/json",
+		"x-goog-api-key":     req.APIKey,
+		"x-opencode-session": sessionHeader,
+	}
+	if req.IsStream {
+		headers["Accept"] = "text/event-stream"
+	}
+
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	resp, err := proxy.DoRequest(ctx, req.Client, "POST", geminiURL, headers, geminiBody)
+	if err != nil {
+		return fmt.Errorf("ForwardOpencodeGo (gemini route): %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
+	}
+
+	if req.IsStream {
+		return geminiStream(w, resp.Body, ctx)
+	}
+	return geminiNonStream(w, resp.Body)
+}
+
 func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	body := InjectReasoningContent(req.Body, "opencode-go")
 
@@ -1517,6 +1577,10 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	// the keyless inference gate with public credentials (see zen).
 	if isOpencodeFreeModel(cleanModel) {
 		return forwardOpencodeGoFree(w, req, cleanModel)
+	}
+
+	if isOpencodeGoGeminiModel(cleanModel) {
+		return forwardOpencodeGoGemini(w, req, cleanModel, sessionHeader)
 	}
 
 	if isOpencodeGoResponsesModel(cleanModel) {

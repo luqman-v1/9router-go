@@ -127,3 +127,39 @@ func TestIsOpencodeFreeTierModel(t *testing.T) {
 		})
 	}
 }
+
+func TestGetModelFormats_OpenCodeGoLanes(t *testing.T) {
+	tests := []struct {
+		name          string
+		provider      string
+		model         string
+		wantDeclared  bool
+		wantTarget    string
+		wantSupported string
+	}{
+		{"gemini argon contributor goes to gemini", "opencode-go", "gemini-4-argon-contributor", true, FormatGemini, FormatGemini},
+		{"unknown gemini goes to gemini via family fallback", "opencode-go", "gemini-2.5-flash", true, FormatGemini, FormatGemini},
+		{"claude haiku goes to claude", "opencode-go", "claude-haiku-5-5", true, FormatClaude, FormatClaude},
+		{"longcat free goes to openai", "opencode-go", "longcat-2.5-preview-free", true, FormatOpenAI, FormatOpenAI},
+		{"step 5 preview goes to openai", "opencode-go", "step-5-preview", true, FormatOpenAI, FormatOpenAI},
+		{"beam free goes to openai", "opencode-go", "beam-free", true, FormatOpenAI, FormatOpenAI},
+		{"ocg alias resolves same", "ocg", "gemini-4-argon-contributor", true, FormatGemini, FormatGemini},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, declared := GetModelFormats(tt.provider, tt.model)
+			if declared != tt.wantDeclared {
+				t.Fatalf("declared = %v, want %v", declared, tt.wantDeclared)
+			}
+			if !declared {
+				return
+			}
+			if got.TargetFormat != tt.wantTarget {
+				t.Errorf("TargetFormat = %q, want %q", got.TargetFormat, tt.wantTarget)
+			}
+			if tt.wantSupported != "" && !got.SupportsFormat(tt.wantSupported) {
+				t.Errorf("expected %q among supported formats %v", tt.wantSupported, got.SupportedFormats)
+			}
+		})
+	}
+}

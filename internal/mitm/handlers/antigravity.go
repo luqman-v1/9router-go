@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const antigravityIDEVersion = "1.23.2"
+const antigravityIDEVersion = "2.23.0"
 
 // HandleAntigravity intercepts Antigravity Gemini-native requests and forwards to 9router.
 // It preserves client identity for catalog requests (fetchAvailableModels) and only

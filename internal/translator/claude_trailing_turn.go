@@ -2,6 +2,7 @@ package translator
 
 import (
 	json "encoding/json/v2"
+	"reflect"
 	"strings"
 )
 
@@ -158,13 +159,5 @@ func sameTail(repaired, original []any) bool {
 	if !aOK || !bOK {
 		return true
 	}
-	left, err := json.Marshal(a)
-	if err != nil {
-		return true
-	}
-	right, err := json.Marshal(b)
-	if err != nil {
-		return true
-	}
-	return string(left) == string(right)
+	return reflect.DeepEqual(a, b)
 }

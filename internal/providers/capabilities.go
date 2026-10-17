@@ -470,7 +470,7 @@ var patternCapabilities = []patternCapability{
 	// and every consumer fell through to the 128k/4096 floor. The bridge
 	// publishes the bare id "gemini-argon" as well as the "gemini-4-argon"
 	// alias, so both spellings have to hit this row.
-	{pattern: "*gemini*argon*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
+	{pattern: "*gemini*argon*", caps: Capabilities{Vision: true, PDF: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
 	{pattern: "*gemini-4*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
 	{pattern: "*gemini-3.8*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
 	{pattern: "*gemini-3.7*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},

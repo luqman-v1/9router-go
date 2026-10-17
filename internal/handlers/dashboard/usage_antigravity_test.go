@@ -16,6 +16,18 @@ func TestFetchAntigravityDashboardWeekly_HundredScaleAndWindow(t *testing.T) {
 			w.Write([]byte(`{
 				"groups": [
 					{
+						"displayName": "Gemini 4 Argon",
+						"buckets": [
+							{
+								"bucketId": "gemini-argon-wtu-weekly",
+								"displayName": "Gemini 4 Argon Weekly Limit",
+								"window": "weekly",
+								"remainingFraction": 0.98,
+								"resetTime": "2026-10-23T09:42:31Z"
+							}
+						]
+					},
+					{
 						"displayName": "Gemini Models",
 						"buckets": [
 							{
@@ -66,8 +78,8 @@ func TestFetchAntigravityDashboardWeekly_HundredScaleAndWindow(t *testing.T) {
 	defer func() { antigravityDailyBaseURL = origDaily }()
 
 	weekly := fetchAntigravityDashboardWeekly(context.Background(), "mock-token", "mock-project")
-	if len(weekly) != 4 {
-		t.Fatalf("expected 4 weekly quota buckets, got %d: %v", len(weekly), weekly)
+	if len(weekly) != 5 {
+		t.Fatalf("expected 5 weekly quota buckets, got %d: %v", len(weekly), weekly)
 	}
 
 	tests := []struct {
@@ -109,6 +121,14 @@ func TestFetchAntigravityDashboardWeekly_HundredScaleAndWindow(t *testing.T) {
 			wantRemPct:  65.0,
 			wantWindow:  "weekly",
 			wantDisplay: "Claude & GPT (Weekly)",
+		},
+		{
+			key:         "argon_weekly",
+			wantTotal:   100.0,
+			wantUsed:    2.0,
+			wantRemPct:  98.0,
+			wantWindow:  "weekly",
+			wantDisplay: "Gemini 4 Argon (Weekly)",
 		},
 	}
 

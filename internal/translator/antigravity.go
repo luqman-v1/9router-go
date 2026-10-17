@@ -342,6 +342,11 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 // this value, so it must stay family-shaped. Only AntigravityUpstreamModel
 // applies the effort suffix the backend actually needs.
 var AntigravityModelSynonyms = map[string]string{
+	// Gemini 4 Argon serves one backend id per tier; the bare catalog id is medium tier.
+	"gemini-4-argon":        "gemini-4-argon-medium",
+	"gemini-4-argon-high":   "gemini-4-argon-high",
+	"gemini-4-argon-medium": "gemini-4-argon-medium",
+	"gemini-4-argon-low":    "gemini-4-argon-low",
 	// Upstream decolua/9router#24034f69 retired the gemini-3.5 family and
 	// gemini-3-flash; the default moved to the 3.8 medium tier.
 	"gemini-default":             "gemini-3.8-flash-medium",
@@ -408,6 +413,11 @@ func NormalizeAntigravityModel(model string) string {
 // decolua/9router#a07ed95b, refreshed by #24034f69). Every value was probed
 // live against daily-cloudcode-pa.googleapis.com on 2026-10-09.
 var antigravityUpstreamModelIDs = map[string]string{
+	// Gemini 4 Argon serves one backend id per tier; the bare catalog id is medium tier.
+	"gemini-4-argon":        "gemini-4-argon-medium",
+	"gemini-4-argon-high":   "gemini-4-argon-high",
+	"gemini-4-argon-medium": "gemini-4-argon-medium",
+	"gemini-4-argon-low":    "gemini-4-argon-low",
 	// The 3.8 family serves one backend id per tier. The bare catalog id is
 	// the medium tier.
 	"gemini-3.8-flash":        "gemini-3.8-flash-medium",

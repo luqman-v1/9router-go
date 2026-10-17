@@ -132,13 +132,13 @@ func TestHandleAntigravity_CatalogPreserve(t *testing.T) {
 	}
 	var parsed map[string]any
 	_ = json.Unmarshal(capturedBody, &parsed)
-	// For catalog, should NOT override to 1.23.2
+	// For catalog, should NOT override to 2.23.0
 	if meta, ok := parsed["metadata"].(map[string]any); ok {
-		if meta["ideVersion"] == "1.23.2" {
-			t.Error("catalog request should preserve 2.11.0, not override to 1.23.2")
+		if meta["ideVersion"] == "2.23.0" {
+			t.Error("catalog request should preserve 2.11.0, not override to 2.23.0")
 		}
 	}
-	if capturedUA == "antigravity/1.23.2" {
+	if capturedUA == "antigravity/2.23.0" {
 		t.Error("catalog should preserve User-Agent, not override")
 	}
 
@@ -156,11 +156,11 @@ func TestHandleAntigravity_CatalogPreserve(t *testing.T) {
 	}
 	_ = json.Unmarshal(capturedBody, &parsed)
 	if meta, ok := parsed["metadata"].(map[string]any); ok {
-		if meta["ideVersion"] != "1.23.2" {
-			t.Errorf("generation should override to 1.23.2, got %v", meta["ideVersion"])
+		if meta["ideVersion"] != "2.23.0" {
+			t.Errorf("generation should override to 2.23.0, got %v", meta["ideVersion"])
 		}
 	}
-	if capturedUA != "antigravity/1.23.2" {
-		t.Errorf("generation should override User-Agent to 1.23.2, got %q", capturedUA)
+	if capturedUA != "antigravity/2.23.0" {
+		t.Errorf("generation should override User-Agent to 2.23.0, got %q", capturedUA)
 	}
 }

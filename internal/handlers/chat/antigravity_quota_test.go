@@ -354,3 +354,83 @@ func TestAntigravityQuota_Generic429NoStrike(t *testing.T) {
 		t.Errorf("model must be blocked after 3 explicit quota 429s")
 	}
 }
+
+func TestParseWeeklyQuotaSummary_Argon(t *testing.T) {
+	raw := []byte(`{
+		"groups": [
+			{
+				"displayName": "Gemini 4 Argon",
+				"buckets": [
+					{
+						"bucketId": "gemini-argon-wtu-weekly",
+						"displayName": "Gemini 4 Argon Weekly Limit",
+						"remainingFraction": 0.98,
+						"resetTime": "2026-10-23T09:42:31Z",
+						"window": "weekly"
+					}
+				]
+			},
+			{
+				"displayName": "Gemini Models",
+				"buckets": [
+					{
+						"bucketId": "gemini-weekly",
+						"displayName": "Gemini Weekly Limit",
+						"remainingFraction": 0.75,
+						"resetTime": "2026-10-23T09:42:31Z",
+						"window": "weekly"
+					}
+				]
+			}
+		]
+	}`)
+
+	parsed := ParseWeeklyQuotaSummary(raw)
+	aw, ok := parsed["argon_weekly"]
+	if !ok {
+		t.Fatal("expected argon_weekly to be parsed")
+	}
+	if aw.Used != 20 || aw.Total != 1000 || aw.RemainingPercentage != 98.0 {
+		t.Errorf("unexpected argon_weekly: %+v", aw)
+	}
+
+	gw, ok := parsed["gemini_weekly"]
+	if !ok {
+		t.Fatal("expected gemini_weekly to be parsed")
+	}
+	if gw.Used != 250 || gw.Total != 1000 || gw.RemainingPercentage != 75.0 {
+		t.Errorf("unexpected gemini_weekly: %+v", gw)
+	}
+}
+
+func TestAntigravityQuota_ArgonIsolation(t *testing.T) {
+	connID := "test-conn-argon-iso"
+	ClearAntigravityQuotaCache()
+
+	futureReset := time.Now().UTC().Add(1 * time.Hour)
+	agQuotaMu.Lock()
+	agQuotaCache[connID] = map[string]AntigravityModelQuota{
+		"argon_weekly": {
+			RemainingPercentage: 0,
+			ResetAt:             futureReset,
+		},
+		"gemini_weekly": {
+			RemainingPercentage: 100,
+			ResetAt:             futureReset,
+		},
+	}
+	agQuotaMu.Unlock()
+
+	// argon models must be blocked due to argon_weekly
+	if !IsAntigravityModelBlocked(connID, "gemini-4-argon") {
+		t.Errorf("gemini-4-argon should be blocked by argon_weekly")
+	}
+	if !IsAntigravityModelBlocked(connID, "gemini-4-argon-high") {
+		t.Errorf("gemini-4-argon-high should be blocked by argon_weekly")
+	}
+
+	// standard gemini models must NOT be blocked because gemini_weekly is 100%
+	if IsAntigravityModelBlocked(connID, "gemini-3.8-flash-high") {
+		t.Errorf("gemini-3.8-flash-high should NOT be blocked by argon_weekly")
+	}
+}
