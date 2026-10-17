@@ -25,6 +25,7 @@ export type ActiveTab =
   | 'terminal'
   | 'settings'
   | 'security'
+  | 'plans'
   | 'keys' // legacy alias for the endpoint tab; see ROUTE_TO_TAB below
 
 export const TAB_ROUTES: Record<ActiveTab, string> = {
@@ -51,6 +52,7 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   terminal: '/dashboard/console-log',
   settings: '/dashboard/profile',
   security: '/dashboard/security',
+  plans: '/dashboard/plans',
   // Legacy alias: keys are managed on the endpoint tab (issue #199), so both
   // tabs resolve to the same route rather than leaving one unreachable.
   keys: '/dashboard/endpoint',
@@ -164,6 +166,10 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   // security: vault + guardrails
   '/dashboard/security': 'security',
   '/security': 'security',
+
+  // plans: reusable policy templates the API keys inherit from (F-3)
+  '/dashboard/plans': 'plans',
+  '/plans': 'plans',
 }
 
 // The Usage page's sections. Cache Analytics and Compression Analytics joined
@@ -229,6 +235,7 @@ export function pathToTab(pathname: string): ActiveTab {
   if (normalized.includes('providers') || normalized.includes('connections')) return 'connections'
   if (normalized.includes('keys')) return 'endpoint'
   if (normalized.includes('security')) return 'security'
+  if (normalized.includes('plans')) return 'plans'
   if (normalized.includes('profile') || normalized.includes('settings')) return 'settings'
   return 'endpoint'
 }

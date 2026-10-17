@@ -52,7 +52,7 @@ func TestGlobalDefaultsNeverInjectQuota(t *testing.T) {
 	defaults := func() Limits {
 		return Limits{RPM: 100, TPM: 5000, Concurrency: 2}
 	}
-	limits := limitsFor(&models.APIKey{}, defaults)
+	limits := limitsFor(&models.APIKey{}, defaults, nil)
 
 	if limits.RPM != 100 || limits.TPM != 5000 || limits.Concurrency != 2 {
 		t.Errorf("global defaults not applied: %+v", limits)
@@ -62,7 +62,7 @@ func TestGlobalDefaultsNeverInjectQuota(t *testing.T) {
 	}
 
 	// And a key that sets its own quota still resolves it.
-	withQuota := limitsFor(&models.APIKey{TokenQuota: new(999)}, defaults)
+	withQuota := limitsFor(&models.APIKey{TokenQuota: new(999)}, defaults, nil)
 	if withQuota.TokenQuota != 999 {
 		t.Errorf("per-key TokenQuota = %d, want 999", withQuota.TokenQuota)
 	}

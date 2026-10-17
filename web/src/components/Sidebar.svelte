@@ -320,6 +320,23 @@
         </span>
         <span class="text-[13px]">Security</span>
       </a>
+
+      <a
+        href={TAB_ROUTES.plans}
+        onclick={(e) => handleNav('plans', e)}
+        class="flex items-center gap-3 px-3 py-1.5 rounded-lg transition-all group cursor-pointer {isLinkActive('plans')
+          ? 'bg-primary/10 text-primary font-medium'
+          : 'text-text-muted hover:bg-surface-2 hover:text-text-main'}"
+      >
+        <span
+          class="material-symbols-outlined text-[18px] {isLinkActive('plans')
+            ? 'fill-1'
+            : 'group-hover:text-primary transition-colors'}"
+        >
+          workspace_premium
+        </span>
+        <span class="text-[13px]">Plans</span>
+      </a>
     </div>
   </nav>
 

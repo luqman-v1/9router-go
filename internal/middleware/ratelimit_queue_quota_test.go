@@ -317,7 +317,7 @@ func TestLimitsForResolvesQuotaAndQueue(t *testing.T) {
 	limits := limitsFor(&models.APIKey{
 		TokenQuota:     new(1234),
 		QueueTimeoutMs: new(2500),
-	}, nil)
+	}, nil, nil)
 	if limits.TokenQuota != 1234 {
 		t.Errorf("TokenQuota = %d, want 1234", limits.TokenQuota)
 	}
@@ -330,19 +330,19 @@ func TestLimitsForResolvesQuotaAndQueue(t *testing.T) {
 // no explicit queue timeout gets the upstream-equivalent 60s default, and that
 // a key with no concurrency cap never queues at all.
 func TestLimitsForDefaultQueueTimeout(t *testing.T) {
-	capped := limitsFor(&models.APIKey{RateLimitConcurrency: new(3)}, nil)
+	capped := limitsFor(&models.APIKey{RateLimitConcurrency: new(3)}, nil, nil)
 	if capped.QueueTimeout != DefaultQueueTimeout {
 		t.Errorf("capped QueueTimeout = %v, want %v", capped.QueueTimeout, DefaultQueueTimeout)
 	}
 
-	uncapped := limitsFor(&models.APIKey{}, nil)
+	uncapped := limitsFor(&models.APIKey{}, nil, nil)
 	if uncapped.QueueTimeout != 0 {
 		t.Errorf("uncapped QueueTimeout = %v, want 0", uncapped.QueueTimeout)
 	}
 
 	// A key that sets its OWN queue timeout of zero-like absence but has a
 	// per-key concurrency cap keeps the documented default.
-	explicit := limitsFor(&models.APIKey{RateLimitConcurrency: new(2), QueueTimeoutMs: new(250)}, nil)
+	explicit := limitsFor(&models.APIKey{RateLimitConcurrency: new(2), QueueTimeoutMs: new(250)}, nil, nil)
 	if explicit.QueueTimeout != 250*time.Millisecond {
 		t.Errorf("explicit QueueTimeout = %v, want 250ms", explicit.QueueTimeout)
 	}
@@ -358,7 +358,7 @@ func TestGlobalConcurrencyDefaultDoesNotQueue(t *testing.T) {
 	globalOnly := func() Limits { return Limits{Concurrency: 4} }
 
 	// Key with nothing of its own: concurrency is global, so no queue.
-	l := limitsFor(&models.APIKey{ID: "k"}, globalOnly)
+	l := limitsFor(&models.APIKey{ID: "k"}, globalOnly, nil)
 	if l.Concurrency != 4 {
 		t.Fatalf("Concurrency = %d, want 4 from the global fallback", l.Concurrency)
 	}
@@ -368,14 +368,14 @@ func TestGlobalConcurrencyDefaultDoesNotQueue(t *testing.T) {
 
 	// The same key, but with its own queue timeout: the operator opted in, so it
 	// applies even though the cap is global.
-	optedIn := limitsFor(&models.APIKey{ID: "k", QueueTimeoutMs: new(500)}, globalOnly)
+	optedIn := limitsFor(&models.APIKey{ID: "k", QueueTimeoutMs: new(500)}, globalOnly, nil)
 	if optedIn.QueueTimeout != 500*time.Millisecond {
 		t.Errorf("opt-in QueueTimeout = %v, want 500ms", optedIn.QueueTimeout)
 	}
 
 	// The same key, but with its own concurrency cap: the documented default
 	// applies even without a global fallback.
-	perKey := limitsFor(&models.APIKey{ID: "k", RateLimitConcurrency: new(4)}, nil)
+	perKey := limitsFor(&models.APIKey{ID: "k", RateLimitConcurrency: new(4)}, nil, nil)
 	if perKey.QueueTimeout != DefaultQueueTimeout {
 		t.Errorf("per-key QueueTimeout = %v, want %v", perKey.QueueTimeout, DefaultQueueTimeout)
 	}

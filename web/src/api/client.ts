@@ -99,6 +99,8 @@ export interface APIKey {
   usedCount?: number
   /** Free-form JSON object, e.g. { customerId, priceCents }. */
   metadata?: string
+  /** Plan template this key inherits from. Empty means no plan. */
+  planId?: string
 }
 
 export interface APIKeyPolicy {
@@ -113,7 +115,32 @@ export interface APIKeyPolicy {
   metadata?: string
   /** Renames the key. An empty string clears the stored name. */
   name?: string
+  /** Plan template to inherit. An empty string detaches the key. */
+  planId?: string
 }
+
+/** A reusable policy template (F-3). Keys inherit its limits as defaults. */
+export interface Plan {
+  id: string
+  name: string
+  description: string
+  limitMicros: number
+  limitTokens: number
+  rpmLimit: number
+  tpmLimit: number
+  concurrencyLimit: number
+  period: PlanPeriod
+  alertPct: number
+  hardCutoff: boolean
+  allowedModels: string[]
+  createdAt: string
+  updatedAt: string
+}
+
+export type PlanPeriod = 'daily' | 'weekly' | 'monthly' | 'total'
+
+/** A plan write. Omitted fields keep their stored value on update. */
+export type PlanInput = Partial<Omit<Plan, 'id' | 'createdAt' | 'updatedAt'>>
 
 export interface GuardrailPolicy {
   id: string
@@ -1148,6 +1175,23 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ models }),
     }),
+
+  // F-3 plan templates: the reusable policy a key inherits from.
+  getPlans: () => request<{ plans: Plan[] }>('/api/plans'),
+  getPlan: (id: string) => request<Plan>(`/api/plans/${encodeURIComponent(id)}`),
+  createPlan: (plan: PlanInput) =>
+    request<Plan>('/api/plans', { method: 'POST', body: JSON.stringify(plan) }),
+  updatePlan: (id: string, plan: PlanInput) =>
+    request<Plan>(`/api/plans/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(plan),
+    }),
+  deletePlan: (id: string) =>
+    request<{ status: string; id: string }>(`/api/plans/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  getPlanKeys: (id: string) =>
+    request<{ id: string; keys: number }>(`/api/plans/${encodeURIComponent(id)}/keys`),
 
   // F-5 credential vault
   getVaultStatus: () => request<VaultStatus>('/api/vault/status'),

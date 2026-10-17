@@ -27,12 +27,11 @@ func (r *Repo) ValidateApiKey(key string) (bool, error) {
 	return active == 1, nil
 }
 
-// apiKeyColumns is the shared column list for every full-row apiKeys read.
 const apiKeyColumns = `SELECT id, key, name, machineId, isActive, createdAt,
 	rateLimitRPM, rateLimitTPM, rateLimitConcurrency,
 	tokenQuota, queueTimeoutMs,
 	keyHash, lookupHash, keyDisplay,
-	expiresAt, lastUsedAt, usedCount, metadata`
+	expiresAt, lastUsedAt, usedCount, metadata, planId`
 
 // apiKeyScan returns the Scan destinations for apiKeyColumns plus an applier
 // that must run after Scan has filled the nullable columns.
@@ -43,12 +42,13 @@ func apiKeyScan(k *models.APIKey) (dest []any, apply func()) {
 	var keyHash, lookupHash, keyDisplay sql.NullString
 	var expiresAt, lastUsedAt, metadata sql.NullString
 	var usedCount sql.NullInt64
+	var planID sql.NullString
 	dest = []any{&k.ID, &k.Key, &nameVal, &machineVal, &k.IsActive, &k.CreatedAt,
 		&rateRPM, &rateTPM, &rateConc, &tokenQuota, &queueTimeout, &keyHash, &lookupHash, &keyDisplay,
-		&expiresAt, &lastUsedAt, &usedCount, &metadata}
+		&expiresAt, &lastUsedAt, &usedCount, &metadata, &planID}
 	apply = func() {
 		applyApiKeyNulls(k, nameVal, machineVal, rateRPM, rateTPM, rateConc, tokenQuota, queueTimeout, usedCount,
-			keyHash, lookupHash, keyDisplay, expiresAt, lastUsedAt, metadata)
+			keyHash, lookupHash, keyDisplay, expiresAt, lastUsedAt, metadata, planID)
 	}
 	return dest, apply
 }
@@ -57,7 +57,7 @@ func apiKeyScan(k *models.APIKey) (dest []any, apply func()) {
 func applyApiKeyNulls(k *models.APIKey, nameVal, machineVal sql.NullString,
 	rateRPM, rateTPM, rateConc, tokenQuota, queueTimeout, usedCount sql.NullInt64,
 	keyHash, lookupHash, keyDisplay sql.NullString,
-	expiresAt, lastUsedAt, metadata sql.NullString) {
+	expiresAt, lastUsedAt, metadata, planID sql.NullString) {
 	if nameVal.Valid {
 		k.Name = &nameVal.String
 	}
@@ -105,6 +105,9 @@ func applyApiKeyNulls(k *models.APIKey, nameVal, machineVal sql.NullString,
 	}
 	if metadata.Valid {
 		k.Metadata = &metadata.String
+	}
+	if planID.Valid {
+		k.PlanID = &planID.String
 	}
 }
 

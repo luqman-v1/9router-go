@@ -608,7 +608,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	if reserved, ok := middleware.ReservedTokensFromContext(ctx); ok && h.RateLimiter != nil {
 		if clientKey := requestKeyFromContext(ctx); clientKey != nil {
 			ctx = middleware.WithTokenSettler(ctx, func(actual int) {
-				if limit := middleware.EffectiveTPM(h.rateLimitDefaults(), clientKey); limit > 0 {
+				if limit := h.RateLimiter.EffectiveTPM(h.rateLimitDefaults(), clientKey); limit > 0 {
 					h.RateLimiter.SettleTokenUsage(clientKey.ID, limit, reserved, actual)
 				}
 			})

@@ -250,6 +250,12 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Get("/api/keys/{id}/models", dashH.HandleGetApiKeyModels)
 	r.Put("/api/keys/{id}/models", dashH.HandleSetApiKeyModels)
 	r.Put("/api/keys/{id}", dashH.HandleUpdateApiKey)
+	r.Get("/api/plans", dashH.HandleListPlans)
+	r.Post("/api/plans", dashH.HandleCreatePlan)
+	r.Get("/api/plans/{id}", dashH.HandleGetPlan)
+	r.Put("/api/plans/{id}", dashH.HandleUpdatePlan)
+	r.Delete("/api/plans/{id}", dashH.HandleDeletePlan)
+	r.Get("/api/plans/{id}/keys", dashH.HandlePlanKeys)
 	r.Get("/api/metrics", observ.Handler().ServeHTTP)
 	r.Get("/api/vault/status", dashH.HandleGetVaultStatus)
 	r.Get("/api/guardrails/policies", dashH.HandleGetGuardrailPolicies)
@@ -505,6 +511,9 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	// sized against it, so changing it has to restart the gateway.
 	window := time.Duration(repo.GetRateLimitDefaults().WindowSeconds) * time.Second
 	rateLimiter := middleware.NewRateLimiter(window)
+	// The plan tier (F-3) is resolved from the repository, so a plan change
+	// applies to the next request without a restart.
+	rateLimiter.SetPlanSource(repo)
 	// The fallback itself is read per request, so an operator can raise or drop
 	// a global default without a restart. Only the window, which the live
 	// windows already depend on, is pinned at boot.

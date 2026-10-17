@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // tableDef mirrors one entry of upstream schema.js TABLES: the declarative
@@ -305,11 +306,35 @@ var goOnlyColumns = [][3]string{
 	// so rows the upstream dashboard wrote (client key in apiKey) keep counting
 	// through the fallback term.
 	{"usageHistory", "clientKey", "TEXT DEFAULT ''"},
+	// F-3 Plans: reusable policy template
+	{"apiKeys", "planId", "TEXT DEFAULT ''"},
 }
 
 // keiRouterTables are Go-only tables for KeiRouter port features.
-// All use IF NOT EXISTS and are additive-only.
 var keiRouterTables = []tableDef{
+	{
+		name: "plans",
+		columns: [][2]string{
+			{"id", "TEXT PRIMARY KEY"},
+			{"tenant_id", "TEXT NOT NULL DEFAULT 'default'"},
+			{"name", "TEXT NOT NULL"},
+			{"description", "TEXT DEFAULT ''"},
+			{"limit_micros", "INTEGER NOT NULL DEFAULT 0"},
+			{"limit_tokens", "INTEGER NOT NULL DEFAULT 0"},
+			{"rpm_limit", "INTEGER NOT NULL DEFAULT 0"},
+			{"tpm_limit", "INTEGER NOT NULL DEFAULT 0"},
+			{"concurrency_limit", "INTEGER NOT NULL DEFAULT 0"},
+			{"period", "TEXT NOT NULL DEFAULT 'monthly'"},
+			{"alert_pct", "INTEGER NOT NULL DEFAULT 80"},
+			{"hard_cutoff", "INTEGER NOT NULL DEFAULT 1"},
+			{"allowed_models", "TEXT DEFAULT ''"},
+			{"created_at", "TEXT NOT NULL"},
+			{"updated_at", "TEXT NOT NULL"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_plans_tenant ON plans(tenant_id)",
+		},
+	},
 	{
 		name: "api_key_model_access",
 		columns: [][2]string{
@@ -480,6 +505,18 @@ func EnsureKeiRouterTables(db *sql.DB) error {
 		if err := ensureTable(db, t); err != nil {
 			return err
 		}
+	}
+	// The default plan is part of the table's shape, not operator data: every
+	// path that creates the plans table also guarantees the row exists, so a
+	// key assigned to "default" always resolves to a plan instead of silently
+	// reading as unplanned. INSERT OR IGNORE keeps it stable across boots.
+	if _, err := db.Exec( //nolint:noctx
+		`INSERT OR IGNORE INTO plans (id, tenant_id, name, description, limit_micros, limit_tokens, rpm_limit, tpm_limit, concurrency_limit, period, alert_pct, hard_cutoff, allowed_models, created_at, updated_at)
+		 VALUES ('default', 'default', 'Default', 'Default plan for existing keys', 0, 0, 0, 0, 0, 'monthly', 80, 0, '', ?, ?)`,
+		time.Now().UTC().Format(time.RFC3339),
+		time.Now().UTC().Format(time.RFC3339),
+	); err != nil {
+		return fmt.Errorf("keirouter tables: seed default plan: %w", err)
 	}
 	return nil
 }

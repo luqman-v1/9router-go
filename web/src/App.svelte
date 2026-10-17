@@ -27,6 +27,7 @@
   import SkillsView from './components/SkillsView.svelte'
   import SettingsView from './components/SettingsView.svelte'
   import SecurityPanel from './components/security/SecurityPanel.svelte'
+  import PlansView from './components/plans/PlansView.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import UpdateModal from './components/UpdateModal.svelte'
   import type { SystemVersionInfo } from './api/client'
@@ -553,6 +554,8 @@
               <ProfileSettingsView {settings} onRefresh={loadData} />
             {:else if activeTab === 'security'}
               <SecurityPanel />
+            {:else if activeTab === 'plans'}
+              <PlansView />
             {/if}
           {/if}
         </div>

@@ -52,6 +52,10 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		QueueTimeoutMs       *int    `json:"queueTimeoutMs"`
 		ExpiresAt            *string `json:"expiresAt"`
 		Metadata             *string `json:"metadata"`
+		// F-3: the reusable policy template this key inherits from. Pointer so
+		// an omitted field leaves the assignment alone; an empty string is a
+		// deliberate "detach from the plan".
+		PlanID *string `json:"planId"`
 		// Renaming a key. `name` is a pointer so an omitted field leaves the
 		// stored name alone; an empty string is a deliberate "clear the name",
 		// which is what the dashboard's edit dialog sends when the operator
@@ -134,6 +138,19 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	// F-3 plan assignment. An unknown plan is refused rather than stored: a
+	// dangling id would silently resolve to "no plan", so the key would keep
+	// its old limits while the dashboard showed it on a template.
+	planID := ""
+	if req.PlanID != nil {
+		planID = strings.TrimSpace(*req.PlanID)
+		if planID != "" {
+			if _, err := h.Repo.GetPlan(planID); err != nil {
+				handlerutil.WriteJSONError(w, http.StatusBadRequest, "unknown plan: "+planID)
+				return
+			}
+		}
+	}
 	if err := h.Repo.SetApiKeyRateLimit(id, rpm, tpm, conc); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -160,14 +177,22 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	if req.PlanID != nil {
+		if err := h.Repo.SetApiKeyPlan(id, planID); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	// The auth cache holds a verified key row for a few seconds so argon2
 	// does not run on every request. A policy change is not a latency trade-off:
 	// the operator just revoked access, so the cached row must go now — an
-	// expired or newly limited key must not keep working until its TTL lapses.
+	// expired, newly limited, or re-planned key must not keep working until its
+	// TTL lapses.
 	keikey.DefaultAuthCache().InvalidateByID(id)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
 		"id":     id,
+		"planId": planID,
 		"limits": map[string]int{
 			"rpm": rpm, "tpm": tpm, "concurrency": conc,
 			"tokenQuota": quota, "queueTimeoutMs": queueMs,

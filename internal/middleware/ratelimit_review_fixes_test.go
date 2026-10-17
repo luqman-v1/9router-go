@@ -419,14 +419,14 @@ func TestLimitsForGlobalDefaultDisabled(t *testing.T) {
 	disabled := func() Limits { return Limits{} }
 
 	// A key with no columns of its own: nothing applies.
-	l := limitsFor(&models.APIKey{ID: "k"}, disabled)
+	l := limitsFor(&models.APIKey{ID: "k"}, disabled, nil)
 	if l.Concurrency != 0 || l.QueueTimeout != 0 {
 		t.Errorf("disabled defaults produced %+v, want zero limits", l)
 	}
 
 	// A key with its own concurrency cap still gets the documented default even
 	// with global defaults off.
-	perKey := limitsFor(&models.APIKey{ID: "k", RateLimitConcurrency: new(2)}, disabled)
+	perKey := limitsFor(&models.APIKey{ID: "k", RateLimitConcurrency: new(2)}, disabled, nil)
 	if perKey.QueueTimeout != DefaultQueueTimeout {
 		t.Errorf("per-key capped QueueTimeout = %v, want %v", perKey.QueueTimeout, DefaultQueueTimeout)
 	}
@@ -445,7 +445,7 @@ func TestLimitsForPerKeyOverridesGlobal(t *testing.T) {
 		RateLimitTPM:         new(500),
 		RateLimitConcurrency: new(8),
 		QueueTimeoutMs:       new(250),
-	}, global)
+	}, global, nil)
 	if l.RPM != 50 || l.TPM != 500 || l.Concurrency != 8 {
 		t.Errorf("per-key limits did not win: %+v", l)
 	}

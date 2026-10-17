@@ -47,14 +47,17 @@ func IsModelNotAllowed(err error) bool {
 	return errors.As(err, &target)
 }
 
-// effectiveAllowedModels is the ONE place a key's allowlist is read. Both
-// dispatch (checkModelAccess) and listing (filterModelsByAccess) go through it.
+// effectiveAllowedModels is the ONE loader a key's allowlist passes through.
+// Both dispatch (checkModelAccess) and listing (filterModelsByAccess) go
+// through it, so a client can never list a model it may not call.
 //
-// An empty result means "no allowlist configured" and allows every model, which
-// is what keeps every key minted before this feature behaving exactly as it did.
-// A nil key (no API-key middleware on the route) also returns empty. A storage
-// failure degrades the same way rather than turning into a 500: a broken policy
-// read must not take down traffic the key has always been allowed to send.
+// The result is the key's own patterns unioned with the ones its plan grants
+// (F-3). An empty result means "no allowlist configured" and allows every
+// model, which is what keeps every key minted before this feature behaving
+// exactly as it did. A nil key (no API-key middleware on the route) also
+// returns empty. A storage failure degrades the same way rather than turning
+// into a 500: a broken policy read must not take down traffic the key has
+// always been allowed to send.
 func (h *ChatHandler) effectiveAllowedModels(key *models.APIKey) ([]string, error) {
 	if h == nil || key == nil || key.ID == "" || h.Repo == nil {
 		return nil, nil
@@ -64,10 +67,10 @@ func (h *ChatHandler) effectiveAllowedModels(key *models.APIKey) ([]string, erro
 		log.Warn("chat", "model allowlist read failed, allowing all", "error", err, "apiKeyId", key.ID)
 		return nil, nil
 	}
-	return patterns, nil
+	return h.withPlanPatterns(key.ID, key.PlanID, patterns), nil
 }
 
-// allowedModelPatterns is effectiveAllowedModels for callers that hold a key id
+// allowedModelPatterns is the same loader for callers that hold a key id
 // rather than the key itself — the capacity-adapter pool filter runs deep in
 // dispatch, long after the request context is gone. It returns nil for an
 // empty id, which modelAllowed reads as "no allowlist".
@@ -80,7 +83,63 @@ func (h *ChatHandler) allowedModelPatterns(keyID string) []string {
 		log.Warn("chat", "model allowlist read failed, allowing all", "error", err, "apiKeyId", keyID)
 		return nil
 	}
-	return patterns
+	return h.withPlanPatterns(keyID, nil, patterns)
+}
+
+// withPlanPatterns widens a key's allowlist with the patterns its plan grants.
+//
+// The two sides are UNIONED, so the result can only ever add a model, never
+// take one away: a plan names what every key on it may call, and the key's own
+// rows are how an operator widens that for this one key. An empty list on
+// either side contributes nothing, which keeps "no plan" and "no allowlist"
+// both reading as "no constraint".
+//
+// planID may be nil when the caller holds only a key id, in which case the
+// plan is fetched with one joined query. A caller that already holds the key
+// passes its plan id: an empty one — every key minted before F-3 — skips that
+// query entirely, so the common case pays nothing extra.
+func (h *ChatHandler) withPlanPatterns(keyID string, planID *string, own []string) []string {
+	if h.Repo == nil {
+		return own
+	}
+	var planPatterns []string
+	if planID != nil && strings.TrimSpace(*planID) != "" {
+		plan, err := h.Repo.GetPlan(strings.TrimSpace(*planID))
+		if err == nil {
+			planPatterns = plan.AllowedModels
+		}
+	} else if planID == nil {
+		// The caller holds only a key id, so the plan id is unknown: one joined
+		// read answers it. A caller that passed a known-empty plan id is not
+		// here, so a key with no plan skips this query entirely.
+		plans, err := h.Repo.GetPlansForKeys([]string{keyID})
+		if err == nil {
+			planPatterns = plans[keyID].AllowedModels
+		}
+	}
+	if len(planPatterns) == 0 {
+		return own
+	}
+	return unionModelPatterns(own, planPatterns)
+}
+
+// unionModelPatterns merges two allowlists in stable order, dropping
+// duplicates and blanks. Either side may be nil, which means "no constraint"
+// and therefore contributes nothing.
+func unionModelPatterns(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, list := range [][]string{a, b} {
+		for _, m := range list {
+			m = strings.TrimSpace(m)
+			if m == "" || seen[m] {
+				continue
+			}
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // modelAllowed is the single allow/deny decision.

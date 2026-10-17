@@ -5,7 +5,110 @@
 > **Target**: `https://github.com/luqman-v1/9router-go` (Go 1.27 + Chi + Uber Fx + Svelte 5, SQLite WAL, single-binary)
 > **Status**: Analisis & spesifikasi siap implementasi
 
+> **BACA BAGIAN INI DULU.** Beberapa fitur di bawah sudah selesai di 9router-go; jangan dikerjakan ulang.
+
 ---
+
+## Status & Rencana Eksekusi (2026-10-16)
+
+**Koreksi sumber.** Dokumen ini ditulis 2026-10-07 dari klon KeiRouter `3d8b702` (fork `helmiau`, 2026-09-08). Upstream `mydisha/keirouter` kini `0918b9e` (**v0.2.0**, 2026-10-13): **20 commit di depan, 453 file berubah**, +3 paket (`audit`, `errclass`, `skills`) dan +4 migrasi (`0030`–`0033`). Worktree baca-saja upstream: `D:/GithubRepository/keirouter-upstream`. Semua status di bawah diverifikasi ulang ke kode 9router-go `d995986` (1.9.14-exp.1), bukan dari dokumen ini.
+
+### A. Status per fitur (terverifikasi 2026-10-16)
+
+| # | Fitur | Status | Bukti |
+|---|-------|--------|-------|
+| F-1 | Rate limit per-key (RPM/TPM/konkurensi + antrean) | **SELESAI** | `internal/middleware/ratelimit.go:888-894`; kuota token `:762`; kolom `internal/db/schema.go:279-285` |
+| F-2 | Budget USD + hard-cutoff | **PARSIAL** | hanya `tokenQuota` seumur hidup — tanpa periode, `alert_pct`, cutoff 402; `usageHistory.cost` masih telemetri |
+| F-3 | Plans (template reusable) | **SELESAI** (PR #354) | resolver tunggal `internal/policy/policy.go`; repo `internal/db/plans.go`; tabel `plans` + `apiKeys.planId` di `internal/db/schema.go`; API `internal/handlers/dashboard/plans.go`; UI `web/src/components/plans/PlansView.svelte` |
+| F-4 | Guardrails | **SELESAI (MVP)** | `internal/guardrails/detectors.go:31,62` (PII + injeksi), `middleware.go`, `resolver.go`, `outbound.go`; tanpa toxicity/topics/bias |
+| F-5 | Credential vault AES-GCM | **SELESAI** | `internal/vault/vault.go`; kolom tersegel `schema.go:272-277` |
+| F-6 | Argon2id key hashing | **SELESAI** | `internal/keikey/apikey.go:1-45`; jalur auth `internal/middleware/auth.go:102-107`; kolom `schema.go:287-289` |
+| F-7 | Model access per-key (allowlist + wildcard) | **SELESAI** | repo `internal/db/modelaccess.go:24`; gate `internal/handlers/chat/access.go:134,159`; API `dashboard/apikeys_models.go`; route `router.go:245-246`; UI `web/src/components/keys/ApiKeyPolicyModal.svelte:333` |
+| F-8 | Portal penggunaan publik | BELUM | — |
+| F-9 | Response cache | **SELESAI** (melampaui KeiRouter) | `internal/semanticcache/cache.go:17-51` (LRU + TTL 24 jam + ambang kemiripan 0,95); wiring `handlers/chat/chat.go:111`, `forward.go:423` |
+| F-10 | Prometheus `/metrics` | **SELESAI** | `internal/observ/metrics.go:1-45`; route `internal/handlers/router.go:248` |
+| F-11 | Multi-tenant | TUNDA | — |
+| F-12 | System tray | SKIP | — |
+| F-13 | Terse / token saver | **SELESAI** | `internal/tokensaver/` |
+| F-14 | Metadata resale (expiry/usedCount/metadata) | **SELESAI** | `schema.go:291-294`; `dashboard/apikeys_policy.go:47-60` |
+| F-15 | Branding white-label | BELUM | — |
+
+**Kesimpulan:** dari Tier A, **F-3 (Plans) sudah selesai** (PR #354) dan **F-2 (Budget) masih parsial** — itu PR berikutnya. F-7 sudah tuntas end-to-end, jadi ia tidak lagi jadi PR tersendiri: allowlist-nya kini diwarisi lewat plan (union).
+
+### B. Rencana eksekusi — scope terpilih: Plans + Budget + Model-access
+
+F-7 sudah tuntas end-to-end (lihat §A), jadi scope tersisa = **2 PR berurutan** ke `main` (AGENTS.md §7.7), branch dari `origin/main`. Detail desain per fitur tetap ada di §2 (F-3, F-2) — bagian ini menegaskan urutan, cakupan, dan definisi selesai. Bagian §3 (Rekomendasi Roadmap lama) **ditimpa** oleh bagian ini untuk scope yang dipilih.
+
+#### B1. PR-1 — F-3 Plans (payung policy) — **SELESAI (PR #354)**
+
+1. **Skema.** Tabel `plans` di `keiRouterTables` (`internal/db/schema.go`): `id TEXT PRIMARY KEY`, `tenant_id TEXT NOT NULL DEFAULT 'default'`, `name`, `description`, `limit_micros INTEGER NOT NULL DEFAULT 0`, `limit_tokens INTEGER NOT NULL DEFAULT 0`, `rpm_limit`, `tpm_limit`, `concurrency_limit INTEGER NOT NULL DEFAULT 0`, `period TEXT NOT NULL DEFAULT 'monthly'` (enum `daily|weekly|monthly|total`), `alert_pct INTEGER NOT NULL DEFAULT 80`, `hard_cutoff INTEGER NOT NULL DEFAULT 1`, `allowed_models TEXT DEFAULT ''` (dipisah koma), `created_at`, `updated_at` (RFC3339 UTC, mengikuti `0015_plans.sql`). `goOnlyColumns` += `{"apiKeys","planId","TEXT DEFAULT ''"}`. Seed: satu plan `default` dengan literal RFC3339 (bukan `datetime('now')`, agar portabel), disisipkan di `EnsureKeiRouterTables` sehingga setiap jalur bootstrap ikut memilikinya. **Divergensi dari draft awal:** `UPDATE apiKeys SET planId='default' WHERE planId=''` sengaja **tidak** dijalankan — plan `default` semuanya nol jadi perilaku key yang ada tidak berubah, sementara backfill akan menambah satu bacaan plan per request untuk setiap key. Key baru cukup dipetakan lewat `PUT /api/keys/{id}` dengan `planId`.
+2. **Repo.** `internal/db/plans.go` — `Create/Get/List/Update/Delete/CountKeys`, mengikuti pola `internal/db/modelaccess.go` (termasuk pembacaan massal satu query `GetPlansForKeys` untuk daftar key).
+3. **Resolver.** `internal/policy/policy.go` — `Resolve(key *models.APIKey) EffectivePolicy`. Algoritma: mulai dari nol → timpa dari plan (bila `planId` ada dan plan ditemukan) → timpa dengan kolom key bila nilainya > 0. `EffectivePolicy` = `{PlanID, RPM, TPM, Concurrency, QueueTimeoutMs, TokenQuota, LimitMicros, LimitTokens, BudgetPeriod, AlertPct, HardCutoff, AllowedModels}`. Satu-satunya sumber kebenaran; dipanggil ratelimit (`internal/middleware/ratelimit.go:888-894`), budget (B2), dan model-gate (`internal/handlers/chat/access.go:52`) — **tidak boleh** ada logika limit yang tersebar.
+4. **Middleware.** Rate limit membaca `policy.RPM/TPM/Concurrency`; kolom key lama tetap berlaku hanya sebagai override eksplisit (nilai > 0).
+5. **API dashboard.** `internal/handlers/dashboard/plans.go`: `GET /api/plans`, `POST /api/plans`, `PUT /api/plans/{id}`, `DELETE /api/plans/{id}`, `GET /api/plans/{id}/keys` (memakai `CountKeys`); rute di `internal/handlers/router.go` dekat `:245`. Validasi: `period` ∈ enum, `alertPct` 0–100, semua limit ≥ 0, `allowedModels` pola dengan `*` akhir. `DELETE` → **409** bila masih dipakai key.
+6. **UI.** `web/src/components/plans/PlansView.svelte` (daftar + editor, Svelte 5 runes) dan klien di `web/src/api/client.ts` (pola `:1123`); `ApiKeyPolicyModal.svelte:132` menambah pemilih plan sehingga `planId` ikut terkirim di `APIKeyPolicy` (tipe `web/src/api/client.ts:102`). Allowlist per key tetap ada sebagai override.
+7. **Uji.** `internal/policy/policy_test.go` tabel kasus (tanpa plan → nol; plan only; override key; warisan `allowedModels`; `period` tidak valid ditolak). `internal/db/plans_test.go` CRUD + `CountKeys` pada SQLite in-memory. **Wajib** menambah `planId` ke fixture `apiKeys` yang ditulis tangan — `internal/handlers/dashboard/dashboard_test.go`, `internal/db/dashboard_test.go`, `internal/db/repos_test.go`, `internal/middleware/auth_test.go` — kalau tidak: `no such column: planId`.
+
+#### B2. PR-2 — F-2 Budget (enforcement) — estimasi 1–1,5 hari
+
+1. **Skema.** `goOnlyColumns` += `limitMicros INTEGER DEFAULT 0`, `budgetPeriod TEXT DEFAULT 'monthly'`, `alertPct INTEGER DEFAULT 80`, `hardCutoff INTEGER DEFAULT 1`. Periode memakai enum yang sama dengan plan.
+2. **Belanja.** Dihitung dari `usageHistory` dalam jendela periode: `SUM(cost)` × 1e6 → micros, `SUM(promptTokens+completionTokens)` → token. Tanpa counter Redis dan tanpa job reset (KeiRouter memakai Redis + `reservations`; pendekatan SQL lebih sederhana — trade-off: tidak ada proteksi overshoot sub-detik, ditutup langkah 4). Konversi float→micros di **satu** helper, tidak dicampur float di penjagaan.
+3. **Middleware.** `internal/middleware/budget.go`, dipasang setelah `RequireRateLimit` di rantai middleware: sebelum dispatch, 402 dengan payload `{"error":"budget_exhausted","period":...,"limit_micros":...}` saat `hardCutoff=1` dan belanja ≥ limit; header `X-Budget-Alert: <n>%` saat lewat `alertPct`. `GET /api/keys/{id}/budget` mengembalikan belanja + sisa.
+4. **Reservasi in-flight.** `map[apiKeyID]reservation` + `sync.RWMutex`, mengikuti `budget/budget.go` KeiRouter: catat estimasi biaya saat mulai, lepaskan saat selesai, tolak saat estimasi membuat total melampaui limit. Mencegah N permintaan paralel menembus batas.
+5. **UI.** Indikator di `ApiKeyPolicyModal` (limit, periode, alert %, cutoff) + ringkasan di halaman Usage.
+6. **Uji.** `internal/middleware/budget_test.go`: tepat di batas (diizinkan/ditolak), pergantian periode, `hardCutoff=0` (hanya peringatan), reservasi paralel, konversi tanpa pembulatan salah.
+
+#### B3. Urutan dan alasan
+
+Plan adalah payung yang memuat limit RPM/TPM/konkurensi, kuota token, dan `allowedModels`; budget membaca policy hasil resolver yang sama, jadi mengerjakannya lebih dulu berarti menulis enforcement dua kali.
+
+### C. Backlog baru dari delta v0.2.0 (belum ada di dokumen ini)
+
+| Fitur upstream | Commit / migrasi | Nilai | Verdict |
+|----------------|------------------|-------|---------|
+| Audit trail tamper-evident + ekspor OTLP (OpenTelemetry Protocol) | `6cae829`, `0032_audit_log_otel.sql` | Tinggi (kepatuhan) | Ambil |
+| Paket `skills` operator (blok instruksi per scope key/plan/model) | `backend/internal/skills/skills.go` | Sedang | Ambil (kecil) |
+| `errclass` klasifikasi error agnostik-provider | `backend/internal/errclass/` | Sedang | Ambil |
+| Meter: cache-write 1 jam + tagihan web search | `c6885de`, `0031` | Sedang | Ambil |
+| Usage: `chain_id`/`fallback_count` + hasil guardrail per request | `0030`, `0033` | Sedang | Ambil |
+| Leksikon toksisitas Indonesia + corpus test | `024bd84` | Sedang | Ambil (murah) |
+| Topik berbasis LLM (Large Language Model) | `fae103d` | Sedang | Nanti |
+| ML (Machine Learning) classifier injeksi + LLM judge + sidecar PromptGuard | `11bf55b` | Tinggi | Tunda (butuh deploy Python) |
+
+### D. Jebakan yang sudah diketahui
+
+- Fixture `apiKeys` yang ditulis tangan tidak mengikuti `goOnlyColumns`; setiap kolom baru harus ditambahkan di keempat berkas uji pada PR-1 langkah 7.
+- Uang disimpan sebagai **micros integer**; konversi dari `usageHistory.cost REAL` dilakukan di satu helper, jangan dicampur float.
+- Semua skema baru lewat `goOnlyColumns`/`keiRouterTables` (`internal/db/schema.go:268,299`) — tabel milik upstream tidak boleh diubah.
+- Setiap PR menulis satu fragmen `.changes/<nomor-pr>-<slug>.md`; `CHANGELOG.md` tidak disentuh (AGENTS.md §7.6).
+
+### E. Definisi selesai dan gate
+
+**Gate global (setiap PR):** `go test ./...` hijau; `make vet-lua` **tidak** diperlukan; `make vet-svelte` untuk perubahan UI; `cd web && bun run build` bersih; fragmen `.changes/<nomor-pr>-<slug>.md` ditulis, `CHANGELOG.md` **tidak** disentuh; branch dari `origin/main`, PR ke `main` (AGENTS.md §7.6–§7.7).
+
+| PR | Definisi selesai |
+|----|------------------|
+| PR-1 | `policy.Resolve` menghasilkan identik untuk key tanpa plan; ratelimit menolak/izinkan sama seperti sebelum untuk key `planId` kosong; `apiKeys.planId` tersimpan dan dapat diubah via `PUT /api/keys/{id}`; tabel `plans` CRUD penuh; fixture `apiKeys` di 4 berkas uji memuat `planId`. |
+| PR-2 | 402 benar saat `hardCutoff` terlampaui; peringatan muncul saat `alertPct`; reservasi paralel tidak menembus batas; `GET /api/keys/{id}/budget` konsisten dengan `usageHistory`; konversi float→micros tidak ada pembulatan salah. |
+
+### F. Estimasi total
+
+| Pekerjaan | Unit konkret |
+|-----------|---------------|
+| PR-1 (F-3 Plans) | 1–1,5 hari kerja: skema + repo ± 3 jam; resolver + middleware ± 3 jam; API + UI ± 4 jam; uji + gate ± 2 jam |
+| PR-2 (F-2 Budget) | 1–1,5 hari kerja: skema + middleware ± 4 jam; kueri belanja + reservasi ± 4 jam; uji + gate ± 2 jam |
+| Total scope terpilih | **2–3 hari kerja** |
+
+### G. Keputusan yang masih terbuka
+
+1. **Gabungan allowlist** — plan `allowedModels` dan allowlist per key: digabung (union) atau key menimpa? Rekomendasi: **union** (key boleh menambah, bukan mempersempit).
+2. **Agregasi budget** — `SUM` langsung atas `usageHistory` vs membaca `UsageDaily` (tabel agregasi harian sudah ada di `internal/models/types.go`) sebagai cache. Rekomendasi: mulai `SUM`, pindah ke `UsageDaily` bila tabel besar.
+3. **Seed plan `default`** — di migrasi (sekali, portabel) vs di kode startup (mudah diubah). Rekomendasi: **migrasi**, mengikuti `0015_plans.sql`.
+4. **UI plan** — halaman penuh `PlansView` vs modal. Rekomendasi: halaman penuh (sudah ada pola `SettingsView`).
+5. **PR-2 `hardCutoff` default** — 1 (mati) atau 0 (peringatan saja) untuk plan `default`. Rekomendasi: **0** agar perilaku lama tidak berubah untuk key yang sudah ada.
+
+---
+
 
 ## 0. Ruang Lingkup
 

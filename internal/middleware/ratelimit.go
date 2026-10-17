@@ -15,6 +15,7 @@ import (
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/observ"
+	"9router/proxy/internal/policy"
 )
 
 // RateLimiter implements per-key rate limiting with sliding window RPM,
@@ -42,6 +43,10 @@ type RateLimiter struct {
 	// key costs a 429, not one goroutine per caller. It is a field, not a
 	// constant, so a test can shrink it.
 	maxQueueDepth int
+	// plans resolves the plan template assigned to a key (F-3). Atomic so a
+	// late wiring call cannot race a request in flight; nil means the install
+	// has no plan tier, which is every setup that has not configured one.
+	plans atomic.Pointer[policy.PlanSource]
 }
 
 // waitQueue is the FIFO of parked requests for one key.
@@ -89,6 +94,28 @@ func NewRateLimiter(window time.Duration) *RateLimiter {
 		maxKeys:       10000,
 		maxQueueDepth: DefaultMaxQueueDepth,
 	}
+}
+
+// SetPlanSource wires the plan tier (F-3). Call it before the first request;
+// the atomic pointer keeps a later rewiring safe for readers already resolving
+// a key.
+func (rl *RateLimiter) SetPlanSource(src policy.PlanSource) {
+	if rl == nil {
+		return
+	}
+	rl.plans.Store(&src)
+}
+
+// planSource returns the wired plan source, or nil when none was set.
+func (rl *RateLimiter) planSource() policy.PlanSource {
+	if rl == nil {
+		return nil
+	}
+	p := rl.plans.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // Check verifies if a request is allowed under the given limits.
@@ -670,7 +697,7 @@ func RequireRateLimit(rl *RateLimiter, defaults Defaults, usage TokenUsageReader
 				return
 			}
 
-			limits := limitsFor(apiKey, defaults)
+			limits := limitsFor(apiKey, defaults, rl.planSource())
 
 			// Lifetime token quota: a hard budget, refused with 403 the same way
 			// a not-yet-ported plan-tier cap would be. It is checked before
@@ -799,14 +826,15 @@ func rejectQuotaExhausted(w http.ResponseWriter, used, quota int) {
 }
 
 // EffectiveTPM returns the TPM limit that applies to a key, resolving the
-// key's column against the operator's global default exactly as the limiter
-// does.
+// key's column against the plan tier and the operator's global default
+// exactly as the limiter does. It is a method so it resolves through the same
+// plan source the limiter charged against.
 //
 // The metering path needs the same number the limiter charged: reconciling the
 // real usage against a different limit would settle the charge into the wrong
 // bucket.
-func EffectiveTPM(d Defaults, apiKey *models.APIKey) int {
-	return limitsFor(apiKey, d).TPM
+func (rl *RateLimiter) EffectiveTPM(d Defaults, apiKey *models.APIKey) int {
+	return limitsFor(apiKey, d, rl.planSource()).TPM
 }
 
 // reservedCtxKey carries the TPM charge the limiter took for this request, and
@@ -872,12 +900,14 @@ type Limits struct {
 
 // limitsFor resolves the effective limits for a key.
 //
-// The key's own column always wins where it is set; the global default only
-// fills a column the operator left at 0. That ordering is what keeps a global
-// default from quietly capping a key that was deliberately given a higher
-// budget, and from lifting one that was deliberately capped. The plan tier the
-// port plan describes sits between the two and is not implemented yet.
-func limitsFor(apiKey *models.APIKey, d Defaults) Limits {
+// Precedence, least specific first: the operator's global default, the plan
+// assigned to the key, then the key's own column. That ordering is what keeps
+// a global default from quietly capping a key that was deliberately given a
+// higher budget, and lets a plan cap many keys while a single key still
+// escapes its plan without editing the plan for everyone on it.
+//
+// The plan layer comes from policy.Resolve, the one place that merge happens.
+func limitsFor(apiKey *models.APIKey, d Defaults, plans policy.PlanSource) Limits {
 	// A nil Defaults means the operator configured no global fallback, which
 	// is the same as a fallback of zero. Every install without the settings
 	// keys reaches here, so it must not be a nil call.
@@ -885,26 +915,32 @@ func limitsFor(apiKey *models.APIKey, d Defaults) Limits {
 	if d != nil {
 		out = d()
 	}
-	if v := derefInt(apiKey.RateLimitRPM); v > 0 {
-		out.RPM = v
+	// The plan tier arrives with the key's own overrides already folded in, so
+	// this one value carries the whole precedence rule — global default, then
+	// plan, then key — and the two sources can never be applied in the wrong
+	// order by two call sites.
+	pol := policy.Resolve(plans, apiKey)
+	if pol.RPM > 0 {
+		out.RPM = pol.RPM
 	}
-	if v := derefInt(apiKey.RateLimitTPM); v > 0 {
-		out.TPM = v
+	if pol.TPM > 0 {
+		out.TPM = pol.TPM
 	}
-	if v := derefInt(apiKey.RateLimitConcurrency); v > 0 {
-		out.Concurrency = v
+	if pol.Concurrency > 0 {
+		out.Concurrency = pol.Concurrency
 	}
 	// The quota is a lifetime budget, so it is never taken from the global
-	// fallback: a default token quota would silently cap every key in the
-	// install, which is not what a per-key rate default means.
-	if v := derefInt(apiKey.TokenQuota); v > 0 {
-		out.TokenQuota = v
+	// fallback and never from a plan: a default token quota would silently cap
+	// every key in the install, and a plan's token limit is a per-period
+	// budget the budget engine enforces — a different guarantee.
+	if pol.TokenQuota > 0 {
+		out.TokenQuota = pol.TokenQuota
 	}
 
 	// Queue timeout. The default only applies when the CONCURRENCY cap is the
-	// key's own column. A concurrency cap that arrived from the operator's
-	// global fallback must not silently acquire a 60s queue: on the release
-	// before this change such a key was refused immediately, and turning that
+	// key's own or its plan's: a cap that arrived only from the operator's
+	// global fallback must not silently acquire a 60s queue. On the release
+	// before that change such a key was refused immediately, and turning that
 	// into a minute-long wait is a behaviour change the dashboard cannot show
 	// (the key reads "unset").
 	//
@@ -914,11 +950,17 @@ func limitsFor(apiKey *models.APIKey, d Defaults) Limits {
 	switch {
 	case keyQueue > 0:
 		// The operator set a queue timeout on the key: honour it, and it
-		// applies whether the concurrency cap is per-key or global.
+		// applies whether the concurrency cap is per-key or from its plan.
 		out.QueueTimeout = time.Duration(keyQueue) * time.Millisecond
 	case keyConc > 0:
 		// The key set its own concurrency cap but no timeout: the documented
 		// default applies.
+		out.QueueTimeout = DefaultQueueTimeout
+	case pol.PlanID != "" && pol.Concurrency > 0:
+		// The concurrency cap came from the key's plan. A plan is assigned to
+		// this key deliberately, so it queues like the key's own cap rather
+		// than behaving like the global fallback. Reaching this branch means
+		// the key's own column is 0, so pol.Concurrency is the plan's value.
 		out.QueueTimeout = DefaultQueueTimeout
 	case out.Concurrency > 0:
 		// Concurrency came only from the global fallback: no queueing. This is

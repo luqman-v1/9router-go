@@ -79,6 +79,9 @@ type APIKey struct {
 	LastUsedAt *string `json:"lastUsedAt,omitempty"`
 	UsedCount  *int    `json:"usedCount,omitempty"`
 	Metadata   *string `json:"metadata,omitempty"`
+	// F-3 Plans: id of the reusable policy template this key inherits from.
+	// Empty means no plan; plan values are defaults the key can override.
+	PlanID *string `json:"planId,omitempty"`
 }
 
 // Combo represents a multi-model routing combinated alias.
