@@ -145,6 +145,22 @@ func zenChatLaneBody(body []byte) ([]byte, error) {
 	return converted.Body, nil
 }
 
+// zenShapedBody applies the tool-name shaping the request's destination gate
+// expects, and returns the shaped body with the rename map the response side
+// needs to restore the caller's spelling.
+//
+// The shaper must follow the gate the request lands on, not the lane it arrived
+// from: a free id travels to the keyless /inference gate whichever lane carried
+// it, and that gate wants the genuine CLI 2.x read/shell definitions. Shaping a
+// free request with the legacy quartet — the /zen/v1 fingerprint — sends a body
+// the inference gate refuses, which is what the messages lane used to do.
+func zenShapedBody(body []byte, cleanModel string, free bool) ([]byte, map[string]string) {
+	if free {
+		return translator.ConcealOpenCodeV2FingerprintTools(body, false, isOpenCodeAutoToolChoiceModel(cleanModel))
+	}
+	return translator.ConcealFingerprintTools(body)
+}
+
 func reqCtx(req *Request) context.Context {
 	if req.Ctx != nil {
 		return req.Ctx
@@ -379,15 +395,14 @@ func forwardZenMessages(w http.ResponseWriter, req *Request, cleanModel string, 
 	default:
 		body = EnsureClaudeMessagesFor(body, "opencode-zen", cleanModel)
 	}
-	body, toolNameMap := translator.ConcealFingerprintTools(body)
+	free := isOpencodeFreeModel(cleanModel)
+	body, toolNameMap := zenShapedBody(body, cleanModel, free)
 	req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 	w = NewToolNameRestoringWriter(w, toolNameMap)
 
-	free := isOpencodeFreeModel(cleanModel)
 	headers := zenAuthHeaders(req.APIKey)
 	if free {
-		// No free-tier id routes to this lane today, but if one ever does,
-		// the inference gate expects public credentials, not a user key.
+		// The inference gate expects public credentials, not a user key.
 		delete(headers, "x-api-key")
 		headers["Authorization"] = "Bearer public"
 	}
