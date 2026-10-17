@@ -408,7 +408,11 @@ func NormalizeAntigravityModel(model string) string {
 // decolua/9router#a07ed95b, refreshed by #24034f69). Every value was probed
 // live against daily-cloudcode-pa.googleapis.com on 2026-10-09.
 var antigravityUpstreamModelIDs = map[string]string{
-	// The 3.8 family serves one backend id per tier. The bare catalog id is
+	// Gemini 4 Argon family
+	"gemini-4-argon-high":   "gemini-4-argon-high",
+	"gemini-4-argon-medium": "gemini-4-argon-medium",
+	"gemini-4-argon-low":    "gemini-4-argon-low",
+	"gemini-4-argon":        "gemini-4-argon-medium",
 	// the medium tier.
 	"gemini-3.8-flash":        "gemini-3.8-flash-medium",
 	"gemini-3.8-flash-high":   "gemini-3.8-flash-high",

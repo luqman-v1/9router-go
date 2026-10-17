@@ -377,7 +377,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 
 	// Normalize Gemini contents: merge adjacent same-role messages, strip empty parts,
 	// and ensure first turn is "user" (parity with decolua/9router v0.5.75 #e7b5f09).
-	req.Contents = NormalizeGeminiContents(req.Contents)
+	req.Contents = NormalizeGeminiContentsForModel(req.Contents, oreq.Model)
 
 	// Tools
 	if len(oreq.Tools) > 0 {
@@ -407,15 +407,17 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 
 	// Generation config
 	genConfig := make(map[string]any)
-	if oreq.Temperature != nil {
-		genConfig["temperature"] = *oreq.Temperature
-	}
-
-	if oreq.TopP != nil {
-		genConfig["topP"] = *oreq.TopP
-	}
-	if oreq.TopK != nil {
-		genConfig["topK"] = *oreq.TopK
+	isGemini4 := isGemini4Model(oreq.Model)
+	if !isGemini4 {
+		if oreq.Temperature != nil {
+			genConfig["temperature"] = *oreq.Temperature
+		}
+		if oreq.TopP != nil {
+			genConfig["topP"] = *oreq.TopP
+		}
+		if oreq.TopK != nil {
+			genConfig["topK"] = *oreq.TopK
+		}
 	}
 	maxTokens := oreq.MaxTokens
 	if maxTokens == nil {
@@ -460,7 +462,28 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	return out, nil
 }
 
-// extractThoughtSig extracts a thought_signature encoded in a tool call ID (format: "...__ts__<sig>").
+func isGemini4Model(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "gemini-4") || strings.Contains(m, "gemini-argon")
+}
+
+// moveFunctionResponsesLast places all functionResponse parts at the end of the parts array for Gemini 4 models.
+func moveFunctionResponsesLast(parts []GeminiPart) []GeminiPart {
+	var nonResp []GeminiPart
+	var resp []GeminiPart
+	for _, p := range parts {
+		if p.FunctionResponse != nil {
+			resp = append(resp, p)
+		} else {
+			nonResp = append(nonResp, p)
+		}
+	}
+	if len(resp) == 0 {
+		return parts
+	}
+	return append(nonResp, resp...)
+}
+
 func extractThoughtSig(id string) string {
 	const sep = "__ts__"
 	if _, after, ok := strings.CutLast(id, sep); ok && after != "" {
@@ -523,7 +546,7 @@ func (u *toolCallIDUniquifier) next(id string) string {
 // readability and the call's index for uniqueness — two parts in one chunk are
 // emitted inside a single clock tick, so UnixNano alone collides and the client
 // cannot match a result to its call.
-// Parity with `functionCall.id || \`${name}-${Date.now()}-${index}\`` in
+// Parity with `functionCall.id || \`${name}-${Date.now()}-${index}\“ in
 // open-sse/translator/response/gemini-to-openai.js.
 func geminiToolCallID(geminiID, name string, index int) string {
 	if geminiID != "" {
@@ -1008,6 +1031,12 @@ func geminiToolMediaParts(content any) []GeminiPart {
 // prefill, a truncated stream, or tool calls the client never answered all
 // arrive that way and would 400 without the guards.
 func NormalizeGeminiContents(contents []GeminiContent) []GeminiContent {
+	return NormalizeGeminiContentsForModel(contents, "")
+}
+
+// NormalizeGeminiContentsForModel allows passing model name to conditionally apply Gemini 4 functionResponse ordering.
+func NormalizeGeminiContentsForModel(contents []GeminiContent, model string) []GeminiContent {
+	isGemini4 := isGemini4Model(model)
 	out := make([]GeminiContent, 0, len(contents)+2)
 	for _, c := range contents {
 		if c.Role == "" || len(c.Parts) == 0 {
@@ -1024,11 +1053,19 @@ func NormalizeGeminiContents(contents []GeminiContent) []GeminiContent {
 			continue
 		}
 		if len(out) > 0 && out[len(out)-1].Role == c.Role {
-			out[len(out)-1].Parts = append(out[len(out)-1].Parts, validParts...)
+			parts := validParts
+			if c.Role == "user" && isGemini4 {
+				parts = moveFunctionResponsesLast(parts)
+			}
+			out[len(out)-1].Parts = append(out[len(out)-1].Parts, parts...)
 		} else {
+			parts := validParts
+			if c.Role == "user" && isGemini4 {
+				parts = moveFunctionResponsesLast(parts)
+			}
 			out = append(out, GeminiContent{
 				Role:  c.Role,
-				Parts: validParts,
+				Parts: parts,
 			})
 		}
 	}
