@@ -18,25 +18,17 @@ import (
 // spends a model's worth of tokens to test a credential makes "Check" a
 // billable action the operator did not ask for.
 
-const (
-	deepSeekUsersCurrentURL = "https://chat.deepseek.com/api/v0/users/current"
-	deepSeekWebUserAgent    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-)
+const deepSeekUsersCurrentURL = "https://chat.deepseek.com/api/v0/users/current"
 
-// deepSeekWebHeaders is the same fingerprint the executor sends, so a probe
-// that passes is evidence about the credential rather than about the header set.
+// deepSeekWebHeaders is the executor's own fingerprint, not a copy of it.
+//
+// A probe is only evidence about the credential if it sends what the real turn
+// sends: a header set maintained separately drifts, and a probe that passes with
+// a stale `X-Client-Version` — or without the client-attestation headers —
+// reports a credential usable when the executor would be judged differently.
+// So the fingerprint comes from the one place that defines it.
 func deepSeekWebHeaders() map[string]string {
-	return map[string]string{
-		"Accept":             "*/*",
-		"Accept-Language":    "en-US,en;q=0.9",
-		"Origin":             "https://chat.deepseek.com",
-		"Referer":            "https://chat.deepseek.com/",
-		"User-Agent":         deepSeekWebUserAgent,
-		"X-Client-Bundle-Id": "com.deepseek.chat",
-		"X-Client-Locale":    "en-US",
-		"X-Client-Platform":  "web",
-		"X-Client-Version":   "2.0.0",
-	}
+	return executor.DeepSeekBrowserHeaders()
 }
 
 // validateDeepSeekWeb checks a pasted userToken against /api/v0/users/current,
@@ -63,6 +55,15 @@ func validateDeepSeekWeb(ctx context.Context, apiKey string) validateOutcome {
 	if status != http.StatusOK {
 		return validateOutcome{supported: true,
 			message: "chat.deepseek.com returned HTTP " + http.StatusText(status)}
+	}
+
+	// The account-level enforcement is the answer a suspended account gets, and
+	// it is not an auth failure: the credential is fine and the account is
+	// punished. Reported as "invalid token" a user re-pastes a token that was
+	// never the problem, so the enforcement is named for what it is.
+	if enforcement := executor.DeepSeekEnforcementFromBody(body); enforcement != nil {
+		return validateOutcome{supported: true,
+			message: "chat.deepseek.com refused this account: " + enforcement.Message}
 	}
 
 	// This API reports an auth failure as HTTP 200 with a code in the body, so a

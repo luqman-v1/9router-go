@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,6 +36,11 @@ type deepSeekFakeUpstream struct {
 	// provider is judged on can be asserted.
 	headers map[string]http.Header
 
+	// bodies captures the last request body per path, so a test can assert on
+	// what the upstream was actually asked to do — which session id it was
+	// given, which parent it was threading on, which prompt it received.
+	bodies map[string][]byte
+
 	// completionBody is the event stream the completion endpoint answers with.
 	completionBody string
 
@@ -42,26 +48,68 @@ type deepSeekFakeUpstream struct {
 	tokenStatus int
 	// tokenCode overrides the application-level code in the same envelope.
 	tokenCode int
+
+	// muteBody, when set, replaces the completion answer with an account-level
+	// enforcement document rather than an event stream.
+	muteBody string
+
+	// createdSessions counts the sessions this upstream has minted, so a test
+	// can tell a reused session from a fresh one: a turn that continues a
+	// pinned conversation must not create a second upstream session.
+	createdSessions int
+}
+
+// countCalls reports how many requests the upstream served on path.
+func (f *deepSeekFakeUpstream) countCalls(path string) int {
+	count := 0
+	for _, call := range f.callPaths() {
+		if call == path {
+			count++
+		}
+	}
+	return count
 }
 
 // newDeepSeekFakeUpstream returns an upstream whose completion answers with the
 // given event-stream frames.
 func newDeepSeekFakeUpstream(t *testing.T, frames ...string) *deepSeekFakeUpstream {
 	t.Helper()
+	// The attestation hosts are real public endpoints, so a turn driven in a
+	// unit test has to be given a stub for them: without this the executor
+	// would fetch an attestation value from the internet mid-test.
+	stubDeepSeekAttestation(t)
 	return &deepSeekFakeUpstream{
 		challengeSalt:   "salt-for-test",
 		challengeExpire: 1778891543095,
 		headers:         map[string]http.Header{},
+		bodies:          map[string][]byte{},
 		completionBody:  strings.Join(frames, ""),
 		tokenStatus:     http.StatusOK,
 	}
 }
 
 func (f *deepSeekFakeUpstream) record(r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, r.URL.Path)
 	f.headers[r.URL.Path] = r.Header.Clone()
+	f.bodies[r.URL.Path] = body
+}
+
+// body decodes the request the upstream received on path.
+func (f *deepSeekFakeUpstream) body(t *testing.T, path string) map[string]any {
+	t.Helper()
+	f.mu.Lock()
+	raw := append([]byte(nil), f.bodies[path]...)
+	f.mu.Unlock()
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode %s request body %q: %v", path, raw, err)
+	}
+	return decoded
 }
 
 func (f *deepSeekFakeUpstream) callPaths() []string {
@@ -84,10 +132,14 @@ func (f *deepSeekFakeUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		})
 
 	case "/api/v0/chat_session/create":
+		f.mu.Lock()
+		f.createdSessions++
+		id := fmt.Sprintf("session-%d", f.createdSessions)
+		f.mu.Unlock()
 		_ = json.MarshalWrite(w, map[string]any{
 			"code": 0,
 			"data": map[string]any{"biz_data": map[string]any{
-				"chat_session": map[string]any{"id": "session-1"},
+				"chat_session": map[string]any{"id": id},
 			}},
 		})
 
@@ -112,6 +164,12 @@ func (f *deepSeekFakeUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		})
 
 	case deepSeekCompletionPath:
+		if f.muteBody != "" {
+			// The account-level enforcement: HTTP 200, a JSON document, and no
+			// event stream at all.
+			fmt.Fprint(w, f.muteBody)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, f.completionBody)
 
@@ -166,6 +224,9 @@ func TestForwardDeepSeekWebStreams(t *testing.T) {
 		t.Fatalf("ForwardDeepSeekWeb: %v", err)
 	}
 
+	// Stealth mode is on by default, so a plain request with no client session
+	// id creates a session and closes it again when the turn ends: the session
+	// is not pinned to a conversation, so nothing will ever thread on it.
 	calls := upstream.callPaths()
 	wantOrder := []string{
 		"/api/v0/users/current",
@@ -210,17 +271,21 @@ func TestForwardDeepSeekWebStreams(t *testing.T) {
 	completionHeaders := upstream.headers[deepSeekCompletionPath]
 	for header, want := range map[string]string{
 		"X-Client-Bundle-Id": "com.deepseek.chat",
-		"X-Client-Version":   "2.0.0",
+		"X-Client-Version":   deepSeekWebClientVersion,
 		"X-Client-Platform":  "web",
 		"Origin":             server.URL,
 		"Authorization":      "Bearer access-token-1",
+		"Sec-Fetch-Mode":     "cors",
+		"Sec-Ch-Ua-Platform": `"Windows"`,
+		"X-Hif-Leim":         "attestation-leim-value",
+		"X-Hif-Dliq":         "attestation-dliq-value",
 	} {
 		if got := completionHeaders.Get(header); got != want {
 			t.Errorf("completion %s = %q, want %q", header, got, want)
 		}
 	}
-	if ua := completionHeaders.Get("User-Agent"); !strings.Contains(ua, "Chrome/149") {
-		t.Errorf("completion User-Agent = %q, want the captured Chrome/149 build", ua)
+	if ua := completionHeaders.Get("User-Agent"); ua != deepSeekWebUserAgent {
+		t.Errorf("completion User-Agent = %q, want the declared build %q", ua, deepSeekWebUserAgent)
 	}
 	if got := completionHeaders.Get("Cookie"); !strings.Contains(got, "HWWAFSESID=") {
 		t.Errorf("completion Cookie = %q, want the synthetic anti-bot cookie", got)

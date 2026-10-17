@@ -4,7 +4,7 @@
   import Button from '../../lib/ui/Button.svelte'
   import { PROVIDER_CATALOG, isChatProvider } from '../../lib/providers'
   import ProviderCard from './ProviderCard.svelte'
-  import { getProviderStats, matchesFilter, matchesSearch } from './types'
+  import { getProviderStats, matchesFilter, matchesSearch, providerAuthTypes } from './types'
 
   interface Props {
     connections: ProviderConnection[]
@@ -39,8 +39,8 @@
   // 2. OAuth Providers
   let oauthProviders = $derived(
     PROVIDER_CATALOG
-      .filter((p) => isChatProvider(p) && !p.hidden && p.category === 'oauth' && matchesSearch(p.name, searchQuery, p.id, p.alias) && matchesFilter(getProviderStats(connections, p.id, ['oauth']), statusFilter))
-      .map((p) => ({ ...p, stats: getProviderStats(connections, p.id, ['oauth']) }))
+      .filter((p) => isChatProvider(p) && !p.hidden && p.category === 'oauth' && matchesSearch(p.name, searchQuery, p.id, p.alias) && matchesFilter(getProviderStats(connections, p.id, providerAuthTypes(p, ['oauth'])), statusFilter))
+      .map((p) => ({ ...p, stats: getProviderStats(connections, p.id, providerAuthTypes(p, ['oauth'])) }))
       .sort((a, b) => (b.stats.connected > 0 ? 1 : 0) - (a.stats.connected > 0 ? 1 : 0) || a.name.localeCompare(b.name))
   )
 
@@ -55,8 +55,8 @@
   // 4. API Key Providers
   let apikeyProviders = $derived(
     PROVIDER_CATALOG
-      .filter((p) => isChatProvider(p) && !p.hidden && (p.category === 'apikey' || p.category === 'webCookie') && matchesSearch(p.name, searchQuery, p.id, p.alias) && matchesFilter(getProviderStats(connections, p.id, ['apikey', 'api_key']), statusFilter))
-      .map((p) => ({ ...p, stats: getProviderStats(connections, p.id, ['apikey', 'api_key']) }))
+      .filter((p) => isChatProvider(p) && !p.hidden && (p.category === 'apikey' || p.category === 'webCookie') && matchesSearch(p.name, searchQuery, p.id, p.alias) && matchesFilter(getProviderStats(connections, p.id, providerAuthTypes(p, ['apikey', 'api_key'])), statusFilter))
+      .map((p) => ({ ...p, stats: getProviderStats(connections, p.id, providerAuthTypes(p, ['apikey', 'api_key'])) }))
       .sort((a, b) => (b.stats.connected > 0 ? 1 : 0) - (a.stats.connected > 0 ? 1 : 0) || a.name.localeCompare(b.name))
   )
 

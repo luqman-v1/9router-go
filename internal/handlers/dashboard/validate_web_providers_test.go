@@ -19,6 +19,21 @@ func deepSeekProbeBody(token string) []byte {
 
 // deepSeekProbeErrorBody builds the HTTP-200-with-a-code rejection this API uses
 // for a dead credential.
+
+// deepSeekProbeMuteBody is the account-level enforcement, which this API answers
+// with HTTP 200: the credential is fine and the account is punished.
+func deepSeekProbeMuteBody() []byte {
+	return mustMarshalJSON(map[string]any{
+		"code": 0,
+		"data": map[string]any{
+			"biz_code": 5,
+			"biz_msg":  "user is muted",
+		},
+	})
+}
+
+// deepSeekProbeErrorBody builds the HTTP-200-with-a-code rejection this API uses
+// for a dead credential.
 func deepSeekProbeErrorBody(code int) []byte {
 	return mustMarshalJSON(map[string]any{"code": code, "msg": "Authorization Failed"})
 }
@@ -98,6 +113,18 @@ func TestValidateDeepSeekWeb(t *testing.T) {
 			wantValid:   false,
 			wantMessage: "Missing userToken",
 		},
+		{
+			name:   "a muted account is named, not reported as a dead token",
+			apiKey: "user-token-4",
+			respond: func(int, capturedProbe) (int, []byte, error) {
+				// The enforcement arrives as HTTP 200 with the refusal in the
+				// body, so a probe that trusted the status would call this
+				// account valid and the user would find out on the first turn.
+				return http.StatusOK, deepSeekProbeMuteBody(), nil
+			},
+			wantValid:   false,
+			wantMessage: "refused this account",
+		},
 	}
 
 	for _, tt := range tests {
@@ -142,11 +169,16 @@ func TestValidateDeepSeekWebSendsBrowserFingerprint(t *testing.T) {
 	if got := probe.headers.Get("Authorization"); got != "Bearer user-token-1" {
 		t.Errorf("Authorization = %q, want the Bearer userToken", got)
 	}
+	// The probe must send the executor's own fingerprint, including the
+	// client-attestation header family: a probe judged against a different
+	// header set says nothing about whether the real turn will be accepted.
 	for header, want := range map[string]string{
 		"X-Client-Bundle-Id": "com.deepseek.chat",
-		"X-Client-Version":   "2.0.0",
+		"X-Client-Version":   "2.3.0",
 		"X-Client-Platform":  "web",
 		"Origin":             "https://chat.deepseek.com",
+		"Sec-Fetch-Mode":     "cors",
+		"Sec-Ch-Ua-Platform": `"Windows"`,
 	} {
 		if got := probe.headers.Get(header); got != want {
 			t.Errorf("probe %s = %q, want %q", header, got, want)

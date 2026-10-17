@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -10,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	json "encoding/json/v2"
 
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
@@ -27,6 +26,11 @@ import (
 // failure has to surface as the status the router can act on — a 401 so the
 // account is cooled down and rotated, a 429 so the client backs off — rather
 // than as one opaque 502.
+//
+// Stealth mode (see deepseek_web_stealth.go) decides how closely the turn
+// imitates the site's own client: whether the request carries the full browser
+// fingerprint, whether the conversation is pinned to one upstream session with
+// only its new tail sent, and how many turns one account may run at once.
 func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 	var envelope deepSeekRequestEnvelope
 	if err := json.Unmarshal(req.Body, &envelope); err != nil {
@@ -46,64 +50,212 @@ func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 		return deepSeekFailure(http.StatusBadRequest, "deepseek-web received an empty messages array")
 	}
 
-	options := resolveDeepSeekModelOptions(envelope.Model, envelope)
-	prompt := deepSeekMessagesToPrompt(envelope.Messages, deepSeekHistoryWindow(req.ConnData))
+	stealth := deepSeekStealthFor(req.ConnData)
+	prompt := deepSeekTurnPrompt(envelope, req, stealth)
 	if prompt == "" {
 		return deepSeekFailure(http.StatusBadRequest, "deepseek-web received a request with no text content")
 	}
 
-	// The tool declarations are folded into the prompt rather than sent as a
-	// parameter: /api/v0/chat/completion has no field for them. Only a request
-	// that actually declared tools reaches this, so an ordinary turn's prompt is
-	// byte-for-byte what it was before.
-	if len(envelope.Tools) > 0 {
-		prompt = deepSeekRenderTools(envelope.Tools) + "\n\n" + prompt
-	}
+	options := resolveDeepSeekModelOptions(envelope.Model, envelope)
+	turn := newDeepSeekTurn(req.Client, deepSeekBaseURL(req.Config), stealth)
 
-	turn := newDeepSeekTurn(req.Client, deepSeekBaseURL(req.Config))
+	// A turn that leaves in lockstep with its neighbours is not what a person
+	// typing produces, and an agent client dispatches several turns at once.
+	deepSeekPause(ctx, stealth.jitter)
+
+	// One account, at most maxConcurrency turns at a time. A burst is what turns
+	// a busy account into a limited one, so the over-cap turns wait here instead
+	// of being sent.
+	release, err := deepSeekGates.acquire(ctx, userToken, stealth.maxConcurrency, deepSeekStealthQueueWait)
+	if err != nil {
+		return deepSeekFailure(http.StatusTooManyRequests, "deepseek-web: "+err.Error())
+	}
+	defer release()
 
 	accessToken, err := turn.acquireAccessToken(ctx, userToken)
 	if err != nil {
 		return deepSeekAuthFailure(err, userToken)
 	}
 
-	sessionID, err := turn.createSession(ctx, accessToken)
+	session, err := deepSeekAcquireSession(ctx, turn, accessToken, stealth, userToken, req, prompt)
 	if err != nil {
 		return deepSeekAuthFailure(err, userToken)
 	}
+	deepSeekStealthLog(stealth, session.claim.reuse)
 
 	response, err := turn.completion(ctx, accessToken, deepSeekCompletionRequest{
-		ChatSessionID:   sessionID,
+		ChatSessionID:   session.id,
+		ParentMessageID: session.claim.parentMessageID,
 		ModelType:       options.modelType,
-		Prompt:          prompt,
+		Prompt:          session.claim.tail,
 		RefFileIDs:      []string{},
 		ThinkingEnabled: options.thinking,
 		SearchEnabled:   options.search,
+		Stream:          req.IsStream,
 	})
 	if err != nil {
+		deepSeekAbandonSession(session, ctx, turn, accessToken)
 		return deepSeekAuthFailure(err, userToken)
 	}
 	defer response.Body.Close()
 
-	// An upstream session serves one turn, so it is closed once the body is
-	// drained. A leftover session is invisible to the user, which is why the
-	// failure there is logged inside the helper rather than returned.
-	defer turn.deleteSession(ctx, accessToken, sessionID)
+	// An enforcement body is not a turn. The account mute and the application
+	// errors arrive as HTTP 200 with a JSON payload, and a reader that treated
+	// one as an empty stream would report the account as merely cut off — which
+	// is how a briefly muted account earns a longer mute.
+	if enforcement := deepSeekEnforcementFromResponse(response); enforcement != nil {
+		deepSeekAbandonSession(session, ctx, turn, accessToken)
+		return enforcement.error()
+	}
+
+	// One accumulator serves the whole turn: what the upstream said about its
+	// own answer — its message id, whether it signed off, whether it refused —
+	// decides whether this conversation can be continued next turn.
+	accumulator := newDeepSeekStreamAccumulator(envelope.Model)
 
 	// Tool calling is a separate path, taken only when the client declared
 	// tools. Everything above is identical either way: same token exchange, same
 	// session, same completion. The branch exists below the shared preamble so
 	// that a request without tools cannot be affected by any of it.
-	if len(envelope.Tools) > 0 {
-		return deepSeekToolTurnToClient(w, req, response.Body, envelope)
+	var runErr error
+	switch {
+	case len(envelope.Tools) > 0:
+		runErr = deepSeekToolTurnToClient(w, req, response.Body, envelope, accumulator)
+	default:
+		forwardUpstreamResponseHeaders(w, response.Header)
+		if req.IsStream {
+			runErr = deepSeekStreamToClient(w, req, response.Body, envelope.Model, accumulator)
+		} else {
+			runErr = deepSeekCollectToClient(w, req, response.Body, envelope.Model, accumulator)
+		}
 	}
 
-	forwardUpstreamResponseHeaders(w, response.Header)
-
-	if req.IsStream {
-		return deepSeekStreamToClient(w, req, response.Body, envelope.Model)
+	if !deepSeekSettleSession(session, prompt, accumulator, runErr, ctx, turn, accessToken) {
+		// The conversation is not pinned to this session, so nothing will ever
+		// thread on it: the upstream copy is closed rather than left behind.
+		turn.deleteSession(ctx, accessToken, session.id)
 	}
-	return deepSeekCollectToClient(w, req, response.Body, envelope.Model)
+	return runErr
+}
+
+// deepSeekTurnPrompt renders the conversation as the single prompt string the
+// web API accepts, with the tool declarations folded in.
+//
+// The tool declarations never reach the upstream as a parameter — the endpoint
+// has no field for them — so they lead the prompt. Only a request that actually
+// declared tools reaches that branch, so an ordinary turn's prompt is
+// byte-for-byte what it was before.
+func deepSeekTurnPrompt(envelope deepSeekRequestEnvelope, req *Request, stealth deepSeekStealth) string {
+	// A pinned conversation renders as a stable transcript, because only the
+	// tail of each prompt is sent: the same conversation has to render the same
+	// way from turn to turn, or no turn extends the previous one.
+	prompt := deepSeekMessagesToPrompt(envelope.Messages, deepSeekHistoryWindow(req.ConnData), stealth.persistSession)
+	if prompt == "" || len(envelope.Tools) == 0 {
+		return prompt
+	}
+	return deepSeekRenderTools(envelope.Tools) + "\n\n" + prompt
+}
+
+// deepSeekSession is the session one turn runs against, and the claim that
+// produced it.
+type deepSeekSession struct {
+	// id is the upstream chat session the completion call names.
+	id string
+
+	// claim carries what the turn must send: the prompt tail, the parent to
+	// thread on, and whether the store may be written when the turn ends.
+	claim deepSeekSessionClaim
+
+	// key is the conversation's store key, empty when this turn cannot pin —
+	// no client conversation id, or session persistence off.
+	key string
+
+	// createdHere is true when this turn opened the upstream session, which is
+	// what decides whether abandoning it closes it upstream.
+	createdHere bool
+}
+
+// deepSeekAcquireSession resolves the session one turn runs against.
+//
+// With session persistence on, the conversation's pinned session is reused and
+// only the new tail of the prompt is sent. Every case that cannot reuse —
+// no conversation id, another turn holding the session, a prompt that does not
+// extend what was sent — falls back to a fresh session carrying the whole
+// prompt, which is the plain behaviour and always correct.
+func deepSeekAcquireSession(
+	ctx context.Context,
+	turn deepSeekTurn,
+	accessToken string,
+	stealth deepSeekStealth,
+	userToken string,
+	req *Request,
+	prompt string,
+) (deepSeekSession, error) {
+	session := deepSeekSession{claim: deepSeekSessionClaim{tail: prompt}}
+
+	if stealth.persistSession {
+		session.key = deepSeekSessionKey(userToken, req.SessionID, req.IsStream)
+		session.claim = deepSeekSessions.claim(session.key, prompt)
+	}
+
+	session.id = session.claim.sessionID
+	if session.claim.reuse {
+		return session, nil
+	}
+
+	id, err := turn.createSession(ctx, accessToken)
+	if err != nil {
+		return deepSeekSession{}, err
+	}
+	session.id = id
+	session.createdHere = true
+	return session, nil
+}
+
+// deepSeekSettleSession keeps the conversation's session when the turn produced
+// something the next turn can continue from, and drops it otherwise. It reports
+// whether the store now owns the session: false means the caller must close it
+// upstream, because nothing will thread on it.
+//
+// A session is only worth pinning when the turn finished, the upstream named the
+// answer it produced, and nothing in the stream said the account was refused.
+// Any other outcome leaves the conversation on a fresh session next turn, which
+// is the plain behaviour and always correct.
+func deepSeekSettleSession(
+	session deepSeekSession,
+	prompt string,
+	accumulator *deepSeekStreamAccumulator,
+	runErr error,
+	ctx context.Context,
+	turn deepSeekTurn,
+	accessToken string,
+) bool {
+	if session.key == "" || !session.claim.pin {
+		return false
+	}
+	switch {
+	case runErr != nil, accumulator.enforcement != nil, !accumulator.sawFinished:
+		deepSeekSessions.forget(session.key, session.id)
+		return false
+	}
+	deepSeekSessions.commit(session.claim, session.key, session.id, prompt, accumulator.responseMessageID)
+	return deepSeekSessions.holds(session.key, session.id)
+}
+
+// deepSeekAbandonSession drops a conversation's session after a turn that must
+// not continue it.
+//
+// A session this turn created is closed upstream, because nothing will thread on
+// it. A reused one is only forgotten: the upstream thread is still the one the
+// conversation belongs to, but the next turn must not assume a refused turn was
+// recorded, so the entry goes either way.
+func deepSeekAbandonSession(session deepSeekSession, ctx context.Context, turn deepSeekTurn, accessToken string) {
+	if session.key != "" && session.claim.pin {
+		deepSeekSessions.forget(session.key, session.id)
+	}
+	if session.createdHere {
+		turn.deleteSession(ctx, accessToken, session.id)
+	}
 }
 
 // deepSeekBaseURL reads the endpoint this connection dials. A connection may
@@ -138,14 +290,19 @@ func deepSeekHistoryWindow(connData map[string]any) int {
 // without a FINISHED signal was cut off — an expired session, a dropped
 // connection — and reporting the partial text as a finished answer is how a
 // client comes to treat a truncated reply as the model's real conclusion.
-func deepSeekStreamToClient(w http.ResponseWriter, req *Request, upstream io.Reader, model string) error {
+//
+// A refusal carried inside the stream (`event: hint` / `event: toast`, which
+// the scanner hands over as ordinary `data:` payloads) is the other case: the
+// response is already on the wire, so the refusal travels as an error frame —
+// and the turn still returns it, because the router cools the account down on
+// the status rather than on what the client saw.
+func deepSeekStreamToClient(w http.ResponseWriter, req *Request, upstream io.Reader, model string, accumulator *deepSeekStreamAccumulator) error {
 	hw := proxy.NewHeartbeatWriter(req.Ctx, w, 0)
 	defer hw.Close()
 	flusher := proxy.WriteSSEHeaders(hw)
 
 	responseID := deepSeekResponseID()
 	created := time.Now().Unix()
-	accumulator := newDeepSeekStreamAccumulator(model)
 
 	startTime := req.StartTime
 	if startTime.IsZero() {
@@ -190,11 +347,12 @@ func deepSeekStreamToClient(w http.ResponseWriter, req *Request, upstream io.Rea
 		if emitErr != nil {
 			return
 		}
-		var event deepSeekStreamEvent
-		if err := json.Unmarshal(payload, &event); err != nil {
+		accumulator.consume(payload)
+		if accumulator.enforcement != nil {
+			// A refusal ends the turn: emitting the text that arrived beside it
+			// would present a partial answer as the model's conclusion.
 			return
 		}
-		accumulator.apply(event)
 
 		if thinking, sent := deepSeekDeltaFrom(accumulator.thinkingText(), thinkingSent); thinking != "" {
 			thinkingSent = sent
@@ -220,6 +378,14 @@ func deepSeekStreamToClient(w http.ResponseWriter, req *Request, upstream io.Rea
 	}
 	if emitErr != nil {
 		return emitErr
+	}
+
+	if enforcement := accumulator.enforcement; enforcement != nil {
+		_, _ = hw.Write(proxy.BuildStreamErrorBytes(enforcement.status(), enforcement.Message, proxy.SSEFormatOpenAI))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return enforcement.error()
 	}
 	if !accumulator.sawFinished {
 		return deepSeekReportStreamAbort(hw, flusher,
@@ -259,16 +425,12 @@ func deepSeekReportStreamAbort(hw *proxy.HeartbeatWriter, flusher http.Flusher, 
 
 // deepSeekCollectToClient drives the same stream to completion and returns one
 // chat.completion document.
-func deepSeekCollectToClient(w http.ResponseWriter, req *Request, upstream io.Reader, model string) error {
-	accumulator := newDeepSeekStreamAccumulator(model)
-	if err := proxy.ScanStream(upstream, func(payload []byte) {
-		var event deepSeekStreamEvent
-		if err := json.Unmarshal(payload, &event); err != nil {
-			return
-		}
-		accumulator.apply(event)
-	}); err != nil {
+func deepSeekCollectToClient(w http.ResponseWriter, req *Request, upstream io.Reader, model string, accumulator *deepSeekStreamAccumulator) error {
+	if err := deepSeekDrain(upstream, accumulator); err != nil {
 		return deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+err.Error())
+	}
+	if enforcement := accumulator.enforcement; enforcement != nil {
+		return enforcement.error()
 	}
 	if !accumulator.sawFinished {
 		return deepSeekFailure(http.StatusBadGateway,
@@ -297,6 +459,43 @@ func deepSeekCollectToClient(w http.ResponseWriter, req *Request, upstream io.Re
 	// Claude client receives the shape it asked for, outbound guardrails still
 	// apply, and the log buffer records the same text every other provider does.
 	return jsonResponse(req.Ctx, w, bytes.NewReader(encoded), req.TranslateResp, req.ResponseBuf)
+}
+
+// deepSeekDrain folds the upstream body into the caller's accumulator.
+//
+// The accumulator belongs to the caller because what the stream said about the
+// answer has to outlive the read: it decides whether the conversation can be
+// continued and whether the account has to be cooled down.
+func deepSeekDrain(upstream io.Reader, accumulator *deepSeekStreamAccumulator) error {
+	return proxy.ScanStream(upstream, func(payload []byte) {
+		accumulator.consume(payload)
+	})
+}
+
+// deepSeekEnforcementFromResponse reads a refusal out of a completion answer
+// that is a JSON document rather than an event stream.
+//
+// The mute enforcement arrives this way — a plain HTTP 200 carrying
+// `{"data":{"biz_code":5,…}}` — and so does the site's general application
+// error. Neither can be found by scanning an event stream that was never sent,
+// and both have to become a status the router acts on. The body is put back for
+// the caller, so a response that turns out to be ordinary content is still
+// readable.
+func deepSeekEnforcementFromResponse(response *http.Response) *deepSeekEnforcement {
+	if response == nil {
+		return nil
+	}
+	if strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
+		return nil
+	}
+
+	body, err := io.ReadAll(io.LimitReader(response.Body, deepSeekMaxBodyBytes))
+	if err != nil || len(body) == 0 {
+		return nil
+	}
+	response.Body = io.NopCloser(bytes.NewReader(body))
+
+	return deepSeekEnforcementFromBody(body)
 }
 
 // deepSeekResponseID mints a completion id in the shape OpenAI clients expect.

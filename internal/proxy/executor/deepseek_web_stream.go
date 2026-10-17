@@ -23,11 +23,13 @@ type deepSeekFragment struct {
 	Content string `json:"content"`
 }
 
-// deepSeekResponsePayload is the `v.response` shape, which carries both the
-// reasoning mode for everything after it and the fragments themselves.
+// deepSeekResponsePayload is the `v.response` shape, which carries the
+// reasoning mode for everything after it, the upstream's own message id and
+// the fragments themselves.
 type deepSeekResponsePayload struct {
 	Response struct {
 		ThinkingEnabled bool               `json:"thinking_enabled"`
+		MessageID       *int64             `json:"message_id"`
 		Fragments       []deepSeekFragment `json:"fragments"`
 	} `json:"response"`
 }
@@ -77,6 +79,17 @@ type deepSeekStreamAccumulator struct {
 	cites    []deepSeekSearchResult
 
 	sawFinished bool
+
+	// responseMessageID is the upstream's own id for the answer it is
+	// streaming. With session persistence it is the parent the next turn
+	// threads on, so it is recorded as soon as the stream names it.
+	responseMessageID *int64
+
+	// enforcement is set when the upstream refused the turn inside the stream
+	// instead of answering — an account-level mute or a rate-limit hint. The
+	// payload carries no completion, so a turn that only ever received one has
+	// to be reported as the refusal it is rather than as a cut-off session.
+	enforcement *deepSeekEnforcement
 }
 
 // newDeepSeekStreamAccumulator returns an accumulator for one requested model.
@@ -94,6 +107,23 @@ func deepSeekIsThinkingModel(model string) bool {
 		strings.Contains(name, "reason")
 }
 
+// consume reads one raw `data:` payload, recording a refusal before folding the
+//
+// The payload is read twice on purpose: the enforcement fields sit at the top
+// level of an error frame, beside `p` and `v` rather than inside them, and the
+// payload's shape — not the topic — is what says the upstream refused.
+func (a *deepSeekStreamAccumulator) consume(payload []byte) {
+	if enforcement := deepSeekEnforcementFromEvent(payload); enforcement != nil {
+		a.enforcement = enforcement
+	}
+
+	var event deepSeekStreamEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return
+	}
+	a.apply(event)
+}
+
 // apply folds one upstream event into the accumulated state.
 //
 // The live stream carries three shapes the topic switch has to cover, and only
@@ -103,9 +133,9 @@ func deepSeekIsThinkingModel(model string) bool {
 //	{"p":"response/fragments/-1/content","o":"APPEND","v":"x"}  one character
 //	{"p":"response","o":"BATCH","v":[{"p":"quasi_status","v":"FINISHED"}]}
 //
-// The topicless form is the common one: dispatching on `p` alone sends it to
-// the default branch, where a bare string is appended but an object is dropped
-// — which loses the whole answer while still finding the FINISHED marker, so a
+// The topicless form is the common one: dispatching on `p` alone sends it to the
+// default branch, where a bare string is appended but an object is dropped —
+// which loses the whole answer while still finding the FINISHED marker, so a
 // turn reports success with no text. The object form is therefore checked
 // before the topic switch.
 func (a *deepSeekStreamAccumulator) apply(event deepSeekStreamEvent) {
@@ -187,6 +217,11 @@ func (a *deepSeekStreamAccumulator) applyResponsePayload(payload deepSeekRespons
 	// fragment after it belongs to the reasoning channel until one names another.
 	if payload.Response.ThinkingEnabled {
 		a.channel = deepSeekChannelThinking
+	}
+	// The upstream's own message id, which is the parent the next turn of a
+	// persisted session threads on.
+	if payload.Response.MessageID != nil {
+		a.responseMessageID = payload.Response.MessageID
 	}
 	for _, fragment := range payload.Response.Fragments {
 		a.appendFragment(fragment)

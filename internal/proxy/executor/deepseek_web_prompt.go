@@ -76,7 +76,13 @@ func deepSeekMessageText(content jsontext.Value) string {
 // multi-turn conversation replays up to deepSeekDefaultAutoHistoryWindow turns,
 // while a single-turn one sends only its user message, so an ordinary chat turn
 // is not inflated by a transcript it does not need.
-func deepSeekMessagesToPrompt(messages []deepSeekMessage, historyWindow int) string {
+//
+// transcript forces the role-tagged form even for a single-turn conversation.
+// Session persistence needs it: the rendering of one conversation has to have
+// the same shape from turn to turn, or each turn's prompt is a different
+// document and none can be expressed as an extension of the previous one. The
+// plain path leaves it off, which keeps its prompt byte-for-byte what it was.
+func deepSeekMessagesToPrompt(messages []deepSeekMessage, historyWindow int, transcript bool) string {
 	if len(messages) == 0 {
 		return ""
 	}
@@ -122,6 +128,15 @@ func deepSeekMessagesToPrompt(messages []deepSeekMessage, historyWindow int) str
 	var parts []string
 	if len(systemParts) > 0 {
 		parts = append(parts, strings.Join(systemParts, "\n\n"))
+	}
+
+	// Transcript mode renders the whole conversation, untruncated: the upstream
+	// session is the memory in that mode, and only the tail of this prompt is
+	// ever sent, so a local window would serve no purpose while making each
+	// turn's prompt shorter than the last and unusable as an extension of it.
+	if transcript {
+		parts = append(parts, deepSeekRenderTranscript(conversation))
+		return strings.Join(parts, "\n\n")
 	}
 
 	window := historyWindow

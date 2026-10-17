@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { getIconPath, getProviderStats } from './types'
+import { getIconPath, getProviderStats, providerAuthTypes } from './types'
 import type { ProviderConnection } from '../../api/client'
 
 function conn(overrides: Partial<ProviderConnection> = {}): ProviderConnection {
@@ -15,6 +15,35 @@ function conn(overrides: Partial<ProviderConnection> = {}): ProviderConnection {
     ...overrides,
   } as ProviderConnection
 }
+
+describe('providerAuthTypes', () => {
+  test('counts a cookie connection rendered in the API key section', () => {
+    // deepseek-web stores authType 'cookie' (its add modal derives it from the
+    // catalog's webCookie category) while its card lives in the API Key
+    // section, so a fixed ['apikey','api_key'] list matched nothing and the
+    // tile read "No connections" beside a live connection.
+    const types = providerAuthTypes({ authType: 'cookie', authModes: undefined }, ['apikey', 'api_key'])
+    expect(types).toContain('cookie')
+
+    const stats = getProviderStats(
+      [conn({ provider: 'deepseek-web', authType: 'cookie', isActive: 1, testStatus: 'active' })],
+      'deepseek-web',
+      types
+    )
+    expect(stats.total).toBe(1)
+    expect(stats.connected).toBe(1)
+  })
+
+  test('keeps the apikey and api_key spellings interchangeable', () => {
+    expect(providerAuthTypes(undefined, ['apikey'])).toContain('api_key')
+    expect(providerAuthTypes(undefined, ['api_key'])).toContain('apikey')
+  })
+
+  test('leaves a section list alone when the catalog declares nothing', () => {
+    expect(providerAuthTypes(undefined, ['oauth'])).toEqual(['oauth'])
+  })
+})
+
 
 describe('getProviderStats', () => {
   test('counts active connection as connected even when soft lastError is present', () => {

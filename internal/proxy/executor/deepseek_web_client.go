@@ -42,9 +42,9 @@ const (
 	// proof-of-work challenge is requested for, so the two are defined once.
 	deepSeekCompletionPath = "/api/v0/chat/completion"
 
-	// deepSeekWebUserAgent is the Chrome build the fingerprint below was captured
-	// from; the X-Client-* headers only read as consistent while the UA is.
-	deepSeekWebUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+	// deepSeekUserAgent is defined with the rest of the browser fingerprint in
+	// deepseek_web_stealth.go, so the UA and the client-hint headers cannot
+	// drift apart.
 
 	// deepSeekAccessTokenTTL mirrors upstream's 3600s access-token cache.
 	deepSeekAccessTokenTTL = time.Hour
@@ -62,17 +62,19 @@ const (
 )
 
 // deepSeekTurn is the per-request state for one completion: where this
-// connection's endpoints are, and which client dials them.
+// connection's endpoints are, which client dials them, and how closely the
+// request imitates the site's own client.
 type deepSeekTurn struct {
 	client    *http.Client
 	endpoints deepSeekEndpoints
 	origin    string
+	stealth   deepSeekStealth
 }
 
 // newDeepSeekTurn resolves the endpoints for one connection's configured base
 // URL. A nil client falls back to the default, so the executor is usable
 // without one in tests and in the paths that pass nil.
-func newDeepSeekTurn(client *http.Client, baseURL string) deepSeekTurn {
+func newDeepSeekTurn(client *http.Client, baseURL string, stealth deepSeekStealth) deepSeekTurn {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -80,38 +82,25 @@ func newDeepSeekTurn(client *http.Client, baseURL string) deepSeekTurn {
 		client:    client,
 		endpoints: deepSeekEndpointsFor(baseURL),
 		origin:    deepSeekOrigin(baseURL),
+		stealth:   stealth,
 	}
 }
 
-// webHeaders is upstream's FAKE_HEADERS: the fingerprint the current
-// chat.deepseek.com web build (client v2.0.0) sends on every /api/v0/* call.
+// webHeaders is the fingerprint every /api/v0/* call carries.
 //
-// Two details are load-bearing rather than cosmetic, and upstream calls both
-// out. The legacy `X-App-Version` stamp was DROPPED by the 2.0.0 client, so
-// sending the stale stamp is itself a bot-detection signal. And the live client
-// also sends `x-hif-leim`, a signed attestation produced by obfuscated browser
-// JS; that one is deliberately not reproduced, because it cannot be without
-// porting that JS and the completion endpoint does not currently enforce it.
+// With stealth on it is the full set the current web build sends, including
+// the `x-hif-leim` / `x-hif-dliq` attestation values and the browser's own
+// `Sec-Fetch-*` / client-hint headers; with stealth off it is the minimal set
+// this provider shipped with, so the two modes are a real comparison.
 //
-// Accept-Encoding is deliberately absent: Go's transport manages compression
-// itself, and setting the header suppresses transparent gzip, leaving every
-// response to be decoded by hand.
+// Accept-Encoding is deliberately absent from both: Go's transport manages
+// compression itself, and setting the header suppresses transparent gzip,
+// leaving every response to be decoded by hand.
 func (t deepSeekTurn) webHeaders(extra map[string]string) map[string]string {
-	headers := map[string]string{
-		"Accept":             "*/*",
-		"Accept-Language":    "en-US,en;q=0.9",
-		"Origin":             t.origin,
-		"Referer":            t.origin + "/",
-		"User-Agent":         deepSeekWebUserAgent,
-		"X-Client-Bundle-Id": "com.deepseek.chat",
-		"X-Client-Locale":    "en-US",
-		"X-Client-Platform":  "web",
-		"X-Client-Version":   "2.0.0",
+	if t.stealth.enabled {
+		return deepSeekBrowserHeaders(t.origin, extra)
 	}
-	for k, v := range extra {
-		headers[k] = v
-	}
-	return headers
+	return deepSeekPlainHeaders(t.origin, extra)
 }
 
 // deepSeekFakeCookie is upstream's generateFakeCookie(): the synthetic anti-bot
@@ -407,6 +396,20 @@ func (t deepSeekTurn) deleteSession(ctx context.Context, accessToken, sessionID 
 	}
 }
 
+// attestationHeaders returns the client-attestation headers for a completion
+// call, or an empty map when stealth is off.
+//
+// The fetch is best effort by design: a cached value is used until its TTL
+// passes, a failed refresh falls back to the stale one, and a turn with no
+// value at all still goes out. Nothing about an attestation host being
+// unreachable should cost the caller an answer.
+func (t deepSeekTurn) attestationHeaders(ctx context.Context) map[string]string {
+	if !t.stealth.enabled {
+		return nil
+	}
+	return deepSeekHif.headers(ctx, t.client, t.origin)
+}
+
 // deepSeekPowResponse is the proof-of-work answer, base64-encoded into the
 // X-Ds-Pow-Response header of the completion call.
 type deepSeekPowResponse struct {
@@ -467,14 +470,20 @@ func (t deepSeekTurn) requestPow(ctx context.Context, accessToken string) (strin
 }
 
 // deepSeekCompletionRequest is the payload of one completion call.
+//
+// `parent_message_id` is an integer, not a string: it is the upstream's own
+// message id, and the site threads a follow-up turn on it. Sending a string
+// there is a protocol error, which is why the first turn of a conversation
+// sends null — the field is a pointer so "absent" and "0" stay distinct.
 type deepSeekCompletionRequest struct {
 	ChatSessionID   string   `json:"chat_session_id"`
-	ParentMessageID *string  `json:"parent_message_id"`
+	ParentMessageID *int64   `json:"parent_message_id"`
 	ModelType       string   `json:"model_type"`
 	Prompt          string   `json:"prompt"`
 	RefFileIDs      []string `json:"ref_file_ids"`
 	ThinkingEnabled bool     `json:"thinking_enabled"`
 	SearchEnabled   bool     `json:"search_enabled"`
+	Stream          bool     `json:"stream"`
 	Preempt         bool     `json:"preempt"`
 }
 
@@ -490,20 +499,21 @@ func (t deepSeekTurn) completion(ctx context.Context, accessToken string, reques
 		return nil, err
 	}
 
-	// The web client sends the UTC offset in seconds. time.Now().Zone() returns
-	// seconds east of UTC, which is the value this header carries.
-	_, offsetSeconds := time.Now().Zone()
-
 	payload, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("deepseek-web: marshal completion: %w", err)
 	}
 
 	allHeaders := t.webHeaders(map[string]string{
-		"Cookie":                   deepSeekFakeCookie(),
-		"X-Ds-Pow-Response":        powAnswer,
-		"X-Client-Timezone-Offset": strconv.Itoa(offsetSeconds),
+		"Cookie":            deepSeekFakeCookie(),
+		"X-Ds-Pow-Response": powAnswer,
 	})
+	// The attestation headers belong to a completion call, not to the session
+	// or challenge calls: that is where the browser attaches them, and sending
+	// them everywhere would be its own kind of fingerprint.
+	for name, value := range t.attestationHeaders(ctx) {
+		allHeaders[name] = value
+	}
 	allHeaders["Content-Type"] = "application/json"
 	allHeaders["Authorization"] = "Bearer " + accessToken
 

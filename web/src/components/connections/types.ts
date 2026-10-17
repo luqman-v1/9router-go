@@ -1,7 +1,7 @@
 import { api, getAuthHeaders, type ProviderConnection } from '../../api/client'
 import { parseCustomModelsResponse, parseDisabledModelsMap } from '../../lib/customModels'
 import { getModelCaps, getModelKind } from '../../lib/models'
-import { PROVIDER_CATALOG, PROVIDER_CATALOG_MAP } from '../../lib/providers'
+import { PROVIDER_CATALOG, PROVIDER_CATALOG_MAP, type ProviderCatalogItem } from '../../lib/providers'
 
 export const MEDIA_KINDS: Record<string, true> = {
   image: true,
@@ -122,6 +122,36 @@ export function getProviderStats(
 
   return { total, connected, errorCount, allDisabled, latestError, connections: list }
 }
+
+
+// providerAuthTypes returns the stored authType values a provider's card has to
+// count, given the types its section is about.
+//
+// The card used to be handed one fixed list per section — ['apikey','api_key']
+// for the providers the API Key section renders — and a credential stored under
+// any other type was therefore counted as none. A browser-login provider is the
+// case that made it visible: its add modal derives 'cookie' from the catalog's
+// webCookie category, so `deepseek-web` held a live connection while its tile
+// read "No connections" and the detail page listed it. The types the catalog
+// declares are added to the section's list rather than replacing it, so this can
+// only widen what a card counts — no provider that used to match stops matching.
+export function providerAuthTypes(
+  item: Pick<ProviderCatalogItem, 'authType' | 'authModes'> | undefined,
+  sectionTypes: string[]
+): string[] {
+  // The registry is not consistent about which spelling it declares, and both
+  // name the same credential, so the pair always travels together — normalized
+  // first, because the sections already pass both.
+  const types = sectionTypes.flatMap((type) =>
+    type === 'apikey' || type === 'api_key' ? ['apikey', 'api_key'] : [type]
+  )
+  const widened = [...new Set(types)]
+  for (const declared of [item?.authType, ...(item?.authModes ?? [])]) {
+    if (declared && !widened.includes(declared)) widened.push(declared)
+  }
+  return widened
+}
+
 
 export function matchesFilter(stats: ProviderStats, statusFilter: string, noAuth?: boolean): boolean {
   if (statusFilter === 'all') return true

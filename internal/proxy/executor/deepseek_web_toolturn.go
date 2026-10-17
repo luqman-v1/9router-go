@@ -28,19 +28,25 @@ import (
 
 // deepSeekToolTurnToClient reads the turn and writes either a tool call or the
 // model's plain answer.
-func deepSeekToolTurnToClient(w http.ResponseWriter, req *Request, upstream io.Reader, envelope deepSeekRequestEnvelope) error {
-	accumulator, err := deepSeekAccumulate(upstream)
-	if err != nil {
-		return err
+//
+// The accumulator is the caller's: what the stream said about the answer — the
+// upstream's message id, whether it signed off, whether it refused — outlives
+// this read, because it decides whether the conversation can be continued.
+func deepSeekToolTurnToClient(w http.ResponseWriter, req *Request, upstream io.Reader, envelope deepSeekRequestEnvelope, accumulator *deepSeekStreamAccumulator) error {
+	if err := deepSeekDrain(upstream, accumulator); err != nil {
+		return deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+err.Error())
+	}
+	// A refusal the upstream streamed instead of answering reaches the client as
+	// the status it is. Nothing has been written yet on this path — it buffers
+	// the whole turn so a tool call's arguments arrive whole — so the failure
+	// travels as a status rather than as an in-band chunk.
+	if enforcement := accumulator.enforcement; enforcement != nil {
+		return enforcement.error()
 	}
 	if !accumulator.sawFinished {
 		// The same rule as the streaming path: a turn the upstream never signed
 		// off is a cut-off session, not an answer. Reporting it as an empty tool
 		// result would have the client retry a call that may have been made.
-		//
-		// Nothing has been written yet on this path — it buffers the whole turn
-		// so a tool call's arguments arrive whole — so the failure travels as a
-		// status rather than as an in-band chunk, which is why the writer is nil.
 		return deepSeekFailure(http.StatusBadGateway,
 			"deepseek-web: stream ended before completion — the upstream session was cut off")
 	}
@@ -83,18 +89,12 @@ func deepSeekToolTurnToClient(w http.ResponseWriter, req *Request, upstream io.R
 	return deepSeekWriteStreamedAnswer(w, req, envelope.Model, accumulator, text)
 }
 
-// deepSeekAccumulate drains the upstream body into one accumulator.
+// deepSeekAccumulate drains the upstream body into a fresh accumulator, for the
+// callers that only need the text.
 func deepSeekAccumulate(upstream io.Reader) (*deepSeekStreamAccumulator, error) {
 	accumulator := newDeepSeekStreamAccumulator("")
-	scanErr := proxy.ScanStream(upstream, func(payload []byte) {
-		var event deepSeekStreamEvent
-		if err := json.Unmarshal(payload, &event); err != nil {
-			return
-		}
-		accumulator.apply(event)
-	})
-	if scanErr != nil {
-		return nil, deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+scanErr.Error())
+	if err := deepSeekDrain(upstream, accumulator); err != nil {
+		return nil, deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+err.Error())
 	}
 	return accumulator, nil
 }

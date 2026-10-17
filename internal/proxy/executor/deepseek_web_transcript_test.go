@@ -58,7 +58,7 @@ func TestDeepSeekTranscriptDoesNotReplayLeakedMarkup(t *testing.T) {
 		toolTurn(t, "Jakarta: 32C"),
 	}
 
-	prompt := deepSeekMessagesToPrompt(messages, 0)
+	prompt := deepSeekMessagesToPrompt(messages, 0, false)
 
 	if strings.Contains(prompt, "DSML") {
 		t.Fatalf("the transcript replayed the leaked markup:\n%s", prompt)
@@ -78,7 +78,7 @@ func TestDeepSeekTranscriptDropsReplayedJSONCall(t *testing.T) {
 		toolTurn(t, "32C"),
 	}
 
-	prompt := deepSeekMessagesToPrompt(messages, 0)
+	prompt := deepSeekMessagesToPrompt(messages, 0, false)
 
 	if strings.Contains(prompt, `"arguments"`) {
 		t.Fatalf("the transcript replayed a JSON call object:\n%s", prompt)
@@ -96,7 +96,7 @@ func TestDeepSeekTranscriptKeepsOrdinaryProse(t *testing.T) {
 		assistantTurn(t, "Halo! Ada yang bisa saya bantu?"),
 	}
 
-	prompt := deepSeekMessagesToPrompt(messages, 0)
+	prompt := deepSeekMessagesToPrompt(messages, 0, false)
 
 	if !strings.Contains(prompt, "Ada yang bisa saya bantu?") {
 		t.Fatalf("ordinary prose was dropped:\n%s", prompt)
@@ -111,7 +111,7 @@ func TestDeepSeekTranscriptKeepsNonCallJSON(t *testing.T) {
 		assistantTurn(t, `Contohnya {"name": "Bima", "kota": "Jakarta"}`),
 	}
 
-	prompt := deepSeekMessagesToPrompt(messages, 0)
+	prompt := deepSeekMessagesToPrompt(messages, 0, false)
 
 	if !strings.Contains(prompt, `"kota"`) {
 		t.Fatalf("a non-call JSON fragment was removed:\n%s", prompt)
@@ -129,7 +129,7 @@ func TestDeepSeekTranscriptRendersRecordedCall(t *testing.T) {
 		toolTurn(t, "32C"),
 	}
 
-	prompt := deepSeekMessagesToPrompt(messages, 0)
+	prompt := deepSeekMessagesToPrompt(messages, 0, false)
 
 	if !strings.Contains(prompt, `[called read with {"path":"https://wttr.in/Jakarta"}]`) {
 		t.Fatalf("the recorded call was not rendered:\n%s", prompt)
@@ -144,7 +144,7 @@ func TestDeepSeekTranscriptKeepsProseBeforeMarkup(t *testing.T) {
 		assistantTurn(t, "Let me check that.\n"+realLeakedTurn),
 	}
 
-	prompt := deepSeekMessagesToPrompt(messages, 0)
+	prompt := deepSeekMessagesToPrompt(messages, 0, false)
 
 	if strings.Contains(prompt, "DSML") {
 		t.Fatalf("markup survived:\n%s", prompt)
