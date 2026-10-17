@@ -23,6 +23,7 @@
   import SummaryKpiCards from './SummaryKpiCards.svelte'
   import UsageBreakdownTable from './UsageBreakdownTable.svelte'
   import RequestDetailsTab from './RequestDetailsTab.svelte'
+  import UsageChart from './UsageChart.svelte'
   import ProviderTopologyCard from './ProviderTopologyCard.svelte'
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   interface Props {
@@ -489,6 +490,9 @@
         {/if}
       </div>
     </div>
+
+    <!-- Usage trend visualization, under Recent Requests and above the usage filter -->
+    <UsageChart {period} />
 
     <!-- Breakdown Table -->
     <UsageBreakdownTable {stats} />

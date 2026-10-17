@@ -476,6 +476,54 @@ export interface ConnectionUsageResponse {
   error?: string
 }
 
+// Usage dashboard (Details section): heatmap cells, lifetime cards, node health.
+export interface UsageDailyPoint {
+  date: string
+  requests: number
+  tokens: number
+  cost: number
+}
+export interface UsageTopModel {
+  model: string
+  provider?: string
+  tokens: number
+}
+export interface UsageLifetime {
+  totalRequests: number
+  totalTokens: number
+  peakTokens: number
+  peakDate: string
+  currentStreak: number
+  longestStreak: number
+  topModel: UsageTopModel | null
+  cacheHitRate: number | null
+  cacheTokens: number
+  cacheRequests: number
+}
+export interface UsageNodeHealth {
+  name?: string
+  model?: string
+  provider: string
+  requests: number
+  errors: number
+  successRate: number
+  avgLatencyMs: number | null
+  avgTtftMs: number | null
+  avgSpeed: number | null
+  hasPerfData: boolean
+  score: number | null
+  promptTokens: number
+  completionTokens: number
+  cost: number
+  lastUsed: string
+}
+export interface UsageDashboardResponse {
+  daily: UsageDailyPoint[]
+  nodes: UsageNodeHealth[]
+  models: UsageNodeHealth[]
+  lifetime: UsageLifetime | null
+}
+
 // Codex reset credits. `selectionToken` is the field the dashboard selects
 // with; `code` carries the typed refusal the server raised (e.g. no_credit vs
 // nothing_to_reset) so the modal can say which happened.
@@ -1515,6 +1563,13 @@ export const api = {
 
   // Usage & Telemetry
   getUsageStats: (period = 'today') => request<any>(`/api/usage/stats?period=${encodeURIComponent(period)}`),
+  /** One chart point: bucket label (HH:MM or MMM D), totals, and the per-model-family token split. */
+  getUsageChart: (period = '7d') =>
+    request<{ label: string; tokens: number; cost: number; byModel: Record<string, number> }[]>(
+      `/api/usage/chart?period=${encodeURIComponent(period)}`
+    ),
+  /** Details-section dashboard payload: heatmap days, lifetime cards, node health. */
+  getUsageDashboard: () => request<UsageDashboardResponse>('/api/usage/dashboard'),
   getRequestDetails: (limit = 50, offset = 0) =>
     request<any>(`/api/usage/request-details?limit=${limit}&offset=${offset}`),
   /** Full stored payload for one request; the list omits request/response bodies. */

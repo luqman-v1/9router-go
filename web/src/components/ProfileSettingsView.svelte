@@ -25,6 +25,7 @@
   import Button from '../lib/ui/Button.svelte'
   import Input from '../lib/ui/Input.svelte'
   import { api, getAuthHeaders, responseErrorMessage, type DatabaseStats, type Settings } from '../api/client'
+  import { isCompactUnitsEnabled, setCompactUnits } from '../lib/compactNumber'
 
   interface Props {
     settings?: Settings
@@ -49,6 +50,9 @@
 
   // Routing Strategy State
   let fallbackStrategy = $state('failover')
+  // Unit abbreviation is a localStorage-only preference (compactUnits key);
+  // there is no server-side setting for it.
+  let compactUnits = $state(isCompactUnitsEnabled())
   let stickyRoundRobinLimit = $state(3)
   let comboStrategy = $state('first-model')
   let forceFallback = $state(false)
@@ -402,6 +406,31 @@
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+    <!-- SECTION: Display preferences (localStorage-backed, not saved server-side) -->
+    <Card padding="md" class="space-y-4">
+      <div class="flex items-center justify-between pb-2 border-b border-border">
+        <div class="flex items-center gap-2">
+          <Sliders class="w-4 h-4 text-brand-500" />
+          <h2 class="text-sm font-bold text-text-main">Display</h2>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="font-semibold text-text-main">Unit abbreviation</p>
+          <p class="text-[11px] text-text-subtle">Large numbers as 亿/万 (zh) or M/B (en); off → full numbers</p>
+        </div>
+        <Toggle
+          checked={compactUnits}
+          size="sm"
+          label="Unit abbreviation"
+          onChange={(val: boolean) => {
+            setCompactUnits(val)
+            compactUnits = isCompactUnitsEnabled()
+          }}
+        />
+      </div>
+    </Card>
     <!-- SECTION 1: Runtime Storage -->
     <Card padding="md" class="space-y-4">
       <div class="flex items-center justify-between pb-2 border-b border-border">

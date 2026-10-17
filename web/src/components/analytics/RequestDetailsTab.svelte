@@ -5,6 +5,7 @@
   import Card from '../../lib/ui/Card.svelte'
   import ProviderArtwork from '../providers/ProviderArtwork.svelte'
   import { api, normalizeLastError, type ProviderConnection } from '../../api/client'
+  import UsageDashboard from './UsageDashboard.svelte'
   import { copyToClipboard } from '../../lib/clipboard'
   import {
     cachedTokensFor,
@@ -113,6 +114,8 @@
     })
   })
 </script>
+
+<UsageDashboard />
 
 <Card padding="none" class="overflow-hidden border border-border">
   <div class="px-5 py-3 border-b border-border flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between bg-surface-2">
