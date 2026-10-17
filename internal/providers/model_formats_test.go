@@ -99,11 +99,16 @@ func TestIsOpencodeFreeTierModel(t *testing.T) {
 		model    string
 		want     bool
 	}{
+		// big-pickle is free but carries no "-free" suffix, so only the
+		// curated map can classify it. It is catalogued on opencode-zen alone,
+		// and a live keyless request to /inference/v1/chat/completions for it
+		// answers 200 with a completion — that gate serves free-tier ids only.
+		// The lanes that do not list it rightly do not claim it.
 		{"big-pickle on opencode", "opencode", "big-pickle", false},
-		{"big-pickle on opencode-zen", "opencode-zen", "big-pickle", false},
+		{"big-pickle on opencode-zen", "opencode-zen", "big-pickle", true},
 		{"big-pickle on opencode-go", "opencode-go", "big-pickle", false},
 		{"big-pickle on antigravity", "antigravity", "big-pickle", false},
-		{"big-pickle on alias ocz", "ocz", "big-pickle", false},
+		{"big-pickle on alias ocz", "ocz", "big-pickle", true},
 		{"big-pickle on unrelated provider", "openai", "big-pickle", false},
 		{"uncataloged free model on antigravity", "antigravity", "longcat-2.5-preview-free", false},
 		{"uncataloged free model on opencode", "opencode", "longcat-2.5-preview-free", true},

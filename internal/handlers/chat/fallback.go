@@ -190,6 +190,17 @@ func (h *ChatHandler) handleAccountFallback(
 				excludeIDs = append(excludeIDs, connObj.ID)
 				continue
 			}
+			// A free-tier refusal says nothing about the account: the gate is
+			// not serving this egress at the moment, and the same connection
+			// serves the next request once it reopens. Cooling it down would
+			// mark a healthy account unhealthy and skip it for later requests,
+			// so the refusal is reported without touching the cooldown.
+			if isOpencodeFreeTierRefusal(provider, ue) {
+				log.Warn("fallback", "opencode free-tier refusal, not locking the account",
+					"conn", connObj.ID, "provider", provider, "model", model)
+				excludeIDs = append(excludeIDs, connObj.ID)
+				continue
+			}
 			// Extract error text from upstream body for classification
 			errorText := extractErrorText(ue.Body)
 			// Get current backoff level from this connection
@@ -230,9 +241,52 @@ func (h *ChatHandler) handleAccountFallback(
 		return lastErr
 	}
 	if lastErr != nil {
-		return lastErr
+		return opencodeClosureError(provider, model, lastErr)
 	}
 	return fmt.Errorf("no available connections for provider: %s", provider)
+}
+
+// opencodeClosureError turns a free-tier refusal that survived the executor's
+// retries into a response the caller can act on, instead of forwarding the
+// upstream 403 verbatim.
+//
+// The gate answers 403 FreeTierError when it is not serving free traffic from
+// this egress at that moment. That is a temporary unavailability of a shared
+// free tier, not a verdict on the caller's credentials — but a 403 is read as
+// "you are not allowed" by every client, including this gateway's own
+// callers, so an agent loop stops mid-tool-call and the user is left with a
+// wall of text about downloading OpenCode.
+//
+// 503 + Retry-After is the honest signal for "temporarily not available, come
+// back": it tells a client to back off and retry rather than to give up or to
+// assume its key is wrong. The upstream's own wording is preserved in the
+// message so the cause is still diagnosable, and the type names the condition
+// so a client can branch on it without string matching.
+func opencodeClosureError(provider, model string, err error) error {
+	var ue *upstreamError
+	if !errors.As(err, &ue) || !isOpencodeFreeTierRefusal(provider, ue) {
+		return err
+	}
+	const retryAfterSeconds = 30
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": fmt.Sprintf(
+				"OpenCode's free tier is not serving requests right now. This is an upstream condition rather than a problem with your request or credentials. Retry in about %ds, or use a paid %s key or another provider.",
+				retryAfterSeconds, provider),
+			"type": "free_tier_unavailable",
+			"code": http.StatusServiceUnavailable,
+		},
+	})
+	log.Warn("fallback", "opencode free tier refused after retries; reporting unavailable instead of the raw 403",
+		"provider", provider, "model", model, "retry_after_s", retryAfterSeconds)
+	return &upstreamError{
+		StatusCode: http.StatusServiceUnavailable,
+		Body:       body,
+		Header: http.Header{
+			"Retry-After":  []string{fmt.Sprint(retryAfterSeconds)},
+			"Content-Type": []string{"application/json"},
+		},
+	}
 }
 
 // tryForwardWithConnection attempts a single upstream request using the given connection data.
@@ -1252,6 +1306,31 @@ func mentionsGate(lower string) bool {
 // credential failure. For model-scoped errors, only LockConnectionModel and
 // RecordConnectionError are set so that unrelated healthy models on the same account
 // remain available.
+// isOpencodeFreeTierRefusal reports whether an upstream failure is the OpenCode
+// free-tier gate refusing to serve this traffic, rather than a problem with the
+// account, key or request.
+//
+// The gate answers 403 with a body whose type is FreeTierError when it is not
+// serving free traffic from this egress at that moment. That says nothing about
+// the caller's credentials, and a 403 is read as "you are not allowed" by every
+// client — so it must not be forwarded verbatim; see opencodeClosureError.
+//
+// The provider check keeps every other provider's 403 handling untouched, and
+// the body check keeps a genuine OpenCode auth or quota 403 on the normal path.
+func isOpencodeFreeTierRefusal(provider string, ue *upstreamError) bool {
+	switch provider {
+	case "opencode", "opencode-zen", "opencode-go":
+	default:
+		return false
+	}
+	if ue == nil || ue.StatusCode != http.StatusForbidden {
+		return false
+	}
+	// Match the error type, not the prose: the gate's message text has already
+	// been reworded once.
+	return bytes.Contains(ue.Body, []byte("FreeTierError"))
+}
+
 func isModelScopedError(statusCode int, errorText string, model string) bool {
 	if model == "" {
 		return false

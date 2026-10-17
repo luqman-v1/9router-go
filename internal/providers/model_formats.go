@@ -250,8 +250,12 @@ func openCodeFamilyFormatsFor(base string) *ModelFormats {
 // /zen/v1 requests) plus the upstream free-executor routing show these ids
 // answer behind the keyless /inference/v1 gate, so the keyed zen lane
 // forwards them there with public credentials instead of the user key.
-// big-pickle is deliberately absent: it has no live 403 evidence and the lane
-// table carries it as paid chat, so moving it could break working calls.
+//
+// big-pickle is free without saying so in its name, so the id alone does not
+// classify it — this map does. It was previously left out on the reasoning
+// that it had no live 403 evidence while the lane table called it paid chat;
+// that absence of evidence is not evidence of a paid tier, and a free id with
+// no "-free" suffix is exactly the case suffix matching would get wrong.
 var openCodeFreeTierModels = map[string]bool{
 	// opencode (free provider)
 	"muse-spark-1.2-contributor-free": true,
@@ -264,6 +268,8 @@ var openCodeFreeTierModels = map[string]bool{
 	"ling-3.0-flash-fin-free":     true,
 	"nemotron-3-ultra-free":       true,
 	"nemotron-3.5-lightning-free": true,
+	// free despite the missing "-free" suffix
+	"big-pickle": true,
 	// opencode-go free tier on the paid lane
 	"space-bunny-free": true,
 }

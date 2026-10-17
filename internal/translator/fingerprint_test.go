@@ -77,23 +77,20 @@ func TestConcealFingerprintToolsDropsPlainDuplicates(t *testing.T) {
 	body := []byte(`{"tools":[{"name":"Bash"},{"name":"bash"},{"name":"Read"},{"name":"read"}]}`)
 	out, _ := ConcealFingerprintTools(body)
 	names := toolNames(t, out)
-	if len(names) != 4 {
-		t.Errorf("want 4 unique tools (bash,read plus injected glob,grep), got %d: %v", len(names), names)
+	// bash and read are already declared after collapsing, so nothing is added.
+	if len(names) != 2 {
+		t.Errorf("want 2 unique tools (bash, read), got %d: %v", len(names), names)
 	}
 }
 
 func TestConcealFingerprintToolsInjectsWhenNoTools(t *testing.T) {
-	// A tool-less request is also rejected upstream (403), so the quartet is added.
+	// A tool-less request is also rejected upstream (403), so the required tool
+	// is added. Only "read" is required — the wider quartet is not injected.
 	body := []byte(`{"model":"muse-spark-1.3-contributor-free","input":[]}`)
 	out, _ := ConcealFingerprintTools(body)
 	names := toolNames(t, out)
-	if len(names) != 4 {
-		t.Fatalf("want 4 injected tools, got %d: %v", len(names), names)
-	}
-	for _, n := range names {
-		if n != strings.ToLower(n) {
-			t.Errorf("injected tool must be lowercase, got %q", n)
-		}
+	if len(names) != 1 || names[0] != "read" {
+		t.Fatalf(`want exactly one injected "read" tool, got %d: %v`, len(names), names)
 	}
 }
 
@@ -142,6 +139,116 @@ func TestConcealFingerprintToolsRetargetsToolChoice(t *testing.T) {
 	}
 }
 
+// A forced Chat Completions choice nests the name under "function"; it has to
+// follow the rename too, or upstream is asked to force a tool the request no
+// longer declares.
+func TestConcealFingerprintToolsRetargetsNestedChatToolChoice(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"Bash"}}],"tool_choice":{"type":"function","function":{"name":"Bash"}}}`)
+	out, nameMap := ConcealFingerprintTools(body)
+	if nameMap["bash"] != "Bash" {
+		t.Fatalf("expected Bash -> bash rename, got %v", nameMap)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	choice, _ := m["tool_choice"].(map[string]any)
+	fn, _ := choice["function"].(map[string]any)
+	if fn["name"] != "bash" {
+		t.Errorf("tool_choice.function.name = %v, want \"bash\"", fn["name"])
+	}
+}
+
+// Prior-turn tool calls naming the caller's original spelling have to be
+// retargeted across every wire shape, so the conversation stays self-consistent
+// once the tools array declares the canonical name.
+func TestConcealFingerprintToolsRetargetsToolHistory(t *testing.T) {
+	t.Run("chat tool_calls", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"Read","arguments":"{}"}}]}],"tools":[{"type":"function","function":{"name":"Read"}}]}`)
+		out, _ := ConcealFingerprintTools(body)
+		var m map[string]any
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		msg := m["messages"].([]any)[0].(map[string]any)
+		call := msg["tool_calls"].([]any)[0].(map[string]any)
+		if got := call["function"].(map[string]any)["name"]; got != "read" {
+			t.Errorf("history tool call name = %v, want \"read\"", got)
+		}
+	})
+	t.Run("anthropic tool_use", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{}}]}],"tools":[{"name":"Grep"}]}`)
+		out, _ := ConcealFingerprintTools(body)
+		var m map[string]any
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		msg := m["messages"].([]any)[0].(map[string]any)
+		block := msg["content"].([]any)[0].(map[string]any)
+		if block["name"] != "grep" {
+			t.Errorf("tool_use block name = %v, want \"grep\"", block["name"])
+		}
+	})
+	t.Run("responses function_call", func(t *testing.T) {
+		body := []byte(`{"input":[{"type":"function_call","call_id":"fc_1","name":"Glob","arguments":"{}"}],"tools":[{"type":"function","name":"Glob"}]}`)
+		out, _ := ConcealFingerprintTools(body)
+		var m map[string]any
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		item := m["input"].([]any)[0].(map[string]any)
+		if item["name"] != "glob" {
+			t.Errorf("function_call item name = %v, want \"glob\"", item["name"])
+		}
+	})
+}
+
+// A forced choice naming a tool whose declaration is a reviewed duplicate
+// (dropped in favour of the canonical one) cannot be retargeted reliably, as
+// the rename could belong to either spelling; it is dropped rather than
+// forwarded dangling.
+//
+// Body order matters: the exact "read" is seen first, so the later "Read" is
+// dropped as a duplicate and never recorded in the rename map.
+func TestConcealFingerprintToolsDropsUnretargetableChoice(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","name":"read"},{"type":"function","name":"Read"}],"tool_choice":{"type":"tool","name":"Read"}}`)
+	out, nameMap := ConcealFingerprintTools(body)
+	if original, ok := nameMap["read"]; !ok || original != "" {
+		t.Fatalf("the dropped duplicate must be recorded as unresolvable (\"\"), got %v", nameMap)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := m["tool_choice"]; present {
+		t.Errorf("dangling tool_choice survived: %v", m["tool_choice"])
+	}
+}
+
+// An exact lowercase "read" is what the gate fingerprints; a client that
+// already declares it must keep its own definition untouched (no rename, no
+// response-side restoration) so downstream function calling is unaffected.
+func TestConcealFingerprintToolsPreservesExactReadDefinition(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","name":"read","description":"client read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}]}`)
+	out, nameMap := ConcealFingerprintTools(body)
+	if len(nameMap) != 0 {
+		t.Errorf("exact read must not be renamed, got %v", nameMap)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, raw := range m["tools"].([]any) {
+		tool := raw.(map[string]any)
+		if tool["name"] != "read" {
+			continue
+		}
+		if tool["description"] != "client read" {
+			t.Errorf("client read definition was rewritten: %v", tool["description"])
+		}
+	}
+}
+
 func TestConcealFingerprintToolsAlreadyCanonical(t *testing.T) {
 	// A body that already carries the lowercase quartet needs no rename and no
 	// extra declarations.
@@ -166,24 +273,33 @@ func TestConcealFingerprintToolsAlreadyCanonical(t *testing.T) {
 }
 
 func TestConcealFingerprintToolsInjectsWhenQuartetAbsent(t *testing.T) {
-	// A client sending other tools without the quartet still needs it injected
-	// (upstream returns 403 without those lowercase names), and caller tools must
-	// survive untouched.
+	// A client sending other tools without the required one still needs "read"
+	// injected (upstream returns 403 without it), and caller tools must survive
+	// untouched. The rest of the quartet is NOT injected: the gate does not ask
+	// for it, so adding it would only offer the model tools that do nothing.
 	body := []byte(`{"tools":[{"name":"terminal"},{"name":"read_file"}]}`)
 	out, nameMap := ConcealFingerprintTools(body)
 	if len(nameMap) != 0 {
 		t.Errorf("nothing was capitalised, map should be empty: %v", nameMap)
 	}
 	names := toolNames(t, out)
-	for _, q := range OpenCodeFingerprintTools {
-		found := false
-		for _, n := range names {
-			if n == q {
-				found = true
-			}
+	if len(names) != 3 {
+		t.Errorf(`want terminal, read_file and one injected "read", got %d: %v`, len(names), names)
+	}
+	injected := 0
+	for _, n := range names {
+		if n == "read" {
+			injected++
 		}
-		if !found {
-			t.Errorf("quartet member %q was not injected: %v", q, names)
+	}
+	if injected != 1 {
+		t.Errorf(`want exactly one "read", got %d: %v`, injected, names)
+	}
+	for _, unneeded := range []string{"bash", "glob", "grep"} {
+		for _, n := range names {
+			if n == unneeded {
+				t.Errorf("%q must not be injected — the gate does not require it: %v", unneeded, names)
+			}
 		}
 	}
 	joined := strings.Join(names, ",")
@@ -265,6 +381,16 @@ func TestRestoreToolNamesNoOpWithoutMap(t *testing.T) {
 	}
 }
 
+// A "" entry marks a caller spelling whose declaration was dropped as a
+// duplicate: the response must keep the canonical name rather than blank it.
+func TestRestoreToolNamesIgnoresDroppedDuplicateMarker(t *testing.T) {
+	body := []byte(`{"choices":[{"delta":{"tool_calls":[{"function":{"name":"read"}}]}}]}`)
+	nameMap := map[string]string{"read": ""}
+	if out := RestoreToolNames(body, nameMap); string(out) != string(body) {
+		t.Errorf("a \"\" marker must not rewrite the frame, got %s", out)
+	}
+}
+
 func TestRestoreToolNamesInSSEKeepsFraming(t *testing.T) {
 	nameMap := map[string]string{"bash": "Bash"}
 	chunk := []byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"name\":\"bash\"}}\n\n")
@@ -336,8 +462,8 @@ func TestConcealFingerprintToolsChatShapeWhenNoTools(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	tools, ok := m["tools"].([]any)
-	if !ok || len(tools) != 4 {
-		t.Fatalf("want 4 tools, got %v", tools)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("want the single required tool, got %v", tools)
 	}
 	for _, tool := range tools {
 		tm, ok := tool.(map[string]any)
@@ -348,8 +474,8 @@ func TestConcealFingerprintToolsChatShapeWhenNoTools(t *testing.T) {
 		if !ok {
 			t.Fatalf("chat shape must nest name inside 'function', got %v", tm)
 		}
-		if fn["name"] == "" {
-			t.Errorf("expected tool name in function object")
+		if fn["name"] != "read" {
+			t.Errorf(`want "read", got %v`, fn["name"])
 		}
 	}
 	if m["tool_choice"] != "none" {
