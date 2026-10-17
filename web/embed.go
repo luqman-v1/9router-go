@@ -38,7 +38,16 @@ func Handler() http.Handler {
 			stat, statErr := f.Stat()
 			f.Close()
 			if statErr == nil && !stat.IsDir() {
-				if path == "sw.js" {
+				if path == "index.html" {
+					// The entry document names the content-hashed bundle. Embedded
+					// files carry no ModTime, so there is nothing for a browser to
+					// revalidate against: without this it is free to keep serving an
+					// old entry, and therefore an old bundle, after an upgrade. The
+					// assets it points at are hashed and safe to keep.
+					w.Header().Set("Cache-Control", "no-cache")
+				} else if strings.HasPrefix(path, "assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				} else if path == "sw.js" {
 					w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 					w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 					w.Header().Set("Service-Worker-Allowed", "/")
@@ -70,6 +79,9 @@ func Handler() http.Handler {
 			return
 		}
 
+		// Same reason as the entry document above: a client-side route must not
+		// be cached against the bundle hash it was served with.
+		w.Header().Set("Cache-Control", "no-cache")
 		if seeker, ok := indexFile.(io.ReadSeeker); ok {
 			http.ServeContent(w, r, "index.html", stat.ModTime(), seeker)
 		} else {

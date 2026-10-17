@@ -25,6 +25,7 @@
   import RequestDetailsTab from './RequestDetailsTab.svelte'
   import UsageChart from './UsageChart.svelte'
   import ProviderTopologyCard from './ProviderTopologyCard.svelte'
+  import ComboFlowCard from './ComboFlowCard.svelte'
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   interface Props {
     connections?: ProviderConnection[]
@@ -65,6 +66,10 @@
   // body, so the failure arrives here as a thrown error: keep the message, and
   // let the template show the stale data as stale rather than as current.
   let statsError = $state('')
+  // Combo definitions for the live map. The SSE already reports which combo a
+  // request asked for (requestedModel); these supply the members it resolved
+  // to, so the card can list models and providers instead of guessing.
+  let comboDefs = $state<{ name: string; members: string[]; strategy?: string }[]>([])
   let detailsError = $state('')
   let pulseTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -161,6 +166,34 @@
 
   $effect(() => {
     if (section === 'details') loadDetails(detailsPage)
+  })
+
+  // Loaded once: editing a combo is rare, and a reload picks up the change.
+  $effect(() => {
+    let cancelled = false
+    api
+      .getCombos()
+      .then((rows: any[]) => {
+        if (cancelled) return
+        comboDefs = (Array.isArray(rows) ? rows : [])
+          .map((c: any) => {
+            let members: string[] = []
+            try {
+              const raw = typeof c?.models === 'string' ? JSON.parse(c.models) : c?.models
+              if (Array.isArray(raw)) members = raw.map((m: any) => String(m))
+            } catch {
+              members = []
+            }
+            return { name: String(c?.name ?? ''), members, strategy: String(c?.strategy ?? '') }
+          })
+          .filter((c: { name: string }) => c.name !== '')
+      })
+      .catch(() => {
+        if (!cancelled) comboDefs = []
+      })
+    return () => {
+      cancelled = true
+    }
   })
 
   // SSE real-time updates for activeRequests, recentRequests and error notifications
@@ -428,6 +461,15 @@
   {#if section === 'overview'}
     <!-- 5 Overview KPI Cards -->
     <SummaryKpiCards {stats} />
+
+    <!-- Combo flow: router -> combo -> members, only while a combo is in use
+         (or just finished). The provider map below keeps its own animation. -->
+    <ComboFlowCard
+      combos={comboDefs}
+      {activeRequests}
+      recentRequests={stats.recentRequests || []}
+      {errorProvider}
+    />
 
     <!-- Topology + Recent Requests -->
     <div class="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">

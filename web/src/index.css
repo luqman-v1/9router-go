@@ -327,3 +327,431 @@ body {
 .changelog-body strong {
   font-weight: 600;
 }
+
+/* Combo flow — the combo's members as one ordered list.
+
+   An orbit could not show the two things this card is for: which member is tried
+   first, and what each member is. So the card is a numbered list in the combo's
+   own order, one row per member with its full provider, model, status and
+   latency. A single column also means the text has the whole card width on a
+   phone, which is where the row layout kept colliding. */
+.cf-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.6rem 0.7rem;
+  border-bottom: 1px solid var(--color-border, #334155);
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.08), transparent 60%);
+}
+.cf-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+.cf-kicker {
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-text-muted, #94a3b8);
+}
+.cf-name {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #22d3ee;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-strategy {
+  border-radius: 999px;
+  border: 1px solid rgba(167, 139, 250, 0.5);
+  background: rgba(167, 139, 250, 0.14);
+  color: #a78bfa;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0.08rem 0.4rem;
+  text-transform: uppercase;
+}
+.cf-counters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.cf-counters span {
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.56rem;
+  font-weight: 700;
+  padding: 0.1rem 0.42rem;
+}
+.cf-counters span[data-kind='trying'] {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #f59e0b;
+}
+.cf-counters span[data-kind='connected'] {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.45);
+  color: #10b981;
+}
+.cf-counters span[data-kind='failed'] {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #ef4444;
+}
+.cf-counters span[data-kind='idle'] {
+  background: rgba(100, 116, 139, 0.14);
+  border-color: rgba(100, 116, 139, 0.35);
+  color: var(--color-text-muted, #94a3b8);
+}
+/* the route: gateway -> combo */
+.cf-route {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem 0.6rem 0.4rem;
+  background-image: radial-gradient(rgba(148, 163, 184, 0.16) 1px, transparent 1px);
+  background-size: 13px 13px;
+}
+.cf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 0.55rem;
+  border: 1.4px solid var(--color-border, #334155);
+  background: rgba(15, 23, 42, 0.9);
+  padding: 0.25rem 0.4rem;
+  min-width: 0;
+}
+.cf-chip img {
+  height: 0.9rem;
+  width: 0.9rem;
+  object-fit: contain;
+  flex: none;
+}
+.cf-chip span {
+  font-size: 0.6rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.cf-chip[data-role='router'] {
+  border-color: #facc15;
+  color: #facc15;
+  flex: none;
+}
+.cf-chip[data-role='router'][data-state='connected'] {
+  border-color: #10b981;
+  color: #10b981;
+}
+.cf-chip[data-role='router'][data-state='failed'] {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+.cf-chip[data-role='combo'] {
+  border-color: #22d3ee;
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.14), rgba(167, 139, 250, 0.18));
+  flex: 1 1 auto;
+}
+.cf-chip-icon {
+  color: #22d3ee;
+  font-size: 0.95rem;
+  flex: none;
+}
+.cf-chip-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.cf-chip-text strong {
+  font-size: 0.66rem;
+  font-weight: 700;
+  color: #22d3ee;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-chip-text small {
+  font-size: 0.5rem;
+  color: var(--color-text-muted, #94a3b8);
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* the hop: a line with a dot travelling from the gateway into the combo */
+.cf-route-arrow {
+  flex: none;
+  height: 12px;
+  width: 1.6rem;
+  color: #facc15;
+}
+.cf-route-arrow[data-state='connected'] {
+  color: #10b981;
+}
+.cf-route-arrow[data-state='trying'] {
+  color: #f59e0b;
+}
+.cf-route-arrow[data-state='failed'] {
+  color: #ef4444;
+}
+.cf-route-arrow svg {
+  height: 100%;
+  width: 100%;
+  overflow: visible;
+}
+.cf-route-arrow path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  opacity: 0.85;
+}
+.cf-route-arrow circle {
+  fill: currentColor;
+  filter: drop-shadow(0 0 3px currentColor);
+}
+/* the ordered list: a rail down the numbers, one row per member */
+.cf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 0 0.6rem 0.4rem;
+  list-style: none;
+  counter-reset: none;
+}
+.cf-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 0.4rem;
+  padding-bottom: 0.3rem;
+}
+/* the rail: one continuous line behind the numbers */
+.cf-order {
+  position: relative;
+  flex: none;
+  width: 1.35rem;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 0.35rem;
+  font-variant-numeric: tabular-nums;
+}
+.cf-order::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1.4px;
+  margin-left: -0.7px;
+  background: rgba(148, 163, 184, 0.35);
+}
+.cf-row:first-child .cf-order::before {
+  top: 0.55rem;
+}
+.cf-row:last-child .cf-order::before {
+  bottom: calc(100% - 0.75rem);
+}
+/* the number sits on the rail as a small disc */
+.cf-order-disc {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 1rem;
+  min-width: 1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: var(--color-surface, #0f172a);
+  font-size: 0.52rem;
+  font-weight: 700;
+  color: var(--color-text-muted, #94a3b8);
+}
+.cf-row[data-status='trying'] .cf-order-disc {
+  border-color: #f59e0b;
+  color: #f59e0b;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.35);
+}
+.cf-row[data-status='connected'] .cf-order-disc {
+  border-color: #10b981;
+  color: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
+}
+.cf-row[data-status='failed'] .cf-order-disc {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+.cf-row[data-used='false'] {
+  opacity: 0.62;
+}
+.cf-row-card {
+  flex: 1;
+  min-width: 0;
+  border-radius: 0.55rem;
+  border: 1px solid var(--color-border, #334155);
+  background: var(--color-surface, rgba(15, 23, 42, 0.6));
+  padding: 0.35rem 0.45rem;
+}
+.cf-row[data-status='trying'] .cf-row-card {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.09);
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.2);
+}
+.cf-row[data-status='connected'] .cf-row-card {
+  border-color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+}
+.cf-row[data-status='failed'] .cf-row-card {
+  border-color: rgba(239, 68, 68, 0.75);
+  background: rgba(239, 68, 68, 0.06);
+}
+.cf-row-main {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.cf-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: 1.15rem;
+  width: 1.15rem;
+  border-radius: 0.32rem;
+  background: color-mix(in srgb, var(--tint, #64748b) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tint, #64748b) 55%, transparent);
+  color: var(--tint, #94a3b8);
+  font-size: 0.48rem;
+  font-weight: 700;
+}
+.cf-row-names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.cf-row-names strong {
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--color-text, #e2e8f0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-row-names small {
+  font-size: 0.55rem;
+  line-height: 1.2;
+  color: var(--color-text-muted, #94a3b8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-latency {
+  flex: none;
+  border-radius: 0.28rem;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--color-text-muted, #94a3b8);
+  font-size: 0.52rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 0.02rem 0.25rem;
+}
+.cf-row[data-status='connected'] .cf-latency {
+  border-color: rgba(16, 185, 129, 0.45);
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+}
+.cf-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.12rem;
+  flex: none;
+  color: var(--color-text-muted, #94a3b8);
+}
+.cf-status-text {
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.cf-row[data-status='trying'] .cf-status {
+  color: #f59e0b;
+}
+.cf-row[data-status='connected'] .cf-status {
+  color: #10b981;
+}
+.cf-row[data-status='failed'] .cf-status {
+  color: #ef4444;
+}
+.cf-ico {
+  font-size: 0.78rem;
+}
+.cf-spin {
+  animation: cf-rotate 0.9s linear infinite;
+  transform-origin: center;
+}
+@keyframes cf-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* what happens next: where a refusal hands off, or where the run stopped */
+.cf-handoff {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  margin: 0.22rem 0 0;
+  padding-top: 0.22rem;
+  border-top: 1px dashed rgba(148, 163, 184, 0.3);
+  font-size: 0.52rem;
+  color: var(--color-text-muted, #94a3b8);
+  line-height: 1.25;
+}
+.cf-row[data-status='failed'] .cf-handoff {
+  color: #f87171;
+}
+.cf-handoff-ok {
+  color: #10b981;
+  border-top-color: rgba(16, 185, 129, 0.3);
+}
+.cf-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.6rem;
+  padding: 0.45rem 0.7rem 0.55rem;
+  border-top: 1px solid var(--color-border, #334155);
+  font-size: 0.55rem;
+  color: var(--color-text-muted, #94a3b8);
+}
+.cf-legend span::before {
+  content: '';
+  display: inline-block;
+  height: 5px;
+  width: 5px;
+  border-radius: 999px;
+  margin-right: 0.25rem;
+  background: #64748b;
+  vertical-align: middle;
+}
+.cf-legend span[data-kind='trying']::before {
+  background: #f59e0b;
+}
+.cf-legend span[data-kind='connected']::before {
+  background: #10b981;
+}
+.cf-legend span[data-kind='failed']::before {
+  background: #ef4444;
+}

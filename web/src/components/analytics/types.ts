@@ -35,6 +35,10 @@ export interface RecentRequestItem {
   status?: string
   model?: string
   provider?: string
+  requestedModel?: string
+  comboName?: string
+  /** How long the request took, for completed requests only. */
+  latencyMs?: number
   promptTokens?: number
   cachedTokens?: number
   completionTokens?: number
@@ -45,6 +49,10 @@ export interface ActiveRequestItem {
   provider?: string
   account?: string
   count?: number
+  /** What the client asked for: the combo name when a combo served it. */
+  requestedModel?: string
+  /** Set only when a combo served this request — the map animates on it. */
+  comboName?: string
 }
 
 

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"9router/proxy/internal/db"
-	"9router/proxy/internal/translator"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/translator"
 )
 
 const (
@@ -23,6 +23,14 @@ type ActiveRequest struct {
 	Provider string `json:"provider"`
 	Account  string `json:"account"`
 	Count    int    `json:"count"`
+	// RequestedModel is the name the client asked for, and ComboName is set
+	// only when a combo served the request. A combo request reports the member
+	// that serves it in Model/Provider, so the dashboard can draw
+	// 9router-go -> combo -> member instead of showing the member as if the
+	// caller had asked for it by name. ComboName is the explicit signal: the
+	// map must not have to guess which names are combos.
+	RequestedModel string `json:"requestedModel,omitempty"`
+	ComboName      string `json:"comboName,omitempty"`
 }
 
 // RecentRequest matches the Next.js dashboard recentRequests item shape.
@@ -34,6 +42,12 @@ type RecentRequest struct {
 	CompletionTokens int    `json:"completionTokens"`
 	CachedTokens     int    `json:"cachedTokens"`
 	Status           string `json:"status"`
+	RequestedModel   string `json:"requestedModel,omitempty"`
+	ComboName        string `json:"comboName,omitempty"`
+	// LatencyMs is how long the request took, recorded for completed requests
+	// only: a refused member has a rejection time, not a latency, and the map
+	// must not present one as the other.
+	LatencyMs int64 `json:"latencyMs,omitempty"`
 }
 
 // StreamPayload represents the payload sent over SSE on /api/usage/stream.
@@ -52,9 +66,16 @@ type PendingState struct {
 
 // Tracker tracks in-flight requests, recent completions, and broadcasts SSE updates.
 type Tracker struct {
-	mu                sync.RWMutex
-	byModel           map[string]int
-	byAccount         map[string]map[string]int
+	mu        sync.RWMutex
+	byModel   map[string]int
+	byAccount map[string]map[string]int
+	// requestedByKey maps the same "model (provider)" key the counters use to
+	// the names behind the request. The counters cannot tell two requests for
+	// the same member apart, so neither can this: if two combos are in flight
+	// on one member at once, the later start names the row and the row goes
+	// back to unnamed once the count drains. Completed requests do not rely on
+	// it — each carries its own names on the ring entry.
+	requestedByKey    map[string]pendingNames
 	lastErrorProvider string
 	lastErrorTs       int64
 	recentRing        []RecentRequest
@@ -77,15 +98,32 @@ func GetTracker() *Tracker {
 // NewTracker creates a new Tracker instance.
 func NewTracker() *Tracker {
 	return &Tracker{
-		byModel:     make(map[string]int),
-		byAccount:   make(map[string]map[string]int),
-		recentRing:  make([]RecentRequest, 0, ringCap),
-		subscribers: make(map[chan []byte]struct{}),
+		byModel:        make(map[string]int),
+		byAccount:      make(map[string]map[string]int),
+		requestedByKey: make(map[string]pendingNames),
+		recentRing:     make([]RecentRequest, 0, ringCap),
+		subscribers:    make(map[chan []byte]struct{}),
 	}
+}
+
+// pendingNames are the names behind one in-flight request: what the client
+// asked for, and the combo that served it when one did.
+type pendingNames struct {
+	Requested string
+	Combo     string
 }
 
 // TrackPending updates the in-flight count for a given model, provider, and connection.
 func (t *Tracker) TrackPending(model, provider, connectionID string, started bool, isError bool) {
+	t.TrackPendingRequested("", "", model, provider, connectionID, started, isError)
+}
+
+// TrackPendingRequested additionally records the names the client asked for and
+// the combo that served it. A combo request asks for the combo and is served by
+// a member, so both names describe one in-flight request: they share the same
+// counter and key, and they ride along for as long as that counter is above
+// zero.
+func (t *Tracker) TrackPendingRequested(requested, combo, model, provider, connectionID string, started bool, isError bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -105,6 +143,18 @@ func (t *Tracker) TrackPending(model, provider, connectionID string, started boo
 		delete(t.byModel, modelKey)
 	} else {
 		t.byModel[modelKey] = newModelCount
+	}
+
+	// Pair the names with the counter. Started sets them, zero clears them: a
+	// stale pairing would keep calling a finished combo request a combo.
+	if started && newModelCount > 0 && (requested != "" || combo != "") {
+		if t.requestedByKey == nil {
+			t.requestedByKey = make(map[string]pendingNames)
+		}
+		t.requestedByKey[modelKey] = pendingNames{Requested: requested, Combo: combo}
+	}
+	if newModelCount <= 0 && t.requestedByKey != nil {
+		delete(t.requestedByKey, modelKey)
 	}
 
 	// Update byAccount (track public/direct requests under "__direct__" so they are never dropped)
@@ -233,10 +283,13 @@ func (t *Tracker) buildPayloadLocked(repo *db.Repo) StreamPayload {
 				mName, pName := parseModelKey(modelKey)
 				accountCountedModels[modelKey] += count
 				active = append(active, ActiveRequest{
-					Model:    mName,
-					Provider: pName,
-					Account:  accName,
-					Count:    count,
+					Model:          mName,
+					Provider:       pName,
+					Account:        accName,
+					Count:          count,
+					RequestedModel: t.requestedByKey[modelKey].Requested,
+
+					ComboName: t.requestedByKey[modelKey].Combo,
 				})
 			}
 		}
@@ -249,10 +302,13 @@ func (t *Tracker) buildPayloadLocked(repo *db.Repo) StreamPayload {
 		if remaining > 0 {
 			mName, pName := parseModelKey(modelKey)
 			active = append(active, ActiveRequest{
-				Model:    mName,
-				Provider: pName,
-				Account:  "Public / Direct",
-				Count:    remaining,
+				Model:          mName,
+				Provider:       pName,
+				Account:        "Public / Direct",
+				Count:          remaining,
+				RequestedModel: t.requestedByKey[modelKey].Requested,
+
+				ComboName: t.requestedByKey[modelKey].Combo,
 			})
 		}
 	}

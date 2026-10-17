@@ -1,7 +1,9 @@
 package usagetracker
 
 import (
+	json "encoding/json/v2"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -191,4 +193,113 @@ func TestGetTracker_SingletonAndParseModelKey(t *testing.T) {
 	if m2 != "deepseek-chat" || p2 != "unknown" {
 		t.Errorf("parseModelKey(deepseek-chat) = %s, %s", m2, p2)
 	}
+}
+
+// A combo request asks for the combo and is served by a member, so the stream
+// has to name both: the member in model/provider, the requested name and the
+// combo in requestedModel/comboName. The pairing has to live exactly as long as
+// the counter does — a stale one would keep calling a finished request a combo,
+// and a plain request must never inherit someone else's combo name.
+func TestTracker_RequestedModelPairing(t *testing.T) {
+	tr := NewTracker()
+
+	tr.TrackPendingRequested("PRO", "PRO", "deepseek-v4.1-flash", "tokenharbor", "conn_a", true, false)
+	state := tr.GetActiveState(nil)
+	if len(state.ActiveRequests) != 1 {
+		t.Fatalf("expected 1 active request, got %d", len(state.ActiveRequests))
+	}
+	got := state.ActiveRequests[0]
+	if got.Model != "deepseek-v4.1-flash" || got.Provider != "tokenharbor" {
+		t.Errorf("model/provider must stay the member that serves it, got %s/%s", got.Model, got.Provider)
+	}
+	if got.RequestedModel != "PRO" || got.ComboName != "PRO" {
+		t.Errorf("expected requestedModel/comboName PRO, got %q/%q", got.RequestedModel, got.ComboName)
+	}
+
+	// The payload the dashboard consumes carries both fields.
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal stream payload: %v", err)
+	}
+	for _, want := range []string{`"requestedModel":"PRO"`, `"comboName":"PRO"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("stream payload must expose %s, got %s", want, raw)
+		}
+	}
+
+	// Two in-flight requests on the same member share one row and one pairing.
+	tr.TrackPendingRequested("PRO", "PRO", "deepseek-v4.1-flash", "tokenharbor", "conn_a", true, false)
+	state = tr.GetActiveState(nil)
+	if len(state.ActiveRequests) != 1 || state.ActiveRequests[0].Count != 2 {
+		t.Fatalf("expected one row with count 2, got %+v", state.ActiveRequests)
+	}
+
+	// Both finishing clears the pairing together with the counter.
+	tr.TrackPendingRequested("PRO", "PRO", "deepseek-v4.1-flash", "tokenharbor", "conn_a", false, false)
+	tr.TrackPendingRequested("PRO", "PRO", "deepseek-v4.1-flash", "tokenharbor", "conn_a", false, false)
+	state = tr.GetActiveState(nil)
+	if len(state.ActiveRequests) != 0 {
+		t.Fatalf("expected the pairing to be gone with the counter, got %+v", state.ActiveRequests)
+	}
+
+	// A plain request carries the name it asked for and no combo.
+	tr.TrackPendingRequested("gpt-6-sol", "", "gpt-6-sol", "cx", "conn_b", true, false)
+	state = tr.GetActiveState(nil)
+	if len(state.ActiveRequests) != 1 {
+		t.Fatalf("expected 1 active request, got %d", len(state.ActiveRequests))
+	}
+	if state.ActiveRequests[0].ComboName != "" {
+		t.Errorf("plain request must not carry a combo name, got %q", state.ActiveRequests[0].ComboName)
+	}
+	if state.ActiveRequests[0].RequestedModel != "gpt-6-sol" {
+		t.Errorf("plain request must carry what it asked for, got %q", state.ActiveRequests[0].RequestedModel)
+	}
+
+	// TrackPending (media lanes) stays name-free so nothing is mislabelled.
+	tr.TrackPending("whisper-1", "openai", "conn_c", true, false)
+	state = tr.GetActiveState(nil)
+	for _, r := range state.ActiveRequests {
+		if r.ComboName != "" {
+			t.Errorf("TrackPending must not invent a combo, got %q", r.ComboName)
+		}
+	}
+}
+
+// A completed request carries how long it took, so the flow card can badge the
+// member that answered with its real time instead of a guess.
+func TestTracker_RecentRequestCarriesLatency(t *testing.T) {
+	tr := NewTracker()
+	tr.PushRecent(RecentRequest{
+		Timestamp:        time.Now().Format(time.RFC3339),
+		Model:            "deepseek-v4.1-flash",
+		Provider:         "tokenharbor",
+		PromptTokens:     12,
+		CompletionTokens: 4,
+		Status:           "ok",
+		RequestedModel:   "PRO",
+		ComboName:        "PRO",
+		LatencyMs:        1234,
+	}, nil)
+
+	state := tr.GetActiveState(nil)
+	for _, r := range state.RecentRequests {
+		if r.Model != "deepseek-v4.1-flash" {
+			continue
+		}
+		if r.LatencyMs != 1234 {
+			t.Errorf("expected latencyMs 1234, got %d", r.LatencyMs)
+		}
+		if r.ComboName != "PRO" {
+			t.Errorf("expected the row to stay tagged with its combo, got %q", r.ComboName)
+		}
+		raw, err := json.Marshal(state)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(raw), `"latencyMs":1234`) {
+			t.Errorf("stream payload must expose latencyMs, got %s", raw)
+		}
+		return
+	}
+	t.Fatalf("recent request missing from payload: %+v", state.RecentRequests)
 }

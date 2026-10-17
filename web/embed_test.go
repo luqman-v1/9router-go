@@ -91,3 +91,30 @@ func TestHandler_PWAAssets(t *testing.T) {
 		})
 	}
 }
+
+// The entry document must not be cached: it names the hashed bundle, and an old
+// entry keeps an old dashboard on screen after an upgrade. The hashed assets are
+// the opposite — their name changes with their content, so they can be kept.
+func TestHandlerCacheHeaders(t *testing.T) {
+	h := web.Handler()
+
+	for _, tc := range []struct{ path, want, why string }{
+		{"/", "no-cache", "SPA entry"},
+		{"/dashboard/usage", "no-cache", "client-side route"},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if got := rec.Header().Get("Cache-Control"); got != tc.want {
+			t.Errorf("%s (%s): Cache-Control = %q, want %q", tc.path, tc.why, got, tc.want)
+		}
+	}
+
+	// Any asset the entry points at is content-hashed and may be kept forever.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/whatever.js", nil))
+	if rec.Code == http.StatusOK {
+		if got := rec.Header().Get("Cache-Control"); !strings.Contains(got, "immutable") {
+			t.Errorf("/assets/*: Cache-Control = %q, want an immutable policy", got)
+		}
+	}
+}

@@ -513,10 +513,19 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	metrics := &streamMetrics{}
 	var fwdErr error
 
-	usagetracker.GetTracker().TrackPending(model, provider, connectionID, true, false)
+	// The names behind this in-flight request. The forwarder carries both: for
+	// a combo request RequestedModel is the combo the client asked for and
+	// ComboName marks that a combo served it, while model/provider name the
+	// member that is doing the work. The dashboard animates exactly that hop.
+	requestedName := f.RequestedModel
+	if requestedName == "" {
+		requestedName = translator.RequestedModelFromContext(ctx)
+	}
+	comboName := f.ComboName
+	usagetracker.GetTracker().TrackPendingRequested(requestedName, comboName, model, provider, connectionID, true, false)
 	defer func() {
 		hasErr := fwdErr != nil
-		usagetracker.GetTracker().TrackPending(model, provider, connectionID, false, hasErr)
+		usagetracker.GetTracker().TrackPendingRequested(requestedName, comboName, model, provider, connectionID, false, hasErr)
 	}()
 
 	// A connection bound to a pool that cannot serve traffic must fail before
