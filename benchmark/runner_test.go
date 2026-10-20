@@ -147,6 +147,236 @@ func TestLoadPayloadFileMissingFile(t *testing.T) {
 	}
 }
 
+// TestClassifyEvent pins the semantic-event map for all three wire shapes the
+// gateway serves. Metadata, role-only deltas, empty payloads, terminals and
+// usage trailers must read as evNone: timing one of those as the first token
+// would report a TTFT the client never received.
+func TestClassifyEvent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    eventKind
+	}{
+		// metadata / keep-alive / terminal
+		{"done", `[DONE]`, evNone},
+		{"empty", ``, evNone},
+		{"role-only", `{"choices":[{"delta":{"role":"assistant","content":""}}]}`, evNone},
+		{"finish", `{"choices":[{"delta":{},"finish_reason":"stop"}]}`, evNone},
+		{"usage-trailer", `{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2}}`, evNone},
+		{"message-start", `{"type":"message_start","message":{"usage":{"input_tokens":10}}}`, evNone},
+		{"message-delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`, evNone},
+		{"message-stop", `{"type":"message_stop"}`, evNone},
+		{"ping", `{"type":"ping"}`, evNone},
+		{"responses-created", `{"type":"response.created","response":{"status":"in_progress"}}`, evNone},
+		{"responses-completed", `{"type":"response.completed","response":{"status":"completed"}}`, evNone},
+		{"content-block-start-text", `{"type":"content_block_start","content_block":{"type":"text","text":""}}`, evNone},
+		{"garbage", `not json`, evNone},
+
+		// text
+		{"chat-text", `{"choices":[{"delta":{"content":"Hello"}}]}`, evText},
+		{"chat-text-empty-string", `{"choices":[{"delta":{"content":""}}]}`, evNone},
+		{"chat-legacy-text", `{"choices":[{"text":"Hello"}]}`, evText},
+		{"claude-text", `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}`, evText},
+		{"claude-text-empty", `{"type":"content_block_delta","delta":{"type":"text_delta","text":""}}`, evNone},
+		{"responses-text", `{"type":"response.output_text.delta","delta":"Hello"}`, evText},
+
+		// tool-only
+		{"chat-tool", `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1"}]}}]}`, evTool},
+		{"chat-function-call", `{"choices":[{"delta":{"function_call":{"name":"f"}}}]}`, evTool},
+		{"claude-tool-delta", `{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{}"}}`, evTool},
+		{"claude-tool-start", `{"type":"content_block_start","content_block":{"type":"tool_use","name":"f"}}`, evTool},
+		{"responses-tool", `{"type":"response.function_call_arguments.delta","delta":"{}"}`, evTool},
+
+		// reasoning-only
+		{"chat-reasoning-content", `{"choices":[{"delta":{"reasoning_content":"thinking"}}]}`, evReasoning},
+		{"chat-reasoning", `{"choices":[{"delta":{"reasoning":"thinking"}}]}`, evReasoning},
+		{"claude-thinking", `{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hmm"}}`, evReasoning},
+		{"claude-thinking-start", `{"type":"content_block_start","content_block":{"type":"thinking"}}`, evReasoning},
+		{"responses-reasoning", `{"type":"response.reasoning_summary_text.delta","delta":"hmm"}`, evReasoning},
+
+		// typed error
+		{"error-event", `{"type":"error","error":{"message":"overloaded"}}`, evError},
+		{"error-envelope", `{"error":{"message":"overloaded"}}`, evError},
+		{"responses-failed", `{"type":"response.failed","response":{"status":"failed"}}`, evError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyEvent([]byte(tc.payload)); got != tc.want {
+				t.Fatalf("classifyEvent(%s) = %v want %v", tc.payload, got, tc.want)
+			}
+		})
+	}
+}
+
+// ttftServer streams the given frames with an optional pause, so a test can
+// prove TTFT lands on the semantic event rather than on the first byte.
+func ttftServer(t *testing.T, pause time.Duration, frames ...string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		for i, frame := range frames {
+			if i > 0 && pause > 0 {
+				time.Sleep(pause)
+			}
+			_, _ = io.WriteString(w, "data: "+frame+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func measureTTFT(t *testing.T, srv *httptest.Server) sample {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := measureOnce(ctx, srv.Client(), srv.URL, []byte(`{"stream":true}`), "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// TestMeasureTTFTSkipsMetadataBeforeText is the case that makes TTFT a
+// different number from first body byte: the stream opens with metadata, a
+// keep-alive and a role-only delta, then pauses before the first token. TTFT
+// must land after the pause.
+func TestMeasureTTFTSkipsMetadataBeforeText(t *testing.T) {
+	const pause = 40 * time.Millisecond
+	srv := ttftServer(t, pause,
+		`{"type":"message_start","message":{"usage":{"input_tokens":10}}}`,
+		"",
+		`{"choices":[{"delta":{"role":"assistant","content":""}}]}`,
+		`{"choices":[{"delta":{"content":"Hello"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`[DONE]`,
+	)
+	got := measureTTFT(t, srv)
+	if got.TTFT == 0 {
+		t.Fatal("no TTFT recorded for a stream that carried text")
+	}
+	if got.TTFT < pause {
+		t.Fatalf("TTFT %v landed before the token pause %v — metadata was timed", got.TTFT, pause)
+	}
+	if got.TTFT > got.Total {
+		t.Fatalf("TTFT %v after total %v", got.TTFT, got.Total)
+	}
+	if got.TTFT <= got.FirstBodyByte {
+		t.Fatalf("TTFT %v not distinguishable from first body byte %v", got.TTFT, got.FirstBodyByte)
+	}
+}
+
+// TestMeasureTTFTCountsToolOnly keeps a tool-only turn legitimately fast: a
+// stream that never emits text still produced an answer the client can act on.
+func TestMeasureTTFTCountsToolOnly(t *testing.T) {
+	srv := ttftServer(t, 0,
+		`{"type":"message_start","message":{"usage":{"input_tokens":10}}}`,
+		`{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_1","name":"mock_tool"}}`,
+		`{"type":"message_stop"}`,
+	)
+	if got := measureTTFT(t, srv); got.TTFT == 0 {
+		t.Fatalf("tool-only stream produced no TTFT: %+v", got)
+	}
+}
+
+// TestMeasureTTFTCountsReasoningOnly is the same for a reasoning turn.
+func TestMeasureTTFTCountsReasoningOnly(t *testing.T) {
+	srv := ttftServer(t, 0,
+		`{"choices":[{"delta":{"reasoning_content":"thinking"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`[DONE]`,
+	)
+	if got := measureTTFT(t, srv); got.TTFT == 0 {
+		t.Fatalf("reasoning-only stream produced no TTFT: %+v", got)
+	}
+}
+
+// TestMeasureTTFTRejectsEventOnlyStream pins that metadata plus a terminal is
+// not a token. Reporting a TTFT here would name a first token that never came.
+func TestMeasureTTFTRejectsEventOnlyStream(t *testing.T) {
+	srv := ttftServer(t, 0,
+		`{"type":"response.created","response":{"status":"in_progress"}}`,
+		`{"type":"response.completed","response":{"status":"completed","usage":{"output_tokens":0}}}`,
+	)
+	got := measureTTFT(t, srv)
+	if got.TTFT != 0 {
+		t.Fatalf("event-only stream reported TTFT %v", got.TTFT)
+	}
+	if !completeBody(true, got.Body) {
+		t.Fatal("event-only stream should still count as complete")
+	}
+}
+
+// TestMeasureTTFTRejectsTypedError keeps a typed error event from being read
+// as a first token. The stream ends without an answer, and a TTFT for it would
+// be latency to a failure.
+func TestMeasureTTFTRejectsTypedError(t *testing.T) {
+	srv := ttftServer(t, 0,
+		`{"type":"error","error":{"message":"model overloaded"}}`,
+	)
+	got := measureTTFT(t, srv)
+	if got.TTFT != 0 {
+		t.Fatalf("typed error reported TTFT %v", got.TTFT)
+	}
+}
+
+// TestMeasureTTFTIgnoresUsageTrailer pins that a trailer after the terminal
+// does not move the numbers: it arrives after the answer, and TTFT is about
+// the first one.
+func TestMeasureTTFTIgnoresUsageTrailer(t *testing.T) {
+	srv := ttftServer(t, 0,
+		`{"choices":[{"delta":{"content":"Hi"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`,
+		`[DONE]`,
+	)
+	got := measureTTFT(t, srv)
+	if got.TTFT == 0 {
+		t.Fatal("no TTFT recorded")
+	}
+	if !completeBody(true, got.Body) {
+		t.Fatal("terminal missing")
+	}
+	if got.TTFT > got.Total {
+		t.Fatalf("TTFT %v after total %v", got.TTFT, got.Total)
+	}
+}
+
+// TestRunBenchmarkReportsTTFT pins that the aggregate carries TTFT and says
+// how many samples it came from, so a level with no semantic events shows up
+// as empty rather than as a zero-millisecond first token.
+func TestRunBenchmarkReportsTTFT(t *testing.T) {
+	srv := ttftServer(t, 0,
+		`{"choices":[{"delta":{"content":"Hi"}}]}`,
+		`[DONE]`,
+	)
+	res := runBenchmark(Config{Target: srv.URL, APIKey: "synthetic", Requests: 4, Stream: true, Timeout: 5 * time.Second}, 2)
+	if res.TTFTSamples != 4 || res.TTFTAvg <= 0 || res.TTFTP50 <= 0 || res.TTFTMax <= 0 {
+		t.Fatalf("TTFT missing from the aggregate: %+v", res)
+	}
+	if res.TTFTP50 > res.TTFTMax || res.TTFTP95 > res.TTFTMax {
+		t.Fatalf("TTFT percentiles out of order: %+v", res)
+	}
+}
+
+// TestRunBenchmarkTTFTEmptyWhenNoSemanticEvent pins the empty case end to end.
+func TestRunBenchmarkTTFTEmptyWhenNoSemanticEvent(t *testing.T) {
+	srv := ttftServer(t, 0,
+		`{"type":"response.created","response":{"status":"in_progress"}}`,
+		`{"type":"response.completed","response":{"status":"completed"}}`,
+	)
+	res := runBenchmark(Config{Target: srv.URL, APIKey: "synthetic", Requests: 3, Stream: true, Timeout: 5 * time.Second}, 2)
+	if res.SuccessReqs != 3 {
+		t.Fatalf("tally: %+v", res)
+	}
+	if res.TTFTSamples != 0 || res.TTFTAvg != 0 {
+		t.Fatalf("event-only responses produced TTFT: %+v", res)
+	}
+}
+
 // TestRunBenchmarkSendsPayloadFileBytes pins that a payload file reaches the
 // server byte for byte, so the matrix really drives the request shape it names.
 func TestRunBenchmarkSendsPayloadFileBytes(t *testing.T) {

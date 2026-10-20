@@ -16,9 +16,12 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"9router/proxy/internal/proxy"
 )
 
 type Config struct {
@@ -50,14 +53,200 @@ type BenchResult struct {
 	P95         time.Duration
 	P99         time.Duration
 	MaxLatency  time.Duration
+	// TTFT is the first semantic event, measured only on successful stream
+	// responses. TTFTSamples says how many were seen, so a level that produced
+	// no semantic event cannot report a TTFT of zero as if it were fast.
+	TTFTAvg     time.Duration
+	TTFTP50     time.Duration
+	TTFTP95     time.Duration
+	TTFTMax     time.Duration
+	TTFTSamples uint64
 }
 
 type sample struct {
 	HeaderLatency time.Duration
 	FirstBodyByte time.Duration
-	Total         time.Duration
-	Status        int
-	Body          []byte
+	// TTFT is time-to-first-token as the client sees it: the arrival of the
+	// first semantic event (text, tool call or reasoning delta), not the first
+	// byte on the wire. Zero when the stream carried no such event. The
+	// distinction matters — the first byte of a valid SSE stream is usually
+	// metadata, a keep-alive or an empty `data:` frame, all of which a client
+	// cannot use.
+	TTFT   time.Duration
+	Total  time.Duration
+	Status int
+	Body   []byte
+}
+
+// eventKind classifies one SSE payload by what a client can act on.
+type eventKind int
+
+const (
+	evNone eventKind = iota // metadata, keep-alive, role-only, terminal, usage trailer
+	evText
+	evTool
+	evReasoning
+	evError // typed error event: the stream is over without an answer
+)
+
+// eventProbe reads the fields that carry content across the three wire shapes
+// the gateway serves: Chat Completions, Claude Messages and Responses.
+type eventProbe struct {
+	Type  string          `json:"type"`
+	Error json.RawMessage `json:"error"`
+	// OpenAI chat
+	Choices []struct {
+		Text  string `json:"text"` // legacy completions
+		Delta struct {
+			Content          json.RawMessage `json:"content"`
+			ToolCalls        json.RawMessage `json:"tool_calls"`
+			FunctionCall     json.RawMessage `json:"function_call"`
+			ReasoningContent string          `json:"reasoning_content"`
+			Reasoning        string          `json:"reasoning"`
+		} `json:"delta"`
+	} `json:"choices"`
+	// Claude Messages carries an object; Responses carries a plain string under
+	// the same key, so it is left raw and decoded per event type.
+	Delta        json.RawMessage `json:"delta"`
+	ContentBlock struct {
+		Type string `json:"type"`
+	} `json:"content_block"`
+}
+
+// claudeDelta is the object form of `delta`, used by content_block_delta.
+type claudeDelta struct {
+	Type        string `json:"type"`
+	Text        string `json:"text"`
+	Thinking    string `json:"thinking"`
+	PartialJSON string `json:"partial_json"`
+}
+
+// classifyEvent reports what kind of event a payload is. Non-JSON payloads and
+// shapes this prober does not model read as evNone: unknown metadata is not an
+// answer, and guessing would timestamp a TTFT the client never received.
+func classifyEvent(payload []byte) eventKind {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[DONE]")) {
+		return evNone
+	}
+	var ev eventProbe
+	if err := json.Unmarshal(trimmed, &ev); err != nil {
+		return evNone
+	}
+	switch ev.Type {
+	case "error", "response.failed":
+		return evError
+	}
+	if rawJSONHasValue(ev.Error) {
+		return evError
+	}
+
+	if len(ev.Choices) > 0 {
+		choice := ev.Choices[0]
+		if strings.TrimSpace(choice.Text) != "" {
+			return evText
+		}
+		d := choice.Delta
+		if rawJSONHasValue(d.ToolCalls) || rawJSONHasValue(d.FunctionCall) {
+			return evTool
+		}
+		if strings.TrimSpace(d.ReasoningContent) != "" || strings.TrimSpace(d.Reasoning) != "" {
+			return evReasoning
+		}
+		if textOfContent(d.Content) != "" {
+			return evText
+		}
+		return evNone
+	}
+
+	switch ev.Type {
+	case "content_block_delta":
+		var d claudeDelta
+		if err := json.Unmarshal(ev.Delta, &d); err != nil {
+			return evNone
+		}
+		switch d.Type {
+		case "text_delta":
+			if d.Text != "" {
+				return evText
+			}
+		case "thinking_delta":
+			if d.Thinking != "" {
+				return evReasoning
+			}
+		case "input_json_delta":
+			return evTool
+		}
+	case "content_block_start":
+		// A tool_use block carries the tool name and id, so the client can act
+		// on it before any argument arrives.
+		switch ev.ContentBlock.Type {
+		case "tool_use":
+			return evTool
+		case "thinking":
+			return evReasoning
+		}
+	case "response.output_text.delta":
+		return evText
+	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
+		return evTool
+	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+		return evReasoning
+	}
+	return evNone
+}
+
+// rawJSONHasValue reports whether a raw JSON value carries content rather than
+// null, an empty string, or an empty array/object.
+func rawJSONHasValue(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || bytes.Equal(trimmed, []byte(`""`)) ||
+		bytes.Equal(trimmed, []byte("[]")) || bytes.Equal(trimmed, []byte("{}")) {
+		return false
+	}
+	return true
+}
+
+// textOfContent returns text carried by an OpenAI chat delta content, which is
+// a string in the classic shape and an array of parts in the multimodal one.
+func textOfContent(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(trimmed, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(trimmed, &parts); err != nil {
+		return ""
+	}
+	for _, part := range parts {
+		if strings.TrimSpace(part.Text) != "" {
+			return strings.TrimSpace(part.Text)
+		}
+	}
+	return ""
+}
+
+// firstByteClock records when the first body byte arrived. It sits in the read
+// path so the timestamp is taken while the body is still streaming, not after
+// the whole body was read.
+type firstByteClock struct {
+	started time.Time
+	at      time.Duration
+	seen    bool
+}
+
+func (c *firstByteClock) Write(p []byte) (int, error) {
+	if !c.seen && len(p) > 0 {
+		c.seen = true
+		c.at = time.Since(c.started)
+	}
+	return len(p), nil
 }
 
 func measureOnce(ctx context.Context, client *http.Client, target string, body []byte, key string) (sample, error) {
@@ -74,20 +263,45 @@ func measureOnce(ctx context.Context, client *http.Client, target string, body [
 	}
 	defer resp.Body.Close()
 	got := sample{HeaderLatency: time.Since(started), Status: resp.StatusCode}
-	first := make([]byte, 1)
-	n, readErr := io.ReadFull(resp.Body, first)
-	got.FirstBodyByte = time.Since(started)
-	if readErr != nil && readErr != io.EOF {
-		return got, readErr
-	}
+
 	const maxBody = 10 << 20
-	rest, err := io.ReadAll(io.LimitReader(resp.Body, maxBody-int64(n)+1))
+	var buf bytes.Buffer
+	clock := &firstByteClock{started: started}
+	limited := io.LimitReader(resp.Body, maxBody+1)
+	sink := io.MultiWriter(&buf, clock)
+
+	var readErr error
+	if strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		// ScanStream emits each complete event as it arrives, so the semantic
+		// event is timestamped when the client could have seen it rather than
+		// after io.ReadAll drained the response.
+		ttftSet := false
+		readErr = proxy.ScanStream(io.TeeReader(limited, sink), func(payload []byte) {
+			if ttftSet {
+				return
+			}
+			switch classifyEvent(payload) {
+			case evText, evTool, evReasoning:
+				got.TTFT = time.Since(started)
+				ttftSet = true
+			}
+		})
+	} else {
+		_, readErr = io.Copy(sink, limited)
+	}
 	got.Total = time.Since(started)
-	got.Body = append(first[:n], rest...)
+	if readErr == nil || readErr == io.EOF {
+		readErr = nil
+	}
+	got.FirstBodyByte = clock.at
+	if !clock.seen {
+		got.FirstBodyByte = got.Total
+	}
+	got.Body = buf.Bytes()
 	if len(got.Body) > maxBody {
 		return got, fmt.Errorf("benchmark response exceeds %d bytes", maxBody)
 	}
-	return got, err
+	return got, readErr
 }
 
 // loadPayloadFile reads a JSON request body from disk and checks it is an
@@ -192,6 +406,7 @@ func runBenchmark(cfg Config, concurrency int) BenchResult {
 
 	var successReqs, failedReqs, semanticErr uint64
 	latencies := make([]time.Duration, cfg.Requests)
+	ttfts := make([]time.Duration, cfg.Requests)
 
 	tr := &http.Transport{
 		MaxIdleConns:        concurrency * 2,
@@ -228,6 +443,7 @@ func runBenchmark(cfg Config, concurrency int) BenchResult {
 					atomic.AddUint64(&successReqs, 1)
 					mu.Lock()
 					latencies[idx] = got.Total
+					ttfts[idx] = got.TTFT
 					mu.Unlock()
 				}
 			}
@@ -256,6 +472,28 @@ func runBenchmark(cfg Config, concurrency int) BenchResult {
 		avgLat = sum / time.Duration(len(valid))
 	}
 
+	// TTFT is reported separately from total latency and only over samples
+	// that produced a semantic event. A stream that answered with metadata
+	// and a terminal event carries no TTFT, and folding a zero into the
+	// average would advertise a fast first token that never existed.
+	var ttftValid []time.Duration
+	var ttftSum time.Duration
+	for _, d := range ttfts {
+		if d > 0 {
+			ttftValid = append(ttftValid, d)
+			ttftSum += d
+		}
+	}
+	sort.Slice(ttftValid, func(i, j int) bool { return ttftValid[i] < ttftValid[j] })
+
+	ttftAvg, ttftP50, ttftP95, ttftMax := time.Duration(0), time.Duration(0), time.Duration(0), time.Duration(0)
+	if len(ttftValid) > 0 {
+		ttftAvg = ttftSum / time.Duration(len(ttftValid))
+		ttftP50 = ttftValid[int(float64(len(ttftValid))*0.50)]
+		ttftP95 = ttftValid[int(float64(len(ttftValid))*0.95)]
+		ttftMax = ttftValid[len(ttftValid)-1]
+	}
+
 	totalReqs := successReqs + failedReqs + semanticErr
 	rps := float64(successReqs) / totalDuration.Seconds()
 
@@ -273,6 +511,11 @@ func runBenchmark(cfg Config, concurrency int) BenchResult {
 		P95:         p95,
 		P99:         p99,
 		MaxLatency:  maxLat,
+		TTFTAvg:     ttftAvg,
+		TTFTP50:     ttftP50,
+		TTFTP95:     ttftP95,
+		TTFTMax:     ttftMax,
+		TTFTSamples: uint64(len(ttftValid)),
 	}
 }
 
@@ -292,6 +535,25 @@ func printResultsTable(results []BenchResult) {
 			r.Concurrency, r.TotalReqs, r.SuccessReqs, r.FailedReqs, r.SemanticErr, r.RPS, r.AvgLatency, r.P50, r.P95, r.P99, r.MaxLatency)
 	}
 	fmt.Println("==================================================")
+
+	// TTFT gets its own table on purpose: it is a different measurement from
+	// total latency, and appending it to the table above would invite a
+	// side-by-side "speedup" between two numbers that do not mean the same
+	// thing. `samples` is printed so a level whose streams carried no semantic
+	// event shows its empty TTFT rather than hiding it behind a zero.
+	fmt.Println("\nTTFT — first semantic event (text, tool or reasoning delta), not first byte")
+	fmt.Printf("| Concurrency | Samples | Avg TTFT | p50 | p95 | Max TTFT |\n")
+	fmt.Printf("|-------------|---------|----------|-----|-----|----------|\n")
+	for _, r := range results {
+		if r.TTFTSamples == 0 {
+			fmt.Printf("| %11d | %7d | %8s | %3s | %3s | %8s |\n", r.Concurrency, 0, "n/a", "n/a", "n/a", "n/a")
+			continue
+		}
+		fmt.Printf("| %11d | %7d | %8v | %3v | %3v | %8v |\n",
+			r.Concurrency, r.TTFTSamples, r.TTFTAvg, r.TTFTP50, r.TTFTP95, r.TTFTMax)
+	}
+	fmt.Println("==================================================")
+
 	if failedOverall {
 		fmt.Fprintln(os.Stderr, "at least one level recorded zero successes — this is a failed run, not a speedup")
 		os.Exit(1)
