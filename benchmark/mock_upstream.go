@@ -3,11 +3,33 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
 )
+
+// mockWantsStream reads the requested mode from the JSON request body. The
+// query string and Accept header alone were not enough: a gateway that
+// streams because the body says so would still be measured as JSON, and the
+// benchmark would report a latency for a response shape the client never
+// asked for.
+func mockWantsStream(w http.ResponseWriter, r *http.Request) (bool, error) {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	var body struct {
+		Stream bool `json:"stream"`
+	}
+	if err := decoder.Decode(&body); err != nil {
+		return false, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return false, fmt.Errorf("expected one JSON request document")
+	}
+	return body.Stream || r.URL.Query().Get("stream") == "true" || r.Header.Get("Accept") == "text/event-stream", nil
+}
 
 // Mock upstream OpenAI-compatible server that returns a fixed SSE response.
 func main() {
@@ -20,8 +42,11 @@ func main() {
 
 	// Non-streaming endpoint
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-		stream := r.URL.Query().Get("stream") == "true" ||
-			r.Header.Get("Accept") == "text/event-stream"
+		stream, err := mockWantsStream(w, r)
+		if err != nil {
+			http.Error(w, "invalid mock request", http.StatusBadRequest)
+			return
+		}
 
 		// Simulate small upstream latency
 		time.Sleep(5 * time.Millisecond)
@@ -61,8 +86,8 @@ func main() {
 		fmt.Fprint(w, `{"id":"mock-msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"Hello world"}],"model":"mock-model","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":2}}`)
 	})
 
-	fmt.Printf("Mock upstream listening on :%s\n", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	fmt.Printf("Mock upstream listening on 127.0.0.1:%s\n", port)
+	if err := http.ListenAndServe("127.0.0.1:"+port, mux); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start mock upstream: %v\n", err)
 		os.Exit(1)
 	}
