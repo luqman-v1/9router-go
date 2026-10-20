@@ -28,6 +28,12 @@ type Config struct {
 	Requests    int
 	Stream      bool
 	Timeout     time.Duration
+	// Payload is the request body sent verbatim when set. It overrides the
+	// built-in payload, so a matrix can drive one runner through several
+	// request shapes without recompiling it.
+	Payload []byte
+	// Model is the model field of the built-in payload.
+	Model string
 }
 
 type BenchResult struct {
@@ -84,6 +90,22 @@ func measureOnce(ctx context.Context, client *http.Client, target string, body [
 	return got, err
 }
 
+// loadPayloadFile reads a JSON request body from disk and checks it is an
+// object. A file holding an array or a scalar is rejected: the benchmark sends
+// it as an HTTP request body, and a body the gateway cannot parse is a
+// measurement of nothing.
+func loadPayloadFile(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return nil, fmt.Errorf("%s is not a JSON object: %w", path, err)
+	}
+	return data, nil
+}
+
 // completeBody reports whether a response carries a terminal event or a
 // well-formed JSON document. A body cut short by maxBody, a dead socket, or a
 // proxy that stopped mid-stream is not a success — counting it as one is how a
@@ -104,17 +126,33 @@ func completeBody(stream bool, body []byte) bool {
 func main() {
 	var cfg Config
 	var concurrencyCSV string
+	var payloadPath string
+	var modelFlag string
 	flag.StringVar(&cfg.Target, "target", os.Getenv("BENCH_TARGET"), "gateway chat/completions URL under test")
 	flag.StringVar(&cfg.APIKey, "key", os.Getenv("BENCH_KEY"), "API key for the sandbox gateway")
 	flag.StringVar(&concurrencyCSV, "concurrency", "1,10,25,50,100", "comma-separated concurrency levels")
 	flag.IntVar(&cfg.Requests, "requests", 500, "requests per concurrency level")
 	flag.BoolVar(&cfg.Stream, "stream", true, "send stream:true and require a terminal event")
 	flag.DurationVar(&cfg.Timeout, "timeout", 30*time.Second, "per-request timeout")
+	flag.StringVar(&payloadPath, "payload", os.Getenv("BENCH_PAYLOAD"), "path to a JSON request body file; overrides the built-in payload")
+	flag.StringVar(&modelFlag, "model", os.Getenv("BENCH_MODEL"), "model field of the built-in payload (default gpt-4o)")
 	flag.Parse()
 
 	if cfg.Target == "" || cfg.APIKey == "" {
 		fmt.Fprintln(os.Stderr, "target and key are required: this runner measures an operator-started gateway, it does not start one")
 		os.Exit(2)
+	}
+	cfg.Model = modelFlag
+	if cfg.Model == "" {
+		cfg.Model = "gpt-4o"
+	}
+	if payloadPath != "" {
+		body, err := loadPayloadFile(payloadPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid payload file: %v\n", err)
+			os.Exit(2)
+		}
+		cfg.Payload = body
 	}
 	for _, raw := range bytes.Split([]byte(concurrencyCSV), []byte(",")) {
 		var c int
@@ -143,11 +181,14 @@ func main() {
 }
 
 func runBenchmark(cfg Config, concurrency int) BenchResult {
-	payload, _ := json.Marshal(map[string]any{
-		"model":    "gpt-4o",
-		"stream":   cfg.Stream,
-		"messages": []map[string]string{{"role": "user", "content": "Hi"}},
-	})
+	payload := cfg.Payload
+	if len(payload) == 0 {
+		payload, _ = json.Marshal(map[string]any{
+			"model":    cfg.Model,
+			"stream":   cfg.Stream,
+			"messages": []map[string]string{{"role": "user", "content": "Hi"}},
+		})
+	}
 
 	var successReqs, failedReqs, semanticErr uint64
 	latencies := make([]time.Duration, cfg.Requests)
