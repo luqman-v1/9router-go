@@ -119,6 +119,33 @@ func TestCaptureThinking(t *testing.T) {
 	}
 }
 
+func TestNumberFieldRejectsOutOfRange(t *testing.T) {
+	if _, ok := numberField(float64(1e30)); ok {
+		t.Error("a budget beyond the int range must be rejected")
+	}
+	if _, ok := numberField("not a number"); ok {
+		t.Error("a non-number must be rejected")
+	}
+	v, ok := numberField(float64(1024))
+	if !ok || v != 1024 {
+		t.Errorf("numberField(1024) = (%d, %v), want (1024, true)", v, ok)
+	}
+}
+
+func TestParseSuffixRejectsAnOverflowingBudget(t *testing.T) {
+	model, intent := ParseSuffix("model(99999999999999999999)")
+	if model != "model" {
+		t.Errorf("model = %q, want model (the suffix is still stripped)", model)
+	}
+	if intent != nil {
+		t.Errorf("intent = %+v, want nil for a budget that does not fit", intent)
+	}
+	model, intent = ParseSuffix("model(8192)")
+	if model != "model" || intent == nil || intent.Mode != ModeBudget || intent.Budget != 8192 {
+		t.Errorf("ParseSuffix(model(8192)) = (%q, %+v)", model, intent)
+	}
+}
+
 func TestParseSuffix(t *testing.T) {
 	tests := []struct {
 		in    string

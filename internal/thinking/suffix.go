@@ -34,7 +34,12 @@ func ParseSuffix(model string) (string, *Intent) {
 	case raw == "ultra":
 		return clean, &Intent{Mode: ModeLevel, Level: "ultra"}
 	case allDigits(raw):
-		n, _ := strconv.Atoi(raw)
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			// A number that does not fit is not a budget: the suffix is still
+			// stripped, but no intent is expressed.
+			return clean, nil
+		}
 		return clean, &Intent{Mode: ModeBudget, Budget: n}
 	default:
 		if _, ok := LevelToBudget[raw]; ok {

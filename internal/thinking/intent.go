@@ -187,30 +187,44 @@ func effortString(s string) *Intent {
 
 // numberField converts JSON numbers (float64 from encoding/json, plus int
 // variants) to int. NaN/Inf and non-numbers report ok=false; upstream
-// Number() semantics: finite only.
+// Number() semantics: finite only. A value above the token ceiling reports
+// ok=false too: a float64 beyond the int range converts to an undefined
+// value, and a budget that large is not a budget. A negative value converts
+// fine — the callers decide what a non-positive budget means.
 func numberField(v any) (int, bool) {
 	switch n := v.(type) {
 	case float64:
-		if isFinite(n) {
+		if isFinite(n) && n <= maxTokenCount {
 			return int(n), true
 		}
 	case float32:
-		if isFinite(float64(n)) {
+		if isFinite(float64(n)) && n <= maxTokenCount {
 			return int(n), true
 		}
 	case int:
-		return n, true
+		if n <= maxTokenCount {
+			return n, true
+		}
 	case int64:
-		return int(n), true
+		if n <= maxTokenCount {
+			return int(n), true
+		}
 	case int32:
-		return int(n), true
+		if n <= maxTokenCount {
+			return int(n), true
+		}
 	case string:
-		if n, err := strconv.Atoi(strings.TrimSpace(n)); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(n)); err == nil && n <= maxTokenCount {
 			return n, true
 		}
 	}
 	return 0, false
 }
+
+// maxTokenCount is the ceiling a token count is accepted under. It is far
+// above any real model budget and below the point where a float64 stops
+// converting to an int exactly.
+const maxTokenCount = 1 << 30
 
 func isFinite(f float64) bool {
 	return !math.IsNaN(f) && !math.IsInf(f, 0)
