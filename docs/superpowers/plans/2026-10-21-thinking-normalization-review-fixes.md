@@ -457,6 +457,8 @@ In `internal/thinking/levels.go`, change `EffortToThinkingLevel`'s switch to map
 
 In `internal/thinking/levels.go`, in `NormalizeOpenAILevel`, after the existing `max`/`ultra` handling, return `"medium"` when the level is not one of `EffortLevels` (case-insensitive, trimmed). Keep the existing `max`/`ultra` behaviour intact: `"ultra"` falls back to `"max"` when the model advertises `"max"`, else to `"xhigh"`.
 
+**Note:** `levelFor` in `internal/thinking/writers.go` is the clamp the writers call, and it must let `"auto"` through unchanged — `auto` asks the upstream to decide, it is not a level to clamp. The step model answers `reasoning_effort:auto` for an `enabled:true` request, and a clamp that maps `auto` to `medium` breaks that (the integration test `TestStepModelMapsReasoningEnabledTrueToAuto` catches it).
+
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `go test ./internal/thinking/ -count=1`
@@ -835,34 +837,42 @@ being treated as absent."
 - Consumes: `thinking.ClampDisableToMinimalJSON` (Task 1), `providers.GetCapabilitiesForModel`.
 - Produces: no new exported symbol.
 
-- [ ] **Step 1: Write the failing integration test**
+- [ ] **Step 1: Write the failing test**
 
-Create `internal/integration/mimo_free_reasoning_test.go` (build tag `integration`): a combo whose only member is a `mimo-free` model, a `mimo-free` connection to a fake upstream, and a client request carrying `reasoning_effort: "none"`. Assert the upstream body contains `"minimal"` and not `"none"`. Use the combo helper the other combo integration tests use — copy the call shape from the nearest existing combo test in `internal/integration/`, and use `env.AddCombo(t, ...)` and `env.AddConnection(t, "mimo-free-1", "mimo-free", "mimo-free", up, "test-key")`.
+Create `internal/handlers/chat/mimofree_test.go` with `TestClampMimoFreeReasoning` (or extend it): the combo path calls `MimoFreeChat` directly, so extract the clamp into a named helper in `internal/handlers/chat/mimofree.go` —
+
+```go
+func clampMimoFreeReasoning(body []byte, model string) []byte {
+	return thinking.ClampDisableToMinimalJSON(body, providers.GetCapabilitiesForModel(mimoProviderID, model))
+}
+```
+
+— call it from `internal/handlers/chat/combo.go` right before the `h.MimoFreeChat` call, and assert that a body asking for `none` comes out as `minimal`, a body asking for `high` is untouched, and a body with no ask stays without one.
+
+**Note:** the lane's endpoints are hardcoded (`mimoBootstrapURL`, `mimoChatURL` in `internal/handlers/chat/mimofree.go`), so it cannot be faked with the integration harness the way the other providers can. The helper is the tested unit, not an end-to-end request.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `go test -tags=integration ./internal/integration/ -run TestMimoFreeComboLaneClampsDisabledReasoning -v -count=1`
-Expected: FAIL — the upstream body still carries `"none"`.
+Run: `go test ./internal/handlers/chat/ -run TestClampMimoFreeReasoning -v -count=1`
+Expected: FAIL — the body keeps `"none"`.
 
 - [ ] **Step 3: Clamp the lane**
 
 In `internal/handlers/chat/combo.go`, immediately before the `h.MimoFreeChat(ctx, cw, upstreamJSON, isStream, comboMetrics)` call, apply the clamp:
 
 ```go
-upstreamJSON = thinking.ClampDisableToMinimalJSON(upstreamJSON, providers.GetCapabilitiesForModel("mimo-free", modelInfo.Model))
+upstreamJSON = clampMimoFreeReasoning(upstreamJSON, modelInfo.Model)
 ```
-
-`internal/handlers/chat/combo.go` needs the `internal/providers` and `internal/thinking` imports.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `go test -tags=integration ./internal/integration/ -run TestMimoFreeComboLaneClampsDisabledReasoning -v -count=1`
+Run: `go test ./internal/handlers/chat/ -run TestClampMimoFreeReasoning -v -count=1`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-rtk git add internal/handlers/chat/combo.go internal/integration/mimo_free_reasoning_test.go
+rtk git add internal/handlers/chat/combo.go internal/handlers/chat/mimofree.go internal/handlers/chat/mimofree_test.go
 rtk git commit -m "fix(chat): clamp a disabled-reasoning request on the mimo-free combo lane
 
 The combo path calls MimoFreeChat directly, so neither the thinking chokepoint
@@ -927,8 +937,10 @@ rtk git commit -m "docs(changes): record the thinking-normalisation review fixes
 
 ```bash
 rtk git push -u origin fix/thinking-normalization
-gh pr create --repo luqman-v1/9router-go --base main --head fix/thinking-normalization \
+gh pr create --repo luqman-v1/9router-go --base main --head n1klaus:fix/thinking-normalization \
   --title "fix(thinking): close the reasoning-normalisation review findings" \
   --body "Closes the findings of the 2026-10-21 review of fix/thinking-normalization. Blockers: the mandatory-reasoning clamp now runs on the Responses-native lane, and a Claude client's thinking.type=disabled survives the request conversion. Also: deterministic marshalling at every map-to-bytes wire boundary with direct seam tests, a bounded effort vocabulary, a validated providerThinking mode, a linear request-body scan, upstream-matched OpenAI filter and CommandCode parity, and the mimo-free combo lane. See .changes/ for the full list."
 ```
-Expected: a PR against `main` whose changed-file list matches Step 5.
+Expected: a PR against `main` whose changed-file list matches Step 5. The head branch comes from a fork: the local `gh` account has only pull permission on `luqman-v1/9router-go`, so the branch is pushed to the `n1klaus/9router-go` fork and the PR head is `n1klaus:fix/thinking-normalization`.
+
+After the PR exists, rename the fragment to `.changes/<pr-number>-<slug>.md` (the convention is the PR number), commit that rename and push it again.
