@@ -4,9 +4,9 @@ import { COMBO_STRATEGIES, resolveComboStrategy } from './types'
 const OPTION_VALUES = COMBO_STRATEGIES.map((s) => s.value)
 
 describe('resolveComboStrategy', () => {
-  // The server fills combo.strategy from settings.comboStrategies[name] and
-  // otherwise from the global `comboStrategy`, so a card can receive either
-  // vocabulary. Anything it can receive has to render as one of the options.
+  // The server normalizes combo strategies onto the three canonical values
+  // (db.NormalizeComboStrategy), but a card can still meet a legacy value in
+  // a hand-edited settings blob — everything has to land on a real option.
   it('maps every value the server can send onto an existing option', () => {
     const serverValues = [
       undefined,
@@ -18,6 +18,7 @@ describe('resolveComboStrategy', () => {
       'sticky',
       'capacity',
       'fusion',
+      'ensemble',
       'nonsense-from-a-hand-edited-backup'
     ]
 
@@ -27,23 +28,30 @@ describe('resolveComboStrategy', () => {
   })
 
   it('treats the global routing mode as the card fallback', () => {
-    // `first-model` is the global Combo Routing Mode and the default when a
-    // combo has no per-combo entry. It is try-in-order, which is exactly what
-    // the card calls `fallback`.
+    // `first-model` is the legacy name of the global Combo Routing Mode's
+    // try-in-order behaviour, which is exactly what the card calls
+    // `fallback`.
     expect(resolveComboStrategy('first-model')).toBe('fallback')
   })
 
-  it('passes a real per-combo strategy through unchanged', () => {
-    for (const value of ['round-robin', 'sticky', 'capacity', 'fusion']) {
+  it('passes a canonical per-combo strategy through unchanged', () => {
+    for (const value of ['round-robin', 'fallback', 'fusion']) {
       expect(resolveComboStrategy(value)).toBe(value)
     }
   })
 
-  it('falls back for a missing or unrecognised value', () => {
-    expect(resolveComboStrategy(undefined)).toBe('fallback')
-    expect(resolveComboStrategy(null)).toBe('fallback')
-    expect(resolveComboStrategy('')).toBe('fallback')
-    expect(resolveComboStrategy('nonsense')).toBe('fallback')
+  it('folds legacy strategies into the closest canonical one', () => {
+    expect(resolveComboStrategy('sticky')).toBe('round-robin')
+    expect(resolveComboStrategy('failover')).toBe('fallback')
+    expect(resolveComboStrategy('capacity')).toBe('fallback')
+    expect(resolveComboStrategy('ensemble')).toBe('fusion')
+  })
+
+  it('resolves a missing or unrecognised value to round-robin, the default', () => {
+    expect(resolveComboStrategy(undefined)).toBe('round-robin')
+    expect(resolveComboStrategy(null)).toBe('round-robin')
+    expect(resolveComboStrategy('')).toBe('round-robin')
+    expect(resolveComboStrategy('nonsense')).toBe('round-robin')
   })
 
   it('lists every option with a non-empty label', () => {

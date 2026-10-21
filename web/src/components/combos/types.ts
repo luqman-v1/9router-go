@@ -6,17 +6,15 @@ export interface ComboStrategyInfo {
 }
 
 /**
- * Every strategy a combo card can render. A value the server sends that has
- * no matching <option> leaves the <select> blank while still opening on click,
- * so this list has to cover everything `combo.strategy` can hold — which
- * includes the global routing mode, not just the per-combo overrides.
+ * The three strategies a combo can run, aligned with JRouters — plus the
+ * inherit entry that removes a per-combo override. The server normalizes
+ * every stored value onto one of the three (db.NormalizeComboStrategy), so
+ * these options cover anything `combo.strategy` can hold.
  */
 export const COMBO_STRATEGIES = [
   { value: 'inherit', label: 'Inherit global strategy' },
+  { value: 'round-robin', label: 'Round Robin — rotate members' },
   { value: 'fallback', label: 'Fallback — try in order' },
-  { value: 'round-robin', label: 'Round Robin — rotate' },
-  { value: 'sticky', label: 'Sticky — stay until the limit' },
-  { value: 'capacity', label: 'Capacity — prefer free tiers' },
   { value: 'fusion', label: 'Fusion — panel + judge' }
 ] as const
 
@@ -29,17 +27,38 @@ export const COMBO_STRATEGIES = [
  */
 export const INHERIT_STRATEGY = 'inherit'
 
-// The global "Combo Routing Mode" calls try-in-order `first-model`, while a
-// combo card calls it `fallback`. applyComboStrategy treats an unrecognised
-// value as try-in-order, so the two names are the same behaviour and
-// `first-model` resolves to the card's own label rather than a fourth option.
-const STRATEGY_ALIASES: Record<string, string> = { 'first-model': 'fallback' }
+// Legacy values fold into the closest of the three canonical strategies,
+// mirroring the server's NormalizeComboStrategy: the global routing mode's
+// `first-model` (and failover, capacity) are ordered walks, ensemble is
+// fusion, and rotation-flavoured names (sticky, load-balance, weighted, ...)
+// are round-robin.
+const STRATEGY_ALIASES: Record<string, string> = {
+  'first-model': 'fallback',
+  failover: 'fallback',
+  capacity: 'fallback',
+  ensemble: 'fusion',
+  round_robin: 'round-robin',
+  roundrobin: 'round-robin',
+  sticky: 'round-robin',
+  'load-balance': 'round-robin',
+  load_balance: 'round-robin',
+  smart: 'round-robin',
+  weighted: 'round-robin',
+  weighted_distribution: 'round-robin',
+  race: 'round-robin',
+  parallel: 'round-robin'
+}
 
-/** Coerce a server-supplied strategy into one the card can actually display. */
+const CANONICAL_STRATEGIES = new Set(['round-robin', 'fallback', 'fusion'])
+
+/**
+ * Coerce a server-supplied strategy into one of the three canonical values.
+ * Missing and unrecognised values resolve to round-robin, the server default.
+ */
 export function resolveComboStrategy(value: string | undefined | null): string {
-  if (!value) return 'fallback'
+  if (!value) return 'round-robin'
   const resolved = STRATEGY_ALIASES[value] ?? value
-  return COMBO_STRATEGIES.some((s) => s.value === resolved) ? resolved : 'fallback'
+  return CANONICAL_STRATEGIES.has(resolved) ? resolved : 'round-robin'
 }
 
 /**

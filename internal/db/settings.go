@@ -488,8 +488,9 @@ func (r *Repo) SetComboStrategy(comboName string, strat ComboStrategy) error {
 	}
 
 	if strat.Strategy != "" {
-		entry["strategy"] = strat.Strategy
-		entry["fallbackStrategy"] = strat.Strategy
+		normalized := NormalizeComboStrategy(strat.Strategy)
+		entry["strategy"] = normalized
+		entry["fallbackStrategy"] = normalized
 	}
 	if strat.StickyLimit > 0 {
 		entry["stickyLimit"] = strat.StickyLimit
@@ -499,11 +500,11 @@ func (r *Repo) SetComboStrategy(comboName string, strat ComboStrategy) error {
 		entry["judgeModel"] = strat.JudgeModel
 	}
 
-	if strat.Strategy == "fallback" && strat.JudgeModel == "" {
-		delete(currentMap, comboName)
-	} else {
-		currentMap[comboName] = entry
-	}
+	// An explicit choice is always persisted, fallback included: deleting the
+	// entry for one named strategy would silently hand the combo back to the
+	// global mode (the trap upstream #4576 fixed on the UI side). Removing an
+	// override is the caller's explicit job on the settings blob.
+	currentMap[comboName] = entry
 
 	return r.UpdateSettingsRaw(map[string]any{
 		"comboStrategies": currentMap,

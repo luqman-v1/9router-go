@@ -26,6 +26,7 @@
   import { isCompactUnitsEnabled, setCompactUnits } from '../lib/compactNumber'
   import { isDetailsExpandedByDefault, setDetailsExpandedByDefault } from '../lib/displayPrefs'
   import { TOGGLEABLE_NAV_ENTRIES, orderHiddenNav, setNavVisible } from '../lib/nav'
+  import { resolveComboStrategy } from './combos/types'
 
   interface Props {
     settings?: Settings
@@ -67,7 +68,7 @@
   // switch below flips that default (detailsExpandedByDefault, localStorage).
   let detailsExpanded = $state(isDetailsExpandedByDefault())
   let stickyRoundRobinLimit = $state(3)
-  let comboStrategy = $state('first-model')
+  let comboStrategy = $state('round-robin')
   let forceFallback = $state(false)
 
   // Feature Visibility: ids of the sidebar entries this deployment hides. The
@@ -126,7 +127,7 @@
       if (typeof settings.sessionTimeout === 'string') sessionTimeout = settings.sessionTimeout
       if (typeof settings.fallbackStrategy === 'string') fallbackStrategy = settings.fallbackStrategy
       if (typeof settings.stickyRoundRobinLimit === 'number') stickyRoundRobinLimit = settings.stickyRoundRobinLimit
-      if (typeof settings.comboStrategy === 'string') comboStrategy = settings.comboStrategy
+      if (typeof settings.comboStrategy === 'string') comboStrategy = resolveComboStrategy(settings.comboStrategy)
       if (typeof settings.forceFallback === 'boolean') forceFallback = settings.forceFallback
 
       // Global system prompt
@@ -162,7 +163,7 @@
         if (typeof s.stickyRoundRobinLimit === 'number') stickyRoundRobinLimit = s.stickyRoundRobinLimit
         // Feature Visibility
         hiddenNav = orderHiddenNav(s.navVisibility)
-        if (s.comboStrategy) comboStrategy = String(s.comboStrategy)
+        if (s.comboStrategy) comboStrategy = resolveComboStrategy(String(s.comboStrategy))
         if (typeof s.forceFallback === 'boolean') forceFallback = s.forceFallback
         enableSystemPrompt = !!s.systemPromptEnabled
         if (typeof s.systemPromptPrefix === 'string') systemPromptPrefix = s.systemPromptPrefix
@@ -898,8 +899,9 @@
             bind:value={comboStrategy}
             class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-xs text-text-main focus:outline-none focus:border-brand-500"
           >
-            <option value="first-model">First Model (Always try primary model first)</option>
             <option value="round-robin">Round Robin (Rotate starting model)</option>
+            <option value="fallback">First Model (Always try primary model first)</option>
+            <option value="fusion">Fusion (Panel + judge picks the answer)</option>
           </select>
         </div>
 

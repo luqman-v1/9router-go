@@ -479,12 +479,18 @@ func (h *ChatHandler) applyComboStrategy(strategy string, models []string, combo
 		}
 
 		return rotated
-	case "capacity":
-		fallthrough
-	default:
+	case "fallback", "capacity", "fusion":
+		// Ordered: fallback walks the members in order, capacity walks its
+		// adapter-ordered list in order, and fusion's panel keeps the
+		// configured order for its judge.
 		out := make([]string, len(models))
 		copy(out, models)
 		return out
+	default:
+		// Anything unrecognised resolves to round-robin, the canonical
+		// default. db.NormalizeComboStrategy folds stored values before they
+		// reach here; this covers direct callers passing a raw value.
+		return h.applyComboStrategy("round-robin", models, comboName, stickyLimit, newTurn)
 	}
 }
 

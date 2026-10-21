@@ -181,7 +181,7 @@ func (r *Repo) CreateCombo(id, name, kind, modelsJSON, strategy string) error {
 	}
 	if strategy != "" {
 		// Update strategy if column exists in the schema
-		_, _ = r.db.Exec(`UPDATE combos SET strategy = ? WHERE id = ?`, strategy, id)
+		_, _ = r.db.Exec(`UPDATE combos SET strategy = ? WHERE id = ?`, NormalizeComboStrategy(strategy), id)
 	}
 	return nil
 }
@@ -202,7 +202,7 @@ func (r *Repo) UpdateCombo(id, name, kind, modelsJSON, strategy string) error {
 	}
 	if strategy != "" {
 		// Update strategy if column exists in the schema
-		_, _ = r.db.Exec(`UPDATE combos SET strategy = ? WHERE id = ?`, strategy, id)
+		_, _ = r.db.Exec(`UPDATE combos SET strategy = ? WHERE id = ?`, NormalizeComboStrategy(strategy), id)
 	}
 	return nil
 }
