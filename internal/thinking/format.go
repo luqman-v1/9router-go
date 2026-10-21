@@ -87,13 +87,31 @@ func Apply(body map[string]any, target, provider, model string, override *Intent
 	return body
 }
 
+// shouldSkipNormalization reports whether the fast path applies: no override,
+// no model suffix, no thinking fields present. This avoids the decode/marshal
+// cost on the common case where the client sends a plain request.
+func shouldSkipNormalization(body []byte, model string, override *Intent) bool {
+	if override != nil {
+		return false
+	}
+	if strings.Contains(model, "(") {
+		return false
+	}
+	if BodyMentionsThinking(body) {
+		return false
+	}
+	if bodyModelHasSuffix(body) {
+		return false
+	}
+	return true
+}
+
 // ApplyJSON is Apply over raw bytes. Fast path returns the input unchanged
 // when the body's own model carries no suffix and no thinking key is present;
 // decode/marshal errors also return the input unchanged. Idempotent
 // (strip-then-write), so combo/rotation re-entry is safe.
 func ApplyJSON(body []byte, target, provider, model string, override *Intent) []byte {
-	if override == nil && !strings.Contains(model, "(") &&
-		!BodyMentionsThinking(body) && !bodyModelHasSuffix(body) {
+	if shouldSkipNormalization(body, model, override) {
 		return body
 	}
 	var m map[string]any
@@ -111,21 +129,27 @@ func ApplyJSON(body []byte, target, provider, model string, override *Intent) []
 // bodyModelHasSuffix reports whether the body's own "model" value carries a
 // "(…)" suffix. It scans the raw bytes for the model key instead of decoding:
 // the first ")" before the next quote/comma/brace after "model" indicates one.
+// Scans bytes directly to avoid string allocation in the hot path.
 func bodyModelHasSuffix(body []byte) bool {
-	s := string(body)
-	for _, key := range []string{`"model"`, `"modelId"`, `"model_id"`} {
-		idx := strings.Index(s, key)
+	keys := [][]byte{[]byte(`"model"`), []byte(`"modelId"`), []byte(`"model_id"`)}
+	for _, key := range keys {
+		idx := indexOfBytes(body, key)
 		for idx != -1 {
-			rest := s[idx+len(key):]
-			rest = strings.TrimLeft(rest, " \t\n\r:")
+			rest := body[idx+len(key):]
+			rest = trimLeftByte(rest, " \t\n\r:")
 			if len(rest) > 0 && rest[0] == '"' {
-				end := strings.IndexByte(rest[1:], '"')
-				if end != -1 && strings.Contains(rest[1:1+end], "(") && strings.HasSuffix(strings.TrimSpace(rest[1:1+end]), ")") {
-					return true
+				// Find closing quote
+				end := indexOfByte(rest[1:], '"')
+				if end != -1 {
+					value := rest[1 : 1+end]
+					if indexOfBytes(value, []byte("(")) != -1 &&
+						(len(value) == 0 || value[len(value)-1] == ')' || trimRightByte(value, " \t\n\r")[len(trimRightByte(value, " \t\n\r"))-1] == ')') {
+						return true
+					}
 				}
 				break
 			}
-			next := strings.Index(s[idx+len(key):], key)
+			next := indexOfBytes(body[idx+len(key):], key)
 			if next == -1 {
 				break
 			}
@@ -133,6 +157,77 @@ func bodyModelHasSuffix(body []byte) bool {
 		}
 	}
 	return false
+}
+
+// indexOfBytes returns the index of the first occurrence of sub in b, or -1.
+func indexOfBytes(b, sub []byte) int {
+	if len(sub) == 0 {
+		return 0
+	}
+	if len(sub) > len(b) {
+		return -1
+	}
+	for i := 0; i <= len(b)-len(sub); i++ {
+		if bytesEqual(b[i:i+len(sub)], sub) {
+			return i
+		}
+	}
+	return -1
+}
+
+// indexOfByte returns the index of the first occurrence of c in b, or -1.
+func indexOfByte(b []byte, c byte) int {
+	for i := range b {
+		if b[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// trimLeftByte removes leading bytes in cutset from b and returns the result.
+func trimLeftByte(b []byte, cutset string) []byte {
+	for len(b) > 0 {
+		if !containsByte(cutset, b[0]) {
+			break
+		}
+		b = b[1:]
+	}
+	return b
+}
+
+// trimRightByte removes trailing bytes in cutset from b and returns the result.
+func trimRightByte(b []byte, cutset string) []byte {
+	for len(b) > 0 {
+		if !containsByte(cutset, b[len(b)-1]) {
+			break
+		}
+		b = b[:len(b)-1]
+	}
+	return b
+}
+
+// containsByte reports whether c is in s.
+func containsByte(s string, c byte) bool {
+	for i := range s {
+		if s[i] == c {
+			return true
+		}
+	}
+	return false
+}
+
+// bytesEqual reports whether a and b are equal.
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveFormat ports resolveFormat verbatim.
