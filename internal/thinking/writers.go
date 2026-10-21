@@ -229,6 +229,10 @@ func levelFor(level string, supported []string) string {
 	if level == "max" || level == "ultra" {
 		return NormalizeOpenAILevel(level, supported)
 	}
+	if level == "auto" {
+		// "auto" asks the upstream to decide; it is not a level to clamp.
+		return level
+	}
 	if !KnownEffort(level) {
 		level = "medium"
 	}

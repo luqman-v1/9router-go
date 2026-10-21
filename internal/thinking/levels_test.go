@@ -147,7 +147,7 @@ func TestNormalizeOpenAILevelUnknown(t *testing.T) {
 // known vocabulary.
 func TestWriterLevelsStayInsideTheProviderVocabulary(t *testing.T) {
 	known := map[string]bool{
-		"none": true, "minimal": true, "low": true, "medium": true,
+		"none": true, "auto": true, "minimal": true, "low": true, "medium": true,
 		"high": true, "xhigh": true, "max": true,
 	}
 

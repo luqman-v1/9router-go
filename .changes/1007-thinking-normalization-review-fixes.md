@@ -1,0 +1,21 @@
+### Fixed
+
+- **The mandatory-reasoning clamp now runs on the Responses-native lane.** The unified thinking pass never ran when the upstream speaks the Responses API — always the case for the `muse` provider — so a client asking for no reasoning forwarded `reasoning_effort:none` unchanged and a provider that mandates reasoning answered 400 (*"Reasoning is mandatory for this endpoint and cannot be disabled"*). The clamp now happens at the dispatch chokepoint for both the Chat dialect (`reasoning_effort`) and the Responses dialect (`reasoning.effort`), so the intent reaches the upstream as `minimal`.
+- **A Claude client's `thinking:{type:"disabled"}` survives the request conversion.** `TranslateClaudeToOpenAI` handled `enabled` and `adaptive` but not `disabled`, so the disable request was dropped before the thinking pass could capture it and the client silently received the provider default. The dialect now maps to `reasoning_effort:"none"`, which the pipeline already understands.
+- **The mimo-free combo lane is normalised too.** The combo path calls `MimoFreeChat` directly, so neither the thinking pass nor the clamp ran there.
+- **Every map-to-bytes wire boundary is deterministic.** json/v2 does not order Go map keys by default, so the same request produced different bytes on the wire. The inbound thinking marshal, the Gemini generationConfig and request, the Gemini response boundaries and the request translator now marshal with `json.Deterministic(true)`, and each seam has a repeated-call test.
+- **The `providerThinking` mode is validated.** Any non-empty mode was stored and written straight into `reasoning_effort`, so a hand-edited settings blob could put an invalid effort on the wire. The allowed modes are declared once, rejected on write and dropped on read.
+- **An unknown effort level never reaches a provider.** A client-supplied `reasoning_effort` was forwarded verbatim, so `reasoning_effort:ultra` became `thinkingLevel:"ultra"` and any other string became an invalid enum. Both level mappers are bounded to the known vocabularies, and a level the model does not advertise is mapped onto one it does.
+- **The `cache_control` markers survive for the providers that register the quirk.** Upstream's filter takes a `preserveCacheControl` option, and the alicode family on DashScope is registered with it — dropping the markers makes those gateways answer 400. The quirk is carried from the provider registry.
+- **A null CommandCode field is an absent field.** Upstream reads the request fields with nullish coalescing, so a null `max_tokens`, `temperature` or `top_p` falls back to the default instead of reaching the provider as a JSON null.
+- **A budget beyond the int range is rejected.** A float64 past the int range converted to an undefined value, and a numeric model suffix overflowed `strconv.Atoi` into `MaxInt64`; both now express no intent.
+
+### Changed
+
+- The OpenAI filter is split into focused helpers, and the model-suffix scan of the request body uses the `bytes` package instead of hand-rolled byte comparisons.
+- The Gemini capability lookup documents its contract: the capability rows are model patterns, the pattern table carries no provider scope, and a vendor prefix on the model id is stripped.
+- Every new test module is back under the project size threshold, and the retired Z.ai transform's no-op case is asserted on the wire.
+
+### Notes
+
+Three findings from the review turned out not to be defects, and the behaviour was left alone: the OpenAI filter's assistant-with-`tool_calls` shortcut matches upstream (upstream returns such a message as-is), the Gemini capability lookup is provider-agnostic by design, and the model-suffix scan was already linear. The first is now pinned by a test that names the upstream reference, and the `developer`-role handling on the CommandCode path — a deliberate local divergence from upstream — is pinned as well.
