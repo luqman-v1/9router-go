@@ -314,7 +314,7 @@ could capture it and a Claude client silently got the provider default."
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `internal/translator/openai_filter_determinism_test.go` with two table-free tests. Call the functions with the signatures they have **at this point in the plan** — Task 7 adds an options parameter to `FilterToOpenAIFormatJSON` and Task 8 adds a capabilities parameter to `TranslateOpenAIToGemini`, and both tasks update these two tests when they change the signature.
+Create `internal/translator/openai_filter_determinism_test.go` with two table-free tests. Call the functions with the signatures they have **at this point in the plan** — Task 7 adds an options parameter to `FilterToOpenAIFormatJSON`, and that task updates these two tests when it changes the signature.
 
 - `TestFilterToOpenAIFormatJSONDeterministic` — take one body containing at least six top-level keys, marshal it through `FilterToOpenAIFormatJSON` 100 times, assert every result is byte-identical to the first.
 - `TestTranslateOpenAIToGeminiDeterministic` — take one OpenAI body with a `reasoning_effort`, call `translator.TranslateOpenAIToGemini` 100 times, assert every result is byte-identical to the first.
@@ -607,17 +607,17 @@ dropping the field unconditionally."
 
 ---
 
-### Task 8: Fix the test helper and the capability context (F11, F12)
+### Task 8: Make the Gemini test helper fail loudly (F11, F12)
 
 **Files:**
-- Modify: `internal/translator/gemini_thinking_test.go:22-34` (`geminiMaxTokens`)
-- Modify: `internal/translator/gemini.go:429-450` (capability lookup and the translator signature)
-- Modify: every call site of `TranslateOpenAIToGemini`
-- Modify: `internal/translator/gemini_test.go`
+- Modify: `internal/translator/gemini_thinking_test.go` (`geminiMaxTokens`)
+- Modify: `internal/translator/gemini.go` (the capability lookup comment)
 
 **Interfaces:**
 - Consumes: `providers.GetCapabilitiesForModel(provider, model) Capabilities`.
-- Produces: `func TranslateOpenAIToGemini(openaiBody []byte, caps providers.Capabilities) ([]byte, error)` — the existing function gains a `caps` parameter and stops resolving capabilities itself.
+- Produces: no signature change. `TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error)` keeps its signature.
+
+**Note:** F12 (the capability lookup losing the provider context) turned out not to be a defect. The capabilities pattern table carries no provider scope, the lookup strips the vendor prefix from the model id, and the existing parity test already pins the resolution (gemini-2.5 → budget, gemini-3 → level). The task documents the contract instead of changing the signature, and no call site changes.
 
 - [ ] **Step 1: Fix the test helper**
 
@@ -628,14 +628,13 @@ In `internal/translator/gemini_thinking_test.go`, change `geminiMaxTokens` to fa
 Run: `go test ./internal/translator/ -run TestTranslateOpenAIToGemini -v`
 Expected: PASS, and the helper now reports a wrong-shaped body instead of returning 0.
 
-- [ ] **Step 3: Change the translator signature**
+- [ ] **Step 3: Document the capability contract**
 
-In `internal/translator/gemini.go`, change the signature to `func TranslateOpenAIToGemini(openaiBody []byte, caps providers.Capabilities) ([]byte, error)` and delete the `providers.GetCapabilitiesForModel("", oreq.Model)` call, using the `caps` parameter instead.
+In `internal/translator/gemini.go`, replace the comment above the capability lookup with the precise contract: the capability rows are model patterns, the pattern table carries no provider scope, so the lookup is provider-agnostic by design and a vendor prefix on the model id is stripped.
 
-- [ ] **Step 4: Update every call site**
+- [ ] **Step 4: Pin the output-token budget**
 
-Run: `rtk grep -n "TranslateOpenAIToGemini(" --type go`
-Expected: the translator's own tests — including `TestTranslateOpenAIToGeminiDeterministic` from Task 3 — plus the executor call sites. At each call site, resolve the capabilities with `providers.GetCapabilitiesForModel(provider, model)` — the provider id and the model are both in scope at the executor call sites — and pass them in.
+Add `TestTranslateOpenAIToGeminiWritesMaxOutputTokens` to `internal/translator/gemini_thinking_test.go`: translate a gemini-2.5 request with `reasoning_effort:"high"` and assert the helper reads a positive `maxOutputTokens`. With the old helper a missing field read as 0, so the assertion could not fail.
 
 - [ ] **Step 5: Run the tests**
 
@@ -645,13 +644,12 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-rtk git add internal/translator/gemini.go internal/translator/gemini_test.go internal/translator/gemini_thinking_test.go internal/proxy/executor/
-rtk git commit -m "fix(translator): resolve Gemini capabilities from the provider and stop masking bad test output
+rtk git add internal/translator/gemini.go internal/translator/gemini_thinking_test.go
+rtk git commit -m "test(translator): make the Gemini helper fail loudly instead of reporting zero
 
-The translator resolved capabilities with an empty provider, so a provider-scoped
-capability row could not apply. Take the resolved capabilities from the caller,
-and make the Gemini test helper fail loudly instead of turning a missing field
-into a passing zero."
+The helper turned a missing or wrong-shaped generationConfig into a zero, so a
+translator regression that dropped the output-token budget could not fail the
+test that reads it."
 ```
 
 ---

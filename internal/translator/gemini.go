@@ -455,7 +455,10 @@ func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]
 		probe["enable_thinking"] = true
 	}
 	intent := thinking.Extract(probe)
-	// Gemini capability rows are model patterns; provider-agnostic by design.
+	// The capability rows are model patterns, and the pattern table carries no
+	// provider scope, so the lookup is provider-agnostic by design: a vendor
+	// prefix on the model id is stripped and the global row for the bare id
+	// decides the wire format.
 	caps := providers.GetCapabilitiesForModel("", oreq.Model)
 	if tc, floor := thinking.GeminiConfig(intent, caps.ThinkingFormat, caps); tc != nil {
 		genConfig["thinkingConfig"] = tc

@@ -30,9 +30,28 @@ func geminiMaxTokens(t *testing.T, geminiBytes []byte) float64 {
 	if err := json.Unmarshal(geminiBytes, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	gc, _ := m["generationConfig"].(map[string]any)
-	v, _ := gc["maxOutputTokens"].(float64)
+	gc, ok := m["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected generationConfig in %s", geminiBytes)
+	}
+	v, ok := gc["maxOutputTokens"].(float64)
+	if !ok {
+		t.Fatalf("expected maxOutputTokens in %s", geminiBytes)
+	}
 	return v
+}
+
+// TestTranslateOpenAIToGeminiWritesMaxOutputTokens pins that a reasoning
+// request carries an output-token budget. The helper that reads it used to
+// report 0 for a missing field, which let a translator regression pass.
+func TestTranslateOpenAIToGeminiWritesMaxOutputTokens(t *testing.T) {
+	out, err := TranslateOpenAIToGemini([]byte(`{"model":"gemini-2.5-flash","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini: %v", err)
+	}
+	if got := geminiMaxTokens(t, out); got <= 0 {
+		t.Fatalf("maxOutputTokens = %v, want a positive budget", got)
+	}
 }
 
 func TestTranslateOpenAIToGemini_ThinkingParity(t *testing.T) {

@@ -108,11 +108,8 @@ both the `generationConfig` and the `maxOutputTokens` type assertion and
 returns `0` for a missing or wrong-shaped field, so any case expecting `0`
 passes vacuously.
 
-**F12 — The Gemini translator resolves capabilities globally.**
-`internal/translator/gemini.go:429-450` calls
-`providers.GetCapabilitiesForModel("", oreq.Model)` with an empty provider, so
-a provider-scoped or custom-node capability row cannot be honoured on this
-path.
+**F12 — The Gemini translator resolves capabilities globally (not a defect).**
+`internal/translator/gemini.go` calls `providers.GetCapabilitiesForModel("", oreq.Model)`. The capabilities pattern table carries no provider scope, the lookup strips the vendor prefix from the model id, and the existing parity test already pins the resolution (gemini-2.5 → budget, gemini-3 → level). The contract is documented in the code; no signature change.
 
 **F13 — `FilterToOpenAIFormat` is one 248-pure-LOC branch-heavy function.**
 `internal/translator/openai_filter.go:35-231` does role normalization, content
