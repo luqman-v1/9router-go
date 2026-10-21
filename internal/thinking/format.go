@@ -2,6 +2,7 @@ package thinking
 
 import (
 	"9router/proxy/internal/providers"
+	"bytes"
 	json "encoding/json/v2"
 	"strings"
 )
@@ -130,104 +131,50 @@ func ApplyJSON(body []byte, target, provider, model string, override *Intent) []
 // "(…)" suffix. It scans the raw bytes for the model key instead of decoding:
 // the first ")" before the next quote/comma/brace after "model" indicates one.
 // Scans bytes directly to avoid string allocation in the hot path.
+//
+// The scan is linear. A request body is read without a size cap, so a body
+// that repeats the model key must not cost a quadratic walk.
 func bodyModelHasSuffix(body []byte) bool {
-	keys := [][]byte{[]byte(`"model"`), []byte(`"modelId"`), []byte(`"model_id"`)}
-	for _, key := range keys {
-		idx := indexOfBytes(body, key)
-		for idx != -1 {
-			rest := body[idx+len(key):]
-			rest = trimLeftByte(rest, " \t\n\r:")
-			if len(rest) > 0 && rest[0] == '"' {
-				// Find closing quote
-				end := indexOfByte(rest[1:], '"')
-				if end != -1 {
-					value := rest[1 : 1+end]
-					if indexOfBytes(value, []byte("(")) != -1 &&
-						(len(value) == 0 || value[len(value)-1] == ')' || trimRightByte(value, " \t\n\r")[len(trimRightByte(value, " \t\n\r"))-1] == ')') {
-						return true
-					}
-				}
+	for _, key := range [][]byte{[]byte(`"model"`), []byte(`"modelId"`), []byte(`"model_id"`)} {
+		for off := 0; off < len(body); {
+			rel := bytes.Index(body[off:], key)
+			if rel == -1 {
 				break
 			}
-			next := indexOfBytes(body[idx+len(key):], key)
-			if next == -1 {
+			i := off + rel + len(key)
+			off = i
+			i = skipJSONSpace(body, i)
+			if i >= len(body) || body[i] != '"' {
+				off = i
+				continue
+			}
+			end := bytes.IndexByte(body[i+1:], '"')
+			if end == -1 {
 				break
 			}
-			idx += len(key) + next
+			value := body[i+1 : i+1+end]
+			off = i + 1 + end + 1
+			trimmed := bytes.TrimRight(value, " \t\n\r")
+			if bytes.IndexByte(value, '(') >= 0 && len(trimmed) > 0 && trimmed[len(trimmed)-1] == ')' {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// indexOfBytes returns the index of the first occurrence of sub in b, or -1.
-func indexOfBytes(b, sub []byte) int {
-	if len(sub) == 0 {
-		return 0
-	}
-	if len(sub) > len(b) {
-		return -1
-	}
-	for i := 0; i <= len(b)-len(sub); i++ {
-		if bytesEqual(b[i:i+len(sub)], sub) {
+// skipJSONSpace returns the index of the first byte at or after i that is
+// neither JSON whitespace nor the colon that separates a key from its value.
+func skipJSONSpace(body []byte, i int) int {
+	for i < len(body) {
+		switch body[i] {
+		case ' ', '\t', '\n', '\r', ':':
+			i++
+		default:
 			return i
 		}
 	}
-	return -1
-}
-
-// indexOfByte returns the index of the first occurrence of c in b, or -1.
-func indexOfByte(b []byte, c byte) int {
-	for i := range b {
-		if b[i] == c {
-			return i
-		}
-	}
-	return -1
-}
-
-// trimLeftByte removes leading bytes in cutset from b and returns the result.
-func trimLeftByte(b []byte, cutset string) []byte {
-	for len(b) > 0 {
-		if !containsByte(cutset, b[0]) {
-			break
-		}
-		b = b[1:]
-	}
-	return b
-}
-
-// trimRightByte removes trailing bytes in cutset from b and returns the result.
-func trimRightByte(b []byte, cutset string) []byte {
-	for len(b) > 0 {
-		if !containsByte(cutset, b[len(b)-1]) {
-			break
-		}
-		b = b[:len(b)-1]
-	}
-	return b
-}
-
-// containsByte reports whether c is in s.
-func containsByte(s string, c byte) bool {
-	for i := range s {
-		if s[i] == c {
-			return true
-		}
-	}
-	return false
-}
-
-// bytesEqual reports whether a and b are equal.
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return i
 }
 
 // resolveFormat ports resolveFormat verbatim.
