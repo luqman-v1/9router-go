@@ -16,8 +16,9 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
-	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
+	"9router/proxy/internal/thinking"
 	"9router/proxy/internal/translator"
 )
 
@@ -64,6 +65,14 @@ func generateMimoFingerprint() string {
 	seed := fmt.Sprintf("%s|%s|%s", host, "mimo-free", username)
 	h := sha256.Sum256([]byte(seed))
 	return fmt.Sprintf("%x", h)
+}
+
+// clampMimoFreeReasoning applies the mandatory-reasoning clamp to a mimo-free
+// body. The combo path calls MimoFreeChat directly, so neither the thinking
+// pass nor the clamp ran there: an explicit disable reached the provider
+// unchanged, and a provider that mandates reasoning answered 400.
+func clampMimoFreeReasoning(body []byte, model string) []byte {
+	return thinking.ClampDisableToMinimalJSON(body, providers.GetCapabilitiesForModel(mimoProviderID, model))
 }
 
 // MimoFreeChat is an HTTP handler that forwards a request via the MiMo free tier.

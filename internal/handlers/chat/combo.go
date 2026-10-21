@@ -698,6 +698,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				}
 				if modelInfo.Provider == "mimo-free" {
 					comboMetrics := &streamMetrics{}
+					upstreamJSON = clampMimoFreeReasoning(upstreamJSON, modelInfo.Model)
 					fwdErr = h.MimoFreeChat(fwdCtx, targetWriter, upstreamJSON, isStream, comboMetrics)
 				} else {
 					fwdErr = h.tryForwardWithConnection(forwardRequestParams{
