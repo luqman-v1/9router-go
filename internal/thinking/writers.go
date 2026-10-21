@@ -2,6 +2,7 @@ package thinking
 
 import (
 	"9router/proxy/internal/providers"
+	"strings"
 )
 
 // applyFormat ports applyFormat: one dialect out. none on a model that
@@ -21,7 +22,7 @@ func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Ca
 			break
 		}
 		if lvl := ToLevel(eff); lvl != "" {
-			body["reasoning_effort"] = NormalizeOpenAILevel(lvl, supported)
+			body["reasoning_effort"] = levelFor(lvl, supported)
 		}
 	case "openai-responses":
 		// Responses nests effort: reasoning:{effort,summary}. A top-level
@@ -35,7 +36,7 @@ func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Ca
 			if cur == nil {
 				cur = map[string]any{}
 			}
-			cur["effort"] = NormalizeOpenAILevel(lvl, supported)
+			cur["effort"] = levelFor(lvl, supported)
 			if _, ok := cur["summary"]; !ok {
 				cur["summary"] = "auto"
 			}
@@ -54,14 +55,14 @@ func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Ca
 			delete(body, "thinking")
 		}
 		lvl := ToLevel(eff)
-		effort := lvl
+		effort := "high"
 		switch {
 		case lvl == "auto":
 			effort = "high"
 		case lvl == "minimal":
 			effort = "low"
-		case lvl == "xhigh" && !containsLevel(supported, "xhigh"):
-			effort = "high"
+		default:
+			effort = levelFor(lvl, supported)
 		}
 		body["output_config"] = map[string]any{"effort": effort}
 	case "gemini-level":
@@ -170,6 +171,7 @@ func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Ca
 			break
 		}
 		if lvl := ToLevel(eff); lvl != "" {
+			lvl = levelFor(lvl, supported)
 			if lvl == "xhigh" || lvl == "max" {
 				lvl = "high"
 			}
@@ -181,7 +183,7 @@ func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Ca
 			break
 		}
 		if lvl := ToLevel(eff); lvl != "" {
-			body["reasoning_effort"] = lvl
+			body["reasoning_effort"] = knownLevel(lvl)
 		}
 	case "kiro":
 		// Handled via system-tag injection in the kiro translator; no field.
@@ -196,7 +198,7 @@ func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Ca
 				break
 			}
 			if lvl := ToLevel(eff); lvl != "" {
-				params["reasoning_effort"] = lvl
+				params["reasoning_effort"] = levelFor(lvl, supported)
 			}
 			break
 		}
@@ -204,10 +206,62 @@ func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Ca
 			break
 		}
 		if lvl := ToLevel(eff); lvl != "" {
-			body["reasoning_effort"] = lvl
+			body["reasoning_effort"] = levelFor(lvl, supported)
 		}
 	default:
 	}
+}
+
+// knownLevel maps a level the client made up to medium and leaves a level the
+// effort dialects know alone. It is the clamp for a format whose level set is
+// wider than the registry's picker entries.
+func knownLevel(level string) string {
+	if KnownEffort(level) {
+		return strings.ToLower(strings.TrimSpace(level))
+	}
+	return "medium"
+}
+
+// levelFor emits a level the target accepts. An unknown level becomes medium,
+// and a level the model does not advertise falls back to the closest one it
+// does — a provider answers a level outside its enum with a 400.
+func levelFor(level string, supported []string) string {
+	if level == "max" || level == "ultra" {
+		return NormalizeOpenAILevel(level, supported)
+	}
+	if !KnownEffort(level) {
+		level = "medium"
+	}
+	if len(supported) == 0 || containsLevel(supported, level) {
+		return level
+	}
+	if level == "minimal" && containsLevel(supported, "low") {
+		return "low"
+	}
+	want := effortRank(level)
+	best, bestRank, lowest, lowestRank := "", -1, "", 1<<30
+	for _, s := range supported {
+		if s == "none" {
+			continue
+		}
+		r := effortRank(s)
+		if r < 0 {
+			continue
+		}
+		if r <= want && r > bestRank {
+			best, bestRank = s, r
+		}
+		if r < lowestRank {
+			lowest, lowestRank = s, r
+		}
+	}
+	if best != "" {
+		return best
+	}
+	if lowest != "" {
+		return lowest
+	}
+	return level
 }
 
 func withDisplay(thinking map[string]any, display string) map[string]any {

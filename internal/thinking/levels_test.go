@@ -100,6 +100,112 @@ func TestLevelMaps(t *testing.T) {
 	}
 }
 
+func TestEffortToThinkingLevelUnknown(t *testing.T) {
+	cases := map[string]string{
+		"ultra":   "high",
+		"xhigh":   "high",
+		"max":     "high",
+		"banana":  "high",
+		"":        "high",
+		"minimal": "minimal",
+		"low":     "low",
+		"medium":  "medium",
+		"high":    "high",
+		"none":    "minimal",
+		"off":     "minimal",
+	}
+	for in, want := range cases {
+		if got := EffortToThinkingLevel(in); got != want {
+			t.Errorf("EffortToThinkingLevel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNormalizeOpenAILevelUnknown(t *testing.T) {
+	cases := []struct {
+		level     string
+		supported []string
+		want      string
+	}{
+		{"banana", nil, "medium"},
+		{"", nil, "medium"},
+		{"high", nil, "high"},
+		{"minimal", nil, "minimal"},
+		{"max", []string{"none", "low", "medium", "high", "max"}, "max"},
+		{"max", []string{"none", "low", "medium", "high", "xhigh"}, "xhigh"},
+		{"ultra", []string{"none", "low", "medium", "high", "max"}, "max"},
+	}
+	for _, tt := range cases {
+		if got := NormalizeOpenAILevel(tt.level, tt.supported); got != tt.want {
+			t.Errorf("NormalizeOpenAILevel(%q, %v) = %q, want %q", tt.level, tt.supported, got, tt.want)
+		}
+	}
+}
+
+// TestWriterLevelsStayInsideTheProviderVocabulary pins that a level the client
+// made up never reaches a provider: each writer must emit a level from the
+// known vocabulary.
+func TestWriterLevelsStayInsideTheProviderVocabulary(t *testing.T) {
+	known := map[string]bool{
+		"none": true, "minimal": true, "low": true, "medium": true,
+		"high": true, "xhigh": true, "max": true,
+	}
+
+	cases := []struct {
+		name     string
+		target   string
+		provider string
+		model    string
+		level    func(body map[string]any) string
+	}{
+		{
+			name: "openai", target: "openai", provider: "openai", model: "gpt-5.3-codex",
+			level: func(b map[string]any) string { s, _ := b["reasoning_effort"].(string); return s },
+		},
+		{
+			name: "claude-adaptive", target: "claude", provider: "claude", model: "claude-opus-4.7",
+			level: func(b map[string]any) string {
+				oc, _ := b["output_config"].(map[string]any)
+				s, _ := oc["effort"].(string)
+				return s
+			},
+		},
+		{
+			name: "step", target: "openai", provider: "deepseek", model: "step-5-preview",
+			level: func(b map[string]any) string { s, _ := b["reasoning_effort"].(string); return s },
+		},
+		{
+			name: "commandcode", target: "commandcode", provider: "commandcode", model: "deepseek/deepseek-v4.1-flash",
+			level: func(b map[string]any) string { s, _ := b["reasoning_effort"].(string); return s },
+		},
+		{
+			name: "gemini-level", target: "gemini", provider: "", model: "gemini-3-pro",
+			level: func(b map[string]any) string {
+				gc, _ := b["generationConfig"].(map[string]any)
+				tc, _ := gc["thinkingConfig"].(map[string]any)
+				s, _ := tc["thinkingLevel"].(string)
+				return s
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, asked := range []string{"banana", "ultra"} {
+				out := apply(t, tc.target, tc.provider, tc.model,
+					map[string]any{"reasoning_effort": asked}, nil)
+				got := tc.level(out)
+				if got == asked {
+					t.Fatalf("%s: the client level %q reached the wire verbatim: %+v", tc.name, asked, out)
+				}
+				if !known[got] {
+					t.Fatalf("%s: level %q is outside the known vocabulary: %+v", tc.name, got, out)
+				}
+			}
+		})
+	}
+}
+
 func TestGeminiConfig(t *testing.T) {
 	caps := providers.Capabilities{Reasoning: true, ThinkingFormat: "gemini-level"}
 	tc, floor := GeminiConfig((&Intent{Mode: ModeLevel, Level: "high"}), "gemini-level", caps)

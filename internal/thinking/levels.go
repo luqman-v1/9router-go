@@ -74,18 +74,48 @@ func EffortToThinkingLevel(effort string) string {
 	switch e {
 	case "none", "off":
 		return "minimal"
-	case "xhigh", "max":
+	case "xhigh", "max", "ultra":
 		return "high"
-	default:
+	case "minimal", "low", "medium", "high":
 		return e
+	default:
+		return "high"
 	}
 }
 
+// KnownEffort reports whether a level is one the effort dialects accept. A
+// level outside the set is not a value a provider understands, so it is
+// mapped to a known one instead of being forwarded.
+func KnownEffort(level string) bool {
+	e := strings.ToLower(strings.TrimSpace(level))
+	for _, l := range EffortLevels {
+		if e == l {
+			return true
+		}
+	}
+	return false
+}
+
+// effortRank orders the levels from the lowest to the highest, so a level can
+// be mapped onto the closest one a model advertises.
+func effortRank(level string) int {
+	for i, l := range EffortLevels {
+		if l == level {
+			return i
+		}
+	}
+	return -1
+}
+
 // NormalizeOpenAILevel keeps max|ultra only when the model advertises them;
-// ultra falls back to max, else xhigh. Port of normalizeOpenAILevel.
+// ultra falls back to max, else xhigh. A level outside the effort set becomes
+// medium. Port of normalizeOpenAILevel.
 func NormalizeOpenAILevel(level string, supported []string) string {
 	if level != "max" && level != "ultra" {
-		return level
+		if KnownEffort(level) {
+			return strings.ToLower(strings.TrimSpace(level))
+		}
+		return "medium"
 	}
 	for _, s := range supported {
 		if s == level {
