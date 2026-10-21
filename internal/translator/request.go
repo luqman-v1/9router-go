@@ -443,6 +443,12 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 			} else {
 				oreq.ReasoningEffort = "medium"
 			}
+		} else if creq.Thinking.Type == "disabled" {
+			// "none" is the OpenAI dialect the thinking pipeline reads. A
+			// provider that forbids disabling clamps it to minimal; one that
+			// allows it forwards the disable. Dropping it here would leave the
+			// client asking for no reasoning with the provider default.
+			oreq.ReasoningEffort = "none"
 		} else if creq.Thinking.Type == "adaptive" {
 			effort := "high"
 			if creq.OutputConfig != nil && creq.OutputConfig.Effort != "" {

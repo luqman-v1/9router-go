@@ -509,6 +509,28 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 			t.Errorf("expected no reasoning_effort, got %v", oreq["reasoning_effort"])
 		}
 	})
+
+	t.Run("thinking disabled → none reasoning_effort", func(t *testing.T) {
+		claudeJSON := []byte(`{
+			"model": "claude-3-5-sonnet",
+			"messages": [{"role":"user","content":"hello"}],
+			"thinking": {"type": "disabled"}
+		}`)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		if err != nil {
+			t.Fatalf("failed to translate: %v", err)
+		}
+		var oreq map[string]any
+		if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
+			t.Fatalf("failed to parse: %v", err)
+		}
+		// "none" is the OpenAI dialect the thinking pipeline reads: the
+		// disable must survive the conversion, and a provider that forbids
+		// disabling clamps it to minimal afterwards.
+		if oreq["reasoning_effort"] != "none" {
+			t.Errorf("expected reasoning_effort 'none', got %v", oreq["reasoning_effort"])
+		}
+	})
 }
 
 func TestDefaultClaudeToolType(t *testing.T) {
