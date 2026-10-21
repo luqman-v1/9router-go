@@ -153,6 +153,36 @@ func TestCommandcodeConvertMessages(t *testing.T) {
 	}
 }
 
+// TestCommandcodeNullFieldsAreAbsent pins the nullish semantics upstream's
+// openaiToCommandCodeRequest has: a null value is an absent value, so the
+// default applies and no key ever carries a JSON null.
+func TestCommandcodeNullFieldsAreAbsent(t *testing.T) {
+	params := commandcodeParamsForTest(t, `{"model":"m","messages":[],"max_tokens":null,"temperature":null,"top_p":null,"reasoning_effort":null}`)
+	if got := params["max_tokens"]; got != float64(1024) {
+		t.Errorf("max_tokens = %v, want the 1024 default", got)
+	}
+	if got := params["temperature"]; got != 0.3 {
+		t.Errorf("temperature = %v, want the 0.3 default", got)
+	}
+	if _, has := params["top_p"]; has {
+		t.Errorf("top_p must be absent, got %v", params["top_p"])
+	}
+	if _, has := params["reasoning_effort"]; has {
+		t.Errorf("reasoning_effort must be absent, got %v", params["reasoning_effort"])
+	}
+}
+
+// TestCommandcodeDeveloperRoleFeedsTheSystemPrompt pins the deliberate local
+// divergence: upstream downgrades a developer turn to a user turn
+// (open-sse/translator/request/openai-to-commandcode.js:106-160), while this
+// port feeds the system prompt.
+func TestCommandcodeDeveloperRoleFeedsTheSystemPrompt(t *testing.T) {
+	params := commandcodeParamsForTest(t, `{"model":"m","messages":[{"role":"developer","content":"be terse"}]}`)
+	if got := params["system"]; got != "be terse" {
+		t.Errorf("system = %v, want the developer turn in the system prompt", got)
+	}
+}
+
 func TestBuildCommandcodeBody_ConvertsToolsToAnthropicShape(t *testing.T) {
 	params := commandcodeParamsForTest(t, `{
 		"model":"z-ai/glm-5.3-flash",

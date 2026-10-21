@@ -452,18 +452,18 @@ func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
 		"stream":     true,
 		"max_tokens": commandcodeMaxTokens(m),
 	}
-	if temp, ok := m["temperature"]; ok {
+	if temp, ok := m["temperature"]; ok && temp != nil {
 		params["temperature"] = temp
 	} else {
 		params["temperature"] = 0.3
 	}
-	if top, ok := m["top_p"]; ok {
+	if top, ok := m["top_p"]; ok && top != nil {
 		params["top_p"] = top
 	}
 	if tools, ok := m["tools"].([]any); ok && len(tools) > 0 {
 		params["tools"] = convertOpenAIToolsToClaude(tools)
 	}
-	if effort, ok := m["reasoning_effort"]; ok {
+	if effort, ok := m["reasoning_effort"]; ok && effort != nil {
 		params["reasoning_effort"] = effort
 	}
 
