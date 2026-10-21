@@ -614,7 +614,7 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	}
 	req["messages"] = messagesRaw
 
-	if out, err := json.Marshal(req); err == nil {
+	if out, err := json.Marshal(req, json.Deterministic(true)); err == nil {
 		return out
 	}
 	return body
@@ -641,7 +641,7 @@ func DefaultClaudeToolType(body []byte) []byte {
 		}
 	}
 	if changed {
-		if out, err := json.Marshal(req); err == nil {
+		if out, err := json.Marshal(req, json.Deterministic(true)); err == nil {
 			return out
 		}
 	}
@@ -859,7 +859,7 @@ func AnchorClaudeCache(body []byte) []byte {
 	// 4. Budget guard: if already >= the marker budget, cap and return
 	if countCacheControlBlocks(req) >= cacheControlMarkerBudget {
 		capCacheControlBlocks(req)
-		if out, err := json.Marshal(req); err == nil {
+		if out, err := json.Marshal(req, json.Deterministic(true)); err == nil {
 			return out
 		}
 		return body
@@ -872,7 +872,7 @@ func AnchorClaudeCache(body []byte) []byte {
 	// 6. Ensure total cache_control blocks <= the marker budget.
 	capCacheControlBlocks(req)
 
-	out, err := json.Marshal(req)
+	out, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		return body
 	}

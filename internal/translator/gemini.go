@@ -472,14 +472,14 @@ func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]
 		genConfig["maxOutputTokens"] = *maxTokens
 	}
 	if len(genConfig) > 0 {
-		configJSON, err := json.Marshal(genConfig)
+		configJSON, err := json.Marshal(genConfig, json.Deterministic(true))
 		if err != nil {
 			return nil, fmt.Errorf("marshal generation config: %w", err)
 		}
 		req.GenerationConfig = configJSON
 	}
 
-	out, err := json.Marshal(req)
+	out, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		return nil, fmt.Errorf("marshal gemini request: %w", err)
 	}
@@ -616,7 +616,7 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 				reasoningContent += part.Text
 			}
 			if part.FunctionCall != nil {
-				args, err := json.Marshal(part.FunctionCall.Args)
+				args, err := json.Marshal(part.FunctionCall.Args, json.Deterministic(true))
 				if err != nil {
 					args = []byte("{}")
 				}
@@ -704,7 +704,7 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 		delete(resp["choices"].([]map[string]any)[0]["message"].(map[string]any), "tool_calls")
 	}
 
-	out, err := json.Marshal(resp)
+	out, err := json.Marshal(resp, json.Deterministic(true))
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal OpenAI response: %w", err)
 	}
@@ -772,7 +772,7 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 					delta["reasoning_content"] = part.Text
 				}
 				if part.FunctionCall != nil {
-					args, err := json.Marshal(part.FunctionCall.Args)
+					args, err := json.Marshal(part.FunctionCall.Args, json.Deterministic(true))
 					if err != nil {
 						args = []byte("{}")
 					}
@@ -914,7 +914,7 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 	// Format as multiple SSE lines
 	var buf bytes.Buffer
 	for _, res := range results {
-		payload, err := json.Marshal(res)
+		payload, err := json.Marshal(res, json.Deterministic(true))
 		if err != nil {
 			continue
 		}

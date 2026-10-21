@@ -34,7 +34,7 @@ func (h *ChatHandler) prepareInboundThinking(provider, model string, body []byte
 	if intent == nil {
 		intent = thinking.CaptureThinking(m)
 	}
-	out, err := json.Marshal(m)
+	out, err := json.Marshal(m, json.Deterministic(true))
 	if err != nil {
 		return body, wireModel, intent
 	}
