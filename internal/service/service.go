@@ -1,7 +1,8 @@
 // Package service installs the gateway as an autostart service so it comes
 // back after a reboot: a systemd user unit on systemd Linux, a launchd agent
 // on macOS, an OpenRC/runit service where those inits run, a cron @reboot
-// entry everywhere else, and a scheduled task on Windows.
+// entry everywhere else, and on Windows a logon task, falling back to the
+// per-user Startup folder when creating the task needs an elevated console.
 package service
 
 import (
@@ -25,9 +26,10 @@ const (
 	BackendLaunchd     Backend = "launchd"
 	BackendOpenRC      Backend = "openrc"
 	BackendRunit       Backend = "runit"
-	BackendCron        Backend = "cron"
-	BackendWindowsTask Backend = "windows-task"
-	BackendOverrideEnv         = "9ROUTER_SERVICE_BACKEND"
+	BackendCron           Backend = "cron"
+	BackendWindowsTask    Backend = "windows-task"
+	BackendWindowsStartup Backend = "windows-startup"
+	BackendOverrideEnv            = "9ROUTER_SERVICE_BACKEND"
 )
 
 // ErrNotInstalled is returned when no autostart entry exists to remove.
@@ -100,7 +102,17 @@ func Install(extraArgs []string) (Info, error) {
 	case BackendCron:
 		return installCron(exe, extraArgs)
 	case BackendWindowsTask:
-		return installWindowsTask(exe, extraArgs)
+		info, err := installWindowsTask(exe, extraArgs)
+		if err == nil {
+			return info, nil
+		}
+		// Creating a logon task needs an Administrator console (schtasks
+		// answers "Access is denied" otherwise). The per-user Startup folder
+		// runs the same command at logon and needs no elevation, so a denied
+		// task falls back to it rather than reporting the install as failed.
+		return installWindowsStartup(exe, extraArgs)
+	case BackendWindowsStartup:
+		return installWindowsStartup(exe, extraArgs)
 	default:
 		return Info{}, fmt.Errorf("service.Install: no supported autostart backend found on %s", goos)
 	}
@@ -128,6 +140,9 @@ func Uninstall() ([]Info, error) {
 	if info, ok := uninstallWindowsTask(); ok {
 		removed = append(removed, info)
 	}
+	if info, ok := uninstallWindowsStartup(); ok {
+		removed = append(removed, info)
+	}
 	if len(removed) == 0 {
 		return nil, ErrNotInstalled
 	}
@@ -143,6 +158,7 @@ func Status() (Info, bool) {
 		statusRunit,
 		statusCron,
 		statusWindowsTask,
+		statusWindowsStartup,
 	} {
 		if info, ok := probe(); ok {
 			return info, true
@@ -160,7 +176,7 @@ func Status() (Info, bool) {
 func Detect() Backend {
 	if forced := strings.TrimSpace(os.Getenv(BackendOverrideEnv)); forced != "" {
 		switch Backend(forced) {
-		case BackendSystemdUser, BackendLaunchd, BackendOpenRC, BackendRunit, BackendCron:
+		case BackendSystemdUser, BackendLaunchd, BackendOpenRC, BackendRunit, BackendCron, BackendWindowsStartup:
 			return Backend(forced)
 		case "systemd", "system", "systemd-system":
 			// This package only manages the unprivileged per-user unit, so

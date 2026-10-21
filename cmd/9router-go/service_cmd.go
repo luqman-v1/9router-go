@@ -172,6 +172,8 @@ func inspectHint(backend service.Backend) string {
 		return "crontab -l | grep 9router-go"
 	case service.BackendWindowsTask:
 		return "schtasks /query /tn 9router-go"
+	case service.BackendWindowsStartup:
+		return "explorer shell:startup"
 	default:
 		return ""
 	}

@@ -156,9 +156,9 @@ func main() {
 				Subcommands: []*cli.Command{
 					{
 						Name:  "install",
-						Usage: "Install autostart (systemd user unit, launchd agent, OpenRC/runit service, cron @reboot, or scheduled task)",
+						Usage: "Install autostart (systemd user unit, launchd agent, OpenRC/runit service, cron @reboot, Windows logon task, or the Startup folder)",
 						Flags: []cli.Flag{
-							&cli.StringFlag{Name: "backend", Usage: "force a backend: systemd, launchd, openrc, runit, cron"},
+							&cli.StringFlag{Name: "backend", Usage: "force a backend: systemd, launchd, openrc, runit, cron, windows-startup"},
 						},
 						Action: serviceInstall,
 					},

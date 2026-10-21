@@ -51,6 +51,11 @@ func control(op string) (Info, error) {
 		err = controlRunit(op)
 	case BackendWindowsTask:
 		err = controlWindowsTask(op)
+	case BackendWindowsStartup:
+		// The Startup folder only fires at logon (like cron @reboot): there is
+		// no supervisor to start/stop/restart, so control falls back to the
+		// pid-file daemon.
+		return Info{}, ErrNoSupervisor
 	case BackendCron:
 		return Info{}, ErrNoSupervisor
 	default:
