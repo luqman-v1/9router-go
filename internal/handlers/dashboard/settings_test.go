@@ -51,6 +51,36 @@ func setupSettingsTestDB(t *testing.T) (*db.Repo, func()) {
 	return repo, cleanup
 }
 
+func TestHandleUpdateSettings_ProviderThinkingMode(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	put := func(body string) int {
+		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := put(`{"providerThinking":{"cline":{"mode":"high"}}}`); code != http.StatusOK {
+		t.Fatalf("a level mode: status = %d, want 200", code)
+	}
+	if code := put(`{"providerThinking":{"openai":{"mode":"on"}}}`); code != http.StatusOK {
+		t.Fatalf("a switch mode: status = %d, want 200", code)
+	}
+	if code := put(`{"providerThinking":{"gemini":{"mode":"banana"}}}`); code != http.StatusBadRequest {
+		t.Fatalf("an unknown mode: status = %d, want 400", code)
+	}
+	if code := put(`{"providerThinking":{"gemini":{"mode":"none"}}}`); code != http.StatusOK {
+		t.Fatalf("none is an effort mode: status = %d, want 200", code)
+	}
+	if code := put(`{"providerThinking":{"gemini":"high"}}`); code != http.StatusBadRequest {
+		t.Fatalf("a malformed entry: status = %d, want 400", code)
+	}
+}
+
 func TestHandleUpdateSettings_PasswordChange(t *testing.T) {
 	repo, cleanup := setupSettingsTestDB(t)
 	defer cleanup()

@@ -174,6 +174,50 @@ func TestGetSettings_DashboardParityKeys(t *testing.T) {
 	}
 }
 
+func TestGetSettings_ProviderThinkingModeVocabulary(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := NewRepo(database)
+
+	settingsJSON := `{
+		"providerThinking": {
+			"cline": {"mode": "HIGH"},
+			"openai": {"mode": "banana"},
+			"gemini": {"mode": "off"}
+		}
+	}`
+
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+
+	if _, err := database.Exec(`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, settingsJSON); err != nil {
+		t.Fatalf("failed to insert settings: %v", err)
+	}
+
+	settings, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	if settings == nil {
+		t.Fatal("expected non-nil settings")
+	}
+
+	if got := settings.ProviderThinking["cline"].Mode; got != "high" {
+		t.Errorf("cline mode = %q, want high (a mode is normalized)", got)
+	}
+	if got := settings.ProviderThinking["gemini"].Mode; got != "off" {
+		t.Errorf("gemini mode = %q, want off", got)
+	}
+	if _, ok := settings.ProviderThinking["openai"]; ok {
+		t.Errorf("a mode outside the vocabulary must be dropped, got %+v", settings.ProviderThinking["openai"])
+	}
+}
+
 func TestSetComboAndProviderStrategy_PreservesExistingSettings(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	defer cleanup()

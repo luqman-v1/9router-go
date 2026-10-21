@@ -2,6 +2,7 @@ package db
 
 import (
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/thinking"
 	json "encoding/json/v2"
 )
 
@@ -127,7 +128,7 @@ type SettingsData struct {
 	//
 	// 0 means "keep forever", which is the default: the ledger is only pruned
 	// when an operator asks for it. See usage_retention_ledger.go.
-	UsageHistoryRetentionDays int             `json:"usageHistoryRetentionDays,omitempty"`
+	UsageHistoryRetentionDays int                         `json:"usageHistoryRetentionDays,omitempty"`
 	ProviderThinking          map[string]ProviderThinking `json:"providerThinking,omitempty"`
 }
 
@@ -420,13 +421,14 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 			}
 		}
 	}
-	// Per-provider reasoning overrides (dashboard provider card). Non-empty
-	// mode strings only; the same setting drives the UI's copied-model suffix.
+	// Per-provider reasoning overrides (dashboard provider card). Only a mode
+	// inside the allowed vocabulary is kept: the mode reaches reasoning_effort
+	// on the wire, and a provider rejects an unknown effort.
 	if pt, ok := raw["providerThinking"].(map[string]any); ok {
 		s.ProviderThinking = make(map[string]ProviderThinking, len(pt))
 		for k, v := range pt {
 			if vm, ok := v.(map[string]any); ok {
-				if mode := handlerutil.GetString(vm, "mode"); mode != "" {
+				if mode, valid := thinking.NormalizeProviderThinkingMode(handlerutil.GetString(vm, "mode")); valid {
 					s.ProviderThinking[k] = ProviderThinking{Mode: mode}
 				}
 			}

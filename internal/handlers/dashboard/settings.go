@@ -22,6 +22,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/thinking"
 )
 
 // Dashboard client headers, matching the Next dashboard settings/database route.
@@ -104,6 +105,11 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "setting "+key+" is read-only")
 			return
 		}
+	}
+
+	if err := validateProviderThinking(updates["providerThinking"]); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	// Feature Visibility stores sidebar ids, so the payload is normalized here:
@@ -407,6 +413,31 @@ func (h *DashboardHandler) exportAuthorized(r *http.Request) bool {
 
 // sanitizeSettings copies settings and drops secrets, exposing `hasPassword`
 // the way the Next dashboard does.
+// validateProviderThinking rejects a per-provider reasoning override whose
+// mode is outside the allowed vocabulary. The mode reaches reasoning_effort on
+// the wire, and a provider answers an unknown effort with a 400 — so a mode
+// that cannot be honoured is refused at the boundary instead.
+func validateProviderThinking(v any) error {
+	if v == nil {
+		return nil
+	}
+	pt, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("providerThinking must be an object")
+	}
+	for provider, entry := range pt {
+		vm, ok := entry.(map[string]any)
+		if !ok {
+			return fmt.Errorf("providerThinking[%s] must be an object", provider)
+		}
+		mode, _ := vm["mode"].(string)
+		if _, valid := thinking.NormalizeProviderThinkingMode(mode); !valid {
+			return fmt.Errorf("providerThinking[%s].mode must be one of %s", provider, strings.Join(thinking.ProviderThinkingModes, ", "))
+		}
+	}
+	return nil
+}
+
 func sanitizeSettings(raw map[string]any) map[string]any {
 	if raw == nil {
 		raw = map[string]any{}

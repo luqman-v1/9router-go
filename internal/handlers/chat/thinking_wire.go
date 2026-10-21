@@ -45,8 +45,8 @@ func (h *ChatHandler) prepareInboundThinking(provider, model string, body []byte
 // mirroring upstream chatCore.js:117-131. Only when the client hasn't set
 // the field; "auto" (and "") means no override.
 func (h *ChatHandler) injectProviderThinking(provider string, m map[string]any) {
-	mode := h.providerThinkingMode(provider)
-	if mode == "" || mode == "auto" {
+	mode, valid := thinking.NormalizeProviderThinkingMode(h.providerThinkingMode(provider))
+	if !valid || mode == "auto" {
 		return
 	}
 	switch mode {

@@ -295,9 +295,9 @@ func TestInjectProviderThinkingDialectKeys(t *testing.T) {
 			wantMode: thinking.ModeLevel, wantLev: "low",
 		},
 		{
-			name: "unknown mode is written verbatim and lowercases to a level",
+			name: "an unknown mode is not written to the wire",
 			mode: "Enabled", client: map[string]any{},
-			want: map[string]any{"reasoning_effort": "Enabled"}, wantMode: thinking.ModeLevel, wantLev: "enabled",
+			want: map[string]any{}, wantNil: true,
 		},
 	}
 	for _, tt := range tests {
