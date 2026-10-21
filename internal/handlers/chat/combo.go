@@ -555,6 +555,11 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			}
 
 			var entrySuccess bool
+			// Connections already attempted for THIS entry. A failure must
+			// never re-dial the same connection for the same member: the
+			// non-retryable statuses used to loop here ten times on the
+			// sole connection of a shared-account provider.
+			triedConns := make(map[string]bool)
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
 				var connID string
@@ -572,6 +577,15 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					var err error
 					picked, cData, err = h.getBestConnectionWithContext(ctx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
+						// Never silent: a member starved of connections
+						// (every account excluded or in cooldown) used to
+						// break here without a trace, so the combo looked
+						// frozen on the previous member's error and no
+						// console line explained why nothing routed on.
+						log.Warn("combo", "no connection available for member, advancing to next member", "provider", modelInfo.Provider, "model", modelInfo.Model, "entry", entry, "error", err)
+						if lastErr == nil {
+							lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"no available connections for %s/%s: %v","type":"upstream_error","code":502}}`, modelInfo.Provider, modelInfo.Model, err))}
+						}
 						break
 					}
 					connID = picked.ID
@@ -588,6 +602,10 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "lockKey", lockKey, "conn", connID)
 						excludeIDs = append(excludeIDs, connID)
 						continue
+					}
+					if triedConns[connID] {
+						log.Warn("combo", "connection already attempted for member, advancing to next member", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
+						break
 					}
 				}
 
@@ -621,6 +639,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				}
 
 				if fwdErr != nil {
+					if connID != "" {
+						triedConns[connID] = true
+					}
 					if ctx.Err() != nil {
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(clientClosedBody)}
 						break
@@ -665,6 +686,21 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						if providers.IsModelFitError(ue.StatusCode, ue.Body) {
 							log.Info("combo", "model too small for request, next member",
 								"provider", modelInfo.Provider, "model", modelInfo.Model)
+							retry.note(ue)
+							lastErr = ue
+							break
+						}
+						if providers.IsMemberFailoverStatus(ue.StatusCode) && !providers.RetryableStatusCodes[ue.StatusCode] {
+							// A member-side fault the account table does not
+							// list (500, 501, 408, 404, other 5xx): another
+							// member may well serve the turn, so advance
+							// after this ONE attempt instead of re-dialling
+							// the same connection for this member. The
+							// account is deliberately not locked or
+							// excluded: on a shared-account aggregator the
+							// remaining members live on this very
+							// connection, and parking it would starve them.
+							log.Warn("combo", "member failed, advancing to next member", "status", ue.StatusCode, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
 							retry.note(ue)
 							lastErr = ue
 							break
@@ -786,6 +822,11 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			}
 
 			var entrySuccess bool
+			// Connections already attempted for THIS entry. A failure must
+			// never re-dial the same connection for the same member: the
+			// non-retryable statuses used to loop here ten times on the
+			// sole connection of a shared-account provider.
+			triedConns := make(map[string]bool)
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
 				var connID string
@@ -803,6 +844,15 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					var err error
 					picked, cData, err = h.getBestConnectionWithContext(ctx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
+						// Never silent: a member starved of connections
+						// (every account excluded or in cooldown) used to
+						// break here without a trace, so the combo looked
+						// frozen on the previous member's error and no
+						// console line explained why nothing routed on.
+						log.Warn("combo", "no connection available for member, advancing to next member", "provider", modelInfo.Provider, "model", modelInfo.Model, "entry", entry, "error", err)
+						if lastErr == nil {
+							lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"no available connections for %s/%s: %v","type":"upstream_error","code":502}}`, modelInfo.Provider, modelInfo.Model, err))}
+						}
 						break
 					}
 					connID = picked.ID
@@ -818,6 +868,10 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "lockKey", lockKey, "conn", connID)
 						excludeIDs = append(excludeIDs, connID)
 						continue
+					}
+					if triedConns[connID] {
+						log.Warn("combo", "connection already attempted for member, advancing to next member", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
+						break
 					}
 				}
 
@@ -843,6 +897,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				})
 
 				if fwdErr != nil {
+					if connID != "" {
+						triedConns[connID] = true
+					}
 					if ctx.Err() != nil {
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(clientClosedBody)}
 						break
@@ -880,6 +937,21 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						if providers.IsModelFitError(ue.StatusCode, ue.Body) {
 							log.Info("combo", "model too small for request, next member",
 								"provider", modelInfo.Provider, "model", modelInfo.Model)
+							retry.note(ue)
+							lastErr = ue
+							break
+						}
+						if providers.IsMemberFailoverStatus(ue.StatusCode) && !providers.RetryableStatusCodes[ue.StatusCode] {
+							// A member-side fault the account table does not
+							// list (500, 501, 408, 404, other 5xx): another
+							// member may well serve the turn, so advance
+							// after this ONE attempt instead of re-dialling
+							// the same connection for this member. The
+							// account is deliberately not locked or
+							// excluded: on a shared-account aggregator the
+							// remaining members live on this very
+							// connection, and parking it would starve them.
+							log.Warn("combo", "member failed, advancing to next member", "status", ue.StatusCode, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
 							retry.note(ue)
 							lastErr = ue
 							break
@@ -975,20 +1047,44 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 	}
 	// Account-scoped cooldown alongside the per-model locks, so the selector
 	// can skip this account before spending a request (upstream applyErrorState).
-	// Only lock if error is account-scoped, not model-scoped (e.g. 401 auth issues),
-	// so unrelated models stay available.
-	if isModelScopedError(ue.StatusCode, extractErrorText(ue.Body), model) {
-		if recErr := h.Repo.RecordConnectionScopedError(connID, model, "chat", ue.StatusCode, extractErrorText(ue.Body), cls.NewBackoffLevel); recErr != nil {
+	// Only lock the ACCOUNT when the failure demonstrably indicts it: a 429
+	// spends its quota window, and an auth-failure text names the credential
+	// itself. A bare 401/403/5xx carries neither proof, and on an aggregator
+	// node it is routinely per-model (one upstream behind the shared key
+	// rejecting one model). Parking the whole account for it — and excluding
+	// the connection for the rest of the pass — starved every other member of
+	// a combo built on that single connection: they died in the selector with
+	// no log line and the client kept the first member's error. Per-model
+	// failure therefore records the error for visibility, locks only this
+	// model on this connection, and leaves the connection selectable for the
+	// remaining members.
+	errText := extractErrorText(ue.Body)
+	if isModelScopedError(ue.StatusCode, errText, model) || !isAccountScopedFailure(ue.StatusCode, errText) {
+		if recErr := h.Repo.RecordConnectionScopedError(connID, model, "chat", ue.StatusCode, errText, cls.NewBackoffLevel); recErr != nil {
 			log.Warn("combo", "record connection error failed", "conn", connID, "error", recErr)
 		}
 	} else {
 		until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
-		if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, extractErrorText(ue.Body)); err != nil {
+		if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, errText); err != nil {
 			log.Warn("combo", "rate limit lock failed", "conn", connID, "error", err)
 		}
+		*excludeIDs = append(*excludeIDs, connID)
 	}
-	*excludeIDs = append(*excludeIDs, connID)
 	log.Warn("combo", "locked on retryable error", "provider", provider, "model", model, "lockKey", lockKey, "conn", connID, "status", ue.StatusCode, "cooldown_s", cooldownSec)
+}
+
+// isAccountScopedFailure reports whether an upstream error demonstrably
+// indicts the whole account rather than the one member that was tried: a
+// 429 spends the account's quota window, and an auth-failure text (invalid
+// API key, expired token, suspended account, ...) names the credential
+// itself. Anything else — above all a bare 401/403 from an aggregator that
+// serves many models behind one key — is treated as member-scoped until
+// proven otherwise.
+func isAccountScopedFailure(statusCode int, errText string) bool {
+	if statusCode == http.StatusTooManyRequests {
+		return true
+	}
+	return isAccountAuthFailure(strings.ToLower(errText))
 }
 
 // ---- Fusion (parallel fan-out + judge synthesis) ----

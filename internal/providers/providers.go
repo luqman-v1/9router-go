@@ -1188,6 +1188,24 @@ var RetryableStatusCodes = map[int]bool{
 	http.StatusGatewayTimeout:     true, // 504
 }
 
+// IsMemberFailoverStatus reports whether an upstream failure is a fault of
+// the member that was tried (a model, or the node serving it) rather than of
+// the request, so a combo should advance to its next member and an account
+// fallback should try its next connection. It widens RetryableStatusCodes
+// with the member-side statuses that table deliberately omits for account
+// locking: 404 (the member's model/endpoint is not on this node), 408 (the
+// member stalled), and every other 5xx (500, 501, 505, ...). A 500/501 from
+// one aggregator model says nothing about the next model behind the same
+// key, but the old combo loop treated it as neither retryable nor
+// advanceable: it re-picked the same connection up to ten times per member
+// and the turn appeared to freeze on the failing model.
+func IsMemberFailoverStatus(status int) bool {
+	if RetryableStatusCodes[status] {
+		return true
+	}
+	return status == http.StatusNotFound || status == http.StatusRequestTimeout || status >= 500
+}
+
 // IsLocalByDesign reports whether a provider's official upstream is intended
 // to run locally on loopback (e.g. ollama-local on localhost:11434).
 func IsLocalByDesign(provider string) bool {

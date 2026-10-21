@@ -227,6 +227,17 @@ func (h *ChatHandler) handleAccountFallback(
 			excludeIDs = append(excludeIDs, connObj.ID)
 			continue
 		}
+		var serverUE *upstreamError
+		if errors.As(lastErr, &serverUE) && providers.IsMemberFailoverStatus(serverUE.StatusCode) {
+			// A member-side fault (500, 501, 408, 404, other 5xx) on one
+			// account says nothing about the next account: keep falling
+			// through instead of returning the first account's error as
+			// the turn's verdict. No persistent lock is written here —
+			// the fault may live on the node, not the credential.
+			log.Warn("fallback", "member-side error on connection, trying next connection", "conn", connObj.ID, "provider", provider, "model", model, "status", serverUE.StatusCode)
+			excludeIDs = append(excludeIDs, connObj.ID)
+			continue
+		}
 		return lastErr
 	}
 	if lastErr != nil {

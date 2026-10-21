@@ -189,3 +189,24 @@ func TestGetProviderModelKind(t *testing.T) {
 		}
 	}
 }
+
+func TestIsMemberFailoverStatus(t *testing.T) {
+	// Account-fallback statuses stay failover statuses for a combo member.
+	for _, status := range []int{401, 402, 403, 429, 502, 503, 504} {
+		if !IsMemberFailoverStatus(status) {
+			t.Errorf("IsMemberFailoverStatus(%d) = false, want true (retryable)", status)
+		}
+	}
+	// Member-side faults the account table omits: the next member may serve.
+	for _, status := range []int{404, 408, 500, 501, 505} {
+		if !IsMemberFailoverStatus(status) {
+			t.Errorf("IsMemberFailoverStatus(%d) = false, want true (member-side)", status)
+		}
+	}
+	// Request-scoped and success statuses must not advance a combo.
+	for _, status := range []int{200, 400, 405, 409, 413, 422} {
+		if IsMemberFailoverStatus(status) {
+			t.Errorf("IsMemberFailoverStatus(%d) = true, want false", status)
+		}
+	}
+}
