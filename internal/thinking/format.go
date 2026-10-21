@@ -267,8 +267,3 @@ func hasWriter(fmt string) bool {
 		return false
 	}
 }
-
-// canDisable mirrors providers' tri-state default (nil = can disable).
-func canDisable(caps providers.Capabilities) bool {
-	return caps.ThinkingCanDisable == nil || *caps.ThinkingCanDisable
-}

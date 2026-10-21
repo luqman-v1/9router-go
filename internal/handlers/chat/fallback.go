@@ -725,19 +725,23 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 
 	// Unified thinking normalisation, outbound half (port of open-sse
 	// applyThinking and filterToOpenAIFormat). Runs last on the wire body so
-	// no converter can resurrect a dialect the target rejects. Codex/muse
-	// Responses passthrough and Claude-native clients keep their existing
-	// handling: claudeNative clients author their own Claude thinking, and
-	// Responses-native upstreams already normalise reasoning in their
-	// executors with their own (level) handling.
-	if !claudeNative && !executor.UpstreamSpeaksResponses(provider, wireModel, providerCfg) {
-		target := "openai"
-		if isAnthropic {
-			target = "claude"
-		}
-		pipedBody = thinking.ApplyJSON(pipedBody, target, provider, wireModel, thinkingIntent)
-		if !isAnthropic && !providerCfg.IsGeminiNative() {
-			pipedBody = translator.FilterToOpenAIFormatJSON(pipedBody)
+	// no converter can resurrect a dialect the target rejects. Claude-native
+	// clients author their own Claude thinking and keep their existing
+	// handling. A Responses-native upstream never runs ApplyJSON — its
+	// executor does its own level mapping — so the one thing that must still
+	// reach it is the mandatory-reasoning clamp.
+	if !claudeNative {
+		if executor.UpstreamSpeaksResponses(provider, wireModel, providerCfg) {
+			pipedBody = thinking.ClampDisableToMinimalJSON(pipedBody, providers.GetCapabilitiesForModel(provider, wireModel))
+		} else {
+			target := "openai"
+			if isAnthropic {
+				target = "claude"
+			}
+			pipedBody = thinking.ApplyJSON(pipedBody, target, provider, wireModel, thinkingIntent)
+			if !isAnthropic && !providerCfg.IsGeminiNative() {
+				pipedBody = translator.FilterToOpenAIFormatJSON(pipedBody)
+			}
 		}
 	}
 	start := time.Now()

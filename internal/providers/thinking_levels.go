@@ -202,7 +202,7 @@ func GetThinkingLevels(provider, model string) []string {
 			}
 		}
 	}
-	if !canDisableThinking(caps) {
+	if !caps.CanDisableThinking() {
 		levels = withoutLevel(levels, "none")
 	}
 	return append([]string(nil), levels...)

@@ -46,7 +46,7 @@ func GeminiConfig(intent *Intent, format string, caps providers.Capabilities) (c
 	if intent == nil {
 		return nil, 0
 	}
-	cd := canDisable(caps)
+	cd := caps.CanDisableThinking()
 	switch format {
 	case "gemini-level":
 		level := "minimal"

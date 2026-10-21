@@ -8,7 +8,7 @@ import (
 // cannot disable clamps to level minimal before the writer runs.
 func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Capabilities, supported []string, display string) {
 	none := cfg.Mode == ModeNone
-	cd := canDisable(caps)
+	cd := caps.CanDisableThinking()
 	eff := cfg
 	if none && !cd {
 		eff = &Intent{Mode: ModeLevel, Level: "minimal"}
