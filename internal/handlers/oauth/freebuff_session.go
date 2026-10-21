@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
@@ -140,7 +141,7 @@ func (h *OAuthHandler) HandleFreebuffSessionStatus(w http.ResponseWriter, r *htt
 		return
 	}
 	upReq.Header.Set("Authorization", "Bearer "+authToken)
-	upReq.Header.Set("User-Agent", "codebuff-cli/0.0.138")
+	upReq.Header.Set("User-Agent", constants.FreebuffClientUserAgent)
 	upReq.Header.Set("Accept", "application/json")
 
 	resp, err := executor.DoFreebuffHTTP(r.Context(), nil, upReq)

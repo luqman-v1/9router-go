@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/proxy/executor"
@@ -33,7 +34,7 @@ func fetchFreebuffUpstreamSession(ctx context.Context, token string) (*freebuffU
 		return nil, fmt.Errorf("create session request failed: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("User-Agent", "codebuff-cli/0.0.138")
+	req.Header.Set("User-Agent", constants.FreebuffClientUserAgent)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := executor.DoFreebuffHTTP(ctx, nil, req)

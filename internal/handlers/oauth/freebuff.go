@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/proxy/executor"
@@ -83,7 +84,7 @@ func (h *OAuthHandler) HandleFreebuffInitiate(w http.ResponseWriter, r *http.Req
 		upReq, reqErr := http.NewRequestWithContext(r.Context(), http.MethodPost, reqURL, bytes.NewReader(upstreamPayload))
 		if reqErr == nil {
 			upReq.Header.Set("Content-Type", "application/json")
-			upReq.Header.Set("User-Agent", "codebuff-cli/0.0.138")
+			upReq.Header.Set("User-Agent", constants.FreebuffClientUserAgent)
 			resp, doErr := executor.DoFreebuffHTTP(r.Context(), nil, upReq)
 			if doErr == nil {
 				defer resp.Body.Close()
@@ -205,7 +206,7 @@ func (h *OAuthHandler) HandleFreebuffPoll(w http.ResponseWriter, r *http.Request
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create status request failed: %v", err))
 		return
 	}
-	upReq.Header.Set("User-Agent", "codebuff-cli/0.0.138")
+	upReq.Header.Set("User-Agent", constants.FreebuffClientUserAgent)
 
 	resp, err := executor.DoFreebuffHTTP(r.Context(), nil, upReq)
 	if err != nil {

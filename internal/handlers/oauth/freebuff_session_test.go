@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 )
 
@@ -108,8 +109,8 @@ func TestHandleFreebuffSessionStatus_ActiveSession(t *testing.T) {
 	if authHeader != "Bearer fb-secret-token-123" {
 		t.Errorf("expected Authorization Bearer fb-secret-token-123, got %q", authHeader)
 	}
-	if uaHeader != "codebuff-cli/0.0.138" {
-		t.Errorf("expected User-Agent codebuff-cli/0.0.138, got %q", uaHeader)
+	if uaHeader != constants.FreebuffClientUserAgent {
+		t.Errorf("expected User-Agent %s, got %q", constants.FreebuffClientUserAgent, uaHeader)
 	}
 	if acceptHeader != "application/json" {
 		t.Errorf("expected Accept application/json, got %q", acceptHeader)

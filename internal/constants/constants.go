@@ -70,3 +70,11 @@ const (
 const (
 	StreamReadBuffer = 4096 // 4 KB read buffer for streaming
 )
+
+// Freebuff client identity. The Freebuff backend refuses outdated clients
+// (410 freebuff_update_required) and the accepted version tracks the
+// published codebuff CLI, so the version is named in exactly one place.
+const (
+	CodebuffCLIVersion      = "1.0.688"
+	FreebuffClientUserAgent = "codebuff-cli/" + CodebuffCLIVersion
+)

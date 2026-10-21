@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/proxy"
 )
@@ -20,7 +21,7 @@ import (
 const (
 	freebuffSessionPath  = "/api/v1/freebuff/session"
 	freebuffSessionTTL   = 60 * time.Minute
-	freebuffCLIUserAgent = "codebuff-cli/0.0.138"
+	freebuffCLIUserAgent = constants.FreebuffClientUserAgent
 
 	// freebuffInstanceHeader names the session a release (DELETE) targets. The
 	// CLI sends the same header only on GET and DELETE — POST takes the model.

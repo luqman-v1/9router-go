@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -741,7 +742,7 @@ func (h *DashboardHandler) probeFreebuff(ctx context.Context, conn *models.Provi
 		return probeOutcome{message: fmt.Sprintf("create probe request failed: %v", err)}
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("User-Agent", "codebuff-cli/0.0.138")
+	req.Header.Set("User-Agent", constants.FreebuffClientUserAgent)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := executor.DoFreebuffHTTP(ctx, client, req)
