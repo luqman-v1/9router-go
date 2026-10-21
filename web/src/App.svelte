@@ -23,6 +23,7 @@
   import ProxyPoolsView from './components/ProxyPoolsView.svelte'
   import ProfileSettingsView from './components/ProfileSettingsView.svelte'
   import MediaWebView from './components/media/MediaWebView.svelte'
+  import ModelTestView from './components/model-test/ModelTestView.svelte'
   import QuotaTrackerView from './components/QuotaTrackerView.svelte'
   import SkillsView from './components/SkillsView.svelte'
   import SettingsView from './components/SettingsView.svelte'
@@ -261,6 +262,7 @@
     endpoint: { title: 'Endpoint & Key', description: 'API endpoint and key configuration' },
     connections: { title: 'Providers & Endpoints', description: 'Manage your AI provider connections' },
     combos: { title: 'Combo & Routing', description: 'Model combos and failover strategies' },
+    'model-test': { title: 'Model Testing', description: 'Probe your active models and see which ones answer' },
     // The two moved tabs are sections of the Usage page, so the TopBar keeps
     // the Usage title and the section's own header below it names the section.
     'usage-cache': { title: 'Usage & Analytics', description: 'Monitor your API usage, token consumption, and request logs' },
@@ -392,6 +394,8 @@
               />
             {:else if activeTab === 'combos'}
               <CombosView {combos} {connections} {providerNodes} onRefresh={loadData} bind:isCreatingOpen={isCreateComboOpen} />
+            {:else if activeTab === 'model-test'}
+              <ModelTestView {connections} {providerNodes} />
             {:else if activeTab === 'analytics' || activeTab === 'usage-cache' || activeTab === 'usage-compression'}
               <!-- Cache and Compression Analytics are Usage sections (#200);
                    AnalyticsView renders all four sections under one header. -->

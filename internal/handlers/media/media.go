@@ -30,6 +30,10 @@ type MediaHandler struct {
 	Client     *http.Client
 	TokenSaver *shared.TokenSaverConfig
 	ChatH      *chat.ChatHandler
+
+	// testRunner owns the dashboard's batch model test: it survives the request
+	// that started it so a run keeps going while the operator navigates away.
+	testRunner *modelTestRunner
 }
 
 // NewMediaHandler creates a MediaHandler instance.
@@ -44,12 +48,14 @@ func NewMediaHandler(repo *db.Repo, ts *shared.TokenSaverConfig, chatH *chat.Cha
 	} else {
 		transport = proxy.NewFallbackTransport(http.DefaultTransport)
 	}
-	return &MediaHandler{
+	h := &MediaHandler{
 		Repo:       repo,
 		Client:     &http.Client{Transport: transport, Timeout: 0},
 		TokenSaver: ts,
 		ChatH:      chatH,
 	}
+	h.testRunner = newModelTestRunner(h.probeModel, h.probeProviderAll)
+	return h
 }
 
 // mediaConnectionError renders why a media lane found no usable account.

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -69,17 +70,21 @@ func (h *MediaHandler) HandleTestModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	handlerutil.WriteJSON(w, http.StatusOK, h.probeModel(r, req.Model, req.Kind))
+	handlerutil.WriteJSON(w, http.StatusOK, h.probeModel(r.Context(), req.Model, req.Kind))
 }
 
 // probeModel runs one probe and turns whatever the kind's handler answered into
 // a verdict. A 200 is not a pass: a passthrough endpoint copies the upstream
 // status through, so a provider that answers 200 with an empty or error-shaped
 // body has to be read out of the payload, not the status line.
-func (h *MediaHandler) probeModel(r *http.Request, model, kind string) testModelResult {
+//
+// The context is the caller's, not the HTTP request's: the batch runner in
+// model_test_run.go probes on a run-level context so a probe outlives the
+// request that started the run and can still be cancelled as a group.
+func (h *MediaHandler) probeModel(ctx context.Context, model, kind string) testModelResult {
 	start := time.Now()
 	payload := probeFor(kind, model)
-	ctx, cancel := context.WithTimeout(r.Context(), testModelTimeout)
+	ctx, cancel := context.WithTimeout(ctx, testModelTimeout)
 	defer cancel()
 	ctx = handlerutil.WithProbeContext(ctx)
 
@@ -97,6 +102,99 @@ func (h *MediaHandler) probeModel(r *http.Request, model, kind string) testModel
 	result := readProbeResult(rec, kind)
 	result.LatencyMs = time.Since(start).Milliseconds()
 	return result
+}
+
+// probeProviderAll tests a connected provider across every chat model its
+// active connections serve: the per-provider mode of the sweep. Reporting one
+// model's verdict as the provider's brands a live provider dead whenever the
+// chosen model happens to be down, so the sweep walks them all and the
+// provider passes when at least one model answers. The model list comes from
+// the chat handler (the same list /v1/models serves), so the choice is driven
+// by the catalog rather than hard-coded here.
+func (h *MediaHandler) probeProviderAll(ctx context.Context, provider string) providerProbeResult {
+	if h.ChatH == nil {
+		return providerProbeResult{testModelResult: testModelResult{Error: "chat handler unavailable"}}
+	}
+	models := h.ChatH.ChatModelsForProvider(ctx, provider)
+	if len(models) == 0 {
+		return providerProbeResult{testModelResult: testModelResult{Error: "no chat model found for provider " + provider}}
+	}
+	breakdown := make([]modelTestModelResult, 0, len(models))
+	for _, model := range models {
+		if ctx.Err() != nil {
+			break
+		}
+		breakdown = append(breakdown, modelBreakdown(model, h.probeModel(ctx, model, "")))
+	}
+	return aggregateProviderResults(breakdown)
+}
+
+func modelBreakdown(model string, r testModelResult) modelTestModelResult {
+	row := modelTestModelResult{
+		Model:      model,
+		OK:         r.OK,
+		LatencyMs:  r.LatencyMs,
+		HTTPStatus: r.Status,
+		Error:      r.Error,
+		Blocked:    r.Blocked,
+		ResetAt:    r.ResetAt,
+	}
+	switch {
+	case r.Blocked:
+		row.State = testBlocked
+	case r.OK:
+		row.State = testPass
+	default:
+		row.State = testFail
+	}
+	return row
+}
+
+// aggregateProviderResults folds a provider's per-model verdicts into the one
+// verdict its row reports: a pass when any model answered, otherwise the
+// first failure's wording (or the first block, when nothing outright failed),
+// so the row still says why the provider is down.
+func aggregateProviderResults(breakdown []modelTestModelResult) providerProbeResult {
+	out := providerProbeResult{Models: breakdown}
+	if len(breakdown) == 0 {
+		out.Error = "no models probed"
+		return out
+	}
+	passed := 0
+	var firstFail, firstBlocked *modelTestModelResult
+	for i := range breakdown {
+		row := &breakdown[i]
+		out.LatencyMs += row.LatencyMs
+		switch row.State {
+		case testPass:
+			passed++
+		case testBlocked:
+			if firstBlocked == nil {
+				firstBlocked = row
+			}
+		default:
+			if firstFail == nil {
+				firstFail = row
+			}
+		}
+	}
+	switch {
+	case passed > 0:
+		out.OK = true
+		out.Status = http.StatusOK
+		if passed < len(breakdown) {
+			out.Note = fmt.Sprintf("%d of %d models answered", passed, len(breakdown))
+		}
+	case firstFail != nil:
+		out.Error = firstFail.Error
+		out.Status = firstFail.HTTPStatus
+	case firstBlocked != nil:
+		out.Blocked = true
+		out.Error = firstBlocked.Error
+		out.ResetAt = firstBlocked.ResetAt
+		out.Status = firstBlocked.HTTPStatus
+	}
+	return out
 }
 
 // dispatchProbe hands the probe to the handler that owns the kind.

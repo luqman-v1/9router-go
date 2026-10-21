@@ -1043,6 +1043,58 @@ export function normalizeConnection(c: ProviderConnection): ProviderConnection {
   } as ProviderConnection
 }
 
+// Batch model test (the Model Testing page). The gateway owns the run, so these
+// types describe the server's snapshot rather than anything the page computes.
+export interface ModelTestTarget {
+  model?: string
+  kind?: string
+  /** Set instead of model/kind to test a provider across all its chat models. */
+  provider?: string
+}
+
+export type ModelTestRowState = 'pending' | 'running' | 'pass' | 'fail' | 'blocked' | 'canceled'
+
+/** One model's verdict inside a provider row's sweep. */
+export interface ModelTestModelRow {
+  model: string
+  state: ModelTestRowState
+  ok: boolean
+  latencyMs: number
+  httpStatus?: number
+  error?: string
+  blocked?: boolean
+  resetAt?: string
+}
+
+export interface ModelTestRow {
+  model: string
+  kind: string
+  provider?: string
+  state: ModelTestRowState
+  ok: boolean
+  latencyMs: number
+  httpStatus?: number
+  note?: string
+  error?: string
+  blocked?: boolean
+  resetAt?: string
+  /** Per-model breakdown, present on provider rows. */
+  models?: ModelTestModelRow[]
+}
+
+export interface ModelTestRun {
+  id: string
+  running: boolean
+  startedAt: string
+  finishedAt?: string
+  total: number
+  done: number
+  passed: number
+  failed: number
+  blocked: number
+  entries: ModelTestRow[]
+}
+
 // Connections API
 export const api = {
   // Connections
@@ -1376,6 +1428,33 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ model, kind }),
     }),
+
+  /**
+   * Starts a background sweep of models. The gateway runs it server-side,
+   * so it keeps going while the operator navigates away; poll `getModelTestRun`
+   * for progress. Rejects with 409 when a run is already live.
+   */
+  startModelTestRun: (targets: ModelTestTarget[]) =>
+    request<ModelTestRun>('/api/model-tests/runs', {
+      method: 'POST',
+      body: JSON.stringify({ targets }),
+    }),
+
+  /**
+   * Starts a connected-provider sweep. Each provider is probed exactly once,
+   * over its chat lane, and progresses in the same server-side run as every
+   * other mode — so a mix of "per model" and "per provider" targets can sit
+   * in one run. The provider list comes from the active connections on the
+   * dashboard; every selection shows the chat model it actually ran on.
+   */
+  startProviderTestRun: (providers: string[]) =>
+    request<ModelTestRun>('/api/model-tests/runs', {
+      method: 'POST',
+      body: JSON.stringify({ targets: providers.map((p) => ({ provider: p })) }),
+    }),
+  getModelTestRun: () => request<ModelTestRun>('/api/model-tests/runs/current'),
+  cancelModelTestRun: () =>
+    request<ModelTestRun>('/api/model-tests/runs/current', { method: 'DELETE' }),
 
   // Settings
   getSettings: () => request<Settings>('/api/settings'),

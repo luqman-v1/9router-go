@@ -371,6 +371,34 @@ func (h *ChatHandler) buildModelsList(ctx context.Context) []ModelInfoObject {
 	return h.buildModelsListForMode(ctx, modeListAll, conns, activeConnections(conns), nil)
 }
 
+// FirstChatModelForProvider returns one chat-lane model id the provider's
+// active connections currently serve, for a caller that needs a concrete model
+// to probe a provider (the dashboard's connected-provider test). It walks the
+// same connected list /v1/models serves, and identifies a chat-lane entry the
+// same way that list does: only LLM entries carry context_length.
+func (h *ChatHandler) FirstChatModelForProvider(ctx context.Context, provider string) (string, bool) {
+	ids := h.ChatModelsForProvider(ctx, provider)
+	if len(ids) == 0 {
+		return "", false
+	}
+	return ids[0], true
+}
+
+// ChatModelsForProvider returns every chat-lane model id the provider's
+// active connections currently serve, in the order the connected list serves
+// them. FirstChatModelForProvider is its head.
+func (h *ChatHandler) ChatModelsForProvider(ctx context.Context, provider string) []string {
+	var ids []string
+	seen := make(map[string]bool)
+	for _, m := range h.buildModelsListResult(ctx, modeListConnected).Models {
+		if m.OwnedBy == provider && m.ContextLength != nil && !seen[m.ID] {
+			seen[m.ID] = true
+			ids = append(ids, m.ID)
+		}
+	}
+	return ids
+}
+
 // allConnections returns every provider connection row, or nil without a Repo.
 func (h *ChatHandler) allConnections() []*models.ProviderConnection {
 	if h.Repo == nil {

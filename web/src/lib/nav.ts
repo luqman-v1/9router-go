@@ -67,6 +67,7 @@ export const NAV_GROUPS: NavGroup[] = [
     entries: [
       { kind: 'link', id: 'endpoint', label: 'Endpoint & Key', icon: 'api' },
       { kind: 'link', id: 'connections', label: 'Providers', icon: 'dns' },
+      { kind: 'link', id: 'model-test', label: 'Model Testing', icon: 'science' },
       { kind: 'link', id: 'combos', label: 'Combo & Vision Adapter', icon: 'layers' },
       { kind: 'link', id: 'analytics', label: 'Usage', icon: 'bar_chart' },
       { kind: 'link', id: 'quota', label: 'Quota Tracker', icon: 'data_usage' },

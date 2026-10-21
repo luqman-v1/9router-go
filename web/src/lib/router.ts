@@ -3,6 +3,7 @@ export type ActiveTab =
   | 'endpoint'
   | 'connections'
   | 'combos'
+  | 'model-test'
   | 'analytics'
   | 'quota'
   | 'token-saver'
@@ -33,6 +34,7 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   endpoint: '/dashboard/endpoint',
   connections: '/dashboard/providers',
   combos: '/dashboard/combos',
+  'model-test': '/dashboard/model-test',
   analytics: '/dashboard/usage',
   quota: '/dashboard/quota',
   'token-saver': '/dashboard/token-saver',
@@ -76,6 +78,10 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   // combos
   '/dashboard/combos': 'combos',
   '/combos': 'combos',
+
+  // model testing
+  '/dashboard/model-test': 'model-test',
+  '/model-test': 'model-test',
 
   // usage / analytics
   '/dashboard/usage': 'analytics',
@@ -211,6 +217,9 @@ export function pathToTab(pathname: string): ActiveTab {
   }
   if (normalized.includes('login')) return 'login'
   if (normalized.includes('endpoint')) return 'endpoint'
+  // Before the media rules: 'model-test' contains neither, but stating it next
+  // to the other explicit segments keeps the substring fallback readable.
+  if (normalized.includes('model-test')) return 'model-test'
   if (normalized.includes('embedding')) return 'media-embedding'
   if (normalized.includes('image')) return 'media-image'
   if (normalized.includes('tts')) return 'media-tts'
