@@ -7,6 +7,11 @@ import (
 
 func filterBody(t *testing.T, body map[string]any) map[string]any {
 	t.Helper()
+	return filterBodyWith(t, body, FilterOptions{})
+}
+
+func filterBodyWith(t *testing.T, body map[string]any, opts FilterOptions) map[string]any {
+	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -15,13 +20,13 @@ func filterBody(t *testing.T, body map[string]any) map[string]any {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	return FilterToOpenAIFormat(m)
+	return FilterToOpenAIFormat(m, opts)
 }
 
 func TestFilterToOpenAIFormat(t *testing.T) {
 	t.Run("messages missing returns identical", func(t *testing.T) {
 		in := map[string]any{"model": "m"}
-		if got := FilterToOpenAIFormat(in); len(got) != 1 {
+		if got := FilterToOpenAIFormat(in, FilterOptions{}); len(got) != 1 {
 			t.Fatalf("changed: %+v", got)
 		}
 	})
@@ -142,7 +147,11 @@ func TestFilterToOpenAIFormat(t *testing.T) {
 			t.Errorf("params.reasoning_effort dropped by the OpenAI filter")
 		}
 	})
-	t.Run("assistant tool_calls shortcut keeps thinking blocks", func(t *testing.T) {
+	t.Run("assistant tool_calls keeps its content as upstream does", func(t *testing.T) {
+		// Upstream's filterToOpenAIFormat returns an assistant message with
+		// tool_calls as-is (open-sse/translator/formats/openai.js:25), so the
+		// thinking block on such a turn stays - the shortcut is the OpenAI
+		// contract, not a leak the filter has to fix.
 		out := filterBody(t, map[string]any{"messages": []any{
 			map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"id": "1"}},
 				"content": []any{
@@ -153,6 +162,31 @@ func TestFilterToOpenAIFormat(t *testing.T) {
 		parts := out["messages"].([]any)[0].(map[string]any)["content"].([]any)
 		if len(parts) != 2 || parts[0].(map[string]any)["type"] != "thinking" {
 			t.Fatalf("parts = %+v, want the thinking block kept on the tool_calls shortcut", parts)
+		}
+	})
+	t.Run("cache_control is stripped unless the provider keeps it", func(t *testing.T) {
+		body := map[string]any{"messages": []any{
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "text", "text": "hi", "signature": "sig",
+					"cache_control": map[string]any{"type": "ephemeral"}},
+			}},
+		}}
+		out := filterBody(t, body)
+		part := out["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+		if _, has := part["cache_control"]; has {
+			t.Fatalf("cache_control must be stripped by default: %+v", part)
+		}
+		if _, has := part["signature"]; has {
+			t.Fatalf("signature must always be stripped: %+v", part)
+		}
+
+		out = filterBodyWith(t, body, FilterOptions{PreserveCacheControl: true})
+		part = out["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+		if _, has := part["cache_control"]; !has {
+			t.Fatalf("a provider that keeps cache_control must keep it: %+v", part)
+		}
+		if _, has := part["signature"]; has {
+			t.Fatalf("signature must always be stripped: %+v", part)
 		}
 	})
 	t.Run("user thinking-only message dropped", func(t *testing.T) {

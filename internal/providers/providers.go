@@ -32,6 +32,12 @@ type ProviderConfig struct {
 	// model's capability decides). Consumed by internal/thinking.resolveFormat.
 	ThinkingFormat string
 
+	// PreserveCacheControl mirrors the upstream registry's
+	// quirks.preserveCacheControl: a provider registered with it keeps the
+	// cache_control markers on its content blocks, so the OpenAI filter must
+	// not strip them.
+	PreserveCacheControl bool
+
 	// UpstreamIsAnthropic marks an entry whose upstream speaks Anthropic Messages while
 	// the client may speak OpenAI, on a host that is not api.anthropic.com. The existing
 	// detection keys off that host, so a gateway like Bedrock needs its own flag for the
@@ -645,14 +651,19 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://coding.dashscope.aliyuncs.com/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		// Upstream registers the preserveCacheControl quirk for the alicode
+		// family: these gateways answer 400 when the cache_control markers are
+		// stripped from the content blocks.
+		PreserveCacheControl: true,
 	},
 	"alicode-intl": {
 		// Coding Plan keys live on the coding-intl host; dashscope-intl is the
 		// Model Studio (alims-intl) host and rejects them
 		// (upstream registry/alicode-intl.js:17).
-		BaseURL:    "https://coding-intl.dashscope.aliyuncs.com/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:              "https://coding-intl.dashscope.aliyuncs.com/v1/chat/completions",
+		AuthHeader:           "Authorization",
+		AuthScheme:           "bearer",
+		PreserveCacheControl: true,
 	},
 	"byteplus": {
 		BaseURL:    "https://ark.ap-southeast.bytepluses.com/api/coding/v3/chat/completions",
@@ -721,9 +732,10 @@ var KnownProviders = map[string]ProviderConfig{
 	"alitp-intl": {
 		// Token Plan is served from the .maas host under the compatible-mode
 		// path, not the bare /v1 path (upstream registry/alitp-intl.js:23).
-		BaseURL:    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:              "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+		AuthHeader:           "Authorization",
+		AuthScheme:           "bearer",
+		PreserveCacheControl: true,
 	},
 	"fish-audio": {
 		BaseURL:    "https://api.fish.audio/v1/tts",
@@ -1216,9 +1228,10 @@ var KnownProviders = map[string]ProviderConfig{
 		SearchMethod: "GET",
 	},
 	"alims-intl": {
-		BaseURL:    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:              "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+		AuthHeader:           "Authorization",
+		AuthScheme:           "bearer",
+		PreserveCacheControl: true,
 	},
 	"api-airforce": {
 		BaseURL:    "https://api.airforce/v1/chat/completions",
@@ -1346,6 +1359,15 @@ var RetryableStatusCodes = map[int]bool{
 	http.StatusBadGateway:         true, // 502
 	http.StatusServiceUnavailable: true, // 503
 	http.StatusGatewayTimeout:     true, // 504
+}
+
+// PreservesCacheControl reports whether a provider keeps the cache_control
+// markers on its content blocks (upstream's quirks.preserveCacheControl).
+func PreservesCacheControl(provider string) bool {
+	if cfg, ok := KnownProviders[provider]; ok {
+		return cfg.PreserveCacheControl
+	}
+	return false
 }
 
 // IsLocalByDesign reports whether a provider's official upstream is intended

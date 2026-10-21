@@ -13,9 +13,9 @@ func TestFilterToOpenAIFormatJSONDeterministic(t *testing.T) {
 	body := []byte(`{"model":"m","max_tokens":128,"temperature":0.5,"stream":true,` +
 		`"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"yo"}],` +
 		`"tools":[{"type":"function","function":{"name":"f","description":"d","parameters":{"type":"object","properties":{"a":{"type":"string"}}}}}]}`)
-	first := FilterToOpenAIFormatJSON(body)
+	first := FilterToOpenAIFormatJSON(body, FilterOptions{})
 	for i := 0; i < 100; i++ {
-		got := FilterToOpenAIFormatJSON(body)
+		got := FilterToOpenAIFormatJSON(body, FilterOptions{})
 		if !bytes.Equal(got, first) {
 			t.Fatalf("the OpenAI wire body is not stable:\nfirst: %s\ngot:   %s", first, got)
 		}
