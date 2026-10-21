@@ -25,15 +25,23 @@ func TestQueueIsFIFO(t *testing.T) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	// Enqueue n waiters in a strict order. Each records its index as it is
-	// granted, then releases immediately so the next head can proceed.
+	parked := func() int {
+		rl.mu.Lock()
+		defer rl.mu.Unlock()
+		if q := rl.queues[key]; q != nil {
+			return len(q.waiters)
+		}
+		return 0
+	}
+
+	// Enqueue the waiters one at a time, each only after the previous one is
+	// observably parked. Sleeping on a stagger cannot promise that order:
+	// under load a later goroutine can be scheduled first, and the queue is
+	// then blamed for an order the test itself never established.
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			// A short, ordered stagger guarantees enqueue order is the
-			// goroutine order; the queue must preserve it.
-			time.Sleep(time.Duration(idx) * 5 * time.Millisecond)
 			if _, ok := rl.Acquire(context.Background(), key, 0, 1, 3*time.Second); !ok {
 				t.Errorf("waiter %d timed out", idx)
 				return
@@ -43,11 +51,15 @@ func TestQueueIsFIFO(t *testing.T) {
 			mu.Unlock()
 			rl.ReleaseConcurrency(key)
 		}(i)
+		deadline := time.Now().Add(3 * time.Second)
+		for parked() < i+1 {
+			if time.Now().After(deadline) {
+				t.Fatalf("waiter %d never parked (queue holds %d)", i, parked())
+			}
+			time.Sleep(time.Millisecond)
+		}
 	}
 
-	// Release the initial holder after all waiters have had time to enqueue.
-	time.Sleep(time.Duration(n) * 5 * time.Millisecond)
-	time.Sleep(10 * time.Millisecond)
 	rl.ReleaseConcurrency(key)
 	wg.Wait()
 
