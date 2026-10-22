@@ -220,3 +220,31 @@ func TestClaudeUpstreamMapsEffortToThinking(t *testing.T) {
 		t.Errorf("output_config = %v, want {high}", wire["output_config"])
 	}
 }
+
+// TestSuffixOnAComboNameResolvesAndApplies pins that a "(level)" suffix on a
+// combo name resolves. The suffix is a request override, not part of the model
+// id, so it comes off the name before the name is resolved against the
+// aliases and the combos — otherwise "mycombo(high)" resolves to neither.
+// The intent it carries then travels beside the request, because the combo
+// path replaces the body's model field with the member it is about to call.
+func TestSuffixOnAComboNameResolvesAndApplies(t *testing.T) {
+	env, upstream := newProviderEnv(t)
+	env.AddCombo(t, "combo-1", "mycombo", []string{"deepseek/deepseek-v4-pro"})
+
+	body := ChatBody("mycombo(high)", false)
+	res := env.Post(t, "/v1/chat/completions", body)
+	if res.Status != http.StatusOK {
+		t.Fatalf("POST = %d, want 200 (body: %s)", res.Status, truncate(res.Body))
+	}
+	sent := upstream.Last(t)
+	if got := sent.Model(t); got != "deepseek-v4-pro" {
+		t.Errorf("upstream model = %q, want the combo member", got)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(sent.Body, &wire); err != nil {
+		t.Fatalf("unmarshal upstream body: %v", err)
+	}
+	if wire["reasoning_effort"] != "high" {
+		t.Errorf("the suffix level must reach the upstream, got %s", truncate(sent.Body))
+	}
+}
