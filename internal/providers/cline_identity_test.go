@@ -1,7 +1,6 @@
 package providers
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -12,7 +11,7 @@ func TestClineIdentityHeaders(t *testing.T) {
 		"HTTP-Referer":     "https://cline.bot",
 		"X-Title":          "Cline",
 		"User-Agent":       "9Router/1.2.3",
-		"X-PLATFORM":       runtime.GOOS,
+		"X-PLATFORM":       nodePlatform(),
 		"X-CLIENT-TYPE":    "9router",
 		"X-CLIENT-VERSION": "1.2.3",
 		"X-CORE-VERSION":   "1.2.3",

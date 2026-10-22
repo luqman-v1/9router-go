@@ -228,9 +228,9 @@ func commandcodeConvertMessages(rawMsgs []any) (messages []any, system string) {
 }
 
 // commandcodeMaxTokens mirrors upstream `body.max_tokens ?? body.max_output_tokens
-// ?? DEFAULT_MAX_TOKENS`. The fallback stays 1024 (upstream 64000) on purpose —
-// see the note in buildCommandcodeBody. A null value is an absent value, the
-// way upstream's nullish coalescing reads it.
+// ?? DEFAULT_MAX_TOKENS`. The fallback stays 1024 (upstream 64000): the free
+// tier the provider bills against rejects a larger budget. A null value is an
+// absent value, the way upstream's nullish coalescing reads it.
 func commandcodeMaxTokens(body map[string]any) any {
 	if v, ok := body["max_tokens"]; ok && v != nil {
 		return v
