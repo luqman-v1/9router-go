@@ -470,7 +470,7 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		}
 	}
 
-	out, err := json.Marshal(oreq)
+	out, err := json.Marshal(oreq, json.Deterministic(true))
 	if err != nil {
 		return nil, fmt.Errorf("marshal OpenAI request: %w", err)
 	}

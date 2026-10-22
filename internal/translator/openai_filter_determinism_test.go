@@ -13,15 +13,58 @@ import (
 // every call, or a prefix-caching upstream misses the cache it would
 // otherwise hit.
 func TestFilterToOpenAIFormatJSONDeterministic(t *testing.T) {
+	// The fixture must be one the filter actually rewrites: a body the filter
+	// leaves alone is returned byte for byte, so the assertion would pass
+	// through the passthrough and never reach the deterministic marshal.
 	body := []byte(`{"model":"m","max_tokens":128,"temperature":0.5,"stream":true,` +
-		`"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"yo"}],` +
-		`"tools":[{"type":"function","function":{"name":"f","description":"d","parameters":{"type":"object","properties":{"a":{"type":"string"}}}}}]}`)
+		`"messages":[{"role":"developer","content":"sys"},` +
+		`{"role":"user","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"hi"}]}],` +
+		`"tool_choice":{"type":"any"}}`)
 	first := FilterToOpenAIFormatJSON(body, FilterOptions{})
+	if !bytes.Contains(first, []byte(`"role":"system"`)) {
+		t.Fatalf("the fixture must be rewritten by the filter, otherwise the determinism assertion is vacuous: %s", first)
+	}
 	for i := 0; i < 100; i++ {
 		got := FilterToOpenAIFormatJSON(body, FilterOptions{})
 		if !bytes.Equal(got, first) {
 			t.Fatalf("the OpenAI wire body is not stable:\nfirst: %s\ngot:   %s", first, got)
 		}
+	}
+}
+
+// TestTranslateClaudeToOpenAIToolChoiceIsDeterministic pins the byte-stability
+// of the Claude translation. A forced single tool becomes a nested
+// tool_choice object, and a map marshalled without the deterministic flag
+// orders its keys differently from one call to the next.
+func TestTranslateClaudeToOpenAIToolChoiceIsDeterministic(t *testing.T) {
+	body := []byte(`{"model":"claude-x","max_tokens":100,"tool_choice":{"type":"tool","name":"f"},` +
+		`"messages":[{"role":"user","content":"hi"}]}`)
+	first, err := TranslateClaudeToOpenAI(body)
+	if err != nil {
+		t.Fatalf("TranslateClaudeToOpenAI: %v", err)
+	}
+	for i := 0; i < 200; i++ {
+		got, err := TranslateClaudeToOpenAI(body)
+		if err != nil {
+			t.Fatalf("TranslateClaudeToOpenAI: %v", err)
+		}
+		if !bytes.Equal(got, first) {
+			t.Fatalf("the translated body is not stable:\nfirst: %s\ngot:   %s", first, got)
+		}
+	}
+}
+
+// TestFilterToOpenAIFormatJSONNormalizesToolsWithoutMessages pins the shape
+// normalisation: an empty tool list is dropped and a Claude-shaped tool_choice
+// is rewritten whether or not the body carries a messages key.
+func TestFilterToOpenAIFormatJSONNormalizesToolsWithoutMessages(t *testing.T) {
+	out := FilterToOpenAIFormatJSON([]byte(`{"tools":[]}`), FilterOptions{})
+	if bytes.Contains(out, []byte("tools")) {
+		t.Fatalf("an empty tool list must be dropped, got %s", out)
+	}
+	out = FilterToOpenAIFormatJSON([]byte(`{"tool_choice":{"type":"any"}}`), FilterOptions{})
+	if !bytes.Contains(out, []byte(`"required"`)) {
+		t.Fatalf("a Claude-shaped tool_choice must be normalised without a messages key, got %s", out)
 	}
 }
 

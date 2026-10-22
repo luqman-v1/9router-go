@@ -47,14 +47,12 @@ func FilterToOpenAIFormat(body map[string]any, opts FilterOptions) map[string]an
 // touch is returned byte for byte, so a plain request pays no
 // re-serialisation on the way out.
 func filterToOpenAIFormat(body map[string]any, opts FilterOptions) bool {
-	msgs, ok := body["messages"].([]any)
-	if !ok {
-		return false
-	}
 	changed := false
-	if filtered, messagesChanged := filterMessages(msgs, opts); messagesChanged {
-		body["messages"] = filtered
-		changed = true
+	if msgs, ok := body["messages"].([]any); ok {
+		if filtered, messagesChanged := filterMessages(msgs, opts); messagesChanged {
+			body["messages"] = filtered
+			changed = true
+		}
 	}
 	if normalizeTools(body) {
 		changed = true

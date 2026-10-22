@@ -334,7 +334,7 @@ func TestConvertClaudeMessage_EmptyBlocks(t *testing.T) {
 
 // --- BudgetToLevel (unified map; port of upstream budgetToLevel) ---
 
-func TestBudgetToEffort(t *testing.T) {
+func TestBudgetToLevel(t *testing.T) {
 	tests := []struct {
 		budget int
 		want   string
@@ -345,14 +345,10 @@ func TestBudgetToEffort(t *testing.T) {
 		{10000, "medium"},
 		{1024, "low"},
 		{100, "minimal"},
-		{0, "medium"},
+		{0, ""},
 	}
 	for _, tt := range tests {
-		got := thinking.BudgetToLevel(tt.budget)
-		if got == "" {
-			got = "medium"
-		}
-		if got != tt.want {
+		if got := thinking.BudgetToLevel(tt.budget); got != tt.want {
 			t.Errorf("BudgetToLevel(%d) = %q, want %q", tt.budget, got, tt.want)
 		}
 	}

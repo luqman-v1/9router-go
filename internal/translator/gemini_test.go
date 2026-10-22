@@ -544,7 +544,7 @@ func TestTranslateOpenAIToGemini_MultipleSystemMessagesPreserved(t *testing.T) {
 	}
 }
 
-func TestTranslateOpenAIToGemini_ThinkingBudgetExceedsMaxTokensGuard(t *testing.T) {
+func TestTranslateOpenAIToGemini_ThinkingOutputFloor(t *testing.T) {
 	t.Run("reasoning effort high with small max_tokens", func(t *testing.T) {
 		openaiJSON := []byte(`{
 			"model": "gemini-3.8-flash-high",
