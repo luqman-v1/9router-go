@@ -6,8 +6,12 @@ import "strings"
 // role becomes system, the thinking blocks are dropped, and the messages that
 // carry nothing are pruned. Port of the message pass in upstream's
 // filterToOpenAIFormat (open-sse/translator/formats/openai.js:19-73).
-func filterMessages(msgs []any, opts FilterOptions) []any {
+//
+// The bool reports whether the list changed; the original slice is returned
+// unchanged when it did not, so the caller can keep the bytes it received.
+func filterMessages(msgs []any, opts FilterOptions) ([]any, bool) {
 	out := make([]any, 0, len(msgs))
+	changed := false
 	for _, m := range msgs {
 		msg, ok := m.(map[string]any)
 		if !ok {
@@ -19,6 +23,7 @@ func filterMessages(msgs []any, opts FilterOptions) []any {
 			msg = shallowCopy(msg)
 			msg["role"] = "system"
 			role = "system"
+			changed = true
 		}
 		// A tool turn keeps its own shape, and an assistant turn with tool
 		// calls keeps its tool_calls — both are the OpenAI contract, and
@@ -38,48 +43,78 @@ func filterMessages(msgs []any, opts FilterOptions) []any {
 			continue
 		}
 		if parts, ok := msg["content"].([]any); ok {
-			msg = shallowCopy(msg)
-			msg["content"] = filterContentBlocks(parts, opts)
+			filtered, blocksChanged := filterContentBlocks(parts, opts)
+			if blocksChanged {
+				msg = shallowCopy(msg)
+				msg["content"] = filtered
+				changed = true
+			}
 			out = append(out, msg)
 			continue
 		}
 		out = append(out, msg)
 	}
-	return pruneEmptyMessages(out)
+	pruned, prunedChanged := pruneEmptyMessages(out)
+	if prunedChanged {
+		changed = true
+	}
+	if !changed {
+		return msgs, false
+	}
+	return pruned, true
 }
 
 // filterContentBlocks keeps the blocks an OpenAI provider accepts and drops
 // the thinking ones. A message whose content was emptied carries an empty
-// text block instead, so the turn stays valid.
-func filterContentBlocks(parts []any, opts FilterOptions) []any {
+// text block instead, so the turn stays valid. The bool reports whether any
+// block was dropped or rewritten.
+func filterContentBlocks(parts []any, opts FilterOptions) ([]any, bool) {
 	filtered := make([]any, 0, len(parts))
+	changed := false
 	for _, p := range parts {
 		block, ok := p.(map[string]any)
 		if !ok {
+			changed = true
 			continue
 		}
 		typ, _ := block["type"].(string)
 		switch {
 		case typ == claudeBlockThinking || typ == claudeBlockRedactedThinking:
+			changed = true
 			continue
 		case validOpenAIContentTypes[typ]:
-			filtered = append(filtered, stripBlock(block, opts))
+			stripped, strippedChanged := stripBlock(block, opts)
+			if strippedChanged {
+				changed = true
+			}
+			filtered = append(filtered, stripped)
 		case typ == claudeBlockToolUse:
+			changed = true
 			continue
 		case typ == claudeBlockToolResult:
-			filtered = append(filtered, stripBlock(block, opts))
+			stripped, strippedChanged := stripBlock(block, opts)
+			if strippedChanged {
+				changed = true
+			}
+			filtered = append(filtered, stripped)
+		default:
+			changed = true
+			continue
 		}
 	}
 	if len(filtered) == 0 {
 		filtered = append(filtered, map[string]any{"type": openaiBlockText, "text": ""})
+		changed = true
 	}
-	return filtered
+	return filtered, changed
 }
 
 // pruneEmptyMessages drops the turns that carry no content, but never a tool
-// turn or an assistant turn with tool_calls.
-func pruneEmptyMessages(msgs []any) []any {
+// turn or an assistant turn with tool_calls. The bool reports whether a turn
+// was dropped.
+func pruneEmptyMessages(msgs []any) ([]any, bool) {
 	kept := msgs[:0]
+	changed := false
 	for _, m := range msgs {
 		msg, ok := m.(map[string]any)
 		if !ok {
@@ -101,6 +136,8 @@ func pruneEmptyMessages(msgs []any) []any {
 		case string:
 			if strings.TrimSpace(content) != "" {
 				kept = append(kept, m)
+			} else {
+				changed = true
 			}
 		case []any:
 			keep := false
@@ -122,25 +159,30 @@ func pruneEmptyMessages(msgs []any) []any {
 			}
 			if keep {
 				kept = append(kept, m)
+			} else {
+				changed = true
 			}
 		default:
 			kept = append(kept, m)
 		}
 	}
-	return kept
+	return kept, changed
 }
 
 // normalizeTools converts the tool declarations to the OpenAI shape and drops
-// an empty tool list, which some providers reject.
-func normalizeTools(body map[string]any) {
+// an empty tool list, which some providers reject. The bool reports whether
+// the tool list changed.
+func normalizeTools(body map[string]any) bool {
 	tools, ok := body["tools"].([]any)
 	if !ok || len(tools) == 0 {
 		if ok {
 			delete(body, "tools")
+			return true
 		}
-		return
+		return false
 	}
 	norm := make([]any, 0, len(tools))
+	changed := false
 	for _, t := range tools {
 		tool, ok := t.(map[string]any)
 		if !ok {
@@ -163,6 +205,7 @@ func normalizeTools(body map[string]any) {
 						"parameters":  parametersField(tool, "input_schema"),
 					},
 				})
+				changed = true
 				continue
 			}
 			if _, has := tool["description"]; has {
@@ -174,6 +217,7 @@ func normalizeTools(body map[string]any) {
 						"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
 					},
 				})
+				changed = true
 				continue
 			}
 		}
@@ -193,31 +237,41 @@ func normalizeTools(body map[string]any) {
 					},
 				})
 			}
+			changed = true
 			continue
 		}
 		norm = append(norm, tool)
 	}
+	if !changed {
+		return false
+	}
 	body["tools"] = norm
+	return true
 }
 
 // normalizeToolChoice converts the Claude tool_choice shape to the OpenAI one.
-func normalizeToolChoice(body map[string]any) {
+// The bool reports whether the choice changed.
+func normalizeToolChoice(body map[string]any) bool {
 	choice, ok := body["tool_choice"].(map[string]any)
 	if !ok {
-		return
+		return false
 	}
 	typ, _ := choice["type"].(string)
-	switch {
-	case typ == "auto":
+	switch typ {
+	case "auto":
 		body["tool_choice"] = "auto"
-	case typ == "any":
+		return true
+	case "any":
 		body["tool_choice"] = "required"
-	case typ == "tool":
+		return true
+	case "tool":
 		if name, _ := choice["name"].(string); name != "" {
 			body["tool_choice"] = map[string]any{
 				"type":     openaiBlockFunction,
 				"function": map[string]any{"name": name},
 			}
+			return true
 		}
 	}
+	return false
 }
