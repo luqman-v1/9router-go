@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/proxy"
 )
@@ -317,8 +318,10 @@ func ForwardFreebuff(w http.ResponseWriter, req *Request) error {
 	// 4. Execute Chat Request
 	doChat := func(body []byte) (*http.Response, error) {
 		headers := map[string]string{
-			"Authorization": "Bearer " + token,
-			"User-Agent":    freebuffChatUserAgent,
+			"Authorization":             "Bearer " + token,
+			"User-Agent":                freebuffChatUserAgent,
+			"x-freebuff-client":         constants.FreebuffClientDescriptor,
+			"x-freebuff-client-version": constants.FreebuffClientVersion,
 		}
 		if req.IsStream {
 			headers["Accept"] = "text/event-stream"

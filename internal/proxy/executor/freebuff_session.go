@@ -93,6 +93,12 @@ func DoFreebuffHTTP(ctx context.Context, client *http.Client, req *http.Request)
 	if client == nil {
 		client = http.DefaultClient
 	}
+	if req.Header.Get("x-freebuff-client") == "" {
+		req.Header.Set("x-freebuff-client", constants.FreebuffClientDescriptor)
+	}
+	if req.Header.Get("x-freebuff-client-version") == "" {
+		req.Header.Set("x-freebuff-client-version", constants.FreebuffClientVersion)
+	}
 	resp, err := client.Do(req)
 	if isFreebuffProxyRefusal(err, resp) {
 		if resp != nil {

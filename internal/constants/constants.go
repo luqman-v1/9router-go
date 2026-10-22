@@ -77,4 +77,11 @@ const (
 const (
 	CodebuffCLIVersion      = "1.0.688"
 	FreebuffClientUserAgent = "codebuff-cli/" + CodebuffCLIVersion
+
+	// The backend version-gates on these two headers, not the User-Agent:
+	// a client that omits them is refused as out of date
+	// (410 freebuff_update_required). Values mirror the published
+	// freebuff CLI (its internal build version is the package version).
+	FreebuffClientDescriptor = "cli"
+	FreebuffClientVersion    = "0.2.32"
 )
