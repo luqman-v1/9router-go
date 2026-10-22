@@ -54,6 +54,9 @@ func BudgetToLevel(budget int) string {
 
 // BudgetToEffort maps a Gemini thinkingBudget to an OpenAI effort
 // (antigravity reverse map). "" when budget <= 0. Port of budgetToEffort.
+//
+// Port surface: the upstream effort tables this port carries, with no
+// production caller in this repo yet.
 func BudgetToEffort(budget int) string {
 	switch {
 	case budget <= 0:
