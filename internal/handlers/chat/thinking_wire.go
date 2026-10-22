@@ -19,8 +19,11 @@ import (
 func (h *ChatHandler) prepareInboundThinking(provider, model string, body []byte) ([]byte, string, *thinking.Intent) {
 	wireModel, suffixIntent := thinking.ParseSuffix(model)
 	needsWire := wireModel != model || suffixIntent != nil
+	// The operator override is read once and reused below: the fast path
+	// needs it to know whether the body has to be decoded at all.
+	mode := h.providerThinkingMode(provider)
 	if !needsWire && len(providers.ModelStrip(provider, model)) == 0 &&
-		h.providerThinkingMode(provider) == "" && !thinking.BodyMentionsThinking(body) {
+		mode == "" && !thinking.BodyMentionsThinking(body) {
 		return body, wireModel, nil
 	}
 	var m map[string]any
@@ -28,7 +31,7 @@ func (h *ChatHandler) prepareInboundThinking(provider, model string, body []byte
 		return body, wireModel, suffixIntent
 	}
 	translator.StripContentTypes(m, providers.ModelStrip(provider, wireModel))
-	h.injectProviderThinking(provider, m)
+	h.injectProviderThinkingMode(mode, m)
 	thinking.NormalizeThinkingConfig(m)
 	intent := suffixIntent
 	if intent == nil {
@@ -45,7 +48,13 @@ func (h *ChatHandler) prepareInboundThinking(provider, model string, body []byte
 // mirroring upstream chatCore.js:117-131. Only when the client hasn't set
 // the field; "auto" (and "") means no override.
 func (h *ChatHandler) injectProviderThinking(provider string, m map[string]any) {
-	mode, valid := thinking.NormalizeProviderThinkingMode(h.providerThinkingMode(provider))
+	h.injectProviderThinkingMode(h.providerThinkingMode(provider), m)
+}
+
+// injectProviderThinkingMode applies an operator override that was already
+// read, so the per-request path reads the settings once instead of twice.
+func (h *ChatHandler) injectProviderThinkingMode(mode string, m map[string]any) {
+	mode, valid := thinking.NormalizeProviderThinkingMode(mode)
 	if !valid || mode == "auto" {
 		return
 	}

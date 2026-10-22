@@ -218,6 +218,62 @@ func TestGetSettings_ProviderThinkingModeVocabulary(t *testing.T) {
 	}
 }
 
+// TestGetSettingsReflectsAWrite pins the cache contract: the parsed row is
+// reused only while the row content is unchanged, so a write is visible on
+// the next read whatever wrote it.
+func TestGetSettingsReflectsAWrite(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := NewRepo(database)
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+		`{"providerThinking":{"deepseek":{"mode":"off"}}}`,
+	); err != nil {
+		t.Fatalf("failed to insert settings: %v", err)
+	}
+
+	first, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	if got := first.ProviderThinking["deepseek"].Mode; got != "off" {
+		t.Fatalf("providerThinking = %+v, want the seeded value", first.ProviderThinking)
+	}
+
+	// A write through the Repo.
+	updated := map[string]any{"providerThinking": map[string]any{"deepseek": map[string]any{"mode": "high"}}}
+	if err := repo.UpdateSettingsRaw(updated); err != nil {
+		t.Fatalf("UpdateSettingsRaw: %v", err)
+	}
+	second, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings after write: %v", err)
+	}
+	if got := second.ProviderThinking["deepseek"].Mode; got != "high" {
+		t.Errorf("providerThinking = %+v, want the written value", second.ProviderThinking)
+	}
+
+	// A write that bypasses the Repo.
+	if _, err := database.Exec(`UPDATE settings SET data = ? WHERE id = 1`,
+		`{"providerThinking":{"deepseek":{"mode":"auto"}}}`); err != nil {
+		t.Fatalf("failed to update settings: %v", err)
+	}
+	third, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings after direct write: %v", err)
+	}
+	if got := third.ProviderThinking["deepseek"].Mode; got != "auto" {
+		t.Errorf("providerThinking = %+v, want the directly written value", third.ProviderThinking)
+	}
+}
+
 func TestSetComboAndProviderStrategy_PreservesExistingSettings(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	defer cleanup()

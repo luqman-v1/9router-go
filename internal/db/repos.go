@@ -33,11 +33,21 @@ type Repo struct {
 	// jbBuild serialises snapshot rebuilds so concurrent first requests after
 	// a write build it once.
 	jbBuild sync.Mutex
+	// settingsCache holds the parsed settings row. It lives on the Repo for
+	// the same reason activePoolIDs does: the answer belongs to one database.
+	settingsCache atomic.Pointer[cachedSettings]
 	// vault is the optional credential vault. It is stored rather than held by
 	// value so a key rotation can swap the live vault without touching any
 	// reader that already captured a *Repo. A nil value means "no vault", which
 	// is every install that never set ROUTER_MASTER_KEY.
 	vault atomic.Value // *vault.Vault
+}
+
+// cachedSettings is one parsed settings row and the row content it was
+// parsed from.
+type cachedSettings struct {
+	raw   string
+	value *SettingsData
 }
 
 // nowUTC is the timestamp format every connection write stamps.
