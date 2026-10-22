@@ -21,8 +21,8 @@ func TestClineIdentityHeaders(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, h[k], want)
 		}
 	}
-	if h["X-PLATFORM-VERSION"] == "" || !strings.HasPrefix(h["X-PLATFORM-VERSION"], "go") {
-		t.Errorf("X-PLATFORM-VERSION = %q, want go runtime version", h["X-PLATFORM-VERSION"])
+	if h["X-PLATFORM-VERSION"] == "" || !strings.HasPrefix(h["X-PLATFORM-VERSION"], "v") {
+		t.Errorf("X-PLATFORM-VERSION = %q, want a v-prefixed version", h["X-PLATFORM-VERSION"])
 	}
 	if _, has := h["Authorization"]; has {
 		t.Error("identity must not carry Authorization")
@@ -38,6 +38,26 @@ func TestClineIdentityHeaders(t *testing.T) {
 			if strings.Contains(v, "Cline/") || v == "cline-cli" || v == "cli" {
 				t.Errorf("%s StaticHeaders[%s] = %q: stale impersonation", p, k, v)
 			}
+		}
+	}
+}
+
+// TestNodePlatformFor pins the platform mapping on its own, without the
+// implementation as its oracle: the Windows spelling is the whole point of
+// the mapping, and a test that compares the header against nodePlatform()
+// never exercises that branch on a host that is not Windows.
+func TestNodePlatformFor(t *testing.T) {
+	cases := []struct {
+		goos string
+		want string
+	}{
+		{"windows", "win32"},
+		{"darwin", "darwin"},
+		{"linux", "linux"},
+	}
+	for _, c := range cases {
+		if got := nodePlatformFor(c.goos); got != c.want {
+			t.Errorf("nodePlatformFor(%q) = %q, want %q", c.goos, got, c.want)
 		}
 	}
 }

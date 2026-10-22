@@ -2,16 +2,38 @@ package providers
 
 import (
 	"runtime"
+	"strings"
 )
 
 // nodePlatform is the Go runtime's platform in the spelling Node's
 // process.platform uses, which is what upstream sends: "win32", not
 // "windows".
 func nodePlatform() string {
-	if runtime.GOOS == "windows" {
+	return nodePlatformFor(runtime.GOOS)
+}
+
+// nodePlatformFor maps a Go OS name onto Node's process.platform spelling.
+// It is a function of its argument so the mapping can be tested on a host
+// that is not the one it describes.
+func nodePlatformFor(goos string) string {
+	if goos == "windows" {
 		return "win32"
 	}
-	return runtime.GOOS
+	return goos
+}
+
+// NodePlatform is the platform name in Node's process.platform spelling
+// ("win32" on Windows). Shared with the executors, whose envelopes carry the
+// same field.
+func NodePlatform() string {
+	return nodePlatform()
+}
+
+// nodePlatformVersion is the Go runtime's version in the shape Node's
+// process.version has: upstream sends a v-prefixed version, and a Go build
+// string in that field is a fingerprint no real client sends.
+func nodePlatformVersion() string {
+	return "v" + strings.TrimPrefix(runtime.Version(), "go")
 }
 
 // ClineIdentityHeaders is the port of upstream buildClineHeaders
@@ -26,7 +48,7 @@ func ClineIdentityHeaders(version string, extra map[string]string) map[string]st
 		"X-Title":            "Cline",
 		"User-Agent":         "9Router/" + version,
 		"X-PLATFORM":         nodePlatform(),
-		"X-PLATFORM-VERSION": runtime.Version(),
+		"X-PLATFORM-VERSION": nodePlatformVersion(),
 		"X-CLIENT-TYPE":      "9router",
 		"X-CLIENT-VERSION":   version,
 		"X-CORE-VERSION":     version,
