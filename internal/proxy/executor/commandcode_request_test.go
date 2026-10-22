@@ -248,3 +248,56 @@ func TestBuildCommandcodeBody_NoToolsKeyWhenAbsent(t *testing.T) {
 		t.Errorf("params.tools must be absent when the request has no tools, got %v", v)
 	}
 }
+
+// TestBuildCommandcodeBody_WhitelistsAPreWrappedParams pins the native
+// envelope: a client that sends {params:{...}} gets the same treatment as an
+// OpenAI body. Without the whitelist the client could set the model the
+// provider is called with, and pass any parameter the provider accepts — on
+// the operator's account.
+func TestBuildCommandcodeBody_WhitelistsAPreWrappedParams(t *testing.T) {
+	out, err := buildCommandcodeBody([]byte(`{
+		"model":"requested",
+		"params":{
+			"model":"attacker-model",
+			"max_tokens":4096,
+			"system":"leak",
+			"extra":"not-a-param",
+			"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]
+		}
+	}`), "resolved-model")
+	if err != nil {
+		t.Fatalf("buildCommandcodeBody() error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	params, ok := payload["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected params object, got %T", payload["params"])
+	}
+	if params["model"] != "resolved-model" {
+		t.Errorf("params.model = %v, want the resolved model", params["model"])
+	}
+	if _, has := params["extra"]; has {
+		t.Errorf("params carried a key outside the whitelist: %v", params)
+	}
+	if params["max_tokens"] != float64(4096) {
+		t.Errorf("params.max_tokens = %v, want the client's own budget", params["max_tokens"])
+	}
+	if params["system"] != "leak" {
+		t.Errorf("params.system = %v, want the client's system prompt", params["system"])
+	}
+	if _, has := params["messages"]; !has {
+		t.Errorf("params.messages must survive the whitelist: %v", params)
+	}
+}
+
+// TestBuildCommandcodeBody_RejectsAPreWrappedParamsThatIsNotAnObject pins the
+// shape: a params value that is not an object is a client error, not a body
+// to forward.
+func TestBuildCommandcodeBody_RejectsAPreWrappedParamsThatIsNotAnObject(t *testing.T) {
+	if _, err := buildCommandcodeBody([]byte(`{"model":"m","params":"nope"}`), "m"); err == nil {
+		t.Fatal("a non-object params must be refused")
+	}
+}

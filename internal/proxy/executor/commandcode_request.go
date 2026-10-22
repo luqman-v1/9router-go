@@ -240,3 +240,32 @@ func commandcodeMaxTokens(body map[string]any) any {
 	}
 	return 1024
 }
+
+// commandcodeTools projects the tool declarations onto the three keys the
+// CommandCode schema takes. Upstream's convertTools emits exactly
+// {name, description, input_schema}, and a Claude-shaped tool carries
+// cache_control markers and a strict flag the schema does not define.
+func commandcodeTools(tools []any) []any {
+	out := make([]any, 0, len(tools))
+	for _, t := range tools {
+		m, ok := t.(map[string]any)
+		if !ok {
+			out = append(out, t)
+			continue
+		}
+		name, hasName := m["name"]
+		if !hasName {
+			out = append(out, t)
+			continue
+		}
+		projected := map[string]any{"name": name}
+		if desc, ok := m["description"]; ok {
+			projected["description"] = desc
+		}
+		if schema, ok := m["input_schema"]; ok {
+			projected["input_schema"] = schema
+		}
+		out = append(out, projected)
+	}
+	return out
+}

@@ -13,7 +13,6 @@ import (
 	"math"
 	"net/http"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -419,8 +418,35 @@ func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
 		return body, err
 	}
 
-	// If already wrapped in params, ensure required top-level fields
-	if _, hasParams := m["params"]; hasParams {
+	// If already wrapped in params, keep the native envelope but re-derive
+	// the fields the gateway owns. A client-supplied params object is a
+	// request to the provider, so it goes through the same whitelist the
+	// flat path builds: without it a client could set the model or any
+	// parameter the provider accepts.
+	if rawParams, hasParams := m["params"]; hasParams {
+		p, ok := rawParams.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("buildCommandcodeBody: params must be an object")
+		}
+		params := map[string]any{}
+		for _, k := range []string{"messages", "stream", "temperature", "top_p", "tools", "reasoning_effort", "system"} {
+			if v, ok := p[k]; ok && v != nil {
+				params[k] = v
+			}
+		}
+		if _, ok := params["stream"]; !ok {
+			params["stream"] = true
+		}
+		if _, ok := params["messages"]; !ok {
+			params["messages"] = []any{}
+		}
+		// The model is the gateway's to decide: the client asked for a
+		// model, the gateway resolved one, and the provider is called with
+		// the resolved id. The budget follows the flat path: the client's
+		// own value when it set one, the 1024 default otherwise.
+		params["model"] = model
+		params["max_tokens"] = commandcodeMaxTokens(p)
+		m["params"] = params
 		if _, hasThread := m["threadId"]; !hasThread {
 			m["threadId"] = uuid.New().String()
 		}
@@ -431,7 +457,7 @@ func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
 			m["config"] = map[string]any{
 				"workingDir":    "/",
 				"date":          time.Now().UTC().Format("2006-01-02"),
-				"environment":   runtime.GOOS,
+				"environment":   providers.NodePlatform(),
 				"structure":     []any{},
 				"isGitRepo":     false,
 				"currentBranch": "",
@@ -461,7 +487,7 @@ func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
 		params["top_p"] = top
 	}
 	if tools, ok := m["tools"].([]any); ok && len(tools) > 0 {
-		params["tools"] = convertOpenAIToolsToClaude(tools)
+		params["tools"] = commandcodeTools(convertOpenAIToolsToClaude(tools))
 	}
 	if effort, ok := m["reasoning_effort"]; ok && effort != nil {
 		params["reasoning_effort"] = effort
@@ -482,7 +508,7 @@ func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
 		"config": map[string]any{
 			"workingDir":    "/",
 			"date":          time.Now().UTC().Format("2006-01-02"),
-			"environment":   runtime.GOOS,
+			"environment":   providers.NodePlatform(),
 			"structure":     []any{},
 			"isGitRepo":     false,
 			"currentBranch": "",
