@@ -274,7 +274,10 @@ func TestThoughtSignatureNoSignature(t *testing.T) {
 		"usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
 	}`
 
-	openaiBytes, _, _ := TranslateGeminiResponseToOpenAI([]byte(geminiResp))
+	openaiBytes, _, err := TranslateGeminiResponseToOpenAI([]byte(geminiResp))
+	if err != nil {
+		t.Fatalf("TranslateGeminiResponseToOpenAI: %v", err)
+	}
 	var resp struct {
 		Choices []struct {
 			Message struct {
@@ -284,7 +287,12 @@ func TestThoughtSignatureNoSignature(t *testing.T) {
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	json.Unmarshal(openaiBytes, &resp)
+	if err := json.Unmarshal(openaiBytes, &resp); err != nil {
+		t.Fatalf("unmarshal the translated response: %v", err)
+	}
+	if len(resp.Choices) == 0 {
+		t.Fatal("the translated response has no choices")
+	}
 
 	tc := resp.Choices[0].Message.ToolCalls[0]
 	if strings.Contains(tc.ID, "__ts__") {

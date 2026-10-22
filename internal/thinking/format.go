@@ -76,8 +76,8 @@ func Apply(body map[string]any, target, provider, model string, override *Intent
 	if cfg == nil {
 		return body, changed
 	}
-	fmt := resolveFormat(target, provider, clean, caps)
-	if !hasWriter(fmt) {
+	wireFormat := resolveFormat(target, provider, clean, caps)
+	if !hasWriter(wireFormat) {
 		// Unreachable format: neither write nor strip.
 		return body, changed
 	}
@@ -89,7 +89,7 @@ func Apply(body map[string]any, target, provider, model string, override *Intent
 		display = override.Display
 	}
 	stripped := Strip(body)
-	applyFormat(fmt, body, cfg, caps, providers.GetThinkingLevels(provider, clean), display)
+	applyFormat(wireFormat, body, cfg, caps, providers.GetThinkingLevels(provider, clean), display)
 	return body, changed || stripped || dialectKeyPresent(body)
 }
 
@@ -191,18 +191,21 @@ func skipJSONSpace(body []byte, i int) int {
 	return i
 }
 
-// resolveFormat ports resolveFormat verbatim.
+// resolveFormat picks the dialect: the wire the request goes out on, then
+// the provider registry, then the model's capability.
+//
+// The wire wins because the registry describes a provider in general while
+// the target describes this request: a connection whose endpoint speaks the
+// Responses API has to carry the field that API accepts, whatever the
+// provider's default wire is. Upstream pins the same rule for one provider
+// by name (`provider === "muse" && targetFormat === "openai-responses"`,
+// thinkingUnified.js:137-145); this port applies it to every provider on that
+// lane, so the nine aggregators the registry records as "openai" also read
+// reasoning:{effort,summary} when the request goes to a /responses endpoint.
 func resolveFormat(target, provider, model string, caps providers.Capabilities) string {
 	if target == "commandcode" {
 		return "commandcode"
 	}
-	// The wire is authoritative: a strict Responses upstream rejects a
-	// top-level reasoning_effort ("unknown parameter `reasoning_effort`") and
-	// reads reasoning:{effort,summary} instead. The dialect follows the wire,
-	// not the provider registry, so every provider on that lane gets it —
-	// including the nine aggregators the registry records as "openai".
-	// (upstream thinkingUnified.js:137-145 pins the same dialect for the Muse
-	// lane.)
 	if target == "openai-responses" && !nativeOnlyFormats[caps.ThinkingFormat] {
 		return "openai-responses"
 	}

@@ -121,10 +121,11 @@ func TestApplyReportsWhetherItChangedTheBody(t *testing.T) {
 }
 
 // TestResolveFormatPrefersTheWireOverTheProviderRegistry pins the dialect
-// order: the wire the upstream speaks is authoritative. A strict Responses
-// upstream rejects a top-level reasoning_effort, so a provider the registry
-// records as "openai" must still use the Responses dialect when the request
-// goes to a /responses endpoint.
+// order: the wire the request goes out on is authoritative. A strict
+// Responses upstream rejects a top-level reasoning_effort, so a provider the
+// registry records as "openai" must still use the Responses dialect when the
+// request goes to a /responses endpoint. Upstream pins the same rule for one
+// provider by name; this port applies it to every provider on that lane.
 func TestResolveFormatPrefersTheWireOverTheProviderRegistry(t *testing.T) {
 	out := apply(t, "openai-responses", "openrouter", "openai/gpt-5.4",
 		map[string]any{"model": "openai/gpt-5.4", "reasoning_effort": "high"}, nil)
@@ -134,6 +135,17 @@ func TestResolveFormatPrefersTheWireOverTheProviderRegistry(t *testing.T) {
 	}
 	if _, has := out["reasoning_effort"]; has {
 		t.Fatalf("a Responses wire must not carry a top-level reasoning_effort, got %+v", out)
+	}
+}
+
+// TestResolveFormatUsesTheProviderRegistryOffTheResponsesWire pins the rest
+// of the order: off that lane the provider registry decides, and a provider
+// it describes keeps the dialect it speaks.
+func TestResolveFormatUsesTheProviderRegistryOffTheResponsesWire(t *testing.T) {
+	out := apply(t, "openai", "openrouter", "openai/gpt-5.4",
+		map[string]any{"model": "openai/gpt-5.4", "reasoning_effort": "high"}, nil)
+	if out["reasoning_effort"] != "high" {
+		t.Fatalf("a provider the registry records as openai keeps its dialect, got %+v", out)
 	}
 }
 

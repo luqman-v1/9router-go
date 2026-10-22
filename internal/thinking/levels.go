@@ -169,6 +169,10 @@ func ToLevel(in *Intent) string {
 // ToBudget converts an intent to a token budget for budget-based formats.
 // auto → (-1, true) (upstream "no budget" sentinel). Clamps to r when set.
 // false when unmappable. Port of toBudget.
+//
+// A negative budget is not a budget: it clamps to 0, and the format writers
+// turn 0 into their own default rather than putting a negative token count on
+// the wire.
 func ToBudget(in *Intent, r *providers.ThinkingRange) (int, bool) {
 	if in == nil {
 		return 0, false
@@ -188,11 +192,14 @@ func ToBudget(in *Intent, r *providers.ThinkingRange) (int, bool) {
 	default:
 		return 0, false
 	}
+	if budget < 0 {
+		budget = 0
+	}
 	if r != nil {
-		if r.Min != 0 && budget < r.Min {
+		if r.Min > 0 && budget < r.Min {
 			budget = r.Min
 		}
-		if r.Max != 0 && budget > r.Max {
+		if r.Max > 0 && budget > r.Max {
 			budget = r.Max
 		}
 	}

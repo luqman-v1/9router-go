@@ -208,33 +208,50 @@ func TestWriterLevelsStayInsideTheProviderVocabulary(t *testing.T) {
 
 func TestGeminiConfig(t *testing.T) {
 	caps := providers.Capabilities{Reasoning: true, ThinkingFormat: "gemini-level"}
-	tc, floor := GeminiConfig((&Intent{Mode: ModeLevel, Level: "high"}), "gemini-level", caps)
+	// The level sets the models advertise: Gemini 3 takes "minimal", Gemini 4
+	// answers 400 for it and its floor is "low".
+	gemini3 := []string{"minimal", "low", "medium", "high"}
+	gemini4 := []string{"low", "medium", "high"}
+
+	tc, floor := GeminiConfig((&Intent{Mode: ModeLevel, Level: "high"}), "gemini-level", caps, gemini3)
 	if tc["thinkingLevel"] != "high" || tc["includeThoughts"] != true || floor != 65535 {
 		t.Fatalf("gemini-level high = %+v floor %d", tc, floor)
 	}
-	tc, _ = GeminiConfig(&Intent{Mode: ModeNone}, "gemini-level", caps)
+	tc, _ = GeminiConfig(&Intent{Mode: ModeNone}, "gemini-level", caps, gemini3)
 	if tc["thinkingLevel"] != "minimal" || tc["includeThoughts"] != false {
 		t.Fatalf("gemini-level none = %+v", tc)
 	}
+	// A level the model does not advertise is clamped onto the lowest one it
+	// does: Gemini 4 rejects "minimal" with a 400.
+	tc, _ = GeminiConfig(&Intent{Mode: ModeNone}, "gemini-level", caps, gemini4)
+	if tc["thinkingLevel"] != "low" {
+		t.Fatalf("gemini-4 none = %+v, want the level clamped to low", tc)
+	}
+	tc, _ = GeminiConfig(&Intent{Mode: ModeLevel, Level: "minimal"}, "gemini-level", caps, gemini4)
+	if tc["thinkingLevel"] != "low" {
+		t.Fatalf("gemini-4 minimal = %+v, want the level clamped to low", tc)
+	}
 	tc, floor = GeminiConfig(&Intent{Mode: ModeLevel, Level: "high"}, "gemini-budget",
-		providers.Capabilities{Reasoning: true, ThinkingFormat: "gemini-budget"})
+		providers.Capabilities{Reasoning: true, ThinkingFormat: "gemini-budget"}, gemini3)
 	if tc["thinkingBudget"] != 24576 || tc["includeThoughts"] != true || floor != 32768 {
 		t.Fatalf("gemini-budget high = %+v floor %d", tc, floor)
 	}
 	tc, floor = GeminiConfig(&Intent{Mode: ModeAuto}, "gemini-budget",
-		providers.Capabilities{Reasoning: true})
+		providers.Capabilities{Reasoning: true}, gemini3)
 	if tc["thinkingBudget"] != -1 || floor != 32768 {
 		t.Fatalf("gemini-budget auto = %+v floor %d", tc, floor)
 	}
+	// A disabled request does not raise maxOutputTokens: upstream breaks out
+	// of the case before the floor is applied.
 	tc, floor = GeminiConfig(&Intent{Mode: ModeNone}, "gemini-budget",
-		providers.Capabilities{Reasoning: true})
-	if tc["thinkingBudget"] != 0 || tc["includeThoughts"] != false || floor != 8192 {
+		providers.Capabilities{Reasoning: true}, gemini3)
+	if tc["thinkingBudget"] != 0 || tc["includeThoughts"] != false || floor != 0 {
 		t.Fatalf("gemini-budget none = %+v floor %d", tc, floor)
 	}
-	if tc, floor := GeminiConfig(nil, "gemini-level", caps); tc != nil || floor != 0 {
+	if tc, floor := GeminiConfig(nil, "gemini-level", caps, gemini3); tc != nil || floor != 0 {
 		t.Fatalf("nil intent = %+v floor %d", tc, floor)
 	}
-	if tc, floor := GeminiConfig(&Intent{Mode: ModeAuto}, "openai", caps); tc != nil || floor != 0 {
+	if tc, floor := GeminiConfig(&Intent{Mode: ModeAuto}, "openai", caps, gemini3); tc != nil || floor != 0 {
 		t.Fatalf("unknown format = %+v floor %d", tc, floor)
 	}
 }

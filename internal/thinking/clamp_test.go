@@ -20,6 +20,8 @@ func TestClampDisableToMinimalJSON(t *testing.T) {
 		{"chat dialect off clamps", `{"reasoning_effort":"off"}`, false, `{"reasoning_effort":"minimal"}`},
 		{"chat dialect NONE clamps", `{"reasoning_effort":"NONE"}`, false, `{"reasoning_effort":"minimal"}`},
 		{"responses dialect none clamps", `{"reasoning":{"effort":"none"}}`, false, `{"reasoning":{"effort":"minimal"}}`},
+		{"responses dialect enabled false clamps", `{"reasoning":{"enabled":false}}`, false, `{"reasoning":{"effort":"minimal"}}`},
+		{"claude dialect disabled clamps", `{"thinking":{"type":"disabled"}}`, false, `{"thinking":{"budget_tokens":1024,"type":"enabled"}}`},
 		{"a provider that allows disabling is untouched", `{"reasoning_effort":"none"}`, true, `{"reasoning_effort":"none"}`},
 		{"another level is untouched", `{"reasoning_effort":"high"}`, false, `{"reasoning_effort":"high"}`},
 		{"a body without reasoning is untouched", `{"model":"m"}`, false, `{"model":"m"}`},

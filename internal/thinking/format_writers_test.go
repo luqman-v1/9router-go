@@ -157,12 +157,28 @@ func TestApplyTokenRouter(t *testing.T) {
 // TestApplyTokenRouterClampsDisableOnAModelThatCannotDisable pins that the
 // tokenrouter dialect honours the none-on-cannot-disable clamp: the model
 // cannot switch reasoning off, so the request lands on the lowest effort
-// instead of on no field at all.
+// instead of on no field at all. The lowest effort is "low": the dialect's
+// enum is low/medium/high/xhigh/max, and "minimal" is not one of them.
 func TestApplyTokenRouterClampsDisableOnAModelThatCannotDisable(t *testing.T) {
 	out := apply(t, "openai", "tokenrouter", "z-ai/glm-5.3-free",
 		map[string]any{"reasoning_effort": "none"}, nil)
-	if out["reasoning_effort"] == nil {
-		t.Fatalf("a model that cannot disable must receive the clamped level, got %+v", out)
+	if out["reasoning_effort"] != "low" {
+		t.Fatalf("a model that cannot disable must receive the enum floor, got %+v", out)
+	}
+}
+
+// TestApplyClaudeBudgetStaysAboveTheApiFloor pins the budget floor: the
+// Messages API rejects a budget below 1024, and the none→minimal clamp feeds
+// this writer the "minimal" level, whose budget is 512.
+func TestApplyClaudeBudgetStaysAboveTheApiFloor(t *testing.T) {
+	out := apply(t, "claude", "claude", "claude-haiku-4.5",
+		map[string]any{"reasoning_effort": "minimal"}, nil)
+	th, _ := out["thinking"].(map[string]any)
+	if th["type"] != "enabled" {
+		t.Fatalf("claude budget → %+v", out)
+	}
+	if th["budget_tokens"] != ClaudeMinThinkingBudget {
+		t.Fatalf("claude budget = %v, want the API floor %d", th["budget_tokens"], ClaudeMinThinkingBudget)
 	}
 }
 

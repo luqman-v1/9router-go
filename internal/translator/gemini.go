@@ -460,15 +460,18 @@ func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]
 	// prefix on the model id is stripped and the global row for the bare id
 	// decides the wire format.
 	caps := providers.GetCapabilitiesForModel("", oreq.Model)
-	if tc, floor := thinking.GeminiConfig(intent, caps.ThinkingFormat, caps); tc != nil {
+	supported := providers.GetThinkingLevels("", oreq.Model)
+	if tc, floor := thinking.GeminiConfig(intent, caps.ThinkingFormat, caps, supported); tc != nil {
 		genConfig["thinkingConfig"] = tc
-		// Raise maxOutputTokens to the floor, never above caps.MaxOutput.
-		target := floor
-		if caps.MaxOutput > 0 && caps.MaxOutput < target {
-			target = caps.MaxOutput
-		}
-		if maxTokens == nil || *maxTokens < target {
-			maxTokens = &target
+		if floor > 0 {
+			// Raise maxOutputTokens to the floor, never above caps.MaxOutput.
+			target := floor
+			if caps.MaxOutput > 0 && caps.MaxOutput < target {
+				target = caps.MaxOutput
+			}
+			if maxTokens == nil || *maxTokens < target {
+				maxTokens = &target
+			}
 		}
 	}
 	if maxTokens != nil {

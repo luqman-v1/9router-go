@@ -93,7 +93,7 @@ func Extract(body map[string]any) *Intent {
 	// 4. Gemini shape (top-level, generationConfig, or request envelope).
 	for _, tc := range geminiThinkingConfigs(body) {
 		if s, ok := tc["thinkingLevel"].(string); ok && s != "" {
-			return &Intent{Mode: ModeLevel, Level: strings.ToLower(s)}
+			return &Intent{Mode: ModeLevel, Level: strings.ToLower(strings.TrimSpace(s))}
 		}
 		if v, present := tc["thinkingBudget"]; present {
 			if b, ok := numberField(v); ok {
@@ -172,9 +172,13 @@ func geminiThinkingConfigs(body map[string]any) []map[string]any {
 	return out
 }
 
-// effortString maps none|off → none, auto → auto, else level (lowercased).
+// effortString maps none|off → none, auto → auto, else level (trimmed and
+// lowercased). The trim matters: a value the client padded with spaces is
+// still that level, and the package's own helpers (KnownEffort, ToLevel)
+// trim, so an untrimmed value here would be "known" in one place and
+// unknown in another.
 func effortString(s string) *Intent {
-	e := strings.ToLower(s)
+	e := strings.ToLower(strings.TrimSpace(s))
 	switch e {
 	case "none", "off":
 		return &Intent{Mode: ModeNone}

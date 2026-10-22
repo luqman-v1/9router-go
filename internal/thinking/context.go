@@ -29,3 +29,36 @@ func SuffixIntentFromContext(ctx context.Context) *Intent {
 	intent, _ := ctx.Value(suffixIntentKey{}).(*Intent)
 	return intent
 }
+
+type providerThinkingKey struct{}
+
+// WithProviderThinkingModes carries the operator's providerThinking overrides
+// for the request, keyed by provider.
+//
+// The overrides are read once per request and travel on the context, so a
+// request that tries several connections does not re-read the settings row
+// once per attempt. An empty map is still a snapshot: it says the settings
+// were read and carry no override.
+func WithProviderThinkingModes(ctx context.Context, modes map[string]string) context.Context {
+	if ctx == nil {
+		return ctx
+	}
+	if modes == nil {
+		modes = map[string]string{}
+	}
+	return context.WithValue(ctx, providerThinkingKey{}, modes)
+}
+
+// ProviderThinkingMode returns the operator override for a provider. The bool
+// reports whether the request carries a snapshot: false means the caller has
+// to read the settings itself.
+func ProviderThinkingMode(ctx context.Context, provider string) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	modes, ok := ctx.Value(providerThinkingKey{}).(map[string]string)
+	if !ok {
+		return "", false
+	}
+	return modes[provider], true
+}

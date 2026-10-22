@@ -880,6 +880,10 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		// The Kiro envelope carries the effort in its own schema, not in a body
+		// field. Declaring the format keeps the pass from forwarding a
+		// reasoning dialect the envelope does not carry.
+		ThinkingFormat: "kiro",
 	},
 	"bedrock": {
 		// The executor substitutes the region per request and signs each request with

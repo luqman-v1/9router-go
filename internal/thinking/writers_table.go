@@ -102,22 +102,32 @@ func writeClaudeBudget(c *writerCtx) {
 		c.body["thinking"] = withDisplay(map[string]any{"type": "enabled"}, c.display)
 		return
 	}
-	if !ok || b == 0 {
+	if !ok || b <= 0 {
 		b = 8192
+	}
+	// The Messages API rejects a budget below its floor ("thinking.budget_tokens:
+	// must be >= 1024"), so the smallest budget it accepts is the floor here.
+	// The none→minimal clamp feeds this writer too, and a 512 there is a 400.
+	if b < ClaudeMinThinkingBudget {
+		b = ClaudeMinThinkingBudget
 	}
 	c.body["thinking"] = withDisplay(map[string]any{"type": "enabled", "budget_tokens": b}, c.display)
 }
 
 func writeGeminiLevel(c *writerCtx) {
-	tc, floor := GeminiConfig(c.eff, "gemini-level", c.caps)
+	tc, floor := GeminiConfig(c.eff, "gemini-level", c.caps, c.supported)
 	SetGeminiThinking(c.body, tc)
-	EnsureGeminiOutputFloor(c.body, floor, c.caps)
+	if floor > 0 {
+		EnsureGeminiOutputFloor(c.body, floor, c.caps)
+	}
 }
 
 func writeGeminiBudget(c *writerCtx) {
-	tc, floor := GeminiConfig(c.eff, "gemini-budget", c.caps)
+	tc, floor := GeminiConfig(c.eff, "gemini-budget", c.caps, c.supported)
 	SetGeminiThinking(c.body, tc)
-	EnsureGeminiOutputFloor(c.body, floor, c.caps)
+	if floor > 0 {
+		EnsureGeminiOutputFloor(c.body, floor, c.caps)
+	}
 }
 
 // writeZai emits the Z.ai dialect: Z.ai ignores thinking.disabled, so
@@ -202,7 +212,7 @@ func writeHunyuan(c *writerCtx) {
 		c.body["thinking"] = map[string]any{"type": "enabled"}
 		return
 	}
-	if !ok || b == 0 {
+	if !ok || b <= 0 {
 		b = 8192
 	}
 	c.body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": b}
@@ -235,12 +245,22 @@ func writeTokenRouter(c *writerCtx) {
 		return
 	}
 	if lvl := ToLevel(c.eff); lvl != "" {
-		c.body["reasoning_effort"] = knownLevel(lvl)
+		lvl = knownLevel(lvl)
+		// The enum is low/medium/high/xhigh/max: "minimal" is not one of them,
+		// and the none→minimal clamp lands here. Its floor is "low".
+		if lvl == "minimal" {
+			lvl = "low"
+		}
+		c.body["reasoning_effort"] = lvl
 	}
 }
 
-// writeKiro writes no field: the kiro translator injects the effort through
-// the system tag.
+// writeKiro writes no field: the Kiro envelope carries the effort in its own
+// schema, not in a body field. This port does not implement that injection
+// (the Kiro translator documents it as not ported), so a Kiro request runs at
+// the model's default effort. The format exists so the pass still strips the
+// reasoning dialects on that lane instead of forwarding a field the Kiro
+// envelope does not carry.
 func writeKiro(c *writerCtx) {}
 
 // writeCommandcode emits the CommandCode dialect: the native CLI sends

@@ -73,6 +73,9 @@ func TestBodyModelHasSuffixStaysFastOnALargeBody(t *testing.T) {
 	if bodyModelHasSuffix(body) {
 		t.Fatal("a body without a model suffix must not report one")
 	}
+	if allocs := testing.AllocsPerRun(10, func() { bodyModelHasSuffix(body) }); allocs > 0 {
+		t.Errorf("the scan allocated %v times, want none: it runs on every request", allocs)
+	}
 }
 
 // TestBodyModelHasSuffixFindsTheSuffix pins that the rewrite still finds a
