@@ -24,7 +24,9 @@ tool call (`z-ai/glm-5.3-flash`, `xiaomi/mimo-v2.6-flash`).
   `toContentBlocks`, `safeParseJson` and `convertMessages`
 - `buildCommandcodeBody` builds `params` from a whitelist instead of copying every
   client key, and converts OpenAI `tools` through the existing
-  `convertOpenAIToolsToClaude`
+  `convertOpenAIToolsToClaude`. The native `{params:{...}}` envelope goes
+  through the same whitelist: the model is the resolved one, and a key outside
+  the whitelist does not reach the provider
 - `max_tokens` default stays 1024 (upstream 64000): deliberate local divergence,
   the test ping budget depends on it
 
