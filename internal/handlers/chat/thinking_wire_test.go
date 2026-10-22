@@ -1,10 +1,12 @@
 package chat
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/thinking"
 )
 
@@ -14,10 +16,70 @@ func wireHandler() *ChatHandler {
 	return &ChatHandler{}
 }
 
+// TestPrepareInboundKeepsAnUnchangedBodyByteIdentical pins the byte
+// stability of the inbound body when the operator override has nothing to
+// add: the body the client sent is the body the upstream sees, so an integer
+// above 2^53 in it survives the pass.
+func TestPrepareInboundKeepsAnUnchangedBodyByteIdentical(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	if err := repo.UpdateSettingsRaw(map[string]any{
+		"providerThinking": map[string]any{"openai": map[string]any{"mode": "high"}},
+	}); err != nil {
+		t.Fatalf("UpdateSettingsRaw: %v", err)
+	}
+	h := NewChatHandler(repo)
+	body := []byte(`{"model":"m","user_id":9007199254740993,"reasoning_effort":"low",` +
+		`"messages":[{"role":"user","content":"hi"}]}`)
+	out, _, _ := h.prepareInboundThinking(context.Background(), "openai", "m", body, false)
+	if !bytes.Equal(out, body) {
+		t.Fatalf("an unchanged inbound body must be returned byte for byte:\nin:  %s\nout: %s", body, out)
+	}
+}
+
+// TestInjectProviderThinkingUsesTheClaudeDialectForAClaudeClient pins the
+// dialect of the operator override. A Claude client sends the Claude wire,
+// and that wire has no reasoning_effort field: Anthropic answers an unknown
+// top-level field with a 400.
+func TestInjectProviderThinkingUsesTheClaudeDialectForAClaudeClient(t *testing.T) {
+	h := wireHandler()
+	m := map[string]any{
+		"model":    "claude-x",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}
+	if !h.injectProviderThinkingMode("high", m, true, "anthropic", "claude-haiku-4.5") {
+		t.Fatal("the override must be reported as applied")
+	}
+	if _, has := m["reasoning_effort"]; has {
+		t.Fatalf("a Claude body must not carry reasoning_effort: %+v", m)
+	}
+	th, _ := m["thinking"].(map[string]any)
+	if th == nil || th["type"] == nil {
+		t.Fatalf("a Claude body must carry the Claude thinking dialect: %+v", m)
+	}
+}
+
+// TestPrepareInboundTakesTheSuffixFromTheRequestedModel pins where the
+// suffix comes from: the client's own model field, so a combo or an alias
+// name carries it too. The name is resolved without the suffix, so the
+// override has to travel beside the request.
+func TestPrepareInboundTakesTheSuffixFromTheRequestedModel(t *testing.T) {
+	h := wireHandler()
+	body := []byte(`{"model":"mycombo(high)","messages":[{"role":"user","content":"hi"}]}`)
+	_, wireModel, intent := h.prepareInboundThinking(context.Background(), "openai", "gpt-5.4", body, false)
+	if wireModel != "gpt-5.4" {
+		t.Fatalf("wireModel = %q, want the resolved model", wireModel)
+	}
+	if intent == nil || intent.Mode != thinking.ModeLevel || intent.Level != "high" {
+		t.Fatalf("intent = %+v, want level high", intent)
+	}
+}
+
 func TestPrepareInboundFastPath(t *testing.T) {
 	h := wireHandler()
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
-	out, wireModel, intent := h.prepareInboundThinking("openai", "m", body)
+	out, wireModel, intent := h.prepareInboundThinking(context.Background(), "openai", "m", body, false)
 	if string(out) != string(body) {
 		t.Fatalf("fast path rewrote: %s", out)
 	}
@@ -28,8 +90,8 @@ func TestPrepareInboundFastPath(t *testing.T) {
 
 func TestPrepareInboundSuffix(t *testing.T) {
 	h := wireHandler()
-	out, wireModel, intent := h.prepareInboundThinking("deepseek", "deepseek-chat(high)",
-		[]byte(`{"model":"x","messages":[]}`))
+	out, wireModel, intent := h.prepareInboundThinking(context.Background(), "deepseek", "deepseek-chat(high)",
+		[]byte(`{"model":"x","messages":[]}`), false)
 	if wireModel != "deepseek-chat" {
 		t.Fatalf("wireModel = %q", wireModel)
 	}
@@ -47,15 +109,19 @@ func TestPrepareInboundSuffix(t *testing.T) {
 
 func TestPrepareInboundCapture(t *testing.T) {
 	h := wireHandler()
-	out, wireModel, intent := h.prepareInboundThinking("claude", "claude-haiku-4.5",
-		[]byte(`{"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`))
+	out, wireModel, intent := h.prepareInboundThinking(context.Background(), "claude", "claude-haiku-4.5",
+		[]byte(`{"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`), false)
 	if wireModel != "claude-haiku-4.5" {
 		t.Fatalf("wireModel = %q", wireModel)
 	}
 	if intent == nil || intent.Mode != "level" || intent.Display != "summarized" {
 		t.Fatalf("intent = %+v", intent)
 	}
-	if !strings.Contains(string(out), "reasoning_effort") {
+	var decoded map[string]any
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("unmarshal %s: %v", out, err)
+	}
+	if _, has := decoded["reasoning_effort"]; !has {
 		t.Fatalf("inbound must keep client fields: %s", out)
 	}
 }
@@ -63,7 +129,7 @@ func TestPrepareInboundCapture(t *testing.T) {
 func TestPrepareInboundMalformed(t *testing.T) {
 	h := wireHandler()
 	bad := []byte(`{nope`)
-	out, wireModel, _ := h.prepareInboundThinking("openai", "m(none)", bad)
+	out, wireModel, _ := h.prepareInboundThinking(context.Background(), "openai", "m(none)", bad, false)
 	if string(out) != string(bad) || wireModel != "m" {
 		t.Fatalf("malformed = (%s, %q)", out, wireModel)
 	}
@@ -165,7 +231,7 @@ func TestPrepareInboundDialectCapture(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, _, intent := h.prepareInboundThinking("openai", "gpt-5.3-codex", []byte(tt.body))
+			out, _, intent := h.prepareInboundThinking(context.Background(), "openai", "gpt-5.3-codex", []byte(tt.body), false)
 			if tt.wantNil {
 				if intent != nil {
 					t.Fatalf("intent = %+v, want nil", intent)

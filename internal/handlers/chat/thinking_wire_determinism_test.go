@@ -2,6 +2,7 @@ package chat
 
 import (
 	"bytes"
+	"context"
 	"testing"
 )
 
@@ -12,9 +13,9 @@ func TestPrepareInboundThinkingDeterministic(t *testing.T) {
 	h := wireHandler()
 	body := []byte(`{"model":"m","reasoning_effort":"high","max_tokens":128,"temperature":0.5,` +
 		`"messages":[{"role":"user","content":"hi"}]}`)
-	first, _, _ := h.prepareInboundThinking("openai", "m", body)
+	first, _, _ := h.prepareInboundThinking(context.Background(), "openai", "m", body, false)
 	for i := 0; i < 100; i++ {
-		got, _, _ := h.prepareInboundThinking("openai", "m", body)
+		got, _, _ := h.prepareInboundThinking(context.Background(), "openai", "m", body, false)
 		if !bytes.Equal(got, first) {
 			t.Fatalf("the inbound body is not stable:\nfirst: %s\ngot:   %s", first, got)
 		}

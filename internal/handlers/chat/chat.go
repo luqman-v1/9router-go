@@ -8,6 +8,7 @@ import (
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/semanticcache"
+	"9router/proxy/internal/thinking"
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/updater"
 	"bytes"
@@ -61,6 +62,11 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// A "(level)" suffix is a request override, not part of the model id: it
+	// comes off the name before the name is resolved against the aliases and
+	// the combos, and the intent it carries travels on the context.
+	modelName, suffixIntent := thinking.ParseSuffix(reqBody.Model)
+
 	if reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
@@ -85,7 +91,8 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// outlive the request (docs/provider-limits-plan.md D7).
 	ctx = withProviderLimitState(ctx)
 	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
-	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
+	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
 	// Record the dispatching key so the outbound guardrail tap can resolve the
 	// right policy. A keyless caller leaves it unset and the tap stays inert.
 	ctx = withGuardrailKey(ctx, requestKeyID(r))
@@ -118,7 +125,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	modelInfo, err := h.resolveModel(reqBody.Model)
+	modelInfo, err := h.resolveModel(modelName)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -248,6 +255,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A "(level)" suffix is a request override, not part of the model id: it
+	// comes off the name before the name is resolved against the aliases and
+	// the combos, and the intent it carries travels on the context.
+	modelName, suffixIntent := thinking.ParseSuffix(reqBody.Model)
+
 	if reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
@@ -255,11 +267,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Per-key model policy: 403 before any translation work or connection
 	// selection.
-	if !h.enforceModelAccess(w, r, reqBody.Model) {
+	if !h.enforceModelAccess(w, r, modelName) {
 		return
 	}
 
-	modelInfo, err := h.resolveModel(reqBody.Model)
+	modelInfo, err := h.resolveModel(modelName)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
@@ -308,7 +320,8 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	workingBody["stream"] = reqBody.Stream
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
 	ctx = withProviderLimitState(ctx)
-	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
+	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
 	// Record the dispatching key so the outbound guardrail tap can resolve the
 	// policy scoped to it. A keyless caller leaves it unset and the tap stays
 	// inert.
