@@ -31,7 +31,7 @@ func decodeYAML(src []byte) ([]*yaml.Node, error) {
 			return docs, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrParseFailure, err)
+			return nil, fmt.Errorf("%w: %w", ErrParseFailure, err)
 		}
 		docs = append(docs, &n)
 	}
@@ -254,11 +254,11 @@ func appendYAMLTopKey(src []byte, docs []*yaml.Node, path []string, value string
 func verifyYAML(out []byte, e Edit) ([]byte, error) {
 	docs, err := decodeYAML(out)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInternalInconsistency, err)
+		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
 	}
 	n, err := findYAMLScalar(docs, e.KeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInternalInconsistency, err)
+		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
 	}
 	if n.Kind != yaml.ScalarNode || n.Value != e.Value {
 		return nil, fmt.Errorf("%w: %q did not read back as written", ErrInternalInconsistency, e.KeyPath[len(e.KeyPath)-1])

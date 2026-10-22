@@ -283,7 +283,7 @@ func appendTOMLSection(src []byte, sectionPath []string, key, val string) []byte
 // package's bug, so it is reported as such and nothing is returned to write.
 func verifyTOML(out []byte) ([]byte, error) {
 	if _, err := collectTOML(out); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInternalInconsistency, err)
+		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
 	}
 	return out, nil
 }
