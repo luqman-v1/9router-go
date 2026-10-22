@@ -188,12 +188,16 @@ func resolveFormat(target, provider, model string, caps providers.Capabilities) 
 		}
 	}
 	isOpenAIWire := target == "openai" || target == "openai-responses"
+	// A Responses target is served by the Responses dialect: a strict
+	// Responses upstream rejects a top-level reasoning_effort ("unknown
+	// parameter `reasoning_effort`") and reads reasoning:{effort,summary}
+	// instead. The dialect follows the wire, not the capability, so every
+	// provider on that lane gets it (upstream thinkingUnified.js:137-145
+	// pins the same dialect for the Muse lane).
+	if target == "openai-responses" && !nativeOnlyFormats[caps.ThinkingFormat] {
+		return "openai-responses"
+	}
 	if caps.ThinkingFormat != "" && !(isOpenAIWire && nativeOnlyFormats[caps.ThinkingFormat]) {
-		// Muse (Meta) strict Responses API rejects top-level reasoning_effort
-		// and requires nested reasoning: { effort, summary }.
-		if provider == "muse" && target == "openai-responses" {
-			return "openai-responses"
-		}
 		return caps.ThinkingFormat
 	}
 	if f, ok := formatToNative[target]; ok {

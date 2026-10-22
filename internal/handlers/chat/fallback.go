@@ -727,23 +727,28 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// applyThinking and filterToOpenAIFormat). Runs last on the wire body so
 	// no converter can resurrect a dialect the target rejects. Claude-native
 	// clients author their own Claude thinking and keep their existing
-	// handling. A Responses-native upstream never runs ApplyJSON — its
-	// executor does its own level mapping — so the one thing that must still
-	// reach it is the mandatory-reasoning clamp.
+	// handling.
+	//
+	// The target format is the wire the upstream speaks, not the shape the
+	// client sent: a Responses-native upstream (opencode, muse, a custom
+	// node on a /responses endpoint) reads reasoning:{effort,summary} and
+	// rejects a top-level reasoning_effort, so the pass runs there too —
+	// upstream applies the thinking pass for every target format
+	// (open-sse/translator/index.js:137). The mandatory-reasoning clamp is
+	// part of the writer, so the Responses lane gets it as well.
 	if !claudeNative {
-		if executor.UpstreamSpeaksResponses(provider, wireModel, providerCfg) {
-			pipedBody = thinking.ClampDisableToMinimalJSON(pipedBody, providers.GetCapabilitiesForModel(provider, wireModel))
-		} else {
-			target := "openai"
-			if isAnthropic {
-				target = "claude"
-			}
-			pipedBody = thinking.ApplyJSON(pipedBody, target, provider, wireModel, thinkingIntent)
-			if !isAnthropic && !providerCfg.IsGeminiNative() {
-				pipedBody = translator.FilterToOpenAIFormatJSON(pipedBody, translator.FilterOptions{
-					PreserveCacheControl: providers.PreservesCacheControl(provider),
-				})
-			}
+		target := "openai"
+		switch {
+		case executor.UpstreamSpeaksResponses(provider, wireModel, providerCfg):
+			target = "openai-responses"
+		case isAnthropic:
+			target = "claude"
+		}
+		pipedBody = thinking.ApplyJSON(pipedBody, target, provider, wireModel, thinkingIntent)
+		if target == "openai" && !providerCfg.IsGeminiNative() {
+			pipedBody = translator.FilterToOpenAIFormatJSON(pipedBody, translator.FilterOptions{
+				PreserveCacheControl: providers.PreservesCacheControl(provider),
+			})
 		}
 	}
 	start := time.Now()
