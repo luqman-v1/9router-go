@@ -108,6 +108,9 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := thinking.WithSuffixIntent(h.newResponsesContext(r, modelName, modelInfo, &body), suffixIntent)
+	// The operator's providerThinking overrides are read once here, not once
+	// per connection attempt.
+	ctx = h.withProviderThinkingModes(ctx)
 
 	var workingBody map[string]any
 	if err := json.Unmarshal(body, &workingBody); err != nil {

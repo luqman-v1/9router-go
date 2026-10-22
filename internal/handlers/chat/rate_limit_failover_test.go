@@ -30,6 +30,16 @@ func isoRetryAfterBody(d time.Duration) string {
 	return retryAfterBody(time.Now(), d)
 }
 
+// deltaRetryAfterBody carries the wait as a duration instead of an instant.
+//
+// An instant decays while the router processes the failure: on a loaded
+// machine the wait it asks for can be gone before the router reads it, and a
+// test that asserts on the wait then fails on the machine's speed, not on the
+// behaviour. A duration is the same wait however long the handling takes.
+func deltaRetryAfterBody(d time.Duration) string {
+	return `{"error":{"message":"rate limited","retryAfter":"` + d.String() + `"}}`
+}
+
 // TestRetryAfterWait_Extraction pins every carrier of a retry instruction. The
 // header and the RetryInfo detail were both invisible to the router before:
 // UpstreamError carried no headers at all, and retryDelay sits on the detail
@@ -184,7 +194,7 @@ func TestComboRateLimitFailover(t *testing.T) {
 		{
 			name:     "429 with a retry-after past the tolerance is not retried",
 			accounts: 2, status: http.StatusTooManyRequests,
-			body:          func() string { return isoRetryAfterBody(5 * time.Second) },
+			body:          func() string { return deltaRetryAfterBody(5 * time.Second) },
 			failFirstHits: 2, wantHits: 2, wantStatus: http.StatusTooManyRequests,
 		},
 		{
@@ -201,15 +211,15 @@ func TestComboRateLimitFailover(t *testing.T) {
 			// lock it takes is short enough for the pass to find the account.
 			name:     "429 with a brief retry-after still gets the bounded second pass",
 			accounts: 1, status: http.StatusTooManyRequests,
-			body:          func() string { return isoRetryAfterBody(time.Second) },
+			body:          func() string { return deltaRetryAfterBody(time.Second) },
 			failFirstHits: 1, wantHits: 2, wantStatus: http.StatusOK,
 		},
 		{
-			// An RFC3339 Retry-After is truncated to whole seconds, so the wait
-			// lands anywhere in (2s, 3s]; the floor is what is pinned.
+			// A duration Retry-After is exact, so the wait lands on the
+			// duration itself; the floor is what is pinned.
 			name:     "a transient 503 keeps the wider retry cap",
 			accounts: 2, status: http.StatusServiceUnavailable,
-			body:          func() string { return isoRetryAfterBody(3 * time.Second) },
+			body:          func() string { return deltaRetryAfterBody(3 * time.Second) },
 			failFirstHits: 3, wantHits: 4, wantMinWait: 2 * time.Second, wantStatus: http.StatusOK,
 		},
 	}

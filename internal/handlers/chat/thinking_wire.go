@@ -33,7 +33,7 @@ func (h *ChatHandler) prepareInboundThinking(ctx context.Context, provider, mode
 	needsWire := wireModel != model
 	// The operator override is read once and reused below: the fast path
 	// needs it to know whether the body has to be decoded at all.
-	mode := h.providerThinkingMode(provider)
+	mode := h.providerThinkingMode(ctx, provider)
 	if !needsWire && len(providers.ModelStrip(provider, model)) == 0 &&
 		mode == "" && suffixIntent == nil && !thinking.BodyMentionsThinking(body) {
 		return body, wireModel, nil
@@ -43,15 +43,23 @@ func (h *ChatHandler) prepareInboundThinking(ctx context.Context, provider, mode
 		return body, wireModel, suffixIntent
 	}
 	changed := translator.StripContentTypes(m, providers.ModelStrip(provider, wireModel))
-	if h.injectProviderThinkingMode(mode, m, claudeClient, provider, wireModel) {
-		changed = true
+	// The intent is captured before the conversation shape is normalised: the
+	// normalisation drops a thinking block the shape invalidates, and the
+	// client still asked for it.
+	intent := suffixIntent
+	if intent == nil {
+		intent = thinking.CaptureThinking(m)
 	}
 	if thinking.NormalizeThinkingConfig(m) {
 		changed = true
 	}
-	intent := suffixIntent
-	if intent == nil {
-		intent = thinking.CaptureThinking(m)
+	// The override is injected after the normalisation, so the block it
+	// writes is not the one the normalisation drops: on a request whose last
+	// turn is not a user turn the override used to be injected and deleted
+	// again in the same pass, and the operator's setting silently did
+	// nothing.
+	if h.injectProviderThinkingMode(mode, m, claudeClient, provider, wireModel) {
+		changed = true
 	}
 	// A body the inbound pass did not change keeps the client's bytes: no
 	// re-serialisation, and no float64 round trip for the integers in it.
@@ -68,8 +76,8 @@ func (h *ChatHandler) prepareInboundThinking(ctx context.Context, provider, mode
 // injectProviderThinking applies settings.providerThinking[provider].mode,
 // mirroring upstream chatCore.js:117-131. Only when the client hasn't set
 // the field; "auto" (and "") means no override.
-func (h *ChatHandler) injectProviderThinking(provider string, m map[string]any) bool {
-	return h.injectProviderThinkingMode(h.providerThinkingMode(provider), m, false, provider, "")
+func (h *ChatHandler) injectProviderThinking(ctx context.Context, provider string, m map[string]any) bool {
+	return h.injectProviderThinkingMode(h.providerThinkingMode(ctx, provider), m, false, provider, "")
 }
 
 // injectProviderThinkingMode applies an operator override that was already
@@ -114,8 +122,15 @@ func (h *ChatHandler) injectProviderThinkingMode(mode string, m map[string]any, 
 }
 
 // providerThinkingMode reads settings.providerThinking[provider].mode.
-// A nil repo (tests) means no override.
-func (h *ChatHandler) providerThinkingMode(provider string) string {
+//
+// The overrides are read once per request and travel on the context, so a
+// request that tries several connections does not re-read the settings row
+// once per attempt. A caller that carries no context falls back to the
+// repository.
+func (h *ChatHandler) providerThinkingMode(ctx context.Context, provider string) string {
+	if mode, ok := thinking.ProviderThinkingMode(ctx, provider); ok {
+		return mode
+	}
 	if h == nil || h.Repo == nil {
 		return ""
 	}
@@ -128,4 +143,22 @@ func (h *ChatHandler) providerThinkingMode(provider string) string {
 		return ""
 	}
 	return strings.TrimSpace(pt.Mode)
+}
+
+// withProviderThinkingModes puts the operator's providerThinking overrides on
+// the request context. It reads the settings row once, before the request
+// picks a connection.
+func (h *ChatHandler) withProviderThinkingModes(ctx context.Context) context.Context {
+	if h == nil || h.Repo == nil {
+		return ctx
+	}
+	settings, err := h.Repo.GetSettings()
+	if err != nil || settings == nil {
+		return thinking.WithProviderThinkingModes(ctx, nil)
+	}
+	modes := make(map[string]string, len(settings.ProviderThinking))
+	for provider, pt := range settings.ProviderThinking {
+		modes[provider] = pt.Mode
+	}
+	return thinking.WithProviderThinkingModes(ctx, modes)
 }

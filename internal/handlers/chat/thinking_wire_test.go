@@ -139,9 +139,32 @@ func TestInjectProviderThinking(t *testing.T) {
 	h := wireHandler()
 	// nil repo → no-op.
 	m := map[string]any{}
-	h.injectProviderThinking("deepseek", m)
+	h.injectProviderThinking(context.Background(), "deepseek", m)
 	if len(m) != 0 {
 		t.Fatalf("nil repo injected: %+v", m)
+	}
+}
+
+// TestPrepareInboundKeepsTheOperatorOverrideOnAPrefill pins the order of
+// the two passes. The conversation shape is normalised first — a thinking
+// block is request-scoped tool state and only valid when the conversation
+// ends on a user turn — and the operator's override is injected after it.
+// Injected before it, the override was written and deleted again in the same
+// pass, and the operator's setting silently did nothing on every prefill.
+func TestPrepareInboundKeepsTheOperatorOverrideOnAPrefill(t *testing.T) {
+	repo := poolRotationDB(t, `{"providerThinking":{"deepseek":{"mode":"on"}}}`)
+	h := &ChatHandler{Repo: repo}
+	body := []byte(`{"model":"deepseek-v4-pro","messages":[` +
+		`{"role":"user","content":"hi"},{"role":"assistant","content":"prefill"}]}`)
+	out, _, _ := h.prepareInboundThinking(context.Background(), "deepseek", "deepseek-v4-pro", body, false)
+	if !bytes.Contains(out, []byte(`"budget_tokens":10000`)) {
+		t.Fatalf("the operator override must survive a prefill turn: %s", out)
+	}
+	// And it has to reach the wire: the outbound pass reads the override
+	// back out of the body.
+	wire := thinking.ApplyJSON(out, "openai", "deepseek", "deepseek-v4-pro", nil)
+	if !bytes.Contains(wire, []byte(`"reasoning_effort"`)) {
+		t.Fatalf("the operator override must reach the wire: %s", wire)
 	}
 }
 

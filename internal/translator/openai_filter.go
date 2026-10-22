@@ -2,7 +2,13 @@ package translator
 
 import (
 	json "encoding/json/v2"
+	"errors"
 )
+
+// ErrNoMessages reports that the request carries no messages. Both OpenAI
+// and Anthropic answer an empty messages array with a 400, so the caller
+// fails the request locally instead of spending the call.
+var ErrNoMessages = errors.New("the request carries no messages")
 
 // OpenAI content/message block types missing from the package's existing
 // sets (claude_blocks.go, responses_request.go), mirroring
@@ -67,19 +73,26 @@ func filterToOpenAIFormat(body map[string]any, opts FilterOptions) bool {
 // decode errors return the input unchanged. A body the filter does not change
 // is returned unchanged as well, so the bytes the client sent are the bytes
 // the upstream sees.
-func FilterToOpenAIFormatJSON(body []byte, opts FilterOptions) []byte {
+//
+// A body whose message list ends up empty is reported as ErrNoMessages: the
+// upstream would answer that with a 400, so the caller answers it here.
+func FilterToOpenAIFormatJSON(body []byte, opts FilterOptions) ([]byte, error) {
 	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil || m == nil {
-		return body
+		return body, nil
 	}
-	if !filterToOpenAIFormat(m, opts) {
-		return body
+	changed := filterToOpenAIFormat(m, opts)
+	if msgs, ok := m["messages"].([]any); ok && len(msgs) == 0 {
+		return body, ErrNoMessages
+	}
+	if !changed {
+		return body, nil
 	}
 	out, err := json.Marshal(m, json.Deterministic(true))
 	if err != nil {
-		return body
+		return body, nil
 	}
-	return out
+	return out, nil
 }
 
 // stripBlock drops the signature and, unless the provider keeps them, the

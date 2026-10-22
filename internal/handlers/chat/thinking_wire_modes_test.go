@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -105,7 +106,7 @@ func TestInjectProviderThinkingDialectKeys(t *testing.T) {
 			for k, v := range tt.client {
 				m[k] = v
 			}
-			h.injectProviderThinking("deepseek", m)
+			h.injectProviderThinking(context.Background(), "deepseek", m)
 			if !reflect.DeepEqual(m, tt.want) {
 				t.Fatalf("body = %+v, want %+v", m, tt.want)
 			}

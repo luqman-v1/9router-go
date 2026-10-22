@@ -2,6 +2,7 @@ package translator
 
 import (
 	"bytes"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -20,12 +21,18 @@ func TestFilterToOpenAIFormatJSONDeterministic(t *testing.T) {
 		`"messages":[{"role":"developer","content":"sys"},` +
 		`{"role":"user","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"hi"}]}],` +
 		`"tool_choice":{"type":"any"}}`)
-	first := FilterToOpenAIFormatJSON(body, FilterOptions{})
+	first, err := FilterToOpenAIFormatJSON(body, FilterOptions{})
+	if err != nil {
+		t.Fatalf("FilterToOpenAIFormatJSON: %v", err)
+	}
 	if !bytes.Contains(first, []byte(`"role":"system"`)) {
 		t.Fatalf("the fixture must be rewritten by the filter, otherwise the determinism assertion is vacuous: %s", first)
 	}
 	for i := 0; i < 100; i++ {
-		got := FilterToOpenAIFormatJSON(body, FilterOptions{})
+		got, err := FilterToOpenAIFormatJSON(body, FilterOptions{})
+		if err != nil {
+			t.Fatalf("FilterToOpenAIFormatJSON: %v", err)
+		}
 		if !bytes.Equal(got, first) {
 			t.Fatalf("the OpenAI wire body is not stable:\nfirst: %s\ngot:   %s", first, got)
 		}
@@ -58,13 +65,36 @@ func TestTranslateClaudeToOpenAIToolChoiceIsDeterministic(t *testing.T) {
 // normalisation: an empty tool list is dropped and a Claude-shaped tool_choice
 // is rewritten whether or not the body carries a messages key.
 func TestFilterToOpenAIFormatJSONNormalizesToolsWithoutMessages(t *testing.T) {
-	out := FilterToOpenAIFormatJSON([]byte(`{"tools":[]}`), FilterOptions{})
+	out, err := FilterToOpenAIFormatJSON([]byte(`{"tools":[]}`), FilterOptions{})
+	if err != nil {
+		t.Fatalf("FilterToOpenAIFormatJSON: %v", err)
+	}
 	if bytes.Contains(out, []byte("tools")) {
 		t.Fatalf("an empty tool list must be dropped, got %s", out)
 	}
-	out = FilterToOpenAIFormatJSON([]byte(`{"tool_choice":{"type":"any"}}`), FilterOptions{})
+	out, err = FilterToOpenAIFormatJSON([]byte(`{"tool_choice":{"type":"any"}}`), FilterOptions{})
+	if err != nil {
+		t.Fatalf("FilterToOpenAIFormatJSON: %v", err)
+	}
 	if !bytes.Contains(out, []byte(`"required"`)) {
 		t.Fatalf("a Claude-shaped tool_choice must be normalised without a messages key, got %s", out)
+	}
+}
+
+// TestFilterToOpenAIFormatJSONReportsAnEmptyMessageList pins the local
+// failure: a request whose every turn carried nothing ends up with an empty
+// message list, and both OpenAI and Anthropic answer that with a 400. The
+// gateway answers it itself instead of forwarding the array.
+func TestFilterToOpenAIFormatJSONReportsAnEmptyMessageList(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":[` +
+		`{"type":"thinking","thinking":"hmm"},{"type":"text","text":""}]}]}`)
+	_, err := FilterToOpenAIFormatJSON(body, FilterOptions{})
+	if !errors.Is(err, ErrNoMessages) {
+		t.Fatalf("an emptied message list must be reported, got %v", err)
+	}
+	// A body without a messages key is not that case: the provider decides.
+	if _, err := FilterToOpenAIFormatJSON([]byte(`{"model":"m"}`), FilterOptions{}); err != nil {
+		t.Fatalf("a body without messages must be forwarded, got %v", err)
 	}
 }
 
@@ -93,7 +123,10 @@ func TestTranslateOpenAIToGeminiDeterministic(t *testing.T) {
 // a plain request pays no re-serialisation on the way out.
 func TestFilterToOpenAIFormatJSONLeavesAnUnchangedBodyByteIdentical(t *testing.T) {
 	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hello"}],"stream":true}`)
-	out := FilterToOpenAIFormatJSON(body, FilterOptions{})
+	out, err := FilterToOpenAIFormatJSON(body, FilterOptions{})
+	if err != nil {
+		t.Fatalf("FilterToOpenAIFormatJSON: %v", err)
+	}
 	if !bytes.Equal(out, body) {
 		t.Errorf("body was rewritten:\n got %s\nwant %s", out, body)
 	}
@@ -123,12 +156,25 @@ func TestFilterToOpenAIFormatJSONFastPathMatchesTheFilter(t *testing.T) {
 	}
 	for _, raw := range corpus {
 		body := []byte(raw)
-		got := FilterToOpenAIFormatJSON(body, FilterOptions{})
+		got, err := FilterToOpenAIFormatJSON(body, FilterOptions{})
 		var m map[string]any
 		if err := json.Unmarshal(body, &m); err != nil {
 			t.Fatalf("unmarshal %s: %v", raw, err)
 		}
 		FilterToOpenAIFormat(m, FilterOptions{})
+		if errors.Is(err, ErrNoMessages) {
+			// The filter emptied the list. The JSON entry point reports that
+			// instead of forwarding the empty array; the map filter leaves
+			// the empty list behind.
+			msgs, ok := m["messages"].([]any)
+			if !ok || len(msgs) != 0 {
+				t.Errorf("the empty-list case must agree with the filter for %s: %v", raw, m["messages"])
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("FilterToOpenAIFormatJSON(%s): %v", raw, err)
+		}
 		var want map[string]any
 		if err := json.Unmarshal(got, &want); err != nil {
 			t.Fatalf("unmarshal result %s: %v", got, err)
@@ -144,7 +190,10 @@ func TestFilterToOpenAIFormatJSONFastPathMatchesTheFilter(t *testing.T) {
 // and the fast path must not strip them either.
 func TestFilterToOpenAIFormatJSONKeepsCacheControlForTheQuirkProvider(t *testing.T) {
 	body := []byte(`{"model":"qwen","messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"}}]}]}`)
-	out := FilterToOpenAIFormatJSON(body, FilterOptions{PreserveCacheControl: true})
+	out, err := FilterToOpenAIFormatJSON(body, FilterOptions{PreserveCacheControl: true})
+	if err != nil {
+		t.Fatalf("FilterToOpenAIFormatJSON: %v", err)
+	}
 	if !bytes.Contains(out, []byte("cache_control")) {
 		t.Errorf("cache_control was stripped for a provider that keeps it: %s", out)
 	}

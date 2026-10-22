@@ -112,6 +112,11 @@ func filterContentBlocks(parts []any, opts FilterOptions) ([]any, bool) {
 // pruneEmptyMessages drops the turns that carry no content, but never a tool
 // turn or an assistant turn with tool_calls. The bool reports whether a turn
 // was dropped.
+//
+// A body whose every turn carried nothing ends up with an empty message list;
+// the JSON entry point reports that as ErrNoMessages, so the gateway can
+// answer the client itself instead of forwarding an empty messages array the
+// upstream answers with a 400.
 func pruneEmptyMessages(msgs []any) ([]any, bool) {
 	kept := msgs[:0]
 	changed := false
