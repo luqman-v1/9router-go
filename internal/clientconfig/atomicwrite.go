@@ -90,7 +90,7 @@ func WriteFileAtomic(g guard, content []byte, h hooks) error {
 		}
 	}
 
-	tempRel, err := createTemp(r, g.rel, perm)
+	tempRel, err := createTemp(r, g.rel)
 	if err != nil {
 		return err
 	}
@@ -149,7 +149,15 @@ func writeTemp(r rootFS, tempRel string, content []byte, perm os.FileMode, h hoo
 // within one filesystem, and a cross-device rename either fails with EXDEV or
 // silently degrades to copy+unlink, which breaks the invariant. os.Root has no
 // CreateTemp, so the name is drawn here.
-func createTemp(r rootFS, relTarget string, perm os.FileMode) (string, error) {
+//
+// The temp is chmodded owner-writable on the handle before it is closed, rather
+// than being created with the target's perm. OpenFile's perm argument is masked
+// by umask and that mask can include the owner write bit — under umask 0277 a
+// 0640 target creates the temp 0400 — so writeTemp's reopen for the write gets
+// EACCES and the write fails before it starts. Chmod on the handle is not
+// subject to umask. writeTemp applies the target's real mode once the bytes are
+// down, which is where the user's choice is honoured.
+func createTemp(r rootFS, relTarget string) (string, error) {
 	dir := filepath.Dir(relTarget)
 	for i := 0; i < 16; i++ {
 		nonce := make([]byte, 8)
@@ -157,12 +165,20 @@ func createTemp(r rootFS, relTarget string, perm os.FileMode) (string, error) {
 			return "", fmt.Errorf("%w: nonce: %w", ErrWriteFailed, err)
 		}
 		name := filepath.Join(dir, fmt.Sprintf(".tmp-%x", nonce))
-		f, err := r.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
+		f, err := r.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, os.FileMode(constants.FilePermKey))
 		if errors.Is(err, fs.ErrExist) {
 			continue
 		}
 		if err != nil {
 			return "", fmt.Errorf("%w: create temp %s: %w", ErrWriteFailed, name, err)
+		}
+		// Restored on the handle because the create perm was umask-masked. The
+		// temp holds the key's new content, so it stays owner-only until the
+		// rename.
+		if err := f.Chmod(os.FileMode(constants.FilePermKey)); err != nil {
+			_ = f.Close()
+			_ = r.Remove(name)
+			return "", fmt.Errorf("%w: chmod temp %s: %w", ErrWriteFailed, name, err)
 		}
 		// Closed immediately; writeTemp reopens it for the write so the seam
 		// sees a plain *os.File with no preexisting buffered state.

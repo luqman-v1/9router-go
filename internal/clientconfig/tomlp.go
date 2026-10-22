@@ -64,7 +64,7 @@ func collectTOML(src []byte) (*tomlDoc, error) {
 	buf := parseableTOML(src)
 	var scratch any
 	if err := toml.Unmarshal(buf, &scratch); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrParseFailure, err)
+		return nil, fmt.Errorf("%w: %w", ErrParseFailure, err)
 	}
 	p := &unstable.Parser{KeepComments: true}
 	p.Reset(buf)
@@ -105,7 +105,7 @@ func collectTOML(src []byte) (*tomlDoc, error) {
 		}
 	}
 	if err := p.Error(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrParseFailure, err)
+		return nil, fmt.Errorf("%w: %w", ErrParseFailure, err)
 	}
 	return doc, nil
 }

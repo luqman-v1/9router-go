@@ -219,7 +219,7 @@ func resolveGuard(baseDir, relPath string) (guard, error) {
 	case errors.Is(statErr, fs.ErrNotExist):
 		// New file — valid, every ancestor was checked above.
 	default:
-		return guard{}, fmt.Errorf("%w: lstat %s: %v", ErrPathEscape, candidate, statErr)
+		return guard{}, fmt.Errorf("%w: lstat %s: %w", ErrPathEscape, candidate, statErr)
 	}
 	return g, nil
 }

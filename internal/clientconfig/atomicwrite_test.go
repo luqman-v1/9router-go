@@ -122,7 +122,7 @@ func TestCreateTemp_SameDirectoryAsTarget(t *testing.T) {
 	}
 	r := openTestRoot(t, base)
 
-	name, err := createTemp(r, filepath.Join("nested", "settings.json"), 0o600)
+	name, err := createTemp(r, filepath.Join("nested", "settings.json"))
 	if err != nil {
 		t.Fatalf("createTemp: %v", err)
 	}
