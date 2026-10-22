@@ -224,9 +224,14 @@ func writeStep(c *writerCtx) {
 }
 
 // writeTokenRouter emits the TokenRouter dialect: its enum is
-// low/medium/high/xhigh/max, so "none" and "auto" are omitted.
+// low/medium/high/xhigh/max, so "none" and "auto" are omitted. A model that
+// cannot disable is not omitted: the clamp already turned the disable into
+// the lowest effort, and that effort is what the request carries.
 func writeTokenRouter(c *writerCtx) {
-	if c.none || c.eff.Mode == ModeAuto {
+	if c.none && c.canDisable {
+		return
+	}
+	if c.eff.Mode == ModeAuto {
 		return
 	}
 	if lvl := ToLevel(c.eff); lvl != "" {
@@ -241,8 +246,8 @@ func writeKiro(c *writerCtx) {}
 // writeCommandcode emits the CommandCode dialect: the native CLI sends
 // reasoning_effort inside the params of the /alpha/generate envelope. Go's
 // flat OpenAI body has no params object — buildCommandcodeBody wraps it
-// later and copies the top-level keys into params — so the field is written
-// at the top level.
+// later and copies the whitelisted top-level keys into params — so the field
+// is written at the top level.
 func writeCommandcode(c *writerCtx) {
 	if params, ok := c.body["params"].(map[string]any); ok {
 		if c.none && c.canDisable {

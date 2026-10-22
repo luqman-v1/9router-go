@@ -154,6 +154,29 @@ func TestApplyTokenRouter(t *testing.T) {
 	}
 }
 
+// TestApplyTokenRouterClampsDisableOnAModelThatCannotDisable pins that the
+// tokenrouter dialect honours the none-on-cannot-disable clamp: the model
+// cannot switch reasoning off, so the request lands on the lowest effort
+// instead of on no field at all.
+func TestApplyTokenRouterClampsDisableOnAModelThatCannotDisable(t *testing.T) {
+	out := apply(t, "openai", "tokenrouter", "z-ai/glm-5.3-free",
+		map[string]any{"reasoning_effort": "none"}, nil)
+	if out["reasoning_effort"] == nil {
+		t.Fatalf("a model that cannot disable must receive the clamped level, got %+v", out)
+	}
+}
+
+// TestApplyCommandcodeThroughTheCapabilityOverlay pins the route production
+// takes: the dispatch never names a "commandcode" target, so the writer is
+// reached through the provider capability overlay at the ordinary target.
+func TestApplyCommandcodeThroughTheCapabilityOverlay(t *testing.T) {
+	out := apply(t, "openai", "commandcode", "deepseek/deepseek-v4-pro",
+		map[string]any{"model": "deepseek/deepseek-v4-pro", "reasoning_effort": "max"}, nil)
+	if out["reasoning_effort"] != "max" {
+		t.Fatalf("overlay route → %+v", out)
+	}
+}
+
 func TestApplyCommandcode(t *testing.T) {
 	out := apply(t, "commandcode", "commandcode", "deepseek/deepseek-v4.1-flash", map[string]any{
 		"params":           map[string]any{"model": "deepseek/deepseek-v4.1-flash"},

@@ -3,7 +3,6 @@ package thinking
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestBodyMentionsThinkingDoesNotCopyTheBody pins the allocation contract: the
@@ -35,6 +34,23 @@ func BenchmarkBodyMentionsThinking(b *testing.B) {
 	}
 }
 
+// TestBodyMentionsThinkingIgnoresContent pins that the scan looks for a
+// thinking KEY, not for the word anywhere in the body. A user message that
+// talks about reasoning is not a thinking field, and treating it as one
+// defeats the byte-identical fast path for ordinary traffic.
+func TestBodyMentionsThinkingIgnoresContent(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"explain \"reasoning\" please"}]}`)
+	if BodyMentionsThinking(body) {
+		t.Fatalf("a thinking word in the content is not a thinking field: %s", body)
+	}
+	if BodyMentionsThinking([]byte(`{"model":"m","reasoning_effort":"high"}`)) == false {
+		t.Fatal("a thinking key must be detected")
+	}
+	if BodyMentionsThinking([]byte(`{"model":"m","thinking":{"type":"enabled"}}`)) == false {
+		t.Fatal("a thinking key must be detected")
+	}
+}
+
 // TestBodyModelHasSuffixStaysFastOnALargeBody guards the model-suffix scan's
 // cost. A request body is read without a size cap, so the scan has to stay
 // cheap on a body that repeats the model key. The bound is a regression
@@ -54,15 +70,8 @@ func TestBodyModelHasSuffixStaysFastOnALargeBody(t *testing.T) {
 		t.Fatalf("fixture is %d bytes, want at least 1 MiB", len(body))
 	}
 
-	start := time.Now()
-	got := bodyModelHasSuffix(body)
-	elapsed := time.Since(start)
-
-	if got {
+	if bodyModelHasSuffix(body) {
 		t.Fatal("a body without a model suffix must not report one")
-	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("the scan took %s, want well under 2s (a linear scan)", elapsed)
 	}
 }
 

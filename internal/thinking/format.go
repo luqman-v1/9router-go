@@ -40,11 +40,16 @@ var nativeOnlyFormats = map[string]bool{
 // Order: suffix strip + model rewrite; capability lookup; strip when the
 // model cannot reason; extract intent (override wins); resolve format;
 // return untouched when no writer exists; strip all dialects; write one.
-func Apply(body map[string]any, target, provider, model string, override *Intent) map[string]any {
+//
+// The bool reports whether the body changed. A caller that owns the bytes can
+// then return the input unchanged instead of re-serialising it, which keeps
+// the client's own bytes — and any integer above 2^53 in them — intact.
+func Apply(body map[string]any, target, provider, model string, override *Intent) (map[string]any, bool) {
 	if len(body) == 0 {
-		return body
+		return body, false
 	}
 	clean, suffix := ParseSuffix(model)
+	changed := false
 	// Gap B: the suffix is a request override, not the model id. The
 	// dispatch callers write the suffixed id into body["model"]; strip it
 	// whenever present. (`model` may be the already-stripped wireModel, so
@@ -52,6 +57,7 @@ func Apply(body map[string]any, target, provider, model string, override *Intent
 	if m, _ := body["model"].(string); m != "" {
 		if stripped := StripSuffix(m); stripped != m {
 			body["model"] = stripped
+			changed = true
 		}
 	}
 	cfg := override
@@ -61,20 +67,19 @@ func Apply(body map[string]any, target, provider, model string, override *Intent
 	caps := providers.GetCapabilitiesForModel(provider, clean)
 	// Model cannot reason → strip any stray thinking fields.
 	if !caps.Reasoning {
-		Strip(body)
-		return body
+		return body, changed || Strip(body)
 	}
 	if cfg == nil {
 		cfg = Extract(body)
 	}
 	// No expressed intent on a reasoning-capable model: byte-identical.
 	if cfg == nil {
-		return body
+		return body, changed
 	}
 	fmt := resolveFormat(target, provider, clean, caps)
 	if !hasWriter(fmt) {
 		// Unreachable format: neither write nor strip.
-		return body
+		return body, changed
 	}
 	var display string
 	if t, ok := body["thinking"].(map[string]any); ok {
@@ -83,9 +88,9 @@ func Apply(body map[string]any, target, provider, model string, override *Intent
 	if display == "" && override != nil {
 		display = override.Display
 	}
-	Strip(body)
+	stripped := Strip(body)
 	applyFormat(fmt, body, cfg, caps, providers.GetThinkingLevels(provider, clean), display)
-	return body
+	return body, changed || stripped || dialectKeyPresent(body)
 }
 
 // shouldSkipNormalization reports whether the fast path applies: no override,
@@ -109,8 +114,15 @@ func shouldSkipNormalization(body []byte, model string, override *Intent) bool {
 
 // ApplyJSON is Apply over raw bytes. Fast path returns the input unchanged
 // when the body's own model carries no suffix and no thinking key is present;
-// decode/marshal errors also return the input unchanged. Idempotent
-// (strip-then-write), so combo/rotation re-entry is safe.
+// a pass that changes nothing also returns the input unchanged, so a body the
+// client sent is the body the upstream sees. Decode/marshal errors also
+// return the input unchanged. Idempotent (strip-then-write), so combo and
+// rotation re-entry is safe.
+//
+// The body is decoded into map[string]any, and json/v2 decodes an interface
+// number as float64. A body the pass rewrites therefore loses an integer
+// above 2^53 on the way out — the same limit upstream's JSON.parse has. A
+// body the pass does not rewrite is never decoded, so it keeps its bytes.
 func ApplyJSON(body []byte, target, provider, model string, override *Intent) []byte {
 	if shouldSkipNormalization(body, model, override) {
 		return body
@@ -119,7 +131,9 @@ func ApplyJSON(body []byte, target, provider, model string, override *Intent) []
 	if err := json.Unmarshal(body, &m); err != nil || m == nil {
 		return body
 	}
-	Apply(m, target, provider, model, override)
+	if _, changed := Apply(m, target, provider, model, override); !changed {
+		return body
+	}
 	out, err := json.Marshal(m, json.Deterministic(true))
 	if err != nil {
 		return body
@@ -182,21 +196,22 @@ func resolveFormat(target, provider, model string, caps providers.Capabilities) 
 	if target == "commandcode" {
 		return "commandcode"
 	}
+	// The wire is authoritative: a strict Responses upstream rejects a
+	// top-level reasoning_effort ("unknown parameter `reasoning_effort`") and
+	// reads reasoning:{effort,summary} instead. The dialect follows the wire,
+	// not the provider registry, so every provider on that lane gets it —
+	// including the nine aggregators the registry records as "openai".
+	// (upstream thinkingUnified.js:137-145 pins the same dialect for the Muse
+	// lane.)
+	if target == "openai-responses" && !nativeOnlyFormats[caps.ThinkingFormat] {
+		return "openai-responses"
+	}
 	if provider != "" {
 		if pf := providers.ThinkingFormatFor(provider); pf != "" {
 			return pf
 		}
 	}
 	isOpenAIWire := target == "openai" || target == "openai-responses"
-	// A Responses target is served by the Responses dialect: a strict
-	// Responses upstream rejects a top-level reasoning_effort ("unknown
-	// parameter `reasoning_effort`") and reads reasoning:{effort,summary}
-	// instead. The dialect follows the wire, not the capability, so every
-	// provider on that lane gets it (upstream thinkingUnified.js:137-145
-	// pins the same dialect for the Muse lane).
-	if target == "openai-responses" && !nativeOnlyFormats[caps.ThinkingFormat] {
-		return "openai-responses"
-	}
 	if caps.ThinkingFormat != "" && (!isOpenAIWire || !nativeOnlyFormats[caps.ThinkingFormat]) {
 		return caps.ThinkingFormat
 	}

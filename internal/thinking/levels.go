@@ -31,6 +31,15 @@ func EffortToBudget(level string) (int, bool) {
 	return b, ok
 }
 
+// BudgetForLevel returns the thinking budget a level stands for. An unknown
+// level uses the medium budget.
+func BudgetForLevel(level string) int {
+	if b, ok := EffortToBudget(level); ok && b > 0 {
+		return b
+	}
+	return LevelToBudget["medium"]
+}
+
 // BudgetToLevel maps tokens to the nearest discrete level via midpoints.
 // "" when budget <= 0 (no reasoning). Port of budgetToLevel.
 func BudgetToLevel(budget int) string {

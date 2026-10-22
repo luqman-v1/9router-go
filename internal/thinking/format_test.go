@@ -1,6 +1,7 @@
 package thinking
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -17,7 +18,8 @@ func apply(t *testing.T, target, provider, model string, body map[string]any, ov
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatalf("apply fixture marshal: %v", err)
 	}
-	return Apply(m, target, provider, model, override)
+	out, _ := Apply(m, target, provider, model, override)
+	return out
 }
 
 func mustAbsent(t *testing.T, body map[string]any, keys ...string) {
@@ -83,6 +85,55 @@ func TestApplyReasoningEnabledFalseEqualsEffortNone(t *testing.T) {
 				t.Fatalf("reasoning:{enabled:false} = %+v, want reasoning_effort:none = %+v", enabled, effortNone)
 			}
 		})
+	}
+}
+
+// TestApplyJSONLeavesABodyWithoutIntentByteIdentical pins the fast path: a
+// body that asks for no reasoning is returned byte for byte, so an integer
+// above 2^53 in it reaches the upstream unchanged.
+func TestApplyJSONLeavesABodyWithoutIntentByteIdentical(t *testing.T) {
+	body := []byte(`{"model":"m","user_id":9007199254740993,"messages":[{"role":"user","content":"hi"}]}`)
+	out := ApplyJSON(body, "openai", "openai", "m", nil)
+	if !bytes.Equal(out, body) {
+		t.Fatalf("a body without intent must be returned byte for byte:\nin:  %s\nout: %s", body, out)
+	}
+}
+
+// TestApplyReportsWhetherItChangedTheBody pins the change report the byte
+// passthrough is built on: a body the pass did not touch reports no change,
+// so the caller can return the client's bytes untouched.
+func TestApplyReportsWhetherItChangedTheBody(t *testing.T) {
+	plain := map[string]any{
+		"model":    "m",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}
+	if _, changed := Apply(plain, "openai", "openai", "m", nil); changed {
+		t.Fatal("a body without a reasoning field must report no change")
+	}
+	withEffort := map[string]any{
+		"model":            "m",
+		"reasoning_effort": "high",
+		"messages":         []any{map[string]any{"role": "user", "content": "hi"}},
+	}
+	if _, changed := Apply(withEffort, "openai", "openai", "m", nil); !changed {
+		t.Fatal("a body the pass rewrites must report a change")
+	}
+}
+
+// TestResolveFormatPrefersTheWireOverTheProviderRegistry pins the dialect
+// order: the wire the upstream speaks is authoritative. A strict Responses
+// upstream rejects a top-level reasoning_effort, so a provider the registry
+// records as "openai" must still use the Responses dialect when the request
+// goes to a /responses endpoint.
+func TestResolveFormatPrefersTheWireOverTheProviderRegistry(t *testing.T) {
+	out := apply(t, "openai-responses", "openrouter", "openai/gpt-5.4",
+		map[string]any{"model": "openai/gpt-5.4", "reasoning_effort": "high"}, nil)
+	r, _ := out["reasoning"].(map[string]any)
+	if r == nil || r["effort"] != "high" {
+		t.Fatalf("a Responses wire must use the Responses dialect, got %+v", out)
+	}
+	if _, has := out["reasoning_effort"]; has {
+		t.Fatalf("a Responses wire must not carry a top-level reasoning_effort, got %+v", out)
 	}
 }
 
