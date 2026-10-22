@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close every finding from the code review of `fix/thinking-normalization` against `origin/main` — the dropped `(level)` suffix on Responses-native lanes, the per-request cost of the new thinking pass, and the minor defects — without breaking upstream parity.
+**Goal:** Close every finding from the code review of `fix/thinking-normalization` against the canonical `main` (`upstream/main`) — the dropped `(level)` suffix on Responses-native lanes, the per-request cost of the new thinking pass, and the minor defects — without breaking upstream parity.
 
 **Architecture:** The unified thinking pass stays where it is: `internal/thinking` owns the intent model and the per-format writers, and `internal/handlers/chat/fallback.go` applies it at the dispatch choke point. The Responses-native lane stops being a special case: it gets the same `ApplyJSON` call as every other lane, with the wire dialect resolved to `openai-responses` instead of being skipped. The per-request cost is reduced by making the two always-on passes (the thinking-key scan and the OpenAI filter) skip work they provably do not change.
 
