@@ -81,6 +81,40 @@ func TestHandleUpdateSettings_ProviderThinkingMode(t *testing.T) {
 	}
 }
 
+// TestHandleUpdateSettings_RejectsANonNumericQuota pins the boundary: a
+// quota written as a string reads back as zero, and zero is "no limit" on the
+// rate limiter. The dashboard has to refuse the value instead of storing a
+// quota that is silently unlimited.
+func TestHandleUpdateSettings_RejectsANonNumericQuota(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	put := func(body string) int {
+		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := put(`{"defaultRpm":100}`); code != http.StatusOK {
+		t.Fatalf("a numeric quota: status = %d, want 200", code)
+	}
+	for _, key := range []string{"defaultRpm", "defaultTpm", "defaultConcurrency"} {
+		if code := put(`{"` + key + `":"100"}`); code != http.StatusBadRequest {
+			t.Fatalf("%s as a string: status = %d, want 400", key, code)
+		}
+	}
+	raw, err := repo.GetSettingsRaw()
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	if got := raw["defaultRpm"]; got != float64(100) {
+		t.Errorf("defaultRpm = %v, want the stored number", got)
+	}
+}
+
 func TestHandleUpdateSettings_PasswordChange(t *testing.T) {
 	repo, cleanup := setupSettingsTestDB(t)
 	defer cleanup()

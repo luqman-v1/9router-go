@@ -1,5 +1,11 @@
 package db
 
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+)
+
 // ComboStrategy defines routing strategy, sticky limit, and judge model for a combo.
 // The Smart* fields configure the "smart" strategy (System One routing, #623).
 type ComboStrategy struct {
@@ -188,20 +194,26 @@ func DefaultSettings() *SettingsData {
 // rebuilding the maps is about half of the read (measured 94.5 µs and 53
 // allocations for the whole read, of which the point query is 47 µs).
 //
-// The returned value is a copy of the struct. The maps inside it are shared
-// with the cache and are read-only to every caller outside this package.
+// A read that fails is an error, not a row of defaults: a transient database
+// failure would otherwise silently turn the operator's settings off for the
+// length of the failure — the prompt compression back on, the reasoning
+// override gone — and nothing would say so. A row that does not exist yet is
+// not a failure: that is a fresh install.
 func (r *Repo) GetSettings() (*SettingsData, error) {
 	var rawData string
 	err := r.db.QueryRow(`SELECT data FROM settings WHERE id = 1`).Scan(&rawData)
 	if err != nil {
-		return DefaultSettings(), nil
+		if errors.Is(err, sql.ErrNoRows) {
+			return DefaultSettings(), nil
+		}
+		return nil, fmt.Errorf("get settings: %w", err)
 	}
 	if c := r.settingsCache.Load(); c != nil && c.raw == rawData {
 		return cloneSettings(c.value), nil
 	}
 	s, ok := parseSettings(rawData)
 	if !ok {
-		return DefaultSettings(), nil
+		return nil, errors.New("parse settings: the stored settings row is not readable")
 	}
 	r.settingsCache.Store(&cachedSettings{raw: rawData, value: s})
 	return cloneSettings(s), nil
@@ -276,6 +288,18 @@ func cloneProviderOverrides(m map[string]ProviderOverrides) map[string]ProviderO
 		return nil
 	}
 	out := make(map[string]ProviderOverrides, len(m))
+	for k, v := range m {
+		v.Headers = cloneStringMap(v.Headers)
+		out[k] = v
+	}
+	return out
+}
+
+func cloneStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
 	for k, v := range m {
 		out[k] = v
 	}

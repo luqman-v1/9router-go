@@ -1,5 +1,48 @@
 package db
 
+import (
+	json "encoding/json/v2"
+	"fmt"
+	"sync"
+)
+
+// settingsWriteMu serialises the settings read-modify-write cycle.
+//
+// The settings row is one JSON blob: a writer reads it, merges its own keys
+// into it and writes it back. Two writers that interleave lose one another's
+// keys, so the whole cycle runs under one lock.
+var settingsWriteMu sync.Mutex
+
+// updateSettings merges into the settings row under the write lock.
+//
+// The merge runs on the row as it is, so a writer that has to change a nested
+// key does not read the row itself. A row that cannot be read is not
+// replaced: the merge would write back only its own keys and drop everything
+// else the operator had set.
+func (r *Repo) updateSettings(merge func(existing map[string]any) error) error {
+	settingsWriteMu.Lock()
+	defer settingsWriteMu.Unlock()
+
+	existing, err := r.GetSettingsRaw()
+	if err != nil {
+		return fmt.Errorf("update settings: %w", err)
+	}
+	if err := merge(existing); err != nil {
+		return err
+	}
+	b, err := json.Marshal(existing)
+	if err != nil {
+		return fmt.Errorf("marshal settings data: %w", err)
+	}
+	if _, err := r.db.Exec(
+		`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+		string(b),
+	); err != nil {
+		return fmt.Errorf("update settings raw: %w", err)
+	}
+	return nil
+}
+
 // SetAutoUpdate updates the autoUpdate flag in the settings table.
 func (r *Repo) SetAutoUpdate(enabled bool) error {
 	return r.UpdateSettingsRaw(map[string]any{
@@ -9,85 +52,72 @@ func (r *Repo) SetAutoUpdate(enabled bool) error {
 
 // SetProviderStrategy updates or sets the routing strategy and proxy pool for a provider without clobbering other settings.
 func (r *Repo) SetProviderStrategy(provider string, strat ProviderStrategy) error {
-	raw, err := r.GetSettingsRaw()
-	if err != nil || raw == nil {
-		raw = make(map[string]any)
-	}
-
-	var currentMap map[string]any
-	if ps, ok := raw["providerStrategies"].(map[string]any); ok {
-		currentMap = ps
-	} else {
-		currentMap = make(map[string]any)
-	}
-
-	entry := map[string]any{}
-	if existingEntry, ok := currentMap[provider].(map[string]any); ok {
-		for ek, ev := range existingEntry {
-			entry[ek] = ev
+	return r.updateSettings(func(existing map[string]any) error {
+		currentMap, _ := existing["providerStrategies"].(map[string]any)
+		if currentMap == nil {
+			currentMap = make(map[string]any)
 		}
-	}
 
-	if strat.ProxyPoolID != "" {
-		entry["proxyPoolId"] = strat.ProxyPoolID
-	}
-	if strat.RotateStrategy != "" {
-		entry["rotateStrategy"] = strat.RotateStrategy
-		entry["fallbackStrategy"] = strat.RotateStrategy
-	}
-	if strat.StickyLimit > 0 {
-		entry["stickyLimit"] = strat.StickyLimit
-		entry["stickyRoundRobinLimit"] = strat.StickyLimit
-	}
-	entry["strictModelAssignment"] = strat.StrictModelAssignment
+		entry := map[string]any{}
+		if existingEntry, ok := currentMap[provider].(map[string]any); ok {
+			for ek, ev := range existingEntry {
+				entry[ek] = ev
+			}
+		}
 
-	currentMap[provider] = entry
-	return r.UpdateSettingsRaw(map[string]any{
-		"providerStrategies": currentMap,
+		if strat.ProxyPoolID != "" {
+			entry["proxyPoolId"] = strat.ProxyPoolID
+		}
+		if strat.RotateStrategy != "" {
+			entry["rotateStrategy"] = strat.RotateStrategy
+			entry["fallbackStrategy"] = strat.RotateStrategy
+		}
+		if strat.StickyLimit > 0 {
+			entry["stickyLimit"] = strat.StickyLimit
+			entry["stickyRoundRobinLimit"] = strat.StickyLimit
+		}
+		entry["strictModelAssignment"] = strat.StrictModelAssignment
+
+		currentMap[provider] = entry
+		existing["providerStrategies"] = currentMap
+		return nil
 	})
 }
 
 // SetComboStrategy updates or sets the routing strategy for a combo without clobbering other settings.
 func (r *Repo) SetComboStrategy(comboName string, strat ComboStrategy) error {
-	raw, err := r.GetSettingsRaw()
-	if err != nil || raw == nil {
-		raw = make(map[string]any)
-	}
-
-	var currentMap map[string]any
-	if cs, ok := raw["comboStrategies"].(map[string]any); ok {
-		currentMap = cs
-	} else {
-		currentMap = make(map[string]any)
-	}
-
-	entry := map[string]any{}
-	if existingEntry, ok := currentMap[comboName].(map[string]any); ok {
-		for ek, ev := range existingEntry {
-			entry[ek] = ev
+	return r.updateSettings(func(existing map[string]any) error {
+		currentMap, _ := existing["comboStrategies"].(map[string]any)
+		if currentMap == nil {
+			currentMap = make(map[string]any)
 		}
-	}
 
-	if strat.Strategy != "" {
-		entry["strategy"] = strat.Strategy
-		entry["fallbackStrategy"] = strat.Strategy
-	}
-	if strat.StickyLimit > 0 {
-		entry["stickyLimit"] = strat.StickyLimit
-		entry["stickyRoundRobinLimit"] = strat.StickyLimit
-	}
-	if strat.JudgeModel != "" {
-		entry["judgeModel"] = strat.JudgeModel
-	}
+		entry := map[string]any{}
+		if existingEntry, ok := currentMap[comboName].(map[string]any); ok {
+			for ek, ev := range existingEntry {
+				entry[ek] = ev
+			}
+		}
 
-	if strat.Strategy == "fallback" && strat.JudgeModel == "" {
-		delete(currentMap, comboName)
-	} else {
-		currentMap[comboName] = entry
-	}
+		if strat.Strategy != "" {
+			entry["strategy"] = strat.Strategy
+			entry["fallbackStrategy"] = strat.Strategy
+		}
+		if strat.StickyLimit > 0 {
+			entry["stickyLimit"] = strat.StickyLimit
+			entry["stickyRoundRobinLimit"] = strat.StickyLimit
+		}
+		if strat.JudgeModel != "" {
+			entry["judgeModel"] = strat.JudgeModel
+		}
 
-	return r.UpdateSettingsRaw(map[string]any{
-		"comboStrategies": currentMap,
+		if strat.Strategy == "fallback" && strat.JudgeModel == "" {
+			delete(currentMap, comboName)
+		} else {
+			currentMap[comboName] = entry
+		}
+		existing["comboStrategies"] = currentMap
+		return nil
 	})
 }
 
@@ -113,23 +143,23 @@ func (r *Repo) GetProviderOverride(provider string) (*ProviderOverrides, error) 
 // SetProviderOverride stores or clears one provider's override. A nil override
 // deletes the entry, which is how an empty PUT clears it.
 func (r *Repo) SetProviderOverride(provider string, override *ProviderOverrides) error {
-	raw, err := r.GetSettingsRaw()
-	if err != nil || raw == nil {
-		raw = make(map[string]any)
-	}
-	all, ok := raw["providerOverrides"].(map[string]any)
-	if !ok {
-		all = make(map[string]any)
-	}
-	if override == nil || len(override.Headers) == 0 {
-		delete(all, provider)
-	} else {
-		all[provider] = map[string]any{"headers": override.Headers}
-	}
-	if len(all) == 0 {
-		return r.UpdateSettingsRaw(map[string]any{"providerOverrides": nil})
-	}
-	return r.UpdateSettingsRaw(map[string]any{"providerOverrides": all})
+	return r.updateSettings(func(existing map[string]any) error {
+		all, _ := existing["providerOverrides"].(map[string]any)
+		if all == nil {
+			all = make(map[string]any)
+		}
+		if override == nil || len(override.Headers) == 0 {
+			delete(all, provider)
+		} else {
+			all[provider] = map[string]any{"headers": override.Headers}
+		}
+		if len(all) == 0 {
+			existing["providerOverrides"] = nil
+		} else {
+			existing["providerOverrides"] = all
+		}
+		return nil
+	})
 }
 
 // GetGuardrailsEnabled reports whether the guardrail taps are active at all.

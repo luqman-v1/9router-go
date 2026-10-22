@@ -1,6 +1,8 @@
 package db
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -306,6 +308,109 @@ func TestGetSettingsCloneDoesNotShareMaps(t *testing.T) {
 	}
 	if got := second.ProviderThinking["deepseek"].Mode; got != "off" {
 		t.Errorf("providerThinking = %q, want the stored value: the caller mutated the cached row", got)
+	}
+}
+
+func TestGetSettingsCloneDoesNotShareProviderOverrideHeaders(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+		`{"providerOverrides":{"deepseek":{"headers":{"X-Test":"one"}}}}`,
+	); err != nil {
+		t.Fatalf("failed to insert settings: %v", err)
+	}
+
+	repo := NewRepo(database)
+	first, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	first.ProviderOverrides["deepseek"].Headers["X-Test"] = "poisoned"
+
+	second, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	if got := second.ProviderOverrides["deepseek"].Headers["X-Test"]; got != "one" {
+		t.Errorf("providerOverrides headers = %q, want the stored value: the caller mutated the cached row", got)
+	}
+}
+
+// TestUpdateSettingsRawRefusesAnUnreadableRow pins the write path: a row
+// that cannot be read is not replaced. Writing back only the update would
+// drop every other setting the operator had set, the dashboard password
+// among them.
+func TestUpdateSettingsRawRefusesAnUnreadableRow(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+	broken := `{"password":"hash",`
+	if _, err := database.Exec(
+		`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+		broken,
+	); err != nil {
+		t.Fatalf("failed to insert settings: %v", err)
+	}
+
+	repo := NewRepo(database)
+	if err := repo.UpdateSettingsRaw(map[string]any{"rtkEnabled": true}); err == nil {
+		t.Fatal("a write against an unreadable row must be refused")
+	}
+	var stored string
+	if err := database.QueryRow(`SELECT data FROM settings WHERE id = 1`).Scan(&stored); err != nil {
+		t.Fatalf("read settings row: %v", err)
+	}
+	if stored != broken {
+		t.Errorf("the stored row = %q, want it untouched", stored)
+	}
+}
+
+// TestConcurrentSettingsWritesDoNotLoseKeys pins the write lock: the
+// settings row is one JSON blob, and two writers that interleave lose one
+// another's keys.
+func TestConcurrentSettingsWritesDoNotLoseKeys(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+
+	repo := NewRepo(database)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := repo.UpdateSettingsRaw(map[string]any{fmt.Sprintf("key%d", i): i}); err != nil {
+				t.Errorf("UpdateSettingsRaw: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	raw, err := repo.GetSettingsRaw()
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	for i := 0; i < 8; i++ {
+		if _, ok := raw[fmt.Sprintf("key%d", i)]; !ok {
+			t.Errorf("key%d was lost by a concurrent write", i)
+		}
 	}
 }
 

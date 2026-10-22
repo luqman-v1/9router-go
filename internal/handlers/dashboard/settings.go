@@ -111,6 +111,12 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	normalizeProviderThinking(updates)
+
+	if err := validateNumericSettings(updates); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// Feature Visibility stores sidebar ids, so the payload is normalized here:
 	// the sidebar must never receive an id it cannot address (navvisibility.go).
@@ -438,6 +444,57 @@ func validateProviderThinking(v any) error {
 	return nil
 }
 
+// numericSettingKeys are the settings the dashboard writes as numbers.
+//
+// A value of another type is refused at the boundary: the reader coerces
+// anything that is not a positive number to zero, and zero is "no limit" on
+// the rate limiter. A quota written as a string would therefore read back as
+// unlimited while the rate limiter stays on.
+var numericSettingKeys = []string{
+	"defaultRpm", "defaultTpm", "defaultConcurrency", "rateWindowSeconds",
+	"retentionDays", "maxRequestRecords", "usageHistoryRetentionDays",
+	"rtkMaxLines", "rtkMaxChars", "headroomTimeoutMs",
+	"semanticCacheTTL", "semanticCacheMaxEntries",
+	"stickyRoundRobinLimit", "comboStickyRoundRobinLimit",
+}
+
+func validateNumericSettings(updates map[string]any) error {
+	for _, key := range numericSettingKeys {
+		v, ok := updates[key]
+		if !ok || v == nil {
+			continue
+		}
+		switch v.(type) {
+		case float64, int, int64:
+		default:
+			return fmt.Errorf("setting %s must be a number", key)
+		}
+	}
+	return nil
+}
+
+// normalizeProviderThinking rewrites the stored modes into the vocabulary the
+// enforcement uses, so the dashboard echoes back the mode that is enforced
+// rather than the spelling the operator typed.
+func normalizeProviderThinking(updates map[string]any) {
+	pt, ok := updates["providerThinking"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, entry := range pt {
+		vm, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		mode, _ := vm["mode"].(string)
+		if normalized, valid := thinking.NormalizeProviderThinkingMode(mode); valid {
+			vm["mode"] = normalized
+		}
+	}
+}
+
+// sanitizeSettings copies settings and drops secrets, exposing `hasPassword`
+// the way the Next dashboard does.
 func sanitizeSettings(raw map[string]any) map[string]any {
 	if raw == nil {
 		raw = map[string]any{}
