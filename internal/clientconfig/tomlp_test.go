@@ -224,3 +224,39 @@ func TestPatchTOMLNewSectionInFileWithoutTrailingNewline(t *testing.T) {
 		t.Fatalf("Patch() = %q, want %q", out, want)
 	}
 }
+
+// The output gate is gone (see the note at the top of tomlp.go): the strict
+// parser now runs on the input only, because it is quadratic and running it
+// twice doubled the cost of every patch. These are the conflicts it used to
+// catch, pinned here so the cheaper pre-splice check cannot silently lose one.
+func TestPatchTOMLCreateConflicts(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		edit Edit
+	}{
+		{"root key where a dotted key already owns the name",
+			"a.b = 1\n",
+			Edit{KeyPath: []string{"a"}, Value: "v", CreateIfMissing: true}},
+		{"section key where a dotted key already owns the name",
+			"[s]\nb.c = 1\n",
+			Edit{KeyPath: []string{"s", "b"}, Value: "v", CreateIfMissing: true}},
+		{"key under a name that is already a scalar",
+			"a = 1\n",
+			Edit{KeyPath: []string{"a", "b"}, Value: "v", CreateIfMissing: true}},
+		{"section key under a name that is already a scalar",
+			"[s]\nb = 1\n",
+			Edit{KeyPath: []string{"s", "b", "c"}, Value: "v", CreateIfMissing: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := Patch([]byte(tt.src), FormatTOML, []Edit{tt.edit})
+			if !errors.Is(err, ErrUnsupportedStructure) {
+				t.Fatalf("Patch() error = %v, want ErrUnsupportedStructure", err)
+			}
+			if out != nil {
+				t.Errorf("Patch() returned bytes with an error: %q", out)
+			}
+		})
+	}
+}

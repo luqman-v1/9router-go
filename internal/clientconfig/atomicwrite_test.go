@@ -122,11 +122,22 @@ func TestCreateTemp_SameDirectoryAsTarget(t *testing.T) {
 	}
 	r := openTestRoot(t, base)
 
-	name, err := createTemp(r, filepath.Join("nested", "settings.json"))
+	f, name, err := createTemp(r, filepath.Join("nested", "settings.json"))
 	if err != nil {
 		t.Fatalf("createTemp: %v", err)
 	}
+	defer f.Close()
 	if got := filepath.Dir(name); got != "nested" {
 		t.Errorf("temp dir = %q, want nested", got)
+	}
+	// The handle comes back open on the file it created. Reopening by name is
+	// the swap window this signature exists to remove, so the assertion is
+	// that the descriptor names the temp path, not that a second open works.
+	fi, err := f.Stat()
+	if err != nil {
+		t.Fatalf("stat handle: %v", err)
+	}
+	if fi.Size() != 0 {
+		t.Errorf("temp size = %d, want 0", fi.Size())
 	}
 }

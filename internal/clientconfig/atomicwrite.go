@@ -80,6 +80,16 @@ func WriteFileAtomic(g guard, content []byte, h hooks) error {
 	}
 	defer func() { _ = r.Close() }()
 
+	if len(content) > LargeFileWarningBytes {
+		// A warning, not a refusal: the file is the user's, and D7 keeps the
+		// decision with them. The number is worth saying out loud because the
+		// parsers build a tree on top of the whole file — 121x its size for
+		// TOML, measured — so a "large" config is where that becomes memory
+		// rather than latency.
+		log.Warn("clientconfig", "writing a large config file",
+			"path", g.rel, "bytes", len(content), "threshold", LargeFileWarningBytes)
+	}
+
 	perm := os.FileMode(constants.FilePermKey)
 	if g.existed {
 		// Preserve the mode the user already chose; a config that was 0640 for
@@ -90,7 +100,7 @@ func WriteFileAtomic(g guard, content []byte, h hooks) error {
 		}
 	}
 
-	tempRel, err := createTemp(r, g.rel)
+	tempFile, tempRel, err := createTemp(r, g.rel)
 	if err != nil {
 		return err
 	}
@@ -104,7 +114,7 @@ func WriteFileAtomic(g guard, content []byte, h hooks) error {
 		}
 	}()
 
-	if err := writeTemp(r, tempRel, content, perm, h); err != nil {
+	if err := writeTemp(tempFile, tempRel, content, perm, h); err != nil {
 		return err
 	}
 	if err := renameWithRetry(r, tempRel, g.rel, h); err != nil {
@@ -118,11 +128,15 @@ func WriteFileAtomic(g guard, content []byte, h hooks) error {
 
 // writeTemp fills the temp file and closes it, so the rename always moves a
 // file whose bytes are on disk rather than in a page cache.
-func writeTemp(r rootFS, tempRel string, content []byte, perm os.FileMode, h hooks) error {
-	f, err := r.OpenFile(tempRel, os.O_WRONLY, perm)
-	if err != nil {
-		return fmt.Errorf("%w: reopen temp %s: %w", ErrWriteFailed, tempRel, err)
-	}
+//
+// The handle is the one createTemp opened, never a fresh open by name. A
+// reopen addresses the name again, and a name in a directory someone else can
+// write is a name someone else can replace with a symlink between the create
+// and the second open — so the bytes would land wherever the link pointed. It
+// also reopened without O_TRUNC, which trusts that the file is still empty.
+// Keeping the descriptor removes the window and the trust together: the file
+// written and the file renamed are the same file object.
+func writeTemp(f *os.File, tempRel string, content []byte, perm os.FileMode, h hooks) error {
 	if err := h.write(f, content); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("%w: write temp %s: %w", ErrWriteFailed, tempRel, err)
@@ -157,12 +171,12 @@ func writeTemp(r rootFS, tempRel string, content []byte, perm os.FileMode, h hoo
 // EACCES and the write fails before it starts. Chmod on the handle is not
 // subject to umask. writeTemp applies the target's real mode once the bytes are
 // down, which is where the user's choice is honoured.
-func createTemp(r rootFS, relTarget string) (string, error) {
+func createTemp(r rootFS, relTarget string) (*os.File, string, error) {
 	dir := filepath.Dir(relTarget)
 	for i := 0; i < 16; i++ {
 		nonce := make([]byte, 8)
 		if _, err := rand.Read(nonce); err != nil {
-			return "", fmt.Errorf("%w: nonce: %w", ErrWriteFailed, err)
+			return nil, "", fmt.Errorf("%w: nonce: %w", ErrWriteFailed, err)
 		}
 		name := filepath.Join(dir, fmt.Sprintf(".tmp-%x", nonce))
 		f, err := r.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, os.FileMode(constants.FilePermKey))
@@ -170,7 +184,7 @@ func createTemp(r rootFS, relTarget string) (string, error) {
 			continue
 		}
 		if err != nil {
-			return "", fmt.Errorf("%w: create temp %s: %w", ErrWriteFailed, name, err)
+			return nil, "", fmt.Errorf("%w: create temp %s: %w", ErrWriteFailed, name, err)
 		}
 		// Restored on the handle because the create perm was umask-masked. The
 		// temp holds the key's new content, so it stays owner-only until the
@@ -178,16 +192,14 @@ func createTemp(r rootFS, relTarget string) (string, error) {
 		if err := f.Chmod(os.FileMode(constants.FilePermKey)); err != nil {
 			_ = f.Close()
 			_ = r.Remove(name)
-			return "", fmt.Errorf("%w: chmod temp %s: %w", ErrWriteFailed, name, err)
+			return nil, "", fmt.Errorf("%w: chmod temp %s: %w", ErrWriteFailed, name, err)
 		}
-		// Closed immediately; writeTemp reopens it for the write so the seam
-		// sees a plain *os.File with no preexisting buffered state.
-		if err := f.Close(); err != nil {
-			return "", fmt.Errorf("%w: close temp %s: %w", ErrWriteFailed, name, err)
-		}
-		return name, nil
+		// The handle goes back to the caller, which writes through it. Not
+		// closed here: a close-then-reopen-by-name is the swap window
+		// writeTemp's comment describes.
+		return f, name, nil
 	}
-	return "", fmt.Errorf("%w: temp name exhausted in %s", ErrWriteFailed, dir)
+	return nil, "", fmt.Errorf("%w: temp name exhausted in %s", ErrWriteFailed, dir)
 }
 
 // defaultNow is the production clock. Tests inject a fixed one through the

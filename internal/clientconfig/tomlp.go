@@ -12,7 +12,19 @@ import (
 // one that reports byte ranges, but it does not validate semantics — it accepts
 // a file with a duplicate table or a duplicate key, which would let a patch
 // create a second [table] header. toml.Unmarshal catches those, and is therefore
-// run as a gate on both the input and the output.
+// run as a gate on the input, once per Patch call.
+//
+// It runs on the input only, not on the output as well: toml.Unmarshal is
+// quadratic in the number of keys a table holds (its SeenTracker.find walks the
+// siblings of every key), so the gate is the most expensive thing Patch does and
+// doubling it doubled the whole cost — 512 KB of TOML went from 1.16 s to 2.32 s
+// and X5's 64 KB budget became a coin flip. The output is verified by the
+// unstable parser plus a read-back of the edited key (`verifyTOML`), which is
+// linear, and the two conflict checks below make that weaker gate sufficient:
+// after the input is proven valid, this package only ever replaces one scalar
+// with a quoted string or inserts one key line, so the only way to produce an
+// invalid document is a key that already exists in another form — and each of
+// those is refused before the splice.
 //
 // Two measured limits shape the code below (docs/specs/config-patch-spec.md
 // §4.2.2): Table and KeyValue nodes carry no byte range, so a header's range is
@@ -60,12 +72,21 @@ func parseableTOML(src []byte) []byte {
 	return out
 }
 
+// collectTOML is the entry gate: the strict parser first (it is the only layer
+// that catches a duplicate key or table), then the range scan.
 func collectTOML(src []byte) (*tomlDoc, error) {
 	buf := parseableTOML(src)
 	var scratch any
 	if err := toml.Unmarshal(buf, &scratch); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrParseFailure, err)
 	}
+	return scanTOML(buf, src)
+}
+
+// scanTOML builds the byte-range index with the unstable parser alone. It is
+// linear in the document size, which is what makes it usable as the output
+// check where the strict parser would cost another O(n²) pass.
+func scanTOML(buf, src []byte) (*tomlDoc, error) {
 	p := &unstable.Parser{KeepComments: true}
 	p.Reset(buf)
 	doc := &tomlDoc{}
@@ -198,7 +219,7 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 		case kv.multiLine:
 			return nil, fmt.Errorf("%w: value of %q is a multi-line string", ErrUnsupportedStructure, key)
 		}
-		return verifyTOML(splice(src, kv.valStart, kv.valEnd, []byte(tomlQuote(e.Value))))
+		return verifyTOML(splice(src, kv.valStart, kv.valEnd, []byte(tomlQuote(e.Value))), e)
 	}
 
 	for _, s := range doc.sections {
@@ -212,11 +233,19 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 	if !e.CreateIfMissing {
 		return nil, fmt.Errorf("%w: %q", ErrKeyNotFound, strings.Join(e.KeyPath, "."))
 	}
+	// Every remaining path inserts a key. A key whose name an existing dotted
+	// key already uses as a table — "a.b = 1" and then "a = ..." — parses as
+	// the document it is, not as the one the caller asked for, and appending
+	// it produces a file TOML itself rejects. The strict parser used to say so
+	// on the output; it no longer runs there, so the refusal is here.
+	if err := tomlCreateConflict(doc, e.KeyPath); err != nil {
+		return nil, err
+	}
 	if len(sectionPath) == 0 {
-		return verifyTOML(insertTOMLRootKey(src, doc, key, e.Value))
+		return verifyTOML(insertTOMLRootKey(src, doc, key, e.Value), e)
 	}
 	if idx := tomlFindSection(doc, sectionPath); idx >= 0 {
-		return verifyTOML(insertTOMLKey(src, doc, idx, sectionPath, key, e.Value))
+		return verifyTOML(insertTOMLKey(src, doc, idx, sectionPath, key, e.Value), e)
 	}
 	for _, kv := range doc.kvs {
 		if len(kv.fullPath) > len(sectionPath) && samePath(kv.fullPath[:len(sectionPath)], sectionPath) {
@@ -224,7 +253,31 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 				ErrUnsupportedStructure, strings.Join(sectionPath, "."))
 		}
 	}
-	return verifyTOML(appendTOMLSection(src, sectionPath, key, e.Value))
+	return verifyTOML(appendTOMLSection(src, sectionPath, key, e.Value), e)
+}
+
+// tomlCreateConflict refuses a create whose key path runs through a key that
+// already exists as a dotted key.
+//
+// "a.b = 1" makes a a table holding b. Writing "a = \"v\"" next to it is the
+// same namespace as "[a] b = 1", so the file would hold a scalar where a table
+// already lives — rejected by TOML, and by this check before the bytes are
+// built.
+func tomlCreateConflict(doc *tomlDoc, fullPath []string) error {
+	for _, kv := range doc.kvs {
+		// Either side may be the shorter one. "a.b = 1" then "a": the new key
+		// takes a name a table already owns. "a = 1" then "a.b": the new key
+		// would live inside a scalar. Both produce a file TOML rejects.
+		if len(kv.fullPath) < len(fullPath) && samePath(kv.fullPath, fullPath[:len(kv.fullPath)]) {
+			return fmt.Errorf("%w: %q exists only as a dotted key",
+				ErrUnsupportedStructure, strings.Join(fullPath, "."))
+		}
+		if len(fullPath) < len(kv.fullPath) && samePath(fullPath, kv.fullPath[:len(fullPath)]) {
+			return fmt.Errorf("%w: %q is already a value, not a table",
+				ErrUnsupportedStructure, strings.Join(fullPath, "."))
+		}
+	}
+	return nil
 }
 
 func tomlFindSection(doc *tomlDoc, path []string) int {
@@ -279,11 +332,35 @@ func appendTOMLSection(src []byte, sectionPath []string, key, val string) []byte
 	return out
 }
 
-// verifyTOML re-runs both parser layers on the patched bytes. A failure is this
-// package's bug, so it is reported as such and nothing is returned to write.
-func verifyTOML(out []byte) ([]byte, error) {
-	if _, err := collectTOML(out); err != nil {
+// verifyTOML checks the patched bytes with the linear layer, not the strict
+// one, and then reads the edited key back.
+//
+// The scan proves the output still parses. The read-back proves the splice
+// landed on the key path the caller asked for — a splice that lands one byte
+// off produces a document that parses and means something else, which a
+// parse-only check cannot see. What neither proves is key/table uniqueness,
+// and that is covered before the splice instead: the input has already passed
+// the strict gate, and patchTOML refuses a create whose name already exists as
+// a key, a dotted prefix, or a table (see the conflict checks there). Those are
+// the only shapes a single-value insert or a quoted-scalar replace can collide
+// with.
+func verifyTOML(out []byte, e Edit) ([]byte, error) {
+	buf := parseableTOML(out)
+	doc, err := scanTOML(buf, out)
+	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
 	}
-	return out, nil
+	for _, kv := range doc.kvs {
+		if !samePath(kv.fullPath, e.KeyPath) {
+			continue
+		}
+		if kv.valStart < 0 || kv.valEnd > len(out) || kv.valStart >= kv.valEnd {
+			return nil, fmt.Errorf("%w: %q has no byte range", ErrInternalInconsistency, strings.Join(e.KeyPath, "."))
+		}
+		if got := string(out[kv.valStart:kv.valEnd]); got != tomlQuote(e.Value) {
+			return nil, fmt.Errorf("%w: %q reads back as %s", ErrInternalInconsistency, strings.Join(e.KeyPath, "."), got)
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("%w: %q is absent after the patch", ErrInternalInconsistency, strings.Join(e.KeyPath, "."))
 }

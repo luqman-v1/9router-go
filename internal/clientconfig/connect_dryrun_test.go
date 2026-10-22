@@ -177,12 +177,17 @@ func TestWritePath_CountedByCountingRoot(t *testing.T) {
 // mutations the write path performs, and a counter that under-counts would
 // let a write slip past the dry-run guarantee.
 //
-// WriteFileAtomic on an existing target performs four mutating calls:
+// WriteFileAtomic on an existing target performs three mutating calls:
 //  1. create the temp file  (OpenFile with O_CREATE|O_EXCL|O_WRONLY)
-//  2. reopen it for writing (OpenFile with O_WRONLY)
-//  3. rename it onto target (Rename)
-//  4. remove the temp name  (Remove — the name is already gone, but the call
+//  2. rename it onto target (Rename)
+//  3. remove the temp name  (Remove — the name is already gone, but the call
 //     was made, and a call that touches the namespace must be counted)
+//
+// It used to be four, with a second OpenFile reopening the temp by name. That
+// reopen was a swap window: a name in a writable directory can be replaced with
+// a symlink between the create and the second open, and the bytes then land
+// wherever the link points. The temp handle is now kept and written directly,
+// so this count is also the assertion that no reopen came back.
 //
 // The chmod and the fsync happen on the open file handle, not through the
 // root, so they are not root mutations.
@@ -200,8 +205,8 @@ func TestWriteFileAtomic_CountsEveryMutation(t *testing.T) {
 	if err := WriteFileAtomic(g, []byte(`{"url":"http://new"}`), countingRootHook(counter)); err != nil {
 		t.Fatalf("WriteFileAtomic: %v", err)
 	}
-	if got := counter.Writes(); got != 4 {
-		t.Errorf("Writes() = %d, want 4 (create temp, reopen for write, rename, remove temp)", got)
+	if got := counter.Writes(); got != 3 {
+		t.Errorf("Writes() = %d, want 3 (create temp, rename, remove temp)", got)
 	}
 }
 

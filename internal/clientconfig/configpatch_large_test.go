@@ -49,25 +49,14 @@ func TestX5LargeFile(t *testing.T) {
 			if len(src) < target {
 				t.Fatalf("sample is only %d bytes", len(src))
 			}
-			// Best of three. CI runs `go test ./...`, so ~60 packages share two
-			// cores and a single wall-clock sample can be several times its
-			// solo cost — a one-shot assertion measures the scheduler, not the
-			// patcher. A real regression is slow every time.
-			var out []byte
-			elapsed := time.Duration(1<<62 - 1)
-			for i := 0; i < 3; i++ {
-				begin := time.Now()
-				var err error
-				out, err = Patch([]byte(src), tt.format, []Edit{edit})
-				if d := time.Since(begin); d < elapsed {
-					elapsed = d
-				}
-				if err != nil {
-					t.Fatalf("Patch() error = %v", err)
-				}
+			begin := time.Now()
+			out, err := Patch([]byte(src), tt.format, []Edit{edit})
+			elapsed := time.Since(begin)
+			if err != nil {
+				t.Fatalf("Patch() error = %v", err)
 			}
 			if elapsed > x5Budget {
-				t.Errorf("Patch() took %v on a %d byte file", elapsed, len(src))
+				t.Errorf("Patch() took %v on a %d byte file, budget %v", elapsed, len(src), x5Budget)
 			}
 			tail := tailAfter(src, `"https://old/v1"`)
 			if tail == "" || !strings.HasSuffix(string(out), tail) {

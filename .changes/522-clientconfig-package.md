@@ -40,9 +40,12 @@ promise. An earlier version wrapped an `*os.Root` the write path never went
 through, which made the guarantee unverifiable.
 
 **The connect path refuses what it should.** A gateway URL with userinfo, a
-query or a fragment is refused; plaintext HTTP is refused outside loopback
-unless the operator says otherwise; a redirect that downgrades HTTPS or
-crosses origin is refused, and the redirect target is checked against the
+query or a fragment is refused; plaintext HTTP to a public host is refused
+outright, and `--allow-insecure` relaxes that rule only for a loopback
+destination, never for a public one. A redirect that downgrades HTTPS is
+refused; one that crosses origin is refused only when the request carries a
+credential, in a header or in the body — a credential-free GET is allowed to
+follow a cross-origin redirect. Every redirect target is checked against the
 same guard as the first request, so a redirect cannot be used to reach an
 address the guard would have blocked. Errors are redacted, so a password or a
 userinfo component cannot reach stderr through a `*url.Error`.
@@ -57,3 +60,21 @@ attached short-flag spelling that no amount of shell-history grepping finds;
 the error names the flag and never the value. The prompt clears `ISIG` as
 well as `ECHO`, so Ctrl+C lands in the password as a byte instead of killing
 the process and leaving the terminal with echo off.
+
+**Cost, measured, and where it stops.** `Patch` is linear in file size for
+JSONC and YAML: a 512 KB sample went from 987 ms to 15 ms once the JSONC
+duplicate-key check stopped rescanning every member of an object. TOML is not
+linear, and cannot be made so from here: `go-toml/v2`'s duplicate detection
+walks the sibling keys of a table on every insert, so a 512 KB TOML document
+takes about a second to parse — 25 ms at 64 KB. `Patch` pays that parse once,
+not twice; the output is checked with the linear parser plus a read-back of the
+edited key, instead of a second full semantic pass. A caller writing a config
+should treat `LargeFileWarningBytes` as the point to ask the user, because both
+parsers build a tree above the whole file — a 256 KB TOML patch allocates
+about 33 MB, 121x the input, and 1 MiB about 140 MB.
+
+**No caller yet.** Nothing outside this package imports it, and the write
+functions take an unexported `guard` with no exported constructor, so they
+cannot be reached from outside at all. This change brings the package in with
+its own tests; wiring it into the CLI is a separate change, and nothing here
+promises a user-visible behaviour until that lands.

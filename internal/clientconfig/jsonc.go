@@ -91,6 +91,11 @@ func (p *jsonParser) parseValue() (*jsonNode, error) {
 func (p *jsonParser) parseObject() (*jsonNode, error) {
 	n := &jsonNode{kind: jLBrace, tok: p.i}
 	p.i++
+	// Duplicate detection is a map, not a rescan of n.members. The rescan is
+	// quadratic in the member count, and a config file with a few thousand
+	// keys is exactly the case X5 measures: at 512 KB it turned a linear walk
+	// into a second of wall clock.
+	seen := make(map[string]struct{})
 	for {
 		p.skipComments()
 		if p.at(jRBrace) {
@@ -119,11 +124,10 @@ func (p *jsonParser) parseObject() (*jsonNode, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, m := range n.members {
-			if m.key == key {
-				return nil, fmt.Errorf("%w: duplicate key %q", ErrParseFailure, key)
-			}
+		if _, dup := seen[key]; dup {
+			return nil, fmt.Errorf("%w: duplicate key %q", ErrParseFailure, key)
 		}
+		seen[key] = struct{}{}
 		p.i++
 		if !p.at(jColon) {
 			return nil, fmt.Errorf("%w: expected ':' at offset %d", ErrParseFailure, p.offset())
