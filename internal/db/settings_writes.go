@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"fmt"
 	"sync"
@@ -34,7 +35,11 @@ func (r *Repo) updateSettings(merge func(existing map[string]any) error) error {
 	if err != nil {
 		return fmt.Errorf("marshal settings data: %w", err)
 	}
-	if _, err := r.db.Exec(
+	// The write carries no request context: a settings save that is cancelled
+	// with the caller leaves the operator with a half-applied change, and the
+	// statement itself is atomic.
+	if _, err := r.db.ExecContext(
+		context.Background(),
 		`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
 		string(b),
 	); err != nil {
