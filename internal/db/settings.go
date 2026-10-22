@@ -208,13 +208,89 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 }
 
 // cloneSettings copies the settings struct so a caller that replaces a field
-// cannot poison the cached value.
+// cannot poison the cached value. The maps are copied too: the cache holds
+// the one parsed row, and a caller that writes into a map it was handed would
+// otherwise change the answer every other reader sees.
 func cloneSettings(s *SettingsData) *SettingsData {
 	if s == nil {
 		return nil
 	}
 	out := *s
+	out.RTKCategories = cloneBoolMap(s.RTKCategories)
+	out.RTKFilters = cloneBoolMap(s.RTKFilters)
+	out.ComboStrategies = cloneComboStrategies(s.ComboStrategies)
+	out.ProviderStrategies = cloneProviderStrategies(s.ProviderStrategies)
+	out.CapacityAdapter = cloneCapacityAdapters(s.CapacityAdapter)
+	out.ProviderOverrides = cloneProviderOverrides(s.ProviderOverrides)
+	out.ProviderThinking = cloneProviderThinking(s.ProviderThinking)
 	return &out
+}
+
+func cloneBoolMap(m map[string]bool) map[string]bool {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]bool, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneComboStrategies(m map[string]ComboStrategy) map[string]ComboStrategy {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]ComboStrategy, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneProviderStrategies(m map[string]ProviderStrategy) map[string]ProviderStrategy {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]ProviderStrategy, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneCapacityAdapters(m map[string]CapacityAdapterEntry) map[string]CapacityAdapterEntry {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]CapacityAdapterEntry, len(m))
+	for k, v := range m {
+		v.Models = append([]string(nil), v.Models...)
+		out[k] = v
+	}
+	return out
+}
+
+func cloneProviderOverrides(m map[string]ProviderOverrides) map[string]ProviderOverrides {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]ProviderOverrides, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneProviderThinking(m map[string]ProviderThinking) map[string]ProviderThinking {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]ProviderThinking, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // settingsInt coerces a settings value to a non-negative int, treating a

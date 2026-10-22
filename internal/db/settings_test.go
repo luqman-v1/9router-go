@@ -274,6 +274,41 @@ func TestGetSettingsReflectsAWrite(t *testing.T) {
 	}
 }
 
+// TestGetSettingsCloneDoesNotShareMaps pins the cache contract: the parsed
+// row the caller receives is its own copy, so a caller that writes into a map
+// it was handed cannot change the answer the next reader sees.
+func TestGetSettingsCloneDoesNotShareMaps(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+		`{"providerThinking":{"deepseek":{"mode":"off"}}}`,
+	); err != nil {
+		t.Fatalf("failed to insert settings: %v", err)
+	}
+
+	repo := NewRepo(database)
+	first, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	first.ProviderThinking["deepseek"] = ProviderThinking{Mode: "on"}
+
+	second, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	if got := second.ProviderThinking["deepseek"].Mode; got != "off" {
+		t.Errorf("providerThinking = %q, want the stored value: the caller mutated the cached row", got)
+	}
+}
+
 func TestSetComboAndProviderStrategy_PreservesExistingSettings(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	defer cleanup()
