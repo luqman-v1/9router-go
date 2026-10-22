@@ -191,18 +191,19 @@ func DefaultSettings() *SettingsData {
 // The returned value is a copy of the struct. The maps inside it are shared
 // with the cache and are read-only to every caller outside this package.
 func (r *Repo) GetSettings() (*SettingsData, error) {
-	raw, ok := r.readSettingsRow()
-	if !ok {
+	var rawData string
+	err := r.db.QueryRow(`SELECT data FROM settings WHERE id = 1`).Scan(&rawData)
+	if err != nil {
 		return DefaultSettings(), nil
 	}
-	if c := r.settingsCache.Load(); c != nil && c.raw == raw {
+	if c := r.settingsCache.Load(); c != nil && c.raw == rawData {
 		return cloneSettings(c.value), nil
 	}
-	s, ok := parseSettings(raw)
+	s, ok := parseSettings(rawData)
 	if !ok {
 		return DefaultSettings(), nil
 	}
-	r.settingsCache.Store(&cachedSettings{raw: raw, value: s})
+	r.settingsCache.Store(&cachedSettings{raw: rawData, value: s})
 	return cloneSettings(s), nil
 }
 
@@ -214,16 +215,6 @@ func cloneSettings(s *SettingsData) *SettingsData {
 	}
 	out := *s
 	return &out
-}
-
-// readSettingsRow reads the raw settings row. The bool is false when the row
-// is missing or unreadable.
-func (r *Repo) readSettingsRow() (string, bool) {
-	var rawData string
-	if err := r.db.QueryRow(`SELECT data FROM settings WHERE id = 1`).Scan(&rawData); err != nil {
-		return "", false
-	}
-	return rawData, true
 }
 
 // settingsInt coerces a settings value to a non-negative int, treating a

@@ -81,11 +81,11 @@ func writeClaudeAdaptive(c *writerCtx) {
 	}
 	lvl := ToLevel(c.eff)
 	effort := "high"
-	switch {
-	case lvl == "auto":
-		effort = "high"
-	case lvl == "minimal":
+	switch lvl {
+	case "minimal":
 		effort = "low"
+	case "auto":
+		// "auto" asks the upstream to decide; the adaptive dialect names it high.
 	default:
 		effort = levelFor(lvl, c.supported)
 	}

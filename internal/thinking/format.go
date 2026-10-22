@@ -197,7 +197,7 @@ func resolveFormat(target, provider, model string, caps providers.Capabilities) 
 	if target == "openai-responses" && !nativeOnlyFormats[caps.ThinkingFormat] {
 		return "openai-responses"
 	}
-	if caps.ThinkingFormat != "" && !(isOpenAIWire && nativeOnlyFormats[caps.ThinkingFormat]) {
+	if caps.ThinkingFormat != "" && (!isOpenAIWire || !nativeOnlyFormats[caps.ThinkingFormat]) {
 		return caps.ThinkingFormat
 	}
 	if f, ok := formatToNative[target]; ok {
