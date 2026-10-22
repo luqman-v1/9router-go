@@ -6,6 +6,35 @@ import (
 	"time"
 )
 
+// TestBodyMentionsThinkingDoesNotCopyTheBody pins the allocation contract: the
+// scan runs on every request, so it must not copy the body it scans. The
+// string conversion this replaced allocated the whole body per call.
+func TestBodyMentionsThinkingDoesNotCopyTheBody(t *testing.T) {
+	body := []byte(strings.Repeat(`{"model":"gpt-5","messages":[{"role":"user","content":"hello"}],`+"\n", 2000))
+	allocs := testing.AllocsPerRun(20, func() {
+		if BodyMentionsThinking(body) {
+			t.Fatal("unexpected hit")
+		}
+	})
+	if allocs > 0 {
+		t.Errorf("BodyMentionsThinking allocated %.1f objects per call, want 0", allocs)
+	}
+}
+
+// BenchmarkBodyMentionsThinking measures the per-request scan on a body large
+// enough for the cost to show. The scan is linear in the body size and runs
+// on every request, so the number belongs in the changelog.
+func BenchmarkBodyMentionsThinking(b *testing.B) {
+	body := []byte(strings.Repeat(`{"model":"gpt-5","messages":[{"role":"user","content":"hello"}],`+"\n", 8000))
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if BodyMentionsThinking(body) {
+			b.Fatal("unexpected hit")
+		}
+	}
+}
+
 // TestBodyModelHasSuffixStaysFastOnALargeBody guards the model-suffix scan's
 // cost. A request body is read without a size cap, so the scan has to stay
 // cheap on a body that repeats the model key. The bound is a regression

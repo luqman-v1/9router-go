@@ -1,7 +1,7 @@
 package thinking
 
 import (
-	"maps"
+	"bytes"
 	"strconv"
 	"strings"
 )
@@ -123,22 +123,24 @@ var SnapshotKeys = []string{
 	`"thinking`, `"reasoning`, `"output_config"`, `"enable_thinking"`,
 }
 
+// snapshotKeyBytes is SnapshotKeys as bytes, so the per-request scan does not
+// convert the body to a string.
+var snapshotKeyBytes = func() [][]byte {
+	out := make([][]byte, 0, len(SnapshotKeys))
+	for _, k := range SnapshotKeys {
+		out = append(out, []byte(k))
+	}
+	return out
+}()
+
 // BodyMentionsThinking reports whether raw JSON likely carries a thinking
 // field, so hot paths can skip decode. Case-sensitive; keys are lowercase
 // on the wire.
 func BodyMentionsThinking(raw []byte) bool {
-	s := string(raw)
-	for _, k := range SnapshotKeys {
-		if strings.Contains(s, k) {
+	for _, k := range snapshotKeyBytes {
+		if bytes.Contains(raw, k) {
 			return true
 		}
 	}
 	return false
-}
-
-// cloneShallow copies one map level for tests/docs helpers.
-func cloneShallow(m map[string]any) map[string]any {
-	out := make(map[string]any, len(m))
-	maps.Copy(out, m)
-	return out
 }
