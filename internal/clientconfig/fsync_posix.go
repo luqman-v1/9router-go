@@ -22,7 +22,7 @@ func fsyncDir(r rootFS, dir string) {
 		log.Warn("clientconfig", "could not open directory for sync", "dir", dir, "error", err)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := f.Sync(); err != nil {
 		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) ||
 			errors.Is(err, syscall.EBADF) || errors.Is(err, syscall.EPERM) {

@@ -1,7 +1,9 @@
 package clientconfig
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -97,12 +99,47 @@ func TestYAMLQuoteRoundTrip(t *testing.T) {
 	}
 }
 
-func TestQuoteIsDeterministic(t *testing.T) {
+func TestQuoteIsStable(t *testing.T) {
 	// §6 requires byte-identical output for identical input; a quoter that
 	// varied would turn every patch into a spurious rewrite.
+	//
+	// The quoters are pure functions of their argument, so asking whether one
+	// call equals another call with the same argument tests nothing — it is
+	// true by construction. What the property actually needs is that the
+	// quoter produces the same bytes for the same *value* when the value
+	// arrives through the patcher, so each sample is written into a real
+	// document and then patched again: the second pass must find the value
+	// already there and change nothing.
+	//
+	// Every sample goes through all three formats, because each format has its
+	// own quoter and a value that is stable in one is not automatically stable
+	// in another.
 	for _, s := range scalarSamples {
-		if jsoncQuote(s) != jsoncQuote(s) || tomlQuote(s) != tomlQuote(s) || yamlQuote(s) != yamlQuote(s) {
-			t.Fatalf("quoter is not deterministic for %q", s)
-		}
+		t.Run(s, func(t *testing.T) {
+			cases := []struct {
+				name   string
+				format Format
+				src    string
+				path   []string
+			}{
+				{"jsonc", FormatJSONC, "{\n  \"v\": \"old\"\n}\n", []string{"v"}},
+				{"toml", FormatTOML, "[t]\nv = \"old\"\n", []string{"t", "v"}},
+				{"yaml", FormatYAML, "v: old\n", []string{"v"}},
+			}
+			for _, tc := range cases {
+				edit := Edit{KeyPath: tc.path, Value: s}
+				first, err := Patch([]byte(tc.src), tc.format, []Edit{edit})
+				if err != nil {
+					t.Fatalf("%s: first patch: %v", tc.name, err)
+				}
+				second, err := Patch(first, tc.format, []Edit{edit})
+				if !errors.Is(err, ErrAlreadyPatched) {
+					t.Fatalf("%s: second patch error = %v, want ErrAlreadyPatched", tc.name, err)
+				}
+				if !bytes.Equal(second, first) {
+					t.Fatalf("%s: second patch changed bytes:\n%q\n%q", tc.name, first, second)
+				}
+			}
+		})
 	}
 }

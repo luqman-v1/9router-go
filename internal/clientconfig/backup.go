@@ -44,29 +44,29 @@ func writeExclusiveBackup(r rootFS, relTarget string, content []byte, now func()
 			continue
 		}
 		if err != nil {
-			return "", fmt.Errorf("%w: create backup %s: %v", ErrWriteFailed, name, err)
+			return "", fmt.Errorf("%w: create backup %s: %w", ErrWriteFailed, name, err)
 		}
 		if _, err := f.Write(content); err != nil {
-			f.Close()
+			_ = f.Close()
 			_ = r.Remove(name)
-			return "", fmt.Errorf("%w: write backup %s: %v", ErrWriteFailed, name, err)
+			return "", fmt.Errorf("%w: write backup %s: %w", ErrWriteFailed, name, err)
 		}
 		// Chmod on the handle, not on the path: the perm passed to OpenFile is
 		// masked by umask, and under umask 0200 a 0600 backup lands as 0400
 		// read-only, which is a file the user cannot clean up later.
 		if err := f.Chmod(backupPerm); err != nil {
-			f.Close()
+			_ = f.Close()
 			_ = r.Remove(name)
-			return "", fmt.Errorf("%w: chmod backup %s: %v", ErrWriteFailed, name, err)
+			return "", fmt.Errorf("%w: chmod backup %s: %w", ErrWriteFailed, name, err)
 		}
 		if err := f.Sync(); err != nil {
-			f.Close()
+			_ = f.Close()
 			_ = r.Remove(name)
-			return "", fmt.Errorf("%w: sync backup %s: %v", ErrWriteFailed, name, err)
+			return "", fmt.Errorf("%w: sync backup %s: %w", ErrWriteFailed, name, err)
 		}
 		if err := f.Close(); err != nil {
 			_ = r.Remove(name)
-			return "", fmt.Errorf("%w: close backup %s: %v", ErrWriteFailed, name, err)
+			return "", fmt.Errorf("%w: close backup %s: %w", ErrWriteFailed, name, err)
 		}
 		return name, nil
 	}

@@ -76,9 +76,9 @@ func WriteFileAtomic(g guard, content []byte, h hooks) error {
 
 	r, err := h.openRoot(g.baseResolved)
 	if err != nil {
-		return fmt.Errorf("%w: open root %s: %v", ErrPathEscape, g.baseResolved, err)
+		return fmt.Errorf("%w: open root %s: %w", ErrPathEscape, g.baseResolved, err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	perm := os.FileMode(constants.FilePermKey)
 	if g.existed {
@@ -108,7 +108,7 @@ func WriteFileAtomic(g guard, content []byte, h hooks) error {
 		return err
 	}
 	if err := renameWithRetry(r, tempRel, g.rel, h); err != nil {
-		return fmt.Errorf("%w: rename %s → %s: %v", ErrWriteFailed, tempRel, g.rel, err)
+		return fmt.Errorf("%w: rename %s → %s: %w", ErrWriteFailed, tempRel, g.rel, err)
 	}
 	// Best effort, POSIX only. On Windows this is a no-op that reports
 	// unsupported, which must not fail the write.
@@ -121,24 +121,24 @@ func WriteFileAtomic(g guard, content []byte, h hooks) error {
 func writeTemp(r rootFS, tempRel string, content []byte, perm os.FileMode, h hooks) error {
 	f, err := r.OpenFile(tempRel, os.O_WRONLY, perm)
 	if err != nil {
-		return fmt.Errorf("%w: reopen temp %s: %v", ErrWriteFailed, tempRel, err)
+		return fmt.Errorf("%w: reopen temp %s: %w", ErrWriteFailed, tempRel, err)
 	}
 	if err := h.write(f, content); err != nil {
-		f.Close()
-		return fmt.Errorf("%w: write temp %s: %v", ErrWriteFailed, tempRel, err)
+		_ = f.Close()
+		return fmt.Errorf("%w: write temp %s: %w", ErrWriteFailed, tempRel, err)
 	}
 	if err := h.sync(f); err != nil {
-		f.Close()
-		return fmt.Errorf("%w: sync temp %s: %v", ErrWriteFailed, tempRel, err)
+		_ = f.Close()
+		return fmt.Errorf("%w: sync temp %s: %w", ErrWriteFailed, tempRel, err)
 	}
 	// Chmod on the handle after writing: umask already masked the perm at
 	// creation, and doing it here keeps the file writable while it is written.
 	if err := f.Chmod(perm); err != nil {
-		f.Close()
-		return fmt.Errorf("%w: chmod temp %s: %v", ErrWriteFailed, tempRel, err)
+		_ = f.Close()
+		return fmt.Errorf("%w: chmod temp %s: %w", ErrWriteFailed, tempRel, err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("%w: close temp %s: %v", ErrWriteFailed, tempRel, err)
+		return fmt.Errorf("%w: close temp %s: %w", ErrWriteFailed, tempRel, err)
 	}
 	return nil
 }
@@ -154,7 +154,7 @@ func createTemp(r rootFS, relTarget string, perm os.FileMode) (string, error) {
 	for i := 0; i < 16; i++ {
 		nonce := make([]byte, 8)
 		if _, err := rand.Read(nonce); err != nil {
-			return "", fmt.Errorf("%w: nonce: %v", ErrWriteFailed, err)
+			return "", fmt.Errorf("%w: nonce: %w", ErrWriteFailed, err)
 		}
 		name := filepath.Join(dir, fmt.Sprintf(".tmp-%x", nonce))
 		f, err := r.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
@@ -162,12 +162,12 @@ func createTemp(r rootFS, relTarget string, perm os.FileMode) (string, error) {
 			continue
 		}
 		if err != nil {
-			return "", fmt.Errorf("%w: create temp %s: %v", ErrWriteFailed, name, err)
+			return "", fmt.Errorf("%w: create temp %s: %w", ErrWriteFailed, name, err)
 		}
 		// Closed immediately; writeTemp reopens it for the write so the seam
 		// sees a plain *os.File with no preexisting buffered state.
 		if err := f.Close(); err != nil {
-			return "", fmt.Errorf("%w: close temp %s: %v", ErrWriteFailed, name, err)
+			return "", fmt.Errorf("%w: close temp %s: %w", ErrWriteFailed, name, err)
 		}
 		return name, nil
 	}

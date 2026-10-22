@@ -28,9 +28,9 @@ func BackupAndWrite(g guard, oldContent, content []byte, now func() time.Time, h
 	h = h.withDefaults()
 	r, err := h.openRoot(g.baseResolved)
 	if err != nil {
-		return WriteResult{}, fmt.Errorf("%w: open root %s: %v", ErrPathEscape, g.baseResolved, err)
+		return WriteResult{}, fmt.Errorf("%w: open root %s: %w", ErrPathEscape, g.baseResolved, err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	var res WriteResult
 	if g.existed {

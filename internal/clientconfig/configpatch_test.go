@@ -57,7 +57,6 @@ func TestX1BytePreservation(t *testing.T) {
 				t.Fatalf("sample does not contain %q", tt.oldVal)
 			}
 			end := start + len(tt.oldVal)
-			repl := string(out) // the replacement is whatever sits between the halves
 			head := tt.src[:start]
 			tail := tt.src[end:]
 			if !strings.HasPrefix(string(out), head) {
@@ -66,7 +65,8 @@ func TestX1BytePreservation(t *testing.T) {
 			if !strings.HasSuffix(string(out), tail) {
 				t.Fatalf("tail changed:\n got %q\nwant %q", string(out)[max(0, len(out)-len(tail)):], tail)
 			}
-			repl = string(out)[len(head) : len(out)-len(tail)]
+			// The replacement is whatever sits between the halves.
+			repl := string(out)[len(head) : len(out)-len(tail)]
 			if want := string(out[:len(head)]) + repl + string(out[len(head)+len(repl):]); want != string(out) {
 				t.Fatal("splice decomposition does not reconstruct the output")
 			}

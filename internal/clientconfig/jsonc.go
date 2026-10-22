@@ -174,7 +174,7 @@ func (p *jsonParser) parseArray() (*jsonNode, error) {
 func decodeJSONString(raw []byte) (string, error) {
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return "", fmt.Errorf("%w: bad string literal: %v", ErrParseFailure, err)
+		return "", fmt.Errorf("%w: bad string literal: %w", ErrParseFailure, err)
 	}
 	return s, nil
 }
@@ -258,7 +258,7 @@ func insertJSONMember(src []byte, toks []jsonTok, obj *jsonNode, key, val string
 // wrote something invalid, which is a bug and not a user error.
 func verifyJSONC(out []byte) ([]byte, error) {
 	if _, _, err := parseJSONC(out); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInternalInconsistency, err)
+		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
 	}
 	return out, nil
 }

@@ -69,7 +69,7 @@ func validateRelComponents(relPath string) error {
 	if relPath == "" || filepath.IsAbs(relPath) || filepath.VolumeName(relPath) != "" {
 		return fmt.Errorf("%w: %q", ErrPathEscape, relPath)
 	}
-	for _, comp := range strings.Split(filepath.ToSlash(relPath), "/") {
+	for _, comp := range splitPathComponents(relPath) {
 		if comp == "" || comp == "." || comp == ".." {
 			return fmt.Errorf("%w: bad component %q in %q", ErrPathEscape, comp, relPath)
 		}
@@ -86,6 +86,27 @@ func validateRelComponents(relPath string) error {
 		}
 	}
 	return nil
+}
+
+// splitPathComponents splits a relative path on both separator spellings.
+//
+// A path written on Windows uses "\", a path written on POSIX uses "/". A
+// client config path is portable — the same file is addressed the same way
+// whichever OS wrote it — so both spellings are read as separators on every
+// platform. Without the split, "..\..\etc\passwd" is a single harmless-looking
+// file name on POSIX, and "a\NUL" is a file name that hides a reserved device
+// name inside it. Refusing them is the same policy the colon check already
+// follows: one path, one meaning, whichever OS reads it.
+func splitPathComponents(relPath string) []string {
+	parts := make([]string, 0, 4)
+	start := 0
+	for i := 0; i < len(relPath); i++ {
+		if relPath[i] == '/' || relPath[i] == '\\' {
+			parts = append(parts, relPath[start:i])
+			start = i + 1
+		}
+	}
+	return append(parts, relPath[start:])
 }
 
 func isReservedName(comp string) bool {
@@ -110,14 +131,14 @@ func resolveGuard(baseDir, relPath string) (guard, error) {
 
 	baseAbs, err := filepath.Abs(baseDir)
 	if err != nil {
-		return guard{}, fmt.Errorf("%w: abs base: %v", ErrPathEscape, err)
+		return guard{}, fmt.Errorf("%w: abs base: %w", ErrPathEscape, err)
 	}
 	baseResolved, err := filepath.EvalSymlinks(baseAbs)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return guard{}, fmt.Errorf("%w: %s", ErrBaseMissing, baseAbs)
 		}
-		return guard{}, fmt.Errorf("%w: eval base: %v", ErrPathEscape, err)
+		return guard{}, fmt.Errorf("%w: eval base: %w", ErrPathEscape, err)
 	}
 
 	// Walk up to the nearest ancestor that exists, so a target that is being
@@ -133,7 +154,7 @@ func resolveGuard(baseDir, relPath string) (guard, error) {
 			break
 		}
 		if !errors.Is(evalErr, fs.ErrNotExist) {
-			return guard{}, fmt.Errorf("%w: eval %s: %v", ErrPathEscape, cur, evalErr)
+			return guard{}, fmt.Errorf("%w: eval %s: %w", ErrPathEscape, cur, evalErr)
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
@@ -150,14 +171,14 @@ func resolveGuard(baseDir, relPath string) (guard, error) {
 	// the lexical check below would accept it, because an alias can sit
 	// lexically inside the base while pointing out of it.
 	walk := baseResolved
-	for _, comp := range strings.Split(filepath.ToSlash(filepath.Clean(filepath.FromSlash(relPath))), "/") {
+	for _, comp := range splitPathComponents(filepath.Clean(relPath)) {
 		walk = filepath.Join(walk, comp)
 		fi, statErr := os.Lstat(walk)
 		if errors.Is(statErr, fs.ErrNotExist) {
 			break
 		}
 		if statErr != nil {
-			return guard{}, fmt.Errorf("%w: lstat %s: %v", ErrPathEscape, walk, statErr)
+			return guard{}, fmt.Errorf("%w: lstat %s: %w", ErrPathEscape, walk, statErr)
 		}
 		if fi.Mode()&os.ModeSymlink != 0 || isNameSurrogateReparse(walk) {
 			if escapesResolved(walk, baseResolved) {
@@ -180,18 +201,25 @@ func resolveGuard(baseDir, relPath string) (guard, error) {
 
 	g := guard{baseResolved: baseResolved, rel: filepath.Clean(relCheck)}
 
-	fi, statErr := os.Lstat(resolved)
+	// The final component is inspected on the candidate path, not on the
+	// resolved one. EvalSymlinks has already followed the link by the time we
+	// get here, so Lstat(resolved) describes the link's target and never the
+	// link — a symlink as the last component read as a regular file, and the
+	// refusal it is supposed to get never happened. Renaming onto a symlink
+	// replaces the link rather than its target, so a link here is refused even
+	// when it stays inside the base.
+	fi, statErr := os.Lstat(candidate)
 	switch {
-	case statErr == nil && (fi.Mode()&os.ModeSymlink != 0 || isNameSurrogateReparse(resolved)):
-		return guard{}, fmt.Errorf("%w: final component is a link: %s", ErrSymlinkAncestor, resolved)
+	case statErr == nil && (fi.Mode()&os.ModeSymlink != 0 || isNameSurrogateReparse(candidate)):
+		return guard{}, fmt.Errorf("%w: final component is a link: %s", ErrSymlinkAncestor, candidate)
 	case statErr == nil && !fi.Mode().IsRegular():
-		return guard{}, fmt.Errorf("%w: %s", ErrNotRegular, resolved)
+		return guard{}, fmt.Errorf("%w: %s", ErrNotRegular, candidate)
 	case statErr == nil:
 		g.existed = true
 	case errors.Is(statErr, fs.ErrNotExist):
 		// New file — valid, every ancestor was checked above.
 	default:
-		return guard{}, fmt.Errorf("%w: lstat %s: %v", ErrPathEscape, resolved, statErr)
+		return guard{}, fmt.Errorf("%w: lstat %s: %v", ErrPathEscape, candidate, statErr)
 	}
 	return g, nil
 }
@@ -235,18 +263,4 @@ func escapesResolved(linkPath, baseResolved string) bool {
 func isNameSurrogateReparse(p string) bool {
 	_, err := os.Readlink(p)
 	return err == nil
-}
-
-// open returns a rootFS on the resolved base. Close it after finishing one
-// file operation.
-//
-// The return type is the interface, not *os.Root, so a caller that wants to
-// observe or count the writes can substitute its own implementation. That is
-// what makes the dry-run counter possible at all (§5.2).
-func (g guard) open() (rootFS, error) {
-	r, err := os.OpenRoot(g.baseResolved)
-	if err != nil {
-		return nil, fmt.Errorf("%w: open root %s: %v", ErrPathEscape, g.baseResolved, err)
-	}
-	return osRootFS{root: r}, nil
 }

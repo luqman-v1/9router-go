@@ -86,9 +86,9 @@ func ReadConnectPassword(opts PasswordOptions) (string, error) {
 	}
 
 	if isTTY() {
-		fmt.Fprint(warn, prompt)
+		_, _ = fmt.Fprint(warn, prompt)
 		line, err := readPasswordFromConsole(stdin)
-		fmt.Fprintln(warn) // the user's Enter was not echoed either
+		_, _ = fmt.Fprintln(warn) // the user's Enter was not echoed either
 		if err != nil {
 			return "", fmt.Errorf("read password: %w", err)
 		}
@@ -96,7 +96,7 @@ func ReadConnectPassword(opts PasswordOptions) (string, error) {
 	}
 
 	if v := env(PasswordEnvVar); v != "" {
-		fmt.Fprintln(warn, EnvPasswordWarning)
+		_, _ = fmt.Fprintln(warn, EnvPasswordWarning)
 		return validatePassword(v)
 	}
 	return "", fmt.Errorf("%w: đặt %s nếu chạy không tương tác, hoặc chạy lệnh trong terminal thật",

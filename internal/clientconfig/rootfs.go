@@ -89,7 +89,7 @@ func (o osRootFS) Chtimes(name string, atime time.Time, mtime time.Time) error {
 func (o osRootFS) Symlink(oldName, newName string) error {
 	return o.root.Symlink(oldName, newName)
 }
-func (o osRootFS) Link(oldName, newName string) error { return o.root.Link(oldName, newName) }
-func (o osRootFS) Open(name string) (*os.File, error)   { return o.root.Open(name) }
+func (o osRootFS) Link(oldName, newName string) error    { return o.root.Link(oldName, newName) }
+func (o osRootFS) Open(name string) (*os.File, error)    { return o.root.Open(name) }
 func (o osRootFS) Stat(name string) (os.FileInfo, error) { return o.root.Stat(name) }
 func (o osRootFS) Close() error                          { return o.root.Close() }
