@@ -17,6 +17,16 @@ import (
 	"time"
 )
 
+// truncateTokenBody caps an upstream body used in an error message, so a
+// credential the token endpoint echoed back cannot reach the logs or the
+// client.
+func truncateTokenBody(b []byte) string {
+	if len(b) > 200 {
+		return string(b[:200])
+	}
+	return string(b)
+}
+
 var (
 	clineOAuthAuthorizeURL = "https://api.cline.bot/api/v1/auth/authorize"
 	clineOAuthTokenURL     = "https://api.cline.bot/api/v1/auth/token"
@@ -304,7 +314,7 @@ func exchangeClineCode(ctx context.Context, tokenURL, code, verifier, redirectUR
 		return "", "", err
 	}
 	if tokenResp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("status %d: %s", tokenResp.StatusCode, string(respBody))
+		return "", "", fmt.Errorf("status %d: %s", tokenResp.StatusCode, truncateTokenBody(respBody))
 	}
 	var parsed struct {
 		Success bool `json:"success"`
