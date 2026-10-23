@@ -336,21 +336,38 @@ func verifyYAMLReplaced(out []byte, e Edit) ([]byte, error) {
 	return out, nil
 }
 
-// deleteYAMLKey removes the whole line a key occupies.
+// deleteYAMLKey removes a key and, when it holds a block collection, every line
+// that belongs to it.
 //
-// Only a scalar held directly by a mapping takes this path: deleting a subtree
-// would mean re-indenting its neighbours, which is a rewrite the caller has not
-// asked this package to perform. A non-scalar target is refused — and unlike
-// the JSON path it can be, because YAML gives the node's line directly.
+// The node's Line is the line its key starts on. A block collection's children
+// are more indented than that key, so the block ends at the first later line
+// whose indentation is at or above the key's own — or at end of input. That is
+// the whole rule, and it is why this can delete a subtree where the JSON path
+// cannot: there is no comma to keep in step.
+//
+// A flow collection is rejected rather than half-handled: its children are on
+// the same line, and the caller replacing one has ValueJSON for it.
 func deleteYAMLKey(src []byte, target *yaml.Node, e Edit) ([]byte, error) {
-	if target.Kind != yaml.ScalarNode {
-		return nil, fmt.Errorf("%w: cannot delete a non-scalar %q", ErrUnsupportedStructure, e.KeyPath[len(e.KeyPath)-1])
-	}
 	starts := yamlLineStarts(src)
 	if target.Line <= 0 || target.Line > len(starts) {
 		return nil, fmt.Errorf("%w: target has no usable position", ErrUnsupportedStructure)
 	}
-	start := starts[target.Line-1]
+	if target.Style&yaml.FlowStyle != 0 && target.Kind != yaml.ScalarNode {
+		return nil, fmt.Errorf("%w: cannot delete a flow collection %q",
+			ErrUnsupportedStructure, e.KeyPath[len(e.KeyPath)-1])
+	}
+	// The node's Line is where its key starts for a scalar, but for a block
+	// mapping it is where the mapping's first child line begins (measured: the
+	// node for a nested mapping sits on line 2 of a file where its key is on
+	// line 2, and the value is on line 3). Walking back to the line that holds
+	// the key is what makes the cut start at the key rather than inside its
+	// value.
+	keyLine, keyIndent := yamlKeyLine(src, starts, target)
+	start := starts[keyLine-1]
+	if target.Kind == yaml.ScalarNode {
+		keyLine, keyIndent = target.Line, target.Column-1
+		start = starts[keyLine-1]
+	}
 	end := lineEnd(src, start)
 	if end < len(src) && src[end] == '\r' {
 		end++
@@ -358,7 +375,65 @@ func deleteYAMLKey(src []byte, target *yaml.Node, e Edit) ([]byte, error) {
 	if end < len(src) && src[end] == '\n' {
 		end++
 	}
+	if target.Kind == yaml.MappingNode || target.Kind == yaml.SequenceNode {
+		end = yamlBlockEnd(src, starts, keyLine, keyIndent, end)
+	}
 	return verifyYAMLRemoved(splice(src, start, end, nil), e)
+}
+
+// yamlKeyLine finds the line holding the key of a block value: the nearest line
+// above the node whose indentation is less than the node's, and which ends in
+// a colon.
+func yamlKeyLine(src []byte, starts []int, target *yaml.Node) (int, int) {
+	childIndent := target.Column - 1
+	for line := target.Line - 1; line >= 1; line-- {
+		lineStart := starts[line-1]
+		lineEndOff := lineEnd(src, lineStart)
+		text := string(src[lineStart:lineEndOff])
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		indent := len(text) - len(strings.TrimLeft(text, " \t"))
+		if strings.HasSuffix(strings.TrimSpace(text), ":") {
+			return line, indent
+		}
+		if indent < childIndent {
+			return line + 1, childIndent
+		}
+	}
+	return 1, 0
+}
+
+// yamlBlockEnd extends endLine past every line indented deeper than the key.
+func yamlBlockEnd(src []byte, starts []int, keyLine, keyIndent, end int) int {
+
+	for line := keyLine + 1; line <= len(starts); line++ {
+		lineStart := starts[line-1]
+		lineEndOff := lineEnd(src, lineStart)
+		text := string(src[lineStart:lineEndOff])
+		if strings.TrimSpace(text) == "" {
+			end = lineEndOff
+			if end < len(src) && src[end] == '\r' {
+				end++
+			}
+			if end < len(src) && src[end] == '\n' {
+				end++
+			}
+			continue
+		}
+		indent := len(text) - len(strings.TrimLeft(text, " \t"))
+		if indent <= keyIndent {
+			return end
+		}
+		end = lineEndOff
+		if end < len(src) && src[end] == '\r' {
+			end++
+		}
+		if end < len(src) && src[end] == '\n' {
+			end++
+		}
+	}
+	return end
 }
 
 // verifyYAMLRemoved confirms the key is gone and the file still parses.
