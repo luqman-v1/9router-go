@@ -458,9 +458,6 @@ func verifyYAMLRemoved(out []byte, e Edit) ([]byte, error) {
 // patcher has no grounds to infer, and guessing one is how a config ends up
 // structurally wrong.
 func appendYAMLTopKey(src []byte, docs []*yaml.Node, path []string, value string) ([]byte, error) {
-	if len(path) != 1 {
-		return nil, fmt.Errorf("%w: cannot create nested key %q", ErrUnsupportedStructure, path[len(path)-1])
-	}
 	if len(docs) == 0 || len(docs[len(docs)-1].Content) == 0 {
 		return nil, fmt.Errorf("%w: no document to extend", ErrUnsupportedStructure)
 	}
@@ -472,11 +469,39 @@ func appendYAMLTopKey(src []byte, docs []*yaml.Node, path []string, value string
 	if len(out) > 0 && out[len(out)-1] != '\n' {
 		out = append(out, nl...)
 	}
-	// The key is quoted too: a plain key containing ":" or starting with a
-	// reserved indicator would change meaning, and one style keeps a second
-	// patch byte-identical.
-	out = append(out, (yamlQuote(path[0]) + ": " + yamlQuote(value) + nl)...)
-	return verifyYAML(out, Edit{KeyPath: path, Value: value})
+	// One indented pair per path element. The key is quoted at every level: a
+	// plain key containing ":" or starting with a reserved indicator would
+	// change meaning, and one style keeps a second patch byte-identical.
+	for i, part := range path {
+		indent := strings.Repeat("  ", i)
+		last := i == len(path)-1
+		out = append(out, (indent + yamlQuote(part) + ":")...)
+		if last {
+			out = append(out, (" " + yamlQuote(value) + nl)...)
+			break
+		}
+		out = append(out, nl...)
+	}
+	return verifyYAMLValue(out, Edit{KeyPath: path, Value: value})
+}
+
+// verifyYAMLValue confirms the created path reads back as the value asked for.
+// It exists because verifyYAML compares against e.Value on a scalar lookup, and
+// this path builds the file rather than splicing one.
+func verifyYAMLValue(out []byte, e Edit) ([]byte, error) {
+	docs, err := decodeYAML(out)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
+	}
+	n, err := findYAMLScalar(docs, e.KeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
+	}
+	if n.Value != e.Value {
+		return nil, fmt.Errorf("%w: %q did not read back as written",
+			ErrInternalInconsistency, e.KeyPath[len(e.KeyPath)-1])
+	}
+	return out, nil
 }
 
 // verifyYAML re-decodes the output and confirms the target now reads back as

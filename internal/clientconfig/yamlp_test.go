@@ -120,8 +120,11 @@ func TestPatchYAMLRefusals(t *testing.T) {
 			Edit{KeyPath: []string{"b"}, Value: "x"}, ErrKeyNotFound},
 		{"anchored target", "k: &ank \"old\"\n",
 			Edit{KeyPath: []string{"k"}, Value: "x"}, ErrUnsupportedStructure},
-		{"nested key cannot be created", "a: 1\n",
-			Edit{KeyPath: []string{"b", "c"}, Value: "x", CreateIfMissing: true}, ErrUnsupportedStructure},
+		// Nested creation used to be refused here. omp needs it: writing
+		// providers["9router"] into a file with no providers object is the
+		// normal first run, and the two-level form is now written with one
+		// indent stop per element. The case moved to the success tests below
+		// rather than being deleted, so the behaviour stays pinned.
 		{"plain scalar folded over two lines", "k: one\n  two\n",
 			Edit{KeyPath: []string{"k"}, Value: "x"}, ErrUnsupportedStructure},
 	}

@@ -323,3 +323,33 @@ func TestPatchTOMLRefusesValueJSON(t *testing.T) {
 		t.Fatalf("error = %v, want %v", err, ErrUnsupportedStructure)
 	}
 }
+
+// Nested creation replaced a refusal: writing providers["9router"] into a file
+// with no providers object is omp's normal first run. One indent stop per path
+// element, and the result must read back.
+func TestPatchYAMLCreateNestedKey(t *testing.T) {
+	out, err := Patch([]byte("a: 1\n"), FormatYAML, []Edit{
+		{KeyPath: []string{"providers", "9router", "baseUrl"}, Value: "http://h/v1", CreateIfMissing: true},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Every key is quoted, at every level: one style, and a plain key containing
+	// ":" or starting with a reserved indicator would change meaning unquoted.
+	for _, want := range []string{"\"providers\":", "\"9router\":", "\"baseUrl\":"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	docs, err := decodeYAML(out)
+	if err != nil {
+		t.Fatalf("output does not parse: %v", err)
+	}
+	n, err := findYAMLScalar(docs, []string{"providers", "9router", "baseUrl"})
+	if err != nil {
+		t.Fatalf("created path does not read back: %v", err)
+	}
+	if n.Value != "http://h/v1" {
+		t.Errorf("got %q, want %q", n.Value, "http://h/v1")
+	}
+}
