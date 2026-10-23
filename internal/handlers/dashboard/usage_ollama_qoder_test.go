@@ -244,7 +244,6 @@ func withOllamaEndpoints(t *testing.T, usageBody, meBody string) {
 	t.Cleanup(func() { ollamaUsageURL, ollamaMeURL = prevUsage, prevMe })
 }
 
-
 func TestFetchQoderUsage_ParsesAddOnQuota(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
