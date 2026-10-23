@@ -519,10 +519,38 @@ func TestCustomModelsEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete custom model expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-
 	kvScope, _ := repo.GetKVScope("customModels")
 	if len(kvScope) != 0 {
 		t.Fatalf("expected 0 custom models after delete, got %d", len(kvScope))
+	}
+
+	// 5. Test model id containing a slash (e.g. deepseek/deepseek-v4-1-flash)
+	slashModelData := map[string]any{
+		"providerAlias": "openrouter",
+		"id":            "deepseek/deepseek-v4-1-flash",
+		"type":          "llm",
+		"name":          "DeepSeek V4.1 Flash",
+	}
+	slashBodyBytes, _ := json.Marshal(slashModelData)
+	req = httptest.NewRequest(http.MethodPost, "/api/models/custom", bytes.NewReader(slashBodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save custom model with slash expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	slashKey := "openrouter|deepseek/deepseek-v4-1-flash|llm"
+	req = httptest.NewRequest(http.MethodDelete, "/api/models/custom/"+slashKey, nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete custom model with slash expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	kvScope, _ = repo.GetKVScope("customModels")
+	if len(kvScope) != 0 {
+		t.Fatalf("expected 0 custom models after slash delete, got %d", len(kvScope))
 	}
 }
 

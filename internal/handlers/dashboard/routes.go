@@ -49,6 +49,11 @@ func getURLParam(r *http.Request, key string) string {
 	if v := chi.URLParam(r, key); v != "" {
 		return v
 	}
+	if key == "key" {
+		if v := chi.URLParam(r, "*"); v != "" {
+			return v
+		}
+	}
 	return r.PathValue(key)
 }
 
@@ -140,6 +145,7 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/models/caps", h.HandleGetModelCaps)
 		r.Post("/models/custom", h.HandleSaveCustomModel)
 		r.Delete("/models/custom/{key}", h.HandleDeleteCustomModel)
+		r.Delete("/models/custom/*", h.HandleDeleteCustomModel)
 		r.Get("/models/disabled", h.HandleGetDisabledModels)
 		r.Put("/models/disabled/{provider}", h.HandleSaveDisabledModels)
 

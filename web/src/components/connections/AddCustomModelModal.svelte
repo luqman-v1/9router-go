@@ -206,7 +206,7 @@
         {#if plan.invalid.length > 0}
           <ul class="text-xs text-red-500 mt-1 space-y-0.5">
             {#each plan.invalid as id (id)}
-              <li><code class="font-mono">{id}</code> — not a usable id (slash, pipe, quotes or angle brackets)</li>
+              <li><code class="font-mono">{id}</code> — not a usable id (pipe, quotes or angle brackets)</li>
             {/each}
           </ul>
         {/if}

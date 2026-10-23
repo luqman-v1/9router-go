@@ -44,10 +44,9 @@ describe('parseModelIds: alias prefix', () => {
     assert.deepStrictEqual(out.invalid, ['/'])
   })
 
-  it('reports a foreign provider prefix as invalid rather than storing an address', () => {
+  it('strips the matching prefix and preserves other namespaced model ids', () => {
     const out = parseModelIds('nara/glm-5.3,other/glm-4.7', 'nara')
-    assert.deepStrictEqual(out.ids, ['glm-5.3'])
-    assert.deepStrictEqual(out.invalid, ['other/glm-4.7'])
+    assert.deepStrictEqual(out.ids, ['glm-5.3', 'other/glm-4.7'])
   })
 
   it('ignores an alias-only entry', () => {
@@ -62,10 +61,16 @@ describe('parseModelIds: duplicates and invalids are reported, never silently dr
     assert.deepStrictEqual(out.duplicates, ['glm-5.3'])
   })
 
-  it('reports an id carrying an address separator as invalid', () => {
-    const out = parseModelIds('glm/5.3,glm-4.7')
-    assert.deepStrictEqual(out.ids, ['glm-4.7'])
-    assert.deepStrictEqual(out.invalid, ['glm/5.3'])
+  it('accepts namespaced model ids carrying slashes', () => {
+    const out = parseModelIds('deepseek/deepseek-v4-1-flash,glm/5.3')
+    assert.deepStrictEqual(out.ids, ['deepseek/deepseek-v4-1-flash', 'glm/5.3'])
+    assert.deepStrictEqual(out.invalid, [])
+  })
+
+  it('reports leading or trailing slashes and consecutive slashes as invalid', () => {
+    const out = parseModelIds('/invalid,invalid/,a//b')
+    assert.deepStrictEqual(out.ids, [])
+    assert.deepStrictEqual(out.invalid, ['/invalid', 'invalid/', 'a//b'])
   })
 
   it('reports an invalid id once however often it was pasted', () => {
@@ -73,9 +78,9 @@ describe('parseModelIds: duplicates and invalids are reported, never silently dr
   })
 
   it('accepts the characters real model ids use', () => {
-    const out = parseModelIds('claude-sonnet-4.5,deepseek-v3.2:free,gpt-5.2-2026-01-31,grok_4.1')
+    const out = parseModelIds('claude-sonnet-4.5,deepseek/deepseek-v4-1-flash,deepseek-v3.2:free,gpt-5.2-2026-01-31,grok_4.1')
     assert.deepStrictEqual(out.invalid, [])
-    assert.strictEqual(out.ids.length, 4)
+    assert.strictEqual(out.ids.length, 5)
   })
 })
 
