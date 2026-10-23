@@ -45,6 +45,11 @@ func hasQuotaRow(body, name string) bool {
 func registerStubRefresher(t *testing.T, provider string, fn oauth.Refresher) {
 	previous := oauth.Get(provider)
 	oauth.Register(provider, fn)
+	// A stub's answer must not be confused with one a previous test cached:
+	// oauth's shared Refresh dedup cache is keyed on provider + spent token,
+	// and these tests reuse the literal token "rt". Swapping the refresher
+	// invalidates any cached result for it, so the new stub always runs.
+	oauth.ResetRefreshCacheForTesting()
 	t.Cleanup(func() {
 		// A leaked stub keeps answering after the test, which would make later
 		// code believe this provider has a refresher it does not have.
