@@ -29,6 +29,10 @@
   import { getIconPath } from './connections/types'
   import EditConnectionModal, { type ConnectionUpdate } from './connections/EditConnectionModal.svelte'
   import QuotaTable from './quota/QuotaTable.svelte'
+  import AutoPingScheduleModal, {
+    type AutoPingSaveResult,
+    type AutoPingSchedule,
+  } from './quota/AutoPingScheduleModal.svelte'
   import {
     ACCOUNT_FILTER_OPTIONS,
     ACCOUNT_PAGE_SIZE_MAX,
@@ -161,10 +165,33 @@
   // autoPingMaps because the two are independent: the switch says "ping this
   // account when its window resets", the schedule says "ping it at 09:30 /
   // 14:30 / 19:30". Writing one must not delete the other.
-  let autoPingSchedules = $state<{ claude: Record<string, unknown>; codex: Record<string, unknown> }>({
+  let autoPingSchedules = $state<{
+    claude: Record<string, AutoPingSchedule | { enabled: false } | unknown>
+    codex: Record<string, AutoPingSchedule | { enabled: false } | unknown>
+  }>({
     claude: {},
     codex: {},
   })
+
+  // The connection whose auto-ping settings are being edited. Null closes the
+  // modal; the modal seeds its own fields from the same two maps the row reads,
+  // so opening it twice in a row cannot show a stale schedule.
+  let autoPingEditing = $state<ProviderConnection | null>(null)
+
+  // The operator's own zone for the schedule preview. The browser is the only
+  // place that knows it, and it must not be the process default: the dashboard
+  // and the scheduler can run in different zones (a container in UTC, a browser
+  // in Asia/Ho_Chi_Minh), and a preview labelled with the wrong zone is worse
+  // than no preview.
+  const localTimezone = $derived(
+    (() => {
+      try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+      } catch {
+        return 'UTC'
+      }
+    })()
+  )
 
   // Edit modal state. The modal itself owns its fields and payload (issue #158).
   let editingConnection = $state<ProviderConnection | null>(null)
@@ -427,6 +454,34 @@
       await api.updateSettings(payload)
     } catch (err) {
       console.error('Failed to update autoPing:', err)
+    }
+  }
+
+  // Saving the schedule modal writes BOTH halves in one payload: the mode radio
+  // decides the reactive switch and the schedule entry together, so a save that
+  // only sent `schedules` would leave the switch on and let the reactive ping
+  // keep firing alongside the schedule the operator just chose.
+  async function saveAutoPingSchedule(result: AutoPingSaveResult) {
+    const conn = autoPingEditing
+    autoPingEditing = null
+    if (!conn) return
+
+    const provider = conn.provider as 'claude' | 'codex'
+    const key = AUTO_PING_SETTINGS_KEYS[provider]
+    if (!key) return
+
+    const nextConnections = { ...(autoPingMaps[provider] || {}), [conn.id]: result.reactive }
+    const nextSchedules = { ...(autoPingSchedules[provider] || {}), [conn.id]: result.schedule }
+
+    autoPingMaps = { ...autoPingMaps, [provider]: nextConnections }
+    autoPingSchedules = { ...autoPingSchedules, [provider]: nextSchedules }
+
+    try {
+      await api.updateSettings({
+        [key]: { connections: nextConnections, schedules: nextSchedules },
+      })
+    } catch (err) {
+      console.error('Failed to update autoPing schedule:', err)
     }
   }
 
@@ -1219,6 +1274,9 @@
 
                 {#if (conn.provider === 'claude' || conn.provider === 'codex') && conn.authType === 'oauth'}
                   {@const isAutoPingActive = autoPingMaps[conn.provider]?.[conn.id] === true}
+                  {@const hasSchedule =
+                    (autoPingSchedules[conn.provider]?.[conn.id] as { enabled?: boolean } | undefined)
+                      ?.enabled === true}
                   <button
                     type="button"
                     onclick={() => toggleAutoPing(conn.id, conn.provider, !isAutoPingActive)}
@@ -1227,6 +1285,17 @@
                     class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {isAutoPingActive ? 'text-primary' : 'text-text-muted'}"
                   >
                     <span class="material-symbols-outlined text-[18px]">bolt</span>
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => (autoPingEditing = conn)}
+                    title="Auto-ping schedule"
+                    aria-label="Configure auto-ping schedule"
+                    class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {hasSchedule
+                      ? 'text-primary'
+                      : 'text-text-muted'}"
+                  >
+                    <span class="material-symbols-outlined text-[18px]">schedule</span>
                   </button>
                 {/if}
 
@@ -1433,6 +1502,21 @@
     onSave={saveEditingConnection}
     onSaveError={(message) => alert(message)}
     testLabel="Test"
+  />
+{/if}
+
+{#if autoPingEditing}
+  <AutoPingScheduleModal
+    open
+    connectionName={autoPingEditing.name}
+    reactive={autoPingMaps[autoPingEditing.provider as 'claude' | 'codex']?.[autoPingEditing.id] ===
+      true}
+    schedule={(autoPingSchedules[autoPingEditing.provider as 'claude' | 'codex']?.[
+      autoPingEditing.id
+    ] as AutoPingSchedule | null) ?? null}
+    timezone={localTimezone}
+    onClose={() => (autoPingEditing = null)}
+    onSave={saveAutoPingSchedule}
   />
 {/if}
 

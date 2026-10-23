@@ -68,11 +68,20 @@ explicitly too: Codex starts the 5h window only once a streaming response
 completes, and relying on the transform to force it was an accident waiting to
 break.
 
-**The schedule editor is not in this change; schedules are API-only for now.**
-`PUT /api/settings` accepts them and the scheduler picks them up on the next
-tick, but nothing in `web/` renders an editor. Upstream has one
-(`AutoPingScheduleModal.js`); porting it is a separate change. `SlotLabels()`
-exists for that editor and currently has no caller.
+**The schedule editor is in the dashboard.** Each claude/codex OAuth row in the
+quota tracker carries a schedule control next to the reactive switch, and it
+opens the same three-mode modal upstream has (`AutoPingScheduleModal.js`): off,
+on reset, or a schedule. The schedule form takes an anchor time, a window and a
+slots-per-day count, previews the resulting daily slots and the moment coverage
+ends, and refuses a value outside the bounds the scheduler enforces rather than
+clamping it silently. Saving writes both halves of the settings key in one
+payload, because the mode decides both — a save that wrote only `schedules`
+would leave the reactive ping on and fire twice. Choosing Off deletes the entry
+rather than storing `{enabled:false}`, matching the merge rule that keeps a
+stopped schedule from resurrecting.
+
+The preview arithmetic is a TypeScript port of `SlotLabels()` and both sides
+round before the modulo, so a 5.1h window previews 19:42 and fires at 19:42.
 
 **The slot-expiry sweep runs once per tick, not once per claim.** `claim` is
 called per configured connection, so purging the fired map there was quadratic
