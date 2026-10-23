@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 
@@ -32,7 +33,7 @@ func runTray(cCtx *cli.Context) error {
 			for {
 				select {
 				case <-open.ClickedCh:
-					_ = openInBrowser(url + "/dashboard")
+					_ = openInBrowser(context.Background(), url+"/dashboard")
 				case <-stop.ClickedCh:
 					if _, err := daemon.Stop(); err == nil {
 						fmt.Println("9router-go stopped from tray.")

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -30,9 +32,25 @@ func stdinIsTerminal() bool {
 // interface picker the Node CLI shows instead of silently booting a server.
 func runMenu(cCtx *cli.Context) error {
 	in := bufio.NewReader(os.Stdin)
+	first := true
 	for {
 		fmt.Print(menuText())
-		choice := parseChoice(readChoice(in))
+		line, ok := readChoice(in)
+		if !ok {
+			// The read ended at EOF before a byte arrived, so there is nobody
+			// behind it however the stdin stat looked. /dev/null and a closed
+			// pipe are both character devices, which is why stdinIsTerminal
+			// let us in — and why a supervisor or the e2e harness, which give
+			// the process exactly that, ended up here. That is the
+			// non-interactive case, so boot the server as it always did rather
+			// than exiting 1 with a menu nobody read.
+			if first {
+				return runServer(cCtx)
+			}
+			return nil
+		}
+		first = false
+		choice := parseChoice(line)
 		switch choice {
 		case "1":
 			return openDashboard(cCtx)
@@ -77,13 +95,17 @@ func menuText() string {
 	return b.String()
 }
 
-// readChoice blocks for one line; EOF (Ctrl+Z/closed pipe on a TTY) exits.
-func readChoice(in *bufio.Reader) string {
+// readChoice blocks for one line. ok is false when the stream ended without
+// yielding anything: the caller distinguishes "the operator pressed Ctrl+Z" from
+// "there was never an operator" by whether this was the first read.
+func readChoice(in *bufio.Reader) (line string, ok bool) {
 	line, err := in.ReadString('\n')
 	if err != nil && err != io.EOF {
-		return "0"
+		return "0", true
 	}
-	return line
+	// io.EOF with a partial line (a terminal that closed mid-line) still
+	// carries the operator's input; EOF with nothing does not.
+	return line, line != ""
 }
 
 // parseChoice maps the typed line to a menu key. Enter alone takes the
@@ -109,7 +131,7 @@ func openDashboard(cCtx *cli.Context) error {
 	target := url + "/dashboard"
 	if daemon.RunningPID() == 0 {
 		res, err := daemon.Start(url, forwardArgs(cCtx))
-		if err != nil && err != daemon.ErrAlreadyRunning {
+		if err != nil && !errors.Is(err, daemon.ErrAlreadyRunning) {
 			return err
 		}
 		if res.URL != "" {
@@ -117,17 +139,23 @@ func openDashboard(cCtx *cli.Context) error {
 		}
 	}
 	fmt.Printf("Opening %s\n", target)
-	return openInBrowser(target)
+	return openInBrowser(cCtx.Context, target)
 }
 
 // openInBrowser uses the OS opener so no dependency is pulled in.
-func openInBrowser(target string) error {
+//
+// CommandContext rather than Command: the linters require a context, and it
+// costs nothing here — the opener is detached from the caller and the process
+// outlives the call either way. The dashboard URL is built from the daemon's
+// own listen address, never from client input, so it cannot smuggle an
+// argument to the opener.
+func openInBrowser(ctx context.Context, target string) error {
 	switch runtime.GOOS {
 	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", target).Start()
+		return exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", target).Start()
 	case "darwin":
-		return exec.Command("open", target).Start()
+		return exec.CommandContext(ctx, "open", target).Start()
 	default:
-		return exec.Command("xdg-open", target).Start()
+		return exec.CommandContext(ctx, "xdg-open", target).Start()
 	}
 }

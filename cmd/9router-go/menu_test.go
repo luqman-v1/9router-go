@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"bufio"
+	"strings"
+	"testing"
+)
 
 func TestParseChoice(t *testing.T) {
 	cases := map[string]string{
@@ -18,5 +22,21 @@ func TestParseChoice(t *testing.T) {
 		if got := parseChoice(in); got != want {
 			t.Errorf("parseChoice(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestReadChoiceEOFIsNotABlankLine: the caller tells "no operator at all" from
+// "the operator pressed Ctrl+Z" by whether anything arrived, so an empty read
+// has to be distinguishable from a blank line.
+func TestReadChoiceEOFIsNotABlankLine(t *testing.T) {
+	if line, ok := readChoice(bufio.NewReader(strings.NewReader(""))); ok {
+		t.Errorf("readChoice on an empty stream = (%q, true), want ok=false", line)
+	}
+	if line, ok := readChoice(bufio.NewReader(strings.NewReader("\n"))); !ok || line != "\n" {
+		t.Errorf("readChoice(blank line) = (%q, %v), want (\\n, true)", line, ok)
+	}
+	// A line with no trailing newline still carries the operator's input.
+	if line, ok := readChoice(bufio.NewReader(strings.NewReader("3"))); !ok || line != "3" {
+		t.Errorf("readChoice(\"3\" at EOF) = (%q, %v), want (3, true)", line, ok)
 	}
 }
