@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"errors"
+	"net/http"
 	"testing"
 
 	"9router/proxy/internal/db"
@@ -175,5 +177,66 @@ func TestResolveEgress_HTTPPoolIsNotDirect(t *testing.T) {
 	}
 	if e.LogValue() != "warp" {
 		t.Fatalf("LogValue() = %q, want warp", e.LogValue())
+	}
+}
+
+// A pool that already refused the turn is never a rotation candidate: the next
+// attempt must land on the egress that has not been tried yet.
+func TestResolveProviderProxyPoolID_NeverSelectsExcludedPool(t *testing.T) {
+	repo := poolRotationDB(t, `{"providerStrategies":{"opencode":{"rotateStrategy":"round-robin"}}}`)
+	ids := insertPools(t, repo, 2)
+	excluded := map[string]bool{ids[0]: true}
+	h := NewChatHandler(repo)
+
+	for i := 0; i < 8; i++ {
+		if got := h.ResolveProviderProxyPoolID("opencode", excluded); got != ids[1] {
+			t.Fatalf("call %d: pool = %q, want %q (an excluded pool must never be selected)", i, got, ids[1])
+		}
+	}
+}
+
+// With every pool excluded the pool binding is dropped so the attempt can go
+// out direct — errNoUsablePool is the sentinel, not a client-visible failure.
+func TestResolveProviderProxyPoolID_AllPoolsExcludedFallsThrough(t *testing.T) {
+	repo := poolRotationDB(t, `{"providerStrategies":{"opencode":{"rotateStrategy":"round-robin"}}}`)
+	ids := insertPools(t, repo, 2)
+	excluded := map[string]bool{ids[0]: true, ids[1]: true}
+	h := NewChatHandler(repo)
+
+	if got := h.ResolveProviderProxyPoolID("opencode", excluded); got != "" {
+		t.Fatalf("pool = %q, want empty (direct attempt instead of a hard failure)", got)
+	}
+	if _, err := h.resolveProviderProxyPoolID("opencode", excluded); !errors.Is(err, errNoUsablePool) {
+		t.Fatalf("err = %v, want errNoUsablePool", err)
+	}
+	connData := &ConnectionData{}
+	h.applyProviderProxyPool(connData, "opencode", excluded)
+	if connData.ProxyPoolID != "" {
+		t.Fatalf("bound pool = %q, want empty once every pool is excluded", connData.ProxyPoolID)
+	}
+}
+
+// A keyed provider's rotateStrategy means ACCOUNT rotation, so it must not
+// rotate pools on its own. The exclusion set is the free-tier-refusal signal
+// (the failover loop fills it), and only then does the next pool get picked.
+func TestResolveProviderProxyPoolID_KeyedProviderRotatesAfterFreeTierExclusion(t *testing.T) {
+	repo := poolRotationDB(t, `{"providerStrategies":{"opencode-zen":{"rotateStrategy":"round-robin"}}}`)
+	ids := insertPools(t, repo, 2)
+	h := NewChatHandler(repo)
+
+	if got := h.ResolveProviderProxyPoolID("opencode-zen"); got != "" {
+		t.Fatalf("pool = %q, want empty before any refusal: a keyed provider's rotation is account rotation", got)
+	}
+	if got := h.ResolveProviderProxyPoolID("opencode-zen", map[string]bool{ids[0]: true}); got != ids[1] {
+		t.Fatalf("pool = %q, want %q (a free-tier exclusion must rotate the egress)", got, ids[1])
+	}
+}
+
+// A free-tier 403 is an egress verdict: it must not be recorded as a
+// model-scoped lock. Any other 403 keeps the pre-existing handling.
+func TestModelScopedError_FreeTierForbiddenIsNotModelScoped(t *testing.T) {
+	body := []byte(`{"error":{"type":"FreeTierError","message":"free tier can only be used from within OpenCode"}}`)
+	if isModelScopedError(http.StatusForbidden, extractErrorText(body), "jev-1.13-free", body) {
+		t.Fatal("a FreeTierError 403 must not be model-scoped; the failover loop rotates the pool instead")
 	}
 }

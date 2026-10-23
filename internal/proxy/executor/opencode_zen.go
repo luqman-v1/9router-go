@@ -301,6 +301,8 @@ func forwardZenChat(w http.ResponseWriter, req *Request, cleanModel, sourceForma
 			return forwardOpencodeRequest(reqCtx(req), req.Client, &cfg, req.APIKey, body, true)
 		}
 		return proxy.ForwardOpenAI(reqCtx(req), req.Client, &cfg, req.APIKey, body, true)
+	}, func() (*http.Response, error) {
+		return forwardOpencodeRequestDirect(reqCtx(req), &cfg, req.APIKey, body, true)
 	})
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeZen: %w", err)
@@ -375,6 +377,8 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 			return forwardOpencodeRequest(ctx, req.Client, &cfg, req.APIKey, body, req.IsStream)
 		}
 		return proxy.ForwardOpenAI(ctx, req.Client, &cfg, req.APIKey, body, req.IsStream)
+	}, func() (*http.Response, error) {
+		return forwardOpencodeRequestDirect(ctx, &cfg, req.APIKey, body, req.IsStream)
 	})
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeZen (responses): %w", err)

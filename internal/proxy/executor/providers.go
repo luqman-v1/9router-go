@@ -631,6 +631,8 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		}
 		resp, err := forwardOpenCode(ctx, func() (*http.Response, error) {
 			return forwardOpencodeRequest(ctx, req.Client, &cfg, apiKey, transformedBody, req.IsStream)
+		}, func() (*http.Response, error) {
+			return forwardOpencodeRequestDirect(ctx, &cfg, apiKey, transformedBody, req.IsStream)
 		})
 		if err != nil {
 			return fmt.Errorf("ForwardOpencode (muse-spark responses): %w", err)
@@ -682,6 +684,8 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 	}
 	resp, err := forwardOpenCode(ctx, func() (*http.Response, error) {
 		return forwardOpencodeRequest(ctx, req.Client, &cfg, apiKey, body, true)
+	}, func() (*http.Response, error) {
+		return forwardOpencodeRequestDirect(ctx, &cfg, apiKey, body, true)
 	})
 	if err != nil {
 		return fmt.Errorf("ForwardOpencode: %w", err)
@@ -1515,6 +1519,8 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 	}
 	resp, err := forwardOpenCode(ctx, func() (*http.Response, error) {
 		return forwardOpencodeRequest(ctx, req.Client, &cfg, "public", body, true)
+	}, func() (*http.Response, error) {
+		return forwardOpencodeRequestDirect(ctx, &cfg, "public", body, true)
 	})
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeGo (free lane): %w", err)
@@ -1673,6 +1679,8 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		}
 		resp, err := forwardOpenCode(ctx, func() (*http.Response, error) {
 			return proxy.ForwardOpenAI(ctx, req.Client, &cfg, req.APIKey, transformedBody, req.IsStream)
+		}, func() (*http.Response, error) {
+			return forwardOpencodeRequestDirect(ctx, &cfg, req.APIKey, transformedBody, req.IsStream)
 		})
 		if err != nil {
 			return fmt.Errorf("ForwardOpencodeGo (muse-spark responses): %w", err)
@@ -1773,6 +1781,8 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	}
 	resp, err := forwardOpenCode(ctx, func() (*http.Response, error) {
 		return proxy.ForwardOpenAI(ctx, req.Client, &cfg, req.APIKey, body, req.IsStream)
+	}, func() (*http.Response, error) {
+		return forwardOpencodeRequestDirect(ctx, &cfg, req.APIKey, body, req.IsStream)
 	})
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeGo (default route): %w", err)

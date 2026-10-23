@@ -135,12 +135,16 @@ func (h *ChatHandler) handleAccountFallback(
 	}
 
 	var excludeIDs []string
+	// Pools already refused by an OpenCode free-tier gate in this turn. The
+	// resolver filters them out, so the retry walks to the next egress instead
+	// of burning a healthy account.
+	excludedPools := map[string]bool{}
 	var lastErr error
 	for _, c := range allConns {
 		if slices.Contains(excludeIDs, c.ID) {
 			continue
 		}
-		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, c.ID, nil, model)
+		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, c.ID, nil, model, excludedPools)
 		if err != nil || connObj == nil {
 			if lastErr == nil && err != nil {
 				lastErr = err
@@ -204,12 +208,20 @@ func (h *ChatHandler) handleAccountFallback(
 				excludeIDs = append(excludeIDs, connObj.ID)
 				continue
 			}
-			// A free-tier refusal says nothing about the account: the gate is
-			// not serving this egress at the moment, and the same connection
-			// serves the next request once it reopens. Cooling it down would
-			// mark a healthy account unhealthy and skip it for later requests,
-			// so the refusal is reported without touching the cooldown.
+			// A free-tier refusal says nothing about the account or the model:
+			// the gate is not serving this EGRESS at the moment. Exclude the
+			// pool that served the attempt and retry the same account through
+			// the next one; with every pool excluded the resolver stops
+			// binding a pool (errNoUsablePool) and the retry goes direct.
+			// Cooling the account down would mark it unhealthy over an egress
+			// verdict, so the cooldown stays untouched.
 			if isOpencodeFreeTierRefusal(provider, ue) {
+				if poolID := connData.ProxyPoolID; poolID != "" {
+					log.Warn("fallback", "opencode free-tier refusal, rotating proxy pool",
+						"conn", connObj.ID, "provider", provider, "model", model, "pool", poolID)
+					excludedPools[poolID] = true
+					continue
+				}
 				log.Warn("fallback", "opencode free-tier refusal, not locking the account",
 					"conn", connObj.ID, "provider", provider, "model", model)
 				excludeIDs = append(excludeIDs, connObj.ID)
@@ -235,7 +247,7 @@ func (h *ChatHandler) handleAccountFallback(
 			// selector can skip this account before spending a request
 			// (upstream applyErrorState). Only lock if error is account-scoped,
 			// not model-scoped (e.g. 401 auth issues), so unrelated models stay available.
-			if isModelScopedError(ue.StatusCode, errorText, model) {
+			if isModelScopedError(ue.StatusCode, errorText, model, ue.Body) {
 				if recErr := h.Repo.RecordConnectionScopedError(connObj.ID, model, "chat", ue.StatusCode, errorText, classification.NewBackoffLevel); recErr != nil {
 					log.Warn("fallback", "record connection error failed", "conn", connObj.ID, "error", recErr)
 				}
@@ -1412,13 +1424,25 @@ func isOpencodeFreeTierRefusal(provider string, ue *upstreamError) bool {
 	return bytes.Contains(ue.Body, []byte("FreeTierError"))
 }
 
-func isModelScopedError(statusCode int, errorText string, model string) bool {
+func isModelScopedError(statusCode int, errorText string, model string, bodies ...[]byte) bool {
 	if model == "" {
 		return false
 	}
 	lower := strings.ToLower(errorText)
 	if isAccountAuthFailure(lower) {
 		return false
+	}
+	// An OpenCode free-tier refusal is an egress verdict, not a model gate:
+	// the failover loop answers it by rotating the proxy pool, so it must not
+	// be recorded as a model-scoped lock. Matched on the body's error type —
+	// the prose is not stable enough to key on, and every other 403 keeps the
+	// existing cooldown-only handling (it never rotates a pool).
+	if statusCode == http.StatusForbidden {
+		for _, body := range bodies {
+			if bytes.Contains(body, []byte("FreeTierError")) {
+				return false
+			}
+		}
 	}
 
 	// 1. Quota exhaustion markers (Antigravity Claude, etc.) on 429/403/503

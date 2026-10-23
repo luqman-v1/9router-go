@@ -48,12 +48,16 @@ func isOpenCodeRefusal(ue *proxy.UpstreamError) bool {
 // response to stream from, or the error to report. It performs the single
 // retry described above and nothing more.
 //
+// The repeat goes out over sendDirect, a DIRECT egress, not over the egress
+// that just failed: the refusal is the gate declining this address, so a replay
+// through the same proxy repeats the refusal.
+//
 // A non-200 arrives as an *proxy.UpstreamError in the error position — the
 // request layer converts the status before returning, so the response is nil
 // there — which is why the classifier reads the error rather than the response.
 // Any other error is a transport failure; the account-failover path owns that,
 // and it is returned untouched.
-func forwardOpenCode(ctx context.Context, send func() (*http.Response, error)) (*http.Response, error) {
+func forwardOpenCode(ctx context.Context, send, sendDirect func() (*http.Response, error)) (*http.Response, error) {
 	resp, err := send()
 	if err == nil {
 		return resp, nil
@@ -61,6 +65,10 @@ func forwardOpenCode(ctx context.Context, send func() (*http.Response, error)) (
 
 	var ue *proxy.UpstreamError
 	if !errors.As(err, &ue) || !isOpenCodeRefusal(ue) {
+		return nil, err
+	}
+	// The caller forbade routing around its proxy; report the refusal instead.
+	if proxy.StrictProxy(ctx) {
 		return nil, err
 	}
 
@@ -71,5 +79,12 @@ func forwardOpenCode(ctx context.Context, send func() (*http.Response, error)) (
 		return nil, ue
 	case <-time.After(openCodeRetryDelay):
 	}
-	return send()
+
+	directResp, directErr := sendDirect()
+	if directErr != nil {
+		// The replay failed too. The gate's refusal is the actionable answer, so
+		// report it rather than the replay's follow-on error.
+		return nil, ue
+	}
+	return directResp, nil
 }

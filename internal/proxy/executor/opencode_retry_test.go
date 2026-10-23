@@ -14,8 +14,8 @@ import (
 )
 
 // The gate occasionally refuses a correctly-fingerprinted request and serves the
-// same request on a repeat. These tests pin that exactly one repeat is made, and
-// that nothing else is retried.
+// same request on a repeat. These tests pin that exactly one repeat is made,
+// that it leaves over the direct egress, and that nothing else is retried.
 
 const gateRefusalBody = `{"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."}}`
 
@@ -45,7 +45,7 @@ func succeed(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 }
 
-// send builds the closure the call sites pass to forwardOpenCode, dialling the
+// send builds the closure the call sites pass to forwardOpenCode, dialing the
 // stub through the same request path the executors use.
 func send(srv *httptest.Server) func() (*http.Response, error) {
 	cfg := &providers.ProviderConfig{BaseURL: srv.URL, StaticHeaders: map[string]string{}}
@@ -54,37 +54,50 @@ func send(srv *httptest.Server) func() (*http.Response, error) {
 	}
 }
 
-func TestForwardOpenCodeRetriesRefusalOnceThenSucceeds(t *testing.T) {
-	srv, calls := gateStub(t,
-		func(w http.ResponseWriter, _ *http.Request) { refuse(w, http.StatusForbidden, gateRefusalBody) },
-		succeed,
-	)
-	resp, err := forwardOpenCode(context.Background(), send(srv))
+// A refusal is the gate declining this egress, so the single repeat must go out
+// over the direct sender — and its response must be the one returned.
+func TestForwardOpenCodeReplaysRefusalOverDirectEgress(t *testing.T) {
+	proxied, proxiedCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		refuse(w, http.StatusForbidden, gateRefusalBody)
+	})
+	directSrv, directCalls := gateStub(t, succeed)
+
+	resp, err := forwardOpenCode(context.Background(), send(proxied), send(directSrv))
 	if err != nil {
-		t.Fatalf("a single refusal must be retried, got: %v", err)
+		t.Fatalf("a single refusal must be retried over the direct egress, got: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200 after the retry", resp.StatusCode)
+		t.Errorf("status = %d, want 200 from the direct replay", resp.StatusCode)
 	}
-	if got := atomic.LoadInt32(calls); got != 2 {
-		t.Errorf("upstream saw %d attempts, want exactly 2 (one refusal, one retry)", got)
+	if got := atomic.LoadInt32(proxiedCalls); got != 1 {
+		t.Errorf("proxied egress saw %d attempts, want 1", got)
+	}
+	if got := atomic.LoadInt32(directCalls); got != 1 {
+		t.Errorf("direct egress saw %d attempts, want exactly 1", got)
 	}
 }
 
-// The budget is one retry: a gate that refuses everything must be dialled twice,
+// The budget is one replay: a gate that refuses everything must be dialed twice,
 // not more. This is the property the reviewer asked for.
 func TestForwardOpenCodeStopsAfterOneRetry(t *testing.T) {
-	srv, calls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
+	proxied, proxiedCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
 		refuse(w, http.StatusForbidden, gateRefusalBody)
 	})
-	resp, err := forwardOpenCode(context.Background(), send(srv))
+	directSrv, directCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		refuse(w, http.StatusForbidden, gateRefusalBody)
+	})
+
+	resp, err := forwardOpenCode(context.Background(), send(proxied), send(directSrv))
 	if err == nil {
 		resp.Body.Close()
 		t.Fatal("every attempt refused, so an error is required")
 	}
-	if got := atomic.LoadInt32(calls); got != 2 {
-		t.Errorf("upstream saw %d attempts, want exactly 2 — one retry, not a loop", got)
+	if got := atomic.LoadInt32(proxiedCalls); got != 1 {
+		t.Errorf("proxied egress saw %d attempts, want 1", got)
+	}
+	if got := atomic.LoadInt32(directCalls); got != 1 {
+		t.Errorf("direct egress saw %d attempts, want 1 — one retry, not a loop", got)
 	}
 	var ue *proxy.UpstreamError
 	if !errors.As(err, &ue) {
@@ -98,16 +111,43 @@ func TestForwardOpenCodeStopsAfterOneRetry(t *testing.T) {
 // A 403 that is not the free-tier refusal means the key or account is wrong and
 // fails identically forever; repeating it would only burn quota.
 func TestForwardOpenCodeDoesNotRetryOtherForbidden(t *testing.T) {
-	srv, calls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
+	proxied, proxiedCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
 		refuse(w, http.StatusForbidden, `{"error":{"message":"insufficient credit"}}`)
 	})
-	resp, err := forwardOpenCode(context.Background(), send(srv))
+	directSrv, directCalls := gateStub(t, succeed)
+
+	resp, err := forwardOpenCode(context.Background(), send(proxied), send(directSrv))
 	if err == nil {
 		resp.Body.Close()
 		t.Fatal("a real 403 must be reported")
 	}
-	if got := atomic.LoadInt32(calls); got != 1 {
-		t.Errorf("upstream saw %d attempts, want 1 — a quota 403 must not be retried", got)
+	if got := atomic.LoadInt32(proxiedCalls); got != 1 {
+		t.Errorf("proxied egress saw %d attempts, want 1 — a quota 403 must not be retried", got)
+	}
+	if got := atomic.LoadInt32(directCalls); got != 0 {
+		t.Errorf("direct egress saw %d attempts, want 0 — only the free-tier refusal is retried", got)
+	}
+}
+
+// A caller that forbade routing around its proxy must see the refusal, not a
+// silent direct replay that breaks its egress policy.
+func TestForwardOpenCodeSkipsDirectUnderStrictProxy(t *testing.T) {
+	proxied, proxiedCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		refuse(w, http.StatusForbidden, gateRefusalBody)
+	})
+	directSrv, directCalls := gateStub(t, succeed)
+
+	ctx := proxy.WithStrictProxy(context.Background(), true)
+	resp, err := forwardOpenCode(ctx, send(proxied), send(directSrv))
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("a strict-proxy refusal must be reported")
+	}
+	if got := atomic.LoadInt32(proxiedCalls); got != 1 {
+		t.Errorf("proxied egress saw %d attempts, want 1", got)
+	}
+	if got := atomic.LoadInt32(directCalls); got != 0 {
+		t.Errorf("direct egress saw %d attempts, want 0 under strict proxy", got)
 	}
 }
 
@@ -116,16 +156,20 @@ func TestForwardOpenCodeDoesNotRetryOtherForbidden(t *testing.T) {
 func TestForwardOpenCodeLeavesOtherStatusesAlone(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusTooManyRequests} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
-			srv, calls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
+			proxied, proxiedCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
 				refuse(w, status, `{"error":{"message":"x"}}`)
 			})
-			resp, err := forwardOpenCode(context.Background(), send(srv))
+			directSrv, directCalls := gateStub(t, succeed)
+			resp, err := forwardOpenCode(context.Background(), send(proxied), send(directSrv))
 			if err == nil {
 				resp.Body.Close()
 				t.Fatalf("%d must be reported as an error", status)
 			}
-			if got := atomic.LoadInt32(calls); got != 1 {
-				t.Errorf("upstream saw %d attempts, want 1 — only the free-tier refusal is retried here", got)
+			if got := atomic.LoadInt32(proxiedCalls); got != 1 {
+				t.Errorf("proxied egress saw %d attempts, want 1", got)
+			}
+			if got := atomic.LoadInt32(directCalls); got != 0 {
+				t.Errorf("direct egress saw %d attempts, want 0 — only the free-tier refusal is retried here", got)
 			}
 		})
 	}
@@ -133,18 +177,23 @@ func TestForwardOpenCodeLeavesOtherStatusesAlone(t *testing.T) {
 
 // A caller that has gone away must not be held for the retry.
 func TestForwardOpenCodeStopsOnCancelledContext(t *testing.T) {
-	srv, calls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
+	proxied, proxiedCalls := gateStub(t, func(w http.ResponseWriter, _ *http.Request) {
 		refuse(w, http.StatusForbidden, gateRefusalBody)
 	})
+	directSrv, directCalls := gateStub(t, succeed)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	resp, err := forwardOpenCode(ctx, send(srv))
+	resp, err := forwardOpenCode(ctx, send(proxied), send(directSrv))
 	if err == nil {
 		resp.Body.Close()
 		t.Fatal("a cancelled request must not report success")
 	}
-	if got := atomic.LoadInt32(calls); got != 1 {
-		t.Errorf("upstream saw %d attempts after cancellation, want 1", got)
+	if got := atomic.LoadInt32(proxiedCalls); got != 1 {
+		t.Errorf("proxied egress saw %d attempts, want 1", got)
+	}
+	if got := atomic.LoadInt32(directCalls); got != 0 {
+		t.Errorf("direct egress saw %d attempts after cancellation, want 0", got)
 	}
 }
 
@@ -152,6 +201,15 @@ func TestForwardOpenCodeStopsOnCancelledContext(t *testing.T) {
 func TestOpenCodeRetryDelayIsSmall(t *testing.T) {
 	if openCodeRetryDelay > 500*time.Millisecond {
 		t.Errorf("openCodeRetryDelay = %v, want under 500ms so the retry is not felt", openCodeRetryDelay)
+	}
+}
+
+// The direct replay only makes sense where the stealth stack is the transport.
+// A relay or plain-HTTP lane must error so the caller reports the refusal.
+func TestForwardOpencodeRequestDirectRefusesNonStealthLane(t *testing.T) {
+	cfg := &providers.ProviderConfig{BaseURL: "http://127.0.0.1:1", StaticHeaders: map[string]string{}}
+	if _, err := forwardOpencodeRequestDirect(context.Background(), cfg, "public", []byte(`{}`), true); err == nil {
+		t.Fatal("a plain-HTTP lane has no direct replay; want an error")
 	}
 }
 

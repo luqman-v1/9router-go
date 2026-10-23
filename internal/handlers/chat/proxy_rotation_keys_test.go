@@ -251,3 +251,18 @@ func TestPoolRotation_AliasesShareOneCursor(t *testing.T) {
 		t.Fatalf("alias rotation visited %d of 3 pools (%v), want all of them", len(seen), order)
 	}
 }
+
+// A keyed provider rotates pools only under a live free-tier exclusion set;
+// even then the excluded pool is never a candidate.
+func TestResolveProviderProxyPoolID_KeyedExclusionNeverSelectsExcludedPool(t *testing.T) {
+	repo := poolRotationDB(t, `{"providerStrategies":{"opencode-zen":{"rotateStrategy":"round-robin"}}}`)
+	ids := insertPools(t, repo, 2)
+	h := NewChatHandler(repo)
+
+	excluded := map[string]bool{ids[1]: true}
+	for i := 0; i < 6; i++ {
+		if got := h.ResolveProviderProxyPoolID("opencode-zen", excluded); got != ids[0] {
+			t.Fatalf("call %d: pool = %q, want %q (excluded pool was selected)", i, got, ids[0])
+		}
+	}
+}

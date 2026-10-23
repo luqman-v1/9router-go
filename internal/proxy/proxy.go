@@ -151,6 +151,11 @@ func strictOnly(ctx context.Context) bool {
 	return ok && intended
 }
 
+// StrictProxy reports whether ctx forbids routing around the assigned proxy.
+// Exported for the executor retry layer, which must not answer a strict-proxy
+// caller with a direct replay.
+func StrictProxy(ctx context.Context) bool { return strictOnly(ctx) }
+
 // newJSONRequest builds one replayable request. body is a []byte, so
 // http.NewRequestWithContext installs a GetBody and no replay has to buffer a
 // body the first attempt already consumed.
