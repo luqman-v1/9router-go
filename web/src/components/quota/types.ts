@@ -703,7 +703,15 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
               return
             }
             normalizedQuotas.push({
-              name: quotaType === 'user' ? 'Personal' : quotaType === 'organization' ? 'Organization' : quotaType,
+              name:
+                quotaType === 'user'
+                  ? 'Personal'
+                  : quotaType === 'organization'
+                    ? 'Organization'
+                    : quotaType === 'addOn'
+                      ? 'Add-On Promo'
+                      : quotaType,
+              detailUrl: quota.detailUrl as string | undefined,
               used: Number(quota.used) || 0,
               total: Number(quota.total) || 0,
               resetAt: (quota.resetAt as string) || null,

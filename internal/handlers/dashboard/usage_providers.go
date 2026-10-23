@@ -844,6 +844,7 @@ func fetchQoderUsageAt(ctx context.Context, accessToken, usageURL string) usageR
 	}
 	userQuota, _ := body["userQuota"].(map[string]any)
 	orgQuota, _ := body["orgResourcePackage"].(map[string]any)
+	addOnQuota, _ := body["addOnQuota"].(map[string]any)
 	strOr := func(m map[string]any, k, fallback string) string {
 		if s, _ := m[k].(string); s != "" {
 			return s
@@ -861,6 +862,20 @@ func fetchQoderUsageAt(ctx context.Context, accessToken, usageURL string) usageR
 			"remaining": usageNum(orgQuota["remaining"], 0), "unit": strOr(orgQuota, "unit", "credits"),
 			"resetAt": resetAt,
 		},
+	}
+	if addOnTotal := usageNum(addOnQuota["total"], 0); addOnTotal > 0 {
+		addOnEntry := map[string]any{
+			"total":        addOnTotal,
+			"used":         usageNum(addOnQuota["used"], 0),
+			"remaining":    usageNum(addOnQuota["remaining"], 0),
+			"unit":         strOr(addOnQuota, "unit", "credits"),
+			"resetAt":      "",
+			"neverExpires": false,
+		}
+		if detailURL, ok := addOnQuota["detailUrl"].(string); ok && detailURL != "" {
+			addOnEntry["detailUrl"] = detailURL
+		}
+		quotas["addOn"] = addOnEntry
 	}
 	extra := map[string]any{
 		"totalUsagePercentage": usageNum(body["totalUsagePercentage"], 0),
