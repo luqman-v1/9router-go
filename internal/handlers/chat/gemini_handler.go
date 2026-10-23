@@ -338,6 +338,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 			Client:               h.Client,
 			Provider:             provider,
 			RefreshToken:         oauthData.RefreshToken,
+			Force:                true,
 			ProviderSpecificData: oauth.StringMap(forcePSD),
 		})
 		if err == nil && result != nil {
