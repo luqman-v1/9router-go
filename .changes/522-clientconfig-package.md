@@ -68,10 +68,20 @@ linear, and cannot be made so from here: `go-toml/v2`'s duplicate detection
 walks the sibling keys of a table on every insert, so a 512 KB TOML document
 takes about a second to parse — 25 ms at 64 KB. `Patch` pays that parse once,
 not twice; the output is checked with the linear parser plus a read-back of the
-edited key, instead of a second full semantic pass. A caller writing a config
-should treat `LargeFileWarningBytes` as the point to ask the user, because both
-parsers build a tree above the whole file — a 256 KB TOML patch allocates
-about 33 MB, 121x the input, and 1 MiB about 140 MB.
+edited key, instead of a second full semantic pass.
+
+The linearity claim is per-format and shape-dependent, so it is measured as a
+ratio rather than asserted: doubling the sample costs about 2x for JSONC and
+YAML (2.1x and 1.9x from 256 KB to 512 KB, `TestPatchScalesLinearly`) and about
+4x for TOML (3.8x over the same span), on one flat table of N scalar keys — the
+shape that puts every key in the same sibling set, and so the worst case for
+`go-toml`'s seen-tracker. `TestPatchTOMLAddsNoPass` pins the part this package
+controls: Patch spends 1.0–1.1x the cost of a bare `toml.Unmarshal` on the same
+bytes, so the quadratic term is the dependency's, not a second pass of ours.
+
+A caller writing a config should treat `LargeFileWarningBytes` as the point to
+ask the user, because both parsers build a tree above the whole file — a 256 KB
+TOML patch allocates about 33 MB, 121x the input, and 1 MiB about 140 MB.
 
 **No caller yet.** Nothing outside this package imports it, and the write
 functions take an unexported `guard` with no exported constructor, so they
