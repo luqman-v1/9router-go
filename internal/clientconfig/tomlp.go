@@ -213,6 +213,15 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 		if !samePath(kv.fullPath, e.KeyPath) {
 			continue
 		}
+		if e.Delete {
+			return verifyTOMLRemoved(removeTOMLLine(src, kv), e)
+		}
+		if e.ValueJSON != "" {
+			// TOML has no container form this package will write: inline tables
+			// are refused as unstable above, so a caller that set ValueJSON for
+			// TOML asked for something the format path cannot honour.
+			return nil, fmt.Errorf("%w: TOML writes no container value", ErrUnsupportedStructure)
+		}
 		switch {
 		case kv.valKind == unstable.Array || kv.valKind == unstable.InlineTable:
 			return nil, fmt.Errorf("%w: value of %q is a %s", ErrUnsupportedStructure, key, kv.valKind)
@@ -220,6 +229,9 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 			return nil, fmt.Errorf("%w: value of %q is a multi-line string", ErrUnsupportedStructure, key)
 		}
 		return verifyTOML(splice(src, kv.valStart, kv.valEnd, []byte(tomlQuote(e.Value))), e)
+	}
+	if e.Delete {
+		return nil, fmt.Errorf("%w: %q", ErrKeyNotFound, strings.Join(e.KeyPath, "."))
 	}
 
 	for _, s := range doc.sections {
@@ -278,6 +290,44 @@ func tomlCreateConflict(doc *tomlDoc, fullPath []string) error {
 		}
 	}
 	return nil
+}
+
+// removeTOMLLine deletes the whole line a key/value occupies.
+//
+// TOML has no separator to leave behind, so unlike JSON there is nothing to
+// splice around: the value is the rest of its line, and removing that line
+// removes the entry. A dotted key inside a [table] header is one line too, so
+// the section header above it is untouched.
+func removeTOMLLine(src []byte, kv tomlKeyValue) []byte {
+	start := lineStartOf(src, kv.valStart)
+	end := lineEnd(src, kv.valEnd)
+	// Take the line terminator with it so the file does not gain a blank line.
+	if end < len(src) && src[end] == '\r' {
+		end++
+	}
+	if end < len(src) && src[end] == '\n' {
+		end++
+	}
+	return splice(src, start, end, nil)
+}
+
+// verifyTOMLRemoved confirms a delete did what was asked: the file still
+// parses, and the key is gone.
+//
+// It cannot reuse verifyTOML, which asserts the key is present and reads back
+// as the requested value — the opposite of what a delete promises.
+func verifyTOMLRemoved(out []byte, e Edit) ([]byte, error) {
+	doc, err := scanTOML(parseableTOML(out), out)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
+	}
+	for _, kv := range doc.kvs {
+		if samePath(kv.fullPath, e.KeyPath) {
+			return nil, fmt.Errorf("%w: %q is still present after delete",
+				ErrInternalInconsistency, strings.Join(e.KeyPath, "."))
+		}
+	}
+	return out, nil
 }
 
 func tomlFindSection(doc *tomlDoc, path []string) int {

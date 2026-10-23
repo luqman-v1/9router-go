@@ -210,16 +210,172 @@ func patchYAML(src []byte, e Edit) ([]byte, error) {
 	}
 	target, err := findYAMLScalar(docs, e.KeyPath)
 	if err != nil {
-		if !errors.Is(err, ErrKeyNotFound) || !e.CreateIfMissing {
+		if !errors.Is(err, ErrKeyNotFound) || !e.CreateIfMissing || e.Delete {
 			return nil, err
 		}
 		return appendYAMLTopKey(src, docs, e.KeyPath, e.Value)
+	}
+	if e.Delete {
+		return deleteYAMLKey(src, target, e)
+	}
+	// yamlScalarRange stops at anything that is not a scalar. A collection being
+	// replaced by ValueJSON is not a scalar case, so it needs its own range: the
+	// node's own line and column, through the end of that line.
+	if e.ValueJSON != "" && target.Kind != yaml.ScalarNode {
+		start, end, err := yamlNodeLineRange(src, target)
+		if err != nil {
+			return nil, err
+		}
+		return replaceYAMLWithFlow(src, start, end, e)
 	}
 	start, end, err := yamlScalarRange(src, target, yamlLineStarts(src))
 	if err != nil {
 		return nil, err
 	}
-	return verifyYAML(splice(src, start, end, []byte(yamlQuote(e.Value))), e)
+	repl := []byte(yamlQuote(e.Value))
+	if e.ValueJSON != "" {
+		// A collection replaces the scalar outright. The caller's text is
+		// parsed first so a malformed flow collection is reported as the
+		// caller's mistake, not as bytes this package wrote.
+		flow := strings.TrimSpace(e.ValueJSON)
+		if !strings.HasPrefix(flow, "[") && !strings.HasPrefix(flow, "{") {
+			return nil, fmt.Errorf("%w: ValueJSON must be a flow collection", ErrUnsupportedStructure)
+		}
+		if _, err := decodeYAML([]byte("k: " + flow + "\n")); err != nil {
+			return nil, fmt.Errorf("%w: ValueJSON does not parse: %w", ErrUnsupportedStructure, err)
+		}
+		repl = []byte(flow)
+	}
+	return verifyYAML(splice(src, start, end, repl), Edit{KeyPath: e.KeyPath, Value: e.Value})
+}
+
+// yamlNodeLineRange brackets a collection by the line its key sits on.
+//
+// Only flow and single-line block collections are replaced this way: a block
+// collection spanning lines would need its indentation re-derived, which this
+// package refuses to guess.
+func yamlNodeLineRange(src []byte, n *yaml.Node) (int, int, error) {
+	starts := yamlLineStarts(src)
+	if n.Line <= 0 || n.Line > len(starts) {
+		return 0, 0, fmt.Errorf("%w: target has no usable position", ErrUnsupportedStructure)
+	}
+	lineStart := starts[n.Line-1]
+	if n.Line == 1 && hasBOM(src) {
+		lineStart += bomLen
+	}
+	// The value begins after the "key:" on this line; find the colon and skip to
+	// the first non-blank byte after it.
+	i := lineStart
+	for i < len(src) && src[i] != ':' && src[i] != '\n' {
+		i++
+	}
+	if i >= len(src) || src[i] != ':' {
+		return 0, 0, fmt.Errorf("%w: target line has no ':'", ErrUnsupportedStructure)
+	}
+	i++
+	for i < len(src) && (src[i] == ' ' || src[i] == '\t') {
+		i++
+	}
+	start := i
+	end := yamlLineEnd(src, start)
+	// A block collection puts its children on later lines. Replacing only the
+	// first would leave the children behind, pointing at a value that no longer
+	// exists, so this path handles flow collections and empty block ones only.
+	if strings.HasPrefix(string(src[start:end]), "[]") || strings.HasPrefix(string(src[start:end]), "{}") {
+		return start, end, nil
+	}
+	if n.Line < len(starts) {
+		nextStart := starts[n.Line]
+		nextEnd := yamlLineEnd(src, nextStart)
+		indent := len(src[nextStart:nextEnd]) - len(strings.TrimLeft(string(src[nextStart:nextEnd]), " \t"))
+		if strings.TrimSpace(string(src[nextStart:nextEnd])) != "" && indent > len(src[lineStart:start])-len(strings.TrimLeft(string(src[lineStart:start]), " \t")) {
+			return 0, 0, fmt.Errorf("%w: collection spans more than one line", ErrUnsupportedStructure)
+		}
+	}
+	return start, end, nil
+}
+
+// yamlLineEnd returns the byte offset just past the last non-blank byte of the
+// line that contains `start`, stopping before a trailing comment.
+func yamlLineEnd(src []byte, start int) int {
+	end := start
+	for i := start; i < len(src); i++ {
+		if src[i] == '\n' || src[i] == '\r' {
+			break
+		}
+		if src[i] == '#' && (i == start || src[i-1] == ' ' || src[i-1] == '\t') {
+			break
+		}
+		end = i + 1
+	}
+	for end > start && (src[end-1] == ' ' || src[end-1] == '\t') {
+		end--
+	}
+	return end
+}
+
+// replaceYAMLWithFlow substitutes caller-supplied flow text for a collection.
+func replaceYAMLWithFlow(src []byte, start, end int, e Edit) ([]byte, error) {
+	flow := strings.TrimSpace(e.ValueJSON)
+	if !strings.HasPrefix(flow, "[") && !strings.HasPrefix(flow, "{") {
+		return nil, fmt.Errorf("%w: ValueJSON must be a flow collection", ErrUnsupportedStructure)
+	}
+	if _, err := decodeYAML([]byte("k: " + flow + "\n")); err != nil {
+		return nil, fmt.Errorf("%w: ValueJSON does not parse: %w", ErrUnsupportedStructure, err)
+	}
+	return verifyYAMLReplaced(splice(src, start, end, []byte(flow)), e)
+}
+
+// verifyYAMLReplaced confirms the file still parses after a collection was
+// swapped. It cannot use verifyYAML, which insists the target reads back as a
+// scalar equal to e.Value.
+func verifyYAMLReplaced(out []byte, e Edit) ([]byte, error) {
+	if _, err := decodeYAML(out); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
+	}
+	return out, nil
+}
+
+// deleteYAMLKey removes the whole line a key occupies.
+//
+// Only a scalar held directly by a mapping takes this path: deleting a subtree
+// would mean re-indenting its neighbours, which is a rewrite the caller has not
+// asked this package to perform. A non-scalar target is refused — and unlike
+// the JSON path it can be, because YAML gives the node's line directly.
+func deleteYAMLKey(src []byte, target *yaml.Node, e Edit) ([]byte, error) {
+	if target.Kind != yaml.ScalarNode {
+		return nil, fmt.Errorf("%w: cannot delete a non-scalar %q", ErrUnsupportedStructure, e.KeyPath[len(e.KeyPath)-1])
+	}
+	starts := yamlLineStarts(src)
+	if target.Line <= 0 || target.Line > len(starts) {
+		return nil, fmt.Errorf("%w: target has no usable position", ErrUnsupportedStructure)
+	}
+	start := starts[target.Line-1]
+	end := lineEnd(src, start)
+	if end < len(src) && src[end] == '\r' {
+		end++
+	}
+	if end < len(src) && src[end] == '\n' {
+		end++
+	}
+	return verifyYAMLRemoved(splice(src, start, end, nil), e)
+}
+
+// verifyYAMLRemoved confirms the key is gone and the file still parses.
+// verifyYAML asserts the key is present with the written value, so it cannot
+// stand in for a delete.
+func verifyYAMLRemoved(out []byte, e Edit) ([]byte, error) {
+	docs, err := decodeYAML(out)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
+	}
+	if _, err := findYAMLScalar(docs, e.KeyPath); err == nil {
+		return nil, fmt.Errorf("%w: %q is still present after delete",
+			ErrInternalInconsistency, e.KeyPath[len(e.KeyPath)-1])
+	} else if !errors.Is(err, ErrKeyNotFound) {
+		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
+	}
+	return out, nil
 }
 
 // appendYAMLTopKey adds one top-level key to the last document. Only a
