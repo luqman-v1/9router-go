@@ -2,8 +2,8 @@ package dashboard
 
 import (
 	"context"
-	"errors"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -67,8 +67,8 @@ type usageCredentials struct {
 	// adoptedRefreshToken, when set, is token material read back from the row
 	// immediately before the refresh; it wins over the snapshot's own value.
 	adoptedRefreshToken string
-	raw                map[string]any
-	provider           string
+	raw                 map[string]any
+	provider            string
 }
 
 // accessToken reports the token a quota read must present. Kiro and other
@@ -238,6 +238,7 @@ func (h *DashboardHandler) refreshUsageCredentials(ctx context.Context, conn *mo
 		RefreshToken:         creds.refreshTokenFor(),
 		AccessToken:          creds.accessToken(),
 		ProviderSpecificData: oauth.StringMap(psd),
+		Force:                true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("refresh %s credentials: %w", conn.Provider, err)

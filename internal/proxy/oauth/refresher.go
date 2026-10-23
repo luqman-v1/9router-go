@@ -25,6 +25,7 @@ type Params struct {
 	Provider     string
 	RefreshToken string
 	AccessToken  string // current (possibly expired) token
+	Force        bool
 	// ProviderSpecificData carries per-account OAuth material stored at login
 	// time (e.g. Kiro clientId/clientSecret/region for AWS SSO OIDC refresh).
 	ProviderSpecificData map[string]string
@@ -68,7 +69,7 @@ func Refresh(ctx context.Context, p *Params) (*TokenResult, error) {
 	if fn == nil {
 		return nil, fmt.Errorf("no OAuth refresher for: %s", p.Provider)
 	}
-	return DedupRefresh(ctx, p.Provider, p.RefreshToken, func(ctx context.Context) (*TokenResult, error) {
+	return DedupRefresh(ctx, p.Provider, p.RefreshToken, p.Force, func(ctx context.Context) (*TokenResult, error) {
 		return fn(ctx, p)
 	})
 }

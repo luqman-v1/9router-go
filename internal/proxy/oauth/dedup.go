@@ -6,16 +6,18 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"9router/proxy/internal/providers"
 )
 
 const (
-	refreshResultTTL      = 10 * time.Second
+	refreshResultTTL       = 10 * time.Second
 	refreshCacheMaxEntries = 512
 )
 
 type refreshCacheEntry struct {
-	result     *TokenResult
-	expiresAt  time.Time
+	result    *TokenResult
+	expiresAt time.Time
 }
 
 var (
@@ -25,7 +27,8 @@ var (
 )
 
 func cacheKey(provider, oldToken string) string {
-	return provider + ":" + oldToken
+	normalizedProvider := providers.ResolveAlias(provider)
+	return normalizedProvider + ":" + oldToken
 }
 
 func getCachedRefresh(key string) *TokenResult {
@@ -60,8 +63,8 @@ func storeRefresh(key string, result *TokenResult) {
 		}
 	}
 	refreshCache[key] = refreshCacheEntry{
-		result:     result,
-		expiresAt:  time.Now().Add(refreshResultTTL),
+		result:    result,
+		expiresAt: time.Now().Add(refreshResultTTL),
 	}
 }
 
@@ -79,21 +82,26 @@ func CopyTokenResult(result *TokenResult) *TokenResult {
 	}
 }
 
-func DedupRefresh(ctx context.Context, provider, oldToken string, fn func(ctx context.Context) (*TokenResult, error)) (*TokenResult, error) {
+func DedupRefresh(ctx context.Context, provider, oldToken string, force bool, fn func(ctx context.Context) (*TokenResult, error)) (*TokenResult, error) {
 	if oldToken == "" || provider == "" {
 		return fn(ctx)
 	}
 
 	key := cacheKey(provider, oldToken)
-	if cached := getCachedRefresh(key); cached != nil {
-		return CopyTokenResult(cached), nil
+	if !force {
+		if cached := getCachedRefresh(key); cached != nil {
+			return CopyTokenResult(cached), nil
+		}
 	}
 
 	res, err, _ := refreshFlight.Do(key, func() (any, error) {
-		if cached := getCachedRefresh(key); cached != nil {
-			return cached, nil
+		if !force {
+			if cached := getCachedRefresh(key); cached != nil {
+				return cached, nil
+			}
 		}
-		result, err := fn(ctx)
+		flightCtx := context.WithoutCancel(ctx)
+		result, err := fn(flightCtx)
 		if err != nil {
 			return nil, err
 		}
