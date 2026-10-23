@@ -64,10 +64,13 @@ func Unregister(provider string) {
 
 // Refresh calls the provider's refresher, or falls back to standard OAuth2.
 func Refresh(ctx context.Context, p *Params) (*TokenResult, error) {
-	if fn := Get(p.Provider); fn != nil {
-		return fn(ctx, p)
+	fn := Get(p.Provider)
+	if fn == nil {
+		return nil, fmt.Errorf("no OAuth refresher for: %s", p.Provider)
 	}
-	return nil, fmt.Errorf("no OAuth refresher for: %s", p.Provider)
+	return DedupRefresh(ctx, p.Provider, p.RefreshToken, func(ctx context.Context) (*TokenResult, error) {
+		return fn(ctx, p)
+	})
 }
 
 // StringMap flattens a connection providerSpecificData blob to the string
