@@ -213,7 +213,16 @@ func patchJSONC(src []byte, e Edit) ([]byte, error) {
 				return nil, fmt.Errorf("%w: %q", ErrKeyNotFound, part)
 			}
 			if idx != len(e.KeyPath)-1 {
-				return nil, fmt.Errorf("%w: intermediate object %q is absent", ErrKeyNotFound, part)
+				// CreateIfMissing covers the whole path, not just the leaf:
+				// connect writing env.ANTHROPIC_BASE_URL into a settings file
+				// with no "env" object is the common first-run case, and
+				// refusing it would make the caller special-case it.
+				rest := e.KeyPath[idx:]
+				nested, err := jsonNestedEntry(e, rest)
+				if err != nil {
+					return nil, err
+				}
+				return verifyJSONC(insertJSONMember(src, p.toks, cur, part, nested))
 			}
 			entry, err := jsonMemberEntry(e, part)
 			if err != nil {
@@ -278,6 +287,28 @@ func jsonMemberEntry(e Edit, key string) (string, error) {
 		return "", err
 	}
 	return jsoncQuote(key) + ": " + string(val), nil
+}
+
+// jsonNestedEntry renders `key: {…}` for a path that has to be created whole.
+//
+// The value is built from the remaining path rather than from ValueJSON: this
+// branch only runs when the leaf is scalar, so the nested objects are all
+// scaffolding along the way and the last element carries the caller's value.
+func jsonNestedEntry(e Edit, path []string) (string, error) {
+	leaf, err := jsonValueBytes(e)
+	if err != nil {
+		return "", err
+	}
+	// Fold from the leaf outwards: the last element becomes the innermost
+	// pair, and each step wraps what is already built.
+	inner := string(leaf)
+	for i := len(path) - 1; i > 0; i-- {
+		inner = jsoncQuote(path[i]) + ": " + inner
+		if i > 1 {
+			inner = "{" + inner + "}"
+		}
+	}
+	return jsoncQuote(path[0]) + ": " + "{" + inner + "}", nil
 }
 
 // validateJSONValue re-parses the caller's container text once, before any

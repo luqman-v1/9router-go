@@ -136,7 +136,7 @@ func applyPlans(plans []FilePlan, now func() time.Time) (Result, error) {
 // applyOnePlan writes one file. It returns whether anything changed and the
 // backup path, if one was made.
 func applyOnePlan(p FilePlan, now func() time.Time) (changed bool, backup string, err error) {
-	g, err := resolveGuard(p.File.Dir, relFromDir(p.File.Dir, p.File.Path))
+	g, err := resolveGuardOrCreate(p.File.Dir, relFromDir(p.File.Dir, p.File.Path))
 	if err != nil {
 		return false, "", fmt.Errorf("%s: %w", p.File.Purpose, err)
 	}
@@ -147,10 +147,26 @@ func applyOnePlan(p FilePlan, now func() time.Time) (changed bool, backup string
 	if p.RemoveFile {
 		return removeThroughGuard(g, old != nil)
 	}
-	var cur = old
+	// A file that does not exist yet starts from the empty document for its
+	// format. Zero bytes is not valid JSONC ("empty document") and leaves the
+	// TOML and YAML paths nothing to splice into, so a first-ever connect would
+	// fail on the very case it exists for.
+	cur := old
+	if len(cur) == 0 {
+		cur, err = emptyDocument(p.File.Format)
+		if err != nil {
+			return false, "", fmt.Errorf("%s: %w", p.File.Purpose, err)
+		}
+	}
 	for _, e := range p.Edits {
 		next, patchErr := Patch(cur, p.File.Format, []Edit{e})
 		if errors.Is(patchErr, ErrAlreadyPatched) {
+			continue
+		}
+		// Deleting a key that is not there already has the wanted outcome.
+		// Reset runs its whole list every time, so a client whose file never
+		// held one of the keys must not fail on that key.
+		if e.Delete && errors.Is(patchErr, ErrKeyNotFound) {
 			continue
 		}
 		if patchErr != nil {
@@ -169,6 +185,49 @@ func applyOnePlan(p FilePlan, now func() time.Time) (changed bool, backup string
 		backup = wr.Backup
 	}
 	return true, backup, nil
+}
+
+// emptyDocument is the starting text for a file that does not exist yet.
+//
+// TOML's empty document is genuinely zero bytes: an empty file is valid TOML,
+// and starting it as "{}" would make a root table the TOML writer then refuses
+// to append a root key inside.
+func emptyDocument(f Format) ([]byte, error) {
+	switch f {
+	case FormatJSONC, FormatYAML:
+		return []byte("{}"), nil
+	case FormatTOML:
+		return nil, nil
+	}
+	return nil, fmt.Errorf("%w: no empty document for %s", ErrUnsupportedStructure, f)
+}
+
+// resolveGuardOrCreate makes the client's own directory when the client has
+// never run on this machine, then resolves the guard.
+//
+// resolveGuard refuses a missing base on purpose: a base that does not exist
+// cannot be checked for symlinks, so containment cannot be proven. That is the
+// right answer for a caller handed a path. For a first-ever connect it would
+// mean the command fails on every machine where the client is not installed
+// yet — which is most of them, and is precisely when someone runs connect.
+//
+// Only the adapter's own base is created (e.g. ~/.claude), never a parent:
+// creating a broader path would be this package inventing structure it has no
+// business owning, and the base is exactly what the plan already declares.
+// After the MkdirAll the normal resolveGuard runs again, so a symlinked
+// ancestor is still refused — this opens the missing-directory case only.
+func resolveGuardOrCreate(dir, rel string) (guard, error) {
+	g, err := resolveGuard(dir, rel)
+	if err == nil {
+		return g, nil
+	}
+	if !errors.Is(err, ErrBaseMissing) {
+		return guard{}, err
+	}
+	if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+		return guard{}, fmt.Errorf("%w: create %s: %w", ErrBaseMissing, dir, mkErr)
+	}
+	return resolveGuard(dir, rel)
 }
 
 // readThroughGuard reads the target through the same root the write uses.
