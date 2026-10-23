@@ -309,8 +309,16 @@ export function resolveFilteredGroups(
 
       if (!parsed.isEmpty) {
         const groupMatches = matchesSearch(group.name, parsed)
-        const matchedModels = models.filter((m) => matchesSearch(m, parsed))
-        models = matchedModels.length > 0 ? matchedModels : groupMatches ? models : []
+        models = models.filter((m) => {
+          if (matchesSearch(m, parsed)) return true
+          if (groupMatches) {
+            if (parsed.negativeTerms.length > 0) {
+              return matchesSearch(m, { ...parsed, positiveTerms: [] })
+            }
+            return true
+          }
+          return false
+        })
       }
 
       if (models.length === 0) return null

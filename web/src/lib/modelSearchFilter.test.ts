@@ -42,6 +42,21 @@ describe("parseSearchQuery", () => {
     ok(result.regex instanceof RegExp);
     strictEqual(result.regex.source, "opus.*");
   });
+
+  test("regex with flags", () => {
+    const result = parseSearchQuery("/gpt-[45]/i");
+    ok(result.isRegex);
+    ok(result.regex instanceof RegExp);
+    strictEqual(result.regex.source, "gpt-[45]");
+    strictEqual(result.regex.flags, "i");
+  });
+
+  test("live typing regex without closing slash", () => {
+    const result = parseSearchQuery("/gpt-4");
+    ok(result.isRegex);
+    ok(result.regex instanceof RegExp);
+    strictEqual(result.regex.source, "gpt-4");
+  });
 });
 
 describe("matchesSearch", () => {

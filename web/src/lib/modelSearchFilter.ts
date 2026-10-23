@@ -20,21 +20,40 @@ export function parseSearchQuery(rawQuery?: string | null): ParsedSearchQuery {
     };
   }
 
-  // Check if it's a regex (starts and ends with /)
-  if (raw.startsWith('/') && raw.endsWith('/') && raw.length > 2) {
-    const pattern = raw.slice(1, -1);
-    try {
-      const regex = new RegExp(pattern, 'i');
-      return {
-        raw,
-        isEmpty: false,
-        isRegex: true,
-        regex,
-        positiveTerms: [],
-        negativeTerms: [],
-      };
-    } catch {
-      // Invalid regex, treat as plain text
+  // Check if it's a regex (starts with /)
+  if (raw.startsWith('/')) {
+    // Try to match full regex with flags: /pattern/flags
+    const fullRegexMatch = raw.match(/^\/(.+)\/([a-z]*)$/i);
+    if (fullRegexMatch) {
+      try {
+        const flags = fullRegexMatch[2] || 'i';
+        const regex = new RegExp(fullRegexMatch[1], flags);
+        return {
+          raw,
+          isEmpty: false,
+          isRegex: true,
+          regex,
+          positiveTerms: [],
+          negativeTerms: [],
+        };
+      } catch {
+        // Invalid regex, fall through to plain text handling
+      }
+    } else if (raw.length > 1) {
+      // Starts with / but no closing /, treat rest as pattern with default 'i' flag
+      try {
+        const regex = new RegExp(raw.slice(1), 'i');
+        return {
+          raw,
+          isEmpty: false,
+          isRegex: true,
+          regex,
+          positiveTerms: [],
+          negativeTerms: [],
+        };
+      } catch {
+        // Invalid regex, fall through to plain text handling
+      }
     }
   }
 
