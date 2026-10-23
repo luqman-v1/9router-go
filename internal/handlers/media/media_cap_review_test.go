@@ -233,7 +233,6 @@ func TestMeasureJSONInput_DoesNotDuplicateTheBody(t *testing.T) {
 	const size = 8 << 20
 	payload := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("a"), size))
 	body := []byte(`{"model":"m","prompt":"p","image":"data:image/png;base64,` + payload + `"}`)
-	payload = ""
 
 	before := liveHeap(t)
 	use, err := measureMediaInput("application/json", body)

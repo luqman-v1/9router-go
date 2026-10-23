@@ -19,15 +19,8 @@ import (
 // image fields, a request over the sum cap but under every other one, and an
 // upstream allowed to rewrite the usage numbers the gateway itself measured.
 
-// noFilenameMultipart builds a body whose media part is named like a media
-// field but carries no `filename=` attribute. antigravity_stt selects its audio
-// by FormName() == "file", so this is the audio it forwards.
-func noFilenameMultipart(t *testing.T, model string, payload []byte) (*bytes.Buffer, string) {
-	t.Helper()
-	return noFilenamePart(t, model, payload, "audio/mpeg")
-}
-
-// noFilenamePart is the same shape with a caller-chosen part media type, so the
+// noFilenamePart builds a body whose media part is named like a media field but
+// carries no `filename=` attribute. The part media type is a parameter so the
 // filename-less bypass can be exercised on audio while the per-item cap — which
 // exempts audio — is exercised on an image.
 func noFilenamePart(t *testing.T, model string, payload []byte, partType string) (*bytes.Buffer, string) {
@@ -157,6 +150,62 @@ func TestMediaInputCap_IgnoresProseInImageField(t *testing.T) {
 	if use.Items != 0 {
 		t.Errorf("prose in \"image\" measured as %d media item(s), want 0", use.Items)
 	}
+}
+
+// TestMediaInputCap_CountsEscapedBase64ImageFields is red before the fix: the
+// JSON walk sliced the RAW token text out of the body and rejected the value at
+// the first backslash that was not \n \r \t. But the lanes forward the DECODED
+// string — encoding/json/v2 removes the escapes before they see it — so a legal
+// escape at the head of a payload made the guard measure zero while the whole
+// payload went upstream. The escape \u0041 is 'A' and \/ is '/', both in the base64
+// alphabet, so the decoded value is byte-identical to the original payload.
+func TestMediaInputCap_CountsEscapedBase64ImageFields(t *testing.T) {
+	payload := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("a"), 8<<10))
+	if len(payload) < 1024 {
+		t.Fatalf("fixture too small to be treated as base64: %d bytes", len(payload))
+	}
+	// The escape only has to land in the first mediaProbeLen bytes, which is the
+	// window the sniff samples.
+	const unicodeEscapeA = `\u0041`
+	const escapedSolidus = `\/`
+	cases := []struct{ name, escaped string }{
+		{"unicode escape", unicodeEscapeA + payload[1:]},
+		{"escaped solidus", escapedSolidus + payload[1:]},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			use, err := measureMediaInput("application/json", []byte(`{"model":"x","image":"`+tc.escaped+`"}`))
+			if err != nil {
+				t.Fatalf("measure: %v", err)
+			}
+			wantBytes := int64(8 << 10)
+			if use.Items != 1 || use.Bytes != wantBytes {
+				t.Errorf("escaped bare base64 in \"image\": measured %d item(s) / %d bytes, want 1 / %d (decoded)",
+					use.Items, use.Bytes, wantBytes)
+			}
+		})
+	}
+
+	// The count cap falls with the size half: nine escaped images measured as
+	// zero, so the 8-item cap could not fire either.
+	t.Run("count cap", func(t *testing.T) {
+		var b strings.Builder
+		b.WriteString(`{"images":[`)
+		for i := 0; i < MediaMaxItems+1; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString(`"` + `A` + payload[1:] + `"`)
+		}
+		b.WriteString(`]}`)
+		use, err := measureMediaInput("application/json", []byte(b.String()))
+		if err != nil {
+			t.Fatalf("measure: %v", err)
+		}
+		if use.Items != MediaMaxItems+1 {
+			t.Errorf("measured %d items, want %d — an escaped payload must still count", use.Items, MediaMaxItems+1)
+		}
+	})
 }
 
 // TestMediaInputCap_NoSumCap pins the decision that replaced MediaMaxTotalBytes.

@@ -3,6 +3,7 @@ package media
 import (
 	"bytes"
 	jsontext "encoding/json/jsontext"
+	json "encoding/json/v2"
 	"strings"
 )
 
@@ -100,7 +101,12 @@ func (use *mediaInputUse) recordJSONString(body []byte, start, size int64, membe
 	if quote < 0 || quote+1 >= len(span) {
 		return
 	}
-	raw := span[quote+1 : len(span)-1]
+	// Measure the DECODED value, not the raw token text. A string token keeps
+	// its escapes until something unquotes it, and the lanes hand the decoded
+	// string to the provider — so measuring the raw text let a legal escape
+	// like A (an 'A') or \/ (a base64 '/') at the head of a payload make
+	// the sniff classify it as prose while the full payload went upstream.
+	raw := unquoteJSONString(span[quote+1 : len(span)-1])
 	head := raw
 	if len(head) > mediaProbeLen {
 		head = head[:mediaProbeLen]
@@ -116,6 +122,25 @@ func (use *mediaInputUse) recordJSONString(body []byte, start, size int64, membe
 	if isBareMediaField(member) && looksLikeBase64Payload(raw, head) {
 		use.recordItem(base64DecodedLen(raw), false)
 	}
+}
+
+// unquoteJSONString decodes a JSON string token's contents (the bytes between
+// its quotes) into the value the lanes will forward. A string that will not
+// unquote is returned as-is, so a malformed token still measures rather than
+// measuring zero.
+//
+// The returned slice may alias raw when the token carried no escapes, which is
+// the common case and keeps the allocation-free property the streaming walk
+// exists for.
+func unquoteJSONString(raw []byte) []byte {
+	if bytes.IndexByte(raw, '\\') < 0 {
+		return raw
+	}
+	var out string
+	if err := json.Unmarshal([]byte(`"`+string(raw)+`"`), &out); err != nil {
+		return raw
+	}
+	return []byte(out)
 }
 
 // jsonIsWhitespaceEscape reports whether b[i] starts one of the escapes a
