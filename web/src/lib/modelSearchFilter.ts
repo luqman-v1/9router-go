@@ -1,0 +1,151 @@
+export interface ParsedSearchQuery {
+  raw: string;
+  isEmpty: boolean;
+  isRegex: boolean;
+  regex: RegExp | null;
+  positiveTerms: string[];
+  negativeTerms: string[];
+}
+
+export function parseSearchQuery(rawQuery?: string | null): ParsedSearchQuery {
+  const raw = rawQuery?.trim() ?? '';
+  if (!raw) {
+    return {
+      raw: '',
+      isEmpty: true,
+      isRegex: false,
+      regex: null,
+      positiveTerms: [],
+      negativeTerms: [],
+    };
+  }
+
+  // Check if it's a regex (starts and ends with /)
+  if (raw.startsWith('/') && raw.endsWith('/') && raw.length > 2) {
+    const pattern = raw.slice(1, -1);
+    try {
+      const regex = new RegExp(pattern, 'i');
+      return {
+        raw,
+        isEmpty: false,
+        isRegex: true,
+        regex,
+        positiveTerms: [],
+        negativeTerms: [],
+      };
+    } catch {
+      // Invalid regex, treat as plain text
+    }
+  }
+
+  // Split by whitespace, respecting quoted strings
+  const tokens: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let quoteChar = '';
+
+  for (let i = 0; i < raw.length; i++) {
+    const char = raw[i];
+    if ((char === '"' || char === "'") && !inQuotes) {
+      inQuotes = true;
+      quoteChar = char;
+    } else if (char === quoteChar && inQuotes) {
+      inQuotes = false;
+      quoteChar = '';
+    } else if (char === ' ' && !inQuotes) {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+    } else {
+      current += char;
+    }
+  }
+  if (current) tokens.push(current);
+
+  const positiveTerms: string[] = [];
+  const negativeTerms: string[] = [];
+
+  for (const token of tokens) {
+    if (token.startsWith('!') || token.startsWith('-')) {
+      const term = token.slice(1).toLowerCase();
+      if (term) negativeTerms.push(term);
+    } else {
+      positiveTerms.push(token.toLowerCase());
+    }
+  }
+
+  return {
+    raw,
+    isEmpty: false,
+    isRegex: false,
+    regex: null,
+    positiveTerms,
+    negativeTerms,
+  };
+}
+
+export function extractCandidates(target: unknown): string[] {
+  if (target == null) return [];
+  const candidates: string[] = [];
+  
+  // Handle string target directly
+  if (typeof target === 'string') {
+    candidates.push(target.toLowerCase());
+    return candidates;
+  }
+  
+  const obj = target as Record<string, unknown>;
+  const fields = ['name', 'id', 'value', 'alias', 'provider'];
+  for (const field of fields) {
+    const val = obj[field];
+    if (typeof val === 'string') candidates.push(val.toLowerCase());
+    else if (Array.isArray(val)) {
+      for (const item of val) {
+        if (typeof item === 'string') candidates.push(item.toLowerCase());
+      }
+    }
+  }
+  return candidates;
+}
+
+export function matchesSearch(
+  target: unknown,
+  queryOrParsed?: ParsedSearchQuery | string | null
+): boolean {
+  const parsed =
+    typeof queryOrParsed === 'string' || queryOrParsed == null
+      ? parseSearchQuery(queryOrParsed)
+      : queryOrParsed;
+
+  if (parsed.isEmpty) return true;
+
+  const candidates = extractCandidates(target);
+  if (candidates.length === 0) return false;
+
+  if (parsed.isRegex && parsed.regex) {
+    return candidates.some((c) => parsed.regex!.test(c));
+  }
+
+  // All positive terms must match at least one candidate
+  for (const term of parsed.positiveTerms) {
+    const matched = candidates.some((c) => c.includes(term));
+    if (!matched) return false;
+  }
+
+  // No negative term should match any candidate
+  for (const term of parsed.negativeTerms) {
+    const matched = candidates.some((c) => c.includes(term));
+    if (matched) return false;
+  }
+
+  return true;
+}
+
+export function filterModelsByQuery<T>(
+  items: T[],
+  query: string | ParsedSearchQuery
+): T[] {
+  const parsed = typeof query === 'string' ? parseSearchQuery(query) : query;
+  return items.filter((item) => matchesSearch(item, parsed));
+}
