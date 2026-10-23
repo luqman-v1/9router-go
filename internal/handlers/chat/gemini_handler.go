@@ -265,7 +265,7 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		if err != nil {
 			log.Error("oauth", "marshal connection data failed", "conn", connectionID, "error", err)
 		} else {
-			_, _ = db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
+			_, _ = db.ExecContext(context.Background(), "UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 				string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
 		}
 		newPID := projectID
@@ -361,7 +361,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 			if err != nil {
 				log.Error("oauth", "marshal conn data failed", "conn", connectionID, "error", err)
 			} else {
-				_, _ = db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
+				_, _ = db.ExecContext(context.Background(), "UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 					string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
 			}
 			newPID := oauthData.ProjectID
@@ -406,7 +406,7 @@ func (h *ChatHandler) forceRefreshOAuthToken(connectionID string) (string, strin
 		if err != nil {
 			log.Error("oauth", "marshal conn data failed", "conn", connectionID, "error", err)
 		} else {
-			_, _ = db.Exec("UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
+			_, _ = db.ExecContext(context.Background(), "UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?",
 				string(mergedJSON), time.Now().UTC().Format(time.RFC3339), connectionID)
 		}
 
