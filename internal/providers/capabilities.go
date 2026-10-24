@@ -253,9 +253,9 @@ var modelCapabilities = map[string]Capabilities{
 	// claude-fable-5 (no -1 suffix) is adaptive-only like fable-5-1; upstream
 	// capabilities.js only matches it through *claude*fable* -> claude-budget,
 	// which produced thinking{type:"enabled"} and a 400 on the real API.
-	"claude-fable-5":   {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
-	"claude-fable-5-1": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
-	"glm-5.2":          {Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingEffortSupported: true, ThinkingCanDisable: new(false)},
+	"claude-fable-5":               {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
+	"claude-fable-5-1":             {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
+	"glm-5.2":                      {Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingEffortSupported: true, ThinkingCanDisable: new(false)},
 	// Upstream b6a9ca43: the exact glm-5.2 entry shadows the *glm-5.2*
 	// pattern completely, so it must repeat the pattern's
 	// ThinkingEffortSupported or reasoning_effort is dropped for GLM-5.2
