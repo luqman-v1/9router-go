@@ -15,10 +15,42 @@ import (
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/translator"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 )
+
+// renameMaxTokensBody moves max_tokens onto max_completion_tokens and drops
+// the old key, keeping an explicit client-sent target value. A body without
+// max_tokens, or one that does not parse as an object, returns unchanged.
+func renameMaxTokensBody(body []byte) []byte {
+	var m map[string]jsontext.Value
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	raw, ok := m["max_tokens"]
+	if !ok {
+		return body
+	}
+	if _, exists := m["max_completion_tokens"]; !exists {
+		m["max_completion_tokens"] = raw
+	}
+	delete(m, "max_tokens")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
 
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
+	// Provider-scoped param rules from upstream paramSupport strip unsupported
+	// params on the outgoing body (executors/default.js:91). The openai rule
+	// renames max_tokens because current OpenAI models answer 400 "Use
+	// 'max_completion_tokens' instead".
+	if req.Provider == "openai" {
+		req.Body = renameMaxTokensBody(req.Body)
+	}
 	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
 	if err != nil {
 		return fmt.Errorf("ForwardOpenAI upstream: %w", err)

@@ -12,10 +12,12 @@ import (
 var billingHeaderRegex = regexp.MustCompile(`(?i)^x-anthropic-billing-header:[^\n]*(?:\r?\n)?`)
 
 // requiresMaxCompletionTokens reports whether model needs max_completion_tokens instead of max_tokens (PR #3657).
-// Matches gpt-5.x and o1/o3/o4 with hyphen, same as JS /gpt-5|o[134]-/i
+// Matches gpt-5.x/gpt-6.x and o1/o3/o4 with hyphen; gpt-6 also rejects max_tokens
+// (upstream 7c42d8f8), and the provider-scoped rename in the openai executor
+// covers the OpenAI-format clients.
 func requiresMaxCompletionTokens(model string) bool {
 	lower := strings.ToLower(model)
-	if strings.Contains(lower, "gpt-5") {
+	if strings.Contains(lower, "gpt-5") || strings.Contains(lower, "gpt-6") {
 		return true
 	}
 	if strings.Contains(lower, "o1-") || strings.Contains(lower, "o3-") || strings.Contains(lower, "o4-") {

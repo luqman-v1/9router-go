@@ -25,6 +25,7 @@ type Request struct {
 	Ctx            context.Context
 	Client         *http.Client
 	Config         *providers.ProviderConfig
+	Provider       string // canonical provider id; provider-scoped wire rules key off it
 	APIKey         string
 	Body           []byte
 	IsStream       bool
