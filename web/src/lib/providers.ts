@@ -1938,6 +1938,22 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "sensenova",
+    "name": "SenseNova",
+    "category": "apikey",
+    "alias": "sensenova",
+    "color": "#5B5CE2",
+    "icon": "auto_awesome",
+    "website": "https://token.sensenova.cn",
+    "notice": {"apiKeyUrl":"https://token.sensenova.cn"},
+    "noAuth": false,
+    "serviceKinds": [
+      "llm",
+      "image",
+      "imageToText"
+    ]
+  },
+  {
     "id": "siliconflow",
     "name": "SiliconFlow",
     "category": "apikey",
