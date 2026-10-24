@@ -237,8 +237,9 @@ func (h *ChatHandler) handleAccountFallback(
 			errorText := extractErrorText(ue.Body)
 			// Get current backoff level from this connection
 			currentBackoffLevel := h.Repo.GetConnectionBackoffLevel(connObj.ID)
-			// Classify error to get dynamic cooldown
-			classification := providers.ClassifyError(ue.StatusCode, errorText, currentBackoffLevel)
+			// Classify error to get dynamic cooldown; provider-scoped rules
+			// key off the canonical provider the request routed to.
+			classification := providers.ClassifyErrorForProvider(ue.StatusCode, errorText, currentBackoffLevel, provider)
 			cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(classification.CooldownMs)*time.Millisecond, ue)
 			errMsg := errorText
 			if errMsg == "" {

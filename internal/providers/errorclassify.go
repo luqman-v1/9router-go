@@ -13,6 +13,9 @@ type ErrorRule struct {
 	Status     int    // HTTP status code match; 0 means not status-based
 	CooldownMs int    // fixed cooldown duration; 0 means use exponential backoff
 	Backoff    bool   // true = use exponential backoff (rate limit)
+	// Provider scopes a text rule to one canonical provider id; empty applies
+	// to every provider.
+	Provider string
 }
 
 // BackoffConfig controls exponential backoff scaling.
@@ -39,6 +42,12 @@ const (
 // Checked top-to-bottom: text rules first (by order), then status rules.
 var ErrorRules = []ErrorRule{
 	// --- Text-based rules (checked first, order = priority) ---
+	// Intl gateway blocks affect the account/IP, so let the connection back
+	// off (upstream 3b137aa6): without a provider-scoped rule the messages
+	// fall through to the request-scoped 4xx path and the connection gets
+	// zero cooldown while its backoff level never moves.
+	{Provider: "codebuddy-intl", Text: "request illegal", Backoff: true},
+	{Provider: "codebuddy-intl", Text: "conversation id missing", Backoff: true},
 	{Text: "no credentials", CooldownMs: cooldownLong},
 	{Text: "request not allowed", CooldownMs: cooldownShort},
 	{Text: "improperly formed request", CooldownMs: cooldownLong},
@@ -133,6 +142,16 @@ type ErrorClassification struct {
 // Returns the cooldown duration and new backoff level.
 // Matches Next.js checkFallbackError() in open-sse/services/accountFallback.js.
 func ClassifyError(statusCode int, errorText string, backoffLevel int) ErrorClassification {
+	return ClassifyErrorForProvider(statusCode, errorText, backoffLevel, "")
+}
+
+// ClassifyErrorForProvider is ClassifyError with provider-scoped rules
+// applied: provider is the canonical provider id the request routed to
+// (aliases are resolved here, so `cbai` matches the codebuddy-intl rules).
+func ClassifyErrorForProvider(statusCode int, errorText string, backoffLevel int, provider string) ErrorClassification {
+	if provider != "" {
+		provider = ResolveAlias(provider)
+	}
 	lowerError := ""
 	if errorText != "" {
 		lowerError = strings.ToLower(errorText)
@@ -141,6 +160,9 @@ func ClassifyError(statusCode int, errorText string, backoffLevel int) ErrorClas
 	for _, rule := range ErrorRules {
 		// Text-based match (substring, case-insensitive)
 		if rule.Text != "" && lowerError != "" && strings.Contains(lowerError, rule.Text) {
+			if rule.Provider != "" && rule.Provider != provider {
+				continue
+			}
 			if rule.Backoff {
 				newLevel := min(backoffLevel+1, BackoffConfig.MaxLevel)
 				return ErrorClassification{
