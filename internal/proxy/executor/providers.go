@@ -261,6 +261,9 @@ func kiroUpstreamBody(req *Request) ([]byte, error) {
 	if idx := strings.IndexByte(model, '('); idx > 0 {
 		model = model[:idx]
 	}
+	// Anthropic spellings (claude-sonnet-4-5-20250929) 400 on Kiro's data
+	// plane; fold them onto the dotted upstream alias.
+	model = normalizeKiroUpstreamModelId(model)
 
 	profileArn := ""
 	if req.ConnData != nil {
