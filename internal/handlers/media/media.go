@@ -794,6 +794,16 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					continue
 				}
 			}
+			// Gemini image models answer the native generateContent shape, not
+			// the OpenAI images endpoint the generic forward would dial.
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (subInfo.Provider == "gemini" || subInfo.Provider == "gm") {
+				if err := h.handleGeminiImage(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					lastErr = err.Error()
+					continue
+				}
+			}
 			// Codex image models are Responses-API models, not an image endpoint.
 			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (subInfo.Provider == "codex" || subInfo.Provider == "cx") {
 				if err := h.handleCodexImage(w, r, body, subInfo); err == nil {
@@ -946,6 +956,14 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	}
 	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
 		if err := h.handleAntigravityImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+	// Gemini image models answer the native generateContent shape, not the
+	// OpenAI images endpoint the generic forward would dial.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (modelInfo.Provider == "gemini" || modelInfo.Provider == "gm") {
+		if err := h.handleGeminiImage(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
 		return
