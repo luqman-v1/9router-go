@@ -40,9 +40,14 @@ type Request struct {
 	Endpoint       string            // custom URL override (azure)
 	ToolNameMap    map[string]string // claude OAuth tool-cloak map (suffixed -> original)
 	UpstreamClaude bool              // upstream responds in Claude format while client sent OpenAI format
-	ResponseBuf    io.Writer         // writer to capture response text for token estimation & logging
-	StartTime      time.Time         // request start time for TTFT tracking
-	TTFT           *int64            // pointer to TTFT metric (ms to first chunk)
+	// LiftReasoningAliases marks a lane whose upstream streams thinking under
+	// the vendor aliases (reasoning / reasoning_details[]) instead of
+	// reasoning_content (OpenCode Free's MiMo route); the passthrough adds
+	// reasoning_content so OpenAI-shaped clients see the thinking.
+	LiftReasoningAliases bool
+	ResponseBuf          io.Writer // writer to capture response text for token estimation & logging
+	StartTime            time.Time // request start time for TTFT tracking
+	TTFT                 *int64    // pointer to TTFT metric (ms to first chunk)
 }
 
 // Executor forwards a request upstream and writes the response.

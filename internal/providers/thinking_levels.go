@@ -83,6 +83,14 @@ var patternThinking = []thinkingPattern{
 	{Provider: "codex", Pattern: "*gpt-5.6-terra*", Levels: codexGPT56UltraLevels()},
 	{Provider: "codex", Pattern: "*gpt-5.6-luna*", Levels: codexGPT56Levels()},
 	{Pattern: "*codex*", Levels: []string{"low", "medium", "high", "xhigh"}}, // codex cannot disable thinking
+	// OpenCode Free (oc) MiMo rides the same OpenRouter-backed route as the
+	// rest of that lane and takes the full OpenAI effort enum verbatim (all
+	// seven values 200, anything else 400 "Invalid option"), so it owns the
+	// entry ahead of the unqualified *mimo*v2.6* one below — that one
+	// describes Xiaomi's own API, and its [none..xhigh] set would make max
+	// unreachable here (the deepseek wire branch clamps max to high when the
+	// declared set lacks it).
+	{Provider: "opencode", Pattern: "*mimo*v2.6*", Levels: []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}},
 	{Pattern: "*mimo*v2.6*", Levels: []string{"none", "low", "medium", "high", "xhigh"}},
 	// mimo-v2.5-pro on opencode-go rejects reasoning_effort "max" (probed live);
 	// v2.5 accepts it.

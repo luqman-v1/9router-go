@@ -435,7 +435,10 @@ func sseToOpenAIJSON(raw []byte) ([]byte, bool) {
 		if c, ok := delta["content"].(string); ok && c != "" {
 			contentParts = append(contentParts, c)
 		}
-		if r, ok := delta["reasoning_content"].(string); ok && r != "" {
+		// Vendor aliases (`reasoning`, `reasoning_details[]`) count as
+		// reasoning too: without this an alias lane's thinking is silently
+		// dropped before the empty-content rescue below could keep it.
+		if r := reasoningTextFromDeltaMap(delta); r != "" {
 			reasoningParts = append(reasoningParts, r)
 		}
 		if fr, ok := choice["finish_reason"].(string); ok {

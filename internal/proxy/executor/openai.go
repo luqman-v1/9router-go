@@ -123,6 +123,7 @@ func execSSEStream(w http.ResponseWriter, upstream io.Reader, req *Request) erro
 	return sseStream(sseStreamOpts{
 		W: w, Upstream: upstream, Translate: req.TranslateResp, StartTime: startTime,
 		TTFT: req.TTFT, Buf: req.ResponseBuf, Ctx: req.Ctx, ToolNameMap: req.ToolNameMap,
+		LiftReasoningAliases: req.LiftReasoningAliases,
 	})
 }
 
@@ -145,6 +146,9 @@ type sseStreamOpts struct {
 	Buf         io.Writer
 	Ctx         context.Context
 	ToolNameMap map[string]string
+	// LiftReasoningAliases patches passthrough deltas to expose alias-shaped
+	// thinking as reasoning_content (opencode quirk).
+	LiftReasoningAliases bool
 }
 
 // sseStream pipes SSE chunks to client with optional format translation.
@@ -153,6 +157,7 @@ func sseStream(o sseStreamOpts) error {
 	translate, startTime := o.Translate, o.StartTime
 	ttft, buf := o.TTFT, o.Buf
 	ctx, toolNameMap := o.Ctx, o.ToolNameMap
+	liftAliases := o.LiftReasoningAliases
 
 	// A /v1/responses client on a Chat Completions upstream needs the answer
 	// replayed as Responses events. The branch sits ahead of the header write
@@ -181,6 +186,9 @@ func sseStream(o sseStreamOpts) error {
 				for _, ev := range events {
 					if len(ev.Payload) == 0 {
 						continue
+					}
+					if liftAliases {
+						ev.Payload = liftReasoningAliasesPayload(ev.Payload)
 					}
 					if bytes.Contains(ev.Payload, []byte(`"message_delta"`)) || bytes.Contains(ev.Payload, []byte(`"message_stop"`)) {
 						sawTerminal = true
@@ -235,6 +243,10 @@ func sseStream(o sseStreamOpts) error {
 			}
 			return err
 		}
+		var patchers []func([]byte) []byte
+		if liftAliases {
+			patchers = append(patchers, liftReasoningAliasesPayload)
+		}
 		return proxy.SSECopy(hw, upstream, flusher, func(chunk []byte) {
 			if ttft != nil && *ttft == 0 {
 				*ttft = time.Since(startTime).Milliseconds()
@@ -243,7 +255,7 @@ func sseStream(o sseStreamOpts) error {
 				buf.Write(chunk)
 			}
 			captureUsageFromSSEChunk(ctx, chunk)
-		})
+		}, patchers...)
 	}
 
 	sessionKey := translator.NewSessionKey("stream")

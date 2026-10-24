@@ -111,29 +111,3 @@ func streamToolCallIndex(tc map[string]any) (int, bool) {
 	}
 	return 0, false
 }
-
-// patchLine patches one complete SSE line (including its terminator) when it
-// carries a `data:` payload needing an id fill.
-func (f *StreamToolCallIDFill) patchLine(line []byte) ([]byte, bool) {
-	trimmed := bytes.TrimLeft(line, " \t")
-	if !bytes.HasPrefix(trimmed, []byte("data:")) {
-		return nil, false
-	}
-	payload := bytes.TrimSpace(trimmed[len("data:"):])
-	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-		return nil, false
-	}
-	patched, changed := f.Fill(payload)
-	if !changed {
-		return nil, false
-	}
-	term := []byte("\n")
-	if bytes.HasSuffix(line, []byte("\r\n")) {
-		term = []byte("\r\n")
-	}
-	out := make([]byte, 0, len("data: ")+len(patched)+len(term))
-	out = append(out, []byte("data: ")...)
-	out = append(out, patched...)
-	out = append(out, term...)
-	return out, true
-}

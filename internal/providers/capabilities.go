@@ -313,6 +313,16 @@ var devinCLIGPTCaps = Capabilities{
 	ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 128000,
 }
 var providerCapabilities = map[string]map[string]Capabilities{
+	// OpenCode Free (oc): the free lane's MiMo route is OpenRouter-backed and
+	// takes the plain OpenAI reasoning_effort enum verbatim ("none" really
+	// drops thinking). The global *mimo*v2.6* pattern describes Xiaomi's own
+	// API (DeepSeek-shaped thinking object, always on), which this lane
+	// ignores: thinking.type:disabled still streamed reasoning. Limits repeat
+	// the family pattern deliberately: the synced catalog carries no opencode
+	// limit delta for this id, so 1M/131k is what the lane already published.
+	"opencode": {
+		"mimo-v2.6-flash-free": {Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ThinkingCanDisable: new(true), ContextWindow: 1048576, MaxOutput: 131072},
+	},
 	"nvidia": {
 		"minimaxai/minimax-m2.7":        {Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
 		"minimaxai/minimax-m3":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},

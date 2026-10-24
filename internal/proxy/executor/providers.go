@@ -683,6 +683,12 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 	}
 
 	body := InjectReasoningContent(req.Body, "opencode")
+	// The free lane's MiMo route streams thinking as reasoning +
+	// reasoning_details[] instead of reasoning_content; the passthrough lifts
+	// the alias so OpenAI-shaped clients see the thinking. Every other model
+	// on the lane already emits reasoning_content, so the lift is a no-op
+	// there (upstream quirks.reasoningAliasFields).
+	req.LiftReasoningAliases = true
 	// opencode Chat Completions path: same conceal + restore of tool names.
 	body, toolNameMap := translator.ConcealOpenCodeV2FingerprintTools(body, false, isOpenCodeAutoToolChoiceModel(cleanModel))
 	req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
@@ -695,6 +701,14 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		reqMap["stream"] = true
 		if cleanModel != "" {
 			reqMap["model"] = cleanModel
+		}
+		// The free backend validates reasoning_effort against the plain
+		// OpenAI enum and answers 400 "Invalid option" for "auto", which
+		// adaptive thinking (Claude Code's thinking:{type:"adaptive"})
+		// arrives as. Omitting it lets the upstream pick its own default,
+		// which is what adaptive means.
+		if v, ok := reqMap["reasoning_effort"].(string); ok && v == "auto" {
+			delete(reqMap, "reasoning_effort")
 		}
 		// Deterministic marshaling keeps the serialized request prefix
 		// stable across turns, which DeepSeek's prefix prompt cache
