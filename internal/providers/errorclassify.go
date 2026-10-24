@@ -45,6 +45,13 @@ var ErrorRules = []ErrorRule{
 	{Text: "rate limit", Backoff: true},
 	{Text: "too many requests", Backoff: true},
 	{Text: "quota exceeded", Backoff: true},
+	// Out-of-credits arrives as a 400 from several providers ("insufficient
+	// credits" / Anthropic's "credit balance is too low"). The combo advance
+	// happens through the request-scoped 4xx path, but without these rules
+	// the spent account reads as healthy and is retried on every pass
+	// (upstream b82f5c4a).
+	{Text: "insufficient credit", Backoff: true},
+	{Text: "credit balance is too low", Backoff: true},
 	{Text: "capacity", Backoff: true},
 	{Text: "overloaded", Backoff: true},
 	{Text: "resource_exhausted", Backoff: true},

@@ -29,6 +29,29 @@ func TestClassifyError_ResourceExhausted429(t *testing.T) {
 	}
 }
 
+func TestClassifyError_CreditExhaustionBacksOff(t *testing.T) {
+	// Out-of-credits 400s are account-scoped: fall back and cool the account
+	// down with an incremented backoff level instead of leaving it healthy
+	// (upstream b82f5c4a).
+	for _, text := range []string{"Insufficient credits to complete this request", "Your credit balance is too low to access the API"} {
+		cls := ClassifyError(http.StatusBadRequest, text, 0)
+		if !cls.ShouldFallback {
+			t.Errorf("expected fallback for %q, got %+v", text, cls)
+		}
+		if cls.NewBackoffLevel != 1 {
+			t.Errorf("expected backoff level 1 for %q, got %d", text, cls.NewBackoffLevel)
+		}
+		if cls.CooldownMs != BackoffConfig.BaseMs {
+			t.Errorf("expected %dms cooldown for %q, got %d", BackoffConfig.BaseMs, text, cls.CooldownMs)
+		}
+	}
+	// A 400 that carries no account fault still says nothing about the credential.
+	cls := ClassifyError(http.StatusBadRequest, "invalid request body", 0)
+	if cls.ShouldFallback {
+		t.Errorf("expected no fallback for a plain 400, got %+v", cls)
+	}
+}
+
 func TestClassifyError_Status503Fallback(t *testing.T) {
 	// Plain 503 without specific matching text should trigger backoff via status rule
 	cls := ClassifyError(http.StatusServiceUnavailable, "", 0)
