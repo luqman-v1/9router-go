@@ -190,6 +190,7 @@ var ProviderModels = map[string][]string{
 	"selfhosted-embedding": {"embedding"},
 	"selfhosted-stt":       {"whisper-1"},
 	"selfhosted-tts":       {"kokoro"},
+	"sensenova":            {"sensenova-6.8-flash-lite", "sensenova-u1.5-lite", "sensenova-u1.5-fast", "deepseek-v4-flash", "deepseek-flash", "glm-5.2", "kimi-k3"},
 	"siliconflow":          {"deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V3.2", "deepseek-ai/DeepSeek-V3.2-Exp", "deepseek-ai/DeepSeek-V3.1", "deepseek-ai/DeepSeek-V3.1-Terminus", "deepseek-ai/DeepSeek-R1", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-122B-A10B", "zai-org/GLM-5.1", "zai-org/GLM-5", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.5", "openai/gpt-oss-120b", "MiniMaxAI/MiniMax-M2.5", "inclusionAI/Ling-flash-2.0"},
 	"stability":            {"stable-image-ultra", "stable-image-core", "sd3.5-large", "sd3.5-large-turbo", "sd3.5-medium"},
 	"stability-ai":         {"stable-image-ultra", "stable-image-core", "sd3.5-large", "sd3.5-large-turbo", "sd3.5-medium"},

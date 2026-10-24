@@ -122,6 +122,7 @@ export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
   "selfhosted-stt": "selfhosted-stt",
   "selfhosted-tts": "selfhosted-tts",
   "siliconflow": "siliconflow",
+  "sensenova": "sensenova",
   "stability-ai": "stability",
   "tencent": "hunyuan",
   "together": "together",
@@ -4918,6 +4919,54 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
         "size"
       ],
       "kind": "image"
+    }
+  ],
+  "sensenova": [
+    {
+      "id": "sensenova-6.8-flash-lite",
+      "name": "SenseNova 6.8 Flash Lite"
+    },
+    {
+      "id": "sensenova-u1.5-lite",
+      "name": "SenseNova U1.5 Lite",
+      "kind": "image",
+      "params": [
+        "n",
+        "size",
+        "output_format",
+        "response_format",
+        "watermark",
+        "prompt_extend"
+      ]
+    },
+    {
+      "id": "sensenova-u1.5-fast",
+      "name": "SenseNova U1.5 Fast",
+      "kind": "image",
+      "params": [
+        "n",
+        "size",
+        "output_format",
+        "response_format",
+        "watermark",
+        "prompt_extend"
+      ]
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "name": "DeepSeek V4 Flash"
+    },
+    {
+      "id": "deepseek-flash",
+      "name": "DeepSeek V4.1 Flash"
+    },
+    {
+      "id": "glm-5.2",
+      "name": "GLM-5.2"
+    },
+    {
+      "id": "kimi-k3",
+      "name": "Kimi K3"
     }
   ],
   "siliconflow": [

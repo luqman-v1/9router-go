@@ -534,6 +534,12 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"sensenova": {
+		BaseURL:    "https://token.sensenova.cn/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		ImageURL:   "https://token.sensenova.cn/v1/images/generations",
+	},
 	"cloudflare-ai": {
 		BaseURL:    "https://api.cloudflare.com/client/v4/accounts/" + os.Getenv("CLOUDFLARE_ACCOUNT_ID") + "/ai/v1/chat/completions",
 		AuthHeader: "Authorization",
