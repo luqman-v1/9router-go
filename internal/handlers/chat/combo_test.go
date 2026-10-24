@@ -789,12 +789,12 @@ func TestApplyCapacityAdapter_DoesNotFoldAdapterIntoComboRotation(t *testing.T) 
 		t.Fatalf("seed settings: %v", err)
 	}
 	h := NewChatHandler(db.NewRepo(database))
-	comboModels := []string{"oc/space-bunny-free"}
+	comboModels := []string{"oc/jev-1.13-free"}
 
 	t.Run("vision turn is governed by the adapter strategy, not the combo's", func(t *testing.T) {
 		augmented, strategy, injected := h.applyCapacityAdapter(comboModels, map[string]bool{"vision": true}, "round-robin", "combo-wombo", "")
 
-		if !slices.Equal(augmented, []string{"ag/gemini-3.8-flash-high", "oc/space-bunny-free"}) {
+		if !slices.Equal(augmented, []string{"ag/gemini-3.8-flash-high", "oc/jev-1.13-free"}) {
 			t.Fatalf("expected the vision adapter model prepended, got %v", augmented)
 		}
 		if !slices.Equal(injected, []string{"ag/gemini-3.8-flash-high"}) {
@@ -811,7 +811,7 @@ func TestApplyCapacityAdapter_DoesNotFoldAdapterIntoComboRotation(t *testing.T) 
 			if rotated[0] != "ag/gemini-3.8-flash-high" {
 				t.Fatalf("turn %d served by %s, want ag/gemini-3.8-flash-high", turn, rotated[0])
 			}
-			if rotated[len(rotated)-1] != "oc/space-bunny-free" {
+			if rotated[len(rotated)-1] != "oc/jev-1.13-free" {
 				t.Fatalf("turn %d lost the combo fallback, got %v", turn, rotated)
 			}
 		}
@@ -820,7 +820,7 @@ func TestApplyCapacityAdapter_DoesNotFoldAdapterIntoComboRotation(t *testing.T) 
 	t.Run("text-only turn keeps the combo's own strategy and list", func(t *testing.T) {
 		augmented, strategy, injected := h.applyCapacityAdapter(comboModels, map[string]bool{"tools": true}, "round-robin", "combo-wombo", "")
 
-		if len(augmented) != 1 || augmented[0] != "oc/space-bunny-free" {
+		if len(augmented) != 1 || augmented[0] != "oc/jev-1.13-free" {
 			t.Fatalf("expected an untouched list, got %v", augmented)
 		}
 		if injected != nil {
