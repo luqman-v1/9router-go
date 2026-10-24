@@ -113,7 +113,7 @@ func TestOpencodeClosureError_NonOpencodePassesThrough(t *testing.T) {
 		Body:       []byte(`{"error":{"type":"FreeTierError","message":"not allowed"}}`),
 	}
 	classified := opencodeClosureError("claude", "claude-3-5-sonnet", origErr)
-	if classified != origErr {
+	if !errors.Is(classified, origErr) {
 		t.Errorf("expected original error untouched for non-opencode provider")
 	}
 }
@@ -124,7 +124,7 @@ func TestOpencodeClosureError_NonFreeTierErrorPassesThrough(t *testing.T) {
 		Body:       []byte(`{"error":{"type":"AuthError","message":"invalid token"}}`),
 	}
 	classified := opencodeClosureError("opencode", "model", origErr)
-	if classified != origErr {
+	if !errors.Is(classified, origErr) {
 		t.Errorf("expected original error untouched for non-FreeTierError")
 	}
 }
