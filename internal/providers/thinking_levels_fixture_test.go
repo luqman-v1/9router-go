@@ -18,7 +18,7 @@ import (
 //	  go test ./internal/providers/ -run TestDumpCatalogPairs -count=1
 //	node scripts/gen-thinking-levels.mjs <upstream-checkout> v0.5.99 \
 //	  internal/providers/testdata/catalog_pairs.json
-const upstreamLevelsFixtureVersion = "v0.5.99"
+const upstreamLevelsFixtureVersion = "v0.5.109"
 
 // pendingUpstreamDivergences lists (provider, model) pairs where the Go
 // resolver intentionally answers differently from the captured tag. Each entry
@@ -50,6 +50,17 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 	"agnes": {
 		"agnes-3.0-pro":   {"none", "minimal", "low", "medium", "high", "xhigh"},
 		"agnes-3.0-flash": {"none", "minimal", "low", "medium", "high", "xhigh"},
+	},
+	// gemini-web: the Go override (providerCapabilities["gemini-web"]) narrows
+	// the site surface deliberately — the composer has no thinking toggle the
+	// executor can set, and its Lite models publish no reasoning level. The
+	// upstream rows advertise the API surface's levels, which the site cannot
+	// honour. These are Go-intentional, not pending.
+	"gemini-web": {
+		"gemini-pro":            {"minimal", "low", "medium", "high"},
+		"gemini-flash":          {"minimal", "low", "medium", "high"},
+		"gemini-argon":          {"low", "medium", "high"},
+		"gemini-3.1-flash-lite": nil,
 	},
 }
 

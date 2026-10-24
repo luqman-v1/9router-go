@@ -252,7 +252,9 @@ func TestQoderIsBillingBlock(t *testing.T) {
 	}{
 		{"daily billing count", `{"code":110,"message":"exceeded"}`, true},
 		{"quota exhausted", `{"code":112,"message":"quota"}`, true},
-		{"queue throttle", `{"code":10605,"message":"busy"}`, true},
+		// 10605 is the model-queue throttle — a transient capacity signal the
+		// executor waits out, not a billing block.
+		{"queue throttle", `{"code":10605,"message":"busy"}`, false},
 		{"pricing page pointer", `{"message":"see pricingUrl"}`, true},
 		{"ordinary model error", `{"code":400,"message":"flow nodes not found"}`, false},
 		{"empty", ``, false},

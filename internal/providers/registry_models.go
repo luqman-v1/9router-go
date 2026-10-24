@@ -179,8 +179,11 @@ var ProviderModels = map[string][]string{
 	"qd":                   {"ultimate", "auto", "performance", "efficient", "lite", "qmodel_38max", "qmodel_latest", "qmodel", "qfmodel", "kmodel_latest", "kmodel", "gmodel", "gfmodel", "dmodel", "dfmodel", "mmodel"},
 	"qdcn":                 {"ultimate", "auto", "performance", "efficient", "lite", "qmodel_38max", "qmodel_latest", "qmodel", "qfmodel", "kmodel_latest", "kmodel", "gmodel", "gfmodel", "dmodel", "dfmodel", "mmodel"},
 	"qianfan":              {"deepseek-v4-pro", "deepseek-v4-flash", "glm-5.2", "glm-5.1", "kimi-k2.6", "qwen3.5-397b-a17b", "qwen3.5-27b"},
-	"qoder":                {"ultimate", "auto", "performance", "efficient", "lite", "qmodel_38max", "qmodel_latest", "qmodel", "qfmodel", "kmodel_latest", "kmodel", "gmodel", "gfmodel", "dmodel", "dfmodel", "mmodel"},
-	"qoder-cn":             {"ultimate", "auto", "performance", "efficient", "lite", "qmodel_38max", "qmodel_latest", "qmodel", "qfmodel", "kmodel_latest", "kmodel", "gmodel", "gfmodel", "dmodel", "dfmodel", "mmodel"},
+	// smodel (Sonus) / cmodel (Cantus): the frontier reasoning pair is absent
+	// from many per-account catalogs, so the executor falls back to a static
+	// model_config; they stay listed so the picker still offers them.
+	"qoder":                {"ultimate", "auto", "performance", "efficient", "lite", "qmodel_38max", "qmodel_latest", "qmodel", "qfmodel", "kmodel_latest", "kmodel", "gmodel", "gfmodel", "dmodel", "dfmodel", "mmodel", "smodel", "cmodel"},
+	"qoder-cn":             {"ultimate", "auto", "performance", "efficient", "lite", "qmodel_38max", "qmodel_latest", "qmodel", "qfmodel", "kmodel_latest", "kmodel", "gmodel", "gfmodel", "dmodel", "dfmodel", "mmodel", "smodel", "cmodel"},
 	"recraft":              {"recraftv3", "recraftv2"},
 	"runway":               {"gen4_image", "gen4_image_turbo", "gen4_turbo", "gen3a_turbo"},
 	"runwayml":             {"gen4_image", "gen4_image_turbo", "gen4_turbo", "gen3a_turbo"},
