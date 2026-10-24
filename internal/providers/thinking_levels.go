@@ -97,6 +97,12 @@ var patternThinking = []thinkingPattern{
 	// deepseek-v4.1-flash (upstream decolua/9router#4614).
 	{Provider: "codebuddy-cn", Pattern: "deepseek-v4-pro", Levels: []string{"low", "high", "xhigh"}},
 	{Provider: "codebuddy-cn", Pattern: "deepseek-v4.1-flash", Levels: []string{"low", "high", "max"}},
+	// OpenCode Zen free tier (oc / ocz) — the free id of the same v4.1-flash
+	// model publishes low|high|max, and unlike DeepSeek's own API the upstream
+	// forwards the level verbatim (no low→high collapse). The generic
+	// *deepseek-v4.* glob below would advertise medium/xhigh, which the model
+	// does not serve, so this entry MUST stay above it (upstream 313559f4).
+	{Pattern: "*deepseek-v4.1-flash-free*", Levels: []string{"low", "high", "max"}},
 	{Pattern: "*deepseek-v4.*", Levels: []string{"none", "low", "medium", "high", "xhigh", "max"}},
 	// codebuddy-cn per-model effort sets — the server's product-config payload
 	// publishes `reasoning.supportedEfforts` per model. NOTE: the chat endpoint
@@ -306,12 +312,21 @@ func parseDigits(s string) (int, bool) {
 //
 // The rule is deliberately general: any level set omitting "max" would hit the
 // same rejection, and levelOpenAI (GPT-5.x, o-series) has no "max" either.
+//
+// Upstream 313559f4: the declared levels also win where they disagree with the
+// DeepSeek collapse — zen's free deepseek-v4.1-flash publishes low|high|max and
+// its upstream takes the level verbatim, so "low" is preserved when the set
+// declares it instead of collapsing to "high".
 func ClampDeepseekEffort(provider, model, level string) string {
+	levels := GetThinkingLevels(provider, model)
+	if (level == "low" || level == "minimal") && slices.Contains(levels, "low") {
+		return "low"
+	}
 	want := "high"
 	if level == "xhigh" || level == "max" {
 		want = "max"
 	}
-	if want == "max" && !slices.Contains(GetThinkingLevels(provider, model), "max") {
+	if want == "max" && !slices.Contains(levels, "max") {
 		return "high"
 	}
 	return want
