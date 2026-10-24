@@ -288,31 +288,97 @@ func (h *ChatHandler) handleAccountFallback(
 // assume its key is wrong. The upstream's own wording is preserved in the
 // message so the cause is still diagnosable, and the type names the condition
 // so a client can branch on it without string matching.
+type opencodeRefusalDetail struct {
+	StatusCode int
+	ErrorType  string
+	Message    string
+	RetryAfter int
+}
+
+func classifyOpencodeFreeTierRefusal(provider string, body []byte) opencodeRefusalDetail {
+	msg := extractErrorText(body)
+	lower := strings.ToLower(msg)
+
+	switch {
+	case strings.Contains(lower, "not available in your country") ||
+		strings.Contains(lower, "country_blocked") ||
+		strings.Contains(lower, "country not allowed") ||
+		strings.Contains(lower, "region"):
+		return opencodeRefusalDetail{
+			StatusCode: http.StatusForbidden,
+			ErrorType:  "free_tier_region_blocked",
+			Message:    fmt.Sprintf("OpenCode's free tier is not available in your region (%s). Route through a proxy pool in a supported country.", provider),
+		}
+
+	case strings.Contains(lower, "rate limit") ||
+		strings.Contains(lower, "too many requests") ||
+		strings.Contains(lower, "freeusagelimiterror") ||
+		strings.Contains(lower, "quota"):
+		return opencodeRefusalDetail{
+			StatusCode: http.StatusTooManyRequests,
+			ErrorType:  "free_tier_quota_exhausted",
+			Message:    fmt.Sprintf("OpenCode free tier rate limit or quota exceeded for this egress. Retry in about 60s, rotate proxy pool, or use a paid %s key.", provider),
+			RetryAfter: 60,
+		}
+
+	case strings.Contains(lower, "upgrade required") ||
+		strings.Contains(lower, "upgrade_required") ||
+		strings.Contains(lower, "client version") ||
+		strings.Contains(lower, "version deprecated"):
+		return opencodeRefusalDetail{
+			StatusCode: http.StatusUpgradeRequired,
+			ErrorType:  "free_tier_upgrade_required",
+			Message:    "OpenCode client version is deprecated or requires upgrade.",
+		}
+
+	case strings.Contains(lower, "detect abuse traffic") ||
+		strings.Contains(lower, "abuse"):
+		return opencodeRefusalDetail{
+			StatusCode: http.StatusServiceUnavailable,
+			ErrorType:  "free_tier_abuse_detected",
+			Message:    "OpenCode free tier gateway flagged abuse traffic on this egress. Route through a clean residential/ISP proxy pool, or retry in about 30s.",
+			RetryAfter: 30,
+		}
+
+	default:
+		const retryAfterSeconds = 30
+		return opencodeRefusalDetail{
+			StatusCode: http.StatusServiceUnavailable,
+			ErrorType:  "free_tier_unavailable",
+			Message: fmt.Sprintf(
+				"OpenCode's free tier is not serving requests right now. This is an upstream condition rather than a problem with your request or credentials. Retry in about %ds, or use a paid %s key or another provider.",
+				retryAfterSeconds, provider,
+			),
+			RetryAfter: retryAfterSeconds,
+		}
+	}
+}
+
 func opencodeClosureError(provider, model string, err error) error {
 	var ue *upstreamError
 	if !errors.As(err, &ue) || !isOpencodeFreeTierRefusal(provider, ue) {
 		return err
 	}
-	const retryAfterSeconds = 30
+	detail := classifyOpencodeFreeTierRefusal(provider, ue.Body)
 	body, _ := json.Marshal(map[string]any{
 		"error": map[string]any{
-			"message": fmt.Sprintf(
-				"OpenCode's free tier is not serving requests right now. This is an upstream condition rather than a problem with your request or credentials. Retry in about %ds, or use a paid %s key or another provider.",
-				retryAfterSeconds, provider,
-			),
-			"type": "free_tier_unavailable",
-			"code": http.StatusServiceUnavailable,
+			"message": detail.Message,
+			"type":    detail.ErrorType,
+			"code":    detail.StatusCode,
 		},
 	})
-	log.Warn("fallback", "opencode free tier refused after retries; reporting unavailable instead of the raw 403",
-		"provider", provider, "model", model, "retry_after_s", retryAfterSeconds)
+	log.Warn("fallback", "opencode free tier refused after retries; reporting classified failure",
+		"provider", provider, "model", model, "type", detail.ErrorType, "status", detail.StatusCode)
+	header := http.Header{
+		"Content-Type": []string{"application/json"},
+	}
+	if detail.RetryAfter > 0 {
+		header.Set("Retry-After", fmt.Sprint(detail.RetryAfter))
+	}
 	return &upstreamError{
-		StatusCode: http.StatusServiceUnavailable,
+		StatusCode: detail.StatusCode,
 		Body:       body,
-		Header: http.Header{
-			"Retry-After":  []string{fmt.Sprint(retryAfterSeconds)},
-			"Content-Type": []string{"application/json"},
-		},
+		Header:     header,
 	}
 }
 
