@@ -4854,7 +4854,7 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "mmodel",
       "name": "MiniMax-M3"
-    }
+    },
     {
       "id": "smodel",
       "name": "Sonus"
