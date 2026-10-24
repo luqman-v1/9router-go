@@ -3,7 +3,9 @@ package executor
 import (
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/translator"
 	json "encoding/json/v2"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -628,25 +630,35 @@ func TestIsOpencodeResponsesModel(t *testing.T) {
 	}
 }
 
-func TestIsOpencodeGoResponsesModel(t *testing.T) {
-	// The paid go lane keeps its pre-v2 predicate: narrowing it to the free
-	// ids would silently move paid traffic to the chat lane.
+func TestGoTargetFormat(t *testing.T) {
+	// Upstream resolveTransport (chatCore): a client that speaks a lane the
+	// model serves is forwarded on it, anything else is translated into the
+	// model's target lane (opencode-go.js models[] supportedFormats).
+	chatCtx := context.Background()
+	responsesCtx := translator.WithClientFormat(context.Background(), translator.ClientFormatResponses)
 	tests := []struct {
+		name  string
+		ctx   context.Context
 		model string
-		want  bool
+		want  string
 	}{
-		{"muse-spark-1.2-contributor", true},
-		{"muse-spark-1.3-contributor", true},
-		{"muse-spark-1.2-contributor-free", true},
-		{"grok-4.6", true},
-		{"gpt-5.6-luna", true},
-		{"space-bunny-free", false},
-		{"glm-5.2", false},
+		{"muse-spark pins the responses lane", chatCtx, "muse-spark-1.3-contributor", providers.FormatOpenAIResponses},
+		{"grok-4.6 keeps the responses lane", chatCtx, "grok-4.6", providers.FormatOpenAIResponses},
+		{"grok-4.5 answers the grok family on responses", chatCtx, "grok-4.5", providers.FormatOpenAIResponses},
+		{"grok-4.7 answers the grok family on responses", chatCtx, "grok-4.7", providers.FormatOpenAIResponses},
+		{"gpt-5.6-luna keeps the responses lane", chatCtx, "gpt-5.6-luna", providers.FormatOpenAIResponses},
+		{"gpt-6-luna answers the gpt family on responses", chatCtx, "gpt-6-luna", providers.FormatOpenAIResponses},
+		{"chat client keeps deepseek-v4.1-flash on chat", chatCtx, "deepseek-v4.1-flash", providers.FormatOpenAI},
+		{"responses client takes deepseek-v4.1-flash to responses", responsesCtx, "deepseek-v4.1-flash", providers.FormatOpenAIResponses},
+		{"chat client keeps deepseek-v4-pro on chat", chatCtx, "deepseek-v4-pro", providers.FormatOpenAI},
+		{"responses client takes deepseek-v4-pro to responses", responsesCtx, "deepseek-v4-pro", providers.FormatOpenAIResponses},
+		{"claude-haiku-5-5 stays on messages", chatCtx, "claude-haiku-5-5", providers.FormatClaude},
+		{"unknown id defaults to chat", chatCtx, "some-future-model", providers.FormatOpenAI},
 	}
 	for _, tt := range tests {
-		t.Run(tt.model, func(t *testing.T) {
-			if got := isOpencodeGoResponsesModel(tt.model); got != tt.want {
-				t.Errorf("isOpencodeGoResponsesModel(%q) = %v, want %v", tt.model, got, tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			if got := goTargetFormat(tt.ctx, tt.model); got != tt.want {
+				t.Errorf("goTargetFormat(%q) = %q, want %q", tt.model, got, tt.want)
 			}
 		})
 	}
@@ -872,6 +884,83 @@ func TestNormalizeMuseSparkResponsesBody_ReasoningAndToolChoice(t *testing.T) {
 	fc, _ := inList[1].(map[string]any)
 	if fc["encrypted_content"] != nil {
 		t.Errorf("expected encrypted_content deleted from function_call, got %v", fc["encrypted_content"])
+	}
+}
+
+func TestNormalizeMuseSparkResponsesBody_ReasoningNesting(t *testing.T) {
+	// Parity with the openai-responses branch of upstream applyFormat
+	// (open-sse/translator/concerns/thinkingUnified.js, #3014): the nested
+	// reasoning:{effort,summary} shape replaces the Chat-shaped fields, and
+	// "none" is expressed by omitting reasoning rather than by an effort level.
+	tests := []struct {
+		name        string
+		model       string
+		body        string
+		wantEffort  any
+		wantSummary any
+		wantOmitted bool
+	}{
+		{
+			name:        "top-level reasoning_effort nests with summary auto",
+			model:       "deepseek-v4.1-flash",
+			body:        `{"model":"deepseek-v4.1-flash","reasoning_effort":"high","input":[]}`,
+			wantEffort:  "high",
+			wantSummary: "auto",
+		},
+		{
+			name:        "nested reasoning keeps a client-set summary",
+			model:       "deepseek-v4.1-flash",
+			body:        `{"model":"deepseek-v4.1-flash","reasoning":{"effort":"high","summary":"concise"},"input":[]}`,
+			wantEffort:  "high",
+			wantSummary: "concise",
+		},
+		{
+			name:        "nested effort none omits reasoning",
+			model:       "deepseek-v4.1-flash",
+			body:        `{"model":"deepseek-v4.1-flash","reasoning":{"effort":"none"},"input":[]}`,
+			wantOmitted: true,
+		},
+		{
+			name:        "top-level effort none omits reasoning",
+			model:       "deepseek-v4.1-flash",
+			body:        `{"model":"deepseek-v4.1-flash","reasoning_effort":"none","input":[]}`,
+			wantOmitted: true,
+		},
+		{
+			name:        "muse-spark effort high nests the same way",
+			model:       "muse-spark-1.3",
+			body:        `{"model":"muse-spark-1.3","reasoning_effort":"high","input":[]}`,
+			wantEffort:  "high",
+			wantSummary: "auto",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := normalizeMuseSparkResponsesBody([]byte(tt.body), "oc/"+tt.model)
+			if err != nil {
+				t.Fatalf("normalize failed: %v", err)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(out, &parsed); err != nil {
+				t.Fatalf("unmarshal output: %v", err)
+			}
+			if tt.wantOmitted {
+				if _, ok := parsed["reasoning"]; ok {
+					t.Errorf("expected reasoning omitted, got %v", parsed["reasoning"])
+				}
+				if _, ok := parsed["reasoning_effort"]; ok {
+					t.Errorf("expected reasoning_effort dropped, got %v", parsed["reasoning_effort"])
+				}
+				return
+			}
+			rMap, _ := parsed["reasoning"].(map[string]any)
+			if rMap["effort"] != tt.wantEffort || rMap["summary"] != tt.wantSummary {
+				t.Errorf("expected reasoning {effort:%v, summary:%v}, got %v", tt.wantEffort, tt.wantSummary, parsed["reasoning"])
+			}
+			if _, ok := parsed["reasoning_effort"]; ok {
+				t.Errorf("expected Chat-shaped reasoning_effort dropped, got %v", parsed["reasoning_effort"])
+			}
+		})
 	}
 }
 

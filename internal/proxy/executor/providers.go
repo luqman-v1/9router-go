@@ -1328,7 +1328,7 @@ func normalizeClaudeBlocks(c any) []any {
 // plus any Muse Spark model (upstream isMuseSparkModel:
 // /^muse[-_]?spark(?:$|[-_:.\s])/i), so future free Spark ids keep the
 // Responses lane without a code change. Paid lanes must not share this
-// predicate — opencode-go has its own (isOpencodeGoResponsesModel).
+// predicate — opencode-go routes on the catalog (goTargetFormat).
 func isOpencodeResponsesModel(model string) bool {
 	base := model
 	if parenIdx := strings.IndexByte(base, '('); parenIdx != -1 {
@@ -1350,15 +1350,22 @@ func isOpencodeResponsesModel(model string) bool {
 	return false
 }
 
-// isOpencodeGoResponsesModel preserves the paid opencode-go lane rule exactly
-// as it was before the v2 free-tier port: go models route on the broader
-// predicate and must never follow the free executor's narrowing.
-func isOpencodeGoResponsesModel(model string) bool {
-	base := model
-	if parenIdx := strings.IndexByte(base, '('); parenIdx != -1 {
-		base = base[:parenIdx]
+// goTargetFormat reports which opencode-go endpoint a request must travel on,
+// the paid sibling of zenTargetFormat and museTargetFormat: a client that
+// already speaks a lane the model serves is forwarded on it, anything else is
+// translated into the model's target lane (open-sse/handlers/chatCore.js
+// resolveTransport). deepseek-v4* serves /responses next to chat, so a
+// Responses client reaches it with nested reasoning while a Chat client keeps
+// the deepseek thinking shape on /chat/completions.
+func goTargetFormat(ctx context.Context, model string) string {
+	formats, declared := providers.GetModelFormats("opencode-go", model)
+	if !declared {
+		return providers.FormatOpenAI
 	}
-	return strings.Contains(base, "muse-spark") || base == "grok-4.6" || base == "gpt-5.6-luna"
+	if formats.SupportsFormat(clientFormatFor(ctx)) {
+		return clientFormatFor(ctx)
+	}
+	return formats.TargetFormat
 }
 
 func deriveOpencodeSession(rawSession, clientTool, connID string) string {
@@ -1463,7 +1470,9 @@ func museSparkCleanModel(model string) string {
 }
 
 // normalizeMuseSparkResponsesBody reshapes an OpenAI Responses body for the
-// Muse Spark lane. model is the id exactly as the client sent it (prefix and
+// opencode /responses lanes: the Muse Spark ids it is named for, plus every
+// other model the go lane routes there (deepseek-v4*, grok-4.x, gpt-*-luna).
+// model is the id exactly as the client sent it (prefix and
 // "(level)" override included) so the request modifier survives the cleaning.
 func normalizeMuseSparkResponsesBody(body []byte, model string) ([]byte, error) {
 	cleanModel := museSparkCleanModel(model)
@@ -1472,20 +1481,37 @@ func normalizeMuseSparkResponsesBody(body []byte, model string) ([]byte, error) 
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body, nil
 	}
+	// Reasoning folds into the nested Responses shape the way
+	// applyZenResponsesReasoning does for zen: an explicit "none" has no nested
+	// equivalent and is expressed upstream by removing reasoning entirely —
+	// sending effort "none" instead asks a model to think at the lowest level
+	// rather than to not think, which is a different (and billable) request.
 	if rEffort, ok := m["reasoning_effort"].(string); ok {
-		if rEffort == "max" {
-			rEffort = "xhigh"
-		}
-		m["reasoning"] = map[string]any{
-			"effort":  rEffort,
-			"summary": "auto",
-		}
 		delete(m, "reasoning_effort")
-	} else if rMap, ok := m["reasoning"].(map[string]any); ok {
-		if eff, ok := rMap["effort"].(string); ok && eff == "max" {
-			rMap["effort"] = "xhigh"
+		if strings.EqualFold(strings.TrimSpace(rEffort), "none") {
+			delete(m, "reasoning")
+		} else if rEffort != "" {
+			if rEffort == "max" {
+				rEffort = "xhigh"
+			}
+			m["reasoning"] = map[string]any{
+				"effort":  rEffort,
+				"summary": "auto",
+			}
 		}
-		rMap["summary"] = "auto"
+	} else if rMap, ok := m["reasoning"].(map[string]any); ok {
+		if eff, ok := rMap["effort"].(string); ok {
+			if strings.EqualFold(strings.TrimSpace(eff), "none") {
+				delete(m, "reasoning")
+			} else if eff == "max" {
+				rMap["effort"] = "xhigh"
+			}
+		}
+		if _, still := m["reasoning"]; still {
+			if rMap["summary"] == nil {
+				rMap["summary"] = "auto"
+			}
+		}
 	} else if effort := museSparkEffortSuffix(model); effort != "" {
 		// Fill-only: an explicit body effort already won above, so the model-id
 		// override never silently replaces what the caller asked for in the body.
@@ -1693,7 +1719,7 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		return forwardOpencodeGoGemini(w, req, cleanModel, sessionHeader)
 	}
 
-	if isOpencodeGoResponsesModel(cleanModel) {
+	if goTargetFormat(reqCtx(req), cleanModel) == providers.FormatOpenAIResponses {
 		// Route through Responses API format: https://opencode.ai/zen/go/v1/responses (#3819, #3820, v0.5.75)
 		transformedBody, _, err := buildResponsesBody(req.Body)
 		if err != nil {

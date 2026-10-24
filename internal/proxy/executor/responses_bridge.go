@@ -32,9 +32,10 @@ import (
 //   - a base URL that is the /responses endpoint itself (codex, grok-cli,
 //     perplexity-agent) — the same test the opencode executors use before
 //     appending /responses to their chat base URL;
-//   - an opencode model whose declared target format is the Responses lane
-//     (muse-spark, grok-4.6, gpt-5.6-luna) — a chat-completions or Claude
-//     client asking for the same model is translated in, not relayed.
+//   - an opencode model whose declared formats include the Responses lane —
+//     the grok/gpt/muse-spark families pin it as their only lane, and
+//     deepseek-v4* serves it alongside chat (upstream models[] supportedFormats) —
+//     so a /v1/responses client is relayed while other clients are translated in.
 func UpstreamSpeaksResponses(provider, model string, cfg *providers.ProviderConfig) bool {
 	if cfg != nil && strings.HasSuffix(strings.TrimRight(cfg.BaseURL, "/"), "/responses") {
 		return true
@@ -45,11 +46,10 @@ func UpstreamSpeaksResponses(provider, model string, cfg *providers.ProviderConf
 		if !declared {
 			return isOpencodeResponsesModel(cleanResponsesModel(model))
 		}
-		// Only a Responses-native lane stays on /responses. A model that has
-		// to be translated into Responses (a Chat client asking for
-		// deepseek-v4-pro) must not be relayed as if the upstream already
-		// spoke the client's format.
-		return formats.TargetFormat == providers.FormatOpenAIResponses
+		// The question is whether the model serves the client's Responses wire
+		// directly, not which lane is its target: deepseek-v4-pro targets chat
+		// but answers a Responses client on /responses without translation.
+		return formats.SupportsFormat(providers.FormatOpenAIResponses)
 	case "opencode-zen":
 		// Muse Spark is the only lane that speaks Responses natively, and
 		// only for an id the catalog knows — an undeclared id keeps the
