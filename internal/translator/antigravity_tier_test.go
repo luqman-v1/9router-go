@@ -54,7 +54,7 @@ func TestAntigravityTieredModel(t *testing.T) {
 		{"claude family follows effort", "claude-sonnet-5-5", `{"reasoning_effort":"low"}`, "claude-sonnet-5-5-low"},
 		{"unknown tier falls back to the base row", "gemini-3.8-flash", `{"reasoning_effort":"turbo"}`, "gemini-3.8-flash-medium"},
 		{"pro high resolves through its tiered row", "gemini-3.1-pro", `{"reasoning_effort":"high"}`, "gemini-pro-agent"},
-		{"untiered model unaffected", "gemini-3.1-pro", `{"reasoning_effort":"medium"}`, "gemini-3.1-pro"},
+		{"medium pro keeps the plain synonym mapping", "gemini-3.1-pro", `{"reasoning_effort":"medium"}`, "gemini-pro-agent"},
 	}
 	for _, tc := range cases {
 		if got := AntigravityTieredModel(tc.model, []byte(tc.body)); got != tc.want {
