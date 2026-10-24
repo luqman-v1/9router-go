@@ -145,7 +145,14 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 	flusher := internalproxy.WriteSSEHeaders(hw)
 
 	if !translate {
+		// Passthrough still repairs id-less tool-call fragments: a provider
+		// opening a new tool-call index without an id aborts strict
+		// OpenAI-compatible clients mid-turn (upstream 95c9d03e).
+		toolFill := internalproxy.NewStreamToolCallIDFill()
 		err := internalproxy.ScanStream(upstream, func(payload []byte) {
+			if patched, changed := toolFill.Fill(payload); changed {
+				payload = patched
+			}
 			if metrics.TTFT == 0 {
 				metrics.TTFT = time.Since(startTime).Milliseconds()
 			}

@@ -55,7 +55,7 @@ func SSECopy(w http.ResponseWriter, upstream io.Reader, flusher http.Flusher, on
 	// to the pool, and the pool would add a race window between ReleaseByteSlice
 	// and the next iteration's write/flush completing.
 	buf := make([]byte, 4096)
-	c := &sseCopier{w: w, flusher: flusher, trailingNL: 2}
+	c := &sseCopier{w: w, flusher: flusher, trailingNL: 2, toolFill: NewStreamToolCallIDFill()}
 	for {
 		n, err := upstream.Read(buf)
 		if n > 0 {
@@ -107,6 +107,9 @@ type sseCopier struct {
 	hasTerminal bool
 	hasDone     bool
 	seenSSE     bool
+	// toolFill mints ids for tool-call fragments that open a new index
+	// without one; nil when the relay carries no chat chunks worth patching.
+	toolFill *StreamToolCallIDFill
 	// seenInbandError tracks a provider-injected error event swallowed from
 	// the relay. inbandCode/Msg hold the first one seen; the turn fails only
 	// when no completion preceded it (inbandFailure).
@@ -178,6 +181,17 @@ func (c *sseCopier) writeEvents(complete []byte) error {
 		}
 		if c.swallowInbandError(line) {
 			if err := c.writeRaw(complete[segStart:start]); err != nil {
+				return err
+			}
+			segStart = eol + 1
+			start = eol + 1
+			continue
+		}
+		if patched, ok := c.toolFill.patchLine(line); ok {
+			if err := c.writeRaw(complete[segStart:start]); err != nil {
+				return err
+			}
+			if err := c.writeRaw(patched); err != nil {
 				return err
 			}
 			segStart = eol + 1
