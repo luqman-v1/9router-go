@@ -3643,6 +3643,21 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "deepseek-v4.1-flash:cloud",
       "name": "DeepSeek V4.1 Flash (Cloud)"
+    },
+    {
+      "id": "clef",
+      "name": "Clef",
+      "kind": "systemone"
+    },
+    {
+      "id": "clef-flash",
+      "name": "Clef Flash",
+      "kind": "systemone"
+    },
+    {
+      "id": "clef:cloud",
+      "name": "Clef (Cloud)",
+      "kind": "systemone"
     }
   ],
   "openai": [

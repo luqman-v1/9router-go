@@ -284,15 +284,19 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	targetURL := providerCfg.SystemoneURL
-	if connData != nil && connData.BaseURL != "" {
-		baseURL := strings.TrimRight(connData.BaseURL, "/")
-		if strings.Contains(baseURL, "/chat/completions") {
-			targetURL = strings.Replace(baseURL, "/chat/completions", "/systemone", 1)
-		} else {
-			targetURL = baseURL + "/systemone"
-		}
-	} else if targetURL == "" {
+	override := ""
+	if connData != nil {
+		override = strings.TrimSpace(connData.BaseURL)
+	}
+	var targetURL string
+	switch {
+	case override != "" && strings.Contains(override, "/chat/completions"):
+		targetURL = strings.Replace(strings.TrimRight(override, "/"), "/chat/completions", "/systemone", 1)
+	case override != "":
+		targetURL = buildSystemoneURL(override, providerCfg.SystemoneURL, providerCfg.SystemonePath)
+	case providerCfg.SystemoneURL != "":
+		targetURL = providerCfg.SystemoneURL
+	default:
 		baseURL := strings.TrimRight(providerCfg.BaseURL, "/")
 		if strings.Contains(baseURL, "/chat/completions") {
 			targetURL = strings.Replace(baseURL, "/chat/completions", "/systemone", 1)
@@ -1268,4 +1272,31 @@ func buildEmbeddingsURL(baseURL string) string {
 		return strings.Replace(baseURL, "/chat/completions", "/embeddings", 1)
 	}
 	return strings.TrimRight(baseURL, "/") + "/embeddings"
+}
+
+// buildSystemoneURL joins a saved host override with the registry path
+// without doubling a "/v1" or "/v1/systemone" the host already includes
+// (upstream buildSystemoneUrl). An override with no registry path keeps the
+// lane's "/systemone" suffix; one that already names the endpoint is used
+// as-is.
+func buildSystemoneURL(override, cfgURL, cfgPath string) string {
+	base := strings.TrimRight(strings.TrimSpace(override), "/")
+	if base == "" {
+		return cfgURL
+	}
+	if strings.HasSuffix(base, "/systemone") {
+		return base
+	}
+	if cfgPath == "" {
+		return base + "/systemone"
+	}
+	path := strings.TrimRight(cfgPath, "/")
+	if strings.HasSuffix(base, path) {
+		return base
+	}
+	prefix := path[:strings.LastIndex(path, "/")]
+	if prefix != "" && strings.HasSuffix(base, prefix) {
+		return base + path[len(prefix):]
+	}
+	return base + path
 }

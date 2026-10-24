@@ -21,6 +21,7 @@ type ProviderConfig struct {
 	VideoURL      string            // override /videos/generations endpoint
 	VoicesURL     string            // override /audio/voices listing endpoint
 	SystemoneURL  string            // override /systemone endpoint (System One structured evaluation)
+	SystemonePath string            // registry path a saved host override is joined with (empty: override is a full URL)
 	FetchURL      string            // override /web/fetch endpoint (Jina, Firecrawl, etc.)
 	FetchMethod   string            // HTTP method for fetch: GET or POST (default POST)
 	UsageURL      string            // override /usage endpoint (quota tracker)
@@ -523,11 +524,12 @@ var KnownProviders = map[string]ProviderConfig{
 	// an OpenAI-shaped error body. That is the lane ForwardOpenAI already speaks,
 	// so the fix needs no native-translator port.
 	"ollama": {
-		BaseURL:     "https://ollama.com/v1/chat/completions",
-		AuthHeader:  "Authorization",
-		AuthScheme:  "bearer",
-		FetchURL:    "https://ollama.com/api/web_fetch",
-		FetchMethod: "POST",
+		BaseURL:      "https://ollama.com/v1/chat/completions",
+		AuthHeader:   "Authorization",
+		AuthScheme:   "bearer",
+		FetchURL:     "https://ollama.com/api/web_fetch",
+		FetchMethod:  "POST",
+		SystemoneURL: "https://ollama.com/v1/systemone",
 	},
 	"siliconflow": {
 		BaseURL:    "https://api.siliconflow.com/v1/chat/completions",
@@ -762,6 +764,9 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader:    "Authorization",
 		AuthScheme:    "bearer",
 		LocalByDesign: true,
+		SystemoneURL:  "http://localhost:11434/v1/systemone",
+		// Saved host (providerSpecificData.baseUrl) is joined with this path.
+		SystemonePath: "/v1/systemone",
 	},
 	"minimax-cn": {
 		BaseURL:    "https://api.minimaxi.com/v1/chat/completions",
