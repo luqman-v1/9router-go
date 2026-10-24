@@ -7,12 +7,17 @@ import (
 	"strings"
 )
 
+const (
+	// RawCap is upstream's RAW_CAP (10 MiB). Outputs larger than this are skipped or truncated.
+	RawCap = 10 * 1024 * 1024
+)
+
 // RTKConfig defines settings for RTK tool output compression.
 type RTKConfig struct {
 	Mode         string          `json:"mode,omitempty"`         // "simple" | "advance"
 	Intensity    string          `json:"intensity,omitempty"`    // "minimal" | "standard" | "aggressive"
-	MaxLines     int             `json:"maxLines,omitempty"`     // default 100
-	MaxChars     int             `json:"maxChars,omitempty"`     // default 8000
+	MaxLines     int             `json:"maxLines,omitempty"`     // default 250 (SmartTruncMin)
+	MaxChars     int             `json:"maxChars,omitempty"`     // default 10MB (RawCap)
 	Deduplicate  bool            `json:"deduplicate,omitempty"`  // default true
 	Categories   map[string]bool `json:"categories,omitempty"`   // git, build, test, package, docker, system
 	Filters      map[string]bool `json:"filters,omitempty"`      // per-filter ID toggle overrides
@@ -24,8 +29,8 @@ func DefaultRTKConfig() RTKConfig {
 	return RTKConfig{
 		Mode:        "simple",
 		Intensity:   "standard",
-		MaxLines:    100,
-		MaxChars:    8000,
+		MaxLines:    SmartTruncMin,
+		MaxChars:    RawCap,
 		Deduplicate: true,
 		Categories: map[string]bool{
 			"git":     true,
@@ -66,11 +71,11 @@ var (
 func resolveLimits(cfg RTKConfig) (int, int) {
 	maxLines := cfg.MaxLines
 	if maxLines <= 0 {
-		maxLines = 100
+		maxLines = SmartTruncMin
 	}
 	maxChars := cfg.MaxChars
 	if maxChars <= 0 {
-		maxChars = 8000
+		maxChars = RawCap
 	}
 	switch strings.ToLower(cfg.Intensity) {
 	case "minimal":
@@ -78,12 +83,12 @@ func resolveLimits(cfg RTKConfig) (int, int) {
 		maxChars *= 2
 	case "aggressive":
 		maxLines /= 2
-		if maxLines < 30 {
-			maxLines = 30
+		if maxLines < SmartTruncHead+SmartTruncTail {
+			maxLines = SmartTruncHead + SmartTruncTail
 		}
 		maxChars /= 2
-		if maxChars < 2000 {
-			maxChars = 2000
+		if maxChars < 100000 {
+			maxChars = 100000
 		}
 	}
 	return maxLines, maxChars
@@ -512,9 +517,13 @@ func CompressTextDetailedWithCommand(text string, command string, cfg RTKConfig)
 		}
 	}
 
-	// 3. Smart line truncation if still over maxLines
+	// 3. Smart line truncation if still over maxLines (requires at least SmartTruncMin lines for fallback)
 	lines := strings.Split(curr, "\n")
-	if len(lines) > maxLines && len(curr) >= MinCompressSize {
+	minLinesThreshold := SmartTruncMin
+	if matchedFilter != nil && maxLines < minLinesThreshold {
+		minLinesThreshold = maxLines
+	}
+	if len(lines) >= minLinesThreshold && len(lines) > maxLines && len(curr) >= MinCompressSize {
 		curr = smartTruncateLines(lines, maxLines, matchedFilter)
 		techniques = append(techniques, "smart-truncation")
 	}

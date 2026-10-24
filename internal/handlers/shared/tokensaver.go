@@ -54,8 +54,8 @@ func NewTokenSaverConfig(rtk, caveman, ponytail bool) *TokenSaverConfig {
 		rtkEnabled:     rtk,
 		rtkMode:        "simple",
 		rtkIntensity:   "standard",
-		rtkMaxLines:    100,
-		rtkMaxChars:    8000,
+		rtkMaxLines:    250,
+		rtkMaxChars:    10 * 1024 * 1024,
 		rtkDeduplicate: true,
 		rtkCategories: map[string]bool{
 			"git":     true,

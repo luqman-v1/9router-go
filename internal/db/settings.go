@@ -46,30 +46,30 @@ type CapacityAdapterEntry struct {
 
 // SettingsData represents token saver, combo routing, and general settings stored in the settings table.
 type SettingsData struct {
-	RTKEnabled                 bool                            `json:"rtkEnabled"`
-	RTKMode                    string                          `json:"rtkMode,omitempty"`
-	RTKIntensity               string                          `json:"rtkIntensity,omitempty"`
-	RTKMaxLines                int                             `json:"rtkMaxLines,omitempty"`
-	RTKMaxChars                int                             `json:"rtkMaxChars,omitempty"`
-	RTKDeduplicate             bool                            `json:"rtkDeduplicate,omitempty"`
-	RTKCategories              map[string]bool                 `json:"rtkCategories,omitempty"`
-	RTKFilters                 map[string]bool                 `json:"rtkFilters,omitempty"`
-	RTKRawRetention            string                          `json:"rtkRawRetention,omitempty"`
-	CavemanEnabled             bool                            `json:"cavemanEnabled"`
-	CavemanMode                string                          `json:"cavemanMode,omitempty"`
-	CavemanLevel               string                          `json:"cavemanLevel"`
-	CavemanAutoClarity         bool                            `json:"cavemanAutoClarity,omitempty"`
-	CavemanLanguage            string                          `json:"cavemanLanguage,omitempty"`
-	CavemanInputMode           bool                            `json:"cavemanInputMode,omitempty"`
-	CavemanPreserveKeywords    string                          `json:"cavemanPreserveKeywords,omitempty"`
-	PonytailEnabled            bool                            `json:"ponytailEnabled"`
-	PonytailLevel              string                          `json:"ponytailLevel"`
-	ADHDEnabled                bool                            `json:"adhdEnabled"`
-	ADHDLevel                  string                          `json:"adhdLevel"`
-	SystemPromptEnabled        bool                            `json:"systemPromptEnabled"`
-	SystemPromptPrefix         string                          `json:"systemPromptPrefix,omitempty"`
-	SystemPromptSuffix         string                          `json:"systemPromptSuffix,omitempty"`
-	HeadroomUrl                string                          `json:"headroomUrl"`
+	RTKEnabled              bool            `json:"rtkEnabled"`
+	RTKMode                 string          `json:"rtkMode,omitempty"`
+	RTKIntensity            string          `json:"rtkIntensity,omitempty"`
+	RTKMaxLines             int             `json:"rtkMaxLines,omitempty"`
+	RTKMaxChars             int             `json:"rtkMaxChars,omitempty"`
+	RTKDeduplicate          bool            `json:"rtkDeduplicate,omitempty"`
+	RTKCategories           map[string]bool `json:"rtkCategories,omitempty"`
+	RTKFilters              map[string]bool `json:"rtkFilters,omitempty"`
+	RTKRawRetention         string          `json:"rtkRawRetention,omitempty"`
+	CavemanEnabled          bool            `json:"cavemanEnabled"`
+	CavemanMode             string          `json:"cavemanMode,omitempty"`
+	CavemanLevel            string          `json:"cavemanLevel"`
+	CavemanAutoClarity      bool            `json:"cavemanAutoClarity,omitempty"`
+	CavemanLanguage         string          `json:"cavemanLanguage,omitempty"`
+	CavemanInputMode        bool            `json:"cavemanInputMode,omitempty"`
+	CavemanPreserveKeywords string          `json:"cavemanPreserveKeywords,omitempty"`
+	PonytailEnabled         bool            `json:"ponytailEnabled"`
+	PonytailLevel           string          `json:"ponytailLevel"`
+	ADHDEnabled             bool            `json:"adhdEnabled"`
+	ADHDLevel               string          `json:"adhdLevel"`
+	SystemPromptEnabled     bool            `json:"systemPromptEnabled"`
+	SystemPromptPrefix      string          `json:"systemPromptPrefix,omitempty"`
+	SystemPromptSuffix      string          `json:"systemPromptSuffix,omitempty"`
+	HeadroomUrl             string          `json:"headroomUrl"`
 	// HeadroomEnabled is the master switch for in-flight compression. It is
 	// separate from HeadroomUrl because the URL has a default the panel fills
 	// in, so "a URL exists" cannot stand in for "the operator turned this on".
@@ -115,8 +115,8 @@ func DefaultSettings() *SettingsData {
 		RTKEnabled:     true,
 		RTKMode:        "simple",
 		RTKIntensity:   "standard",
-		RTKMaxLines:    100,
-		RTKMaxChars:    8000,
+		RTKMaxLines:    250,
+		RTKMaxChars:    10 * 1024 * 1024,
 		RTKDeduplicate: true,
 		RTKCategories: map[string]bool{
 			"git":     true,
