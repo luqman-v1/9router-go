@@ -143,7 +143,11 @@ export function matchesSearch(
   if (candidates.length === 0) return false;
 
   if (parsed.isRegex && parsed.regex) {
-    return candidates.some((c) => parsed.regex!.test(c));
+    return candidates.some((c) => {
+      // Each candidate is an independent search, including for global/sticky regexes.
+      parsed.regex!.lastIndex = 0;
+      return parsed.regex!.test(c);
+    });
   }
 
   // All positive terms must match at least one candidate

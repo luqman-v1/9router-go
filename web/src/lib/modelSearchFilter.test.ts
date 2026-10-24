@@ -83,4 +83,14 @@ describe("matchesSearch", () => {
     ok(matchesSearch(target, "/claude-3-.*/"));
     ok(!matchesSearch(target, "/gpt-.*/"));
   });
+
+  test("global regex does not leak lastIndex between candidates", () => {
+    ok(matchesSearch({ name: "aaa1", id: "bbb1" }, "/1/g"));
+  });
+
+  test("global regex stays independent across repeated searches", () => {
+    const parsed = parseSearchQuery("/1/g");
+    ok(matchesSearch({ name: "aaa1" }, parsed));
+    ok(matchesSearch({ name: "aaa1" }, parsed));
+  });
 });
