@@ -42,12 +42,16 @@ func TestApplyZaiThinking(t *testing.T) {
 		},
 		{
 			// thinkingCanDisable is false on the glm-5.2 exact entry, so a
-			// none request is clamped there too rather than disabled.
+			// none request is clamped there too rather than disabled. The
+			// entry also repeats the pattern's ThinkingEffortSupported
+			// (upstream b6a9ca43), so the clamp carries an effort level the
+			// way glm-5.3's does.
 			name:  "glm-5.2 clamps a none request",
 			model: "glm-5.2",
 			in:    `{"model":"glm-5.2","reasoning_effort":"none"}`,
 			want: map[string]any{
-				"thinking": map[string]any{"type": "enabled"},
+				"reasoning_effort": "low",
+				"thinking":         map[string]any{"type": "enabled"},
 			},
 		},
 		{

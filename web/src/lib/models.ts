@@ -5586,6 +5586,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   ],
   "xai": [
     {
+      "id": "grok-4.7",
+      "name": "Grok 4.7"
+    },
+    {
       "id": "grok-4.6",
       "name": "Grok 4.6"
     },
