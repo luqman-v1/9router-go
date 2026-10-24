@@ -6,6 +6,18 @@ import { getRemainingPercentage } from './types'
 // calculatePercentage, which answered 0 — the quota table then painted it red,
 // the exact picture a drained account gets.
 describe('getRemainingPercentage', () => {
+  it('inverts a reported used share (percentageIsUsed)', () => {
+    expect(getRemainingPercentage({ percentage: 30, percentageIsUsed: true })).toBe(70)
+  })
+
+  it('uses the reported percentage as-is when it is already the remaining share', () => {
+    expect(getRemainingPercentage({ percentage: 45 })).toBe(45)
+  })
+
+  it('clamps an inverted percentage at zero', () => {
+    expect(getRemainingPercentage({ percentage: 120, percentageIsUsed: true })).toBe(0)
+  })
+
   it('returns remaining when the row reports it', () => {
     expect(getRemainingPercentage({ remaining: 42.4 })).toBe(42)
   })

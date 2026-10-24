@@ -150,9 +150,9 @@
               bgLight: 'bg-blue-500/10',
               emoji: '💰',
             }
-          : colorClassesFor(quota.remainingPct)}
+          : colorClassesFor((quota.colorPercentage as number | undefined) ?? quota.remainingPct)}
         {@const countdown = formatResetTime(quota.resetAt)}
-        {@const resetDisplay = formatResetTimeDisplay(quota.resetAt)}
+        {@const resetDisplay = (quota.emptyMessage as string | undefined) || formatResetTimeDisplay(quota.resetAt)}
         {@const recurring = quota.recurring !== false}
         {@const countdownLabel = recurring ? `in ${countdown}` : `expires in ${countdown}`}
 

@@ -461,6 +461,24 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validateQoder(ctx, provider, apiKey, psd)
 	case "v1m":
 		return validateV1M(ctx, apiKey)
+	case "commandcode":
+		// The registry's /alpha/generate consumes credits and needs a
+		// conversation id, so only whoami can validate a key against this
+		// upstream.
+		headers := validateAuthHeaders(cfg, apiKey)
+		headers["Accept"] = "application/json"
+		status, _, err := validateProbeDo(ctx, http.MethodGet,
+			strings.TrimSuffix(commandCodeAPIBase, "/")+"/alpha/whoami?limits=1", headers, nil)
+		if err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return validateOutcome{supported: true, message: "Invalid API key"}
+		}
+		if status < 200 || status >= 300 {
+			return validateOutcome{supported: true, message: fmt.Sprintf("Command Code API error (%d)", status)}
+		}
+		return validateOutcome{valid: true, supported: true}
 	case "bedrock", "bedrock-xai":
 		// A signed ListFoundationModels call. The registry's BaseURL carries a
 		// {region} placeholder, so the generic probe would dial a literal "{region}"

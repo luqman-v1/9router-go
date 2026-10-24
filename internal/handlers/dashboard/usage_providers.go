@@ -499,16 +499,37 @@ func fetchGroqUsage(ctx context.Context, apiKey string) usageResult {
 
 // ---------- commandcode: whoami → credits + subscriptions ----------
 
+// commandCodeAPIBase is a var so tests can point the usage fetch and the
+// connection probe at a local server.
+var commandCodeAPIBase = "https://api.commandcode.ai"
+
 var commandCodePlanNames = map[string]string{
-	"individual-go": "Go", "individual-goat": "GOAT", "individual-pro": "Pro",
-	"individual-pro-v1": "Pro", "individual-provider": "Provider",
-	"individual-max": "Max", "individual-ultra": "Ultra", "teams-pro": "Teams Pro",
+	"individual-go": "Go", "individual-go-v1": "Go", "individual-goat": "GOAT",
+	"individual-pro": "Pro", "individual-pro-v1": "Pro",
+	"individual-provider": "Provider",
+	"individual-max":      "Max", "individual-ultra": "Ultra", "teams-pro": "Teams Pro",
 }
 
 var commandCodePlanCaps = map[string]float64{
-	"individual-go": 10, "individual-goat": 70, "individual-pro": 30,
-	"individual-pro-v1": 80, "individual-provider": 15,
+	"individual-go": 10, "individual-go-v1": 10, "individual-goat": 70,
+	"individual-pro": 30, "individual-pro-v1": 80, "individual-provider": 15,
 	"individual-max": 150, "individual-ultra": 300, "teams-pro": 40,
+}
+
+// The API also returns the bare tier ids ("go", "pro", ...); fold them onto
+// the full plan ids the name/cap tables are keyed by.
+var commandCodePlanAliases = map[string]string{
+	"go": "individual-go", "go-v1": "individual-go-v1", "goat": "individual-goat",
+	"pro": "individual-pro", "provider": "individual-provider",
+	"max": "individual-max", "ultra": "individual-ultra",
+}
+
+func normalizeCommandCodePlanID(planID string) string {
+	normalized := strings.ToLower(strings.TrimSpace(planID))
+	if alias, ok := commandCodePlanAliases[normalized]; ok {
+		return alias
+	}
+	return normalized
 }
 
 func commandCodeWindow(win any) map[string]any {
@@ -523,10 +544,27 @@ func commandCodeWindow(win any) map[string]any {
 	}
 	total = math.Max(0, total)
 	used = math.Max(0, used)
+	percentage, colorPercentage := 0.0, 100.0
+	if total > 0 {
+		percentage = math.Round(used / total * 100)
+		colorPercentage = math.Round((total - used) / total * 100)
+	}
+	resetAt := usageResetTimeToNil(m["resetAt"])
 	return map[string]any{
 		"used": used, "total": total, "remaining": math.Max(0, total-used),
-		"unlimited": false, "resetAt": usageResetTimeToNil(m["resetAt"]),
+		"percentage": percentage, "colorPercentage": colorPercentage,
+		"percentageIsUsed": true, "unlimited": false, "resetAt": resetAt,
+		// A window with no usage and no reset is an idle window, not an
+		// unknown one; the table says so instead of rendering N/A.
+		"emptyMessage": emptyWindowMessage(used, resetAt),
 	}
+}
+
+func emptyWindowMessage(used float64, resetAt any) any {
+	if used == 0 && resetAt == nil {
+		return "No usage in this window"
+	}
+	return nil
 }
 
 func usageResetTimeToNil(v any) any {
@@ -540,7 +578,7 @@ func fetchCommandCodeUsage(ctx context.Context, apiKey string) usageResult {
 	if strings.TrimSpace(apiKey) == "" {
 		return usageResult{message: "Command Code API key not available. Add a key to view usage."}
 	}
-	base := strings.TrimSuffix("https://api.commandcode.ai", "/")
+	base := strings.TrimSuffix(commandCodeAPIBase, "/")
 	headers := map[string]string{
 		"Authorization": "Bearer " + strings.TrimSpace(apiKey),
 		"Accept":        "application/json",
@@ -601,13 +639,14 @@ func fetchCommandCodeUsage(ctx context.Context, apiKey string) usageResult {
 	}
 	creditsBody := usageJSON(creditsRes.out)
 	subsBody := usageJSON(subsRes.out)
-	var planID string
+	var rawPlanID string
 	if d, ok := subsBody["data"].(map[string]any); ok {
-		planID, _ = d["planId"].(string)
+		rawPlanID, _ = d["planId"].(string)
 	}
+	planID := normalizeCommandCodePlanID(rawPlanID)
 	plan := commandCodePlanNames[planID]
 	if plan == "" {
-		plan = firstNonEmptyStr(planID, "Command Code")
+		plan = firstNonEmptyStr(rawPlanID, "Command Code")
 	}
 	capVal := commandCodePlanCaps[planID]
 	var credits map[string]any
@@ -620,14 +659,22 @@ func fetchCommandCodeUsage(ctx context.Context, apiKey string) usageResult {
 		used = math.Max(0, capVal-remaining)
 		total = capVal
 	}
+	creditsPercentage, creditsColorPercentage := 0.0, 100.0
+	if capVal > 0 {
+		creditsPercentage = math.Round(used / capVal * 100)
+		creditsColorPercentage = math.Round(remaining / capVal * 100)
+	}
 	var periodEnd any
 	if d, ok := subsBody["data"].(map[string]any); ok {
 		periodEnd = d["currentPeriodEnd"]
 	}
 	quotas := map[string]any{
 		"Credits": map[string]any{
+			"name": "Monthly",
 			"used": used, "total": total, "remaining": remaining,
-			"unlimited": capVal <= 0, "resetAt": usageResetTimeToNil(periodEnd),
+			"percentage": creditsPercentage, "colorPercentage": creditsColorPercentage,
+			"percentageIsUsed": true,
+			"unlimited":        capVal <= 0, "resetAt": usageResetTimeToNil(periodEnd),
 		},
 	}
 	var windows map[string]any
@@ -635,9 +682,11 @@ func fetchCommandCodeUsage(ctx context.Context, apiKey string) usageResult {
 		windows = w
 	}
 	if w := commandCodeWindow(windows["fiveHour"]); w != nil {
+		w["name"] = "5-hour limit"
 		quotas["Session (5h)"] = w
 	}
 	if w := commandCodeWindow(windows["weekly"]); w != nil {
+		w["name"] = "Weekly limit"
 		quotas["Weekly"] = w
 	}
 	return usageResult{plan: plan, quotas: quotas}
