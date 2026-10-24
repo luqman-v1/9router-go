@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,8 +72,8 @@ func TestForwardQoder_QueueBudgetExceeded(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	err := ForwardQoder(rec, qoderRequest(t, srv))
-	ue, ok := err.(*proxy.UpstreamError)
-	if !ok {
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) {
 		t.Fatalf("expected UpstreamError, got %v", err)
 	}
 	if ue.StatusCode != http.StatusServiceUnavailable {

@@ -456,7 +456,7 @@ func qoderFetchQueueStatus(ctx context.Context, client *http.Client, chatTargetU
 	if err != nil {
 		return nil, false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, false
 	}

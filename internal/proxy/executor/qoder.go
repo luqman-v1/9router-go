@@ -316,7 +316,7 @@ func ForwardQoder(w http.ResponseWriter, req *Request) error {
 			// coalescer surfaces, and a clean stream just continues. The peek
 			// consumed the head, so hand the already-read bytes back instead
 			// of re-sending — one upstream call per attempt.
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			rewoundR, rewoundW := io.Pipe()
 			go func() {
 				source := io.MultiReader(bytes.NewReader(peek.consumed), peek.reader)
@@ -335,7 +335,7 @@ func ForwardQoder(w http.ResponseWriter, req *Request) error {
 		// Queued: the model is briefly out of capacity, so hold the request
 		// open and replay rather than failing it as a billing block.
 		_, _ = io.Copy(io.Discard, peek.reader)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		waited := time.Since(queueWaitStart)
 		if waited >= time.Duration(maxQueueWait)*time.Millisecond {
