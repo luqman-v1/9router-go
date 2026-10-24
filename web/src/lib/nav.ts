@@ -100,6 +100,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { kind: 'link', id: 'console-log', label: 'Console Log', icon: 'terminal' },
       { kind: 'link', id: 'settings', label: 'Settings', icon: 'settings' },
       { kind: 'link', id: 'security', label: 'Security', icon: 'shield_lock' },
+      { kind: 'link', id: 'jailbreak', label: 'Jailbreak', icon: 'lock_open' },
       PLANS_LINK,
     ],
   },

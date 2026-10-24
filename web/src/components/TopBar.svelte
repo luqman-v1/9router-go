@@ -176,6 +176,11 @@
       description: 'Live server console output',
       icon: 'terminal',
     },
+    jailbreak: {
+      title: 'Jailbreak',
+      description: 'Per-model system-prompt injection and Gemini safety bypass',
+      icon: 'lock_open',
+    },
     settings: {
       title: 'Settings',
       description: 'Manage your preferences',

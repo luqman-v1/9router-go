@@ -60,6 +60,12 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		if err != nil {
 			return nil, fmt.Errorf("translate to Gemini: %w", err)
 		}
+		if translator.GeminiSafetyRequested(ctx) {
+			geminiBody, err = translator.ApplyGeminiSafetySettings(geminiBody)
+			if err != nil {
+				return nil, fmt.Errorf("apply safetySettings: %w", err)
+			}
+		}
 
 		// Wrap for antigravity if needed
 		sendBody = geminiBody

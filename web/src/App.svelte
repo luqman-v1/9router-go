@@ -34,6 +34,7 @@
   import Toasts from './lib/ui/Toasts.svelte'
   import TerminalView from './components/TerminalView.svelte'
   import TokenSaverView from './components/TokenSaverView.svelte'
+  import JailbreakView from './components/JailbreakView.svelte'
   import TopBar from './components/TopBar.svelte'
   import { parseMediaProvider, parseProviderId, pathToTab, providerPath, mediaProviderPath, TAB_ROUTES, type ActiveTab, type MediaProviderRoute } from './lib/router'
   import { PROVIDER_CATALOG } from './lib/providers'
@@ -291,6 +292,7 @@
       description: 'Encrypt provider credentials at rest, and scan prompts for personal data and injection attempts before they leave the gateway',
     },
     plans: { title: 'Plans', description: 'Per-key quota plans and policy resolution' },
+    jailbreak: { title: 'Jailbreak', description: 'Per-model system-prompt injection and Gemini safety bypass' },
   }
 
   function handleOpenNewCombo() {
@@ -598,6 +600,8 @@
               <SecurityPanel />
             {:else if activeTab === 'plans'}
               <PlansView />
+            {:else if activeTab === 'jailbreak'}
+              <JailbreakView />
             {/if}
           {/if}
         </div>

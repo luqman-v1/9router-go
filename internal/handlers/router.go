@@ -220,6 +220,21 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	// Compression Analytics
 	r.Get("/api/analytics/compression", dashH.HandleGetCompressionAnalytics)
 
+	// Jailbreak: agent prompt presets + per-model binding. Registered here and in
+	// dashboard.RegisterRoutes (a tests-only table); a route added there alone
+	// 404s on the real server — the same trap as the per-node limits pair.
+	r.Get("/api/jailbreak", dashH.HandleGetJailbreak)
+	r.Put("/api/jailbreak", dashH.HandlePutJailbreak)
+	r.Get("/api/jailbreak/presets", dashH.HandleListJailbreakPresets)
+	r.Put("/api/jailbreak/presets", dashH.HandlePutJailbreakPreset)
+	r.Delete("/api/jailbreak/presets/{id}", dashH.HandleDeleteJailbreakPreset)
+	r.Get("/api/jailbreak/models", dashH.HandleListJailbreakModels)
+	r.Put("/api/jailbreak/models", dashH.HandleSetJailbreakModel)
+	r.Get("/api/jailbreak/excludes", dashH.HandleGetJailbreakExcludes)
+	r.Put("/api/jailbreak/excludes", dashH.HandlePutJailbreakExcludes)
+	r.Post("/api/jailbreak/import", dashH.HandleImportJailbreak)
+	r.Post("/api/jailbreak/presets/upload", dashH.HandleUploadJailbreakPreset)
+
 	r.Get("/api/provider-nodes", dashH.HandleGetProviderNodes)
 	r.Post("/api/provider-nodes", dashH.HandleCreateProviderNode)
 	r.Put("/api/provider-nodes/{id}", dashH.HandleUpdateProviderNode)

@@ -262,18 +262,16 @@ describe('sidebar arrangement', () => {
 
   it('hides a row without losing the place it was moved to', () => {
     const order = moveNavEntry([], 'security', -1)
-    expect(renderedIds({ hidden: [] }, order).slice(-4)).toEqual([
-      'console-log',
-      'security',
-      'settings',
-      'plans',
-    ])
-    // Hidden, the row keeps its slot: the entries around it do not close the gap.
-    expect(renderedIds({ hidden: ['security'] }, order).slice(-3)).toEqual([
-      'console-log',
-      'settings',
-      'plans',
-    ])
+    const visible = renderedIds({ hidden: [] }, order)
+    const slot = visible.indexOf('security')
+    // The row keeps the slot it was moved into: what follows it on screen is
+    // what follows it in the stored arrangement.
+    expect(visible[slot + 1]).toBe(order[order.indexOf('security') + 1])
+    // Hidden, the row leaves and its neighbours keep their own slots instead
+    // of closing the gap.
+    const hidden = renderedIds({ hidden: ['security'] }, order)
+    expect(hidden).not.toContain('security')
+    expect(hidden[slot]).toBe(order[order.indexOf('security') + 1])
   })
 })
 

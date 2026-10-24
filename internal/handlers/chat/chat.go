@@ -188,8 +188,12 @@ func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWrit
 		handlerutil.WriteJSONError(cw, http.StatusBadRequest, "failed to parse request body")
 		return
 	}
+	// The client's model id is the jailbreak key; rewrite the body to the
+	// resolved upstream model first, then inject against the original id.
+	requestedModel, _ := upstreamBody["model"].(string)
 	upstreamBody["model"] = modelInfo.Model
 	repairToolCallIDsInMap(upstreamBody)
+	ctx = h.applyJailbreak(ctx, upstreamBody, requestedModel, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
 	upstreamJSON, err := json.Marshal(upstreamBody)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal upstream request")
@@ -343,7 +347,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 // handleMessagesSingleModel forwards a translated Claude request for a single model.
 func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
 	cw := newCommittedResponseWriter(w)
+	// The client's model id is the jailbreak key; rewrite the body to the
+	// resolved upstream model first, then inject against the original id.
+	requestedModel, _ := translatedReq["model"].(string)
 	translatedReq["model"] = modelInfo.Model
+	ctx = h.applyJailbreak(ctx, translatedReq, requestedModel, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
 	finalBody, err := json.Marshal(translatedReq)
 	if err != nil {
 		handlerutil.WriteJSONError(cw, http.StatusInternalServerError, "failed to marshal translated request")
