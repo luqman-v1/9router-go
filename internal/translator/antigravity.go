@@ -6,6 +6,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -507,6 +508,101 @@ func AntigravityUpstreamModel(model string) string {
 		return stripParenthesisedSuffix(resolved)
 	}
 	return NormalizeAntigravityModel(base)
+}
+
+// AntigravityEffortTier reads the reasoning tier a client asked for, mirroring
+// upstream getModelUpstreamId: the model id's own "(level)" suffix wins over
+// the body, then reasoning_effort / output_config.effort / reasoning.effort,
+// then thinking.budget_tokens (>16384 high, <=4096 low, else medium).
+// xhigh/max fold onto high and minimal onto low. Empty when nothing asks for
+// a tier.
+func AntigravityEffortTier(model string, clientBody []byte) string {
+	if idx := strings.Index(model, "("); idx != -1 && strings.HasSuffix(model, ")") {
+		return antigravityNormalizeTier(strings.ToLower(strings.TrimSpace(model[idx+1 : len(model)-1])))
+	}
+	if len(clientBody) == 0 {
+		return ""
+	}
+	var probe map[string]any
+	if err := json.Unmarshal(clientBody, &probe); err != nil {
+		return ""
+	}
+	effort := ""
+	for _, key := range []string{"reasoning_effort", "output_config", "reasoning"} {
+		v, ok := probe[key]
+		if !ok {
+			continue
+		}
+		if key == "reasoning_effort" {
+			if s, ok := v.(string); ok && s != "" {
+				effort = s
+				break
+			}
+			continue
+		}
+		obj, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if s, ok := obj["effort"].(string); ok && s != "" {
+			effort = s
+			break
+		}
+	}
+	if effort != "" {
+		return antigravityNormalizeTier(strings.ToLower(strings.TrimSpace(effort)))
+	}
+	if thinking, ok := probe["thinking"].(map[string]any); ok {
+		if b, ok := antigravityToFloat(thinking["budget_tokens"]); ok && b > 0 {
+			switch {
+			case b > 16384:
+				return "high"
+			case b <= 4096:
+				return "low"
+			default:
+				return "medium"
+			}
+		}
+	}
+	return ""
+}
+
+func antigravityNormalizeTier(level string) string {
+	switch level {
+	case "xhigh", "max":
+		return "high"
+	case "minimal":
+		return "low"
+	}
+	return level
+}
+
+func antigravityToFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return f, err == nil
+	}
+	return 0, false
+}
+
+// AntigravityTieredModel resolves a client model id to the tiered backend id
+// the client's reasoning effort asks for — upstream's body-inspecting branch
+// of getModelUpstreamId. An unadorned `gemini-3.8-flash` with
+// reasoning_effort "high" reaches Google as `gemini-3.8-flash-high` instead of
+// always landing on the bare id's medium tier. Falls back to the plain
+// resolution when no tier is requested or the catalog has no such variant.
+// The "(level)" suffix never reaches the wire: Cloud Code 404s suffixed ids.
+func AntigravityTieredModel(model string, clientBody []byte) string {
+	base := stripParenthesisedSuffix(strings.ToLower(strings.TrimSpace(model)))
+	if tier := AntigravityEffortTier(model, clientBody); tier != "" {
+		if resolved, ok := antigravityUpstreamModelIDs[base+"-"+tier]; ok {
+			return stripParenthesisedSuffix(resolved)
+		}
+	}
+	return AntigravityUpstreamModel(model)
 }
 
 // stripParenthesisedSuffix removes a trailing "(level)" from an id, if any.

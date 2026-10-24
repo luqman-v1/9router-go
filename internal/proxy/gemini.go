@@ -22,7 +22,10 @@ import (
 func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey, bodyStr string, isStream bool, projectID, modelName string) (*http.Response, error) {
 	body := []byte(bodyStr)
 	if projectID != "" {
-		modelName = translator.NormalizeAntigravityModel(modelName)
+		// Body-inspecting tier resolution (upstream getModelUpstreamId): an
+		// unadorned id follows the client's reasoning effort when the catalog
+		// has that variant.
+		modelName = translator.AntigravityTieredModel(modelName, body)
 	}
 
 	var sendBody []byte
