@@ -205,7 +205,7 @@ func TestCompressMessages_ToolResultLong(t *testing.T) {
 	assertContains(t, val, "... (")
 }
 
-func TestCompressMessages_TextBlockLong(t *testing.T) {
+func TestCompressMessages_TextBlockIsNotCompressed(t *testing.T) {
 	diff := longGitDiff()
 	msg := map[string]any{
 		"messages": []any{
@@ -218,14 +218,12 @@ func TestCompressMessages_TextBlockLong(t *testing.T) {
 	}
 	in, _ := json.Marshal(msg)
 	out, ok := CompressMessages(in)
-	if !ok {
-		t.Fatal("expected true for long text block")
+	if ok {
+		t.Fatal("expected false for text block: prose/conversation text must not be compressed")
 	}
-	var res map[string]any
-	json.Unmarshal(out, &res)
-	arr := res["messages"].([]any)[0].(map[string]any)["content"].([]any)
-	val := arr[0].(map[string]any)["text"].(string)
-	assertContains(t, val, "... (")
+	if string(out) != string(in) {
+		t.Fatal("expected body to remain unchanged for text block")
+	}
 }
 
 func TestCompressMessages_InputKey(t *testing.T) {

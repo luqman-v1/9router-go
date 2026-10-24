@@ -108,37 +108,18 @@ func TestCompressReadNumberedBoundaryMatchesUpstream(t *testing.T) {
 	}
 }
 
-// The end-to-end protected path shares that boundary: a 250-line numbered
-// dump under a protected tool is truncated, a 249-line one is left intact.
-func TestProtectedReadResultAtTheLineThresholdIsTruncated(t *testing.T) {
-	tests := []struct {
-		name        string
-		lines       int
-		wantTruncat bool
-	}{
-		{name: "249 lines is below the threshold", lines: 249, wantTruncat: false},
-		{name: "250 lines is at the threshold", lines: 250, wantTruncat: true},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			content := numberedDump(tc.lines)
+// A protected tool (read, grep, edit, write, etc.) is never truncated regardless of line count.
+func TestProtectedReadResultNeverTruncatedRegardlessOfLines(t *testing.T) {
+	for _, lines := range []int{249, 250, 500} {
+		t.Run(fmt.Sprintf("%d lines", lines), func(t *testing.T) {
+			content := numberedDump(lines)
 			out, changed := CompressMessagesWithConfig(toolBody(t, "read", content), DefaultRTKConfig())
-			if changed != tc.wantTruncat {
-				t.Fatalf("changed = %v, want %v", changed, tc.wantTruncat)
+			if changed {
+				t.Fatalf("changed = true, want false: protected tool must never be truncated")
 			}
 			got := toolContent(t, out)
-			if !tc.wantTruncat {
-				if got != content {
-					t.Error("a dump below the threshold was rewritten")
-				}
-				return
-			}
-			if got == content {
-				t.Fatal("a dump at the threshold was not truncated")
-			}
-			if !strings.Contains(got, fmt.Sprintf("... +%d lines truncated (file continues)", tc.lines-SmartTruncHead-SmartTruncTail)) {
-				t.Errorf("the upstream marker is missing from the truncated result: %q", got)
+			if got != content {
+				t.Error("content was altered under protected tool")
 			}
 		})
 	}

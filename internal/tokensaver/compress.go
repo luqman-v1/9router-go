@@ -35,12 +35,15 @@ const (
 // exact-case map protected only the clients that happened to use the
 // capitalised spelling, which is the opposite of what the list is for.
 var protectedTools = map[string]bool{
-	"read":   true,
-	"grep":   true,
-	"edit":   true,
-	"write":  true,
-	"patch":  true,
-	"anchor": true,
+	"read":     true,
+	"grep":     true,
+	"edit":     true,
+	"write":    true,
+	"patch":    true,
+	"anchor":   true,
+	"glob":     true,
+	"view":     true,
+	"list_dir": true,
 }
 
 func isProtectedTool(name string) bool {
@@ -274,19 +277,7 @@ func CompressMessagesWithConfig(body []byte, cfg RTKConfig) ([]byte, bool) {
 				continue
 			}
 			if isProtectedTool(name) {
-				// A protected tool's result is not rewritten, with one
-				// exception: a line-numbered file dump, which upstream
-				// truncates safely (head and tail kept, the cut marked).
-				if output, ok := msg["output"].(string); ok {
-					if newOutput, did := compressProtectedText(output); did {
-						msg["output"] = newOutput
-						compressed = true
-					}
-				} else if outputArr, ok := msg["output"].([]any); ok {
-					if compressProtectedParts(outputArr, "input_text", "text") {
-						compressed = true
-					}
-				}
+				// Protected tool output (Read, Grep, Edit, Write, etc.) is never rewritten.
 				continue
 			}
 			if output, ok := msg["output"].(string); ok && len(output) > MinCompressSize {
@@ -321,19 +312,7 @@ func CompressMessagesWithConfig(body []byte, cfg RTKConfig) ([]byte, bool) {
 				continue
 			}
 			if isProtectedTool(name) {
-				// A protected tool's result is not rewritten, with one
-				// exception: a line-numbered file dump, which upstream
-				// truncates safely (head and tail kept, the cut marked).
-				if content, ok := msg["content"].(string); ok {
-					if newContent, did := compressProtectedText(content); did {
-						msg["content"] = newContent
-						compressed = true
-					}
-				} else if contentArr, ok := msg["content"].([]any); ok {
-					if compressProtectedParts(contentArr, "text") {
-						compressed = true
-					}
-				}
+				// Protected tool output (Read, Grep, Edit, Write, etc.) is never rewritten.
 				continue
 			}
 			if content, ok := msg["content"].(string); ok && len(content) > MinCompressSize {
@@ -377,12 +356,7 @@ func CompressMessagesWithConfig(body []byte, cfg RTKConfig) ([]byte, bool) {
 					continue
 				}
 				if isProtectedTool(name) {
-					// A protected tool's result is not rewritten, with one
-					// exception: a line-numbered file dump, which upstream
-					// truncates safely (head and tail kept, the cut marked).
-					if compressProtectedBlock(block) {
-						compressed = true
-					}
+					// Protected tool output (Read, Grep, Edit, Write, etc.) is never rewritten.
 					continue
 				}
 
@@ -404,15 +378,6 @@ func CompressMessagesWithConfig(body []byte, cfg RTKConfig) ([]byte, bool) {
 							}
 						}
 					}
-				}
-			}
-			if block["type"] == "text" {
-				// A plain text block is the assistant's own prose, not the
-				// output of a command, so there is no originating command to
-				// select a filter by. The content-scoped filters still apply.
-				if text, ok := block["text"].(string); ok && len(text) > MinCompressSize {
-					block["text"] = CompressTextWithConfig(text, cfg)
-					compressed = true
 				}
 			}
 		}
