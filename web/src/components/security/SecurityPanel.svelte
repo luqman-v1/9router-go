@@ -21,7 +21,8 @@
 
   const DETECTORS = [
     { id: 'pii', label: 'PII', hint: 'Email, IP, NIK, cards, IBAN' },
-    { id: 'injection', label: 'Prompt injection', hint: 'Override and exfiltration attempts' }
+    { id: 'injection', label: 'Prompt injection', hint: 'Override and exfiltration attempts' },
+    { id: 'custom', label: 'Custom pattern', hint: 'User-defined regular expressions' }
   ] as const
 
   const ACTIONS = [
@@ -52,6 +53,11 @@
   let formDetectors = $state<string[]>(['pii'])
   let formAction = $state('log_only')
   let isCreating = $state(false)
+
+  let formCustomPatterns = $state<Array<{ name: string; regex: string; replacement?: string }>>([])
+  let customName = $state('')
+  let customRegex = $state('')
+  let customReplacement = $state('')
 
   let rotateKey = $state('')
   let isRotating = $state(false)
@@ -123,6 +129,10 @@
     formScopeId = ''
     formDetectors = ['pii']
     formAction = 'log_only'
+    formCustomPatterns = []
+    customName = ''
+    customRegex = ''
+    customReplacement = ''
     error = null
     notice = null
     isEditorOpen = true
@@ -132,6 +142,29 @@
     formDetectors = formDetectors.includes(id)
       ? formDetectors.filter((d) => d !== id)
       : [...formDetectors, id]
+  }
+
+  function addCustomPattern() {
+    if (!customRegex.trim()) {
+      error = 'Regex pattern is required'
+      return
+    }
+    formCustomPatterns = [
+      ...formCustomPatterns,
+      {
+        name: customName.trim() || 'custom',
+        regex: customRegex.trim(),
+        replacement: customReplacement.trim() || undefined
+      }
+    ]
+    customName = ''
+    customRegex = ''
+    customReplacement = ''
+    error = null
+  }
+
+  function removeCustomPattern(index: number) {
+    formCustomPatterns = formCustomPatterns.filter((_, i) => i !== index)
   }
 
   async function createPolicy() {
@@ -149,13 +182,27 @@
       error = 'Select at least one detector'
       return
     }
+    if (formDetectors.includes('custom') && formCustomPatterns.length === 0 && customRegex.trim() !== '') {
+      addCustomPattern()
+    }
+    if (formDetectors.includes('custom') && formCustomPatterns.length === 0) {
+      error = 'Custom pattern detector requires at least one pattern'
+      return
+    }
     try {
       isCreating = true
+      const config: Record<string, unknown> = {
+        detectors: formDetectors,
+        action: formAction
+      }
+      if (formDetectors.includes('custom') && formCustomPatterns.length > 0) {
+        config.customPatterns = formCustomPatterns
+      }
       await api.createGuardrailPolicy({
         name: formName.trim(),
         scope: formScope,
         scopeId: formScope === 'global' ? '' : formScopeId.trim(),
-        config: JSON.stringify({ detectors: formDetectors, action: formAction })
+        config: JSON.stringify(config)
       })
       isEditorOpen = false
       notice = 'Policy created'
@@ -204,15 +251,16 @@
     }
   }
 
-  function parseConfig(raw: string): { detectors: string[]; action: string } {
+  function parseConfig(raw: string): { detectors: string[]; action: string; customPatterns: Array<{ name: string; regex: string; replacement?: string }> } {
     try {
-      const cfg = JSON.parse(raw) as { detectors?: unknown; action?: unknown }
+      const cfg = JSON.parse(raw) as { detectors?: unknown; action?: unknown; customPatterns?: unknown }
       return {
         detectors: Array.isArray(cfg.detectors) ? cfg.detectors.map(String) : [],
-        action: typeof cfg.action === 'string' ? cfg.action : 'log_only'
+        action: typeof cfg.action === 'string' ? cfg.action : 'log_only',
+        customPatterns: Array.isArray(cfg.customPatterns) ? cfg.customPatterns : []
       }
     } catch {
-      return { detectors: [], action: 'log_only' }
+      return { detectors: [], action: 'log_only', customPatterns: [] }
     }
   }
 
@@ -606,6 +654,59 @@
         {/each}
       </div>
     </div>
+
+    {#if formDetectors.includes('custom')}
+      <div class="space-y-3 border-t border-border-subtle pt-4">
+        <h4 class="text-sm font-medium text-text-main">Custom patterns</h4>
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Input
+            id="custom-name"
+            label="Name"
+            placeholder="e.g. API key"
+            bind:value={customName}
+          />
+          <Input
+            id="custom-regex"
+            label="Regex pattern"
+            placeholder="e.g. sk-[a-zA-Z0-9]{32}"
+            bind:value={customRegex}
+          />
+          <Input
+            id="custom-replacement"
+            label="Replacement (optional)"
+            placeholder="e.g. [REDACTED]"
+            bind:value={customReplacement}
+          />
+        </div>
+        <Button variant="outline" size="sm" onclick={addCustomPattern} disabled={!customRegex.trim()}>
+          <Plus size={14} />
+          Add pattern
+        </Button>
+        {#if formCustomPatterns.length > 0}
+          <div class="space-y-2">
+            {#each formCustomPatterns as pattern, index (index)}
+              <div class="flex items-center gap-2 rounded-[10px] border border-border bg-surface-2 px-3 py-2">
+                <div class="flex-1 min-w-0">
+                  <div class="font-code text-xs text-text-main truncate">{pattern.name}</div>
+                  <div class="font-code text-xs text-text-subtle truncate">{pattern.regex}</div>
+                  {#if pattern.replacement}
+                    <div class="font-code text-xs text-text-muted truncate">→ {pattern.replacement}</div>
+                  {/if}
+                </div>
+                <button
+                  type="button"
+                  onclick={() => removeCustomPattern(index)}
+                  title="Remove pattern"
+                  class="rounded-lg p-1 text-text-muted hover:text-error hover:bg-error/10 transition-colors"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     <div class="flex flex-col gap-1.5">
       <label for="policy-action" class="text-sm font-medium text-text-main">Action</label>

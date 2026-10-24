@@ -1,15 +1,17 @@
 package dashboard
 
 import (
-	json "encoding/json/v2"
+	"encoding/json/v2"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/guardrails"
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -149,11 +151,12 @@ func (h *DashboardHandler) guardrailPolicyFromBody(w http.ResponseWriter, r *htt
 	defer r.Body.Close()
 
 	var req struct {
-		Name    string `json:"name"`
-		Scope   string `json:"scope"`
-		ScopeID string `json:"scopeId"`
-		Enabled *bool  `json:"enabled"`
-		Config  string `json:"config"`
+		Name           string                     `json:"name"`
+		Scope          string                     `json:"scope"`
+		ScopeID        string                     `json:"scopeId"`
+		Enabled        *bool                      `json:"enabled"`
+		Config         string                     `json:"config"`
+		CustomPatterns []guardrails.CustomPattern `json:"customPatterns,omitempty"`
 	}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -204,17 +207,19 @@ func validateGuardrailConfig(raw string) error {
 		return errEmptyGuardrailConfig
 	}
 	var probe struct {
-		Detectors []string `json:"detectors"`
-		Action    string   `json:"action"`
+		Detectors      []string                   `json:"detectors"`
+		Action         string                     `json:"action"`
+		CustomPatterns []guardrails.CustomPattern `json:"customPatterns,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(raw), &probe); err != nil {
 		return errGuardrailConfigJSON
 	}
-	if len(probe.Detectors) == 0 {
+	// Allow empty detectors if customPatterns are present.
+	if len(probe.Detectors) == 0 && len(probe.CustomPatterns) == 0 {
 		return errGuardrailNoDetectors
 	}
 	for _, d := range probe.Detectors {
-		if d != "pii" && d != "injection" {
+		if d != "pii" && d != "injection" && d != "custom" {
 			return errGuardrailUnknownDetector
 		}
 	}
@@ -222,6 +227,15 @@ func validateGuardrailConfig(raw string) error {
 	case "allow", "log_only", "warn", "mask", "block":
 	default:
 		return errGuardrailUnknownAction
+	}
+	// Validate custom patterns
+	for _, cp := range probe.CustomPatterns {
+		if strings.TrimSpace(cp.Regex) == "" {
+			return errGuardrailCustomPatternEmptyRegex
+		}
+		if _, err := regexp.Compile(cp.Regex); err != nil {
+			return errGuardrailCustomPatternInvalidRegex
+		}
 	}
 	return nil
 }
@@ -239,10 +253,11 @@ type guardrailConfigError string
 func (e guardrailConfigError) Error() string { return string(e) }
 
 const (
-	errEmptyGuardrailConfig   = guardrailConfigError("config is required")
-	errGuardrailConfigJSON    = guardrailConfigError("config must be a JSON object")
-	errGuardrailNoDetectors   = guardrailConfigError("config.detectors must list at least one detector")
-	errGuardrailUnknownAction = guardrailConfigError(
-		"config.action must be one of allow, log_only, warn, mask, block")
-	errGuardrailUnknownDetector = guardrailConfigError("config.detectors may only contain pii and injection")
+	errEmptyGuardrailConfig               = guardrailConfigError("config is required")
+	errGuardrailConfigJSON                = guardrailConfigError("config must be a JSON object")
+	errGuardrailNoDetectors               = guardrailConfigError("config.detectors must list at least one detector or customPatterns must be provided")
+	errGuardrailUnknownAction             = guardrailConfigError("config.action must be one of allow, log_only, warn, mask, block")
+	errGuardrailUnknownDetector           = guardrailConfigError("config.detectors may only contain pii, injection, and custom")
+	errGuardrailCustomPatternEmptyRegex   = guardrailConfigError("custom pattern regex cannot be empty")
+	errGuardrailCustomPatternInvalidRegex = guardrailConfigError("custom pattern regex is invalid")
 )
