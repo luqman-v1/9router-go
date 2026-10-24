@@ -285,8 +285,11 @@ func InjectSystemPromptClaude(body []byte, prompt string) ([]byte, bool) {
 			req["system"] = prompt
 		}
 	case []any:
-		// Text blocks: skip if already present, else append a text block.
-		for _, block := range sys {
+		// Text blocks: skip if already present. If a block carries cache_control,
+		// insert before it so the cache breakpoint remains at the end (mirrors
+		// upstream open-sse/rtk/systemInject.js:220-230).
+		lastCacheIdx := -1
+		for i, block := range sys {
 			bMap, ok := block.(map[string]any)
 			if !ok {
 				continue
@@ -294,8 +297,20 @@ func InjectSystemPromptClaude(body []byte, prompt string) ([]byte, bool) {
 			if t, ok := bMap["text"].(string); ok && strings.Contains(t, prompt) {
 				return body, false
 			}
+			if bMap["cache_control"] != nil {
+				lastCacheIdx = i
+			}
 		}
-		req["system"] = append(sys, map[string]any{"type": "text", "text": prompt})
+		newBlock := map[string]any{"type": "text", "text": prompt}
+		if lastCacheIdx >= 0 {
+			res := make([]any, 0, len(sys)+1)
+			res = append(res, sys[:lastCacheIdx]...)
+			res = append(res, newBlock)
+			res = append(res, sys[lastCacheIdx:]...)
+			req["system"] = res
+		} else {
+			req["system"] = append(sys, newBlock)
+		}
 	case nil:
 		req["system"] = prompt
 	default:

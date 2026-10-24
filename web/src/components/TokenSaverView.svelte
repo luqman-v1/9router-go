@@ -153,7 +153,7 @@
     rtkEnabled = true
     cavemanEnabled = true
     cavemanLevel = 'full'
-    adhdEnabled = true
+    adhdEnabled = false
     adhdLevel = 'full'
     ponytailEnabled = false
     headroomEnabled = false
@@ -162,7 +162,7 @@
       rtkEnabled: true,
       cavemanEnabled: true,
       cavemanLevel: 'full',
-      adhdEnabled: true,
+      adhdEnabled: false,
       adhdLevel: 'full',
       ponytailEnabled: false,
       headroomEnabled: false,
