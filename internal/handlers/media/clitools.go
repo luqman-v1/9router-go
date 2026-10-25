@@ -58,7 +58,7 @@ var cliTools = []toolDef{
 	{id: "pi", bin: "pi"},
 	{id: "omp", bin: "omp", hasVer: true},
 	{id: "crush", bin: "crush"},
-	{id: "forgecode", bin: "forgecode"},
+	{id: "forge", bin: "forge"},
 	{id: "smelt", bin: "smelt"},
 	{id: "codewhale", bin: "codewhale"},
 }

@@ -47,7 +47,7 @@ func TestCLIDetectors_HasAllToolIDs(t *testing.T) {
 		"claude", "codex", "opencode", "droid", "openclaw", "hermes",
 		"cowork", "copilot", "cline", "kilo", "deepseek-tui", "jcode",
 		"grok-build", "devin", "pi", "omp",
-		"crush", "forgecode", "smelt", "codewhale",
+		"crush", "forge", "smelt", "codewhale",
 	}
 	m := cliDetectors()
 	for _, id := range want {

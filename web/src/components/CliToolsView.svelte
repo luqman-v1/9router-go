@@ -446,66 +446,66 @@
       category: 'cli',
       image: '/providers/crush.png',
       color: '#8B5CF6',
-      description: 'Crush AI terminal agent with model routing',
-      configType: 'env',
-      envVars: {
-        CRUSH_BASE_URL: `${localOrigin}/v1`,
-        CRUSH_API_KEY: 'sk-9router-local-token',
-      },
+      description: 'Crush AI terminal agent — configure ~/.config/crush/crush.json',
+      configType: 'guide',
       instructions: [
-        `export CRUSH_BASE_URL="${localOrigin}/v1"`,
-        `export CRUSH_API_KEY="<your-api-key>"`,
+        `Add 9router-go to your Crush config in ~/.config/crush/crush.json:`,
+        `{"providers":{"9router":{"type":"openai","base_url":"${localOrigin}/v1","api_key":"${snippetApiKey}"}}}`,
+        noApiKey
+          ? `No API key exists yet — create one in API Keys first, then update "api_key".`
+          : `Point your active model to 9router in crush.json or pass --provider 9router on startup.`,
+        `List available models: curl -s ${localOrigin}/v1/models -H "Authorization: Bearer ${snippetApiKey}"`,
       ],
     },
     {
-      id: 'forgecode',
-      name: 'ForgeCode',
+      id: 'forge',
+      name: 'Forge',
       category: 'cli',
-      image: '/providers/forgecode.png',
+      image: '/providers/forge.png',
       color: '#F97316',
-      description: 'ForgeCode AI-powered development CLI',
-      configType: 'env',
-      envVars: {
-        FORGECODE_BASE_URL: `${localOrigin}/v1`,
-        FORGECODE_API_KEY: 'sk-9router-local-token',
-      },
+      description: 'Forge AI coding CLI — configure ~/.forge/config.toml',
+      configType: 'guide',
       instructions: [
-        `export FORGECODE_BASE_URL="${localOrigin}/v1"`,
-        `export FORGECODE_API_KEY="<your-api-key>"`,
+        `Configure 9router-go endpoint under the [openai] section in ~/.forge/config.toml:`,
+        `[openai]\nbase_url = "${localOrigin}/v1"\napi_key = "${snippetApiKey}"`,
+        noApiKey
+          ? `No API key exists yet — create one in API Keys first, then update api_key.`
+          : `Run 'forge' to start working with models routed through 9router-go.`,
+        `Optionally override model via --model flag or config.toml default_model setting.`,
       ],
     },
     {
       id: 'smelt',
       name: 'Smelt',
       category: 'cli',
-      image: '/providers/smelt.png',
+      image: '/providers/smelt.svg',
       color: '#E11D48',
-      description: 'Smelt terminal coding agent with 9router-go integration',
-      configType: 'env',
-      envVars: {
-        SMELT_BASE_URL: `${localOrigin}/v1`,
-        SMELT_API_KEY: 'sk-9router-local-token',
-      },
+      description: 'Smelt terminal coding agent — configure ~/.smelt/config.json',
+      configType: 'guide',
       instructions: [
-        `export SMELT_BASE_URL="${localOrigin}/v1"`,
-        `export SMELT_API_KEY="<your-api-key>"`,
+        `Add 9router-go gateway configuration to ~/.smelt/config.json:`,
+        `{"api_base":"${localOrigin}/v1","api_key":"${snippetApiKey}"}`,
+        noApiKey
+          ? `No API key exists yet — create one in API Keys first, then update "api_key".`
+          : `Launch 'smelt' in your workspace directory to begin.`,
+        `Compatible with standard OpenAI completions and Responses endpoints.`,
       ],
     },
     {
       id: 'codewhale',
       name: 'CodeWhale',
       category: 'cli',
-      image: '/providers/codewhale.png',
+      image: '/providers/codewhale.svg',
       color: '#06B6D4',
-      description: 'CodeWhale AI coding assistant for terminal workflows',
-      configType: 'env',
-      envVars: {
-        CODEWHALE_BASE_URL: `${localOrigin}/v1`,
-        CODEWHALE_API_KEY: 'sk-9router-local-token',
-      },
+      description: 'CodeWhale terminal developer suite — configure ~/.codewhale/config.toml',
+      configType: 'guide',
       instructions: [
-        `export CODEWHALE_BASE_URL="${localOrigin}/v1"`,
-        `export CODEWHALE_API_KEY="<your-api-key>"`,
+        `Add 9router-go endpoint to ~/.codewhale/config.toml:`,
+        `[gateway]\nendpoint = "${localOrigin}/v1"\napi_key = "${snippetApiKey}"`,
+        noApiKey
+          ? `No API key exists yet — create one in API Keys first, then update api_key.`
+          : `Run 'codewhale' to begin terminal-assisted coding workflows.`,
+        `Verify connection with: codewhale check`,
       ],
     },
   ])
