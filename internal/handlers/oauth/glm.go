@@ -1,6 +1,8 @@
 package oauth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -15,7 +17,7 @@ import (
 // the ZCode CLI polling protocol — no PKCE, no local callback:
 //
 //  1. POST https://zcode.z.ai/api/v1/oauth/cli/init
-//     Authorization: Bearer <random poll token>
+//     Authorization: Bearer <hex poll token>
 //     {"provider":"zai"}
 //     → { code: 0, data: { authorize_url, flow_id, poll_interval_sec, expires_at } }
 //  2. Browser opens authorize_url; user signs in with the Z.ai account
@@ -43,7 +45,15 @@ var (
 )
 
 func glmStart() (map[string]any, error) {
-	pollToken := randomString(64)
+	// The site parses the bearer poll token as a hex flow identifier: the CLI
+	// and upstream send 32 random bytes hex-encoded, and anything else is
+	// answered with HTTP 400 code 3004 "invalid_flow" (confirmed against the
+	// live endpoint).
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, fmt.Errorf("ZCode OAuth init failed: %w", err)
+	}
+	pollToken := hex.EncodeToString(raw)
 	data, status, err := postJSON(glmCLIInitURL, map[string]any{"provider": "zai"},
 		map[string]string{"Authorization": "Bearer " + pollToken})
 	if err != nil {

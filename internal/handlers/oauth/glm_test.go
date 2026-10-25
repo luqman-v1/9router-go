@@ -4,10 +4,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
+
+// The live init endpoint parses the bearer poll token as a hex flow
+// identifier and answers anything else with 400 code 3004 "invalid_flow".
+var glmHexPollToken = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 	const (
@@ -27,9 +32,10 @@ func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 
 		switch {
 		case r.URL.Path == "/api/v1/oauth/cli/init":
-			auth := r.Header.Get("Authorization")
-			if !strings.HasPrefix(auth, "Bearer ") {
-				http.Error(w, `{"code":401,"msg":"missing bearer"}`, http.StatusUnauthorized)
+			token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if !ok || !glmHexPollToken.MatchString(token) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": 3004, "msg": "invalid_flow"})
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -169,6 +175,17 @@ func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 		session, _ := res["session"].(map[string]any)
 		if strVal(session, "zcodePollToken") == "" {
 			t.Errorf("session missing zcodePollToken")
+		}
+	})
+
+	t.Run("PollTokenIsHexLikeTheCLI", func(t *testing.T) {
+		res, err := glmStart()
+		if err != nil {
+			t.Fatalf("glmStart failed: %v", err)
+		}
+		session, _ := res["session"].(map[string]any)
+		if token := strVal(session, "zcodePollToken"); !glmHexPollToken.MatchString(token) {
+			t.Errorf("zcodePollToken = %q, want 64 lowercase hex chars", token)
 		}
 	})
 
