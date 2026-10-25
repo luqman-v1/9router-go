@@ -92,6 +92,8 @@ func SetupRoutes(r interface {
 	r.Get("/api/media-providers/tts/deepgram/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/elevenlabs/voices", mediaH.HandleAudioVoices)
 	r.Post("/audio/transcriptions", mediaH.HandleAudioTranscriptions)
+	r.Post("/audio/sound-generation", mediaH.HandleAudioSoundGeneration)
+	r.Post("/v1/audio/sound-generation", mediaH.HandleAudioSoundGeneration)
 	r.Post("/videos/generations", mediaH.HandleVideoGenerations)
 	r.Post("/videos/edits", mediaH.HandleVideoEdits)
 	r.Post("/videos/extensions", mediaH.HandleVideoExtensions)
