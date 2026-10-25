@@ -180,6 +180,12 @@ func (h *ChatHandler) RefreshOAuthTokenIfExpired(connectionID, currentToken stri
 	return h.refreshOAuthTokenIfExpired(connectionID, currentToken)
 }
 
+// ForceRefreshOAuthToken refreshes unconditionally, for a media lane whose
+// upstream answered 401 on a token the lazy check considered valid.
+func (h *ChatHandler) ForceRefreshOAuthToken(connectionID string) (string, string, error) {
+	return h.forceRefreshOAuthToken(connectionID)
+}
+
 func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken string) (string, string, error) {
 	if connectionID == "" {
 		return currentToken, "", nil
