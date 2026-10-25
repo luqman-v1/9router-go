@@ -404,6 +404,53 @@ func TestHandleMessages_RequireClaudeToolType(t *testing.T) {
 	if t0["type"] != "custom" {
 		t.Errorf("expected tool type to be 'custom', got: %v", t0["type"])
 	}
+
+	// Negative assertion: a Claude-native provider without RequireClaudeToolType (e.g. anthropic/claude)
+	// must leave typeless tools untouched without injecting type: "custom".
+	var claudeReceivedBody []byte
+	claudeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claudeReceivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg-2","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer claudeUpstream.Close()
+
+	claudeConnData, _ := json.Marshal(map[string]any{
+		"apiKey":  "sk-ant-test-key",
+		"baseUrl": claudeUpstream.URL,
+	})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-claude', 'claude', 'apikey', 'Mock Claude', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(claudeConnData))
+	if err != nil {
+		t.Fatalf("failed to insert mock claude connection: %v", err)
+	}
+
+	claudeReqBody := `{"model":"claude/claude-3-7-sonnet","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"test_tool","description":"desc","input_schema":{"type":"object"}}],"max_tokens":100}`
+	claudeReq := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(claudeReqBody))
+	claudeRec := httptest.NewRecorder()
+
+	handler.HandleMessages(claudeRec, claudeReq)
+	if claudeRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for claude, got %d, body: %s", claudeRec.Code, claudeRec.Body.String())
+	}
+
+	var parsedClaude map[string]any
+	if err := json.Unmarshal(claudeReceivedBody, &parsedClaude); err != nil {
+		t.Fatalf("unmarshal claude body: %v", err)
+	}
+	claudeTools, ok := parsedClaude["tools"].([]any)
+	if !ok || len(claudeTools) != 1 {
+		t.Fatalf("expected 1 tool in claude forwarded body: %+v", parsedClaude["tools"])
+	}
+	ct0, ok := claudeTools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tool is not map: %+v", claudeTools[0])
+	}
+	if ct0["type"] != nil {
+		t.Errorf("expected claude tool type to remain absent/nil, got: %v", ct0["type"])
+	}
 }
 
 func TestHandleChatCompletions_Streaming(t *testing.T) {
