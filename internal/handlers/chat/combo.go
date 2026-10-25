@@ -648,15 +648,20 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 
 				var fwdErr error
 				fwdCtx := ctx
+				targetWriter := http.ResponseWriter(cw)
+				var streamPeeker *internalproxy.StreamContentPeeker
 				if !isStream {
 					fwdCtx = internalproxy.WithZeroContentProbe(ctx, !isLastModel)
+				} else if !isLastModel {
+					streamPeeker = internalproxy.NewStreamContentPeeker(cw)
+					targetWriter = streamPeeker
 				}
 				if modelInfo.Provider == "mimo-free" {
 					comboMetrics := &streamMetrics{}
-					fwdErr = h.MimoFreeChat(fwdCtx, cw, upstreamJSON, isStream, comboMetrics)
+					fwdErr = h.MimoFreeChat(fwdCtx, targetWriter, upstreamJSON, isStream, comboMetrics)
 				} else {
 					fwdErr = h.tryForwardWithConnection(forwardRequestParams{
-						Ctx: fwdCtx, W: cw, Provider: modelInfo.Provider, Model: modelInfo.Model,
+						Ctx: fwdCtx, W: targetWriter, Provider: modelInfo.Provider, Model: modelInfo.Model,
 						RequestedModel: comboName, ComboName: comboName,
 						ConnectionID: connID, ConnName: connObjName(picked), ConnEmail: connObjEmail(picked),
 						ConnData: connData, Body: upstreamJSON,
@@ -664,8 +669,18 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						Endpoint: forwardEndpoint(ctx, "/v1/chat/completions"),
 					})
 				}
+				if streamPeeker != nil && fwdErr == nil {
+					if finishErr := streamPeeker.Finish(); finishErr != nil {
+						fwdErr = finishErr
+					}
+				}
 
 				if fwdErr != nil {
+					if errors.Is(fwdErr, internalproxy.ErrStreamingZeroContent) {
+						log.Warn("combo", "streaming zero content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						lastErr = &upstreamError{StatusCode: http.StatusOK, Body: []byte(`{"error":{"message":"streaming zero content"}}`)}
+						break
+					}
 					var zcErr *internalproxy.ZeroContentError
 					if errors.As(fwdErr, &zcErr) {
 						log.Warn("combo", "zero usable content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
@@ -914,19 +929,34 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				}
 
 				fwdCtx := ctx
+				targetWriter := http.ResponseWriter(cw)
+				var streamPeeker *internalproxy.StreamContentPeeker
 				if !isStream {
 					fwdCtx = internalproxy.WithZeroContentProbe(ctx, !isLastModel)
+				} else if !isLastModel {
+					streamPeeker = internalproxy.NewStreamContentPeeker(cw)
+					targetWriter = streamPeeker
 				}
 				fwdErr := h.tryForwardWithConnection(forwardRequestParams{
-					Ctx: fwdCtx, W: cw, Provider: modelInfo.Provider, Model: modelInfo.Model,
+					Ctx: fwdCtx, W: targetWriter, Provider: modelInfo.Provider, Model: modelInfo.Model,
 					RequestedModel: comboName, ComboName: comboName,
 					ConnectionID: connID, ConnName: connObjName(picked), ConnEmail: connObjEmail(picked),
 					ConnData: connData, Body: upstreamJSON,
 					IsStream: isStream, TranslateResponse: !translator.IsResponsesClient(ctx),
 					Endpoint: forwardEndpoint(ctx, "/v1/messages"),
 				})
+				if streamPeeker != nil && fwdErr == nil {
+					if finishErr := streamPeeker.Finish(); finishErr != nil {
+						fwdErr = finishErr
+					}
+				}
 
 				if fwdErr != nil {
+					if errors.Is(fwdErr, internalproxy.ErrStreamingZeroContent) {
+						log.Warn("combo", "streaming zero content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						lastErr = &upstreamError{StatusCode: http.StatusOK, Body: []byte(`{"error":{"message":"streaming zero content"}}`)}
+						break
+					}
 					var zcErr *internalproxy.ZeroContentError
 					if errors.As(fwdErr, &zcErr) {
 						log.Warn("combo", "zero usable content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
