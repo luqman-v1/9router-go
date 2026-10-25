@@ -2585,6 +2585,22 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "grok-4.2",
       "name": "Grok 4.2 (4.20 Beta)"
+    },
+    {
+      "id": "grok-4.20",
+      "name": "Grok 4.20"
+    },
+    {
+      "id": "grok-4.20-beta",
+      "name": "Grok 4.20 Beta"
+    },
+    {
+      "id": "grok-image",
+      "name": "Grok Imagine Image"
+    },
+    {
+      "id": "grok-video",
+      "name": "Grok Imagine Video"
     }
   ],
   "groq": [

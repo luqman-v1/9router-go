@@ -124,7 +124,7 @@ var ProviderModels = map[string][]string{
 	"grok-cli":            {"grok-build", "grok-4.7", "grok-4.5", "grok-4.5-high", "grok-4.5-medium", "grok-4.5-low"},
 	"uc-web":              {"seedream-v4.5", "seedream-v5", "seedream-v5-flash", "nano-banana-pro-ultra", "nano-banana-pro", "nano-banana", "nano-banana-2", "gpt-image", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "wan-2.6-image", "wan-2.7-text-to-image", "wan-2.7-text-to-image-pro", "prefect-pony-xl", "1.0", "1.1", "2.0", "flux-2-max", "SDXL", "realism", "realism-2", "z-image-turbo", "default", "turbo", "wan-2.2-uncensored-v2", "wan-2.2-uncensored", "wan-2.6", "wan-2.6-ultra", "wan-2.7", "wan-2.7-pro", "wan-2.7-uncensored", "wan-2.7-uncensored-v2", "wan-3.0", "wan-3.0-uncensored", "wan-3.0-uncensored-pro", "sora-2", "sora-2-pro", "grok-imagine-video", "bytedance-seedance-2.0", "seedance-2.0-fast", "seedance-2.0-uncensored", "seedance-2.0-fast-uncensored", "seedance-2.0-mini-uncensored", "seedance-2.0-mini-turbo", "seedance-v1.5-pro-uncensored", "seedance-2.5-uncensored", "seedance-2.5", "vidu-q3-uncensored", "av-gen-v2", "cosmos-predict", "minimax-h3", "happyhorse-1.0", "wan/v2.2-a14b"},
 	"veoaifree-web":       {"veo", "seedance", "nano-banana"},
-	"grok-web":            {"grok-3", "grok-3-mini", "grok-3-thinking", "grok-4", "grok-4-mini", "grok-4-thinking", "grok-4-heavy", "grok-4.1-mini", "grok-4.1-fast", "grok-4.1-expert", "grok-4.1-thinking", "grok-4.2"},
+	"grok-web":            {"grok-3", "grok-3-mini", "grok-3-thinking", "grok-4", "grok-4-mini", "grok-4-thinking", "grok-4-heavy", "grok-4.1-mini", "grok-4.1-fast", "grok-4.1-expert", "grok-4.1-thinking", "grok-4.2", "grok-4.20", "grok-4.20-beta", "grok-image", "grok-video"},
 	"groq":                {"llama-3.3-70b-versatile", "meta-llama/llama-4-maverick-17b-128e-instruct", "qwen/qwen3-32b", "openai/gpt-oss-120b", "whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"},
 	"gw":                  {"grok-3", "grok-3-mini", "grok-3-thinking", "grok-4", "grok-4-mini", "grok-4-thinking", "grok-4-heavy", "grok-4.1-mini", "grok-4.1-fast", "grok-4.1-expert", "grok-4.1-thinking", "grok-4.2"},
 	"hf":                  {"black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev", "black-forest-labs/FLUX.1-Krea-dev", "black-forest-labs/FLUX.1-Kontext-dev", "black-forest-labs/FLUX.2-dev", "black-forest-labs/FLUX.2-klein-9B", "black-forest-labs/FLUX.2-klein-4B", "black-forest-labs/FLUX.2-klein-base-9B", "black-forest-labs/FLUX.2-klein-base-4B", "stabilityai/stable-diffusion-xl-base-1.0", "stabilityai/stable-diffusion-3.5-large", "stabilityai/stable-diffusion-3.5-large-turbo", "Qwen/Qwen-Image", "Qwen/Qwen-Image-2512", "Qwen/Qwen-Image-Edit", "Qwen/Qwen-Image-Edit-2509", "Qwen/Qwen-Image-Edit-2511", "ideogram-ai/ideogram-4-fp8", "tencent/HunyuanImage-3.0", "Tongyi-MAI/Z-Image-Turbo", "krea/Krea-2-Turbo", "HiDream-ai/HiDream-I1-Fast", "playgroundai/playground-v2.5-1024px-aesthetic", "openai/whisper-large-v3", "openai/whisper-large-v3-turbo"},
@@ -223,6 +223,10 @@ var ProviderModels = map[string][]string{
 // filters on it (modelKind() in src/app/api/v1/models/route.js); without it here
 // media models would leak into the LLM list.
 var ProviderModelKinds = map[string]map[string]string{
+	"grok-web": {
+		"grok-image": "image",
+		"grok-video": "video",
+	},
 	"aai": {
 		"best":            "stt",
 		"nano":            "stt",

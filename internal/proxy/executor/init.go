@@ -73,6 +73,10 @@ func RegisterAll() {
 	// the session tokens, the nested request array and the line stream are not
 	// anything the shared passthrough can express.
 	Register("gemini-web", func() Executor { return ForwardGeminiWeb })
+	// grok-web posts to grok.com's conversations/new behind Cloudflare with a
+	// browser Cookie header and answers NDJSON, not an OpenAI stream — the
+	// shared passthrough cannot express the handshake or the wire shape.
+	Register("grok-web", func() Executor { return ForwardGrokWeb })
 	// One executor serves both Bedrock entries: the registry entry's Format picks the
 	// wire shape (Anthropic Messages vs OpenAI Chat Completions), the way one Vertex
 	// executor serves vertex and vertex-partner.
