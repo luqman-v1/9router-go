@@ -75,5 +75,16 @@ func Get(provider string) Executor {
 // Default returns the default OpenAI-compat executor.
 func Default() Executor { return ForwardOpenAI }
 
+// Release clears internal byte buffers and maps so memory can be collected
+// immediately following upstream dispatch.
+func (r *Request) Release() {
+	if r == nil {
+		return
+	}
+	r.Body = nil
+	r.ConnData = nil
+	r.ToolNameMap = nil
+}
+
 // IsGeminiNative checks if a config uses gemini-native format.
 func IsGeminiNative(cfg *providers.ProviderConfig) bool { return cfg.Format == "gemini-native" }

@@ -845,6 +845,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			execReq.Leases = h.Repo
 		}
 		fwdErr = exec(w, execReq)
+		execReq.Release()
 	} else if providerCfg.IsGeminiNative() {
 		fwdErr = h.forwardGeminiNativeRequest(ctx, w, provider, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics, httpClient)
 	} else {
@@ -890,6 +891,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 					retryReq.Leases = h.Repo
 				}
 				fwdErr = exec(w, retryReq)
+				retryReq.Release()
 			} else if providerCfg.IsGeminiNative() {
 				fwdErr = h.forwardGeminiNativeRequest(ctx, w, provider, providerCfg, apiKey, connectionID, pipedBody, isStream, translateResponse, metrics, httpClient)
 			} else {
@@ -1016,6 +1018,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		}
 		logInfo.ConnName, logInfo.ConnEmail = identityNames(h.connIdentityKVOr(f, connectionID))
 		h.logUsage(ctx, logInfo, usage, latencyMs, body, metrics)
+		metrics.ResponseBuf.Reset()
 		fwdErr = nil
 		return nil
 	}
@@ -1077,6 +1080,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		body,
 		metrics,
 	)
+	metrics.ResponseBuf.Reset()
 	if isClientCanceled(ctx, fwdErr) {
 		log.Info("fallback", "client canceled request", append([]any{
 			"provider", provider, "model", model,
