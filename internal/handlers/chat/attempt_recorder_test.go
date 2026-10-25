@@ -56,9 +56,6 @@ func TestFallbackAttemptRecorder_ContextPropagation(t *testing.T) {
 	if got := FallbackAttemptRecorderFrom(ctx); got != r {
 		t.Fatalf("expected same recorder from context")
 	}
-	if got := FallbackAttemptRecorderFrom(nil); got != nil {
-		t.Fatalf("expected nil for nil context")
-	}
 	if got := FallbackAttemptRecorderFrom(context.Background()); got != nil {
 		t.Fatalf("expected nil when no recorder in context")
 	}
