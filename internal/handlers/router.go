@@ -610,6 +610,12 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 		r.Get("/api/cli-tools/hermes-settings", hermesH.HandleGet)
 		r.Post("/api/cli-tools/hermes-settings", hermesH.HandlePost)
 		r.Delete("/api/cli-tools/hermes-settings", hermesH.HandleDelete)
+		// pi writes the same kind of file Hermes does — a CLI agent's own
+		// config on the operator's disk — so it rides the same dashboard group.
+		piH := media.NewPiHandler(repo)
+		r.Get("/api/cli-tools/pi-settings", piH.HandleGet)
+		r.Post("/api/cli-tools/pi-settings", piH.HandlePost)
+		r.Delete("/api/cli-tools/pi-settings", piH.HandleDelete)
 	})
 
 	SetupConsoleLogRoutes(r, repo)
