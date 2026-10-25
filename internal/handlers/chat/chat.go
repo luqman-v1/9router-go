@@ -269,15 +269,17 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	// historical case; minimax-code serves the same wire on MiniMax's mavis
 	// gateway (open-sse/config/providers.js transport.format).
 	claudeNative := modelInfo.Provider == "claude" || modelInfo.Provider == "anthropic"
-	if !claudeNative {
-		if cfg, err := h.GetProviderConfig(modelInfo.Provider, nil); err == nil {
+	var providerCfg *providers.ProviderConfig
+	if cfg, err := h.GetProviderConfig(modelInfo.Provider, nil); err == nil {
+		providerCfg = cfg
+		if !claudeNative {
 			claudeNative = cfg != nil && cfg.Format == providers.FormatClaude
 		}
 	}
 	if claudeNative {
 		translateResponse = false
 		body = translator.SanitizeClaudePassthrough(body, translator.ClaudeIntentionalPrefill(body))
-		if modelInfo.Provider == "minimax" || modelInfo.Provider == "minimax-cn" {
+		if providerCfg != nil && providerCfg.RequireClaudeToolType {
 			body = translator.DefaultClaudeToolType(body)
 		}
 		body = translator.AnchorClaudeCache(body)

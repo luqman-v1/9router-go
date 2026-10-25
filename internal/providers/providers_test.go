@@ -66,6 +66,21 @@ func TestKnownProviders_NoAuthOverridesScheme(t *testing.T) {
 	}
 }
 
+func TestKnownProviders_RequireClaudeToolType(t *testing.T) {
+	for _, p := range []string{"minimax", "minimax-cn", "minimax-code", "minimax-code-global"} {
+		cfg, ok := KnownProviders[p]
+		if !ok {
+			t.Fatalf("provider %s not found in KnownProviders", p)
+		}
+		if !cfg.RequireClaudeToolType {
+			t.Errorf("provider %s expected RequireClaudeToolType=true", p)
+		}
+	}
+	if KnownProviders["openai"].RequireClaudeToolType {
+		t.Error("provider openai expected RequireClaudeToolType=false")
+	}
+}
+
 func TestKnownProviders_StaticHeaders(t *testing.T) {
 	cfg := KnownProviders["opencode"]
 	if cfg.StaticHeaders["x-opencode-client"] != "desktop" {
