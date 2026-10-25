@@ -1093,6 +1093,14 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	// veoaifree.com free tier: WordPress AJAX, no credentials (~6 requests
+	// per hour per IP); image and video lanes are executor-driven.
+	"veoaifree-web": {
+		BaseURL:    "https://veoaifree.com",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		NoAuth:     true,
+	},
 
 	"sdwebui": {
 		BaseURL:  "http://localhost:7860/sdapi/v1/txt2img",

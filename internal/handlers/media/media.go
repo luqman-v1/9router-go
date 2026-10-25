@@ -998,6 +998,21 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
+
+	// veoaifree.com free tier: WordPress AJAX with a scraped CSRF nonce, not
+	// an OpenAI-compatible endpoint.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (modelInfo.Provider == "veoaifree-web" || modelInfo.Provider == "veo-free") {
+		if err := h.handleVeoFreeWebImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+	if (endpoint == "/v1/videos/generations" || endpoint == "/videos/generations") && (modelInfo.Provider == "veoaifree-web" || modelInfo.Provider == "veo-free") {
+		if err := h.handleVeoFreeWebVideo(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
 	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
 		if err := h.handleAntigravitySTT(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())

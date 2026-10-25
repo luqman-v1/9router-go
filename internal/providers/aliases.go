@@ -58,6 +58,7 @@ var ProviderAliasMap = map[string]string{
 	"grok-build":     "grok-cli",
 	"gw":             "grok-web",
 	"uc":             "uc-web",
+	"veo-free":       "veoaifree-web",
 	"hf":             "huggingface",
 	"hyp":            "hyperbolic",
 	"if":             "iflow",
