@@ -41,6 +41,23 @@ func TestKnownProviders_AuthSchemes(t *testing.T) {
 	}
 }
 
+func TestKnownProviders_PerplexityWebIsParked(t *testing.T) {
+	// Upstream 38a0c449 parks perplexity-web with serviceKinds: [] — no
+	// executor sits behind it, so it must stay out of the pickers while the
+	// cookie probe and any saved connection keep resolving. Hidden is that
+	// contract on this side: offered nowhere, reachable everywhere.
+	cfg := KnownProviders["perplexity-web"]
+	if !cfg.Hidden {
+		t.Error("perplexity-web expected Hidden=true (parked, upstream serviceKinds: [])")
+	}
+	if models := ProviderModels["perplexity-web"]; len(models) == 0 {
+		t.Error("perplexity-web expected its model catalog kept so stored connections still resolve")
+	}
+	if got := ResolveAlias("pw"); got != "perplexity-web" {
+		t.Errorf("ResolveAlias(pw) = %q, want perplexity-web", got)
+	}
+}
+
 func TestKnownProviders_NoAuthOverridesScheme(t *testing.T) {
 	// mimo-free has NoAuth=true and a DefaultAPIKey fallback.
 	cfg := KnownProviders["mimo-free"]
