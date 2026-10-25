@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -39,7 +40,7 @@ func TestStreamContentPeeker_ZeroContentReturnsError(t *testing.T) {
 	_, _ = peeker.Write([]byte("data: [DONE]\n\n"))
 
 	err := peeker.Finish()
-	if err != ErrStreamingZeroContent {
+	if !errors.Is(err, ErrStreamingZeroContent) {
 		t.Fatalf("expected ErrStreamingZeroContent, got %v", err)
 	}
 	if rec.Body.Len() > 0 {

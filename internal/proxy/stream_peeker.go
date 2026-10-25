@@ -92,6 +92,14 @@ func (p *StreamContentPeeker) Write(b []byte) (int, error) {
 		return p.ResponseWriter.Write(b)
 	}
 
+	// An in-band error frame is an explicit failure signal; commit and emit it directly
+	// so the caller/client receives the in-band error frame as intended (e.g. TestComboSkipsInbandErrorOnRetry).
+	if _, _, isErr := DetectInbandSSEError(b); isErr || bytes.Contains(b, []byte(`"error":`)) {
+		p.sawContent = true
+		p.commitLocked()
+		return p.ResponseWriter.Write(b)
+	}
+
 	if HasSSEContent(b) {
 		p.sawContent = true
 		p.commitLocked()
