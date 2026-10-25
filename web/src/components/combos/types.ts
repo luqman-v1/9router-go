@@ -3,6 +3,14 @@ import type { Combo, SmartRule, SmartRulePreview } from '../../api/client'
 export interface ComboStrategyInfo {
   fallbackStrategy?: string
   judgeModel?: string
+  /** Smart Router policy: smart | strict | per-turn | custom. */
+  smartPolicy?: string
+  /** Explicit false forces per-turn regardless of smartPolicy. */
+  sessionSticky?: boolean
+  /** 0-1 confidence a System One choice must reach to switch models. */
+  confidenceThreshold?: number
+  /** System One model that evaluates the route; empty means the free default. */
+  routerModel?: string
 }
 
 /**
@@ -17,6 +25,7 @@ export const COMBO_STRATEGIES = [
   { value: 'round-robin', label: 'Round Robin — rotate' },
   { value: 'sticky', label: 'Sticky — stay until the limit' },
   { value: 'capacity', label: 'Capacity — prefer free tiers' },
+  { value: 'smart', label: 'Smart Router — System One' },
   { value: 'fusion', label: 'Fusion — panel + judge' }
 ] as const
 
@@ -271,4 +280,47 @@ export function smartRuleCount(combo: Combo): number {
 /** Whether a member is owned by a rule rather than pinned by the operator. */
 export function isAutoMember(combo: Combo, model: string): boolean {
   return Array.isArray(combo.autoMembers) && combo.autoMembers.includes(model)
+}
+
+/**
+ * Merge a Smart Router policy patch into `settings.comboStrategies`. The
+ * policy carries its own stickiness: per-turn is the one policy without a
+ * session pin, so it is recorded as sessionSticky:false alongside the name
+ * (upstream SmartPolicyModal's onSave payload).
+ */
+export function updateSmartPolicy(
+  currentStrategies: Record<string, ComboStrategyInfo>,
+  comboName: string,
+  cfg: { smartPolicy: string; sessionSticky: boolean; confidenceThreshold: number }
+): Record<string, ComboStrategyInfo> {
+  const updated = { ...currentStrategies }
+  updated[comboName] = { ...(updated[comboName] || {}), ...cfg }
+  return updated
+}
+
+/** Merge a router-model override into `settings.comboStrategies`. */
+export function updateRouterModel(
+  currentStrategies: Record<string, ComboStrategyInfo>,
+  comboName: string,
+  routerModel: string
+): Record<string, ComboStrategyInfo> {
+  const updated = { ...currentStrategies }
+  const rest = { ...(updated[comboName] || {}) }
+  if (routerModel) rest.routerModel = routerModel
+  else delete rest.routerModel
+  updated[comboName] = rest
+  return updated
+}
+
+/** The policy chip label a smart combo card shows (upstream getPolicyBadgeLabel). */
+export function smartPolicyLabel(info: ComboStrategyInfo): string {
+  const policy = info.smartPolicy || (info.sessionSticky === false ? 'per-turn' : 'smart')
+  if (policy === 'strict') return 'Strict Lock'
+  if (policy === 'per-turn') return 'Per-Turn'
+  if (policy === 'custom') {
+    const raw = info.confidenceThreshold
+    const pct = Math.round((raw || 0.8) * (raw && raw <= 1 ? 100 : 1))
+    return `Custom (≥${pct || 80}%)`
+  }
+  return 'Smart (≥80%)'
 }

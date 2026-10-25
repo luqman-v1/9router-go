@@ -19,7 +19,7 @@
 
   interface Props {
     isOpen: boolean
-    target: 'combo' | 'vision' | 'audio' | 'judge'
+    target: 'combo' | 'vision' | 'audio' | 'judge' | 'router'
     connections?: ProviderConnection[]
     combos?: Combo[]
     providerNodes?: ProviderNode[]
@@ -133,7 +133,9 @@
                 ? 'Add Audio Model'
                 : target === 'judge'
                   ? 'Select Judge Model'
-                  : 'Add Model to Combo'}
+                  : target === 'router'
+                    ? 'Select System One Router'
+                    : 'Add Model to Combo'}
           </h2>
         </div>
         <button

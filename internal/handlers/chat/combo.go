@@ -531,8 +531,15 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
 
-	// 1. Apply combo rotation strategy first
-	models := h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit, detectNewTurn(body))
+	// 1. Apply combo rotation strategy first. The smart strategy orders the
+	// models itself (System One evaluation + session stickiness) and carries
+	// its routing state on the context for the failure loop below.
+	var models []string
+	if strategy == "smart" {
+		ctx, models = h.applySmartRouting(ctx, body, comboModels, comboName)
+	} else {
+		models = h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit, detectNewTurn(body))
+	}
 
 	// 2. Auto-capability-switch: float models that satisfy the request's required capabilities to the front.
 	// This ensures that if the rotated model lacks required capabilities (e.g., vision), a capable model overrides it.
@@ -764,6 +771,11 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				break
 			}
 
+			// A failed smart-pinned model loses its session pin, so the next
+			// turn re-evaluates instead of returning to a dead model.
+			if !entrySuccess {
+				h.clearFailedSmartSticky(ctx, entry)
+			}
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}
@@ -813,7 +825,12 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	// Connections that failed with a retryable status this request; remaining
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
-	models := h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit, detectNewTurn(bodyJSON))
+	var models []string
+	if strategy == "smart" {
+		ctx, models = h.applySmartRouting(ctx, bodyJSON, comboModels, comboName)
+	} else {
+		models = h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit, detectNewTurn(bodyJSON))
+	}
 	if required := DetectRequiredCapabilities(bodyJSON); len(required) > 0 {
 		reordered := ReorderByCapabilities(models, required)
 		models = reordered
@@ -1016,6 +1033,11 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				break
 			}
 
+			// A failed smart-pinned model loses its session pin, so the next
+			// turn re-evaluates instead of returning to a dead model.
+			if !entrySuccess {
+				h.clearFailedSmartSticky(ctx, entry)
+			}
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}

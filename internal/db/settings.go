@@ -7,10 +7,23 @@ import (
 )
 
 // ComboStrategy defines routing strategy, sticky limit, and judge model for a combo.
+// The Smart* fields configure the "smart" strategy (System One routing, #623).
 type ComboStrategy struct {
 	Strategy    string `json:"strategy,omitempty"`
 	StickyLimit int    `json:"stickyLimit,omitempty"`
 	JudgeModel  string `json:"judgeModel,omitempty"`
+	// SmartPolicy is "smart" (adaptive switch, default), "strict" (lock the
+	// first evaluated model for the session), "per-turn" (no stickiness), or
+	// "custom" (SmartCustomThreshold governs switching).
+	SmartPolicy string `json:"smartPolicy,omitempty"`
+	// SessionSticky nil means true; an explicit false forces per-turn.
+	SessionSticky *bool `json:"sessionSticky,omitempty"`
+	// ConfidenceThreshold is the 0-1 confidence a System One choice must
+	// reach before the session switches away from its pinned model.
+	ConfidenceThreshold *float64 `json:"confidenceThreshold,omitempty"`
+	// RouterModel overrides the System One model that evaluates the route
+	// (default oc/jev-1.13-free).
+	RouterModel string `json:"routerModel,omitempty"`
 }
 
 // ProviderStrategy defines routing and proxy pool options for a specific
@@ -334,11 +347,20 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 					sticky = int(sl)
 				}
 				judge := handlerutil.GetString(vm, "judgeModel")
-				s.ComboStrategies[k] = ComboStrategy{
+				entry := ComboStrategy{
 					Strategy:    strat,
 					StickyLimit: sticky,
 					JudgeModel:  judge,
 				}
+				entry.SmartPolicy = handlerutil.GetString(vm, "smartPolicy")
+				if ss, ok := vm["sessionSticky"].(bool); ok {
+					entry.SessionSticky = &ss
+				}
+				if ct, ok := vm["confidenceThreshold"].(float64); ok && ct > 0 {
+					entry.ConfidenceThreshold = &ct
+				}
+				entry.RouterModel = handlerutil.GetString(vm, "routerModel")
+				s.ComboStrategies[k] = entry
 			}
 		}
 	}

@@ -10,9 +10,12 @@
     resolveComboStrategy,
     updateComboStrategy,
     updateJudgeModel,
+    updateRouterModel,
+    updateSmartPolicy,
     type CapacityAdapterState,
     type ComboStrategyInfo
   } from './types'
+  import SmartPolicyModal from './SmartPolicyModal.svelte'
   import Button from '../../lib/ui/Button.svelte'
   import Card from '../../lib/ui/Card.svelte'
   import ComboCard from './ComboCard.svelte'
@@ -68,7 +71,8 @@
 
   // Model Picker Modal state
   let showModelPicker = $state(false)
-  let modelPickerTarget = $state<'combo' | 'vision' | 'audio' | 'judge'>('combo')
+  let modelPickerTarget = $state<'combo' | 'vision' | 'audio' | 'judge' | 'router'>('combo')
+  let policyCombo = $state<Combo | null>(null)
 
   // Confirm Delete Modal state (upstream confirmState parity). Carries the ids
   // to remove.
@@ -198,6 +202,29 @@
     }
   }
 
+  async function handleSetRouterModel(comboName: string, routerModel: string) {
+    const updated = updateRouterModel(comboStrategies, comboName, routerModel)
+    comboStrategies = updated
+    try {
+      await api.patchSettings({ comboStrategies: updated })
+    } catch (e) {
+      console.error('Failed to set smart router model:', e)
+    }
+  }
+
+  async function handleSaveSmartPolicy(
+    comboName: string,
+    cfg: { smartPolicy: string; sessionSticky: boolean; confidenceThreshold: number }
+  ) {
+    const updated = updateSmartPolicy(comboStrategies, comboName, cfg)
+    comboStrategies = updated
+    try {
+      await api.patchSettings({ comboStrategies: updated })
+    } catch (e) {
+      console.error('Failed to save smart policy:', e)
+    }
+  }
+
   async function saveCapacityAdapter(next: CapacityAdapterState) {
     capacityAdapter = next
     try {
@@ -268,7 +295,7 @@
     }
   }
 
-  function openModelPicker(target: 'combo' | 'vision' | 'audio' | 'judge') {
+  function openModelPicker(target: 'combo' | 'vision' | 'audio' | 'judge' | 'router') {
     modelPickerTarget = target
     showModelPicker = true
   }
@@ -280,6 +307,10 @@
     if (modelPickerTarget === 'judge') {
       const judge = editingCombo?.name ? comboStrategies[editingCombo.name]?.judgeModel : undefined
       return judge ? [judge] : []
+    }
+    if (modelPickerTarget === 'router') {
+      const router = editingCombo?.name ? comboStrategies[editingCombo.name]?.routerModel : undefined
+      return router ? [router] : []
     }
     return []
   })
@@ -300,6 +331,9 @@
     } else if (modelPickerTarget === 'judge' && editingCombo) {
       handleSetJudge(editingCombo.name, val)
       showModelPicker = false
+    } else if (modelPickerTarget === 'router' && editingCombo) {
+      handleSetRouterModel(editingCombo.name, val)
+      showModelPicker = false
     }
   }
 
@@ -314,6 +348,9 @@
       saveCapacityAdapter({ ...capacityAdapter, audioInput: { ...capacityAdapter.audioInput, models: cur.filter((m) => m !== val) } })
     } else if (modelPickerTarget === 'judge' && editingCombo) {
       clearJudge(editingCombo.name)
+      showModelPicker = false
+    } else if (modelPickerTarget === 'router' && editingCombo) {
+      handleSetRouterModel(editingCombo.name, '')
       showModelPicker = false
     }
   }
@@ -511,6 +548,8 @@
             onSetStrategy={handleSetStrategy}
             onOpenJudgePicker={(c) => { editingCombo = c; openModelPicker('judge') }}
             onClearJudge={clearJudge}
+            onOpenRouterPicker={(c) => { editingCombo = c; openModelPicker('router') }}
+            onOpenPolicyModal={(c) => (policyCombo = c)}
             onCopy={copyName}
             onEdit={openEditModal}
             onDelete={(c) => (confirmState = { name: c.name, ids: [c.id] })}
@@ -557,6 +596,16 @@
   onSelect={handleSelectModel}
   onDeselect={handleDeselectModel}
   onClose={() => (showModelPicker = false)}
+/>
+
+<!-- Smart Router policy editor (upstream SmartPolicyModal parity) -->
+<SmartPolicyModal
+  isOpen={!!policyCombo}
+  onClose={() => (policyCombo = null)}
+  comboName={policyCombo?.name || ''}
+  currentPolicy={policyCombo ? comboStrategies[policyCombo.name]?.smartPolicy : undefined}
+  currentThreshold={policyCombo ? comboStrategies[policyCombo.name]?.confidenceThreshold : undefined}
+  onSave={(cfg) => policyCombo && handleSaveSmartPolicy(policyCombo.name, cfg)}
 />
 
 <!-- Confirm Delete Modal (upstream ConfirmModal parity) -->
