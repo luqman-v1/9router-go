@@ -440,6 +440,74 @@
         `Use api: openai-responses instead if a model does not stream correctly over Chat Completions.`,
       ],
     },
+    {
+      id: 'crush',
+      name: 'Crush',
+      category: 'cli',
+      image: '/providers/crush.png',
+      color: '#8B5CF6',
+      description: 'Crush AI terminal agent with model routing',
+      configType: 'env',
+      envVars: {
+        CRUSH_BASE_URL: `${localOrigin}/v1`,
+        CRUSH_API_KEY: 'sk-9router-local-token',
+      },
+      instructions: [
+        `export CRUSH_BASE_URL="${localOrigin}/v1"`,
+        `export CRUSH_API_KEY="<your-api-key>"`,
+      ],
+    },
+    {
+      id: 'forgecode',
+      name: 'ForgeCode',
+      category: 'cli',
+      image: '/providers/forgecode.png',
+      color: '#F97316',
+      description: 'ForgeCode AI-powered development CLI',
+      configType: 'env',
+      envVars: {
+        FORGECODE_BASE_URL: `${localOrigin}/v1`,
+        FORGECODE_API_KEY: 'sk-9router-local-token',
+      },
+      instructions: [
+        `export FORGECODE_BASE_URL="${localOrigin}/v1"`,
+        `export FORGECODE_API_KEY="<your-api-key>"`,
+      ],
+    },
+    {
+      id: 'smelt',
+      name: 'Smelt',
+      category: 'cli',
+      image: '/providers/smelt.png',
+      color: '#E11D48',
+      description: 'Smelt terminal coding agent with 9router-go integration',
+      configType: 'env',
+      envVars: {
+        SMELT_BASE_URL: `${localOrigin}/v1`,
+        SMELT_API_KEY: 'sk-9router-local-token',
+      },
+      instructions: [
+        `export SMELT_BASE_URL="${localOrigin}/v1"`,
+        `export SMELT_API_KEY="<your-api-key>"`,
+      ],
+    },
+    {
+      id: 'codewhale',
+      name: 'CodeWhale',
+      category: 'cli',
+      image: '/providers/codewhale.png',
+      color: '#06B6D4',
+      description: 'CodeWhale AI coding assistant for terminal workflows',
+      configType: 'env',
+      envVars: {
+        CODEWHALE_BASE_URL: `${localOrigin}/v1`,
+        CODEWHALE_API_KEY: 'sk-9router-local-token',
+      },
+      instructions: [
+        `export CODEWHALE_BASE_URL="${localOrigin}/v1"`,
+        `export CODEWHALE_API_KEY="<your-api-key>"`,
+      ],
+    },
   ])
   let filteredTools = $derived(
     toolsCatalog.filter((tool) => {

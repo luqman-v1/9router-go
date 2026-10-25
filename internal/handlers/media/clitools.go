@@ -57,6 +57,10 @@ var cliTools = []toolDef{
 	{id: "devin", bin: "devin", hasVer: true},
 	{id: "pi", bin: "pi"},
 	{id: "omp", bin: "omp", hasVer: true},
+	{id: "crush", bin: "crush"},
+	{id: "forgecode", bin: "forgecode"},
+	{id: "smelt", bin: "smelt"},
+	{id: "codewhale", bin: "codewhale"},
 }
 
 // CLIToolsHandler aggregates per-tool CLI install/version status for the
