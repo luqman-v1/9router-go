@@ -980,6 +980,24 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
+
+	// UC web: the persona image API needs a minted Clerk session, not a bearer
+	// key, so the generic forward cannot reach it.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (modelInfo.Provider == "uc-web" || modelInfo.Provider == "uc") {
+		if err := h.handleUcWebImage(w, r, body, modelInfo); err != nil {
+			writeUcMediaError(w, err)
+		}
+		return
+	}
+
+	// UC web video: generation posts to the persona video API and polls the
+	// result URL, so it shares the image lane's session plumbing.
+	if (endpoint == "/v1/videos/generations" || endpoint == "/videos/generations") && (modelInfo.Provider == "uc-web" || modelInfo.Provider == "uc") {
+		if err := h.handleUcWebVideo(w, r, body, modelInfo); err != nil {
+			writeUcMediaError(w, err)
+		}
+		return
+	}
 	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
 		if err := h.handleAntigravitySTT(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())

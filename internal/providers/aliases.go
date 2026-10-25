@@ -57,6 +57,7 @@ var ProviderAliasMap = map[string]string{
 	"gq":             "groq",
 	"grok-build":     "grok-cli",
 	"gw":             "grok-web",
+	"uc":             "uc-web",
 	"hf":             "huggingface",
 	"hyp":            "hyperbolic",
 	"if":             "iflow",

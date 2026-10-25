@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/media"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -451,6 +452,9 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validateXiaomiTokenplan(ctx, apiKey, psd)
 	case "grok-web":
 		return validateGrokWeb(ctx, apiKey)
+	case "uc-web":
+		valid, message := media.ValidateUcWebCookie(ctx, apiKey)
+		return validateOutcome{valid: valid, supported: true, message: message}
 	case "perplexity-web":
 		return validatePerplexityWeb(ctx, apiKey)
 	case "deepseek-web":
