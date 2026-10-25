@@ -184,7 +184,8 @@ func (h *DashboardHandler) HandleGetUsageProviders(w http.ResponseWriter, r *htt
 	var list []ProviderItem
 	for _, c := range conns {
 		if c.Provider != "" && !seen[c.Provider] {
-			if cfg, ok := providers.KnownProviders[c.Provider]; ok && cfg.Hidden {
+			canonical := providers.ResolveAlias(c.Provider)
+			if cfg, ok := providers.KnownProviders[canonical]; ok && cfg.Hidden {
 				continue
 			}
 			seen[c.Provider] = true

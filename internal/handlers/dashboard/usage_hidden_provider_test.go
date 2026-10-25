@@ -12,11 +12,12 @@ func TestHandleGetUsageProviders_ExcludesHidden(t *testing.T) {
 	defer cleanup()
 	h := NewDashboardHandler(repo)
 
-	// Seed connections: two visible, one hidden (mimo-free)
+	// Seed connections: two visible, one canonical hidden (mimo-free), one alias hidden (mmf)
 	for _, s := range []struct{ id, provider, authType string }{
 		{"c-openai", "openai", "apikey"},
 		{"c-claude", "claude", "oauth"},
-		{"c-mmf", "mimo-free", "apikey"},
+		{"c-mimo", "mimo-free", "apikey"},
+		{"c-mmf", "mmf", "apikey"},
 	} {
 		if err := repo.CreateProviderConnection(s.id, s.provider, s.authType, s.id, "sk-"+s.provider); err != nil {
 			t.Fatalf("seed %s: %v", s.provider, err)
