@@ -213,6 +213,15 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 		if !samePath(kv.fullPath, e.KeyPath) {
 			continue
 		}
+		if e.Delete {
+			return verifyTOMLRemoved(removeTOMLLine(src, kv, kv.tablePath), e)
+		}
+		if e.ValueJSON != "" {
+			// TOML has no container form this package will write: inline tables
+			// are refused as unstable above, so a caller that set ValueJSON for
+			// TOML asked for something the format path cannot honour.
+			return nil, fmt.Errorf("%w: TOML writes no container value", ErrUnsupportedStructure)
+		}
 		switch {
 		case kv.valKind == unstable.Array || kv.valKind == unstable.InlineTable:
 			return nil, fmt.Errorf("%w: value of %q is a %s", ErrUnsupportedStructure, key, kv.valKind)
@@ -220,6 +229,9 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 			return nil, fmt.Errorf("%w: value of %q is a multi-line string", ErrUnsupportedStructure, key)
 		}
 		return verifyTOML(splice(src, kv.valStart, kv.valEnd, []byte(tomlQuote(e.Value))), e)
+	}
+	if e.Delete {
+		return nil, fmt.Errorf("%w: %q", ErrKeyNotFound, strings.Join(e.KeyPath, "."))
 	}
 
 	for _, s := range doc.sections {
@@ -278,6 +290,96 @@ func tomlCreateConflict(doc *tomlDoc, fullPath []string) error {
 		}
 	}
 	return nil
+}
+
+// removeTOMLLine deletes the whole line a key/value occupies.
+//
+// TOML has no separator to leave behind, so unlike JSON there is nothing to
+// splice around: the value is the rest of its line, and removing that line
+// removes the entry.
+//
+// Two headers can be left empty by this and are cleaned up with it: the table
+// whose last key just went, and — because a nested table's header is written
+// under its parent's — the parent if that removal empties it in turn. A config
+// holding a bare "[model_providers.9router]" line is not what "reset" means,
+// and TOML itself reads the empty table as a value the user did not ask for
+// (matrix §5.2 "xoá container rỗng").
+func removeTOMLLine(src []byte, kv tomlKeyValue, tablePath []string) []byte {
+	start := lineStartOf(src, kv.valStart)
+	end := lineEnd(src, kv.valEnd)
+	if end < len(src) && src[end] == '\r' {
+		end++
+	}
+	if end < len(src) && src[end] == '\n' {
+		end++
+	}
+	out := splice(src, start, end, nil)
+	return dropEmptyTOMLTables(out, tablePath)
+}
+
+// dropEmptyTOMLTables removes the header of tablePath when nothing is left
+// under it, then repeats for its parent. It stops at the first table that still
+// holds a key, so a reset that leaves the user's siblings behind keeps their
+// header.
+func dropEmptyTOMLTables(src []byte, tablePath []string) []byte {
+	for len(tablePath) > 0 {
+		doc, err := scanTOML(parseableTOML(src), src)
+		if err != nil {
+			return src
+		}
+		// Anything still inside this table — a key or a child table — means the
+		// header has to stay.
+		occupied := false
+		for _, kv := range doc.kvs {
+			if len(kv.fullPath) > len(tablePath) && samePath(kv.fullPath[:len(tablePath)], tablePath) {
+				occupied = true
+				break
+			}
+		}
+		for _, s := range doc.sections {
+			if len(s.path) > len(tablePath) && samePath(s.path[:len(tablePath)], tablePath) {
+				occupied = true
+				break
+			}
+		}
+		if occupied {
+			return src
+		}
+		idx := tomlFindSection(doc, tablePath)
+		if idx < 0 {
+			return src
+		}
+		start := doc.sections[idx].headerStart
+		end := doc.sections[idx].headerEnd
+		if end < len(src) && src[end] == '\r' {
+			end++
+		}
+		if end < len(src) && src[end] == '\n' {
+			end++
+		}
+		src = splice(src, start, end, nil)
+		tablePath = tablePath[:len(tablePath)-1]
+	}
+	return src
+}
+
+// verifyTOMLRemoved confirms a delete did what was asked: the file still
+// parses, and the key is gone.
+//
+// It cannot reuse verifyTOML, which asserts the key is present and reads back
+// as the requested value — the opposite of what a delete promises.
+func verifyTOMLRemoved(out []byte, e Edit) ([]byte, error) {
+	doc, err := scanTOML(parseableTOML(out), out)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
+	}
+	for _, kv := range doc.kvs {
+		if samePath(kv.fullPath, e.KeyPath) {
+			return nil, fmt.Errorf("%w: %q is still present after delete",
+				ErrInternalInconsistency, strings.Join(e.KeyPath, "."))
+		}
+	}
+	return out, nil
 }
 
 func tomlFindSection(doc *tomlDoc, path []string) int {

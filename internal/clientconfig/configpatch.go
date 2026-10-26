@@ -43,10 +43,36 @@ func (f Format) String() string {
 // no sections, so the flag only governs the key there. The zero value is false,
 // because a patch that silently invents structure in a file the user did not
 // expect to change is the worse default.
+//
+// ValueJSON and Delete exist because Value alone cannot express what the client
+// adapters need (docs/specs/client-adapter-miniplan.md §1.2): it is a scalar
+// string, and seven of the nine clients write an object, an array, or remove a
+// key. Both are still splice-only — the caller supplies already-serialized
+// text, and the result goes through the same verify* pass as any other edit.
 type Edit struct {
 	KeyPath         []string
 	Value           string
 	CreateIfMissing bool
+
+	// ValueJSON replaces the target with a container the caller has already
+	// serialized in the file's own dialect: a JSON object or array for JSONC,
+	// a YAML flow collection for YAML. It is validated by re-parsing before the
+	// splice, and overrides Value when non-empty.
+	//
+	// TOML has no entry here on purpose. This package refuses inline tables as
+	// an unstable structure, so a TOML table is written by editing its keys
+	// with CreateIfMissing — the first edit appends the [table] header and the
+	// rest land inside it. That keeps one representation per concept.
+	ValueJSON string
+
+	// Delete removes the named key from its parent. It conflicts with Value and
+	// ValueJSON.
+	//
+	// Exactly one key goes; the parent object is left in place even when it
+	// becomes empty. A client whose reset must also drop the emptied parent
+	// decides that itself — the primitive has no way to know whether an empty
+	// object is leftovers or a value the user wants.
+	Delete bool
 }
 
 // LargeFileWarningBytes is the size above which a caller should warn the user
@@ -119,6 +145,12 @@ func validateEdit(e Edit) error {
 		if part == "" {
 			return fmt.Errorf("%w: empty component in key path", ErrKeyNotFound)
 		}
+	}
+	// Delete and a value are contradictory instructions. Refusing here rather
+	// than letting one silently win means a caller that sets both by mistake
+	// finds out, instead of losing a key it meant to write.
+	if e.Delete && (e.Value != "" || e.ValueJSON != "") {
+		return fmt.Errorf("%w: Delete and a value in the same edit", ErrUnsupportedStructure)
 	}
 	return nil
 }
