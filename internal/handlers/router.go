@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"9router/proxy/internal/clientconfig"
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/guardrails"
@@ -618,6 +619,23 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 		r.Get("/api/cli-tools/pi-settings", piH.HandleGet)
 		r.Post("/api/cli-tools/pi-settings", piH.HandlePost)
 		r.Delete("/api/cli-tools/pi-settings", piH.HandleDelete)
+		// The nine clientconfig adapters (claude, codex, opencode, droid,
+		// crush, kilo, cline, pi, omp) each answer the same three verbs.
+		// Upstream gives every client its own Next route; here one handler
+		// resolves the id out of the path, so the adapter table stays the only
+		// place a client is described.
+		cliH := media.NewCLIToolHandler()
+		for _, id := range clientconfig.IDs() {
+			// pi has its own handler above (it merges over a previously saved
+			// block); skip it so the two cannot disagree about the same file.
+			if id == "pi" {
+				continue
+			}
+			route := "/api/cli-tools/" + id + "-settings"
+			r.Get(route, cliH.HandleCLIToolGet)
+			r.Post(route, cliH.HandleCLIToolPost)
+			r.Delete(route, cliH.HandleCLIToolDelete)
+		}
 	})
 
 	SetupConsoleLogRoutes(r, repo)
