@@ -112,11 +112,3 @@ func claudeTierValue(opts Options, tier string) (string, bool) {
 	}
 	return "", false
 }
-
-// claudeModelForWarning strips the [1m] context marker before a model is
-// compared against the server's list. The marker is part of the env value, not
-// part of the model id (connect-cli-spec §3.2.4), so keeping it would warn
-// about a model that does exist.
-func claudeModelForWarning(model string) string {
-	return strings.TrimSuffix(model, "[1m]")
-}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 // Path resolution for the nine clients in docs/specs/client-schema-matrix.md §3.
@@ -67,24 +66,6 @@ func xdgConfigHome(home string) string {
 		return v
 	}
 	return filepath.Join(home, ".config")
-}
-
-// appDataDirs returns the Windows roaming and local AppData directories.
-// Both are empty on other platforms, and the callers that need them are already
-// platform-specific.
-func appDataDirs(home string) (roaming, local string) {
-	if runtime.GOOS != "windows" {
-		return "", ""
-	}
-	roaming = os.Getenv("APPDATA")
-	if roaming == "" {
-		roaming = filepath.Join(home, "AppData", "Roaming")
-	}
-	local = os.Getenv("LOCALAPPDATA")
-	if local == "" {
-		local = filepath.Join(home, "AppData", "Local")
-	}
-	return roaming, local
 }
 
 // claudePaths is ~/.claude/settings.json on every platform (matrix §3.1).
