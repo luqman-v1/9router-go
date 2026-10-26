@@ -10,9 +10,9 @@ import (
 
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/handlers/chat"
+	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
-	"9router/proxy/internal/handlers/shared"
 )
 
 // SoundGenerationRequest is the caller's body for /v1/audio/sound-generation.
@@ -36,12 +36,14 @@ func elevenLabsSoundGenerationURL(connData *chat.ConnectionData) string {
 // HandleAudioSoundGeneration generates a sound effect via the ElevenLabs
 // sound-generation API and streams the raw audio back to the caller.
 func (h *MediaHandler) HandleAudioSoundGeneration(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		_ = r.Body.Close()
+	}()
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
-	defer r.Body.Close()
 
 	var req SoundGenerationRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -112,7 +114,9 @@ func (h *MediaHandler) HandleAudioSoundGeneration(w http.ResponseWriter, r *http
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, "upstream request failed: "+err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
@@ -130,7 +134,7 @@ func (h *MediaHandler) HandleAudioSoundGeneration(w http.ResponseWriter, r *http
 		log.Warn("media", "copy sound-generation response failed", "error", err)
 	}
 
-	h.Repo.UpdateConnectionLastUsed(conn.ID)
+	_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 	latencyMs := time.Since(start).Milliseconds()
 	logInfo := &shared.UsageLogInfo{
 		Provider:     provider,
