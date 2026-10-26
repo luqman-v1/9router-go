@@ -4,6 +4,7 @@ import (
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/guardrails"
+	"9router/proxy/internal/handlers/batches"
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlers/dashboard"
 	"9router/proxy/internal/handlers/media"
@@ -577,6 +578,31 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 		r.Use(middleware.RequireRateLimit(rateLimiter, defaults, repo))
 		r.Use(guardrails.Inbound(guardrailStore, guardrailAudit(repo), guardrailSwitch))
 		engineChatH = SetupRoutes(r, repo, ts)
+
+		fileH := batches.NewFileHandler(repo)
+		batchH := batches.NewBatchHandler(repo)
+
+		// File endpoints (OpenAI Batch API compatible)
+		r.Post("/v1/files", fileH.HandleCreateFile)
+		r.Post("/files", fileH.HandleCreateFile)
+		r.Get("/v1/files", fileH.HandleListFiles)
+		r.Get("/files", fileH.HandleListFiles)
+		r.Get("/v1/files/{file_id}", fileH.HandleGetFile)
+		r.Get("/files/{file_id}", fileH.HandleGetFile)
+		r.Get("/v1/files/{file_id}/content", fileH.HandleGetFileContent)
+		r.Get("/files/{file_id}/content", fileH.HandleGetFileContent)
+		r.Delete("/v1/files/{file_id}", fileH.HandleDeleteFile)
+		r.Delete("/files/{file_id}", fileH.HandleDeleteFile)
+
+		// Batch endpoints (OpenAI Batch API compatible)
+		r.Post("/v1/batches", batchH.HandleCreateBatch)
+		r.Post("/batches", batchH.HandleCreateBatch)
+		r.Get("/v1/batches", batchH.HandleListBatches)
+		r.Get("/batches", batchH.HandleListBatches)
+		r.Get("/v1/batches/{batch_id}", batchH.HandleGetBatch)
+		r.Get("/batches/{batch_id}", batchH.HandleGetBatch)
+		r.Post("/v1/batches/{batch_id}/cancel", batchH.HandleCancelBatch)
+		r.Post("/batches/{batch_id}/cancel", batchH.HandleCancelBatch)
 	})
 
 	// The provider gate (docs/provider-limits-plan.md) reads the same limiter
