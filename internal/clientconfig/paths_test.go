@@ -10,6 +10,11 @@ import (
 // 3.1's stopping condition: every path matches matrix §3, and no string still
 // holds "~" or an unexpanded variable.
 func TestPathResolution(t *testing.T) {
+	// opencode and crush honour $XDG_CONFIG_HOME, which a developer's shell and
+	// some CI runners set. Clearing it here is what makes the expectation
+	// `home/.config/...` true everywhere; without it the test read the runner's
+	// real config path and failed on Linux while passing on Windows.
+	t.Setenv("XDG_CONFIG_HOME", "")
 	home := t.TempDir()
 
 	tests := []struct {
