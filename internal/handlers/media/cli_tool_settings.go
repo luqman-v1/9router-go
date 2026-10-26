@@ -3,6 +3,7 @@ package media
 import (
 	"errors"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -68,9 +69,11 @@ func (h *CLIToolHandler) resolveTool(w http.ResponseWriter, r *http.Request) (cl
 	return adapter, true
 }
 
-// installedFor reports whether the client's binary is on PATH. A client that
-// has already been configured is also treated as installed, because the config
-// file is the thing this route reads and writes.
+// installedFor reports whether the client is present on this machine: its
+// binary is on PATH, or its config file already exists. Paths() only says where
+// the file *would* be — it resolves a path without touching the disk — so
+// treating a non-empty list as "installed" reported every client as installed
+// on a clean machine.
 func installedFor(adapter clientconfig.Adapter) bool {
 	if _, err := exec.LookPath(adapter.ID()); err == nil {
 		return true
@@ -79,7 +82,12 @@ func installedFor(adapter clientconfig.Adapter) bool {
 	if err != nil {
 		return false
 	}
-	return len(paths.Files) > 0
+	for _, f := range paths.Files {
+		if _, statErr := os.Stat(f.Path); statErr == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // HandleCLIToolGet serves GET /api/cli-tools/{tool}-settings: what the adapter
@@ -99,11 +107,6 @@ func (h *CLIToolHandler) HandleCLIToolGet(w http.ResponseWriter, r *http.Request
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	plan, err := adapter.Plan(opts)
-	if err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	files := make([]map[string]any, 0, len(paths.Files))
 	for _, f := range paths.Files {
 		files = append(files, map[string]any{
@@ -111,6 +114,25 @@ func (h *CLIToolHandler) HandleCLIToolGet(w http.ResponseWriter, r *http.Request
 			"format":  f.Format.String(),
 			"purpose": f.Purpose,
 		})
+	}
+	plan, err := adapter.Plan(opts)
+	if err != nil {
+		// A client that has never run on this machine has no config directory,
+		// and Plan refuses a base it cannot prove containment for. That is "not
+		// installed", not a server fault — the caller is asking what would be
+		// written, not asking us to write it.
+		if errors.Is(err, clientconfig.ErrBaseMissing) {
+			handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+				"tool":      adapter.ID(),
+				"installed": false,
+				"files":     files,
+				"plan":      []any{},
+				"message":   "Config directory does not exist yet; applying settings will create it.",
+			})
+			return
+		}
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"tool":      adapter.ID(),

@@ -142,3 +142,65 @@ func TestCLIToolGetDoesNotLeakTheAPIKey(t *testing.T) {
 		t.Errorf("GET leaked the API key: %s", rec.Body.String())
 	}
 }
+
+// A client that has never run on this machine has no config directory. Plan
+// refuses a base it cannot prove containment for, and that refusal reached the
+// caller as a 500 — on the Linux CI runner every uninstalled client answered
+// "base directory does not exist" instead of "not installed".
+func TestCLIToolGetAnswersNotInstalledForAMissingConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	h := NewCLIToolHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/cli-tools/droid-settings", nil)
+	req.URL.Path = "/api/cli-tools/droid-settings"
+	rec := httptest.NewRecorder()
+	h.HandleCLIToolGet(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["installed"] != false {
+		t.Errorf("installed = %v, want false when ~/.factory does not exist", resp["installed"])
+	}
+	// The paths are still reported: they are what Apply would create.
+	files, _ := resp["files"].([]any)
+	if len(files) == 0 {
+		t.Error("files is empty; the caller cannot see where settings would go")
+	}
+}
+
+// Reporting a client as installed just because Paths() returned a path was the
+// bug: Paths resolves a location without touching the disk, so a clean machine
+// looked fully provisioned. The flip side must still work — once the file
+// exists, the client is installed.
+func TestCLIToolGetInstalledFollowsTheConfigFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	dir := filepath.Join(home, ".factory")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewCLIToolHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/cli-tools/droid-settings", nil)
+	req.URL.Path = "/api/cli-tools/droid-settings"
+	rec := httptest.NewRecorder()
+	h.HandleCLIToolGet(rec, req)
+
+	var resp map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["installed"] != true {
+		t.Errorf("installed = %v, want true once the config file exists", resp["installed"])
+	}
+}
