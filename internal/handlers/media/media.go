@@ -866,24 +866,39 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 
 			finalBody := handlerutil.UpdateModelInBody(body, subInfo.Model)
+			// The endpoint the caller used is a route on this gateway, not a
+			// path on the vendor's host: appending it to BaseURL built URLs the
+			// vendor never serves (tavily got api.tavily.com/search/v1/search,
+			// serper got google.serper.dev/v1/search). Each vendor publishes its
+			// own search/fetch URL and verb in the registry.
 			targetURL := strings.TrimRight(providerCfg.BaseURL, "/") + endpoint
 			method := r.Method
-			// Use provider FetchURL for web/fetch when configured (e.g., ollama cloud)
-			if endpoint == "/v1/web/fetch" && providerCfg.FetchURL != "" {
-				targetURL = providerCfg.FetchURL
-				if providerCfg.FetchMethod != "" {
-					method = providerCfg.FetchMethod
-				} else {
-					method = "POST"
-				}
-				// Ollama cloud expects {"url": "https://..."} only
-				if subInfo.Provider == "ollama" {
-					var tmp struct {
-						URL string `json:"url"`
+			switch endpoint {
+			case "/v1/search":
+				if providerCfg.SearchURL != "" {
+					targetURL = providerCfg.SearchURL
+					method = strings.ToUpper(providerCfg.SearchMethod)
+					if method == "" {
+						method = http.MethodPost
 					}
-					if err := json.Unmarshal(body, &tmp); err == nil && tmp.URL != "" {
-						if b, err := json.Marshal(map[string]string{"url": tmp.URL}); err == nil {
-							finalBody = b
+				}
+			case "/v1/web/fetch":
+				if providerCfg.FetchURL != "" {
+					targetURL = providerCfg.FetchURL
+					if providerCfg.FetchMethod != "" {
+						method = providerCfg.FetchMethod
+					} else {
+						method = "POST"
+					}
+					// Ollama cloud expects {"url": "https://..."} only
+					if subInfo.Provider == "ollama" {
+						var tmp struct {
+							URL string `json:"url"`
+						}
+						if err := json.Unmarshal(body, &tmp); err == nil && tmp.URL != "" {
+							if b, err := json.Marshal(map[string]string{"url": tmp.URL}); err == nil {
+								finalBody = b
+							}
 						}
 					}
 				}
