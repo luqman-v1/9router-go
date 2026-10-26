@@ -45,8 +45,8 @@ func TestHandleGetModelCaps_CommandCode(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", code)
 	}
-	if len(caps) != 22 {
-		t.Fatalf("expected 22 commandcode models, got %d", len(caps))
+	if len(caps) != 23 {
+		t.Fatalf("expected 23 commandcode models, got %d", len(caps))
 	}
 
 	tests := []struct {

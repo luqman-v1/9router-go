@@ -371,6 +371,7 @@ var modelCapabilities = map[string]Capabilities{
 	"coder-model":               {Reasoning: true, Tools: true, ThinkingFormat: "qwen"},
 	"kimi-k3":                   {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
 	"k3":                        {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
+	"kimi-k3.1-pro":             {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
 	"kimi-for-coding":           {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
 	"kimi-for-coding-highspeed": {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
 	"kimi-k2.7-code":            {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
@@ -447,6 +448,10 @@ var providerCapabilities = map[string]map[string]Capabilities{
 	// limit delta for this id, so 1M/131k is what the lane already published.
 	"opencode": {
 		"mimo-v2.6-flash-free": {Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ThinkingCanDisable: new(true), ContextWindow: 1048576, MaxOutput: 131072},
+		// The free lane's deepseek-v4.1-flash rejects prompts above ~330k tokens
+		// (upstream #5097); pin the published window so clients compact instead
+		// of hard-failing mid-session.
+		"deepseek-v4.1-flash-free": {Vision: true, Reasoning: true, ThinkingFormat: "deepseek", ContextWindow: 330000, MaxOutput: 128000},
 	},
 	"nvidia": {
 		"minimaxai/minimax-m2.7":        {Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},

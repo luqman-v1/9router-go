@@ -1540,6 +1540,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "DeepSeek V4 Flash"
     },
     {
+      "id": "moonshotai/Kimi-K3.1-Pro",
+      "name": "Kimi K3.1 Pro"
+    },
+    {
       "id": "moonshotai/Kimi-K2.7-Code",
       "name": "Kimi K2.7 Code"
     },
@@ -3939,6 +3943,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "kimi-k3",
       "name": "Kimi K3"
+    },
+    {
+      "id": "kimi-k3.1-pro",
+      "name": "Kimi K3.1 Pro"
     },
     {
       "id": "deepseek-v4-pro",
