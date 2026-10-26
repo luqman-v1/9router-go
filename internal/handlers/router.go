@@ -87,6 +87,8 @@ func SetupRoutes(r interface {
 	r.Post("/responses/compact", chatH.HandleResponsesCompact)
 	r.Post("/images/generations", mediaH.HandleImages)
 	r.Post("/audio/speech", mediaH.HandleAudioSpeech)
+	r.Post("/audio/music", mediaH.HandleAudioMusic)
+	r.Post("/v1/audio/music", mediaH.HandleAudioMusic)
 	r.Get("/audio/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/inworld/voices", mediaH.HandleAudioVoices)
