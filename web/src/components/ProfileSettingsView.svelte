@@ -133,6 +133,7 @@
   // feature flag: the currency still formats every cost and the arrangement
   // still drives the Usage page while folded.
   let advancedSettings = $state(isAdvancedSettingsVisible())
+  let promptInjectionEnabled = $state(false)
   // Usage-page panel visibility and arrangement. The card below edits the draft
   // in lib/usagePanel.svelte.ts; the global Save writes it with the rest of the
   // form, so an edit there raises the same bottom-right reminder a switch does.
@@ -344,6 +345,7 @@
         if (s.comboStrategy) comboStrategy = String(s.comboStrategy)
         if (typeof s.forceFallback === 'boolean') forceFallback = s.forceFallback
         enableSystemPrompt = !!s.systemPromptEnabled
+        if (typeof s.promptInjectionEnabled === 'boolean') promptInjectionEnabled = s.promptInjectionEnabled
         if (typeof s.systemPromptPrefix === 'string') systemPromptPrefix = s.systemPromptPrefix
         if (typeof s.systemPromptSuffix === 'string') systemPromptSuffix = s.systemPromptSuffix
         if (typeof s.appName === 'string') appName = s.appName
@@ -1519,7 +1521,29 @@
 
         {#if advancedSettings}
         <div class="space-y-1">
-          <p class="text-xs text-text-main">Rates — one USD in each currency</p>
+          <p class="text-xs text-text-main">Prompt Injection Pro</p>
+          <p class="text-[11px] text-text-subtle">
+            Enable system prompt or chat script injection per global, API key, model, or model+key combination.
+          </p>
+        </div>
+        <div class="flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-xs font-semibold text-text-main">Enable Prompt Injection</p>
+            <p class="text-[11px] text-text-subtle">
+              Turn on the Prompt Injection Pro feature.
+            </p>
+          </div>
+          <Toggle
+            checked={promptInjectionEnabled}
+            size="sm"
+            label="Prompt Injection"
+            onChange={async (val) => {
+              promptInjectionEnabled = val
+              await api.setPromptInjectionSetting(val)
+            }}
+          />
+        </div>
+        {/if}
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
             {#each CURRENCY_CATALOG as option (option.code)}
               <label class="flex items-center gap-2 rounded-[10px] border border-border-subtle px-2 py-1.5">

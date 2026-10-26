@@ -129,6 +129,10 @@ type SettingsData struct {
 	// 0 means "keep forever", which is the default: the ledger is only pruned
 	// when an operator asks for it. See usage_retention_ledger.go.
 	UsageHistoryRetentionDays int `json:"usageHistoryRetentionDays,omitempty"`
+	// PromptInjectionEnabled is the master switch for the Prompt Injection
+	// Pro feature (system prompt or chat script per global / API key / model
+	// / combo). Off by default so the surface is opt-in.
+	PromptInjectionEnabled bool `json:"promptInjectionEnabled"`
 }
 
 // DefaultSettings returns fallback settings.
@@ -170,6 +174,7 @@ func DefaultSettings() *SettingsData {
 		SemanticCacheTTL:        1440,
 		SemanticCacheMaxEntries: 1000,
 		AutoUpdate:              false,
+		PromptInjectionEnabled:  false,
 		CapacityAdapter: map[string]CapacityAdapterEntry{
 			"vision":     {Enabled: true, RoundRobin: false, Models: []string{}},
 			"pdf":        {Enabled: false, RoundRobin: false, Models: []string{}},
@@ -298,6 +303,9 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	}
 	if v, ok := raw["autoUpdate"].(bool); ok {
 		s.AutoUpdate = v
+	}
+	if v, ok := raw["promptInjectionEnabled"].(bool); ok {
+		s.PromptInjectionEnabled = v
 	}
 
 	// Observability & Storage retention settings
@@ -469,6 +477,13 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 func (r *Repo) SetAutoUpdate(enabled bool) error {
 	return r.UpdateSettingsRaw(map[string]any{
 		"autoUpdate": enabled,
+	})
+}
+
+// SetPromptInjectionEnabled updates the promptInjectionEnabled flag in the settings table.
+func (r *Repo) SetPromptInjectionEnabled(enabled bool) error {
+	return r.UpdateSettingsRaw(map[string]any{
+		"promptInjectionEnabled": enabled,
 	})
 }
 

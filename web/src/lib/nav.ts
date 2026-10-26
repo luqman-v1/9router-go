@@ -53,6 +53,7 @@ const PLANS_LINK: NavLink = { kind: 'link', id: 'plans', label: 'Plans', icon: '
 export const DEFAULT_HIDDEN_NAV_ENTRIES: NavLink[] = [
   PLANS_LINK,
   { kind: 'link', id: 'jailbreak', label: 'Persona', icon: 'masks' },
+  { kind: 'link', id: 'prompt-injection', label: 'Prompt Injection', icon: 'hub' },
 ]
 
 /**
@@ -105,6 +106,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { kind: 'link', id: 'skills', label: 'Skills', icon: 'extension' },
       { kind: 'link', id: 'security', label: 'Security', icon: 'shield_lock' },
       { kind: 'link', id: 'jailbreak', label: 'Persona', icon: 'masks' },
+      { kind: 'link', id: 'prompt-injection', label: 'Prompt Injection', icon: 'hub' },
       PLANS_LINK,
       // Console Log and Settings sit last on purpose: they are the two entries
       // an operator reaches for after everything else, and Settings is the one

@@ -181,6 +181,7 @@ func (h *ChatHandler) makePanelCall(body []byte, entry, comboName string) func(c
 		}
 		upstreamBody["model"] = modelInfo.Model
 		ctx = h.applyJailbreak(ctx, upstreamBody, comboName, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
+		ctx = h.applyPromptInjection(ctx, upstreamBody, comboName)
 		upstreamJSON, err := json.Marshal(upstreamBody)
 		if err != nil {
 			return &fusionResult{model: entry, err: err}

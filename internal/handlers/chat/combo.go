@@ -681,6 +681,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				upstreamBody["model"] = modelInfo.Model
 				repairToolCallIDsInMap(upstreamBody)
 				ctx = h.applyJailbreak(ctx, upstreamBody, comboName, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
+				ctx = h.applyPromptInjection(ctx, upstreamBody, comboName)
 				upstreamJSON, err := json.Marshal(upstreamBody)
 				if err != nil {
 					break
@@ -976,6 +977,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				}
 				entryBody["model"] = modelInfo.Model
 				ctx = h.applyJailbreak(ctx, entryBody, comboName, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
+				ctx = h.applyPromptInjection(ctx, entryBody, comboName)
 
 				upstreamJSON, err := json.Marshal(entryBody)
 				if err != nil {
@@ -1301,6 +1303,7 @@ func (h *ChatHandler) handleFusion(ctx context.Context, w http.ResponseWriter, b
 	}
 	ub["model"] = judgeModel
 	ctx = h.applyJailbreak(ctx, ub, comboName, judgeModel)
+	ctx = h.applyPromptInjection(ctx, ub, comboName)
 	if isStream {
 		ub["stream"] = true
 	} else {

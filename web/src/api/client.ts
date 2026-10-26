@@ -959,6 +959,28 @@ export interface JailbreakModelConfig {
   presetId: string
 }
 
+/** Prompt Injection Pro: one entry in the stacked injection pipeline. */
+export interface PromptInjectionDoc {
+  id?: string
+  targetType: 'global' | 'key' | 'model' | 'key-model'
+  targetId: string
+  mode: 'system' | 'script'
+  content: string
+  enabled: boolean
+  createdAt?: string
+  updatedAt?: string
+}
+
+/** Prompt Injection template: reusable prompt content copied into injections. */
+export interface PromptInjectionTemplate {
+  id: string
+  name: string
+  content: string
+  kind?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
 /** The global exclude list: models matching these rules are never injected. */
 export interface JailbreakExcludes {
   excludes: JailbreakKeyword[]
@@ -2517,6 +2539,38 @@ export const api = {
   duplicateJailbreakPreset: (id: string, newId?: string) =>
     request<{ ok: boolean; preset: JailbreakDoc }>(`/api/jailbreak/presets/${encodeURIComponent(id)}/duplicate`, {
       method: 'POST',
-      body: JSON.stringify({ id: newId || '' }),
+      body: JSON.stringify({ id: newId }),
+    }),
+  // Prompt Injection Pro
+  getPromptInjectionSetting: () =>
+    request<{ promptInjectionEnabled: boolean }>('/api/prompt-injection/setting'),
+  setPromptInjectionSetting: (enabled: boolean) =>
+    request<{ ok: boolean }>('/api/prompt-injection/setting', {
+      method: 'PUT',
+      body: JSON.stringify({ promptInjectionEnabled: enabled }),
+    }),
+  listPromptInjections: () =>
+    request<PromptInjectionDoc[]>('/api/prompt-injection'),
+  getPromptInjection: (id: string) =>
+    request<PromptInjectionDoc>(`/api/prompt-injection/${encodeURIComponent(id)}`),
+  savePromptInjection: (injection: PromptInjectionDoc) =>
+    request<{ ok: boolean; id: string }>('/api/prompt-injection', {
+      method: 'PUT',
+      body: JSON.stringify(injection),
+    }),
+  deletePromptInjection: (id: string) =>
+    request<{ ok: boolean }>(`/api/prompt-injection/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  listPromptInjectionTemplates: () =>
+    request<PromptInjectionTemplate[]>('/api/prompt-injection/templates'),
+  savePromptInjectionTemplate: (template: PromptInjectionTemplate) =>
+    request<{ ok: boolean; id: string }>('/api/prompt-injection/templates', {
+      method: 'PUT',
+      body: JSON.stringify(template),
+    }),
+  deletePromptInjectionTemplate: (id: string) =>
+    request<{ ok: boolean }>(`/api/prompt-injection/templates/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     }),
 }

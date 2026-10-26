@@ -35,6 +35,7 @@
   import TerminalView from './components/TerminalView.svelte'
   import TokenSaverView from './components/TokenSaverView.svelte'
   import JailbreakView from './components/JailbreakView.svelte'
+  import PromptInjectionView from './components/PromptInjectionView.svelte'
   import TopBar from './components/TopBar.svelte'
   import { parseMediaProvider, parseProviderId, pathToTab, providerPath, mediaProviderPath, TAB_ROUTES, type ActiveTab, type MediaProviderRoute } from './lib/router'
   import { PROVIDER_CATALOG } from './lib/providers'
@@ -606,6 +607,8 @@
               <PlansView />
             {:else if activeTab === 'jailbreak'}
               <JailbreakView />
+            {:else if activeTab === 'prompt-injection'}
+              <PromptInjectionView />
             {/if}
           {/if}
         </div>
