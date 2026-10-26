@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -643,35 +644,67 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 	var data []map[string]any
 	now := time.Now().Unix()
 
-	for id, cfg := range providers.KnownProviders {
-		var match bool
-		switch kind {
-		case "image":
-			match = cfg.ImageURL != ""
-		case "tts":
-			match = cfg.TTSURL != ""
-		case "stt":
-			match = cfg.STTURL != ""
-		case "systemone":
-			match = cfg.SystemoneURL != ""
-		case "embedding":
-			match = strings.Contains(cfg.BaseURL, "/embeddings")
-		case "web":
-			match = false
-		case "image-to-text":
-			match = true
+	// A web provider is the search/fetch lane itself, so upstream publishes one
+	// entry per lane — `<alias>/search` when the provider has a searchConfig and
+	// `<alias>/fetch` when it has a fetchConfig (src/app/api/v1/models/route.js
+	// :612-631). Answering `match = false` for the whole kind left the listing
+	// empty and every web client without a model to call.
+	if kind == "web" {
+		for id, cfg := range providers.KnownProviders {
+			alias := providers.GetProviderAlias(id)
+			if cfg.SearchURL != "" {
+				data = append(data, map[string]any{
+					"id":       alias + "/search",
+					"object":   "model",
+					"kind":     "webSearch",
+					"owned_by": alias,
+					"endpoint": "/v1/search",
+					"created":  now,
+				})
+			}
+			if cfg.FetchURL != "" {
+				data = append(data, map[string]any{
+					"id":       alias + "/fetch",
+					"object":   "model",
+					"kind":     "webFetch",
+					"owned_by": alias,
+					"endpoint": "/v1/web/fetch",
+					"created":  now,
+				})
+			}
 		}
-		if !match {
-			continue
-		}
-		data = append(data, map[string]any{
-			"id":       id,
-			"object":   "model",
-			"kind":     kind,
-			"owned_by": id,
-			"endpoint": kindEndpoint(kind),
-			"created":  now,
+		sort.Slice(data, func(i, j int) bool {
+			return data[i]["id"].(string) < data[j]["id"].(string)
 		})
+	} else {
+		for id, cfg := range providers.KnownProviders {
+			var match bool
+			switch kind {
+			case "image":
+				match = cfg.ImageURL != ""
+			case "tts":
+				match = cfg.TTSURL != ""
+			case "stt":
+				match = cfg.STTURL != ""
+			case "systemone":
+				match = cfg.SystemoneURL != ""
+			case "embedding":
+				match = strings.Contains(cfg.BaseURL, "/embeddings")
+			case "image-to-text":
+				match = true
+			}
+			if !match {
+				continue
+			}
+			data = append(data, map[string]any{
+				"id":       id,
+				"object":   "model",
+				"kind":     kind,
+				"owned_by": id,
+				"endpoint": kindEndpoint(kind),
+				"created":  now,
+			})
+		}
 	}
 
 	// Per-key policy applies to the kind listing too — it is the same
