@@ -93,6 +93,7 @@ var ProviderAliasMap = map[string]string{
 	"nv":             "nvidia",
 	"oa":             "openai",
 	"oc":             "opencode",
+	"ocg":            "opencode-go",
 	"ocz":            "opencode-zen",
 	"or":             "openrouter",
 	"pa":             "perplexity-agent",
@@ -122,13 +123,20 @@ var ProviderAliasMap = map[string]string{
 	"ps":             "poolside",
 	"qianfan":        "baidu",
 	"samba":          "sambanova",
-	"tr":             "trae",
-	"voyage":         "voyage-ai",
-	"vx":             "vertex",
-	"vxp":            "vertex-partner",
-	"ws":             "windsurf",
-	"xq":             "xquik",
-	"zd":             "zed",
+	// "tr" belongs to tokenrouter, not trae. Upstream publishes trae's own
+	// alias as "tr" but keeps trae out of the registry array (a hidden entry:
+	// its SOLO agent has no tool calling), and builds the alias table from that
+	// array in order, so tokenrouter's aliases[] entry wins
+	// (open-sse/services/model.js:16-19). Verified against upstream:
+	// resolveProviderAlias("tr") === "tokenrouter".
+	"tr":       "tokenrouter",
+	"marscode": "trae",
+	"voyage":   "voyage-ai",
+	"vx":       "vertex",
+	"vxp":      "vertex-partner",
+	"ws":       "windsurf",
+	"xq":       "xquik",
+	"zd":       "zed",
 }
 
 // ResolveAlias returns the canonical provider ID for an alias, or the alias itself if not found.
