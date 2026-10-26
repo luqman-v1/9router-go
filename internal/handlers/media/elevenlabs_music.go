@@ -120,7 +120,7 @@ func (h *MediaHandler) HandleAudioMusic(w http.ResponseWriter, r *http.Request) 
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, "elevenlabs music request failed: "+err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
