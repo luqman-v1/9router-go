@@ -450,7 +450,7 @@
       configType: 'guide',
       instructions: [
         `Add 9router-go to your Crush config in ~/.config/crush/crush.json:`,
-        `{"providers":{"9router":{"type":"openai","base_url":"${localOrigin}/v1","api_key":"${snippetApiKey}"}}}`,
+        `{"providers":{"9router":{"type":"openai-compat","base_url":"${localOrigin}/v1","api_key":"${snippetApiKey}","models":["claude-sonnet-4-6"]}}}`,
         noApiKey
           ? `No API key exists yet — create one in API Keys first, then update "api_key".`
           : `Point your active model to 9router in crush.json or pass --provider 9router on startup.`,
@@ -484,9 +484,9 @@
       configType: 'guide',
       instructions: [
         `Add 9router-go gateway configuration to ~/.smelt/config.json:`,
-        `{"api_base":"${localOrigin}/v1","api_key":"${snippetApiKey}"}`,
+        `{"baseUrl":"${localOrigin}/v1","apiKey":"${snippetApiKey}","_managedBy":"9router"}`,
         noApiKey
-          ? `No API key exists yet — create one in API Keys first, then update "api_key".`
+          ? `No API key exists yet — create one in API Keys first, then update "apiKey".`
           : `Launch 'smelt' in your workspace directory to begin.`,
         `Compatible with standard OpenAI completions and Responses endpoints.`,
       ],
@@ -500,8 +500,8 @@
       description: 'CodeWhale terminal developer suite — configure ~/.codewhale/config.toml',
       configType: 'guide',
       instructions: [
-        `Add 9router-go endpoint to ~/.codewhale/config.toml:`,
-        `[gateway]\nendpoint = "${localOrigin}/v1"\napi_key = "${snippetApiKey}"`,
+        `Add 9router-go endpoint under [openai] in ~/.codewhale/config.toml:`,
+        `[openai]\nbase_url = "${localOrigin}/v1"\napi_key = "${snippetApiKey}"`,
         noApiKey
           ? `No API key exists yet — create one in API Keys first, then update api_key.`
           : `Run 'codewhale' to begin terminal-assisted coding workflows.`,
