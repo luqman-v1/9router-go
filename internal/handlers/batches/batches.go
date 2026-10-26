@@ -3,6 +3,7 @@ package batches
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -57,9 +58,7 @@ func (h *BatchHandler) HandleCreateBatch(w http.ResponseWriter, r *http.Request)
 	}
 
 	response := batchToResponse(batch)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(response)
+	handlerutil.WriteJSON(w, http.StatusCreated, response)
 }
 
 // HandleListBatches handles GET /v1/batches and GET /batches
@@ -68,7 +67,9 @@ func (h *BatchHandler) HandleListBatches(w http.ResponseWriter, r *http.Request)
 
 	limit := 20
 	if v := r.URL.Query().Get("limit"); v != "" {
-		// Parse limit, ignore errors and use default
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
 	}
 
 	after := r.URL.Query().Get("after")
@@ -96,8 +97,7 @@ func (h *BatchHandler) HandleListBatches(w http.ResponseWriter, r *http.Request)
 		"data":   data,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	handlerutil.WriteJSON(w, http.StatusOK, response)
 }
 
 // HandleGetBatch handles GET /v1/batches/{batch_id} and GET /batches/{batch_id}
@@ -124,8 +124,7 @@ func (h *BatchHandler) HandleGetBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := batchToResponse(batch)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	handlerutil.WriteJSON(w, http.StatusOK, response)
 }
 
 // HandleCancelBatch handles POST /v1/batches/{batch_id}/cancel and POST /batches/{batch_id}/cancel
@@ -159,8 +158,7 @@ func (h *BatchHandler) HandleCancelBatch(w http.ResponseWriter, r *http.Request)
 	}
 
 	response := batchToResponse(batch)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	handlerutil.WriteJSON(w, http.StatusOK, response)
 }
 
 func batchToResponse(b *db.Batch) map[string]any {

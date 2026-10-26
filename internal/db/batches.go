@@ -119,7 +119,6 @@ func (r *Repo) ListBatches(ctx context.Context, filter BatchFilter) ([]*Batch, e
 			query += " AND id > ?"
 		} else {
 			query += " WHERE id > ?"
-			whereAdded = true
 		}
 		args = append(args, filter.After)
 	}
@@ -135,7 +134,7 @@ func (r *Repo) ListBatches(ctx context.Context, filter BatchFilter) ([]*Batch, e
 	if err != nil {
 		return nil, fmt.Errorf("ListBatches: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var batches []*Batch
 	for rows.Next() {

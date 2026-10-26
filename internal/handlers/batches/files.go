@@ -1,7 +1,6 @@
 package batches
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -32,14 +31,18 @@ func (h *FileHandler) HandleCreateFile(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Failed to parse multipart form: "+err.Error())
 		return
 	}
-	defer r.MultipartForm.RemoveAll()
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing 'file' field in multipart form")
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	purpose := r.FormValue("purpose")
 	if purpose == "" {
@@ -52,7 +55,7 @@ func (h *FileHandler) HandleCreateFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fileID := generateFileID()
+	fileID := db.GenerateFileID()
 	now := time.Now().Unix()
 
 	f := &db.File{
@@ -78,9 +81,7 @@ func (h *FileHandler) HandleCreateFile(w http.ResponseWriter, r *http.Request) {
 		"purpose":    f.Purpose,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(response)
+	handlerutil.WriteJSON(w, http.StatusCreated, response)
 }
 
 // HandleListFiles handles GET /v1/files and GET /files
@@ -112,8 +113,7 @@ func (h *FileHandler) HandleListFiles(w http.ResponseWriter, r *http.Request) {
 		"data":   data,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	handlerutil.WriteJSON(w, http.StatusOK, response)
 }
 
 // HandleGetFile handles GET /v1/files/{file_id} and GET /files/{file_id}
@@ -148,8 +148,7 @@ func (h *FileHandler) HandleGetFile(w http.ResponseWriter, r *http.Request) {
 		"purpose":    f.Purpose,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	handlerutil.WriteJSON(w, http.StatusOK, response)
 }
 
 // HandleGetFileContent handles GET /v1/files/{file_id}/content and GET /files/{file_id}/content
@@ -175,9 +174,8 @@ func (h *FileHandler) HandleGetFileContent(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", "attachment; filename=\"file\"")
-	w.Write(content)
+	w.Header().Set("Content-Type", "application/binary")
+	_, _ = w.Write(content)
 }
 
 // HandleDeleteFile handles DELETE /v1/files/{file_id} and DELETE /files/{file_id}
@@ -209,19 +207,5 @@ func (h *FileHandler) HandleDeleteFile(w http.ResponseWriter, r *http.Request) {
 		"deleted": true,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-}
-
-func generateFileID() string {
-	return "file_" + time.Now().UTC().Format("20060102150405") + "_" + randString(16)
-}
-
-func randString(n int) string {
-	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = letters[time.Now().UnixNano()%int64(len(letters))]
-	}
-	return string(b)
+	handlerutil.WriteJSON(w, http.StatusOK, response)
 }

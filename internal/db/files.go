@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,6 +20,7 @@ type File struct {
 
 var (
 	ErrFileNotFound = errors.New("file not found")
+	fileIDSeq       int64
 )
 
 func (r *Repo) SaveFile(ctx context.Context, f *File) error {
@@ -63,7 +66,7 @@ func (r *Repo) ListFiles(ctx context.Context, purpose string) ([]*File, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var files []*File
 	for rows.Next() {
@@ -89,19 +92,8 @@ func (r *Repo) DeleteFile(ctx context.Context, id string) error {
 	return nil
 }
 
-func generateFileID() string {
-	return "file_" + time.Now().UTC().Format("20060102150405") + "_" + randString(16)
-}
-
-func randString(n int) string {
-	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = letters[randInt(len(letters))]
-	}
-	return string(b)
-}
-
-func randInt(n int) int {
-	return int(time.Now().UnixNano()) % n
+// GenerateFileID mints a unique identifier for uploaded files.
+func GenerateFileID() string {
+	seq := atomic.AddInt64(&fileIDSeq, 1)
+	return fmt.Sprintf("file_%d_%d", time.Now().UnixNano(), seq)
 }
