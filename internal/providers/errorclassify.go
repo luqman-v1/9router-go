@@ -37,6 +37,13 @@ const (
 	cooldownLong  = 2 * 60 * 1000 // 2 minutes
 	cooldownShort = 5 * 1000      // 5 seconds
 
+	// cooldownAccountBan parks a CodeBuddy intl credential whose account the
+	// vendor's risk control restricted (11140 "request illegal"). Independent
+	// WorkBuddy gateways agree the block clears only by re-login or appeal, so
+	// the generic 2-minute 403 rule would hammer a banned credential — the
+	// behaviour that inflates the block in the first place.
+	cooldownAccountBan = 2 * 60 * 60 * 1000 // 2 hours
+
 	// cooldownBannedAccount parks a deepseek-web account whose credential the
 	// site refuses (40012 USER_IS_BANNED). The ban names the account, not a
 	// model and not a transient condition: the generic 2-minute 403 rule
@@ -59,6 +66,13 @@ var ErrorRules = []ErrorRule{
 	// off (upstream 3b137aa6): without a provider-scoped rule the messages
 	// fall through to the request-scoped 4xx path and the connection gets
 	// zero cooldown while its backoff level never moves.
+	//
+	// The ban rule must precede them: an account-level risk-control block
+	// (11140 "request illegal" with a restricted display message) does not
+	// clear on a short cooldown, and re-picking the banned credential every
+	// two minutes is what inflates the block. The wording is the only safe
+	// signal — 11140 also carries ordinary throttling, which stays on backoff.
+	{Provider: "codebuddy-intl", Text: "account restricted upstream", CooldownMs: cooldownAccountBan},
 	{Provider: "codebuddy-intl", Text: "request illegal", Backoff: true},
 	{Provider: "codebuddy-intl", Text: "conversation id missing", Backoff: true},
 	// DeepSeek web account-level refusals both arrive as 403, and they are

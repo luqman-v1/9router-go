@@ -60,3 +60,34 @@ func TestClassifyErrorForProvider_CbaiAliasResolves(t *testing.T) {
 		t.Errorf("cbai alias classified %+v", cls)
 	}
 }
+
+// An account-level risk-control block (11140 "request illegal" plus a
+// restricted display message) does not clear on a short cooldown, and re-picking
+// the banned credential every two minutes is what inflates the block. The
+// canonical wording the executor emits decides it, because 11140 also carries
+// ordinary model throttling.
+func TestClassifyErrorForProvider_CodebuddyIntlAccountBan(t *testing.T) {
+	msg := `CodeBuddy Intl account restricted upstream (11140 "request illegal"): Your account has been restricted due to unusual activity.`
+	want := 2 * 60 * 60 * 1000
+	for _, level := range []int{0, 3, BackoffConfig.MaxLevel} {
+		cls := ClassifyErrorForProvider(403, msg, level, "codebuddy-intl")
+		if !cls.ShouldFallback || cls.CooldownMs != want {
+			t.Errorf("level %d classified %+v, want fallback with a 2h cooldown", level, cls)
+		}
+	}
+
+	// The phrase is intl-only, and a plain 403 elsewhere keeps the generic
+	// two-minute rule.
+	if cls := ClassifyErrorForProvider(403, msg, 0, "openai"); cls.CooldownMs != cooldownLong {
+		t.Errorf("openai classified %+v, want the generic 403 cooldown (%dms)", cls, cooldownLong)
+	}
+	if cls := ClassifyErrorForProvider(403, msg, 0, "codebuddy-cn"); cls.CooldownMs == want {
+		t.Errorf("codebuddy-cn took the intl ban cooldown: %+v", cls)
+	}
+
+	// Throttling worded without the ban phrase must stay on backoff, never 2h.
+	throttle := "CodeBuddy rate limit: The model provider is rate-limiting requests."
+	if cls := ClassifyErrorForProvider(429, throttle, 0, "codebuddy-intl"); cls.CooldownMs == want {
+		t.Errorf("throttling took the ban cooldown: %+v", cls)
+	}
+}

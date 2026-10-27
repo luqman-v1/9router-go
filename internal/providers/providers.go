@@ -727,15 +727,25 @@ var KnownProviders = map[string]ProviderConfig{
 		},
 	},
 	"codebuddy-intl": {
-		BaseURL:        "https://www.codebuddy.ai/v2/chat/completions",
+		// The intl channel moved off www.codebuddy.ai: chat now goes to the
+		// WorkBuddy AI gateway, and the identity below is the official 5.8.4
+		// desktop client's (capture-verified upstream). The OAuth/plugin auth
+		// URLs stay on www.codebuddy.ai — only chat and billing moved.
+		BaseURL:        "https://www.workbuddy.ai/v2/chat/completions",
 		AuthHeader:     "Authorization",
 		AuthScheme:     "bearer",
 		ThinkingFormat: "openai",
 		StaticHeaders: map[string]string{
-			"User-Agent":          "CLI/2.108.1 CodeBuddy/2.108.1",
+			"User-Agent":          "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0",
 			"X-Product":           "SaaS",
-			"X-IDE-Type":          "CLI",
-			"X-IDE-Name":          "CLI",
+			"X-IDE-Type":          "WorkBuddy",
+			"X-IDE-Name":          "WorkBuddy",
+			"X-IDE-Version":       "5.8.4",
+			"X-Private-Data":      "true",
+			"X-Agent-Intent":      "craft",
+			"X-Agent-Purpose":     "conversation",
+			"X-Agent-Type":        "main",
+			"X-Domain":            "www.workbuddy.ai",
 			"x-requested-with":    "XMLHttpRequest",
 			"x-codebuddy-request": "1",
 		},
