@@ -19,6 +19,8 @@ export interface ComboStrategyInfo {
    * which orders the models itself.
    */
   respectStoredOrder?: boolean
+  /** Time-to-first-token timeout in ms for intermediate combo candidates. */
+  firstTokenTimeoutMs?: number
 }
 
 /**

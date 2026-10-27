@@ -441,6 +441,23 @@ func (h *ChatHandler) comboRespectsStoredOrder(comboName string) bool {
 	return cfg.RespectStoredOrder
 }
 
+// comboFirstTokenTimeoutMs reports the configured time-to-first-token deadline
+// for intermediate combo members. 0 means no timeout (global default).
+func (h *ChatHandler) comboFirstTokenTimeoutMs(comboName string) int {
+	if h.Repo == nil || comboName == "" {
+		return 0
+	}
+	settings, err := h.Repo.GetSettings()
+	if err != nil || settings == nil {
+		return 0
+	}
+	cfg, ok := settings.ComboStrategies[comboName]
+	if !ok {
+		return 0
+	}
+	return cfg.FirstTokenTimeoutMs
+}
+
 // ApplyComboStrategy rotates the array of models based on the selected strategy.
 // It treats every call as a new turn (backward-compatible wrapper).
 func (h *ChatHandler) ApplyComboStrategy(strategy string, models []string, comboName string, stickyLimit int) []string {
@@ -693,11 +710,15 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				fwdCtx := ctx
 				targetWriter := http.ResponseWriter(cw)
 				var streamPeeker *internalproxy.StreamContentPeeker
+				var cancelTimeout context.CancelFunc
 				if !isStream {
 					fwdCtx = internalproxy.WithZeroContentProbe(ctx, !isLastModel)
 				} else if !isLastModel {
 					streamPeeker = internalproxy.NewStreamContentPeeker(cw)
 					targetWriter = streamPeeker
+					if timeoutMs := h.comboFirstTokenTimeoutMs(comboName); timeoutMs > 0 {
+						fwdCtx, cancelTimeout = context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+					}
 				}
 				attemptStart := time.Now()
 				if modelInfo.Provider == "mimo-free" {
@@ -714,6 +735,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						Endpoint: forwardEndpoint(ctx, "/v1/chat/completions"),
 					})
 				}
+				if cancelTimeout != nil {
+					cancelTimeout()
+				}
 				if streamPeeker != nil && fwdErr == nil {
 					if finishErr := streamPeeker.Finish(); finishErr != nil {
 						fwdErr = finishErr
@@ -722,6 +746,11 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
 
 				if fwdErr != nil {
+					if ctx.Err() == nil && fwdCtx.Err() == context.DeadlineExceeded {
+						log.Warn("combo", "first token timeout, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						lastErr = &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: []byte(`{"error":{"message":"first token timeout"}}`)}
+						break
+					}
 					if errors.Is(fwdErr, internalproxy.ErrStreamingZeroContent) {
 						log.Warn("combo", "streaming zero content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
 						lastErr = &upstreamError{StatusCode: http.StatusOK, Body: []byte(`{"error":{"message":"streaming zero content"}}`)}
@@ -994,11 +1023,15 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				fwdCtx := ctx
 				targetWriter := http.ResponseWriter(cw)
 				var streamPeeker *internalproxy.StreamContentPeeker
+				var cancelTimeout context.CancelFunc
 				if !isStream {
 					fwdCtx = internalproxy.WithZeroContentProbe(ctx, !isLastModel)
 				} else if !isLastModel {
 					streamPeeker = internalproxy.NewStreamContentPeeker(cw)
 					targetWriter = streamPeeker
+					if timeoutMs := h.comboFirstTokenTimeoutMs(comboName); timeoutMs > 0 {
+						fwdCtx, cancelTimeout = context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+					}
 				}
 				attemptStart := time.Now()
 				fwdErr := h.tryForwardWithConnection(forwardRequestParams{
@@ -1009,6 +1042,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					IsStream: isStream, TranslateResponse: !translator.IsResponsesClient(ctx),
 					Endpoint: forwardEndpoint(ctx, "/v1/messages"),
 				})
+				if cancelTimeout != nil {
+					cancelTimeout()
+				}
 				if streamPeeker != nil && fwdErr == nil {
 					if finishErr := streamPeeker.Finish(); finishErr != nil {
 						fwdErr = finishErr
@@ -1017,6 +1053,11 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
 
 				if fwdErr != nil {
+					if ctx.Err() == nil && fwdCtx.Err() == context.DeadlineExceeded {
+						log.Warn("combo", "first token timeout, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						lastErr = &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: []byte(`{"error":{"message":"first token timeout"}}`)}
+						break
+					}
 					if errors.Is(fwdErr, internalproxy.ErrStreamingZeroContent) {
 						log.Warn("combo", "streaming zero content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
 						lastErr = &upstreamError{StatusCode: http.StatusOK, Body: []byte(`{"error":{"message":"streaming zero content"}}`)}

@@ -33,6 +33,11 @@ type ComboStrategy struct {
 	// One evaluation plus session stickiness) and keeps the combo's own order
 	// on every failure path, so this flag is a no-op there.
 	RespectStoredOrder bool `json:"respectStoredOrder,omitempty"`
+	// FirstTokenTimeoutMs bounds time-to-first-token for intermediate combo members.
+	// If the candidate member takes longer than this to emit its first token, the
+	// request falls over to the next combo member. The last candidate member always
+	// keeps the normal deadline.
+	FirstTokenTimeoutMs int `json:"firstTokenTimeoutMs,omitempty"`
 }
 
 // ProviderStrategy defines routing and proxy pool options for a specific

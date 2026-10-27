@@ -46,6 +46,11 @@ func applyComboStrategies(s *SettingsData, raw map[string]any) {
 		if rso, ok := vm["respectStoredOrder"].(bool); ok {
 			entry.RespectStoredOrder = rso
 		}
+		if ft, ok := vm["firstTokenTimeoutMs"].(float64); ok && ft > 0 {
+			entry.FirstTokenTimeoutMs = int(ft)
+		} else if ft, ok := vm["firstTokenTimeout"].(float64); ok && ft > 0 {
+			entry.FirstTokenTimeoutMs = int(ft)
+		}
 		s.ComboStrategies[k] = entry
 	}
 }
