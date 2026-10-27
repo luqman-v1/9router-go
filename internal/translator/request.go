@@ -546,11 +546,10 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 					continue
 				}
 			}
-			// Strip empty text blocks (Anthropic 400s on empty text). The same
-			// emptiness rule decides whether the whole message survives below,
-			// so both read it from one place — a whitespace-only block must not
-			// slip through one pass and be dropped by the other.
-			if bType == "text" && !isContentfulBlock(block) {
+			// Strip empty text blocks and invalid thinking blocks. The same
+			// contentful rule decides whether the whole message survives below,
+			// so both read it from one place.
+			if (bType == "text" || bType == "thinking") && !isContentfulBlock(block) {
 				changed = true
 				continue
 			}
