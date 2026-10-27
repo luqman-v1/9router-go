@@ -461,19 +461,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/tunnel/tailscale-enable", dashH.HandleTailscaleEnable)
 	r.Post("/api/tunnel/tailscale-disable", dashH.HandleTailscaleDisable)
 
-	// Single Sign-On settings checks + SP metadata (profile page)
+	// Single Sign-On settings checks (profile page)
 	r.Post("/api/auth/oidc/test", ssoH.HandleOidcTest)
-	// The browser flows LoginView.svelte links to. The settings routes above
-	// could test an issuer, but pressing "Sign in with SSO" hit a 404 because
-	// these were never registered.
-	r.Get("/api/auth/oidc/start", ssoH.HandleOIDCStart)
-	r.Get("/api/auth/oidc/callback", ssoH.HandleOIDCCallback)
-	r.Get("/api/auth/saml/start", ssoH.HandleSAMLStart)
-	// The IdP posts the assertion here, so it must accept a form body and must
-	// not require a dashboard session — the session is what it creates.
-	r.Post("/api/auth/saml/acs", ssoH.HandleSAMLACS)
 	r.Post("/api/auth/saml/test", ssoH.HandleSamlTest)
-	r.Get("/api/auth/saml/metadata", ssoH.HandleSamlMetadata)
 
 	// Mount OAuth routes under dashboard auth so web dashboard can initiate and exchange tokens
 	oauthH := oauth.NewOAuthHandler(repo)
@@ -668,6 +658,15 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	r.Post("/api/auth/reset-password", dashH.HandleResetPassword)
 	r.Get("/api/settings/require-login", dashH.HandleRequireLogin)
 	r.Get("/api/tunnel/status", dashH.HandleTunnelStatus)
+
+	// Single Sign-On browser login flows and metadata are public so an unauthenticated
+	// caller can authenticate before a dashboard session exists.
+	ssoH := sso.NewHandler(repo)
+	r.Get("/api/auth/oidc/start", ssoH.HandleOIDCStart)
+	r.Get("/api/auth/oidc/callback", ssoH.HandleOIDCCallback)
+	r.Get("/api/auth/saml/start", ssoH.HandleSAMLStart)
+	r.Post("/api/auth/saml/acs", ssoH.HandleSAMLACS)
+	r.Get("/api/auth/saml/metadata", ssoH.HandleSamlMetadata)
 
 	// Admin-only operations (health reset, shutdown, update) - strictly requires session cookie or CLI token.
 	// Standard client API keys are rejected, matching upstream ALWAYS_PROTECTED.

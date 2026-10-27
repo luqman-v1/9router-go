@@ -76,6 +76,68 @@ func TestHandleResetPasswordRefusesNonLocalCallers(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "localhost") {
 		t.Errorf("error does not say why: %s", rec.Body.String())
 	}
+
+	// Security regression: spoofing Host: localhost must NOT bypass the RemoteAddr gate.
+	reqSpoofed := httptest.NewRequest(http.MethodPost, "/api/auth/reset-password", nil)
+	reqSpoofed.RemoteAddr = "203.0.113.7:5555"
+	reqSpoofed.Host = "localhost"
+	recSpoofed := httptest.NewRecorder()
+	h.HandleResetPassword(recSpoofed, reqSpoofed)
+	if recSpoofed.Code != http.StatusForbidden {
+		t.Fatalf("spoofed Host: localhost status = %d, want 403 Forbidden", recSpoofed.Code)
+	}
+}
+
+// CSRF / Cross-site form POST attacks must be rejected even from loopback.
+func TestHandleResetPasswordRefusesCrossSiteCallers(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+
+	h := NewDashboardHandler(repo, nil)
+
+	t.Run("rejects cross-site Sec-Fetch-Site", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/reset-password", nil)
+		req.RemoteAddr = "127.0.0.1:41234"
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		rec := httptest.NewRecorder()
+		h.HandleResetPassword(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("cross-site Sec-Fetch-Site status = %d, want 403", rec.Code)
+		}
+	})
+
+	t.Run("rejects foreign Origin", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/reset-password", nil)
+		req.RemoteAddr = "127.0.0.1:41234"
+		req.Header.Set("Origin", "https://evil.com")
+		rec := httptest.NewRecorder()
+		h.HandleResetPassword(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("foreign Origin status = %d, want 403", rec.Code)
+		}
+	})
+
+	t.Run("rejects foreign Referer", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/reset-password", nil)
+		req.RemoteAddr = "127.0.0.1:41234"
+		req.Header.Set("Referer", "https://evil.com/attack.html")
+		rec := httptest.NewRecorder()
+		h.HandleResetPassword(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("foreign Referer status = %d, want 403", rec.Code)
+		}
+	})
+
+	t.Run("accepts same-origin localhost Origin", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/reset-password", nil)
+		req.RemoteAddr = "127.0.0.1:41234"
+		req.Header.Set("Origin", "http://localhost:20130")
+		rec := httptest.NewRecorder()
+		h.HandleResetPassword(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("same-origin localhost Origin status = %d, want 200", rec.Code)
+		}
+	})
 }
 
 // The response must never carry the password literal — a reset that printed it
