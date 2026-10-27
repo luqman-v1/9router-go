@@ -15,8 +15,8 @@ import (
 
 // GeminiStreamState holds translation state for Gemini stream chunks.
 type GeminiStreamState struct {
-	MessageStartSent     bool
-	MessageId            string
+	MessageStartSent bool
+	MessageId        string
 	// SessionID is the conversation this stream belongs to, taken from the
 	// client's session header. A thought signature is only valid for the call
 	// it was issued for, so the store is namespaced by the conversation that
