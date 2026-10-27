@@ -141,6 +141,8 @@ export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
   "xiaomi-mimo": "mimo",
   "xiaomi-tokenplan": "xmtp",
   "zed": "zd",
+  "atmorouter": "atmo",
+  "runcrate": "rc",
 };
 
 const FREEBUFF_MODELS: ProviderModel[] = [
@@ -5961,6 +5963,24 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     }
   ],
   "zd": [],
+  "atmo": [
+    { "id": "cc/claude-sonnet-4-6", "name": "Claude Sonnet 4.6" },
+    { "id": "cc/claude-opus-4-7", "name": "Claude Opus 4.7" },
+    { "id": "cx/gpt-5.6-sol", "name": "GPT-5.6 Sol" },
+    { "id": "cb/gemini-3.1-pro", "name": "Gemini 3.1 Pro" },
+    { "id": "cbcn/glm-5.3", "name": "GLM 5.3" },
+    { "id": "ali/kimi-k2.7-code", "name": "Kimi K2.7 Code" },
+    { "id": "ali/qwen3.8-max", "name": "Qwen 3.8 Max" },
+    { "id": "ali/deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash" }
+  ],
+  "rc": [
+    { "id": "deepseek-ai/DeepSeek-V4.1-Flash", "name": "DeepSeek V4.1 Flash" },
+    { "id": "deepseek-ai/DeepSeek-V4.1-Flash-1017", "name": "DeepSeek V4.1 Flash 1017" },
+    { "id": "zai-org/GLM-5.3", "name": "GLM 5.3" },
+    { "id": "zai-org/GLM-5.3-Flash", "name": "GLM 5.3 Flash" },
+    { "id": "Qwen/Qwen3.8-Flash", "name": "Qwen3.8 Flash" },
+    { "id": "openai/gpt-oss-120b", "name": "gpt-oss 120B" }
+  ],
   "af": [
     {
       "id": "gpt-oss-120b",

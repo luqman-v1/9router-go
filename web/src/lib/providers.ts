@@ -473,6 +473,36 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "atmorouter",
+    "name": "AtmoRouter",
+    "category": "apikey",
+    "alias": "atmo",
+    "color": "#00C896",
+    "icon": "router",
+    "website": "https://atmorouter.dev",
+    "notice": {"apiKeyUrl":"https://atmorouter.dev/dashboard"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
+    "id": "runcrate",
+    "name": "RunCrate",
+    "category": "apikey",
+    "alias": "rc",
+    "color": "#FF6B35",
+    "icon": "local_shipping",
+    "website": "https://runcrate.ai",
+    "notice": {"apiKeyUrl":"https://www.runcrate.ai/dashboard"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
     "id": "freebuff",
     "name": "Freebuff",
     "category": "oauth",

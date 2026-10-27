@@ -845,3 +845,60 @@ func TestHandleValidateProvider_Nous(t *testing.T) {
 		}
 	})
 }
+
+// --- runcrate ---
+
+func TestHandleValidateProvider_RuncrateProbesBillingBalance(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, out := postValidate(t, `{"provider":"runcrate","apiKey":"rc-test"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != true {
+		t.Errorf("expected valid=true, got %v", out["valid"])
+	}
+	if out["supported"] != true {
+		t.Errorf("expected supported=true, got %v", out["supported"])
+	}
+	if out["error"] != nil {
+		t.Errorf("expected null error, got %v", out["error"])
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected exactly one probe, got %d", len(*calls))
+	}
+	probe := (*calls)[0]
+	if probe.method != http.MethodGet || probe.url != "https://www.runcrate.ai/api/v1/billing/balance" {
+		t.Errorf("unexpected probe %s %s", probe.method, probe.url)
+	}
+	if got := probe.headers.Get("Authorization"); got != "Bearer rc-test" {
+		t.Errorf("expected bearer auth header, got %q", got)
+	}
+}
+
+func TestHandleValidateProvider_RuncrateAliasResolves(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, _ := postValidate(t, `{"provider":"rc","apiKey":"rc-test"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(*calls) != 1 || (*calls)[0].url != "https://www.runcrate.ai/api/v1/billing/balance" {
+		t.Fatalf("alias rc did not resolve to runcrate: %+v", *calls)
+	}
+}
+
+func TestHandleValidateProvider_RuncrateInvalidKey(t *testing.T) {
+	staticProbeStub(t, http.StatusUnauthorized)
+
+	rec, out := postValidate(t, `{"provider":"runcrate","apiKey":"nope"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid=false, got %d", rec.Code)
+	}
+	if out["valid"] != false {
+		t.Errorf("expected valid=false, got %v", out["valid"])
+	}
+	if out["error"] != "Invalid API key" {
+		t.Errorf("expected 'Invalid API key', got %v", out["error"])
+	}
+}

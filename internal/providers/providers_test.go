@@ -341,3 +341,66 @@ func TestNewProvidersRegistry_v060(t *testing.T) {
 		}
 	}
 }
+
+func TestNewProvidersRegistry_v061(t *testing.T) {
+	// atmorouter
+	if _, ok := KnownProviders["atmorouter"]; !ok {
+		t.Error("expected atmorouter provider registered")
+	}
+	cfg := KnownProviders["atmorouter"]
+	if cfg.BaseURL != "https://atmorouter.dev/v1/chat/completions" {
+		t.Errorf("atmorouter expected BaseURL https://atmorouter.dev/v1/chat/completions, got %s", cfg.BaseURL)
+	}
+	if cfg.AuthScheme != "bearer" || cfg.AuthHeader != "Authorization" {
+		t.Errorf("atmorouter expected bearer/Authorization, got %s/%s", cfg.AuthScheme, cfg.AuthHeader)
+	}
+
+	// runcrate
+	if _, ok := KnownProviders["runcrate"]; !ok {
+		t.Error("expected runcrate provider registered")
+	}
+	cfg = KnownProviders["runcrate"]
+	if cfg.BaseURL != "https://api.runcrate.ai/v1/chat/completions" {
+		t.Errorf("runcrate expected BaseURL https://api.runcrate.ai/v1/chat/completions, got %s", cfg.BaseURL)
+	}
+	if cfg.AuthScheme != "bearer" || cfg.AuthHeader != "Authorization" {
+		t.Errorf("runcrate expected bearer/Authorization, got %s/%s", cfg.AuthScheme, cfg.AuthHeader)
+	}
+
+	// Aliases
+	if a := ResolveAlias("atmo"); a != "atmorouter" {
+		t.Errorf("expected atmo alias to resolve to atmorouter, got %s", a)
+	}
+	if a := ResolveAlias("rc"); a != "runcrate" {
+		t.Errorf("expected rc alias to resolve to runcrate, got %s", a)
+	}
+
+	// Verify model seeds
+	expectedModel := map[string]string{
+		"atmorouter": "cc/claude-sonnet-4-6",
+		"runcrate":   "deepseek-ai/DeepSeek-V4.1-Flash",
+	}
+	for provider, wantModel := range expectedModel {
+		models := GetProviderModels(provider)
+		if len(models) == 0 {
+			t.Errorf("GetProviderModels(%q) returned empty list", provider)
+		}
+		hasModel := false
+		for _, m := range models {
+			if m == wantModel {
+				hasModel = true
+				break
+			}
+		}
+		if !hasModel {
+			t.Errorf("GetProviderModels(%q) missing %s, got %v", provider, wantModel, models)
+		}
+	}
+	// Verify aliases reach the same catalog
+	for _, alias := range []string{"atmo", "rc"} {
+		models := GetProviderModels(alias)
+		if len(models) == 0 {
+			t.Errorf("GetProviderModels(%q) returned empty list", alias)
+		}
+	}
+}
