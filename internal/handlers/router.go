@@ -468,6 +468,10 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	// these were never registered.
 	r.Get("/api/auth/oidc/start", ssoH.HandleOIDCStart)
 	r.Get("/api/auth/oidc/callback", ssoH.HandleOIDCCallback)
+	r.Get("/api/auth/saml/start", ssoH.HandleSAMLStart)
+	// The IdP posts the assertion here, so it must accept a form body and must
+	// not require a dashboard session — the session is what it creates.
+	r.Post("/api/auth/saml/acs", ssoH.HandleSAMLACS)
 	r.Post("/api/auth/saml/test", ssoH.HandleSamlTest)
 	r.Get("/api/auth/saml/metadata", ssoH.HandleSamlMetadata)
 

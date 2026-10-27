@@ -6,6 +6,7 @@ toolchain go1.27.3
 
 require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
+	github.com/beevik/etree v1.7.0
 	github.com/bogdanfinn/fhttp v0.6.9
 	github.com/bogdanfinn/tls-client v1.16.0
 	github.com/bogdanfinn/utls v1.7.8-barnius
@@ -17,6 +18,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
+	github.com/russellhaering/goxmldsig v1.6.1
 	github.com/samber/lo v1.53.0
 	github.com/spf13/viper v1.21.0
 	github.com/urfave/cli/v2 v2.27.7
@@ -63,6 +65,7 @@ require (
 	github.com/getlantern/ops v0.0.0-20190325191751-d70cb0d6f85f // indirect
 	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
+	github.com/jonboulle/clockwork v0.5.0 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
