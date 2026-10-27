@@ -517,13 +517,17 @@ func freshHex32() (string, error) {
 //	X-Conversation-Message-ID  32 hex   (mirrored by X-Request-ID)
 //	X-Trace-ID / X-B3-* / traceparent / b3 — one trace id per request
 //
-// Every id is fresh per request, including the conversation id: the 5.8.4
-// capture rotates it on every call and the gateway keeps no history under it.
-// Deriving it from the session key was worse than inert — the key was the
-// opening user message, so unrelated sessions that start with the same prompt
-// shared one id, an anomalous pattern the gateway can see. Non-empty values that
-// already exist are preserved so a caller tracking its own conversation keeps
-// it; blank counts as absent. The function is idempotent.
+// This function fills only what is missing, so whoever calls it owns the
+// conversation id's scope. codebuddyIntlHeaders pre-seeds it from a named
+// session — the CLI (codebuddy-lite-wb 5.8.4) keeps one id across a
+// conversation, and prompt-cache affinity is worth keeping — and leaves it to
+// this function when the caller names no session, which yields a fresh id per
+// request, the shape the 5.8.4 desktop client sends. What must never happen is
+// deriving it from prompt text: the opening user message is not a session, so
+// two unrelated conversations that start alike would share one id, an anomaly
+// the gateway can see. Non-empty values already present are preserved so an
+// operator-fixed or caller-supplied id wins; blank counts as absent. The
+// function is idempotent.
 //
 // Errors are returned, never swallowed: a request without the family is refused
 // by the gateway every time, so a silent fall-through would be a 100% failure
