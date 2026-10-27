@@ -569,7 +569,17 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// format, whichever of the two ways it earns that: a model routed to a
 	// Messages endpoint (opencode-zen's Claude and Qwen lanes), or an endpoint
 	// that speaks Messages outright (minimax-code on the mavis gateway).
+	// Anthropic's own two provider ids are the third way, and they follow the
+	// same rule chat.go applies when it decides whether to convert at all: it
+	// keeps the body in Claude format for provider "claude"/"anthropic"
+	// whatever base URL the connection carries. Mirrored here, because this
+	// flag is also what says "the body arriving is Claude-shaped" — without
+	// the name check a relay or proxy override made isAnthropic false, the
+	// outbound thinking pass ran with target "openai", and
+	// FilterToOpenAIFormatJSON rewrote a Claude body's tools into
+	// {type:"function",function:{…}} on its way to a Messages API.
 	claudeNative := messagesClient && (isAnthropic ||
+		provider == "claude" || provider == "anthropic" ||
 		executor.ServesMessagesEndpoint(provider, model) ||
 		servesClaudeMessages(provider, providerCfg))
 

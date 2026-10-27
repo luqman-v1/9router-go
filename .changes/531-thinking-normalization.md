@@ -196,10 +196,24 @@ running the suites):
   normalised even without a `messages` key, which used to skip the tool and
   tool_choice passes entirely. It no longer runs over a Claude Messages body: a
   provider whose own endpoint speaks Messages (`minimax-code` on the MiniMax
-  mavis gateway) had its converted body normalised back toward OpenAI, deleting
+  mavis gateway) had its converted body  normalised back toward OpenAI, deleting
   every `tool_use` block and rewriting the tools into a shape the Messages API
   rejects. The filter is split into focused helpers, and the model-suffix scan
   uses the `bytes` package.
+- **The outbound pass now keeps its hands off a body that never left Claude
+  format.** The lane's `claudeNative` flag was derived from the *connection's*
+  base URL (`isAnthropic` requires `https://api.anthropic.com`), while
+  `chat.go` decides the other way round: provider `claude`/`anthropic` keeps the
+  Claude wire whatever base URL the connection carries. A `/v1/messages` client
+  on a relayed `claude` connection therefore arrived at the outbound pass with
+  `target:"openai"`, and the filter rewrote its `input_schema` tools into
+  `{type:"function",function:{…}}` on the way to a Messages API — the same
+  symptom as the minimax-code case above, reached from the client side instead
+  of the provider side. The fallback now mirrors chat.go's rule, so the pass
+  and the token savers' system-prompt placement both see the format the body is
+  actually in. Caught by the negative assertion in
+  `TestHandleMessages_RequireClaudeToolType`, which was green before this branch
+  and red with it.
 - **A request whose every turn carried nothing is answered locally** instead of
   being forwarded with an empty `messages` array, which OpenAI and Anthropic
   both answer with a 400.
