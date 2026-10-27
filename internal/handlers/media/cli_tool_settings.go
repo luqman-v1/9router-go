@@ -135,10 +135,11 @@ func (h *CLIToolHandler) HandleCLIToolGet(w http.ResponseWriter, r *http.Request
 		return
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"tool":      adapter.ID(),
-		"installed": installedFor(adapter),
-		"files":     files,
-		"plan":      planFiles(plan),
+		"tool":       adapter.ID(),
+		"installed":  installedFor(adapter),
+		"has9Router": ToolHas9Router(adapter.ID()),
+		"files":      files,
+		"plan":       planFiles(plan),
 	})
 }
 

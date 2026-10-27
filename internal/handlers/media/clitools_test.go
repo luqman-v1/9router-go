@@ -3,6 +3,11 @@ package media
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,5 +62,104 @@ func TestCLIDetectors_HasAllToolIDs(t *testing.T) {
 	}
 	if len(m) != len(want) {
 		t.Errorf("got %d detectors, want %d", len(m), len(want))
+	}
+}
+
+func TestCLIDetectors_ClaudeHas9Router(t *testing.T) {
+	t.Run("env ANTHROPIC_BASE_URL", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:20130/v1")
+		t.Setenv("NINEROUTER_URL", "")
+		if !claudeHas9Router() {
+			t.Fatal("expected claudeHas9Router to be true when ANTHROPIC_BASE_URL is set")
+		}
+	})
+
+	t.Run("env NINEROUTER_URL", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_BASE_URL", "")
+		t.Setenv("NINEROUTER_URL", "http://127.0.0.1:20130")
+		if !claudeHas9Router() {
+			t.Fatal("expected claudeHas9Router to be true when NINEROUTER_URL is set")
+		}
+	})
+
+	t.Run("settings.json with ANTHROPIC_BASE_URL", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_BASE_URL", "")
+		t.Setenv("NINEROUTER_URL", "")
+		tmpHome := t.TempDir()
+		t.Setenv("HOME", tmpHome)
+
+		claudeDir := filepath.Join(tmpHome, ".claude")
+		if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := `{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:20130/v1"}}`
+		if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if !claudeHas9Router() {
+			t.Fatal("expected claudeHas9Router to be true from ~/.claude/settings.json")
+		}
+	})
+
+	t.Run("settings.json with jsonc comments", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_BASE_URL", "")
+		t.Setenv("NINEROUTER_URL", "")
+		tmpHome := t.TempDir()
+		t.Setenv("HOME", tmpHome)
+
+		claudeDir := filepath.Join(tmpHome, ".claude")
+		if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := `{
+			// custom endpoint for 9router
+			"env": {
+				"ANTHROPIC_BASE_URL": "http://127.0.0.1:20130/v1",
+			}
+		}`
+		if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if !claudeHas9Router() {
+			t.Fatal("expected claudeHas9Router to be true from JSONC settings.json")
+		}
+	})
+
+	t.Run("unconfigured reports false", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_BASE_URL", "")
+		t.Setenv("NINEROUTER_URL", "")
+		tmpHome := t.TempDir()
+		t.Setenv("HOME", tmpHome)
+
+		claudeDir := filepath.Join(tmpHome, ".claude")
+		if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := `{"env": {}}`
+		if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if claudeHas9Router() {
+			t.Fatal("expected claudeHas9Router to be false when unconfigured")
+		}
+	})
+}
+
+func TestCLIToolsHandler_AllStatuses_CarriesHas9Router(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:20130/v1")
+	h := NewCLIToolsHandler()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/cli-tools/all-statuses", nil)
+	h.HandleAllStatuses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"has9Router":true`) && !strings.Contains(body, `"has9Router": true`) {
+		t.Fatalf("expected all-statuses response to carry has9Router, got %s", body)
 	}
 }

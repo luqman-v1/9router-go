@@ -675,7 +675,7 @@
                 {#if tool.image}
                   <img
                     src={tool.image}
-                    alt={tool.name}
+                    alt=""
                     class="size-8 object-contain rounded-lg"
                     onerror={(e) => {
                       const img = e.currentTarget as HTMLElement
@@ -752,7 +752,7 @@
             {#if selectedTool.image}
               <img
                 src={selectedTool.image}
-                alt={selectedTool.name}
+                alt=""
                 class="size-9 object-contain rounded-lg"
                 onerror={(e) => {
                   const img = e.currentTarget as HTMLElement
