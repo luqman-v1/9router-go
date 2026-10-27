@@ -93,6 +93,11 @@ func SetupRoutes(r interface {
 	r.Get("/models/{kind}", chatH.HandleModelsByKind)
 	r.Get("/models/*", chatH.HandleModelLookup)
 	r.Get("/v1/models", chatH.HandleModels)
+	// Gemini API surface. A Gemini SDK speaks only this protocol — it lists
+	// models, then posts contents[] to an action-suffixed path — so without
+	// these routes a Gemini client cannot use the gateway at all.
+	r.Get("/v1beta/models", chatH.HandleGeminiListModels)
+	r.Post("/v1beta/models/*", chatH.HandleGeminiGenerateContent)
 	r.Get("/v1/models/*", chatH.HandleModelLookup)
 	r.Get("/api/v1/models", chatH.HandleModels)
 	r.Get("/api/v1/models/*", chatH.HandleModelLookup)
