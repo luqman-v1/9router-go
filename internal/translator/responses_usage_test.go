@@ -33,6 +33,20 @@ func TestParseResponsesUsage(t *testing.T) {
 			wantCached:     64,
 		},
 		{
+			name:           "terminal stream event with cached tokens",
+			body:           `{"type":"response.completed","response":{"id":"resp_123","usage":{"input_tokens":5000,"output_tokens":150,"total_tokens":5150,"input_tokens_details":{"cached_tokens":4000}}}}`,
+			wantPrompt:     5000,
+			wantCompletion: 150,
+			wantCached:     4000,
+		},
+		{
+			name:           "terminal stream event response.done with prompt_tokens_details",
+			body:           `{"type":"response.done","response":{"usage":{"prompt_tokens":1000,"completion_tokens":200,"prompt_tokens_details":{"cached_tokens":800}}}}`,
+			wantPrompt:     1000,
+			wantCompletion: 200,
+			wantCached:     800,
+		},
+		{
 			name: "no usage at all",
 			body: `{"id":"resp_1","output":[]}`,
 		},

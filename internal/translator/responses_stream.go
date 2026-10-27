@@ -15,6 +15,7 @@ func TranslateOpenAIToResponses(chunk *OpenAIChunk, s *ResponsesState) []Respons
 	// the client without a token count.
 	if chunk.Usage != nil {
 		s.Usage = toResponsesUsage(chunk.Usage)
+		s.RawUsage = chunk.Usage
 	}
 
 	if len(chunk.Choices) == 0 {

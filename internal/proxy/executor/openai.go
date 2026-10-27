@@ -312,7 +312,11 @@ func captureUsageFromSSEChunk(ctx context.Context, chunk []byte) {
 		if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
 			return
 		}
-		if usage := translator.ParseResponseUsage(payload); usage != nil {
+		usage := translator.ParseResponseUsage(payload)
+		if usage == nil {
+			usage = translator.ParseResponsesUsage(payload)
+		}
+		if usage != nil {
 			translator.SetUsage(ctx, usage)
 		}
 	})

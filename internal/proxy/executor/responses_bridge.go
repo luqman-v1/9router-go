@@ -156,6 +156,20 @@ func (b *ResponsesBridge) FeedFrames(frames []byte) {
 	}
 }
 
+// OpenAIUsage returns the usage block accumulated from upstream Chat Completions chunks,
+// preserving cached tokens and reasoning tokens for usage accounting.
+func (b *ResponsesBridge) OpenAIUsage() *translator.OpenAIUsage {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.state == nil {
+		return nil
+	}
+	return b.state.RawUsage
+}
+
 // Close flushes whatever the upstream left open. A truncated stream must not
 // swallow response.completed: without a terminal event the client waits forever
 // for a turn that already ended.
@@ -243,6 +257,9 @@ func StreamChatToResponses(ctx context.Context, w http.ResponseWriter, upstream 
 	err := proxy.ScanStreamWithDeadline(ctx, upstream, PendingCompletionFlushTimeout, bridge.CompletionPending, bridge.Feed)
 	if bridge.Err() != nil {
 		return fmt.Errorf("write to client: %w", bridge.Err())
+	}
+	if u := bridge.OpenAIUsage(); u != nil {
+		translator.SetUsage(ctx, u)
 	}
 	return err
 }
