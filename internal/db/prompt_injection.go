@@ -50,33 +50,6 @@ func (r *Repo) GetPromptInjectionEnabled() bool {
 	}
 	return s.PromptInjectionEnabled
 }
-
-// SaveSettings persists the whole SettingsData row.
-func (r *Repo) PromptInjectionEnabled() bool {
-	s, err := r.GetSettings()
-	if err != nil || s == nil {
-		return false
-	}
-	return s.PromptInjectionEnabled
-}
-
-// SaveSettings persists the whole SettingsData row.
-func (r *Repo) SaveSettings(s *SettingsData) error {
-	if s == nil {
-		return fmt.Errorf("nil settings")
-	}
-	raw, err := json.Marshal(s)
-	if err != nil {
-		return err
-	}
-	_, err = r.db.ExecContext(context.Background(),
-		`INSERT INTO settings (id, data) VALUES (1, ?)
-		 ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
-		string(raw),
-	)
-	return err
-}
-
 // ListPromptInjectionTemplates returns all templates.
 func (r *Repo) ListPromptInjectionTemplates() ([]*PromptInjectionTemplate, error) {
 	rows, err := r.db.QueryContext(context.Background(),
@@ -87,6 +60,7 @@ func (r *Repo) ListPromptInjectionTemplates() ([]*PromptInjectionTemplate, error
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []*PromptInjectionTemplate
 	for rows.Next() {
 		var k, raw string
@@ -100,13 +74,9 @@ func (r *Repo) ListPromptInjectionTemplates() ([]*PromptInjectionTemplate, error
 		t.ID = strings.TrimPrefix(k, promptInjectionTemplatePrefix)
 		out = append(out, &t)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return out, rows.Err()
 }
 
-// SavePromptInjectionTemplate creates or updates a template.
 func (r *Repo) SavePromptInjectionTemplate(t *PromptInjectionTemplate) error {
 	if t == nil {
 		return fmt.Errorf("nil template")

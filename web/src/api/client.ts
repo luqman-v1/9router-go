@@ -2539,7 +2539,7 @@ export const api = {
   duplicateJailbreakPreset: (id: string, newId?: string) =>
     request<{ ok: boolean; preset: JailbreakDoc }>(`/api/jailbreak/presets/${encodeURIComponent(id)}/duplicate`, {
       method: 'POST',
-      body: JSON.stringify({ id: newId }),
+      body: JSON.stringify({ id: newId || '' }),
     }),
   // Prompt Injection Pro
   getPromptInjectionSetting: () =>
