@@ -89,6 +89,7 @@
   import { PauseCircle } from 'lucide-svelte'
   import ProviderHeaderOverridesModal from './ProviderHeaderOverridesModal.svelte'
   import EditCompatibleNodeModal from './EditCompatibleNodeModal.svelte'
+  import ExportKeysModal from './ExportKeysModal.svelte'
   import FreebuffSessionBanner from './FreebuffSessionBanner.svelte'
   import ProviderIcon from './ProviderIcon.svelte'
 
@@ -707,6 +708,7 @@
   let addConnectionError = $state('')
   let showAddCustomModelModal = $state(false)
   let showEditNodeModal = $state(false)
+  let showExportKeysModal = $state(false)
   let showHeaderOverrides = $state(false)
   // Freebuff specific state & session tracking
   let isFreebuff = $derived(
@@ -3371,6 +3373,14 @@
           </button>
           <button
             type="button"
+            onclick={() => (showExportKeysModal = true)}
+            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
+          >
+            <span class="material-symbols-outlined text-[18px]">download</span>
+            Export Keys
+          </button>
+          <button
+            type="button"
             onclick={() => (showEditNodeModal = true)}
             class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
           >
@@ -4127,6 +4137,16 @@
         >
           <span class="material-symbols-outlined text-[18px]">add</span>
           Add
+        </button>
+      {/if}
+      {#if providerConnections.length > 0}
+        <button
+          type="button"
+          onclick={() => (showExportKeysModal = true)}
+          class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
+        >
+          <span class="material-symbols-outlined text-[18px]">download</span>
+          Export Keys
         </button>
       {/if}
     </div>
@@ -5349,4 +5369,11 @@
   }}
   onSubmit={handleAddKeyConnection}
   onBulkDone={onRefresh}
+/>
+
+<ExportKeysModal
+  isOpen={showExportKeysModal}
+  providerId={providerId}
+  providerName={providerName}
+  onClose={() => (showExportKeysModal = false)}
 />

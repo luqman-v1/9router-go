@@ -56,6 +56,16 @@ export interface ActiveRequestItem {
 }
 
 
+export interface FallbackAttemptItem {
+  connectionId?: string
+  account?: string
+  provider?: string
+  model?: string
+  statusCode?: number | string
+  error?: string
+  latencyMs?: number
+}
+
 export interface RequestDetailItem {
   id?: string
   status?: string
@@ -75,6 +85,7 @@ export interface RequestDetailItem {
   cacheSource?: string
   cost?: number
   error?: string
+  attempts?: FallbackAttemptItem[]
   latency?: {
     total?: number
     ttft?: number

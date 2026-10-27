@@ -354,3 +354,110 @@ func TestDeepSeekNestedObjectIsNotACall(t *testing.T) {
 		t.Fatalf("extracted %d calls, want 1: a nested object is part of its parent", len(calls))
 	}
 }
+
+// leakedCronjobBlock is a DSML answer copied from a cronjob report that reached
+// a Telegram group as literal text. It is malformed: the calls wrapper's opening
+// tag is missing and an invoke carries no name attribute, so nothing in it can
+// become a tool call. The old single-pass strip removed one element and left the
+// stray parameter opener and calls closer behind.
+const leakedCronjobBlock = "<｜｜DSML｜｜ parameter>\n" +
+	"<｜｜DSML｜｜ invoke>\n" +
+	"<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /tmp/rev-651 && sed -n 1060,1130p internal/handlers/chat/fallback.go</｜｜DSML｜｜ parameter>\n" +
+	"</｜｜DSML｜｜ invoke>\n" +
+	"</｜｜DSML｜｜ calls>"
+
+// leakedCronjobMixedClosers is the second leaked shape: one invoke opener with
+// two parameter bodies and two invoke closers, closing with a calls closer. The
+// extra closer unbalances the nesting, so a scrubber that counted only one
+// element kind would leave a stray tag in the output.
+const leakedCronjobMixedClosers = "<｜｜DSML｜｜ calls>\n" +
+	"<｜‖DSML‖｜ invoke name=\"terminal\">\n" +
+	"<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /tmp/rev-663 && sed -n 600,700p internal/handlers/chat/models_list.go</｜｜DSML｜｜ parameter>\n" +
+	"</｜｜DSML｜｜ invoke>\n" +
+	"<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /tmp/rev-663 && sed -n 730,790p internal/handlers/chat/models_list.go</｜｜DSML｜｜ parameter>\n" +
+	"</｜｜DSML｜｜ invoke>\n" +
+	"</｜｜DSML｜｜ calls>"
+
+// TestDeepSeekStripDSMLRemovesRaggedBlocks pins the two shapes that reached a
+// chat as literal markup: neither is a parseable tool call, and both must be
+// removed whole — tags, bodies, and orphan stray closers — with the prose
+// around them intact.
+func TestDeepSeekStripDSMLRemovesRaggedBlocks(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{name: "missing calls opener", text: leakedCronjobBlock},
+		{name: "unbalanced closers", text: leakedCronjobMixedClosers},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			answer := "Saya cek dulu.\n" + tt.text + "\nIni hasilnya."
+			got := deepSeekStripDSML(answer)
+			if strings.Contains(got, "DSML") {
+				t.Fatalf("markup survived:\n%s", got)
+			}
+			if !strings.Contains(got, "Saya cek dulu.") || !strings.Contains(got, "Ini hasilnya.") {
+				t.Fatalf("prose around the block was lost:\n%q", got)
+			}
+		})
+	}
+}
+
+// TestDeepSeekScrubberDropsBlockAcrossFrames feeds a DSML block one fragment at
+// a time, the way the streaming executor sees it. The scrubber must emit only
+// the prose and keep nothing of the tags, even though every tag boundary falls
+// inside a fragment.
+func TestDeepSeekScrubberDropsBlockAcrossFrames(t *testing.T) {
+	answer := "Baik, saya cek dulu.\n" + leakedCronjobBlock + "\nIni hasilnya."
+	parts := []string{
+		answer[:20],
+		answer[20:40],
+		answer[40:80],
+		answer[80:],
+	}
+
+	var scrubber deepSeekDSMLScrubber
+	var out strings.Builder
+	var buf string
+	for _, part := range parts {
+		buf += part
+		clean, n := scrubber.scrub(buf)
+		out.WriteString(clean)
+		buf = buf[n:]
+	}
+	if buf != "" {
+		t.Fatalf("%d bytes were never consumed", len(buf))
+	}
+	got := out.String()
+	if strings.Contains(got, "DSML") {
+		t.Fatalf("markup survived:\n%s", got)
+	}
+	if !strings.Contains(got, "Baik, saya cek dulu.") || !strings.Contains(got, "Ini hasilnya.") {
+		t.Fatalf("prose around the block was lost:\n%q", got)
+	}
+}
+
+// TestDeepSeekScrubberHoldsPartialTagFrames feeds the same block one rune at
+// a time. The upstream stream often delivers one character per frame, so a
+// tag arrives as `<`, then `<｜`, then `<｜｜` — the scrubber must hold those
+// prefixes instead of emitting them, or the first bytes of the markup leak as
+// text.
+func TestDeepSeekScrubberHoldsPartialTagFrames(t *testing.T) {
+	answer := "Awal\n" + leakedCronjobBlock + "\nAkhir"
+	var scrubber deepSeekDSMLScrubber
+	var out strings.Builder
+	var buf string
+	for _, r := range answer {
+		buf += string(r)
+		clean, n := scrubber.scrub(buf)
+		out.WriteString(clean)
+		buf = buf[n:]
+	}
+	if buf != "" {
+		t.Fatalf("%d bytes were never consumed", len(buf))
+	}
+	if got := out.String(); got != "Awal\n\nAkhir" {
+		t.Fatalf("scrubbed = %q, want %q", got, "Awal\n\nAkhir")
+	}
+}

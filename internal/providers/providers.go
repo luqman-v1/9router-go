@@ -38,6 +38,14 @@ type ProviderConfig struct {
 	// not strip them.
 	PreserveCacheControl bool
 
+	// HeaderOverrides is the operator's per-provider Custom Headers, kept apart
+	// from StaticHeaders so a forwarder can apply it last. StaticHeaders is
+	// written by both the registry and an executor; an override is the operator
+	// correcting that value, and an executor that rebuilds its own header map
+	// would otherwise drop it. Upstream applies these after buildHeaders for
+	// exactly that reason (open-sse/executors/base.js:132).
+	HeaderOverrides map[string]string
+
 	// UpstreamIsAnthropic marks an entry whose upstream speaks Anthropic Messages while
 	// the client may speak OpenAI, on a host that is not api.anthropic.com. The existing
 	// detection keys off that host, so a gateway like Bedrock needs its own flag for the
@@ -315,6 +323,40 @@ func MergeHeaderOverrides(headers, overrides map[string]string) map[string]strin
 	}
 	for k, v := range overrides {
 		res[k] = v
+	}
+	return res
+}
+
+// ApplyHeaderOverrides returns a copy of headers with the operator's overrides
+// applied last, matching an existing name case-insensitively.
+//
+// MergeHeaderOverrides replaces by exact key, which is enough for the generic
+// forward path because both sides spell the header the same way. An executor
+// that assembles its own map is the different case: CodeBuddy writes
+// `X-IDE-Type` while an operator's entry may be `x-ide-type`, and a
+// case-sensitive set would leave both keys in the map, where which one wins
+// depends on map iteration order. Matching the key already present keeps
+// exactly one entry per name, which is what the operator's correction means.
+func ApplyHeaderOverrides(headers, overrides map[string]string) map[string]string {
+	if len(overrides) == 0 {
+		return headers
+	}
+	res := make(map[string]string, len(headers)+len(overrides))
+	for k, v := range headers {
+		res[k] = v
+	}
+	for name, value := range overrides {
+		applied := false
+		for existing := range res {
+			if strings.EqualFold(existing, name) {
+				res[existing] = value
+				applied = true
+				break
+			}
+		}
+		if !applied {
+			res[name] = value
+		}
 	}
 	return res
 }
@@ -1351,6 +1393,16 @@ var KnownProviders = map[string]ProviderConfig{
 		StaticHeaders: map[string]string{
 			"content-type": "application/json",
 		},
+	},
+	"atmorouter": {
+		BaseURL:    "https://atmorouter.dev/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"runcrate": {
+		BaseURL:    "https://api.runcrate.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
 	},
 }
 

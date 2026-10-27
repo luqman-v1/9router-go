@@ -112,7 +112,7 @@ func (h *ChatHandler) LogFailure(
 		startedAt = now.Add(-time.Duration(latencyMs) * time.Millisecond)
 	}
 
-	reqData, marshalErr := json.Marshal(map[string]any{
+	failurePayload := map[string]any{
 		"id":             reqID,
 		"provider":       info.Provider,
 		"model":          info.Model,
@@ -136,7 +136,13 @@ func (h *ChatHandler) LogFailure(
 		"tokens":   tokens,
 		"request":  map[string]any{"messages": extractRequestMessages(requestBody)},
 		"response": map[string]any{"error": message, "status": statusCode, "content": responseContent},
-	})
+	}
+	if rec := FallbackAttemptRecorderFrom(ctx); rec != nil {
+		if attempts := rec.Snapshot(); len(attempts) > 0 {
+			failurePayload["attempts"] = attempts
+		}
+	}
+	reqData, marshalErr := json.Marshal(failurePayload)
 	if marshalErr != nil {
 		return
 	}
@@ -345,7 +351,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		startedAtUsage = now.Add(-time.Duration(latencyMs) * time.Millisecond)
 	}
 
-	reqData, err := json.Marshal(map[string]any{
+	detailPayload := map[string]any{
 		"id":             reqID,
 		"provider":       info.Provider,
 		"model":          info.Model,
@@ -367,7 +373,13 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		"cost":           cost,
 		"request":        map[string]any{"messages": reqMsgs},
 		"response":       map[string]any{"content": respContent},
-	})
+	}
+	if rec := FallbackAttemptRecorderFrom(ctx); rec != nil {
+		if attempts := rec.Snapshot(); len(attempts) > 0 {
+			detailPayload["attempts"] = attempts
+		}
+	}
+	reqData, err := json.Marshal(detailPayload)
 	if err != nil {
 		log.Error("usage", "marshal request detail failed", "error", err)
 		return

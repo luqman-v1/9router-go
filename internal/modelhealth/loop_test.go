@@ -2,6 +2,7 @@ package modelhealth
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -354,4 +355,113 @@ func mustGet(t *testing.T, store *fakeStore, scope, key string) any {
 		t.Fatalf("no row stored under %s/%s", scope, key)
 	}
 	return raw
+}
+
+// A disabled feature must not end the loop. It used to return outright, so
+// toggling the scheduler on in the dashboard did nothing until the process
+// restarted — the settings said "no restart needed" and the behaviour said
+// otherwise.
+//
+// The interval is one minute (the floor), so the test asserts the first pass
+// and the goroutine's survival rather than a cadence: Run passes immediately
+// when enabled, and the only thing that ends it is the context.
+func TestLoopStaysAliveWhileDisabled(t *testing.T) {
+	store := newFakeStore()
+	var enabled atomic.Bool
+	var probes atomic.Int64
+	l := NewLoop(store, func(ctx context.Context, provider, model string) Verdict {
+		probes.Add(1)
+		return Verdict{OK: true}
+	}, func() []Candidate {
+		return []Candidate{{Provider: "vsllm", Model: "m1"}}
+	}, func() Config {
+		cfg := Default()
+		cfg.Enabled = enabled.Load()
+		return cfg
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { l.Run(ctx); close(done) }()
+
+	// Disabled at boot: no pass, but the goroutine must still be alive.
+	time.Sleep(50 * time.Millisecond)
+	if probes.Load() != 0 {
+		t.Fatalf("probes = %d while disabled, want 0", probes.Load())
+	}
+	select {
+	case <-done:
+		t.Fatal("Run returned while the feature was merely disabled; it must stay alive")
+	default:
+	}
+
+	// Turning it on runs a pass without a restart.
+	enabled.Store(true)
+	waitFor(t, func() bool { return probes.Load() > 0 }, "probes to start after enabling")
+
+	// Turning it off again pauses, and the goroutine survives to be re-enabled.
+	enabled.Store(false)
+	settled := probes.Load()
+	// The loop notices the change on its 2s paused poll, so a short sleep is
+	// not enough to prove the pause; the probe count must not grow while the
+	// feature is off, and the goroutine must still be alive.
+	time.Sleep(3 * time.Second)
+	if probes.Load() != settled {
+		t.Fatalf("probes moved from %d to %d while disabled, want a pause", settled, probes.Load())
+	}
+	select {
+	case <-done:
+		t.Fatal("Run returned after the feature was switched off; it must stay alive")
+	default:
+	}
+	enabled.Store(true)
+	waitFor(t, func() bool { return probes.Load() > settled }, "probes to resume after re-enabling")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after ctx cancel")
+	}
+}
+
+// A loop that starts disabled must still be running when the feature is
+// switched on later — the case a fresh install hits.
+func TestLoopStartsDisabledThenRuns(t *testing.T) {
+	store := newFakeStore()
+	var enabled atomic.Bool
+	var probes atomic.Int64
+	l := NewLoop(store, func(ctx context.Context, provider, model string) Verdict {
+		probes.Add(1)
+		return Verdict{OK: true}
+	}, func() []Candidate {
+		return []Candidate{{Provider: "vsllm", Model: "m1"}}
+	}, func() Config {
+		cfg := Default()
+		cfg.Enabled = enabled.Load()
+		return cfg
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go l.Run(ctx)
+	time.Sleep(50 * time.Millisecond)
+	if probes.Load() != 0 {
+		t.Fatalf("probes = %d, want 0 while disabled at boot", probes.Load())
+	}
+	enabled.Store(true)
+	waitFor(t, func() bool { return probes.Load() > 0 }, "probes to start after enabling")
+}
+
+// waitFor polls a condition for up to two seconds. A one-minute interval means
+// the loop's own cadence cannot be waited on directly, so these tests wait on
+// the observable effect instead of the tick.
+func waitFor(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }

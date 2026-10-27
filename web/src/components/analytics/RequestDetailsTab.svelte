@@ -436,6 +436,33 @@
           </div>
         {/if}
 
+        {#if selectedDetail.attempts && selectedDetail.attempts.length > 1}
+          <div class="p-3.5 rounded-xl bg-surface-2/60 border border-border space-y-2">
+            <div class="text-[10px] text-text-muted uppercase font-bold tracking-wider">
+              Account Failover Trail ({selectedDetail.attempts.length} attempts)
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              {#each selectedDetail.attempts as att, i}
+                {#if i > 0}
+                  <span class="material-symbols-outlined text-[16px] text-text-subtle">arrow_forward</span>
+                {/if}
+                <div class="flex items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-1.5">
+                  <span class="px-1.5 py-0.5 rounded border text-[10px] font-bold {att.statusCode === 200 || att.statusCode === '200' ? 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20' : 'text-red-500 bg-red-500/10 border-red-500/20'}">
+                    {att.statusCode ?? '—'}
+                  </span>
+                  <span class="font-medium text-text-main text-xs">{att.account || att.connectionId}</span>
+                  {#if att.latencyMs != null}
+                    <span class="text-text-muted text-[11px]">({att.latencyMs}ms)</span>
+                  {/if}
+                  {#if att.error}
+                    <span class="text-[11px] text-text-muted truncate max-w-[200px]">{att.error}</span>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
         <!-- Routing & Account Details (OmniRoute style) -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
           <div class="p-3 rounded-xl bg-surface-2 border border-border space-y-1">

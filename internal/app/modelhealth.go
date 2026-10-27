@@ -53,6 +53,12 @@ func startModelHealthScheduler(ctx context.Context, repo *db.Repo, chatH *chat.C
 			return modelhealth.ParseConfig(raw["modelHealth"])
 		},
 	)
+	// The dashboard's disabled-models write reports the operator's own
+	// enable/disable decisions to this loop, so it needs a handle on it. The
+	// router builds the dashboard handler and cannot be threaded the loop
+	// through three call sites and every mounting test, so the loop publishes
+	// itself here instead.
+	modelhealth.PublishLoop(loop)
 	go loop.Run(ctx)
 }
 

@@ -416,6 +416,12 @@ func deepSeekStreamToClient(w http.ResponseWriter, req *Request, upstream io.Rea
 	// Reasoning and visible text are separate channels on the wire. The role
 	// delta rides whichever channel opens first, and each channel is emitted as
 	// a delta from what the client has already been sent.
+	//
+	// DeepSeek's web models reach for their native DSML tool syntax even when
+	// the request declared no tools, and that markup is not an answer. The
+	// scrubber drops it as it arrives, so the client sees the prose around it
+	// and never the tags.
+	var scrubber deepSeekDSMLScrubber
 	thinkingSent, contentSent, roleAnnounced := 0, 0, false
 	scanErr := proxy.ScanStream(upstream, func(payload []byte) {
 		if emitErr != nil {
@@ -437,9 +443,11 @@ func deepSeekStreamToClient(w http.ResponseWriter, req *Request, upstream io.Rea
 			}
 			_ = emit(delta, nil)
 		}
-		if content, sent := deepSeekDeltaFrom(accumulator.contentText(), contentSent); content != "" {
-			contentSent = sent
-			delta := map[string]any{"content": content}
+		contentTail := accumulator.contentText()[contentSent:]
+		clean, consumed := scrubber.scrub(contentTail)
+		contentSent += consumed
+		if clean != "" {
+			delta := map[string]any{"content": clean}
 			if !roleAnnounced {
 				roleAnnounced = true
 				delta["role"] = "assistant"
@@ -511,7 +519,11 @@ func deepSeekCollectToClient(w http.ResponseWriter, req *Request, upstream io.Re
 			"deepseek-web: stream ended before completion — the upstream session was cut off")
 	}
 
-	message := map[string]any{"role": "assistant", "content": accumulator.contentText()}
+	text := accumulator.contentText()
+	if deepSeekHasDSML(text) {
+		text = deepSeekStripDSML(text)
+	}
+	message := map[string]any{"role": "assistant", "content": text}
 	if thinking := accumulator.thinkingText(); thinking != "" {
 		message["reasoning_content"] = thinking
 	}

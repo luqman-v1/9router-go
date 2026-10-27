@@ -91,36 +91,79 @@ func NewLoop(store Store, probe ProbeFunc, candidates CandidateLister, config fu
 // Run ticks until ctx is cancelled. The first pass runs immediately so a
 // process that starts inside an interval fires the pass that came due while
 // it was down.
+//
+// A disabled feature does NOT end the loop. It used to return outright, which
+// meant toggling the scheduler on in the dashboard did nothing until the
+// process restarted — the settings said "no restart needed" and the behaviour
+// said otherwise. The loop now stays alive and re-reads the config on a short
+// cadence while the feature is off, so turning it on takes effect promptly
+// rather than after a full interval; once running, it settles into the
+// configured interval.
 func (l *Loop) Run(ctx context.Context) {
 	if l.store == nil || l.probe == nil {
 		return
 	}
-	cfg := l.currentConfig()
-	if !cfg.Enabled {
-		log.Info("modelhealth", "disabled by settings; not starting")
-		return
-	}
-	log.Info("modelhealth", "scheduler started",
-		"interval", cfg.Interval().String(),
-		"threshold", cfg.FailureThreshold(),
-		"scope", string(cfg.ProbeScope()))
-	ticker := time.NewTicker(cfg.Interval())
-	defer ticker.Stop()
-	for {
-		l.pass(ctx)
+	// disabledPoll is how often a paused loop re-reads the config. The
+	// configured interval can be an hour, and waiting that long to notice the
+	// operator switched the feature on is the restart the copy promises is
+	// unnecessary — just a slower one.
+	disabledPoll := 2 * time.Second
+	wait := func() bool {
 		select {
 		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// The interval is re-read every pass rather than cached, so a
-			// schedule saved in the dashboard takes effect on the next tick
-			// without a restart — the same property the auto-ping loop has.
-			cfg = l.currentConfig()
-			if !cfg.Enabled {
-				log.Info("modelhealth", "disabled by settings; stopping")
+			return false
+		case <-time.After(disabledPoll):
+			return true
+		}
+	}
+	started := false
+	for {
+		cfg := l.currentConfig()
+		if !cfg.Enabled {
+			if started {
+				started = false
+				log.Info("modelhealth", "disabled by settings; pausing")
+			}
+			if !wait() {
 				return
 			}
-			ticker.Reset(cfg.Interval())
+			continue
+		}
+		if !started {
+			started = true
+			log.Info("modelhealth", "scheduler started",
+				"interval", cfg.Interval().String(),
+				"threshold", cfg.FailureThreshold(),
+				"scope", string(cfg.ProbeScope()))
+		}
+		l.pass(ctx)
+		// Sleep in short slices rather than one long wait, so a context cancel
+		// or a config change is noticed promptly. The interval can be an hour,
+		// and a single blocking wait would make both the shutdown and the
+		// re-enable path wait it out — the restart the copy promises is
+		// unnecessary, just a slower one.
+		deadline := time.Now().Add(cfg.Interval())
+		for time.Now().Before(deadline) {
+			remaining := time.Until(deadline)
+			if remaining > disabledPoll {
+				remaining = disabledPoll
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(remaining):
+			}
+			// A shorter interval saved in the dashboard takes effect now
+			// rather than after the old one elapses.
+			if next := l.currentConfig(); next.Interval() < cfg.Interval() {
+				break
+			}
+			// A feature switched off mid-interval stops the wait: the loop goes
+			// back to the paused poll rather than finishing an interval nobody
+			// asked it to finish.
+			if !l.currentConfig().Enabled {
+				break
+			}
 		}
 	}
 }

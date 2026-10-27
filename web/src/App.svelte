@@ -341,8 +341,14 @@
     {/if}
 
     <!-- Left Sidebar -->
+    <!-- z-50 is the mobile drawer's layer, above its backdrop at z-40. On
+         desktop the wrapper returns to normal flow (lg:static), and an index
+         there made it a sibling stacking context above the content column:
+         every dialog opened inside <main> painted underneath the sidebar and
+         lost its left edge (issue #729). lg:z-auto drops the index exactly
+         where the drawer becomes the static column. -->
     <div
-      class="fixed inset-y-0 left-0 z-50 lg:static transition-transform duration-300 transform lg:transform-none {isMobileMenuOpen
+      class="fixed inset-y-0 left-0 z-50 lg:static lg:z-auto transition-transform duration-300 transform lg:transform-none {isMobileMenuOpen
         ? 'translate-x-0'
         : '-translate-x-full lg:translate-x-0 pointer-events-none lg:pointer-events-auto'}"
     >

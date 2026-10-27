@@ -11,6 +11,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/models"
+	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/providers"
 )
 
@@ -31,8 +32,9 @@ type ModelInfoObject struct {
 	// the client would read as a real limit. Upstream emits them on combo
 	// entries too (comboSeatLimits in src/app/api/v1/models/route.js), taking
 	// the smallest window in the combo's seat tree.
-	ContextLength       *int `json:"context_length,omitempty"`
-	MaxCompletionTokens *int `json:"max_completion_tokens,omitempty"`
+	ContextLength       *int                       `json:"context_length,omitempty"`
+	MaxCompletionTokens *int                       `json:"max_completion_tokens,omitempty"`
+	Pricing             *pricing.OpenRouterPricing `json:"pricing,omitempty"`
 }
 
 // ConnectionHasCredential reports whether a provider connection carries auth
@@ -661,6 +663,7 @@ func (h *ChatHandler) appendConnectionModels(
 				Capabilities:        live.Capabilities,
 				ContextLength:       optionalTokenLimit(ctxLen),
 				MaxCompletionTokens: optionalTokenLimit(maxOut),
+				Pricing:             pricing.BuildOpenRouterPricing(outputAlias, modelID),
 			})
 			continue
 		}
@@ -681,6 +684,7 @@ func (h *ChatHandler) appendConnectionModels(
 			Capabilities:        &caps,
 			ContextLength:       optionalTokenLimit(ctxLen),
 			MaxCompletionTokens: optionalTokenLimit(maxOut),
+			Pricing:             pricing.BuildOpenRouterPricing(outputAlias, modelID),
 		})
 	}
 	return data
@@ -766,6 +770,7 @@ func appendStaticModel(data []ModelInfoObject, seen map[string]bool, alias, mode
 		Capabilities:        &caps,
 		ContextLength:       optionalTokenLimit(ctxLen),
 		MaxCompletionTokens: optionalTokenLimit(maxOut),
+		Pricing:             pricing.BuildOpenRouterPricing(alias, modelID),
 	})
 }
 
@@ -826,6 +831,7 @@ func (h *ChatHandler) appendLooseCustomModels(
 				Capabilities:        &caps,
 				ContextLength:       optionalTokenLimit(ctxLen),
 				MaxCompletionTokens: optionalTokenLimit(maxOut),
+				Pricing:             pricing.BuildOpenRouterPricing(prefix, cm.ID),
 			})
 		}
 	}
@@ -1090,6 +1096,20 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 		contextWindow, maxOutput := comboSeatLimits(index, combo.Name)
 		entry.ContextLength = optionalTokenLimit(contextWindow)
 		entry.MaxCompletionTokens = optionalTokenLimit(maxOutput)
+
+		// Pricing: inherit from first leaf model
+		if combo.Models != "" {
+			var leaves []string
+			if err := json.Unmarshal([]byte(combo.Models), &leaves); err == nil && len(leaves) > 0 {
+				if flattened, err := h.flattenComboModels(leaves); err == nil && len(flattened) > 0 {
+					first := flattened[0]
+					if slash := strings.Index(first, "/"); slash > 0 {
+						entry.Pricing = pricing.BuildOpenRouterPricing(first[:slash], first[slash+1:])
+					}
+				}
+			}
+		}
+
 		data = append(data, entry)
 	}
 	return data

@@ -528,3 +528,96 @@ func TestForwardCodebuddyCN_RateLimitMapping(t *testing.T) {
 		t.Errorf("expected mapped StatusCode = 429, got %d", ue.StatusCode)
 	}
 }
+
+// The operator's Custom Headers must reach the wire. This executor assembles
+// its own header map, so a value the dashboard accepted was previously
+// replaced here and never sent — the dashboard showed the header, the upstream
+// never saw it.
+func TestForwardCodebuddyCN_OperatorOverridesWin(t *testing.T) {
+	var got http.Header
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	cfg := &providers.ProviderConfig{
+		BaseURL: ts.URL,
+		StaticHeaders: map[string]string{
+			"User-Agent": "CLI/2.108.1 CodeBuddy/2.108.1",
+			"X-IDE-Type": "CLI",
+		},
+		HeaderOverrides: map[string]string{
+			"User-Agent":                "IDE/2.108.1 CodeBuddy/2.108.1",
+			"X-IDE-Type":                "IDE",
+			"X-IDE-Name":                "IDE",
+			"X-Conversation-ID":         "6ba7b810-9dad-11d3-a456-426614174000",
+			"X-Conversation-Request-ID": "6ba7b811-9dad-11d3-a456-426614174000",
+			"X-Conversation-Message-ID": "6ba7b812-9dad-11d3-a456-426614174000",
+		},
+	}
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Ctx:      context.Background(),
+		Client:   ts.Client(),
+		Config:   cfg,
+		APIKey:   "tok",
+		IsStream: true,
+		Body:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+	}
+	if err := ForwardCodebuddyCN(rec, req); err != nil {
+		t.Fatalf("ForwardCodebuddyCN: %v", err)
+	}
+	if got == nil {
+		t.Fatal("upstream request not captured")
+	}
+
+	for header, want := range cfg.HeaderOverrides {
+		if v := got.Get(header); v != want {
+			t.Errorf("%s = %q, want the operator's %q", header, v, want)
+		}
+	}
+	// A generated value must not survive next to the operator's: two entries
+	// for one name leave the winner to map iteration order.
+	if n := len(got.Values("X-Conversation-ID")); n != 1 {
+		t.Errorf("X-Conversation-ID sent %d times, want exactly 1", n)
+	}
+}
+
+// A lowercase override must replace the executor's own spelling rather than
+// land beside it.
+func TestForwardCodebuddyCN_OverrideCaseInsensitive(t *testing.T) {
+	var got http.Header
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	cfg := &providers.ProviderConfig{
+		BaseURL:         ts.URL,
+		HeaderOverrides: map[string]string{"x-ide-type": "IDE"},
+	}
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Ctx:      context.Background(),
+		Client:   ts.Client(),
+		Config:   cfg,
+		APIKey:   "tok",
+		IsStream: true,
+		Body:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+	}
+	if err := ForwardCodebuddyCN(rec, req); err != nil {
+		t.Fatalf("ForwardCodebuddyCN: %v", err)
+	}
+	if v := got.Get("X-IDE-Type"); v != "IDE" {
+		t.Errorf("X-IDE-Type = %q, want IDE", v)
+	}
+	if n := len(got.Values("X-IDE-Type")); n != 1 {
+		t.Errorf("X-IDE-Type sent %d times, want exactly 1", n)
+	}
+}
