@@ -47,13 +47,14 @@ func HasSSEContent(chunk []byte) bool {
 // StreamContentPeeker buffers initial SSE frames until content is observed.
 type StreamContentPeeker struct {
 	http.ResponseWriter
-	flusher    http.Flusher
-	mu         sync.Mutex
-	committed  bool
-	sawContent bool
-	buf        bytes.Buffer
-	header     http.Header
-	statusCode int
+	flusher     http.Flusher
+	mu          sync.Mutex
+	committed   bool
+	sawContent  bool
+	buf         bytes.Buffer
+	header      http.Header
+	statusCode  int
+	onFirstSeen func()
 }
 
 func NewStreamContentPeeker(w http.ResponseWriter) *StreamContentPeeker {
@@ -67,6 +68,18 @@ func NewStreamContentPeeker(w http.ResponseWriter) *StreamContentPeeker {
 		header:         make(http.Header),
 		statusCode:     http.StatusOK,
 	}
+}
+
+// SetOnFirstSeen registers a callback invoked as soon as the first content
+// (or in-band error) is observed. Used by combo first-token timeout cancellation.
+func (p *StreamContentPeeker) SetOnFirstSeen(cb func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sawContent && cb != nil {
+		cb()
+		return
+	}
+	p.onFirstSeen = cb
 }
 
 func (p *StreamContentPeeker) Header() http.Header {
@@ -96,12 +109,18 @@ func (p *StreamContentPeeker) Write(b []byte) (int, error) {
 	// so the caller/client receives the in-band error frame as intended (e.g. TestComboSkipsInbandErrorOnRetry).
 	if _, _, isErr := DetectInbandSSEError(b); isErr || bytes.Contains(b, []byte(`"error":`)) {
 		p.sawContent = true
+		if p.onFirstSeen != nil {
+			p.onFirstSeen()
+		}
 		p.commitLocked()
 		return p.ResponseWriter.Write(b)
 	}
 
 	if HasSSEContent(b) {
 		p.sawContent = true
+		if p.onFirstSeen != nil {
+			p.onFirstSeen()
+		}
 		p.commitLocked()
 		return p.ResponseWriter.Write(b)
 	}

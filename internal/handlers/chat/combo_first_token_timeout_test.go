@@ -131,3 +131,65 @@ func TestComboChat_FirstTokenTimeoutIgnoredOnLastMember(t *testing.T) {
 		t.Errorf("expected last member answer, got: %s", out)
 	}
 }
+
+func TestComboChat_FirstTokenArrivesBeforeTimeoutLetsStreamComplete(t *testing.T) {
+	sqlDB, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	database := db.NewRepo(sqlDB)
+
+	// Member 1 flushes its first token immediately (<10ms), then completes after 200ms.
+	// Since firstTokenTimeoutMs = 50ms, the timer must be disarmed on the first token
+	// and allow the stream to finish cleanly with [DONE] instead of cutting it off.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"start\"}}]}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(200 * time.Millisecond)
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"finish\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p1 := 1
+	p2 := 2
+	if err := database.CreateProviderConnectionFull("c1", "provider1", "apikey", "c1", &p1, `{"apiKey":"sk-p1","baseUrl":"`+srv.URL+`"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateProviderConnectionFull("c2", "provider2", "apikey", "c2", &p2, `{"apiKey":"sk-p2","baseUrl":"http://127.0.0.1:9999"}`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.CreateCombo("test-complete-combo", "test-complete-combo", "chat", `["provider1/m1", "provider2/m2"]`, "fallback"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.SetComboStrategy("test-complete-combo", db.ComboStrategy{
+		Strategy:            "fallback",
+		FirstTokenTimeoutMs: 50,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewChatHandler(database)
+
+	reqBody := `{"model":"test-complete-combo","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	out := rec.Body.String()
+	if !strings.Contains(out, "start") || !strings.Contains(out, "finish") || !strings.Contains(out, "[DONE]") {
+		t.Errorf("expected full stream completed with [DONE], got: %s", out)
+	}
+}

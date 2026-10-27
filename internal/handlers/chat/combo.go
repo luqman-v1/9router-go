@@ -717,7 +717,15 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					streamPeeker = internalproxy.NewStreamContentPeeker(cw)
 					targetWriter = streamPeeker
 					if timeoutMs := h.comboFirstTokenTimeoutMs(comboName); timeoutMs > 0 {
-						fwdCtx, cancelTimeout = context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+						var attemptCancel context.CancelFunc
+						fwdCtx, attemptCancel = context.WithCancel(ctx)
+						cancelTimeout = attemptCancel
+						firstTokenTimer := time.AfterFunc(time.Duration(timeoutMs)*time.Millisecond, func() {
+							attemptCancel()
+						})
+						streamPeeker.SetOnFirstSeen(func() {
+							firstTokenTimer.Stop()
+						})
 					}
 				}
 				attemptStart := time.Now()
@@ -746,7 +754,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
 
 				if fwdErr != nil {
-					if ctx.Err() == nil && fwdCtx.Err() == context.DeadlineExceeded {
+					if ctx.Err() == nil && fwdCtx.Err() == context.Canceled {
 						log.Warn("combo", "first token timeout, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
 						lastErr = &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: []byte(`{"error":{"message":"first token timeout"}}`)}
 						break
@@ -1030,7 +1038,15 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					streamPeeker = internalproxy.NewStreamContentPeeker(cw)
 					targetWriter = streamPeeker
 					if timeoutMs := h.comboFirstTokenTimeoutMs(comboName); timeoutMs > 0 {
-						fwdCtx, cancelTimeout = context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+						var attemptCancel context.CancelFunc
+						fwdCtx, attemptCancel = context.WithCancel(ctx)
+						cancelTimeout = attemptCancel
+						firstTokenTimer := time.AfterFunc(time.Duration(timeoutMs)*time.Millisecond, func() {
+							attemptCancel()
+						})
+						streamPeeker.SetOnFirstSeen(func() {
+							firstTokenTimer.Stop()
+						})
 					}
 				}
 				attemptStart := time.Now()
@@ -1053,7 +1069,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
 
 				if fwdErr != nil {
-					if ctx.Err() == nil && fwdCtx.Err() == context.DeadlineExceeded {
+					if ctx.Err() == nil && fwdCtx.Err() == context.Canceled {
 						log.Warn("combo", "first token timeout, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
 						lastErr = &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: []byte(`{"error":{"message":"first token timeout"}}`)}
 						break
