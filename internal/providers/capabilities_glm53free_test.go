@@ -16,7 +16,7 @@ func TestGLM53FlashFreeOpenAIThinking(t *testing.T) {
 		if caps.ThinkingFormat != "openai" {
 			t.Errorf("%s: thinking format = %q, want openai", provider, caps.ThinkingFormat)
 		}
-		if canDisableThinking(caps) {
+		if caps.CanDisableThinking() {
 			t.Errorf("%s: glm-5.3-flash-free must not advertise a disable toggle", provider)
 		}
 		if !caps.Vision || !caps.PDF {
