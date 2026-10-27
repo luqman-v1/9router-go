@@ -112,7 +112,7 @@ func (h *ChatHandler) HandleGeminiGenerateContent(w http.ResponseWriter, r *http
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	suffix := strings.TrimPrefix(r.URL.Path, "/v1beta/models/")
 	model, stream, ok := GeminiPathAction(suffix)

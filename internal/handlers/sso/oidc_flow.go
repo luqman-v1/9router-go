@@ -237,7 +237,7 @@ func exchangeOIDCCode(ctx context.Context, tokenEndpoint string, cfg oidcSetting
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var token oidcTokenResponse
 	if err := json.UnmarshalRead(resp.Body, &token); err != nil {
 		return nil, fmt.Errorf("oidc: parse token response: %w", err)

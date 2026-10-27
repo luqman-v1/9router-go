@@ -311,7 +311,7 @@ func ForwardPerplexityWeb(w http.ResponseWriter, req *Request) error {
 	if err != nil {
 		return fmt.Errorf("ForwardPerplexityWeb: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		msg := fmt.Sprintf("Perplexity returned HTTP %d", resp.StatusCode)

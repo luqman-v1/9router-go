@@ -74,7 +74,7 @@ func oidcSigningKeys(ctx context.Context, jwksURI string) (map[string]*rsa.Publi
 	if err != nil {
 		return nil, fmt.Errorf("oidc: fetch jwks: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("oidc: jwks answered %d", resp.StatusCode)
 	}

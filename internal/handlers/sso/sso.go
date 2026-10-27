@@ -221,7 +221,7 @@ func fetchDiscovery(issuerURL string) (*discoveryDocument, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Failed to load OIDC discovery document from %s", discoveryURL)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("Failed to load OIDC discovery document from %s", discoveryURL)
 	}
@@ -272,7 +272,7 @@ func probeClientSecret(tokenEndpoint, clientID, clientSecret, redirectURI string
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var data map[string]any
 	_ = json.Unmarshal(mustRead(resp), &data)

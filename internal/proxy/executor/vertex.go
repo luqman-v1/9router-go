@@ -164,7 +164,7 @@ func vertexPostToken(ctx context.Context, client *http.Client, form url.Values) 
 	if err != nil {
 		return "", 0, fmt.Errorf("vertex token: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var payload struct {
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int    `json:"expires_in"`
@@ -344,7 +344,7 @@ func ForwardVertex(w http.ResponseWriter, req *Request) error {
 	if err != nil {
 		return fmt.Errorf("ForwardVertex: upstream request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
 		log.Warn("vertex", "upstream refused", "status", resp.StatusCode, "model", model)
