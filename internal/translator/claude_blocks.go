@@ -24,6 +24,8 @@ var contentfulBlocks = map[string]struct{}{
 	"image":                    {},
 	"document":                 {},
 	claudeBlockContainerUpload: {},
+	claudeBlockThinking:        {},
+	"redacted_thinking":        {},
 }
 
 // isContentfulBlock reports whether one content block keeps its message alive.

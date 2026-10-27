@@ -54,6 +54,26 @@ func TestDropNonContentfulClaudeMessages(t *testing.T) {
 			wantRoles:   []string{},
 			wantChanged: true,
 		},
+		{
+			name: "blank thinking block is kept (first-party reasoning signature retention)",
+			messages: []any{
+				claudeTurn("user", textBlock("hi")),
+				claudeTurn("assistant", map[string]any{"type": "thinking", "thinking": "", "signature": "sig123"}),
+				claudeTurn("user", textBlock("again")),
+			},
+			wantRoles:   []string{"user", "assistant", "user"},
+			wantChanged: false,
+		},
+		{
+			name: "redacted_thinking block is kept",
+			messages: []any{
+				claudeTurn("user", textBlock("hi")),
+				claudeTurn("assistant", map[string]any{"type": "redacted_thinking", "data": "data123"}),
+				claudeTurn("user", textBlock("again")),
+			},
+			wantRoles:   []string{"user", "assistant", "user"},
+			wantChanged: false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -71,6 +71,11 @@ func TestIsZeroContentResponse(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "Anthropic content with a thinking block",
+			body: `{"content":[{"type":"thinking","thinking":"reasoning step"}],"stop_reason":"in_progress"}`,
+			want: false,
+		},
+		{
 			name: "Anthropic empty content with stop_reason max_tokens",
 			body: `{"content":[],"stop_reason":"max_tokens"}`,
 			want: false,
