@@ -105,6 +105,10 @@ func SetupRoutes(r interface {
 	r.Post("/messages", chatH.HandleMessages)
 	r.Post("/messages/count_tokens", chatH.HandleCountTokens)
 	r.Post("/api/chat", chatH.HandleOllamaChat)
+	// An Ollama client lists models before it chats; without this the gateway
+	// looks like an Ollama server with nothing installed.
+	r.Get("/api/tags", mediaH.HandleOllamaTags)
+	r.Get("/tags", mediaH.HandleOllamaTags)
 
 	// Media, Audio, Video & Web Tools Domain
 	r.Post("/embeddings", mediaH.HandleEmbeddings)
@@ -539,9 +543,26 @@ func mountOAuthRoutes(r interface {
 // warning on SetupRoutes about the two PersistentStores.
 func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.ChatHandler {
 	// Public (unauthenticated) endpoints
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+	healthH := func(w http.ResponseWriter, r *http.Request) {
+		// The browser probes this endpoint from the dashboard's tunnel and
+		// Tailscale cards (EndpointView.svelte clientPingUrl). A cross-origin
+		// fetch needs CORS on the response or the probe fails on a healthy
+		// gateway, so the headers are part of the contract, not decoration.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
 		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		w.Write([]byte(`{"status":"ok"}`))
+	}
+	r.Get("/health", healthH)
+	// Upstream serves the same answer under /api as well, and an older
+	// dashboard build polls that path.
+	r.Get("/api/health", healthH)
+	r.Options("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.WriteHeader(http.StatusNoContent)
 	})
 	// Version info is public (upstream PUBLIC_API_PATHS): the Sidebar polls
 	// /api/version on every dashboard page including /login, before any
