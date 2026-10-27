@@ -76,6 +76,12 @@ var patternThinking = []thinkingPattern{
 	// (thinkingLevels.js:44).
 	{Pattern: "*gemini*argon*", Levels: []string{"low", "medium", "high"}},
 	{Pattern: "*gemini-4*", Levels: []string{"low", "medium", "high"}},
+	// Gemini 3.8 tiered ids carry the tier in the model id
+	// (gemini-3.8-flash-low/medium/high) and answer 400
+	// "Thinking level MINIMAL is not supported" to a thinkingLevel minimal —
+	// probed live via the antigravity lane. LOW is the floor here too, so a
+	// disable request clamps to low instead of reaching Google as minimal.
+	{Pattern: "*gemini-3.8*", Levels: []string{"low", "medium", "high"}},
 	{Pattern: "*claude*4.6*", Levels: levelClaudeNoXHigh},
 	{Pattern: "*claude*4-6*", Levels: levelClaudeNoXHigh},
 	{Provider: "codex", Pattern: "*gpt-6*", Levels: codexGPT56Levels()},

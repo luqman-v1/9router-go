@@ -51,6 +51,46 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"agnes-3.0-pro":   {"none", "minimal", "low", "medium", "high", "xhigh"},
 		"agnes-3.0-flash": {"none", "minimal", "low", "medium", "high", "xhigh"},
 	},
+	// Gemini 3.8 answers 400 "Thinking level MINIMAL is not supported for this
+	// model" to a thinkingLevel minimal — probed live through the antigravity
+	// lane (the tiered ids carry the tier in the model id and LOW is the
+	// floor), the same rejection Gemini 4 Argon gave before its pattern row.
+	// v0.5.109 still advertises minimal for the family, so every lane serving
+	// the model diverges. These are Go-intentional, not pending.
+	"antigravity": {
+		"gemini-3.8-flash":        {"low", "medium", "high"},
+		"gemini-3.8-flash-low":    {"low", "medium", "high"},
+		"gemini-3.8-flash-medium": {"low", "medium", "high"},
+		"gemini-3.8-flash-high":   {"low", "medium", "high"},
+	},
+	"ag": {
+		"gemini-3.8-flash":        {"low", "medium", "high"},
+		"gemini-3.8-flash-low":    {"low", "medium", "high"},
+		"gemini-3.8-flash-medium": {"low", "medium", "high"},
+		"gemini-3.8-flash-high":   {"low", "medium", "high"},
+	},
+	"gemini": {
+		"gemini-3.8-flash": {"low", "medium", "high"},
+	},
+	"github": {
+		"gemini-3.8-flash": {"low", "medium", "high"},
+	},
+	"gh": {
+		"gemini-3.8-flash": {"low", "medium", "high"},
+	},
+	"ocz": {
+		"gemini-3.8-flash":                {"low", "medium", "high"},
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"ocg": {
+		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"muse": {
+		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	},
 	// gemini-web: the Go override (providerCapabilities["gemini-web"]) narrows
 	// the site surface deliberately — the composer has no thinking toggle the
 	// executor can set, and its Lite models publish no reasoning level. The
@@ -75,6 +115,7 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
 	},
 	"opencode-zen": {
+		"gemini-3.8-flash":                {"low", "medium", "high"},
 		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
 		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
 	},
@@ -82,17 +123,8 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
 		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
 	},
-	"ocz": {
-		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
-		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
-	},
-	"ocg": {
-		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
-		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
-	},
-	"muse": {
-		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
-		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	"sumopod": {
+		"gemini/gemini-3.8-flash": {"low", "medium", "high"},
 	},
 }
 
