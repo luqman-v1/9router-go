@@ -134,6 +134,13 @@
   let ponytailLevel = $state('full')
   let adhdEnabled = $state(false)
   let adhdLevel = $state('full')
+  // A user-authored system prompt, separate from the built-in style savers:
+  // house style, language, a coding convention. Prefix is the first thing the
+  // model reads; suffix is its last word, which is what survives a turn of
+  // untrusted content.
+  let systemPromptEnabled = $state(false)
+  let systemPromptPrefix = $state('')
+  let systemPromptSuffix = $state('')
   let semanticCacheEnabled = $state(false)
   let semanticCacheTTL = $state('1440')
   let semanticCacheMaxEntries = $state('1000')
@@ -260,6 +267,9 @@
       if (typeof settings.ponytailLevel === 'string' && settings.ponytailLevel) ponytailLevel = settings.ponytailLevel
       if (typeof settings.adhdEnabled === 'boolean') adhdEnabled = settings.adhdEnabled
       if (typeof settings.adhdLevel === 'string' && settings.adhdLevel) adhdLevel = settings.adhdLevel
+      if (typeof settings.systemPromptEnabled === 'boolean') systemPromptEnabled = settings.systemPromptEnabled
+      if (typeof settings.systemPromptPrefix === 'string') systemPromptPrefix = settings.systemPromptPrefix
+      if (typeof settings.systemPromptSuffix === 'string') systemPromptSuffix = settings.systemPromptSuffix
       if (typeof settings.semanticCacheEnabled === 'boolean') semanticCacheEnabled = settings.semanticCacheEnabled
       if (typeof settings.semanticCacheTTL === 'number' && settings.semanticCacheTTL > 0) semanticCacheTTL = String(settings.semanticCacheTTL)
       if (typeof settings.semanticCacheMaxEntries === 'number' && settings.semanticCacheMaxEntries > 0) semanticCacheMaxEntries = String(settings.semanticCacheMaxEntries)
@@ -732,6 +742,18 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
   function handleSelectADHDLevel(levelId: string) {
     adhdLevel = levelId
     patchSetting({ adhdLevel: levelId })
+  }
+
+  function handleToggleSystemPrompt(value: boolean) {
+    systemPromptEnabled = value
+    patchSetting({ systemPromptEnabled: value })
+  }
+
+  function saveSystemPrompt() {
+    patchSetting({
+      systemPromptPrefix,
+      systemPromptSuffix,
+    })
   }
 
   function copyInstallCommand() {
@@ -1858,7 +1880,64 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
       </div>
     {/if}
 
-    <!-- 6. Prompt & Response Cache -->
+    <!-- 6. Custom system prompt -->
+    <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2 flex-wrap">
+          <p class="font-medium">Custom system prompt</p>
+          <span class="text-xs px-2 py-0.5 rounded font-medium {systemPromptEnabled ? 'bg-success/15 text-success' : 'bg-surface-3 text-text-muted'}">
+            {systemPromptEnabled ? 'Active' : 'Disabled'}
+          </span>
+        </div>
+        <p class="text-sm text-text-muted">
+          Inject your own instruction into every request. The prefix leads the system prompt; the suffix lands after it, where
+          it survives a turn of untrusted content.
+        </p>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <Toggle
+          checked={systemPromptEnabled}
+          onChange={() => handleToggleSystemPrompt(!systemPromptEnabled)}
+        />
+      </div>
+    </div>
+
+    {#if systemPromptEnabled}
+      <div class="py-3 px-4 rounded-lg bg-surface-2/40 border border-border mt-3 space-y-3">
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-text-muted" for="system-prompt-prefix">Prefix</label>
+          <textarea
+            id="system-prompt-prefix"
+            bind:value={systemPromptPrefix}
+            rows="2"
+            placeholder="House style, language, conventions — read before anything else"
+            class="w-full px-3 py-2 rounded-lg bg-surface-1 border border-border text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-primary/40"
+          ></textarea>
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-text-muted" for="system-prompt-suffix">Suffix</label>
+          <textarea
+            id="system-prompt-suffix"
+            bind:value={systemPromptSuffix}
+            rows="2"
+            placeholder="Last word the model reads — e.g. always answer in Vietnamese"
+            class="w-full px-3 py-2 rounded-lg bg-surface-1 border border-border text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-primary/40"
+          ></textarea>
+        </div>
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+          <p class="text-xs text-text-muted">Applied to chat, Responses and Claude requests alike.</p>
+          <button
+            type="button"
+            onclick={saveSystemPrompt}
+            class="px-3 py-1.5 rounded text-xs font-medium bg-primary text-white hover:opacity-90 transition-opacity cursor-pointer"
+          >
+            Save prompt
+          </button>
+        </div>
+      </div>
+    {/if}
+
+    <!-- 7. Prompt & Response Cache -->
     <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2 flex-wrap">
