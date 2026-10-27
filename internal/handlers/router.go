@@ -647,6 +647,11 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	r.Get("/api/auth/status", dashH.HandleAuthStatus)
 	r.Post("/api/auth/login", dashH.HandleAuthLogin)
 	r.Post("/api/auth/logout", dashH.HandleAuthLogout)
+	// Deliberately outside the admin group: this is the recovery path for an
+	// operator who cannot log in, so it cannot require the session it is meant
+	// to restore. The handler refuses anything but a loopback origin, which is
+	// the same gate upstream's dashboard guard applies.
+	r.Post("/api/auth/reset-password", dashH.HandleResetPassword)
 	r.Get("/api/settings/require-login", dashH.HandleRequireLogin)
 	r.Get("/api/tunnel/status", dashH.HandleTunnelStatus)
 

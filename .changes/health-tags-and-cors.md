@@ -15,3 +15,14 @@ Upstream answers this route from a hardcoded two-model fixture; this asks the
 provider registry instead, so the list is the models the gateway can actually
 route and stays correct as the catalogue changes. `/tags` is served too — some
 clients use the un-prefixed path when the base URL already ends in `/api`.
+
+**There was no way to recover a forgotten dashboard password.** Upstream ships
+`POST /api/auth/reset-password`, which clears the stored hash so the configured
+initial password works again. The Go port had no such route, and `password` is a
+protected setting — a PUT through `/api/settings` is refused — so a locked-out
+operator's only path was deleting the database.
+
+The route is deliberately outside the admin group: it exists for someone who
+cannot log in, so it cannot require the session it restores. Local-only is
+enforced in the handler instead, the same gate upstream's dashboard guard
+applies, and the response never carries the password literal.
