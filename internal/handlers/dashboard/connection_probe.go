@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/customjson"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -515,6 +516,9 @@ func (h *DashboardHandler) probeAPIKeyConnection(ctx context.Context, conn *mode
 // minimal POST <base>/v1/messages for Anthropic-compatible nodes (400/529 still
 // prove the key was accepted).
 func (h *DashboardHandler) probeCompatibleConnection(ctx context.Context, conn *models.ProviderConnection, data connectionProbeData, raw map[string]any, client *http.Client) probeOutcome {
+	if customjson.IsConnection(data.ProviderSpecificData) {
+		return probeCustomJSONConnection(ctx, data, client)
+	}
 	base := psdStr(data.ProviderSpecificData, "baseUrl")
 	if base == "" {
 		base = psdStr(raw, "baseUrl")

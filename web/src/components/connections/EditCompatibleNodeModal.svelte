@@ -7,6 +7,8 @@
   import { api, type ProviderNode, type ProviderNodeLimits, type ProviderNodeLimitsPatch } from '../../api/client'
   import { nodeFormSeed } from './nodeFormSeed'
   import ProviderNodeLimitsField from './ProviderNodeLimitsField.svelte'
+  import CustomJsonFields from './CustomJsonFields.svelte'
+  import { CUSTOM_JSON_API_TYPE, customJsonForm, parseCustomJsonForm, type CustomJsonConfig } from '../../lib/customJsonForm'
   import { nodeLimitsDraftOf, nodeLimitsPatchOf, type NodeLimitsDraft } from '../../lib/node-limits'
 
   interface Props {
@@ -22,6 +24,8 @@
       urlSuffix: string
       /** The policy to store; the parent writes it once the node id is final. */
       limits: ProviderNodeLimitsPatch
+      /** Request template and response mapping when apiType is "custom-json". */
+      customJson?: CustomJsonConfig
     }) => Promise<void> | void
     /** Called with the stored policy after a token-count reset, so the page updates. */
     onLimitsSaved?: (limits: ProviderNodeLimits) => void
@@ -32,7 +36,10 @@
   let formName = $state('')
   let formPrefix = $state('')
   let formUrlSuffix = $state('')
-  let formApiType = $state<'chat' | 'responses'>('chat')
+  let formApiType = $state<'chat' | 'responses' | 'custom-json'>('chat')
+  let jsonForm = $state(customJsonForm())
+  let isCustomJson = $derived(!isAnthropic && formApiType === CUSTOM_JSON_API_TYPE)
+  let checkNeedsKey = $derived(!(isCustomJson && jsonForm.authType === 'none'))
   let formBaseUrl = $state('')
   let checkKey = $state('')
   let checkModelId = $state('')
@@ -77,6 +84,7 @@
     formUrlSuffix = seed.urlSuffix
     formApiType = seed.apiType
     formBaseUrl = seed.baseUrl
+    jsonForm = customJsonForm(node.customJson)
     checkKey = ''
     checkModelId = ''
     validation = null
@@ -91,18 +99,22 @@
   )
 
   async function handleValidate() {
-    if (!checkKey || validating || !formBaseUrl.trim()) return
+    if ((checkNeedsKey && !checkKey) || validating || !formBaseUrl.trim()) return
     validating = true
+    limitsError = ''
     try {
       const res = await api.validateProviderNode({
         baseUrl: formBaseUrl.trim(),
         apiKey: checkKey,
         type: isAnthropic ? 'anthropic-compatible' : 'openai-compatible',
         modelId: checkModelId.trim() || undefined,
+        ...(isCustomJson ? { apiType: CUSTOM_JSON_API_TYPE, customJson: parseCustomJsonForm(jsonForm) } : {}),
       })
       validation = res.valid ? 'success' : 'failed'
-    } catch {
+      if (!res.valid && res.error) limitsError = res.error
+    } catch (err) {
       validation = 'failed'
+      limitsError = err instanceof Error ? err.message : String(err)
     } finally {
       validating = false
     }
@@ -120,6 +132,7 @@
         baseUrl: string
         urlSuffix: string
         limits: ProviderNodeLimitsPatch
+        customJson?: CustomJsonConfig
       } = {
         name: formName.trim(),
         prefix: formPrefix.trim(),
@@ -133,6 +146,7 @@
         limits: nodeLimitsPatchOf(limitsDraft),
       }
       if (!isAnthropic) payload.apiType = formApiType
+      if (isCustomJson) payload.customJson = parseCustomJsonForm(jsonForm)
       await onSave(payload)
     } catch (err) {
       limitsError = err instanceof Error ? err.message : String(err)
@@ -143,7 +157,7 @@
 </script>
 
 {#if node}
-<Modal {isOpen} title={`Edit ${isAnthropic ? 'Anthropic' : 'OpenAI'} Compatible`} {onClose}>
+<Modal {isOpen} title={isCustomJson ? 'Edit Custom JSON API' : `Edit ${isAnthropic ? 'Anthropic' : 'OpenAI'} Compatible`} {onClose} size={isCustomJson ? 'xl' : 'md'}>
   <div class="flex flex-col gap-4">
     <Input
       label="Name"
@@ -176,20 +190,26 @@
         >
           <option value="chat">Chat Completions</option>
           <option value="responses">Responses API</option>
+          <option value="custom-json">Custom JSON API</option>
         </select>
       </div>
     {/if}
     <Input
-      label="Base URL"
+      label={isCustomJson ? 'Endpoint URL' : 'Base URL'}
       bind:value={formBaseUrl}
-      placeholder={isAnthropic ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1'}
-      hint={`Use the base URL (ending in /v1) for your ${isAnthropic ? 'Anthropic' : 'OpenAI'}-compatible API.`}
+      placeholder={isCustomJson ? 'https://example.com/api/chat' : isAnthropic ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1'}
+      hint={isCustomJson
+        ? 'Enter the complete HTTP(S) endpoint URL. No path is appended.'
+        : `Use the base URL (ending in /v1) for your ${isAnthropic ? 'Anthropic' : 'OpenAI'}-compatible API.`}
       inputClass="font-mono"
     />
+    {#if isCustomJson}
+      <CustomJsonFields bind:value={jsonForm} idPrefix="edit-custom-json" />
+    {/if}
     <div class="flex gap-2">
       <div class="flex-1">
         <Input
-          label="API Key (for Check)"
+          label={checkNeedsKey ? 'API Key (for Check)' : 'API Key (not required)'}
           type="password"
           bind:value={checkKey}
         />
@@ -198,9 +218,9 @@
         <Button
           variant="secondary"
           onclick={handleValidate}
-          disabled={!checkKey || validating || !formBaseUrl.trim()}
+          disabled={(checkNeedsKey && !checkKey) || validating || !formBaseUrl.trim()}
         >
-          {validating ? 'Checking...' : 'Check'}
+          {validating ? 'Checking...' : isCustomJson ? 'Send Test Request' : 'Check'}
         </Button>
       </div>
     </div>
@@ -208,7 +228,7 @@
       label="Model ID (optional)"
       bind:value={checkModelId}
       placeholder="e.g. my-model-id"
-      hint="If provider lacks /models endpoint, enter a model ID to validate via chat/completions instead."
+      hint={isCustomJson ? 'Optional model ID used for the test request.' : 'If provider lacks /models endpoint, enter a model ID to validate via chat/completions instead.'}
     />
     {#if validation}
       <Badge variant={validation === 'success' ? 'success' : 'error'}>

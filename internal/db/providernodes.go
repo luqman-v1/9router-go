@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
 	"time"
@@ -23,6 +24,9 @@ type ProviderNodeData struct {
 	Prefix  string `json:"prefix"`
 	APIType string `json:"apiType"`
 	BaseURL string `json:"baseUrl"`
+	// CustomJSON is the request template and response mapping of a custom
+	// JSON node (apiType "custom-json"); empty for every other node.
+	CustomJSON jsontext.Value `json:"customJson,omitempty"`
 }
 
 // parseProviderNodeData extracts the JSON-encoded data field from a providerNode row.

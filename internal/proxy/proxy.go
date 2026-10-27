@@ -301,6 +301,14 @@ func DoRequest(ctx context.Context, client *http.Client, method, url string, hea
 	})
 }
 
+// DoRequestOnce performs a single attempt with none of DoRequest's transient
+// retries. It is for requests that must never be replayed on the router's own
+// initiative, such as a custom JSON business endpoint whose operation may
+// already have run when it answered 502.
+func DoRequestOnce(ctx context.Context, client *http.Client, method, url string, headers map[string]string, body []byte) (*http.Response, error) {
+	return doRequestOnce(ctx, client, method, url, headers, body)
+}
+
 // doRequestOnce performs a single attempt.
 func doRequestOnce(ctx context.Context, client *http.Client, method, url string, headers map[string]string, body []byte) (*http.Response, error) {
 	req, err := newJSONRequest(ctx, method, url, headers, body)

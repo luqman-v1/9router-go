@@ -15,6 +15,13 @@
     /** Custom OpenAI/Anthropic-compatible node — asks for a default model. */
     isCompatible?: boolean
     isAnthropic?: boolean
+    /**
+     * Custom JSON node: saving only checks the node's configuration, and Check
+     * becomes an explicit "Send Test Request" against the business endpoint.
+     */
+    customJson?: boolean
+    /** The node sends no credential, so the key field may stay empty. */
+    apiKeyOptional?: boolean
     /** Names of already saved connections, so bulk auto-naming never collides. */
     existingNames?: string[]
     proxyPools?: ProxyPool[]
@@ -31,6 +38,8 @@
     providerName = '',
     isCompatible = false,
     isAnthropic = false,
+    customJson = false,
+    apiKeyOptional = false,
     existingNames = [],
     proxyPools = [],
     error = '',
@@ -100,7 +109,7 @@
               ? 'AWS secret access key'
               : ''
   )
-  let modalTitle = $derived(`Add ${providerName || providerId} ${credentialLabel}`)
+  let modalTitle = $derived(`Add ${providerName || providerId} ${customJson ? 'Connection' : credentialLabel}`)
 
   // Form state (single mode)
   let mode = $state<'single' | 'bulk'>('single')
@@ -234,7 +243,11 @@
     return { ...(base || {}), assignedModel }
   }
 
-  async function runValidation(): Promise<boolean> {
+  /**
+   * validateOnly is how a save checks a custom JSON connection: a real request
+   * would run the business operation, so it is sent only for an explicit test.
+   */
+  async function runValidation(validateOnly = false): Promise<boolean> {
     validating = true
     validationNote = ''
     try {
@@ -242,6 +255,7 @@
         provider: providerId,
         apiKey: formApiKey,
         providerSpecificData: buildProviderSpecificData(),
+        ...(customJson ? (validateOnly ? { validateOnly: true } : { modelId: formDefaultModel.trim() || undefined }) : {}),
       })
       if (!res.supported) {
         validation = null
@@ -382,7 +396,7 @@
   let saveDisabled = $derived(
     saving ||
       (!isOllamaLocal && !formName.trim()) ||
-      (!credentialIsOptional && !formApiKey.trim()) ||
+      (!credentialIsOptional && !apiKeyOptional && !formApiKey.trim()) ||
       (isCompatible && !formDefaultModel.trim()) ||
       (isAzure && (!azureData.azureEndpoint || !azureData.deployment || !azureData.organization)) ||
       (isCloudflareAi && !cloudflareAccountId.trim()) ||
@@ -400,7 +414,7 @@
     saving = true
     try {
       // Validate before saving so the connection gets a real test status.
-      const isValid = await runValidation()
+      const isValid = await runValidation(customJson)
       await onSubmit({
         provider: providerId,
         authType: connectionAuthType,
@@ -430,6 +444,7 @@
         const res = await api.validateProvider({
           provider: providerId,
           apiKey: entry.apiKey,
+          ...(customJson ? { validateOnly: true } : {}),
           ...(entry.providerSpecificData ? { providerSpecificData: entry.providerSpecificData } : {}),
         })
         await api.createConnection({
@@ -577,12 +592,12 @@
               <div class="flex gap-2">
                 <div class="flex-1">
                   <label for="connApiKey" class={labelCls}>
-                    {credentialLabel}{#if credentialIsOptional}<span class="text-text-muted text-xs font-normal"> (optional in profile mode)</span>{/if}
+                    {credentialLabel}{#if credentialIsOptional}<span class="text-text-muted text-xs font-normal"> (optional in profile mode)</span>{:else if apiKeyOptional}<span class="text-text-muted text-xs font-normal"> (optional)</span>{/if}
                   </label>
                   <input
                     id="connApiKey"
                     type={isCookie ? 'text' : 'password'}
-                    required={!credentialIsOptional}
+                    required={!credentialIsOptional && !apiKeyOptional}
                     bind:value={formApiKey}
                     placeholder={credentialPlaceholder}
                     class="{inputCls} font-mono"
@@ -592,9 +607,9 @@
                   <Button
                     variant="secondary"
                     onclick={handleValidate}
-                    disabled={!formApiKey || validating || saving}
+                    disabled={(!formApiKey && !apiKeyOptional) || validating || saving}
                   >
-                    {validating ? 'Checking...' : 'Check'}
+                    {validating ? 'Checking...' : customJson ? 'Send Test Request' : 'Check'}
                   </Button>
                 </div>
               </div>
@@ -959,8 +974,12 @@
 
             {#if isCompatible}
               <p class="text-xs text-text-muted">
+                {#if customJson}
+                  {'Choose a model ID for this endpoint. It is available to the request template as {{model}}.'}
+                {:else}
                 Enter the model ID exactly as your compatible endpoint expects it. This model will be saved as the
                 connection default.
+                {/if}
               </p>
             {/if}
 

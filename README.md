@@ -39,6 +39,7 @@ Same idea as [9Router](https://github.com/decolua/9router), minus the Node.js ru
 - ✅ **Proxy per API key** — bind a proxy pool to each provider API key (connection), one-by-one or via **Apply Proxy** across many at once
 - ✅ **Custom headers** — add your own request headers to custom compatible providers
 - ✅ **Unified custom provider add** — one shared dialog adds OpenAI-/Anthropic-compatible endpoints
+- ✅ **Custom JSON APIs** — route chat to a business endpoint with its own JSON schema via a request template and response path ([docs](docs/CUSTOM_JSON_API.md))
 - ✅ **Custom usage ranges** — analyze any window (`14d`, `12h`), not just fixed presets
 - ✅ **Extended logging** — live console log with level filters & search, plus per-request payload inspector
 - ✅ **Single binary** — Go + embedded dashboard, works with Claude Code, Codex, Cursor, Cline, any CLI tool

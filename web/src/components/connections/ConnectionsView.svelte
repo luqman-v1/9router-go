@@ -4,6 +4,7 @@
   import ProvidersOverviewGrid from './ProvidersOverviewGrid.svelte'
   import ProviderDetailView from './ProviderDetailView.svelte'
   import AddCompatibleNodeModal from './AddCompatibleNodeModal.svelte'
+  import type { CustomJsonConfig } from '../../lib/customJsonForm'
 
   interface Props {
     connections?: ProviderConnection[]
@@ -43,10 +44,11 @@
     name: string
     prefix: string
     baseUrl: string
-    apiType?: 'chat' | 'responses'
+    apiType?: 'chat' | 'responses' | 'custom-json'
     type: string
     urlSuffix: string
     limits: ProviderNodeLimitsPatch
+    customJson?: CustomJsonConfig
   }) {
     try {
       const node = await api.createProviderNode({
@@ -55,7 +57,8 @@
         baseUrl: data.baseUrl,
         apiType: data.apiType,
         type: data.type as unknown as string,
-        urlSuffix: data.urlSuffix || undefined
+        urlSuffix: data.urlSuffix || undefined,
+        ...(data.customJson ? { customJson: data.customJson } : {})
       })
       // The limits endpoint needs the id the create just answered with, so this is
       // deliberately a second request: a node whose limits failed to save is still a
