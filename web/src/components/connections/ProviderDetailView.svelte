@@ -5374,6 +5374,6 @@
 <ExportKeysModal
   isOpen={showExportKeysModal}
   providerId={providerId}
-  providerName={providerInfo?.name || providerId}
+  providerName={providerName}
   onClose={() => (showExportKeysModal = false)}
 />
