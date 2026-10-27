@@ -150,6 +150,13 @@ func TestCLIDetectors_ClaudeHas9Router(t *testing.T) {
 
 func TestCLIToolsHandler_AllStatuses_CarriesHas9Router(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:20130/v1")
+	tmpBin := t.TempDir()
+	fakeClaude := filepath.Join(tmpBin, "claude")
+	if err := os.WriteFile(fakeClaude, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	h := NewCLIToolsHandler()
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/cli-tools/all-statuses", nil)
@@ -162,4 +169,16 @@ func TestCLIToolsHandler_AllStatuses_CarriesHas9Router(t *testing.T) {
 	if !strings.Contains(body, `"has9Router":true`) && !strings.Contains(body, `"has9Router": true`) {
 		t.Fatalf("expected all-statuses response to carry has9Router, got %s", body)
 	}
+
+	// When binary is not on PATH (like in a CI runner) but tool is configured in env,
+	// it must still report installed: true and has9Router: true.
+	t.Run("without binary on PATH but configured in env", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir()) // empty PATH
+		t.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:20130/v1")
+		recEmptyPath := httptest.NewRecorder()
+		h.HandleAllStatuses(recEmptyPath, httptest.NewRequest(http.MethodGet, "/api/cli-tools/all-statuses", nil))
+		if !strings.Contains(recEmptyPath.Body.String(), `"has9Router":true`) && !strings.Contains(recEmptyPath.Body.String(), `"has9Router": true`) {
+			t.Fatalf("expected has9Router true even without binary in PATH, got %s", recEmptyPath.Body.String())
+		}
+	})
 }

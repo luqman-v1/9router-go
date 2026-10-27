@@ -119,18 +119,26 @@ func (t toolDef) detector() toolDetector {
 		}
 	default:
 		return func(ctx context.Context) (*cliStatus, error) {
-			if _, err := exec.LookPath(t.bin); err != nil {
+			installed := false
+			if _, err := exec.LookPath(t.bin); err == nil {
+				installed = true
+			}
+			has9 := false
+			if t.has9Router != nil {
+				has9 = t.has9Router()
+				if has9 {
+					installed = true
+				}
+			}
+			if !installed {
 				// Not installed is a value, not an error (tool ≠ null).
 				return &cliStatus{Installed: false}, nil
 			}
-			s := &cliStatus{Installed: true}
+			s := &cliStatus{Installed: true, Has9Router: has9}
 			if t.hasVer {
 				if v, err := binVersion(ctx, t.bin); err == nil && v != "" {
 					s.Version = &v
 				}
-			}
-			if t.has9Router != nil {
-				s.Has9Router = t.has9Router()
 			}
 			return s, nil
 		}
@@ -329,4 +337,3 @@ func hermesHas9Router() bool {
 func piHas9Router() bool {
 	return piHas9RouterConfig(readPiConfig())
 }
-
