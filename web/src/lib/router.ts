@@ -27,6 +27,7 @@ export type ActiveTab =
   | 'security'
   | 'plans'
   | 'jailbreak'
+  | 'prompt-injection'
   | 'keys' // legacy alias for the endpoint tab; see ROUTE_TO_TAB below
 
 export const TAB_ROUTES: Record<ActiveTab, string> = {
@@ -55,6 +56,7 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   security: '/dashboard/security',
   plans: '/dashboard/plans',
   jailbreak: '/dashboard/jailbreak',
+  'prompt-injection': '/dashboard/prompt-injection',
   // Legacy alias: keys are managed on the endpoint tab (issue #199), so both
   // tabs resolve to the same route rather than leaving one unreachable.
   keys: '/dashboard/endpoint',
@@ -174,6 +176,8 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   '/plans': 'plans',
   '/dashboard/jailbreak': 'jailbreak',
   '/jailbreak': 'jailbreak',
+  '/dashboard/prompt-injection': 'prompt-injection',
+  '/prompt-injection': 'prompt-injection',
 }
 
 // The Usage page's sections. Cache Analytics and Compression Analytics joined
@@ -240,6 +244,8 @@ export function pathToTab(pathname: string): ActiveTab {
   if (normalized.includes('keys')) return 'endpoint'
   if (normalized.includes('security')) return 'security'
   if (normalized.includes('plans')) return 'plans'
+  if (normalized.includes('jailbreak')) return 'jailbreak'
+  if (normalized.includes('prompt-injection')) return 'prompt-injection'
   if (normalized.includes('profile') || normalized.includes('settings')) return 'settings'
   return 'endpoint'
 }

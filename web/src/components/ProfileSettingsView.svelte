@@ -1543,7 +1543,9 @@
             }}
           />
         </div>
-        {/if}
+
+        <div class="space-y-1">
+          <p class="text-xs text-text-main">Rates — one USD in each currency</p>
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
             {#each CURRENCY_CATALOG as option (option.code)}
               <label class="flex items-center gap-2 rounded-[10px] border border-border-subtle px-2 py-1.5">

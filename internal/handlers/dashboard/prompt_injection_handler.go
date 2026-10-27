@@ -139,20 +139,20 @@ func (h *DashboardHandler) HandleDeletePromptInjectionTemplate(w http.ResponseWr
 
 func (h *DashboardHandler) HandleGetPromptInjectionSetting(w http.ResponseWriter, r *http.Request) {
 	enabled := h.Repo.GetPromptInjectionEnabled()
-	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"enabled": enabled})
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"promptInjectionEnabled": enabled})
 }
 
 func (h *DashboardHandler) HandlePutPromptInjectionSetting(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		Enabled bool `json:"enabled"`
+		PromptInjectionEnabled bool `json:"promptInjectionEnabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.Repo.SetPromptInjectionEnabled(payload.Enabled); err != nil {
+	if err := h.Repo.SetPromptInjectionEnabled(payload.PromptInjectionEnabled); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": payload.Enabled})
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "promptInjectionEnabled": payload.PromptInjectionEnabled})
 }

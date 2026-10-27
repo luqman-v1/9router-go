@@ -248,6 +248,17 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Put("/api/jailbreak/presets/order", dashH.HandleReorderJailbreakPresets)
 	r.Post("/api/jailbreak/presets/upload", dashH.HandleUploadJailbreakPreset)
 
+	// Prompt Injection Pro: system prompt or chat script per global / API key / model / combo.
+	r.Get("/api/prompt-injection/setting", dashH.HandleGetPromptInjectionSetting)
+	r.Put("/api/prompt-injection/setting", dashH.HandlePutPromptInjectionSetting)
+	r.Get("/api/prompt-injection", dashH.HandleListPromptInjections)
+	r.Get("/api/prompt-injection/{id}", dashH.HandleGetPromptInjection)
+	r.Put("/api/prompt-injection", dashH.HandlePutPromptInjection)
+	r.Delete("/api/prompt-injection/{id}", dashH.HandleDeletePromptInjection)
+	r.Get("/api/prompt-injection/templates", dashH.HandleListPromptInjectionTemplates)
+	r.Put("/api/prompt-injection/templates", dashH.HandlePutPromptInjectionTemplate)
+	r.Delete("/api/prompt-injection/templates/{id}", dashH.HandleDeletePromptInjectionTemplate)
+
 	r.Get("/api/provider-nodes", dashH.HandleGetProviderNodes)
 	r.Post("/api/provider-nodes", dashH.HandleCreateProviderNode)
 	r.Put("/api/provider-nodes/{id}", dashH.HandleUpdateProviderNode)

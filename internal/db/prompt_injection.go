@@ -12,11 +12,11 @@ import (
 // PromptInjectionDoc represents one injection entry: a system prompt or a
 // scripted chat that is stacked onto every request matching its target.
 type PromptInjectionDoc struct {
-	ID        string `json:"id,omitempty"`
-	TargetType string `json:"targetType"` // "global" | "key" | "model" | "key-model"
+	ID         string `json:"id,omitempty"`
+	TargetType string `json:"targetType"`         // "global" | "key" | "model" | "key-model"
 	TargetID   string `json:"targetId,omitempty"` // empty for global
-	Mode       string `json:"mode"`        // "system" | "script"
-	Content    string `json:"content"`     // system prompt text or JSON script
+	Mode       string `json:"mode"`               // "system" | "script"
+	Content    string `json:"content"`            // system prompt text or JSON script
 	Enabled    bool   `json:"enabled"`
 	CreatedAt  string `json:"createdAt,omitempty"`
 	UpdatedAt  string `json:"updatedAt,omitempty"`
@@ -33,9 +33,9 @@ type PromptInjectionTemplate struct {
 }
 
 const (
-	promptInjectionScope       = "promptInjection"
-	promptInjectionPrefix      = "injection:"
-	promptInjectionEnabledKey  = "enabled"
+	promptInjectionScope          = "promptInjection"
+	promptInjectionPrefix         = "injection:"
+	promptInjectionEnabledKey     = "enabled"
 	promptInjectionTemplatePrefix = "template:"
 )
 
@@ -87,7 +87,6 @@ func (r *Repo) ListPromptInjectionTemplates() ([]*PromptInjectionTemplate, error
 		return nil, err
 	}
 	defer rows.Close()
-
 	var out []*PromptInjectionTemplate
 	for rows.Next() {
 		var k, raw string
@@ -101,7 +100,10 @@ func (r *Repo) ListPromptInjectionTemplates() ([]*PromptInjectionTemplate, error
 		t.ID = strings.TrimPrefix(k, promptInjectionTemplatePrefix)
 		out = append(out, &t)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // SavePromptInjectionTemplate creates or updates a template.
@@ -164,7 +166,6 @@ func (r *Repo) ListPromptInjections(targetType string) ([]*PromptInjectionDoc, e
 		return nil, err
 	}
 	defer rows.Close()
-
 	var out []*PromptInjectionDoc
 	for rows.Next() {
 		var d PromptInjectionDoc
@@ -175,7 +176,10 @@ func (r *Repo) ListPromptInjections(targetType string) ([]*PromptInjectionDoc, e
 		d.Enabled = enabledInt != 0
 		out = append(out, &d)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // GetPromptInjection returns one injection by id.
