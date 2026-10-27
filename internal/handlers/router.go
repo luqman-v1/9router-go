@@ -463,6 +463,11 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 
 	// Single Sign-On settings checks + SP metadata (profile page)
 	r.Post("/api/auth/oidc/test", ssoH.HandleOidcTest)
+	// The browser flows LoginView.svelte links to. The settings routes above
+	// could test an issuer, but pressing "Sign in with SSO" hit a 404 because
+	// these were never registered.
+	r.Get("/api/auth/oidc/start", ssoH.HandleOIDCStart)
+	r.Get("/api/auth/oidc/callback", ssoH.HandleOIDCCallback)
 	r.Post("/api/auth/saml/test", ssoH.HandleSamlTest)
 	r.Get("/api/auth/saml/metadata", ssoH.HandleSamlMetadata)
 
