@@ -26,7 +26,7 @@ func (h *MediaHandler) HandleImageEdits(w http.ResponseWriter, r *http.Request) 
 	}
 	defer func() {
 		if r.MultipartForm != nil {
-			r.MultipartForm.RemoveAll()
+			_ = r.MultipartForm.RemoveAll()
 		}
 	}()
 
@@ -77,7 +77,7 @@ func (h *MediaHandler) HandleImageEdits(w http.ResponseWriter, r *http.Request) 
 
 	n := 0
 	if nStr := strings.TrimSpace(r.FormValue("n")); nStr != "" {
-		fmt.Sscanf(nStr, "%d", &n)
+		_, _ = fmt.Sscanf(nStr, "%d", &n)
 	}
 
 	reqBody := map[string]any{
@@ -113,7 +113,7 @@ func fileToDataURI(fh *multipart.FileHeader) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	data, err := io.ReadAll(f)
 	if err != nil {

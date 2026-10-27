@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	json "encoding/json/v2"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -442,14 +441,4 @@ func TestHandleImageEdits_WhitespacePrompt(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Missing required field: prompt") {
 		t.Errorf("expected 'Missing required field: prompt' in response, got %s", rec.Body.String())
 	}
-}
-
-// Helper to read all multipart file content for testing
-func readAllMultipartFile(fh *multipart.FileHeader) ([]byte, error) {
-	f, err := fh.Open()
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return io.ReadAll(f)
 }
