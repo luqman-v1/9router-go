@@ -811,6 +811,69 @@ func mergeMapField(target map[string]any, key string, source map[string]any) {
 	target[key] = existing
 }
 
+// HandleExportProviderKeys handles GET /api/providers/{id}/export-keys.
+// Returns all stored connections for a given provider with unmasked raw credentials.
+// Matches upstream decolua/9router#4889 exportProviderKeys contract.
+func (h *DashboardHandler) HandleExportProviderKeys(w http.ResponseWriter, r *http.Request) {
+	providerID := getURLParam(r, "id")
+	if providerID == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Provider ID required")
+		return
+	}
+
+	conns, err := h.Repo.GetProviderConnections(providerID, false)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	type exportedKey struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		AuthType string `json:"authType"`
+		Key      string `json:"key"`
+	}
+
+	exported := make([]exportedKey, 0, len(conns))
+	for _, c := range conns {
+		if c == nil {
+			continue
+		}
+		var data map[string]any
+		if c.Data != "" {
+			_ = json.Unmarshal([]byte(c.Data), &data)
+		}
+		key := ""
+		if data != nil {
+			if k, ok := data["apiKey"].(string); ok && k != "" {
+				key = k
+			} else if tok, ok := data["accessToken"].(string); ok && tok != "" {
+				key = tok
+			}
+		}
+
+		name := ""
+		if c.Name != nil && *c.Name != "" {
+			name = *c.Name
+		} else if c.Email != nil && *c.Email != "" {
+			name = *c.Email
+		} else {
+			name = c.ID
+		}
+
+		exported = append(exported, exportedKey{
+			ID:       c.ID,
+			Name:     name,
+			AuthType: c.AuthType,
+			Key:      key,
+		})
+	}
+
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"connections": exported,
+	})
+}
+
 // HandleDeleteConnection handles DELETE /api/connections/{id}.
 // Calls DeleteProviderConnection.
 func (h *DashboardHandler) HandleDeleteConnection(w http.ResponseWriter, r *http.Request) {

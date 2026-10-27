@@ -2519,4 +2519,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ id: newId || '' }),
     }),
+  exportProviderKeys: (providerId: string) =>
+    request<{ connections: Array<{ id: string; name: string; authType: string; key: string }> }>(
+      `/api/providers/${encodeURIComponent(providerId)}/export-keys`,
+    ),
 }

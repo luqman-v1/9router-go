@@ -82,6 +82,7 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/connections/{id}/test", h.HandleTestConnection)
 		r.Post("/providers/{id}/test", h.HandleTestConnection)
 		r.Get("/providers/{id}/models", h.HandleGetConnectionModels)
+		r.Get("/providers/{id}/export-keys", h.HandleExportProviderKeys)
 		// Bulk removal for the rows the import path writes; the single-row form
 		// stays at DELETE /models/custom/{key}.
 		r.Delete("/providers/{id}/models", h.HandleDeleteProviderModels)
