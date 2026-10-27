@@ -466,7 +466,10 @@ func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
 				"recentCommits": []any{},
 			}
 		}
-		return json.Marshal(m)
+		// marshalStable, not json.Marshal: CommandCode is a prefix-caching
+		// upstream, so the same logical request has to serialise identically
+		// or every call after the first misses the prompt cache.
+		return marshalStable(m)
 	}
 
 	// Build params from an explicit whitelist (upstream openai-to-commandcode.js:187-199).
@@ -519,6 +522,10 @@ func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
 		"params": params,
 	}
 
+	// json.Marshal is deliberate here: this path mints a fresh threadId on
+	// every request, so the body differs call to call whatever the member
+	// order is. The caller-shaped `params` path above keeps a supplied
+	// threadId and is the one that must stay byte-stable.
 	return json.Marshal(payload)
 }
 
@@ -1531,7 +1538,10 @@ func normalizeMuseSparkResponsesBody(body []byte, model string) ([]byte, error) 
 			}
 		}
 	}
-	return json.Marshal(m)
+	// marshalStable, not json.Marshal: opencode-go's muse-spark lane is a
+	// prefix-caching upstream and a body whose members reshuffle on every
+	// call turns each request after the first into a full cache miss.
+	return marshalStable(m)
 }
 
 // ForwardOpencodeGo handles requests for opencode-go (paid tier).
