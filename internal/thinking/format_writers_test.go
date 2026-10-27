@@ -242,9 +242,13 @@ func TestApplyZaiPorted(t *testing.T) {
 			map[string]any{"thinking": map[string]any{"type": "enabled"}},
 		},
 		{
-			"glm-5.2 clamps none", "glm-5.2",
+			// The exact glm-5.2 entry repeats the pattern's
+			// ThinkingEffortSupported (upstream b6a9ca43), so the clamp carries
+			// an effort level the way glm-5.3's does. Before that upstream fix
+			// the entry omitted the flag and the effort was dropped.
+			"glm-5.2 clamps none and carries the effort", "glm-5.2",
 			`{"model":"glm-5.2","reasoning_effort":"none"}`,
-			map[string]any{"thinking": map[string]any{"type": "enabled"}},
+			map[string]any{"reasoning_effort": "low", "thinking": map[string]any{"type": "enabled"}},
 		},
 		{
 			"switchable model disables via enable_thinking", "glm-4.6v",
