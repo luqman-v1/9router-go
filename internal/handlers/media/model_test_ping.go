@@ -85,11 +85,7 @@ func (h *MediaHandler) HandleTestModel(w http.ResponseWriter, r *http.Request) {
 // image, audio and video rows are filtered out before they become candidates
 // — so there is no kind to dispatch on here.
 func (h *MediaHandler) ProbeModelForHealth(ctx context.Context, model string) testModelResult {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/api/models/test", nil)
-	if err != nil {
-		return testModelResult{Error: err.Error()}
-	}
-	return h.probeModel(req, model, "")
+	return h.probeModel(ctx, model, "")
 }
 
 // probeModel runs one probe and turns whatever the kind's handler answered into
