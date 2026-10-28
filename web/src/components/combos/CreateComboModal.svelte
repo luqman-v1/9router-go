@@ -144,6 +144,11 @@
   let sortKey = $state<ComboSortKey>('manual')
   let sortNote = $state('')
   let modelMeta = $state<ModelMetaMap | null>(null)
+
+  // Draft model testing state
+  let isTestingDraft = $state(false)
+  let draftTestResults = $state<Record<string, { ok: boolean; latencyMs: number; error?: string }>>({})
+  let draftActiveModel = $state<string | null>(null)
   // Four of the options need data the editor does not already hold, so it is
   // fetched lazily on first use rather than on every open.
   async function ensureMeta() {
@@ -178,6 +183,33 @@
     }
     onUpdateModels(sorted)
     sortNote = key === 'shuffle' ? 'shuffled once' : 'sorted'
+  }
+
+  async function handleTestDraftModels() {
+    if (models.length === 0 || isTestingDraft) return
+    isTestingDraft = true
+    draftActiveModel = null
+    // Clear previous results for a fresh run
+    draftTestResults = {}
+    try {
+      for (const model of models) {
+        draftActiveModel = model
+        try {
+          const res = await api.testComboModels(editingCombo?.id || 'draft', { models: [model], kind: 'llm' })
+          const r = res.results?.find((x) => x.model === model)
+          if (r) {
+            draftTestResults[model] = { ok: r.ok, latencyMs: r.latencyMs, error: r.error }
+          } else {
+            draftTestResults[model] = { ok: false, latencyMs: 0, error: 'No result' }
+          }
+        } catch (e) {
+          draftTestResults[model] = { ok: false, latencyMs: 0, error: e instanceof Error ? e.message : String(e) }
+        }
+      }
+    } finally {
+      isTestingDraft = false
+      draftActiveModel = null
+    }
   }
 
   function rulePreviewFor(id: string) {
@@ -534,6 +566,28 @@
             <Plus class="w-3 h-3" />
             <span>Add Models Manually</span>
           </button>
+          <!-- Test Models: dead/alive check for draft models -->
+          <button
+            type="button"
+            disabled={models.length === 0 || isTestingDraft}
+            onclick={handleTestDraftModels}
+            class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-text-muted hover:text-text-main hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            title={models.length === 0 ? "No models to test" : isTestingDraft ? "Testing draft models..." : "Test draft models (Dead/Alive check)"}
+          >
+            {#if isTestingDraft}
+              <span class="material-symbols-outlined animate-spin text-[12px] text-brand-500">progress_activity</span>
+            {:else}
+              <span class="material-symbols-outlined text-[13px]">play_circle</span>
+            {/if}
+            <span>{isTestingDraft ? "Testing..." : "Test Models"}</span>
+          </button>
+          {#if Object.keys(draftTestResults).length > 0}
+            {@const alive = Object.values(draftTestResults).filter((r) => r.ok).length}
+            {@const total = Object.keys(draftTestResults).length}
+            <span class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+              {alive}/{total} Alive
+            </span>
+          {/if}
         </div>
       </div>
 
@@ -569,6 +623,8 @@
                   class="min-w-0 flex-1 rounded border border-brand-500/40 bg-white px-1.5 py-0.5 font-mono text-xs text-text-main outline-none dark:bg-black/20"
                 />
               {:else}
+                {@const res = draftTestResults[model]}
+                {@const isModelActive = isTestingDraft && draftActiveModel === model}
                 <div
                   class="min-w-0 flex-1 cursor-text truncate rounded px-1.5 py-0.5 font-mono text-xs text-text-main hover:bg-black/5 dark:hover:bg-white/5"
                   onclick={() => startEdit(idx, model)}
@@ -577,7 +633,22 @@
                   tabindex="0"
                   title="Click to edit"
                 >
-                  {model}
+                  <code
+                    class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-xs transition-colors {res ? (res.ok ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-medium' : 'border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400 font-medium') : 'border-transparent bg-transparent text-text-main'}"
+                    title={res ? (res.ok ? `Alive · ${res.latencyMs}ms` : `Dead · ${res.error || 'Failed'}`) : isModelActive ? 'Testing...' : 'Click to edit'}
+                  >
+                    {#if isModelActive}
+                      <span class="material-symbols-outlined animate-spin text-[12px] text-brand-500">progress_activity</span>
+                    {:else if res}
+                      <span class="material-symbols-outlined text-[13px] {res.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}">
+                        {res.ok ? 'check_circle' : 'cancel'}
+                      </span>
+                    {/if}
+                    <span>{model}</span>
+                    {#if res?.ok}
+                      <span class="text-[10px] opacity-75 font-sans font-normal">{res.latencyMs}ms</span>
+                    {/if}
+                  </code>
                 </div>
               {/if}
               {#if caps.vision}
