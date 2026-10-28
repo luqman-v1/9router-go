@@ -235,6 +235,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/usage/{connectionId}/reset-credits", h.HandleListCodexResetCredits)
 		r.Post("/usage/{connectionId}/reset-credits/consume", h.HandleConsumeCodexResetCredit)
 
+		// GLM Reset Cards (Z.ai international). Only for provider == "glm".
+		r.Get("/usage/{connectionId}/glm-reset-cards", h.HandleGetGLMResetCards)
+		r.Post("/usage/{connectionId}/glm-reset-cards", h.HandleRedeemGLMResetCard)
+
 		// Cache Analytics & Management
 		r.Get("/cache", h.HandleGetCache)
 		r.Delete("/cache", h.HandleDeleteCache)
