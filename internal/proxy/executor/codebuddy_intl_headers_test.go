@@ -342,3 +342,71 @@ func TestForwardCodebuddyIntl_WireHeaders(t *testing.T) {
 		t.Errorf("leading message = %v, want the CodeBuddy system prompt", first)
 	}
 }
+
+// An edge relay rewrites BaseURL to the relay URL and keeps the real target only
+// in x-relay-target, so channel selection must not depend on BaseURL: a relayed
+// intl connection was routed as CN, losing the WorkBuddy identity and the family
+// the gateway refuses without.
+func TestForwardCodebuddy_RelayKeepsChannel(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider string
+		target   string
+		wantUA   string
+		wantFam  bool
+	}{
+		{"intl relay", "codebuddy-intl", "https://www.workbuddy.ai", codebuddyIntlUserAgent, true},
+		{"intl alias relay", "cbai", "https://www.workbuddy.ai", codebuddyIntlUserAgent, true},
+		{"cn relay", "codebuddy-cn", "https://copilot.tencent.com", "CLI/2.108.1 CodeBuddy/2.108.1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured *http.Request
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				captured = r
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
+			}))
+			defer ts.Close()
+
+			target, err := url.Parse(ts.URL)
+			if err != nil {
+				t.Fatalf("parse test server URL: %v", err)
+			}
+			// The relay rewrites BaseURL and records the real target in the header.
+			cfg := &providers.ProviderConfig{
+				BaseURL: "https://relay.example.test/edge",
+				StaticHeaders: map[string]string{
+					"x-relay-target": tc.target,
+					"x-relay-path":   "/v2/chat/completions",
+				},
+			}
+			req := &Request{
+				Ctx:      context.Background(),
+				Client:   &http.Client{Transport: codebuddyHostRewriteTransport{target: target}},
+				Config:   cfg,
+				Provider: tc.provider,
+				APIKey:   "test-token",
+				IsStream: true,
+				Body:     []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"ping"}]}`),
+			}
+			if err := ForwardCodebuddyCN(httptest.NewRecorder(), req); err != nil {
+				t.Fatalf("forward: %v", err)
+			}
+			if captured == nil {
+				t.Fatal("upstream request not captured")
+			}
+			if got := captured.Header.Get("User-Agent"); got != tc.wantUA {
+				t.Errorf("User-Agent = %q, want %q", got, tc.wantUA)
+			}
+			hasFamily := captured.Header.Get("X-Conversation-ID") != "" && captured.Header.Get("traceparent") != ""
+			if hasFamily != tc.wantFam {
+				t.Errorf("family present = %v, want %v", hasFamily, tc.wantFam)
+			}
+			// The relay's own routing headers must survive the merge.
+			if captured.Header.Get("x-relay-target") != tc.target {
+				t.Errorf("x-relay-target = %q, want %q", captured.Header.Get("x-relay-target"), tc.target)
+			}
+		})
+	}
+}

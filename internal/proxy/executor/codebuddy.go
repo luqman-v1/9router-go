@@ -83,7 +83,7 @@ func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 
 	ctx := req.Ctx
 	cfg := req.Config
-	intl := cfg != nil && isCodebuddyIntlBaseURL(cfg.BaseURL)
+	intl := isCodebuddyIntlRequest(req, cfg)
 	if cfg != nil {
 		merged := make(map[string]string, len(cfg.StaticHeaders)+25)
 		for k, v := range cfg.StaticHeaders {
@@ -438,6 +438,26 @@ func codebuddySessionConversationID(req *Request, body []byte) string {
 
 func codebuddyConversationHeaders(req *Request, body []byte) map[string]string {
 	return codebuddyHeaders(req, nil, body)
+}
+
+// isCodebuddyIntlRequest picks the channel. The provider id wins because an
+// edge relay rewrites cfg.BaseURL to the relay URL and keeps the real target
+// only in x-relay-target (internal/proxy/transport.go BuildEdgeRelayHeaders), so
+// a relayed intl connection would otherwise be routed as CN — losing the
+// WorkBuddy identity and the header family the gateway demands. The relay target
+// and the base URL are fallbacks for configs that carry no provider id (tests,
+// custom entries).
+func isCodebuddyIntlRequest(req *Request, cfg *providers.ProviderConfig) bool {
+	if req != nil && req.Provider != "" {
+		return req.Provider == "codebuddy-intl" || req.Provider == "cbai"
+	}
+	if cfg == nil {
+		return false
+	}
+	if target := headerFold(cfg.StaticHeaders, "x-relay-target"); target != "" && isCodebuddyIntlBaseURL(target) {
+		return true
+	}
+	return isCodebuddyIntlBaseURL(cfg.BaseURL)
 }
 
 // isCodebuddyIntlBaseURL reports whether the connection talks to the
