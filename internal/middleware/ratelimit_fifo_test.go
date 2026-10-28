@@ -25,20 +25,9 @@ func TestQueueIsFIFO(t *testing.T) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	parked := func() int {
-		rl.mu.Lock()
-		defer rl.mu.Unlock()
-		if q := rl.queues[key]; q != nil {
-			return len(q.waiters)
-		}
-		return 0
-	}
-
-	// Enqueue the waiters one at a time, each only after the previous one is
-	// observably parked. Sleeping on a stagger cannot promise that order:
-	// under load a later goroutine can be scheduled first, and the queue is
-	// then blamed for an order the test itself never established.
-	for i := 0; i < n; i++ {
+	// Enqueue n waiters in a strict order. Each records its index as it is
+	// granted, then releases immediately so the next head can proceed.
+	for i := range n {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -51,15 +40,17 @@ func TestQueueIsFIFO(t *testing.T) {
 			mu.Unlock()
 			rl.ReleaseConcurrency(key)
 		}(i)
-		deadline := time.Now().Add(3 * time.Second)
-		for parked() < i+1 {
-			if time.Now().After(deadline) {
-				t.Fatalf("waiter %d never parked (queue holds %d)", i, parked())
-			}
-			time.Sleep(time.Millisecond)
-		}
+
+		// Establish enqueue order instead of hoping for it: the next waiter
+		// starts only once this one is parked. A sleep-based stagger used to
+		// stand in for this and it broke under load — goroutine 4 reached
+		// Acquire before 2 and 3, so the recorder saw 0,1,4,2,3,... and
+		// reported a FIFO violation the queue had not made. The queue is what
+		// this test is about, not the scheduler.
+		waitParked(t, rl, key, i+1)
 	}
 
+	// Every waiter is parked; freeing the slot hands it down the queue.
 	rl.ReleaseConcurrency(key)
 	wg.Wait()
 
@@ -72,6 +63,28 @@ func TestQueueIsFIFO(t *testing.T) {
 			break
 		}
 	}
+}
+
+// waitParked blocks until the queue for key holds at least want waiters. It is
+// white-box on purpose: the only observable "this request is queued" state is
+// the queue itself, and a timing assumption here would test the scheduler
+// rather than the limiter.
+func waitParked(t *testing.T, rl *RateLimiter, key string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rl.mu.Lock()
+		depth := 0
+		if q, ok := rl.queues[key]; ok {
+			depth = len(q.waiters)
+		}
+		rl.mu.Unlock()
+		if depth >= want {
+			return
+		}
+		time.Sleep(200 * time.Microsecond)
+	}
+	t.Fatalf("queue never held %d parked waiters", want)
 }
 
 // TestQueueWaitsForRPMWindow proves a request queues on RPM exhaustion, not just

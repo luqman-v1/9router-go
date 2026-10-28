@@ -143,6 +143,22 @@ jobs:
           go-version: "1.27"
           cache: true
 
+      - name: Warm the module cache (retried)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if go mod download all; then
+              echo "module graph cached on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::go mod download failed 3 times; the proxy is unreachable."
+              exit 1
+            fi
+            echo "attempt ${attempt} failed (transient proxy error); retrying in 5s"
+            sleep 5
+          done
+
       - name: Build all platforms
         run: make cross
 

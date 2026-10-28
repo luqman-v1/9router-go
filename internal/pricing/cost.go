@@ -31,6 +31,13 @@ var (
 	freeModelNamespaces = []string{"cline-free/"}
 	// KnownFreeModels holds model IDs billed at zero that lack a standard
 	// -free suffix. Canonical list shared with suggested-models filtering.
+	//
+	// This list answers "what does it cost", not "which gate serves it". The
+	// lane decision lives in providers.openCodeFreeTierModels, and an id can sit
+	// in one list without the other: big-pickle is billed at zero here and still
+	// routed on the keyed paid lane (#410). That divergence is deliberate and
+	// recorded in internal/providers/model_formats_pricing_divergence_test.go,
+	// which fails when a new id starts disagreeing silently.
 	KnownFreeModels     = []string{"big-pickle"}
 )
 

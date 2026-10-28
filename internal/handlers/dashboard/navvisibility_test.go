@@ -14,13 +14,20 @@ func TestNormalizeNavVisibility(t *testing.T) {
 	for i := range 40 {
 		longList = append(longList, fmt.Sprintf("tab-%02d", i))
 	}
+	longOrder := make([]any, 0, maxNavOrderEntries+6)
+	for i := range maxNavOrderEntries + 6 {
+		longOrder = append(longOrder, fmt.Sprintf("tab-%02d", i))
+	}
 
 	tests := []struct {
-		name      string
-		input     any
-		want      []string
-		wantCount int
-		clear     bool
+		name           string
+		input          any
+		want           []string
+		wantCount      int
+		wantOrder      []string
+		wantOrderCount int
+		wantNoOrder    bool
+		clear          bool
 	}{
 		{
 			name:  "no value at all clears the setting",
@@ -71,6 +78,41 @@ func TestNormalizeNavVisibility(t *testing.T) {
 			input:     map[string]any{"hidden": longList},
 			wantCount: maxHiddenNavEntries,
 		},
+		{
+			name:        "an absent arrangement keeps only the hide list",
+			input:       map[string]any{"hidden": []any{"quota"}},
+			want:        []string{"quota"},
+			wantNoOrder: true,
+		},
+		{
+			name: "the arrangement keeps the order it arrived in, settings included",
+			input: map[string]any{
+				"hidden": []any{},
+				"order":  []any{"plans", "settings", "quota"},
+			},
+			want:      []string{},
+			wantOrder: []string{"plans", "settings", "quota"},
+		},
+		{
+			name: "the arrangement is lower-cased, trimmed and de-duplicated",
+			input: map[string]any{
+				"hidden": []any{},
+				"order":  []any{"Plans", " plans ", " quota ", "bad id"},
+			},
+			want:      []string{},
+			wantOrder: []string{"plans", "quota"},
+		},
+		{
+			name:  "a scalar arrangement clears the setting rather than the hide list alone",
+			input: map[string]any{"hidden": []any{"quota"}, "order": "plans"},
+			clear: true,
+		},
+		{
+			name:           "the arrangement is capped",
+			input:          map[string]any{"hidden": []any{}, "order": longOrder},
+			want:           []string{},
+			wantOrderCount: maxNavOrderEntries,
+		},
 	}
 
 	for _, tt := range tests {
@@ -100,6 +142,27 @@ func TestNormalizeNavVisibility(t *testing.T) {
 			}
 			if strings.Join(hidden, ",") != strings.Join(tt.want, ",") {
 				t.Errorf("hidden = %v, want %v", hidden, tt.want)
+			}
+			order, hasOrder := got["order"].([]string)
+			switch {
+			case tt.wantOrder != nil:
+				if !hasOrder {
+					t.Fatalf("order = %#v, want %v", got["order"], tt.wantOrder)
+				}
+				if strings.Join(order, ",") != strings.Join(tt.wantOrder, ",") {
+					t.Errorf("order = %v, want %v", order, tt.wantOrder)
+				}
+			case tt.wantOrderCount > 0:
+				if len(order) != tt.wantOrderCount {
+					t.Fatalf("order has %d entries, want %d", len(order), tt.wantOrderCount)
+				}
+				if order[0] != "tab-00" || order[1] != "tab-01" {
+					t.Errorf("capping must keep the first ids, got %v", order[:2])
+				}
+			case tt.wantNoOrder:
+				if _, present := got["order"]; present {
+					t.Errorf("order = %#v, want it absent", got["order"])
+				}
 			}
 		})
 	}
@@ -159,6 +222,22 @@ func TestHandleUpdateSettingsNavVisibility(t *testing.T) {
 	}
 	if hidden, _ := visibility["hidden"].([]any); len(hidden) != 0 {
 		t.Fatalf("hidden = %v, want an empty list", hidden)
+	}
+
+	// The arrangement round-trips beside the hide list. `settings` may sit in it
+	// — the operator is free to move the entry, only the hide list refuses it.
+	put(t, `{"navVisibility":{"hidden":["quota"],"order":["plans","settings","quota"]}}`)
+	body = getSettings(t)
+	visibility, ok = body["navVisibility"].(map[string]any)
+	if !ok {
+		t.Fatalf("an arrangement must round-trip, got %#v", body["navVisibility"])
+	}
+	order, _ := visibility["order"].([]any)
+	if len(order) != 3 || order[0] != "plans" || order[1] != "settings" || order[2] != "quota" {
+		t.Fatalf("order = %v, want [plans settings quota]", order)
+	}
+	if hidden, _ := visibility["hidden"].([]any); len(hidden) != 1 || hidden[0] != "quota" {
+		t.Fatalf("hidden = %v, want [quota]", hidden)
 	}
 
 	// Re-hide, then clear with an unparsable payload: the previous list must not

@@ -322,6 +322,10 @@ func TestMaskAPIKey(t *testing.T) {
 	if !strings.HasPrefix(masked, "sk-machi") || !strings.HasSuffix(masked, "cdef") || !strings.Contains(masked, "***") {
 		t.Errorf("MaskAPIKey(%q) = %q", key, masked)
 	}
+	whitespaceKey := "  sk-machine1234567890abcdef  "
+	if got := MaskAPIKey(whitespaceKey); got != masked {
+		t.Errorf("MaskAPIKey(%q) = %q, want %q (matches trimmed key)", whitespaceKey, got, masked)
+	}
 }
 
 func TestGetString(t *testing.T) {

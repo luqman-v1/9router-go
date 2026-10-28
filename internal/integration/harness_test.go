@@ -100,7 +100,8 @@ func newEnvWithTokenSaver(t *testing.T, build func(*db.Repo) *handlers.TokenSave
 		ts = build(repo)
 	}
 
-	srv := httptest.NewServer(app.ProvideRouter(repo, ts))
+	router, _ := app.ProvideRouter(repo, ts)
+	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 
 	return &Env{

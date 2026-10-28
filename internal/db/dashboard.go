@@ -423,6 +423,44 @@ func (r *Repo) SetKV(scope, key, value string) error {
 	return nil
 }
 
+// KVEntry is one key-value pair written by SetKVMany.
+type KVEntry struct {
+	Key   string
+	Value string
+}
+
+// SetKVMany writes every entry of one scope in a single transaction.
+//
+// The bulk custom-model save is one request by design
+// (docs/provider-limits-plan.md D9), and a response that reports "8 added" must
+// not leave three of them written because the process stopped halfway: either the
+// batch lands or none of it does. The per-line reasons in that response explain
+// the lines the caller dropped before the write, which is where a genuinely
+// rejected line belongs — not in a half-applied table.
+func (r *Repo) SetKVMany(ctx context.Context, scope string, entries []KVEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("set kv batch [%s]: %w", scope, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, entry := range entries {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO kv (scope, key, value) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`,
+			scope, entry.Key, entry.Value,
+		); err != nil {
+			return fmt.Errorf("set kv batch [%s] %s: %w", scope, entry.Key, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("set kv batch [%s]: %w", scope, err)
+	}
+	return nil
+}
+
 // DeleteKV removes a key-value pair for a given scope.
 func (r *Repo) DeleteKV(scope, key string) error {
 	_, err := r.db.Exec(`DELETE FROM kv WHERE scope = ? AND key = ?`, scope, key)
@@ -458,24 +496,15 @@ func (r *Repo) GetSettingsRaw() (map[string]any, error) {
 
 // UpdateSettingsRaw reads settings row id=1 data JSON into map[string]any,
 // merges updates into it, re-marshals, and updates settings row id=1.
+//
+// The merge runs under the settings write lock, and a row that cannot be read
+// is not replaced: writing back only the updates would drop every other
+// setting the operator had set.
 func (r *Repo) UpdateSettingsRaw(updates map[string]any) error {
-	existing, err := r.GetSettingsRaw()
-	if err != nil {
-		existing = make(map[string]any)
-	}
-	for k, v := range updates {
-		existing[k] = v
-	}
-	b, err := json.Marshal(existing)
-	if err != nil {
-		return fmt.Errorf("marshal settings data: %w", err)
-	}
-	_, err = r.db.Exec(
-		`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
-		string(b),
-	)
-	if err != nil {
-		return fmt.Errorf("update settings raw: %w", err)
-	}
-	return nil
+	return r.updateSettings(func(existing map[string]any) error {
+		for k, v := range updates {
+			existing[k] = v
+		}
+		return nil
+	})
 }

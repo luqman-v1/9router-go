@@ -33,6 +33,10 @@ var (
 	// why it is read opportunistically rather than required — see
 	// geminiWebTokens for what its absence means.
 	geminiWebAtRe = regexp.MustCompile(`"SNlM0e":"([^"]+)"`)
+	// geminiWebPushIDRe is the feed id the page carries. It ties an uploaded
+	// image to the session that uploaded it, so it is read alongside the other
+	// page tokens.
+	geminiWebPushIDRe = regexp.MustCompile(`"(?:qKIAYe|q2k)":"(feeds/[a-z0-9]+)"`)
 )
 
 // Gemini Web answers an anonymous visitor: `gemini.google.com/app` issues the
@@ -69,7 +73,23 @@ type geminiWebEndpoints struct {
 	app    string
 	batch  string
 	stream string
+	// upload is the content-push service an image is uploaded to. It is a
+	// different host from the site — the site's own composer uploads
+	// cross-site to it — so it is not derived from the origin.
+	upload string
+	// uploadFallback is the resumable service the primary upload falls back
+	// to. It is a different host too, for the same reason.
+	uploadFallback string
 }
+
+// geminiWebUploadEndpointOverride points the content-push service somewhere
+// else.
+//
+// It exists so a test can serve the upload from a second server, which is the
+// only way to prove that the session's cookies travel to a host other than
+// the site's — a jar is per-host, and a test whose upload goes to the same
+// host would pass whether the copy happened or not.
+var geminiWebUploadEndpointOverride atomic.Pointer[string]
 
 // geminiWebEndpointsFor resolves the endpoints for one connection.
 func geminiWebEndpointsFor(cfg *providers.ProviderConfig) geminiWebEndpoints {
@@ -79,11 +99,26 @@ func geminiWebEndpointsFor(cfg *providers.ProviderConfig) geminiWebEndpoints {
 			origin = parsed
 		}
 	}
+	upload := geminiWebUploadEndpoint
+	fallback := geminiWebUploadFallback
+	if origin != geminiWebOrigin {
+		// A mirror (or a test) is one server, so the upload goes there too:
+		// the public content-push host is reachable from a public origin and
+		// from nowhere else. The fallback follows, so a mirror's image bytes
+		// are never sent to a host the operator did not name.
+		upload = origin + geminiWebUploadPath
+		fallback = origin + geminiWebUploadFallbackPath
+	}
+	if override := geminiWebUploadEndpointOverride.Load(); override != nil {
+		upload = *override
+	}
 	return geminiWebEndpoints{
-		origin: origin,
-		app:    origin + "/app",
-		batch:  origin + geminiWebBatchPath,
-		stream: origin + geminiWebStreamPath,
+		origin:         origin,
+		app:            origin + "/app",
+		batch:          origin + geminiWebBatchPath,
+		stream:         origin + geminiWebStreamPath,
+		upload:         upload,
+		uploadFallback: fallback,
 	}
 }
 
@@ -158,6 +193,29 @@ func geminiWebSessionFor(req *Request) *geminiWebSession {
 	return session
 }
 
+// geminiWebEvictSession drops the session a credential owns.
+//
+// A session is keyed by its credential, and a renewed credential is a
+// different one, so every renewal would otherwise leave the previous
+// session behind. Without this the map grows by one entry per renewal, and
+// a rotation every nine minutes is 160 entries a day for one account.
+func geminiWebEvictSession(credential string) {
+	if credential == "" {
+		return
+	}
+	geminiWebSessionMu.Lock()
+	defer geminiWebSessionMu.Unlock()
+	for key, session := range geminiWebSessions {
+		if !strings.HasPrefix(key, credential+"\x00") {
+			continue
+		}
+		if session != nil && session.stealth != nil {
+			session.stealth.closeIdleConnections()
+		}
+		delete(geminiWebSessions, key)
+	}
+}
+
 // geminiWebTokens are the per-page tokens every later call echoes back.
 type geminiWebTokens struct {
 	// bl and fSid are required: without them a call cannot be formed at all.
@@ -169,6 +227,10 @@ type geminiWebTokens struct {
 	// cookie bought nothing, which is worth reporting rather than silently
 	// sending anonymous-shaped requests.
 	at string
+	// pushID is the feed the page belongs to. It travels with an image
+	// upload, and a page that carries none falls back to the site's own
+	// default — see geminiWebUploadDefaultPush.
+	pushID string
 }
 
 // tokens returns the cached page tokens, fetching them when they are absent or
@@ -217,6 +279,9 @@ func (s *geminiWebSession) refreshTokens(ctx context.Context) (geminiWebTokens, 
 	if at := geminiWebAtRe.FindStringSubmatch(html); len(at) >= 2 {
 		tokens.at = at[1]
 	}
+	if pushID := geminiWebPushIDRe.FindStringSubmatch(html); len(pushID) >= 2 {
+		tokens.pushID = pushID[1]
+	}
 	s.page, s.fetched = tokens, time.Now()
 	return tokens, nil
 }
@@ -235,6 +300,12 @@ func (s *geminiWebSession) do(ctx context.Context, method, target string, body i
 	if err != nil {
 		return nil, fmt.Errorf("gemini-web: build request: %w", err)
 	}
+	// The content-push service is a different host from the site, and a jar is
+	// per-host, so the session's cookies are not there to be sent. The site's
+	// own composer carries them across, and an upload that arrives without
+	// them belongs to no session — which a signed-in account only discovers
+	// when the model cannot resolve the attachment.
+	s.shareCredentialTo(target)
 	values := geminiWebCORSValues(s.endpoints.origin, s.endpoints.referer())
 	// The per-call headers are merged into the shared set, so a call that names a
 	// header the base set also names takes its own value. Everything supplied is
@@ -251,6 +322,20 @@ func (s *geminiWebSession) do(ctx context.Context, method, target string, body i
 	geminiWebSetOrdered(request.Header, geminiWebCORSOrder, values)
 	request.Header[fhttp.PHeaderOrderKey] = geminiWebPseudoHeaderOrder
 	return s.stealth.do(request)
+}
+
+// shareCredentialTo copies the session's cookies to the host a request is
+// addressed to.
+//
+// The jar is per-host, so the site's own cookies are not on any other host's
+// request. A jar is also the only place a rotated cookie's current value
+// lives, so the copy is read from there rather than from the configured
+// credential.
+func (s *geminiWebSession) shareCredentialTo(target string) {
+	if s.stealth == nil {
+		return
+	}
+	s.stealth.shareCredentialTo(target)
 }
 
 // geminiWebFormBody renders the urlencoded form both RPCs post, carrying the
@@ -275,6 +360,7 @@ func (s *geminiWebSession) streamTurn(
 	prompt string,
 	thinkingLevel int,
 	model *geminiWebModel,
+	attachments []geminiWebAttachment,
 	onLine func(*geminiWebLine) error,
 ) error {
 	tokens, err := s.tokens(ctx)
@@ -290,7 +376,11 @@ func (s *geminiWebSession) streamTurn(
 		log.Warn("gemini-web", "the configured cookie produced no SNlM0e token; the site served an anonymous page",
 			"hint", "the cookie is likely stale or missing __Secure-1PSID")
 	}
-	inner := geminiWebBuildInner(prompt, thinkingLevel)
+	modelNumber := 1
+	if model != nil {
+		modelNumber = model.Number
+	}
+	inner := geminiWebBuildInner(prompt, thinkingLevel, modelNumber, attachments)
 	uuid := geminiWebRequestUUID()
 	inner[geminiWebSlotRequestUUID] = uuid
 	innerJSON, err := json.Marshal(inner)

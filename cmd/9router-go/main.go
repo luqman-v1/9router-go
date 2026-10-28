@@ -6,7 +6,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,9 +21,19 @@ import (
 	"9router/proxy/internal/updater"
 )
 
+// binaryName lets the same executable answer to `opencode-go`, so a renamed
+// copy (or symlink) shows the matching name in help and errors.
+func binaryName() string {
+	if base := filepath.Base(os.Args[0]); strings.HasPrefix(base, "opencode-go") {
+		return "opencode-go"
+	}
+	return "9router-go"
+}
+
 func main() {
+	self := binaryName()
 	app := &cli.App{
-		Name:  "9router-go",
+		Name:  self,
 		Usage: "AI API proxy gateway with token saver features",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
@@ -213,13 +225,18 @@ func foregroundOrBackground(cCtx *cli.Context) error {
 	if cCtx.Bool(daemon.BackgroundName) {
 		return startDetached(cCtx)
 	}
+	// On a terminal, bare `9router-go` offers the interface picker; without one
+	// (service unit, container, pipe) it boots the server as before.
+	if stdinIsTerminal() {
+		return runMenu(cCtx)
+	}
 	return runServer(cCtx)
 }
 
 // unknownCommandError turns a missed command dispatch into guidance instead
 // of a boot.
 func unknownCommandError(args []string) error {
-	return fmt.Errorf("unknown command %q — see '9router-go help'", args[0])
+	return fmt.Errorf("unknown command %q — see '%s help'", args[0], binaryName())
 }
 
 func runServer(cCtx *cli.Context) error {

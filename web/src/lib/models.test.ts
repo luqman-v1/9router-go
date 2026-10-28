@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS, PROVIDER_MODELS } from './models'
+import { PROVIDER_CATALOG } from './providers'
 
 // PROVIDER_MODELS is keyed by provider id, while PROVIDER_ID_TO_ALIAS holds the
 // short display prefix (uiAlias) used to render `cmc/<model>`. The two only
@@ -11,7 +12,7 @@ describe('getModelsByProviderId', () => {
 
     const models = getModelsByProviderId('commandcode')
 
-    expect(models.length).toBe(22)
+    expect(models.length).toBe(23)
     expect(models.map((m) => m.id)).toContain('deepseek/deepseek-v4-pro')
     expect(models.map((m) => m.id)).toContain('nvidia/nemotron-3-ultra-550b-a55b')
   })
@@ -47,6 +48,7 @@ describe('commandcode catalog', () => {
   const UPSTREAM_REGISTRY_ORDER = [
     'deepseek/deepseek-v4-pro',
     'deepseek/deepseek-v4-flash',
+    'moonshotai/Kimi-K3.1-Pro',
     'moonshotai/Kimi-K2.7-Code',
     'moonshotai/Kimi-K2.7-Code-Highspeed',
     'moonshotai/Kimi-K2.6',
@@ -71,6 +73,53 @@ describe('commandcode catalog', () => {
 
   it('keeps the upstream registry order', () => {
     expect(getModelsByProviderId('commandcode').map((m) => m.id)).toEqual(UPSTREAM_REGISTRY_ORDER)
+  })
+})
+
+// The 22 rows above are a snapshot of upstream's registry file, not of what
+// Command Code serves. Its Provider API publishes the whole catalogue on
+// /provider/v1/models — the free tiers (reflection/beam:free,
+// stealth/glyph-cluster:free, poolside/laguna-s-2.1-free) and everything
+// released after the snapshot (minimax/minimax-m3.1-flash, z-ai/glm-5.3-flash,
+// moonshotai/Kimi-K3, …). Without a modelsFetcher the dashboard has no way to
+// reach any of it: the "Suggested free models" list stays empty and "Check
+// Latest Models" never renders.
+describe('commandcode live catalog', () => {
+  it('fetches the Provider API catalogue through the free-tier filter', () => {
+    const p = PROVIDER_CATALOG.find((e) => e.id === 'commandcode')
+    expect(p?.modelsFetcher).toEqual({
+      url: 'https://api.commandcode.ai/provider/v1/models',
+      type: 'commandcode-free',
+    })
+  })
+})
+
+// Of the five keyless catalogues wired on the backend, only Vercel AI Gateway
+// gets a modelsFetcher here. The "Suggested free models" section is a free-tier
+// surface, and probing each feed live shows the other four have no zero-priced
+// tier to suggest: chutes prices every model, nvidia and ollama carry no
+// pricing block at all, and openrouter already had its openrouter-free fetcher.
+// A fetcher that returns nothing is worse than no fetcher — it renders an empty
+// section the operator has to interpret.
+describe('keyless live catalogs', () => {
+  it('wires Vercel AI Gateway through its own free-tier filter', () => {
+    const p = PROVIDER_CATALOG.find((e) => e.id === 'vercel-ai-gateway')
+    expect(p?.modelsFetcher).toEqual({
+      url: 'https://ai-gateway.vercel.sh/v1/models',
+      type: 'vercel-free',
+    })
+  })
+
+  it('leaves the four without a free tier unfetched', () => {
+    for (const id of ['chutes', 'nvidia', 'ollama']) {
+      const p = PROVIDER_CATALOG.find((e) => e.id === id)
+      expect(p?.modelsFetcher, `${id} has no zero-priced tier to suggest`).toBeUndefined()
+    }
+  })
+
+  it('keeps openrouter on the free-tier fetcher it already had', () => {
+    const p = PROVIDER_CATALOG.find((e) => e.id === 'openrouter')
+    expect(p?.modelsFetcher?.type).toBe('openrouter-free')
   })
 })
 

@@ -24,6 +24,12 @@ type comboStickyState struct {
 	ServingIndex int
 }
 
+// smartStickyEntry is one session's pinned model in the smart strategy.
+type smartStickyEntry struct {
+	Model    string
+	LastUsed time.Time
+}
+
 // ChatHandler handles /v1/chat/completions (OpenAI) and /v1/messages (Claude) endpoints.
 type ChatHandler struct {
 	Repo       *db.Repo
@@ -33,7 +39,7 @@ type ChatHandler struct {
 	// The handler holds it so the metering path can reconcile a TPM
 	// reservation once the real usage is known: the estimate is taken
 	// pre-dispatch, but only the response knows what the turn actually cost.
-RateLimiter   *middleware.RateLimiter
+	RateLimiter   *middleware.RateLimiter
 	SemanticCache *semanticcache.Cache
 	stickyMu      sync.Mutex
 	stickyState   map[string]*comboStickyState
@@ -46,6 +52,10 @@ RateLimiter   *middleware.RateLimiter
 	// one would otherwise upsert the same row.
 	deprecationMu    sync.Mutex
 	deprecationCache map[string]time.Time
+	// smartSticky pins the model a session's smart-routed combo settles on,
+	// so later turns reuse the provider holding the warm prompt cache.
+	smartStickyMu sync.Mutex
+	smartSticky   map[string]smartStickyEntry
 }
 
 // Type aliases for shared types

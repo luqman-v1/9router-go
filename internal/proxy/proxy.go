@@ -27,6 +27,11 @@ type UpstreamError struct {
 	// where the response is still in hand, so this is the only chance to keep
 	// them.
 	Header http.Header
+	// ReadErr records a failure to read the error body in full (a truncated or
+	// mis-declared response). The status and whatever bytes arrived are still
+	// valid and callers branch on the status, so a read failure must not erase
+	// it — See doRequestOnce.
+	ReadErr error
 }
 
 func (e *UpstreamError) Error() string {
@@ -145,6 +150,11 @@ func strictOnly(ctx context.Context) bool {
 	intended, ok := ctx.Value(strictProxyCtxKey{}).(bool)
 	return ok && intended
 }
+
+// StrictProxy reports whether ctx forbids routing around the assigned proxy.
+// Exported for the executor retry layer, which must not answer a strict-proxy
+// caller with a direct replay.
+func StrictProxy(ctx context.Context) bool { return strictOnly(ctx) }
 
 // newJSONRequest builds one replayable request. body is a []byte, so
 // http.NewRequestWithContext installs a GetBody and no replay has to buffer a
@@ -334,10 +344,12 @@ func doRequestOnce(ctx context.Context, client *http.Client, method, url string,
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		resp.Body.Close()
-		if readErr != nil {
-			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)
-		}
-		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
+		// Keep the status even when the body could not be read in full. The
+		// status is the part callers act on: retryable-error classification,
+		// account failover and the free-tier refusal check all branch on it. A
+		// plain fmt.Errorf here discarded the code, so a truncated error body
+		// turned a 403 into an opaque 502 that no retry could recognise.
+		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header, ReadErr: readErr}
 	}
 	return resp, nil
 }

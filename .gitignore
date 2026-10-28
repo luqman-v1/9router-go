@@ -51,3 +51,30 @@ stitch-screenshots/
 # A pasted browser-login credential for scripts/deepseek-web-live.sh. Never
 # belongs in a commit, and `git add -A` would otherwise stage it silently.
 .ds-token
+
+/opencode-go
+/opencode-go-*
+
+# Per-machine AI agent harness config. These directories hold tooling that is
+# installed locally, not project content: a committed `.claude/settings.json`
+# or `.agents/` tree makes every checkout inherit another machine's hooks.
+# The project's own instructions — CLAUDE.md and AGENTS.md — stay tracked.
+/.claude/
+/.agents/
+/.gemini/
+/.cursor/
+/.codex/
+/.continue/
+/.aider*
+/.mcp.json
+/.clinerules
+/.windsurfrules
+/GEMINI.md
+/QWEN.md
+/COPILOT.md
+
+# Local agent-tooling config (not part of the product). The .claude/ and
+# .agents/ trees are already covered by the harness block above.
+.omo/run-continuation/
+.omo/omo.jsonc
+.omp/settings.json

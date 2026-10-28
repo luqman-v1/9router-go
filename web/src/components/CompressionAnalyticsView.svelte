@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, type Snippet } from 'svelte'
+  import { onDestroy, type Snippet } from 'svelte'
   import {
     api,
     type CompressionAnalyticsSummary,
@@ -10,6 +10,9 @@
   import { periodLabel, type Period } from './analytics/types'
   import Menu from '../lib/ui/Menu.svelte'
   import MenuItem from '../lib/ui/MenuItem.svelte'
+  import { costIn, currentCurrency } from '../lib/currency.svelte'
+  import { convertFromUsd } from '../lib/currency'
+  import { isPanelVisible } from '../lib/usagePanel.svelte'
 
   interface Props {
     /**
@@ -56,6 +59,8 @@
     notifications.success('Exported JSON successfully')
   }
 
+  // Cost columns in the CSV: EstUSD keeps the pre-existing USD cell, EstLocal
+  // adds the operator's display-currency conversion, Currency names its code.
   function exportCSV() {
     if (!stats) return
     const lines = ['Category,Key,Requests,TokensSaved,AvgSavingsPct']
@@ -70,9 +75,14 @@
     }
     if (stats.topSavers && stats.topSavers.length > 0) {
       lines.push('')
-      lines.push('TopSavers,RequestID,Timestamp,Provider,Model,Mode,OriginalTokens,CompressedTokens,TokensSaved,SavingsPct,DurationMs,EstUSD')
+      lines.push('TopSavers,RequestID,Timestamp,Provider,Model,Mode,OriginalTokens,CompressedTokens,TokensSaved,SavingsPct,DurationMs,EstUSD,EstLocal,Currency')
       for (const s of stats.topSavers) {
-        lines.push(`TopSaver,${s.requestId},${s.timestamp},${s.provider},${s.model},${s.mode},${s.originalTokens},${s.compressedTokens},${s.tokensSaved},${s.savingsPct}%,${s.durationMs}ms,$${s.estimatedUsd}`)
+        const currency = currentCurrency()
+        const local = convertFromUsd(s.estimatedUsd ?? 0, currency)
+        const estLocal = local === null ? '' : local.toFixed(4)
+        // The USD cell is the pre-existing `$`-prefixed number, unchanged here.
+        const usdCell = '$' + s.estimatedUsd
+        lines.push(`TopSaver,${s.requestId},${s.timestamp},${s.provider},${s.model},${s.mode},${s.originalTokens},${s.compressedTokens},${s.tokensSaved},${s.savingsPct}%,${s.durationMs}ms,${usdCell},${estLocal},${currency.code}`)
       }
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' })
@@ -85,7 +95,10 @@
     notifications.success('Exported CSV successfully')
   }
 
-  onMount(() => {
+  $effect(() => {
+    if (!isPanelVisible('compression.trend') && !isPanelVisible('compression.mode') && !isPanelVisible('compression.provider') && !isPanelVisible('compression.model') && !isPanelVisible('compression.topSavers') && !isPanelVisible('compression.receipts')) {
+      return
+    }
     loadData()
   })
 
@@ -306,7 +319,7 @@
       </div>
       <div class="mt-3">
         <div class="text-2xl font-bold text-emerald-500">
-          ${(stats?.realUsage?.estimatedUsdSaved ?? 0).toFixed(2)}
+          {costIn(stats?.realUsage?.estimatedUsdSaved ?? 0)}
         </div>
         <p class="text-xs text-text-subtle mt-1 truncate">Estimated USD saved</p>
       </div>
@@ -329,6 +342,7 @@
   </div>
 
   <!-- Hourly Trend Chart -->
+  {#if isPanelVisible('compression.trend')}
   <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm">
     <div class="flex flex-col gap-1 mb-4">
       <h3 class="text-sm font-semibold text-text-main flex items-center gap-1.5">
@@ -379,10 +393,12 @@
       </div>
     {/if}
   </div>
+  {/if}
 
   <!-- Breakdown Grid: Modes, Providers, Models -->
   <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
     <!-- Breakdown by Mode -->
+    {#if isPanelVisible('compression.mode')}
     <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm space-y-4">
       <div class="flex items-center justify-between">
         <h3 class="text-sm font-semibold text-text-main flex items-center gap-1.5">
@@ -424,8 +440,10 @@
         </div>
       {/if}
     </div>
+    {/if}
 
     <!-- Breakdown by Provider -->
+    {#if isPanelVisible('compression.provider')}
     <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm space-y-4">
       <div class="flex items-center justify-between">
         <h3 class="text-sm font-semibold text-text-main flex items-center gap-1.5">
@@ -468,8 +486,10 @@
         </div>
       {/if}
     </div>
+    {/if}
 
     <!-- Breakdown by Model -->
+    {#if isPanelVisible('compression.model')}
     <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm space-y-4">
       <div class="flex items-center justify-between">
         <h3 class="text-sm font-semibold text-text-main flex items-center gap-1.5">
@@ -514,9 +534,11 @@
         </div>
       {/if}
     </div>
+    {/if}
   </div>
 
   <!-- Top 10 Biggest Savers Table -->
+  {#if isPanelVisible('compression.topSavers')}
   <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm space-y-4">
     <div class="flex items-center justify-between">
       <div>
@@ -593,7 +615,7 @@
                   {s.durationMs}ms
                 </td>
                 <td class="py-2.5 px-3 text-right font-medium text-emerald-400">
-                  ${s.estimatedUsd.toFixed(3)}
+                  {costIn(s.estimatedUsd, 3)}
                 </td>
               </tr>
             {/each}
@@ -602,8 +624,10 @@
       </div>
     {/if}
   </div>
+  {/if}
 
   <!-- Real Usage Receipts & Telemetry Details -->
+  {#if isPanelVisible('compression.receipts')}
   <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm">
     <h3 class="text-sm font-semibold text-text-main mb-3 flex items-center gap-1.5">
       <span class="material-symbols-outlined text-[18px] text-brand-500">receipt_long</span>
@@ -637,4 +661,5 @@
       </div>
     </div>
   </div>
+  {/if}
 </div>

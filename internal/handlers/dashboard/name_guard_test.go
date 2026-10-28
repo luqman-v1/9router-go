@@ -11,12 +11,15 @@ import (
 )
 
 // A bare model string resolves against a model alias first and a combo name
-// second, while a custom model id is reached as "<node-prefix>/<id>". All three
-// are dashboard-writable, so the same string could land in two of them: the
-// alias silently outranks the combo, and /v1/models then advertises a combo and
-// a custom model under names a client cannot tell apart. Observed on the "xai"
-// node, which carried custom model ids "combo-wombo" and "agy" beside combos of
-// exactly those names.
+// second, so those two spaces share one namespace and a name written into both
+// makes one of them unreachable. That pair is what the guard refuses.
+//
+// A custom model id is not in that namespace: it is reached as
+// "<node-prefix>/<id>" and published in the same prefixed form, so an id that
+// matches an alias or a combo is a second, distinguishable address rather than a
+// shadowed name. Refusing those writes broke "Import from /models" — a /models
+// list carrying one already-aliased id failed the whole import — so custom model
+// writes are no longer cross-checked at all.
 //
 // The guard is write-side only, so a setup that already collides keeps serving
 // traffic; only new writes are refused.
@@ -24,12 +27,14 @@ func TestGuardNameCollision(t *testing.T) {
 	const (
 		nodeID     = "openai-compatible-chat-xai"
 		comboName  = "combo-wombo"
-		aliasName  = "agy"
 		otherCombo = "free-tier"
+		customID   = "agy"
+		bareAlias  = "shared-name"
 	)
 
 	// seed builds a repo holding a combo "combo-wombo", a combo "free-tier",
-	// and a node "xai" carrying a custom model id "agy".
+	// a model alias "shared-name", and a node "xai" carrying a custom model id
+	// "agy".
 	seed := func(t *testing.T) (*DashboardHandler, func()) {
 		t.Helper()
 		repo, cleanup := setupTestDB(t)
@@ -42,13 +47,17 @@ func TestGuardNameCollision(t *testing.T) {
 			cleanup()
 			t.Fatalf("seed combo %s: %v", otherCombo, err)
 		}
+		if err := repo.SetKV("modelAliases", bareAlias, `"openai/gpt-4o"`); err != nil {
+			cleanup()
+			t.Fatalf("seed alias: %v", err)
+		}
 		if _, err := repo.CreateProviderNode(nodeID, "openai-compatible", "xai",
 			`{"prefix":"xai","apiType":"chat","baseUrl":"http://xai.local/v1"}`); err != nil {
 			cleanup()
 			t.Fatalf("seed node: %v", err)
 		}
-		if err := repo.SetKV("customModels", nodeID+"|"+aliasName+"|llm",
-			`{"id":"`+aliasName+`","providerAlias":"`+nodeID+`","type":"llm"}`); err != nil {
+		if err := repo.SetKV("customModels", nodeID+"|"+customID+"|llm",
+			`{"id":"`+customID+`","providerAlias":"`+nodeID+`","type":"llm"}`); err != nil {
 			cleanup()
 			t.Fatalf("seed custom model: %v", err)
 		}
@@ -85,33 +94,89 @@ func TestGuardNameCollision(t *testing.T) {
 		}
 	}
 
-	t.Run("a custom model id matching a combo is refused", func(t *testing.T) {
+	assertAccepted := func(t *testing.T, rec *httptest.ResponseRecorder, wantKey string) {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body)
+		}
+		if wantKey == "" {
+			return
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["key"] != wantKey {
+			t.Errorf("key = %v, want %s", payload["key"], wantKey)
+		}
+	}
+
+	// assertCustomModel checks the row landed in the customModels kv scope.
+	assertCustomModel := func(t *testing.T, h *DashboardHandler, key string) {
+		t.Helper()
+		kv, err := h.Repo.GetKVScope("customModels")
+		if err != nil {
+			t.Fatalf("read customModels: %v", err)
+		}
+		if _, ok := kv[key]; !ok {
+			t.Fatalf("custom model %q was not written (have %v)", key, kv)
+		}
+	}
+
+	t.Run("a custom model id matching a combo is accepted", func(t *testing.T) {
 		h, cleanup := seed(t)
 		defer cleanup()
 
+		key := nodeID + "|" + comboName + "|llm"
 		rec := do(h, http.MethodPost, "/api/models/custom",
 			`{"providerAlias":"`+nodeID+`","id":"`+comboName+`","type":"llm"}`)
-		assertRefused(t, rec, "COMBO_NAME_CONFLICT")
+		assertAccepted(t, rec, key)
+		assertCustomModel(t, h, key)
+	})
 
-		// Nothing may be written — a refusal that still persists is worse.
-		if _, err := h.Repo.GetComboByName(comboName); err != nil {
-			t.Fatalf("combo lookup: %v", err)
-		}
-		if owner, ok := customModelOwner(h, comboName); ok {
-			t.Fatalf("refused custom model was still written to %s", owner)
+	t.Run("a custom model id matching a model alias is accepted", func(t *testing.T) {
+		h, cleanup := seed(t)
+		defer cleanup()
+
+		// The reported failure: /models listed an id a bare-name alias already
+		// owned, and the import was refused.
+		key := nodeID + "|" + bareAlias + "|llm"
+		rec := do(h, http.MethodPost, "/api/models/custom",
+			`{"providerAlias":"`+nodeID+`","id":"`+bareAlias+`","type":"llm"}`)
+		assertAccepted(t, rec, key)
+
+		assertCustomModel(t, h, key)
+		if target, err := h.Repo.GetModelAlias(bareAlias); err != nil || target == "" {
+			t.Fatalf("the alias must survive the write: %q (err %v)", target, err)
 		}
 	})
 
-	t.Run("a combo name matching a custom model id is refused", func(t *testing.T) {
+	t.Run("a combo name matching a custom model id is accepted", func(t *testing.T) {
 		h, cleanup := seed(t)
 		defer cleanup()
 
+		// The other order of the same pair: the custom id is prefixed, so the
+		// combo keeps the bare name and neither entry is shadowed. Refusing
+		// this would make the guard order-dependent.
 		rec := do(h, http.MethodPost, "/api/combos",
-			`{"id":"c3","name":"`+aliasName+`","models":["oc/space-bunny-free"]}`)
-		assertRefused(t, rec, "CUSTOM_MODEL_NAME_CONFLICT")
+			`{"id":"c3","name":"`+customID+`","models":["oc/space-bunny-free"]}`)
+		assertAccepted(t, rec, "")
 
-		if combo, err := h.Repo.GetComboByName(aliasName); err != nil || combo != nil {
-			t.Fatalf("refused combo was still created: %+v (err %v)", combo, err)
+		if combo, err := h.Repo.GetComboByName(customID); err != nil || combo == nil {
+			t.Fatalf("combo was not created: %+v (err %v)", combo, err)
+		}
+	})
+
+	t.Run("a model alias matching a custom model id is accepted", func(t *testing.T) {
+		h, cleanup := seed(t)
+		defer cleanup()
+
+		rec := do(h, http.MethodPut, "/api/models/alias",
+			`{"model":"openai/gpt-4o","alias":"`+customID+`"}`)
+		assertAccepted(t, rec, "")
+
+		if target, err := h.Repo.GetModelAlias(customID); err != nil || target != "openai/gpt-4o" {
+			t.Fatalf("alias was not written: %q (err %v)", target, err)
 		}
 	})
 
@@ -130,22 +195,28 @@ func TestGuardNameCollision(t *testing.T) {
 		}
 	})
 
-	t.Run("a model alias matching a custom model id is refused", func(t *testing.T) {
+	t.Run("a combo name matching a model alias is refused", func(t *testing.T) {
 		h, cleanup := seed(t)
 		defer cleanup()
 
-		rec := do(h, http.MethodPut, "/api/models/alias",
-			`{"model":"openai/gpt-4o","alias":"`+aliasName+`"}`)
-		assertRefused(t, rec, "CUSTOM_MODEL_NAME_CONFLICT")
+		// The mirror of the case above: a bare request for the name is the
+		// alias, so the new combo could never be reached.
+		rec := do(h, http.MethodPost, "/api/combos",
+			`{"id":"c3","name":"`+bareAlias+`","models":["oc/space-bunny-free"]}`)
+		assertRefused(t, rec, "MODEL_ALIAS_CONFLICT")
+
+		if combo, err := h.Repo.GetComboByName(bareAlias); err != nil || combo != nil {
+			t.Fatalf("refused combo was still created: %+v (err %v)", combo, err)
+		}
 	})
 
-	t.Run("renaming a combo into a taken name is refused and leaves the row alone", func(t *testing.T) {
+	t.Run("renaming a combo into an alias name is refused and leaves the row alone", func(t *testing.T) {
 		h, cleanup := seed(t)
 		defer cleanup()
 
 		rec := do(h, http.MethodPut, "/api/combos/c1",
-			`{"name":"`+aliasName+`","models":["oc/space-bunny-free"]}`)
-		assertRefused(t, rec, "CUSTOM_MODEL_NAME_CONFLICT")
+			`{"name":"`+bareAlias+`","models":["oc/space-bunny-free"]}`)
+		assertRefused(t, rec, "MODEL_ALIAS_CONFLICT")
 
 		combo, err := h.Repo.GetComboById("c1")
 		if err != nil || combo == nil {

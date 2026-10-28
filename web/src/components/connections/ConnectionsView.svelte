@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { api, type ProviderConnection, type ProviderNode } from '../../api/client'
+  import { api, type ProviderConnection, type ProviderNode, type ProviderNodeLimitsPatch } from '../../api/client'
+  import { hasAnyNodeLimitPatch } from '../../lib/node-limits'
   import ProvidersOverviewGrid from './ProvidersOverviewGrid.svelte'
   import ProviderDetailView from './ProviderDetailView.svelte'
   import AddCompatibleNodeModal from './AddCompatibleNodeModal.svelte'
@@ -45,6 +46,7 @@
     apiType?: 'chat' | 'responses'
     type: string
     urlSuffix: string
+    limits: ProviderNodeLimitsPatch
   }) {
     try {
       const node = await api.createProviderNode({
@@ -55,6 +57,18 @@
         type: data.type as unknown as string,
         urlSuffix: data.urlSuffix || undefined
       })
+      // The limits endpoint needs the id the create just answered with, so this is
+      // deliberately a second request: a node whose limits failed to save is still a
+      // working node, and saying so beats losing the create with it.
+      if (hasAnyNodeLimitPatch(data.limits)) {
+        try {
+          await api.setProviderNodeLimits(node.id, data.limits)
+        } catch (err) {
+          alert(
+            `Provider node created, but its capacity limits did not save: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+      }
       showAddNodeModal = false
       onRefresh()
       selectedProviderId = node.id

@@ -1,6 +1,9 @@
 package providers
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The browser-login providers are distinct deployments reached with a credential
 // a browser session produces, not an API key. Each test below pins a contract a
@@ -156,17 +159,21 @@ func TestGeminiWebIsReachableWithoutACredential(t *testing.T) {
 	}
 }
 
-// TestGeminiWebDoesNotAdvertiseControlsTheWebSurfaceLacks pins the capability
+// TestGeminiWebAdvertisesOnlyWhatTheWebSurfaceHas pins the capability
 // override.
 //
 // The generic `*gemini-3*` pattern row describes the API surface and grants
-// vision, audio, video and search. The web surface has none of those, and a
-// client that sees the flags set will send an image and get an error back.
-func TestGeminiWebDoesNotAdvertiseControlsTheWebSurfaceLacks(t *testing.T) {
+// vision, audio, video and search. The web surface takes an image but has
+// neither audio, video nor a search toggle the executor can set, and a client
+// that sees those flags set will send a request the provider cannot serve.
+func TestGeminiWebAdvertisesOnlyWhatTheWebSurfaceHas(t *testing.T) {
 	for _, model := range GetProviderModels("gemini-web") {
 		caps := GetCapabilitiesForModel("gemini-web", model)
-		if caps.Vision || caps.AudioInput || caps.VideoInput {
-			t.Errorf("%s: media input flags must be false on the web surface; got %+v", model, caps)
+		if !caps.Vision {
+			t.Errorf("%s: the site's own composer takes an image, so vision must be advertised", model)
+		}
+		if caps.AudioInput || caps.VideoInput {
+			t.Errorf("%s: audio and video input flags must be false on the web surface; got %+v", model, caps)
 		}
 		if !caps.Tools {
 			t.Errorf("%s: tool calling is supported through the prompt and must be advertised", model)
@@ -174,5 +181,17 @@ func TestGeminiWebDoesNotAdvertiseControlsTheWebSurfaceLacks(t *testing.T) {
 		if caps.ThinkingFormat != "gemini-level" {
 			t.Errorf("%s: ThinkingFormat = %q, want gemini-level (the site's own enum)", model, caps.ThinkingFormat)
 		}
+		// A Lite model does not think: the site's registry publishes no
+		// reasoning level for it. Advertising one would send a level the
+		// model cannot serve, and the site answers such a request with a
+		// different model.
+		if isGeminiWebLiteModel(model) && caps.Reasoning {
+			t.Errorf("%s: a Lite model has no reasoning level, so reasoning must not be advertised", model)
+		}
 	}
+}
+
+// isGeminiWebLiteModel reports whether a catalogued name is a Lite model.
+func isGeminiWebLiteModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "lite")
 }

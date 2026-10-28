@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -92,7 +93,7 @@ func TestMigratePlaintextCredentialsSealsExistingRows(t *testing.T) {
 	seedPlaintextConn(t, repo, "conn-a", "sk-secret-a")
 	seedPlaintextConn(t, repo, "conn-b", "sk-secret-b")
 
-	result, err := repo.MigratePlaintextCredentials(path)
+	result, err := repo.MigratePlaintextCredentials(context.Background(), path)
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -113,7 +114,7 @@ func TestMigratePlaintextCredentialsIsIdempotent(t *testing.T) {
 	repo, path := migrationEnv(t)
 	seedPlaintextConn(t, repo, "conn-a", "sk-secret-a")
 
-	if _, err := repo.MigratePlaintextCredentials(path); err != nil {
+	if _, err := repo.MigratePlaintextCredentials(context.Background(), path); err != nil {
 		t.Fatalf("first migration: %v", err)
 	}
 	wrapped, ciphertext, ok, err := repo.GetConnectionSealed("conn-a", SlotSecret)
@@ -121,7 +122,7 @@ func TestMigratePlaintextCredentialsIsIdempotent(t *testing.T) {
 		t.Fatalf("first pass did not seal: ok=%v err=%v", ok, err)
 	}
 
-	second, err := repo.MigratePlaintextCredentials(path)
+	second, err := repo.MigratePlaintextCredentials(context.Background(), path)
 	if err != nil {
 		t.Fatalf("second migration: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestMigratePlaintextCredentialsKeepsCredentialUsable(t *testing.T) {
 	repo, path := migrationEnv(t)
 	seedPlaintextConn(t, repo, "conn-a", "sk-secret-a")
 
-	if _, err := repo.MigratePlaintextCredentials(path); err != nil {
+	if _, err := repo.MigratePlaintextCredentials(context.Background(), path); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	conn, err := repo.GetProviderConnectionByID("conn-a")
@@ -167,7 +168,7 @@ func TestMigratePlaintextCredentialsLeavesNonSecrets(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	result, err := repo.MigratePlaintextCredentials(path)
+	result, err := repo.MigratePlaintextCredentials(context.Background(), path)
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestMigratePlaintextCredentialsNoOpWithoutVault(t *testing.T) {
 	repo := NewRepo(database)
 	seedPlaintextConn(t, repo, "conn-a", "sk-secret-a")
 
-	result, err := repo.MigratePlaintextCredentials(path)
+	result, err := repo.MigratePlaintextCredentials(context.Background(), path)
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -208,7 +209,7 @@ func TestMigratePlaintextCredentialsTakesBackup(t *testing.T) {
 	repo, path := migrationEnv(t)
 	seedPlaintextConn(t, repo, "conn-a", "sk-secret-a")
 
-	if _, err := repo.MigratePlaintextCredentials(path); err != nil {
+	if _, err := repo.MigratePlaintextCredentials(context.Background(), path); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	backups, err := filepath.Glob(filepath.Join(filepath.Dir(path), "pre-vault-*.sqlite"))

@@ -52,6 +52,7 @@ type ledgerRow struct {
 	rowid     int64
 	clientKey string
 	apiKey    string
+	provider  string
 	tokens    int64
 }
 
@@ -63,11 +64,16 @@ type ledgerWatchedKey struct {
 
 // ledgerWatchIndex indexes the watched keys by the two spellings a ledger row
 // can carry, so folding a chunk is a map lookup per row rather than a scan of
-// the key list.
+// the key list. providers maps each watched providerNodes id to its own reset
+// mark: usageHistory.provider holds the node id verbatim for a custom provider,
+// so that dimension needs one exact match and no spelled-form index. A nil map
+// means the dimension was never loaded, which is how a partial fixture without a
+// providerNodes table still prunes.
 type ledgerWatchIndex struct {
-	keys   []ledgerWatchedKey
-	byMask map[string][]int
-	byRaw  map[string][]int
+	keys      []ledgerWatchedKey
+	byMask    map[string][]int
+	byRaw     map[string][]int
+	providers map[string]int64
 }
 
 // PruneUsageHistory deletes usageHistory rows older than retention, carrying the
@@ -116,9 +122,7 @@ func (r *Repo) PruneUsageHistory(ctx context.Context, retention time.Duration) (
 		}
 		cursor = chunk[len(chunk)-1].rowid
 		result.Rows += len(chunk)
-		for _, tokens := range carried {
-			result.CarriedTokens += int(tokens)
-		}
+		result.CarriedTokens += int(carried.total())
 	}
 
 	if result.Rows > 0 {
@@ -163,13 +167,15 @@ func ledgerCutoff(retention time.Duration) string {
 	return time.Now().UTC().Add(-retention).Truncate(time.Second).Format(time.RFC3339)
 }
 
-// ledgerWatchedKeys loads the keys a carryover can be attributed to, indexed by
-// the spellings tokenUsageSince matches on.
+// ledgerWatchedKeys loads the keys and the providers a carryover can be
+// attributed to, indexed by the spellings tokenUsageSince matches on.
 //
 // Every key is watched, not only the ones carrying a tokenQuota today: a
 // carryover for a key with no budget is never read, but it is also never wrong,
 // and it means an operator who sets a quota tomorrow is measured against spend
-// that already happened instead of against a ledger with a hole in it.
+// that already happened instead of against a ledger with a hole in it. The same
+// reasoning watches every provider node, whose tokenQuota needs provider
+// carryover for exactly the same reason.
 func (r *Repo) ledgerWatchedKeys(ctx context.Context) (*ledgerWatchIndex, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, COALESCE(key, ''), COALESCE(`+quotaResetColumn+`, 0) FROM apiKeys`)
@@ -204,7 +210,58 @@ func (r *Repo) ledgerWatchedKeys(ctx context.Context) (*ledgerWatchIndex, error)
 	); err != nil {
 		return nil, fmt.Errorf("drop orphaned usage carryover: %w", err)
 	}
+	if err := r.loadProviderMarks(ctx, index); err != nil {
+		return nil, err
+	}
 	return index, nil
+}
+
+// loadProviderMarks fills the index's provider dimension.
+//
+// providerNodes is probed rather than assumed: a fixture that builds only part
+// of the schema still gets a working prune, with the dimension left nil, instead
+// of failing on a table it never asked for. Both the refresh and the fold read a
+// nil map as "nothing to carry".
+func (r *Repo) loadProviderMarks(ctx context.Context, index *ledgerWatchIndex) error {
+	exists, err := tableExistsOnDB(r.db, "providerNodes")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, COALESCE(`+providerQuotaResetColumn+`, 0) FROM providerNodes`)
+	if err != nil {
+		return fmt.Errorf("read provider nodes for carryover: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	marks := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var mark int64
+		if err := rows.Scan(&id, &mark); err != nil {
+			return fmt.Errorf("scan provider node for carryover: %w", err)
+		}
+		if id == "" {
+			continue
+		}
+		marks[id] = mark
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate provider nodes for carryover: %w", err)
+	}
+	index.providers = marks
+
+	// The same orphan rule as the key dimension: the reader resolves provider
+	// carryover by node id, so a row whose node is gone can never be read again.
+	if _, err := r.db.ExecContext(ctx,
+		`DELETE FROM providerLedgerCarryover WHERE providerId NOT IN (SELECT id FROM providerNodes)`,
+	); err != nil {
+		return fmt.Errorf("drop orphaned provider carryover: %w", err)
+	}
+	return nil
 }
 
 func (w *ledgerWatchIndex) add(id, rawKey string, mark int64) {
@@ -215,14 +272,22 @@ func (w *ledgerWatchIndex) add(id, rawKey string, mark int64) {
 	w.byRaw[rawKey] = append(w.byRaw[rawKey], i)
 }
 
-// refreshMarks re-reads every watched key's reset mark through the caller's
-// transaction, so the marks a chunk is folded against are the ones that are
+// refreshMarks re-reads every watched key's and provider's reset mark through
+// the caller's transaction, so the marks a chunk is folded against are the ones
 // current at the instant the carryover commits.
 //
-// It only updates the marks in place; the index's key list is left alone,
-// because a key created after the prune started cannot own a row this pass is
-// deleting (that row predates the key's first request).
+// It only updates the marks in place; both watched lists are left alone, because
+// a key or node created after the prune started cannot own a row this pass is
+// deleting (that row predates its first request).
 func (w *ledgerWatchIndex) refreshMarks(ctx context.Context, tx *sql.Tx) error {
+	if err := w.refreshKeyMarks(ctx, tx); err != nil {
+		return err
+	}
+	return w.refreshProviderMarks(ctx, tx)
+}
+
+// refreshKeyMarks refreshes the client-key half of the index.
+func (w *ledgerWatchIndex) refreshKeyMarks(ctx context.Context, tx *sql.Tx) error {
 	if len(w.keys) == 0 {
 		return nil
 	}
@@ -252,19 +317,94 @@ func (w *ledgerWatchIndex) refreshMarks(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-// fold sums, per key, what this chunk contributed to that key's budget.
+// refreshProviderMarks refreshes the provider half, for the reset that lands
+// mid-prune and would otherwise bank spend a provider quota had just forgiven.
+func (w *ledgerWatchIndex) refreshProviderMarks(ctx context.Context, tx *sql.Tx) error {
+	if w.providers == nil {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, COALESCE(`+providerQuotaResetColumn+`, 0) FROM providerNodes`)
+	if err != nil {
+		return fmt.Errorf("refresh provider reset marks for carryover: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	marks := make(map[string]int64, len(w.providers))
+	for rows.Next() {
+		var id string
+		var mark int64
+		if err := rows.Scan(&id, &mark); err != nil {
+			return fmt.Errorf("scan provider reset mark for carryover: %w", err)
+		}
+		marks[id] = mark
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate provider reset marks for carryover: %w", err)
+	}
+	for id := range w.providers {
+		if mark, ok := marks[id]; ok {
+			w.providers[id] = mark
+		}
+	}
+	return nil
+}
+
+// ledgerCarry is what one folded chunk contributes to the two carryover tables:
+// tokens per client key for usageLedgerCarryover, and tokens per custom provider
+// node for providerLedgerCarryover.
+type ledgerCarry struct {
+	keys      map[string]int64
+	providers map[string]int64
+}
+
+// total is every token this chunk carried, summed over both dimensions: the
+// per-key carryover and the per-provider-node carryover. It is a sum of two
+// ledgers, not a count of distinct tokens — a row that belongs to a watched key
+// *and* a watched node is carried into both tables and counted twice here, which
+// is correct for the question the number answers (how much spend this prune
+// stopped refunding) and wrong for "how many tokens were deleted". `Rows` is the
+// deletion figure.
+func (c ledgerCarry) total() int64 {
+	var sum int64
+	for _, tokens := range c.keys {
+		sum += tokens
+	}
+	for _, tokens := range c.providers {
+		sum += tokens
+	}
+	return sum
+}
+
+// fold sums, per key and per provider, what this chunk contributed to those
+// budgets.
 //
-// The three lookups are exactly the three terms tokenUsageSince sums: the row's
-// clientKey against the key's masked form, and the row's apiKey against both the
-// raw and the masked form (rows the upstream Next.js dashboard wrote put the
-// client key in apiKey; this build puts the upstream credential there). Keeping
-// the two in step is what makes the reader's answer identical across a prune.
+// The three key lookups are exactly the three terms tokenUsageSince sums: the
+// row's clientKey against the key's masked form, and the row's apiKey against
+// both the raw and the masked form (rows the upstream Next.js dashboard wrote
+// put the client key in apiKey; this build puts the upstream credential there).
+// Keeping the two in step is what makes the reader's answer identical across a
+// prune.
 //
 // A row is counted once per key even when it matches through more than one term,
 // and only when it sits after that key's reset mark: rows at or before the mark
 // were already excluded from the budget before they were deleted, so carrying
-// them would inflate a key that had been deliberately reset.
-func (w *ledgerWatchIndex) fold(chunk []ledgerRow) map[string]int64 {
+// them would inflate a key that had been deliberately reset. The provider
+// dimension carries the same guard against the node's own mark, and needs no
+// dedupe because a row names at most one node.
+//
+// The two dimensions are folded in separate passes rather than interleaved: the
+// chunk is bounded by retentionChunkSize, and one loop per budget reads better
+// than one loop serving two unrelated match rules.
+func (w *ledgerWatchIndex) fold(chunk []ledgerRow) ledgerCarry {
+	var carried ledgerCarry
+	carried.keys = w.foldKeys(chunk)
+	carried.providers = w.foldProviders(chunk)
+	return carried
+}
+
+// foldKeys is the client-key half of fold.
+func (w *ledgerWatchIndex) foldKeys(chunk []ledgerRow) map[string]int64 {
 	if len(w.keys) == 0 {
 		return nil
 	}
@@ -294,6 +434,32 @@ func (w *ledgerWatchIndex) fold(chunk []ledgerRow) map[string]int64 {
 	return carried
 }
 
+// foldProviders is the custom-provider half of fold.
+//
+// The match is exact: usageHistory.provider carries the providerNodes id the
+// request resolved to, so a row belongs to at most one node and a node's spend
+// survives a prune only if its own mark says the rows still counted.
+func (w *ledgerWatchIndex) foldProviders(chunk []ledgerRow) map[string]int64 {
+	if len(w.providers) == 0 {
+		return nil
+	}
+	carried := make(map[string]int64)
+	for _, row := range chunk {
+		if row.tokens == 0 || row.provider == "" {
+			continue
+		}
+		mark, watched := w.providers[row.provider]
+		if !watched || row.rowid <= mark {
+			continue
+		}
+		carried[row.provider] += row.tokens
+	}
+	if len(carried) == 0 {
+		return nil
+	}
+	return carried
+}
+
 // readLedgerChunk reads the next chunk of doomed rows in rowid order.
 //
 // Ordered by rowid rather than by timestamp so the cursor advances monotonically
@@ -303,7 +469,7 @@ func (w *ledgerWatchIndex) fold(chunk []ledgerRow) map[string]int64 {
 // the scan and block retention forever on every pass.
 func (r *Repo) readLedgerChunk(ctx context.Context, cursor int64, cutoff string) ([]ledgerRow, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT rowid, COALESCE(clientKey, ''), COALESCE(apiKey, ''),
+		SELECT rowid, COALESCE(clientKey, ''), COALESCE(apiKey, ''), COALESCE(provider, ''),
 		       CAST(COALESCE(promptTokens, 0) AS INTEGER) + CAST(COALESCE(completionTokens, 0) AS INTEGER)
 		  FROM usageHistory
 		 WHERE rowid > ? AND timestamp < ?
@@ -317,7 +483,7 @@ func (r *Repo) readLedgerChunk(ctx context.Context, cursor int64, cutoff string)
 	var chunk []ledgerRow
 	for rows.Next() {
 		var row ledgerRow
-		if err := rows.Scan(&row.rowid, &row.clientKey, &row.apiKey, &row.tokens); err != nil {
+		if err := rows.Scan(&row.rowid, &row.clientKey, &row.apiKey, &row.provider, &row.tokens); err != nil {
 			return nil, fmt.Errorf("scan usageHistory chunk: %w", err)
 		}
 		chunk = append(chunk, row)
@@ -339,52 +505,62 @@ func (r *Repo) readLedgerChunk(ctx context.Context, cursor int64, cutoff string)
 // be charged for it again. Reading the marks here — in the same transaction that
 // writes the carryover and deletes the rows — makes "which mark decided what to
 // carry" and "which rows are gone" the same instant.
-func (r *Repo) deleteLedgerChunk(ctx context.Context, chunk []ledgerRow, watched *ledgerWatchIndex) (map[string]int64, error) {
+func (r *Repo) deleteLedgerChunk(ctx context.Context, chunk []ledgerRow, watched *ledgerWatchIndex) (ledgerCarry, error) {
 	rowids := make([]int64, 0, len(chunk))
 	for _, row := range chunk {
 		rowids = append(rowids, row.rowid)
 	}
 	encoded, err := json.Marshal(rowids)
 	if err != nil {
-		return nil, fmt.Errorf("encode usageHistory chunk rowids: %w", err)
+		return ledgerCarry{}, fmt.Errorf("encode usageHistory chunk rowids: %w", err)
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("prune usageHistory: begin: %w", err)
+		return ledgerCarry{}, fmt.Errorf("prune usageHistory: begin: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
 
 	if err := watched.refreshMarks(ctx, tx); err != nil {
-		return nil, err
+		return ledgerCarry{}, err
 	}
 	carried := watched.fold(chunk)
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	for _, keyID := range sortedKeyIDs(carried) {
+	for _, keyID := range sortedKeyIDs(carried.keys) {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO usageLedgerCarryover (keyId, tokens, updatedAt) VALUES (?, ?, ?)
 			ON CONFLICT(keyId) DO UPDATE SET tokens = tokens + excluded.tokens, updatedAt = excluded.updatedAt`,
-			keyID, carried[keyID], now,
+			keyID, carried.keys[keyID], now,
 		); err != nil {
-			return nil, fmt.Errorf("carry usage tokens for key %s: %w", keyID, err)
+			return ledgerCarry{}, fmt.Errorf("carry usage tokens for key %s: %w", keyID, err)
+		}
+	}
+	for _, nodeID := range sortedKeyIDs(carried.providers) {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO providerLedgerCarryover (providerId, tokens, updatedAt) VALUES (?, ?, ?)
+			ON CONFLICT(providerId) DO UPDATE SET tokens = tokens + excluded.tokens, updatedAt = excluded.updatedAt`,
+			nodeID, carried.providers[nodeID], now,
+		); err != nil {
+			return ledgerCarry{}, fmt.Errorf("carry usage tokens for provider %s: %w", nodeID, err)
 		}
 	}
 
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM usageHistory WHERE rowid IN (SELECT value FROM json_each(?))`, string(encoded),
 	); err != nil {
-		return nil, fmt.Errorf("delete usageHistory chunk: %w", err)
+		return ledgerCarry{}, fmt.Errorf("delete usageHistory chunk: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("prune usageHistory: commit: %w", err)
+		return ledgerCarry{}, fmt.Errorf("prune usageHistory: commit: %w", err)
 	}
 	return carried, nil
 }
 
 // sortedKeyIDs orders the carryover writes so a prune produces the same
-// statement sequence every run.
+// statement sequence every run. It serves both tables: the key and the provider
+// dimension are each a map from row id to carried tokens.
 func sortedKeyIDs(carried map[string]int64) []string {
 	ids := make([]string, 0, len(carried))
 	for id := range carried {

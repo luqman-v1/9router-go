@@ -4,8 +4,10 @@
   import Button from '../../lib/ui/Button.svelte'
   import Input from '../../lib/ui/Input.svelte'
   import Modal from '../../lib/ui/Modal.svelte'
-  import { api, type ProviderNode } from '../../api/client'
+  import { api, type ProviderNode, type ProviderNodeLimits, type ProviderNodeLimitsPatch } from '../../api/client'
   import { nodeFormSeed } from './nodeFormSeed'
+  import ProviderNodeLimitsField from './ProviderNodeLimitsField.svelte'
+  import { nodeLimitsDraftOf, nodeLimitsPatchOf, type NodeLimitsDraft } from '../../lib/node-limits'
 
   interface Props {
     isOpen: boolean
@@ -18,10 +20,14 @@
       apiType?: string
       baseUrl: string
       urlSuffix: string
+      /** The policy to store; the parent writes it once the node id is final. */
+      limits: ProviderNodeLimitsPatch
     }) => Promise<void> | void
+    /** Called with the stored policy after a token-count reset, so the page updates. */
+    onLimitsSaved?: (limits: ProviderNodeLimits) => void
   }
 
-  let { isOpen, node = null, isAnthropic = false, onClose, onSave }: Props = $props()
+  let { isOpen, node = null, isAnthropic = false, onClose, onSave, onLimitsSaved }: Props = $props()
 
   let formName = $state('')
   let formPrefix = $state('')
@@ -33,6 +39,11 @@
   let validating = $state(false)
   let validation = $state<'success' | 'failed' | null>(null)
   let saving = $state(false)
+  let limitsDraft = $state<NodeLimitsDraft>(nodeLimitsDraftOf(null))
+  let limitsError = $state('')
+  // A reset answers with the fresh policy before the page's poll does, so show that
+  // instead of mutating the `node` prop.
+  let limitsAfterReset = $state<ProviderNodeLimits | null>(null)
 
   // Seed once per open, not once per `node` object.
   //
@@ -70,6 +81,9 @@
     checkModelId = ''
     validation = null
     saving = false
+    limitsDraft = nodeLimitsDraftOf(node.limits ?? null)
+    limitsError = ''
+    limitsAfterReset = null
   })
 
   let saveDisabled = $derived(
@@ -97,6 +111,7 @@
   async function handleSubmit() {
     if (saveDisabled) return
     saving = true
+    limitsError = ''
     try {
       const payload: {
         name: string
@@ -104,14 +119,23 @@
         apiType?: string
         baseUrl: string
         urlSuffix: string
+        limits: ProviderNodeLimitsPatch
       } = {
         name: formName.trim(),
         prefix: formPrefix.trim(),
         baseUrl: formBaseUrl.trim(),
         urlSuffix: formUrlSuffix.trim(),
+        // The policy travels with the node save, and the page writes it *after* the
+        // node: an edited URL suffix renames the provider id, and the limits columns
+        // live on that row. Writing them here, against the id this dialog still
+        // holds, is how an edit would leave the policy on an id that no longer
+        // exists — the node would come back unlimited.
+        limits: nodeLimitsPatchOf(limitsDraft),
       }
       if (!isAnthropic) payload.apiType = formApiType
       await onSave(payload)
+    } catch (err) {
+      limitsError = err instanceof Error ? err.message : String(err)
     } finally {
       saving = false
     }
@@ -190,6 +214,21 @@
       <Badge variant={validation === 'success' ? 'success' : 'error'}>
         {validation === 'success' ? 'Valid' : 'Invalid'}
       </Badge>
+    {/if}
+    <!-- Capacity limits use the same fields as the ones above, separated by a rule
+         and collapsed until needed; the Save below stores both, so these are not a
+         second form with a second button. -->
+    <ProviderNodeLimitsField
+      bind:draft={limitsDraft}
+      usage={limitsAfterReset ?? node.limits ?? null}
+      nodeId={node.id}
+      onReset={(limits) => {
+        limitsAfterReset = limits
+        onLimitsSaved?.(limits)
+      }}
+    />
+    {#if limitsError}
+      <p class="text-xs text-red-500" role="alert">{limitsError}</p>
     {/if}
     <div class="flex gap-2">
       <Button onclick={handleSubmit} fullWidth disabled={saveDisabled}>

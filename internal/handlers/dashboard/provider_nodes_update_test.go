@@ -31,13 +31,25 @@ func setupNodeTestDB(t *testing.T) (*db.Repo, func()) {
 	// The node rename moves usage and request history with it, so the fixture
 	// needs the two tables the production schema always has.
 	for _, query := range []string{
+		// usageHistory mirrors the production shape rather than the two columns a
+		// rename happens to move: the node handlers also sum tokens off it (a custom
+		// provider's lifetime quota is measured from promptTokens/completionTokens),
+		// and a fixture missing them fails on the query shape instead of on the
+		// behaviour the test is about.
 		`CREATE TABLE IF NOT EXISTS usageHistory (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			timestamp TEXT NOT NULL,
 			provider TEXT,
 			model TEXT,
 			connectionId TEXT,
-			status TEXT
+			apiKey TEXT,
+			endpoint TEXT,
+			promptTokens INTEGER DEFAULT 0,
+			completionTokens INTEGER DEFAULT 0,
+			cost REAL,
+			status TEXT,
+			tokens TEXT,
+			meta TEXT
 		);`,
 		`CREATE TABLE IF NOT EXISTS requestDetails (
 			id TEXT PRIMARY KEY,

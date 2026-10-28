@@ -3,6 +3,7 @@
   // decolua/9router v0.5.95 b3cf3fde). Upstream calls this CustomConfigCard.
   import { api } from '../../api/client'
   import type { ProviderOverridesResponse } from '../../api/client'
+  import { headerNameError, headerValueError } from './headerOverrideValidation'
 
   interface Props {
     isOpen: boolean
@@ -18,7 +19,6 @@
   }
 
   const MAX_HEADERS = 20
-  const MAX_VALUE_LENGTH = 8192
 
   let builtin = $state<Record<string, string>>({})
   let blocked = $state<string[]>([])
@@ -48,16 +48,17 @@
   let tooMany = $derived(Object.keys(payload).length > MAX_HEADERS)
 
   // The same rules the server enforces, so the operator finds out in the field
-  // rather than in a 400. Authorization/Cookie/Host and the framing headers
-  // are excluded by the server too — this only stops the wasted round trip.
+  // rather than in a 400: the RFC 7230 token grammar for a name, and the
+  // "no bytes net/http would refuse" rule for a value. Authorization/Cookie/
+  // Host and the framing headers are excluded by the server too — this only
+  // stops the wasted round trip.
   function rowError(row: HeaderRow): string {
     const key = row.key.trim()
     if (!key) return ''
-    if (!/^[A-Za-z0-9-]+$/.test(key)) return 'Letters, digits and dashes only.'
+    const nameError = headerNameError(key)
+    if (nameError) return nameError
     if (blockedSet.has(key.toLowerCase())) return 'The gateway owns this header.'
-    if (row.value.includes('\n') || row.value.includes('\r')) return 'No line breaks in a value.'
-    if (row.value.length > MAX_VALUE_LENGTH) return `Max ${MAX_VALUE_LENGTH} characters.`
-    return ''
+    return headerValueError(row.value)
   }
 
   let anyRowError = $derived(rows.some((r) => rowError(r) !== ''))

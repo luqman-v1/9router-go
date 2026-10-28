@@ -1,9 +1,9 @@
 package chat
 
 import (
+	json "9router/proxy/internal/fastjson"
 	"bytes"
 	"context"
-	json "9router/proxy/internal/fastjson"
 	"fmt"
 	"net/http"
 	"strings"
@@ -152,7 +152,7 @@ func collectPanel(ctx context.Context, calls []func(context.Context) *fusionResu
 // makePanelCall returns a closure that resolves one panel model and forwards the
 // request. The closure signature matches what collectPanel expects. The ctx
 // aborts the upstream HTTP request when the panel moves on without us.
-func (h *ChatHandler) makePanelCall(body []byte, entry string) func(context.Context) *fusionResult {
+func (h *ChatHandler) makePanelCall(body []byte, entry, comboName string) func(context.Context) *fusionResult {
 	return func(ctx context.Context) *fusionResult {
 		modelInfo := h.resolveModelEntry(entry)
 		if modelInfo == nil {
@@ -180,6 +180,7 @@ func (h *ChatHandler) makePanelCall(body []byte, entry string) func(context.Cont
 			return &fusionResult{model: entry, err: err}
 		}
 		upstreamBody["model"] = modelInfo.Model
+		ctx = h.applyJailbreak(ctx, upstreamBody, comboName, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
 		upstreamJSON, err := json.Marshal(upstreamBody)
 		if err != nil {
 			return &fusionResult{model: entry, err: err}

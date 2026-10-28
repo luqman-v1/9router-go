@@ -227,3 +227,31 @@ func TestStrictAndLaxPoolsDoNotShareACachedClient(t *testing.T) {
 func isStrictRefusal(err error) bool {
 	return errors.Is(err, internalproxy.ErrStrictProxyRequired)
 }
+// TestStrictProxy_ZeroDirectToUpstreamDialOnDeadProxy asserts strict proxy client
+// ensures zero direct socket dials to upstream when proxy is dead (G18).
+func TestStrictProxy_ZeroDirectToUpstreamDialOnDeadProxy(t *testing.T) {
+	repo := setupProxyPools(t)
+	upstream, hits := directCounter(t)
+
+	pool, err := repo.InsertProxyPool(db.ProxyPoolData{
+		Name: "dead-strict-spec", ProxyURL: "http://127.0.0.1:1", Type: "http", StrictProxy: true,
+	})
+	if err != nil {
+		t.Fatalf("insert proxy pool: %v", err)
+	}
+	poolID, _ := pool["id"].(string)
+
+	h := &ChatHandler{Client: &http.Client{}, Repo: repo}
+	client, err := h.GetClientForConnection(&ConnectionData{ProxyPoolID: poolID})
+	if err != nil {
+		t.Fatalf("get client: %v", err)
+	}
+	if !internalproxy.ForbidsDirectReplay(client) {
+		t.Fatal("must carry ForbidDirectReplay marker")
+	}
+
+	_, _ = internalproxy.DoRequest(t.Context(), client, http.MethodPost, upstream.URL, nil, []byte(`{}`))
+	if *hits != 0 {
+		t.Fatalf("strict proxy leaked direct dial to upstream! hits = %d", *hits)
+	}
+}

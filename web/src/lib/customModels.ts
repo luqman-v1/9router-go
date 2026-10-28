@@ -96,3 +96,47 @@ export function subscribeCustomModelsChanged(load: () => void): () => void {
     window.removeEventListener(CUSTOM_MODELS_CHANGED_EVENT, load)
   }
 }
+
+/** One row a bulk import wants to store, already keyed for POST /api/models/custom. */
+export interface CustomModelWrite {
+  /** The model id, so a refusal can name the row it refused. */
+  id: string
+  key: string
+  value: unknown
+}
+
+export interface CustomModelImportOutcome {
+  imported: number
+  /** Ids the server refused, carrying the reason it gave. */
+  refused: Array<{ id: string; reason: string }>
+}
+
+/**
+ * Stores a batch of custom models one call at a time, tolerating a refusal.
+ *
+ * The server refuses an id that already addresses a model alias or a combo
+ * with a typed 409, and a /models listing carries such ids routinely: a
+ * bare-name alias usually points at the same model on another node, which the
+ * guard cannot tell apart from a genuine collision. Awaiting every save inside
+ * one try/catch made the first refusal abort the batch — the ids listed after
+ * it were never attempted, which is what "Import from /models" did to a
+ * provider whose list held one already-aliased name. Each row is now attempted
+ * on its own and the refusals come back as data, so the caller can report
+ * exactly which ids to rename instead of losing the rest of the import.
+ */
+export async function importCustomModelsBestEffort(
+  writes: CustomModelWrite[],
+  save: (key: string, value: unknown) => Promise<unknown>,
+): Promise<CustomModelImportOutcome> {
+  let imported = 0
+  const refused: Array<{ id: string; reason: string }> = []
+  for (const write of writes) {
+    try {
+      await save(write.key, write.value)
+      imported += 1
+    } catch (err) {
+      refused.push({ id: write.id, reason: err instanceof Error ? err.message : String(err) })
+    }
+  }
+  return { imported, refused }
+}

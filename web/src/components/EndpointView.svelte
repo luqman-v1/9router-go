@@ -19,17 +19,19 @@
   import { copyToClipboard } from '../lib/clipboard'
   import ApiKeysTable from './keys/ApiKeysTable.svelte'
   import { api, type APIKey, type Settings, type TunnelStatusResponse } from '../api/client'
-
+  import type { ActiveTab } from '../lib/router'
   interface Props {
     apiKeys?: APIKey[]
     settings?: Settings
     onRefresh?: () => void
+    navigate?: (tab: ActiveTab) => void
   }
 
   let {
     apiKeys = [],
     settings = {},
-    onRefresh
+    onRefresh,
+    navigate,
   }: Props = $props()
 
   // Local state for the endpoint + tunnel settings. The key list owns its own
@@ -639,7 +641,16 @@
       <div class="mt-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs">
         <AlertTriangle class="w-4 h-4 shrink-0 text-amber-500" />
         <p class="flex-1 leading-relaxed">{unsafeReason}</p>
-        <a href="/dashboard/profile" class="font-semibold underline hover:opacity-80 shrink-0">
+        <a
+          href="/dashboard/profile"
+          onclick={(e) => {
+            if (navigate) {
+              e.preventDefault()
+              navigate('settings')
+            }
+          }}
+          class="font-semibold underline hover:opacity-80 shrink-0"
+        >
           Open settings
         </a>
       </div>
@@ -671,7 +682,16 @@
                 ? 'Require login is disabled — anyone can access your dashboard via tunnel.'
                 : 'Dashboard uses the default password — change it in Profile settings.'}
             </p>
-            <a href="/dashboard/profile" class="font-semibold underline hover:opacity-80 shrink-0">
+            <a
+              href="/dashboard/profile"
+              onclick={(e) => {
+                if (navigate) {
+                  e.preventDefault()
+                  navigate('settings')
+                }
+              }}
+              class="font-semibold underline hover:opacity-80 shrink-0"
+            >
               {!requireLogin ? 'Enable' : 'Change password'}
             </a>
           </div>

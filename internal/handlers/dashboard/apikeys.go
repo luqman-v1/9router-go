@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	json "encoding/json/v2"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -31,13 +32,54 @@ func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	privileged := middleware.CallerIsDashboardPrivileged(h.Repo, r)
+	// Access is a second table, so it is read in one query for the whole list
+	// rather than once per key. A read failure must NOT read as "no
+	// restriction": the gate fails closed on exactly that error (see
+	// internal/handlers/chat/access.go), so reporting the keys as unrestricted
+	// here would have the dashboard advertise an open key the request path is
+	// in fact denying. Every key is reported restricted-with-nothing-allowed
+	// instead, which is the safe direction and matches what the gate will do.
+	allowlists, err := h.Repo.GetAllowedModelsForKeys(apiKeyIDs(keys))
+	accessReadFailed := err != nil
+	if accessReadFailed {
+		log.Error("apikeys", "read model allowlists for the key list failed; reporting every key as restricted", "error", err)
+		allowlists = map[string][]string{}
+	}
+	// The effective policy is the key's own rows unioned with its plan's, which
+	// is what the gate enforces. The plan half is one joined query for the whole
+	// page for the same reason the allowlist is.
+	plans, planErr := h.Repo.GetPlansForKeys(apiKeyIDs(keys))
+	if planErr != nil && !errors.Is(planErr, db.ErrNoPlansTable) {
+		// The plan half of the union is unknown for every key on this page, so
+		// the union is unknown — the same fail-closed answer as above rather
+		// than reporting the own rows as if they were the whole policy.
+		log.Error("apikeys", "read plans for the key list failed; reporting every key as restricted", "error", planErr)
+		accessReadFailed = true
+	}
+
 	sanitized := make([]map[string]any, 0, len(keys))
 	for _, k := range keys {
 		if k == nil {
 			continue
 		}
+		var access keyAccess
+		if accessReadFailed {
+			access = keyAccess{Restricted: true, Allow: []string{}}
+		} else {
+			// The key's rows alone understate the policy whenever a plan is
+			// attached, and the direction is always widening (see
+			// withPlanPatterns), so the union is what "what may this key call"
+			// has to answer.
+			access = accessFromPatterns(unionModelPatterns(allowlists[k.ID], plans[k.ID].AllowedModels))
+		}
 		sanitized = append(sanitized, map[string]any{
-			"id": k.ID, "key": apiKeySecretFor(k, privileged), "keyDisplay": apiKeyDisplay(k), "name": k.Name,
+			// The Node dashboard reads access{restricted,allow}; Go's own
+			// clients read the columns above. `access` is the EFFECTIVE policy
+			// — the key's rows unioned with its plan's — because that is what
+			// the gate enforces and what an operator reading the list means by
+			// "what may this key call".
+			"access": access,
+			"id":     k.ID, "key": apiKeySecretFor(k, privileged), "keyDisplay": apiKeyDisplay(k), "name": k.Name,
 			"machineId": k.MachineID, "isActive": k.IsActive, "createdAt": k.CreatedAt,
 			// The governance columns belong in the list, not only behind a
 			// per-key fetch: the dashboard has to tell a constrained key from
@@ -90,6 +132,18 @@ func maskClientKey(key string) string {
 		return "***"
 	}
 	return handlerutil.RunePrefix(key, 6) + "…" + handlerutil.RuneSuffix(key, 4)
+}
+
+// apiKeyIDs collects the non-empty ids of a key listing, for the single
+// batched allowlist read behind the list's `access` field.
+func apiKeyIDs(keys []*models.APIKey) []string {
+	ids := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if k != nil && k.ID != "" {
+			ids = append(ids, k.ID)
+		}
+	}
+	return ids
 }
 
 // intOrZero unwraps an optional int column, treating NULL and 0 alike: both

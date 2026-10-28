@@ -92,6 +92,7 @@ describe('providers & media separation', () => {
       'codebuddy-intl',
       'kimchi',
       'kimi',
+      'nous',
       'qoder',
       'windsurf',
       'xai',

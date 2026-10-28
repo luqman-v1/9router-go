@@ -157,6 +157,12 @@ func (b *ResponseBuf) Bytes() []byte {
 	return b.buf
 }
 
+// Reset releases the accumulated buffer memory and resets the done flag.
+func (b *ResponseBuf) Reset() {
+	b.buf = nil
+	b.done = false
+}
+
 // StreamMetrics captures timing and content during a proxied stream.
 type StreamMetrics struct {
 	TTFT        int64       // ms from request start to first chunk

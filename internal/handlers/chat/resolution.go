@@ -9,6 +9,7 @@ import (
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
+	"9router/proxy/internal/thinking"
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -55,9 +56,9 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 			Transport: transport,
 			Timeout:   0, // no timeout for streaming support
 		},
-		TokenSaver:  cfg,
+		TokenSaver:    cfg,
 		SemanticCache: sc,
-		stickyState: make(map[string]*comboStickyState),
+		stickyState:   make(map[string]*comboStickyState),
 	}
 }
 
@@ -152,7 +153,6 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 	return &ModelInfo{Provider: provider, Model: model}
 }
 
-
 // flattenComboModels recursively expands combo-name entries into concrete
 // "provider/model" leaves, keeping order and deduping consecutive identical
 // leaves so a nested combo can't create pointless rotation slots. Guards
@@ -226,6 +226,10 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	}
 	// Strip [1m] context marker before resolution (PR #3691)
 	modelStr = stripModelContextMarker(modelStr)
+	// A "(level)" thinking suffix is a request override, not part of the model
+	// id, so it comes off before the name is resolved against the aliases and
+	// the combos — otherwise "mycombo(high)" resolves to neither.
+	modelStr, _ = thinking.ParseSuffix(modelStr)
 
 	// 1. Standard format: "provider/model"
 	if strings.Contains(modelStr, "/") {
@@ -292,18 +296,6 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		}
 	}
 
-	// Codex-only GPT model slugs (open-sse/services/model.js MODEL_PREFIX_
-	// PROVIDERS): these exist on backend-api/codex/models but not on the OpenAI
-	// API, so a bare id from the Codex CLI's own picker used to fall through to
-	// openai and 404 for anyone holding only a Codex OAuth account (#4405).
-	// The rules sit ahead of the generic gpt-* fallback; plain gpt-4* / gpt-3.5*
-	// / gpt-4o* stay on openai.
-	//
-	// Outside the Repo guard so it resolves with nil Repo / an empty DB.
-	if codexOnlyModelSlug(modelStr) {
-		return &ModelInfo{Provider: "codex", Model: modelStr}, nil
-	}
-
 	// 3. Check if it's a combo name
 	if h.Repo != nil {
 		combo, err := h.Repo.GetComboByName(modelStr)
@@ -333,6 +325,24 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 				}
 			}
 		}
+	}
+
+	// Codex-only GPT model slugs (open-sse/services/model.js MODEL_PREFIX_
+	// PROVIDERS): these exist on backend-api/codex/models but not on the OpenAI
+	// API, so a bare id from the Codex CLI's own picker used to fall through to
+	// openai and 404 for anyone holding only a Codex OAuth account (#4405).
+	// The rules sit ahead of the generic gpt-* fallback; plain gpt-4* / gpt-3.5*
+	// / gpt-4o* stay on openai.
+	//
+	// After step 3 deliberately: a stored combo owns the bare id it is named
+	// after, exactly as upstream orders it (src/sse/services/model.js resolves
+	// the combo before the prefix inference). The cursor presets seed combos
+	// named `gpt-5.2-codex` / `gpt-5.3-codex`, and running this rule first made
+	// them served-yet-unrouteable.
+	//
+	// Outside the Repo guard so it resolves with nil Repo / an empty DB.
+	if codexOnlyModelSlug(modelStr) {
+		return &ModelInfo{Provider: "codex", Model: modelStr}, nil
 	}
 
 	// 3.5 Check if it's a bare provider alias (e.g., "ag" -> "antigravity")
@@ -407,6 +417,20 @@ func (h *ChatHandler) resolvePrefixProvider(prefix string, model string) *ModelI
 
 	conn, _, err := h.getBestConnection(node.ID, "", nil, model)
 	if err != nil || conn == nil {
+		// A provider refusal is the one failure this must not swallow into a
+		// bare-prefix lookup: the prefix is not a provider any connection is
+		// registered under, so the client would read "no active connections for
+		// provider: <prefix>" and never see the reason the node gave — an expired
+		// contract, a spent lifetime quota, or a node at its own capacity.
+		// Pinning the node lets the dispatch path answer with its own typed
+		// refusal, which is what it does for every other caller.
+		//
+		// Every other failure keeps the previous behaviour: resolution falls
+		// through to the bare prefix and the connection error surfaces from the
+		// path that owns it.
+		if _, refused := providerLimitRefusal(err); refused {
+			return &ModelInfo{Provider: node.ID, Model: model}
+		}
 		return nil
 	}
 
@@ -415,6 +439,28 @@ func (h *ChatHandler) resolvePrefixProvider(prefix string, model string) *ModelI
 		Model:        model,
 		ConnectionID: conn.ID,
 	}
+}
+
+// wireModelForNode rewrites a client-facing model id onto the id the node's
+// upstream gateway serves. A provider node publishes its models as
+// "<prefix>/<id>", and the prefix only routes the request to the node — the
+// gateway beyond it has never heard of it, so forwarding the prefixed id
+// verbatim answers 400 "no model endpoints" (kiro and zed strip their own
+// prefixes for the same reason). Only an exact "<prefix>/" match is removed;
+// a node with no prefix, a model requested unprefixed, and a registry
+// provider all pass through unchanged.
+func (h *ChatHandler) wireModelForNode(provider, model string) string {
+	if !isCompatibleProviderID(provider) {
+		return model
+	}
+	prefix := h.providerNodePrefixMap()[provider]
+	if prefix == "" {
+		return model
+	}
+	if rest, ok := strings.CutPrefix(model, prefix+"/"); ok {
+		return rest
+	}
+	return model
 }
 
 // resolveComboRouting retrieves the routing strategy, sticky limit, and judge model

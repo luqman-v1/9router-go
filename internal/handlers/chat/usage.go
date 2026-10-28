@@ -47,7 +47,13 @@ const maxPersistedErrorLen = 512
 
 // LogFailure persists a bounded, credential-free diagnostic for a failed or
 // aborted request. It intentionally does not touch usageHistory/daily totals.
+//
+// ctx is the request context, and it is not optional: the abort verdict is
+// taken from it, so a call site that passes a nil context records a client
+// abort as an ordinary 502 while the response says 499. The same context and
+// the same classifier decide both, so the row and the response agree.
 func (h *ChatHandler) LogFailure(
+	ctx context.Context,
 	info *UsageLogInfo,
 	usage *translator.OpenAIUsage,
 	err error,
@@ -80,7 +86,7 @@ func (h *ChatHandler) LogFailure(
 	if errors.As(err, &upstreamErr) && upstreamErr.StatusCode > 0 {
 		statusCode = upstreamErr.StatusCode
 	}
-	if isClientCanceled(nil, err) {
+	if isClientCanceled(ctx, err) {
 		statusCode = StatusClientClosedRequest
 	}
 	message := extractErrorText([]byte(err.Error()))
@@ -106,7 +112,7 @@ func (h *ChatHandler) LogFailure(
 		startedAt = now.Add(-time.Duration(latencyMs) * time.Millisecond)
 	}
 
-	reqData, marshalErr := json.Marshal(map[string]any{
+	failurePayload := map[string]any{
 		"id":             reqID,
 		"provider":       info.Provider,
 		"model":          info.Model,
@@ -130,7 +136,13 @@ func (h *ChatHandler) LogFailure(
 		"tokens":   tokens,
 		"request":  map[string]any{"messages": extractRequestMessages(requestBody)},
 		"response": map[string]any{"error": message, "status": statusCode, "content": responseContent},
-	})
+	}
+	if rec := FallbackAttemptRecorderFrom(ctx); rec != nil {
+		if attempts := rec.Snapshot(); len(attempts) > 0 {
+			failurePayload["attempts"] = attempts
+		}
+	}
+	reqData, marshalErr := json.Marshal(failurePayload)
 	if marshalErr != nil {
 		return
 	}
@@ -339,7 +351,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		startedAtUsage = now.Add(-time.Duration(latencyMs) * time.Millisecond)
 	}
 
-	reqData, err := json.Marshal(map[string]any{
+	detailPayload := map[string]any{
 		"id":             reqID,
 		"provider":       info.Provider,
 		"model":          info.Model,
@@ -361,7 +373,13 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		"cost":           cost,
 		"request":        map[string]any{"messages": reqMsgs},
 		"response":       map[string]any{"content": respContent},
-	})
+	}
+	if rec := FallbackAttemptRecorderFrom(ctx); rec != nil {
+		if attempts := rec.Snapshot(); len(attempts) > 0 {
+			detailPayload["attempts"] = attempts
+		}
+	}
+	reqData, err := json.Marshal(detailPayload)
 	if err != nil {
 		log.Error("usage", "marshal request detail failed", "error", err)
 		return

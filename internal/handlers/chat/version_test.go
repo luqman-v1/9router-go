@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -151,7 +152,22 @@ func TestHandleTriggerUpdate_UpToDate(t *testing.T) {
 	}
 }
 
+// TestHandleChangelog drives the local-file path, not the network fallback.
+//
+// The handler tries changelogDirs() and then, if none of them has a changelog,
+// fetches it from GitHub. The old version of this test ran from the package
+// directory, where none of the three candidate dirs holds a CHANGELOG.md, so it
+// silently exercised the remote fetch and passed only on a machine with egress
+// (P0 Step 4 requires the suite to be safe with outbound blocked — this was the
+// one test that was not). Chdir into a fixture root makes the local path the
+// one under test and removes the network dependency entirely.
 func TestHandleChangelog(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "CHANGELOG.md"), []byte("# Changelog\n\n## 1.0.0\n"), 0o644); err != nil {
+		t.Fatalf("seed changelog: %v", err)
+	}
+	t.Chdir(root)
+
 	handler := NewChatHandler(nil, nil)
 	req := httptest.NewRequest("GET", "/api/changelog", nil)
 	rec := httptest.NewRecorder()
@@ -159,7 +175,7 @@ func TestHandleChangelog(t *testing.T) {
 	handler.HandleChangelog(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+		t.Fatalf("expected 200 from the local changelog, got %d: %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "Changelog") {
 		t.Errorf("expected response to contain 'Changelog', got: %s", rec.Body.String())

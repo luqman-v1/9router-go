@@ -44,13 +44,81 @@ func stripCodexUnsupportedTokenParams(body []byte) []byte {
 			changed = true
 		}
 	}
+	changed = normalizeCodexServiceTier(envelope) || changed
 	if !changed {
 		return body
 	}
 
-	out, err := json.Marshal(envelope)
+	out, err := marshalStable(envelope)
 	if err != nil {
 		return body
 	}
 	return out
+}
+
+// normalizeCodexServiceTier applies the Codex backend's service_tier rule and
+// drops the client-only "speed" hint. Port of open-sse/executors/codex.js
+// transformRequest:
+//
+//	if (body.service_tier === "fast") body.service_tier = "priority";
+//	if (body.service_tier && body.service_tier !== "priority") delete body.service_tier;
+//
+// "speed" is not deleted by that block. It disappears with every other field
+// outside RESPONSES_API_ALLOWLIST when the final filter runs, which this port
+// does not carry — so it is dropped explicitly here for the same effect.
+//
+// The rule lives here rather than in buildResponsesBody because that builder is
+// shared with every other Responses provider (grok-cli and friends); those
+// backends are not behind this allowlist and accept the field as sent.
+//
+// The guard is truthiness, not "not priority": upstream leaves null, false, 0
+// and "" in the body, so this does too. Reading it as strip-everything-else
+// would be stricter than the reference and would change what a client sending
+// an explicit null gets.
+//
+// Absence stays absence. Nothing here invents a tier: neither an account-level
+// codexFastMode preference nor a "speed" field promotes a request the caller
+// did not ask to prioritise.
+func normalizeCodexServiceTier(envelope map[string]any) bool {
+	var changed bool
+	if raw, ok := envelope["service_tier"]; ok {
+		s, isString := raw.(string)
+		switch {
+		case isString && s == "fast":
+			envelope["service_tier"] = "priority"
+			changed = true
+		case isString && s == "priority":
+			// Already the one value the backend accepts; leave it.
+		case truthy(raw):
+			delete(envelope, "service_tier")
+			changed = true
+		}
+	}
+	if _, ok := envelope["speed"]; ok {
+		delete(envelope, "speed")
+		changed = true
+	}
+	return changed
+}
+
+// truthy mirrors JavaScript's truthiness for the values JSON can hold, which
+// is what upstream's guard evaluates. Numbers matter: 0 and 0.0 are falsy on
+// the wire's terms, and encoding/json decodes both to float64.
+func truthy(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return t
+	case string:
+		return t != ""
+	case float64:
+		return t != 0
+	case []any:
+		return true // an array is an object in JS; only null/undefined/0/""/false are falsy
+	case map[string]any:
+		return true
+	default:
+		return true
+	}
 }

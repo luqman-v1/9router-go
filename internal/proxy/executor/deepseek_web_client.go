@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -69,6 +68,18 @@ type deepSeekTurn struct {
 	endpoints deepSeekEndpoints
 	origin    string
 	stealth   deepSeekStealth
+
+	// transport is the browser-fidelity stack. It is nil when the turn goes
+	// over plain net/http instead — which is what the test suite runs
+	// against, and what a connection that opts out of the stack runs against.
+	transport *deepSeekTransport
+
+	// cookie is the site's own session cookie, as the operator configured it.
+	cookie string
+
+	// deviceID is the id the site knows this client by. The site generates
+	// it per browser and keeps it, and it is what the settings calls carry.
+	deviceID string
 }
 
 // newDeepSeekTurn resolves the endpoints for one connection's configured base
@@ -86,49 +97,69 @@ func newDeepSeekTurn(client *http.Client, baseURL string, stealth deepSeekStealt
 	}
 }
 
-// webHeaders is the fingerprint every /api/v0/* call carries.
+// withBrowserFingerprint attaches the transport and the credential the turn
+// dials the site with.
 //
-// With stealth on it is the full set the current web build sends, including
-// the `x-hif-leim` / `x-hif-dliq` attestation values and the browser's own
-// `Sec-Fetch-*` / client-hint headers; with stealth off it is the minimal set
-// this provider shipped with, so the two modes are a real comparison.
-//
-// Accept-Encoding is deliberately absent from both: Go's transport manages
-// compression itself, and setting the header suppresses transparent gzip,
-// leaving every response to be decoded by hand.
-func (t deepSeekTurn) webHeaders(extra map[string]string) map[string]string {
-	if t.stealth.enabled {
-		return deepSeekBrowserHeaders(t.origin, extra)
+// The cookie is the site's own, not a fabricated one: the WAF reads it, and a
+// cookie the site never issued is a request the site does not recognise. A
+// turn with no cookie still works — the API's credential is the Bearer token
+// — but the browser's own request carries one, so the browser's own request
+// shape includes one.
+func (t deepSeekTurn) withBrowserFingerprint(cookie, deviceID string) deepSeekTurn {
+	t.cookie = cookie
+	t.deviceID = deviceID
+	if deepSeekWebPlainHTTP() {
+		return t
 	}
-	return deepSeekPlainHeaders(t.origin, extra)
+	transport, err := newDeepSeekTransport(t.client, t.origin, cookie)
+	if err != nil {
+		// The stack is defence in depth: the API endpoints answer the same
+		// over Go's own transport. A failure to build it is logged and the
+		// turn continues over plain net/http rather than failing outright.
+		log.Warn("deepseek-web", "could not build the browser transport, using plain HTTP", "error", err)
+		return t
+	}
+	t.transport = transport
+	return t
 }
 
-// deepSeekFakeCookie is upstream's generateFakeCookie(): the synthetic anti-bot
-// noise the real site sends on every request. It carries no credential — the
-// Bearer access token is the credential — but a request without it does not
-// look like the client it is imitating.
-func deepSeekFakeCookie() string {
-	const hexDigits = "0123456789abcdef"
-	hexID := func(n int) string {
-		var b strings.Builder
-		b.Grow(n)
-		for range n {
-			b.WriteByte(hexDigits[rand.IntN(len(hexDigits))])
+// webHeaders is the fingerprint a chat call carries.
+//
+// The chat calls — the token exchange, the proof-of-work challenge, the
+// completion — are issued below the app's request interceptor, so they carry
+// no `x-client-*` block. See deepseek_web_headers.go for the capture this
+// comes from.
+//
+// With stealth off it is the minimal set this provider shipped with, so the
+// two modes are a real comparison rather than a different flavour of the
+// same thing.
+//
+// Accept-Encoding is deliberately absent from the plain set: Go's transport
+// manages compression itself, and setting the header suppresses transparent
+// gzip, leaving every response to be decoded by hand.
+func (t deepSeekTurn) webHeaders(extra map[string]string) map[string]string {
+	var headers map[string]string
+	if t.stealth.enabled {
+		headers = deepSeekBrowserHeaders(t.origin, extra)
+	} else {
+		headers = deepSeekPlainHeaders(t.origin, extra)
+	}
+	return t.withCookie(headers)
+}
+
+// withCookie puts the site's own cookie on a header set.
+//
+// On the browser stack the cookie jar writes the cookie, and the stack
+// deletes a hand-written one so the site's current value is the only one on
+// the wire. Over plain net/http there is no jar, so the configured cookie is
+// written here instead.
+func (t deepSeekTurn) withCookie(headers map[string]string) map[string]string {
+	if t.transport == nil && t.cookie != "" {
+		if _, ok := headers["cookie"]; !ok {
+			headers["cookie"] = t.cookie
 		}
-		return b.String()
 	}
-	// RFC 4122 v4 shape: upstream's replacement pins the version nibble to 4 and
-	// the variant nibble to one of 8-b, which is what a real browser generates
-	// for these two cookie names.
-	uuid := func() string {
-		variant := hexDigits[8+rand.IntN(4)]
-		return hexID(8) + "-" + hexID(4) + "-4" + hexID(3) + "-" + string(variant) + hexID(3) + "-" + hexID(12)
-	}
-	now := time.Now()
-	return "intercom-HWWAFSESTIME=" + strconv.FormatInt(now.UnixMilli(), 10) +
-		"; HWWAFSESID=" + hexID(18) +
-		"; Hm_lvt_" + uuid() + "=" + strconv.FormatInt(now.Unix(), 10) +
-		"; _frid=" + uuid()
+	return headers
 }
 
 // deepSeekTokenCache memoizes userToken -> access token. Upstream keys the same
@@ -245,10 +276,34 @@ func (e *deepSeekAPIError) Error() string {
 }
 
 const (
-	// deepSeekCodeAuthFailed is the observed "Authorization Failed" envelope.
+	// deepSeekCodeAuthFailed is the "Authorization Failed" envelope the site
+	// answers a rejected credential with.
 	deepSeekCodeAuthFailed = 40003
-	// deepSeekCodeRateLimited is the observed rate-limit envelope.
-	deepSeekCodeRateLimited = 40002
+
+	// deepSeekCodeMissingToken is the "Missing Token" envelope: the request
+	// carried no credential at all.
+	//
+	// This code used to be read as a rate limit. It is not: the site's own
+	// bundle names 40002 MISSING_TOKEN and 40003 INVALID_TOKEN, and a
+	// request that carried no Bearer token was answered with 40002 — which
+	// the old mapping turned into a 429, so a broken credential was cooled
+	// down and retried against the same account instead of being reported.
+	deepSeekCodeMissingToken = 40002
+
+	// deepSeekCodeUserBanned is the "user is banned" envelope: the account
+	// itself is refused. It is not a credential problem, and no amount of
+	// re-authenticating helps.
+	deepSeekCodeUserBanned = 40012
+
+	// deepSeekCodeIPRestricted is the "IP access restricted" envelope: the
+	// account is fine and the address is not. Another egress reaches it.
+	deepSeekCodeIPRestricted = 40029
+
+	// deepSeekCodeMuted is the account-mute envelope.
+	deepSeekCodeMuted = 50006
+
+	// deepSeekCodeRequestEncrypted is the "request decrypt failed" envelope.
+	deepSeekCodeRequestEncrypted = 40006
 )
 
 // deepSeekUserToken normalizes a pasted credential. DeepSeek stores its token
@@ -276,6 +331,7 @@ func deepSeekUserToken(raw string) string {
 func DeepSeekUserToken(raw string) string { return deepSeekUserToken(raw) }
 
 // do sends one request to the chat.deepseek.com API and unwraps the envelope.
+//
 // Transport-level retries belong to the shared proxy layer, so this performs
 // exactly one attempt and classifies the outcome itself.
 func (t deepSeekTurn) do(ctx context.Context, method, url, bearer string, headers map[string]string, payload any) (jsontext.Value, error) {
@@ -289,12 +345,19 @@ func (t deepSeekTurn) do(ctx context.Context, method, url, bearer string, header
 	}
 
 	allHeaders := t.webHeaders(headers)
-	allHeaders["Content-Type"] = "application/json"
 	if bearer != "" {
-		allHeaders["Authorization"] = "Bearer " + bearer
+		allHeaders["authorization"] = "Bearer " + bearer
+	}
+	// The site marks a POST as cross-origin and leaves a GET unmarked: the
+	// capture shows `origin` on the POSTs and not on the GETs. A GET that
+	// carried one would be a request the site never made.
+	if method == http.MethodPost {
+		allHeaders["origin"] = t.origin
+	} else {
+		delete(allHeaders, "origin")
 	}
 
-	resp, err := proxy.DoRequest(ctx, t.client, method, url, allHeaders, body)
+	resp, err := t.send(ctx, method, url, body, allHeaders)
 	if err != nil {
 		return nil, fmt.Errorf("deepseek-web: %s: %w", url, err)
 	}
@@ -313,6 +376,35 @@ func (t deepSeekTurn) do(ctx context.Context, method, url, bearer string, header
 		return nil, &deepSeekAPIError{Code: envelope.Code, Message: envelope.Msg}
 	}
 	return envelope.Data, nil
+}
+
+// send issues one request and classifies a non-200 answer the way the shared
+// proxy layer does.
+//
+// The browser stack is used when there is one; otherwise the request goes
+// over Go's own transport, which the shared layer drives with its retry and
+// proxy-fallback rules.
+func (t deepSeekTurn) send(ctx context.Context, method, url string, body []byte, headers map[string]string) (*http.Response, error) {
+	if t.transport == nil {
+		return proxy.DoRequest(ctx, t.client, method, url, headers, body)
+	}
+	response, err := t.transport.send(ctx, method, url, body, headers)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode == http.StatusOK {
+		return response, nil
+	}
+	// A non-200 is read here, because the body is the part the caller
+	// classifies: the site's refusals arrive inside it.
+	errBody, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	_ = response.Body.Close()
+	return nil, &proxy.UpstreamError{
+		StatusCode: response.StatusCode,
+		Body:       errBody,
+		Header:     response.Header,
+		ReadErr:    readErr,
+	}
 }
 
 // bizDataOf unwraps the data envelope's biz_data field, which this API nests
@@ -368,8 +460,7 @@ func (t deepSeekTurn) acquireAccessToken(ctx context.Context, userToken string) 
 // conversation id a client can thread across turns on its own, so one session
 // serves one request.
 func (t deepSeekTurn) createSession(ctx context.Context, accessToken string) (string, error) {
-	data, err := t.do(ctx, http.MethodPost, t.endpoints.sessionCreate, accessToken,
-		map[string]string{"Cookie": deepSeekFakeCookie()}, map[string]any{})
+	data, err := t.do(ctx, http.MethodPost, t.endpoints.sessionCreate, accessToken, nil, map[string]any{})
 	if err != nil {
 		return "", err
 	}
@@ -386,18 +477,29 @@ func (t deepSeekTurn) createSession(ctx context.Context, accessToken string) (st
 // deleteSession closes an upstream chat session. Best effort by design: a
 // session left open is invisible to the user, so a failure here must not fail a
 // turn that already produced an answer.
+//
+// The Referer names the conversation's own page, which is the page a person
+// deletes a conversation from.
 func (t deepSeekTurn) deleteSession(ctx context.Context, accessToken, sessionID string) {
 	if sessionID == "" {
 		return
 	}
 	payload := map[string]any{"chat_session_id": sessionID}
-	if _, err := t.do(ctx, http.MethodPost, t.endpoints.sessionDelete, accessToken, nil, payload); err != nil {
+	if _, err := t.do(ctx, http.MethodPost, t.endpoints.sessionDelete, accessToken, map[string]string{
+		"referer": deepSeekChatPageURL(t.origin, sessionID),
+	}, payload); err != nil {
 		log.Debug("deepseek-web", "session cleanup failed", "error", err)
 	}
 }
 
 // attestationHeaders returns the client-attestation headers for a completion
 // call, or an empty map when stealth is off.
+//
+// The values are fetched through the turn itself rather than a bare client,
+// so they are collected over the same browser-fidelity transport the
+// completion will ride: the attestation hosts are part of the site's
+// anti-bot pipeline, and a value a Go TLS handshake collected is a value
+// that contradicts the Chrome handshake that presents it.
 //
 // The fetch is best effort by design: a cached value is used until its TTL
 // passes, a failed refresh falls back to the stale one, and a turn with no
@@ -407,7 +509,7 @@ func (t deepSeekTurn) attestationHeaders(ctx context.Context) map[string]string 
 	if !t.stealth.enabled {
 		return nil
 	}
-	return deepSeekHif.headers(ctx, t.client, t.origin)
+	return deepSeekHif.headers(ctx, t)
 }
 
 // deepSeekPowResponse is the proof-of-work answer, base64-encoded into the
@@ -453,9 +555,15 @@ func solveDeepSeekPow(ctx context.Context, challenge deepSeekPowChallenge) (stri
 
 // requestPow fetches and answers a fresh challenge for one completion attempt.
 // The challenge is single-use upstream, so every attempt needs a new one.
-func (t deepSeekTurn) requestPow(ctx context.Context, accessToken string) (string, error) {
+//
+// The challenge is requested for one conversation, and the browser requests
+// it from that conversation's page, so the Referer names the page rather
+// than the site root.
+func (t deepSeekTurn) requestPow(ctx context.Context, accessToken, chatSessionID string) (string, error) {
 	payload := map[string]any{"target_path": deepSeekCompletionPath}
-	data, err := t.do(ctx, http.MethodPost, t.endpoints.powChallenge, accessToken, nil, payload)
+	data, err := t.do(ctx, http.MethodPost, t.endpoints.powChallenge, accessToken, map[string]string{
+		"referer": deepSeekChatPageURL(t.origin, chatSessionID),
+	}, payload)
 	if err != nil {
 		return "", err
 	}
@@ -494,7 +602,7 @@ type deepSeekCompletionRequest struct {
 // completion endpoint streams, so holding an open body is the only way to avoid
 // buffering a whole answer.
 func (t deepSeekTurn) completion(ctx context.Context, accessToken string, request deepSeekCompletionRequest) (*http.Response, error) {
-	powAnswer, err := t.requestPow(ctx, accessToken)
+	powAnswer, err := t.requestPow(ctx, accessToken, request.ChatSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -505,8 +613,11 @@ func (t deepSeekTurn) completion(ctx context.Context, accessToken string, reques
 	}
 
 	allHeaders := t.webHeaders(map[string]string{
-		"Cookie":            deepSeekFakeCookie(),
-		"X-Ds-Pow-Response": powAnswer,
+		"x-ds-pow-response": powAnswer,
+		// The completion is issued from the conversation's own page, and a
+		// browser writes that page as the Referer on every fetch it makes
+		// there.
+		"referer": deepSeekChatPageURL(t.origin, request.ChatSessionID),
 	})
 	// The attestation headers belong to a completion call, not to the session
 	// or challenge calls: that is where the browser attaches them, and sending
@@ -514,10 +625,11 @@ func (t deepSeekTurn) completion(ctx context.Context, accessToken string, reques
 	for name, value := range t.attestationHeaders(ctx) {
 		allHeaders[name] = value
 	}
-	allHeaders["Content-Type"] = "application/json"
-	allHeaders["Authorization"] = "Bearer " + accessToken
+	allHeaders["authorization"] = "Bearer " + accessToken
+	// The completion is a POST, and the site marks its POSTs with the origin.
+	allHeaders["origin"] = t.origin
 
-	resp, err := proxy.DoRequest(ctx, t.client, http.MethodPost, t.endpoints.completion, allHeaders, payload)
+	resp, err := t.send(ctx, http.MethodPost, t.endpoints.completion, payload, allHeaders)
 	if err != nil {
 		if status, ok := deepSeekUpstreamStatus(err); ok &&
 			(status == http.StatusUnauthorized || status == http.StatusForbidden) {

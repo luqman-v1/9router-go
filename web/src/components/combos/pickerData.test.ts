@@ -317,4 +317,67 @@ describe('pickerData', () => {
       true
     )
   })
+
+  it('filters groups with negation: !gpt excludes gpt models under OpenAI group even when group matches', () => {
+    const connections: ProviderConnection[] = [
+      {
+        id: 'conn-oai',
+        provider: 'openai',
+        authType: 'apikey',
+        name: 'OpenAI',
+        email: null,
+        priority: 1,
+        isActive: 1,
+        data: '{}',
+        createdAt: '',
+        updatedAt: '',
+      },
+    ]
+    const groups = resolveModelPickerGroups(connections, [])
+    const oaiGroup = groups.find((g) => g.id === 'openai')
+    assert.ok(oaiGroup)
+    assert.ok(oaiGroup.models.some((m) => m.id.includes('gpt')))
+    assert.ok(oaiGroup.models.some((m) => m.id.includes('o1')))
+
+    // Search !gpt: OpenAI group matches "!gpt" (doesn't contain gpt), but all gpt models should be excluded!
+    const filtered = resolveFilteredGroups(groups, '!gpt', 'combo')
+    const filteredOai = filtered.find((g) => g.id === 'openai')
+    assert.ok(filteredOai, 'OpenAI group should remain because o1 models exist')
+    assert.strictEqual(
+      filteredOai.models.some((m) => m.id.includes('gpt')),
+      false,
+      'gpt models must be excluded'
+    )
+    assert.ok(
+      filteredOai.models.some((m) => m.id.includes('o1')),
+      'o1 models must remain'
+    )
+  })
+
+  it('filters combos with negation: !haiku excludes combo-haiku', () => {
+    const combos: Combo[] = [
+      {
+        id: 'c1',
+        name: 'combo-sonnet',
+        kind: null,
+        models: JSON.stringify(['anthropic/claude-3-5-sonnet']),
+        strategy: 'fallback',
+        createdAt: '',
+        updatedAt: '',
+      },
+      {
+        id: 'c2',
+        name: 'combo-haiku',
+        kind: null,
+        models: JSON.stringify(['anthropic/claude-3-5-haiku']),
+        strategy: 'fallback',
+        createdAt: '',
+        updatedAt: '',
+      },
+    ]
+
+    const filtered = resolveFilteredCombos(combos, undefined, '!haiku', 'combo')
+    assert.strictEqual(filtered.length, 1)
+    assert.strictEqual(filtered[0].name, 'combo-sonnet')
+  })
 })

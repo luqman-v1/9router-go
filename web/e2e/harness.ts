@@ -174,3 +174,16 @@ export async function openRowMenu(page: Page, keyName: string): Promise<void> {
     .getByRole('button', { name: `Actions for ${keyName}` })
     .click()
 }
+
+/**
+ * Opens the Usage trend panel on the Overview section and waits for its chart.
+ *
+ * The panel starts collapsed — a chevron row at the bottom of the page, the
+ * way upstream draws it — so the chart, its keyboard stops and its data table
+ * are not in the DOM at all until the disclosure is opened. Every assertion
+ * about them has to open it first, the way a reader reaches it.
+ */
+export async function openUsageTrend(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Toggle Usage trend' }).click()
+  await page.getByRole('img', { name: 'Usage trend chart' }).waitFor()
+}

@@ -8,6 +8,7 @@ import (
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/semanticcache"
+	"9router/proxy/internal/thinking"
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/updater"
 	"bytes"
@@ -17,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -60,6 +62,11 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// A "(level)" suffix is a request override, not part of the model id: it
+	// comes off the name before the name is resolved against the aliases and
+	// the combos, and the intent it carries travels on the context.
+	modelName, suffixIntent := thinking.ParseSuffix(reqBody.Model)
+
 	if reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
@@ -74,13 +81,21 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// keepalive traffic never reaches a provider, so it is not an access
 	// request — and before resolveModel, so a denied model never reaches
 	// connection selection.
-	if !h.enforceModelAccess(w, r, reqBody.Model) {
+	if !h.enforceModelAccess(w, r, modelName) {
 		return
 	}
 
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// Provider-scope limit state travels with the request: what one attempt
+	// learns (this provider is full) must steer the next one, and must not
+	// outlive the request (docs/provider-limits-plan.md D7).
+	ctx = withProviderLimitState(ctx)
 	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
-	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
+	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
+	// The operator's providerThinking overrides are read once here, not once
+	// per connection attempt.
+	ctx = h.withProviderThinkingModes(ctx)
 	// Record the dispatching key so the outbound guardrail tap can resolve the
 	// right policy. A keyless caller leaves it unset and the tap stays inert.
 	ctx = withGuardrailKey(ctx, requestKeyID(r))
@@ -113,7 +128,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	modelInfo, err := h.resolveModel(reqBody.Model)
+	modelInfo, err := h.resolveModel(modelName)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -129,6 +144,11 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 			h.handleFusion(ctx, w, body, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, modelInfo.JudgeModel)
 			return
 		}
+		// Media from old turns rides in the history even when the current turn
+		// is text-only. When no candidate can serve it, strip it rather than
+		// let a text-only upstream reject the whole conversation on a block
+		// this turn does not need.
+		body = maybeStripLegacyMediaBytes(body, augmented)
 		h.handleComboFallback(ctx, w, body, augmented, comboStrategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, injected...)
 		return
 	}
@@ -139,6 +159,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		targetEntry = modelInfo.Provider + "/" + modelInfo.Model
 	}
 	augmented, strat := h.AugmentModelsWithCapacityAdapter([]string{targetEntry}, requiredCaps, requestKeyID(r))
+	body = maybeStripLegacyMediaBytes(body, augmented)
 	if len(augmented) > 1 {
 		injected := augmented[:len(augmented)-1]
 		log.Info("chat", "capacity adapter auto-switch", "target", reqBody.Model, "switched_to", augmented[0], "caps", keysString(requiredCaps))
@@ -184,8 +205,12 @@ func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWrit
 		handlerutil.WriteJSONError(cw, http.StatusBadRequest, "failed to parse request body")
 		return
 	}
-	upstreamBody["model"] = modelInfo.Model
+	// The client's model id is the jailbreak key; rewrite the body to the
+	// resolved upstream model first, then inject against the original id.
+	requestedModel, _ := upstreamBody["model"].(string)
+	upstreamBody["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
 	repairToolCallIDsInMap(upstreamBody)
+	ctx = h.applyJailbreak(ctx, upstreamBody, requestedModel, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
 	upstreamJSON, err := json.Marshal(upstreamBody)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal upstream request")
@@ -201,6 +226,16 @@ func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWrit
 		var ue *upstreamError
 		if errors.As(result, &ue) {
 			cw.Header().Set("Content-Type", "application/json")
+			// Forward only Retry-After. ue.Header can also carry the failed
+			// upstream response's own framing headers (Content-Length,
+			// Transfer-Encoding); copying those makes the reply advertise a
+			// body length that does not match what we write, and the client
+			// sees the response truncated. Retry-After is the one header a
+			// caller needs to know when to come back after a temporary
+			// condition, and we set it ourselves.
+			if ra := ue.Header.Get("Retry-After"); ra != "" {
+				cw.Header().Set("Retry-After", ra)
+			}
 			cw.WriteHeader(ue.StatusCode)
 			cw.Write(ue.Body)
 			return
@@ -229,6 +264,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A "(level)" suffix is a request override, not part of the model id: it
+	// comes off the name before the name is resolved against the aliases and
+	// the combos, and the intent it carries travels on the context.
+	modelName, suffixIntent := thinking.ParseSuffix(reqBody.Model)
+
 	if reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
@@ -236,11 +276,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Per-key model policy: 403 before any translation work or connection
 	// selection.
-	if !h.enforceModelAccess(w, r, reqBody.Model) {
+	if !h.enforceModelAccess(w, r, modelName) {
 		return
 	}
 
-	modelInfo, err := h.resolveModel(reqBody.Model)
+	modelInfo, err := h.resolveModel(modelName)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
@@ -255,15 +295,17 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	// historical case; minimax-code serves the same wire on MiniMax's mavis
 	// gateway (open-sse/config/providers.js transport.format).
 	claudeNative := modelInfo.Provider == "claude" || modelInfo.Provider == "anthropic"
-	if !claudeNative {
-		if cfg, err := h.GetProviderConfig(modelInfo.Provider, nil); err == nil {
+	var providerCfg *providers.ProviderConfig
+	if cfg, err := h.GetProviderConfig(modelInfo.Provider, nil); err == nil {
+		providerCfg = cfg
+		if !claudeNative {
 			claudeNative = cfg != nil && cfg.Format == providers.FormatClaude
 		}
 	}
 	if claudeNative {
 		translateResponse = false
 		body = translator.SanitizeClaudePassthrough(body, translator.ClaudeIntentionalPrefill(body))
-		if modelInfo.Provider == "minimax" || modelInfo.Provider == "minimax-cn" {
+		if providerCfg != nil && providerCfg.RequireClaudeToolType {
 			body = translator.DefaultClaudeToolType(body)
 		}
 		body = translator.AnchorClaudeCache(body)
@@ -286,7 +328,12 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	workingBody["stream"] = reqBody.Stream
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
-	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	ctx = withProviderLimitState(ctx)
+	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
+	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
+	// The operator's providerThinking overrides are read once here, not once
+	// per connection attempt.
+	ctx = h.withProviderThinkingModes(ctx)
 	// Record the dispatching key so the outbound guardrail tap can resolve the
 	// policy scoped to it. A keyless caller leaves it unset and the tap stays
 	// inert.
@@ -305,6 +352,13 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 			h.handleFusion(ctx, w, bodyJSON, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, translateResponse, reqBody.Model, modelInfo.StickyLimit, modelInfo.JudgeModel)
 			return
 		}
+		// Media from old turns rides in the history even when the current turn
+		// is text-only. When no candidate can serve it, strip it rather than
+		// let a text-only upstream reject the whole conversation on a block
+		// this turn does not need.
+		if cleaned, changed := maybeStripLegacyMedia(workingBody, augmented); changed {
+			workingBody = cleaned
+		}
 		h.handleMessagesComboFallback(ctx, w, workingBody, augmented, comboStrategy, reqBody.Stream, reqBody.Model, modelInfo.StickyLimit, injected...)
 		return
 	}
@@ -315,6 +369,9 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		targetEntry = modelInfo.Provider + "/" + modelInfo.Model
 	}
 	augmented, strat := h.AugmentModelsWithCapacityAdapter([]string{targetEntry}, requiredCaps, requestKeyID(r))
+	if cleaned, changed := maybeStripLegacyMedia(workingBody, augmented); changed {
+		workingBody = cleaned
+	}
 	if len(augmented) > 1 {
 		injected := augmented[:len(augmented)-1]
 		log.Info("chat", "capacity adapter auto-switch messages", "target", reqBody.Model, "switched_to", augmented[0], "caps", keysString(requiredCaps))
@@ -328,7 +385,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 // handleMessagesSingleModel forwards a translated Claude request for a single model.
 func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
 	cw := newCommittedResponseWriter(w)
-	translatedReq["model"] = modelInfo.Model
+	// The client's model id is the jailbreak key; rewrite the body to the
+	// resolved upstream model first, then inject against the original id.
+	requestedModel, _ := translatedReq["model"].(string)
+	translatedReq["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
+	ctx = h.applyJailbreak(ctx, translatedReq, requestedModel, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
 	finalBody, err := json.Marshal(translatedReq)
 	if err != nil {
 		handlerutil.WriteJSONError(cw, http.StatusInternalServerError, "failed to marshal translated request")
@@ -344,6 +405,16 @@ func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.Resp
 		var ue *upstreamError
 		if errors.As(result, &ue) {
 			cw.Header().Set("Content-Type", "application/json")
+			// Forward only Retry-After. ue.Header can also carry the failed
+			// upstream response's own framing headers (Content-Length,
+			// Transfer-Encoding); copying those makes the reply advertise a
+			// body length that does not match what we write, and the client
+			// sees the response truncated. Retry-After is the one header a
+			// caller needs to know when to come back after a temporary
+			// condition, and we set it ourselves.
+			if ra := ue.Header.Get("Retry-After"); ra != "" {
+				cw.Header().Set("Retry-After", ra)
+			}
 			cw.WriteHeader(ue.StatusCode)
 			cw.Write(ue.Body)
 			return
@@ -616,35 +687,67 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 	var data []map[string]any
 	now := time.Now().Unix()
 
-	for id, cfg := range providers.KnownProviders {
-		var match bool
-		switch kind {
-		case "image":
-			match = cfg.ImageURL != ""
-		case "tts":
-			match = cfg.TTSURL != ""
-		case "stt":
-			match = cfg.STTURL != ""
-		case "systemone":
-			match = cfg.SystemoneURL != ""
-		case "embedding":
-			match = strings.Contains(cfg.BaseURL, "/embeddings")
-		case "web":
-			match = false
-		case "image-to-text":
-			match = true
+	// A web provider is the search/fetch lane itself, so upstream publishes one
+	// entry per lane — `<alias>/search` when the provider has a searchConfig and
+	// `<alias>/fetch` when it has a fetchConfig (src/app/api/v1/models/route.js
+	// :612-631). Answering `match = false` for the whole kind left the listing
+	// empty and every web client without a model to call.
+	if kind == "web" {
+		for id, cfg := range providers.KnownProviders {
+			alias := providers.GetProviderAlias(id)
+			if cfg.SearchURL != "" {
+				data = append(data, map[string]any{
+					"id":       alias + "/search",
+					"object":   "model",
+					"kind":     "webSearch",
+					"owned_by": alias,
+					"endpoint": "/v1/search",
+					"created":  now,
+				})
+			}
+			if cfg.FetchURL != "" {
+				data = append(data, map[string]any{
+					"id":       alias + "/fetch",
+					"object":   "model",
+					"kind":     "webFetch",
+					"owned_by": alias,
+					"endpoint": "/v1/web/fetch",
+					"created":  now,
+				})
+			}
 		}
-		if !match {
-			continue
-		}
-		data = append(data, map[string]any{
-			"id":       id,
-			"object":   "model",
-			"kind":     kind,
-			"owned_by": id,
-			"endpoint": kindEndpoint(kind),
-			"created":  now,
+		sort.Slice(data, func(i, j int) bool {
+			return data[i]["id"].(string) < data[j]["id"].(string)
 		})
+	} else {
+		for id, cfg := range providers.KnownProviders {
+			var match bool
+			switch kind {
+			case "image":
+				match = cfg.ImageURL != ""
+			case "tts":
+				match = cfg.TTSURL != ""
+			case "stt":
+				match = cfg.STTURL != ""
+			case "systemone":
+				match = cfg.SystemoneURL != ""
+			case "embedding":
+				match = strings.Contains(cfg.BaseURL, "/embeddings")
+			case "image-to-text":
+				match = true
+			}
+			if !match {
+				continue
+			}
+			data = append(data, map[string]any{
+				"id":       id,
+				"object":   "model",
+				"kind":     kind,
+				"owned_by": id,
+				"endpoint": kindEndpoint(kind),
+				"created":  now,
+			})
+		}
 	}
 
 	// Per-key policy applies to the kind listing too — it is the same

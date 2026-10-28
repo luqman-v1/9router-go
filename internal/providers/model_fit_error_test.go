@@ -48,6 +48,18 @@ func TestIsModelFitError(t *testing.T) {
 			want:       true,
 		},
 		{
+			name:       "zed 403 context window exceeded",
+			statusCode: http.StatusForbidden,
+			body:       `{"error":{"message":"Context window exceeded: 103326 tokens exceeds the limit of 100000 tokens"}}`,
+			want:       true,
+		},
+		{
+			name:       "a 403 that is not about fit stays an account refusal",
+			statusCode: http.StatusForbidden,
+			body:       `{"error":{"message":"you do not have access to this model"}}`,
+			want:       false,
+		},
+		{
 			name:       "a malformed body is not a fit failure",
 			statusCode: http.StatusBadRequest,
 			body:       `{"error":{"message":"invalid character 'x' looking for beginning of value"}}`,

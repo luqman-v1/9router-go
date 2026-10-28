@@ -111,7 +111,7 @@ func sanitizeToolArgs(toolName, argsJSON string) string {
 		}
 	}
 
-	sanitized, err := json.Marshal(args)
+	sanitized, err := json.Marshal(args, json.Deterministic(true))
 	if err != nil {
 		return argsJSON
 	}

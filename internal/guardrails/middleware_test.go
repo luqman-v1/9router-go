@@ -73,6 +73,56 @@ func TestInboundIsNoOpWithoutPolicy(t *testing.T) {
 	}
 }
 
+// TestInboundOversizedBodyIsForwardedUntouched pins the size cap's contract: a
+// body over maxScanBody is delivered byte for byte and never scanned. Reading
+// only the prefix and forwarding it was a silent truncation — the handler saw a
+// corrupt request while the middleware reported nothing.
+func TestInboundOversizedBodyIsForwardedUntouched(t *testing.T) {
+	// The marker sits past the cap, so a test that only proved "the handler got
+	// something" would still pass while the tail was dropped.
+	const tailMarker = "tail-marker-9r-beyond-the-cap"
+	body := chatBody(strings.Repeat("a", maxScanBody) + tailMarker)
+	store := jsonStore(`{"detectors":["pii"],"action":"log_only"}`)
+
+	// A declared length is the cheap path; an unknown one (chunked upload)
+	// must reattach what was already consumed.
+	for _, tc := range []struct {
+		name   string
+		length int64
+	}{
+		{name: "declared length", length: int64(len(body))},
+		{name: "unknown length", length: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen []byte
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("downstream read: %v", err)
+				}
+				seen = b
+				w.WriteHeader(http.StatusOK)
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.ContentLength = tc.length
+			Inbound(store, nil, nil)(next).ServeHTTP(httptest.NewRecorder(), req)
+
+			if len(seen) != len(body) {
+				t.Fatalf("handler saw %d bytes, want %d", len(seen), len(body))
+			}
+			if !bytes.Equal(seen, []byte(body)) {
+				t.Error("oversized body was modified in transit")
+			}
+			at := bytes.Index(seen, []byte(tailMarker))
+			if at <= maxScanBody {
+				t.Errorf("tail marker at %d, want past the %d-byte cap", at, maxScanBody)
+			}
+		})
+	}
+}
+
 // TestInboundLogOnlyPassesUnchanged proves log_only observes without touching
 // the request — the safe default an operator enables first.
 func TestInboundLogOnlyPassesUnchanged(t *testing.T) {

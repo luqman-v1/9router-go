@@ -6,6 +6,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -155,7 +156,7 @@ func CloakAntigravityRequest(req *GeminiRequest, clientTool string) (*GeminiRequ
 		}
 		seen[decl.Name] = true
 		if decl.Parameters != nil {
-			if b, err := json.Marshal(decl.Parameters); err == nil {
+			if b, err := json.Marshal(decl.Parameters, json.Deterministic(true)); err == nil {
 				cleaned := CleanParametersSchema(b)
 				var cleanedParams any
 				if err := json.Unmarshal(cleaned, &cleanedParams); err == nil {
@@ -235,9 +236,25 @@ var (
 	harnessBrandOMP             = regexp.MustCompile(`(?i)Oh My Pi`)
 	harnessBrandOMPLive         = regexp.MustCompile(`(?i)omp Live`)
 	claudeBillingHeaderRegex    = regexp.MustCompile(`(?im)^x-anthropic-billing-header:[^\n]*(?:\r?\n)*`)
-	hermesIdentityRegex         = regexp.MustCompile(`(?i)You are Hermes Agent,\s*(an intelligent AI assistant)(?: created by Nous Research)?\.`)
+	// antigravityOpenCodeRegex matches the literal `opencode` provider
+	// identifier upstream rewrites in the system instruction. Upstream's rule
+	// is unbounded and case-insensitive, so `opencode-zen` and
+	// `.config/opencode/` are rewritten too (parity with decolua/9router
+	// open-sse/config/appConstants.js:194).
+	antigravityOpenCodeRegex = regexp.MustCompile(`(?i)opencode`)
+	// hermesIdentityRegex matches every Hermes identity variant upstream
+	// rewrites, and the whole match is replaced by a neutral sentence. The
+	// legacy rule only matched one exact phrasing, so the other variants
+	// reached the Antigravity backend with the fingerprint intact and could
+	// trigger a fake 429 RESOURCE_EXHAUSTED (parity with decolua/9router
+	// commit a61fc6a0).
+	//
+	// The upstream expression is transliterated exactly, including the
+	// literal single space in "Nous Research" — upstream does not accept
+	// other whitespace between the two words, and a port that accepted more
+	// would rewrite phrasings upstream leaves alone.
+	hermesIdentityRegex = regexp.MustCompile(`(?i)You are Hermes(?: Agent)?(?:,\s*(?:an intelligent AI assistant|an AI assistant|an AI agent))?(?:,?\s*(?:built|created)\s+by\s+Nous Research)?\.`)
 )
-var opencodeRegex = regexp.MustCompile(`(?i)\bopencode\b`)
 
 // normalizeHarnessMarkers neutralizes harness fingerprint tags in system text.
 // Bodies are preserved; only the marker names change.
@@ -255,20 +272,13 @@ func rewriteCompetingBranding(text string) string {
 	return rewriteBrandingText(text, true)
 }
 
-// rewriteBrandingText applies competitive-prompt rewrites. Harness markers
-// (tags + branding) are fingerprints of system-instruction text only;
-// user/model messages, tool definitions, arguments, and results keep the
-// existing Claude-SDK + opencode handling and are never harness-normalized.
-func rewriteBrandingText(text string, isSystemInstruction bool) string {
-	for _, phrase := range competitivePromptBlacklist {
-		text = strings.ReplaceAll(text, phrase, "")
-	}
-	text = claudeBillingHeaderRegex.ReplaceAllString(text, "")
-	text = hermesIdentityRegex.ReplaceAllString(text, "You are Hermes Agent. You are ${1}.")
-	if isSystemInstruction {
-		text = normalizeHarnessMarkers(text)
-	}
-	text = opencodeRegex.ReplaceAllStringFunc(text, func(m string) string {
+// rewriteAntigravityBrand rewrites the literal `opencode` provider
+// identifier to `antigravity`, matching upstream's fourth row of
+// ANTIGRAVITY_PROMPT_REWRITES (decolua/9router
+// open-sse/config/appConstants.js:194). Upstream's replacement preserves the
+// three capitalisations it names and lowercases everything else.
+func rewriteAntigravityBrand(text string) string {
+	return antigravityOpenCodeRegex.ReplaceAllStringFunc(text, func(m string) string {
 		switch m {
 		case "OpenCode":
 			return "Antigravity"
@@ -278,6 +288,26 @@ func rewriteBrandingText(text string, isSystemInstruction bool) string {
 			return "antigravity"
 		}
 	})
+}
+
+// rewriteBrandingText applies competitive-prompt rewrites. Harness markers
+// (tags + branding) are fingerprints of system-instruction text only;
+// user/model messages, tool definitions, arguments, and results keep the
+// existing competitive blacklist handling and are never harness-normalized.
+func rewriteBrandingText(text string, isSystemInstruction bool) string {
+	for _, phrase := range competitivePromptBlacklist {
+		text = strings.ReplaceAll(text, phrase, "")
+	}
+	text = claudeBillingHeaderRegex.ReplaceAllString(text, "")
+	text = hermesIdentityRegex.ReplaceAllString(text, "You are an AI assistant.")
+	if isSystemInstruction {
+		text = normalizeHarnessMarkers(text)
+		// Upstream applies this row to the system instruction only: the
+		// caller brands its own client there, and the backend flags
+		// competing-client branding with a fake 429 Quota Exhausted. The
+		// conversation keeps the caller's vocabulary.
+		text = rewriteAntigravityBrand(text)
+	}
 	return strings.TrimSpace(text)
 }
 
@@ -480,6 +510,101 @@ func AntigravityUpstreamModel(model string) string {
 	return NormalizeAntigravityModel(base)
 }
 
+// AntigravityEffortTier reads the reasoning tier a client asked for, mirroring
+// upstream getModelUpstreamId: the model id's own "(level)" suffix wins over
+// the body, then reasoning_effort / output_config.effort / reasoning.effort,
+// then thinking.budget_tokens (>16384 high, <=4096 low, else medium).
+// xhigh/max fold onto high and minimal onto low. Empty when nothing asks for
+// a tier.
+func AntigravityEffortTier(model string, clientBody []byte) string {
+	if idx := strings.Index(model, "("); idx != -1 && strings.HasSuffix(model, ")") {
+		return antigravityNormalizeTier(strings.ToLower(strings.TrimSpace(model[idx+1 : len(model)-1])))
+	}
+	if len(clientBody) == 0 {
+		return ""
+	}
+	var probe map[string]any
+	if err := json.Unmarshal(clientBody, &probe); err != nil {
+		return ""
+	}
+	effort := ""
+	for _, key := range []string{"reasoning_effort", "output_config", "reasoning"} {
+		v, ok := probe[key]
+		if !ok {
+			continue
+		}
+		if key == "reasoning_effort" {
+			if s, ok := v.(string); ok && s != "" {
+				effort = s
+				break
+			}
+			continue
+		}
+		obj, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if s, ok := obj["effort"].(string); ok && s != "" {
+			effort = s
+			break
+		}
+	}
+	if effort != "" {
+		return antigravityNormalizeTier(strings.ToLower(strings.TrimSpace(effort)))
+	}
+	if thinking, ok := probe["thinking"].(map[string]any); ok {
+		if b, ok := antigravityToFloat(thinking["budget_tokens"]); ok && b > 0 {
+			switch {
+			case b > 16384:
+				return "high"
+			case b <= 4096:
+				return "low"
+			default:
+				return "medium"
+			}
+		}
+	}
+	return ""
+}
+
+func antigravityNormalizeTier(level string) string {
+	switch level {
+	case "xhigh", "max":
+		return "high"
+	case "minimal":
+		return "low"
+	}
+	return level
+}
+
+func antigravityToFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return f, err == nil
+	}
+	return 0, false
+}
+
+// AntigravityTieredModel resolves a client model id to the tiered backend id
+// the client's reasoning effort asks for — upstream's body-inspecting branch
+// of getModelUpstreamId. An unadorned `gemini-3.8-flash` with
+// reasoning_effort "high" reaches Google as `gemini-3.8-flash-high` instead of
+// always landing on the bare id's medium tier. Falls back to the plain
+// resolution when no tier is requested or the catalog has no such variant.
+// The "(level)" suffix never reaches the wire: Cloud Code 404s suffixed ids.
+func AntigravityTieredModel(model string, clientBody []byte) string {
+	base := stripParenthesisedSuffix(strings.ToLower(strings.TrimSpace(model)))
+	if tier := AntigravityEffortTier(model, clientBody); tier != "" {
+		if resolved, ok := antigravityUpstreamModelIDs[base+"-"+tier]; ok {
+			return stripParenthesisedSuffix(resolved)
+		}
+	}
+	return AntigravityUpstreamModel(model)
+}
+
 // stripParenthesisedSuffix removes a trailing "(level)" from an id, if any.
 func stripParenthesisedSuffix(id string) string {
 	if idx := strings.Index(id, "("); idx != -1 && strings.HasSuffix(id, ")") {
@@ -559,7 +684,7 @@ func hardenAntigravityRequest(geminiBody []byte) []byte {
 	if !changed {
 		return geminiBody
 	}
-	out, err := json.Marshal(m)
+	out, err := json.Marshal(m, json.Deterministic(true))
 	if err != nil {
 		return geminiBody
 	}
@@ -576,7 +701,7 @@ func StripThoughtSignatures(body []byte) []byte {
 		return body
 	}
 	stripThoughtSignaturesRecursive(v)
-	out, err := json.Marshal(v)
+	out, err := json.Marshal(v, json.Deterministic(true))
 	if err != nil {
 		return body
 	}
@@ -608,7 +733,7 @@ func ReplaceThoughtSignatures(body []byte, replacement string) []byte {
 		return body
 	}
 	replaceThoughtSignaturesRecursive(v, replacement)
-	out, err := json.Marshal(v)
+	out, err := json.Marshal(v, json.Deterministic(true))
 	if err != nil {
 		return body
 	}
@@ -722,7 +847,7 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 			cloaked, _ := CloakAntigravityRequest(cleanedReq, "")
 			cleanedReq = cloaked
 		}
-		if cloakedBytes, err := json.Marshal(cleanedReq); err == nil {
+		if cloakedBytes, err := json.Marshal(cleanedReq, json.Deterministic(true)); err == nil {
 			geminiBody = cloakedBytes
 		}
 	}
@@ -738,7 +863,7 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 		RequestID: antigravityBuildRequestID(projectID, modelName, "agent", contentCount),
 		Request:   geminiBody,
 	}
-	out, err := json.Marshal(wrapper)
+	out, err := json.Marshal(wrapper, json.Deterministic(true))
 	if err != nil {
 		return nil, fmt.Errorf("marshal antigravity wrapper: %w", err)
 	}

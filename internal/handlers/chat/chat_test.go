@@ -351,6 +351,108 @@ func TestHandleMessages_ClaudeFormat(t *testing.T) {
 	}
 }
 
+func TestHandleMessages_RequireClaudeToolType(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	var receivedBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer upstream.Close()
+
+	customData, _ := json.Marshal(map[string]any{
+		"apiKey":  "sk-test-minimax-key",
+		"baseUrl": upstream.URL,
+	})
+	_, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-minimax', 'minimax-code', 'apikey', 'Mock MiniMax Code', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(customData))
+	if err != nil {
+		t.Fatalf("failed to insert mock connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	handler := NewChatHandler(repo)
+
+	// Send request with tool missing type to a provider with RequireClaudeToolType: true (minimax-code)
+	claudeBody := `{"model":"minimax-code/MiniMax-M3.1-Flash-Preview","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"test_tool","description":"desc","input_schema":{"type":"object"}}],"max_tokens":100}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(claudeBody))
+	rec := httptest.NewRecorder()
+
+	handler.HandleMessages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(receivedBody, &parsed); err != nil {
+		t.Fatalf("unmarshal received body: %v", err)
+	}
+	tools, ok := parsed["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected 1 tool in forwarded body, got: %+v", parsed["tools"])
+	}
+	t0, ok := tools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tool is not map: %+v", tools[0])
+	}
+	if t0["type"] != "custom" {
+		t.Errorf("expected tool type to be 'custom', got: %v", t0["type"])
+	}
+
+	// Negative assertion: a Claude-native provider without RequireClaudeToolType (e.g. anthropic/claude)
+	// must leave typeless tools untouched without injecting type: "custom".
+	var claudeReceivedBody []byte
+	claudeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claudeReceivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg-2","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer claudeUpstream.Close()
+
+	claudeConnData, _ := json.Marshal(map[string]any{
+		"apiKey":  "sk-ant-test-key",
+		"baseUrl": claudeUpstream.URL,
+	})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-claude', 'claude', 'apikey', 'Mock Claude', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+		string(claudeConnData))
+	if err != nil {
+		t.Fatalf("failed to insert mock claude connection: %v", err)
+	}
+
+	claudeReqBody := `{"model":"claude/claude-3-7-sonnet","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"test_tool","description":"desc","input_schema":{"type":"object"}}],"max_tokens":100}`
+	claudeReq := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(claudeReqBody))
+	claudeRec := httptest.NewRecorder()
+
+	handler.HandleMessages(claudeRec, claudeReq)
+	if claudeRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for claude, got %d, body: %s", claudeRec.Code, claudeRec.Body.String())
+	}
+
+	var parsedClaude map[string]any
+	if err := json.Unmarshal(claudeReceivedBody, &parsedClaude); err != nil {
+		t.Fatalf("unmarshal claude body: %v", err)
+	}
+	claudeTools, ok := parsedClaude["tools"].([]any)
+	if !ok || len(claudeTools) != 1 {
+		t.Fatalf("expected 1 tool in claude forwarded body: %+v", parsedClaude["tools"])
+	}
+	ct0, ok := claudeTools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tool is not map: %+v", claudeTools[0])
+	}
+	if ct0["type"] != nil {
+		t.Errorf("expected claude tool type to remain absent/nil, got: %v", ct0["type"])
+	}
+}
+
 func TestHandleChatCompletions_Streaming(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -1429,6 +1531,7 @@ func TestLogFailurePersistsSingleSanitizedError(t *testing.T) {
 	repo := db.NewRepo(database)
 	handler := NewChatHandler(repo)
 	handler.LogFailure(
+		context.Background(),
 		&UsageLogInfo{Provider: "openai", Model: "gpt-test", ConnectionID: "conn-1", APIKey: "sk-secret", Endpoint: "/v1/chat/completions"},
 		&translator.OpenAIUsage{PromptTokens: 7, CachedTokens: 3},
 		&upstreamError{StatusCode: http.StatusTooManyRequests, Body: []byte(`{"error":{"message":"rate limited"}}`)},

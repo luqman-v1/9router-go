@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	json "encoding/json/v2"
@@ -32,7 +33,7 @@ func TestApplyTokenSavers_AllOff(t *testing.T) {
 	defer cleanup()
 
 	body := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
-	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(body, false)
+	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(context.Background(), body, false)
 	if string(got) != string(body) {
 		t.Errorf("expected unchanged body when all token savers off")
 	}
@@ -62,7 +63,7 @@ func TestApplyTokenSavers_RTKOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal body: %v", err)
 	}
-	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(body, false)
+	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(context.Background(), body, false)
 	if string(got) == string(body) {
 		t.Errorf("expected RTK to modify body")
 	}
@@ -83,7 +84,7 @@ func TestApplyTokenSavers_CavemanInjects(t *testing.T) {
 	h.TokenSaver.SetCaveman(true)
 
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	got, _, _, _ := h.applyTokenSavers(body, false)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
 	// Caveman prompt text should now appear in the system message.
 	if !strings.Contains(string(got), "terse") && !strings.Contains(string(got), "caveman") {
 		t.Errorf("expected caveman prompt injected, got %s", got)
@@ -96,7 +97,7 @@ func TestApplyTokenSavers_PonytailInjects(t *testing.T) {
 	h.TokenSaver.SetPonytail(true)
 
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	got, _, _, _ := h.applyTokenSavers(body, false)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
 	if !strings.Contains(string(got), tokensaver.PonytailPrompt[:20]) {
 		t.Errorf("expected ponytail prompt injected, got %s", got)
 	}
@@ -108,7 +109,7 @@ func TestApplyTokenSavers_ADHDInjects(t *testing.T) {
 	h.TokenSaver.SetADHD(true)
 
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	got, _, _, _ := h.applyTokenSavers(body, false)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
 	if !strings.Contains(string(got), "I have ADHD — action-first output") {
 		t.Errorf("expected ADHD full prompt injected, got %s", got)
 	}
@@ -116,7 +117,7 @@ func TestApplyTokenSavers_ADHDInjects(t *testing.T) {
 	// Test lite mode
 	h.TokenSaver.SetADHD(true, "lite")
 	bodyLite := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	gotLite, _, _, _ := h.applyTokenSavers(bodyLite, false)
+	gotLite, _, _, _ := h.applyTokenSavers(context.Background(), bodyLite, false)
 	if !strings.Contains(string(gotLite), "I have ADHD (lite)") {
 		t.Errorf("expected ADHD lite prompt injected, got %s", gotLite)
 	}
@@ -262,13 +263,17 @@ func TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter(t *testing.T
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := hits.Add(1)
 		if n == 1 {
-			// Upstream says "wait ~1s" (RFC3339). A 429 is only worth retrying
+			// Upstream says "wait ~1s". A 429 is only worth retrying
 			// inside brief429RetryTolerance — past that the account is out of
 			// quota and re-hitting it deepens the upstream's backoff — so the
 			// bound, not the old 8s cap, is what this covers.
-			ra := time.Now().Add(time.Second).Format(time.RFC3339)
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`{"error":{"retryAfter":"` + ra + `"}}`))
+			// The wait travels as a duration, not as an instant: an instant
+			// decays while the router processes the failure, and on a loaded
+			// machine the wait can be gone before the router reads it. Then
+			// the second pass never runs and this test fails on the
+			// machine's speed instead of on the behaviour.
+			w.Write([]byte(deltaRetryAfterBody(time.Second)))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -413,5 +418,74 @@ func TestHandleAccountFallback_AllInCooldownReportsEarliestReset(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), inTenMinutes.UTC().Format(time.RFC3339)) {
 		t.Errorf("expected error to contain earliest reset %s, got: %v", inTenMinutes.UTC().Format(time.RFC3339), err)
+	}
+}
+func TestApplyTokenSavers_HeadroomOffByDefault(t *testing.T) {
+	// The default must be "off", because the alternative is every request
+	// paying for a round trip to a proxy the operator never configured.
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+
+	body := []byte(`{"messages":[{"role":"user","content":"a long paragraph worth compressing if it were enabled"}]}`)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
+	if string(got) != string(body) {
+		t.Fatalf("headroom must be off by default; body changed")
+	}
+}
+
+func TestApplyTokenSavers_HeadroomCompressesWhenEnabled(t *testing.T) {
+	// The wiring test: with the flag on and a proxy that answers, the body the
+	// handler returns is the proxy's, not the original. Without this, the call
+	// site could be deleted and every other test would still pass.
+	var hits int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"short"}],
+			"tokens_before":900,"tokens_after":3,"tokens_saved":897}`))
+	}))
+	defer ts.Close()
+
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	h.TokenSaver.UpdateFromSettings(&db.SettingsData{
+		HeadroomEnabled:   true,
+		HeadroomUrl:       ts.URL,
+		HeadroomTimeoutMs: 2000,
+	})
+
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"a long paragraph worth compressing if it were enabled at all today"}]}`)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
+	if atomic.LoadInt32(&hits) == 0 {
+		t.Fatalf("enabled headroom never reached the proxy")
+	}
+	if string(got) == string(body) {
+		t.Fatalf("body was not replaced by the compressed one")
+	}
+	if !bytes.Contains(got, []byte(`"short"`)) {
+		t.Fatalf("expected the proxy's message in the result, got: %s", got)
+	}
+}
+
+func TestApplyTokenSavers_HeadroomFailsOpen(t *testing.T) {
+	// A proxy that is configured but not running must not fail the request.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	url := ts.URL
+	ts.Close()
+
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	h.TokenSaver.UpdateFromSettings(&db.SettingsData{
+		HeadroomEnabled:   true,
+		HeadroomUrl:       url,
+		HeadroomTimeoutMs: 300,
+	})
+
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"still has to go through"}]}`)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
+	if string(got) != string(body) {
+		t.Fatalf("a dead proxy must leave the body untouched")
 	}
 }

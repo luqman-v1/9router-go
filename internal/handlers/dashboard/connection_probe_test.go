@@ -592,3 +592,39 @@ func TestTestConnection_CodexProbeSendsAccountIDHeader(t *testing.T) {
 		t.Errorf("Authorization header = %q, want %q", gotHeaders["Authorization"], "Bearer tok")
 	}
 }
+
+func TestTestConnection_NousOAuthUsesMintedAPIKey(t *testing.T) {
+	repo, cleanup := setupProbeTestDB(t)
+	defer cleanup()
+
+	data := `{"accessToken":"oauth-access-token","apiKey":"sk-nous-agent-minted","expiresAt":"2099-01-01T00:00:00Z"}`
+	if err := repo.CreateProviderConnectionFull("conn-nous-oauth", "nous", "oauth", "Nous OAuth", nil, data); err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+
+	var gotHeaders map[string]string
+	var gotURL string
+	var gotBody string
+	original := connectionProbeDo
+	connectionProbeDo = func(_ context.Context, _ *http.Client, _, rawURL string, headers map[string]string, body []byte) (int, []byte, error) {
+		gotURL = rawURL
+		gotHeaders = headers
+		gotBody = string(body)
+		return http.StatusOK, nil, nil
+	}
+	t.Cleanup(func() { connectionProbeDo = original })
+
+	_, body := postTestConnection(t, repo, "conn-nous-oauth")
+	if body["valid"] != true {
+		t.Fatalf("probe should be valid, got %v", body)
+	}
+	if gotURL != "https://inference-api.nousresearch.com/v1/chat/completions" {
+		t.Errorf("url = %q, want https://inference-api.nousresearch.com/v1/chat/completions", gotURL)
+	}
+	if gotHeaders["Authorization"] != "Bearer sk-nous-agent-minted" {
+		t.Errorf("Authorization header = %q, want Bearer sk-nous-agent-minted", gotHeaders["Authorization"])
+	}
+	if !strings.Contains(gotBody, `"model":"poolside/laguna-xs-2.1:free"`) {
+		t.Errorf("body missing probe model: %s", gotBody)
+	}
+}

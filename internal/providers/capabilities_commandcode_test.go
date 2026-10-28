@@ -136,8 +136,8 @@ func TestMergeCapabilities_ThinkingIsDeclarative(t *testing.T) {
 	t.Run("overlay without a thinking format keeps the default", func(t *testing.T) {
 		got := mergeCapabilities(DefaultCapabilities, Capabilities{Vision: true, Tools: true})
 
-		if !canDisableThinking(got) {
-			t.Error("canDisableThinking = false, want true")
+		if !got.CanDisableThinking() {
+			t.Error("CanDisableThinking = false, want true")
 		}
 		if got.ThinkingFormat != "" {
 			t.Errorf("ThinkingFormat = %q, want empty", got.ThinkingFormat)
@@ -153,8 +153,8 @@ func TestMergeCapabilities_ThinkingIsDeclarative(t *testing.T) {
 		if got.ThinkingFormat != "zai" {
 			t.Errorf("ThinkingFormat = %q, want %q", got.ThinkingFormat, "zai")
 		}
-		if !canDisableThinking(got) {
-			t.Error("canDisableThinking = false, want true (unset means upstream default)")
+		if !got.CanDisableThinking() {
+			t.Error("CanDisableThinking = false, want true (unset means upstream default)")
 		}
 	})
 
@@ -169,8 +169,8 @@ func TestMergeCapabilities_ThinkingIsDeclarative(t *testing.T) {
 		if got.ThinkingFormat != "zai" {
 			t.Errorf("ThinkingFormat = %q, want %q", got.ThinkingFormat, "zai")
 		}
-		if canDisableThinking(got) {
-			t.Error("canDisableThinking = true, want false")
+		if got.CanDisableThinking() {
+			t.Error("CanDisableThinking = true, want false")
 		}
 		if got.ThinkingRange == nil || got.ThinkingRange.Max != 65536 {
 			t.Errorf("ThinkingRange = %+v, want {1024 65536}", got.ThinkingRange)

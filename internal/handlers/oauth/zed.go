@@ -64,11 +64,26 @@ func (h *OAuthHandler) HandleZedAuthorize(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// decodeZedBase64 decodes base64url that may or may not carry padding.
+//
+// Zed's native_app_signin redirect hands back the ciphertext as padded
+// base64url ("...==" at the end for a 2048-bit RSA block), while the
+// verifier we mint is unpadded. base64.RawURLEncoding rejects the "="
+// padding outright ("illegal base64 data at input byte N"), so decoding
+// only the raw form made every real browser callback fail. Try the padded
+// form first and fall back to the raw one.
+func decodeZedBase64(s string) ([]byte, error) {
+	if b, err := base64.URLEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	return base64.RawURLEncoding.DecodeString(s)
+}
+
 func decodeZedVerifier(verifier string) ([]byte, error) {
 	if !strings.HasPrefix(verifier, zedKeyPrefix) {
 		return nil, fmt.Errorf("missing Zed private key verifier; restart the login flow")
 	}
-	return base64.RawURLEncoding.DecodeString(strings.TrimPrefix(verifier, zedKeyPrefix))
+	return decodeZedBase64(strings.TrimPrefix(verifier, zedKeyPrefix))
 }
 
 func parseZedCallback(raw string) (userID, encrypted string, err error) {
@@ -120,7 +135,7 @@ func decryptZedToken(encrypted, verifier string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse Zed private key failed: %v", err)
 	}
-	cipher, err := base64.RawURLEncoding.DecodeString(encrypted)
+	cipher, err := decodeZedBase64(encrypted)
 	if err != nil {
 		return "", fmt.Errorf("decode Zed token failed: %v", err)
 	}

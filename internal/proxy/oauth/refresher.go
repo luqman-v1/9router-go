@@ -16,6 +16,7 @@ type TokenResult struct {
 	ExpiresIn    int // seconds
 	Scope        string
 	ProjectID    string // provider-specific extra field
+	APIKey       string
 }
 
 // Params holds all inputs for a refresh call.
@@ -24,6 +25,7 @@ type Params struct {
 	Provider     string
 	RefreshToken string
 	AccessToken  string // current (possibly expired) token
+	Force        bool
 	// ProviderSpecificData carries per-account OAuth material stored at login
 	// time (e.g. Kiro clientId/clientSecret/region for AWS SSO OIDC refresh).
 	ProviderSpecificData map[string]string
@@ -63,10 +65,13 @@ func Unregister(provider string) {
 
 // Refresh calls the provider's refresher, or falls back to standard OAuth2.
 func Refresh(ctx context.Context, p *Params) (*TokenResult, error) {
-	if fn := Get(p.Provider); fn != nil {
-		return fn(ctx, p)
+	fn := Get(p.Provider)
+	if fn == nil {
+		return nil, fmt.Errorf("no OAuth refresher for: %s", p.Provider)
 	}
-	return nil, fmt.Errorf("no OAuth refresher for: %s", p.Provider)
+	return DedupRefresh(ctx, p.Provider, p.RefreshToken, p.Force, func(ctx context.Context) (*TokenResult, error) {
+		return fn(ctx, p)
+	})
 }
 
 // StringMap flattens a connection providerSpecificData blob to the string

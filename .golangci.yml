@@ -7,7 +7,7 @@
 # ratchet is the same shape as web's svelte-check one (AGENTS.md §6.E).
 #
 # Reproduce CI locally:
-#   mkdir -p web/dist && printf '<!doctype html>' > web/dist/index.html
+#   [ -f web/dist/index.html ] || { mkdir -p web/dist && printf '<!doctype html>' > web/dist/index.html; }
 #   golangci-lint run --new-from-rev="$(git merge-base origin/main HEAD)" ./...
 #
 # Fixing the baseline is a follow-up, and `golangci-lint run` with no filter

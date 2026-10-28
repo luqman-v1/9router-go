@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	json "encoding/json/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -98,4 +99,60 @@ func searchSubstr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestConnectionModels_Nous(t *testing.T) {
+	origProbe := validateProbeDo
+	defer func() { validateProbeDo = origProbe }()
+
+	validateProbeDo = func(_ context.Context, method, rawURL string, headers map[string]string, body []byte) (int, []byte, error) {
+		if rawURL != "https://inference-api.nousresearch.com/v1/models" {
+			t.Errorf("expected URL https://inference-api.nousresearch.com/v1/models, got %s", rawURL)
+		}
+		resp := `{"data":[{"id":"poolside/laguna-s-2.1:free","name":"Laguna S","context_length":262144,"architecture":{"output_modalities":["text"]}},{"id":"vendor/embedding","architecture":{"output_modalities":["embeddings"]}}]}`
+		return http.StatusOK, []byte(resp), nil
+	}
+
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	connID := "conn-nous-1"
+	if err := repo.CreateProviderConnectionFull(connID, "nous", "apikey", "Nous Test", nil, `{"apiKey":"test-key"}`); err != nil {
+		t.Fatalf("failed to create connection: %v", err)
+	}
+
+	h := &DashboardHandler{Repo: repo}
+	r := chi.NewRouter()
+	r.Get("/api/providers/{id}/models", h.HandleGetConnectionModels)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/providers/"+connID+"/models", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Provider     string `json:"provider"`
+		ConnectionID string `json:"connectionId"`
+		Models       []struct {
+			ID              string `json:"id"`
+			UpstreamModelID string `json:"upstreamModelId"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if out.Provider != "nous" || out.ConnectionID != connID {
+		t.Errorf("unexpected provider/connectionId: %+v", out)
+	}
+	if len(out.Models) != 1 {
+		t.Fatalf("expected 1 model (embeddings filtered), got %d: %+v", len(out.Models), out.Models)
+	}
+	if out.Models[0].ID != "nous/poolside/laguna-s-2.1:free" {
+		t.Errorf("expected routed ID nous/poolside/laguna-s-2.1:free, got %q", out.Models[0].ID)
+	}
+	if out.Models[0].UpstreamModelID != "poolside/laguna-s-2.1:free" {
+		t.Errorf("expected upstreamModelId poolside/laguna-s-2.1:free, got %q", out.Models[0].UpstreamModelID)
+	}
 }

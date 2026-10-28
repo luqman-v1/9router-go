@@ -43,6 +43,7 @@ type modelCaps struct {
 	Vision         bool     `json:"vision"`
 	Search         bool     `json:"search"`
 	Reasoning      bool     `json:"reasoning"`
+	Jailbreak      bool     `json:"jailbreak"`
 	ContextWindow  int      `json:"contextWindow"`
 	MaxOutput      int      `json:"maxOutput"`
 	ThinkingLevels []string `json:"thinkingLevels"`
@@ -66,14 +67,33 @@ func (h *DashboardHandler) HandleGetModelCaps(w http.ResponseWriter, r *http.Req
 
 	resolved := providers.ResolveAlias(provider)
 	models := providers.GetProviderModels(resolved)
-	if len(models) == 0 {
-		if custom := h.customModelCaps(provider, resolved); len(custom) > 0 {
-			handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-				"provider": provider,
-				"caps":     custom,
-			})
-			return
+	caps := make(map[string]modelCaps, len(models))
+	for _, model := range models {
+		detail := providers.GetCapabilitiesDetailForModel(resolved, model)
+		entry := modelCaps{
+			Vision:        detail.Vision,
+			Search:        detail.Search,
+			Reasoning:     detail.Reasoning,
+			Jailbreak:     detail.Jailbreak,
+			ContextWindow: detail.ContextWindow,
+			MaxOutput:     detail.MaxOutput,
+			Free:          isModelFree(resolved, model),
 		}
+		if levels := providers.GetThinkingLevels(resolved, model); levels != nil {
+			entry.ThinkingLevels = levels
+		}
+		caps[model] = entry
+	}
+
+	if custom := h.customModelCaps(provider, resolved, models); len(custom) > 0 {
+		for id, cEntry := range custom {
+			if _, exists := caps[id]; !exists {
+				caps[id] = cEntry
+			}
+		}
+	}
+
+	if len(caps) == 0 {
 		if strings.HasPrefix(provider, "openai-compatible") || strings.HasPrefix(provider, "anthropic-compatible") {
 			handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 				"provider": provider,
@@ -94,23 +114,6 @@ func (h *DashboardHandler) HandleGetModelCaps(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	caps := make(map[string]modelCaps, len(models))
-	for _, model := range models {
-		detail := providers.GetCapabilitiesDetailForModel(resolved, model)
-		entry := modelCaps{
-			Vision:        detail.Vision,
-			Search:        detail.Search,
-			Reasoning:     detail.Reasoning,
-			ContextWindow: detail.ContextWindow,
-			MaxOutput:     detail.MaxOutput,
-			Free:          isModelFree(resolved, model),
-		}
-		if levels := providers.GetThinkingLevels(resolved, model); levels != nil {
-			entry.ThinkingLevels = levels
-		}
-		caps[model] = entry
-	}
-
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"provider": resolved,
 		"caps":     caps,
@@ -122,7 +125,7 @@ func (h *DashboardHandler) HandleGetModelCaps(w http.ResponseWriter, r *http.Req
 // catalog at all, so before this the endpoint answered caps: {} and the
 // dashboard never saw the models it had just been given — nor the limits they
 // declare.
-func (h *DashboardHandler) customModelCaps(provider, resolved string) map[string]modelCaps {
+func (h *DashboardHandler) customModelCaps(provider, resolved string, staticModels []string) map[string]modelCaps {
 	if h.Repo == nil {
 		return nil
 	}
@@ -139,6 +142,10 @@ func (h *DashboardHandler) customModelCaps(provider, resolved string) map[string
 		if cm == nil || !isLLMCustomModelType(cm.Type) || !slices.Contains(aliases, cm.ProviderAlias) {
 			continue
 		}
+		// Skip custom models whose ID is already owned by the static catalog
+		if slices.Contains(staticModels, cm.ID) {
+			continue
+		}
 		// The same publication /v1/models does. Without it the row's saved
 		// flags and limits never reach a capability lookup on this path.
 		publishCustomModelCaps(cm)
@@ -147,6 +154,7 @@ func (h *DashboardHandler) customModelCaps(provider, resolved string) map[string
 			Vision:        detail.Vision,
 			Search:        detail.Search,
 			Reasoning:     detail.Reasoning,
+			Jailbreak:     detail.Jailbreak,
 			ContextWindow: detail.ContextWindow,
 			MaxOutput:     detail.MaxOutput,
 			Free:          isModelFree(cm.ProviderAlias, cm.ID),
@@ -171,6 +179,8 @@ func publishCustomModelCaps(cm *db.CustomModel) {
 			caps.Vision = on
 		case "reasoning":
 			caps.Reasoning = on
+		case "jailbreak", "uncensored", "unrestricted":
+			caps.Jailbreak = on
 		case "search":
 			caps.Search = on
 		case "tools":

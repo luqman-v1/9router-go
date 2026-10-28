@@ -12,6 +12,7 @@ import (
 	json "encoding/json/v2"
 
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/translator"
 )
 
 // geminiWebEmitter writes a streaming answer.
@@ -31,17 +32,50 @@ type geminiWebEmitter struct {
 	sentThink int
 	roleSent  bool
 	opened    bool
+
+	// sessionKey scopes the Claude translation's state to this turn. The
+	// translator keeps it per key, so two turns in flight do not share a
+	// block counter.
+	sessionKey string
+	// bridge is the Responses client path: the OpenAI chunks are replayed
+	// as the Responses events a /v1/responses client waits for.
+	bridge *ResponsesBridge
+	// claude marks a /v1/messages client. The chunks this emitter writes
+	// are OpenAI chunks, and a Claude client cannot read them, so they are
+	// translated on the way out.
+	claude bool
 }
 
+// newGeminiWebEmitter builds the writer for one turn.
+//
+// The shape of the answer depends on the client: a Chat Completions client
+// gets the OpenAI chunks this emitter builds, a /v1/messages client gets the
+// Claude events the translator produces from them, and a /v1/responses client
+// gets the Responses events the bridge produces from them. A client that
+// receives the wrong shape sees a turn that looks like an upstream answering
+// in the wrong format.
 func newGeminiWebEmitter(w http.ResponseWriter, req *Request, model string) *geminiWebEmitter {
 	hw := proxy.NewHeartbeatWriter(req.Ctx, w, 0)
-	return &geminiWebEmitter{
-		req:     req,
-		hw:      hw,
-		id:      "chatcmpl-gemini-web-" + strconv.FormatInt(time.Now().UnixNano(), 36),
-		created: time.Now().Unix(),
-		model:   model,
+	emitter := &geminiWebEmitter{
+		req:        req,
+		hw:         hw,
+		id:         "chatcmpl-gemini-web-" + strconv.FormatInt(time.Now().UnixNano(), 36),
+		created:    time.Now().Unix(),
+		model:      model,
+		sessionKey: fmt.Sprintf("gemini-web-stream-%d", time.Now().UnixNano()),
+		claude:     req.TranslateResp,
 	}
+	// A /v1/responses client is one hop further out than a Chat one: the
+	// OpenAI chunks this emitter produces become Responses events, so the
+	// bridge consumes them rather than the client.
+	if translator.NeedsResponsesBridge(req.Ctx) {
+		emitter.bridge = NewResponsesBridge(
+			translator.RequestedModelFromContext(req.Ctx),
+			translator.CustomToolNamesFrom(req.Ctx),
+			emitter.writeResponsesFrame,
+		)
+	}
+	return emitter
 }
 
 // open writes the SSE headers on the first frame the client will see.
@@ -76,7 +110,7 @@ func (e *geminiWebEmitter) emitContentDelta(text string) error {
 			return err
 		}
 	}
-	return e.emit(map[string]any{"content": delta}, nil)
+	return e.writeChunk(map[string]any{"content": delta}, nil, nil)
 }
 
 // emitThinkingDelta sends the part of the reasoning the client has not seen.
@@ -86,7 +120,7 @@ func (e *geminiWebEmitter) emitThinkingDelta(thoughts string) error {
 		return err
 	}
 	e.sentThink = sent
-	return e.emit(map[string]any{"reasoning_content": delta}, nil)
+	return e.writeChunk(map[string]any{"reasoning_content": delta}, nil, nil)
 }
 
 // geminiWebDelta computes what is new between what the client was already sent
@@ -107,8 +141,16 @@ func geminiWebDelta(sent int, current string) (delta string, next int, changed b
 	return current[sent:], len(current), true, nil
 }
 
-// emit writes one chunk, announcing the role on the first frame.
-func (e *geminiWebEmitter) emit(delta map[string]any, finish any) error {
+// writeChunk writes one OpenAI chunk in the shape the client asked for.
+//
+// A Chat Completions client gets the chunk as it is. A /v1/messages client
+// cannot read an OpenAI chunk, so the chunk is translated into the Claude
+// events it expects. A /v1/responses client is one hop further out, and the
+// bridge replays the chunk as the Responses events that client waits for.
+//
+// Without this routing a Claude client received OpenAI frames it cannot
+// parse, and the turn looked like an upstream answering in the wrong format.
+func (e *geminiWebEmitter) writeChunk(delta map[string]any, finish any, usage map[string]any) error {
 	if delta == nil {
 		delta = map[string]any{}
 	}
@@ -124,12 +166,46 @@ func (e *geminiWebEmitter) emit(delta map[string]any, finish any) error {
 		"model":   e.model,
 		"choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": finish}},
 	}
+	if usage != nil {
+		chunk["usage"] = usage
+	}
 	encoded, err := json.Marshal(chunk)
 	if err != nil {
 		return fmt.Errorf("gemini-web: marshal chunk: %w", err)
 	}
+	if e.bridge != nil {
+		e.bridge.Feed(encoded)
+		return e.bridge.Err()
+	}
+	frame := fmt.Appendf(nil, "data: %s\n\n", encoded)
+	if e.claude {
+		translated, terr := translator.TranslateOpenAIToClaudeStreamSession(e.sessionKey, encoded)
+		if terr != nil {
+			return terr
+		}
+		if translated != nil {
+			frame = translated
+		}
+	}
 	e.open()
-	if _, err := e.hw.Write(fmt.Appendf(nil, "data: %s\n\n", encoded)); err != nil {
+	if _, err := e.hw.Write(frame); err != nil {
+		return err
+	}
+	if e.flusher != nil {
+		e.flusher.Flush()
+	}
+	return nil
+}
+
+// writeResponsesFrame writes one Responses event to the client.
+func (e *geminiWebEmitter) writeResponsesFrame(frame []byte) error {
+	e.open()
+	if e.req.ResponseBuf != nil {
+		if _, err := e.req.ResponseBuf.Write(frame); err != nil {
+			return err
+		}
+	}
+	if _, err := e.hw.Write(frame); err != nil {
 		return err
 	}
 	if e.flusher != nil {
@@ -151,15 +227,46 @@ func (e *geminiWebEmitter) markTTFT() {
 }
 
 // finish closes a stream that was written as it went.
-func (e *geminiWebEmitter) finish() error {
+//
+// The usage frame rides the last chunk, which is where OpenAI's own servers
+// put it: a client that asked for stream_options.include_usage reads the
+// counts from the final frame, and a client that did not simply ignores a
+// field it does not know.
+func (e *geminiWebEmitter) finish(usage map[string]any) error {
+	return e.finishWithReason("stop", usage)
+}
+
+// finishWithReason closes the stream with a specific finish reason. A turn
+// that ended in a tool call finishes with "tool_calls", which the Claude
+// translation turns into the "tool_use" stop reason.
+func (e *geminiWebEmitter) finishWithReason(reason string, usage map[string]any) error {
 	if !e.opened {
 		// An answer that was never emitted still has to be a well-formed stream.
-		if err := e.emit(map[string]any{"content": ""}, nil); err != nil {
+		if err := e.writeChunk(map[string]any{"content": ""}, nil, nil); err != nil {
 			return err
 		}
 	}
-	if err := e.emit(nil, "stop"); err != nil {
+	if err := e.writeChunk(nil, reason, usage); err != nil {
 		return err
+	}
+	if e.bridge != nil {
+		// A Responses client waits for response.completed, not [DONE], so the
+		// bridge closes the stream itself.
+		e.bridge.StopCompletionWatchdog()
+		e.bridge.Close()
+		return e.hw.Close()
+	}
+	if e.claude {
+		// The Claude stream ends with message_delta and message_stop, which
+		// the translator emits with the finish reason. A stream that never
+		// carried one still has to be closed, or the client waits forever.
+		if end := translator.EnsureStreamClosed(e.sessionKey); len(end) > 0 {
+			if _, err := e.hw.Write(end); err != nil {
+				return err
+			}
+		}
+		translator.ClearStreamState(e.sessionKey)
+		return e.hw.Close()
 	}
 	if _, err := e.hw.Write([]byte("data: [DONE]\n\n")); err != nil {
 		return err
@@ -180,7 +287,11 @@ func (e *geminiWebEmitter) abort(cause error) error {
 		return cause
 	}
 	status, message := proxy.ClassifyStreamAbort(cause)
-	if _, err := e.hw.Write(proxy.BuildStreamErrorBytes(status, message, proxy.SSEFormatOpenAI)); err != nil {
+	format := proxy.SSEFormatOpenAI
+	if e.claude {
+		format = proxy.SSEFormatClaude
+	}
+	if _, err := e.hw.Write(proxy.BuildStreamErrorBytes(status, message, format)); err != nil {
 		return cause
 	}
 	if e.flusher != nil {
@@ -200,7 +311,7 @@ func geminiWebWriteCompletion(w http.ResponseWriter, req *Request, model string,
 	if thinking := strings.TrimSpace(turn.thinking); thinking != "" {
 		message["reasoning_content"] = thinking
 	}
-	return geminiWebWriteJSON(w, req, model, message, "stop")
+	return geminiWebWriteJSON(w, req, model, message, "stop", turn.usage())
 }
 
 // geminiWebWriteToolCalls writes a tool-calling turn.
@@ -209,27 +320,24 @@ func geminiWebWriteCompletion(w http.ResponseWriter, req *Request, model string,
 // channel, so the calls are recovered from the answer's text once it is whole,
 // which is the same approach deepseek-web uses and the same parser does the
 // recovery.
-func geminiWebWriteToolCalls(w http.ResponseWriter, req *Request, model string, calls []deepSeekToolRequest, preamble string) error {
+func geminiWebWriteToolCalls(w http.ResponseWriter, req *Request, model string, calls []deepSeekToolRequest, preamble string, usage map[string]any) error {
 	message := deepSeekToolCallMessage(calls, preamble)
 	if req.IsStream {
-		return geminiWebWriteStreamedToolCalls(w, req, model, calls, preamble)
+		return geminiWebWriteStreamedToolCalls(w, req, model, calls, preamble, usage)
 	}
-	return geminiWebWriteJSON(w, req, model, message, deepSeekFinishReason(message))
+	return geminiWebWriteJSON(w, req, model, message, deepSeekFinishReason(message), usage)
 }
 
 // geminiWebWriteStreamedToolCalls emits recovered calls as SSE. Each call travels
 // in its own frame with its `index`, which is what tells a client that two calls
 // are two calls; the arguments go out whole, because buffering them was the point.
-func geminiWebWriteStreamedToolCalls(w http.ResponseWriter, req *Request, model string, calls []deepSeekToolRequest, preamble string) error {
-	hw := proxy.NewHeartbeatWriter(req.Ctx, w, 0)
-	defer hw.Close()
-	flusher := proxy.WriteSSEHeaders(hw)
-	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
-	created := time.Now().Unix()
-
+//
+// The frames go through the emitter, so a Claude or Responses client gets the
+// shape it asked for instead of the OpenAI chunks this provider produces.
+func geminiWebWriteStreamedToolCalls(w http.ResponseWriter, req *Request, model string, calls []deepSeekToolRequest, preamble string, usage map[string]any) error {
+	emitter := newGeminiWebEmitter(w, req, model)
 	for i, call := range calls {
 		delta := map[string]any{
-			"role": "assistant",
 			"tool_calls": []any{map[string]any{
 				"index": i,
 				"id":    deepSeekToolCallID(call.Name),
@@ -248,67 +356,25 @@ func geminiWebWriteStreamedToolCalls(w http.ResponseWriter, req *Request, model 
 				req.ResponseBuf.Write([]byte(preamble))
 			}
 		}
-		chunk := map[string]any{
-			"id":      "chatcmpl-gemini-web-" + suffix,
-			"object":  "chat.completion.chunk",
-			"created": created,
-			"model":   model,
-			"choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": nil}},
-		}
-		encoded, err := json.Marshal(chunk)
-		if err != nil {
-			return fmt.Errorf("gemini-web: marshal chunk: %w", err)
-		}
-		if _, err := hw.Write(fmt.Appendf(nil, "data: %s\n\n", encoded)); err != nil {
-			return fmt.Errorf("gemini-web: write chunk: %w", err)
-		}
-		if flusher != nil {
-			flusher.Flush()
+		if err := emitter.writeChunk(delta, nil, nil); err != nil {
+			return err
 		}
 	}
-	if err := geminiWebWriteTerminalChunk(hw, flusher, model, suffix, created, deepSeekFinishReason(deepSeekToolCallMessage(calls, preamble))); err != nil {
-		return err
-	}
-	if _, err := hw.Write([]byte("data: [DONE]\n\n")); err != nil {
-		return fmt.Errorf("gemini-web: write terminator: %w", err)
-	}
-	if flusher != nil {
-		flusher.Flush()
-	}
-	return nil
-}
-
-// geminiWebWriteTerminalChunk closes a stream with the finish reason.
-func geminiWebWriteTerminalChunk(hw *proxy.HeartbeatWriter, flusher http.Flusher, model, suffix string, created int64, finish string) error {
-	chunk := map[string]any{
-		"id":      "chatcmpl-gemini-web-" + suffix,
-		"object":  "chat.completion.chunk",
-		"created": created,
-		"model":   model,
-		"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}},
-	}
-	encoded, err := json.Marshal(chunk)
-	if err != nil {
-		return fmt.Errorf("gemini-web: marshal chunk: %w", err)
-	}
-	if _, err := hw.Write(fmt.Appendf(nil, "data: %s\n\n", encoded)); err != nil {
-		return fmt.Errorf("gemini-web: write chunk: %w", err)
-	}
-	if flusher != nil {
-		flusher.Flush()
-	}
-	return nil
+	return emitter.finishWithReason("tool_calls", usage)
 }
 
 // geminiWebWriteJSON writes one chat.completion through the shared response path.
-func geminiWebWriteJSON(w http.ResponseWriter, req *Request, model string, message map[string]any, finish string) error {
+func geminiWebWriteJSON(w http.ResponseWriter, req *Request, model string, message map[string]any, finish string, usage map[string]any) error {
+	if usage == nil {
+		usage = map[string]any{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+	}
 	body := map[string]any{
 		"id":      "chatcmpl-gemini-web-" + strconv.FormatInt(time.Now().UnixNano(), 36),
 		"object":  "chat.completion",
 		"created": time.Now().Unix(),
 		"model":   model,
 		"choices": []map[string]any{{"index": 0, "message": message, "finish_reason": finish}},
-		"usage":   map[string]any{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+		"usage":   usage,
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

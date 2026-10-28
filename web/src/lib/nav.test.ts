@@ -3,14 +3,22 @@ import { TAB_ROUTES } from './router'
 import {
   ALWAYS_VISIBLE_NAV_IDS,
   DEFAULT_HIDDEN_NAV_IDS,
-  TOGGLEABLE_NAV_ENTRIES,
+  NAV_CONTAINERS,
+  NAV_PRESETS,
+  DEFAULT_HIDDEN_NAV_ENTRIES,
   NAV_GROUPS,
   NAV_ORDER,
+  activeNavPreset,
+  arrangedNavGroups,
+  dropNavEntry,
   isNavHidden,
   isNavLinkActive,
+  moveNavEntry,
+  navPresetHidden,
   normalizeHiddenNav,
+  normalizeNavOrder,
+  orderedNavGroups,
   setNavVisible,
-  visibleNavGroups,
   type NavEntry,
 } from './nav'
 
@@ -25,7 +33,8 @@ const groupIds = (groups = NAV_GROUPS): string[] =>
     )
   )
 
-const renderedIds = (hidden: unknown): string[] => groupIds(visibleNavGroups(hidden))
+const renderedIds = (hidden: unknown, order: unknown = []): string[] =>
+  groupIds(orderedNavGroups(hidden, order))
 
 const MEDIA_CHILD_IDS = NAV_GROUPS.flatMap((group) =>
   group.entries.flatMap((entry) => (entry.kind === 'accordion' ? entry.children.map((c) => c.id) : []))
@@ -45,12 +54,15 @@ describe('nav model', () => {
     expect(NAV_ORDER.length).toBeGreaterThan(0)
   })
 
-  it('offers the Plans entry to the panel, and nothing it may not hide', () => {
-    expect(TOGGLEABLE_NAV_ENTRIES.map((entry) => entry.id)).toEqual(['plans'])
-    for (const entry of TOGGLEABLE_NAV_ENTRIES) {
+  it('hides only the defaults, and offers every row to the arrangement', () => {
+    expect(DEFAULT_HIDDEN_NAV_ENTRIES.map((entry) => entry.id)).toEqual(['plans', 'jailbreak'])
+    for (const entry of DEFAULT_HIDDEN_NAV_ENTRIES) {
       expect(NAV_ORDER).toContain(entry.id)
       expect(ALWAYS_VISIBLE_NAV_IDS).not.toContain(entry.id)
     }
+    // The arrangement reaches every row, the unhideable one included.
+    const arranged = NAV_CONTAINERS.flatMap((container) => container.ids)
+    expect(arranged.slice().sort()).toEqual(NAV_ORDER.slice().sort())
   })
 
   it('keeps the panel behind an entry it can never hide', () => {
@@ -62,8 +74,8 @@ describe('nav model', () => {
 })
 
 describe('default visibility', () => {
-  it('hides Plans, and only Plans, until a list is saved', () => {
-    expect([...DEFAULT_HIDDEN_NAV_IDS]).toEqual(['plans'])
+  it('hides Plans and Jailbreak until a list is saved', () => {
+    expect([...DEFAULT_HIDDEN_NAV_IDS]).toEqual(['plans', 'jailbreak'])
     for (const saved of [undefined, null, {}, 'plans', { hidden: 'plans' }]) {
       const ids = renderedIds(saved)
       expect(ids, JSON.stringify(saved)).not.toContain('plans')
@@ -110,7 +122,10 @@ describe('visibility filtering', () => {
   })
 
   it('keeps an accordion that still has one visible child', () => {
-    const groups = visibleNavGroups({ hidden: MEDIA_CHILD_IDS.filter((id) => id !== 'media-video') })
+    const groups = orderedNavGroups(
+      { hidden: MEDIA_CHILD_IDS.filter((id) => id !== 'media-video') },
+      []
+    )
     const accordion = groups
       .flatMap((group) => group.entries)
       .find((entry) => entry.kind === 'accordion')
@@ -134,8 +149,8 @@ describe('stored hide list', () => {
   })
 
   it('starts from the defaults when nothing was saved', () => {
-    expect(setNavVisible(undefined, 'plans', true)).toEqual([])
-    expect(setNavVisible(undefined, 'quota', false)).toEqual(['quota', 'plans'])
+    expect(setNavVisible(undefined, 'plans', true)).toEqual(['jailbreak'])
+    expect(setNavVisible(undefined, 'quota', false)).toEqual(['quota', 'jailbreak', 'plans'])
   })
 
   it('survives a junk payload without losing a valid entry', () => {
@@ -173,5 +188,132 @@ describe('active highlighting', () => {
     expect(isNavLinkActive('analytics', 'usage-cache')).toBe(true)
     expect(isNavLinkActive('analytics', 'usage-compression')).toBe(true)
     expect(isNavLinkActive('quota', 'analytics')).toBe(false)
+  })
+})
+
+describe('sidebar arrangement', () => {
+  it('keeps only ids that address a row, in stored order', () => {
+    expect(normalizeNavOrder({ order: ['plans', 'plans', 'not-an-entry', 'QUOTA', 7] })).toEqual([
+      'plans',
+      'quota',
+    ])
+    // A bare array is what the helpers hand back in, so it reads too.
+    expect(normalizeNavOrder(['quota'])).toEqual(['quota'])
+    expect(normalizeNavOrder(undefined)).toEqual([])
+  })
+
+  it('gives every container one complete list, whatever was stored', () => {
+    for (const container of NAV_CONTAINERS) {
+      expect(new Set(container.ids).size).toBe(container.ids.length)
+    }
+    // Every row is drawn exactly once, in some order, however the stored
+    // arrangement was written.
+    const drawn = groupIds(arrangedNavGroups({ order: ['plans', 'endpoint'] }))
+    expect(drawn.length).toBe(NAV_ORDER.length)
+    for (const id of NAV_ORDER) expect(drawn).toContain(id)
+  })
+
+  it('draws the rows it was given, then the rest in declaration order', () => {
+    const ids = groupIds(arrangedNavGroups({ order: ['analytics', 'endpoint'] }))
+    expect(ids.slice(0, 2)).toEqual(['analytics', 'endpoint'])
+    expect(ids).toContain('cli-tools')
+  })
+
+  it('moves a row one place inside its own container', () => {
+    expect(moveNavEntry([], 'connections', -1).slice(0, 2)).toEqual(['connections', 'endpoint'])
+    // Past an end: unchanged, which is what a disabled arrow relies on.
+    expect(moveNavEntry([], 'endpoint', -1).slice(0, 2)).toEqual(['endpoint', 'connections'])
+  })
+
+  it('keeps an accordion whole and its children in their own container', () => {
+    const moved = moveNavEntry([], 'proxy-pools', -1)
+    const system = arrangedNavGroups(moved).find((group) => group.id === 'system')
+    expect(system?.entries[0].id).toBe('proxy-pools')
+    const accordion = system?.entries[1]
+    expect(accordion?.kind).toBe('accordion')
+    expect(accordion?.kind === 'accordion' && accordion.children.map((c) => c.id)).toEqual(
+      MEDIA_CHILD_IDS
+    )
+    // A media child moves among its siblings, never out into the group.
+    const afterMove = arrangedNavGroups(moveNavEntry([], 'media-tts', -1))
+      .flatMap((group) => group.entries)
+      .find((entry) => entry.kind === 'accordion')
+    expect(afterMove?.kind === 'accordion' && afterMove.children.map((c) => c.id)).toEqual([
+      'media-embedding',
+      'media-tts',
+      'media-image',
+      'media-stt',
+      'media-video',
+      'media-systemone',
+      'media-web',
+    ])
+  })
+
+  it('refuses a drop into another container', () => {
+    const flat = moveNavEntry([], 'connections', -1)
+    expect(dropNavEntry(flat, 'media-tts', 'proxy-pools', true)).toEqual(flat)
+  })
+
+  it('keeps the arrangement to one of every row', () => {
+    const moved = moveNavEntry(moveNavEntry([], 'security', -1), 'media-tts', 1)
+    expect(moved.length).toBe(NAV_ORDER.length)
+    expect(new Set(moved).size).toBe(moved.length)
+  })
+
+  it('hides a row without losing the place it was moved to', () => {
+    const order = moveNavEntry([], 'security', -1)
+    const visible = renderedIds({ hidden: [] }, order)
+    const slot = visible.indexOf('security')
+    // The row keeps the slot it was moved into: what follows it on screen is
+    // what follows it in the stored arrangement.
+    expect(visible[slot + 1]).toBe(order[order.indexOf('security') + 1])
+    // Hidden, the row leaves and its neighbours keep their own slots instead
+    // of closing the gap.
+    const hidden = renderedIds({ hidden: ['security'] }, order)
+    expect(hidden).not.toContain('security')
+    expect(hidden[slot]).toBe(order[order.indexOf('security') + 1])
+  })
+})
+
+describe('sidebar presets', () => {
+  it('offers the four sets, each one a valid hide list', () => {
+    expect(NAV_PRESETS.map((preset) => preset.id)).toEqual([
+      'default',
+      'advanced',
+      'simple',
+      'super-lite',
+    ])
+    for (const preset of NAV_PRESETS) {
+      const hidden = navPresetHidden(preset.id)
+      // No preset may hide the page the panel lives on.
+      expect(hidden).not.toContain('settings')
+      expect(new Set(hidden).size).toBe(hidden.length)
+      for (const id of hidden) expect(NAV_ORDER).toContain(id)
+    }
+  })
+
+  it('starts from the build default and grows to everything', () => {
+    expect(navPresetHidden('default').slice().sort()).toEqual([...DEFAULT_HIDDEN_NAV_IDS].sort())
+    expect(navPresetHidden('advanced')).toEqual([])
+    // Each step reveals more than the one before it.
+    expect(navPresetHidden('simple').length).toBeGreaterThan(navPresetHidden('default').length)
+    expect(navPresetHidden('super-lite').length).toBeGreaterThan(navPresetHidden('simple').length)
+    expect(renderedIds({ hidden: navPresetHidden('super-lite') })).toEqual([
+      'endpoint',
+      'connections',
+      'combos',
+      'analytics',
+      'security',
+      'settings',
+    ])
+  })
+
+  it('reads back the preset a hide list equals, and custom otherwise', () => {
+    for (const preset of NAV_PRESETS) {
+      expect(activeNavPreset({ hidden: navPresetHidden(preset.id) })).toBe(preset.id)
+    }
+    expect(activeNavPreset(undefined)).toBe('default')
+    expect(activeNavPreset({ hidden: ['quota'] })).toBe('custom')
+    expect(activeNavPreset({ hidden: ['quota', 'skills'] })).toBe('custom')
   })
 })

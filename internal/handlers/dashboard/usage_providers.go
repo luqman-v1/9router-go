@@ -92,10 +92,14 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 		return fetchCodexUsage(ctx, firstNonEmptyStr(accessToken, apiKey)), true
 	case "claude":
 		return fetchClaudeUsage(ctx, firstNonEmptyStr(accessToken, apiKey)), true
+	case "gemini-web":
+		return fetchGeminiWebUsage(ctx, apiKey), true
 	case "opencode-zen":
 		return fetchOpenCodeZenUsage(ctx, apiKey, connectionBaseURL(data)), true
 	case "minimax-code", "minimax-code-global":
 		return fetchMiniMaxCodeUsage(ctx, provider, accessToken, psdStr(psd, "realUserID")), true
+	case "glm", "glm-cn":
+		return fetchGLMUsage(ctx, provider, firstNonEmptyStr(apiKey, accessToken)), true
 	default:
 		return usageResult{}, false
 	}
@@ -495,16 +499,37 @@ func fetchGroqUsage(ctx context.Context, apiKey string) usageResult {
 
 // ---------- commandcode: whoami → credits + subscriptions ----------
 
+// commandCodeAPIBase is a var so tests can point the usage fetch and the
+// connection probe at a local server.
+var commandCodeAPIBase = "https://api.commandcode.ai"
+
 var commandCodePlanNames = map[string]string{
-	"individual-go": "Go", "individual-goat": "GOAT", "individual-pro": "Pro",
-	"individual-pro-v1": "Pro", "individual-provider": "Provider",
-	"individual-max": "Max", "individual-ultra": "Ultra", "teams-pro": "Teams Pro",
+	"individual-go": "Go", "individual-go-v1": "Go", "individual-goat": "GOAT",
+	"individual-pro": "Pro", "individual-pro-v1": "Pro",
+	"individual-provider": "Provider",
+	"individual-max":      "Max", "individual-ultra": "Ultra", "teams-pro": "Teams Pro",
 }
 
 var commandCodePlanCaps = map[string]float64{
-	"individual-go": 10, "individual-goat": 70, "individual-pro": 30,
-	"individual-pro-v1": 80, "individual-provider": 15,
+	"individual-go": 10, "individual-go-v1": 10, "individual-goat": 70,
+	"individual-pro": 30, "individual-pro-v1": 80, "individual-provider": 15,
 	"individual-max": 150, "individual-ultra": 300, "teams-pro": 40,
+}
+
+// The API also returns the bare tier ids ("go", "pro", ...); fold them onto
+// the full plan ids the name/cap tables are keyed by.
+var commandCodePlanAliases = map[string]string{
+	"go": "individual-go", "go-v1": "individual-go-v1", "goat": "individual-goat",
+	"pro": "individual-pro", "provider": "individual-provider",
+	"max": "individual-max", "ultra": "individual-ultra",
+}
+
+func normalizeCommandCodePlanID(planID string) string {
+	normalized := strings.ToLower(strings.TrimSpace(planID))
+	if alias, ok := commandCodePlanAliases[normalized]; ok {
+		return alias
+	}
+	return normalized
 }
 
 func commandCodeWindow(win any) map[string]any {
@@ -519,10 +544,27 @@ func commandCodeWindow(win any) map[string]any {
 	}
 	total = math.Max(0, total)
 	used = math.Max(0, used)
+	percentage, colorPercentage := 0.0, 100.0
+	if total > 0 {
+		percentage = math.Round(used / total * 100)
+		colorPercentage = math.Round((total - used) / total * 100)
+	}
+	resetAt := usageResetTimeToNil(m["resetAt"])
 	return map[string]any{
 		"used": used, "total": total, "remaining": math.Max(0, total-used),
-		"unlimited": false, "resetAt": usageResetTimeToNil(m["resetAt"]),
+		"percentage": percentage, "colorPercentage": colorPercentage,
+		"percentageIsUsed": true, "unlimited": false, "resetAt": resetAt,
+		// A window with no usage and no reset is an idle window, not an
+		// unknown one; the table says so instead of rendering N/A.
+		"emptyMessage": emptyWindowMessage(used, resetAt),
 	}
+}
+
+func emptyWindowMessage(used float64, resetAt any) any {
+	if used == 0 && resetAt == nil {
+		return "No usage in this window"
+	}
+	return nil
 }
 
 func usageResetTimeToNil(v any) any {
@@ -536,7 +578,7 @@ func fetchCommandCodeUsage(ctx context.Context, apiKey string) usageResult {
 	if strings.TrimSpace(apiKey) == "" {
 		return usageResult{message: "Command Code API key not available. Add a key to view usage."}
 	}
-	base := strings.TrimSuffix("https://api.commandcode.ai", "/")
+	base := strings.TrimSuffix(commandCodeAPIBase, "/")
 	headers := map[string]string{
 		"Authorization": "Bearer " + strings.TrimSpace(apiKey),
 		"Accept":        "application/json",
@@ -597,13 +639,14 @@ func fetchCommandCodeUsage(ctx context.Context, apiKey string) usageResult {
 	}
 	creditsBody := usageJSON(creditsRes.out)
 	subsBody := usageJSON(subsRes.out)
-	var planID string
+	var rawPlanID string
 	if d, ok := subsBody["data"].(map[string]any); ok {
-		planID, _ = d["planId"].(string)
+		rawPlanID, _ = d["planId"].(string)
 	}
+	planID := normalizeCommandCodePlanID(rawPlanID)
 	plan := commandCodePlanNames[planID]
 	if plan == "" {
-		plan = firstNonEmptyStr(planID, "Command Code")
+		plan = firstNonEmptyStr(rawPlanID, "Command Code")
 	}
 	capVal := commandCodePlanCaps[planID]
 	var credits map[string]any
@@ -616,14 +659,22 @@ func fetchCommandCodeUsage(ctx context.Context, apiKey string) usageResult {
 		used = math.Max(0, capVal-remaining)
 		total = capVal
 	}
+	creditsPercentage, creditsColorPercentage := 0.0, 100.0
+	if capVal > 0 {
+		creditsPercentage = math.Round(used / capVal * 100)
+		creditsColorPercentage = math.Round(remaining / capVal * 100)
+	}
 	var periodEnd any
 	if d, ok := subsBody["data"].(map[string]any); ok {
 		periodEnd = d["currentPeriodEnd"]
 	}
 	quotas := map[string]any{
 		"Credits": map[string]any{
+			"name": "Monthly",
 			"used": used, "total": total, "remaining": remaining,
-			"unlimited": capVal <= 0, "resetAt": usageResetTimeToNil(periodEnd),
+			"percentage": creditsPercentage, "colorPercentage": creditsColorPercentage,
+			"percentageIsUsed": true,
+			"unlimited":        capVal <= 0, "resetAt": usageResetTimeToNil(periodEnd),
 		},
 	}
 	var windows map[string]any
@@ -631,9 +682,11 @@ func fetchCommandCodeUsage(ctx context.Context, apiKey string) usageResult {
 		windows = w
 	}
 	if w := commandCodeWindow(windows["fiveHour"]); w != nil {
+		w["name"] = "5-hour limit"
 		quotas["Session (5h)"] = w
 	}
 	if w := commandCodeWindow(windows["weekly"]); w != nil {
+		w["name"] = "Weekly limit"
 		quotas["Weekly"] = w
 	}
 	return usageResult{plan: plan, quotas: quotas}
@@ -700,8 +753,9 @@ func addUTCMonths(t time.Time, months int) time.Time {
 // Ollama Cloud endpoints. Vars, not consts, so tests can point them at a
 // local server.
 var (
-	ollamaUsageURL = "https://ollama.com/api/usage"
-	ollamaMeURL    = "https://ollama.com/api/me"
+	ollamaUsageURL   = "https://ollama.com/api/usage"
+	ollamaMeURL      = "https://ollama.com/api/me"
+	ollamaBalanceURL = "https://ollama.com/api/balance"
 )
 
 func fetchOllamaUsage(ctx context.Context, apiKey string) usageResult {
@@ -773,10 +827,91 @@ func fetchOllamaUsage(ctx context.Context, apiKey string) usageResult {
 		}
 		quotas[window.Label] = ollamaRatioQuota(ratio, resetAt)
 	}
+	// Ollama Cloud moved the active quota limits to /api/balance; /api/usage
+	// now only carries activity history, so accounts on the new API report
+	// nothing from the limits map above.
+	if len(quotas) == 0 {
+		ollamaBalanceQuotas(ctx, apiKey, quotas)
+	}
 	if len(quotas) == 0 {
 		return usageResult{plan: plan, message: "Ollama Cloud connected. No usage limits reported.", quotas: map[string]any{}}
 	}
 	return usageResult{plan: plan, quotas: quotas}
+}
+
+// ollamaBalanceQuotas parses https://ollama.com/api/balance into the quota
+// table: the session (5h) and weekly (7d) remaining percentages with their
+// reset timestamps, the USD allowance window, and purchased credits.
+// Best-effort — a missing or malformed balance leaves the table empty so the
+// caller keeps its "no usage limits" message.
+func ollamaBalanceQuotas(ctx context.Context, apiKey string, quotas map[string]any) {
+	headers := map[string]string{
+		"Authorization": "Bearer " + strings.TrimSpace(apiKey),
+		"Accept":        "application/json",
+	}
+	status, _, out, err := usageGet(ctx, ollamaBalanceURL, headers)
+	if err != nil || status < 200 || status >= 300 {
+		return
+	}
+	balance := usageJSON(out)
+	if balance == nil {
+		return
+	}
+	inc, _ := balance["included"].(map[string]any)
+	ollamaRemainingWindow := func(key, label string) {
+		entry, ok := inc[key].(map[string]any)
+		if !ok {
+			return
+		}
+		// A missing or non-numeric remaining_percent reads as untouched, not
+		// as exhausted.
+		rem := 100.0
+		if v, ok := usageNumOK(entry["remaining_percent"]); ok {
+			rem = math.Max(0, math.Min(100, v))
+		}
+		quota := map[string]any{
+			"used": math.Round((100-rem)*100) / 100, "total": float64(100),
+			"remainingPercentage": rem, "resetAt": nil, "unlimited": false,
+		}
+		if s := usageStr(entry["resets_at"]); s != "" {
+			quota["resetAt"] = s
+		}
+		quotas[label] = quota
+	}
+	if inc != nil {
+		ollamaRemainingWindow("session", "Session (5h)")
+		ollamaRemainingWindow("weekly", "Weekly (7d)")
+
+		_, aPresent := inc["allowance_usd"]
+		_, bPresent := inc["balance_usd"]
+		if aPresent && bPresent {
+			allowance, _ := usageNumOK(inc["allowance_usd"])
+			balanceUSD, _ := usageNumOK(inc["balance_usd"])
+			remPct := 0.0
+			if allowance > 0 {
+				remPct = math.Round(balanceUSD/allowance*10000) / 100
+			}
+			quota := map[string]any{
+				"used":  math.Max(0, math.Round((allowance-balanceUSD)*100)/100),
+				"total": allowance, "remainingPercentage": remPct,
+				"resetAt": nil, "unlimited": false, "unit": "USD",
+			}
+			if period, ok := inc["period"].(map[string]any); ok {
+				if s := usageStr(period["until"]); s != "" {
+					quota["resetAt"] = s
+				}
+			}
+			quotas["Allowance ($)"] = quota
+		}
+	}
+	if purchased, ok := balance["purchased"].(map[string]any); ok {
+		if v, ok := usageNumOK(purchased["balance_usd"]); ok && v > 0 {
+			quotas["Purchased Credits"] = map[string]any{
+				"used": float64(0), "total": v, "remainingPercentage": float64(100),
+				"isCreditBalance": true, "currency": "$",
+			}
+		}
+	}
 }
 
 func usageNumOK(v any) (float64, bool) {
@@ -842,6 +977,7 @@ func fetchQoderUsageAt(ctx context.Context, accessToken, usageURL string) usageR
 	}
 	userQuota, _ := body["userQuota"].(map[string]any)
 	orgQuota, _ := body["orgResourcePackage"].(map[string]any)
+	addOnQuota, _ := body["addOnQuota"].(map[string]any)
 	strOr := func(m map[string]any, k, fallback string) string {
 		if s, _ := m[k].(string); s != "" {
 			return s
@@ -859,6 +995,20 @@ func fetchQoderUsageAt(ctx context.Context, accessToken, usageURL string) usageR
 			"remaining": usageNum(orgQuota["remaining"], 0), "unit": strOr(orgQuota, "unit", "credits"),
 			"resetAt": resetAt,
 		},
+	}
+	if addOnTotal := usageNum(addOnQuota["total"], 0); addOnTotal > 0 {
+		addOnEntry := map[string]any{
+			"total":        addOnTotal,
+			"used":         usageNum(addOnQuota["used"], 0),
+			"remaining":    usageNum(addOnQuota["remaining"], 0),
+			"unit":         strOr(addOnQuota, "unit", "credits"),
+			"resetAt":      "",
+			"neverExpires": false,
+		}
+		if detailURL, ok := addOnQuota["detailUrl"].(string); ok && detailURL != "" {
+			addOnEntry["detailUrl"] = detailURL
+		}
+		quotas["addOn"] = addOnEntry
 	}
 	extra := map[string]any{
 		"totalUsagePercentage": usageNum(body["totalUsagePercentage"], 0),

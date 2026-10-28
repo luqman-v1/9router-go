@@ -29,6 +29,10 @@
   import { getIconPath } from './connections/types'
   import EditConnectionModal, { type ConnectionUpdate } from './connections/EditConnectionModal.svelte'
   import QuotaTable from './quota/QuotaTable.svelte'
+  import AutoPingScheduleModal, {
+    type AutoPingSaveResult,
+    type AutoPingSchedule,
+  } from './quota/AutoPingScheduleModal.svelte'
   import {
     ACCOUNT_FILTER_OPTIONS,
     ACCOUNT_PAGE_SIZE_MAX,
@@ -67,6 +71,20 @@
   } from './quota/fetch'
 
   const CONNECTIONS_PAGE_SIZE = 20
+
+  /**
+   * The shape one provider's auto-ping settings key holds on the server.
+   *
+   * Two independent halves, exactly as upstream stores them
+   * (src/shared/services/quotaAutoPing.js:289-290): `connections` says which
+   * accounts opt into the reactive ping, `schedules` says when each account is
+   * pinged on its own wall-clock slots. The dashboard only edits the first
+   * half today, so the second is carried along verbatim on every write.
+   */
+  interface AutoPingSettings {
+    connections?: Record<string, boolean>
+    schedules?: Record<string, unknown>
+  }
 
   interface Props {
     connections?: ProviderConnection[]
@@ -143,6 +161,37 @@
     claude: {},
     codex: {},
   })
+  // The schedule half of the same settings key. It is kept apart from
+  // autoPingMaps because the two are independent: the switch says "ping this
+  // account when its window resets", the schedule says "ping it at 09:30 /
+  // 14:30 / 19:30". Writing one must not delete the other.
+  let autoPingSchedules = $state<{
+    claude: Record<string, AutoPingSchedule | { enabled: false } | unknown>
+    codex: Record<string, AutoPingSchedule | { enabled: false } | unknown>
+  }>({
+    claude: {},
+    codex: {},
+  })
+
+  // The connection whose auto-ping settings are being edited. Null closes the
+  // modal; the modal seeds its own fields from the same two maps the row reads,
+  // so opening it twice in a row cannot show a stale schedule.
+  let autoPingEditing = $state<ProviderConnection | null>(null)
+
+  // The operator's own zone for the schedule preview. The browser is the only
+  // place that knows it, and it must not be the process default: the dashboard
+  // and the scheduler can run in different zones (a container in UTC, a browser
+  // in Asia/Ho_Chi_Minh), and a preview labelled with the wrong zone is worse
+  // than no preview.
+  const localTimezone = $derived(
+    (() => {
+      try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+      } catch {
+        return 'UTC'
+      }
+    })()
+  )
 
   // Edit modal state. The modal itself owns its fields and payload (issue #158).
   let editingConnection = $state<ProviderConnection | null>(null)
@@ -231,7 +280,7 @@
 
   const AUTO_PING_TOOLTIPS: Record<string, string> = {
     claude: 'When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.',
-    codex: 'Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota.',
+    codex: 'Auto-starts the next 5h Codex window after reset by sending a tiny request. Consumes a small amount of quota.',
   }
 
   function kiroMethodLabel(conn: ProviderConnectionLike): string {
@@ -379,18 +428,60 @@
   async function toggleAutoPing(connId: string, provider: string, enabled: boolean) {
     const key = AUTO_PING_SETTINGS_KEYS[provider]
     if (!key) return
-    const currentMap = autoPingMaps[provider as 'claude' | 'codex'] || {}
-    const nextMap = { ...currentMap, [connId]: enabled }
+
+    const currentConnections = autoPingMaps[provider as 'claude' | 'codex'] || {}
+    const nextConnections = { ...currentConnections, [connId]: enabled }
+    const nextSchedules = autoPingSchedules[provider as 'claude' | 'codex'] || {}
+
     autoPingMaps = {
       ...autoPingMaps,
-      [provider]: nextMap,
+      [provider]: nextConnections,
     }
+
+    // Nested shape, Node parity (upstream quotaAutoPing.js:289-290): the
+    // connections switch and the schedule map are two independent halves of
+    // one settings key. The schedule half is carried along verbatim so
+    // flipping a switch never deletes the schedule configured for that
+    // account — and the server merges the two halves the same way.
+    const payload = {
+      [key]: {
+        connections: nextConnections,
+        schedules: nextSchedules,
+      },
+    }
+
     try {
-      await api.updateSettingsRaw({
-        [key]: nextMap,
-      })
+      await api.updateSettings(payload)
     } catch (err) {
       console.error('Failed to update autoPing:', err)
+    }
+  }
+
+  // Saving the schedule modal writes BOTH halves in one payload: the mode radio
+  // decides the reactive switch and the schedule entry together, so a save that
+  // only sent `schedules` would leave the switch on and let the reactive ping
+  // keep firing alongside the schedule the operator just chose.
+  async function saveAutoPingSchedule(result: AutoPingSaveResult) {
+    const conn = autoPingEditing
+    autoPingEditing = null
+    if (!conn) return
+
+    const provider = conn.provider as 'claude' | 'codex'
+    const key = AUTO_PING_SETTINGS_KEYS[provider]
+    if (!key) return
+
+    const nextConnections = { ...(autoPingMaps[provider] || {}), [conn.id]: result.reactive }
+    const nextSchedules = { ...(autoPingSchedules[provider] || {}), [conn.id]: result.schedule }
+
+    autoPingMaps = { ...autoPingMaps, [provider]: nextConnections }
+    autoPingSchedules = { ...autoPingSchedules, [provider]: nextSchedules }
+
+    try {
+      await api.updateSettings({
+        [key]: { connections: nextConnections, schedules: nextSchedules },
+      })
+    } catch (err) {
+      console.error('Failed to update autoPing schedule:', err)
     }
   }
 
@@ -782,9 +873,18 @@
       .then((s) => {
         const raw = s as unknown as Record<string, unknown>
         quotaVisibility = (raw?.quotaVisibility as QuotaVisibility) || {}
+        // Nested shape from the server (Node parity): the settings key holds
+        // two independent halves — the connections switch and the schedule map.
+        const claudeConfig = raw?.claudeAutoPing as AutoPingSettings | undefined
+        const codexConfig = raw?.codexAutoPing as AutoPingSettings | undefined
+
         autoPingMaps = {
-          claude: (raw?.claudeAutoPing as Record<string, boolean>) || {},
-          codex: (raw?.codexAutoPing as Record<string, boolean>) || {},
+          claude: claudeConfig?.connections || {},
+          codex: codexConfig?.connections || {},
+        }
+        autoPingSchedules = {
+          claude: claudeConfig?.schedules || {},
+          codex: codexConfig?.schedules || {},
         }
       })
       .catch(() => {})
@@ -1174,6 +1274,9 @@
 
                 {#if (conn.provider === 'claude' || conn.provider === 'codex') && conn.authType === 'oauth'}
                   {@const isAutoPingActive = autoPingMaps[conn.provider]?.[conn.id] === true}
+                  {@const hasSchedule =
+                    (autoPingSchedules[conn.provider]?.[conn.id] as { enabled?: boolean } | undefined)
+                      ?.enabled === true}
                   <button
                     type="button"
                     onclick={() => toggleAutoPing(conn.id, conn.provider, !isAutoPingActive)}
@@ -1182,6 +1285,17 @@
                     class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {isAutoPingActive ? 'text-primary' : 'text-text-muted'}"
                   >
                     <span class="material-symbols-outlined text-[18px]">bolt</span>
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => (autoPingEditing = conn)}
+                    title="Auto-ping schedule"
+                    aria-label="Configure auto-ping schedule"
+                    class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {hasSchedule
+                      ? 'text-primary'
+                      : 'text-text-muted'}"
+                  >
+                    <span class="material-symbols-outlined text-[18px]">schedule</span>
                   </button>
                 {/if}
 
@@ -1388,6 +1502,21 @@
     onSave={saveEditingConnection}
     onSaveError={(message) => alert(message)}
     testLabel="Test"
+  />
+{/if}
+
+{#if autoPingEditing}
+  <AutoPingScheduleModal
+    open
+    connectionName={autoPingEditing.name}
+    reactive={autoPingMaps[autoPingEditing.provider as 'claude' | 'codex']?.[autoPingEditing.id] ===
+      true}
+    schedule={(autoPingSchedules[autoPingEditing.provider as 'claude' | 'codex']?.[
+      autoPingEditing.id
+    ] as AutoPingSchedule | null) ?? null}
+    timezone={localTimezone}
+    onClose={() => (autoPingEditing = null)}
+    onSave={saveAutoPingSchedule}
   />
 {/if}
 

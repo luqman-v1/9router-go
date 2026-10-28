@@ -42,8 +42,8 @@ func TestForceFallbackUsesAccountThatFreesUpFirst(t *testing.T) {
 
 		later := env.NewUpstream(t, chatCompletionResponder())
 		sooner := env.NewUpstream(t, chatCompletionResponder())
-		env.AddConnection(t, "conn-later", "deepseek", "Long Cooldown", later, "sk-later")
-		env.AddConnection(t, "conn-sooner", "deepseek", "Short Cooldown", sooner, "sk-sooner")
+		env.AddConnectionWithPriority(t, "conn-later", "deepseek", "Long Cooldown", later, "sk-later", 1)
+		env.AddConnectionWithPriority(t, "conn-sooner", "deepseek", "Short Cooldown", sooner, "sk-sooner", 2)
 
 		park := func(connID string, d time.Duration) {
 			t.Helper()

@@ -105,19 +105,19 @@
       const refused = sameProvider(errorProvider, resolved) || sameProvider(errorProvider, provider)
 
       let status: Status = 'idle'
-      let note = 'belum dipakai'
+      let note = 'not used yet'
       if (inFlight) {
         status = 'trying'
-        note = 'sedang dicoba'
+        note = 'trying'
       } else if (finished && finishedStatus.toLowerCase() === 'ok') {
         status = 'connected'
-        note = 'menjawab'
+        note = 'answered'
       } else if (refused) {
         status = 'failed'
-        note = 'gagal'
+        note = 'failed'
       } else if (finished) {
         status = 'failed'
-        note = finishedStatus || 'gagal'
+        note = finishedStatus || 'failed'
       }
       return { key: raw, provider, model, status, note, color: colorFor(provider), latency }
     })
@@ -152,10 +152,10 @@
         <span class="cf-strategy">{strategy}</span>
       </div>
       <div class="cf-counters">
-        {#if counts.trying > 0}<span data-kind="trying">{counts.trying} dicoba</span>{/if}
-        {#if counts.connected > 0}<span data-kind="connected">{counts.connected} menjawab</span>{/if}
-        {#if counts.failed > 0}<span data-kind="failed">{counts.failed} gagal</span>{/if}
-        {#if counts.idle > 0}<span data-kind="idle">{counts.idle} sisa</span>{/if}
+        {#if counts.trying > 0}<span data-kind="trying">{counts.trying} trying</span>{/if}
+        {#if counts.connected > 0}<span data-kind="connected">{counts.connected} answered</span>{/if}
+        {#if counts.failed > 0}<span data-kind="failed">{counts.failed} failed</span>{/if}
+        {#if counts.idle > 0}<span data-kind="idle">{counts.idle} remaining</span>{/if}
       </div>
     </header>
 
@@ -168,16 +168,16 @@
       <span class="cf-route-arrow" data-state={routeState} aria-hidden="true">
         <svg viewBox="0 0 40 12" preserveAspectRatio="none">
           <path d="M1 6 H37" />
-          <circle cx="1" cy="6" r="2.2">
-            <animate attributeName="cx" values="1;37" dur="1.1s" repeatCount="indefinite" />
-          </circle>
         </svg>
+        {#if routeState === 'trying'}
+          <span class="cf-dot"></span>
+        {/if}
       </span>
       <div class="cf-chip" data-role="combo">
         <span class="material-symbols-outlined cf-chip-icon">account_tree</span>
         <span class="cf-chip-text">
           <strong>{liveCombo}</strong>
-          <small>{strategy} · {steps.length} anggota</small>
+          <small>{strategy} · {steps.length} members</small>
         </span>
       </div>
     </div>
@@ -202,7 +202,7 @@
                 <small title={step.model || step.provider}>{step.model || '—'}</small>
               </span>
               {#if step.latency > 0}
-                <span class="cf-latency" title="waktu anggota ini menjawab">{fmtLatency(step.latency)}</span>
+                <span class="cf-latency" title="time this member took to answer">{fmtLatency(step.latency)}</span>
               {/if}
               <span class="cf-status">
                 {#if step.status === 'connected'}
@@ -221,12 +221,12 @@
             {#if step.status === 'failed' && steps[i + 1]}
               <p class="cf-handoff">
                 <span class="material-symbols-outlined cf-ico">south</span>
-                gagal, lanjut ke #{i + 2} {steps[i + 1].provider}
+                failed, moving to #{i + 2} {steps[i + 1].provider}
               </p>
             {:else if step.status === 'connected'}
               <p class="cf-handoff cf-handoff-ok">
                 <span class="material-symbols-outlined cf-ico">check</span>
-                dilayani di sini — anggota #{i + 2} dan seterusnya tidak dipakai
+                served here — member #{i + 2} and beyond are unused
               </p>
             {/if}
           </div>
@@ -235,10 +235,10 @@
     </ol>
 
     <footer class="cf-legend">
-      <span data-kind="trying">sedang dicoba</span>
-      <span data-kind="connected">menjawab</span>
-      <span data-kind="failed">gagal → lanjut ke nomor berikutnya</span>
-      <span data-kind="idle">belum dipakai</span>
+      <span data-kind="trying">trying</span>
+      <span data-kind="connected">answered</span>
+      <span data-kind="failed">failed → moves to the next one</span>
+      <span data-kind="idle">not used yet</span>
     </footer>
   </section>
 {/if}

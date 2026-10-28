@@ -133,6 +133,9 @@ Every upstream provider in this repository (`antigravity`, `opencode`, `claude`,
   - Use strongly typed structs for known wire protocols (OpenAI Chat Completions, Anthropic Messages, Gemini GenerateContent, Antigravity envelopes).
   - Use unexported fields or typed wrappers instead of passing untyped maps across package boundaries.
   - Reserve `any` / `map[string]any` strictly for dynamic, provider-specific, or open-ended passthrough payloads.
+- **Enumerations for closed value sets**: Represent finite, known-at-build-time choices with named enum-like types and constants instead of repeating raw string literals in logic, comparisons, switches, or serialized state. In Go, define a named type with constants; in TypeScript, prefer a string-literal union (or an `enum` when runtime enumeration is needed). Reuse the canonical definition across callers.
+- **Do not force enums onto open-ended values**: Keep strings for user input, provider/model IDs, URLs, paths, arbitrary JSON keys, protocol values that must remain extensible, and exact wire-format literals where a named constant alone is appropriate. Preserve required JSON/API wire values when introducing typed enums.
+- **No duplicated string checks for closed sets**: If a string represents a finite internal mode, status, kind, or category, compare against the named constants/type rather than embedding its literal at each use site. Validate external input against the canonical set at the boundary.
 - **Clean JSON Serialization**:
   - Use accurate struct tags (`json:"fieldName,omitempty"`). Omit zero-value fields when required by upstream provider specs.
 
@@ -170,6 +173,15 @@ looks. A large pure-Go library is fine; a small one that needs cgo is not.
 - **Forbidden regardless of size:**
   - Any library requiring cgo. It ends the `CGO_ENABLED=0` guarantee for every target at once.
   - Build tags or platform-specific files that break any target in `CROSS_TARGETS`. These turn a single portable binary into a per-platform build, which is the one property this pipeline exists to keep.
+
+
+### G. Deployment Target: Small Hardware
+
+The gateway is expected to serve from a **1 vCPU box with a small memory ceiling** — an operator's router, a Raspberry Pi, or the cheapest VPS they own. That is why §4.A–§4.F read the way they do: stream instead of buffering, bound every cache and goroutine, reuse the pooled `http.Client`. Code can be correct and still be a regression here.
+
+- **A change that measurably raises steady RSS or per-request CPU on that box is a regression**, even when every test passes and the wire contract is unchanged. Measure the real binary on a real request path before and after, and put the number in the PR.
+- **Bound everything that grows.** A cache needs a size or a TTL, per-connection state needs a lifetime, and a goroutine per request needs a reason to exist. An unbounded map keyed by a client-supplied value is a memory leak with a schedule.
+- **Take the smaller mechanism when both meet the requirement** — a slice over a map, a counter over a histogram, `json.RawMessage` over `map[string]any` on a hot path. When the heavier one is genuinely needed, say which requirement needs it.
 
 ---
 
@@ -380,6 +392,83 @@ cd web && bun run ratchet:svelte -- --update
 
 Never widen the baseline to make a failure disappear — fix the error, or split the PR and land the debt reduction on its own. The `--tsconfig tsconfig.app.json` flag is mandatory: the default resolves `tsconfig.json`, which has `files: []`, and silently checks **zero** components.
 
+
+### F. Client Weight Budget
+
+The dashboard is embedded in the binary and served by the same small box, usually to a phone. Weight is a review criterion here, not a matter of taste. Note the axis: §4.F governs what may enter `go.mod`, this governs what ships to the browser.
+
+Measured on `main` + the first-paint work, 2026-10-21 (`cd web && bun run build`, then `du -sh dist`):
+
+- `dist/` total: **4.6 MB**
+- JS bundle: 1.2 MB raw / **232 KB brotli** · CSS: 115 KB raw / **15 KB brotli** · Material Symbols woff2: **349 KB** · `dist/providers` artwork: 2.2 MB (only the views that render it)
+- The `.br`/`.gz` siblings are pre-compressed build output, not extra weight on the wire — see §6.G
+
+- **Report the numbers for a UI change**: `bun run build`, then `du -sh dist` and the largest files. A few percent of drift is noise; a larger jump needs a reason in the PR.
+- **A new runtime dependency has to pay for itself.** Icon packs, chart libraries, date/utility bundles and animation frameworks are the usual offenders. State what it buys and what it adds.
+- **Costs that never appear in the bundle still count on this box**: an animation or transition on a list that can hold hundreds of rows, a poll faster than the data changes, an unbounded client-side array, one DOM node per data point, `backdrop-filter` or a large blur inside a scrolling container, and per-frame JS on a view that stays open.
+- **A visual addition that costs measurably more than it gives may be refused, with the measured reason attached** — name the asset or the per-frame cost, and what the user gets from it. The build output is the measurement; "it is only a small card" is not.
+
+
+### G. First-Paint Budget: Origin, Fonts, Compression
+
+§6.F is about what the bundle weighs. This is about what the browser has to do to *show* it, and it exists because a dashboard that took 21 seconds to appear on a first visit was shipped and nobody measured it.
+
+The symptom is the `Connecting to 9router-go Localhost Gateway (:20130)...` screen hanging on the first dashboard open. **Before blaming the gateway, measure the client side.** The backend is almost never the cause: every boot endpoint answers in under 5 ms. The delay is in the bytes and round trips before the app mounts.
+
+#### G.1 No third-party origins
+
+**The dashboard may not load any asset from a host other than the gateway.** Not fonts, not a CDN, not a script tag, not an analytics beacon. Every such origin adds a DNS lookup, a TLS handshake and a round trip on a connection the operator did not choose, and it is a dependency the gateway does not control.
+
+This is not a hypothetical: the dashboard pulled Inter, JetBrains Mono and Material Symbols from `fonts.googleapis.com` and `fonts.gstatic.com` until 2026-10-21. Two of those were render-blocking stylesheets. With the CDN blocked or slow, the app did not mount for **21 seconds** — the browser waits for a stylesheet before it runs the script that would have drawn the page. With the CDN reachable, the load event for the same build varied between 3.2 s and 12.3 s across runs, while the self-hosted build stayed within 45 ms of itself.
+
+- Fonts are vendored into `web/src/assets` and served from the gateway's own origin. `web/src/lib/self-hosted-fonts.test.ts` fails the build if a font-CDN URL comes back.
+- `font-display: swap` for text fonts, so a slow font never hides content. `font-display: block` for the icon font, because an icon drawn in the fallback face is a *wrong* glyph, and a row of wrong glyphs is worse than a row of blanks.
+
+#### G.2 Instance the icon font, do not ship it raw
+
+The Material Symbols variable font ships every glyph the family defines on every axis, live: **3.9 MB**. The dashboard draws a few hundred of them.
+
+`bun run vendor:fonts` (`web/scripts/vendor-fonts.ts`) writes an instanced copy to `web/src/assets/material-symbols-outlined.woff2`: the axes the stylesheet pins anyway are pinned (`wght` 400, `GRAD` 0, `opsz` 24), `FILL` keeps its full 0..1 range because the sidebar flips it, and **every glyph is kept** — 3.9 MB → **349 KB**, and an icon name added to the catalog tomorrow still renders instead of showing as tofu.
+
+- The file is committed and the generator is deterministic; CI never runs it.
+- `web/src/lib/icon-font-budget.test.ts` pins the size budget.
+- **Keep every glyph.** Subsetting to the icons in use today is smaller and breaks silently the first time someone adds an icon — the failure is a blank square, and nothing in the build catches it.
+
+#### G.3 Serve the bundle compressed
+
+The embedded asset handler serves what it embeds. `web/scripts/precompress.ts` writes a `.br` and a `.gz` sibling next to every compressible file, and `web/embed.go` picks the best variant the client's `Accept-Encoding` allows.
+
+- **Compress at build time, not at request time.** The gateway runs on a 1 vCPU box and already spends its CPU streaming LLM responses; the bundle never changes between releases, so per-request compression buys nothing the build-time variant did not.
+- **The pre-compression runs as part of `bun run build`**, not as a separate step someone has to remember. `vite build` clears `dist`, so a build that skips the compression leaves the gateway embedding an uncompressed bundle — the handler still works (it falls back to the original file), which is exactly why the omission is invisible until the transfer is measured. `web/embed_compression_test.go` pins the variants' existence so the omission fails the build instead.
+- Brotli is preferred over gzip **on a quality tie** — Chrome sends `gzip, deflate, br` with no `q` values, and header order says nothing about preference. On the current bundle: 1200 KB → 232 KB (brotli) / 306 KB (gzip).
+- **`Vary: Accept-Encoding` belongs on every negotiated response**, not only on the compressed one. The identity body and the compressed body are different bytes for the same URL; a shared cache that stored one and handed it to a client that asked for the other breaks the page.
+- **A compressed variant must never be larger than the original.** The handler prefers the compressed variant whenever the client accepts it, so a variant that grew makes the client download *more* bytes than the identity body. The compressor skips a file whose variant is not smaller.
+- The response must carry a `Content-Length` — `http.ServeContent` refuses to set one on a response with a `Content-Encoding`, which leaves the response chunked.
+- A missing compression variant must fall back to the original file, never fail the request.
+- **Replacing a stdlib handler means auditing what it did for you.** Swapping `http.FileServer` for a plain write silently dropped range support: a client asking for part of a file got the whole file with a 200, and one asking past the end got a 200 instead of a 416. The body goes through `http.ServeContent`, handed the variant's own size so a range resolves against the bytes that are on the wire.
+- **Never write a stub over a built file.** The lint recipe (`mkdir -p web/dist && printf '<!doctype html>' > web/dist/index.html`) exists because `//go:embed` needs *something* to embed. Run it only when there is no build — overwriting a built `index.html` leaves its `.br` variant describing the old document, and the gateway prefers that variant.
+
+#### G.4 Measure the first paint, not just the build
+
+`bun run build` and `du -sh dist` say nothing about what the browser experiences. Measure the open in a real browser against a running gateway, with a **fresh context per run** (no service worker, no HTTP cache, no storage) — otherwise the second run measures the cache, not the fix.
+
+```bash
+cd web && bun run build && cd ..
+# boot the gateway, then: fresh context, cache disabled, record the load event
+# and the bytes actually transferred (not the decoded sizes).
+```
+
+Report three numbers: **bytes transferred**, **request count**, **load event**. The load-event spread across runs matters more than the median — the CDN-backed build varied between 3.2 s and 12.3 s, while the self-hosted build stayed within 45 ms of itself.
+
+#### G.5 The boot screen must not be the only thing the user sees
+
+The `Connecting to 9router-go Localhost Gateway (:20130)...` spinner is a **full-screen gate**: it replaces the whole dashboard until every boot request resolves. Two consequences to keep in mind when touching it:
+
+- It is the first thing an operator sees when something is wrong, so it must not become a *slower* way to find out what is wrong.
+- It is a symptom, not a diagnosis. The message names the gateway, so an operator blames the gateway — when the cause was the browser's download. Do not "fix" a slow dashboard by making the spinner more informative; measure where the time goes first.
+
+The screen stays for as long as the boot requests take, and the boot requests are `Promise.all`-ed, so it is bounded by the slowest one — but only once the *bundle* has loaded. The bundle is the long pole.
+
 ---
 
 ## 7. Upstream Sync Workflow (Step-by-Step)
@@ -415,6 +504,12 @@ When tasked with syncing a feature, bugfix, or provider from upstream:
        go build -o /dev/null ./cmd/9router-go/ || echo "FAIL $pair"
    done
    make vet-svelte   # svelte-check ratchet — see §6.E
+   # A UI change also has to clear the first-paint budget (§6.G): the bundle
+   # must come from the gateway's own origin, the icon font must stay
+   # instanced, and the assets must be served compressed. `go test ./web/...`
+   # and `bun test src scripts` cover the contract; the numbers in the PR
+   # body come from a browser measurement, not from `du -sh dist`.
+   go test ./web/...
    # A CHANGELOG.md hunk in a PR is a violation of §7.6. Both forms matter:
    # the committed range catches what was pushed, the worktree the rest.
    { rtk git diff --name-only HEAD; rtk git diff --name-only main...HEAD; \
@@ -508,18 +603,30 @@ rtk go test ./internal/providers/... -v
 make test-integration
 make vet-integration
 
-# Build frontend SPA (Svelte 5 / Vite 8 via Bun)
+# Build frontend SPA (Svelte 5 / Vite 8 via Bun). Also pre-compresses dist —
+# the gateway serves the .br/.gz siblings (§6.G).
 make web-build
-# Or directly inside web/
+# Or directly inside web/. `bun run build` pre-compresses too — keep it that
+# way, or the gateway embeds an uncompressed bundle.
 cd web && bun run build
+
+# Regenerate the vendored fonts (§6.G). Only needed after a font dependency
+# bump — the output is committed and deterministic.
+cd web && bun run vendor:fonts
+
+# Report the client weight budget (§6.F) after a UI change
+cd web && bun run build && du -sh dist && find dist -type f -printf '%s %p\n' | sort -rn | head -8
 
 # Svelte type-check ratchet (blocks unresolved identifiers, pins type debt)
 make vet-svelte
 
 # Go lint/dispatch ratchet (CI `lint` job: golangci-lint on the diff, govulncheck,
 # oxlint, actionlint). golangci-lint reads source, but web/dist must exist or it
-# reports `pattern dist/*: no matching files found` as a typecheck failure:
-mkdir -p web/dist && printf '<!doctype html>' > web/dist/index.html
+# reports `pattern dist/*: no matching files found` as a typecheck failure.
+# The stub is written only when there is no build yet: overwriting a built
+# index.html would leave its pre-compressed `.br` variant describing the old
+# document, and the gateway prefers that variant.
+[ -f web/dist/index.html ] || { mkdir -p web/dist && printf '<!doctype html>' > web/dist/index.html; }
 golangci-lint run --new-from-rev="$(git merge-base origin/main HEAD)" ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 cd web && bunx oxlint --deny-warnings

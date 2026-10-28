@@ -281,6 +281,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
   },
   {
     "id": "gitlab",
+    "hidden": true,
     "name": "GitLab Duo",
     "category": "oauth",
     "alias": "gitlab",
@@ -309,6 +310,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
   },
   {
     "id": "iflow",
+    "hidden": true,
     "name": "iFlow AI",
     "category": "oauth",
     "alias": "if",
@@ -471,6 +473,36 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "atmorouter",
+    "name": "AtmoRouter",
+    "category": "apikey",
+    "alias": "atmo",
+    "color": "#00C896",
+    "icon": "router",
+    "website": "https://atmorouter.dev",
+    "notice": {"apiKeyUrl":"https://atmorouter.dev/dashboard"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
+    "id": "runcrate",
+    "name": "RunCrate",
+    "category": "apikey",
+    "alias": "rc",
+    "color": "#FF6B35",
+    "icon": "local_shipping",
+    "website": "https://runcrate.ai",
+    "notice": {"apiKeyUrl":"https://www.runcrate.ai/dashboard"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
     "id": "freebuff",
     "name": "Freebuff",
     "category": "oauth",
@@ -512,6 +544,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
   },
   {
     "id": "mimo-free",
+    "hidden": true,
     "name": "MiMo Code Free",
     "category": "free",
     "alias": "mmf",
@@ -605,6 +638,21 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "daoxe",
+    "name": "DaoXE",
+    "category": "freeTier",
+    "alias": "dx",
+    "color": "#10B981",
+    "icon": "auto_awesome",
+    "website": "https://daoxe.com",
+    "notice": {"apiKeyUrl":"https://daoxe.com/token"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
     "id": "coqui",
     "name": "Coqui TTS",
     "category": "freeTier",
@@ -685,6 +733,36 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "nan",
+    "name": "NaN.Builders",
+    "category": "freeTier",
+    "alias": "nan",
+    "color": "#06B6D4",
+    "icon": "construction",
+    "website": "https://nan.builders",
+    "notice": {"apiKeyUrl":"https://cloud.nan.builders"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
+    "id": "openadapter",
+    "name": "OpenAdapter",
+    "category": "freeTier",
+    "alias": "oad",
+    "color": "#8B5CF6",
+    "icon": "hub",
+    "website": "https://openadapter.dev",
+    "notice": {"apiKeyUrl":"https://dashboard.openadapter.in"},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
     "id": "kimchi",
     "name": "Kimchi",
     "category": "freeTier",
@@ -712,6 +790,33 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "serviceKinds": [
       "tts"
     ]
+  },
+  {
+    "id": "nous",
+    "name": "Nous Research",
+    "category": "freeTier",
+    "alias": "nous",
+    "color": "#7C3AED",
+    "icon": "psychology",
+    "website": "https://nousresearch.com",
+    "notice": {
+      "text": "Connect with OAuth Device Code (free account, no payment required) or a Nous Portal API key.",
+      "signupUrl": "https://portal.nousresearch.com",
+      "apiKeyUrl": "https://portal.nousresearch.com/api-keys"
+    },
+    "authType": "oauth",
+    "authModes": ["oauth", "apikey"],
+    "passthroughModels": true,
+    "noAuth": false,
+    "priority": 65,
+    "serviceKinds": [
+      "llm",
+      "imageToText"
+    ],
+    "modelsFetcher": {
+      "url": "https://inference-api.nousresearch.com/v1/models",
+      "type": "nous-free"
+    }
   },
   {
     "id": "nvidia",
@@ -1025,6 +1130,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
   },
   {
     "id": "bluesminds",
+    "hidden": true,
     "name": "BluesMinds",
     "category": "apikey",
     "alias": "bm",
@@ -1134,6 +1240,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "icon": "smart_toy",
     "website": "https://commandcode.ai",
     "notice": {"text":"Use your CommandCode CLI API key (starts with user_...) from ~/.commandcode/auth.json or commandcode.ai/studio.","apiKeyUrl":"https://commandcode.ai/studio"},
+    "modelsFetcher": {"url":"https://api.commandcode.ai/provider/v1/models","type":"commandcode-free"},
     "noAuth": false,
     "serviceKinds": [
       "llm"
@@ -1305,21 +1412,22 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "website": "https://open.bigmodel.cn",
     "notice": {"apiKeyUrl":"https://open.bigmodel.cn/usercenter/apikeys"},
     "noAuth": false,
+    "priority": 130,
     "serviceKinds": [
       "llm"
     ]
   },
   {
     "id": "glm",
-    "name": "GLM Coding",
-    "category": "apikey",
+    "name": "Zai GLM Coding",
+    "category": "oauth",
     "alias": "glm",
     "color": "#2563EB",
     "icon": "code",
     "website": "https://open.bigmodel.cn",
-    "notice": {"apiKeyUrl":"https://open.bigmodel.cn/usercenter/apikeys"},
-    "authType": "apikey",
+    "notice": {"apiKeyUrl":"https://open.bigmodel.cn/usercenter/apikeys","signupUrl":"https://chat.z.ai"},
     "noAuth": false,
+    "authModes": ["oauth", "apikey"],
     "priority": 140,
     "serviceKinds": [
       "llm",
@@ -1801,6 +1909,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
   },
   {
     "id": "sambanova",
+    "hidden": true,
     "name": "SambaNova",
     "category": "apikey",
     "alias": "samba",
@@ -1856,6 +1965,22 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "priority": 999,
     "serviceKinds": [
       "webSearch"
+    ]
+  },
+  {
+    "id": "sensenova",
+    "name": "SenseNova",
+    "category": "apikey",
+    "alias": "sensenova",
+    "color": "#5B5CE2",
+    "icon": "auto_awesome",
+    "website": "https://token.sensenova.cn",
+    "notice": {"apiKeyUrl":"https://token.sensenova.cn"},
+    "noAuth": false,
+    "serviceKinds": [
+      "llm",
+      "image",
+      "imageToText"
     ]
   },
   {
@@ -2047,6 +2172,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "icon": "deployed_code",
     "website": "https://vercel.com/ai-gateway",
     "notice": {"text":"Unified OpenAI-compatible endpoint from Vercel. Use your AI Gateway API key, then pick models with provider/model IDs like anthropic/claude-sonnet-4.6 or openai/gpt-5.4.","apiKeyUrl":"https://vercel.com/dashboard/~/ai-gateway"},
+    "modelsFetcher": {"url":"https://ai-gateway.vercel.sh/v1/models","type":"vercel-free"},
     "noAuth": false,
     "priority": 160,
     "serviceKinds": [
@@ -2232,7 +2358,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "icon": "auto_awesome",
     "website": "https://chat.deepseek.com",
     "authType": "cookie",
-    "authHint": "Paste your userToken from chat.deepseek.com — DevTools → Application → Local Storage → userToken",
+    "authHint": "Paste your userToken from chat.deepseek.com — DevTools → Application → Local Storage → userToken — and the site's own cookie header from DevTools → Application → Cookies (the WAF reads it). The form can read both for you from a browser you are already signed in to, or open a throwaway browser for you to sign in to.",
     "noAuth": false,
     "serviceKinds": [
       "llm"
@@ -2247,7 +2373,7 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "icon": "auto_awesome",
     "website": "https://gemini.google.com",
     "authType": "cookie",
-    "authHint": "Optional. Works with no cookie at all — an anonymous gemini.google.com session reaches one model. Paste __Secure-1PSID from a signed-in tab to reach the others.",
+    "authHint": "Optional. Works with no cookie at all — an anonymous gemini.google.com session reaches one model. To reach the others, copy the WHOLE cookie header of a signed-in tab (DevTools → Application → Cookies) including __Secure-1PSIDTS. That cookie is what carries the session into the model registry; without it the site answers as an anonymous visitor, so the session stays on one model. IMPORTANT: copy the cookies from an Incognito window that you close right after, not from a normal tab. Google rotates __Secure-1PSIDTS every few minutes, and a browser that is still open keeps rotating the same session — the router and the browser then cancel each other's session out and the account is signed out. A closed Incognito window is not rotating anything, so the router's renewal is the only one.",
     "noAuth": false,
     "serviceKinds": [
       "llm"

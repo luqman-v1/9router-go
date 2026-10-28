@@ -4,7 +4,6 @@
   import Toggle from '../lib/ui/Toggle.svelte'
   import Modal from '../lib/ui/Modal.svelte'
   import Button from '../lib/ui/Button.svelte'
-  import Input from '../lib/ui/Input.svelte'
   import { copyToClipboard } from '../lib/clipboard'
   import { api, type Settings } from '../api/client'
 
@@ -153,7 +152,7 @@
     rtkEnabled = true
     cavemanEnabled = true
     cavemanLevel = 'full'
-    adhdEnabled = true
+    adhdEnabled = false
     adhdLevel = 'full'
     ponytailEnabled = false
     headroomEnabled = false
@@ -162,7 +161,7 @@
       rtkEnabled: true,
       cavemanEnabled: true,
       cavemanLevel: 'full',
-      adhdEnabled: true,
+      adhdEnabled: false,
       adhdLevel: 'full',
       ponytailEnabled: false,
       headroomEnabled: false,

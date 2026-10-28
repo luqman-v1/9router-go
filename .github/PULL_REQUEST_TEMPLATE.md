@@ -9,6 +9,14 @@ body:
         Thanks for contributing. Read the checklist at the bottom — most of this repo's CI failures are one of
         those gates, and a PR that fails them costs a round trip.
 
+        Two of them are hard conditions for approval, not advice:
+
+        - **Every CI check must be green on the latest commit.** A red check is not reviewed, and not merged —
+          including a failure that looks environmental. If a live test or a scan is the cause, that gets fixed
+          first and the PR re-runs.
+        - **A UI change must carry before/after screenshots**, attached in the Screenshots section below. A
+          text review cannot show overflow, contrast, or whether a control is reachable.
+
   - type: textarea
     id: summary
     attributes:
@@ -51,6 +59,20 @@ body:
         - "Documentation only"
     validations:
       required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots (required for a UI change)
+      description: |
+        Required when the Surface above is "Dashboard UI (web/src)", or for any other change a person can see.
+        Drag the images into this box: **before** first, then **after**, for the same view and the same window
+        width. Include the narrow/mobile layout when the change touches spacing, columns, or a table.
+
+        A dashboard change with no images is sent back for them rather than reviewed — the diff shows what the
+        code does, not what the operator sees.
+    validations:
+      required: false
 
   - type: textarea
     id: verification
@@ -113,6 +135,10 @@ body:
         - label: `go vet ./...` and `go test -count=1 ./...` pass locally.
           required: true
         - label: Dashboard changes pass `cd web && bun test` and `make vet-svelte`.
+        - label: A UI change attaches before/after screenshots in the Screenshots section above.
+          required: true
+        - label: Every CI check is green on the latest commit (a red check is not an exception).
+          required: true
         - label: Routing, auth, rotation, or usage changes have an integration case under `internal/integration/`.
         - label: New or changed wire behaviour is covered by a test that asserts the response a client sees.
         - label: No provider is aliased, hijacked, or switched by substring matching (`AGENTS.md` §3).

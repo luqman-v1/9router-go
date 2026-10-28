@@ -1,6 +1,10 @@
 package dashboard
 
 import (
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/models"
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/updater"
 	"context"
 	json "encoding/json/v2"
 	"fmt"
@@ -13,10 +17,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/samber/lo"
-
-	"9router/proxy/internal/handlerutil"
-	"9router/proxy/internal/models"
-	"9router/proxy/internal/providers"
 )
 
 // HandleGetConnections handles GET /api/connections.
@@ -138,7 +138,7 @@ const (
 // (registry features.usage).
 var usageSupportedProviders = []string{
 	"antigravity", "claude", "codebuddy-cn", "codebuddy-intl", "codex",
-	"commandcode", "deepseek", "gemini-cli", "github", "glm", "glm-cn",
+	"commandcode", "deepseek", "gemini-cli", "gemini-web", "github", "glm", "glm-cn",
 	"grok-cli", "groq", "kimi", "kiro", "minimax", "minimax-cn", "minimax-code",
 	"minimax-code-global", "ollama",
 	"opencode-go", "opencode-zen", "qoder", "qoder-cn", "trae",
@@ -148,7 +148,7 @@ var usageSupportedProviders = []string{
 // usageApikeyProviders mirrors upstream USAGE_APIKEY_PROVIDERS
 // (registry features.usageApikey).
 var usageApikeyProviders = []string{
-	"codebuddy-cn", "codebuddy-intl", "commandcode", "deepseek", "glm",
+	"codebuddy-cn", "codebuddy-intl", "commandcode", "deepseek", "gemini-web", "glm",
 	"glm-cn", "groq", "kimi", "kiro", "minimax", "minimax-cn", "ollama",
 	"opencode-go", "opencode-zen", "qoder", "qoder-cn", "vercel-ai-gateway",
 	"xiaomi-mimo",
@@ -274,7 +274,6 @@ func connectionSecretHint(data map[string]any) string {
 // sanitizeProviderConnection mirrors upstream sanitize(): only safe fields,
 // secrets in data JSON never leave the server.
 func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
-
 	safe := map[string]any{
 		"id": c.ID, "provider": c.Provider, "authType": c.AuthType,
 		"isActive": c.IsActive, "createdAt": c.CreatedAt, "updatedAt": c.UpdatedAt,
@@ -392,6 +391,14 @@ type createConnectionRequest struct {
 	Overwrite      bool `json:"overwrite"`
 }
 
+// isCompatibleNodeProviderID reports whether providerID names a custom
+// provider node rather than a registry provider.
+func isCompatibleNodeProviderID(providerID string) bool {
+	return strings.HasPrefix(providerID, "openai-compatible-") ||
+		strings.HasPrefix(providerID, "anthropic-compatible-") ||
+		strings.HasPrefix(providerID, "custom-embedding-")
+}
+
 // HandleCreateConnection handles POST /api/connections.
 // Builds the connection data payload (apiKey + providerSpecificData +
 // testStatus + proxyPoolId) and inserts the row with an explicit priority.
@@ -457,6 +464,47 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 	// alongside the key (AddApiKeyModal sends defaultModel for compatible nodes).
 	if req.DefaultModel != "" {
 		dataMap["defaultModel"] = req.DefaultModel
+	}
+
+	// Upstream POST /api/providers rebuilds providerSpecificData from the node
+	// row for compatible providers: the node owns the public prefix, endpoint
+	// and name. If a connection is stored without them, /v1/models falls back
+	// to the internal "openai-compatible-chat-<uuid>" id, which is not a model
+	// alias any client can use. Keep unrelated keys the modal sent (for example
+	// assignedModel) while replacing the node-owned ones.
+	if isCompatibleNodeProviderID(req.Provider) {
+		node, nodeData, err := h.Repo.GetProviderNodeByID(req.Provider)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if node == nil {
+			handlerutil.WriteJSONError(w, http.StatusNotFound, "Provider node not found")
+			return
+		}
+		if nodeData == nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, "Provider node data is invalid")
+			return
+		}
+		psd, _ := dataMap["providerSpecificData"].(map[string]any)
+		if psd == nil {
+			psd = make(map[string]any)
+		}
+		psd["prefix"] = nodeData.Prefix
+		nodeType := ""
+		if node.Type != nil {
+			nodeType = *node.Type
+		}
+		if nodeType == "openai-compatible" {
+			psd["apiType"] = nodeData.APIType
+		} else {
+			delete(psd, "apiType")
+		}
+		psd["baseUrl"] = nodeData.BaseURL
+		if node.Name != nil {
+			psd["nodeName"] = *node.Name
+		}
+		dataMap["providerSpecificData"] = psd
 	}
 
 	dataStr := rawData
@@ -811,6 +859,69 @@ func mergeMapField(target map[string]any, key string, source map[string]any) {
 	target[key] = existing
 }
 
+// HandleExportProviderKeys handles GET /api/providers/{id}/export-keys.
+// Returns all stored connections for a given provider with unmasked raw credentials.
+// Matches upstream decolua/9router#4889 exportProviderKeys contract.
+func (h *DashboardHandler) HandleExportProviderKeys(w http.ResponseWriter, r *http.Request) {
+	providerID := getURLParam(r, "id")
+	if providerID == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Provider ID required")
+		return
+	}
+
+	conns, err := h.Repo.GetProviderConnections(providerID, false)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	type exportedKey struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		AuthType string `json:"authType"`
+		Key      string `json:"key"`
+	}
+
+	exported := make([]exportedKey, 0, len(conns))
+	for _, c := range conns {
+		if c == nil {
+			continue
+		}
+		var data map[string]any
+		if c.Data != "" {
+			_ = json.Unmarshal([]byte(c.Data), &data)
+		}
+		key := ""
+		if data != nil {
+			if k, ok := data["apiKey"].(string); ok && k != "" {
+				key = k
+			} else if tok, ok := data["accessToken"].(string); ok && tok != "" {
+				key = tok
+			}
+		}
+
+		name := ""
+		if c.Name != nil && *c.Name != "" {
+			name = *c.Name
+		} else if c.Email != nil && *c.Email != "" {
+			name = *c.Email
+		} else {
+			name = c.ID
+		}
+
+		exported = append(exported, exportedKey{
+			ID:       c.ID,
+			Name:     name,
+			AuthType: c.AuthType,
+			Key:      key,
+		})
+	}
+
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"connections": exported,
+	})
+}
+
 // HandleDeleteConnection handles DELETE /api/connections/{id}.
 // Calls DeleteProviderConnection.
 func (h *DashboardHandler) HandleDeleteConnection(w http.ResponseWriter, r *http.Request) {
@@ -863,6 +974,12 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 	}
 	if conn.Data != "" {
 		_ = json.Unmarshal([]byte(conn.Data), &connData)
+	}
+	// The Zed catalogue branch reads the same fields through a named type.
+	zedData := &zedConnectionData{
+		APIKey:               connData.APIKey,
+		AccessToken:          connData.AccessToken,
+		ProviderSpecificData: connData.ProviderSpecificData,
 	}
 
 	type modelItem struct {
@@ -1023,14 +1140,20 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no valid token found")
 			return
 		}
+		// OAuth connections present the 9Router identity plus the WorkOS
+		// bearer (upstream buildModelListHeaders); API-key connections send
+		// only Accept + Authorization.
+		var headers map[string]string
+		if connData.AccessToken != "" {
+			headers = providers.ClineIdentityHeaders(updater.CurrentVersion, map[string]string{"Accept": "application/json"})
+		} else {
+			headers = map[string]string{"Accept": "application/json"}
+		}
 		authHeaderVal := token
 		if strings.HasPrefix(token, "eyJ") {
 			authHeaderVal = "workos:" + token
 		}
-		headers := map[string]string{
-			"Authorization": "Bearer " + authHeaderVal,
-			"User-Agent":    "Cline/3.0.0",
-		}
+		headers["Authorization"] = "Bearer " + authHeaderVal
 		status, body, err := validateProbeDo(r.Context(), http.MethodGet, "https://api.cline.bot/api/v1/models", headers, nil)
 		if err != nil {
 			statusCode, _, errMsg := ClassifyUpstreamNetworkError(err)
@@ -1083,6 +1206,23 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Zed's catalogue is behind a two-layer auth: the account token is traded
+	// for a short-lived LLM token first, so it needs its own branch rather
+	// than the plain bearer /models fetch.
+	if conn.Provider == "zed" {
+		zedModels, err := fetchZedCatalogModels(r.Context(), conn, zedData)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to fetch Zed models: "+err.Error())
+			return
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       zedModels,
+		})
+		return
+	}
+
 	// OpenAI-compatible aggregators with a live /v1/models catalogue. The
 	// connection's key is the only credential these need.
 	if listURL := providers.ModelsListURL(conn.Provider); listURL != "" {
@@ -1116,6 +1256,14 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		items := listResp.Data
 		if len(items) == 0 {
 			items = listResp.Models
+		}
+		if conn.Provider == "nous" {
+			handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+				"provider":     conn.Provider,
+				"connectionId": conn.ID,
+				"models":       providers.NormalizeRoutedNousModels(items),
+			})
+			return
 		}
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,

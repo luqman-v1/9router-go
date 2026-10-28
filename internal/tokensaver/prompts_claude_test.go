@@ -70,3 +70,42 @@ func TestInjectSystemPromptClaudeDoesNotTouchOpenAIMessages(t *testing.T) {
 		t.Fatalf("messages must not gain a system entry, got %d", len(msgs))
 	}
 }
+
+func TestInjectSystemPromptClaudePreservesCacheControl(t *testing.T) {
+	prompt := "be terse"
+	// Simulating Claude Code system prompt structure where the last block has cache_control
+	body := []byte(`{
+		"system": [
+			{"type": "text", "text": "base instruction 1"},
+			{"type": "text", "text": "base instruction 2", "cache_control": {"type": "ephemeral"}}
+		],
+		"messages": [{"role": "user", "content": "hi"}]
+	}`)
+	out, did := InjectSystemPromptClaude(body, prompt)
+	if !did {
+		t.Fatal("expected modification")
+	}
+	var req map[string]any
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	blocks, _ := req["system"].([]any)
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 system blocks, got %d", len(blocks))
+	}
+
+	// The block with cache_control must remain the last block so prompt caching breakpoint is preserved
+	lastBlock := blocks[2].(map[string]any)
+	if lastBlock["cache_control"] == nil {
+		t.Errorf("expected last block to carry cache_control, got %v", lastBlock)
+	}
+	if lastBlock["text"] != "base instruction 2" {
+		t.Errorf("expected last block text 'base instruction 2', got %v", lastBlock["text"])
+	}
+
+	// Injected block must be placed before cache_control block
+	injectedBlock := blocks[1].(map[string]any)
+	if injectedBlock["text"] != prompt {
+		t.Errorf("expected injected block at index 1 with text %q, got %v", prompt, injectedBlock["text"])
+	}
+}

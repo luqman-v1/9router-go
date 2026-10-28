@@ -1,15 +1,17 @@
 package dashboard
 
 import (
-	json "encoding/json/v2"
+	"encoding/json/v2"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/guardrails"
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -26,6 +28,14 @@ func (h *DashboardHandler) HandleCreateGuardrailPolicy(w http.ResponseWriter, r 
 	p.ID = uuid.New().String()
 	p.TenantID = db.DefaultGuardrailTenant
 	if err := h.Repo.CreateGuardrailPolicy(p); err != nil {
+		// The unique (tenant, scope, scope_id) index is the only constraint a
+		// create can hit, and an operator needs the reason rather than the
+		// raw SQLite message.
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			handlerutil.WriteJSONError(w, http.StatusConflict,
+				"a policy already exists for this scope; edit or delete it first")
+			return
+		}
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -62,11 +72,15 @@ func (h *DashboardHandler) HandleUpdateGuardrailPolicy(w http.ResponseWriter, r 
 
 // HandleGetGuardrailPolicies handles GET /api/guardrails/policies.
 //
-// An omitted scope lists every scope, which is what the policy editor wants; a
-// scope without a scopeID lists the scope-wide policies of that scope.
+// scope is required. With no scopeId parameter the whole scope is listed,
+// including policies bound to one provider/model/chain/key, which is what the
+// dashboard needs: those rows live under their own scope id and a scope-wide
+// read would hide them. An explicit scopeId (including an empty one) keeps the
+// exact-match behaviour the resolver uses.
 func (h *DashboardHandler) HandleGetGuardrailPolicies(w http.ResponseWriter, r *http.Request) {
-	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
-	scopeID := strings.TrimSpace(r.URL.Query().Get("scopeId"))
+	query := r.URL.Query()
+	scope := strings.TrimSpace(query.Get("scope"))
+	scopeID := strings.TrimSpace(query.Get("scopeId"))
 	if scope == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "scope is required")
 		return
@@ -75,7 +89,15 @@ func (h *DashboardHandler) HandleGetGuardrailPolicies(w http.ResponseWriter, r *
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "unknown scope: "+scope)
 		return
 	}
-	policies, err := h.Repo.ListGuardrailPolicies(scope, scopeID)
+	var (
+		policies []*db.GuardrailPolicy
+		err      error
+	)
+	if query.Has("scopeId") {
+		policies, err = h.Repo.ListGuardrailPolicies(scope, scopeID)
+	} else {
+		policies, err = h.Repo.ListGuardrailPoliciesForScope(r.Context(), scope)
+	}
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -129,11 +151,12 @@ func (h *DashboardHandler) guardrailPolicyFromBody(w http.ResponseWriter, r *htt
 	defer r.Body.Close()
 
 	var req struct {
-		Name    string `json:"name"`
-		Scope   string `json:"scope"`
-		ScopeID string `json:"scopeId"`
-		Enabled *bool  `json:"enabled"`
-		Config  string `json:"config"`
+		Name           string                     `json:"name"`
+		Scope          string                     `json:"scope"`
+		ScopeID        string                     `json:"scopeId"`
+		Enabled        *bool                      `json:"enabled"`
+		Config         string                     `json:"config"`
+		CustomPatterns []guardrails.CustomPattern `json:"customPatterns,omitempty"`
 	}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -184,17 +207,19 @@ func validateGuardrailConfig(raw string) error {
 		return errEmptyGuardrailConfig
 	}
 	var probe struct {
-		Detectors []string `json:"detectors"`
-		Action    string   `json:"action"`
+		Detectors      []string                   `json:"detectors"`
+		Action         string                     `json:"action"`
+		CustomPatterns []guardrails.CustomPattern `json:"customPatterns,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(raw), &probe); err != nil {
 		return errGuardrailConfigJSON
 	}
-	if len(probe.Detectors) == 0 {
+	// Allow empty detectors if customPatterns are present.
+	if len(probe.Detectors) == 0 && len(probe.CustomPatterns) == 0 {
 		return errGuardrailNoDetectors
 	}
 	for _, d := range probe.Detectors {
-		if d != "pii" && d != "injection" {
+		if d != "pii" && d != "injection" && d != "custom" {
 			return errGuardrailUnknownDetector
 		}
 	}
@@ -202,6 +227,15 @@ func validateGuardrailConfig(raw string) error {
 	case "allow", "log_only", "warn", "mask", "block":
 	default:
 		return errGuardrailUnknownAction
+	}
+	// Validate custom patterns
+	for _, cp := range probe.CustomPatterns {
+		if strings.TrimSpace(cp.Regex) == "" {
+			return errGuardrailCustomPatternEmptyRegex
+		}
+		if _, err := regexp.Compile(cp.Regex); err != nil {
+			return errGuardrailCustomPatternInvalidRegex
+		}
 	}
 	return nil
 }
@@ -219,10 +253,11 @@ type guardrailConfigError string
 func (e guardrailConfigError) Error() string { return string(e) }
 
 const (
-	errEmptyGuardrailConfig   = guardrailConfigError("config is required")
-	errGuardrailConfigJSON    = guardrailConfigError("config must be a JSON object")
-	errGuardrailNoDetectors   = guardrailConfigError("config.detectors must list at least one detector")
-	errGuardrailUnknownAction = guardrailConfigError(
-		"config.action must be one of allow, log_only, warn, mask, block")
-	errGuardrailUnknownDetector = guardrailConfigError("config.detectors may only contain pii and injection")
+	errEmptyGuardrailConfig               = guardrailConfigError("config is required")
+	errGuardrailConfigJSON                = guardrailConfigError("config must be a JSON object")
+	errGuardrailNoDetectors               = guardrailConfigError("config.detectors must list at least one detector or customPatterns must be provided")
+	errGuardrailUnknownAction             = guardrailConfigError("config.action must be one of allow, log_only, warn, mask, block")
+	errGuardrailUnknownDetector           = guardrailConfigError("config.detectors may only contain pii, injection, and custom")
+	errGuardrailCustomPatternEmptyRegex   = guardrailConfigError("custom pattern regex cannot be empty")
+	errGuardrailCustomPatternInvalidRegex = guardrailConfigError("custom pattern regex is invalid")
 )

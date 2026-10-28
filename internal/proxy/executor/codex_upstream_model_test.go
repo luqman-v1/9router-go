@@ -31,8 +31,8 @@ func TestRewriteCodexUpstreamModel(t *testing.T) {
 		},
 		{
 			name: "plain id is untouched",
-			body: `{"model":"gpt-5.5","input":[],"stream":true}`,
-			want: "gpt-5.5",
+			body: `{"model":"gpt-5.6-terra","input":[],"stream":true}`,
+			want: "gpt-5.6-terra",
 		},
 		{
 			name: "model below the extended suffix survives",

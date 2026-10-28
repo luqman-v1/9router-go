@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -52,7 +53,7 @@ func (h *MediaHandler) handleAntigravitySTT(w http.ResponseWriter, r *http.Reque
 	var responseFormat string
 
 	contentType := r.Header.Get("Content-Type")
-	if strings.Contains(contentType, "multipart/form-data") {
+	if isMultipartRequest(r) {
 		_, params, err := mime.ParseMediaType(contentType)
 		if err != nil || params["boundary"] == "" {
 			return fmt.Errorf("invalid multipart form data")
@@ -61,7 +62,14 @@ func (h *MediaHandler) handleAntigravitySTT(w http.ResponseWriter, r *http.Reque
 		for {
 			p, err := mr.NextPart()
 			if err != nil {
-				break
+				// A body that stops parsing mid-way is refused rather than
+				// forwarded with whatever was read before the failure. Breaking
+				// out here meant a malformed part header after the audio still
+				// sent the audio upstream, unbilled by any cap.
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				return fmt.Errorf("malformed multipart body: %w", err)
 			}
 			switch p.FormName() {
 			case "file":
@@ -243,12 +251,12 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 		log.Warn("media", "antigravity stt upstream error", "status", resp.StatusCode, "body", errText)
 		if h.Repo != nil {
 			backoff := h.Repo.GetConnectionBackoffLevel(conn.ID)
-		if !handlerutil.IsProbeContext(r.Context()) {
-			if classification := providers.ClassifyError(resp.StatusCode, errText, backoff); classification.ShouldFallback {
-				cooldownSec := max(classification.CooldownMs/1000, 1)
-				_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)
+			if !handlerutil.IsProbeContext(r.Context()) {
+				if classification := providers.ClassifyError(resp.StatusCode, errText, backoff); classification.ShouldFallback {
+					cooldownSec := max(classification.CooldownMs/1000, 1)
+					_ = h.Repo.LockConnectionModel(conn.ID, model, cooldownSec, classification.NewBackoffLevel)
+				}
 			}
-		}
 		}
 		return fmt.Errorf("antigravity stt failed with status %d: %s", resp.StatusCode, string(respBody[:min(300, len(respBody))]))
 	}

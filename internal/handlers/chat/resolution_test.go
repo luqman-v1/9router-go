@@ -533,3 +533,63 @@ func TestResolveModel_StrictProviderIsolation(t *testing.T) {
 		t.Fatalf("resolveModelEntry: expected antigravity, got %+v", entry)
 	}
 }
+
+// A cursor preset seeds a combo named after the bare model id (`gpt-5.3-codex`
+// -> ["cu/gpt-5.3-codex"]), and the catalog serves that preset by name. The
+// Codex-only slug rule used to run before the combo lookup, so a request for
+// that bare id resolved to provider `codex` and the combo was never consulted —
+// the preset was offered and unrouteable at the same time.
+//
+// Upstream puts the combo lookup ahead of the prefix inference
+// (src/sse/services/model.js getModelInfo -> getComboByName first), so a stored
+// combo of that name owns the bare id.
+func TestResolveModel_ComboWinsOverCodexSlugInference(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// Exactly what POST /api/combos/presets writes for the two cursor presets
+	// that carry a codex-only slug.
+	for _, id := range []string{"gpt-5.2-codex", "gpt-5.3-codex"} {
+		models, _ := json.Marshal([]string{"cu/" + id})
+		if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+			"cu-"+id, id, "fallback", string(models), "2026-10-23T00:00:00Z", "2026-10-23T00:00:00Z"); err != nil {
+			t.Fatalf("seed combo %q: %v", id, err)
+		}
+	}
+
+	for _, id := range []string{"gpt-5.2-codex", "gpt-5.3-codex"} {
+		t.Run(id, func(t *testing.T) {
+			info, err := h.resolveModel(id)
+			if err != nil {
+				t.Fatalf("resolveModel(%q) error = %v", id, err)
+			}
+			if len(info.ComboModels) != 1 || info.ComboModels[0] != "cu/"+id {
+				t.Fatalf("resolveModel(%q) = %+v, want the combo [cu/%s] to be consulted", id, info, id)
+			}
+			if info.Provider != "cursor" {
+				t.Errorf("resolveModel(%q).Provider = %q, want cursor (the combo's first leaf), not the codex inference", id, info.Provider)
+			}
+		})
+	}
+}
+
+// The slug rule still owns a bare id when no combo claims it: the fix moves the
+// combo lookup ahead of the rule, it does not remove the rule.
+func TestResolveModel_CodexSlugStillResolvesWithoutCombo(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	h := NewChatHandler(db.NewRepo(database))
+
+	info, err := h.resolveModel("gpt-5.3-codex")
+	if err != nil {
+		t.Fatalf("resolveModel error = %v", err)
+	}
+	if info.Provider != "codex" || info.Model != "gpt-5.3-codex" {
+		t.Errorf("got %s/%s, want codex/gpt-5.3-codex", info.Provider, info.Model)
+	}
+	if len(info.ComboModels) != 0 {
+		t.Errorf("ComboModels = %v, want none", info.ComboModels)
+	}
+}

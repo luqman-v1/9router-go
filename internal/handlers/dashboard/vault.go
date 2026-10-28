@@ -17,7 +17,7 @@ import (
 // migration state without reading the database.
 func (h *DashboardHandler) HandleGetVaultStatus(w http.ResponseWriter, r *http.Request) {
 	v := h.Repo.Vault()
-	sealed, plaintext, err := h.Repo.VaultCounts()
+	sealed, plaintext, err := h.Repo.VaultCounts(r.Context())
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return

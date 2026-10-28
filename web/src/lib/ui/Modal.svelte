@@ -6,6 +6,7 @@
     isOpen = false,
     onClose,
     title = '',
+    icon = '',
     size = 'md',
     closeOnOverlay = true,
     showTrafficLights = true,
@@ -16,6 +17,7 @@
     isOpen?: boolean
     onClose?: () => void
     title?: string
+    icon?: string
     size?: 'sm' | 'md' | 'lg' | 'xl' | 'full'
     closeOnOverlay?: boolean
     showTrafficLights?: boolean
@@ -84,7 +86,12 @@
               </div>
             {/if}
             {#if title}
-              <h2 class="text-lg font-semibold text-text-main">{title}</h2>
+              <h2 class="flex items-center gap-2 text-lg font-semibold text-text-main">
+                {#if icon}
+                  <span class="material-symbols-outlined text-[20px] text-brand-500">{icon}</span>
+                {/if}
+                {title}
+              </h2>
             {/if}
           </div>
           <button

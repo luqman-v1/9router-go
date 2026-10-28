@@ -359,7 +359,7 @@ func CleanParametersSchema(raw jsontext.Value) jsontext.Value {
 
 	cleanGeminiSchema(parsed)
 
-	cleaned, err := json.Marshal(parsed)
+	cleaned, err := json.Marshal(parsed, json.Deterministic(true))
 	if err != nil {
 		return raw // fallback
 	}
@@ -398,7 +398,7 @@ func SanitizeOpenAITools(body []byte) ([]byte, error) {
 		if !ok {
 			continue
 		}
-		raw, err := json.Marshal(params)
+		raw, err := json.Marshal(params, json.Deterministic(true))
 		if err != nil {
 			continue
 		}
@@ -413,5 +413,5 @@ func SanitizeOpenAITools(body []byte) ([]byte, error) {
 	if !changed {
 		return body, nil
 	}
-	return json.Marshal(m)
+	return json.Marshal(m, json.Deterministic(true))
 }

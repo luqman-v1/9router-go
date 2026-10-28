@@ -1,6 +1,7 @@
 <script lang="ts">
   import { fmtTokens } from '../../lib/compactNumber'
-  import { fmtCost, type StatsData } from './types'
+  import { costIn } from '../../lib/currency.svelte'
+  import { type StatsData } from './types'
 
   let { stats = {} }: { stats?: StatsData } = $props()
 </script>
@@ -28,7 +29,7 @@
 
   <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] flex min-w-0 flex-col gap-1 px-4 py-3">
     <span class="text-text-muted text-sm uppercase font-semibold">Est. Cost</span>
-    <span class="truncate text-2xl font-bold text-warning">~{fmtCost(stats.totalCost)}</span>
+    <span class="truncate text-2xl font-bold text-warning">~{costIn(stats.totalCost ?? 0)}</span>
     <span class="text-[10px] text-text-muted">Estimated, not actual billing</span>
   </div>
 </div>

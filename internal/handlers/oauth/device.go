@@ -13,15 +13,16 @@ import (
 	"time"
 
 	"9router/proxy/internal/handlerutil"
-	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 )
 
 // deviceProviders lists providers supporting the device-code family.
 // kimi-coding aliases to kimi (dual-auth merge, like upstream).
 var deviceProviders = []string{
 	"qoder", "qoder-cn", "kilocode", "grok-cli", "github", "kiro", "kimi", "kimi-coding",
-	"codebuddy-cn", "codebuddy-intl", "muse", "minimax-code", "minimax-code-global",
+	"codebuddy-cn", "codebuddy-intl", "muse", "minimax-code", "minimax-code-global", "nous",
+	"glm",
 }
 
 func deviceSupported(p string) bool {
@@ -202,6 +203,10 @@ func deviceStart(provider, region, startURL, authMethod string) (map[string]any,
 		return museStart()
 	case "minimax-code", "minimax-code-global":
 		return minimaxCodeStart(provider)
+	case "nous":
+		return nousStart()
+	case "glm":
+		return glmStart()
 	default:
 		return nil, fmt.Errorf("unsupported provider")
 	}
@@ -472,6 +477,10 @@ func devicePoll(provider, code string, session map[string]any) (deviceTokens, st
 		t, err = musePoll(code)
 	case "minimax-code", "minimax-code-global":
 		t, err = minimaxCodePoll(provider, code, session)
+	case "nous":
+		t, err = nousPoll(code)
+	case "glm":
+		t, err = glmPoll(session, code)
 	default:
 		return t, "error", "unsupported provider"
 	}
@@ -502,6 +511,7 @@ func (h *OAuthHandler) saveDeviceConnection(provider string, t deviceTokens) sav
 		"qoder": "Qoder", "qoder-cn": "Qoder CN", "kilocode": "KiloCode", "grok-cli": "Grok CLI",
 		"github": "GitHub", "kiro": "Kiro", "kimi": "Kimi", "muse": "Muse",
 		"codebuddy-cn": "CodeBuddy", "codebuddy-intl": "CodeBuddy",
+		"nous": "Nous Research", "glm": "Zai GLM Coding",
 	}[provider])
 	id := provider + "-" + shortHash(t.access)
 	dataMap := map[string]any{"apiKey": t.access, "accessToken": t.access}
@@ -515,6 +525,10 @@ func (h *OAuthHandler) saveDeviceConnection(provider string, t deviceTokens) sav
 	for k, v := range t.extra {
 		psd[k] = v
 	}
+	if ak, ok := t.extra["apiKey"].(string); ok && ak != "" {
+		dataMap["apiKey"] = ak
+	}
+	delete(psd, "apiKey")
 	dataMap["providerSpecificData"] = psd
 	if t.expiresIn > 0 {
 		dataMap["expiresAt"] = time.Now().Add(time.Duration(t.expiresIn) * time.Second).UTC().Format(time.RFC3339)

@@ -158,7 +158,7 @@ func TestMiniMaxCodeCapabilities(t *testing.T) {
 			if caps.Vision != tt.vision {
 				t.Errorf("Vision = %v, want %v", caps.Vision, tt.vision)
 			}
-			if got := canDisableThinking(caps); got != tt.canDisable {
+			if got := caps.CanDisableThinking(); got != tt.canDisable {
 				t.Errorf("thinking can be disabled = %v, want %v", got, tt.canDisable)
 			}
 			// The global site serves the same catalog, so it must answer

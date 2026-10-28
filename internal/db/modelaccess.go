@@ -18,6 +18,10 @@ import (
 
 const modelAccessTable = "api_key_model_access"
 
+// SentinelDenyAll is the explicit deny-all pattern used to mark restricted-empty
+// keys (keys that have model access restriction enabled but allow no models).
+const SentinelDenyAll = "!*"
+
 // GetAllowedModels returns the model's allowlist patterns for one API key.
 // The returned slice is empty (never nil) when the key has no allowlist, which
 // callers read as "allow all".

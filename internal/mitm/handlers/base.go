@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -75,8 +76,24 @@ func PipeJSON(upstream *http.Response, w http.ResponseWriter) error {
 }
 
 // SendError writes a JSON error response to the mitm client.
+//
+// The message is encoded by json.Marshal, never interpolated into a template: a
+// message carrying a quote or a backslash (a URL that failed to parse, a Windows
+// path) would otherwise close the JSON string early and leave a bare token
+// behind, which a JavaScript client reports as
+// `JSON Parse error: Unrecognized token '\'`.
 func SendError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	w.Write([]byte(fmt.Sprintf(`{"error":{"message":"%s","type":"mitm_error","code":%d}}`, msg, status)))
+	body, err := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": msg,
+			"type":    "mitm_error",
+			"code":    status,
+		},
+	})
+	if err != nil {
+		body = []byte(`{"error":{"message":"mitm error","type":"mitm_error","code":500}}`)
+	}
+	_, _ = w.Write(body)
 }

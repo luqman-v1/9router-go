@@ -15,10 +15,11 @@
   } from './pickerData'
   import { EMPTY_PICKER_EXTRAS, loadPickerExtras, type ResolvedPickerExtras } from './pickerExtras'
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
+  import { parseSearchQuery } from '../../lib/modelSearchFilter'
 
   interface Props {
     isOpen: boolean
-    target: 'combo' | 'vision' | 'audio' | 'judge'
+    target: 'combo' | 'vision' | 'audio' | 'judge' | 'router'
     connections?: ProviderConnection[]
     combos?: Combo[]
     providerNodes?: ProviderNode[]
@@ -52,6 +53,7 @@
   }: Props = $props()
 
   let searchQuery = $state('')
+  let parsedQuery = $derived(parseSearchQuery(searchQuery))
   let fetchedExtras = $state<ResolvedPickerExtras>(cachedPickerExtras ?? EMPTY_PICKER_EXTRAS)
 
   $effect(() => {
@@ -92,6 +94,10 @@
       onSelect(val)
     }
   }
+
+  function clearSearch() {
+    searchQuery = ''
+  }
 </script>
 
 {#if isOpen}
@@ -127,7 +133,9 @@
                 ? 'Add Audio Model'
                 : target === 'judge'
                   ? 'Select Judge Model'
-                  : 'Add Model to Combo'}
+                  : target === 'router'
+                    ? 'Select System One Router'
+                    : 'Add Model to Combo'}
           </h2>
         </div>
         <button
@@ -152,10 +160,27 @@
           <Search class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
           <input
             type="text"
-            placeholder="Search..."
+            placeholder="Search models (e.g. claude -haiku, !embed, /regex/)..."
             bind:value={searchQuery}
-            class="w-full bg-surface border border-border rounded pl-8 pr-3 py-1.5 text-xs text-text-main placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+            class="w-full bg-surface border border-border rounded pl-8 pr-24 py-1.5 text-xs text-text-main placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-brand-500/50"
           />
+          <div class="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+            {#if parsedQuery.isRegex}
+              <span class="text-[10px] px-1 py-0.2 rounded bg-brand-500/10 text-brand-500 font-mono font-medium">regex</span>
+            {:else if parsedQuery.negativeTerms.length > 0}
+              <span class="text-[10px] px-1 py-0.2 rounded bg-amber-500/10 text-amber-500 font-mono font-medium">!exclude</span>
+            {/if}
+            {#if searchQuery}
+              <button
+                type="button"
+                onclick={clearSearch}
+                aria-label="Clear search"
+                class="p-1 rounded text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors"
+              >
+                <X class="w-3.5 h-3.5" />
+              </button>
+            {/if}
+          </div>
         </div>
       </div>
 

@@ -1,0 +1,2 @@
+### Features
+- **Combo First Token Timeout**: Added per-combo `firstTokenTimeoutMs` strategy setting (upstream `decolua/9router#5214` parity, resolving #744). When configured on a streaming combo, intermediate candidate attempts that fail to emit a content-bearing token within the deadline are cancelled and automatically fail over to the next candidate member, preventing stalled upstreams from holding connections.

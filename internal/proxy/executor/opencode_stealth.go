@@ -261,8 +261,7 @@ func (s *opencodeStealthClient) forward(ctx context.Context, targetURL string, h
 // when targeting https://opencode.ai directly, or falls back to plain HTTP when
 // dialing a local mock server, an edge relay, or when OPENCODE_PLAIN_HTTP=1.
 func forwardOpencodeRequest(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool) (*http.Response, error) {
-	isRelay := cfg.StaticHeaders != nil && cfg.StaticHeaders["x-relay-target"] != ""
-	if opencodePlainHTTP() || !strings.HasPrefix(cfg.BaseURL, "https://") || isRelay {
+	if !opencodeUsesStealth(cfg) {
 		return proxy.ForwardOpenAI(ctx, client, cfg, apiKey, body, isStream)
 	}
 	stealth, err := getOpencodeStealthClient(client)
@@ -270,6 +269,33 @@ func forwardOpencodeRequest(ctx context.Context, client *http.Client, cfg *provi
 		log.Warn("opencode", "stealth client error, falling back to plain HTTP", "error", err)
 		return proxy.ForwardOpenAI(ctx, client, cfg, apiKey, body, isStream)
 	}
+	return stealth.forward(ctx, cfg.BaseURL, opencodeStealthHeaders(cfg, apiKey, isStream), body)
+}
+
+// forwardOpencodeRequestDirect replays a refused free-tier request over a
+// direct egress (bypassing any assigned proxy): using plain HTTP when
+// stealth TLS is disabled or targeting a local/mock URL, and stealth TLS without
+// proxy when talking directly to opencode.ai.
+func forwardOpencodeRequestDirect(ctx context.Context, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool) (*http.Response, error) {
+	if !opencodeUsesStealth(cfg) {
+		return proxy.ForwardOpenAI(ctx, nil, cfg, apiKey, body, isStream)
+	}
+	stealth, err := getOpencodeStealthClient(nil)
+	if err != nil {
+		return nil, err
+	}
+	return stealth.forward(ctx, cfg.BaseURL, opencodeStealthHeaders(cfg, apiKey, isStream), body)
+}
+
+// opencodeUsesStealth reports whether this lane talks to opencode.ai directly
+// and so must use the stealth TLS stack.
+func opencodeUsesStealth(cfg *providers.ProviderConfig) bool {
+	return !opencodePlainHTTP() && strings.HasPrefix(cfg.BaseURL, "https://") && !isRelayConfig(cfg)
+}
+
+// opencodeStealthHeaders builds the request headers the stealth client sends.
+// The direct replay reuses it so both attempts carry the same request.
+func opencodeStealthHeaders(cfg *providers.ProviderConfig, apiKey string, isStream bool) map[string]string {
 	headers := map[string]string{}
 	if !cfg.NoAuth {
 		headers["Authorization"] = "Bearer " + apiKey
@@ -282,7 +308,7 @@ func forwardOpencodeRequest(ctx context.Context, client *http.Client, cfg *provi
 	} else {
 		headers["Accept"] = "*/*"
 	}
-	return stealth.forward(ctx, cfg.BaseURL, headers, body)
+	return headers
 }
 
 // opencodePlainHTTP reports whether the stealth stack is turned off via environment variable.

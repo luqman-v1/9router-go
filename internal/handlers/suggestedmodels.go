@@ -10,6 +10,7 @@ import (
 
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/pricing"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 )
 
@@ -197,6 +198,87 @@ func filterMinimaxCode(envelopes []map[string]any) []suggestedModel {
 	return []suggestedModel{}
 }
 
+func filterNousFree(models []map[string]any) []suggestedModel {
+	nousModels := providers.NormalizeNousFreeModels(models)
+	out := make([]suggestedModel, 0, len(nousModels))
+	for _, m := range nousModels {
+		out = append(out, suggestedModel{
+			ID:            m.ID,
+			Name:          m.Name,
+			ContextLength: m.ContextLength,
+		})
+	}
+	return out
+}
+
+// filterCommandCodeFree keeps Command Code's free tiers. Its catalogue carries
+// no pricing block, so a zero-credit model is signalled only by a trailing
+// ":free" or "-free" on the id — reflection/beam:free, stealth/glyph-cluster:free
+// and poolside/laguna-s-2.1-free are the ones live today. The same convention
+// filterOpencodeFree reads, without its dead-id table: Command Code has never
+// published an id that answers "unavailable".
+func filterCommandCodeFree(models []map[string]any) []suggestedModel {
+	out := []suggestedModel{}
+	for _, m := range models {
+		id := getString(m, "id")
+		if id == "" {
+			continue
+		}
+		if !strings.HasSuffix(id, ":free") && !strings.HasSuffix(id, "-free") {
+			continue
+		}
+		name := getString(m, "name")
+		if name == "" {
+			name = id
+		}
+		sm := suggestedModel{ID: id, Name: name}
+		if clen, ok := getFloat(m, "context_length"); ok {
+			n := int64(clen)
+			sm.ContextLength = &n
+		}
+		out = append(out, sm)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// filterVercelFree keeps Vercel AI Gateway's zero-priced chat models. Its
+// catalogue spells the price keys input/output rather than openrouter's
+// prompt/completion, and the window context_window rather than context_length,
+// so filterOpenRouterFree cannot be reused as-is.
+//
+// The 200k floor is what separates the free tier from the free *evaluation*
+// tier: Vercel also zero-prices four baseten/convai evaluation models at
+// 8k–16k context, and a row that small is not a chat seat an operator would
+// add to a combo. Probing live leaves five language models above the floor —
+// nvidia/nemotron-3.5-lightning-free, poolside/laguna-s-2.1-free,
+// reflection/beam, reflection/beam-free and stealth/glyph-cluster.
+func filterVercelFree(models []map[string]any) []suggestedModel {
+	out := []suggestedModel{}
+	for _, m := range models {
+		id := getString(m, "id")
+		if id == "" {
+			continue
+		}
+		pricing, _ := m["pricing"].(map[string]any)
+		if pricing == nil || getString(pricing, "input") != "0" || getString(pricing, "output") != "0" {
+			continue
+		}
+		clen, ok := getFloat(m, "context_window")
+		if !ok || clen < 200000 {
+			continue
+		}
+		name := getString(m, "name")
+		if name == "" {
+			name = id
+		}
+		n := int64(clen)
+		out = append(out, suggestedModel{ID: id, Name: name, ContextLength: &n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 // contextLengthOf reads an optional context window for sorting.
 func contextLengthOf(m suggestedModel) int64 {
 	if m.ContextLength == nil {
@@ -228,6 +310,12 @@ func HandleSuggestedModels(w http.ResponseWriter, r *http.Request) {
 		filter = filterAirforceFree
 	case "minimax-code":
 		filter = filterMinimaxCode
+	case "nous-free":
+		filter = filterNousFree
+	case "commandcode-free":
+		filter = filterCommandCodeFree
+	case "vercel-free":
+		filter = filterVercelFree
 	default:
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Unknown filter type")
 		return

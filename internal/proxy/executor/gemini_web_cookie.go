@@ -21,6 +21,42 @@ func GeminiWebCookieHeader(apiKey string) string {
 // probe does not carry a second copy that drifts.
 func GeminiWebUserAgent() string { return geminiWebUserAgent }
 
+// GeminiWebAuthorization renders the `authorization` header the site's
+// batchexecute endpoint expects from a signed-in caller, or an empty string
+// when the credential carries nothing to sign with.
+//
+// It is exported so the dashboard probe signs its registry call the same way
+// the executor does. A signed call is the request a signed-in page makes, so
+// it is the one sent — but it is not what decides the served set: measured
+// live on 2026-10-21, the site answered the unsigned registry call with the
+// same model list.
+func GeminiWebAuthorization(cookie string) string {
+	return geminiWebSAPISIDHash(cookie, geminiWebOrigin)
+}
+
+// GeminiWebHasSAPISID reports whether a credential carries the cookie the
+// signed-in calls are signed with.
+//
+// The signature is what a signed-in page sends, so a credential without it
+// is asked as a visitor would be. It is not, on its own, what decides which
+// models the session may be served — see GeminiWebHasSessionTimestamp.
+func GeminiWebHasSAPISID(cookie string) bool {
+	return geminiWebCookieValue(cookie, "SAPISID") != ""
+}
+
+// GeminiWebHasSessionTimestamp reports whether a credential carries the
+// session timestamp cookie.
+//
+// `__Secure-1PSIDTS` is the cookie that decides what a session may be
+// served, and it is the one the site rotates every few minutes. A header
+// without it is answered as an anonymous visitor's, however fresh the rest
+// of it is: measured live against gemini.google.com on 2026-10-21, a header
+// of `__Secure-1PSID` alone was served Flash-Lite only, and the same header
+// with `__Secure-1PSIDTS` added was served the account's four models.
+func GeminiWebHasSessionTimestamp(cookie string) bool {
+	return geminiWebCookieValue(cookie, "__Secure-1PSIDTS") != ""
+}
+
 // geminiWebPlaceholderKeys are the values the router substitutes for a provider
 // with no credential configured. They reach the executor as a real APIKey,
 // because `NoAuth` providers are dispatched with their catalog `DefaultAPIKey`

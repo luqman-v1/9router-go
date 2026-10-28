@@ -24,16 +24,23 @@ var contentfulBlocks = map[string]struct{}{
 	"image":                    {},
 	"document":                 {},
 	claudeBlockContainerUpload: {},
+	"redacted_thinking":        {},
 }
 
 // isContentfulBlock reports whether one content block keeps its message alive.
 // Text counts only when it is not blank: an Anthropic 400s on empty text, and
 // a whitespace-only turn carries nothing either.
+// Thinking blocks count only when carrying a valid Claude signature, ensuring
+// invalid/unsigned thinking blocks are dropped while valid blank thinking survives.
 func isContentfulBlock(block map[string]any) bool {
 	bType, _ := block["type"].(string)
 	if bType == claudeBlockText {
 		text, _ := block["text"].(string)
 		return strings.TrimSpace(text) != ""
+	}
+	if bType == claudeBlockThinking {
+		sig, _ := block["signature"].(string)
+		return IsValidClaudeSignature(sig)
 	}
 	_, ok := contentfulBlocks[bType]
 	return ok

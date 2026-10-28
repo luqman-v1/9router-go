@@ -57,7 +57,12 @@ func SchemaStatements() []string {
 			createdAt TEXT NOT NULL,
 			updatedAt TEXT NOT NULL
 		)`,
+		// usageHistory mirrors the production shape, id included: the reset marks a
+		// token budget is measured from are usageHistory row ids, so a fixture
+		// without the autoincrement primary key fails on the reset rather than on
+		// the query the test is about.
 		`CREATE TABLE IF NOT EXISTS usageHistory (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			timestamp TEXT,
 			provider TEXT,
 			model TEXT,
@@ -90,8 +95,8 @@ func SchemaStatements() []string {
 // CreateTables creates all tables from SchemaStatements in the given database,
 // then creates the Go-only tables and applies the Go-only additive columns, so
 // a fixture matches the shape of a real database. Without this, queries that read
-// the round-robin bookkeeping columns or the KeiRouter per-key columns fail in
-// tests while working in production.
+// the round-robin bookkeeping columns, the KeiRouter per-key columns, or the
+// ledger carryover tables fail in tests while working in production.
 func CreateTables(database *sql.DB) error {
 	for _, stmt := range SchemaStatements() {
 		if _, err := database.Exec(stmt); err != nil {
@@ -100,6 +105,12 @@ func CreateTables(database *sql.DB) error {
 	}
 	if err := db.EnsureKeiRouterTables(database); err != nil {
 		return fmt.Errorf("create keirouter tables: %w", err)
+	}
+	// The ledger carryover tables are Go-only too, and a fixture without them
+	// fails on the first token-budget read rather than on the query shape the
+	// test is about (usageHistory versus providerLedgerCarryover).
+	if err := db.EnsureLedgerTables(database); err != nil {
+		return fmt.Errorf("create ledger tables: %w", err)
 	}
 	return db.EnsureAdditiveColumns(database)
 }

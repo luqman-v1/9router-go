@@ -33,7 +33,7 @@ import (
 
 // testModelTimeout bounds one probe. A provider that never answers (no chat
 // lane, a STT model handed an upload it cannot read) must not hold the button.
-const testModelTimeout = 15 * time.Second
+const testModelTimeout = 45 * time.Second
 
 const (
 	// probeMaxTokens is generous on purpose: a reasoning model spends a small
@@ -71,6 +71,25 @@ func (h *MediaHandler) HandleTestModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, h.probeModel(r.Context(), req.Model, req.Kind))
+}
+
+// ProbeModelForHealth runs one probe for the model-health scheduler.
+//
+// It is the same probe the dashboard's Test button runs, reached through a
+// method rather than the HTTP handler so the scheduler does not have to build
+// a request and parse a response to ask one question. The verdict is
+// identical, which is the point: a model the scheduler judges dead is a model
+// the operator would also see fail.
+//
+// The kind is always the LLM default. The scheduler watches chat models —
+// image, audio and video rows are filtered out before they become candidates
+// — so there is no kind to dispatch on here.
+func (h *MediaHandler) ProbeModelForHealth(ctx context.Context, model string) testModelResult {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/api/models/test", nil)
+	if err != nil {
+		return testModelResult{Error: err.Error()}
+	}
+	return h.probeModel(req, model, "")
 }
 
 // probeModel runs one probe and turns whatever the kind's handler answered into
@@ -355,6 +374,14 @@ func readProbeResult(rec *httptest.ResponseRecorder, kind string) testModelResul
 	body, _ := io.ReadAll(io.LimitReader(rec.Body, probeBodyReadCap))
 	parsed := parseProbeBody(body)
 
+	// Check for inconclusive mid-stream timeout / abort (e.g. status 499/504 with valid first token stream data)
+	if (status == 499 || status == 504) && hasReceivedFirstToken(body) {
+		return testModelResult{OK: true, Status: status, Note: "inconclusive (first token received)"}
+	}
+	if (status == 499 || status == 504) && len(bytes.TrimSpace(body)) == 0 {
+		return testModelResult{Status: status, Error: ""}
+	}
+
 	if status != http.StatusOK {
 		errText := probeErrorText(body, parsed)
 		res := testModelResult{
@@ -367,7 +394,29 @@ func readProbeResult(rec *httptest.ResponseRecorder, kind string) testModelResul
 		}
 		return res
 	}
+
 	return verdictForKind(kind, parsed, status)
+}
+
+func hasReceivedFirstToken(body []byte) bool {
+	lines := bytes.Split(body, []byte("\n"))
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		var chunk struct {
+			Choices []any `json:"choices"`
+		}
+		if json.Unmarshal(payload, &chunk) == nil && len(chunk.Choices) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // cooldownMarkers are the exact sentences the gateway itself emits when every

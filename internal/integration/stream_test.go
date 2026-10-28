@@ -113,8 +113,15 @@ func TestStreamMidStreamDropReportsInBandError(t *testing.T) {
 	if !ok {
 		t.Fatalf("client was never told the stream failed: %q", truncate(res.Body))
 	}
-	if frame.Error.Code == "" {
-		t.Errorf("error frame carries no machine-readable code: %q", truncate(res.Body))
+	// The exact code, not merely "some code": a dropped socket is a 502 and
+	// classifies as upstream_error. Asserting `!= ""` would stay green if a
+	// stall timeout, a client abort or a fabricated gateway code were emitted
+	// instead, which are the three failures this test exists to distinguish.
+	if frame.Error.Code != "upstream_error" {
+		t.Errorf("error frame code = %q, want upstream_error: %q", frame.Error.Code, truncate(res.Body))
+	}
+	if !strings.Contains(frame.Error.Message, "connection lost") {
+		t.Errorf("error frame message = %q, want the dropped-connection wording", frame.Error.Message)
 	}
 	// A dropped stream must not be dressed up as a finished turn: that is
 	// exactly what made the truncation invisible to clients before.

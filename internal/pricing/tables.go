@@ -130,6 +130,7 @@ var (
 		"kimi-k2.6":                 {InputPer1M: 1, OutputPer1M: 4, CachedPer1M: 0.5, ReasoningPer1M: 6, CacheCreationPer1M: 1},
 		"kimi-k2.7-code":            {InputPer1M: 0.95, OutputPer1M: 4, CachedPer1M: 0.19, ReasoningPer1M: 4, CacheCreationPer1M: 0.95},
 		"kimi-k2.7-code-highspeed":  {InputPer1M: 1.9, OutputPer1M: 8, CachedPer1M: 0.38, ReasoningPer1M: 8, CacheCreationPer1M: 1.9},
+		"kimi-k3.1-pro":             {InputPer1M: 2, OutputPer1M: 10, CachedPer1M: 0.2, ReasoningPer1M: 10, CacheCreationPer1M: 2},
 		"kimi-k3":                   {InputPer1M: 3, OutputPer1M: 15, CachedPer1M: 0.3, ReasoningPer1M: 15, CacheCreationPer1M: 3},
 		"kimi-latest":               {InputPer1M: 1, OutputPer1M: 4, CachedPer1M: 0.5, ReasoningPer1M: 6, CacheCreationPer1M: 1},
 		"minimax-m2.1":              {InputPer1M: 0.5, OutputPer1M: 2, CachedPer1M: 0.25, ReasoningPer1M: 3, CacheCreationPer1M: 0.5},
@@ -286,6 +287,16 @@ var (
 			"us.xai.grok-4.6":     {InputPer1M: 3, OutputPer1M: 15, CachedPer1M: 0.75},
 			"global.xai.grok-4.6": {InputPer1M: 3, OutputPer1M: 15, CachedPer1M: 0.75},
 		},
+		"nous": {
+			"meituan/longcat-2.0:free":         {InputPer1M: 0, OutputPer1M: 0, CachedPer1M: 0, ReasoningPer1M: 0},
+			"meituan/longcat-2.5-preview:free": {InputPer1M: 0, OutputPer1M: 0, CachedPer1M: 0, ReasoningPer1M: 0},
+			"stepfun/step-5-preview:free":      {InputPer1M: 0, OutputPer1M: 0, CachedPer1M: 0, ReasoningPer1M: 0},
+			"upstage/solar-mini4:free":         {InputPer1M: 0, OutputPer1M: 0, CachedPer1M: 0, ReasoningPer1M: 0},
+			"stepfun/step-3.7-flash:free":      {InputPer1M: 0, OutputPer1M: 0, CachedPer1M: 0, ReasoningPer1M: 0},
+			"poolside/laguna-s-2.1:free":       {InputPer1M: 0, OutputPer1M: 0, CachedPer1M: 0, ReasoningPer1M: 0},
+			"poolside/laguna-xs-2.1:free":      {InputPer1M: 0, OutputPer1M: 0, CachedPer1M: 0, ReasoningPer1M: 0},
+			"stealth/missingno":                {InputPer1M: 0, OutputPer1M: 0, CachedPer1M: 0, ReasoningPer1M: 0},
+		},
 	}
 )
 
@@ -333,6 +344,7 @@ var patternPricing = []patternPricingRow{
 	{"qwen*-coder-*", ModelPricing{InputPer1M: 1, OutputPer1M: 4, CachedPer1M: 0.5, ReasoningPer1M: 6, CacheCreationPer1M: 1}},
 	{"qwen*", ModelPricing{InputPer1M: 0.5, OutputPer1M: 2, CachedPer1M: 0.25, ReasoningPer1M: 3, CacheCreationPer1M: 0.5}},
 	{"kimi-*-thinking", ModelPricing{InputPer1M: 1.8, OutputPer1M: 7.2, CachedPer1M: 0.9, ReasoningPer1M: 10.8, CacheCreationPer1M: 1.8}},
+	{"kimi-k3.1-pro", ModelPricing{InputPer1M: 2, OutputPer1M: 10, CachedPer1M: 0.2, ReasoningPer1M: 10, CacheCreationPer1M: 2}},
 	{"kimi-k3*", ModelPricing{InputPer1M: 3, OutputPer1M: 15, CachedPer1M: 0.3, ReasoningPer1M: 15, CacheCreationPer1M: 3}},
 	{"kimi-k2*", ModelPricing{InputPer1M: 1.2, OutputPer1M: 4.8, CachedPer1M: 0.6, ReasoningPer1M: 7.2, CacheCreationPer1M: 1.2}},
 	{"kimi-*", ModelPricing{InputPer1M: 1, OutputPer1M: 4, CachedPer1M: 0.5, ReasoningPer1M: 6, CacheCreationPer1M: 1}},

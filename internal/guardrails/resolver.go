@@ -30,8 +30,9 @@ type PolicyStore interface {
 
 // policyConfig is the JSON shape stored in guardrail_policies.config.
 type policyConfig struct {
-	Detectors []string `json:"detectors"`
-	Action    string   `json:"action"`
+	Detectors      []string        `json:"detectors"`
+	Action         string          `json:"action"`
+	CustomPatterns []CustomPattern `json:"customPatterns,omitempty"`
 }
 
 // sqlPolicyStore adapts *sql.DB to PolicyStore.
@@ -122,7 +123,7 @@ func Resolve(store PolicyStore, t Target) (*Engine, error) {
 				// down with it; skip it and keep the last good resolution.
 				continue
 			}
-			if len(cfg.Detectors) == 0 {
+			if len(cfg.Detectors) == 0 && len(cfg.CustomPatterns) == 0 {
 				continue
 			}
 			resolved = cfg
@@ -131,7 +132,7 @@ func Resolve(store PolicyStore, t Target) (*Engine, error) {
 	if resolved == nil {
 		return nil, nil
 	}
-	return NewEngine(resolved.Detectors, Action(resolved.Action)), nil
+	return NewEngineWithCustom(resolved.Detectors, Action(resolved.Action), resolved.CustomPatterns), nil
 }
 
 func parsePolicyConfig(raw string) (*policyConfig, error) {

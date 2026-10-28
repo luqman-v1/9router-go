@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
@@ -21,7 +22,10 @@ import (
 func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey, bodyStr string, isStream bool, projectID, modelName string) (*http.Response, error) {
 	body := []byte(bodyStr)
 	if projectID != "" {
-		modelName = translator.NormalizeAntigravityModel(modelName)
+		// Body-inspecting tier resolution (upstream getModelUpstreamId): an
+		// unadorned id follows the client's reasoning effort when the catalog
+		// has that variant.
+		modelName = translator.AntigravityTieredModel(modelName, body)
 	}
 
 	var sendBody []byte
@@ -55,9 +59,15 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		sendBody = wrapped
 	} else {
 		// Translate OpenAI → Gemini native
-		geminiBody, err := translator.TranslateOpenAIToGemini(body)
+		geminiBody, err := translator.TranslateOpenAIToGeminiWithSession(body, handlerutil.GetSessionID(ctx))
 		if err != nil {
 			return nil, fmt.Errorf("translate to Gemini: %w", err)
+		}
+		if translator.GeminiSafetyRequested(ctx) {
+			geminiBody, err = translator.ApplyGeminiSafetySettings(geminiBody)
+			if err != nil {
+				return nil, fmt.Errorf("apply safetySettings: %w", err)
+			}
 		}
 
 		// Wrap for antigravity if needed

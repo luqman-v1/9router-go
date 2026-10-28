@@ -2,6 +2,7 @@ package executor
 
 import (
 	json "encoding/json/v2"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -273,5 +274,174 @@ func TestEnsureClaudeMessagesFor_UsesLaneProvider(t *testing.T) {
 	}
 	if want != "claude-adaptive" && th["type"] != "enabled" {
 		t.Errorf("thinking.type = %v, want enabled (%s)", th["type"], out)
+	}
+}
+
+// TestEnsureClaudeMessagesFor_zedHaikuUsesAdaptive: Zed's Anthropic lane
+// serves claude-haiku-5-5 with adaptive thinking. The global *claude*haiku*
+// pattern emits the budget shape (thinking.type.enabled + budget_tokens),
+// which Zed rejects with 400 — the exact error this fix ships against. The
+// "zed" lane id must resolve claude-adaptive, while the same id under
+// "anthropic" keeps the budget shape other providers expect. Mirrors upstream
+// open-sse/providers/capabilities.js PROVIDER_CAPABILITIES override semantics
+// (see tests/unit/opencode-go-claude-haiku-55-thinking.test.js).
+func TestEnsureClaudeMessagesFor_zedHaikuUsesAdaptive(t *testing.T) {
+	model := "claude-haiku-5-5"
+	zedCaps := providers.GetCapabilitiesForModel("zed", model)
+	if zedCaps.ThinkingFormat != "claude-adaptive" {
+		t.Fatalf("zed capability ThinkingFormat = %q, want claude-adaptive", zedCaps.ThinkingFormat)
+	}
+	otherCaps := providers.GetCapabilitiesForModel("anthropic", model)
+	if otherCaps.ThinkingFormat == "claude-adaptive" {
+		t.Fatalf("anthropic capability ThinkingFormat = %q; the override must not leak past the zed lane", otherCaps.ThinkingFormat)
+	}
+	if otherCaps.ThinkingFormat == "" {
+		t.Fatalf("anthropic capability ThinkingFormat is empty, want a budget shape for the same id")
+	}
+
+	out := EnsureClaudeMessagesFor([]byte(`{"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`), "zed", model)
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	th, _ := m["thinking"].(map[string]any)
+	if th["type"] != "adaptive" {
+		t.Errorf("zed thinking.type = %v, want adaptive (%s)", th["type"], out)
+	}
+	if _, hasBudget := th["budget_tokens"]; hasBudget {
+		t.Errorf("zed thinking carries budget_tokens = %v; adaptive must have none (%s)", th["budget_tokens"], out)
+	}
+	oc, _ := m["output_config"].(map[string]any)
+	if oc["effort"] == nil || oc["effort"] == "" {
+		t.Errorf("zed output_config.effort missing, want the effort depth (%s)", out)
+	}
+
+	// The same id on another lane must keep its own thinking shape: Zed's
+	// override must not leak into the shared Anthropic conversion.
+	otherOut := EnsureClaudeMessagesFor([]byte(`{"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`), "anthropic", model)
+	var other map[string]any
+	if err := json.Unmarshal(otherOut, &other); err != nil {
+		t.Fatal(err)
+	}
+	oth, _ := other["thinking"].(map[string]any)
+	if oth["type"] == "adaptive" {
+		t.Errorf("anthropic thinking.type = %v, want the budget shape (%s)", oth["type"], otherOut)
+	}
+	if _, hasBudget := oth["budget_tokens"]; !hasBudget {
+		t.Errorf("anthropic thinking lacks budget_tokens; the override leaked (%s)", otherOut)
+	}
+}
+
+// TestOpenAIThinkingDisplaySecondCopy dispositions every client key read by the
+// executor's own copy of the display reader (claude_thinking.go), which the
+// Claude path keeps because it runs during translation, before the OpenAI-only
+// keys are stripped. The fall-through rows differ from
+// thinking.TestOpenAIThinkingDisplayDialects, which short-circuits once a
+// `reasoning` object is present: the divergence is documented as tested, not
+// changed.
+func TestOpenAIThinkingDisplaySecondCopy(t *testing.T) {
+	tests := []struct {
+		name   string
+		reqMap map[string]any
+		want   string
+	}{
+		{"reasoning.summary detailed", map[string]any{"reasoning": map[string]any{"summary": "detailed"}}, "summarized"},
+		{"reasoning.summary auto", map[string]any{"reasoning": map[string]any{"summary": "auto"}}, "summarized"},
+		{"reasoning.summary none alone is not a request", map[string]any{"reasoning": map[string]any{"summary": "none"}}, ""},
+		{"reasoning empty summary falls through to effort", map[string]any{"reasoning": map[string]any{"summary": ""}, "reasoning_effort": "high"}, "summarized"},
+		{"reasoning summary none falls through to effort", map[string]any{"reasoning": map[string]any{"summary": "none"}, "reasoning_effort": "high"}, "summarized"},
+		{"reasoning.effort only falls through to top-level effort", map[string]any{"reasoning": map[string]any{"effort": "high"}, "reasoning_effort": "high"}, "summarized"},
+		{"reasoning non-map falls through to effort", map[string]any{"reasoning": "x", "reasoning_effort": "high"}, "summarized"},
+		{"reasoning_effort high", map[string]any{"reasoning_effort": "high"}, "summarized"},
+		{"reasoning_effort minimal still asks for reasoning", map[string]any{"reasoning_effort": "minimal"}, "summarized"},
+		{"reasoning_effort none opts out", map[string]any{"reasoning_effort": "none"}, ""},
+		{"reasoning_effort NONE opts out case-insensitively", map[string]any{"reasoning_effort": "NONE"}, ""},
+		{"reasoning_effort off opts out", map[string]any{"reasoning_effort": "off"}, ""},
+		{"reasoning_effort minimal_off opts out", map[string]any{"reasoning_effort": "minimal_off"}, ""},
+		{"reasoning_effort empty is not a request", map[string]any{"reasoning_effort": ""}, ""},
+		{"reasoning_effort non-string is not a request", map[string]any{"reasoning_effort": 5.0}, ""},
+		{"claude-native thinking block asks for nothing", map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": 1000.0}}, ""},
+		{"body without reasoning keys asks for nothing", map[string]any{"model": "m"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := openAIThinkingDisplay(tt.reqMap); got != tt.want {
+				t.Fatalf("openAIThinkingDisplay() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestApplyClaudeThinkingDisplayDialectKeys dispositions how the second copy
+// writes its result back: an explicit `thinking.display` is client-owned and
+// survives, and no block is created unless the body actually asked.
+func TestApplyClaudeThinkingDisplayDialectKeys(t *testing.T) {
+	tests := []struct {
+		name     string
+		reqMap   map[string]any
+		wantKeys map[string]any // top-level keys that must remain absent
+		want     map[string]any // full expected body, when non-nil
+	}{
+		{
+			name: "explicit summarized display wins",
+			reqMap: map[string]any{"thinking": map[string]any{"display": "summarized"},
+				"reasoning_effort": "high"},
+			want: map[string]any{"thinking": map[string]any{"display": "summarized"}, "reasoning_effort": "high"},
+		},
+		{
+			name: "explicit none display is not overwritten",
+			reqMap: map[string]any{"thinking": map[string]any{"display": "none"},
+				"reasoning_effort": "high"},
+			want: map[string]any{"thinking": map[string]any{"display": "none"}, "reasoning_effort": "high"},
+		},
+		{
+			name:   "empty display counts as unset",
+			reqMap: map[string]any{"thinking": map[string]any{"display": ""}, "reasoning_effort": "high"},
+			want:   map[string]any{"thinking": map[string]any{"display": "summarized"}, "reasoning_effort": "high"},
+		},
+		{
+			name:   "non-string display counts as unset",
+			reqMap: map[string]any{"thinking": map[string]any{"display": 5.0}, "reasoning_effort": "high"},
+			want:   map[string]any{"thinking": map[string]any{"display": "summarized"}, "reasoning_effort": "high"},
+		},
+		{
+			name:   "thinking non-map is replaced",
+			reqMap: map[string]any{"thinking": "x", "reasoning_effort": "high"},
+			want:   map[string]any{"thinking": map[string]any{"display": "summarized"}, "reasoning_effort": "high"},
+		},
+		{
+			name:   "claude-native thinking fields survive untouched",
+			reqMap: map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": 1000.0}},
+			want:   map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": 1000.0}},
+		},
+		{
+			name:     "no ask creates no thinking block",
+			reqMap:   map[string]any{"model": "m"},
+			wantKeys: map[string]any{"thinking": true},
+		},
+		{
+			name:     "opt-out effort creates no thinking block",
+			reqMap:   map[string]any{"model": "m", "reasoning_effort": "none"},
+			wantKeys: map[string]any{"thinking": true},
+		},
+		{
+			name:   "responses summary ask writes the display",
+			reqMap: map[string]any{"reasoning": map[string]any{"effort": "high", "summary": "auto"}},
+			want: map[string]any{"reasoning": map[string]any{"effort": "high", "summary": "auto"},
+				"thinking": map[string]any{"display": "summarized"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			applyClaudeThinkingDisplay(tt.reqMap)
+			for k := range tt.wantKeys {
+				if _, has := tt.reqMap[k]; has {
+					t.Errorf("%q written: %+v", k, tt.reqMap)
+				}
+			}
+			if tt.want != nil && !reflect.DeepEqual(tt.reqMap, tt.want) {
+				t.Errorf("body = %+v, want %+v", tt.reqMap, tt.want)
+			}
+		})
 	}
 }

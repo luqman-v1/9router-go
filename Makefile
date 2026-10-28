@@ -63,6 +63,7 @@ web-build:
 ## build — compile binary with version embedding
 build: web-build
 	go build -ldflags="$(LDFLAGS)" -o $(BINARY_NAME) ./cmd/9router-go/
+	go build -ldflags="$(LDFLAGS)" -o opencode-go$(BINARY_SUFFIX) ./cmd/9router-go/
 
 # `PORT=20130 ./9router-go` is POSIX env-assignment prefix syntax. cmd.exe does
 # not parse it: it tried to execute a program literally named "PORT" and failed
@@ -201,21 +202,33 @@ export GOOS := $(CROSS_OS)
 export GOARCH := $(CROSS_ARCH)
 endif
 
-cross: web-build
-	@for pair in $(CROSS_TARGETS); do \
-	  os=`echo $$pair | cut -d- -f1`; arch=`echo $$pair | cut -d- -f2`; \
-	  out=$(BINARY_NAME)-$$pair; \
-	  if [ "$$os" = "windows" ]; then out=$$out.exe; fi; \
-	  $(MAKE) --no-print-directory cross-one CROSS_OS=$$os CROSS_ARCH=$$arch OUT=$$out || exit 1; \
-	done
-	@ls -lh $(BINARY_NAME)-*
-	@(sha256sum $(BINARY_NAME)-* || shasum -a 256 $(BINARY_NAME)-*) > SHA256SUMS.txt
-	@cat SHA256SUMS.txt
+CROSS_BIN := 9router-go
 
-.PHONY: cross-one
+cross-linux-amd64:
+	@$(MAKE) --no-print-directory cross-one CROSS_OS=linux CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-linux-amd64
+
+cross-linux-arm64:
+	@$(MAKE) --no-print-directory cross-one CROSS_OS=linux CROSS_ARCH=arm64 OUT=$(CROSS_BIN)-linux-arm64
+
+cross-darwin-amd64:
+	@$(MAKE) --no-print-directory cross-one CROSS_OS=darwin CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-darwin-amd64
+
+cross-darwin-arm64:
+	@$(MAKE) --no-print-directory cross-one CROSS_OS=darwin CROSS_ARCH=arm64 OUT=$(CROSS_BIN)-darwin-arm64
+
+cross-windows-amd64:
+	@$(MAKE) --no-print-directory cross-one CROSS_OS=windows CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-windows-amd64.exe
+
+CROSS_BUILD_TARGETS := cross-linux-amd64 cross-linux-arm64 cross-darwin-amd64 cross-darwin-arm64 cross-windows-amd64
+
+cross: web-build
+	@$(MAKE) -j $(CROSS_BUILD_TARGETS)
+	@ls -lh $(CROSS_BIN)-*
+	@(sha256sum $(CROSS_BIN)-* || shasum -a 256 $(CROSS_BIN)-*) > SHA256SUMS.txt
+	@cat SHA256SUMS.txt
+.PHONY: cross-one $(CROSS_BUILD_TARGETS)
 cross-one:
 	go build -ldflags="$(LDFLAGS)" -o $(OUT) ./cmd/9router-go/
-
 ## mitm-enable — start MITM proxy
 mitm-enable: build
 	$(BINARY) mitm enable

@@ -2,264 +2,279 @@ package translator
 
 import (
 	json "encoding/json/v2"
-	"strconv"
 	"strings"
 )
 
-const openCodeReadDescription = "Read the contents of a file or directory. Supports text files, images, and PDFs. Images and PDFs are presented directly to the model. Each text line is prefixed by its 1-based line number as <line>: <content>. The prefix is for reference and is not part of the file content. Directory entries are returned one per line. Use offset and limit to read large files or directories in sections. Prefer one larger read over many small slices, and use grep to find specific content in large files."
-const openCodeShellDescription = "Execute a shell command and return its output. Commands run on Linux using bash. Quote file paths containing spaces or special characters. Prefer dedicated tools over shell commands when possible. When output is large, the full result is saved to a file and a truncated preview is returned. Rely on automatic truncation unless filtering the output is more useful. Commands accept an optional timeout, background commands have no timeout by default. Background commands return immediately, and you will be notified when they complete. DO NOT poll for completion."
-
-// ConcealOpenCodeV2FingerprintTools ports the OpenCode v2 read/shell
-// fingerprint and canonicalizes the request so any caller body — a clean
-// direct API client or a harness sending Claude/OpenAI shapes with extra
-// fields — ends up in the form the /inference/v1 gate accepts
-// (decolua/9router#4842):
+// ConcealOpenCodeV2FingerprintTools shapes a request for the OpenCode v2
+// free-tier inference gate. Measured live on 2026-10-25 (see
+// opencode_free_harness.go), the gate fingerprints the request body and
+// answers anything else with 429 FreeUsageLimitError — "Free models work in
+// OpenCode" — regardless of transport, session, endpoint or User-Agent:
 //
-//   - caller tools named exactly read/shell with a different definition
-//     travel under a *_client alias (history and tool_choice retargeted);
-//   - the exact OpenCode read/shell definitions are appended when absent;
-//   - on the Responses lane every caller tool is rebuilt into the canonical
-//     flat shape, dropping foreign keys (cache_control, strict, …),
-//     defaulting missing schemas and dropping nameless entries, like the
-//     upstream executor's normalizeResponsesTools; the exact definitions are
-//     appended afterwards so they keep strict:false;
-//   - on the chat lane caller tools keep their shape but gain a default
-//     object schema when missing, so no stub schema reaches the gate;
-//   - tool_choice passes through untouched, except on the Responses lane,
-//     where an explicit choice becomes "auto" on auto-only models (the
-//     upstream forceAutoToolChoiceModels quirk) and a forced function choice
-//     naming no declared tool is dropped.
+//   - the system prompt must start with the CLI harness preamble, verbatim
+//     (a 2,000-char prefix fails; caller instructions appended after the full
+//     preamble pass);
+//   - tool declarations must be the CLI built-ins, byte-exact: a
+//     foreign-named tool, a renamed clone, or an edited description all
+//     answer 400 "Request validation failed"; at least six definitions are
+//     required;
+//   - tool CALLS are not constrained: history may carry calls to undeclared
+//     names and the model may emit them.
 //
-// flat is true for Responses API bodies and false for Chat Completions.
+// So caller tools never travel as declarations. They are described in the
+// appended system text and keep their names in history, and the genuine
+// built-in set is declared in their place. The returned rename map is empty:
+// no name is rewritten, so response tool_calls arrive in the caller's own
+// spelling and need no restoring.
+//
+// flat is true for Responses API bodies and false for Chat Completions;
+// Claude Messages bodies (a "system" field or input_schema tools) are
+// detected and shaped in their own format. forceAutoToolChoice rewrites an
+// explicit choice to "auto" on the Responses lane for auto-only models (the
+// upstream forceAutoToolChoiceModels quirk).
 func ConcealOpenCodeV2FingerprintTools(body []byte, flat bool, forceAutoChoice bool) ([]byte, map[string]string) {
 	var request map[string]any
 	if len(body) == 0 || json.Unmarshal(body, &request) != nil {
 		return body, map[string]string{}
 	}
-	tools, _ := request["tools"].([]any)
-	nameMap := make(map[string]string)
-	taken, seen := make(map[string]bool), make(map[string]bool)
-	for _, tool := range tools {
-		if name := toolNameOf(tool); name != "" {
-			taken[name] = true
-		}
-	}
-	kept := make([]any, 0, len(tools)+2)
-	for _, tool := range tools {
-		name := toolNameOf(tool)
-		if name != "read" && name != "shell" {
-			kept = append(kept, tool)
-			continue
-		}
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		if isExactOpenCodeV2Definition(tool, name) {
-			kept = append(kept, tool)
-			continue
-		}
-		alias := name + "_client"
-		for i := 2; taken[alias]; i++ {
-			alias = name + "_client" + strconv.Itoa(i)
-		}
-		taken[alias], nameMap[alias] = true, name
-		setToolName(tool, alias)
-		kept = append(kept, tool)
-	}
-	request["tools"] = kept
+	claude := isOpenCodeClaudeShapedRequest(request)
 
-	var validNames map[string]bool
-	droppedChoice := false
+	callerTools := describeOpenCodeCallerTools(request)
+	installOpenCodeGenuineTools(request, flat, claude)
+	injectOpenCodeHarnessSystem(request, flat, claude, callerTools)
 	if flat {
-		validNames = canonicalizeOpenCodeV2ResponsesTools(request)
-	} else {
-		defaultOpenCodeV2ChatToolSchemas(request)
-	}
-	if len(nameMap) > 0 {
-		aliasOpenCodeV2History(request, nameMap)
-		aliasOpenCodeV2Choice(request, nameMap)
-	}
-	if flat {
+		// Prior-turn function_call items with no name fail the Responses
+		// validator; a harness history can carry one.
 		dropNamelessOpenCodeV2FunctionCalls(request)
 	}
-	// Append OpenCode's exact definitions after canonicalization, mirroring
-	// the upstream executor (normalizeResponsesTools runs before
-	// applyFingerprintTools): the appended tools keep strict:false on the
-	// Responses lane, and the forced-choice check below only sees
-	// caller-declared names.
-	//
-	// The presence check runs on post-alias names, like upstream's
-	// appendMissingFingerprintTools: a caller read/shell with a different
-	// definition travels under a *_client alias, so the name is absent and
-	// the exact definition is still appended. Checking the pre-alias `seen`
-	// set instead would send no exact fingerprint at all and the gate 403s.
-	current, _ := request["tools"].([]any)
-	present := make(map[string]bool, 2)
-	for _, tool := range current {
-		if name := toolNameOf(tool); name == "read" || name == "shell" {
-			present[name] = true
-		}
-	}
-	var appended []string
-	for _, name := range []string{"read", "shell"} {
-		if present[name] {
-			continue
-		}
-		tool, err := openCodeV2Tool(name, flat)
-		if err != nil {
-			return body, map[string]string{}
-		}
-		current = append(current, tool)
-		appended = append(appended, name)
-	}
-	request["tools"] = current
-	droppedChoice = normalizeOpenCodeV2ToolChoice(request, flat, forceAutoChoice, validNames)
+	droppedChoice := normalizeOpenCodeV2ToolChoice(request, flat, forceAutoChoice, openCodeGenuineToolSet)
 	if flat && request["tool_choice"] == nil && !droppedChoice {
 		request["tool_choice"] = "auto"
-	}
-	if len(appended) > 0 {
-		// Verbatim from the upstream executor (noteUnavailableTools): the
-		// gate does not inspect prompt text, but the model does — backticks,
-		// singular/plural, and all.
-		quoted := make([]string, 0, len(appended))
-		for _, name := range appended {
-			quoted = append(quoted, "`"+name+"`")
-		}
-		list := strings.Join(quoted, " or ")
-		var note string
-		if len(appended) > 1 {
-			note = "Do not call the " + list + " tools; they are placeholders that do nothing. Use the other tools you have been given instead."
-		} else {
-			note = "Do not call the " + list + " tool; it is a placeholder that does nothing. Use the other tools you have been given instead."
-		}
-		if flat {
-			if s, ok := request["instructions"].(string); ok && strings.TrimSpace(s) != "" {
-				request["instructions"] = s + "\n\n" + note
-			} else {
-				request["instructions"] = note
-			}
-		} else {
-			addOpenCodeChatNote(request, note)
-		}
 	}
 	out, err := json.Marshal(request, json.Deterministic(true))
 	if err != nil {
 		return body, map[string]string{}
 	}
-	return out, nameMap
+	return out, map[string]string{}
 }
 
-// isExactOpenCodeV2Definition reports whether tool already carries OpenCode's
-// verbatim description and parameter schema for the fingerprint name.
-func isExactOpenCodeV2Definition(tool any, name string) bool {
-	toolMap, ok := tool.(map[string]any)
-	if !ok {
-		return false
+// openCodeGenuineToolSet lists the built-in names the gate accepts as
+// declarations.
+var openCodeGenuineToolSet = func() map[string]bool {
+	set := make(map[string]bool, len(openCodeGenuineToolNames))
+	for _, name := range openCodeGenuineToolNames {
+		set[name] = true
 	}
-	definition := toolMap
-	if fn, ok := toolMap["function"].(map[string]any); ok {
-		definition = fn
-	}
-	wantDescription := openCodeReadDescription
-	if name == "shell" {
-		wantDescription = openCodeShellDescription
-	}
-	params, _ := json.Marshal(definition["parameters"], json.Deterministic(true))
-	return definition["description"] == wantDescription && string(params) == openCodeV2Parameters(name)
-}
+	return set
+}()
 
-// openCodeV2DefaultSchema is the fallback the upstream executor applies when a
-// tool carries no usable parameter schema: the gate rejects stub schemas.
-func openCodeV2DefaultSchema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{}}
-}
-
-// usableOpenCodeV2Parameters returns the tool's parameter schema when it is a
-// JSON object, and reports whether the caller's entry (flat or nested) had one
-// at all.
-func usableOpenCodeV2Parameters(tool map[string]any) (map[string]any, bool) {
-	if params, ok := tool["parameters"].(map[string]any); ok {
-		return params, true
+// isOpenCodeClaudeShapedRequest reports whether the body is a Claude Messages
+// request: those carry a top-level "system" and input_schema tools, and must
+// keep that wire format (nested chat tools would not validate).
+func isOpenCodeClaudeShapedRequest(request map[string]any) bool {
+	if _, ok := request["system"]; ok {
+		return true
 	}
-	if fn, ok := tool["function"].(map[string]any); ok {
-		if params, ok := fn["parameters"].(map[string]any); ok {
-			return params, true
+	if tools, ok := request["tools"].([]any); ok {
+		for _, tool := range tools {
+			if m, ok := tool.(map[string]any); ok {
+				if _, has := m["input_schema"]; has {
+					return true
+				}
+			}
 		}
 	}
-	return nil, false
+	return false
 }
 
-// canonicalizeOpenCodeV2ResponsesTools rebuilds every tool in the canonical
-// Responses shape (open-sse/executors/opencode.js normalizeResponsesTools):
-// only type/name/description/parameters survive, the name is trimmed and
-// capped, nameless or non-object entries are dropped, and a missing schema
-// becomes the default object. It returns the set of names that survived.
-func canonicalizeOpenCodeV2ResponsesTools(request map[string]any) map[string]bool {
+// installOpenCodeGenuineTools replaces the tools array with the gate's exact
+// built-in definitions in the lane's own shape.
+func installOpenCodeGenuineTools(request map[string]any, flat, claude bool) {
+	var defs []any
+	if err := json.Unmarshal([]byte(openCodeGenuineToolsJSON), &defs); err != nil {
+		return
+	}
+	switch {
+	case claude:
+		out := make([]any, 0, len(defs))
+		for _, def := range defs {
+			fn, ok := def.(map[string]any)["function"].(map[string]any)
+			if !ok {
+				continue
+			}
+			out = append(out, map[string]any{
+				"name":         fn["name"],
+				"description":  fn["description"],
+				"input_schema": fn["parameters"],
+			})
+		}
+		request["tools"] = out
+	case flat:
+		out := make([]any, 0, len(defs))
+		for _, def := range defs {
+			fn, ok := def.(map[string]any)["function"].(map[string]any)
+			if !ok {
+				continue
+			}
+			out = append(out, map[string]any{
+				"type": "function", "name": fn["name"],
+				"description": fn["description"], "parameters": fn["parameters"],
+				"strict": false,
+			})
+		}
+		request["tools"] = out
+	default:
+		request["tools"] = defs
+	}
+}
+
+// describeOpenCodeCallerTools renders the caller's own tool declarations as
+// prompt text, so the model can still call them by name once the declarations
+// are replaced by the gate's built-ins.
+func describeOpenCodeCallerTools(request map[string]any) string {
 	tools, _ := request["tools"].([]any)
-	out := make([]any, 0, len(tools))
-	valid := make(map[string]bool)
+	entries := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		m, ok := tool.(map[string]any)
 		if !ok {
 			continue
 		}
-		name := strings.TrimSpace(toolNameOf(m))
+		name := toolNameOf(m)
 		if name == "" {
 			continue
 		}
-		if len(name) > 128 {
-			name = name[:128]
-		}
-		description, _ := m["description"].(string)
+		definition := m
 		if fn, ok := m["function"].(map[string]any); ok {
-			if d, ok := fn["description"].(string); ok && description == "" {
-				description = d
-			}
+			definition = fn
 		}
-		params, _ := usableOpenCodeV2Parameters(m)
+		entry := map[string]any{"name": name}
+		if desc, ok := definition["description"].(string); ok && desc != "" {
+			entry["description"] = desc
+		}
+		params := definition["parameters"]
 		if params == nil {
-			params = openCodeV2DefaultSchema()
-		} else if params["type"] == "object" && params["properties"] == nil {
-			params["properties"] = map[string]any{}
+			params = definition["input_schema"]
 		}
-		entry := map[string]any{"type": "function", "name": name, "parameters": params}
-		if description != "" {
-			entry["description"] = description
+		if params != nil {
+			entry["parameters"] = params
 		}
-		valid[name] = true
-		out = append(out, entry)
+		encoded, err := json.Marshal(entry, json.Deterministic(true))
+		if err != nil {
+			continue
+		}
+		entries = append(entries, string(encoded))
 	}
-	request["tools"] = out
-	return valid
+	if len(entries) == 0 {
+		return ""
+	}
+	return "# Caller tools\n" +
+		"The calling client provides these tools. Call them by these exact names and argument schemas; their results are returned to you as tool results:\n" +
+		strings.Join(entries, "\n")
 }
 
-// defaultOpenCodeV2ChatToolSchemas leaves chat-shaped caller tools alone but
-// gives any tool without a usable parameter schema the default object schema,
-// in whichever shape (flat or nested under function) it already uses.
-func defaultOpenCodeV2ChatToolSchemas(request map[string]any) {
-	tools, _ := request["tools"].([]any)
-	for _, tool := range tools {
-		m, ok := tool.(map[string]any)
-		if !ok {
-			continue
+// openCodeSessionToolProtocolNote overrides the harness preamble's Code Mode
+// instructions for proxied sessions: the built-in declarations exist only to
+// satisfy the gate, and the caller's own tools are invoked through the
+// execute/CALL_TOOL convention the bridge on the response side rewrites.
+// Without this override the model obeys the preamble's "tools only work inside
+// execute" rule, narrates instead of calling, and never emits a tool_call
+// (measured live 2026-10-25: finish_reason stop, no tool_calls).
+const openCodeSessionToolProtocolNote = "# Session tool protocol\n" +
+	"The Code Mode and tool-catalog instructions above do NOT apply to this session, and the built-in OpenCode tools (edit, glob, grep, question, read, shell, skill, subagent, webfetch, websearch, write, execute) declared in this request are non-functional placeholders — never call them directly.\n" +
+	"The calling client provides the tools listed below. To invoke one, emit a tool_call to the execute tool whose code argument is exactly: CALL_TOOL <tool-name> <json-arguments> — for example {\"code\":\"CALL_TOOL get_weather {\\\"city\\\":\\\"Jakarta\\\"}\"}. The harness routes it to that caller tool and returns its result as the tool result. This execute/CALL_TOOL form is the only working way to call the tools below. When a request needs one of them, emit the CALL_TOOL call immediately instead of narrating or writing code."
+
+// openCodeBuiltinPlaceholderNote is the tool-less variant: with no caller
+// tools to point at, it only needs to suppress the built-ins.
+const openCodeBuiltinPlaceholderNote = "The Code Mode instructions above do not apply to this session, and the built-in OpenCode tools declared in this request are non-functional placeholders. Never call them and never wrap tool usage in execute or in code. No tools are available; answer directly."
+
+// injectOpenCodeHarnessSystem prepends the harness preamble to the request's
+// system prompt and appends the caller-tool section and the placeholder note
+// after the caller's own text.
+func injectOpenCodeHarnessSystem(request map[string]any, flat, claude bool, callerTools string) {
+	suffix := ""
+	if callerTools != "" {
+		suffix = "\n\n" + openCodeSessionToolProtocolNote + "\n\n" + callerTools
+	} else {
+		suffix = "\n\n" + openCodeBuiltinPlaceholderNote
+	}
+	switch {
+	case claude:
+		injectClaudeSystem(request, suffix)
+	case flat:
+		instructions, _ := request["instructions"].(string)
+		if strings.TrimSpace(instructions) == "" {
+			request["instructions"] = openCodeHarnessSystem + suffix
+			return
 		}
-		if _, has := usableOpenCodeV2Parameters(m); has {
-			continue
+		request["instructions"] = openCodeHarnessSystem + "\n\n" + instructions + suffix
+	default:
+		injectChatSystem(request, suffix)
+	}
+}
+
+func injectClaudeSystem(request map[string]any, suffix string) {
+	switch system := request["system"].(type) {
+	case string:
+		if strings.TrimSpace(system) == "" {
+			request["system"] = openCodeHarnessSystem + suffix
+			return
 		}
-		if fn, ok := m["function"].(map[string]any); ok {
-			fn["parameters"] = openCodeV2DefaultSchema()
-			continue
+		request["system"] = openCodeHarnessSystem + "\n\n" + system + suffix
+	case []any:
+		blocks := system
+		if len(blocks) > 0 {
+			request["system"] = append([]any{openCodeHarnessTextBlock(openCodeHarnessSystem)}, blocks...)
+		} else {
+			request["system"] = []any{openCodeHarnessTextBlock(openCodeHarnessSystem)}
 		}
-		if _, hasName := m["name"]; hasName {
-			m["parameters"] = openCodeV2DefaultSchema()
+		if trimmed := strings.TrimPrefix(suffix, "\n\n"); trimmed != "" {
+			request["system"] = append(request["system"].([]any), openCodeHarnessTextBlock(trimmed))
 		}
+	default:
+		request["system"] = openCodeHarnessSystem + suffix
+	}
+}
+
+func openCodeHarnessTextBlock(text string) map[string]any {
+	return map[string]any{"type": "text", "text": text}
+}
+
+func injectChatSystem(request map[string]any, suffix string) {
+	messages, ok := request["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		request["messages"] = []any{map[string]any{"role": "system", "content": openCodeHarnessSystem + suffix}}
+		return
+	}
+	first, ok := messages[0].(map[string]any)
+	if !ok || first["role"] != "system" {
+		request["messages"] = append([]any{map[string]any{"role": "system", "content": openCodeHarnessSystem + suffix}}, messages...)
+		return
+	}
+	switch content := first["content"].(type) {
+	case string:
+		if strings.TrimSpace(content) == "" {
+			first["content"] = openCodeHarnessSystem + suffix
+			return
+		}
+		first["content"] = openCodeHarnessSystem + "\n\n" + content + suffix
+	case []any:
+		blocks := content
+		if len(blocks) > 0 {
+			first["content"] = append([]any{openCodeHarnessTextBlock(openCodeHarnessSystem)}, blocks...)
+		} else {
+			first["content"] = []any{openCodeHarnessTextBlock(openCodeHarnessSystem)}
+		}
+		if trimmed := strings.TrimPrefix(suffix, "\n\n"); trimmed != "" {
+			first["content"] = append(first["content"].([]any), openCodeHarnessTextBlock(trimmed))
+		}
+	default:
+		first["content"] = openCodeHarnessSystem + suffix
 	}
 }
 
 // dropNamelessOpenCodeV2FunctionCalls removes prior-turn function_call items
-// with no name; the Responses validator rejects them and a harness history can
-// carry one (open-sse/executors/opencode.js sanitizeResponsesItems).
+// with no name; the Responses validator rejects them and a harness history
+// can carry one.
 func dropNamelessOpenCodeV2FunctionCalls(request map[string]any) {
 	input, ok := request["input"].([]any)
 	if !ok {
@@ -278,23 +293,26 @@ func dropNamelessOpenCodeV2FunctionCalls(request map[string]any) {
 	request["input"] = out
 }
 
-// normalizeOpenCodeV2ToolChoice ports the upstream tool_choice handling
-// (open-sse/executors/opencode.js): the Responses lane rewrites any explicit
-// choice to "auto" on auto-only models (the forceAutoToolChoiceModels quirk)
-// and drops a forced function choice naming no declared tool. Anything else —
-// including "none" and the chat lane — passes through untouched, exactly like
-// upstream. It reports whether the choice was dropped, so the caller does not
-// refill the slot with a default.
-func normalizeOpenCodeV2ToolChoice(request map[string]any, flat, forceAutoChoice bool, validNames map[string]bool) bool {
-	if !flat {
-		return false
+// normalizeOpenCodeV2ToolChoice keeps tool_choice inside what the gate can
+// validate. A "none" choice is dropped on every lane (the gate answers it
+// with 403 FreeTierError; tool suppression lives in the prompt). On the
+// Responses lane an explicit choice becomes "auto" on auto-only models, and a
+// forced choice naming no genuine built-in is dropped (reporting the drop so
+// the caller does not refill "auto" over it). On the chat and Claude lanes a
+// forced choice naming a caller tool becomes "required": the name cannot
+// travel, but the intent to force a tool call can.
+//
+// It reports whether a forced choice was dropped on the Responses lane.
+func normalizeOpenCodeV2ToolChoice(request map[string]any, flat, forceAutoChoice bool, genuine map[string]bool) bool {
+	if choice, present := request["tool_choice"]; present && isOpenCodeNoneToolChoice(choice) {
+		delete(request, "tool_choice")
 	}
 	choice, present := request["tool_choice"]
 	if !present || choice == nil {
 		return false
 	}
 	if s, ok := choice.(string); ok {
-		if s != "auto" && forceAutoChoice {
+		if flat && s != "auto" && forceAutoChoice {
 			request["tool_choice"] = "auto"
 		}
 		return false
@@ -303,119 +321,51 @@ func normalizeOpenCodeV2ToolChoice(request map[string]any, flat, forceAutoChoice
 	if !ok {
 		return false
 	}
-	if forceAutoChoice {
-		request["tool_choice"] = "auto"
+	kind, _ := m["type"].(string)
+	if kind != "function" && kind != "tool" {
 		return false
 	}
-	if m["type"] == "function" {
-		name, _ := m["name"].(string)
-		if !validNames[strings.TrimSpace(name)] {
+	if flat {
+		if forceAutoChoice {
+			request["tool_choice"] = "auto"
+			return false
+		}
+		if !genuine[strings.TrimSpace(openCodeChoiceName(m))] {
 			delete(request, "tool_choice")
 			return true
 		}
+		return false
+	}
+	if !genuine[strings.TrimSpace(openCodeChoiceName(m))] {
+		request["tool_choice"] = "required"
 	}
 	return false
 }
 
-func openCodeV2Parameters(name string) string {
-	if name == "read" {
-		return "{\"additionalProperties\":false,\"properties\":{\"limit\":{\"description\":\"The maximum number of lines or directory entries to read (defaults to and capped at 2000)\",\"minimum\":0,\"type\":\"integer\"},\"offset\":{\"description\":\"The line or directory entry to start reading from (1-based)\",\"minimum\":0,\"type\":\"integer\"},\"path\":{\"description\":\"File or directory to read\",\"type\":\"string\"}},\"required\":[\"path\"],\"type\":\"object\"}"
+// openCodeChoiceName reads the function/tool name from either forced-choice
+// spelling: {"type":"function","function":{"name"}}, the Claude
+// {"type":"tool","name"} and the Responses {"type":"function","name"}.
+func openCodeChoiceName(m map[string]any) string {
+	if name, _ := m["name"].(string); name != "" {
+		return name
 	}
-	return "{\"additionalProperties\":false,\"properties\":{\"background\":{\"description\":\"Run the command in the background and return immediately (useful for dev servers and long-running builds). You do not need to use '&' at the end of the command when using this parameter. You will be notified when it completes. DO NOT poll for completion.\",\"type\":\"boolean\"},\"command\":{\"description\":\"Shell command string to execute\",\"type\":\"string\"},\"timeout\":{\"description\":\"Timeout in milliseconds. Set to 0 to disable the timeout. Defaults to 120000 for foreground commands. Background commands have no timeout by default.\",\"minimum\":0,\"type\":\"integer\"},\"workdir\":{\"description\":\"Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead.\",\"type\":\"string\"}},\"required\":[\"command\"],\"type\":\"object\"}"
+	if fn, ok := m["function"].(map[string]any); ok {
+		name, _ := fn["name"].(string)
+		return name
+	}
+	return ""
 }
 
-func openCodeV2Tool(name string, flat bool) (map[string]any, error) {
-	parameters := openCodeV2Parameters(name)
-	var schema map[string]any
-	if err := json.Unmarshal([]byte(parameters), &schema); err != nil {
-		return nil, err
+// isOpenCodeNoneToolChoice reports whether a tool_choice value asks for no
+// tools, in either spelling the wire formats use: the string "none" or the
+// object form {"type":"none"}.
+func isOpenCodeNoneToolChoice(choice any) bool {
+	switch c := choice.(type) {
+	case string:
+		return strings.EqualFold(strings.TrimSpace(c), "none")
+	case map[string]any:
+		t, _ := c["type"].(string)
+		return strings.EqualFold(strings.TrimSpace(t), "none")
 	}
-	description := openCodeReadDescription
-	if name == "shell" {
-		description = openCodeShellDescription
-	}
-	if flat {
-		// Upstream appends flat tools with strict:false and asserts it.
-		return map[string]any{"type": "function", "name": name, "description": description, "parameters": schema, "strict": false}, nil
-	}
-	return map[string]any{"type": "function", "function": map[string]any{"name": name, "description": description, "parameters": schema}}, nil
-}
-
-func aliasOpenCodeV2History(request map[string]any, sentToOriginal map[string]string) {
-	aliases := make(map[string]string, len(sentToOriginal))
-	for alias, original := range sentToOriginal {
-		aliases[original] = alias
-	}
-	if input, ok := request["input"].([]any); ok {
-		for _, item := range input {
-			if m, ok := item.(map[string]any); ok && m["type"] == "function_call" {
-				if n, ok := m["name"].(string); ok && aliases[n] != "" {
-					m["name"] = aliases[n]
-				}
-			}
-		}
-	}
-	if messages, ok := request["messages"].([]any); ok {
-		for _, msg := range messages {
-			m, ok := msg.(map[string]any)
-			if !ok {
-				continue
-			}
-			calls, _ := m["tool_calls"].([]any)
-			for _, call := range calls {
-				c, ok := call.(map[string]any)
-				if !ok {
-					continue
-				}
-				fn, _ := c["function"].(map[string]any)
-				if n, ok := fn["name"].(string); ok && aliases[n] != "" {
-					fn["name"] = aliases[n]
-				}
-			}
-		}
-	}
-}
-
-func aliasOpenCodeV2Choice(request map[string]any, sentToOriginal map[string]string) {
-	aliases := make(map[string]string, len(sentToOriginal))
-	for alias, original := range sentToOriginal {
-		aliases[original] = alias
-	}
-	choice, ok := request["tool_choice"].(map[string]any)
-	if !ok {
-		return
-	}
-	if name, ok := choice["name"].(string); ok && aliases[name] != "" {
-		choice["name"] = aliases[name]
-	}
-	if fn, ok := choice["function"].(map[string]any); ok {
-		if name, ok := fn["name"].(string); ok && aliases[name] != "" {
-			fn["name"] = aliases[name]
-		}
-	}
-}
-
-func addOpenCodeChatNote(request map[string]any, note string) {
-	// Claude-shaped bodies carry `system` instead of a leading system
-	// message; upstream returns early for them without a note.
-	if _, hasSystem := request["system"]; hasSystem {
-		return
-	}
-	messages, ok := request["messages"].([]any)
-	if !ok {
-		return
-	}
-	if len(messages) > 0 {
-		if first, ok := messages[0].(map[string]any); ok && first["role"] == "system" {
-			if content, ok := first["content"].(string); ok {
-				first["content"] = content + "\n\n" + note
-				return
-			}
-		}
-	}
-	message := map[string]any{"role": "system", "content": note}
-	if system, ok := request["system"].(string); ok && strings.TrimSpace(system) != "" {
-		message["content"] = system + "\n\n" + note
-	}
-	request["messages"] = append([]any{message}, messages...)
+	return false
 }

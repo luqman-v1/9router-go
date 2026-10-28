@@ -45,7 +45,7 @@ func newCompletionWatchdog(bridge *ResponsesBridge) *completionWatchdog {
 func (w *completionWatchdog) arm() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.emitted || w.timer != nil {
+	if w.emitted || w.timer != nil || !w.bridge.CompletionPending() {
 		return
 	}
 	w.timer = time.AfterFunc(PendingCompletionFlushTimeout, w.emit)

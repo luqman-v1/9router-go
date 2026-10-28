@@ -36,6 +36,7 @@ func (s *oauthRefresherStub) refresher() oauth.Refresher {
 }
 
 func installRefresher(t *testing.T, stub *oauthRefresherStub) {
+	oauth.ResetRefreshCache()
 	t.Helper()
 	previous := oauth.Get(oauthLockTestProvider)
 	oauth.Register(oauthLockTestProvider, stub.refresher())
@@ -321,6 +322,7 @@ func TestSuccessfulRefreshReleasesThePark(t *testing.T) {
 }
 
 func TestOAuthRefresh_SingleflightCollapsesConcurrentCalls(t *testing.T) {
+	oauth.ResetRefreshCache()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 	dropSeededConn(t, database)
@@ -444,8 +446,9 @@ func TestOAuthRefresh_SharedFlightKeepsEachCallersToken(t *testing.T) {
 
 // The same rule holds when the shared flight fails. Every caller in the
 // flight gets the error, and each must still receive the token it arrived
-// with — the leader's token is not a fallback for anyone else.
+// with â€” the leader's token is not a fallback for anyone else.
 func TestOAuthRefresh_FailedSharedFlightKeepsEachCallersToken(t *testing.T) {
+	oauth.ResetRefreshCache()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 	dropSeededConn(t, database)
@@ -487,10 +490,11 @@ func TestOAuthRefresh_FailedSharedFlightKeepsEachCallersToken(t *testing.T) {
 
 // A refresher can report success and hand back nothing. That is a broken
 // provider, not a reason to take the gateway down: the forced path already
-// guards it, and the lazy path must too — otherwise BuildConnectionUpdate
+// guards it, and the lazy path must too â€” otherwise BuildConnectionUpdate
 // dereferences nil and singleflight re-panics that on every waiter instead of
 // returning an error.
 func TestOAuthRefresh_NilResultIsAnErrorNotAPanic(t *testing.T) {
+	oauth.ResetRefreshCache()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 	dropSeededConn(t, database)

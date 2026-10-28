@@ -2,7 +2,7 @@
   import { api, type SystemVersionInfo } from '../api/client'
   import { copyToClipboard } from '../lib/clipboard'
   import { TAB_ROUTES, type ActiveTab } from '../lib/router'
-  import { isNavLinkActive, visibleNavGroups } from '../lib/nav'
+  import { isNavLinkActive, orderedNavGroups } from '../lib/nav'
 
   export type { ActiveTab }
   let {
@@ -17,6 +17,9 @@
     updateInfo = $bindable(null),
     version = $bindable(''),
     hiddenNav,
+    navOrder,
+    brandName = '',
+    brandLogo = '',
   }: {
     activeTab: ActiveTab
     navigate?: (tab: ActiveTab, replace?: boolean) => void
@@ -27,7 +30,15 @@
     updateInfo?: SystemVersionInfo | null
     version?: string
     hiddenNav?: string[]
+    navOrder?: string[]
+    brandName?: string
+    brandLogo?: string
   } = $props()
+  // The white-label branding card in Settings writes these two; an empty value
+  // falls back to the project's own name and favicon, so an operator who never
+  // opens that card sees exactly what the sidebar showed before.
+  const displayBrandName = $derived(brandName || '9router-go')
+  const displayBrandLogo = $derived(brandLogo || '/favicon.svg')
   const INSTALL_CMD = '9router-go update'
   let copied = $state(false)
 
@@ -74,7 +85,7 @@
 
   function handleNav(tab: ActiveTab, e?: MouseEvent) {
     if (e) {
-      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || (e.button !== undefined && e.button !== 0)) return
       e.preventDefault()
     }
     navigate(tab)
@@ -83,7 +94,7 @@
 
   // The sidebar and the Settings > Sidebar switch read the same entry list
   // (web/src/lib/nav.ts), so a hidden entry is hidden in both.
-  const navGroups = $derived(visibleNavGroups(hiddenNav))
+  const navGroups = $derived(orderedNavGroups(hiddenNav, navOrder))
 </script>
 
 <aside
@@ -107,14 +118,14 @@
         class="flex items-center justify-center size-9 rounded-[10px] bg-surface-2 border border-border-subtle shadow-[var(--shadow-warm)] flex-shrink-0 group-hover:scale-105 transition-transform overflow-hidden p-1.5"
       >
         <img
-          src="/favicon.svg"
-          alt="9router-go"
+          src={displayBrandLogo}
+          alt={displayBrandName}
           class="w-full h-full object-contain"
         />
       </div>
       <div class="flex flex-col min-w-0">
         <h1 class="text-lg font-semibold tracking-tight text-text-main truncate leading-snug">
-          9router-go
+          {displayBrandName}
         </h1>
         <span class="text-xs text-text-muted leading-tight">
           {version ? `v${version}` : 'v1.9.9'}

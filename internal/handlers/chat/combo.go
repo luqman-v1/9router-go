@@ -16,6 +16,7 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
+	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
 
@@ -417,6 +418,46 @@ func modelEntryCaps(modelEntry string) providers.Capabilities {
 	return providers.GetCapabilitiesForModel(provider, model)
 }
 
+// comboRespectsStoredOrder reports whether this combo asked to skip the
+// rotation strategy and walk its stored model list in order. The flag lives in
+// the combo's own strategy row (settings.comboStrategies[name]) so it can
+// differ per combo, the same place smartPolicy and sessionSticky live.
+//
+// A settings read that fails is treated as "not set" rather than as an error:
+// the caller is mid-request with a combo to route, and the rotation strategy
+// is the behaviour every combo had before the flag existed.
+func (h *ChatHandler) comboRespectsStoredOrder(comboName string) bool {
+	if h.Repo == nil || comboName == "" {
+		return false
+	}
+	settings, err := h.Repo.GetSettings()
+	if err != nil || settings == nil {
+		return false
+	}
+	cfg, ok := settings.ComboStrategies[comboName]
+	if !ok {
+		return false
+	}
+	return cfg.RespectStoredOrder
+}
+
+// comboFirstTokenTimeoutMs reports the configured time-to-first-token deadline
+// for intermediate combo members. 0 means no timeout (global default).
+func (h *ChatHandler) comboFirstTokenTimeoutMs(comboName string) int {
+	if h.Repo == nil || comboName == "" {
+		return 0
+	}
+	settings, err := h.Repo.GetSettings()
+	if err != nil || settings == nil {
+		return 0
+	}
+	cfg, ok := settings.ComboStrategies[comboName]
+	if !ok {
+		return 0
+	}
+	return cfg.FirstTokenTimeoutMs
+}
+
 // ApplyComboStrategy rotates the array of models based on the selected strategy.
 // It treats every call as a new turn (backward-compatible wrapper).
 func (h *ChatHandler) ApplyComboStrategy(strategy string, models []string, comboName string, stickyLimit int) []string {
@@ -479,18 +520,12 @@ func (h *ChatHandler) applyComboStrategy(strategy string, models []string, combo
 		}
 
 		return rotated
-	case "fallback", "capacity", "fusion":
-		// Ordered: fallback walks the members in order, capacity walks its
-		// adapter-ordered list in order, and fusion's panel keeps the
-		// configured order for its judge.
+	case "capacity":
+		fallthrough
+	default:
 		out := make([]string, len(models))
 		copy(out, models)
 		return out
-	default:
-		// Anything unrecognised resolves to round-robin, the canonical
-		// default. db.NormalizeComboStrategy folds stored values before they
-		// reach here; this covers direct callers passing a raw value.
-		return h.applyComboStrategy("round-robin", models, comboName, stickyLimit, newTurn)
 	}
 }
 
@@ -499,20 +534,65 @@ func keysString(m map[string]bool) string {
 	return strings.Join(slices.Sorted(maps.Keys(m)), ",")
 }
 
+// upstreamErrorBody renders the terminal error a combo answers with when no
+// member could serve the turn.
+//
+// The message is encoded by json.Marshal, never interpolated into a template:
+// an upstream failure routinely carries characters that are illegal raw inside
+// a JSON string — a URL that failed to parse embeds itself in quotes, a Windows
+// path carries backslashes — and a format string emits them verbatim. The
+// result is a body no client can parse: the first quote in the error text
+// closes the string early and the following backslash becomes a bare token,
+// which is what a JavaScript client reports as
+// `JSON Parse error: Unrecognized token '\'`.
+func upstreamErrorBody(message string) []byte {
+	body, err := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    "upstream_error",
+			"code":    http.StatusBadGateway,
+		},
+	})
+	if err != nil {
+		return []byte(`{"error":{"message":"upstream error","type":"upstream_error","code":502}}`)
+	}
+	return body
+}
+
 // handleComboFallback iterates through combo model entries, trying each one.
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
 // adapterModels holds the capacity-adapter entries injected for this request;
 // their history is trimmed to their context window before forwarding.
 func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, adapterModels ...string) {
+	if FallbackAttemptRecorderFrom(ctx) == nil {
+		ctx = WithFallbackAttemptRecorder(ctx, NewFallbackAttemptRecorder())
+	}
 	cw := newCommittedResponseWriter(w)
+	cw.stream = isStream
+	cw.responsesClient = translator.IsResponsesClient(ctx)
 	var lastErr *upstreamError
 	var retry passRetry
 	// Connections that failed with a retryable status this request; remaining
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
 
-	// 1. Apply combo rotation strategy first
-	models := h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit, detectNewTurn(body))
+	// 1. Apply combo rotation strategy first. The smart strategy orders the
+	// models itself (System One evaluation + session stickiness) and carries
+	// its routing state on the context for the failure loop below.
+	//
+	// RespectStoredOrder skips the rotation and walks the stored list as-is,
+	// so the order the operator arranged in the editor is the fallback chain.
+	// The smart strategy is exempt: it orders the models itself and already
+	// keeps the combo's own order on every failure path, so honouring the flag
+	// there would fight the evaluation it exists to perform.
+	var models []string
+	if strategy == "smart" {
+		ctx, models = h.applySmartRouting(ctx, body, comboModels, comboName)
+	} else if h.comboRespectsStoredOrder(comboName) {
+		models = slices.Clone(comboModels)
+	} else {
+		models = h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit, detectNewTurn(body))
+	}
 
 	// 2. Auto-capability-switch: float models that satisfy the request's required capabilities to the front.
 	// This ensures that if the rotated model lacks required capabilities (e.g., vision), a capable model overrides it.
@@ -545,11 +625,12 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			excludeIDs = nil
 		}
 
-		for _, entry := range models {
+		for i, entry := range models {
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
 			}
+			isLastModel := i == len(models)-1
 
 			// Skip unavailable (model-locked) providers
 			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
@@ -561,11 +642,6 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			}
 
 			var entrySuccess bool
-			// Connections already attempted for THIS entry. A failure must
-			// never re-dial the same connection for the same member: the
-			// non-retryable statuses used to loop here ten times on the
-			// sole connection of a shared-account provider.
-			triedConns := make(map[string]bool)
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
 				var connID string
@@ -583,14 +659,19 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					var err error
 					picked, cData, err = h.getBestConnectionWithContext(ctx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
-						// Never silent: a member starved of connections
-						// (every account excluded or in cooldown) used to
-						// break here without a trace, so the combo looked
-						// frozen on the previous member's error and no
-						// console line explained why nothing routed on.
-						log.Warn("combo", "no connection available for member, advancing to next member", "provider", modelInfo.Provider, "model", modelInfo.Model, "entry", entry, "error", err)
-						if lastErr == nil {
-							lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"no available connections for %s/%s: %v","type":"upstream_error","code":502}}`, modelInfo.Provider, modelInfo.Model, err))}
+						// A node the gateway refuses on purpose — expired contract,
+						// spent lifetime quota — must reach the client as that
+						// refusal rather than as an anonymous "all combo models
+						// failed": an operator can act on the first and not on the
+						// second.
+						if refusal, blocked := providerLimitRefusal(err); blocked {
+							log.Info("combo", "provider node unusable, next candidate",
+								"provider", modelInfo.Provider, "model", modelInfo.Model, "axis", refusal.Axis)
+							var refusedErr *upstreamError
+							errors.As(err, &refusedErr)
+							if refusedErr != nil {
+								lastErr = refusedErr
+							}
 						}
 						break
 					}
@@ -609,10 +690,6 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						excludeIDs = append(excludeIDs, connID)
 						continue
 					}
-					if triedConns[connID] {
-						log.Warn("combo", "connection already attempted for member, advancing to next member", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
-						break
-					}
 				}
 
 				var upstreamBody map[string]any
@@ -622,20 +699,44 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to parse request body")
 					return
 				}
-				upstreamBody["model"] = modelInfo.Model
+				upstreamBody["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
 				repairToolCallIDsInMap(upstreamBody)
-				upstreamJSON, err := json.Marshal(upstreamBody)
+				ctx = h.applyJailbreak(ctx, upstreamBody, comboName, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
+				upstreamJSON, err := json.Marshal(upstreamBody, json.Deterministic(true))
 				if err != nil {
 					break
 				}
 
 				var fwdErr error
+				fwdCtx := ctx
+				targetWriter := http.ResponseWriter(cw)
+				var streamPeeker *internalproxy.StreamContentPeeker
+				var cancelTimeout context.CancelFunc
+				if !isStream {
+					fwdCtx = internalproxy.WithZeroContentProbe(ctx, !isLastModel)
+				} else if !isLastModel {
+					streamPeeker = internalproxy.NewStreamContentPeeker(cw)
+					targetWriter = streamPeeker
+					if timeoutMs := h.comboFirstTokenTimeoutMs(comboName); timeoutMs > 0 {
+						var attemptCancel context.CancelFunc
+						fwdCtx, attemptCancel = context.WithCancel(ctx)
+						cancelTimeout = attemptCancel
+						firstTokenTimer := time.AfterFunc(time.Duration(timeoutMs)*time.Millisecond, func() {
+							attemptCancel()
+						})
+						streamPeeker.SetOnFirstSeen(func() {
+							firstTokenTimer.Stop()
+						})
+					}
+				}
+				attemptStart := time.Now()
 				if modelInfo.Provider == "mimo-free" {
 					comboMetrics := &streamMetrics{}
-					fwdErr = h.MimoFreeChat(ctx, cw, upstreamJSON, isStream, comboMetrics)
+					upstreamJSON = clampMimoFreeReasoning(upstreamJSON, modelInfo.Model)
+					fwdErr = h.MimoFreeChat(fwdCtx, targetWriter, upstreamJSON, isStream, comboMetrics)
 				} else {
 					fwdErr = h.tryForwardWithConnection(forwardRequestParams{
-						Ctx: ctx, W: cw, Provider: modelInfo.Provider, Model: modelInfo.Model,
+						Ctx: fwdCtx, W: targetWriter, Provider: modelInfo.Provider, Model: modelInfo.Model,
 						RequestedModel: comboName, ComboName: comboName,
 						ConnectionID: connID, ConnName: connObjName(picked), ConnEmail: connObjEmail(picked),
 						ConnData: connData, Body: upstreamJSON,
@@ -643,10 +744,32 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						Endpoint: forwardEndpoint(ctx, "/v1/chat/completions"),
 					})
 				}
+				if cancelTimeout != nil {
+					cancelTimeout()
+				}
+				if streamPeeker != nil && fwdErr == nil {
+					if finishErr := streamPeeker.Finish(); finishErr != nil {
+						fwdErr = finishErr
+					}
+				}
+				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
 
 				if fwdErr != nil {
-					if connID != "" {
-						triedConns[connID] = true
+					if ctx.Err() == nil && fwdCtx.Err() == context.Canceled {
+						log.Warn("combo", "first token timeout, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						lastErr = &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: []byte(`{"error":{"message":"first token timeout"}}`)}
+						break
+					}
+					if errors.Is(fwdErr, internalproxy.ErrStreamingZeroContent) {
+						log.Warn("combo", "streaming zero content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						lastErr = &upstreamError{StatusCode: http.StatusOK, Body: []byte(`{"error":{"message":"streaming zero content"}}`)}
+						break
+					}
+					var zcErr *internalproxy.ZeroContentError
+					if errors.As(fwdErr, &zcErr) {
+						log.Warn("combo", "zero usable content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						lastErr = &upstreamError{StatusCode: http.StatusOK, Body: zcErr.Body}
+						break
 					}
 					if ctx.Err() != nil {
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(clientClosedBody)}
@@ -662,6 +785,25 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						errors.As(fwdErr, &ue)
 						lastErr = ue
 						break
+					}
+					if attempt, refused := providerLimitRefusal(fwdErr); refused {
+						// A provider at its own capacity is neither an account
+						// fault nor a bad model: cooling the connection down
+						// would park a healthy account, and the next candidate
+						// may be free. Keep the refusal as the terminal error for
+						// when none is left.
+						log.Info("combo", "provider limit, next candidate",
+							"provider", modelInfo.Provider, "model", modelInfo.Model,
+							"axis", attempt.Axis, "conn", connID)
+						var refusedErr *upstreamError
+						errors.As(fwdErr, &refusedErr)
+						if refusedErr != nil {
+							lastErr = refusedErr
+						}
+						if isKnownNoAuth {
+							break
+						}
+						continue
 					}
 					var ue *upstreamError
 					if errors.As(fwdErr, &ue) {
@@ -696,21 +838,6 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 							lastErr = ue
 							break
 						}
-						if providers.IsMemberFailoverStatus(ue.StatusCode) && !providers.RetryableStatusCodes[ue.StatusCode] {
-							// A member-side fault the account table does not
-							// list (500, 501, 408, 404, other 5xx): another
-							// member may well serve the turn, so advance
-							// after this ONE attempt instead of re-dialling
-							// the same connection for this member. The
-							// account is deliberately not locked or
-							// excluded: on a shared-account aggregator the
-							// remaining members live on this very
-							// connection, and parking it would starve them.
-							log.Warn("combo", "member failed, advancing to next member", "status", ue.StatusCode, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
-							retry.note(ue)
-							lastErr = ue
-							break
-						}
 						if providers.RetryableStatusCodes[ue.StatusCode] {
 							h.comboLockRetryable(ctx, &excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
 						}
@@ -725,7 +852,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						}
 						continue
 					}
-					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
+					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: upstreamErrorBody(fmt.Sprintf("upstream error: %v", fwdErr))}
 					if isKnownNoAuth {
 						break
 					}
@@ -736,6 +863,11 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				break
 			}
 
+			// A failed smart-pinned model loses its session pin, so the next
+			// turn re-evaluates instead of returning to a dead model.
+			if !entrySuccess {
+				h.clearFailedSmartSticky(ctx, entry)
+			}
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}
@@ -776,7 +908,12 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 // adapterModels holds the capacity-adapter entries injected for this request;
 // their history is trimmed to their context window before forwarding.
 func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int, adapterModels ...string) {
+	if FallbackAttemptRecorderFrom(ctx) == nil {
+		ctx = WithFallbackAttemptRecorder(ctx, NewFallbackAttemptRecorder())
+	}
 	cw := newCommittedResponseWriter(w)
+	cw.stream = isStream
+	cw.responsesClient = translator.IsResponsesClient(ctx)
 	var lastErr *upstreamError
 	var retry passRetry
 
@@ -785,7 +922,14 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	// Connections that failed with a retryable status this request; remaining
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
-	models := h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit, detectNewTurn(bodyJSON))
+	var models []string
+	if strategy == "smart" {
+		ctx, models = h.applySmartRouting(ctx, bodyJSON, comboModels, comboName)
+	} else if h.comboRespectsStoredOrder(comboName) {
+		models = slices.Clone(comboModels)
+	} else {
+		models = h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit, detectNewTurn(bodyJSON))
+	}
 	if required := DetectRequiredCapabilities(bodyJSON); len(required) > 0 {
 		reordered := ReorderByCapabilities(models, required)
 		models = reordered
@@ -812,11 +956,12 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			excludeIDs = nil
 		}
 
-		for _, entry := range models {
+		for i, entry := range models {
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
 			}
+			isLastModel := i == len(models)-1
 
 			// Skip unavailable (model-locked) providers
 			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
@@ -828,11 +973,6 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			}
 
 			var entrySuccess bool
-			// Connections already attempted for THIS entry. A failure must
-			// never re-dial the same connection for the same member: the
-			// non-retryable statuses used to loop here ten times on the
-			// sole connection of a shared-account provider.
-			triedConns := make(map[string]bool)
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
 				var connID string
@@ -850,14 +990,14 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					var err error
 					picked, cData, err = h.getBestConnectionWithContext(ctx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
-						// Never silent: a member starved of connections
-						// (every account excluded or in cooldown) used to
-						// break here without a trace, so the combo looked
-						// frozen on the previous member's error and no
-						// console line explained why nothing routed on.
-						log.Warn("combo", "no connection available for member, advancing to next member", "provider", modelInfo.Provider, "model", modelInfo.Model, "entry", entry, "error", err)
-						if lastErr == nil {
-							lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"no available connections for %s/%s: %v","type":"upstream_error","code":502}}`, modelInfo.Provider, modelInfo.Model, err))}
+						if refusal, blocked := providerLimitRefusal(err); blocked {
+							log.Info("combo", "provider node unusable, next candidate",
+								"provider", modelInfo.Provider, "model", modelInfo.Model, "axis", refusal.Axis)
+							var refusedErr *upstreamError
+							errors.As(err, &refusedErr)
+							if refusedErr != nil {
+								lastErr = refusedErr
+							}
 						}
 						break
 					}
@@ -875,10 +1015,6 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						excludeIDs = append(excludeIDs, connID)
 						continue
 					}
-					if triedConns[connID] {
-						log.Warn("combo", "connection already attempted for member, advancing to next member", "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
-						break
-					}
 				}
 
 				entryBody, err := adapterTrimmedMap(translatedReq, entry, adapterModels)
@@ -886,25 +1022,70 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to parse request body")
 					return
 				}
-				entryBody["model"] = modelInfo.Model
+				entryBody["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
+				ctx = h.applyJailbreak(ctx, entryBody, comboName, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
 
-				upstreamJSON, err := json.Marshal(entryBody)
+				upstreamJSON, err := json.Marshal(entryBody, json.Deterministic(true))
 				if err != nil {
 					break
 				}
 
+				fwdCtx := ctx
+				targetWriter := http.ResponseWriter(cw)
+				var streamPeeker *internalproxy.StreamContentPeeker
+				var cancelTimeout context.CancelFunc
+				if !isStream {
+					fwdCtx = internalproxy.WithZeroContentProbe(ctx, !isLastModel)
+				} else if !isLastModel {
+					streamPeeker = internalproxy.NewStreamContentPeeker(cw)
+					targetWriter = streamPeeker
+					if timeoutMs := h.comboFirstTokenTimeoutMs(comboName); timeoutMs > 0 {
+						var attemptCancel context.CancelFunc
+						fwdCtx, attemptCancel = context.WithCancel(ctx)
+						cancelTimeout = attemptCancel
+						firstTokenTimer := time.AfterFunc(time.Duration(timeoutMs)*time.Millisecond, func() {
+							attemptCancel()
+						})
+						streamPeeker.SetOnFirstSeen(func() {
+							firstTokenTimer.Stop()
+						})
+					}
+				}
+				attemptStart := time.Now()
 				fwdErr := h.tryForwardWithConnection(forwardRequestParams{
-					Ctx: ctx, W: cw, Provider: modelInfo.Provider, Model: modelInfo.Model,
+					Ctx: fwdCtx, W: targetWriter, Provider: modelInfo.Provider, Model: modelInfo.Model,
 					RequestedModel: comboName, ComboName: comboName,
 					ConnectionID: connID, ConnName: connObjName(picked), ConnEmail: connObjEmail(picked),
 					ConnData: connData, Body: upstreamJSON,
 					IsStream: isStream, TranslateResponse: !translator.IsResponsesClient(ctx),
 					Endpoint: forwardEndpoint(ctx, "/v1/messages"),
 				})
+				if cancelTimeout != nil {
+					cancelTimeout()
+				}
+				if streamPeeker != nil && fwdErr == nil {
+					if finishErr := streamPeeker.Finish(); finishErr != nil {
+						fwdErr = finishErr
+					}
+				}
+				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
 
 				if fwdErr != nil {
-					if connID != "" {
-						triedConns[connID] = true
+					if ctx.Err() == nil && fwdCtx.Err() == context.Canceled {
+						log.Warn("combo", "first token timeout, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						lastErr = &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: []byte(`{"error":{"message":"first token timeout"}}`)}
+						break
+					}
+					if errors.Is(fwdErr, internalproxy.ErrStreamingZeroContent) {
+						log.Warn("combo", "streaming zero content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						lastErr = &upstreamError{StatusCode: http.StatusOK, Body: []byte(`{"error":{"message":"streaming zero content"}}`)}
+						break
+					}
+					var zcErr *internalproxy.ZeroContentError
+					if errors.As(fwdErr, &zcErr) {
+						log.Warn("combo", "zero usable content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						lastErr = &upstreamError{StatusCode: http.StatusOK, Body: zcErr.Body}
+						break
 					}
 					if ctx.Err() != nil {
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(clientClosedBody)}
@@ -918,6 +1099,23 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						errors.As(fwdErr, &blocked)
 						lastErr = blocked
 						break
+					}
+					if attempt, refused := providerLimitRefusal(fwdErr); refused {
+						// Same contract as the OpenAI loop: the endpoint is busy,
+						// so the next candidate is tried without a cooldown on an
+						// account that did nothing wrong.
+						log.Info("combo", "provider limit, next candidate",
+							"provider", modelInfo.Provider, "model", modelInfo.Model,
+							"axis", attempt.Axis, "conn", connID)
+						var refusedErr *upstreamError
+						errors.As(fwdErr, &refusedErr)
+						if refusedErr != nil {
+							lastErr = refusedErr
+						}
+						if isKnownNoAuth {
+							break
+						}
+						continue
 					}
 					var ue *upstreamError
 					if errors.As(fwdErr, &ue) {
@@ -947,21 +1145,6 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 							lastErr = ue
 							break
 						}
-						if providers.IsMemberFailoverStatus(ue.StatusCode) && !providers.RetryableStatusCodes[ue.StatusCode] {
-							// A member-side fault the account table does not
-							// list (500, 501, 408, 404, other 5xx): another
-							// member may well serve the turn, so advance
-							// after this ONE attempt instead of re-dialling
-							// the same connection for this member. The
-							// account is deliberately not locked or
-							// excluded: on a shared-account aggregator the
-							// remaining members live on this very
-							// connection, and parking it would starve them.
-							log.Warn("combo", "member failed, advancing to next member", "status", ue.StatusCode, "provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
-							retry.note(ue)
-							lastErr = ue
-							break
-						}
 						if providers.RetryableStatusCodes[ue.StatusCode] {
 							h.comboLockRetryable(ctx, &excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
 						}
@@ -976,7 +1159,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						}
 						continue
 					}
-					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fmt.Sprintf(`{"error":{"message":"upstream error: %v","type":"upstream_error","code":502}}`, fwdErr))}
+					lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: upstreamErrorBody(fmt.Sprintf("upstream error: %v", fwdErr))}
 					if isKnownNoAuth {
 						break
 					}
@@ -987,6 +1170,11 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				break
 			}
 
+			// A failed smart-pinned model loses its session pin, so the next
+			// turn re-evaluates instead of returning to a dead model.
+			if !entrySuccess {
+				h.clearFailedSmartSticky(ctx, entry)
+			}
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}
@@ -1035,15 +1223,26 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 	if connID == "" {
 		return
 	}
+	// Same contract as the single-provider failover loop: an OpenCode free-tier
+	// refusal is an egress verdict, not an account or model fault. Cooling
+	// either would park a healthy account (and, for the 429 usage-limit shape,
+	// hide it behind a quota it does not own), so the connection is only
+	// excluded for the rest of this pass and the next combo entry is tried.
+	if isOpencodeFreeTierRefusal(provider, ue) {
+		*excludeIDs = append(*excludeIDs, connID)
+		log.Warn("combo", "opencode free-tier refusal, not locking the account",
+			"provider", provider, "model", model, "conn", connID, "status", ue.StatusCode)
+		return
+	}
 	currentLevel := h.Repo.GetConnectionBackoffLevel(connID)
-	cls := providers.ClassifyError(ue.StatusCode, extractErrorText(ue.Body), currentLevel)
+	cls := providers.ClassifyErrorForProvider(ue.StatusCode, extractErrorText(ue.Body), currentLevel, provider)
 	// Upstream parity (checkFallbackError): request-scoped 4xx (400/404/405/
 	// 409/422/...) must not lock the account — the bug is in the request,
 	// not the credential. Only lock when ShouldFallback is set.
 	if !cls.ShouldFallback || cls.CooldownMs <= 0 {
 		return
 	}
-	cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(cls.CooldownMs)*time.Millisecond, ue)
+	cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(cls.CooldownMs)*time.Millisecond, ue, provider)
 	lockKey := canonicalLockModel(provider, model)
 	if err := h.Repo.LockConnectionModel(connID, lockKey, cooldownSec, cls.NewBackoffLevel); err != nil {
 		log.Warn("combo", "lock failed", "conn", connID, "provider", provider, "model", lockKey, "error", err)
@@ -1053,44 +1252,20 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 	}
 	// Account-scoped cooldown alongside the per-model locks, so the selector
 	// can skip this account before spending a request (upstream applyErrorState).
-	// Only lock the ACCOUNT when the failure demonstrably indicts it: a 429
-	// spends its quota window, and an auth-failure text names the credential
-	// itself. A bare 401/403/5xx carries neither proof, and on an aggregator
-	// node it is routinely per-model (one upstream behind the shared key
-	// rejecting one model). Parking the whole account for it — and excluding
-	// the connection for the rest of the pass — starved every other member of
-	// a combo built on that single connection: they died in the selector with
-	// no log line and the client kept the first member's error. Per-model
-	// failure therefore records the error for visibility, locks only this
-	// model on this connection, and leaves the connection selectable for the
-	// remaining members.
-	errText := extractErrorText(ue.Body)
-	if isModelScopedError(ue.StatusCode, errText, model) || !isAccountScopedFailure(ue.StatusCode, errText) {
-		if recErr := h.Repo.RecordConnectionScopedError(connID, model, "chat", ue.StatusCode, errText, cls.NewBackoffLevel); recErr != nil {
+	// Only lock if error is account-scoped, not model-scoped (e.g. 401 auth issues),
+	// so unrelated models stay available.
+	if isModelScopedError(ue.StatusCode, extractErrorText(ue.Body), model, ue.Body) {
+		if recErr := h.Repo.RecordConnectionScopedError(connID, model, "chat", ue.StatusCode, extractErrorText(ue.Body), cls.NewBackoffLevel); recErr != nil {
 			log.Warn("combo", "record connection error failed", "conn", connID, "error", recErr)
 		}
 	} else {
 		until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
-		if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, errText); err != nil {
+		if err := h.Repo.LockConnectionRateLimit(connID, until, cls.NewBackoffLevel, ue.StatusCode, extractErrorText(ue.Body)); err != nil {
 			log.Warn("combo", "rate limit lock failed", "conn", connID, "error", err)
 		}
-		*excludeIDs = append(*excludeIDs, connID)
 	}
+	*excludeIDs = append(*excludeIDs, connID)
 	log.Warn("combo", "locked on retryable error", "provider", provider, "model", model, "lockKey", lockKey, "conn", connID, "status", ue.StatusCode, "cooldown_s", cooldownSec)
-}
-
-// isAccountScopedFailure reports whether an upstream error demonstrably
-// indicts the whole account rather than the one member that was tried: a
-// 429 spends the account's quota window, and an auth-failure text (invalid
-// API key, expired token, suspended account, ...) names the credential
-// itself. Anything else — above all a bare 401/403 from an aggregator that
-// serves many models behind one key — is treated as member-scoped until
-// proven otherwise.
-func isAccountScopedFailure(statusCode int, errText string) bool {
-	if statusCode == http.StatusTooManyRequests {
-		return true
-	}
-	return isAccountAuthFailure(strings.ToLower(errText))
 }
 
 // ---- Fusion (parallel fan-out + judge synthesis) ----
@@ -1153,7 +1328,7 @@ func (h *ChatHandler) handleFusion(ctx context.Context, w http.ResponseWriter, b
 	ft := fusionDefaults
 	calls := make([]func(context.Context) *fusionResult, len(panel))
 	for i, entry := range panel {
-		calls[i] = h.makePanelCall(panelJSON, entry)
+		calls[i] = h.makePanelCall(panelJSON, entry, comboName)
 	}
 
 	settled := collectPanel(ctx, calls, ft)
@@ -1195,6 +1370,7 @@ func (h *ChatHandler) handleFusion(ctx context.Context, w http.ResponseWriter, b
 		return
 	}
 	ub["model"] = judgeModel
+	ctx = h.applyJailbreak(ctx, ub, comboName, judgeModel)
 	if isStream {
 		ub["stream"] = true
 	} else {

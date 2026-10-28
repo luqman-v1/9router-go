@@ -6,6 +6,7 @@
   import ProviderArtwork from '../providers/ProviderArtwork.svelte'
   import { api, normalizeLastError, type ProviderConnection } from '../../api/client'
   import UsageDashboard from './UsageDashboard.svelte'
+  import { isPanelVisible } from '../../lib/usagePanel.svelte'
   import { copyToClipboard } from '../../lib/clipboard'
   import {
     cachedTokensFor,
@@ -17,6 +18,7 @@
     formatLocalTimestamp,
     type RequestDetailItem,
   } from './types'
+  import { costIn } from '../../lib/currency.svelte'
 
   interface Props {
     details?: RequestDetailItem[]
@@ -55,6 +57,10 @@
   // opens the modal on the summary fields and fills in the rest once the
   // by-id read lands.
   async function openDetail(item: RequestDetailItem) {
+    // The payload modal is one of the panels Settings can hide; the row keeps
+    // its cursor and click handler, so the guard is what stops an invisible
+    // dialog from opening behind a hidden section.
+    if (!isPanelVisible('details.payload')) return
     selectedDetail = item
     detailError = ''
     const id = item.id
@@ -117,6 +123,7 @@
 
 <UsageDashboard />
 
+{#if isPanelVisible('details.requests')}
 <Card padding="none" class="overflow-hidden border border-border">
   <div class="px-5 py-3 border-b border-border flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between bg-surface-2">
     <div>
@@ -254,8 +261,9 @@
                 {fmt(cachedTokensFor(item))}
               </td>
               <td class="py-3 px-4 text-right font-mono text-emerald-500 text-[11px]">
-                {item.cost ? `$${item.cost.toFixed(4)}` : '—'}
+                {item.cost ? costIn(item.cost, 4) : '—'}
               </td>
+              {#if isPanelVisible('details.payload')}
               <td class="py-3 px-4 text-right">
                 <button
                   type="button"
@@ -268,6 +276,7 @@
                   View
                 </button>
               </td>
+              {/if}
             </tr>
           {/each}
         </tbody>
@@ -302,9 +311,10 @@
     {/if}
   {/if}
 </Card>
+{/if}
 
 <!-- Detail Modal (OmniRoute style) -->
-{#if selectedDetail}
+{#if selectedDetail && isPanelVisible('details.payload')}
   {@const acc = resolveAccount(selectedDetail)}
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
     <div class="w-full max-w-4xl lg:max-w-5xl max-h-[90vh] rounded-2xl bg-surface border border-border shadow-2xl flex flex-col overflow-hidden">
@@ -426,6 +436,33 @@
           </div>
         {/if}
 
+        {#if selectedDetail.attempts && selectedDetail.attempts.length > 1}
+          <div class="p-3.5 rounded-xl bg-surface-2/60 border border-border space-y-2">
+            <div class="text-[10px] text-text-muted uppercase font-bold tracking-wider">
+              Account Failover Trail ({selectedDetail.attempts.length} attempts)
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              {#each selectedDetail.attempts as att, i}
+                {#if i > 0}
+                  <span class="material-symbols-outlined text-[16px] text-text-subtle">arrow_forward</span>
+                {/if}
+                <div class="flex items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-1.5">
+                  <span class="px-1.5 py-0.5 rounded border text-[10px] font-bold {att.statusCode === 200 || att.statusCode === '200' ? 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20' : 'text-red-500 bg-red-500/10 border-red-500/20'}">
+                    {att.statusCode ?? '—'}
+                  </span>
+                  <span class="font-medium text-text-main text-xs">{att.account || att.connectionId}</span>
+                  {#if att.latencyMs != null}
+                    <span class="text-text-muted text-[11px]">({att.latencyMs}ms)</span>
+                  {/if}
+                  {#if att.error}
+                    <span class="text-[11px] text-text-muted truncate max-w-[200px]">{att.error}</span>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
         <!-- Routing & Account Details (OmniRoute style) -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
           <div class="p-3 rounded-xl bg-surface-2 border border-border space-y-1">
@@ -489,7 +526,7 @@
           <div class="p-3 rounded-xl bg-surface-2 border border-border space-y-1">
             <div class="text-text-muted text-[10px] uppercase font-bold tracking-wider">Est. Cost</div>
             <div class="font-code text-xs text-emerald-500 font-bold">
-              ${selectedDetail.cost ? selectedDetail.cost.toFixed(4) : '0.0000'}
+              {costIn(selectedDetail.cost ?? 0, 4)}
             </div>
           </div>
           {#if selectedDetail.id}

@@ -33,6 +33,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { precompress } from './precompress'
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const stampPath = join(webRoot, '.dist-stamp')
@@ -108,6 +109,12 @@ function buildSpa(): number {
     const install = spawnSync('bun', ['install'], { cwd: webRoot, stdio: 'inherit' })
     if (install.status !== 0) return install.status ?? 1
   }
+  // `bun run build` runs the pre-compression itself (web/package.json), so
+  // the variants exist in dist before the Go build embeds it. A failure
+  // there fails the build: a gateway that embeds an uncompressed bundle
+  // serves a dashboard that takes seconds to open, which is the regression
+  // the pre-compression exists to prevent — and it is deterministic, so it
+  // fails in CI rather than on a user's phone.
   return spawnSync('bun', ['run', 'build'], { cwd: webRoot, stdio: 'inherit' }).status ?? 1
 }
 
@@ -122,6 +129,14 @@ function main(): void {
       const recorded = readFileSync(stampPath, 'utf8').trim()
       if (recorded === current) {
         console.log('web/dist is up to date (inputs unchanged).')
+        // The SPA itself does not need rebuilding, but the compressed
+        // variants do have to exist: `vite build` clears dist, so a build run
+        // directly (`bun run build`, which is what CI does) leaves the
+        // gateway embedding an uncompressed bundle. The gateway falls back
+        // to the original file, so nothing breaks — the dashboard is just
+        // served without compression, which is the exact regression the
+        // pre-compression exists to prevent.
+        precompress()
         process.exit(0)
       }
       console.log('Frontend sources changed since the last build — rebuilding the SPA.')

@@ -88,6 +88,38 @@ func CachedTokensFromJSON(raw []byte) int {
 	return 0
 }
 
+// ResolveTokensCounts extracts prompt and completion token counts following the
+// upstream usage stats precedence:
+// prompt: tokens.prompt_tokens || tokens.input_tokens || rowPrompt || 0
+// completion: tokens.completion_tokens || tokens.output_tokens || rowCompletion || 0
+func ResolveTokensCounts(raw []byte, rowPrompt, rowCompletion int) (int64, int64) {
+	prompt := int64(rowPrompt)
+	completion := int64(rowCompletion)
+	if len(raw) == 0 {
+		return prompt, completion
+	}
+	var usage struct {
+		PromptTokens     *float64 `json:"prompt_tokens"`
+		InputTokens      *float64 `json:"input_tokens"`
+		CompletionTokens *float64 `json:"completion_tokens"`
+		OutputTokens     *float64 `json:"output_tokens"`
+	}
+	if json.Unmarshal(raw, &usage) != nil {
+		return prompt, completion
+	}
+	if usage.PromptTokens != nil && *usage.PromptTokens > 0 {
+		prompt = int64(*usage.PromptTokens)
+	} else if usage.InputTokens != nil && *usage.InputTokens > 0 {
+		prompt = int64(*usage.InputTokens)
+	}
+	if usage.CompletionTokens != nil && *usage.CompletionTokens > 0 {
+		completion = int64(*usage.CompletionTokens)
+	} else if usage.OutputTokens != nil && *usage.OutputTokens > 0 {
+		completion = int64(*usage.OutputTokens)
+	}
+	return prompt, completion
+}
+
 // NormalizeClaudeUsage converts a fresh Claude usage record to the canonical
 // OpenAI shape. The source marker makes repeated calls safe.
 func NormalizeClaudeUsage(usage *OpenAIUsage) *OpenAIUsage {

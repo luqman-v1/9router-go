@@ -37,7 +37,7 @@ func FitToolNames(body []byte) ([]byte, map[string]string) {
 		!bytes.Contains(body, []byte(`"function_call"`)) &&
 		!bytes.Contains(body, []byte(`"tool_use"`)) &&
 		!bytes.Contains(body, []byte(`"functionCall"`)) &&
-!bytes.Contains(body, []byte(`"functionResponse"`)) &&
+		!bytes.Contains(body, []byte(`"functionResponse"`)) &&
 		!bytes.Contains(body, []byte(`"tool_choice"`)) {
 	}
 
@@ -51,7 +51,7 @@ func FitToolNames(body []byte) ([]byte, map[string]string) {
 		return body, nil
 	}
 
-	newBody, err := json.Marshal(req)
+	newBody, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		return body, nil
 	}

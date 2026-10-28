@@ -25,6 +25,7 @@ type Request struct {
 	Ctx            context.Context
 	Client         *http.Client
 	Config         *providers.ProviderConfig
+	Provider       string // canonical provider id; provider-scoped wire rules key off it
 	APIKey         string
 	Body           []byte
 	IsStream       bool
@@ -39,9 +40,14 @@ type Request struct {
 	Endpoint       string            // custom URL override (azure)
 	ToolNameMap    map[string]string // claude OAuth tool-cloak map (suffixed -> original)
 	UpstreamClaude bool              // upstream responds in Claude format while client sent OpenAI format
-	ResponseBuf    io.Writer         // writer to capture response text for token estimation & logging
-	StartTime      time.Time         // request start time for TTFT tracking
-	TTFT           *int64            // pointer to TTFT metric (ms to first chunk)
+	// LiftReasoningAliases marks a lane whose upstream streams thinking under
+	// the vendor aliases (reasoning / reasoning_details[]) instead of
+	// reasoning_content (OpenCode Free's MiMo route); the passthrough adds
+	// reasoning_content so OpenAI-shaped clients see the thinking.
+	LiftReasoningAliases bool
+	ResponseBuf          io.Writer // writer to capture response text for token estimation & logging
+	StartTime            time.Time // request start time for TTFT tracking
+	TTFT                 *int64    // pointer to TTFT metric (ms to first chunk)
 }
 
 // Executor forwards a request upstream and writes the response.
@@ -74,6 +80,17 @@ func Get(provider string) Executor {
 
 // Default returns the default OpenAI-compat executor.
 func Default() Executor { return ForwardOpenAI }
+
+// Release clears internal byte buffers and maps so memory can be collected
+// immediately following upstream dispatch.
+func (r *Request) Release() {
+	if r == nil {
+		return
+	}
+	r.Body = nil
+	r.ConnData = nil
+	r.ToolNameMap = nil
+}
 
 // IsGeminiNative checks if a config uses gemini-native format.
 func IsGeminiNative(cfg *providers.ProviderConfig) bool { return cfg.Format == "gemini-native" }

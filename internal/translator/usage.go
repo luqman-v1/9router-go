@@ -2,8 +2,10 @@ package translator
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +26,28 @@ var (
 // maxPendingJSON bounds a single buffered fragment so a hostile/endless
 // stream cannot grow the map without limit.
 const maxPendingJSON = 1 << 20 // 1 MiB
+
+// sessionCounter makes every stream session key unique.
+//
+// time.Now().UnixNano() alone is not a unique id on Windows: the wall clock
+// there ticks at ~15.6 ms, so 200 concurrent requests observed only two
+// distinct nanosecond values — 104 of them shared one. Requests that shared a
+// key also shared one *StreamState, and the translator mutates that state's
+// maps outside the lock, which crashed the gateway with "concurrent map
+// writes" under load.
+var sessionCounter atomic.Uint64
+
+// sessionNow is the clock NewSessionKey stamps keys with. It is a variable so
+// a test can pin it: with a coarse clock the counter is the only thing that
+// keeps two keys apart, and no CI platform can supply that clock on demand.
+var sessionNow = time.Now
+
+// NewSessionKey returns a key that no other live call can produce. The
+// counter makes it unique within the process; the timestamp keeps it sortable
+// and lets the stale-state pruner work on age.
+func NewSessionKey(prefix string) string {
+	return fmt.Sprintf("%s-%d-%d", prefix, sessionNow().UnixNano(), sessionCounter.Add(1))
+}
 
 // isTruncatedJSON reports whether err is json.Unmarshal failing because the
 // input ended mid-value ("unexpected end of JSON input") — i.e. a valid JSON

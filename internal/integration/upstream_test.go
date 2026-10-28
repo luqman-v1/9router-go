@@ -154,13 +154,29 @@ func claudeMessagesBody(model string, stream bool) map[string]any {
 // is what getProviderConfig prefers over the providers.KnownProviders registry
 // entry. apiKey is the credential the gateway must present upstream.
 //
+// The connection is stored at priority 1 — every AddConnection call is, since
+// the helper has no way to say otherwise. A test that needs one of two
+// same-provider accounts picked first must therefore use
+// AddConnectionWithPriority: with equal priorities the picker falls back to its
+// documented tie-break (the most recently updated row wins), and updatedAt is
+// written at second resolution by nowUTC, so such a test passes or fails on
+// whether its two inserts happened to land in the same wall-clock second.
+//
 // The stored row is read back before returning: an empty baseUrl would fall
 // through to the real provider URL from the registry and turn an offline suite
 // into a live call, so a fixture that failed to persist is a hard failure here
 // rather than a confusing 401 from a real provider in CI.
 func (e *Env) AddConnection(t *testing.T, id, provider, name string, up *Upstream, apiKey string) {
 	t.Helper()
-	priority := 1
+	e.AddConnectionWithPriority(t, id, provider, name, up, apiKey, 1)
+}
+
+// AddConnectionWithPriority is AddConnection with an explicit pick priority, for
+// a test that pins the order the picker walks same-provider accounts in. A lower
+// number is picked first; equal priorities tie-break on updatedAt, which is not
+// something a fixture should rely on.
+func (e *Env) AddConnectionWithPriority(t *testing.T, id, provider, name string, up *Upstream, apiKey string, priority int) {
+	t.Helper()
 	data := fmt.Sprintf(`{"apiKey":%q,"baseUrl":%q}`, apiKey, up.URL+"/chat/completions")
 	if err := e.Repo.CreateProviderConnectionFull(id, provider, "apikey", name, &priority, data); err != nil {
 		t.Fatalf("create connection %s: %v", id, err)

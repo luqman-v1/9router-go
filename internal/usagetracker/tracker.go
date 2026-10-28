@@ -366,6 +366,7 @@ func (t *Tracker) buildPayloadLocked(repo *db.Repo) StreamPayload {
 // recentFromHistoryRow maps a persisted usageHistory row onto the stream shape
 // so ring seeding and live pushes render identically.
 func recentFromHistoryRow(rh db.UsageHistoryRow) RecentRequest {
+	promptTok, complTok := translator.ResolveTokensCounts([]byte(rh.Tokens), rh.PromptTokens, rh.CompletionTokens)
 	cached := translator.CachedTokensFromJSON([]byte(rh.Tokens))
 
 	status := "ok"
@@ -377,8 +378,8 @@ func recentFromHistoryRow(rh db.UsageHistoryRow) RecentRequest {
 		Timestamp:        rh.Timestamp,
 		Model:            rh.Model,
 		Provider:         rh.Provider,
-		PromptTokens:     rh.PromptTokens,
-		CompletionTokens: rh.CompletionTokens,
+		PromptTokens:     int(promptTok),
+		CompletionTokens: int(complTok),
 		CachedTokens:     cached,
 		Status:           status,
 	}

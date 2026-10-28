@@ -28,12 +28,40 @@ import (
 //
 // Renaming alone satisfies the gate, but the client must still receive the tool
 // name it declared itself, so the helpers below also restore the original
-// spelling on the response.
+// spelling on the response (RestoreToolNames / RestoreToolNamesInSSE). The
+// request itself has to stay self-consistent too: once a tool is renamed, a
+// tool_choice or a prior-turn tool call naming the original spelling would
+// reference a tool upstream no longer sees, so ConcealFingerprintTools retargets
+// those references in the same pass.
+//
+// A client tool that is already exactly "read" is left byte-for-byte untouched:
+// the gate only needs the name, so its own description and schema may travel as
+// declared and downstream function calling keeps working.
+//
+// Injection is narrower than renaming: the gate requires only a tool named
+// "read", so the other quartet members are never added on a client's behalf
+// (see openCodeRequiredTools). They are still canonicalised when the client
+// sends them, which is the case the measurements above cover.
 //
 // Ported from the equivalent fix in decolua/9router (opencodeFingerprint.js).
 
 // OpenCodeFingerprintTools holds the canonical names the upstream gate looks for.
 var OpenCodeFingerprintTools = []string{"bash", "glob", "grep", "read"}
+
+// openCodeRequiredTools holds the subset the gate actually requires to be
+// declared. Probing against the legacy /zen/v1 free tier (reported upstream in
+// the opencode2api a9470df change) shows a single tool named "read" is
+// sufficient: [read] alone passes while bash/shell/edit/glob/grep alone — or
+// any combination without read — answer 403 FreeTierError, and neither the
+// description nor the parameter schema of a declared tool is validated there.
+//
+// Only *absent* members are injected, and from this narrower list: a stub the
+// gate never asked for is payload added to every request, and it offers the
+// model a tool that does nothing. Case-variants of the wider quartet are still
+// collapsed onto their canonical spelling (OpenCodeFingerprintTools), because
+// those names come from the client rather than the gateway and renaming them is
+// what makes a harness-shaped body acceptable at all.
+var openCodeRequiredTools = []string{"read"}
 
 // FingerprintToolKey returns the canonical lowercase name when name is a quartet
 // member, or "" when it is not.
@@ -80,12 +108,18 @@ func setToolName(tool any, name string) {
 
 // ConcealFingerprintTools renames quartet case-variants to the canonical
 // lowercase form, drops duplicate names (the upstream rejects a body carrying two
-// tools with the same name), and appends the quartet members that are genuinely
-// absent as no-op declarations.
+// tools with the same name), and appends the gate-required tools that are
+// genuinely absent as no-op declarations.
 //
-// It returns the resulting body together with a map of sent-name -> original-name
-// for the response side. When nothing needed to change, the original body is
+// It returns the resulting body together with the rename map the response side
+// needs to restore the caller's spelling: one sent-name -> original-name entry
+// per renamed spelling. An original spelling whose declaration was dropped as a
+// duplicate maps to "" because the body cannot say which of the two identical
+// declarations it meant. When nothing needed to change, the original body is
 // returned unchanged with an empty map.
+//
+// Concealing is idempotent: a body that already carries the canonical quartet
+// is returned byte-identical with an empty map.
 func ConcealFingerprintTools(body []byte) ([]byte, map[string]string) {
 	noop := map[string]string{}
 	if len(body) == 0 {
@@ -97,8 +131,8 @@ func ConcealFingerprintTools(body []byte) ([]byte, map[string]string) {
 		return body, noop
 	}
 
-	// A body with no tools array still has to receive the quartet: the gate
-	// rejects tool-less requests too (measured 403, 2026-09-18).
+	// A body with no tools array still has to receive the required tool: the
+	// gate rejects tool-less requests too (measured 403, 2026-09-18).
 	var tools []any
 	if raw, ok := m["tools"].([]any); ok {
 		tools = raw
@@ -121,6 +155,11 @@ func ConcealFingerprintTools(body []byte) ([]byte, map[string]string) {
 		}
 		dedupeKey := strings.ToLower(finalName)
 		if seen[dedupeKey] {
+			// The declaration is dropped; if it carried a caller spelling the
+			// response cannot restore it, which "" records.
+			if key != "" && key != current {
+				toolNameMap[key] = ""
+			}
 			continue
 		}
 		seen[dedupeKey] = true
@@ -150,7 +189,7 @@ func ConcealFingerprintTools(body []byte) ([]byte, map[string]string) {
 		}
 	}
 
-	for _, name := range OpenCodeFingerprintTools {
+	for _, name := range openCodeRequiredTools {
 		if seen[name] {
 			continue
 		}
@@ -173,12 +212,18 @@ func ConcealFingerprintTools(body []byte) ([]byte, map[string]string) {
 	}
 	m["tools"] = kept
 
-	// Point an explicit tool_choice at the renamed tool, or apply upstream defaults.
+	// Point an explicit tool_choice (and any prior-turn tool call naming a
+	// renamed tool) at the canonical name, or apply upstream defaults.
+	if len(toolNameMap) > 0 {
+		retargetFingerprintToolReferences(m, toolNameMap)
+	}
 	if choice, ok := m["tool_choice"].(map[string]any); ok {
-		if n, ok := choice["name"].(string); ok {
-			if key := FingerprintToolKey(n); key != "" && toolNameMap[key] != "" {
-				choice["name"] = key
-			}
+		// A forced choice still naming a caller spelling this body could not
+		// resolve (its declaration was dropped as a duplicate) references
+		// nothing upstream sees, so it is dropped rather than forwarded
+		// dangling. Successfully retargeted choices are canonical by now.
+		if ref := fingerprintToolChoiceRef(choice); ref != "" && fingerprintToolChoiceDangling(ref, toolNameMap) {
+			delete(m, "tool_choice")
 		}
 	} else if m["tool_choice"] == nil {
 		if flat {
@@ -197,6 +242,125 @@ func ConcealFingerprintTools(body []byte) ([]byte, map[string]string) {
 	return out, toolNameMap
 }
 
+// fingerprintToolChoiceRef reads the tool name an explicit tool_choice forces,
+// covering the Chat Completions nesting ({"type":"function","function":{"name"}})
+// and the flat shape Claude Messages and Responses use ({"type":"tool","name"}).
+func fingerprintToolChoiceRef(choice map[string]any) string {
+	if fn, ok := choice["function"].(map[string]any); ok {
+		if n, ok := fn["name"].(string); ok && strings.TrimSpace(n) != "" {
+			return strings.TrimSpace(n)
+		}
+	}
+	if n, ok := choice["name"].(string); ok && strings.TrimSpace(n) != "" {
+		return strings.TrimSpace(n)
+	}
+	return ""
+}
+
+// fingerprintToolChoiceDangling reports whether an explicit tool_choice still
+// names a caller spelling this body renamed but could not resolve: the spelling
+// maps to "" because its declaration was dropped as a duplicate of an exact
+// canonical declaration.
+func fingerprintToolChoiceDangling(ref string, sentToOriginal map[string]string) bool {
+	for canonical, original := range sentToOriginal {
+		if original == "" && ref != canonical && strings.EqualFold(ref, canonical) {
+			return true
+		}
+	}
+	return false
+}
+
+// renameFingerprintToolRef rewrites a name field that still carries a renamed
+// tool's original spelling to the canonical name now in the tools array. It
+// reports whether the value changed.
+func renameFingerprintToolRef(holder map[string]any, key string, originalToSent map[string]string) bool {
+	if holder == nil {
+		return false
+	}
+	n, ok := holder[key].(string)
+	if !ok {
+		return false
+	}
+	canonical, renamed := originalToSent[n]
+	if !renamed || canonical == "" || canonical == n {
+		return false
+	}
+	holder[key] = canonical
+	return true
+}
+
+// retargetFingerprintToolReferences keeps a request self-consistent after
+// ConcealFingerprintTools renamed quartet case-variants: every tool_choice and
+// every prior-turn tool call that names the caller's original spelling is
+// rewritten to the canonical lowercase name the tools array now declares.
+//
+// A reference left dangling would make upstream reject a forced choice ("tool
+// not found") or answer a history turn with an unknown tool, so this covers all
+// three wire shapes: Chat tool_calls[].function.name, Claude tool_use blocks,
+// and Responses function_call/custom_tool_call items (chat and flat bodies).
+func retargetFingerprintToolReferences(request map[string]any, sentToOriginal map[string]string) {
+	if len(sentToOriginal) == 0 {
+		return
+	}
+	// Invert the response-side map: the canonical name upstream now sees maps
+	// back to the spelling the caller used in its request.
+	originalToSent := make(map[string]string, len(sentToOriginal))
+	for sent, original := range sentToOriginal {
+		originalToSent[original] = sent
+	}
+	if choice, ok := request["tool_choice"].(map[string]any); ok {
+		if fn, ok := choice["function"].(map[string]any); ok {
+			renameFingerprintToolRef(fn, "name", originalToSent)
+		}
+		renameFingerprintToolRef(choice, "name", originalToSent)
+	}
+	for _, rawMsg := range jsonSliceAt(request, "messages") {
+		msg, ok := rawMsg.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, rawCall := range jsonSliceAt(msg, "tool_calls") {
+			call, ok := rawCall.(map[string]any)
+			if !ok {
+				continue
+			}
+			if fn, ok := call["function"].(map[string]any); ok {
+				renameFingerprintToolRef(fn, "name", originalToSent)
+			}
+		}
+		if fn, ok := msg["function_call"].(map[string]any); ok {
+			renameFingerprintToolRef(fn, "name", originalToSent)
+		}
+		for _, rawBlock := range jsonSliceAt(msg, "content") {
+			block, ok := rawBlock.(map[string]any)
+			if !ok || block["type"] != "tool_use" {
+				continue
+			}
+			renameFingerprintToolRef(block, "name", originalToSent)
+		}
+	}
+	for _, rawItem := range jsonSliceAt(request, "input") {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		t, _ := item["type"].(string)
+		if t != "function_call" && t != "custom_tool_call" {
+			continue
+		}
+		renameFingerprintToolRef(item, "name", originalToSent)
+	}
+}
+
+// jsonSliceAt returns holder[key] as a []any, or nil when it holds anything else.
+func jsonSliceAt(holder map[string]any, key string) []any {
+	if holder == nil {
+		return nil
+	}
+	items, _ := holder[key].([]any)
+	return items
+}
+
 // RestoreToolNames restores the caller's original tool names on a JSON response
 // payload. It covers Claude content_block_start (tool_use), Chat Completions
 // choices[].{delta,message}.tool_calls[].function.name, and Responses output[]
@@ -205,6 +369,19 @@ func RestoreToolNames(payload []byte, toolNameMap map[string]string) []byte {
 	if len(toolNameMap) == 0 || len(payload) == 0 {
 		return payload
 	}
+	// A "" target marks a caller spelling whose declaration was dropped as a
+	// duplicate: there is no original name to put back, so the frame keeps the
+	// canonical one rather than being blanked out.
+	restorable := make(map[string]string, len(toolNameMap))
+	for sent, original := range toolNameMap {
+		if original != "" {
+			restorable[sent] = original
+		}
+	}
+	if len(restorable) == 0 {
+		return payload
+	}
+	toolNameMap = restorable
 
 	var m map[string]any
 	if err := json.Unmarshal(payload, &m); err != nil {

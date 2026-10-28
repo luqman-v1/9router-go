@@ -1,6 +1,7 @@
 import type { Combo, ProviderConnection, ProviderNode } from '../../api/client'
 import { getModelCaps, getModelKind, getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from '../../lib/models'
 import { PROVIDER_CATALOG, isChatProvider } from '../../lib/providers'
+import { parseSearchQuery, matchesSearch } from '../../lib/modelSearchFilter'
 
 const MEDIA_KINDS: Record<string, true> = {
   image: true,
@@ -258,7 +259,18 @@ export function resolveFilteredCombos(
     return []
   }
 
-  const query = searchQuery.trim().toLowerCase()
+  const parsed = parseSearchQuery(searchQuery)
+  if (parsed.isEmpty) {
+    return combos.filter((c) => {
+      // Upstream parity (page.js fetchData): webSearch/webFetch combos live
+      // under media-providers/web. search-combo is excluded even when its kind
+      // field is missing (older rows predate the kind column).
+      if (c.kind && c.kind !== 'llm') return false
+      if (c.name === 'search-combo' || c.name.startsWith('search-combo-')) return false
+      if (currentComboName && c.name === currentComboName) return false
+      return true
+    })
+  }
   return combos.filter((c) => {
     // Upstream parity (page.js fetchData): webSearch/webFetch combos live
     // under media-providers/web. search-combo is excluded even when its kind
@@ -266,10 +278,7 @@ export function resolveFilteredCombos(
     if (c.kind && c.kind !== 'llm') return false
     if (c.name === 'search-combo' || c.name.startsWith('search-combo-')) return false
     if (currentComboName && c.name === currentComboName) return false
-    if (query) {
-      return c.name.toLowerCase().includes(query)
-    }
-    return true
+    return matchesSearch(c.name, parsed)
   })
 }
 
@@ -283,7 +292,7 @@ export function resolveFilteredGroups(
   searchQuery: string,
   target: string
 ): PickerGroup[] {
-  const query = searchQuery.trim().toLowerCase()
+  const parsed = parseSearchQuery(searchQuery)
 
   return groups
     .map((group) => {
@@ -298,15 +307,18 @@ export function resolveFilteredGroups(
 
       if (models.length === 0) return null
 
-      if (query) {
-        const groupMatches = group.name.toLowerCase().includes(query)
-        const matchedModels = models.filter(
-          (m) =>
-            m.name.toLowerCase().includes(query) ||
-            m.id.toLowerCase().includes(query) ||
-            m.value.toLowerCase().includes(query)
-        )
-        models = matchedModels.length > 0 ? matchedModels : groupMatches ? models : []
+      if (!parsed.isEmpty) {
+        const groupMatches = matchesSearch(group.name, parsed)
+        models = models.filter((m) => {
+          if (matchesSearch(m, parsed)) return true
+          if (groupMatches) {
+            if (parsed.negativeTerms.length > 0) {
+              return matchesSearch(m, { ...parsed, positiveTerms: [] })
+            }
+            return true
+          }
+          return false
+        })
       }
 
       if (models.length === 0) return null

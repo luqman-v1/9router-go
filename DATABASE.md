@@ -348,6 +348,8 @@ The payload is sensitive: it can contain provider API keys/tokens, proxy credent
 
 The route is always protected from client API keys and unauthenticated access; it requires a valid dashboard session/local CLI token plus current-password re-authentication where applicable (`internal/middleware/dashboard_auth.go`, `internal/handlers/dashboard/settings.go`).
 
+The three storage-maintenance routes are the one exception to the always-protected rule: `POST /api/settings/database/prune`, `.../prune-usage` and `.../vacuum` admit the dashboard operator when `requireLogin` is off, because an install with no login has no session for the SPA to present and the gate otherwise refused every press of the storage card's buttons. With login on, all three require a valid dashboard session or the local CLI token and still reject client API keys. The JSON export above is not in that exemption — it carries every key, so it keeps requiring the session or the CLI token in both modes.
+
 ### Physical SQLite backup
 
 For a full restore point, copy the SQLite database consistently. The simplest operator procedure is to stop 9router-go and copy the whole database directory, including `data.sqlite-wal` and `data.sqlite-shm` if present. For a live backup, use a SQLite-aware online backup/checkpoint procedure; do not copy only the main file while WAL contains committed pages.

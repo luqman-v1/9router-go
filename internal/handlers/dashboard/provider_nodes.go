@@ -37,11 +37,29 @@ type ProviderNodeResponse struct {
 	URLSuffixGenerated bool   `json:"urlSuffixGenerated"`
 	CreatedAt          string `json:"createdAt"`
 	UpdatedAt          string `json:"updatedAt"`
+	// Limits is the node's capacity policy plus the usage it is measured against
+	// (PR4). The list fills it for every node so the editor never has to make a
+	// second call to discover what a node is currently allowed.
+	Limits *ProviderNodeLimitsResponse `json:"limits,omitempty"`
 }
 
 // HandleGetProviderNodes handles GET /api/provider-nodes.
 func (h *DashboardHandler) HandleGetProviderNodes(w http.ResponseWriter, r *http.Request) {
 	nodes, err := h.Repo.GetProviderNodes()
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// One query for every policy and one for every usage, rather than a read per
+	// node: the list is the dashboard's node page, and a per-node read there
+	// would be N+1 on every load.
+	policies, err := h.Repo.ListProviderLimits(r.Context())
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	usage, err := h.Repo.ProviderTokenUsageByNode(r.Context())
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -70,6 +88,8 @@ func (h *DashboardHandler) HandleGetProviderNodes(w http.ResponseWriter, r *http
 		// after the type literal — so the list derives it the same way the
 		// create/update handlers composed it.
 		item.URLSuffix, item.URLSuffixGenerated = providerNodeSuffixOf(n.ID)
+		limits := h.providerNodeLimitsFrom(n.ID, policies[n.ID], usage[n.ID])
+		item.Limits = &limits
 
 		if n.Data != "" {
 			var dataObj struct {
@@ -348,10 +368,15 @@ func (h *DashboardHandler) HandleDeleteProviderNode(w http.ResponseWriter, r *ht
 		return
 	}
 
-	if err := h.Repo.DeleteProviderNode(id); err != nil {
+	if err := h.Repo.DeleteProviderNode(r.Context(), id); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// The node's models stop resolving the moment the row is gone, so every
+	// combo a rule put them into must drop them. The candidate builder treats
+	// an alias with no node behind it as not live, which is what makes this
+	// pass remove exactly those members.
+	h.reconcileSmartCombosBestEffort(r.Context(), "provider node deleted")
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})
 }
 
@@ -389,6 +414,17 @@ func (h *DashboardHandler) HandleValidateProviderNode(w http.ResponseWriter, r *
 	}
 	if !isValidHTTPURL(baseURL) {
 		writeNodeValidation(w, map[string]any{"valid": false, "error": "Invalid URL format"})
+		return
+	}
+
+	// Cloud metadata is refused for every caller, including loopback. The
+	// local-caller bypass exists so a self-hosted provider (ollama-local on
+	// 127.0.0.1:11434) stays reachable from the dashboard on the same machine;
+	// it is not a licence to dial the metadata service, which answers with
+	// instance credentials. Checked before the bypass so there is one rule to
+	// read rather than an exception inside an exception.
+	if handlerutil.IsCloudMetadataURL(r.Context(), baseURL) {
+		writeNodeValidation(w, map[string]any{"valid": false, "error": "URL not allowed"})
 		return
 	}
 

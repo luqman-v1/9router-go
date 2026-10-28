@@ -488,24 +488,24 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 		Groups []struct {
 			DisplayName string `json:"displayName"`
 			Buckets     []struct {
-				BucketID          string  `json:"bucketId"`
-				DisplayName       string  `json:"displayName"`
-				Window            string  `json:"window"`
-				Disabled          bool    `json:"disabled"`
-				RemainingFraction float64 `json:"remainingFraction"`
-				ResetTime         string  `json:"resetTime"`
+				BucketID          string   `json:"bucketId"`
+				DisplayName       string   `json:"displayName"`
+				Window            string   `json:"window"`
+				Disabled          bool     `json:"disabled"`
+				RemainingFraction *float64 `json:"remainingFraction"`
+				ResetTime         string   `json:"resetTime"`
 			} `json:"buckets"`
 		} `json:"groups"`
 		QuotaSummary *struct {
 			Groups []struct {
 				DisplayName string `json:"displayName"`
 				Buckets     []struct {
-					BucketID          string  `json:"bucketId"`
-					DisplayName       string  `json:"displayName"`
-					Window            string  `json:"window"`
-					Disabled          bool    `json:"disabled"`
-					RemainingFraction float64 `json:"remainingFraction"`
-					ResetTime         string  `json:"resetTime"`
+					BucketID          string   `json:"bucketId"`
+					DisplayName       string   `json:"displayName"`
+					Window            string   `json:"window"`
+					Disabled          bool     `json:"disabled"`
+					RemainingFraction *float64 `json:"remainingFraction"`
+					ResetTime         string   `json:"resetTime"`
 				} `json:"buckets"`
 			} `json:"groups"`
 		} `json:"quotaSummary"`
@@ -551,9 +551,15 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 			if b.Disabled && isWeekly {
 				continue
 			}
-			frac := b.RemainingFraction
+			var frac float64
 			if b.Disabled {
 				frac = 0
+			} else if b.RemainingFraction != nil {
+				frac = *b.RemainingFraction
+			} else {
+				// null or missing: skip the bucket so the quota stays unknown
+				// rather than being reported as exhausted.
+				continue
 			}
 			if frac < 0 {
 				frac = 0

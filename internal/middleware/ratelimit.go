@@ -757,6 +757,175 @@ func RequireRateLimit(rl *RateLimiter, defaults Defaults, usage TokenUsageReader
 	}
 }
 
+// Provider-scope admission.
+//
+// The same limiter serves a second scope. A custom provider is one providerNodes
+// row — a single upstream endpoint shared by every connection under it — so what
+// it tolerates is a property of that endpoint, not of the key calling it. Rather
+// than a second limiter (two copies of the sliding window and the FIFO queue,
+// free to drift apart), a provider's slot lives in these same maps under a
+// namespaced key.
+//
+// Precedence is deliberately key-first: the middleware refuses a caller that has
+// spent its own allowance before a provider slot is ever considered, so one
+// misbehaving caller cannot consume the capacity every other caller depends on.
+
+// ProviderScopeKey namespaces one provider's slot inside the shared limiter maps.
+func ProviderScopeKey(providerID string) string { return "prov:" + providerID }
+
+// EstimatePromptTokens exposes the limiter's own estimator, so a provider's TPM
+// bucket is charged from the same number a key's is.
+func EstimatePromptTokens(body []byte) int { return estimatePromptTokens(body) }
+
+// ProviderRefusal says why one provider attempt was refused.
+type ProviderRefusal struct {
+	// Axis is the limit that refused: "tpm", "rpm" or "concurrency".
+	Axis string
+	// RetryAfter is how long to wait before trying this provider again. For a
+	// queue timeout it is the wait that just elapsed; for TPM it is how long the
+	// bucket needs to refill enough for this request.
+	RetryAfter time.Duration
+	// Limit is the configured value that refused, for the response body.
+	Limit int
+}
+
+// ProviderSlot is one admitted provider attempt. Release ends it and must run
+// when the attempt ends — success, failure, or failover to another candidate.
+type ProviderSlot struct {
+	rl       *RateLimiter
+	key      string
+	tpm      int
+	reserved int
+	held     bool
+}
+
+// Settle reconciles the TPM charge with what the turn actually cost. Only an
+// under-estimate is corrected, exactly as for a key: refunding a surplus would
+// let a caller bank headroom by over-stating its prompt.
+func (s *ProviderSlot) Settle(actual int) {
+	if s == nil || s.rl == nil {
+		return
+	}
+	if s.tpm > 0 && s.reserved > 0 {
+		s.rl.SettleTokenUsage(s.key, s.tpm, s.reserved, actual)
+	}
+	s.reserved = 0
+}
+
+// Release gives back whatever the attempt still holds: the concurrency slot, and
+// any TPM charge the meter never settled. An unsettled charge belongs to an
+// attempt that ended before it produced a usage reading — an upstream error, or a
+// client that hung up — and keeping it would spend a provider's budget on a turn
+// nobody was served.
+func (s *ProviderSlot) Release() {
+	if s == nil || s.rl == nil {
+		return
+	}
+	if s.held {
+		s.rl.ReleaseConcurrency(s.key)
+		s.held = false
+	}
+	if s.reserved > 0 {
+		s.rl.RefundTPM(s.key, s.tpm, s.reserved)
+		s.reserved = 0
+	}
+}
+
+// AcquireProvider admits one attempt against a provider's limits.
+//
+// A nil slot with a nil refusal means the provider declares no limits: the
+// attempt proceeds and there is nothing to release, which is why every caller can
+// hand the slot to a deferred Release unconditionally.
+//
+// A refusal is not an error to report to the client yet. It names this candidate
+// as full; the caller moves to the next candidate and only answers 429 when none
+// is left (docs/provider-limits-plan.md D7).
+func (rl *RateLimiter) AcquireProvider(ctx context.Context, providerID string, limits Limits, promptTokens int) (*ProviderSlot, *ProviderRefusal) {
+	if rl == nil || providerID == "" {
+		return nil, nil
+	}
+	if limits.RPM <= 0 && limits.TPM <= 0 && limits.Concurrency <= 0 {
+		return nil, nil
+	}
+	key := ProviderScopeKey(providerID)
+	slot := &ProviderSlot{rl: rl, key: key, tpm: limits.TPM}
+
+	// TPM first, and not queueable: a token bucket refills continuously, so a
+	// request parked for one could be admitted and immediately re-refused.
+	if limits.TPM > 0 && promptTokens > 0 {
+		if allowed, retryAfterSeconds, axis := rl.checkTPMOnly(key, limits.TPM, promptTokens); !allowed {
+			return nil, &ProviderRefusal{
+				Axis:       axis,
+				Limit:      limits.TPM,
+				RetryAfter: time.Duration(retryAfterSeconds) * time.Second,
+			}
+		}
+		slot.reserved = promptTokens
+	}
+
+	// RPM and concurrency are both queueable here for the same reason as for a
+	// key: the request waits in this provider's FIFO, up to this provider's own
+	// timeout, rather than being refused the moment a burst arrives.
+	waited, ok := rl.Acquire(ctx, key, limits.RPM, limits.Concurrency, limits.QueueTimeout)
+	if !ok {
+		// The TPM charge was taken before the queue and the attempt never left,
+		// so it is not a spend: hand the whole amount back.
+		slot.Release()
+		return nil, &ProviderRefusal{
+			Axis:       queueScope(limits),
+			Limit:      queueLimit(limits),
+			RetryAfter: time.Duration(queueRetryAfter(limits)) * time.Second,
+		}
+	}
+	if waited > 0 {
+		observ.ObserveRateLimitQueueWaitFor("provider", waited.Seconds())
+	}
+	slot.held = limits.Concurrency > 0
+	return slot, nil
+}
+
+// queueLimit names the configured value a queue timeout was waiting on, so the
+// refusal can report the number the operator actually set.
+func queueLimit(limits Limits) int {
+	if limits.Concurrency > 0 {
+		return limits.Concurrency
+	}
+	return limits.RPM
+}
+
+// Snapshot reports the live admission state of a scope key: how many requests sit
+// in its RPM window and how many hold a concurrency slot right now.
+//
+// It exists for the debug trail a refused provider attempt writes. From the
+// refusal alone, "this endpoint is busy" and "this limit is set absurdly low"
+// look identical; these two numbers are what tell them apart, and a queue wait
+// (which leaves no trace in the window) is why the concurrency count is reported
+// even when RPM is the axis that refused.
+//
+// Stale stamps are excluded rather than counted: the window's own pruning happens
+// on the write path, so a count that trusted the slice would report the peak of
+// every window that ever rolled, which is exactly the number that would make an
+// operator raise a limit that is already generous.
+func (rl *RateLimiter) Snapshot(keyID string) (windowCount, active int) {
+	if rl == nil || keyID == "" {
+		return 0, 0
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	cutoff := time.Now().Add(-rl.window)
+	if w, ok := rl.windows[keyID]; ok {
+		for _, stamp := range w.stamps {
+			if stamp.After(cutoff) {
+				windowCount++
+			}
+		}
+	}
+	if counter, ok := rl.active[keyID]; ok && counter != nil {
+		active = int(atomic.LoadInt32(counter))
+	}
+	return windowCount, active
+}
+
 // checkTPMOnly charges the token bucket and names the refusal when it is full.
 // It is separate from Check so the middleware can run TPM before the queue: a
 // TPM refusal must not park the request first.

@@ -4,17 +4,32 @@ import (
 	"bytes"
 	"crypto/sha1"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 
 	"github.com/google/uuid"
 )
+
+const codebuddySystemPrompt = "You are CodeBuddy Code."
+
+var channelMarkers = []string{
+	"You are Claude Code, Anthropic's official CLI for Claude.",
+	"x-anthropic-billing-header",
+	"Main branch (you will usually use this for PRs):",
+}
+
+var channelMarkerRegex = regexp.MustCompile(`(?i)you are claude code|claude.?code.+official.+cli|anthropic.+official.+cli|anxthxropic.+official.+cli|you are (?:cursor|windsurf|cline|aider|continue|copilot|cody)|cc_entrypoint\s*=\s*(?:cli|vscode|jetbrains|gui)|claude.?code.+issues|give feedback.+claude.?code|OhMyOpenCode`)
+
+var codebuddyRateLimitRegex = regexp.MustCompile(`(?i)超出频率限制|frequency limit|限额`)
 
 // ForwardCodebuddyCN forwards to Tencent CodeBuddy with force-stream
 // and reasoning_summary injection.
@@ -36,53 +51,135 @@ func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 
 	ctx := req.Ctx
 	cfg := req.Config
-	// The intl gateway (codebuddy.ai) added "channel verification": requests
-	// without the X-Conversation-* header family the official IDE sends on
-	// every turn are rejected with HTTP 400 code 11128 ("conversation id
-	// missing") — 9router issue #4892. A/B against the live upstream with the
-	// same credentials and body: family absent -> 11128, family present ->
-	// 200 SSE. codebuddy-cn (copilot.tencent.com) is not gated, so only the
-	// intl BaseURL gets the family. Headers merge into a config copy so the
-	// shared StaticHeaders map is never mutated.
-	if cfg != nil && strings.Contains(cfg.BaseURL, "codebuddy.ai") {
-		merged := make(map[string]string, len(cfg.StaticHeaders)+3)
+	if cfg != nil {
+		merged := make(map[string]string, len(cfg.StaticHeaders)+25)
 		for k, v := range cfg.StaticHeaders {
 			merged[k] = v
 		}
-		for k, v := range codebuddyConversationHeaders(req, body) {
+		delete(merged, "x-requested-with")
+		delete(merged, "x-codebuddy-request")
+
+		for k, v := range codebuddyHeaders(req, cfg, body) {
 			merged[k] = v
 		}
 		cfgCopy := *cfg
 		cfgCopy.StaticHeaders = merged
 		cfg = &cfgCopy
 	}
+
 	// Always forward as stream — CodeBuddy rejects stream=false
 	resp, err := proxy.ForwardOpenAI(ctx, req.Client, cfg, req.APIKey, body, true)
 	if err != nil {
+		var ue *proxy.UpstreamError
+		if errors.As(err, &ue) && isCodebuddyRateLimit(ue.Body) {
+			ue.StatusCode = http.StatusTooManyRequests
+		}
 		return fmt.Errorf("ForwardCodebuddyCN upstream: %w", err)
 	}
 	defer resp.Body.Close()
 
+	forwardUpstreamResponseHeaders(w, resp.Header)
+
 	if req.IsStream {
+		if !isEventStreamResponse(resp.Header) {
+			data, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
+			if rerr != nil {
+				return fmt.Errorf("read codebuddy upstream body: %w", rerr)
+			}
+			if !proxy.LooksLikeSSE(data) {
+				if isCodebuddyRateLimit(data) {
+					return proxy.UpstreamFailure(http.StatusTooManyRequests, "CodeBuddy frequency limit (6004)")
+				}
+				return jsonResponse(req.Ctx, w, bytes.NewReader(data), req.TranslateResp, req.ResponseBuf)
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(data))
+		}
 		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, 0, "codebuddy-cn")
 		defer stallReader.Close() // stops the shutdown watcher + stall timer
 		return execSSEStream(w, stallReader, req)
 	}
-	// Client asked for non-stream, but we sent stream=true upstream, so the
-	// upstream body is OpenAI-chat SSE. Re-aggregate the chunks into a single
-	// JSON chat.completion response (mirrors the JS parseSSEToOpenAIResponse
-	// path). If it isn't SSE (e.g. an upstream error JSON), pass it through.
+
 	data, err := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
 	if err != nil {
 		return fmt.Errorf("read codebuddy response: %w", err)
 	}
 	if converted, ok := sseToOpenAIJSON(data); ok {
 		data = converted
+	} else if isCodebuddyRateLimit(data) {
+		return proxy.UpstreamFailure(http.StatusTooManyRequests, "CodeBuddy frequency limit (6004)")
 	}
 	return jsonResponse(req.Ctx, w, bytes.NewReader(data), req.TranslateResp, req.ResponseBuf)
 }
 
-// transformCodebuddyBody forces stream=true and handles reasoning params.
+func sanitizeChannelMarkers(text string) string {
+	if text == "" {
+		return text
+	}
+	result := text
+	for _, marker := range channelMarkers {
+		if strings.Contains(result, marker) {
+			result = strings.ReplaceAll(result, marker, "[external-client-identity]")
+		}
+	}
+	return channelMarkerRegex.ReplaceAllString(result, "[external-client-identity]")
+}
+
+func extractMessageText(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var parts []string
+		for _, b := range v {
+			if s, ok := b.(string); ok {
+				parts = append(parts, s)
+			} else if bm, ok := b.(map[string]any); ok {
+				if t, ok := bm["text"].(string); ok {
+					parts = append(parts, t)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
+}
+
+func copyMap(m map[string]any) map[string]any {
+	cp := make(map[string]any, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
+func isCodebuddyRateLimit(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	var data struct {
+		Code    int    `json:"code"`
+		Msg     string `json:"msg"`
+		Message string `json:"message"`
+		Error   struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return false
+	}
+	msg := data.Msg
+	if msg == "" {
+		msg = data.Message
+	}
+	if msg == "" {
+		msg = data.Error.Message
+	}
+	return data.Code == 6004 || codebuddyRateLimitRegex.MatchString(msg)
+}
+
+// transformCodebuddyBody forces stream=true, normalizes system prompt and caller
+// instructions, sanitizes external client markers, and handles reasoning params.
 func transformCodebuddyBody(body []byte) ([]byte, error) {
 	var reqMap map[string]any
 	if err := json.Unmarshal(body, &reqMap); err != nil {
@@ -92,62 +189,90 @@ func transformCodebuddyBody(body []byte) ([]byte, error) {
 	// Force stream — CodeBuddy rejects non-stream (HTTP 400, code 11101)
 	reqMap["stream"] = true
 
-	// CodeBuddy rejects plain OpenAI shape (11101 invalid request): needs a
-	// leading system prompt + user content as typed blocks, not a bare string
-	// (upstream codebuddy-intl.js transformRequest parity).
-	var msgs []any
-	if arr, ok := reqMap["messages"].([]any); ok {
-		msgs = arr
+	// Handle reasoning_effort / reasoning_summary
+	if eff, ok := reqMap["reasoning_effort"].(string); ok {
+		switch eff {
+		case "none", "off":
+			delete(reqMap, "reasoning_effort")
+		default:
+			reqMap["reasoning_summary"] = "auto"
+		}
 	}
-	shaped := []any{map[string]any{"role": "system", "content": "You are CodeBuddy Code."}}
-	for _, raw := range msgs {
+
+	var inputMessages []any
+	if arr, ok := reqMap["messages"].([]any); ok {
+		inputMessages = arr
+	}
+
+	systemParts := []string{codebuddySystemPrompt}
+	var otherMessages []any
+
+	for _, raw := range inputMessages {
 		m, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
 		role, _ := m["role"].(string)
 		if role == "system" || role == "developer" {
+			rawText := extractMessageText(m["content"])
+			cleaned := strings.TrimSpace(sanitizeChannelMarkers(rawText))
+			if cleaned != "" && cleaned != codebuddySystemPrompt {
+				systemParts = append(systemParts, cleaned)
+			}
 			continue
 		}
 		if role == "user" {
 			if s, ok := m["content"].(string); ok {
-				cp := map[string]any{}
-				for k, v := range m {
-					cp[k] = v
-				}
+				cp := copyMap(m)
 				cp["content"] = []any{map[string]any{"type": "text", "text": s}}
-				shaped = append(shaped, cp)
+				otherMessages = append(otherMessages, cp)
 				continue
 			}
 		}
-		shaped = append(shaped, m)
-	}
-	reqMap["messages"] = shaped
-
-	// Handle reasoning_effort / reasoning_summary
-	if eff, ok := reqMap["reasoning_effort"].(string); ok {
-		switch eff {
-		case "none", "off":
-			// CodeBuddy gateway has no "none" — just omit
-			delete(reqMap, "reasoning_effort")
-		default:
-			// Client explicitly asked for reasoning — mirror the CLI's
-			// reasoning_summary so CodeBuddy surfaces the model's reasoning.
-			reqMap["reasoning_summary"] = "auto"
+		if role == "assistant" {
+			cp := copyMap(m)
+			switch v := cp["content"].(type) {
+			case string:
+				cp["content"] = sanitizeChannelMarkers(v)
+			case []any:
+				var newBlocks []any
+				for _, b := range v {
+					if bm, ok := b.(map[string]any); ok {
+						if t, ok := bm["text"].(string); ok {
+							cpBlock := copyMap(bm)
+							cpBlock["text"] = sanitizeChannelMarkers(t)
+							newBlocks = append(newBlocks, cpBlock)
+							continue
+						}
+					}
+					newBlocks = append(newBlocks, b)
+				}
+				cp["content"] = newBlocks
+			}
+			otherMessages = append(otherMessages, cp)
+			continue
 		}
+		otherMessages = append(otherMessages, m)
 	}
+
+	leadingSystem := map[string]any{
+		"role":    "system",
+		"content": strings.Join(systemParts, "\n\n"),
+	}
+	messages := make([]any, 0, len(otherMessages)+1)
+	messages = append(messages, leadingSystem)
+	messages = append(messages, otherMessages...)
+	reqMap["messages"] = messages
 
 	return json.Marshal(reqMap)
 }
 
-// codebuddyConversationHeaders builds the X-Conversation-* header family the
-// intl gateway requires (see ForwardCodebuddyCN). Mirrors the official IDE:
-// a conversation id derived stably from the session key (uuid5-shaped, so
-// retries of the same turn and account failovers keep the same conversation),
-// plus fresh UUIDs per request and per message.
-func codebuddyConversationHeaders(req *Request, body []byte) map[string]string {
+func codebuddyHeaders(req *Request, cfg *providers.ProviderConfig, body []byte) map[string]string {
+	reqID := strings.ReplaceAll(uuid.NewString(), "-", "")
+	convReqID := strings.ReplaceAll(uuid.NewString(), "-", "")
+
 	sessionKey := req.SessionID
-	if sessionKey == "" {
+	if sessionKey == "" && req.ConnData != nil {
 		if m, ok := req.ConnData["sessionId"].(string); ok {
 			sessionKey = m
 		}
@@ -157,15 +282,52 @@ func codebuddyConversationHeaders(req *Request, body []byte) map[string]string {
 	}
 	var convID string
 	if sessionKey != "" {
-		convID = stableConversationUUID("codebuddy-intl:" + sessionKey)
+		convID = stableConversationUUID("codebuddy:" + sessionKey)
 	} else {
 		convID = uuid.NewString()
 	}
-	return map[string]string{
-		"X-Conversation-ID":         convID,
-		"X-Conversation-Request-ID": uuid.NewString(),
-		"X-Conversation-Message-ID": uuid.NewString(),
+
+	domain := "www.codebuddy.ai"
+	if req.ConnData != nil {
+		if d, ok := req.ConnData["domain"].(string); ok && d != "" {
+			domain = d
+		}
 	}
+	if domain == "www.codebuddy.ai" && cfg != nil && (strings.Contains(cfg.BaseURL, "tencent.com") || strings.Contains(cfg.BaseURL, "copilot.")) {
+		domain = "copilot.tencent.com"
+	}
+
+	return map[string]string{
+		"Content-Type":                "application/json; charset=utf-8",
+		"User-Agent":                  "CLI/2.108.1 CodeBuddy/2.108.1",
+		"X-Product":                   "SaaS",
+		"X-App":                       "cli",
+		"X-IDE-Type":                  "CLI",
+		"X-IDE-Name":                  "CLI",
+		"X-IDE-Version":               "2.108.1",
+		"X-Private-Data":              "false",
+		"X-Requested-With":            "XMLHttpRequest",
+		"X-CodeBuddy-Request":         "1",
+		"X-Domain":                    domain,
+		"X-Stainless-Runtime":         "node",
+		"X-Stainless-Runtime-Version": "v24.11.1",
+		"X-Stainless-Lang":            "js",
+		"X-Stainless-Arch":            "x64",
+		"X-Stainless-Os":              "Windows",
+		"X-Stainless-Package-Version": "6.25.0",
+		"X-Stainless-Helper-Method":   "stream",
+		"X-Stainless-Retry-Count":     "0",
+		"X-Request-ID":                reqID,
+		"X-Conversation-ID":           convID,
+		"X-Conversation-Request-ID":   convReqID,
+		"X-Conversation-Message-ID":   reqID,
+		"X-Agent-Intent":              "craft",
+		"X-Agent-Purpose":             "conversation",
+	}
+}
+
+func codebuddyConversationHeaders(req *Request, body []byte) map[string]string {
+	return codebuddyHeaders(req, nil, body)
 }
 
 // stableConversationUUID derives an RFC-4122-v5-shaped UUID from key via
@@ -273,7 +435,10 @@ func sseToOpenAIJSON(raw []byte) ([]byte, bool) {
 		if c, ok := delta["content"].(string); ok && c != "" {
 			contentParts = append(contentParts, c)
 		}
-		if r, ok := delta["reasoning_content"].(string); ok && r != "" {
+		// Vendor aliases (`reasoning`, `reasoning_details[]`) count as
+		// reasoning too: without this an alias lane's thinking is silently
+		// dropped before the empty-content rescue below could keep it.
+		if r := reasoningTextFromDeltaMap(delta); r != "" {
 			reasoningParts = append(reasoningParts, r)
 		}
 		if fr, ok := choice["finish_reason"].(string); ok {
@@ -304,21 +469,13 @@ func sseToOpenAIJSON(raw []byte) ([]byte, bool) {
 					if n, ok := fn["name"].(string); ok && n != "" {
 						if existing, _ := fEntry["name"].(string); existing == "" {
 							fEntry["name"] = n
-						} else if existing != n && !strings.Contains(existing, n) {
+						} else {
 							fEntry["name"] = existing + n
 						}
 					}
 					if a, ok := fn["arguments"].(string); ok && a != "" {
 						existing, _ := fEntry["arguments"].(string)
-						if existing == "" {
-							fEntry["arguments"] = a
-						} else if existing != a && !strings.Contains(existing, a) {
-							// Only append if not already present (avoid duplicating done after delta)
-							// For split arguments, delta fragments should be appended
-							if len(a) > 0 && !strings.HasSuffix(existing, a) {
-								fEntry["arguments"] = existing + a
-							}
-						}
+						fEntry["arguments"] = existing + a
 					}
 				}
 			}

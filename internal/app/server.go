@@ -15,8 +15,11 @@ import (
 
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
+	"9router/proxy/internal/schedule"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/updater"
 )
@@ -40,6 +43,17 @@ type ServerParams struct {
 	Repo      *db.Repo
 	Handler   http.Handler
 	CLIParams CLIParams
+	// ChatHandler is the engine's chat handler. The auto-ping scheduler sends
+	// its pings through it, so a ping uses the same credential resolution and
+	// the same provider executors as real traffic. It is optional: a server
+	// built without one (the tests) simply runs no ping loop.
+	//
+	// It is the SAME instance the routes are mounted on — the one
+	// handlers.SetupServerRouter returns — not a second one built here. A second
+	// chat handler is a second PersistentStore over the same SQLite file with
+	// its own in-memory LRU, so the dashboard would report zero entries while
+	// the engine served hits.
+	ChatHandler *chat.ChatHandler `optional:"true"`
 }
 
 // Server timeouts are fixed rather than configurable on purpose: the values
@@ -96,6 +110,13 @@ func ProvideServer(p ServerParams) *http.Server {
 			providers.StartBackgroundCatalogSync(shutdown.Context(), nil, catalogPath)
 			oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
 			db.StartRetentionLoop(shutdown.Context(), p.Repo, db.DefaultRequestDetailRetention)
+			// The Gemini Web session cookie is renewed by the site every few
+			// minutes, and the renewed value is what keeps a signed-in
+			// account reaching the models it pays for. Without this loop the
+			// credential has to be pasted again every few minutes.
+			executor.StartGeminiWebRotation(shutdown.Context(), p.Repo)
+			startAutoPingScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
+			startModelHealthScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
 
 			log.Printf("9router-go Proxy (%s) starting on port %d", updater.CurrentVersion, p.Config.Port)
 
@@ -135,4 +156,35 @@ func ProvideServer(p ServerParams) *http.Server {
 	})
 
 	return server
+}
+
+// startAutoPingScheduler starts the quota auto-ping loop.
+//
+// The loop ticks once a minute and pings the connections whose anchored slot
+// has come due, so a provider's 5h window starts on time instead of at the
+// first real request. Upstream runs the same loop
+// (src/shared/services/quotaAutoPing.js:318-322, started from
+// initializeApp.js:112).
+//
+// The configuration is read from the settings row on EVERY tick, never
+// cached, so a schedule saved in the dashboard takes effect on the next tick
+// without a restart.
+//
+// The loop is a no-op without a chat handler or a repository: there is
+// nothing to ping without a connection to ping. It is bound to the shutdown
+// context, so it stops with the other background loops.
+func startAutoPingScheduler(ctx context.Context, repo *db.Repo, chatH *chat.ChatHandler) {
+	if repo == nil || chatH == nil {
+		return
+	}
+
+	sched := schedule.NewScheduler(
+		schedule.ConfigSourceFromSettings(func() (map[string]any, error) {
+			return repo.GetSettingsRaw()
+		}),
+		schedule.PingFuncFromChat(chatH),
+	)
+
+	go sched.Run(ctx)
+	log.Println("[autoping] scheduler started")
 }

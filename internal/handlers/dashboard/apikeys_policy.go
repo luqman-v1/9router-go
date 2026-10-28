@@ -61,6 +61,10 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		// which is what the dashboard's edit dialog sends when the operator
 		// blanks the field.
 		Name *string `json:"name"`
+		// Model access, in the shape the Node dashboard sends: an object, not
+		// the flat `models` list. Omitted leaves the stored allowlist alone;
+		// present is validated and written whole (see apikeys_access.go).
+		Access *keyAccessInput `json:"access"`
 	}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -151,6 +155,18 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 			}
 		}
 	}
+	// Access is validated before the first write like every other field: the
+	// handler writes the governance columns unconditionally, so a body rejected
+	// here must not have applied the rate limits already.
+	var accessPatterns []string
+	if req.Access != nil {
+		patterns, err := validateKeyAccess(req.Access)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		accessPatterns = patterns
+	}
 	if err := h.Repo.SetApiKeyRateLimit(id, rpm, tpm, conc); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -179,6 +195,14 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 	}
 	if req.PlanID != nil {
 		if err := h.Repo.SetApiKeyPlan(id, planID); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	// Access was validated above with every other field and is written here, so
+	// a refused body leaves the allowlist exactly as it was.
+	if req.Access != nil {
+		if err := h.Repo.SetAllowedModels(id, accessPatterns); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

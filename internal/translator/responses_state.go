@@ -46,11 +46,17 @@ type ResponsesOutputDetails struct {
 // never auto-compacts, so the session grows until the upstream context limit
 // rejects it.
 type ResponsesUsage struct {
-	InputTokens         int                     `json:"input_tokens"`
-	OutputTokens        int                     `json:"output_tokens"`
-	TotalTokens         int                     `json:"total_tokens"`
-	InputTokensDetails  *ResponsesInputDetails  `json:"input_tokens_details,omitempty"`
-	OutputTokensDetails *ResponsesOutputDetails `json:"output_tokens_details,omitempty"`
+	InputTokens             int                     `json:"input_tokens"`
+	OutputTokens            int                     `json:"output_tokens"`
+	TotalTokens             int                     `json:"total_tokens"`
+	PromptTokens            int                     `json:"prompt_tokens,omitempty"`
+	CompletionTokens        int                     `json:"completion_tokens,omitempty"`
+	InputTokensDetails      *ResponsesInputDetails  `json:"input_tokens_details,omitempty"`
+	PromptTokensDetails     *ResponsesInputDetails  `json:"prompt_tokens_details,omitempty"`
+	OutputTokensDetails     *ResponsesOutputDetails `json:"output_tokens_details,omitempty"`
+	CompletionTokensDetails *ResponsesOutputDetails `json:"completion_tokens_details,omitempty"`
+	CachedTokens            int                     `json:"cached_tokens,omitempty"`
+	CacheReadInputTokens    int                     `json:"cache_read_input_tokens,omitempty"`
 }
 
 // ResponsesState carries the per-stream translation state for one upstream
@@ -99,7 +105,8 @@ type ResponsesState struct {
 
 	CustomToolNames map[string]bool
 
-	Usage *ResponsesUsage
+	Usage    *ResponsesUsage
+	RawUsage *OpenAIUsage
 
 	CompletedOutputItems map[int]map[string]any
 }
@@ -141,6 +148,21 @@ func (s *ResponsesState) emit(out *[]ResponsesEvent, eventType string, data map[
 // FormatResponsesSSE renders one event as an SSE frame.
 func FormatResponsesSSE(ev ResponsesEvent) string {
 	return formatSSE(ev.Data)
+}
+
+// FormatResponsesFailedSSE formats a terminal response.failed event for streaming
+// Responses clients when an unrecoverable failure (such as context_length_exceeded)
+// occurs before chunks or completion.
+func FormatResponsesFailedSSE(errData map[string]any) string {
+	data := map[string]any{
+		"type": "response.failed",
+		"response": map[string]any{
+			"id":     fmt.Sprintf("resp_%d", time.Now().UnixMilli()),
+			"status": "failed",
+			"error":  errData,
+		},
+	}
+	return formatSSE(data)
 }
 
 // SetCustomToolNames marks which function names are freeform custom tools, so

@@ -48,3 +48,27 @@ func TestGetPricingForModel_FreeNamespaceOrder(t *testing.T) {
 		t.Errorf("bare id = %+v (found %v), want the paid rate", paid, found)
 	}
 }
+
+func TestNousFreePricing(t *testing.T) {
+	models := []string{
+		"meituan/longcat-2.0:free",
+		"meituan/longcat-2.5-preview:free",
+		"stepfun/step-5-preview:free",
+		"upstage/solar-mini4:free",
+		"stepfun/step-3.7-flash:free",
+		"poolside/laguna-s-2.1:free",
+		"poolside/laguna-xs-2.1:free",
+		"stealth/missingno",
+	}
+	for _, m := range models {
+		t.Run(m, func(t *testing.T) {
+			p, found := GetPricingForModel("nous", m)
+			if !found {
+				t.Fatalf("expected pricing found for %q", m)
+			}
+			if p != zeroPricing {
+				t.Errorf("expected zero pricing for %q, got %+v", m, p)
+			}
+		})
+	}
+}

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { Layers } from 'lucide-svelte'
-  import { api, type Combo, type ProviderConnection, type ProviderNode } from '../../api/client'
+  import { Layers, Search, X } from 'lucide-svelte'
+  import { api, type Combo, type ProviderConnection, type ProviderNode, type SmartRule } from '../../api/client'
   import {
     clearJudgeModel,
     comboStrategyOptions,
@@ -10,9 +10,12 @@
     resolveComboStrategy,
     updateComboStrategy,
     updateJudgeModel,
+    updateRouterModel,
+    updateSmartPolicy,
     type CapacityAdapterState,
     type ComboStrategyInfo
   } from './types'
+  import SmartPolicyModal from './SmartPolicyModal.svelte'
   import Button from '../../lib/ui/Button.svelte'
   import Card from '../../lib/ui/Card.svelte'
   import ComboCard from './ComboCard.svelte'
@@ -68,7 +71,8 @@
 
   // Model Picker Modal state
   let showModelPicker = $state(false)
-  let modelPickerTarget = $state<'combo' | 'vision' | 'audio' | 'judge'>('combo')
+  let modelPickerTarget = $state<'combo' | 'vision' | 'audio' | 'judge' | 'router'>('combo')
+  let policyCombo = $state<Combo | null>(null)
 
   // Confirm Delete Modal state (upstream confirmState parity). Carries the ids
   // to remove.
@@ -81,6 +85,21 @@
   // not tracked).
   let selectedIds = $state<Set<string>>(new Set())
 
+  // Upstream 9b4ea9eb: the list takes a search box filtering on the combo name
+  // and its member model ids, case-insensitively, so both "deepseek" and
+  // "deepseek-v4.1-flash" find the right rows.
+  let searchQuery = $state('')
+  let normalizedQuery = $derived(searchQuery.trim().toLowerCase())
+  let filteredCombos = $derived(
+    normalizedQuery
+      ? llmCombos.filter(
+          (c) =>
+            (c.name || '').toLowerCase().includes(normalizedQuery) ||
+            getComboModels(c).some((m) => m.toLowerCase().includes(normalizedQuery))
+        )
+      : llmCombos
+  )
+
   function toggleSelect(combo: Combo) {
     const next = new Set(selectedIds)
     if (next.has(combo.id)) next.delete(combo.id)
@@ -89,10 +108,14 @@
   }
 
   let selectedCombos = $derived(llmCombos.filter((c) => selectedIds.has(c.id)))
-  let allSelected = $derived(llmCombos.length > 0 && selectedCombos.length === llmCombos.length)
+  // Select-all follows the search: with a query active it must only reach the
+  // rows on screen, otherwise a bulk Delete would take out hidden combos.
+  let allSelected = $derived(
+    filteredCombos.length > 0 && filteredCombos.every((c) => selectedIds.has(c.id))
+  )
 
   function toggleSelectAll() {
-    selectedIds = allSelected ? new Set() : new Set(llmCombos.map((c) => c.id))
+    selectedIds = allSelected ? new Set() : new Set(filteredCombos.map((c) => c.id))
   }
 
   function clearSelection() {
@@ -158,6 +181,21 @@
       console.error('Failed to update combo strategy:', e)
     }
   }
+  // Respect stored order lives beside the strategy dropdown because it
+  // modifies how that strategy behaves: the rotation is skipped and the
+  // stored list is walked as-is. The capability reorder still runs, so a
+  // request that needs vision floats a capable model to the front.
+  async function handleToggleStoredOrder(combo: Combo, respect: boolean) {
+    const updated = { ...comboStrategies }
+    updated[combo.name] = { ...(updated[combo.name] || {}), respectStoredOrder: respect }
+    comboStrategies = updated
+    try {
+      await api.patchSettings({ comboStrategies: updated })
+      onRefresh()
+    } catch (e) {
+      console.error('Failed to update stored-order flag:', e)
+    }
+  }
 
   async function handleSetJudge(comboName: string, judgeModel: string) {
     const updated = updateJudgeModel(comboStrategies, comboName, judgeModel)
@@ -176,6 +214,29 @@
       await api.patchSettings({ comboStrategies: updated })
     } catch (e) {
       console.error('Failed to clear judge:', e)
+    }
+  }
+
+  async function handleSetRouterModel(comboName: string, routerModel: string) {
+    const updated = updateRouterModel(comboStrategies, comboName, routerModel)
+    comboStrategies = updated
+    try {
+      await api.patchSettings({ comboStrategies: updated })
+    } catch (e) {
+      console.error('Failed to set smart router model:', e)
+    }
+  }
+
+  async function handleSaveSmartPolicy(
+    comboName: string,
+    cfg: { smartPolicy: string; sessionSticky: boolean; confidenceThreshold: number }
+  ) {
+    const updated = updateSmartPolicy(comboStrategies, comboName, cfg)
+    comboStrategies = updated
+    try {
+      await api.patchSettings({ comboStrategies: updated })
+    } catch (e) {
+      console.error('Failed to save smart policy:', e)
     }
   }
 
@@ -206,14 +267,14 @@
     comboSaveError = ''
   }
 
-  async function handleSaveCombo(name: string, models: string[]) {
+  async function handleSaveCombo(name: string, models: string[], matchRules: SmartRule[]) {
     isSavingCombo = true
     comboSaveError = ''
     try {
       if (editingCombo) {
-        await api.updateCombo(editingCombo.id, { name, models })
+        await api.updateCombo(editingCombo.id, { name, models, matchRules })
       } else {
-        await api.createCombo({ name, models, strategy: 'fallback' })
+        await api.createCombo({ name, models, strategy: 'fallback', matchRules })
       }
       closeModal()
       onRefresh()
@@ -227,7 +288,29 @@
     }
   }
 
-  function openModelPicker(target: 'combo' | 'vision' | 'audio' | 'judge') {
+  // Applying the rules on demand covers what no model write announces: a
+  // catalogue sync that published new models, or a restore.
+  let isReconciling = $state(false)
+  let reconcileNote = $state('')
+  async function handleReconcile() {
+    isReconciling = true
+    reconcileNote = ''
+    try {
+      const res = await api.reconcileCombos()
+      const parts: string[] = [`${res.reconciled} combo${res.reconciled === 1 ? '' : 's'} updated`]
+      if (res.added?.length) parts.push(`+${res.added.length} added`)
+      if (res.removed?.length) parts.push(`-${res.removed.length} removed`)
+      reconcileNote = parts.join(' · ')
+      onRefresh()
+    } catch (e) {
+      reconcileNote = e instanceof Error ? e.message : String(e)
+      console.error('Failed to reconcile combos:', e)
+    } finally {
+      isReconciling = false
+    }
+  }
+
+  function openModelPicker(target: 'combo' | 'vision' | 'audio' | 'judge' | 'router') {
     modelPickerTarget = target
     showModelPicker = true
   }
@@ -239,6 +322,10 @@
     if (modelPickerTarget === 'judge') {
       const judge = editingCombo?.name ? comboStrategies[editingCombo.name]?.judgeModel : undefined
       return judge ? [judge] : []
+    }
+    if (modelPickerTarget === 'router') {
+      const router = editingCombo?.name ? comboStrategies[editingCombo.name]?.routerModel : undefined
+      return router ? [router] : []
     }
     return []
   })
@@ -259,6 +346,9 @@
     } else if (modelPickerTarget === 'judge' && editingCombo) {
       handleSetJudge(editingCombo.name, val)
       showModelPicker = false
+    } else if (modelPickerTarget === 'router' && editingCombo) {
+      handleSetRouterModel(editingCombo.name, val)
+      showModelPicker = false
     }
   }
 
@@ -273,6 +363,9 @@
       saveCapacityAdapter({ ...capacityAdapter, audioInput: { ...capacityAdapter.audioInput, models: cur.filter((m) => m !== val) } })
     } else if (modelPickerTarget === 'judge' && editingCombo) {
       clearJudge(editingCombo.name)
+      showModelPicker = false
+    } else if (modelPickerTarget === 'router' && editingCombo) {
+      handleSetRouterModel(editingCombo.name, '')
       showModelPicker = false
     }
   }
@@ -340,6 +433,34 @@
 
 <div class="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
   <CombosHeader onCreateClick={openCreateModal} />
+  <div class="flex flex-wrap items-center justify-end gap-2">
+    <div class="relative w-full sm:w-64">
+      <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
+      <input
+        type="text"
+        bind:value={searchQuery}
+        placeholder="Search combos…"
+        aria-label="Search combos"
+        class="w-full rounded-[10px] border border-transparent bg-surface-2 py-2 pl-9 pr-9 text-sm text-text-main transition-all duration-150 ease-out placeholder-text-muted/70 focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+      />
+      {#if searchQuery}
+        <button
+          type="button"
+          onclick={() => (searchQuery = '')}
+          aria-label="Clear search"
+          class="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-text-muted transition-colors hover:text-text-main"
+        >
+          <X class="h-4 w-4" />
+        </button>
+      {/if}
+    </div>
+    <Button onclick={handleReconcile} variant="ghost" size="sm" loading={isReconciling}>
+      Reconcile rules
+    </Button>
+    {#if reconcileNote}
+      <span class="text-[11px] text-text-muted">{reconcileNote}</span>
+    {/if}
+  </div>
 
   <!-- Upstream selection bar: the count is on the checkbox, and the bulk
        actions only exist while something is selected, so the destructive
@@ -356,44 +477,51 @@
           class="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary"
         />
         <span>
-          {selectedCombos.length > 0 ? `${selectedCombos.length} selected` : `Select all (${llmCombos.length})`}
+          {selectedCombos.length > 0 ? `${selectedCombos.length} selected` : `Select all (${filteredCombos.length})`}
         </span>
       </label>
 
-      {#if selectedCombos.length > 0}
+      {#if selectedCombos.length > 0 || normalizedQuery}
         <div class="flex min-w-0 flex-wrap items-center gap-2">
-          <div class="w-full min-w-[160px] sm:w-[200px]">
-            <select
-              bind:value={bulkStrategy}
-              class="w-full bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 text-xs text-text-main focus:outline-none focus:ring-brand-500 focus:border-brand-500 cursor-pointer"
+          {#if normalizedQuery}
+            <span class="text-xs text-text-muted">
+              {filteredCombos.length} of {llmCombos.length} shown
+            </span>
+          {/if}
+          {#if selectedCombos.length > 0}
+            <div class="w-full min-w-[160px] sm:w-[200px]">
+              <select
+                bind:value={bulkStrategy}
+                class="w-full bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 text-xs text-text-main focus:outline-none focus:ring-brand-500 focus:border-brand-500 cursor-pointer"
+              >
+                <option value="" disabled>Set strategy…</option>
+                {#each comboStrategyOptions(globalComboStrategy) as strategy (strategy.value)}
+                  <option value={strategy.value}>{strategy.label}</option>
+                {/each}
+              </select>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onclick={handleApplyBulkStrategy}
+              disabled={!bulkStrategy}
+              class="whitespace-nowrap"
             >
-              <option value="" disabled>Set strategy…</option>
-              {#each comboStrategyOptions(globalComboStrategy) as strategy (strategy.value)}
-                <option value={strategy.value}>{strategy.label}</option>
-              {/each}
-            </select>
-          </div>
-          <Button
-            size="sm"
-            variant="outline"
-            onclick={handleApplyBulkStrategy}
-            disabled={!bulkStrategy}
-            class="whitespace-nowrap"
-          >
-            Apply Strategy
-          </Button>
-          <Button
-            icon="delete"
-            size="sm"
-            variant="danger"
-            onclick={handleDeleteSelected}
-            class="whitespace-nowrap"
-          >
-            Delete ({selectedCombos.length})
-          </Button>
-          <Button size="sm" variant="ghost" onclick={clearSelection} class="whitespace-nowrap">
-            Clear
-          </Button>
+              Apply Strategy
+            </Button>
+            <Button
+              icon="delete"
+              size="sm"
+              variant="danger"
+              onclick={handleDeleteSelected}
+              class="whitespace-nowrap"
+            >
+              Delete ({selectedCombos.length})
+            </Button>
+            <Button size="sm" variant="ghost" onclick={clearSelection} class="whitespace-nowrap">
+              Clear
+            </Button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -414,24 +542,39 @@
       </div>
     </Card>
   {:else}
-    <div class="flex flex-col gap-4">
-      {#each llmCombos as combo (combo.id)}
-        <ComboCard
-          {combo}
-          strategyInfo={comboStrategies[combo.name]}
-          globalStrategy={globalComboStrategy}
-          {copiedId}
-          onSetStrategy={handleSetStrategy}
-          onOpenJudgePicker={(c) => { editingCombo = c; openModelPicker('judge') }}
-          onClearJudge={clearJudge}
-          onCopy={copyName}
-          onEdit={openEditModal}
-          onDelete={(c) => (confirmState = { name: c.name, ids: [c.id] })}
-          isSelected={selectedIds.has(combo.id)}
-          onToggleSelect={toggleSelect}
-        />
-      {/each}
-    </div>
+    {#if filteredCombos.length === 0}
+      <Card>
+        <div class="text-center py-10">
+          <p class="text-text-main font-medium mb-1">No combos match “{searchQuery.trim()}”</p>
+          <p class="text-sm text-text-muted mb-4">
+            Try a shorter query, or clear the search to see all {llmCombos.length} combos.
+          </p>
+          <Button variant="secondary" onclick={() => (searchQuery = '')}>Clear search</Button>
+        </div>
+      </Card>
+    {:else}
+      <div class="flex flex-col gap-4">
+        {#each filteredCombos as combo (combo.id)}
+          <ComboCard
+            {combo}
+            strategyInfo={comboStrategies[combo.name]}
+            globalStrategy={globalComboStrategy}
+            {copiedId}
+            onSetStrategy={handleSetStrategy}
+            onToggleStoredOrder={handleToggleStoredOrder}
+            onOpenJudgePicker={(c) => { editingCombo = c; openModelPicker('judge') }}
+            onClearJudge={clearJudge}
+            onOpenRouterPicker={(c) => { editingCombo = c; openModelPicker('router') }}
+            onOpenPolicyModal={(c) => (policyCombo = c)}
+            onCopy={copyName}
+            onEdit={openEditModal}
+            onDelete={(c) => (confirmState = { name: c.name, ids: [c.id] })}
+            isSelected={selectedIds.has(combo.id)}
+            onToggleSelect={toggleSelect}
+          />
+        {/each}
+      </div>
+    {/if}
   {/if}
 
   <!-- Vision / Audio Adapter Section -->
@@ -469,6 +612,16 @@
   onSelect={handleSelectModel}
   onDeselect={handleDeselectModel}
   onClose={() => (showModelPicker = false)}
+/>
+
+<!-- Smart Router policy editor (upstream SmartPolicyModal parity) -->
+<SmartPolicyModal
+  isOpen={!!policyCombo}
+  onClose={() => (policyCombo = null)}
+  comboName={policyCombo?.name || ''}
+  currentPolicy={policyCombo ? comboStrategies[policyCombo.name]?.smartPolicy : undefined}
+  currentThreshold={policyCombo ? comboStrategies[policyCombo.name]?.confidenceThreshold : undefined}
+  onSave={(cfg) => policyCombo && handleSaveSmartPolicy(policyCombo.name, cfg)}
 />
 
 <!-- Confirm Delete Modal (upstream ConfirmModal parity) -->

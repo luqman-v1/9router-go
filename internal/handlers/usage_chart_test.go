@@ -91,7 +91,8 @@ func setupChartTestDB(t *testing.T) *db.Repo {
 	}
 	repo := db.NewRepo(conn)
 	t.Cleanup(func() { conn.Close() })
-	if err := repo.UpsertUsageDaily("2026-10-16", `{"promptTokens":1000,"completionTokens":500,"cost":1.5}`); err != nil {
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	if err := repo.UpsertUsageDaily(yesterday, `{"promptTokens":1000,"completionTokens":500,"cost":1.5}`); err != nil {
 		t.Fatalf("seed usageDaily: %v", err)
 	}
 	if err := repo.InsertUsageHistory("openai", "gpt-5", "conn-1", "sk-1", "/v1/chat/completions",
@@ -168,7 +169,7 @@ func TestHandleUsageChart(t *testing.T) {
 
 func TestDailyChartBucketsAll(t *testing.T) {
 	repo := setupChartTestDB(t)
-	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	buckets := dailyChartBuckets(repo, now, 0)
 	if len(buckets) < 2 {
 		t.Fatalf("all-period must cover both seeded days, got %d buckets", len(buckets))

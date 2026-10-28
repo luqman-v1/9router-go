@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	json "encoding/json/v2"
 	"fmt"
@@ -158,6 +159,36 @@ func (r *Repo) ClearConnectionRateLimit(connID string) error {
 	return nil
 }
 
+// ClearConnectionModelLocks drops every per-model lock a connection carries,
+// leaving the rest of its data alone. A renewed credential makes the old
+// locks moot: without this an account that was parked for a ban or a mute
+// stays parked even after the operator re-authenticates.
+func (r *Repo) ClearConnectionModelLocks(ctx context.Context, connID string) error {
+	var rawData string
+	if err := r.db.QueryRowContext(ctx, "SELECT data FROM providerConnections WHERE id = ?", connID).Scan(&rawData); err != nil {
+		return fmt.Errorf("clear connection model locks %s: %w", connID, err)
+	}
+	var dataMap map[string]any
+	if err := json.Unmarshal([]byte(rawData), &dataMap); err != nil {
+		return fmt.Errorf("clear connection model locks %s: %w", connID, err)
+	}
+	changed := false
+	for k := range dataMap {
+		if strings.HasPrefix(k, modelLockPrefix) && dataMap[k] != nil {
+			dataMap[k] = nil
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	encoded, err := json.Marshal(dataMap)
+	if err != nil {
+		return fmt.Errorf("clear connection model locks %s: %w", connID, err)
+	}
+	return r.UpdateConnectionData(connID, string(encoded))
+}
+
 // IsConnectionModelLocked checks whether the given connection has an active
 // modelLock_<model> field in its data JSON blob. Returns true when the
 // timestamp is in the future.
@@ -298,69 +329,77 @@ func (r *Repo) ResetProviderHealth(provider, model string) error {
 	return r.clearSpecificModelLock(provider, model)
 }
 
+// listConnectionData drains a providerConnections id/data query and closes
+// its rows before returning. The clear*ModelLocks helpers write per row
+// (clearConnectionModelLocks / Exec), and a nested pool checkout while the
+// SELECT rows are still open can deadlock the pool the same way
+// GetProviderConnections did: the writer waits for a connection the open
+// rows will never release. Collect first, then write.
+func (r *Repo) listConnectionData(query string, args ...any) ([]struct{ id, data string }, error) {
+	rows, err := r.db.QueryContext(context.Background(), query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []struct{ id, data string }
+	for rows.Next() {
+		var row struct{ id, data string }
+		if err := rows.Scan(&row.id, &row.data); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (r *Repo) clearAllModelLocks() error {
-	rows, err := r.db.Query("SELECT id, data FROM providerConnections")
+	pairs, err := r.listConnectionData("SELECT id, data FROM providerConnections")
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var id, data string
-		if err := rows.Scan(&id, &data); err != nil {
-			return err
-		}
-		if err := r.clearConnectionModelLocks(id, data); err != nil {
+	for _, p := range pairs {
+		if err := r.clearConnectionModelLocks(p.id, p.data); err != nil {
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func (r *Repo) clearProviderModelLocks(provider string) error {
-	rows, err := r.db.Query("SELECT id, data FROM providerConnections WHERE provider = ?", provider)
+	pairs, err := r.listConnectionData("SELECT id, data FROM providerConnections WHERE provider = ?", provider)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var id, data string
-		if err := rows.Scan(&id, &data); err != nil {
-			return err
-		}
-		if err := r.clearConnectionModelLocks(id, data); err != nil {
+	for _, p := range pairs {
+		if err := r.clearConnectionModelLocks(p.id, p.data); err != nil {
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func (r *Repo) clearSpecificModelLock(provider, model string) error {
 	key := "$." + modelLockPrefix + model
-	rows, err := r.db.Query("SELECT id, data FROM providerConnections WHERE provider = ?", provider)
+	pairs, err := r.listConnectionData("SELECT id, data FROM providerConnections WHERE provider = ?", provider)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var id, data string
-		if err := rows.Scan(&id, &data); err != nil {
-			return err
-		}
-		locked := checkConnectionModelLock(data, model)
+	for _, p := range pairs {
+		locked := checkConnectionModelLock(p.data, model)
 		if !locked {
 			continue
 		}
 		if _, err := r.db.Exec(
 			`UPDATE providerConnections SET data = json_set(data, ?, json('null'), '$.backoffLevel', 0), updatedAt = datetime('now') WHERE id = ?`,
-			key, id,
+			key, p.id,
 		); err != nil {
-			return fmt.Errorf("clear lock %s on %s: %w", key, id, err)
+			return fmt.Errorf("clear lock %s on %s: %w", key, p.id, err)
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func (r *Repo) clearConnectionModelLocks(id, data string) error {

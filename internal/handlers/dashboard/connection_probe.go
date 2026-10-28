@@ -38,16 +38,16 @@ const (
 	// connectionProxyProbeTimeout mirrors the proxy pool test timeout.
 	connectionProxyProbeTimeout = 5 * time.Second
 
-	codexCLIVersion               = providers.CodexCLIVersion
-	grokCLIProbeURL               = "https://cli-chat-proxy.grok.com/v1/user"
-	grokCLIProbeUA                = providers.GrokCLIPagerUserAgent
-	kimchiProbeURL                = "https://api.cast.ai/v1/llm/openai/supported-providers"
-	kilocodeProbeURL              = "https://api.kilo.ai/api/profile"
-	clineProbeURL                 = "https://api.cline.bot/api/v1/users/me"
-	googleUserinfoURL             = "https://www.googleapis.com/oauth2/v1/userinfo?alt=json"
-	codexProbeURL                 = "https://chatgpt.com/backend-api/codex/responses"
-	cloudCodeAssistProbeURL       = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
-	cloudCodeAssistProbeBody      = `{"metadata":{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}`
+	codexCLIVersion          = providers.CodexCLIVersion
+	grokCLIProbeURL          = "https://cli-chat-proxy.grok.com/v1/user"
+	grokCLIProbeUA           = providers.GrokCLIPagerUserAgent
+	kimchiProbeURL           = "https://api.cast.ai/v1/llm/openai/supported-providers"
+	kilocodeProbeURL         = "https://api.kilo.ai/api/profile"
+	clineProbeURL            = "https://api.cline.bot/api/v1/users/me"
+	googleUserinfoURL        = "https://www.googleapis.com/oauth2/v1/userinfo?alt=json"
+	codexProbeURL            = "https://chatgpt.com/backend-api/codex/responses"
+	cloudCodeAssistProbeURL  = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+	cloudCodeAssistProbeBody = `{"metadata":{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}`
 	// Meta's Model API lists its own catalogue for the credential that is
 	// being tested, which is the same call the dashboard's live-model import
 	// makes — a 401/403 is the only invalid answer. This is the Muse Code
@@ -198,11 +198,11 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 		},
 		method: http.MethodGet, noAuth: true,
 	},
-	"kiro":           {checkExpiry: true, refreshable: true},
-	"qoder":          {url: "https://openapi.qoder.sh/api/v1/userinfo", method: http.MethodGet, authHeader: "Authorization", authPrefix: "Bearer "},
-	"qoder-cn":       {url: "https://openapi.qoder.com.cn/api/v1/userinfo", method: http.MethodGet, authHeader: "Authorization", authPrefix: "Bearer "},
-	"kimi":           {checkExpiry: true, refreshable: true},
-	"kimi-coding":    {checkExpiry: true, refreshable: true},
+	"kiro":        {checkExpiry: true, refreshable: true},
+	"qoder":       {url: "https://openapi.qoder.sh/api/v1/userinfo", method: http.MethodGet, authHeader: "Authorization", authPrefix: "Bearer "},
+	"qoder-cn":    {url: "https://openapi.qoder.com.cn/api/v1/userinfo", method: http.MethodGet, authHeader: "Authorization", authPrefix: "Bearer "},
+	"kimi":        {checkExpiry: true, refreshable: true},
+	"kimi-coding": {checkExpiry: true, refreshable: true},
 	// MiniMax Code publishes its own catalogue on the agent gateway, so the
 	// probe proves the credential the same way the quota read does — and the
 	// token is refreshable, unlike the API-key MiniMax providers.
@@ -220,6 +220,15 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 			"x-api-version": "1.0.0",
 		},
 	},
+	"nous": {
+		url:          providers.NousChatCompletionsURL,
+		method:       http.MethodPost,
+		authHeader:   "Authorization",
+		authPrefix:   "Bearer ",
+		extraHeaders: map[string]string{"Content-Type": "application/json"},
+		body:         `{"model":"` + providers.NousValidationModel + `","messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}`,
+		refreshable:  true,
+	},
 	"cursor":         {tokenExists: true},
 	"kilocode":       {url: kilocodeProbeURL, method: http.MethodGet, authHeader: "Authorization", authPrefix: "Bearer "},
 	"cline":          {refreshable: true},
@@ -228,7 +237,8 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 	"gitlab":         {url: "https://gitlab.com/api/v4/user", method: http.MethodGet, authHeader: "Authorization", authPrefix: "Bearer "},
 	"codebuddy-cn":   {tokenExists: true},
 	"codebuddy-intl": {tokenExists: true},
-	"zed":            {tokenExists: true},
+	// The stored credential only authorizes the account API; model access
+	// needs a minted LLM token, so the test walks both layers (probeZed).
 	"windsurf":       {tokenExists: true},
 	"trae":           {tokenExists: true},
 	"devin":          {tokenExists: true},
@@ -593,6 +603,9 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 		return probeOutcome{valid: true}
 	}
 	accessToken := data.AccessToken
+	if provider == "nous" && data.APIKey != "" {
+		accessToken = data.APIKey
+	}
 	refreshed := false
 	var tokens *oauth.TokenResult
 
@@ -603,6 +616,9 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 			return probeOutcome{message: "Token expired and refresh failed"}
 		}
 		accessToken = tokens.AccessToken
+		if provider == "nous" && tokens.APIKey != "" {
+			accessToken = tokens.APIKey
+		}
 		refreshed = true
 	}
 
@@ -636,6 +652,8 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 		return probeOutcome{message: attempt.message, refreshed: refreshed, tokens: tokens}
 	case "cline", "clinepass":
 		return h.probeCline(ctx, data, client, accessToken, refreshed, tokens)
+	case "zed":
+		return h.probeZed(ctx, data, client)
 	case "freebuff":
 		return h.probeFreebuff(ctx, conn, data, client)
 	}
@@ -652,7 +670,11 @@ func (h *DashboardHandler) probeOAuthEndpoint(ctx context.Context, provider stri
 	if attempt.status == http.StatusUnauthorized && cfg.refreshable && !refreshed && data.RefreshToken != "" {
 		retryTokens := h.refreshConnectionToken(ctx, provider, data, client)
 		if retryTokens != nil {
-			retry := runOAuthProbe(ctx, cfg, client, retryTokens.AccessToken, data)
+			retryToken := retryTokens.AccessToken
+			if provider == "nous" && retryTokens.APIKey != "" {
+				retryToken = retryTokens.APIKey
+			}
+			retry := runOAuthProbe(ctx, cfg, client, retryToken, data)
 			if retry.valid {
 				return probeOutcome{valid: true, message: retry.message, refreshed: true, tokens: retryTokens}
 			}
@@ -972,6 +994,9 @@ func (h *DashboardHandler) persistProbeResult(conn *models.ProviderConnection, r
 		}
 		if out.tokens.ProjectID != "" {
 			raw["projectId"] = out.tokens.ProjectID
+		}
+		if out.tokens.APIKey != "" {
+			raw["apiKey"] = out.tokens.APIKey
 		}
 		if out.tokens.ExpiresIn > 0 {
 			raw["expiresIn"] = out.tokens.ExpiresIn

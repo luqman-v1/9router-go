@@ -13,14 +13,14 @@ func RegisterAll() {
 	Register("deepseek", func() Executor { return ForwardOpenAI })
 	Register("sumopod", func() Executor { return ForwardOpenAI })
 	Register("groq", func() Executor { return ForwardOpenAI })
-	Register("nvidia", func() Executor { return ForwardOpenAI })
+	Register("nvidia", func() Executor { return ForwardNvidia })
 	Register("openrouter", func() Executor { return ForwardOpenAI })
 	Register("cerebras", func() Executor { return ForwardOpenAI })
 	Register("together", func() Executor { return ForwardOpenAI })
 	Register("fireworks", func() Executor { return ForwardOpenAI })
 	Register("opencode", func() Executor { return ForwardOpencode })
 	Register("gemini", func() Executor { return ForwardOpenAI })
-	Register("github", func() Executor { return ForwardOpenAI })
+	Register("github", func() Executor { return ForwardGithub })
 	Register("mistral", func() Executor { return ForwardOpenAI })
 	Register("perplexity", func() Executor { return ForwardOpenAI })
 	Register("xai", func() Executor { return ForwardOpenAI })
@@ -73,6 +73,10 @@ func RegisterAll() {
 	// the session tokens, the nested request array and the line stream are not
 	// anything the shared passthrough can express.
 	Register("gemini-web", func() Executor { return ForwardGeminiWeb })
+	// grok-web posts to grok.com's conversations/new behind Cloudflare with a
+	// browser Cookie header and answers NDJSON, not an OpenAI stream — the
+	// shared passthrough cannot express the handshake or the wire shape.
+	Register("grok-web", func() Executor { return ForwardGrokWeb })
 	// One executor serves both Bedrock entries: the registry entry's Format picks the
 	// wire shape (Anthropic Messages vs OpenAI Chat Completions), the way one Vertex
 	// executor serves vertex and vertex-partner.
@@ -98,7 +102,10 @@ func RegisterAll() {
 	Register("tokenrouter", func() Executor { return ForwardOpenAI })
 	Register("trae", func() Executor { return ForwardTrae })
 	Register("windsurf", func() Executor { return ForwardWindsurf })
-	Register("zed", func() Executor { return ForwardOpenAI })
+	Register("zed", func() Executor { return ForwardZed })
 	Register("minimax-code", func() Executor { return ForwardMinimaxCode })
 	Register("minimax-code-global", func() Executor { return ForwardMinimaxCode })
+	Register("daoxe", func() Executor { return ForwardOpenAI })
+	Register("nan", func() Executor { return ForwardOpenAI })
+	Register("openadapter", func() Executor { return ForwardOpenAI })
 }

@@ -12,6 +12,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -357,10 +358,144 @@ func loginEntryLocked(ip string) *loginAttempt {
 	return e
 }
 
+// ParseCIDRList parses comma-separated CIDR strings or single IPs (/32 or /128).
+func ParseCIDRList(raw string) []netip.Prefix {
+	var list []netip.Prefix
+	for _, part := range strings.Split(raw, ",") {
+		s := strings.TrimSpace(part)
+		if s == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(s); err == nil {
+			list = append(list, p)
+			continue
+		}
+		if addr, err := netip.ParseAddr(s); err == nil {
+			addr = addr.Unmap()
+			bits := 32
+			if addr.Is6() {
+				bits = 128
+			}
+			list = append(list, netip.PrefixFrom(addr, bits))
+		}
+	}
+	return list
+}
+
+// DefaultCloudflareCIDRs returns standard Cloudflare CIDRs (both IPv4 and IPv6).
+func DefaultCloudflareCIDRs() []netip.Prefix {
+	cidrs := []string{
+		"173.245.48.0/20",
+		"103.21.244.0/22",
+		"103.22.200.0/22",
+		"103.31.4.0/22",
+		"141.101.64.0/18",
+		"108.162.192.0/18",
+		"190.93.240.0/20",
+		"188.114.96.0/20",
+		"197.234.240.0/22",
+		"198.41.128.0/17",
+		"162.158.0.0/15",
+		"104.16.0.0/13",
+		"104.24.0.0/14",
+		"172.64.0.0/13",
+		"131.0.72.0/22",
+		"2400:cb00::/32",
+		"2606:4700::/32",
+		"2803:f800::/32",
+		"2405:b500::/32",
+		"2405:8100::/32",
+		"2a06:98c0::/29",
+		"2c0f:f248::/32",
+	}
+	res := make([]netip.Prefix, 0, len(cidrs))
+	for _, c := range cidrs {
+		if p, err := netip.ParsePrefix(c); err == nil {
+			res = append(res, p)
+		}
+	}
+	return res
+}
+
+// DefaultTrustedProxies returns default loopback and private CIDRs.
+func DefaultTrustedProxies() []netip.Prefix {
+	cidrs := []string{
+		"127.0.0.0/8",
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"169.254.0.0/16",
+		"::1/128",
+		"fc00::/7",
+		"fe80::/10",
+	}
+	res := make([]netip.Prefix, 0, len(cidrs))
+	for _, c := range cidrs {
+		if p, err := netip.ParsePrefix(c); err == nil {
+			res = append(res, p)
+		}
+	}
+	return res
+}
+
+// IsIPInPrefixes checks if unmapped IP matches any prefix.
+func IsIPInPrefixes(ip netip.Addr, prefixes []netip.Prefix) bool {
+	ip = ip.Unmap()
+	for _, p := range prefixes {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveClientIP resolves client IP from direct socket address and forwarded headers.
+func ResolveClientIP(r *http.Request, trustedCIDRs []netip.Prefix, trustCloudflare bool, cfCIDRs []netip.Prefix) string {
+	remoteHost, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		remoteHost = r.RemoteAddr
+	}
+	remoteIP, err := netip.ParseAddr(strings.TrimSpace(remoteHost))
+	if err != nil {
+		return remoteHost
+	}
+	remoteIP = remoteIP.Unmap()
+
+	if trustCloudflare && IsIPInPrefixes(remoteIP, cfCIDRs) {
+		if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+			if addr, err := netip.ParseAddr(cf); err == nil {
+				return addr.Unmap().String()
+			}
+		}
+	}
+
+	if !IsIPInPrefixes(remoteIP, trustedCIDRs) {
+		return remoteIP.String()
+	}
+
+	if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 {
+		parts := strings.Split(strings.Join(xff, ","), ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			raw := strings.TrimSpace(parts[i])
+			if raw == "" {
+				continue
+			}
+			addr, err := netip.ParseAddr(raw)
+			if err != nil {
+				return remoteIP.String() // Fail closed on malformed hop
+			}
+			addr = addr.Unmap()
+			if !IsIPInPrefixes(addr, trustedCIDRs) {
+				return addr.String()
+			}
+		}
+	}
+	return remoteIP.String()
+}
+
 // LoginClientIP buckets login attempts. The stamped x-9r-real-ip is trusted
 // only with the per-process peer proof (upstream trustedPeer); a TRUST_PROXY
-// XFF is honored only when explicitly enabled. Otherwise every caller shares
-// one bucket so spoofed headers cannot escape the limiter.
+// or TRUSTED_PROXIES is honored with right-to-left multi-hop CIDR validation.
 func LoginClientIP(r *http.Request) string {
 	if token := os.Getenv("NINEROUTER_PEER_TOKEN"); token != "" {
 		if subtle.ConstantTimeCompare(
@@ -372,27 +507,21 @@ func LoginClientIP(r *http.Request) string {
 			}
 		}
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("TRUST_PROXY")), "true") ||
-		strings.EqualFold(strings.TrimSpace(os.Getenv("TRUST_CLOUDFLARE")), "true") {
-		if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
-			return cfIP
-		}
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if first, _, _ := strings.Cut(xff, ","); strings.TrimSpace(first) != "" {
-				return strings.TrimSpace(first)
-			}
-		}
+
+	var trusted []netip.Prefix
+	if raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); raw != "" {
+		trusted = ParseCIDRList(raw)
+	} else if strings.EqualFold(strings.TrimSpace(os.Getenv("TRUST_PROXY")), "true") {
+		trusted = DefaultTrustedProxies()
 	}
-	if strings.TrimSpace(r.Header.Get("x-9r-real-ip")) != "" ||
-		strings.TrimSpace(r.Header.Get("X-Forwarded-For")) != "" ||
-		strings.TrimSpace(r.Header.Get("CF-Connecting-IP")) != "" {
+
+	trustCF := strings.EqualFold(strings.TrimSpace(os.Getenv("TRUST_CLOUDFLARE")), "true") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("TRUST_PROXY")), "true")
+	cfCIDRs := DefaultCloudflareCIDRs()
+
+	ip := ResolveClientIP(r, trusted, trustCF, cfCIDRs)
+	if ip == "" {
 		return "unknown"
 	}
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && strings.TrimSpace(host) != "" {
-		return strings.TrimSpace(host)
-	}
-	if addr := strings.TrimSpace(r.RemoteAddr); addr != "" {
-		return addr
-	}
-	return "unknown"
+	return ip
 }

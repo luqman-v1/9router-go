@@ -1,5 +1,0 @@
-### Usage & Analytics: unit-abbreviation switch for the number counters
-
-- Added a `compactUnits` display preference (Settings → **Display → Unit abbreviation**, persisted in `localStorage`, on by default): token/request counters render `K/M/B` (`亿/万` for zh) when on and full thousand-separated numbers when off — port of `techysy/10router`'s `compactNumber` switch (issue #280, third bullet).
-- New `web/src/lib/compactNumber.ts` (`fmtTokens`/`isCompactUnitsEnabled`/`setCompactUnits`); the Overview KPI cards (Total Requests, Input/Cached/Output Tokens) now route through it, so the switch reaches the whole usage analytics panel. Cards keep the full value in the `title` tooltip for truncated values.
-- Verified: `bun run build`, `svelte-check` ratchet (0 unresolved identifiers, total pinned at baseline), `bun test src` (350 tests, 6 new in `compactNumber.test.ts`), and a browser pass on an isolated `DATA_DIR` instance — toggle off renders `2,400,000`, on renders `2.4M`, and the switch's ARIA name is `Unit abbreviation`.

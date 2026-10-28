@@ -1,23 +1,29 @@
 package dashboard
 
 import (
-	json "encoding/json/v2"
 	"context"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
-	"github.com/google/uuid"
-
+	"9router/proxy/internal/combos/smart"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
+	"github.com/google/uuid"
 )
 
 // HandleGetCombos handles GET /api/combos.
-// Returns a list of combos from Repo.GetCombos().
+//
+// Every combo carries its smart rules and the members those rules currently
+// own. The second half is derived rather than stored, so the dashboard can
+// badge a managed member without having to guess which of the list the
+// operator pinned by hand.
 func (h *DashboardHandler) HandleGetCombos(w http.ResponseWriter, r *http.Request) {
 	combos, err := h.Repo.GetCombos()
 	if err != nil {
@@ -26,6 +32,27 @@ func (h *DashboardHandler) HandleGetCombos(w http.ResponseWriter, r *http.Reques
 	}
 	if combos == nil {
 		combos = []*models.Combo{}
+	}
+	rulesByID, err := h.Repo.ComboRulesByID(r.Context())
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for _, combo := range combos {
+		raw, ok := rulesByID[combo.ID]
+		if !ok {
+			continue
+		}
+		combo.MatchRules = raw
+		rules, err := smart.ParseRules(raw)
+		if err != nil {
+			// An unreadable rule list must not take the whole Combos view down:
+			// the combo still routes on its stored models, and the rules editor
+			// shows the raw column so the operator can fix it.
+			log.Warn("smart-combo", "stored rules unreadable", "combo", combo.Name, "error", err)
+			continue
+		}
+		combo.AutoMembers = smart.AutoMembers(rules)
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, combos)
 }
@@ -41,11 +68,12 @@ func (h *DashboardHandler) HandleCreateCombo(w http.ResponseWriter, r *http.Requ
 	defer r.Body.Close()
 
 	var req struct {
-		ID       string `json:"id"`
-		Name     string `json:"name"`
-		Kind     string `json:"kind"`
-		Models   any    `json:"models"`
-		Strategy string `json:"strategy"`
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		Kind       string `json:"kind"`
+		Models     any    `json:"models"`
+		Strategy   string `json:"strategy"`
+		MatchRules any    `json:"matchRules"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
@@ -63,12 +91,12 @@ func (h *DashboardHandler) HandleCreateCombo(w http.ResponseWriter, r *http.Requ
 		req.Strategy = "fallback"
 	}
 
+	modelsJSON := "[]"
 	modelIDs, ok := normalizeComboModelIDs(req.Models)
 	if !ok {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "models must contain valid model IDs")
 		return
 	}
-	modelsJSON := "[]"
 	if len(modelIDs) > 0 {
 		encoded, err := json.Marshal(modelIDs)
 		if err != nil {
@@ -76,6 +104,14 @@ func (h *DashboardHandler) HandleCreateCombo(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		modelsJSON = string(encoded)
+	}
+
+	// The rules are validated before anything is written: a combo created with
+	// a broken pattern would look saved and then silently match nothing.
+	rulesJSON, _, code, msg := decodeComboRules(req.MatchRules)
+	if code != "" {
+		writeSmartRuleError(w, code, msg)
+		return
 	}
 	// A combo name is addressed bare, so it must not be shadowed by a model
 	// alias (consulted first) or read as a custom model id in /v1/models.
@@ -86,6 +122,15 @@ func (h *DashboardHandler) HandleCreateCombo(w http.ResponseWriter, r *http.Requ
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if rulesJSON != "" {
+		if err := h.Repo.SetComboRules(r.Context(), req.ID, rulesJSON); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	// A combo created with rules is populated immediately, so the operator sees
+	// the members the patterns selected rather than an empty list.
+	h.reconcileSmartCombosBestEffort(r.Context(), "combo created")
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": req.ID})
 }
@@ -107,10 +152,11 @@ func (h *DashboardHandler) HandleUpdateCombo(w http.ResponseWriter, r *http.Requ
 	defer r.Body.Close()
 
 	var req struct {
-		Name     string `json:"name"`
-		Kind     string `json:"kind"`
-		Models   any    `json:"models"`
-		Strategy string `json:"strategy"`
+		Name       string `json:"name"`
+		Kind       string `json:"kind"`
+		Models     any    `json:"models"`
+		Strategy   string `json:"strategy"`
+		MatchRules any    `json:"matchRules"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
@@ -156,6 +202,51 @@ func (h *DashboardHandler) HandleUpdateCombo(w http.ResponseWriter, r *http.Requ
 	if strategy == "" {
 		strategy = existing.Strategy
 	}
+	// The rules are validated before anything is written.
+	rulesJSON, hasRules, code, msg := decodeComboRules(req.MatchRules)
+	if code != "" {
+		writeSmartRuleError(w, code, msg)
+		return
+	}
+	if hasRules && req.Models == nil {
+		// Two things happen to the stored model list when the rule list is
+		// replaced and the caller sent no list of its own:
+		//
+		//  1. it is normalized, because the reconcile reads that column as a
+		//     plain string array and a legacy object row would be unreadable;
+		//  2. the members the removed rules owned are dropped. Without this a
+		//     replaced rule list would orphan its old members into pins, and a
+		//     model the operator just un-matched would sit in the combo forever
+		// with nothing left to take it out.
+		members, ok := normalizeComboModelIDs(existing.Models)
+		if !ok {
+			members, _ = comboModels(existing.Models)
+		}
+		// GetComboById deliberately does not read the rules column — the
+		// resolver's own read stays exactly what it was — so the stored list is
+		// fetched separately here.
+		storedRules, storedErr := h.Repo.GetComboRules(r.Context(), id)
+		oldRules, oldErr := smart.ParseRules(storedRules)
+		newRules, newErr := smart.ParseRules(rulesJSON)
+		if storedErr == nil && oldErr == nil && newErr == nil {
+			// stringDiff(before, after): the second result is what before had
+			// and after lacks, which is exactly the set the removed rules owned.
+			_, orphans := stringDiff(smart.AutoMembers(oldRules), smart.AutoMembers(newRules))
+			if len(orphans) > 0 {
+				kept := make([]string, 0, len(members))
+				for _, m := range members {
+					if slices.Contains(orphans, m) {
+						continue
+					}
+					kept = append(kept, m)
+				}
+				members = kept
+			}
+		}
+		if encoded, err := json.Marshal(members); err == nil {
+			modelsJSON = string(encoded)
+		}
+	}
 	// Renaming a combo moves the bare name it answers to, so a rename gets the
 	// same check as a create. Leaving the name alone is unaffected: the guard
 	// skips the combo space when the caller is writing a combo.
@@ -166,6 +257,15 @@ func (h *DashboardHandler) HandleUpdateCombo(w http.ResponseWriter, r *http.Requ
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if hasRules {
+		if err := h.Repo.SetComboRules(r.Context(), id, rulesJSON); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	// An edited rule list is applied immediately, so the card shows the members
+	// the new patterns select instead of waiting for the next model write.
+	h.reconcileSmartCombosBestEffort(r.Context(), "combo updated")
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})
 }

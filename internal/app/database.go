@@ -10,6 +10,7 @@ import (
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/translator"
 	"9router/proxy/internal/vault"
 )
 
@@ -80,6 +81,10 @@ func ProvideDatabase(lc fx.Lifecycle, cfg *config.Config) (*sql.DB, error) {
 func ProvideRepo(conn *sql.DB) *db.Repo {
 	repo := db.NewRepo(conn)
 	repo.SetVault(vault.NewFromEnv())
+	// G26: hydrate thought signatures from SQLite so a signature written before
+	// a restart is still replayable on the next tool turn. Fail-open — a broken
+	// database only leaves the store process-local, exactly as it was before.
+	translator.SetThoughtSignaturePersistence(repo)
 	return repo
 }
 
@@ -93,7 +98,8 @@ func ProvideRepo(conn *sql.DB) *db.Repo {
 // cannot seal keeps working in plaintext, which is strictly better than a
 // gateway that refuses to start.
 func MigrateVault(repo *db.Repo, cfg *config.Config) error {
-	result, err := repo.MigratePlaintextCredentials(cfg.DatabasePath)
+	ctx := context.Background()
+	result, err := repo.MigratePlaintextCredentials(ctx, cfg.DatabasePath)
 	if err != nil {
 		log.Warn("vault", "plaintext credential migration skipped", "error", err)
 		return nil

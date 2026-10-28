@@ -51,10 +51,12 @@ func TestGemini4ArgonWiring(t *testing.T) {
 			t.Errorf("ClampGeminiLevel(gemini-4-argon, minimal) = %q, want low", clamped)
 		}
 
-		// Gemini 3.8 still accepts minimal
+		// Gemini 3.8 tiered variants reject minimal the same way Argon does
+		// (antigravity 400 "Thinking level MINIMAL is not supported", probed
+		// live on gemini-3.8-flash-low), so the floor is low here too.
 		clamped38 := ClampGeminiLevel("gemini", "gemini-3.8-flash", "minimal")
-		if clamped38 != "minimal" {
-			t.Errorf("ClampGeminiLevel(gemini-3.8-flash, minimal) = %q, want minimal", clamped38)
+		if clamped38 != "low" {
+			t.Errorf("ClampGeminiLevel(gemini-3.8-flash, minimal) = %q, want low", clamped38)
 		}
 	})
 

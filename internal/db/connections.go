@@ -232,11 +232,39 @@ func (r *Repo) GetProviderConnections(provider string, activeOnly bool) ([]*mode
 	}
 	query += connectionSortOrder
 
-	rows, err := r.db.Query(query, args...)
+	connections, err := r.listProviderConnections(query, args)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+
+	// A sealed credential is not in the data column, so each row is
+	// hydrated here the way the single-row readers do it. Without this
+	// the list carried a data blob with no apiKey, and every caller that
+	// reads the credential from it — the chat path, the dashboard's
+	// credential check, the Gemini Web rotation loop — saw an empty
+	// credential while the row itself was perfectly usable.
+	// Hydration runs only after listProviderConnections has closed its
+	// rows: hydrate performs nested queries (sealedPairFor) that need
+	// their own pool connection, and doing that while the result set is
+	// still open can deadlock the pool.
+	for _, conn := range connections {
+		r.hydrate(conn)
+	}
+
+	return connections, nil
+}
+
+// listProviderConnections drains a providerConnections query and closes
+// its rows before returning. Callers that hydrate or write per row must
+// go through a drain-first helper like this one: a nested pool checkout
+// while the SELECT rows are still open can deadlock the whole pool once
+// four concurrent callers pile up (MaxOpenConns is 4).
+func (r *Repo) listProviderConnections(query string, args []any) ([]*models.ProviderConnection, error) {
+	rows, err := r.db.QueryContext(context.Background(), query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
 
 	var connections []*models.ProviderConnection
 	for rows.Next() {
@@ -246,10 +274,8 @@ func (r *Repo) GetProviderConnections(provider string, activeOnly bool) ([]*mode
 		}
 		connections = append(connections, &conn)
 	}
-
-	if err = rows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
 	return connections, nil
 }

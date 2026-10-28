@@ -38,6 +38,14 @@ type TokenSaverConfig struct {
 	semanticCacheEnabled    bool
 	semanticCacheTTL        int
 	semanticCacheMaxEntries int
+
+	// Headroom in-flight compression. Kept apart from the other savers because
+	// it is the only one that talks to another process: the flag, the endpoint
+	// and the deadline all have to be right before a request is worth spending
+	// a round trip on.
+	headroomEnabled   bool
+	headroomURL       string
+	headroomTimeoutMs int
 }
 
 // NewTokenSaverConfig creates config with initial values.
@@ -46,8 +54,8 @@ func NewTokenSaverConfig(rtk, caveman, ponytail bool) *TokenSaverConfig {
 		rtkEnabled:     rtk,
 		rtkMode:        "simple",
 		rtkIntensity:   "standard",
-		rtkMaxLines:    100,
-		rtkMaxChars:    8000,
+		rtkMaxLines:    250,
+		rtkMaxChars:    10 * 1024 * 1024,
 		rtkDeduplicate: true,
 		rtkCategories: map[string]bool{
 			"git":     true,
@@ -73,6 +81,12 @@ func NewTokenSaverConfig(rtk, caveman, ponytail bool) *TokenSaverConfig {
 		systemPromptPrefix:      "",
 		systemPromptSuffix:      "",
 		injectionGuardEnabled:   true, // on by default; toggle via settings
+		// Off by default. The URL is a default the panel fills in, not a
+		// decision, so it starts "not configured" and stays that way until an
+		// operator turns headroomEnabled on.
+		headroomEnabled:         false,
+		headroomURL:             "",
+		headroomTimeoutMs:       0,
 		semanticCacheEnabled:    false,
 		semanticCacheTTL:        1440,
 		semanticCacheMaxEntries: 1000,
@@ -383,6 +397,28 @@ func (c *TokenSaverConfig) UpdateFromSettings(s *db.SettingsData) {
 	if s.SemanticCacheMaxEntries > 0 {
 		c.semanticCacheMaxEntries = s.SemanticCacheMaxEntries
 	}
+	c.headroomEnabled = s.HeadroomEnabled
+	if s.HeadroomUrl != "" {
+		c.headroomURL = s.HeadroomUrl
+	}
+	if s.HeadroomTimeoutMs > 0 {
+		c.headroomTimeoutMs = s.HeadroomTimeoutMs
+	}
+}
+
+// HeadroomEnabled reports whether in-flight compression is switched on.
+func (c *TokenSaverConfig) HeadroomEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.headroomEnabled
+}
+
+// HeadroomEndpoint returns the proxy URL and deadline to use for one request.
+// A zero deadline means the caller should fall back to the client's default.
+func (c *TokenSaverConfig) HeadroomEndpoint() (string, int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.headroomURL, c.headroomTimeoutMs
 }
 
 // SetAll sets all flags atomically.

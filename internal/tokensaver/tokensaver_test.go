@@ -205,7 +205,7 @@ func TestCompressMessages_ToolResultLong(t *testing.T) {
 	assertContains(t, val, "... (")
 }
 
-func TestCompressMessages_TextBlockLong(t *testing.T) {
+func TestCompressMessages_TextBlockIsNotCompressed(t *testing.T) {
 	diff := longGitDiff()
 	msg := map[string]any{
 		"messages": []any{
@@ -218,14 +218,12 @@ func TestCompressMessages_TextBlockLong(t *testing.T) {
 	}
 	in, _ := json.Marshal(msg)
 	out, ok := CompressMessages(in)
-	if !ok {
-		t.Fatal("expected true for long text block")
+	if ok {
+		t.Fatal("expected false for text block: prose/conversation text must not be compressed")
 	}
-	var res map[string]any
-	json.Unmarshal(out, &res)
-	arr := res["messages"].([]any)[0].(map[string]any)["content"].([]any)
-	val := arr[0].(map[string]any)["text"].(string)
-	assertContains(t, val, "... (")
+	if string(out) != string(in) {
+		t.Fatal("expected body to remain unchanged for text block")
+	}
 }
 
 func TestCompressMessages_InputKey(t *testing.T) {
@@ -835,6 +833,62 @@ func TestInjectSystemPrompt_SystemRoleEmptyContent(t *testing.T) {
 	}
 }
 
+// A system turn whose content is already a block array must keep every block.
+// The old injector read the content as a string, missed, and replaced the whole
+// array with the prompt — silently deleting the client's own instructions.
+func TestInjectSystemPrompt_SystemRoleArrayContentIsPreserved(t *testing.T) {
+	prompt := "extra instructions"
+	in := []byte(`{"messages":[{"role":"system","content":[{"type":"text","text":"original instructions"},{"type":"text","text":"second block"}]}]}`)
+	out, ok := InjectSystemPrompt(in, prompt)
+	if !ok {
+		t.Fatal("expected true")
+	}
+	var res map[string]any
+	if err := json.Unmarshal(out, &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	blocks, isArr := res["messages"].([]any)[0].(map[string]any)["content"].([]any)
+	if !isArr {
+		t.Fatalf("content is no longer a block array: %T", res["messages"].([]any)[0].(map[string]any)["content"])
+	}
+	if len(blocks) != 3 {
+		t.Fatalf("block count = %d, want 3 (two original plus the prompt)", len(blocks))
+	}
+	first := blocks[0].(map[string]any)["text"]
+	if first != "original instructions" {
+		t.Errorf("first block text = %v, want %q", first, "original instructions")
+	}
+	second := blocks[1].(map[string]any)["text"]
+	if second != "second block" {
+		t.Errorf("second block text = %v, want %q", second, "second block")
+	}
+	last := blocks[2].(map[string]any)
+	if last["text"] != prompt || last["type"] != "text" {
+		t.Errorf("appended block = %v, want type text with %q", last, prompt)
+	}
+}
+
+// An array-shaped system turn that already carries the prompt is left alone.
+func TestInjectSystemPrompt_SystemRoleArrayContentAlreadyCarries(t *testing.T) {
+	prompt := "extra instructions"
+	in := []byte(`{"messages":[{"role":"system","content":[{"type":"text","text":"has extra instructions inside"}]}]}`)
+	out, ok := InjectSystemPrompt(in, prompt)
+	if ok {
+		t.Errorf("expected false when the prompt is already in the block array, got body %s", out)
+	}
+}
+
+// A string element inside the block array counts as carrying the prompt too:
+// some clients send content as a mixed array of strings and blocks.
+func TestInjectSystemPrompt_SystemRoleArrayContentStringElement(t *testing.T) {
+	prompt := "extra instructions"
+	in := []byte(`{"messages":[{"role":"system","content":["plain string holding extra instructions"]}]}`)
+	out, ok := InjectSystemPrompt(in, prompt)
+	if ok {
+		t.Errorf("expected false when a string element already carries the prompt, got %s", out)
+	}
+}
+
 func TestInjectSystemPrompt_SystemRoleContentNotString(t *testing.T) {
 	prompt := "fallback prompt"
 	in := []byte(`{"messages":[{"role":"system","content":123}]}`)
@@ -1016,6 +1070,249 @@ func TestToMessageArray_ValidArray(t *testing.T) {
 	if len(got) != 1 {
 		t.Errorf("expected length 1, got %d", len(got))
 	}
+}
+
+func TestCompressMessagesWithConfig_PerBlockPreservation(t *testing.T) {
+	diff := longGitDiff()
+	cfg := DefaultRTKConfig()
+
+	t.Run("OpenAI Chat role tool", func(t *testing.T) {
+		chatPayload := map[string]any{
+			"messages": []any{
+				map[string]any{"role": "tool", "tool_call_id": "c1", "is_error": true, "content": diff},
+				map[string]any{"role": "tool", "tool_call_id": "c2", "name": "Read", "content": diff},
+				map[string]any{"role": "tool", "tool_call_id": "c3", "name": "bash", "content": diff},
+			},
+		}
+		in, err := json.Marshal(chatPayload)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+		out, ok := CompressMessagesWithConfig(in, cfg)
+		if !ok {
+			t.Fatal("expected compression for bash block")
+		}
+		var res map[string]any
+		if err := json.Unmarshal(out, &res); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		msgs := res["messages"].([]any)
+		if len(msgs) != 3 {
+			t.Fatalf("expected 3 messages, got %d", len(msgs))
+		}
+		// c1: is_error -> must remain untouched
+		m1 := msgs[0].(map[string]any)
+		if m1["content"].(string) != diff {
+			t.Errorf("expected c1 (is_error) to remain uncompressed")
+		}
+		// c2: Read -> protected tool -> must remain untouched
+		m2 := msgs[1].(map[string]any)
+		if m2["content"].(string) != diff {
+			t.Errorf("expected c2 (Read) to remain uncompressed")
+		}
+		// c3: bash -> compressed
+		m3 := msgs[2].(map[string]any)
+		assertContains(t, m3["content"].(string), "... (")
+	})
+
+	t.Run("Claude Messages tool_result", func(t *testing.T) {
+		claudePayload := map[string]any{
+			"messages": []any{
+				map[string]any{
+					"role": "user",
+					"content": []any{
+						map[string]any{"type": "tool_result", "tool_use_id": "tu1", "is_error": true, "content": diff},
+						map[string]any{"type": "tool_result", "tool_use_id": "tu2", "name": "Grep", "content": diff},
+						map[string]any{"type": "tool_result", "tool_use_id": "tu3", "name": "shell", "content": diff},
+						map[string]any{"type": "tool_result", "tool_use_id": "tu4", "isError": true, "text": diff},
+						map[string]any{"type": "tool_result", "tool_use_id": "tu5", "status": "error", "text": diff},
+					},
+				},
+			},
+		}
+		in, err := json.Marshal(claudePayload)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+		out, ok := CompressMessagesWithConfig(in, cfg)
+		if !ok {
+			t.Fatal("expected compression for shell tool_result")
+		}
+		var res map[string]any
+		if err := json.Unmarshal(out, &res); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		blocks := res["messages"].([]any)[0].(map[string]any)["content"].([]any)
+		if len(blocks) != 5 {
+			t.Fatalf("expected 5 blocks, got %d", len(blocks))
+		}
+		// tu1: is_error
+		if blocks[0].(map[string]any)["content"].(string) != diff {
+			t.Errorf("expected tu1 (is_error) to remain uncompressed")
+		}
+		// tu2: Grep
+		if blocks[1].(map[string]any)["content"].(string) != diff {
+			t.Errorf("expected tu2 (Grep) to remain uncompressed")
+		}
+		// tu3: shell -> compressed
+		assertContains(t, blocks[2].(map[string]any)["content"].(string), "... (")
+		// tu4: isError
+		if blocks[3].(map[string]any)["text"].(string) != diff {
+			t.Errorf("expected tu4 (isError) to remain uncompressed")
+		}
+		// tu5: status error
+		if blocks[4].(map[string]any)["text"].(string) != diff {
+			t.Errorf("expected tu5 (status error) to remain uncompressed")
+		}
+	})
+
+	t.Run("Claude Messages nested blocks array", func(t *testing.T) {
+		nestedPayload := map[string]any{
+			"messages": []any{
+				map[string]any{
+					"role": "user",
+					"content": []any{
+						map[string]any{
+							"type": "tool_result",
+							"name": "Edit",
+							"content": []any{
+								map[string]any{"type": "text", "text": diff},
+							},
+						},
+						map[string]any{
+							"type": "tool_result",
+							"name": "terminal",
+							"content": []any{
+								map[string]any{"type": "text", "text": diff},
+							},
+						},
+					},
+				},
+			},
+		}
+		in, _ := json.Marshal(nestedPayload)
+		out, ok := CompressMessagesWithConfig(in, cfg)
+		if !ok {
+			t.Fatal("expected compression for nested terminal block")
+		}
+		var res map[string]any
+		json.Unmarshal(out, &res)
+		blocks := res["messages"].([]any)[0].(map[string]any)["content"].([]any)
+		// Edit: protected
+		b1Text := blocks[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+		if b1Text != diff {
+			t.Errorf("expected Edit nested text to remain uncompressed")
+		}
+		// terminal: compressed
+		b2Text := blocks[1].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+		assertContains(t, b2Text, "... (")
+	})
+
+	t.Run("OpenAI Responses function_call_output", func(t *testing.T) {
+		responsesPayload := map[string]any{
+			"input": []any{
+				map[string]any{"type": "function_call_output", "call_id": "fc1", "status": "error", "output": diff},
+				map[string]any{"type": "function_call_output", "call_id": "fc2", "name": "Write", "output": diff},
+				map[string]any{"type": "function_call_output", "call_id": "fc3", "name": "command_runner", "output": diff},
+			},
+		}
+		in, err := json.Marshal(responsesPayload)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+		out, ok := CompressMessagesWithConfig(in, cfg)
+		if !ok {
+			t.Fatal("expected compression for command_runner block")
+		}
+		var res map[string]any
+		if err := json.Unmarshal(out, &res); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		items := res["input"].([]any)
+		if len(items) != 3 {
+			t.Fatalf("expected 3 items, got %d", len(items))
+		}
+		// fc1: status error
+		if items[0].(map[string]any)["output"].(string) != diff {
+			t.Errorf("expected fc1 (status error) to remain uncompressed")
+		}
+		// fc2: Write
+		if items[1].(map[string]any)["output"].(string) != diff {
+			t.Errorf("expected fc2 (Write) to remain uncompressed")
+		}
+		// fc3: command_runner -> compressed
+		assertContains(t, items[2].(map[string]any)["output"].(string), "... (")
+	})
+
+	t.Run("Historical tool calls resolution", func(t *testing.T) {
+		chatPayload := map[string]any{
+			"messages": []any{
+				map[string]any{
+					"role": "assistant",
+					"tool_calls": []any{
+						map[string]any{"id": "tc_read", "type": "function", "function": map[string]any{"name": "patch"}},
+						map[string]any{"id": "tc_cmd", "type": "function", "function": map[string]any{"name": "cmd"}},
+					},
+				},
+				map[string]any{"role": "tool", "tool_call_id": "tc_read", "content": diff},
+				map[string]any{"role": "tool", "tool_call_id": "tc_cmd", "content": diff},
+			},
+		}
+		in, _ := json.Marshal(chatPayload)
+		out, ok := CompressMessagesWithConfig(in, cfg)
+		if !ok {
+			t.Fatal("expected compression for cmd block")
+		}
+		var res map[string]any
+		json.Unmarshal(out, &res)
+		msgs := res["messages"].([]any)
+		// tc_read -> patch -> protected
+		if msgs[1].(map[string]any)["content"].(string) != diff {
+			t.Errorf("expected tc_read (patch) to remain uncompressed")
+		}
+		// tc_cmd -> compressed
+		assertContains(t, msgs[2].(map[string]any)["content"].(string), "... (")
+	})
+
+	t.Run("Protected tools helper validation", func(t *testing.T) {
+		tools := []string{"Read", "Grep", "Edit", "Write", "patch", "anchor"}
+		for _, tool := range tools {
+			if !isProtectedTool(tool) {
+				t.Errorf("expected %q to be protected", tool)
+			}
+			if !isProtectedTool("  " + tool + "  ") {
+				t.Errorf("expected %q with whitespace to be protected", tool)
+			}
+		}
+		unprotected := []string{"bash", "sh", "terminal", "python", "curl"}
+		for _, tool := range unprotected {
+			if isProtectedTool(tool) {
+				t.Errorf("expected %q to be unprotected", tool)
+			}
+		}
+
+		if isErrorToolResult(nil) {
+			t.Error("expected nil map to not be error")
+		}
+		if !isErrorToolResult(map[string]any{"is_error": true}) {
+			t.Error("expected is_error: true to be recognized")
+		}
+		if isErrorToolResult(map[string]any{"is_error": false}) {
+			t.Error("expected is_error: false to not be error")
+		}
+		if !isErrorToolResult(map[string]any{"isError": true}) {
+			t.Error("expected isError: true to be recognized")
+		}
+		if !isErrorToolResult(map[string]any{"status": "error"}) {
+			t.Error("expected status: error to be recognized")
+		}
+		if !isErrorToolResult(map[string]any{"status": "ERROR"}) {
+			t.Error("expected status: ERROR to be recognized")
+		}
+		if isErrorToolResult(map[string]any{"status": "success"}) {
+			t.Error("expected status: success to not be error")
+		}
+	})
 }
 
 // ============================================================

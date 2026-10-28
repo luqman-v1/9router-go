@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	json "encoding/json/v2"
 	"fmt"
@@ -186,11 +187,86 @@ func (r *Repo) UpdateProviderNode(id, name, data string) (*models.ProviderNode, 
 	return &node, nil
 }
 
-// DeleteProviderNode deletes a provider node and its associated connections.
-func (r *Repo) DeleteProviderNode(id string) error {
-	if _, err := r.db.Exec("DELETE FROM providerNodes WHERE id = ?", id); err != nil {
+// DeleteProviderNode deletes a provider node, its associated connections,
+// and any custom models registered under its alias.
+func (r *Repo) DeleteProviderNode(ctx context.Context, id string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete provider node %s: begin transaction: %w", id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM providerNodes WHERE id = ?`, id).Scan(&exists); err != nil {
+		return fmt.Errorf("delete provider node %s: check existence: %w", id, err)
+	}
+	if exists == 0 {
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM providerNodes WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete provider node %s: %w", id, err)
 	}
-	_, _ = r.db.Exec("DELETE FROM providerConnections WHERE provider = ?", id)
+	if _, err := tx.ExecContext(ctx, "DELETE FROM providerConnections WHERE provider = ?", id); err != nil {
+		return fmt.Errorf("delete provider node %s: delete connections: %w", id, err)
+	}
+
+	if err := pruneCustomModels(ctx, tx, id); err != nil {
+		return fmt.Errorf("delete provider node %s: prune custom models: %w", id, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete provider node %s: commit: %w", id, err)
+	}
 	return nil
+}
+
+// pruneCustomModels removes any customModels kv rows whose key starts with the
+// node's alias or whose JSON value declares the node as its providerAlias.
+func pruneCustomModels(ctx context.Context, tx *sql.Tx, id string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT key, value FROM kv WHERE scope = 'customModels'`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var toDelete []string
+	for rows.Next() {
+		var key, raw string
+		if err := rows.Scan(&key, &raw); err != nil {
+			return err
+		}
+		keyAlias, _, ok := splitCustomModelKey(key)
+		if !ok {
+			keyAlias = ""
+		}
+		valAlias := customModelValueAlias(raw)
+		if keyAlias == id || valAlias == id {
+			toDelete = append(toDelete, key)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	for _, k := range toDelete {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM kv WHERE scope = 'customModels' AND key = ?`, k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// customModelValueAlias extracts the providerAlias from the JSON-encoded value,
+// returning an empty string if unmarshaling fails or providerAlias is absent.
+func customModelValueAlias(value string) string {
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(value), &decoded); err != nil {
+		return ""
+	}
+	alias, _ := decoded["providerAlias"].(string)
+	return alias
 }

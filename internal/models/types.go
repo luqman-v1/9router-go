@@ -93,6 +93,13 @@ type Combo struct {
 	Strategy  string  `json:"strategy"` // routing strategy: "fallback", "round-robin", "capacity", "fusion"
 	CreatedAt string  `json:"createdAt"`
 	UpdatedAt string  `json:"updatedAt"`
+	// MatchRules is the raw JSON of the combo's smart rules. Empty means the
+	// combo has none, which is every combo written before the feature.
+	MatchRules string `json:"matchRules,omitempty"`
+	// AutoMembers is derived, never stored: the models the rules currently
+	// own. The dashboard badges them so an operator can tell a managed member
+	// from one they pinned by hand.
+	AutoMembers []string `json:"autoMembers,omitempty"`
 }
 
 // KV represents a scoped key-value store entry.

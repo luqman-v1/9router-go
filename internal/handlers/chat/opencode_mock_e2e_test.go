@@ -32,8 +32,8 @@ func TestE2E_Opencode_MuseSpark_Mock_NonStream_ToolCall(t *testing.T) {
 		if !strings.HasSuffix(r.URL.Path, "/responses") {
 			t.Errorf("expected /responses path, got %s", r.URL.Path)
 		}
-		if r.Header.Get("x-opencode-client") != "desktop" {
-			t.Errorf("expected x-opencode-client desktop, got %q", r.Header.Get("x-opencode-client"))
+		if r.Header.Get("x-opencode-client") != "cli" {
+			t.Errorf("expected x-opencode-client cli, got %q", r.Header.Get("x-opencode-client"))
 		}
 		buf := new(bytes.Buffer)
 		buf.ReadFrom(r.Body)
@@ -348,11 +348,12 @@ func TestE2E_Opencode_SpaceBunny_ChatCompletions_Shape(t *testing.T) {
 			t.Errorf("expected model 'space-bunny-free', got %v", parsed["model"])
 		}
 		// Tools must have .function wrapper (Chat Completions format) and be
-		// the v2 inference gate's read/shell fingerprints — the old quartet
-		// stubs are rejected by the gate (decolua/9router#4842).
+		// exactly the 12 genuine built-ins the inference gate accepts — any
+		// caller-named or edited declaration is rejected (measured live
+		// 2026-10-25, internal/translator/opencode_free_harness.go).
 		tools, ok := parsed["tools"].([]any)
-		if !ok || len(tools) != 2 {
-			t.Fatalf("expected 2 v2 fingerprint tools (read, shell), got %v", tools)
+		if !ok || len(tools) != 12 {
+			t.Fatalf("expected the 12 genuine built-in tools, got %d", len(tools))
 		}
 		gotNames := map[string]bool{}
 		for _, tool := range tools {
@@ -377,8 +378,19 @@ func TestE2E_Opencode_SpaceBunny_ChatCompletions_Shape(t *testing.T) {
 				t.Errorf("tool %q must carry a real parameter schema, got %v", name, fn["parameters"])
 			}
 		}
-		if !gotNames["read"] || !gotNames["shell"] {
-			t.Errorf("expected the read and shell fingerprints, got %v", gotNames)
+		for _, want := range []string{"read", "shell", "edit", "write", "glob", "grep"} {
+			if !gotNames[want] {
+				t.Errorf("expected the genuine built-in %q, got %v", want, gotNames)
+			}
+		}
+		// The harness preamble must lead the system prompt.
+		messages, _ := parsed["messages"].([]any)
+		if len(messages) == 0 {
+			t.Fatalf("expected messages, got %v", parsed)
+		}
+		first, _ := messages[0].(map[string]any)
+		if first["role"] != "system" || !strings.HasPrefix(first["content"].(string), "You are an AI agent running in OpenCode") {
+			t.Errorf("the harness preamble must lead the system prompt, got %v", first)
 		}
 		// tool_choice 'none' is rejected by the gate; a tool-less request
 		// carries no tool_choice at all rather than the forbidden value.

@@ -5,6 +5,7 @@ import (
 	"context"
 	json "encoding/json/v2"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/translator"
 )
 
@@ -63,7 +65,7 @@ func TestForwardRequest_BearerAuth(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	body := []byte(`{"model":"x","messages":[{"role":"user","content":"hi"}]}`)
-	err := h.forwardRequest(context.Background(), rec, cfg, "sk-secret", body, false, false, nil, nil)
+	err := h.forwardRequest(context.Background(), rec, cfg, "sk-secret", body, false, false, nil, nil, "openai")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,7 +93,7 @@ func TestForwardRequest_RawAuth(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	body := []byte(`{"model":"x","messages":[]}`)
-	err := h.forwardRequest(context.Background(), rec, cfg, "raw-key", body, false, false, nil, nil)
+	err := h.forwardRequest(context.Background(), rec, cfg, "raw-key", body, false, false, nil, nil, "openai")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -115,7 +117,7 @@ func TestForwardRequest_DefaultAuthWhenUnknownScheme(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	err := h.forwardRequest(context.Background(), rec, cfg, "k", []byte(`{}`), false, false, nil, nil)
+	err := h.forwardRequest(context.Background(), rec, cfg, "k", []byte(`{}`), false, false, nil, nil, "openai")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,7 +141,7 @@ func TestForwardRequest_NoAuth(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	err := h.forwardRequest(context.Background(), rec, cfg, "should-not-be-sent", []byte(`{}`), false, false, nil, nil)
+	err := h.forwardRequest(context.Background(), rec, cfg, "should-not-be-sent", []byte(`{}`), false, false, nil, nil, "openai")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,7 +164,7 @@ func TestForwardRequest_StaticHeadersApplied(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	err := h.forwardRequest(context.Background(), rec, cfg, "k", []byte(`{}`), false, false, nil, nil)
+	err := h.forwardRequest(context.Background(), rec, cfg, "k", []byte(`{}`), false, false, nil, nil, "openai")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -188,7 +190,7 @@ func TestForwardRequest_UpstreamError(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	err := h.forwardRequest(context.Background(), rec, cfg, "k", []byte(`{}`), false, false, nil, nil)
+	err := h.forwardRequest(context.Background(), rec, cfg, "k", []byte(`{}`), false, false, nil, nil, "openai")
 	if err == nil {
 		t.Fatal("expected upstream error")
 	}
@@ -288,6 +290,10 @@ func TestForwardRequest_StreamSetsAcceptHeader(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(constants.HeaderContentType, constants.ContentTypeEventStream)
 		w.WriteHeader(http.StatusOK)
+		// A content chunk first: a stream that opens with the usage trailer and
+		// nothing else carries no answer, and the peek now refuses it as the
+		// empty turn it is.
+		w.Write([]byte("data: {\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n"))
 		w.Write([]byte("data: {\"id\":\"x\",\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":6}}}\n\ndata: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -304,7 +310,7 @@ func TestForwardRequest_StreamSetsAcceptHeader(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{"model": "x", "messages": []any{}})
 	ctx := translator.WithUsageCapture(context.Background())
 	rec := httptest.NewRecorder()
-	err := h.forwardRequest(ctx, rec, cfg, "k", body, true, false, &streamMetrics{}, nil)
+	err := h.forwardRequest(ctx, rec, cfg, "k", body, true, false, &streamMetrics{}, nil, "openai")
 	if err != nil {
 		t.Fatalf("stream request: %v", err)
 	}
@@ -318,4 +324,296 @@ func TestForwardRequest_StreamSetsAcceptHeader(t *testing.T) {
 	if !strings.HasPrefix(rec.Body.String(), "data: {") {
 		t.Errorf("expected streamed body, got %q", rec.Body.String())
 	}
+}
+
+// An upstream that pauses mid-turn for longer than the pending-completion bound
+// must still deliver its remaining chunks. Before the redundant stall reader
+// was removed, this reader wrapped the upstream at exactly that bound, so a
+// pause the bridge tolerates ended the stream early instead.
+func TestHandleStreamResponse_ActivePauseExceedsCompletionBound(t *testing.T) {
+	prev := executor.PendingCompletionFlushTimeout
+	executor.PendingCompletionFlushTimeout = 40 * time.Millisecond
+	defer func() { executor.PendingCompletionFlushTimeout = prev }()
+
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = pw.Write([]byte(`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"chunk1"}}]}` + "\n\n"))
+		time.Sleep(100 * time.Millisecond)
+		_, _ = pw.Write([]byte(`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"chunk2"},"finish_reason":"stop"}]}` + "\n\n"))
+		_, _ = pw.Write([]byte("data: [DONE]\n\n"))
+		_ = pw.Close()
+	}()
+
+	rec := httptest.NewRecorder()
+	ctx := translator.WithResponsesBridge(translator.WithRequestedModel(context.Background(), "gpt-x"))
+	metrics := &streamMetrics{}
+
+	if err := h.handleStreamResponse(ctx, rec, pr, false, time.Now(), metrics); err != nil {
+		t.Fatalf("handleStreamResponse failed on active pause: %v", err)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, "chunk1") || !strings.Contains(out, "chunk2") {
+		t.Errorf("missing streamed chunks in response: %s", out)
+	}
+	if !strings.Contains(out, "event: response.completed") {
+		t.Errorf("expected response.completed in response: %s", out)
+	}
+}
+
+func TestForwardRequest_NousWireFormat(t *testing.T) {
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+
+	cfg := &providers.ProviderConfig{
+		BaseURL:    srv.URL,
+		AuthHeader: constants.HeaderAuthorization,
+	}
+
+	t.Run("reasoning level high", func(t *testing.T) {
+		body := []byte(`{"model":"meituan/longcat-2.0:free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`)
+		rec := httptest.NewRecorder()
+		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "nous"); err != nil {
+			t.Fatalf("forwardRequest: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+			t.Fatalf("unmarshal captured wire body: %v", err)
+		}
+		if _, exists := parsed["reasoning_effort"]; exists {
+			t.Errorf("reasoning_effort should be removed from wire request, got %s", capturedBody)
+		}
+		reasoning, ok := parsed["reasoning"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected nested reasoning on wire, got %s", capturedBody)
+		}
+		if effort, _ := reasoning["effort"].(string); effort != "high" {
+			t.Errorf("expected reasoning.effort=high, got %v", reasoning["effort"])
+		}
+	})
+
+	t.Run("thinking disabled", func(t *testing.T) {
+		body := []byte(`{"model":"meituan/longcat-2.0:free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
+		rec := httptest.NewRecorder()
+		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "nous"); err != nil {
+			t.Fatalf("forwardRequest: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+			t.Fatalf("unmarshal captured wire body: %v", err)
+		}
+		if _, exists := parsed["reasoning_effort"]; exists {
+			t.Errorf("reasoning_effort should be removed from wire request, got %s", capturedBody)
+		}
+		if _, exists := parsed["reasoning"]; exists {
+			t.Errorf("reasoning should be omitted when disabled, got %v", parsed["reasoning"])
+		}
+	})
+
+	t.Run("reasoning auto mode", func(t *testing.T) {
+		body := []byte(`{"model":"meituan/longcat-2.0:free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"auto"}`)
+		rec := httptest.NewRecorder()
+		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "nous"); err != nil {
+			t.Fatalf("forwardRequest: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+			t.Fatalf("unmarshal captured wire body: %v", err)
+		}
+		if _, exists := parsed["reasoning_effort"]; exists {
+			t.Errorf("reasoning_effort should be removed from wire request, got %s", capturedBody)
+		}
+		reasoning, ok := parsed["reasoning"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected nested reasoning on wire, got %s", capturedBody)
+		}
+		if effort, _ := reasoning["effort"].(string); effort != "medium" {
+			t.Errorf("expected reasoning.effort=medium, got %v", reasoning["effort"])
+		}
+	})
+
+	t.Run("attribution tags applied on HTTPS nous endpoint with api key", func(t *testing.T) {
+		var interceptedBody []byte
+		client := &http.Client{
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				interceptedBody, _ = io.ReadAll(r.Body)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`)),
+				}, nil
+			}),
+		}
+		nousCfg := &providers.ProviderConfig{
+			BaseURL: "https://inference-api.nousresearch.com/v1/chat/completions",
+		}
+		body := []byte(`{"model":"stepfun/step-5-preview:free","messages":[{"role":"user","content":"hi"}]}`)
+		rec := httptest.NewRecorder()
+		if err := h.forwardRequest(context.Background(), rec, nousCfg, "test-key", body, false, false, nil, client, "nous"); err != nil {
+			t.Fatalf("forwardRequest: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(interceptedBody, &parsed); err != nil {
+			t.Fatalf("unmarshal wire body: %v", err)
+		}
+		tags, ok := parsed["tags"].([]any)
+		if !ok || len(tags) == 0 {
+			t.Fatalf("expected attribution tags on wire, got %v", parsed["tags"])
+		}
+	})
+
+	t.Run("attribution tags omitted on plaintext downgrade", func(t *testing.T) {
+		var interceptedBody []byte
+		client := &http.Client{
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				interceptedBody, _ = io.ReadAll(r.Body)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`)),
+				}, nil
+			}),
+		}
+		httpCfg := &providers.ProviderConfig{
+			BaseURL: "http://inference-api.nousresearch.com/v1",
+		}
+		body := []byte(`{"model":"stepfun/step-5-preview:free","messages":[{"role":"user","content":"hi"}]}`)
+		rec := httptest.NewRecorder()
+		if err := h.forwardRequest(context.Background(), rec, httpCfg, "test-key", body, false, false, nil, client, "nous"); err != nil {
+			t.Fatalf("forwardRequest: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(interceptedBody, &parsed); err != nil {
+			t.Fatalf("unmarshal wire body: %v", err)
+		}
+		if _, exists := parsed["tags"]; exists {
+			t.Errorf("attribution tags must not be applied on plaintext endpoint, got %v", parsed["tags"])
+		}
+	})
+
+	t.Run("attribution tags omitted on evil host substring match", func(t *testing.T) {
+		var interceptedBody []byte
+		client := &http.Client{
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				interceptedBody, _ = io.ReadAll(r.Body)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`)),
+				}, nil
+			}),
+		}
+		evilCfg := &providers.ProviderConfig{
+			BaseURL: "https://inference-api.nousresearch.com.evil.test/v1",
+		}
+		body := []byte(`{"model":"stepfun/step-5-preview:free","messages":[{"role":"user","content":"hi"}]}`)
+		rec := httptest.NewRecorder()
+		if err := h.forwardRequest(context.Background(), rec, evilCfg, "test-key", body, false, false, nil, client, "nous"); err != nil {
+			t.Fatalf("forwardRequest: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(interceptedBody, &parsed); err != nil {
+			t.Fatalf("unmarshal wire body: %v", err)
+		}
+		if _, exists := parsed["tags"]; exists {
+			t.Errorf("attribution tags must not be applied on evil host, got %v", parsed["tags"])
+		}
+	})
+}
+
+// TestForwardRequest_NousThinkingNotAppliedToNonNousProvider verifies that the Nous
+// thinking dialect is NOT applied when the target provider is not "nous" (AGENTS.md §3.A).
+// This prevents cross-provider leakage where a custom OpenAI-compatible node serving
+// a model with a matching ID (e.g., meituan/longcat-2.0:free) would incorrectly get
+// the Nous nested reasoning format applied.
+func TestForwardRequest_NousThinkingNotAppliedToNonNousProvider(t *testing.T) {
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+
+	cfg := &providers.ProviderConfig{
+		BaseURL:    srv.URL,
+		AuthHeader: constants.HeaderAuthorization,
+	}
+
+	t.Run("non-nous provider retains top-level reasoning_effort", func(t *testing.T) {
+		body := []byte(`{"model":"meituan/longcat-2.0:free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`)
+		rec := httptest.NewRecorder()
+		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "openai-compatible-chat-x"); err != nil {
+			t.Fatalf("forwardRequest: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+			t.Fatalf("unmarshal captured wire body: %v", err)
+		}
+		// Top-level reasoning_effort should be preserved for non-nous providers
+		if effort, _ := parsed["reasoning_effort"].(string); effort != "high" {
+			t.Errorf("expected reasoning_effort=high preserved for non-nous provider, got %v", parsed["reasoning_effort"])
+		}
+		// Nested reasoning object should NOT be added for non-nous providers
+		if _, exists := parsed["reasoning"]; exists {
+			t.Errorf("expected reasoning NOT added for non-nous provider, but got %v", parsed["reasoning"])
+		}
+	})
+
+	t.Run("non-nous provider with auto mode retains top-level reasoning_effort", func(t *testing.T) {
+		body := []byte(`{"model":"meituan/longcat-2.0:free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"auto"}`)
+		rec := httptest.NewRecorder()
+		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "openai-compatible-chat-x"); err != nil {
+			t.Fatalf("forwardRequest: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+			t.Fatalf("unmarshal captured wire body: %v", err)
+		}
+		if effort, _ := parsed["reasoning_effort"].(string); effort != "auto" {
+			t.Errorf("expected reasoning_effort=auto preserved for non-nous provider, got %v", parsed["reasoning_effort"])
+		}
+		if _, exists := parsed["reasoning"]; exists {
+			t.Errorf("expected reasoning NOT added for non-nous provider, but got %v", parsed["reasoning"])
+		}
+	})
+
+	t.Run("non-nous provider with thinking disabled retains top-level reasoning_effort", func(t *testing.T) {
+		body := []byte(`{"model":"meituan/longcat-2.0:free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
+		rec := httptest.NewRecorder()
+		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "openai-compatible-chat-x"); err != nil {
+			t.Fatalf("forwardRequest: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+			t.Fatalf("unmarshal captured wire body: %v", err)
+		}
+		if effort, _ := parsed["reasoning_effort"].(string); effort != "none" {
+			t.Errorf("expected reasoning_effort=none preserved for non-nous provider, got %v", parsed["reasoning_effort"])
+		}
+		if _, exists := parsed["reasoning"]; exists {
+			t.Errorf("expected reasoning NOT added for non-nous provider, but got %v", parsed["reasoning"])
+		}
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }

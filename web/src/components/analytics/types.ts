@@ -5,7 +5,7 @@ export type PeriodPreset = 'today' | '24h' | '7d' | '30d' | '60d' | 'all'
 // A custom entry is "<n>d" or "<n>h"; the server parses both, so the selector is
 // not limited to the presets below.
 export type Period = PeriodPreset | (string & {})
-export type TableView = 'model' | 'account' | 'apiKey' | 'endpoint'
+export type TableView = 'model' | 'provider' | 'account' | 'apiKey' | 'endpoint'
 export type ViewMode = 'costs' | 'tokens'
 
 // ViewOption names one entry of a section's sub-view picker. The option carries
@@ -56,6 +56,16 @@ export interface ActiveRequestItem {
 }
 
 
+export interface FallbackAttemptItem {
+  connectionId?: string
+  account?: string
+  provider?: string
+  model?: string
+  statusCode?: number | string
+  error?: string
+  latencyMs?: number
+}
+
 export interface RequestDetailItem {
   id?: string
   status?: string
@@ -75,6 +85,7 @@ export interface RequestDetailItem {
   cacheSource?: string
   cost?: number
   error?: string
+  attempts?: FallbackAttemptItem[]
   latency?: {
     total?: number
     ttft?: number
@@ -155,6 +166,7 @@ export function normalizeCustomPeriod(input: string): PeriodPreset | null {
 
 export const TABLE_OPTIONS: { value: TableView; label: string }[] = [
   { value: 'model', label: 'Usage by Model' },
+  { value: 'provider', label: 'Usage by Provider' },
   { value: 'account', label: 'Usage by Account' },
   { value: 'apiKey', label: 'Usage by API Key' },
   { value: 'endpoint', label: 'Usage by Endpoint' },
@@ -183,10 +195,6 @@ export function fmt(n?: number): string {
 
 export function cachedTokensFor(detail: RequestDetailItem): number {
   return detail.tokens?.cached_tokens ?? detail.tokens?.cache_read_input_tokens ?? 0
-}
-
-export function fmtCost(n?: number): string {
-  return '$' + (n || 0).toFixed(2)
 }
 
 export function timeAgo(timestamp?: string): string {

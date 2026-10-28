@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
@@ -57,7 +58,7 @@ func geminiStream(w http.ResponseWriter, upstream io.Reader, ctx context.Context
 	defer hw.Close()
 	flusher := proxy.WriteSSEHeaders(hw)
 	firstLine := true
-	state := &translator.GeminiStreamState{}
+	state := &translator.GeminiStreamState{SessionID: handlerutil.GetSessionID(ctx)}
 	return proxy.ScanStream(upstream, func(chunk []byte) {
 		if firstLine {
 			firstLine = false

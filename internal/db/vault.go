@@ -14,11 +14,11 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 
 	"9router/proxy/internal/log"
@@ -32,6 +32,37 @@ const (
 	SlotToken   = "token"
 	SlotRefresh = "refresh"
 )
+
+// providerSpecificSecretFields lists secret fields stored inside the `providerSpecificData` JSON object.
+var providerSpecificSecretFields = []string{
+	"consoleApiKey",
+	"alibabaConsoleCookie",
+	"alibabaConsoleSecToken",
+	"xiaomiMimoConsoleCookie",
+	"qwenCloudCookie",
+	"qwenCloudSecToken",
+	"volcConsoleCookie",
+	"volcCsrfToken",
+	"ollamaUsageCookie",
+	"ollamaCloudUsageCookie",
+	"ollamaCloudCookie",
+	"usageCookie",
+	"accessToken",
+	"refreshToken",
+	"idToken",
+	"apiKey",
+	"secretAccessKey",
+	"awsSecretAccessKey",
+	"sessionToken",
+	"awsSessionToken",
+	"openCodeGoAuthCookie",
+	"opencodeGoAuthCookie",
+	"authCookie",
+	// deepSeekCookie is the site's own session cookie for the DeepSeek Web
+	// provider. It is a credential: the WAF reads it, and it decides whether
+	// the site's document path answers the router or challenges it.
+	"deepSeekCookie",
+}
 
 // slotFields maps each sealed slot to the whitelisted data fields it holds.
 // The list is exhaustive on purpose: an unlisted field is config, not a
@@ -122,12 +153,11 @@ type ConnectionSealCandidate struct {
 }
 
 // ListConnectionsNeedingSeal returns connections holding a whitelisted secret
-// in `data` with no sealed slot yet. The sealed columns being empty is what
-// keeps an already-sealed row from being re-sealed on every scan.
-func (r *Repo) ListConnectionsNeedingSeal() ([]ConnectionSealCandidate, error) {
-	rows, err := r.db.Query(
-		`SELECT id, data FROM providerConnections
-		 WHERE secretCiphertext = '' AND tokenCiphertext = '' AND refreshCiphertext = ''`)
+// in `data` (either top-level or nested in providerSpecificData) that are not yet fully sealed
+// (i.e. missing secretCiphertext/tokenCiphertext/refreshCiphertext, or still holding plaintext nested secrets
+// even when top-level ciphertexts already exist).
+func (r *Repo) ListConnectionsNeedingSeal(ctx context.Context) ([]ConnectionSealCandidate, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT id, data FROM providerConnections`)
 	if err != nil {
 		return nil, fmt.Errorf("list connections needing seal: %w", err)
 	}
@@ -148,24 +178,37 @@ func (r *Repo) ListConnectionsNeedingSeal() ([]ConnectionSealCandidate, error) {
 
 // VaultCounts reports how many connections are sealed and how many still hold a
 // plaintext credential, for the dashboard status route.
-func (r *Repo) VaultCounts() (sealed, plaintext int, err error) {
-	rows, err := r.db.Query(
-		`SELECT
-		   CASE WHEN secretCiphertext <> '' OR tokenCiphertext <> '' OR refreshCiphertext <> '' THEN 1 ELSE 0 END,
-		   CASE WHEN secretCiphertext = '' AND tokenCiphertext = '' AND refreshCiphertext = '' THEN 1 ELSE 0 END
-		 FROM providerConnections`)
+func (r *Repo) VaultCounts(ctx context.Context) (sealed, plaintext int, err error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT data, secretCiphertext, tokenCiphertext, refreshCiphertext FROM providerConnections`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("vault counts: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var isSealed, isPlain int
-		if err = rows.Scan(&isSealed, &isPlain); err != nil {
+		var data, secretCt, tokenCt, refreshCt string
+		if err = rows.Scan(&data, &secretCt, &tokenCt, &refreshCt); err != nil {
 			return 0, 0, fmt.Errorf("vault counts: scan: %w", err)
 		}
-		sealed += isSealed
-		plaintext += isPlain
+		hasCiphertext := secretCt != "" || tokenCt != "" || refreshCt != ""
+		hasPlaintext := len(connSecretFields(data)) > 0
+
+		if hasCiphertext && !hasPlaintext {
+			sealed++
+		} else if !hasCiphertext && hasPlaintext {
+			plaintext++
+		} else if hasCiphertext && hasPlaintext {
+			// Partially sealed (e.g. top-level sealed but nested unsealed) counts as plaintext/unsealed until fully sealed
+			plaintext++
+		} else {
+			// Neither ciphertexts nor plaintext secrets (e.g. no credentials at all)
+			// Traditionally considered sealed or plain? Let's check original behavior:
+			// Original: secretCiphertext == '' && tokenCiphertext == '' && refreshCiphertext == '' was isPlain = 1.
+			// But wait, if there are no secrets at all, was it counted as plain or sealed?
+			// Original CASE WHEN secretCiphertext = '' ... THEN 1 ELSE 0 END counted empty ciphertexts as plain.
+			// Wait, let's keep exact compatibility for rows without secrets or ciphertexts, or check what existing tests expect.
+			plaintext++
+		}
 	}
 	if err = rows.Err(); err != nil {
 		return 0, 0, fmt.Errorf("vault counts: %w", err)
@@ -190,9 +233,9 @@ func (r *Repo) RewrapConnectionDEKs(v *vault.Vault, newMasterKey []byte) (rewrap
 	var targets []target
 	for rows.Next() {
 		var (
-			id                                string
-			secretDEK, secretCT, tokenDEK     string
-			tokenCT, refreshDEK, refreshCT   string
+			id                             string
+			secretDEK, secretCT, tokenDEK  string
+			tokenCT, refreshDEK, refreshCT string
 		)
 		if err = rows.Scan(&id, &secretDEK, &secretCT, &tokenDEK, &tokenCT, &refreshDEK, &refreshCT); err != nil {
 			rows.Close()
@@ -248,6 +291,21 @@ func (r *Repo) sealConnectionData(id, data string) (string, error) {
 		if !taken {
 			continue
 		}
+		// If slot is SlotSecret, also check if there are nested providerSpecificData secret fields to include in the same secret slot payload!
+		if slot == SlotSecret {
+			if psd, ok := fields["providerSpecificData"].(map[string]any); ok {
+				if payload == nil {
+					payload = make(map[string]any)
+				}
+				for _, name := range providerSpecificSecretFields {
+					if s, ok := psd[name].(string); ok && s != "" {
+						payload["nested.providerSpecificData."+name] = s
+						delete(psd, name)
+					}
+				}
+			}
+		}
+
 		encoded, err := json.Marshal(payload)
 		if err != nil {
 			return data, fmt.Errorf("seal connection %s/%s: marshal: %w", id, slot, err)
@@ -259,13 +317,52 @@ func (r *Repo) sealConnectionData(id, data string) (string, error) {
 		if err = r.SetConnectionSealed(id, slot, wrapped, ciphertext); err != nil {
 			return data, err
 		}
-		// Redact exactly the sealed fields; `remaining` was only used to
-		// decide that this slot carries a credential at all.
+		// Redact exactly the sealed fields
 		for name := range payload {
+			if len(name) > 28 && name[:28] == "nested.providerSpecificData." {
+				// already deleted from psd above
+				continue
+			}
 			delete(fields, name)
 		}
 		sealedAny = true
 	}
+
+	// If there are unsealed nested providerSpecificData secret fields, merge them into SlotSecret
+	if psd, ok := fields["providerSpecificData"].(map[string]any); ok {
+		nestedPayload := make(map[string]any)
+		for _, name := range providerSpecificSecretFields {
+			if s, ok := psd[name].(string); ok && s != "" {
+				nestedPayload["nested.providerSpecificData."+name] = s
+				delete(psd, name)
+			}
+		}
+		if len(nestedPayload) > 0 {
+			secretWrapped, secretCt, _, _ := r.GetConnectionSealed(id, SlotSecret)
+			if secretWrapped != "" && secretCt != "" {
+				if plain, err := r.Vault().Open(secretWrapped, secretCt); err == nil {
+					if existingDecoded, ok := decodeObject(plain); ok {
+						for k, v := range existingDecoded {
+							nestedPayload[k] = v
+						}
+					}
+				}
+			}
+			encoded, err := json.Marshal(nestedPayload)
+			if err != nil {
+				return data, fmt.Errorf("seal connection %s/nested: marshal: %w", id, err)
+			}
+			wrapped, ciphertext, err := r.Vault().Seal(string(encoded))
+			if err != nil {
+				return data, fmt.Errorf("seal connection %s/nested: %w", id, err)
+			}
+			if err = r.SetConnectionSealed(id, SlotSecret, wrapped, ciphertext); err != nil {
+				return data, err
+			}
+			sealedAny = true
+		}
+	}
+
 	if !sealedAny {
 		return data, nil
 	}
@@ -308,7 +405,19 @@ func (r *Repo) openConnectionData(id, data string, sealed [6]string) string {
 				"conn", id, "slot", slot)
 			continue
 		}
-		maps.Copy(fields, decoded)
+		for k, val := range decoded {
+			if len(k) > 28 && k[:28] == "nested.providerSpecificData." {
+				fieldName := k[28:]
+				psd, ok := fields["providerSpecificData"].(map[string]any)
+				if !ok {
+					psd = make(map[string]any)
+					fields["providerSpecificData"] = psd
+				}
+				psd[fieldName] = val
+			} else {
+				fields[k] = val
+			}
+		}
 		opened = true
 	}
 	if !opened {
@@ -322,7 +431,7 @@ func (r *Repo) openConnectionData(id, data string, sealed [6]string) string {
 }
 
 // connSecretFields returns the whitelisted credential names present in a data
-// payload with a non-empty string value.
+// payload with a non-empty string value (including nested providerSpecificData secret fields).
 func connSecretFields(data string) []string {
 	fields, ok := decodeObject(data)
 	if !ok {
@@ -333,6 +442,13 @@ func connSecretFields(data string) []string {
 		for _, name := range slotFields[slot] {
 			if s, ok := fields[name].(string); ok && s != "" {
 				found = append(found, name)
+			}
+		}
+	}
+	if psd, ok := fields["providerSpecificData"].(map[string]any); ok {
+		for _, name := range providerSpecificSecretFields {
+			if s, ok := psd[name].(string); ok && s != "" {
+				found = append(found, "providerSpecificData."+name)
 			}
 		}
 	}
@@ -367,7 +483,6 @@ func decodeObject(raw string) (map[string]any, bool) {
 	}
 	return fields, true
 }
-
 
 // hydrate re-injects sealed credentials into a connection's data payload.
 //

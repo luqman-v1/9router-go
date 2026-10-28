@@ -1,6 +1,7 @@
 package handlerutil
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -228,6 +229,99 @@ func isBlockedHost(host string) bool {
 	}
 	return false
 }
+
+// IsCloudMetadataURL reports whether rawURL targets a cloud instance-metadata
+// service. This is the carve-out the loopback bypass must not cover: a browser
+// on the same machine may legitimately point a self-hosted node at
+// 127.0.0.1:11434, but nothing legitimate points one at the metadata service,
+// which hands out instance credentials to any process that asks from inside
+// the VM.
+//
+// Only the metadata addresses are listed. Loopback, RFC1918 and the rest stay
+// the caller's decision, because a self-hosted provider is exactly a request
+// to reach those on purpose.
+func IsCloudMetadataURL(ctx context.Context, rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := normalizeHost(parsed.Hostname())
+	if host == "" {
+		return false
+	}
+	trimmed := strings.Trim(host, "[]")
+	if ip := net.ParseIP(trimmed); ip != nil {
+		return isCloudMetadataIP(ip)
+	}
+	// 169.254.169.254 written as one decimal integer. inet_aton accepts it and
+	// so does the dialer, but net.ParseIP does not — so the literal branch above
+	// never sees it, and the request would reach the metadata service.
+	if n, err := strconv.ParseUint(trimmed, 10, 32); err == nil {
+		return isCloudMetadataIP(net.IPv4(byte(n>>24), byte(n>>16), byte(n>>8), byte(n)))
+	}
+	// A hostname reaches the same service just as directly: on GCP the
+	// documented name is metadata.google.internal, and a wildcard-DNS name
+	// (169.254.169.254.nip.io) resolves to the address from anywhere. Static
+	// handling keeps both refused when resolution is unavailable, which is the
+	// normal case for the offline test suite.
+	if host == "metadata.google.internal" || strings.HasSuffix(host, ".metadata.google.internal") {
+		return true
+	}
+	for _, suffix := range []string{".nip.io", ".sslip.io"} {
+		if !strings.HasSuffix(host, suffix) {
+			continue
+		}
+		// nip.io takes the address with dots, sslip.io with dashes; normalise
+		// both and let the literal check decide.
+		prefix := strings.ReplaceAll(strings.TrimSuffix(host, suffix), "-", ".")
+		if ip := net.ParseIP(prefix); ip != nil && isCloudMetadataIP(ip) {
+			return true
+		}
+	}
+	// A name that does not resolve cannot reach the service either — the dial
+	// fails — so resolution failure is not treated as a signal here. The
+	// lookup takes the caller's context so a dashboard request that is already
+	// cancelled does not leave a resolver goroutine behind.
+	addrs, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return false
+	}
+	for _, ip := range addrs {
+		if isCloudMetadataIP(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCloudMetadataIP(ip net.IP) bool {
+	for _, block := range cloudMetadataAddrs {
+		if block.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// cloudMetadataAddrs are the published metadata endpoints of the clouds this
+// gateway's providers run on, held as single-address networks so the check is
+// one Contains loop rather than a chain of comparisons.
+var cloudMetadataAddrs = func() []*net.IPNet {
+	specs := []string{
+		"169.254.0.0/16",     // IPv4 link-local: AWS/GCP/Azure/DigitalOcean IMDS, AWS ECS (169.254.170.2)
+		"100.100.100.200/32", // Alibaba Cloud
+		"192.0.0.192/32",     // Oracle Cloud
+		"fe80::/10",          // IPv6 link-local, which is where an IPv6 IMDS lives
+		"fd00:ec2::254/128",  // AWS IMDS over IPv6
+	}
+	blocks := make([]*net.IPNet, 0, len(specs))
+	for _, spec := range specs {
+		if _, block, err := net.ParseCIDR(spec); err == nil {
+			blocks = append(blocks, block)
+		}
+	}
+	return blocks
+}()
 
 // AssertPublicURL checks that rawURL does not point to an internal or private address.
 // Returns an error if the URL is blocked (SSRF prevention).

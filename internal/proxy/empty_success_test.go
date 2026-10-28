@@ -81,6 +81,36 @@ func TestEmptyUpstreamError(t *testing.T) {
 			wantFail: false,
 		},
 		{
+			name:     "chat cut off by max_tokens with no text is an answer",
+			body:     `{"choices":[{"message":{"role":"assistant","content":null},"finish_reason":"length"}]}`,
+			wantFail: false,
+		},
+		{
+			name:     "chat cut off by max_tokens with blank text is an answer",
+			body:     `{"choices":[{"message":{"content":""},"finish_reason":"length"}]}`,
+			wantFail: false,
+		},
+		{
+			name:     "claude cut off by max_tokens with no blocks is an answer",
+			body:     `{"content":[],"stop_reason":"max_tokens"}`,
+			wantFail: false,
+		},
+		{
+			name:     "claude ended its turn with no blocks is still a gap",
+			body:     `{"content":[],"stop_reason":"end_turn"}`,
+			wantFail: true,
+		},
+		{
+			name:     "other finish reasons with no content are still a gap",
+			body:     `{"choices":[{"message":{"content":null},"finish_reason":"content_filter"}]}`,
+			wantFail: true,
+		},
+		{
+			name:     "a length finish on an empty choices array is still a gap",
+			body:     `{"choices":[],"finish_reason":"length"}`,
+			wantFail: true,
+		},
+		{
 			name:     "plain content is an answer",
 			body:     `{"choices":[{"message":{"role":"assistant","content":"hello"}}]}`,
 			wantFail: false,

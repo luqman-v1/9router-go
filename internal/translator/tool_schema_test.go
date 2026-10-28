@@ -212,17 +212,7 @@ func TestMergeKiroConsecutiveUsers_AndUUID(t *testing.T) {
 	}
 }
 
-func TestEffortToBudget_AndExtractThoughtSig(t *testing.T) {
-	if got := effortToBudget("high"); got != 32000 {
-		t.Errorf("effortToBudget(high) = %d, want 32000", got)
-	}
-	if got := effortToBudget("medium"); got != 16000 {
-		t.Errorf("effortToBudget(medium) = %d, want 16000", got)
-	}
-	if got := effortToBudget("low"); got != 8000 {
-		t.Errorf("effortToBudget(low) = %d, want 8000", got)
-	}
-
+func TestExtractThoughtSig(t *testing.T) {
 	if sig := extractThoughtSig("tool_call_1__ts__valid_sig"); sig != "valid_sig" {
 		t.Errorf("extractThoughtSig = %q, want valid_sig", sig)
 	}

@@ -49,7 +49,7 @@ func zenConfig(probe *zenProbe) *providers.ProviderConfig {
 		UsageURL:   providers.KnownProviders["opencode-zen"].UsageURL,
 		StaticHeaders: map[string]string{
 			"x-opencode-client": "desktop",
-			"User-Agent":        "opencode/1.18.31",
+			"User-Agent":        "opencode/1.19.4",
 		},
 	}
 }
@@ -360,7 +360,7 @@ func TestForwardOpencodeZen_KeyedLaneStaysOnZenV1(t *testing.T) {
 					AuthScheme: "bearer",
 					StaticHeaders: map[string]string{
 						"x-opencode-client": "desktop",
-						"User-Agent":        "opencode/1.18.31",
+						"User-Agent":        "opencode/1.19.4",
 					},
 				},
 				APIKey:        "sk-zen",
@@ -387,14 +387,68 @@ func TestForwardOpencodeZen_KeyedLaneStaysOnZenV1(t *testing.T) {
 // Free-tier ids 403 on the keyed lane ("free tier can only be used from within
 // OpenCode", probed live), so they travel exactly like free-executor requests:
 // inference endpoint, Bearer public, v2 cli identity and fingerprint.
+// The shaper must follow the gate the request lands on, not the lane it arrived
+// from. A free id is forwarded to the keyless inference gate from every lane,
+// and that gate wants the genuine CLI 2.x read/shell definitions; the legacy
+// quartet is the /zen/v1 fingerprint and is refused there.
+//
+// This pins the rule directly rather than through a lane, because no free id is
+// served on the messages lane today — the bug this guards (the messages lane
+// shaping every request as paid) was therefore invisible to every lane test.
+func TestZenShapedBodyFollowsTheDestinationGate(t *testing.T) {
+	client := []byte(`{"model":"x","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}}]}`)
+
+	t.Run("free id gets the CLI 2.x fingerprint", func(t *testing.T) {
+		out, _ := zenShapedBody(client, "deepseek-v4-flash-free", true)
+		var payload map[string]any
+		if err := json.Unmarshal(out, &payload); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		raw, _ := payload["tools"].([]any)
+		names := map[string]bool{}
+		for _, tool := range raw {
+			if m, ok := tool.(map[string]any); ok {
+				if fn, ok := m["function"].(map[string]any); ok {
+					if n, ok := fn["name"].(string); ok {
+						names[n] = true
+					}
+				}
+			}
+		}
+		if !names["read"] || !names["shell"] {
+			t.Errorf(`a free request must carry the genuine "read" and "shell" fingerprint, got %v`, names)
+		}
+		if names["Bash"] || names["bash"] {
+			t.Errorf("a caller tool must not travel as a declaration, got %v", names)
+		}
+		if len(raw) != 12 {
+			t.Errorf("a free request must declare exactly the 12 genuine built-ins, got %d", len(raw))
+		}
+		system, _ := payload["messages"].([]any)[0].(map[string]any)["content"].(string)
+		if !strings.Contains(system, `"name":"Bash"`) {
+			t.Errorf("the caller Bash tool must be described in the system text: %s", out)
+		}
+	})
+
+	t.Run("paid id keeps the legacy quartet collapse", func(t *testing.T) {
+		out, nameMap := zenShapedBody(client, "deepseek-v4-pro", false)
+		if nameMap["bash"] != "Bash" {
+			t.Errorf("paid request must collapse Bash -> bash, got map %v", nameMap)
+		}
+		if !strings.Contains(string(out), `"name":"bash"`) {
+			t.Errorf("paid request must declare bash, got %s", out)
+		}
+	})
+}
+
 func TestForwardOpencodeZen_FreeModelTakesInferenceGate(t *testing.T) {
 	tests := []struct {
 		model string
 		want  string
 		reply func(w http.ResponseWriter)
 	}{
-		{"deepseek-v4-flash-free", "/inference/v1/chat/completions", zenChatReply},
-		{"muse-spark-1.3-contributor-free", "/inference/v1/responses", zenResponsesReply},
+		{"deepseek-v4-flash-free", "/inference/openai/v1/chat/completions", zenChatReply},
+		{"muse-spark-1.3-contributor-free", "/inference/openai/v1/responses", zenResponsesReply},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
@@ -417,7 +471,7 @@ func TestForwardOpencodeZen_FreeModelTakesInferenceGate(t *testing.T) {
 					AuthScheme: "bearer",
 					StaticHeaders: map[string]string{
 						"x-opencode-client": "desktop",
-						"User-Agent":        "opencode/1.18.31",
+						"User-Agent":        "opencode/1.19.4",
 					},
 				},
 				APIKey:        "sk-zen",
@@ -444,3 +498,48 @@ func TestForwardOpencodeZen_FreeModelTakesInferenceGate(t *testing.T) {
 	}
 }
 
+// A free-tier id on the messages lane travels through the same stealth-capable
+// forwarder as the other free lanes: the legacy /inference/v1 prefix — the v2
+// gate's /inference/openai/v1 surface has no /messages route (404), so only
+// the legacy prefix serves this lane — the public credential, the v2 cli
+// identity, and the read/shell fingerprint. It used to take the plain
+// DoRequest path, which the gate refuses on a direct dial — the request only
+// passed when an edge relay made the call.
+func TestForwardZenMessages_FreeLaneTakesTheStealthForwarder(t *testing.T) {
+	probe := newZenProbe(t, zenMessagesReply)
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Ctx:      context.Background(),
+		Client:   probe.server.Client(),
+		Config:   zenConfig(probe),
+		APIKey:   "sk-zen",
+		Body:     []byte(`{"model":"claude-sonnet-4-6-free","max_tokens":256,"system":"be brief","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+		IsStream: true,
+	}
+	if err := forwardZenMessages(rec, req, "claude-sonnet-4-6-free", true, providers.FormatClaude); err != nil {
+		t.Fatalf("forwardZenMessages: %v", err)
+	}
+	if probe.path != "/inference/v1/messages" {
+		t.Errorf("expected the legacy inference messages lane, got %q", probe.path)
+	}
+	if probe.auth != "Bearer public" {
+		t.Errorf("expected the public credential, got %q", probe.auth)
+	}
+	system, _ := probe.body["system"].(string)
+	if !strings.HasPrefix(system, "You are an AI agent running in OpenCode, a coding agent harness.") {
+		t.Errorf("a native Claude system must gain the harness preamble, got %.80s", system)
+	}
+	if !strings.Contains(system, "be brief") || !strings.Contains(system, "No tools are available") {
+		t.Errorf("the caller system text and the placeholder note must both survive, got tail %.60s", system[len(system)-60:])
+	}
+	tools, _ := probe.body["tools"].([]any)
+	if len(tools) != 12 {
+		t.Errorf("the messages lane must declare exactly the 12 genuine built-ins, got %d", len(tools))
+	}
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]any)
+		if _, ok := tm["input_schema"]; !ok {
+			t.Errorf("claude-shaped tool lost input_schema: %v", tool)
+		}
+	}
+}

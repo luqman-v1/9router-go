@@ -227,7 +227,7 @@ func hourlyChartBuckets(repo *db.Repo, start time.Time, count int) []chartBucket
 	for i := range buckets {
 		buckets[i] = chartBucket{Label: start.Add(time.Duration(i) * time.Hour).Format("15:04"), ByModel: map[string]int64{}}
 	}
-	rows, err := repo.GetUsageHistorySince(start.UTC().Format(time.RFC3339Nano))
+	rows, err := repo.GetUsageHistoryChartSince(start.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return buckets
 	}
@@ -299,7 +299,7 @@ func dailyChartBuckets(repo *db.Repo, now time.Time, count int) []chartBucket {
 	}
 
 	rangeStart := now.AddDate(0, 0, -(count - 1))
-	rows, err := repo.GetUsageHistorySince(rangeStart.UTC().Format(time.RFC3339Nano))
+	rows, err := repo.GetUsageHistoryChartSince(rangeStart.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return buckets
 	}

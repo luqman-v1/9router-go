@@ -168,12 +168,16 @@ var openCodeZenModelFormats = map[string]ModelFormats{
 }
 
 // openCodeGoModelFormats mirrors open-sse/providers/registry/opencode-go.js models[].
+// The deepseek-v4.1-flash entry is upstream-curated: the family fallback only
+// matches /^deepseek-v4-(pro|flash)/, so without it the id falls to the
+// chat-only default and never reaches the /responses lane it serves.
 var openCodeGoModelFormats = map[string]ModelFormats{
 	"claude-haiku-5-5":           openCodeZenFormats(FormatClaude, FormatClaude),
 	"gemini-4-argon-contributor": openCodeZenFormats(FormatGemini, FormatGemini),
 	"longcat-2.5-preview-free":   openCodeZenFormats(FormatOpenAI, FormatOpenAI),
 	"step-5-preview":             openCodeZenFormats(FormatOpenAI, FormatOpenAI),
 	"beam-free":                  openCodeZenFormats(FormatOpenAI, FormatOpenAI),
+	"deepseek-v4.1-flash":        openCodeZenFormats(FormatOpenAI, FormatOpenAI, FormatClaude, FormatOpenAIResponses),
 }
 
 var openCodeZenResponsesFormat = openCodeZenFormats(FormatOpenAIResponses, FormatOpenAIResponses)
@@ -265,6 +269,14 @@ func openCodeFamilyFormatsFor(base string) *ModelFormats {
 // forwards them there with public credentials instead of the user key.
 // big-pickle is deliberately absent: it has no live 403 evidence and the lane
 // table carries it as paid chat, so moving it could break working calls.
+// This map answers "which gate serves it", not "what does it cost" — pricing is
+// internal/pricing.KnownFreeModels, where big-pickle is billed at zero while it
+// stays on this paid lane (#410). The disagreement runs both ways: the -free
+// suffix here does not by itself mean the price table has no row, and
+// deepseek-v4-flash-free resolves to a paid row through the deepseek-v* glob
+// while this map serves it keyless. Both ids are recorded in
+// model_formats_pricing_divergence_test.go, which reconciles the two lists
+// instead of editing one to match the other.
 var openCodeFreeTierModels = map[string]bool{
 	// opencode (free provider)
 	"muse-spark-1.2-contributor-free": true,

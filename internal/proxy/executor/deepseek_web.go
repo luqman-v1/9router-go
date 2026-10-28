@@ -3,6 +3,8 @@ package executor
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -15,6 +17,29 @@ import (
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 )
+
+// deepSeekFirstMessageFingerprint is the stable identity of a conversation
+// that sent no client session id: the account plus the conversation's first
+// user message. The system prompt never stands in for it — most clients lead
+// every conversation with the same system message, and keying on that would
+// put all of a client's conversations on one fallback key where each
+// divergent turn evicts the other's chain, leaving every turn a fresh session
+// carrying the full transcript. Identical first user messages still collide,
+// which is why the session store pairs this with an idle TTL and a tail check
+// that opens a fresh session the moment the prompts diverge.
+func deepSeekFirstMessageFingerprint(messages []deepSeekMessage) string {
+	for _, message := range messages {
+		if message.Role != "user" {
+			continue
+		}
+		h := sha256.New()
+		h.Write([]byte(message.Role))
+		h.Write([]byte{0})
+		h.Write([]byte(message.Content))
+		return hex.EncodeToString(h.Sum(nil))[:16]
+	}
+	return ""
+}
 
 // ForwardDeepSeekWeb routes a chat completion through chat.deepseek.com's web
 // API using a browser-login credential — the port of OmniRoute's
@@ -57,7 +82,8 @@ func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 	}
 
 	options := resolveDeepSeekModelOptions(envelope.Model, envelope)
-	turn := newDeepSeekTurn(req.Client, deepSeekBaseURL(req.Config), stealth)
+	turn := newDeepSeekTurn(req.Client, deepSeekBaseURL(req.Config), stealth).
+		withBrowserFingerprint(stealth.cookie, stealth.deviceID)
 
 	// A turn that leaves in lockstep with its neighbours is not what a person
 	// typing produces, and an agent client dispatches several turns at once.
@@ -65,19 +91,22 @@ func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 
 	// One account, at most maxConcurrency turns at a time. A burst is what turns
 	// a busy account into a limited one, so the over-cap turns wait here instead
-	// of being sent.
+	// of being sent. The slot is freed after a randomized quiet window rather
+	// than the moment the answer is written: two generations overlapping on one
+	// account is the measured trigger of the account-level restriction, and the
+	// window is what keeps the next turn out of this one's breath.
 	release, err := deepSeekGates.acquire(ctx, userToken, stealth.maxConcurrency, deepSeekStealthQueueWait)
 	if err != nil {
 		return deepSeekFailure(http.StatusTooManyRequests, "deepseek-web: "+err.Error())
 	}
-	defer release()
+	defer deepSeekReleaseAfterTurn(release, stealth.callGap)
 
 	accessToken, err := turn.acquireAccessToken(ctx, userToken)
 	if err != nil {
 		return deepSeekAuthFailure(err, userToken)
 	}
 
-	session, err := deepSeekAcquireSession(ctx, turn, accessToken, stealth, userToken, req, prompt)
+	session, err := deepSeekAcquireSession(ctx, turn, accessToken, stealth, userToken, deepSeekFirstMessageFingerprint(envelope.Messages), req, prompt)
 	if err != nil {
 		return deepSeekAuthFailure(err, userToken)
 	}
@@ -91,10 +120,48 @@ func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 		RefFileIDs:      []string{},
 		ThinkingEnabled: options.thinking,
 		SearchEnabled:   options.search,
-		Stream:          req.IsStream,
+		// The site's own client has no non-streaming mode: every completion it
+		// issues is an event stream, and a `stream: false` on this endpoint is
+		// a value no browser ever wrote. A non-streaming client is served by
+		// draining the stream, not by asking the upstream not to send one.
+		Stream: true,
 	})
+	if err != nil && session.claim.reuse && ctx.Err() == nil && !isDeepSeekAuthError(err) {
+		// The pinned session failed at the HTTP level: the chat was deleted in
+		// the DeepSeek UI, the upstream session expired, or the connection
+		// dropped. None of that is the account being refused — the sibling
+		// implementation heals the same situation in-request by dropping the
+		// stale session and retrying once on a fresh one, and so does this:
+		// the fresh session carries the whole prompt, because nothing of the
+		// old thread can be assumed to exist. One retry only — a second
+		// failure is an upstream condition no third attempt of the same shape
+		// fixes, and every attempt is another request on this account. An
+		// auth failure never heals: the token was freshly exchanged and the
+		// upstream rejected it, so a new session would just add two more
+		// doomed calls to the account the site is refusing.
+		deepSeekAbandonSession(session, ctx, turn, userToken, accessToken)
+		deepSeekCloseSession(ctx, turn, userToken, accessToken, session.id)
+		if freshID, createErr := turn.createSession(ctx, accessToken); createErr == nil {
+			retry, retryErr := turn.completion(ctx, accessToken, deepSeekCompletionRequest{
+				ChatSessionID:   freshID,
+				ParentMessageID: nil,
+				ModelType:       options.modelType,
+				Prompt:          prompt,
+				RefFileIDs:      []string{},
+				ThinkingEnabled: options.thinking,
+				SearchEnabled:   options.search,
+				Stream:          true,
+			})
+			if retryErr == nil {
+				response, err = retry, nil
+				session.id = freshID
+				session.createdHere = true
+				session.claim = deepSeekSessionClaim{tail: prompt, pin: true}
+			}
+		}
+	}
 	if err != nil {
-		deepSeekAbandonSession(session, ctx, turn, accessToken)
+		deepSeekAbandonSession(session, ctx, turn, userToken, accessToken)
 		return deepSeekAuthFailure(err, userToken)
 	}
 	defer response.Body.Close()
@@ -104,7 +171,7 @@ func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 	// one as an empty stream would report the account as merely cut off — which
 	// is how a briefly muted account earns a longer mute.
 	if enforcement := deepSeekEnforcementFromResponse(response); enforcement != nil {
-		deepSeekAbandonSession(session, ctx, turn, accessToken)
+		deepSeekAbandonSession(session, ctx, turn, userToken, accessToken)
 		return enforcement.error()
 	}
 
@@ -132,8 +199,11 @@ func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 
 	if !deepSeekSettleSession(session, prompt, accumulator, runErr, ctx, turn, accessToken) {
 		// The conversation is not pinned to this session, so nothing will ever
-		// thread on it: the upstream copy is closed rather than left behind.
-		turn.deleteSession(ctx, accessToken, session.id)
+		// thread on it: the upstream copy is retired rather than left behind.
+		// With stealth on the retirement is queued and batched — an instant
+		// create-then-delete is a cadence no browser produces (see
+		// deepseek_web_delete_queue.go).
+		deepSeekCloseSession(ctx, turn, userToken, accessToken, session.id)
 	}
 	return runErr
 }
@@ -150,6 +220,7 @@ func deepSeekTurnPrompt(envelope deepSeekRequestEnvelope, req *Request, stealth 
 	// tail of each prompt is sent: the same conversation has to render the same
 	// way from turn to turn, or no turn extends the previous one.
 	prompt := deepSeekMessagesToPrompt(envelope.Messages, deepSeekHistoryWindow(req.ConnData), stealth.persistSession)
+	prompt = deepSeekClampPrompt(prompt, deepSeekMaxPromptChars(req.ConnData))
 	if prompt == "" || len(envelope.Tools) == 0 {
 		return prompt
 	}
@@ -188,13 +259,14 @@ func deepSeekAcquireSession(
 	accessToken string,
 	stealth deepSeekStealth,
 	userToken string,
+	firstMessageFingerprint string,
 	req *Request,
 	prompt string,
 ) (deepSeekSession, error) {
 	session := deepSeekSession{claim: deepSeekSessionClaim{tail: prompt}}
 
 	if stealth.persistSession {
-		session.key = deepSeekSessionKey(userToken, req.SessionID, req.IsStream)
+		session.key = deepSeekSessionKey(userToken, req.SessionID, firstMessageFingerprint)
 		session.claim = deepSeekSessions.claim(session.key, prompt)
 	}
 
@@ -245,16 +317,18 @@ func deepSeekSettleSession(
 // deepSeekAbandonSession drops a conversation's session after a turn that must
 // not continue it.
 //
-// A session this turn created is closed upstream, because nothing will thread on
+// A session this turn created is retired upstream, because nothing will thread on
 // it. A reused one is only forgotten: the upstream thread is still the one the
 // conversation belongs to, but the next turn must not assume a refused turn was
-// recorded, so the entry goes either way.
-func deepSeekAbandonSession(session deepSeekSession, ctx context.Context, turn deepSeekTurn, accessToken string) {
+// recorded, so the entry goes either way. The retirement itself goes through
+// deepSeekCloseSession, so a stealth turn queues it rather than deleting in the
+// same second the session was created.
+func deepSeekAbandonSession(session deepSeekSession, ctx context.Context, turn deepSeekTurn, userToken, accessToken string) {
 	if session.key != "" && session.claim.pin {
 		deepSeekSessions.forget(session.key, session.id)
 	}
 	if session.createdHere {
-		turn.deleteSession(ctx, accessToken, session.id)
+		deepSeekCloseSession(ctx, turn, userToken, accessToken, session.id)
 	}
 }
 
@@ -342,6 +416,12 @@ func deepSeekStreamToClient(w http.ResponseWriter, req *Request, upstream io.Rea
 	// Reasoning and visible text are separate channels on the wire. The role
 	// delta rides whichever channel opens first, and each channel is emitted as
 	// a delta from what the client has already been sent.
+	//
+	// DeepSeek's web models reach for their native DSML tool syntax even when
+	// the request declared no tools, and that markup is not an answer. The
+	// scrubber drops it as it arrives, so the client sees the prose around it
+	// and never the tags.
+	var scrubber deepSeekDSMLScrubber
 	thinkingSent, contentSent, roleAnnounced := 0, 0, false
 	scanErr := proxy.ScanStream(upstream, func(payload []byte) {
 		if emitErr != nil {
@@ -363,9 +443,11 @@ func deepSeekStreamToClient(w http.ResponseWriter, req *Request, upstream io.Rea
 			}
 			_ = emit(delta, nil)
 		}
-		if content, sent := deepSeekDeltaFrom(accumulator.contentText(), contentSent); content != "" {
-			contentSent = sent
-			delta := map[string]any{"content": content}
+		contentTail := accumulator.contentText()[contentSent:]
+		clean, consumed := scrubber.scrub(contentTail)
+		contentSent += consumed
+		if clean != "" {
+			delta := map[string]any{"content": clean}
 			if !roleAnnounced {
 				roleAnnounced = true
 				delta["role"] = "assistant"
@@ -437,7 +519,11 @@ func deepSeekCollectToClient(w http.ResponseWriter, req *Request, upstream io.Re
 			"deepseek-web: stream ended before completion — the upstream session was cut off")
 	}
 
-	message := map[string]any{"role": "assistant", "content": accumulator.contentText()}
+	text := accumulator.contentText()
+	if deepSeekHasDSML(text) {
+		text = deepSeekStripDSML(text)
+	}
+	message := map[string]any{"role": "assistant", "content": text}
 	if thinking := accumulator.thinkingText(); thinking != "" {
 		message["reasoning_content"] = thinking
 	}
@@ -515,14 +601,26 @@ func deepSeekFailure(status int, message string) error {
 func deepSeekAuthFailure(err error, userToken string) error {
 	var apiErr *deepSeekAPIError
 	if errors.As(err, &apiErr) {
-		if apiErr.Code == deepSeekCodeAuthFailed {
+		switch apiErr.Code {
+		case deepSeekCodeAuthFailed, deepSeekCodeMissingToken:
+			// The credential is refused or absent. Drop the cached access
+			// token so the next attempt re-exchanges the credential instead
+			// of replaying a refused one.
 			deepSeekTokens.drop(userToken)
 			return deepSeekFailure(http.StatusUnauthorized, apiErr.Error())
-		}
-		if apiErr.Code == deepSeekCodeRateLimited {
+		case deepSeekCodeUserBanned:
+			// The account itself is refused. Cooling it down would only send
+			// the next turn to the same refusal, so this is reported as
+			// forbidden instead.
+			return deepSeekFailure(http.StatusForbidden, apiErr.Error())
+		case deepSeekCodeIPRestricted:
+			// The account is fine; this egress is not.
+			return deepSeekFailure(http.StatusForbidden, apiErr.Error())
+		case deepSeekCodeMuted:
 			return deepSeekFailure(http.StatusTooManyRequests, apiErr.Error())
+		default:
+			return deepSeekFailure(http.StatusBadGateway, apiErr.Error())
 		}
-		return deepSeekFailure(http.StatusBadGateway, apiErr.Error())
 	}
 	if isDeepSeekAuthError(err) {
 		deepSeekTokens.drop(userToken)

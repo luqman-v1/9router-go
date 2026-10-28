@@ -15,6 +15,7 @@ import (
 	"9router/proxy/internal/middleware"
 	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
+	"9router/proxy/internal/thinking"
 	"9router/proxy/internal/translator"
 )
 
@@ -84,6 +85,11 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	// A "(level)" suffix is a request override, not part of the model id: it
+	// comes off the name before the name is resolved against the aliases and
+	// the combos, and the intent it carries travels on the context.
+	modelName, suffixIntent := thinking.ParseSuffix(reqBody.Model)
+
 	if reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
@@ -91,17 +97,20 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 
 	// Per-key model policy: 403 before the responses bridge or any connection
 	// selection.
-	if !h.enforceModelAccess(w, r, reqBody.Model) {
+	if !h.enforceModelAccess(w, r, modelName) {
 		return
 	}
-	modelInfo, err := h.resolveModel(reqBody.Model)
+	modelInfo, err := h.resolveModel(modelName)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	ctx := h.newResponsesContext(r, reqBody.Model, modelInfo, &body)
+	ctx := thinking.WithSuffixIntent(h.newResponsesContext(r, modelName, modelInfo, &body), suffixIntent)
+	// The operator's providerThinking overrides are read once here, not once
+	// per connection attempt.
+	ctx = h.withProviderThinkingModes(ctx)
 
 	var workingBody map[string]any
 	if err := json.Unmarshal(body, &workingBody); err != nil {
@@ -154,6 +163,10 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 // translation when the source format already equals the target format.
 func (h *ChatHandler) newResponsesContext(r *http.Request, requestedModel string, modelInfo *ModelInfo, body *[]byte) context.Context {
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// Provider-scope limit state, installed where the request's context is built
+	// so every candidate this request tries shares one memory of which providers
+	// were full (docs/provider-limits-plan.md D7).
+	ctx = withProviderLimitState(ctx)
 	ctx = translator.WithClientFormat(ctx, translator.ClientFormatResponses)
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(requestedModel))
 	// The dispatching key decides which guardrail policy governs the response.
@@ -183,7 +196,7 @@ func (h *ChatHandler) newResponsesContext(r *http.Request, requestedModel string
 // client, and a Responses client is never one.
 func (h *ChatHandler) handleResponsesSingleModel(ctx context.Context, w http.ResponseWriter, preparedReq map[string]any, modelInfo *ModelInfo, isStream bool) {
 	cw := newCommittedResponseWriter(w)
-	preparedReq["model"] = modelInfo.Model
+	preparedReq["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
 	finalBody, err := json.Marshal(preparedReq)
 	if err != nil {
 		handlerutil.WriteJSONError(cw, http.StatusInternalServerError, "failed to marshal responses request")
@@ -200,6 +213,22 @@ func (h *ChatHandler) handleResponsesSingleModel(ctx context.Context, w http.Res
 	}
 	var ue *upstreamError
 	if errors.As(result, &ue) {
+		if isStream {
+			var errBody struct {
+				Error map[string]any `json:"error"`
+			}
+			if err := json.Unmarshal(ue.Body, &errBody); err == nil && errBody.Error != nil {
+				if code, _ := errBody.Error["code"].(string); code == "context_length_exceeded" {
+					cw.Header().Set("Content-Type", "text/event-stream")
+					cw.WriteHeader(http.StatusOK)
+					_, _ = cw.Write([]byte(translator.FormatResponsesFailedSSE(errBody.Error)))
+					if f, ok := cw.ResponseWriter.(http.Flusher); ok {
+						f.Flush()
+					}
+					return
+				}
+			}
+		}
 		cw.Header().Set("Content-Type", "application/json")
 		cw.WriteHeader(ue.StatusCode)
 		cw.Write(ue.Body)

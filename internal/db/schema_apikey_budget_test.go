@@ -228,3 +228,117 @@ func TestUsageHistoryApiKeyIndexAddedOnUpgrade(t *testing.T) {
 		t.Errorf("usageHistory rows after upgrade = %d, want 50", rows)
 	}
 }
+
+// TestUsageHistoryClientKeyIndexExists pins the SECOND index the per-key token
+// quota needs, and the reason it is not optional.
+//
+// tokenUsageSince sums `clientKey = ? OR apiKey = ? OR apiKey = ?`. SQLite
+// answers a disjunction with a multi-index OR only when every arm is
+// indexable; one unindexed arm degrades the whole statement to a full scan of
+// usageHistory. TestUsageHistoryApiKeyIndexExists above spelled out only the
+// `apiKey = ?` arms, so idx_uh_apikey alone satisfied it while the production
+// query still scanned the ledger — measured at ~127 ms per key on a 512k-row
+// table, against a boot request (GET /api/keys) that runs it once per key row.
+func TestUsageHistoryClientKeyIndexExists(t *testing.T) {
+	r := openEphemeralSchemaDB(t)
+
+	var count int
+	if err := r.db.QueryRow(
+		`SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = 'idx_uh_clientkey'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("query index: %v", err)
+	}
+	if count != 1 {
+		t.Fatal("idx_uh_clientkey is missing; the quota sum would full-scan usageHistory")
+	}
+
+	// The planner must avoid a scan for the full production predicate — the
+	// exact three-arm OR, not the two-arm apiKey subset. `SCAN usageHistory` in
+	// this plan is the regression the test exists to catch.
+	rows, err := r.db.Query(`EXPLAIN QUERY PLAN
+		SELECT COALESCE(SUM(COALESCE(promptTokens,0) + COALESCE(completionTokens,0)), 0)
+		  FROM usageHistory
+		 WHERE (clientKey = ? OR apiKey = ? OR apiKey = ?)`, "k", "k", "k")
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	defer rows.Close()
+	var plan string
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan plan: %v", err)
+		}
+		plan += detail + "\n"
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read plan: %v", err)
+	}
+	if strings.Contains(plan, "SCAN usageHistory") {
+		t.Errorf("the quota sum still full-scans usageHistory:\n%s", plan)
+	}
+	if !strings.Contains(plan, "idx_uh_clientkey") {
+		t.Errorf("query plan does not use idx_uh_clientkey:\n%s", plan)
+	}
+}
+
+// TestUsageHistoryClientKeyIndexAddedOnUpgrade proves an existing install —
+// rows present, index set from before this fix — picks the new index up on the
+// next boot. EnsureCoreSchema re-runs the CREATE INDEX IF NOT EXISTS list, so
+// no migration step is needed.
+func TestUsageHistoryClientKeyIndexAddedOnUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy_clientkey_idx.sqlite")
+	conn, err := OpenDatabase(path)
+	if err != nil {
+		t.Fatalf("OpenDatabase: %v", err)
+	}
+	defer conn.Close()
+
+	// The pre-fix shape: usageHistory WITH clientKey but WITHOUT its index.
+	if _, err := conn.Exec(`CREATE TABLE usageHistory (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
+		provider TEXT, model TEXT, connectionId TEXT, apiKey TEXT, endpoint TEXT,
+		promptTokens INTEGER DEFAULT 0, completionTokens INTEGER DEFAULT 0,
+		cost REAL DEFAULT 0, status TEXT, tokens TEXT, meta TEXT,
+		clientKey TEXT DEFAULT ''
+	)`); err != nil {
+		t.Fatalf("legacy table: %v", err)
+	}
+	for range 50 {
+		if _, err := conn.Exec(
+			`INSERT INTO usageHistory(timestamp, apiKey, clientKey, promptTokens, completionTokens) VALUES(?,?,?,?,?)`,
+			"2026-01-01T00:00:00Z", "***", "sk-legacy", 10, 5); err != nil {
+			t.Fatalf("seed row: %v", err)
+		}
+	}
+	var before int
+	if err := conn.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='idx_uh_clientkey'`).Scan(&before); err != nil {
+		t.Fatalf("pre-check: %v", err)
+	}
+	if before != 0 {
+		t.Fatal("index existed before upgrade; test setup is wrong")
+	}
+
+	if err := EnsureCoreSchema(conn); err != nil {
+		t.Fatalf("EnsureCoreSchema: %v", err)
+	}
+
+	var after int
+	if err := conn.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='idx_uh_clientkey'`).Scan(&after); err != nil {
+		t.Fatalf("post-check: %v", err)
+	}
+	if after != 1 {
+		t.Fatal("idx_uh_clientkey was not created on upgrade")
+	}
+
+	// Pre-existing rows survive, so the upgrade builds an index rather than
+	// rebuilding the ledger the index protects.
+	var rows int
+	if err := conn.QueryRow(`SELECT COUNT(1) FROM usageHistory WHERE clientKey='sk-legacy'`).Scan(&rows); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rows != 50 {
+		t.Errorf("usageHistory rows after upgrade = %d, want 50", rows)
+	}
+}

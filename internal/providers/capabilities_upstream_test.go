@@ -115,8 +115,8 @@ func TestTokenHarborFreeTierSeeds(t *testing.T) {
 	// Every FREE id resolves to a declared window; an id no table knows would
 	// publish the 128000/4096 floor and advertise a free tier it cannot
 	// honour. The paid seeds are aggregator pass-throughs with no local
-	// limits table of their own (grok-4.7 has no pattern row upstream either),
-	// so asserting a window for them would only pin an invented number.
+	// limits table of their own, so asserting a window for them would only
+	// pin an invented number.
 	for _, id := range []string{
 		"mimo-v2.6-flash:free",
 		"mimo-v2.5:free",

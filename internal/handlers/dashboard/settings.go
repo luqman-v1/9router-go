@@ -3,8 +3,10 @@ package dashboard
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"database/sql"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -12,14 +14,15 @@ import (
 	"net/url"
 	"strings"
 	"time"
-	json "encoding/json/v2"
 
 	"golang.org/x/crypto/bcrypt"
 
 	"9router/proxy/internal/auth"
 	"9router/proxy/internal/config"
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/thinking"
 )
 
 // Dashboard client headers, matching the Next dashboard settings/database route.
@@ -104,13 +107,47 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 		}
 	}
 
+	if err := validateProviderThinking(updates["providerThinking"]); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	normalizeProviderThinking(updates)
+
+	if err := validateNumericSettings(updates); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	// Feature Visibility stores sidebar ids, so the payload is normalized here:
 	// the sidebar must never receive an id it cannot address (navvisibility.go).
 	applyNavVisibilityUpdate(updates)
+	// Display currency stores a code plus a rate table, so the payload is
+	// normalized here: a cost surface must never read a NaN rate (currency.go).
+	applyDisplayCurrencyUpdate(updates)
 
+	// Auto-ping schedules are merged against the stored value rather than
+	// written through: a client that sends only `connections` would otherwise
+	// delete every schedule, and one that sends only `schedules` would wipe
+	// every switch. Refused here, before the write, so a bad payload leaves
+	// the settings row untouched.
+	if err := h.mergeAutoPingSchedules(updates); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// White-label branding is rendered by the sidebar, so the stored shape is
+	// normalized here the same way the sidebar ids are (whitelabel.go).
+	applyWhitelabelUpdate(updates)
+	// Clearing appLogoUrl removes the uploaded file with it. The previous value
+	// is read before the write so the path is known, and the file is removed
+	// only after the write succeeds: a failed write must leave the stored logo
+	// and its file in agreement, not one pointing at a deleted asset.
+	previousLogo, clearLogo := logoClearedByUpdate(h, updates)
 	if err := h.Repo.UpdateSettingsRaw(updates); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if clearLogo {
+		removeUploadedLogo(previousLogo)
 	}
 
 	if h.TokenSaver != nil {
@@ -146,7 +183,7 @@ func (h *DashboardHandler) HandleExportDatabase(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	payload, err := h.exportDatabase()
+	payload, err := h.exportDatabase(r.Context())
 	if err != nil {
 		writePlainError(w, http.StatusInternalServerError, "Failed to export database")
 		return
@@ -211,7 +248,9 @@ func (h *DashboardHandler) HandleImportDatabase(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if err := h.importDatabase(payload); err != nil {
+	dryRun := isDryRun(r)
+	report, err := h.importDatabase(r.Context(), payload, dryRun)
+	if err != nil {
 		writePlainError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -219,6 +258,12 @@ func (h *DashboardHandler) HandleImportDatabase(w http.ResponseWriter, r *http.R
 	// upstream re-applies the outbound proxy env here; the Go runtime has no
 	// equivalent yet (no outboundProxyUrl handling), so nothing to re-apply.
 
+	if dryRun {
+		report["success"] = true
+		report["dryRun"] = true
+		handlerutil.WriteJSON(w, http.StatusOK, report)
+		return
+	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
@@ -374,6 +419,82 @@ func (h *DashboardHandler) exportAuthorized(r *http.Request) bool {
 
 // sanitizeSettings copies settings and drops secrets, exposing `hasPassword`
 // the way the Next dashboard does.
+// validateProviderThinking rejects a per-provider reasoning override whose
+// mode is outside the allowed vocabulary. The mode reaches reasoning_effort on
+// the wire, and a provider answers an unknown effort with a 400 — so a mode
+// that cannot be honoured is refused at the boundary instead.
+func validateProviderThinking(v any) error {
+	if v == nil {
+		return nil
+	}
+	pt, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("providerThinking must be an object")
+	}
+	for provider, entry := range pt {
+		vm, ok := entry.(map[string]any)
+		if !ok {
+			return fmt.Errorf("providerThinking[%s] must be an object", provider)
+		}
+		mode, _ := vm["mode"].(string)
+		if _, valid := thinking.NormalizeProviderThinkingMode(mode); !valid {
+			return fmt.Errorf("providerThinking[%s].mode must be one of %s", provider, strings.Join(thinking.ProviderThinkingModes, ", "))
+		}
+	}
+	return nil
+}
+
+// numericSettingKeys are the settings the dashboard writes as numbers.
+//
+// A value of another type is refused at the boundary: the reader coerces
+// anything that is not a positive number to zero, and zero is "no limit" on
+// the rate limiter. A quota written as a string would therefore read back as
+// unlimited while the rate limiter stays on.
+var numericSettingKeys = []string{
+	"defaultRpm", "defaultTpm", "defaultConcurrency", "rateWindowSeconds",
+	"retentionDays", "maxRequestRecords", "usageHistoryRetentionDays",
+	"rtkMaxLines", "rtkMaxChars", "headroomTimeoutMs",
+	"semanticCacheTTL", "semanticCacheMaxEntries",
+	"stickyRoundRobinLimit", "comboStickyRoundRobinLimit",
+}
+
+func validateNumericSettings(updates map[string]any) error {
+	for _, key := range numericSettingKeys {
+		v, ok := updates[key]
+		if !ok || v == nil {
+			continue
+		}
+		switch v.(type) {
+		case float64, int, int64:
+		default:
+			return fmt.Errorf("setting %s must be a number", key)
+		}
+	}
+	return nil
+}
+
+// normalizeProviderThinking rewrites the stored modes into the vocabulary the
+// enforcement uses, so the dashboard echoes back the mode that is enforced
+// rather than the spelling the operator typed.
+func normalizeProviderThinking(updates map[string]any) {
+	pt, ok := updates["providerThinking"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, entry := range pt {
+		vm, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		mode, _ := vm["mode"].(string)
+		if normalized, valid := thinking.NormalizeProviderThinkingMode(mode); valid {
+			vm["mode"] = normalized
+		}
+	}
+}
+
+// sanitizeSettings copies settings and drops secrets, exposing `hasPassword`
+// the way the Next dashboard does.
 func sanitizeSettings(raw map[string]any) map[string]any {
 	if raw == nil {
 		raw = map[string]any{}
@@ -390,6 +511,8 @@ func sanitizeSettings(raw map[string]any) map[string]any {
 		delete(out, key)
 	}
 	sanitizeNavVisibility(out)
+	sanitizeDisplayCurrency(out)
+	sanitizeWhitelabel(out)
 	out["hasPassword"] = hasPassword
 	return out
 }
@@ -449,9 +572,29 @@ type databaseExport struct {
 	Pricing             map[string]any   `json:"pricing"`
 }
 
+// queryer is the read surface shared by *sql.DB and *sql.Tx, so the export
+// walk can run either directly or inside one snapshot transaction.
+type queryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 // exportDatabase reads the dashboard tables into the shared backup payload.
-func (h *DashboardHandler) exportDatabase() (*databaseExport, error) {
-	db := h.Repo.RawDB()
+//
+// Every read happens inside one transaction. Reading table by table on a bare
+// *sql.DB would let a write land between two queries, so a key deleted between
+// the apiKeys query and the access query would export as a key with no
+// allowlist — which restores as unrestricted. The transaction pins one
+// snapshot for the whole walk, so the backup is a state the database was
+// actually in.
+func (h *DashboardHandler) exportDatabase(ctx context.Context) (*databaseExport, error) {
+	rawDB := h.Repo.RawDB()
+	tx, err := rawDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck // read-only; nothing to salvage
+
 	out := &databaseExport{
 		ProviderConnections: []map[string]any{},
 		ProviderNodes:       []map[string]any{},
@@ -464,7 +607,7 @@ func (h *DashboardHandler) exportDatabase() (*databaseExport, error) {
 		Pricing:             map[string]any{},
 	}
 
-	settings, err := h.Repo.GetSettingsRaw()
+	settings, err := getSettingsRawTx(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -472,7 +615,7 @@ func (h *DashboardHandler) exportDatabase() (*databaseExport, error) {
 		out.Settings = stripSecretSettings(settings)
 	}
 
-	if out.ProviderConnections, err = selectRows(db,
+	if out.ProviderConnections, err = selectRows(tx,
 		`SELECT id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt FROM providerConnections`); err != nil {
 		return nil, err
 	}
@@ -481,15 +624,24 @@ func (h *DashboardHandler) exportDatabase() (*databaseExport, error) {
 		normalizeBool(row, "isActive")
 	}
 
-	if out.ProviderNodes, err = selectRows(db,
-		`SELECT id, type, name, data, createdAt, updatedAt FROM providerNodes`); err != nil {
+	if out.ProviderNodes, err = selectRows(tx,
+		`SELECT id, type, name, data, createdAt, updatedAt,
+		        rpmLimit, tpmLimit, concurrencyLimit, tokenQuota, queueTimeoutMs, quotaResetId,
+		        COALESCE(contractExpiresAt, '') AS contractExpiresAt
+		   FROM providerNodes`); err != nil {
 		return nil, err
 	}
 	for _, row := range out.ProviderNodes {
-		mergeDataColumn(row, "id", "type", "name", "createdAt", "updatedAt")
+		// The limit columns are real columns, so mergeDataColumn needs them named
+		// as well: it rebuilds each row from the data blob overlaid with the listed
+		// columns, and a column named in neither place would drop out of the backup
+		// while the restore still looked successful.
+		mergeDataColumn(row, "id", "type", "name", "createdAt", "updatedAt",
+			"rpmLimit", "tpmLimit", "concurrencyLimit", "tokenQuota", "queueTimeoutMs",
+			"quotaResetId", "contractExpiresAt")
 	}
 
-	if out.ProxyPools, err = selectRows(db,
+	if out.ProxyPools, err = selectRows(tx,
 		`SELECT id, isActive, testStatus, data, createdAt, updatedAt FROM proxyPools`); err != nil {
 		return nil, err
 	}
@@ -498,7 +650,7 @@ func (h *DashboardHandler) exportDatabase() (*databaseExport, error) {
 		normalizeBool(row, "isActive")
 	}
 
-	if out.APIKeys, err = selectRows(db,
+	if out.APIKeys, err = selectRows(tx,
 		`SELECT id, key, name, machineId, isActive, createdAt,
 		        rateLimitRPM, rateLimitTPM, rateLimitConcurrency, tokenQuota, queueTimeoutMs
 		   FROM apiKeys`); err != nil {
@@ -507,7 +659,7 @@ func (h *DashboardHandler) exportDatabase() (*databaseExport, error) {
 	// The per-key model allowlist is a separate table, so selecting apiKeys
 	// alone drops it. A restored key would then silently allow every model
 	// again — the one outcome a restriction exists to prevent.
-	access, err := selectRows(db,
+	access, err := selectRows(tx,
 		`SELECT api_key_id, model FROM api_key_model_access ORDER BY api_key_id, model`)
 	if err != nil {
 		return nil, err
@@ -522,34 +674,70 @@ func (h *DashboardHandler) exportDatabase() (*databaseExport, error) {
 	}
 	for _, row := range out.APIKeys {
 		normalizeBool(row, "isActive")
-		if id, _ := row["id"].(string); id != "" {
-			if models := allowlists[id]; len(models) > 0 {
-				row["allowedModels"] = models
-			}
+		models := []string{}
+		if id, _ := row["id"].(string); id != "" && len(allowlists[id]) > 0 {
+			models = allowlists[id]
 		}
+		// Both shapes are always emitted. `allowedModels` is what a Go instance
+		// reads back; `access` is what the Node dashboard reads. Emitting only
+		// one of them means a backup taken here restores unrestricted there.
+		row["allowedModels"] = models
+		row["access"] = accessShape(models)
 	}
 
-	if out.Combos, err = selectRows(db,
-		`SELECT id, name, kind, models, createdAt, updatedAt FROM combos`); err != nil {
+	if out.Combos, err = selectRows(tx,
+		`SELECT id, name, kind, models, matchRules, createdAt, updatedAt FROM combos`); err != nil {
 		return nil, err
 	}
 	for _, row := range out.Combos {
 		row["models"] = parseJSONValue(row["models"], []any{})
 	}
 
-	if err := loadKVScopes(db, out); err != nil {
+	if err := loadKVScopes(tx, out); err != nil {
+		return nil, err
+	}
+	// Nothing was written, so the commit only releases the snapshot. It is
+	// still required: the deferred Rollback would undo nothing but would end
+	// the transaction all the same.
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
+// getSettingsRawTx reads the settings blob inside an existing transaction, so
+// the export's settings and its table walks come from the same snapshot.
+func getSettingsRawTx(ctx context.Context, tx *sql.Tx) (map[string]any, error) {
+	var rawData string
+	err := tx.QueryRowContext(ctx, `SELECT data FROM settings WHERE id = 1`).Scan(&rawData)
+	if errors.Is(err, sql.ErrNoRows) {
+		return map[string]any{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if rawData == "" {
+		return map[string]any{}, nil
+	}
+	raw := map[string]any{}
+	if err := json.Unmarshal([]byte(rawData), &raw); err != nil || raw == nil {
+		return map[string]any{}, nil
+	}
+	return raw, nil
+}
+
 // importDatabase wipes the dashboard tables and restores a backup payload,
 // matching Next's importDb transaction.
-func (h *DashboardHandler) importDatabase(payload map[string]any) error {
-	db := h.Repo.RawDB()
-	tx, err := db.Begin()
+//
+// A dry run walks the identical transaction and rolls it back, so the report
+// describes what a real import would do without writing anything. Rolling back
+// is what makes that true: every statement runs, so a payload that would fail
+// halfway fails here too instead of looking clean.
+func (h *DashboardHandler) importDatabase(ctx context.Context, payload map[string]any, dryRun bool) (map[string]any, error) {
+	rawDB := h.Repo.RawDB()
+	tx, err := rawDB.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
 	// Secrets are stripped from the backup, so a restore must not let their
@@ -558,7 +746,7 @@ func (h *DashboardHandler) importDatabase(payload map[string]any) error {
 	// disable OIDC. Read them inside the transaction before the wipe.
 	liveSecrets, err := readSettingsSecrets(tx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	wipes := []string{
@@ -575,7 +763,7 @@ func (h *DashboardHandler) importDatabase(payload map[string]any) error {
 	}
 	for _, stmt := range wipes {
 		if _, err := tx.Exec(stmt); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -595,12 +783,12 @@ func (h *DashboardHandler) importDatabase(payload map[string]any) error {
 		}
 		b, err := json.Marshal(restored)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := tx.Exec(
 			`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, string(b),
 		); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -618,7 +806,7 @@ func (h *DashboardHandler) importDatabase(payload map[string]any) error {
 			stringDefault(c["email"], nil), c["priority"], boolToInt(c["isActive"]), data,
 			stringDefault(c["createdAt"], nowISO()), stringDefault(c["updatedAt"], nowISO()),
 		); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -628,13 +816,28 @@ func (h *DashboardHandler) importDatabase(payload map[string]any) error {
 		if !ok {
 			continue
 		}
-		data := restData(n, "id", "type", "name", "createdAt", "updatedAt")
+		// A restored node must come back with the limits it had: a backup that
+		// silently lifted a node's ceiling would turn disaster recovery into an
+		// accidental opening of the throttle, the same reason apiKeys carries its
+		// own limits below. quotaResetId travels too — it is the mark the lifetime
+		// quota is measured from, and restoring the spend without the mark would
+		// charge the node for tokens it had already been forgiven.
+		data := restData(n, "id", "type", "name", "createdAt", "updatedAt",
+			"rpmLimit", "tpmLimit", "concurrencyLimit", "tokenQuota", "queueTimeoutMs",
+			"quotaResetId", "contractExpiresAt")
 		if _, err := tx.Exec(
-			`INSERT OR REPLACE INTO providerNodes(id, type, name, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+			`INSERT OR REPLACE INTO providerNodes(id, type, name, data, createdAt, updatedAt,
+			        rpmLimit, tpmLimit, concurrencyLimit, tokenQuota, queueTimeoutMs, quotaResetId,
+			        contractExpiresAt)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			n["id"], stringDefault(n["type"], nil), stringDefault(n["name"], nil), data,
 			stringDefault(n["createdAt"], nowISO()), stringDefault(n["updatedAt"], nowISO()),
+			intDefault(n["rpmLimit"], 0), intDefault(n["tpmLimit"], 0),
+			intDefault(n["concurrencyLimit"], 0), intDefault(n["tokenQuota"], 0),
+			intDefault(n["queueTimeoutMs"], 0), intDefault(n["quotaResetId"], 0),
+			stringDefault(n["contractExpiresAt"], ""),
 		); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -650,7 +853,7 @@ func (h *DashboardHandler) importDatabase(payload map[string]any) error {
 			p["id"], boolToInt(p["isActive"]), stringDefault(p["testStatus"], "unknown"), data,
 			stringDefault(p["createdAt"], nowISO()), stringDefault(p["updatedAt"], nowISO()),
 		); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -679,19 +882,14 @@ func (h *DashboardHandler) importDatabase(payload map[string]any) error {
 			intDefault(k["rateLimitConcurrency"], 0), intDefault(k["tokenQuota"], 0),
 			intDefault(k["queueTimeoutMs"], 0),
 		); err != nil {
-			return err
+			return nil, err
 		}
-		models, _ := k["allowedModels"].([]any)
-		for _, raw := range models {
-			model, _ := raw.(string)
-			if model == "" {
-				continue
-			}
+		for _, model := range importAllowlist(k) {
 			if _, err := tx.Exec(
-				`INSERT OR REPLACE INTO api_key_model_access(api_key_id, model) VALUES(?, ?)`,
-				keyID, model,
+				`INSERT OR REPLACE INTO api_key_model_access(api_key_id, model, created_at) VALUES(?, ?, ?)`,
+				keyID, model, stringDefault(k["createdAt"], nowISO()),
 			); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
@@ -706,29 +904,124 @@ func (h *DashboardHandler) importDatabase(payload map[string]any) error {
 		if err != nil {
 			models = []byte("[]")
 		}
+		rules, err := json.Marshal(c["matchRules"])
+		if err != nil || string(rules) == "null" {
+			rules = []byte("[]")
+		}
 		if _, err := tx.Exec(
-			`INSERT OR REPLACE INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
-			c["id"], c["name"], stringDefault(c["kind"], nil), string(models),
+			`INSERT OR REPLACE INTO combos(id, name, kind, models, matchRules, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			c["id"], c["name"], stringDefault(c["kind"], nil), string(models), string(rules),
 			stringDefault(c["createdAt"], nowISO()), stringDefault(c["updatedAt"], nowISO()),
 		); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	if err := writeKVPayload(tx, "modelAliases", payload["modelAliases"], true); err != nil {
-		return err
+		return nil, err
 	}
 	if err := writeKVPayload(tx, "customModels", payload["customModels"], false); err != nil {
-		return err
+		return nil, err
 	}
 	if err := writeKVPayload(tx, "mitmAlias", payload["mitmAlias"], true); err != nil {
-		return err
+		return nil, err
 	}
 	if err := writeKVPayload(tx, "pricing", payload["pricing"], true); err != nil {
-		return err
+		return nil, err
 	}
 
-	return tx.Commit()
+	report := importReport(payload)
+	report["warnings"] = headerLimitWarnings(payload)
+	if dryRun {
+		// Roll back rather than commit: the deferred Rollback above is what
+		// undoes every statement, so the report describes real work that was
+		// then discarded instead of a separate estimate that could disagree
+		// with what the import would actually do.
+		return report, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return report, nil
+}
+
+// headerLimitWarnings reports provider overrides that break the G17 limits.
+//
+// The header is reported, never trimmed: an override that goes on the wire
+// must go on the wire whole, and a silently truncated value would change what
+// the upstream receives. The operator decides what to do with the warning.
+func headerLimitWarnings(payload map[string]any) []any {
+	settings, _ := payload["settings"].(map[string]any)
+	overrides, _ := settings["providerOverrides"].(map[string]any)
+	warnings := []any{}
+	for connID, raw := range overrides {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		headers, _ := entry["headers"].(map[string]any)
+		if len(headers) > db.MaxOverrideHeaders {
+			warnings = append(warnings, map[string]any{
+				"code":         "incompatible_header_limit",
+				"connectionId": connID,
+				"headerName":   "",
+				"length":       len(headers),
+				"limit":        db.MaxOverrideHeaders,
+				"reason":       "too many headers",
+			})
+		}
+		for name, rawValue := range headers {
+			value, ok := rawValue.(string)
+			if !ok || len(value) <= db.MaxOverrideHeaderValueSize {
+				continue
+			}
+			warnings = append(warnings, map[string]any{
+				"code":         "incompatible_header_limit",
+				"connectionId": connID,
+				"headerName":   name,
+				"length":       len(value),
+				"limit":        db.MaxOverrideHeaderValueSize,
+				"reason":       "header value too long",
+			})
+		}
+	}
+	return warnings
+}
+
+// importReport summarizes what a payload carried, counting what was actually
+// accepted rather than what was present: a malformed row is skipped by the
+// import loops and must not inflate the count.
+func importReport(payload map[string]any) map[string]any {
+	report := map[string]any{}
+	accesses := map[string]int{}
+	for _, table := range []string{"providerConnections", "providerNodes", "proxyPools", "apiKeys", "combos"} {
+		items, _ := payload[table].([]any)
+		accepted := 0
+		for _, item := range items {
+			row, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if table == "apiKeys" {
+				if id, _ := row["id"].(string); id == "" {
+					continue
+				}
+				models := importAllowlist(row)
+				switch {
+				case len(models) == 0:
+					accesses["unrestricted"]++
+				case len(models) == 1 && models[0] == db.SentinelDenyAll:
+					accesses["restrictedEmpty"]++
+				default:
+					accesses["restrictedList"]++
+				}
+			}
+			accepted++
+		}
+		report[table] = accepted
+	}
+	report["apiKeyAccess"] = accesses
+	return report
 }
 
 // writeKVPayload restores kv rows for one scope. keyed scopes store a map of
@@ -778,7 +1071,7 @@ func writeKVPayload(tx *sql.Tx, scope string, value any, keyed bool) error {
 }
 
 // loadKVScopes fills the kv-derived export sections.
-func loadKVScopes(db *sql.DB, out *databaseExport) error {
+func loadKVScopes(db queryer, out *databaseExport) error {
 	rows, err := db.Query(`SELECT scope, key, value FROM kv`)
 	if err != nil {
 		return err
@@ -806,7 +1099,7 @@ func loadKVScopes(db *sql.DB, out *databaseExport) error {
 
 // selectRows runs a query and returns every row as a column → value map, with
 // SQLite BLOB values surfaced as strings (they hold JSON columns).
-func selectRows(db *sql.DB, query string) ([]map[string]any, error) {
+func selectRows(db queryer, query string) ([]map[string]any, error) {
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -929,6 +1222,67 @@ func stringDefault(v any, fallback any) any {
 // nowISO returns a UTC RFC3339 timestamp for rows missing one.
 func nowISO() string {
 	return time.Now().UTC().Format(time.RFC3339)
+}
+
+// accessShape maps a Go allowlist to the Node access object.
+//
+// An empty list is unrestricted and gets one deny-all sentinel row, so a
+// restricted key that allows nothing cannot be mistaken for a key with no
+// restriction at all.
+func accessShape(models []string) map[string]any {
+	if len(models) == 0 {
+		return map[string]any{"restricted": false, "allow": []any{}}
+	}
+	if len(models) == 1 && models[0] == db.SentinelDenyAll {
+		return map[string]any{"restricted": true, "allow": []any{}}
+	}
+	allow := make([]any, 0, len(models))
+	for _, m := range models {
+		allow = append(allow, m)
+	}
+	return map[string]any{"restricted": true, "allow": allow}
+}
+
+// importAllowlist resolves one backed-up api key to the model patterns to
+// restore, following the G05 mapping rules.
+//
+// A Node backup carries access{restricted,allow} and a Go backup carries
+// allowedModels. `access` wins when present: a restricted-empty key has an
+// empty allow list, which is indistinguishable from "no restriction" if only
+// the empty list is looked at — so the restricted flag has to be read, and it
+// has to be read before the empty list is treated as unrestricted.
+func importAllowlist(k map[string]any) []string {
+	if access, ok := k["access"].(map[string]any); ok {
+		restricted, _ := access["restricted"].(bool)
+		allow := stringList(access["allow"])
+		if !restricted {
+			return nil
+		}
+		if len(allow) == 0 {
+			return []string{db.SentinelDenyAll}
+		}
+		return allow
+	}
+	models := stringList(k["allowedModels"])
+	if len(models) == 0 {
+		return nil
+	}
+	return models
+}
+
+// stringList coerces a JSON array to a string slice, dropping empty entries.
+func stringList(v any) []string {
+	items, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if s, ok := item.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // intDefault coerces a backup value to a whole non-negative count, returning

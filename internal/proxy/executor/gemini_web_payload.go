@@ -43,9 +43,13 @@ var geminiWebThinkingLevels = map[string]int{
 }
 
 // geminiWebThinkingLevel resolves the reasoning level for a turn from the body's
-// reasoning fields. An absent or unrecognized value means the site's default
-// rather than a guess.
-func geminiWebThinkingLevel(body geminiWebRequestEnvelope) int {
+// reasoning fields. An absent or unrecognized value means the model's own
+// default rather than a guess.
+//
+// The budget is a client's own unit and the site has no budget field, so it
+// is mapped onto the three levels the site does have: a budget under 4096 is
+// the site's low, one under 16384 its medium, and anything larger its high.
+func geminiWebThinkingLevel(body geminiWebRequestEnvelope, model *geminiWebModel) int {
 	if level, ok := geminiWebThinkingLevels[strings.ToLower(strings.TrimSpace(body.ReasoningEffort))]; ok {
 		return level
 	}
@@ -57,15 +61,15 @@ func geminiWebThinkingLevel(body geminiWebRequestEnvelope) int {
 	}
 	if body.ThinkingBudget != nil {
 		switch {
-		case *body.ThinkingBudget <= 0:
+		case *body.ThinkingBudget <= 4096:
 			return geminiWebThinkingLevels["low"]
-		case *body.ThinkingBudget < 4096:
+		case *body.ThinkingBudget <= 16384:
 			return geminiWebThinkingLevels["medium"]
 		default:
 			return geminiWebThinkingLevels["high"]
 		}
 	}
-	return geminiWebThinkingLevels["low"]
+	return geminiWebDefaultThinkingLevel(model)
 }
 
 // geminiWebBuildInner renders the request array for one turn.
@@ -73,12 +77,23 @@ func geminiWebThinkingLevel(body geminiWebRequestEnvelope) int {
 // Slot 7 asks the site to stream tokens, slot 27 to return routing early, and
 // slot 11 to strip the consumer extensions (Workspace, Maps, YouTube) so they
 // cannot answer in place of the model.
-func geminiWebBuildInner(prompt string, thinkingLevel int) []any {
+//
+// Slot 79 names the model of the account's tier. It used to be hardcoded to
+// 1, which is the Flash-Lite number every anonymous session serves; a
+// signed-in session has other models and the registry reports their numbers,
+// so the resolved model's number goes here.
+func geminiWebBuildInner(prompt string, thinkingLevel int, modelNumber int, attachments []geminiWebAttachment) []any {
 	if thinkingLevel <= 0 {
 		thinkingLevel = geminiWebThinkingLevels["low"]
 	}
+	if modelNumber <= 0 {
+		modelNumber = 1
+	}
 	inner := make([]any, geminiWebInnerSlots)
-	inner[geminiWebSlotPrompt] = []any{prompt, 0, nil, nil, nil, nil, 0}
+	// Slot 0 carries the prompt and, in its fourth member, the attachments
+	// the model is asked to look at. The site's own composer sends the
+	// uploaded paths there, so that is the shape it accepts.
+	inner[geminiWebSlotPrompt] = []any{prompt, 0, nil, geminiWebAttachmentSlot(attachments), nil, nil, 0}
 	inner[geminiWebSlotLanguage] = []string{"en"}
 	inner[geminiWebSlotMetadata] = []any{"", "", "", nil, nil, nil, nil, nil, nil, ""}
 	inner[6] = []int{1}
@@ -94,9 +109,25 @@ func geminiWebBuildInner(prompt string, thinkingLevel int) []any {
 	inner[61] = []any{}
 	inner[67] = 1 // personal context off
 	inner[68] = 1
-	inner[geminiWebSlotModelNumber] = 1
+	inner[geminiWebSlotModelNumber] = modelNumber
 	inner[geminiWebSlotThinkingLevel] = thinkingLevel
 	return inner
+}
+
+// geminiWebAttachmentSlot renders the attachments for slot 0.
+//
+// The slot holds a list of [path, filename] tuples, or nothing at all when
+// the turn has no image — the site's own client sends null there, not an
+// empty list.
+func geminiWebAttachmentSlot(attachments []geminiWebAttachment) any {
+	if len(attachments) == 0 {
+		return nil
+	}
+	slot := make([]any, 0, len(attachments))
+	for _, attachment := range attachments {
+		slot = append(slot, attachment.slot())
+	}
+	return slot
 }
 
 // geminiWebBuildModelHeader renders the x-goog-ext-525001261-jspb header that
@@ -155,8 +186,34 @@ type geminiWebRequestEnvelope struct {
 // transcript, while a single-turn request collapses to just its user message. This
 // provider's turns are self-contained (see geminiWebSlotMetadata), so nothing here
 // needs the frozen-transcript rendering that a session-persisting caller does.
+//
+// The turns are sanitized on the way in. The site takes one flat prompt, so a
+// line that claims a role reads as that role's turn, and a replayed assistant
+// turn that carries the model's own reasoning makes the model continue that
+// reasoning rather than answer.
 func geminiWebMessagesToPrompt(messages []deepSeekMessage) string {
-	return strings.TrimSpace(deepSeekMessagesToPrompt(messages, 0, false))
+	sanitized := make([]deepSeekMessage, 0, len(messages))
+	for _, message := range messages {
+		text := deepSeekMessageText(message.Content)
+		switch message.Role {
+		case "user", "tool":
+			text = geminiWebSanitizeRoleLine(text)
+		case "assistant":
+			text = geminiWebStripReasoning(text)
+		}
+		message.Content = geminiWebTextContent(text)
+		sanitized = append(sanitized, message)
+	}
+	return strings.TrimSpace(deepSeekMessagesToPrompt(sanitized, 0, false))
+}
+
+// geminiWebTextContent puts a plain string back into the content slot.
+func geminiWebTextContent(text string) jsontext.Value {
+	encoded, err := json.Marshal(text)
+	if err != nil {
+		return nil
+	}
+	return jsontext.Value(encoded)
 }
 
 // geminiWebCatalogAlias maps the catalog model ids this provider advertises onto
@@ -299,8 +356,9 @@ func geminiWebIntAt(arr []any, index int) (int, bool) {
 	return int(value), ok
 }
 
-// geminiWebParseModelRegistry reads the otAQ7b payload into the model list and
-// the tier flags that decide the capacity field.
+// geminiWebParseModelRegistry reads the otAQ7b payload into the model list, the
+// tier flags that decide the capacity field, and the thinking policy that
+// says which levels each model offers.
 func geminiWebParseModelRegistry(payload any) ([]geminiWebModel, []int, []int, bool) {
 	arr, ok := payload.([]any)
 	if !ok || len(arr) <= 15 {
@@ -313,6 +371,7 @@ func geminiWebParseModelRegistry(payload any) ([]geminiWebModel, []int, []int, b
 	tierFlags := geminiWebIntList(arr[16])
 	capFlags := geminiWebIntList(arr[17])
 	capacity, capacityField := geminiWebComputeCapacity(tierFlags, capFlags)
+	policy, policyKnown := geminiWebParseThinkingPolicy(geminiWebPayloadAt(arr, 24))
 
 	models := make([]geminiWebModel, 0, len(rawModels))
 	for _, entryAny := range rawModels {
@@ -337,14 +396,17 @@ func geminiWebParseModelRegistry(payload any) ([]geminiWebModel, []int, []int, b
 		if !ok {
 			number, _ = geminiWebIntAt(entry, 9)
 		}
+		levels := policy[number]
 		models = append(models, geminiWebModel{
-			ID:            id,
-			Category:      category,
-			DisplayName:   displayName,
-			Description:   description,
-			Number:        number,
-			Capacity:      capacity,
-			CapacityField: capacityField,
+			ID:                  id,
+			Category:            category,
+			DisplayName:         displayName,
+			Description:         description,
+			Number:              number,
+			Capacity:            capacity,
+			CapacityField:       capacityField,
+			ThinkingLevels:      levels,
+			ThinkingPolicyKnown: policyKnown,
 		})
 	}
 	return models, tierFlags, capFlags, true
@@ -359,6 +421,24 @@ type geminiWebModel struct {
 	Number        int
 	Capacity      int
 	CapacityField int
+	// ThinkingLevels are the reasoning levels the registry says this model
+	// offers. It is empty when the registry published no policy, in which
+	// case the level is not constrained by the registry.
+	ThinkingLevels []string
+	// ThinkingPolicyKnown reports that the registry published a thinking
+	// policy and simply did not list this model. That is different from a
+	// registry with no policy at all: a listed model genuinely has no
+	// thinking levels, while an absent policy means the level cannot be
+	// constrained from the registry.
+	ThinkingPolicyKnown bool
+}
+
+// geminiWebPayloadAt reads one field of a payload array, bounds-checked.
+func geminiWebPayloadAt(arr []any, index int) any {
+	if index < 0 || index >= len(arr) {
+		return nil
+	}
+	return arr[index]
 }
 
 // geminiWebRequestID mints the _reqid the site expects to increase per call.

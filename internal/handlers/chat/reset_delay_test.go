@@ -55,6 +55,20 @@ func TestExtractResetDuration_TextMessage(t *testing.T) {
 	}
 }
 
+func TestExtractResetDuration_CodeBuddyDate(t *testing.T) {
+	cst := time.FixedZone("CST", 8*3600)
+	future := time.Now().In(cst).Add(25 * time.Minute)
+	futureStr := future.Format("2006-01-02 15:04:05")
+	body := []byte(`{"code":6004,"msg":"模型超出频率限制，恢复时间 ` + futureStr + ` UTC+8"}`)
+	dur, ok := extractResetDuration(body)
+	if !ok {
+		t.Fatalf("expected extractResetDuration to succeed on CodeBuddy date format")
+	}
+	if dur < 24*time.Minute || dur > 26*time.Minute {
+		t.Errorf("expected duration around 25m, got %v", dur)
+	}
+}
+
 func TestExtractResetDuration_ClampingSafety(t *testing.T) {
 	// Case 1: Extremely long duration (> 2 hours) is clamped to maxResetCooldown (2 hours) to avoid deadlocks.
 	bodyLong := []byte(`{"error":{"message":"Resets in 720h."}}`)

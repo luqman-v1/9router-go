@@ -31,7 +31,7 @@ import (
 // CurrentVersion is the active 9router-go application version.
 // Can be overridden at build time via -ldflags "-X 9router/proxy/internal/updater.CurrentVersion=1.8.8"
 // Default fallback is read from version.json at init if not overridden.
-var CurrentVersion = "1.9.14-exp.4"
+var CurrentVersion = "1.9.15-exp.13"
 
 // DefaultUpdateURL is the primary remote version manifest URL.
 var DefaultUpdateURL = "https://raw.githubusercontent.com/luqman-v1/9router-go/main/version.json"
@@ -164,9 +164,27 @@ var githubReleasesAPI = lo.CoalesceOrEmpty(os.Getenv("UPSTREAM_API_BASE"), "http
 // GitHub Releases API, and its version metadata is used only if that fails too.
 func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	updateURL := lo.CoalesceOrEmpty(os.Getenv("UPDATE_URL"), DefaultUpdateURL)
+	repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
+	// An unconfigured channel is a fork that links both defaults empty, not a
+	// reason to dial someone else's release API. Refusing here keeps a build
+	// with no channel from silently reaching upstream's manifest or repo.
+	//
+	// It has to be both: a build that configures only one of the two sources
+	// has a channel, and refusing it would turn a working manifest-only (or
+	// repo-only) fork off entirely. Each source below is skipped when its own
+	// setting is empty instead.
+	if updateURL == "" && repo == "" {
+		return nil, fmt.Errorf("update channel is not configured")
+	}
 
 	// 1. Try manifest URL first
-	info, manifestErr := checkManifest(ctx, updateURL)
+	var info *UpdateInfo
+	var manifestErr error
+	if updateURL != "" {
+		info, manifestErr = checkManifest(ctx, updateURL)
+	} else {
+		manifestErr = fmt.Errorf("no manifest channel configured")
+	}
 	if manifestErr == nil && info != nil {
 		if info.SHA256 != "" || !info.HasUpdate {
 			cacheUpdateInfo(info)
@@ -180,11 +198,15 @@ func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 	}
 
 	// 2. Fallback to GitHub Releases API
-	repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
-	ghURL := fmt.Sprintf(githubReleasesAPI, repo)
-	log.Debug("updater", "checking github releases fallback", "repo", repo)
-
-	ghInfo, ghErr := checkGitHubReleases(ctx, ghURL)
+	var ghInfo *UpdateInfo
+	var ghErr error
+	if repo != "" {
+		ghURL := fmt.Sprintf(githubReleasesAPI, repo)
+		log.Debug("updater", "checking github releases fallback", "repo", repo)
+		ghInfo, ghErr = checkGitHubReleases(ctx, ghURL)
+	} else {
+		ghErr = fmt.Errorf("no repo channel configured")
+	}
 	if ghErr == nil && ghInfo != nil {
 		cacheUpdateInfo(ghInfo)
 		return ghInfo, nil
