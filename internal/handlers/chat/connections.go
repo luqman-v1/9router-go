@@ -627,7 +627,10 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		// field is typed as "http://192.168.1.10:11434"), and a host alone names
 		// no route, so the POST used to land on the server root. A URL that
 		// already names a route is passed through untouched.
-		baseURL := chatCompletionsURL(connData.BaseURL)
+		//
+		// A custom node's baseUrl is a PREFIX rather than an endpoint the
+		// operator named, so it is completed by a different rule (#768).
+		baseURL := compatibleNodeLaneURL(provider, connectionAPIType(connData), connData.BaseURL)
 		if cfg, ok := providers.KnownProviders[provider]; ok {
 			cloned := cfg
 			cloned.BaseURL = baseURL
@@ -650,7 +653,7 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		}
 		if node != nil && nodeData != nil && nodeData.BaseURL != "" {
 			baseCfg = &providers.ProviderConfig{
-				BaseURL:    chatCompletionsURL(nodeData.BaseURL),
+				BaseURL:    compatibleNodeLaneURL(provider, nodeData.APIType, nodeData.BaseURL),
 				AuthHeader: constants.HeaderAuthorization,
 				AuthScheme: constants.AuthSchemeBearer,
 			}
@@ -706,6 +709,105 @@ func (h *ChatHandler) withClineIdentity(provider string, cfg *providers.Provider
 	cloned := *cfg
 	cloned.StaticHeaders = providers.ClineIdentityHeaders(updater.CurrentVersion, cfg.StaticHeaders)
 	return &cloned
+}
+
+// compatibleNodeLaneURL completes a custom provider node's baseUrl into the
+// lane its node type and apiType name, and leaves a URL that already names a
+// lane untouched.
+//
+// Upstream treats a node's baseUrl as a PREFIX and appends the lane
+// unconditionally (open-sse/executors/base.js buildUrl: `${normalized}${path}`,
+// with the path chosen by resolveOpenAICompatibleApiType). A node pointed at
+// https://developer.amd.com.cn/radeon/api/v1 therefore reaches
+// /radeon/api/v1/chat/completions there, while this port dialled the base URL
+// itself and the upstream answered 404 (#768).
+//
+// chatCompletionsURL cannot serve this case: it leaves a multi-segment path
+// alone, which is correct for the Ollama Local host field — an endpoint the
+// operator typed — and wrong for a node, whose baseUrl is a prefix by contract.
+// The two rules stay separate for that reason. The bare-host and /v1 shapes
+// resolve exactly as they did through chatCompletionsURL, so a node that
+// already worked keeps the URL it had.
+func compatibleNodeLaneURL(provider, apiType, baseURL string) string {
+	if !isCompatibleNodeProvider(provider) {
+		return chatCompletionsURL(baseURL)
+	}
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		return baseURL
+	}
+	// A base URL that already names a lane is used as-is: appending a second
+	// one would produce the same 404 this function exists to remove, and a node
+	// created before this rule may store the full route.
+	for _, lane := range compatibleNodeLanes {
+		if strings.HasSuffix(base, lane) {
+			return base
+		}
+	}
+	lane := compatibleNodeLane(provider, apiType)
+	// A URL naming no path, or only a version prefix, still needs the /v1 that
+	// makes the prefix an API root — the same completion chatCompletionsURL
+	// applies to the Ollama Local host field.
+	if compatibleNodeNeedsVersionPrefix(base) {
+		return base + "/v1" + lane
+	}
+	return base + lane
+}
+
+// compatibleNodeNeedsVersionPrefix reports whether a base URL carries no path
+// beyond its authority, so the /v1 prefix is still missing.
+func compatibleNodeNeedsVersionPrefix(base string) bool {
+	_, rest, found := strings.Cut(base, "://")
+	if !found {
+		return true
+	}
+	_, path, _ := strings.Cut(rest, "/")
+	return strings.Trim(path, "/") == ""
+}
+
+// compatibleNodeLanes are the routes a custom node baseUrl may already name.
+// A base ending in one of them is an endpoint, not a prefix.
+var compatibleNodeLanes = []string{"/chat/completions", "/messages", "/responses", "/embeddings"}
+
+// compatibleNodeLane is the route a node of this type and apiType serves.
+// Anthropic-compatible nodes speak Messages, custom-embedding nodes speak
+// Embeddings, and an openai-compatible node picks between Chat Completions and
+// Responses from its apiType — the same mapping upstream's buildUrl applies.
+func compatibleNodeLane(provider, apiType string) string {
+	switch {
+	case strings.HasPrefix(provider, "anthropic-compatible-"):
+		return "/messages"
+	case strings.HasPrefix(provider, "custom-embedding-"):
+		return "/embeddings"
+	case apiType == compatibleAPITypeResponses:
+		return "/responses"
+	default:
+		return "/chat/completions"
+	}
+}
+
+// compatibleAPITypeResponses is the stored apiType of an openai-compatible node
+// whose upstream speaks the Responses API (upstream resolveOpenAICompatibleApiType).
+const compatibleAPITypeResponses = "responses"
+
+// isCompatibleNodeProvider reports whether a provider id belongs to a custom
+// endpoint the operator registered, matching the three node shapes the create
+// handler composes (provider_node_id.go).
+func isCompatibleNodeProvider(provider string) bool {
+	return strings.HasPrefix(provider, "openai-compatible-") ||
+		strings.HasPrefix(provider, "anthropic-compatible-") ||
+		strings.HasPrefix(provider, "custom-embedding-")
+}
+
+// connectionAPIType reads the apiType the dashboard stores on a compatible
+// node's connection, which is kept in sync with the node on create and update.
+// An absent value means Chat Completions, the same default upstream applies.
+func connectionAPIType(connData *ConnectionData) string {
+	if connData == nil || connData.ProviderSpecificData == nil {
+		return ""
+	}
+	apiType, _ := connData.ProviderSpecificData["apiType"].(string)
+	return apiType
 }
 
 // chatCompletionsURL completes a configured endpoint into the chat-completions
