@@ -19,11 +19,12 @@ missing.
 `compatibleNodeLaneURL` now completes a node's base URL by that contract, and
 the shared helper keeps its shape rule for the registry and Ollama Local
 overrides. The lane follows the node shape rather than a guess: `/messages` for
-`anthropic-compatible-*`, `/embeddings` for `custom-embedding-*`, and
-`/responses` or `/chat/completions` for `openai-compatible-*` by its stored
-`apiType`. A base URL that already names a lane is used as-is, and a bare host
-or a `/v1` root resolves exactly as it did before, so a node that already worked
-keeps the URL it had.
+`anthropic-compatible-*`, and `/responses` or `/chat/completions` for
+`openai-compatible-*` by its stored `apiType`. A `custom-embedding-*` node keeps
+`/chat/completions`, because the embeddings handler derives its own URL from the
+resolved config and would otherwise append `/embeddings` twice. A base URL that
+already names a lane is used as-is, and a bare host or a `/v1` root resolves
+exactly as it did before, so a node that already worked keeps the URL it had.
 
 Both branches that build a node config go through it — the connection's own
 `providerSpecificData.baseUrl` and the node row's `baseUrl` fallback — because
