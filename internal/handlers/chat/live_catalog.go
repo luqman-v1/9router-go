@@ -449,6 +449,8 @@ func (h *ChatHandler) fetchCompatibleNodeModels(ctx context.Context, conn *model
 	switch {
 	case strings.HasPrefix(providerID, "openai-compatible-"):
 		headers["Authorization"] = "Bearer " + apiKey
+		// OpenAI-compatible API uses /v1/models endpoint
+		baseURL = baseURL + "/v1/models"
 	case strings.HasPrefix(providerID, "anthropic-compatible-"):
 		baseURL = strings.TrimSuffix(baseURL, "/messages/models")
 		if !strings.HasSuffix(baseURL, "/messages") {
