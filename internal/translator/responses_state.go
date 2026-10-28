@@ -22,6 +22,27 @@ const (
 	responsesPrefixReasoningItem = "rs"
 )
 
+// Responses API terminal statuses and the incomplete reason this package adds.
+// The statuses mirror upstream open-sse/translator/schema/finishReasons.js
+// RESPONSES_STATUS.
+const (
+	responsesStatusCompleted  = "completed"
+	responsesStatusIncomplete = "incomplete"
+
+	// responsesIncompleteToolArguments is the incomplete_details.reason reported
+	// when a tool call closed with arguments that do not parse as JSON, which is
+	// what a stream cut mid-arguments leaves behind. Upstream's
+	// RESPONSES_INCOMPLETE_REASON names only max_output_tokens and
+	// content_filter; a truncated argument buffer has no upstream equivalent to
+	// inherit, so this reason is named here.
+	responsesIncompleteToolArguments = "tool_call_arguments_incomplete"
+
+	// responsesIncompleteMaxOutputTokens is upstream's own reason for a turn the
+	// output limit cut short, used when finish_reason says the truncation was
+	// "length" rather than a dropped stream.
+	responsesIncompleteMaxOutputTokens = "max_output_tokens"
+)
+
 // ResponsesEvent is one server-sent event of the OpenAI Responses API stream:
 // the wire `event:` name plus the JSON object that follows in `data:`.
 type ResponsesEvent struct {
@@ -83,6 +104,18 @@ type ResponsesState struct {
 	// owed to the client and has to be flushed on a deadline rather than on
 	// the upstream's cooperation.
 	CompletionPending bool
+
+	// Incomplete records the reason the turn cannot be reported as completed.
+	// It is set when a tool call closes with arguments that do not parse as
+	// JSON — the shape a stream cut mid-arguments leaves — so the terminal
+	// event tells the client the turn is incomplete instead of claiming a
+	// success it did not have. Empty means the turn is whole.
+	Incomplete string
+
+	// FinishReason is the upstream Chat finish_reason of the chunk that closed
+	// the answer, remembered so a truncation can be attributed: a tool call cut
+	// by "length" is the output limit, not a dropped connection.
+	FinishReason string
 
 	MsgTextBuf      map[int]string
 	MsgItemAdded    map[int]bool
