@@ -44,7 +44,7 @@ func TestOllamaCloudAndLocalStaySeparate(t *testing.T) {
 	}
 }
 
-// chatCompletionsURL turns a bare host into the route a POST needs. The
+// ChatCompletionsURL turns a bare host into the route a POST needs. The
 // dashboard's Ollama Local host field is typed as "http://192.168.1.10:11434",
 // so a dotted IP is the case that actually occurs; an early implementation
 // treated a dot in the last segment as a filename and passed it through
@@ -60,6 +60,13 @@ func TestChatCompletionsURL(t *testing.T) {
 		{"trailing slash on a bare host", "http://192.168.1.10:11434/", "http://192.168.1.10:11434/v1/chat/completions"},
 		{"v1 prefix is not doubled", "https://api.example.com/v1", "https://api.example.com/v1/chat/completions"},
 		{"v1 prefix with slash is not doubled", "https://api.example.com/v1/", "https://api.example.com/v1/chat/completions"},
+		// AnyRouter documents https://anyrouter.dev/api/v1 as its base; a
+		// version segment behind a vendor segment is still a base, and a POST
+		// to the base itself is a 404 (the reported model-test failure).
+		{"vendor segment before a version prefix gains the route", "https://anyrouter.dev/api/v1", "https://anyrouter.dev/api/v1/chat/completions"},
+		{"vendor segment before a version prefix with slash", "https://anyrouter.dev/api/v1/", "https://anyrouter.dev/api/v1/chat/completions"},
+		{"openai segment before a version prefix gains the route", "https://api.example.com/openai/v1", "https://api.example.com/openai/v1/chat/completions"},
+		{"a named route under a vendor-prefixed version is left alone", "https://api.example.com/api/v1/proxy", "https://api.example.com/api/v1/proxy"},
 		{"full route is left alone", "https://api.example.com/v1/chat/completions", "https://api.example.com/v1/chat/completions"},
 		{"anthropic messages lane is left alone", "https://api.anthropic.com/v1/messages", "https://api.anthropic.com/v1/messages"},
 		{"responses lane is left alone", "https://chatgpt.com/backend-api/codex/responses", "https://chatgpt.com/backend-api/codex/responses"},
@@ -73,8 +80,8 @@ func TestChatCompletionsURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := chatCompletionsURL(tt.in); got != tt.want {
-				t.Errorf("chatCompletionsURL(%q) = %q, want %q", tt.in, got, tt.want)
+			if got := ChatCompletionsURL(tt.in); got != tt.want {
+				t.Errorf("ChatCompletionsURL(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
@@ -181,7 +188,6 @@ func TestOllamaConnectionProxiesToConfiguredUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getProviderConfig: %v", err)
 	}
-
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()

@@ -124,6 +124,37 @@ func TestTestConnection_OpenAICompatibleNode(t *testing.T) {
 	}
 }
 
+// The node row stores the endpoint; the connection under it carries only the
+// key. The probe must read the node and complete its base the way chat does,
+// or a bare-host node is reported broken while requests succeed.
+func TestTestConnection_OpenAICompatibleBareHostNode(t *testing.T) {
+	repo, cleanup := setupProbeTestDB(t)
+	defer cleanup()
+
+	const nodeID = "openai-compatible-chat-probe-bare"
+	if _, err := repo.CreateProviderNode(nodeID, "openai-compatible", "Bare Node",
+		`{"prefix":"bare","apiType":"chat","baseUrl":"https://node.example.com"}`); err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	if err := repo.CreateProviderConnectionFull("conn-bare", nodeID, "apikey", "Bare", nil, `{"apiKey":"sk-live"}`); err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+
+	var gotURL string
+	stubProbeDo(t, func(method, rawURL string) (int, []byte) {
+		gotURL = rawURL
+		return http.StatusOK, []byte(`{"data":[]}`)
+	})
+
+	status, body := postTestConnection(t, repo, "conn-bare")
+	if status != http.StatusOK || body["valid"] != true {
+		t.Fatalf("status/body = %d %v", status, body)
+	}
+	if gotURL != "https://node.example.com/v1/models" {
+		t.Errorf("probed %q, want the node's /v1/models endpoint", gotURL)
+	}
+}
+
 func TestTestConnection_OpenAICompatibleNodeRejectsBadKey(t *testing.T) {
 	repo, cleanup := setupProbeTestDB(t)
 	defer cleanup()

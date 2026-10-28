@@ -670,6 +670,41 @@ func TestHandleValidateProvider_CustomOpenAINode(t *testing.T) {
 	}
 }
 
+// A node configured with a bare host must validate against the same routes a
+// chat request uses; the probe used to append /models and /chat/completions to
+// the host while chat completed it to /v1 first.
+func TestHandleValidateProvider_CustomOpenAINodeBareHost(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	const nodeID = "openai-compatible-chat-bare"
+	if _, err := repo.CreateProviderNode(nodeID, "openai-compatible", "Bare Node",
+		`{"baseUrl":"https://bare-llm.example","prefix":"bare"}`); err != nil {
+		t.Fatalf("failed to create node: %v", err)
+	}
+
+	calls := staticProbeStub(t, http.StatusOK)
+	body := `{"provider":"` + nodeID + `","apiKey":"my-secret-key"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/validate", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("expected models+chat probes, got %d", len(*calls))
+	}
+	if (*calls)[0].url != "https://bare-llm.example/v1/models" {
+		t.Errorf("models probe = %q, want https://bare-llm.example/v1/models", (*calls)[0].url)
+	}
+	if (*calls)[1].url != "https://bare-llm.example/v1/chat/completions" {
+		t.Errorf("chat probe = %q, want https://bare-llm.example/v1/chat/completions", (*calls)[1].url)
+	}
+}
+
 func TestHandleValidateProvider_CustomOpenAINode_InvalidKeyRejection(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()

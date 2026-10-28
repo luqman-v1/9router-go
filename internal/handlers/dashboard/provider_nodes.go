@@ -14,6 +14,7 @@ import (
 
 	json "encoding/json/v2"
 
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -454,13 +455,15 @@ func writeNodeValidation(w http.ResponseWriter, payload map[string]any) {
 	handlerutil.WriteJSON(w, http.StatusOK, payload)
 }
 
-// validateOpenAICompatibleNode probes GET {base}/models, falling back to a
-// minimal chat request when the model endpoint is absent.
+// validateOpenAICompatibleNode probes the node's model catalogue, falling back
+// to a minimal chat request when the model endpoint is absent. Both URLs are
+// completed the way the chat path completes them, so the Check button and the
+// request it stands in for agree on where a bare or versioned base points.
 func validateOpenAICompatibleNode(w http.ResponseWriter, ctx context.Context, baseURL, apiKey, modelID string) {
 	base := strings.TrimSuffix(baseURL, "/")
 	headers := map[string]string{"Authorization": "Bearer " + apiKey}
 
-	status, body, err := validateProbeDo(ctx, http.MethodGet, base+"/models", headers, nil)
+	status, body, err := validateProbeDo(ctx, http.MethodGet, chat.CompatibleNodeModelsURL(base), headers, nil)
 	if err != nil {
 		writeNodeValidation(w, map[string]any{"valid": false, "error": validateNodeNetworkMessage(err)})
 		return
@@ -493,7 +496,7 @@ func validateOpenAICompatibleNode(w http.ResponseWriter, ctx context.Context, ba
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		}
-		chatStatus, _, cErr := validateProbeDo(ctx, http.MethodPost, base+"/chat/completions", chatHeaders, payload)
+		chatStatus, _, cErr := validateProbeDo(ctx, http.MethodPost, chat.ChatCompletionsURL(base), chatHeaders, payload)
 		if cErr == nil && (chatStatus == http.StatusUnauthorized || chatStatus == http.StatusForbidden) {
 			writeNodeValidation(w, map[string]any{"valid": false, "error": "API key unauthorized"})
 			return

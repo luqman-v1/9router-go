@@ -627,7 +627,7 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		// field is typed as "http://192.168.1.10:11434"), and a host alone names
 		// no route, so the POST used to land on the server root. A URL that
 		// already names a route is passed through untouched.
-		baseURL := chatCompletionsURL(connData.BaseURL)
+		baseURL := ChatCompletionsURL(connData.BaseURL)
 		if cfg, ok := providers.KnownProviders[provider]; ok {
 			cloned := cfg
 			cloned.BaseURL = baseURL
@@ -650,7 +650,7 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		}
 		if node != nil && nodeData != nil && nodeData.BaseURL != "" {
 			baseCfg = &providers.ProviderConfig{
-				BaseURL:    chatCompletionsURL(nodeData.BaseURL),
+				BaseURL:    ChatCompletionsURL(nodeData.BaseURL),
 				AuthHeader: constants.HeaderAuthorization,
 				AuthScheme: constants.AuthSchemeBearer,
 			}
@@ -708,8 +708,12 @@ func (h *ChatHandler) withClineIdentity(provider string, cfg *providers.Provider
 	return &cloned
 }
 
-// chatCompletionsURL completes a configured endpoint into the chat-completions
+// ChatCompletionsURL completes a configured endpoint into the chat-completions
 // route, and leaves one that already names a route untouched.
+//
+// Exported because the dashboard's node/key probes run the same request the
+// chat path will run, and a probe that completes the base URL differently
+// reports a working node as broken (or the reverse).
 //
 // A configured endpoint arrives in one of two shapes: the full route, or a bare
 // host — the compatible-node baseUrl and the Ollama Local host field both take
@@ -719,11 +723,14 @@ func (h *ChatHandler) withClineIdentity(provider string, cfg *providers.Provider
 //
 // Detection is by shape, not by guessing whether the last path segment looks
 // like a filename: an early version did that and exempted exactly the dotted-IP
-// host it existed to fix. A URL whose path is only a version prefix (/v1, and
-// the /v1beta Google uses) is that prefix plus the route; a path that carries
-// any segment beyond it is taken to be an endpoint the operator named, and is
-// left alone rather than having /v1 appended behind it.
-func chatCompletionsURL(baseURL string) string {
+// host it existed to fix. A URL whose path ends in a version prefix (/v1, and
+// the /v1beta Google uses) is that prefix plus the route. The version may sit
+// behind a vendor segment — an OpenAI-compatible provider publishes its base as
+// "https://anyrouter.dev/api/v1" — so the trailing segment decides, not the
+// whole path; a path that ends in any other segment is taken to be an endpoint
+// the operator named, and is left alone rather than having /v1 appended behind
+// it.
+func ChatCompletionsURL(baseURL string) string {
 	url := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if url == "" {
 		return baseURL
@@ -736,24 +743,30 @@ func chatCompletionsURL(baseURL string) string {
 			return url
 		}
 	}
-	// Split off the scheme and authority, then decide from the path alone: no
-	// path at all, or only a version prefix, means nothing named an endpoint and
-	// the route is appended to the prefix that is there.
+	// Split off the scheme and authority, then decide from the path's last
+	// segment: no path at all, or a path ending in a version prefix, means
+	// nothing named an endpoint and the route is appended behind the prefix
+	// that is there.
 	_, rest, found := strings.Cut(url, "://")
 	if !found {
 		return url + "/v1/chat/completions"
 	}
 	_, path, _ := strings.Cut(rest, "/")
-	switch trimmed := strings.Trim(path, "/"); {
+	trimmed := strings.Trim(path, "/")
+	last := ""
+	if trimmed != "" {
+		last = trimmed[strings.LastIndex(trimmed, "/")+1:]
+	}
+	switch {
 	case trimmed == "":
 		return url + "/v1/chat/completions"
-	case isVersionPrefix(trimmed):
-		// Already versioned ("https://host/v1"): the lane is the prefix plus the
-		// route, not a second prefix.
+	case isVersionPrefix(last):
+		// Already versioned ("https://host/v1", "https://host/api/v1"): the
+		// lane is the prefix plus the route, not a second prefix.
 		return url + "/chat/completions"
 	default:
-		// A path carrying a segment beyond the prefix names an endpoint the
-		// operator chose; appending behind it would only produce a 404.
+		// A path ending in a named segment is an endpoint the operator chose;
+		// appending behind it would only produce a 404.
 		return url
 	}
 }
