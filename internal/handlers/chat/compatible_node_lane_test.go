@@ -89,6 +89,47 @@ func TestCompatibleNodeBaseURLGetsItsLane(t *testing.T) {
 			want:     "https://api.example.com/proxy/v1/messages",
 		},
 		{
+			// These four shapes were dialled as configured before this rule
+			// existed (the parent's chatCompletionsURL leaves any named route
+			// alone), so appending a lane behind them would break a node that
+			// works today.
+			name:     "a stored legacy completions route is left alone",
+			provider: "openai-compatible-chat-amd",
+			apiType:  "chat",
+			base:     "https://api.example.com/v1/completions",
+			want:     "https://api.example.com/v1/completions",
+		},
+		{
+			name:     "a stored /chat route is left alone",
+			provider: "openai-compatible-chat-amd",
+			apiType:  "chat",
+			base:     "https://api.example.com/v1/chat",
+			want:     "https://api.example.com/v1/chat",
+		},
+		{
+			name:     "an ollama-shaped /api/chat node is left alone",
+			provider: "openai-compatible-chat-ollama",
+			apiType:  "chat",
+			base:     "http://192.168.1.10:11434/api/chat",
+			want:     "http://192.168.1.10:11434/api/chat",
+		},
+		{
+			name:     "an ollama-shaped /api/generate node is left alone",
+			provider: "openai-compatible-chat-ollama",
+			apiType:  "chat",
+			base:     "http://192.168.1.10:11434/api/generate",
+			want:     "http://192.168.1.10:11434/api/generate",
+		},
+		{
+			// Upstream's resolveOpenAICompatibleApiType falls back to the id when
+			// no apiType is stored, and a connection row written before the
+			// dashboard began syncing apiType carries none.
+			name:     "a responses node with no stored apiType reads its id",
+			provider: "openai-compatible-responses-acme",
+			base:     "https://api.example.com/api/v1",
+			want:     "https://api.example.com/api/v1/responses",
+		},
+		{
 			name:     "a registry provider keeps the shared helper's shape rule",
 			provider: "ollama-local",
 			base:     "http://192.168.1.10:11434",

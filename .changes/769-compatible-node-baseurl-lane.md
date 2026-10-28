@@ -20,11 +20,22 @@ missing.
 the shared helper keeps its shape rule for the registry and Ollama Local
 overrides. The lane follows the node shape rather than a guess: `/messages` for
 `anthropic-compatible-*`, and `/responses` or `/chat/completions` for
-`openai-compatible-*` by its stored `apiType`. A `custom-embedding-*` node keeps
-`/chat/completions`, because the embeddings handler derives its own URL from the
-resolved config and would otherwise append `/embeddings` twice. A base URL that
-already names a lane is used as-is, and a bare host or a `/v1` root resolves
-exactly as it did before, so a node that already worked keeps the URL it had.
+`openai-compatible-*` by its stored `apiType` — falling back to the node id for
+`responses`, as upstream's `resolveOpenAICompatibleApiType` does, because a
+connection row written before the dashboard began syncing `apiType` carries
+none. A `custom-embedding-*` node keeps `/chat/completions`, because the
+embeddings handler derives its own URL from the resolved config and would
+otherwise append `/embeddings` twice.
+
+A base URL that already names a route is used as-is. The route table is the
+parent helper's full list rather than only the lanes this function appends:
+`/chat/completions`, `/messages`, `/responses`, `/completions`, `/chat`,
+`/embeddings`, `/api/chat` and `/api/generate`. Those last four matter because a
+node that stored `/v1/chat`, `/v1/completions` or an Ollama-shaped `/api/chat`
+was dialled exactly as configured before this rule existed — appending a lane
+behind one would have turned a working node into a doubled path. A bare host or
+a `/v1` root resolves exactly as it did before, so a node that already worked
+keeps the URL it had.
 
 Both branches that build a node config go through it — the connection's own
 `providerSpecificData.baseUrl` and the node row's `baseUrl` fallback — because
@@ -36,5 +47,9 @@ through `getProviderConfig` on both branches, and a request through the real
 handler whose fake upstream asserts the path it was dialled on. The
 end-to-end case fails on the pre-fix tree with
 `upstream saw path "/radeon/api/v1", want "/radeon/api/v1/chat/completions"`
-and passes after, and `go test ./internal/handlers/chat/ ./internal/proxy/...
-./internal/handlers/dashboard/` is green.
+and passes after. Five further cases pin the shapes this change must NOT move —
+a stored `/completions`, `/chat`, `/api/chat` and `/api/generate`, plus a
+`responses` node with no stored `apiType` — and each fails with a doubled or
+wrong path when the rule is reverted. `go test ./internal/handlers/chat/
+./internal/handlers/media/ ./internal/proxy/... ./internal/handlers/dashboard/`
+is green.

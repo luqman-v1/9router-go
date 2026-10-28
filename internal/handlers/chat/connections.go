@@ -766,13 +766,25 @@ func compatibleNodeNeedsVersionPrefix(base string) bool {
 }
 
 // compatibleNodeLanes are the routes a custom node baseUrl may already name.
-// A base ending in one of them is an endpoint, not a prefix.
-var compatibleNodeLanes = []string{"/chat/completions", "/messages", "/responses", "/embeddings"}
+// A base ending in one of them is an endpoint, not a prefix. The list is the
+// parent's chatCompletionsURL route table rather than only the three lanes this
+// function appends: a node that already stored /v1/chat, /v1/completions or an
+// Ollama-shaped /api/chat was dialled as configured before this rule existed,
+// and appending a lane behind one of those would turn a working node into a
+// doubled path.
+var compatibleNodeLanes = []string{
+	"/chat/completions", "/messages", "/responses", "/completions",
+	"/chat", "/embeddings", "/api/chat", "/api/generate",
+}
 
 // compatibleNodeLane is the route a node of this type and apiType serves.
 // Anthropic-compatible nodes speak Messages, and an openai-compatible node picks
 // between Chat Completions and Responses from its apiType — the same mapping
-// upstream's buildUrl applies.
+// upstream's buildUrl applies, including its fallback: when no apiType is stored,
+// upstream reads the node id (resolveOpenAICompatibleApiType returns "responses"
+// for a provider id containing "responses"). A connection row written before the
+// apiType sync landed carries no apiType, and a responses node created then has
+// only its id to say so.
 //
 // A custom-embedding node is deliberately NOT given an /embeddings lane here:
 // the embeddings handler derives its own URL from this one (buildEmbeddingsURL
@@ -783,6 +795,8 @@ func compatibleNodeLane(provider, apiType string) string {
 	case strings.HasPrefix(provider, "anthropic-compatible-"):
 		return "/messages"
 	case apiType == compatibleAPITypeResponses:
+		return "/responses"
+	case apiType == "" && strings.Contains(provider, compatibleAPITypeResponses):
 		return "/responses"
 	default:
 		return "/chat/completions"
