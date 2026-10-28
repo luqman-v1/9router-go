@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	glmResetMu      sync.Mutex
+	glmResetMu       sync.Mutex
 	glmResetInFlight = make(map[string]bool)
 )
 

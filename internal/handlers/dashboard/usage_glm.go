@@ -41,8 +41,8 @@ type GLMResetCard struct {
 
 // GLMResetCardsResult wraps the list endpoint payload for the dashboard.
 type GLMResetCardsResult struct {
-	AvailableCount int             `json:"availableCount"`
-	Cards          []GLMResetCard  `json:"cards"`
+	AvailableCount int            `json:"availableCount"`
+	Cards          []GLMResetCard `json:"cards"`
 }
 
 func fetchGLMUsage(ctx context.Context, provider, token string) usageResult {
@@ -167,7 +167,7 @@ func parseGLMResetCardsResponse(payload map[string]any) (map[string]any, error) 
 }
 
 type bucketPair struct {
-	bucket    any
+	bucket   any
 	cardType string
 }
 

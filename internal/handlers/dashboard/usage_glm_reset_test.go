@@ -238,22 +238,22 @@ func TestParseGLMResetExpireTime(t *testing.T) {
 		wantEmpty bool
 	}{
 		{
-			name: "ISO8601 with Z",
+			name:  "ISO8601 with Z",
 			input: "2026-12-31T23:59:59Z",
 			want:  "2026-12-31T23:59:59Z",
 		},
 		{
-			name: "ISO8601 with offset",
+			name:  "ISO8601 with offset",
 			input: "2026-12-31T23:59:59+08:00",
 			want:  "2026-12-31T15:59:59Z", // Converted to UTC
 		},
 		{
-			name: "Beijing naive datetime",
+			name:  "Beijing naive datetime",
 			input: "2026-12-31 23:59:59",
 			want:  "2026-12-31T15:59:59Z", // Beijing UTC+8 -> UTC
 		},
 		{
-			name: "Beijing naive date only",
+			name:  "Beijing naive date only",
 			input: "2026-12-31",
 			want:  "2026-12-30T16:00:00Z", // Midnight Beijing = 16:00 UTC previous day
 		},
@@ -288,10 +288,10 @@ func TestParseGLMResetExpireTime(t *testing.T) {
 // TestParseGLMResetCardsResponse tests the response parsing logic.
 func TestParseGLMResetCardsResponse(t *testing.T) {
 	testCases := []struct {
-		name         string
-		input        map[string]any
-		wantCount    int
-		wantFirstID  string
+		name          string
+		input         map[string]any
+		wantCount     int
+		wantFirstID   string
 		wantFirstType string
 	}{
 		{
@@ -316,8 +316,8 @@ func TestParseGLMResetCardsResponse(t *testing.T) {
 					map[string]any{"recordId": "card-2", "available": false, "expireTime": "2026-12-31 23:59:59"},
 				},
 			}),
-			wantCount:    1,
-			wantFirstID:  "card-1",
+			wantCount:   1,
+			wantFirstID: "card-1",
 		},
 		{
 			name: "filters cards without recordId",
@@ -327,8 +327,8 @@ func TestParseGLMResetCardsResponse(t *testing.T) {
 					map[string]any{"recordId": "card-1", "available": true, "expireTime": "2026-12-31 23:59:59"},
 				},
 			}),
-			wantCount:    1,
-			wantFirstID:  "card-1",
+			wantCount:   1,
+			wantFirstID: "card-1",
 		},
 		{
 			name: "filters cards with unparseable expireTime",
@@ -338,8 +338,8 @@ func TestParseGLMResetCardsResponse(t *testing.T) {
 					map[string]any{"recordId": "card-2", "available": true, "expireTime": "2026-12-31 23:59:59"},
 				},
 			}),
-			wantCount:    1,
-			wantFirstID:  "card-2",
+			wantCount:   1,
+			wantFirstID: "card-2",
 		},
 		{
 			name: "sorts by expiration ascending",
@@ -349,8 +349,8 @@ func TestParseGLMResetCardsResponse(t *testing.T) {
 					map[string]any{"recordId": "card-sooner", "available": true, "expireTime": "2026-12-31 23:59:59"},
 				},
 			}),
-			wantCount:    2,
-			wantFirstID:  "card-sooner",
+			wantCount:   2,
+			wantFirstID: "card-sooner",
 		},
 		{
 			name: "accepts numeric recordId",
@@ -359,8 +359,8 @@ func TestParseGLMResetCardsResponse(t *testing.T) {
 					map[string]any{"recordId": 12345, "available": true, "expireTime": "2026-12-31 23:59:59"},
 				},
 			}),
-			wantCount:    1,
-			wantFirstID:  "12345",
+			wantCount:   1,
+			wantFirstID: "12345",
 		},
 	}
 
