@@ -52,7 +52,7 @@ func (h *MediaHandler) HandleComboTestModels(w http.ResponseWriter, r *http.Requ
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req comboTestModelsRequest
 	if len(body) > 0 {
