@@ -147,16 +147,22 @@ func (h *ChatHandler) LogFailure(
 		return
 	}
 	if shouldLogRequestDetail(h.Repo, true) {
-		if insertErr := h.Repo.InsertRequestDetail(
-			reqID,
-			info.Provider,
-			info.Model,
-			info.ConnectionID,
-			"error",
-			string(reqData),
-		); insertErr != nil {
-			log.Error("usage", "insert failed request detail failed", "error", insertErr)
-		}
+		failureRepo := h.Repo
+		failureID, failureProvider := reqID, info.Provider
+		failureModel, failureConn := info.Model, info.ConnectionID
+		failureData := string(reqData)
+		enqueueUsageWrite(func() {
+			if insertErr := failureRepo.InsertRequestDetail(
+				failureID,
+				failureProvider,
+				failureModel,
+				failureConn,
+				"error",
+				failureData,
+			); insertErr != nil {
+				log.Error("usage", "insert failed request detail failed", "error", insertErr)
+			}
+		})
 	}
 
 	observ.RecordRequest(info.Provider, info.Model, info.Endpoint, statusCode)
@@ -289,9 +295,24 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 	if caller := middleware.AuthenticatedApiKeyFromContext(ctx); caller != nil {
 		clientKey = maskAPIKey(caller.Key)
 	}
-	if err := h.Repo.InsertUsageHistory(info.Provider, info.Model, info.ConnectionID, maskAPIKey(info.APIKey), info.Endpoint, usage.PromptTokens, usage.CompletionTokens, cost, "success", totalTokens, metaJSON, tokensJSON, clientKey); err != nil {
-		log.Error("usage", "insert failed", "error", err)
-	}
+	// The three persistence units below leave the response goroutine: the row,
+	// the detail payload and the daily aggregate are booked by the usage
+	// writer in the order they are enqueued here. Everything the client or the
+	// limiter can observe (metrics, TPM settlement, the recent-requests ring)
+	// stays synchronous.
+	repo := h.Repo
+	usageProvider, usageModel := info.Provider, info.Model
+	usageConnID, usageAPIKey, usageEndpoint := info.ConnectionID, info.APIKey, info.Endpoint
+	usagePrompt, usageCompletion := usage.PromptTokens, usage.CompletionTokens
+	usageTotal := totalTokens
+	enqueueUsageWrite(func() {
+		if repo == nil {
+			return
+		}
+		if err := repo.InsertUsageHistory(usageProvider, usageModel, usageConnID, maskAPIKey(usageAPIKey), usageEndpoint, usagePrompt, usageCompletion, cost, "success", usageTotal, metaJSON, tokensJSON, clientKey); err != nil {
+			log.Error("usage", "insert failed", "error", err)
+		}
+	})
 
 	// Prometheus mirrors the row that was just inserted: a request is counted
 	// once, labelled with the provider/model the usage row names, and never
@@ -312,7 +333,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		if info.SavedTokens == 0 {
 			skipReason = "no_savings"
 		}
-		_ = h.Repo.InsertCompressionAnalytics(context.Background(), db.CompressionAnalyticsRecord{
+		compressionRec := db.CompressionAnalyticsRecord{
 			Timestamp:              now.Format(time.RFC3339),
 			Provider:               info.Provider,
 			Model:                  info.Model,
@@ -328,6 +349,10 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 			ActualCacheReadTokens:  cachedTokens,
 			ActualCacheWriteTokens: cacheCreationTokens,
 			SkipReason:             skipReason,
+		}
+		compressionRepo := h.Repo
+		enqueueUsageWrite(func() {
+			_ = compressionRepo.InsertCompressionAnalytics(context.Background(), compressionRec)
 		})
 	}
 	reqMsgs := extractRequestMessages(requestBody)
@@ -384,13 +409,25 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		log.Error("usage", "marshal request detail failed", "error", err)
 		return
 	}
+	// The settings read decides the row's fate now; only the write leaves.
 	if shouldLogRequestDetail(h.Repo, false) {
-		if err := h.Repo.InsertRequestDetail(reqID, info.Provider, info.Model, info.ConnectionID, "success", string(reqData)); err != nil {
-			log.Error("usage", "insert request detail failed", "error", err)
-		}
+		detailRepo := h.Repo
+		detailID, detailProvider := reqID, info.Provider
+		detailModel, detailConn := info.Model, info.ConnectionID
+		detailData := string(reqData)
+		enqueueUsageWrite(func() {
+			if err := detailRepo.InsertRequestDetail(detailID, detailProvider, detailModel, detailConn, "success", detailData); err != nil {
+				log.Error("usage", "insert request detail failed", "error", err)
+			}
+		})
 	}
 
-	h.upsertDailyUsage(info.Provider, info.Model, info.Endpoint, info.ConnectionID, info.APIKey, usage.PromptTokens, usage.CompletionTokens, cachedTokens, cost)
+	dailyProvider, dailyModel, dailyEndpoint := info.Provider, info.Model, info.Endpoint
+	dailyConn, dailyAPIKey := info.ConnectionID, info.APIKey
+	dailyPrompt, dailyCompletion, dailyCached := usage.PromptTokens, usage.CompletionTokens, cachedTokens
+	enqueueUsageWrite(func() {
+		h.upsertDailyUsage(dailyProvider, dailyModel, dailyEndpoint, dailyConn, dailyAPIKey, dailyPrompt, dailyCompletion, dailyCached, cost)
+	})
 
 	usagetracker.GetTracker().PushRecent(usagetracker.RecentRequest{
 		Timestamp:        now.Format(time.RFC3339),

@@ -16,6 +16,7 @@ import (
 	"9router/proxy/internal/app"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers"
+	"9router/proxy/internal/handlers/chat"
 )
 
 // testAPIKey is the client key seeded into every Env. The engine routes are
@@ -63,6 +64,11 @@ func newEnv(t *testing.T) *Env {
 func newEnvWithTokenSaver(t *testing.T, build func(*db.Repo) *handlers.TokenSaverConfig) *Env {
 	t.Helper()
 	t.Setenv("ALLOW_PRIVATE_NETWORKING", "true")
+
+	// The usage-write assertions read rows straight after the HTTP response,
+	// so the harness runs the usage writer inline like the synchronous path
+	// it replaced. The async behaviour has its own unit tests.
+	chat.SetUsageWritesSynchronousForTest(true)
 
 	// DATA_DIR keeps auth.CLIToken() and config.LoadConfig() from reading or
 	// writing the developer's real ~/.9router. JWT_SECRET pins the HS256
