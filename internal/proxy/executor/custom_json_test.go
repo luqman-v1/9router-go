@@ -24,6 +24,11 @@ type customJSONUpstream struct {
 
 func newCustomJSONUpstream(t *testing.T, status int, reply string) *customJSONUpstream {
 	t.Helper()
+	return newCustomJSONUpstreamTyped(t, status, "application/json", reply)
+}
+
+func newCustomJSONUpstreamTyped(t *testing.T, status int, contentType, reply string) *customJSONUpstream {
+	t.Helper()
 	u := &customJSONUpstream{}
 	u.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u.calls.Add(1)
@@ -31,7 +36,7 @@ func newCustomJSONUpstream(t *testing.T, status int, reply string) *customJSONUp
 		u.header = r.Header.Clone()
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &u.body)
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", contentType)
 		w.WriteHeader(status)
 		io.WriteString(w, reply)
 	}))
@@ -161,5 +166,36 @@ func TestForwardCustomJSON_EmptyReplyIsServed(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d", rec.Code)
+	}
+}
+
+// A text/plain 403 is what the shared transport reads as a failed proxy and
+// replays directly. Coming from the business endpoint itself, a replay would
+// run its operation twice (review of #751).
+func TestForwardCustomJSON_PlainText403IsNotReplayed(t *testing.T) {
+	up := newCustomJSONUpstreamTyped(t, http.StatusForbidden, "text/plain; charset=utf-8", "forbidden by business rule")
+	err := ForwardCustomJSON(httptest.NewRecorder(), up.request(t, map[string]any{}, false))
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) || ue.StatusCode != http.StatusForbidden || string(ue.Body) != "forbidden by business rule" {
+		t.Fatalf("err = %v, want the upstream 403 with its body", err)
+	}
+	if n := up.calls.Load(); n != 1 {
+		t.Errorf("upstream called %d times, want 1", n)
+	}
+}
+
+// Any 2xx is the endpoint's answer, as upstream's response.ok check has it.
+func TestForwardCustomJSON_Non200SuccessIsServed(t *testing.T) {
+	for _, status := range []int{http.StatusCreated, http.StatusAccepted} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			up := newCustomJSONUpstream(t, status, `{"answer":"created"}`)
+			rec := httptest.NewRecorder()
+			if err := ForwardCustomJSON(rec, up.request(t, map[string]any{"responsePath": "answer"}, false)); err != nil {
+				t.Fatalf("ForwardCustomJSON: %v", err)
+			}
+			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"content":"created"`) {
+				t.Errorf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }

@@ -468,7 +468,7 @@ func (h *DashboardHandler) HandleValidateProviderNode(w http.ResponseWriter, r *
 
 	ctx := r.Context()
 	if req.APIType == customjson.APIType {
-		writeNodeValidation(w, probeCustomJSON(ctx, validateProbeDo, baseURL, req.CustomJSON, apiKey, strings.TrimSpace(req.ModelID)))
+		writeNodeValidation(w, probeCustomJSON(ctx, nil, baseURL, req.CustomJSON, apiKey, strings.TrimSpace(req.ModelID)))
 		return
 	}
 	switch strings.TrimSpace(req.Type) {

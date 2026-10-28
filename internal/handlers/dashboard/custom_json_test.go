@@ -5,6 +5,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	json "encoding/json/v2"
@@ -54,9 +56,9 @@ func connectionPSD(t *testing.T, raw string) map[string]any {
 func stubProbe(t *testing.T, status int, reply string) *int {
 	t.Helper()
 	calls := 0
-	orig := validateProbeDo
-	t.Cleanup(func() { validateProbeDo = orig })
-	validateProbeDo = func(context.Context, string, string, map[string]string, []byte) (int, []byte, error) {
+	orig := customJSONProbeDo
+	t.Cleanup(func() { customJSONProbeDo = orig })
+	customJSONProbeDo = func(context.Context, *http.Client, string, string, map[string]string, []byte) (int, []byte, error) {
 		calls++
 		return status, []byte(reply), nil
 	}
@@ -207,5 +209,27 @@ func TestValidateProviderNode_CustomJSONProbe(t *testing.T) {
 				t.Errorf("out = %v, calls = %d", out, *calls)
 			}
 		})
+	}
+}
+
+// The explicit test request goes out once even when the endpoint answers the
+// way a failed proxy does (text/plain 403), which the shared probe helpers
+// would replay directly.
+func TestValidateProviderNode_CustomJSONProbeIsNotReplayed(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("forbidden"))
+	}))
+	defer srv.Close()
+	_, out := postValidateNode(t, `{"apiType":"custom-json","baseUrl":"`+srv.URL+`/biz","apiKey":"",`+
+		`"customJson":{"authType":"none","responsePath":"answer"}}`, true)
+	if nodeValid(t, out) || !strings.Contains(nodeOut(t, out, "error"), "(403)") {
+		t.Errorf("out = %v, want an invalid 403 result", out)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("endpoint called %d times, want 1", n)
 	}
 }

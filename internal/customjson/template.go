@@ -29,11 +29,11 @@ func pathParts(path string) ([]string, error) {
 	}
 	normalized := arrayIndex.ReplaceAllString(strings.TrimPrefix(path, "$."), ".$1")
 	if !fieldPathPattern.MatchString(normalized) {
-		return nil, fmt.Errorf("Invalid field path: %s", path)
+		return nil, fmt.Errorf("invalid field path: %s", path)
 	}
 	parts := strings.Split(normalized, ".")
 	if slices.ContainsFunc(parts, func(p string) bool { return slices.Contains(blockedKeys, p) }) {
-		return nil, errors.New("Unsafe field path")
+		return nil, errors.New("unsafe field path")
 	}
 	return parts, nil
 }
@@ -67,7 +67,7 @@ func readPath(value any, parts []string) (v any, found bool) {
 // nested deeper than maxTemplateDepth or using a blocked key.
 func visit(value any, depth int, fn func(string) (any, error)) (any, error) {
 	if depth > maxTemplateDepth {
-		return nil, errors.New("Request template is nested too deeply")
+		return nil, errors.New("request template is nested too deeply")
 	}
 	switch v := value.(type) {
 	case string:
@@ -86,7 +86,7 @@ func visit(value any, depth int, fn func(string) (any, error)) (any, error) {
 		out := make(map[string]any, len(v))
 		for key, item := range v {
 			if slices.Contains(blockedKeys, key) {
-				return nil, errors.New("Unsafe template key")
+				return nil, errors.New("unsafe template key")
 			}
 			rendered, err := visit(item, depth+1, fn)
 			if err != nil {
@@ -145,7 +145,7 @@ func BuildRequest(cfg Config, model string, body []byte) ([]byte, error) {
 		}
 		v, found := readPath(vars, parts)
 		if !found {
-			return nil, fmt.Errorf("Missing template value: %s", path)
+			return nil, fmt.Errorf("missing template value: %s", path)
 		}
 		return v, nil
 	}
@@ -243,7 +243,7 @@ func ExtractText(cfg Config, data []byte) (string, error) {
 	}
 	v, found := readPath(decoded, parts)
 	if !found || v == nil {
-		return "", fmt.Errorf("Response field not found: %s", cfg.ResponsePath)
+		return "", fmt.Errorf("response field not found: %s", cfg.ResponsePath)
 	}
 	return textOf(v), nil
 }

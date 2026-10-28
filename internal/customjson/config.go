@@ -95,7 +95,7 @@ type rawConfig struct {
 func Normalize(raw []byte, endpoint string) (Config, error) {
 	var in rawConfig
 	if len(raw) == 0 || jsontext.Value(raw).Kind() != '{' || json.Unmarshal(raw, &in) != nil {
-		return Config{}, errors.New("Custom JSON configuration is required")
+		return Config{}, errors.New("custom JSON configuration is required")
 	}
 	if err := validateEndpoint(endpoint); err != nil {
 		return Config{}, err
@@ -130,12 +130,12 @@ func validateEndpoint(endpoint string) error {
 	u, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		if err == nil && u.Host != "" {
-			return errors.New("Use an HTTP(S) endpoint without URL credentials or a fragment")
+			return errors.New("use an HTTP(S) endpoint without URL credentials or a fragment")
 		}
-		return errors.New("A complete HTTP(S) endpoint URL is required")
+		return errors.New("a complete HTTP(S) endpoint URL is required")
 	}
 	if u.User != nil || strings.Contains(endpoint, "#") {
-		return errors.New("Use an HTTP(S) endpoint without URL credentials or a fragment")
+		return errors.New("use an HTTP(S) endpoint without URL credentials or a fragment")
 	}
 	return nil
 }
@@ -160,14 +160,14 @@ func overlayTemplate(v jsontext.Value, cfg *Config) error {
 		return validateTemplate(cfg.RequestTemplate)
 	}
 	if v.Kind() != '{' {
-		return errors.New("Request template must be a JSON object")
+		return errors.New("request template must be a JSON object")
 	}
 	if len(v) > maxTemplateBytes {
-		return errors.New("Request template exceeds 64 KB")
+		return errors.New("request template exceeds 64 KB")
 	}
 	var tpl map[string]any
 	if err := json.Unmarshal(v, &tpl); err != nil {
-		return errors.New("Request template must be a JSON object")
+		return errors.New("request template must be a JSON object")
 	}
 	cfg.RequestTemplate = tpl
 	return validateTemplate(tpl)
@@ -181,7 +181,7 @@ func validateTemplate(tpl map[string]any) error {
 				return "", err
 			}
 			if len(parts) == 0 || !slices.Contains(variables, parts[0]) {
-				return "", fmt.Errorf("Unknown template variable: %s", path)
+				return "", fmt.Errorf("unknown template variable: %s", path)
 			}
 			return "", nil
 		})
@@ -189,7 +189,7 @@ func validateTemplate(tpl map[string]any) error {
 			return nil, err
 		}
 		if strings.Contains(remainder, "{{") || strings.Contains(remainder, "}}") {
-			return nil, errors.New("Invalid template placeholder")
+			return nil, errors.New("invalid template placeholder")
 		}
 		return s, nil
 	})
@@ -202,16 +202,16 @@ func overlayHeaders(v jsontext.Value, cfg *Config) error {
 	}
 	var headers map[string]any
 	if v.Kind() != '{' || json.Unmarshal(v, &headers) != nil || len(headers) > maxHeaders {
-		return errors.New("Custom headers must be a JSON object with at most 20 entries")
+		return errors.New("custom headers must be a JSON object with at most 20 entries")
 	}
 	out := make(map[string]string, len(headers))
 	for name, raw := range headers {
 		if !headerNamePattern.MatchString(name) || slices.Contains(blockedNames, strings.ToLower(name)) || slices.Contains(blockedKeys, name) {
-			return fmt.Errorf("Header cannot be configured: %s", name)
+			return fmt.Errorf("header cannot be configured: %s", name)
 		}
 		value, ok := raw.(string)
 		if !ok || strings.ContainsAny(value, "\r\n") || len(value) > maxHeaderValueBytes {
-			return fmt.Errorf("Invalid header value: %s", name)
+			return fmt.Errorf("invalid header value: %s", name)
 		}
 		out[name] = value
 	}
@@ -220,7 +220,7 @@ func overlayHeaders(v jsontext.Value, cfg *Config) error {
 }
 
 func overlayResponsePath(v jsontext.Value, cfg *Config) error {
-	const msg = "Response field path is required (use $ for the entire JSON response)"
+	const msg = "response field path is required (use $ for the entire JSON response)"
 	if len(v) > 0 {
 		var s string
 		if json.Unmarshal(v, &s) != nil {
@@ -238,10 +238,10 @@ func overlayResponsePath(v jsontext.Value, cfg *Config) error {
 
 func (c *Config) validateEnums() error {
 	if !slices.Contains(methods, c.Method) {
-		return errors.New("Invalid custom JSON HTTP method")
+		return errors.New("invalid custom JSON HTTP method")
 	}
 	if !slices.Contains(authTypes, c.AuthType) {
-		return errors.New("Invalid custom JSON authentication type")
+		return errors.New("invalid custom JSON authentication type")
 	}
 	return nil
 }
@@ -256,7 +256,7 @@ func (c *Config) validateAuthHeader() error {
 		return nil
 	}
 	if !headerNamePattern.MatchString(c.AuthHeader) || slices.Contains(blockedNames, strings.ToLower(c.AuthHeader)) {
-		return errors.New("Invalid API key header name")
+		return errors.New("invalid API key header name")
 	}
 	return nil
 }

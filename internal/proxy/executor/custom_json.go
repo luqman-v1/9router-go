@@ -41,14 +41,21 @@ func ForwardCustomJSON(w http.ResponseWriter, req *Request) error {
 		return proxy.UpstreamFailure(http.StatusUnauthorized, err.Error())
 	}
 
-	resp, err := proxy.DoRequestOnce(req.Ctx, req.Client, cfg.Method, endpoint, headers, payload)
+	resp, err := proxy.SendOnce(req.Ctx, req.Client, cfg.Method, endpoint, headers, payload)
 	if err != nil {
 		return fmt.Errorf("ForwardCustomJSON upstream: %w", err)
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
-	if err != nil {
-		return fmt.Errorf("ForwardCustomJSON read: %w", err)
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
+	if cerr := resp.Body.Close(); cerr != nil && readErr == nil {
+		readErr = cerr
+	}
+	// Any 2xx is the business endpoint's answer (upstream checks response.ok):
+	// a POST that creates something commonly answers 201.
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: data, Header: resp.Header, ReadErr: readErr}
+	}
+	if readErr != nil {
+		return fmt.Errorf("ForwardCustomJSON read: %w", readErr)
 	}
 	text, err := customjson.ExtractText(cfg, data)
 	if err != nil {

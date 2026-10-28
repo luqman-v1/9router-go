@@ -105,7 +105,7 @@ func TestBuildRequestDefaultTemplate(t *testing.T) {
 func TestBuildRequestMissingVariableFails(t *testing.T) {
 	cfg := mustNormalize(t, rawConfigOf(t, map[string]any{"requestTemplate": map[string]any{"project_id": "{{request.missing}}"}}))
 	_, err := BuildRequest(cfg, "x", []byte(`{"messages":[]}`))
-	if err == nil || !strings.Contains(err.Error(), "Missing template value") {
+	if err == nil || !strings.Contains(err.Error(), "missing template value") {
 		t.Fatalf("err = %v, want Missing template value", err)
 	}
 }

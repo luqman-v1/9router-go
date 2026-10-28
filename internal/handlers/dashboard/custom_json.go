@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 
 	"9router/proxy/internal/customjson"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/proxy"
 )
 
 // customJSONProbePrompt is the user text the explicit "Send Test Request"
@@ -83,15 +85,29 @@ func rawAuthType(raw jsontext.Value) customjson.AuthType {
 	return head.AuthType
 }
 
-// probeDoFunc performs one outbound probe request.
-type probeDoFunc func(ctx context.Context, method, rawURL string, headers map[string]string, body []byte) (int, []byte, error)
+// customJSONProbeDo sends the test request exactly once. The shared probe
+// helpers replay a request directly when the answer looks like a proxy
+// failure, and a text/plain 403 from the business endpoint itself looks like
+// one, so a test could run the operation twice. Package-level so tests can
+// stub the network. A nil client is the default client.
+var customJSONProbeDo = func(ctx context.Context, client *http.Client, method, rawURL string, headers map[string]string, body []byte) (int, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, validateProbeTimeout)
+	defer cancel()
+	resp, err := proxy.SendOnce(ctx, client, method, rawURL, headers, body)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, out, err
+}
 
 // probeCustomJSON sends one real request to a custom JSON endpoint, exactly
 // as the router would for a "ping" prompt, and reports whether the reply
-// could be read at the configured response path. do is validateProbeDo for
-// node validation, or the connection's own proxied client for a connection
-// test.
-func probeCustomJSON(ctx context.Context, do probeDoFunc, endpoint string, raw jsontext.Value, apiKey, model string) map[string]any {
+// could be read at the configured response path. client is nil for node
+// validation, or the connection's own (possibly proxied) client for a
+// connection test.
+func probeCustomJSON(ctx context.Context, client *http.Client, endpoint string, raw jsontext.Value, apiKey, model string) map[string]any {
 	if model == "" {
 		model = "custom"
 	}
@@ -112,7 +128,7 @@ func probeCustomJSON(ctx context.Context, do probeDoFunc, endpoint string, raw j
 	if err != nil {
 		return map[string]any{"valid": false, "error": err.Error()}
 	}
-	status, resBody, err := do(ctx, cfg.Method, endpoint, headers, payload)
+	status, resBody, err := customJSONProbeDo(ctx, client, cfg.Method, endpoint, headers, payload)
 	if err != nil {
 		return map[string]any{"valid": false, "error": validateNodeNetworkMessage(err)}
 	}
@@ -144,7 +160,7 @@ func validateCustomJSONConnection(ctx context.Context, nodeData *db.ProviderNode
 		}
 		return map[string]any{"valid": true, "supported": true, "error": nil}
 	}
-	out := probeCustomJSON(ctx, validateProbeDo, baseURL, nodeData.CustomJSON, apiKey, modelID)
+	out := probeCustomJSON(ctx, nil, baseURL, nodeData.CustomJSON, apiKey, modelID)
 	out["supported"] = true
 	return out
 }
@@ -157,10 +173,7 @@ func probeCustomJSONConnection(ctx context.Context, data connectionProbeData, cl
 	if err != nil {
 		return probeOutcome{message: "Invalid custom JSON configuration"}
 	}
-	do := func(ctx context.Context, method, rawURL string, headers map[string]string, body []byte) (int, []byte, error) {
-		return connectionProbeDo(ctx, client, method, rawURL, headers, body)
-	}
-	out := probeCustomJSON(ctx, do, psdStr(psd, "baseUrl"), raw, data.APIKey, data.DefaultModel)
+	out := probeCustomJSON(ctx, client, psdStr(psd, "baseUrl"), raw, data.APIKey, data.DefaultModel)
 	if valid, _ := out["valid"].(bool); valid {
 		return probeOutcome{valid: true}
 	}
