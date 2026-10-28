@@ -132,6 +132,7 @@ func TestCLIDetectors_ClaudeHas9Router(t *testing.T) {
 		t.Setenv("NINEROUTER_URL", "")
 		tmpHome := t.TempDir()
 		t.Setenv("HOME", tmpHome)
+		t.Setenv("USERPROFILE", tmpHome)
 
 		claudeDir := filepath.Join(tmpHome, ".claude")
 		if err := os.MkdirAll(claudeDir, 0o755); err != nil {

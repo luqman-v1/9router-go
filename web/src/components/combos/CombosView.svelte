@@ -90,6 +90,70 @@
   // "deepseek-v4.1-flash" find the right rows.
   let searchQuery = $state('')
   let normalizedQuery = $derived(searchQuery.trim().toLowerCase())
+  let testingCombos = $state<Record<string, boolean>>({})
+  let comboTestResults = $state<
+    Record<
+      string,
+      {
+        results?: Record<string, { ok: boolean; latencyMs: number; error?: string }>
+        summary?: { total: number; alive: number; dead: number }
+        activeModel?: string | null
+      }
+    >
+  >({})
+
+  async function handleTestCombo(combo: Combo) {
+    if (!combo?.id || testingCombos[combo.id]) return
+    const models = getComboModels(combo)
+    if (models.length === 0) return
+
+    testingCombos[combo.id] = true
+    const currentResults: Record<string, { ok: boolean; latencyMs: number; error?: string }> = {}
+
+    try {
+      for (const model of models) {
+        comboTestResults[combo.id] = {
+          ...comboTestResults[combo.id],
+          activeModel: model,
+        }
+
+        try {
+          const res = await api.testComboModels(combo.id, { models: [model], kind: combo.kind || 'llm' })
+          if (res?.results?.[0]) {
+            currentResults[model] = res.results[0]
+          } else {
+            currentResults[model] = {
+              ok: false,
+              latencyMs: 0,
+              error: 'Failed',
+            }
+          }
+        } catch (err) {
+          currentResults[model] = {
+            ok: false,
+            latencyMs: 0,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        }
+
+        const alive = Object.values(currentResults).filter((r) => r.ok).length
+        const totalTested = Object.values(currentResults).length
+        comboTestResults[combo.id] = {
+          results: { ...currentResults },
+          summary: {
+            total: models.length,
+            alive,
+            dead: totalTested - alive,
+          },
+        }
+      }
+    } finally {
+      testingCombos[combo.id] = false
+      if (comboTestResults[combo.id]) {
+        comboTestResults[combo.id].activeModel = null
+      }
+    }
+  }
   let filteredCombos = $derived(
     normalizedQuery
       ? llmCombos.filter(
@@ -569,6 +633,9 @@
             onCopy={copyName}
             onEdit={openEditModal}
             onDelete={(c) => (confirmState = { name: c.name, ids: [c.id] })}
+            onTest={handleTestCombo}
+            isTesting={!!testingCombos[combo.id]}
+            testData={comboTestResults[combo.id]}
             isSelected={selectedIds.has(combo.id)}
             onToggleSelect={toggleSelect}
           />

@@ -42,6 +42,13 @@
     onCopy: (name: string, id: string) => void
     onEdit: (combo: Combo) => void
     onDelete: (combo: Combo) => void
+    onTest?: (combo: Combo) => void
+    isTesting?: boolean
+    testData?: {
+      results?: Record<string, { ok: boolean; latencyMs: number; error?: string }>
+      summary?: { total: number; alive: number; dead: number }
+      activeModel?: string | null
+    } | null
     isSelected?: boolean
     onToggleSelect?: (combo: Combo) => void
   }
@@ -60,11 +67,16 @@
     onCopy,
     onEdit,
     onDelete,
+    onTest,
+    isTesting = false,
+    testData = null,
     isSelected = false,
     onToggleSelect,
   }: Props = $props()
 
+  let expandedModels = $state(false)
   let modelsList = $derived(getComboModels(combo))
+  let visibleModels = $derived(expandedModels ? modelsList : modelsList.slice(0, 3))
   let ruleCount = $derived(smartRuleCount(combo))
 
   function handleToggleSelect(e: Event) {
@@ -119,13 +131,28 @@
             {ruleCount} smart rule{ruleCount === 1 ? '' : 's'}
           </span>
         {/if}
-        <div class="mt-1 flex min-w-0 flex-wrap items-center gap-1">
+        <div class="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
           {#if modelsList.length === 0}
             <span class="text-xs text-text-muted italic">No models</span>
           {:else}
-            {#each modelsList.slice(0, 3) as model}
-              <code class="inline-flex items-center gap-1 rounded bg-black/5 dark:bg-white/5 px-1.5 py-0.5 font-mono text-xs text-text-muted">
+            {#each visibleModels as model}
+              {@const res = testData?.results?.[model]}
+              {@const isModelActive = isTesting && (testData?.activeModel ? testData.activeModel === model : !res)}
+              <code
+                class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-xs transition-colors {res ? (res.ok ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-medium' : 'border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400 font-medium') : 'border-transparent bg-black/5 dark:bg-white/5 text-text-muted'}"
+                title={res ? (res.ok ? `Alive · ${res.latencyMs}ms` : `Dead · ${res.error || 'Failed'}`) : isModelActive ? 'Testing...' : undefined}
+              >
+                {#if isModelActive}
+                  <span class="material-symbols-outlined animate-spin text-[12px] text-brand-500">progress_activity</span>
+                {:else if res}
+                  <span class="material-symbols-outlined text-[13px] {res.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}">
+                    {res.ok ? 'check_circle' : 'cancel'}
+                  </span>
+                {/if}
                 <span>{model}</span>
+                {#if res?.ok}
+                  <span class="text-[10px] opacity-75 font-sans font-normal">{res.latencyMs}ms</span>
+                {/if}
                 {#if isAutoMember(combo, model)}
                   <span
                     class="text-[9px] uppercase tracking-wide text-brand-500"
@@ -141,7 +168,23 @@
               </code>
             {/each}
             {#if modelsList.length > 3}
-              <span class="text-[10px] text-text-muted">+{modelsList.length - 3} more</span>
+              <button
+                type="button"
+                onclick={(e) => {
+                  e.stopPropagation()
+                  expandedModels = !expandedModels
+                }}
+                class="text-[11px] font-medium text-brand-500 hover:underline cursor-pointer"
+              >
+                {expandedModels ? 'Show less' : `+${modelsList.length - 3} more`}
+              </button>
+            {/if}
+            {#if testData?.summary}
+              <span class="inline-flex items-center gap-1 ml-1">
+                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium {testData.summary.dead > 0 ? 'bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/30' : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30'}">
+                  {testData.summary.alive}/{testData.summary.total} Alive
+                </span>
+              </span>
             {/if}
           {/if}
         </div>
@@ -232,7 +275,20 @@
       </div>
 
       <!-- Icon buttons with labels -->
-      <div class="grid grid-cols-3 gap-1 sm:flex sm:items-center">
+      <div class="grid grid-cols-4 gap-1 sm:flex sm:items-center">
+        <button
+          type="button"
+          onclick={() => onTest?.(combo)}
+          disabled={isTesting || modelsList.length === 0}
+          class="flex flex-col items-center justify-center rounded px-2.5 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 hover:text-brand-500 cursor-pointer {isTesting ? 'text-brand-500 cursor-wait' : modelsList.length === 0 ? 'opacity-40 cursor-not-allowed text-text-muted' : 'text-text-muted'}"
+          title={modelsList.length === 0 ? 'No models to test' : isTesting ? 'Testing models...' : 'Test all models in combo (Dead/Alive check)'}
+        >
+          <span class="material-symbols-outlined text-[18px] {isTesting ? 'animate-spin' : ''}">
+            {isTesting ? 'progress_activity' : 'science'}
+          </span>
+          <span class="text-[10px] leading-tight">Test</span>
+        </button>
+
         <button
           type="button"
           onclick={() => onCopy(combo.name, combo.id)}

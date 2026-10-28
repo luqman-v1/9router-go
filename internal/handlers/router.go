@@ -336,6 +336,7 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	// probes would panic instead of reaching the provider.
 	mediaH := media.NewMediaHandler(repo, nil, chatH)
 	r.Post("/api/models/test", mediaH.HandleTestModel)
+	r.Post("/api/combos/{id}/test-models", mediaH.HandleComboTestModels)
 	r.Get("/api/media-providers/tts/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/inworld/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/minimax/voices", mediaH.HandleAudioVoices)

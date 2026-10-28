@@ -2523,4 +2523,13 @@ export const api = {
     request<{ connections: Array<{ id: string; name: string; authType: string; key: string }> }>(
       `/api/providers/${encodeURIComponent(providerId)}/export-keys`,
     ),
+  testComboModels: (id: string, opts?: { models?: string[]; kind?: string }) =>
+    request<{
+      comboId: string
+      summary: { total: number; alive: number; dead: number }
+      results: Array<{ model: string; ok: boolean; latencyMs: number; error?: string; status?: number }>
+    }>(`/api/combos/${encodeURIComponent(id)}/test-models`, {
+      method: 'POST',
+      body: JSON.stringify(opts || {}),
+    }),
 }
