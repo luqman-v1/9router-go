@@ -782,6 +782,19 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			pipedBody = filtered
 		}
 	}
+
+	// A custom openai-compatible node answers 400 "max_tokens and
+	// max_completion_tokens cannot both be set" on a streaming request that
+	// carries both (repro: bansos/gpt-6-luna on api.sakoo.biz.id — whose
+	// backend is GitHub models). A client may spell either field; when both
+	// are present the explicit max_completion_tokens value wins and
+	// max_tokens is dropped, and when the client sent neither the upstream's
+	// own default is honoured. Scoped to the Chat Completions wire — Responses
+	// carries max_output_tokens instead.
+	if endpoint == "/v1/chat/completions" {
+		pipedBody = normalizeChatTokenFields(pipedBody)
+	}
+
 	start := time.Now()
 	metrics := &streamMetrics{}
 	var fwdErr error
