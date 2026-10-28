@@ -6,9 +6,16 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"9router/proxy/internal/handlerutil"
 	"github.com/google/uuid"
+)
+
+var (
+	glmResetMu      sync.Mutex
+	glmResetInFlight = make(map[string]bool)
 )
 
 // HandleGetGLMResetCards handles GET /api/usage/{connectionId}/reset-cards.
@@ -127,6 +134,66 @@ func (h *DashboardHandler) HandleRedeemGLMResetCard(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// In-flight lock per connection.
+	glmResetMu.Lock()
+	if glmResetInFlight[connID] {
+		glmResetMu.Unlock()
+		handlerutil.WriteJSONError(w, http.StatusConflict, "A reset-card redemption is already in progress for this connection.")
+		return
+	}
+	glmResetInFlight[connID] = true
+	glmResetMu.Unlock()
+
+	defer func() {
+		glmResetMu.Lock()
+		delete(glmResetInFlight, connID)
+		glmResetMu.Unlock()
+	}()
+
+	// Re-read cards inventory to verify the card exists and is not expired.
+	cardsResp, err := fetchGLMResetCards(r.Context(), token)
+	if err != nil {
+		status := http.StatusBadGateway
+		msg := err.Error()
+		if strings.Contains(msg, "unauthorized") || strings.Contains(msg, "401") {
+			status = http.StatusUnauthorized
+			msg = "GLM token expired. Re-authenticate the connection to refresh reset cards."
+		}
+		writePlainError(w, status, msg)
+		return
+	}
+
+	// Find the requested card and check expiry.
+	var selectedCard *GLMResetCard
+	cardsList, _ := cardsResp["cards"].([]any)
+	for _, rawCard := range cardsList {
+		cardMap, _ := rawCard.(map[string]any)
+		if cardMap == nil {
+			continue
+		}
+		if cardMap["recordId"] == body.RecordID && cardMap["type"] == body.Type {
+			expiresAtStr, _ := cardMap["expiresAt"].(string)
+			if expiresAtStr != "" {
+				if expTime, err := time.Parse(time.RFC3339, expiresAtStr); err == nil {
+					if time.Now().After(expTime) {
+						handlerutil.WriteJSONError(w, http.StatusConflict, "Selected reset card has expired.")
+						return
+					}
+				}
+			}
+			selectedCard = &GLMResetCard{
+				RecordID:  body.RecordID,
+				Type:      body.Type,
+				ExpiresAt: expiresAtStr,
+			}
+			break
+		}
+	}
+	if selectedCard == nil {
+		handlerutil.WriteJSONError(w, http.StatusConflict, "Selected reset card is no longer available.")
+		return
+	}
+
 	reqID := uuid.New().String()
 	url := "https://api.z.ai/api/biz/customer-package-reset/use"
 	payload := map[string]any{
@@ -147,46 +214,62 @@ func (h *DashboardHandler) HandleRedeemGLMResetCard(w http.ResponseWriter, r *ht
 		writePlainError(w, http.StatusBadGateway, fmt.Sprintf("GLM reset card redeem error: %v", err))
 		return
 	}
-	if status == http.StatusUnauthorized {
-		writePlainError(w, http.StatusUnauthorized, "GLM token expired. Re-authenticate the connection.")
-		return
+
+	// Parse Z.ai response: { success: bool, code: any, message: string }
+	var respData struct {
+		Success bool   `json:"success"`
+		Code    any    `json:"code"`
+		Message string `json:"message"`
 	}
-	if status != http.StatusOK {
-		msg := fmt.Sprintf("GLM reset card API error (%d)", status)
-		if len(out) > 0 {
-			if t := strings.TrimSpace(string(out)); t != "" {
-				if len(t) > 200 {
-					t = t[:200]
-				}
-				msg += ": " + t
-			}
-		}
-		writePlainError(w, http.StatusBadGateway, msg)
-		return
+	_ = json.Unmarshal(out, &respData)
+
+	// Determine success: HTTP 200 && (success == true || code == 0 || code == 200 || code == "SUCCESS")
+	success := false
+	code := "ERROR"
+	message := "GLM reset card redeem failed."
+	if respData.Message != "" {
+		message = respData.Message
 	}
 
-	// Try to parse the response for a success indicator
-	respData := usageJSON(out)
-	success := true
-	code := "SUCCESS"
-	message := "GLM usage reset successfully."
-	if respData != nil {
-		if c, ok := respData["code"].(string); ok && c != "" {
-			code = c
+	if status == http.StatusOK {
+		codeVal := respData.Code
+		switch v := codeVal.(type) {
+		case float64:
+			if v == 0 || v == 200 {
+				success = true
+				code = "SUCCESS"
+			}
+		case int:
+			if v == 0 || v == 200 {
+				success = true
+				code = "SUCCESS"
+			}
+		case string:
+			if v == "SUCCESS" || v == "0" || v == "200" {
+				success = true
+				code = "SUCCESS"
+			}
 		}
-		if m, ok := respData["message"].(string); ok && m != "" {
-			message = m
+		if respData.Success {
+			success = true
+			code = "SUCCESS"
 		}
-		// Check for failure codes
-		if code != "SUCCESS" {
-			success = false
+	}
+
+	if !success {
+		// Return error response with appropriate status
+		if status == http.StatusUnauthorized {
+			handlerutil.WriteJSONError(w, http.StatusUnauthorized, message)
+			return
 		}
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, message)
+		return
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"reset":     success,
+		"reset":     true,
 		"code":      code,
-		"message":   message,
+		"message":   "GLM usage reset successfully.",
 		"recordId":  body.RecordID,
 		"type":      body.Type,
 		"requestId": reqID,

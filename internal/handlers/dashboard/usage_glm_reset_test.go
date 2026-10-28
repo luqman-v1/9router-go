@@ -23,6 +23,15 @@ func setupTestRouterForGLM(repo *db.Repo) chi.Router {
 	return r
 }
 
+// wrapZaiResponse wraps the payload in Z.ai response format.
+func wrapZaiResponse(data any) map[string]any {
+	return map[string]any{
+		"success": true,
+		"code":    200,
+		"data":    data,
+	}
+}
+
 // TestHandleGetGLMResetCards_Success tests successful retrieval of GLM reset cards.
 func TestHandleGetGLMResetCards_Success(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
@@ -40,14 +49,14 @@ func TestHandleGetGLMResetCards_Success(t *testing.T) {
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/biz/customer-package-reset/list" && r.URL.Query().Get("targetType") == "PERSONAL" {
 			w.Header().Set("Content-Type", "application/json")
-			response := map[string]any{
+			response := wrapZaiResponse(map[string]any{
 				"fiveHourResets": []any{
 					map[string]any{"recordId": "card-1", "available": true, "expireTime": "2026-12-31 23:59:59"},
 				},
 				"weekResets": []any{
 					map[string]any{"recordId": "card-2", "available": true, "expireTime": "2027-01-15T23:59:59Z"},
 				},
-			}
+			})
 			json.NewEncoder(w).Encode(response)
 		} else {
 			w.WriteHeader(http.StatusNotFound)
@@ -286,62 +295,72 @@ func TestParseGLMResetCardsResponse(t *testing.T) {
 		wantFirstType string
 	}{
 		{
-			name: "standard response with buckets",
-			input: map[string]any{
+			name: "standard response with buckets wrapped in data",
+			input: wrapZaiResponse(map[string]any{
 				"fiveHourResets": []any{
 					map[string]any{"recordId": "card-1", "available": true, "expireTime": "2026-12-31 23:59:59"},
 				},
 				"weekResets": []any{
 					map[string]any{"recordId": "card-2", "available": true, "expireTime": "2027-01-15T23:59:59Z"},
 				},
-			},
+			}),
 			wantCount:     2,
 			wantFirstID:   "card-1",
 			wantFirstType: "FIVE_HOUR",
 		},
 		{
 			name: "filters unavailable cards",
-			input: map[string]any{
+			input: wrapZaiResponse(map[string]any{
 				"fiveHourResets": []any{
 					map[string]any{"recordId": "card-1", "available": true, "expireTime": "2026-12-31 23:59:59"},
 					map[string]any{"recordId": "card-2", "available": false, "expireTime": "2026-12-31 23:59:59"},
 				},
-			},
+			}),
 			wantCount:    1,
 			wantFirstID:  "card-1",
 		},
 		{
 			name: "filters cards without recordId",
-			input: map[string]any{
+			input: wrapZaiResponse(map[string]any{
 				"fiveHourResets": []any{
 					map[string]any{"recordId": "", "available": true, "expireTime": "2026-12-31 23:59:59"},
 					map[string]any{"recordId": "card-1", "available": true, "expireTime": "2026-12-31 23:59:59"},
 				},
-			},
+			}),
 			wantCount:    1,
 			wantFirstID:  "card-1",
 		},
 		{
 			name: "filters cards with unparseable expireTime",
-			input: map[string]any{
+			input: wrapZaiResponse(map[string]any{
 				"fiveHourResets": []any{
 					map[string]any{"recordId": "card-1", "available": true, "expireTime": "invalid"},
 					map[string]any{"recordId": "card-2", "available": true, "expireTime": "2026-12-31 23:59:59"},
 				},
-			},
+			}),
 			wantCount:    1,
 			wantFirstID:  "card-2",
 		},
 		{
 			name: "sorts by expiration ascending",
-			input: map[string]any{
+			input: wrapZaiResponse(map[string]any{
 				"fiveHourResets": []any{
 					map[string]any{"recordId": "card-later", "available": true, "expireTime": "2027-01-15 23:59:59"},
 					map[string]any{"recordId": "card-sooner", "available": true, "expireTime": "2026-12-31 23:59:59"},
 				},
-			},
+			}),
 			wantCount:    2,
 			wantFirstID:  "card-sooner",
+		},
+		{
+			name: "accepts numeric recordId",
+			input: wrapZaiResponse(map[string]any{
+				"fiveHourResets": []any{
+					map[string]any{"recordId": 12345, "available": true, "expireTime": "2026-12-31 23:59:59"},
+				},
+			}),
+			wantCount:    1,
+			wantFirstID:  "12345",
 		},
 	}
 
@@ -391,7 +410,7 @@ func TestFetchGLMResetCards_Integration(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			response := map[string]any{
+			response := wrapZaiResponse(map[string]any{
 				"fiveHourResets": []any{
 					map[string]any{"recordId": "fh-1", "available": true, "expireTime": "2026-12-31 23:59:59"},
 					map[string]any{"recordId": "fh-2", "available": false, "expireTime": "2026-12-31 23:59:59"},
@@ -399,7 +418,7 @@ func TestFetchGLMResetCards_Integration(t *testing.T) {
 				"weekResets": []any{
 					map[string]any{"recordId": "wk-1", "available": true, "expireTime": "2027-01-15T23:59:59Z"},
 				},
-			}
+			})
 			json.NewEncoder(w).Encode(response)
 		} else {
 			w.WriteHeader(http.StatusNotFound)

@@ -74,6 +74,9 @@ func fetchGLMUsage(ctx context.Context, provider, token string) usageResult {
 	// and the read produced a real result so the UI can show the card list.
 	if provider == "glm" {
 		if cards, err := fetchGLMResetCards(ctx, token); err == nil && cards != nil {
+			if res.extra == nil {
+				res.extra = make(map[string]any)
+			}
 			res.extra["resetCards"] = cards
 		}
 	}
@@ -108,26 +111,20 @@ func fetchGLMResetCards(ctx context.Context, token string) (map[string]any, erro
 // only available cards with a non-empty recordId are kept, expireTime is parsed
 // tolerantly (Beijing UTC+08:00 naive datetimes as well as ISO8601), and the
 // final list is sorted by expiresAt ascending.
-func parseGLMResetCardsResponse(resp map[string]any) (map[string]any, error) {
-	if resp == nil {
+func parseGLMResetCardsResponse(payload map[string]any) (map[string]any, error) {
+	if payload == nil {
 		return nil, fmt.Errorf("GLM reset cards: nil response")
 	}
-	// The list endpoint wraps items under data[].
-	rawData, _ := resp["data"].([]any)
-	if rawData == nil {
-		// Some responses carry the flat array at the top level (legacy).
-		if arr, ok := resp["data"].([]any); ok {
-			rawData = arr
-		}
+
+	// Z.ai wraps the buckets inside payload["data"].
+	dataMap, _ := payload["data"].(map[string]any)
+	if dataMap == nil {
+		dataMap = payload
 	}
 
-	type bucketPair struct {
-		bucket any
-		cardType string
-	}
 	buckets := []bucketPair{
-		{resp["fiveHourResets"], "FIVE_HOUR"},
-		{resp["weekResets"], "WEEK"},
+		{dataMap["fiveHourResets"], "FIVE_HOUR"},
+		{dataMap["weekResets"], "WEEK"},
 	}
 
 	var cards []GLMResetCard
@@ -142,8 +139,9 @@ func parseGLMResetCardsResponse(resp map[string]any) (map[string]any, error) {
 			if !available {
 				continue
 			}
-			recordID, _ := item["recordId"].(string)
-			if strings.TrimSpace(recordID) == "" {
+			// Accept both string and numeric recordId.
+			recordID := strings.TrimSpace(fmt.Sprint(item["recordId"]))
+			if recordID == "" {
 				continue
 			}
 			expiresAt := parseGLMResetExpireTime(item["expireTime"])
@@ -166,6 +164,11 @@ func parseGLMResetCardsResponse(resp map[string]any) (map[string]any, error) {
 	result := GLMResetCardsResult{AvailableCount: len(cards), Cards: cards}
 	out, _ := json.Marshal(result)
 	return usageJSON(out), nil
+}
+
+type bucketPair struct {
+	bucket    any
+	cardType string
 }
 
 // parseGLMResetExpireTime handles the two formats the GLM list endpoint
