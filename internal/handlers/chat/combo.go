@@ -542,6 +542,31 @@ func upstreamErrorBody(message string) []byte {
 	return body
 }
 
+// lastTriedComboIndex returns the index of the last entry a pass over models
+// will actually send a request for, or -1 when none can be tried. The loop
+// skips entries that do not resolve and providers whose model is locked before
+// any request is made, so len(models)-1 is not the last candidate: keying the
+// per-candidate timeout and the zero-content probe to it cut off the one
+// remaining attempt whenever the stored tail was skipped (#776).
+//
+// Availability can only shrink during a pass — the pass itself locks
+// connections — so the index computed here is never earlier than the entry
+// that ends up last. Erring late keeps the timeout off a candidate that did
+// run, which is the direction that never fails a combo sooner.
+func (h *ChatHandler) lastTriedComboIndex(models []string) int {
+	for i := len(models) - 1; i >= 0; i-- {
+		modelInfo := h.resolveModelEntry(models[i])
+		if modelInfo == nil {
+			continue
+		}
+		if h.Repo != nil && !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
 // handleComboFallback iterates through combo model entries, trying each one.
 // Auto-capability-switch: floats vision/pdf-capable models to the front.
 // adapterModels holds the capacity-adapter entries injected for this request;
@@ -612,12 +637,17 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			excludeIDs = nil
 		}
 
+		// The entry tried last is the last one this pass can actually send a
+		// request for, not the last one stored: unresolved entries and
+		// model-locked providers are skipped before anything is forwarded.
+		lastTried := h.lastTriedComboIndex(models)
+
 		for i, entry := range models {
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
 			}
-			isLastModel := i == len(models)-1
+			isLastModel := i == lastTried
 
 			// Skip unavailable (model-locked) providers
 			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
@@ -630,7 +660,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 
 			candidateCtx := ctx
 			candidateWriter := http.ResponseWriter(cw)
-			// The last candidate keeps the global deadline: the response
+			// The candidate tried last keeps the global deadline: the response
 			// timeout only advances a combo, it never makes one fail sooner
 			// than it would without the setting (#744).
 			var timeoutGate *comboResponseTimeout
@@ -952,12 +982,16 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			excludeIDs = nil
 		}
 
+		// See the chat loop: the entry tried last is the last one this pass
+		// can actually send a request for, not the last one stored.
+		lastTried := h.lastTriedComboIndex(models)
+
 		for i, entry := range models {
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
 			}
-			isLastModel := i == len(models)-1
+			isLastModel := i == lastTried
 
 			// Skip unavailable (model-locked) providers
 			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
@@ -969,7 +1003,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			}
 			candidateCtx := ctx
 			candidateWriter := http.ResponseWriter(cw)
-			// See the chat loop: the last candidate keeps the global deadline.
+			// See the chat loop: the candidate tried last keeps the global deadline.
 			var timeoutGate *comboResponseTimeout
 			if responseTimeout > 0 && !isLastModel {
 				timeoutGate = newComboResponseTimeout(ctx, cw, responseTimeout)
