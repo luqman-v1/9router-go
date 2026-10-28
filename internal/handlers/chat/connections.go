@@ -770,15 +770,18 @@ func compatibleNodeNeedsVersionPrefix(base string) bool {
 var compatibleNodeLanes = []string{"/chat/completions", "/messages", "/responses", "/embeddings"}
 
 // compatibleNodeLane is the route a node of this type and apiType serves.
-// Anthropic-compatible nodes speak Messages, custom-embedding nodes speak
-// Embeddings, and an openai-compatible node picks between Chat Completions and
-// Responses from its apiType — the same mapping upstream's buildUrl applies.
+// Anthropic-compatible nodes speak Messages, and an openai-compatible node picks
+// between Chat Completions and Responses from its apiType — the same mapping
+// upstream's buildUrl applies.
+//
+// A custom-embedding node is deliberately NOT given an /embeddings lane here:
+// the embeddings handler derives its own URL from this one (buildEmbeddingsURL
+// swaps /chat/completions for /embeddings), so producing /embeddings here would
+// append it twice.
 func compatibleNodeLane(provider, apiType string) string {
 	switch {
 	case strings.HasPrefix(provider, "anthropic-compatible-"):
 		return "/messages"
-	case strings.HasPrefix(provider, "custom-embedding-"):
-		return "/embeddings"
 	case apiType == compatibleAPITypeResponses:
 		return "/responses"
 	default:

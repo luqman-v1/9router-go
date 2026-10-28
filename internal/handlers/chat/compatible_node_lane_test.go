@@ -70,10 +70,10 @@ func TestCompatibleNodeBaseURLGetsItsLane(t *testing.T) {
 			want:     "https://api.example.com/proxy/v1/messages",
 		},
 		{
-			name:     "a custom-embedding node gains the embeddings lane",
+			name:     "a custom-embedding node keeps the chat lane the embeddings handler converts from",
 			provider: "custom-embedding-emb",
 			base:     "https://api.example.com/proxy/v1",
-			want:     "https://api.example.com/proxy/v1/embeddings",
+			want:     "https://api.example.com/proxy/v1/chat/completions",
 		},
 		{
 			name:     "a stored full chat route is left alone",
