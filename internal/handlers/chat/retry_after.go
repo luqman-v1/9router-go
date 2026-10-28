@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/translator"
 )
 
 const (
@@ -160,6 +161,21 @@ func (p *passRetry) writeError(cw *committedResponseWriter, lastErr *upstreamErr
 	// and code never reach it.
 	if cw.stream {
 		cw.Header().Set(constants.HeaderContentType, constants.ContentTypeEventStream)
+		if cw.responsesClient {
+			var errBody struct {
+				Error map[string]any `json:"error"`
+			}
+			if err := json.Unmarshal(lastErr.Body, &errBody); err == nil && errBody.Error != nil {
+				if code, _ := errBody.Error["code"].(string); code == "context_length_exceeded" {
+					cw.WriteHeader(http.StatusOK)
+					_, _ = cw.Write([]byte(translator.FormatResponsesFailedSSE(errBody.Error)))
+					if f, ok := cw.ResponseWriter.(http.Flusher); ok {
+						f.Flush()
+					}
+					return
+				}
+			}
+		}
 		cw.WriteHeader(lastErr.StatusCode)
 		frame := append([]byte("data: "), lastErr.Body...)
 		frame = append(frame, '\n', '\n')

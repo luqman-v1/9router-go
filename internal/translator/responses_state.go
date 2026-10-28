@@ -150,6 +150,21 @@ func FormatResponsesSSE(ev ResponsesEvent) string {
 	return formatSSE(ev.Data)
 }
 
+// FormatResponsesFailedSSE formats a terminal response.failed event for streaming
+// Responses clients when an unrecoverable failure (such as context_length_exceeded)
+// occurs before chunks or completion.
+func FormatResponsesFailedSSE(errData map[string]any) string {
+	data := map[string]any{
+		"type": "response.failed",
+		"response": map[string]any{
+			"id":     fmt.Sprintf("resp_%d", time.Now().UnixMilli()),
+			"status": "failed",
+			"error":  errData,
+		},
+	}
+	return formatSSE(data)
+}
+
 // SetCustomToolNames marks which function names are freeform custom tools, so
 // the tool-call helpers emit custom_tool_call_input instead of JSON arguments.
 func (s *ResponsesState) SetCustomToolNames(names []string) {

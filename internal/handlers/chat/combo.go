@@ -552,6 +552,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	}
 	cw := newCommittedResponseWriter(w)
 	cw.stream = isStream
+	cw.responsesClient = translator.IsResponsesClient(ctx)
 	var lastErr *upstreamError
 	var retry passRetry
 	// Connections that failed with a retryable status this request; remaining
@@ -875,6 +876,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	}
 	cw := newCommittedResponseWriter(w)
 	cw.stream = isStream
+	cw.responsesClient = translator.IsResponsesClient(ctx)
 	var lastErr *upstreamError
 	var retry passRetry
 

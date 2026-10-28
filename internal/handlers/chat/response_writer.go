@@ -16,6 +16,10 @@ type committedResponseWriter struct {
 	// error written before any byte went out can be framed as SSE instead of a
 	// bare JSON document the client cannot split into events.
 	stream bool
+	// responsesClient records whether this request originated from the /v1/responses
+	// endpoint, allowing terminal stream errors (e.g. context_length_exceeded) to be
+	// emitted as native response.failed events.
+	responsesClient bool
 }
 
 func newCommittedResponseWriter(w http.ResponseWriter) *committedResponseWriter {
