@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -550,7 +551,7 @@ func (h *DashboardHandler) probeCompatibleConnection(ctx context.Context, conn *
 		}
 		return probeOutcome{valid: true}
 	}
-	status, _, err := connectionProbeDo(ctx, client, http.MethodGet, base+"/models", map[string]string{
+	status, _, err := connectionProbeDo(ctx, client, http.MethodGet, chat.CompatibleNodeModelsURL(base), map[string]string{
 		"Authorization": "Bearer " + data.APIKey,
 	}, nil)
 	if err != nil {

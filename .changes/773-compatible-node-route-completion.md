@@ -1,0 +1,3 @@
+### Fixed
+
+- OpenAI/Anthropic-compatible node route completion now agrees with the chat request path. `ChatCompletionsURL` is exported and routes on the last path segment, so vendor-prefixed bases such as `https://anyrouter.dev/api/v1` resolve to `/api/v1/chat/completions` instead of being treated as a named endpoint. A new `CompatibleNodeModelsURL` derives the `/models` endpoint from the completed chat route, so the live catalog fetch, dashboard "Import from /models", the connection probe, and both validate handlers all agree on the same URL. `fetchCompatibleNodeModels` also falls back to the node row's `baseUrl` when a connection carries only the key, so configured nodes publish a live model list.

@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -1247,15 +1248,21 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 	headers := map[string]string{"Content-Type": "application/json"}
+	// The OpenAI-compatible branch asks the same question the chat path asks:
+	// where is this node's `/models` route? It is derived from the completed
+	// chat route so both agree, including a bare host that gains `/v1`.
+	var listURL string
 	if isAnthropic {
 		baseURL = strings.TrimSuffix(baseURL, "/messages")
+		listURL = baseURL + "/models"
 		headers["x-api-key"] = connData.APIKey
 		headers["anthropic-version"] = "2023-06-01"
 		headers["Authorization"] = "Bearer " + connData.APIKey
 	} else {
 		headers["Authorization"] = "Bearer " + connData.APIKey
+		listURL = chat.CompatibleNodeModelsURL(baseURL)
 	}
-	status, body, err := validateProbeDo(r.Context(), http.MethodGet, baseURL+"/models", headers, nil)
+	status, body, err := validateProbeDo(r.Context(), http.MethodGet, listURL, headers, nil)
 	if err != nil {
 		statusCode, _, errMsg := ClassifyUpstreamNetworkError(err)
 		handlerutil.WriteJSONError(w, statusCode, "failed to fetch models: "+errMsg)

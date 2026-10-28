@@ -196,6 +196,27 @@ func TestValidateProviderNode_OpenAIModels404FallsBackToChat(t *testing.T) {
 	}
 }
 
+// A bare-host node must be probed at the routes chat will actually call. The
+// old probe appended "/models" and "/chat/completions" to the raw base, so a
+// node the gateway serves correctly still failed its Check.
+func TestValidateProviderNode_BareHostUsesTheChatRoute(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusNotFound, http.StatusOK)
+
+	rec, out := postValidateNode(t, `{"baseUrl":"https://api.example.com","apiKey":"k","type":"openai-compatible","modelId":"gpt-4"}`, true)
+	if !nodeValid(t, out) {
+		t.Fatalf("chat fallback should validate, got %s", rec.Body.String())
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("expected models+chat probes, got %d", len(*calls))
+	}
+	if (*calls)[0].url != "https://api.example.com/v1/models" {
+		t.Errorf("models probe = %q, want https://api.example.com/v1/models", (*calls)[0].url)
+	}
+	if (*calls)[1].url != "https://api.example.com/v1/chat/completions" {
+		t.Errorf("chat probe = %q, want https://api.example.com/v1/chat/completions", (*calls)[1].url)
+	}
+}
+
 func TestValidateProviderNode_OpenAIModels404WithoutModelID(t *testing.T) {
 	calls := staticProbeStub(t, http.StatusNotFound)
 
