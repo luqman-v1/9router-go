@@ -693,15 +693,97 @@ func classifyCodebuddyFailure(body []byte, intl bool) (codebuddyFailure, bool) {
 			retryAfter: codebuddyRetryAfter(msg),
 		}, true
 	}
-	if data.Code == 11128 && strings.Contains(strings.ToLower(msg), "conversation id missing") {
-		tip := firstNonEmpty(data.DisplayTips["en"], display)
-		out := `CodeBuddy channel verification failed (11128 "conversation id missing"): the upstream gateway requires the X-Conversation-* header family the official IDE sends, supplied by applyCodebuddyConversationHeaders(). If this appears, the gate likely changed (e.g. a new required header).`
-		if tip != "" {
-			out += " Upstream said: " + tip
+	if data.Code == 11128 {
+		if gate := codebuddyGateKind(msg + " " + data.DisplayTips["en"]); gate != codebuddyGateNone {
+			return codebuddyFailure{
+				status:  http.StatusBadRequest,
+				message: codebuddyGateMessage(gate, firstNonEmpty(data.DisplayTips["en"], display)),
+			}, true
 		}
-		return codebuddyFailure{status: http.StatusBadRequest, message: out}, true
+	}
+	// Last resort for the shape the gateway actually sent: its error object
+	// quoted inside `message`, so the parsed Code is 0 and only the text says
+	// what happened.
+	if gate := codebuddyRawChannelGate(body); gate != codebuddyGateNone {
+		return codebuddyFailure{
+			status:  http.StatusBadRequest,
+			message: codebuddyGateMessage(gate, firstNonEmpty(display, msg)),
+		}, true
 	}
 	return codebuddyFailure{}, false
+}
+
+// codebuddyChannelGate names which channel-verification gate a failure reports.
+// Two distinct diagnoses hide behind one gate: a missing header family (fixable
+// here) and a client-fingerprint rejection (the identity headers disagree with
+// the client the channel currently serves).
+type codebuddyChannelGate int
+
+const (
+	codebuddyGateNone codebuddyChannelGate = iota
+	codebuddyGateConversationID
+	codebuddyGateClientIdentity
+)
+
+// codebuddyChannelMarkers are the phrasings the gateway uses for the
+// fingerprint rejection. Recorded from a real 11128 body
+// ("Illegal API invocation from an unapproved channel" + "This call failed
+// channel verification, possibly because it was not sent from an official
+// client"); the bare "channel verification" keeps picking it up when only the
+// displayTips survive translation.
+var codebuddyChannelMarkers = []string{
+	"illegal api invocation from an unapproved channel",
+	"unapproved channel",
+	"channel verification",
+	"not sent from an official client",
+	"渠道校验",
+}
+
+// codebuddyGateCodeRegex finds the business code in a body that carries the
+// upstream error as a quoted string — "{'code': 11128, ...}", single quotes and
+// escaped quotes included — rather than as JSON. The word boundary sits right
+// after the digits, before any closing quote, so 111280 is rejected while
+// "11-128" with a quoted value still matches.
+var codebuddyGateCodeRegex = regexp.MustCompile(`(?i)['"]?code\\*['"]?\s*:\s*\\*['"]?(?:11128|11-128)\b`)
+
+// codebuddyGateKind reads the diagnosis out of the gate's own wording. The code
+// alone never decides: 11128 also carries "first message is not system prompt".
+func codebuddyGateKind(text string) codebuddyChannelGate {
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "conversation id missing") {
+		return codebuddyGateConversationID
+	}
+	for _, marker := range codebuddyChannelMarkers {
+		if strings.Contains(lower, marker) {
+			return codebuddyGateClientIdentity
+		}
+	}
+	return codebuddyGateNone
+}
+
+// codebuddyRawChannelGate detects the gate in a body the JSON parser could not
+// attribute to a code. Both halves are required — the code and the wording — so
+// a request id or an unrelated refusal that happens to contain "11128" is not
+// reported as a channel block.
+func codebuddyRawChannelGate(body []byte) codebuddyChannelGate {
+	if !codebuddyGateCodeRegex.Match(body) {
+		return codebuddyGateNone
+	}
+	return codebuddyGateKind(string(body))
+}
+
+// codebuddyGateMessage turns a gate into an operator-facing cause.
+func codebuddyGateMessage(gate codebuddyChannelGate, detail string) string {
+	var out string
+	if gate == codebuddyGateConversationID {
+		out = `CodeBuddy channel verification failed (11128 "conversation id missing"): the upstream gateway requires the X-Conversation-* header family the official IDE sends, supplied by applyCodebuddyConversationHeaders(). If this appears, the gate likely changed (e.g. a new required header).`
+	} else {
+		out = `CodeBuddy channel verification failed ("illegal api invocation from an unapproved channel"): the gateway rejected the client fingerprint, not the request — it does not accept this caller as the official client. Re-check the intl identity headers (User-Agent, X-IDE-Type/Name/Version, X-Private-Data) against the client version the channel serves now.`
+	}
+	if detail != "" {
+		out += " Upstream said: " + detail
+	}
+	return out
 }
 
 // codebuddyRetryAfter reads the upstream's own reset wall clock out of a

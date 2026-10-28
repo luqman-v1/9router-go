@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,65 @@ func TestClassifyCodebuddyFailure_SystemPromptVariantIsNotTheGate(t *testing.T) 
 	body := []byte(`{"code":11128,"msg":"first message is not system prompt"}`)
 	if f, ok := classifyCodebuddyFailure(body, true); ok {
 		t.Errorf("malformed-request 11128 classified as %+v, want pass-through", f)
+	}
+}
+
+func TestClassifyCodebuddyFailure_UnapprovedChannelWording(t *testing.T) {
+	// Recorded upstream shape: the error object arrives as a single-quoted
+	// string inside `message`, so `code` never reaches the parsed struct.
+	inner := `{'code': 11128, 'msg': 'Illegal API invocation from an unapproved channel', ` +
+		`'displayTips': {'en': 'This call failed channel verification, possibly because it was ` +
+		`not sent from an official client.'}, 'displayMsg': {'zh': 'blocked'}}`
+	body := []byte(`{"message":` + strconv.Quote(inner) + `,"type":"error"}`)
+	f, ok := classifyCodebuddyFailure(body, true)
+	if !ok {
+		t.Fatal("fingerprint rejection not classified")
+	}
+	if f.status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", f.status)
+	}
+	if !strings.Contains(f.message, "client fingerprint") {
+		t.Errorf("message does not name the fingerprint rejection: %q", f.message)
+	}
+	if strings.Contains(f.message, "X-Conversation") {
+		t.Errorf("fingerprint rejection described as a missing header family: %q", f.message)
+	}
+}
+
+func TestClassifyCodebuddyFailure_EscapedChannelCheck(t *testing.T) {
+	inner := `{"code": 11128, "msg": "Illegal API invocation from an unapproved channel"}`
+	double := strings.ReplaceAll(`{"message":"X"}`, "X", strings.ReplaceAll(inner, `"`, `\"`))
+	for _, body := range []string{
+		`{"message":` + strconv.Quote(inner) + `}`,
+		double,
+	} {
+		if f, ok := classifyCodebuddyFailure([]byte(body), true); !ok || f.status != http.StatusBadRequest {
+			t.Errorf("escaped gate not classified: %s -> %+v %v", body, f, ok)
+		}
+	}
+}
+
+func TestClassifyCodebuddyFailure_GateNeedsCodeAndWording(t *testing.T) {
+	// The same traps the reference implementation pins: a refusal that merely
+	// mentions the wording, a request id that looks like the code, and a code
+	// that only shares a prefix must all pass through.
+	body := `{"code":11128,"msg":"blocked by security policy"}`
+	if f, ok := classifyCodebuddyFailure([]byte(body), true); ok {
+		t.Errorf("unrelated 11128 classified as %+v, want pass-through", f)
+	}
+	for _, neg := range []string{
+		`{"msg":"channel verification"}`,
+		`{"requestId":"11128","msg":"official client"}`,
+		`{"code":111280,"msg":"This call failed channel verification"}`,
+	} {
+		if f, ok := classifyCodebuddyFailure([]byte(neg), true); ok {
+			t.Errorf("false positive on %s: %+v", neg, f)
+		}
+	}
+	// A quoted value under a quoted key is still the code.
+	quoted := `{"message":"{'code':'11-128','displayTips':{'en':'not sent from an official client'}}"}`
+	if f, ok := classifyCodebuddyFailure([]byte(quoted), true); !ok || f.status != http.StatusBadRequest {
+		t.Errorf("quoted gate code missed: %s -> %+v %v", quoted, f, ok)
 	}
 }
 
