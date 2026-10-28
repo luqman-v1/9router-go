@@ -722,8 +722,16 @@ type codebuddyChannelGate int
 const (
 	codebuddyGateNone codebuddyChannelGate = iota
 	codebuddyGateConversationID
+	codebuddyGateMissingFamily
 	codebuddyGateClientIdentity
 )
+
+// codebuddyBlockedMarkers is the third recorded shape: 11128 with "request
+// illegal" and "Request blocked. Please send it again". A/B against the live
+// gateway showed it is the missing-family verdict — the same credential, body
+// and host answered 200 once the X-Conversation-* and trace headers were added,
+// so it is not an account or fingerprint verdict.
+var codebuddyBlockedMarkers = []string{"request illegal", "request blocked"}
 
 // codebuddyChannelMarkers are the phrasings the gateway uses for the
 // fingerprint rejection. Recorded from a real 11128 body
@@ -753,6 +761,11 @@ func codebuddyGateKind(text string) codebuddyChannelGate {
 	if strings.Contains(lower, "conversation id missing") {
 		return codebuddyGateConversationID
 	}
+	for _, marker := range codebuddyBlockedMarkers {
+		if strings.Contains(lower, marker) {
+			return codebuddyGateMissingFamily
+		}
+	}
 	for _, marker := range codebuddyChannelMarkers {
 		if strings.Contains(lower, marker) {
 			return codebuddyGateClientIdentity
@@ -775,9 +788,12 @@ func codebuddyRawChannelGate(body []byte) codebuddyChannelGate {
 // codebuddyGateMessage turns a gate into an operator-facing cause.
 func codebuddyGateMessage(gate codebuddyChannelGate, detail string) string {
 	var out string
-	if gate == codebuddyGateConversationID {
+	switch gate {
+	case codebuddyGateConversationID:
 		out = `CodeBuddy channel verification failed (11128 "conversation id missing"): the upstream gateway requires the X-Conversation-* header family the official IDE sends, supplied by applyCodebuddyConversationHeaders(). If this appears, the gate likely changed (e.g. a new required header).`
-	} else {
+	case codebuddyGateMissingFamily:
+		out = `CodeBuddy channel verification failed (11128 "request illegal" / "Request blocked"): the request reached the gateway without the X-Conversation-* and trace headers the official client sends. Measured: the same credential, host and body answer 200 once the family is attached, so treat a missing family first and only then the identity headers (User-Agent, X-IDE-Type/Name/Version).`
+	default:
 		out = `CodeBuddy channel verification failed ("illegal api invocation from an unapproved channel"): the gateway rejected the client fingerprint, not the request — it does not accept this caller as the official client. Re-check the intl identity headers (User-Agent, X-IDE-Type/Name/Version, X-Private-Data) against the client version the channel serves now.`
 	}
 	if detail != "" {

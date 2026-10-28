@@ -108,6 +108,31 @@ func TestClassifyCodebuddyFailure_GateNeedsCodeAndWording(t *testing.T) {
 	}
 }
 
+func TestClassifyCodebuddyFailure_RequestIllegalIsTheMissingFamily(t *testing.T) {
+	// Recorded live: without the X-Conversation-* and trace headers the same
+	// credential, host and body answer this; with them, 200.
+	body := []byte(`{"code":11128,"msg":"request illegal","requestId":"b72177e2-1420-488b-9173-0f27edb56211",` +
+		`"displayMsg":{"en":"Request blocked. Please send it again","zh":"blocked"},` +
+		`"displayTips":{"en":"This call failed channel verification, possibly because it was not sent from an official client."}}`)
+	f, ok := classifyCodebuddyFailure(body, true)
+	if !ok || f.status != http.StatusBadRequest {
+		t.Fatalf("classified %+v (ok=%v), want 400", f, ok)
+	}
+	if !strings.Contains(f.message, "X-Conversation") {
+		t.Errorf("missing-family verdict does not name the family: %q", f.message)
+	}
+	if strings.Contains(f.message, "fingerprint") {
+		t.Errorf("missing-family verdict blamed the fingerprint: %q", f.message)
+	}
+	if !strings.Contains(f.message, "200") {
+		t.Errorf("verdict does not state the measured outcome: %q", f.message)
+	}
+	// The console path's own gate is a body-shape problem, not this one.
+	if f, ok := classifyCodebuddyFailure([]byte(`{"code":11128,"msg":"first message is not system prompt"}`), true); ok {
+		t.Errorf("system-prompt gate classified as %+v", f)
+	}
+}
+
 func TestClassifyCodebuddyFailure_AccountRestricted(t *testing.T) {
 	body := []byte(`{"code":11140,"msg":"request illegal","requestId":"01a14a5d3926755fbbb57391a5ccfad9","displayMsg":{"en":"Your account has been restricted due to unusual activity"}}`)
 	f, ok := classifyCodebuddyFailure(body, true)

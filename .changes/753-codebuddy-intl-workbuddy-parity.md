@@ -101,6 +101,16 @@ executor now re-wraps the rewritten error (`ForwardCodebuddyCN upstream (<url>)`
 so the text and the body agree; `TestForwardCodebuddyIntl_ErrorTextIsCanonical`
 pins it.
 
+**Gate shapes, measured on the live gateway.** Three bodies, one per mistake:
+without the `X-Conversation-*`/trace headers the same credential, host and body
+answer `11128 "request illegal"` + "Request blocked. Please send it again" (add
+the family → `200`); `/console/chat/completions` answers `11128 "first message
+is not system prompt"` until the body opens with the CodeBuddy system prompt and
+typed user blocks (which this executor's transform already does); and a
+fingerprint mismatch answers "Illegal API invocation from an unapproved
+channel". The classifier now tells them apart instead of reporting one generic
+channel-verification cause: missing family, wrong identity, or a gate that moved.
+
 **Residual risk.** The 5.8.4 identity and the trace family are upstream
 capture-verified, not re-derived here without an intl credential; if the gateway
 adds a required header, the 11128 diagnostic now says so instead of surfacing a
