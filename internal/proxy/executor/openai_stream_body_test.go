@@ -1,9 +1,13 @@
 package executor
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"9router/proxy/internal/proxy"
@@ -91,5 +95,58 @@ func TestForwardOpenAI_StreamRequestWithNonStreamBody(t *testing.T) {
 				t.Errorf("StatusCode = %d, want 502 so the router fails over", ue.StatusCode)
 			}
 		})
+	}
+}
+
+// TestForwardOpenAI_MislabelledSSEStreamsLive pins that a stream arriving
+// under a JSON content-type is forwarded frame by frame: the first frame must
+// be readable while the upstream is still holding the rest of the body back.
+// A whole-body buffer would hang here until the release.
+func TestForwardOpenAI_MislabelledSSEStreamsLive(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The mislabel: an SSE body under application/json.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-release
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\" there\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = ForwardOpenAI(w, &Request{
+			Ctx:    r.Context(),
+			Client: upstream.Client(),
+			Config: &providers.ProviderConfig{BaseURL: upstream.URL + "/chat/completions"},
+			APIKey: "k",
+			Body:   []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+			IsStream: true,
+		})
+	}))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL, "application/json", bytes.NewReader([]byte(`{"model":"m","stream":true}`)))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	first, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("first line before the upstream released the body: %v", err)
+	}
+	if !strings.Contains(first, `"content":"hi"`) {
+		t.Fatalf("first line = %q, want the first mislabelled frame", first)
+	}
+
+	close(release)
+	rest, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(rest), "[DONE]") {
+		t.Fatalf("stream after release lost [DONE]: %q", rest)
 	}
 }
