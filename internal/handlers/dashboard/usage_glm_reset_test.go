@@ -690,14 +690,16 @@ func TestHandleRedeemGLMResetCard_InFlightLock(t *testing.T) {
 	// One should succeed (200), one should get 409 conflict
 	successCount := 0
 	conflictCount := 0
-	if w1.Code == http.StatusOK {
+	switch w1.Code {
+	case http.StatusOK:
 		successCount++
-	} else if w1.Code == http.StatusConflict {
+	case http.StatusConflict:
 		conflictCount++
 	}
-	if w2.Code == http.StatusOK {
+	switch w2.Code {
+	case http.StatusOK:
 		successCount++
-	} else if w2.Code == http.StatusConflict {
+	case http.StatusConflict:
 		conflictCount++
 	}
 
