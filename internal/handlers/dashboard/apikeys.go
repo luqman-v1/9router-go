@@ -1,7 +1,6 @@
 package dashboard
 
 import (
-	"context"
 	json "encoding/json/v2"
 	"errors"
 	"io"
@@ -57,6 +56,19 @@ func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Reque
 		accessReadFailed = true
 	}
 
+	// The spend a tokenQuota is measured against is one statement for the
+	// whole page: the ledger scan the sum runs over is the listing's heaviest
+	// read, and paying it once per row was the N+1 that dominated the request
+	// on a ledger past a hundred thousand rows.
+	usage, usageErr := h.Repo.GetApiKeyTokenUsageForKeys(r.Context(), keys)
+	if usageErr != nil {
+		// A read failure reports 0 rather than failing the listing, because
+		// the progress bar is informational; the limiter enforces the same
+		// quota from the same repository read on the request path.
+		log.Warn("apikeys", "usage read for the key list failed; reporting zero spend", "error", usageErr)
+		usage = map[string]int{}
+	}
+
 	sanitized := make([]map[string]any, 0, len(keys))
 	for _, k := range keys {
 		if k == nil {
@@ -99,7 +111,7 @@ func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Reque
 			// reset, so it has to travel with the row: without it every
 			// exhausted key looked untouched and every untouched one looked
 			// exhausted.
-			"usedTokens": apiKeyUsedTokens(r.Context(), h.Repo, k.ID),
+			"usedTokens": usage[k.ID],
 		})
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, sanitized)
@@ -161,26 +173,6 @@ func stringOrEmpty(v *string) string {
 		return ""
 	}
 	return *v
-}
-
-// apiKeyUsedTokens reads the spend a key's tokenQuota is measured against.
-//
-// The listing is bounded by the number of client keys an operator has minted —
-// tens, not thousands — so one read per row is cheaper than the alternative: a
-// join against a masked-key column that carries no index. A read failure
-// reports 0 rather than failing the listing, because the progress bar is
-// informational; the limiter enforces the same quota from the same repository
-// read on the request path.
-func apiKeyUsedTokens(ctx context.Context, repo *db.Repo, keyID string) int {
-	if repo == nil || keyID == "" {
-		return 0
-	}
-	used, err := repo.GetApiKeyTokenUsageByID(ctx, keyID)
-	if err != nil {
-		log.Warn("apikeys", "usage read failed for list row", "error", err, "apiKeyId", keyID)
-		return 0
-	}
-	return used
 }
 
 // apiKeyQuotaResetAt was the reset stamp reader. The mark is a usageHistory row
