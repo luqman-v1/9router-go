@@ -1,8 +1,7 @@
 package dashboard
 
 import (
-	"encoding/json"
-	"fmt"
+	json "encoding/json/v2"
 	"io"
 	"net/http"
 	"strings"
@@ -211,25 +210,24 @@ func (h *DashboardHandler) HandleRedeemGLMResetCard(w http.ResponseWriter, r *ht
 	payloadBytes, _ := json.Marshal(payload)
 	status, _, out, err := usageDo(r.Context(), http.MethodPost, url, headers, payloadBytes)
 	if err != nil {
-		writePlainError(w, http.StatusBadGateway, fmt.Sprintf("GLM reset card redeem error: %v", err))
+		handlerutil.WriteJSON(w, http.StatusBadGateway, map[string]any{
+			"reset":       false,
+			"alreadyUsed": false,
+			"uncertain":   true,
+			"code":        "uncertain",
+			"message":     "Reset outcome is unknown. Check the Z.ai dashboard before trying again.",
+		})
 		return
 	}
 
-	// Parse Z.ai response: { success: bool, code: any, message: string }
+	// Parse Z.ai response: { success: bool, code: any, message: string, alreadyUsed: bool }
 	var respData struct {
-		Success bool   `json:"success"`
-		Code    any    `json:"code"`
-		Message string `json:"message"`
+		Success     bool   `json:"success"`
+		AlreadyUsed bool   `json:"alreadyUsed"`
+		Code        any    `json:"code"`
+		Message     string `json:"message"`
 	}
 	_ = json.Unmarshal(out, &respData)
-
-	// Determine success: HTTP 200 AND success == true AND (code == 0 || code == 200)
-	success := false
-	code := "ERROR"
-	message := "GLM reset card redeem failed."
-	if respData.Message != "" {
-		message = respData.Message
-	}
 
 	// Check code is 0 or 200 (numeric or string)
 	codeOk := false
@@ -242,26 +240,20 @@ func (h *DashboardHandler) HandleRedeemGLMResetCard(w http.ResponseWriter, r *ht
 		codeOk = (v == "0" || v == "200")
 	}
 
-	if status == http.StatusOK && respData.Success && codeOk {
+	// Determine success: HTTP 200 AND success == true AND alreadyUsed != true AND (code == 0 || code == 200)
+	success := false
+	code := "ERROR"
+	if status == http.StatusOK && respData.Success && !respData.AlreadyUsed && codeOk {
 		success = true
 		code = "SUCCESS"
 	}
 
 	if !success {
-		// Distinguish between local upstream 4xx rejection vs uncertain network/server outcome
-		if status >= 400 && status < 500 {
-			handlerutil.WriteJSON(w, status, map[string]any{
-				"reset":       false,
-				"alreadyUsed": false,
-				"uncertain":   false,
-				"code":        "rejected",
-				"message":     message,
-			})
-			return
-		}
+		// All non-success wire responses map to 502 / uncertain: true, matching upstream open-sse/services/usage/glm.js:139.
+		// Never forward upstream 401 as HTTP status because client interceptors would treat it as dashboard session expiration.
 		handlerutil.WriteJSON(w, http.StatusBadGateway, map[string]any{
 			"reset":       false,
-			"alreadyUsed": false,
+			"alreadyUsed": respData.AlreadyUsed,
 			"uncertain":   true,
 			"code":        "uncertain",
 			"message":     "Reset outcome is unknown. Check the Z.ai dashboard before trying again.",
