@@ -252,6 +252,11 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 	if !e.CreateIfMissing {
 		return nil, fmt.Errorf("%w: %q", ErrKeyNotFound, strings.Join(e.KeyPath, "."))
 	}
+	// A container ValueJSON spliced raw reads back as a valid TOML inline
+	// table, so unlike the replace path the read-back cannot catch it here.
+	if e.ValueJSON != "" && tomlScalarLiteral(e.ValueJSON) != nil {
+		return nil, fmt.Errorf("%w: TOML writes no container value", ErrUnsupportedStructure)
+	}
 	// Every remaining path inserts a key. A key whose name an existing dotted
 	// key already uses as a table — "a.b = 1" and then "a = ..." — parses as
 	// the document it is, not as the one the caller asked for, and appending
@@ -429,9 +434,9 @@ func tomlFindSection(doc *tomlDoc, path []string) int {
 	return -1
 }
 
-// insertTOMLKey adds one key line to an existing section, after the last line
-// that belongs to it — after its line comment, never inside it.
-// insertTOMLKey inserts a rendered key/value line at the end of a section.
+// insertTOMLKey inserts a rendered key/value line at the end of a section,
+// after the last line that belongs to it. val is already rendered by
+// tomlEditLiteral; the function never quotes.
 func insertTOMLKey(src []byte, doc *tomlDoc, idx int, sectionPath []string, key, val string) []byte {
 	at := lineEnd(src, doc.sections[idx].headerEnd)
 	for _, kv := range doc.kvs {
@@ -446,10 +451,8 @@ func insertTOMLKey(src []byte, doc *tomlDoc, idx int, sectionPath []string, key,
 	return splice(src, at, at, []byte(line))
 }
 
-// insertTOMLRootKey adds a key to the root table, which by TOML's own rule must
-// stay above the first [table] header.
-// insertTOMLRootKey adds a key to the root table, which by TOML's own rule must
-// sit ahead of the first section header.
+// insertTOMLRootKey inserts a rendered key/value line into the root table,
+// which by TOML's own rule must sit ahead of the first section header.
 func insertTOMLRootKey(src []byte, doc *tomlDoc, key, val string) []byte {
 	at := 0
 	if len(doc.sections) > 0 {

@@ -152,6 +152,12 @@ func TestPatchTOMLErrors(t *testing.T) {
 			Edit{KeyPath: []string{"a", "c"}, Value: "y", CreateIfMissing: true}, ErrUnsupportedStructure},
 		{"array of tables", "[[t]]\nk = 1\n",
 			Edit{KeyPath: []string{"t", "new"}, Value: "y", CreateIfMissing: true}, ErrUnsupportedStructure},
+		{"container ValueJSON on replace", "[t]\nk = 1\n",
+			Edit{KeyPath: []string{"t", "k"}, ValueJSON: `{"a": 1}`}, ErrUnsupportedStructure},
+		{"container ValueJSON on create", "[t]\nk = 1\n",
+			Edit{KeyPath: []string{"t", "new"}, ValueJSON: `{"a": 1}`, CreateIfMissing: true}, ErrUnsupportedStructure},
+		{"container ValueJSON on root create", "a = 1\n",
+			Edit{KeyPath: []string{"root"}, ValueJSON: "[1, 2]", CreateIfMissing: true}, ErrUnsupportedStructure},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
