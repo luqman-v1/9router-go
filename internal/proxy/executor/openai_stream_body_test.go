@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 )
 
 // A streaming request whose upstream answers 200 with a body that is not an
@@ -119,11 +119,11 @@ func TestForwardOpenAI_MislabelledSSEStreamsLive(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = ForwardOpenAI(w, &Request{
-			Ctx:    r.Context(),
-			Client: upstream.Client(),
-			Config: &providers.ProviderConfig{BaseURL: upstream.URL + "/chat/completions"},
-			APIKey: "k",
-			Body:   []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+			Ctx:      r.Context(),
+			Client:   upstream.Client(),
+			Config:   &providers.ProviderConfig{BaseURL: upstream.URL + "/chat/completions"},
+			APIKey:   "k",
+			Body:     []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true}`),
 			IsStream: true,
 		})
 	}))
