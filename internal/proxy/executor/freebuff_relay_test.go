@@ -20,6 +20,31 @@ import (
 // relay code, and without sending the control plane to the chat-completions
 // endpoint.
 
+type relayFake struct {
+	*httptest.Server
+	gotTarget string
+	gotPath   string
+	calls     int
+}
+
+func newRelayFake(t *testing.T, body string) *relayFake {
+	t.Helper()
+	f := &relayFake{}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.gotTarget = r.Header.Get("x-relay-target")
+		f.gotPath = r.Header.Get("x-relay-path")
+		f.calls++
+		if f.gotTarget == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(f.Close)
+	return f
+}
+
 func newFreebuffRelayedClient(t *testing.T, relayURL string) *http.Client {
 	t.Helper()
 	return &http.Client{

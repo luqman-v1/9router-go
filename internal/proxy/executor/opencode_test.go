@@ -451,16 +451,17 @@ func TestForwardOpencode_MuseSpark_EdgeRelay(t *testing.T) {
 	defer srv.Close()
 
 	cfg := &providers.ProviderConfig{
-		BaseURL: srv.URL, // local fake upstream; leave its path intact
-		StaticHeaders: map[string]string{
-			"x-relay-target": "https://opencode.ai",
-			"x-relay-path":   "/zen/v1/chat/completions",
-		},
+		BaseURL:  "https://opencode.ai/zen/v1",
+		RelayURL: srv.URL,
+	}
+
+	client := &http.Client{
+		Transport: proxy.RelayTransport(srv.URL, http.DefaultTransport),
 	}
 
 	rec := httptest.NewRecorder()
 	req := &Request{
-		Client:        srv.Client(),
+		Client:        client,
 		Config:        cfg,
 		APIKey:        "public",
 		Body:          []byte(`{"model":"muse-spark-1.3-contributor-free","input":"test"}`),
