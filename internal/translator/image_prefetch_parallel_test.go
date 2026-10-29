@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -102,5 +103,75 @@ func TestPrefetch_SharedClientAcrossPasses(t *testing.T) {
 		if !strings.Contains(out, "data:image/png;base64,") {
 			t.Fatalf("pass lost the image:\n%s", out)
 		}
+	}
+}
+
+// TestPrefetch_RefusalPrefixDoesNotStarveTheBudget pins the wave loop. The
+// sequential walk charged the budget only on success, so a run of broken URLs
+// cost nothing and the walk continued to the images behind them. A fixed
+// window over the first N candidates broke that: with N below the length of the
+// broken prefix, nothing behind it was fetched and the body inlined zero images
+// from an untouched budget.
+func TestPrefetch_RefusalPrefixDoesNotStarveTheBudget(t *testing.T) {
+	var downloads atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		downloads.Add(1)
+		if strings.HasPrefix(r.URL.Path, "/broken") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(tinyPNG)
+	}))
+	defer srv.Close()
+
+	mk := func(name string) string {
+		return `{"type":"image_url","image_url":{"url":"` + srv.URL + `/` + name + `"}}`
+	}
+	// A broken prefix longer than any single wave the budget can ask for, then
+	// real images. The budget is four and is untouched by the refusals.
+	parts := make([]string, 0, 20)
+	for i := range 20 {
+		parts = append(parts, mk("broken"+strconv.Itoa(i)))
+	}
+	for _, name := range []string{"good1.png", "good2.png", "good3.png", "good4.png"} {
+		parts = append(parts, mk(name))
+	}
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":[` + strings.Join(parts, ",") + `]}]}`)
+
+	out := string(PrefetchInlineImages(context.Background(), body, PrefetchOptions{AllowLoopback: true}))
+	if got := strings.Count(out, "data:image/png;base64,"); got != 4 {
+		t.Fatalf("inlined %d images behind a broken prefix, want 4 (budget untouched):\n%s", got, out)
+	}
+	if n := downloads.Load(); n > 20+4 {
+		t.Fatalf("%d downloads for 20 refusals and 4 images: the refusal ceiling is not bounding the pass", n)
+	}
+}
+
+// TestPrefetch_HealthyBodyCostsOneWave pins the cost the parallel pass was
+// introduced for: a body whose images all resolve must fetch each URL once and
+// stop, not keep starting waves. Four images at the default budget of four is
+// exactly one wave.
+func TestPrefetch_HealthyBodyCostsOneWave(t *testing.T) {
+	var downloads atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		downloads.Add(1)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(tinyPNG)
+	}))
+	defer srv.Close()
+
+	parts := make([]string, 0, 4)
+	for i := range 4 {
+		parts = append(parts, `{"type":"image_url","image_url":{"url":"`+srv.URL+`/good`+strconv.Itoa(i)+`.png"}}`)
+	}
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":[` + strings.Join(parts, ",") + `]}]}`)
+
+	out := string(PrefetchInlineImages(context.Background(), body, PrefetchOptions{AllowLoopback: true}))
+	if got := strings.Count(out, "data:image/png;base64,"); got != 4 {
+		t.Fatalf("inlined %d images, want 4:\n%s", got, out)
+	}
+	if n := downloads.Load(); n != 4 {
+		t.Fatalf("%d downloads for 4 images: a healthy body must fetch each URL exactly once", n)
 	}
 }
