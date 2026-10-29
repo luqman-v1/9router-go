@@ -49,3 +49,15 @@ Two sources of repeated work on the Usage page, both invisible to every check be
 - **The ten-second connection poll ran on every tab.** `App.svelte` re-fetched `/api/connections` (24.5 KB for 46 accounts) and `/api/provider-nodes` (3.5 KB) every ten seconds regardless of which tab was open — including Usage, Quota, Token Saver and Settings, none of which render either list. The poll is now limited to the tabs whose content is drawn from those lists (`endpoint`, `connections`, `combos`, the four media kinds, `proxypools`). A tab that does not draw them still gets a fresh copy on the way in, because `loadData()` runs on navigation.
 
 `web/e2e/usageRequestEconomy.test.ts` pins both as request counts: one dashboard read across five section switches, and zero connection/provider-node reads across two poll ticks on the Usage page. Both assertions fail on the pre-fix code (measured 2 dashboard reads and 4 poll reads in the failing run) and pass after it. `web/src/lib/usageDashboardCache.test.ts` covers the TTL boundary and the invalidation.
+
+### Usage › Overview: the five-second poll no longer carries the breakdown maps
+
+`GET /api/usage/stats` builds five breakdown maps. On a ledger with 411 models the response is **415 KB**, of which the four per-model maps are ~98% — and the Overview polls it every five seconds. Measured **4.9 MB a minute, 1.7 GB an hour**, on a box this project targets at 1 vCPU.
+
+The poll's consumers are the KPI row, the live pulse and the recent-request list: totals, `activeRequests`, `recentRequests`. None of them read `byModel`/`byAccount`/`byApiKey`/`byEndpoint`, and the breakdown table draws exactly one of those at a time.
+
+- `?views=` now selects which breakdowns the handler builds. `views=none` returns totals plus `byProvider` (which the totals are summed from); naming one view builds only that one. Omitting the parameter keeps the previous full shape, so no existing caller changes.
+- The dashboard's five-second poll sends `views=none`; the breakdowns are refreshed on a 30 s tick, which keeps the table current without paying the per-poll cost. A poll merges only the fields it fills, so the table keeps its rows between refreshes rather than blanking for four seconds out of five.
+- Measured after: **415 KB → 5.1 KB per poll, 4.9 MB/min → 870 KB/min**, with identical totals (1372 requests, same token and cost sums) and the breakdown table still 431 rows across polls.
+
+`internal/handlers/usage_stats_views_test.go` pins the default shape, the totals-only shape (exact totals, empty maps, `byProvider` present), a single named view, and that an unknown name is ignored rather than failing the read. `web/e2e/usageStatsViews.test.ts` pins the wire: every poll inside a 13 s window carries `views=none`, and a full read still lands within 33 s so the table cannot freeze on its first load.

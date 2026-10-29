@@ -576,7 +576,14 @@ func apiKeyDisplayName(storedKey string, keyNames map[string]string) string {
 
 // applyRawAggregate copies a cached fold onto the response, applying the
 // display names that depend on connections and nodes rather than on the ledger.
-func applyRawAggregate(resp *UsageStatsResponse, agg *rawAggregate, nodeNameMap, connMap, keyNames map[string]string) {
+// applyRawAggregate folds a cached window aggregate into the response.
+//
+// Only the breakdowns the caller asked for are materialised (see
+// usageStatsViews). byProvider is always folded because the handler sums its
+// totals from it; the other four are skipped when ?views= left them out, which
+// is what keeps the five-second poll from serialising 411-model maps nobody is
+// looking at.
+func applyRawAggregate(resp *UsageStatsResponse, agg *rawAggregate, nodeNameMap, connMap, keyNames map[string]string, views usageStatsViews) {
 	for key, t := range agg.byProvider {
 		p := resp.ByProvider[key]
 		p.Requests = t.requests
@@ -588,71 +595,82 @@ func applyRawAggregate(resp *UsageStatsResponse, agg *rawAggregate, nodeNameMap,
 		resp.ByProvider[key] = p
 	}
 
-	for key, t := range agg.byModel {
-		meta := agg.modelMeta[key]
-		m := resp.ByModel[key]
-		m.RawModel = meta.rawModel
-		m.Provider = displayProviderName(meta.provider, nodeNameMap)
-		m.Requests = t.requests
-		m.PromptTokens = t.promptTokens
-		m.CompletionTokens = t.completionTokens
-		m.CachedTokens = t.cachedTokens
-		m.Cost = t.cost
-		m.LastUsed = t.lastUsed
-		resp.ByModel[key] = m
-	}
-
-	for key, t := range agg.byAccount {
-		meta := agg.accountMeta[key]
-		accName := friendlyAccountName(meta.connectionID, connMap)
-		accKey := meta.rawModel + " (" + meta.provider + " - " + accName + ")"
-		a := resp.ByAccount[accKey]
-		a.RawModel = meta.rawModel
-		a.Provider = displayProviderName(meta.provider, nodeNameMap)
-		a.ConnectionID = meta.connectionID
-		a.AccountName = accName
-		a.Requests = t.requests
-		a.PromptTokens = t.promptTokens
-		a.CompletionTokens = t.completionTokens
-		a.CachedTokens = t.cachedTokens
-		a.Cost = t.cost
-		a.LastUsed = t.lastUsed
-		resp.ByAccount[accKey] = a
-	}
-
-	for key, t := range agg.byAPIKey {
-		meta := agg.apiKeyMeta[key]
-		k := resp.ByApiKey[key]
-		k.RawModel = meta.rawModel
-		k.Provider = displayProviderName(meta.provider, nodeNameMap)
-		masked := maskAPIKeyForStats(meta.apiKey)
-		if masked == "" {
-			masked = "local-no-key"
+	if views.model {
+		for key, t := range agg.byModel {
+			meta := agg.modelMeta[key]
+			m := resp.ByModel[key]
+			m.RawModel = meta.rawModel
+			m.Provider = displayProviderName(meta.provider, nodeNameMap)
+			m.Requests = t.requests
+			m.PromptTokens = t.promptTokens
+			m.CompletionTokens = t.completionTokens
+			m.CachedTokens = t.cachedTokens
+			m.Cost = t.cost
+			m.LastUsed = t.lastUsed
+			resp.ByModel[key] = m
 		}
-		k.ApiKeyMasked = masked
-		k.ApiKeyKey = masked
-		k.KeyName = apiKeyDisplayName(meta.apiKey, keyNames)
-		k.Requests = t.requests
-		k.PromptTokens = t.promptTokens
-		k.CompletionTokens = t.completionTokens
-		k.CachedTokens = t.cachedTokens
-		k.Cost = t.cost
-		k.LastUsed = t.lastUsed
-		resp.ByApiKey[key] = k
+
 	}
 
-	for key, t := range agg.byEndpoint {
-		meta := agg.endpointMeta[key]
-		e := resp.ByEndpoint[key]
-		e.Endpoint = meta.endpoint
-		e.RawModel = meta.rawModel
-		e.Provider = displayProviderName(meta.provider, nodeNameMap)
-		e.Requests = t.requests
-		e.PromptTokens = t.promptTokens
-		e.CompletionTokens = t.completionTokens
-		e.CachedTokens = t.cachedTokens
-		e.Cost = t.cost
-		e.LastUsed = t.lastUsed
-		resp.ByEndpoint[key] = e
+	if views.account {
+		for key, t := range agg.byAccount {
+			meta := agg.accountMeta[key]
+			accName := friendlyAccountName(meta.connectionID, connMap)
+			accKey := meta.rawModel + " (" + meta.provider + " - " + accName + ")"
+			a := resp.ByAccount[accKey]
+			a.RawModel = meta.rawModel
+			a.Provider = displayProviderName(meta.provider, nodeNameMap)
+			a.ConnectionID = meta.connectionID
+			a.AccountName = accName
+			a.Requests = t.requests
+			a.PromptTokens = t.promptTokens
+			a.CompletionTokens = t.completionTokens
+			a.CachedTokens = t.cachedTokens
+			a.Cost = t.cost
+			a.LastUsed = t.lastUsed
+			resp.ByAccount[accKey] = a
+		}
+
+	}
+
+	if views.apiKey {
+		for key, t := range agg.byAPIKey {
+			meta := agg.apiKeyMeta[key]
+			k := resp.ByApiKey[key]
+			k.RawModel = meta.rawModel
+			k.Provider = displayProviderName(meta.provider, nodeNameMap)
+			masked := maskAPIKeyForStats(meta.apiKey)
+			if masked == "" {
+				masked = "local-no-key"
+			}
+			k.ApiKeyMasked = masked
+			k.ApiKeyKey = masked
+			k.KeyName = apiKeyDisplayName(meta.apiKey, keyNames)
+			k.Requests = t.requests
+			k.PromptTokens = t.promptTokens
+			k.CompletionTokens = t.completionTokens
+			k.CachedTokens = t.cachedTokens
+			k.Cost = t.cost
+			k.LastUsed = t.lastUsed
+			resp.ByApiKey[key] = k
+		}
+
+	}
+
+	if views.endpoint {
+		for key, t := range agg.byEndpoint {
+			meta := agg.endpointMeta[key]
+			e := resp.ByEndpoint[key]
+			e.Endpoint = meta.endpoint
+			e.RawModel = meta.rawModel
+			e.Provider = displayProviderName(meta.provider, nodeNameMap)
+			e.Requests = t.requests
+			e.PromptTokens = t.promptTokens
+			e.CompletionTokens = t.completionTokens
+			e.CachedTokens = t.cachedTokens
+			e.Cost = t.cost
+			e.LastUsed = t.lastUsed
+			resp.ByEndpoint[key] = e
+		}
 	}
 }
