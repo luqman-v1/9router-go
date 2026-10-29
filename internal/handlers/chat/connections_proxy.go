@@ -126,6 +126,9 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 		proxyEnabled := connData.ConnectionProxyEnabled
 		proxyURL := connData.ConnectionProxyURL
 		if connData.ProviderSpecificData != nil {
+			if u, ok := connData.ProviderSpecificData["vercelRelayUrl"].(string); ok && strings.TrimSpace(u) != "" {
+				return h.relayClient(strings.TrimSpace(u)), nil
+			}
 			if en, ok := connData.ProviderSpecificData["connectionProxyEnabled"].(bool); ok {
 				proxyEnabled = en
 			}
