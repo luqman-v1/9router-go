@@ -206,11 +206,12 @@ func (r *Repo) GetApiKeyTokenUsageForKeys(ctx context.Context, keys []*models.AP
 	if err != nil {
 		return r.apiKeyTokenUsageByRow(ctx, pending, out)
 	}
+	defer func() { _ = markRows.Close() }()
+
 	for markRows.Next() {
 		var keyID string
 		var mark sql.NullInt64
 		if err := markRows.Scan(&keyID, &mark); err != nil {
-			_ = markRows.Close()
 			return nil, fmt.Errorf("get api key token usage for keys: read mark: %w", err)
 		}
 		if mark.Valid {
@@ -218,10 +219,8 @@ func (r *Repo) GetApiKeyTokenUsageForKeys(ctx context.Context, keys []*models.AP
 		}
 	}
 	if err := markRows.Err(); err != nil {
-		_ = markRows.Close()
 		return nil, fmt.Errorf("get api key token usage for keys: read mark: %w", err)
 	}
-	_ = markRows.Close()
 
 	args := make([]any, 0, 4*len(pending))
 	cteRows := make([]string, 0, len(pending))
@@ -234,7 +233,7 @@ func (r *Repo) GetApiKeyTokenUsageForKeys(ctx context.Context, keys []*models.AP
 	if err != nil {
 		return r.apiKeyTokenUsageByRow(ctx, pending, out)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var keyID string

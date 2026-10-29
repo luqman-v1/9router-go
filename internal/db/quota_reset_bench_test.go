@@ -59,15 +59,15 @@ func seedApiKeysUsageBench(b *testing.B) (*Repo, []*models.APIKey) {
 	if err != nil {
 		b.Fatalf("prepare seed stmt: %v", err)
 	}
+	// A tx-prepared statement is closed by Commit; the deferred close only
+	// covers the Fatalf exits before that.
+	defer stmt.Close()
 	for _, s := range seeds {
 		for j := 0; j < s.rowN; j++ {
 			if _, err := stmt.Exec(s.masked); err != nil {
 				b.Fatalf("seed usage row: %v", err)
 			}
 		}
-	}
-	if err := stmt.Close(); err != nil {
-		b.Fatalf("close seed stmt: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
 		b.Fatalf("commit seed tx: %v", err)
