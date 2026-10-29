@@ -2,6 +2,9 @@ package chat
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,7 +127,7 @@ func TestOrderByTokenmaxxingScores_Ordering(t *testing.T) {
 	}
 }
 
-func TestHandleComboFallback_TokenmaxxingStrategy(t *testing.T) {
+func TestApplyTokenmaxxingRouting_QuotaOrdering(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
@@ -148,6 +151,78 @@ func TestHandleComboFallback_TokenmaxxingStrategy(t *testing.T) {
 	}
 	if ordered[0] != "deepseek/deepseek-chat" {
 		t.Errorf("expected deepseek/deepseek-chat first due to higher quota, got %s", ordered[0])
+	}
+}
+
+func TestComboTokenmaxxing_DrivesWiringEndToEnd(t *testing.T) {
+	sqlDB, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(sqlDB)
+
+	var firstHit string
+	oaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if firstHit == "" {
+			firstHit = "openai"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-oa","choices":[{"message":{"role":"assistant","content":"from openai"}}]}`))
+	}))
+	defer oaServer.Close()
+
+	dsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if firstHit == "" {
+			firstHit = "deepseek"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-ds","choices":[{"message":{"role":"assistant","content":"from deepseek"}}]}`))
+	}))
+	defer dsServer.Close()
+
+	p1 := 1
+	p2 := 2
+	// openai has low quota (10%)
+	if err := repo.CreateProviderConnectionFull("conn-oa", "openai", "apikey", "OA Low", &p1,
+		`{"apiKey":"sk-oa","baseUrl":"`+oaServer.URL+`","quotas":{"monthly":{"remainingPercentage":10,"resetAt":"2026-02-01T00:00:00Z"}}}`); err != nil {
+		t.Fatal(err)
+	}
+	// deepseek has high quota (90%)
+	if err := repo.CreateProviderConnectionFull("conn-ds", "deepseek", "apikey", "DS High", &p2,
+		`{"apiKey":"sk-ds","baseUrl":"`+dsServer.URL+`","quotas":{"monthly":{"remainingPercentage":90,"resetAt":"2026-02-01T00:00:00Z"}}}`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create combo with openai listed FIRST, but tokenmaxxing strategy
+	if err := repo.CreateCombo("tokenmaxxing-combo", "tokenmaxxing-combo", "chat", `["openai/gpt-4o", "deepseek/deepseek-chat"]`, "tokenmaxxing"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetComboStrategy("tokenmaxxing-combo", db.ComboStrategy{
+		Strategy: "tokenmaxxing",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewChatHandler(repo)
+
+	reqBody := `{"model":"tokenmaxxing-combo","messages":[{"role":"user","content":"hello"}],"stream":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// DeepSeek has higher allowance per day, so tokenmaxxing MUST dispatch to deepseek first,
+	// even though openai is index 0 in the combo configuration!
+	if firstHit != "deepseek" {
+		t.Fatalf("expected tokenmaxxing strategy to dispatch deepseek first, but got: %s", firstHit)
+	}
+	if !strings.Contains(rec.Body.String(), "from deepseek") {
+		t.Errorf("expected response from deepseek, got: %s", rec.Body.String())
 	}
 }
 

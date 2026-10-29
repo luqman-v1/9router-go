@@ -189,6 +189,9 @@ func (h *ChatHandler) applyTokenmaxxingRouting(ctx context.Context, modelsList [
 		providerModels[canonical] = append(providerModels[canonical], m)
 	}
 
+	var allTableConns []*models.ProviderConnection
+	var allTableConnsFetched bool
+
 	for canonical, groupModels := range providerModels {
 		// Check cache first for all models in group
 		allCached := true
@@ -211,7 +214,7 @@ func (h *ChatHandler) applyTokenmaxxingRouting(ctx context.Context, modelsList [
 			continue
 		}
 
-		score := h.resolveProviderTokenmaxxingScore(ctx, canonical, groupModels, now)
+		score := h.resolveProviderTokenmaxxingScore(ctx, canonical, now, &allTableConns, &allTableConnsFetched)
 
 		tokenmaxxingCacheMu.Lock()
 		for _, m := range groupModels {
@@ -233,21 +236,25 @@ func (h *ChatHandler) applyTokenmaxxingRouting(ctx context.Context, modelsList [
 	return OrderByTokenmaxxingScores(modelsList, scores)
 }
 
-func (h *ChatHandler) resolveProviderTokenmaxxingScore(ctx context.Context, canonicalProvider string, modelsList []string, now time.Time) *float64 {
+func (h *ChatHandler) resolveProviderTokenmaxxingScore(ctx context.Context, canonicalProvider string, now time.Time, allTableConns *[]*models.ProviderConnection, allTableConnsFetched *bool) *float64 {
 	if h.Repo == nil {
 		return nil
 	}
 	conns, err := h.Repo.GetProviderConnections(canonicalProvider, true)
 	if err != nil || len(conns) == 0 {
-		if conns2, err2 := h.Repo.GetProviderConnections("", true); err2 == nil {
-			var filtered []*models.ProviderConnection
-			for _, c := range conns2 {
-				if c != nil && (strings.EqualFold(c.Provider, canonicalProvider) || strings.EqualFold(resolveProviderAlias(c.Provider), canonicalProvider)) {
-					filtered = append(filtered, c)
-				}
+		if !*allTableConnsFetched {
+			*allTableConnsFetched = true
+			if conns2, err2 := h.Repo.GetProviderConnections("", true); err2 == nil {
+				*allTableConns = conns2
 			}
-			conns = filtered
 		}
+		var filtered []*models.ProviderConnection
+		for _, c := range *allTableConns {
+			if c != nil && (strings.EqualFold(c.Provider, canonicalProvider) || strings.EqualFold(resolveProviderAlias(c.Provider), canonicalProvider)) {
+				filtered = append(filtered, c)
+			}
+		}
+		conns = filtered
 		if len(conns) == 0 {
 			return nil
 		}
@@ -262,7 +269,7 @@ func (h *ChatHandler) resolveProviderTokenmaxxingScore(ctx context.Context, cano
 
 		var quotas []QuotaWindow
 
-		// Check agQuotaCache / agWeeklyCache for antigravity connections
+		// Check agQuotaCache for antigravity connections (RefreshAntigravityQuota already folds weekly buckets here)
 		if strings.EqualFold(canonicalProvider, "antigravity") {
 			agQuotaMu.RLock()
 			if modelQuotas, ok := agQuotaCache[c.ID]; ok {
@@ -271,17 +278,6 @@ func (h *ChatHandler) resolveProviderTokenmaxxingScore(ctx context.Context, cano
 					reset := mq.ResetAt
 					quotas = append(quotas, QuotaWindow{
 						Name:                modelName,
-						RemainingPercentage: &rp,
-						ResetAt:             &reset,
-					})
-				}
-			}
-			if weeklyQuotas, ok := agWeeklyCache[c.ID]; ok {
-				for family, wq := range weeklyQuotas {
-					rp := wq.RemainingPercentage
-					reset := wq.ResetAt
-					quotas = append(quotas, QuotaWindow{
-						Name:                "weekly-" + family,
 						RemainingPercentage: &rp,
 						ResetAt:             &reset,
 					})
