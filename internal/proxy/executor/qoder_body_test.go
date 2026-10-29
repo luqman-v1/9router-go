@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"encoding/base64"
 	json "encoding/json/v2"
 	"io"
@@ -268,7 +269,7 @@ func buildQoderPayload(t *testing.T, creds QoderCosyCreds, body []byte) qoderIde
 	if config == nil {
 		t.Fatal("test fixture did not seed model_config for qfmodel")
 	}
-	built, err := buildQoderChatRequest(body, config, creds, 1700000000000)
+	built, err := buildQoderChatRequestWithAttachments(context.Background(), body, config, creds, 1700000000000, QoderRegionIntl, nil, nil)
 	if err != nil {
 		t.Fatalf("buildQoderChatRequest: %v", err)
 	}

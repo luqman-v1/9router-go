@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 )
 
@@ -388,13 +389,6 @@ type qoderBuiltChat struct {
 	ModelConfig map[string]any
 }
 
-// buildQoderChatRequest maps an OpenAI chat body onto the payload Qoder
-// expects. modelConfig is the live catalog entry for the model, which the
-// caller must resolve first (it is not derivable from the request).
-func buildQoderChatRequest(body []byte, modelConfig map[string]any, creds QoderCosyCreds, now int64) (qoderBuiltChat, error) {
-	return buildQoderChatRequestWithAttachments(context.Background(), body, modelConfig, creds, now, QoderRegionIntl, nil, nil)
-}
-
 // qoderChatModelConfig copies the catalog entry echoed as model_config, minus
 // its `source` field. Qoder routes the chat by that field: with the catalog's
 // source:"system" the request lands in the managed lane and answers
@@ -440,7 +434,13 @@ func buildQoderChatRequestWithAttachments(ctx context.Context, body []byte, mode
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_, _ = RewriteQoderMessageAttachments(ctx, incoming, creds, region, client, uploadFn)
+	// A failed rewrite is not fatal: upstream logs and continues, and the
+	// request still goes out with whatever was achieved. Say so, though — a
+	// silent discard made a lane that never uploaded look like a lane with
+	// nothing to upload.
+	if _, err := RewriteQoderMessageAttachments(ctx, incoming, creds, region, client, uploadFn); err != nil {
+		log.Warn("qoder", "attachment rewrite failed, sending the request as-is", "error", err)
+	}
 	messages, systemText := qoderNormalizedMessages(incoming)
 	tools, _ := request["tools"].([]any)
 
