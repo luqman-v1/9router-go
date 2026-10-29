@@ -4,6 +4,7 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"crypto/sha1"
+	"encoding/base64"
 	"encoding/hex"
 	json "encoding/json/v2"
 	"errors"
@@ -349,10 +350,11 @@ func codebuddyIdentityHeaders(req *Request, cfg *providers.ProviderConfig) map[s
 // half. The intl client is not a Stainless/OpenAI-SDK CLI, so it sends no
 // Stainless headers and marks private data as present.
 func codebuddyIntlIdentityHeaders(req *Request, cfg *providers.ProviderConfig) map[string]string {
-	return map[string]string{
+	h := map[string]string{
 		"Content-Type":        "application/json; charset=utf-8",
 		"User-Agent":          codebuddyIntlUserAgent,
 		"X-Product":           "SaaS",
+		"X-Product-Version":   codebuddyIntlIDEVer,
 		"X-IDE-Type":          "WorkBuddy",
 		"X-IDE-Name":          "WorkBuddy",
 		"X-IDE-Version":       codebuddyIntlIDEVer,
@@ -364,6 +366,52 @@ func codebuddyIntlIdentityHeaders(req *Request, cfg *providers.ProviderConfig) m
 		"X-Agent-Purpose":     "conversation",
 		"X-Agent-Type":        "main",
 	}
+	// The desktop client names the model it is asking for beside the body field.
+	if model := codebuddyRequestModel(req); model != "" {
+		h["X-Model-ID"] = model
+	}
+	// X-User-Id is the signed-in account. The credential is the access token and
+	// its `sub` claim is exactly that id; anything that is not a parseable JWT
+	// omits the header instead of sending an empty one — an empty identity header
+	// is a mismatch the gateway can see, which is worse than its absence.
+	if sub := codebuddyTokenSubject(req); sub != "" {
+		h["X-User-Id"] = sub
+	}
+	return h
+}
+
+// codebuddyRequestModel reads the model a request name for the X-Model-ID
+// header, tolerating a nil request (tests build headers from a bare body).
+func codebuddyRequestModel(req *Request) string {
+	if req == nil {
+		return ""
+	}
+	return strings.TrimSpace(req.ModelName)
+}
+
+// codebuddyTokenSubject extracts the `sub` claim from a bearer access token.
+// Returns "" for anything that is not a two-dot JWT with a string sub, so a
+// plain API key never produces a half-filled identity header.
+func codebuddyTokenSubject(req *Request) string {
+	if req == nil {
+		return ""
+	}
+	token := strings.TrimSpace(req.APIKey)
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[1] == "" {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(claims.Sub)
 }
 
 // codebuddyIntlHeaders fills bag with the intl channel's headers: the WorkBuddy

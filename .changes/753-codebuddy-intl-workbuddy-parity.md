@@ -101,6 +101,16 @@ executor now re-wraps the rewritten error (`ForwardCodebuddyCN upstream (<url>)`
 so the text and the body agree; `TestForwardCodebuddyIntl_ErrorTextIsCanonical`
 pins it.
 
+**Identity parity.** The desktop client also sends `X-Product-Version`, the model
+it is asking for (`X-Model-ID`) and the signed-in account (`X-User-Id`) beside the
+rest of the identity — the same trio 9capn added to its 4.12.1 IDE profile after
+reading the shipped bundle. The intl lane now sends all three: `X-Product-Version`
+is the desktop version, `X-Model-ID` comes from the request, and `X-User-Id` is
+the access token's `sub` claim. Neither of the last two is ever sent blank — a
+credential that is not a parseable JWT, or a request with no model name, omits the
+header instead, because an empty identity header is a mismatch the gateway can
+see while a missing one is not.
+
 **Gate shapes, measured on the live gateway.** Three bodies, one per mistake:
 without the `X-Conversation-*`/trace headers the same credential, host and body
 answer `11128 "request illegal"` + "Request blocked. Please send it again" (add

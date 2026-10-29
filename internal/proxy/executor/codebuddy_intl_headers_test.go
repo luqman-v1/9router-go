@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/base64"
 	json "encoding/json/v2"
 	"io"
 	"net/http"
@@ -408,5 +409,45 @@ func TestForwardCodebuddy_RelayKeepsChannel(t *testing.T) {
 				t.Errorf("x-relay-target = %q, want %q", captured.Header.Get("x-relay-target"), tc.target)
 			}
 		})
+	}
+}
+
+func syntheticJWT(sub string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"` + sub + `"}`))
+	return header + "." + payload + ".signature"
+}
+
+// The desktop client sends the product version, the model it is asking for and
+// the signed-in account beside the rest of the identity. Their absence is a
+// mismatch a risk engine can score, so they ride along when they can be known —
+// and are omitted, never blanked, when they cannot.
+func TestCodebuddyIntlHeaders_ProductModelAndUser(t *testing.T) {
+	cfg := &providers.ProviderConfig{BaseURL: "https://www.workbuddy.ai/v2/chat/completions"}
+	req := &Request{ModelName: "glm-5.3", APIKey: syntheticJWT("afa74f65-b463-4581-a913-d583913dbb21")}
+
+	bag := map[string]string{}
+	if err := codebuddyIntlHeaders(bag, req, cfg); err != nil {
+		t.Fatalf("headers: %v", err)
+	}
+	if got := bag["X-Product-Version"]; got != codebuddyIntlIDEVer {
+		t.Errorf("X-Product-Version = %q, want %q", got, codebuddyIntlIDEVer)
+	}
+	if got := bag["X-Model-ID"]; got != "glm-5.3" {
+		t.Errorf("X-Model-ID = %q, want the requested model", got)
+	}
+	if got := bag["X-User-Id"]; got != "afa74f65-b463-4581-a913-d583913dbb21" {
+		t.Errorf("X-User-Id = %q, want the token subject", got)
+	}
+
+	// A plain API key and no model name: both headers must be absent, not empty.
+	bare := map[string]string{}
+	if err := codebuddyIntlHeaders(bare, &Request{APIKey: "sr_plain"}, cfg); err != nil {
+		t.Fatalf("headers: %v", err)
+	}
+	for _, name := range []string{"X-Model-ID", "X-User-Id"} {
+		if _, ok := bare[name]; ok {
+			t.Errorf("%s must be omitted when it cannot be known, got %q", name, bare[name])
+		}
 	}
 }
