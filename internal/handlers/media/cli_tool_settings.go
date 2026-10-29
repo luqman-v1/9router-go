@@ -11,8 +11,8 @@ import (
 	json "encoding/json/v2"
 
 	"9router/proxy/internal/clientconfig"
-	"9router/proxy/internal/handlerutil"
 	chathandlers "9router/proxy/internal/handlers/chat"
+	"9router/proxy/internal/handlerutil"
 )
 
 // Handler for the nine CLI-client config adapters.
