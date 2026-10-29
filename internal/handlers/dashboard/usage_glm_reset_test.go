@@ -758,3 +758,112 @@ func TestHandleRedeemGLMResetCard_ExpiredCard(t *testing.T) {
 		t.Errorf("expected error about expired or unavailable card, got: %s", w.Body.String())
 	}
 }
+
+// TestHandleRedeemGLMResetCard_UncertainFailures tests that wire non-success responses (401, 400, alreadyUsed)
+// map to 502 with uncertain: true, avoiding dashboard logout or false positives.
+func TestHandleRedeemGLMResetCard_UncertainFailures(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router := setupTestRouterForGLM(repo)
+
+	connID := "test-glm-conn-uncertain"
+	if err := repo.CreateProviderConnectionFull(connID, "glm", "api_key", "Test GLM Uncertain", nil, `{"apiKey":"test-glm-key"}`); err != nil {
+		t.Fatalf("failed to create connection: %v", err)
+	}
+
+	testCases := []struct {
+		name        string
+		zaiStatus   int
+		zaiPayload  map[string]any
+		wantAlready bool
+	}{
+		{
+			name:        "upstream 401 token invalid maps to 502 uncertain",
+			zaiStatus:   http.StatusUnauthorized,
+			zaiPayload:  map[string]any{"success": false, "code": 401, "message": "token invalid"},
+			wantAlready: false,
+		},
+		{
+			name:        "upstream 400 bad request maps to 502 uncertain",
+			zaiStatus:   http.StatusBadRequest,
+			zaiPayload:  map[string]any{"success": false, "code": 400, "message": "card already used"},
+			wantAlready: false,
+		},
+		{
+			name:        "upstream 200 with alreadyUsed: true maps to 502 uncertain",
+			zaiStatus:   http.StatusOK,
+			zaiPayload:  map[string]any{"success": true, "code": 0, "alreadyUsed": true, "message": "already consumed"},
+			wantAlready: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			futureTime := time.Now().Add(24 * time.Hour).Format(time.RFC3339)
+			mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/biz/customer-package-reset/list":
+					w.Header().Set("Content-Type", "application/json")
+					response := wrapZaiResponse(map[string]any{
+						"fiveHourResets": []any{
+							map[string]any{"recordId": "card-valid", "available": true, "expireTime": futureTime},
+						},
+					})
+					_ = json.NewEncoder(w).Encode(response)
+				case "/api/biz/customer-package-reset/use":
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tc.zaiStatus)
+					_ = json.NewEncoder(w).Encode(tc.zaiPayload)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer mockServer.Close()
+
+			originalListURL := glmResetListURL
+			originalUseURL := glmResetUseURL
+			glmResetListURL = mockServer.URL + "/api/biz/customer-package-reset/list"
+			glmResetUseURL = mockServer.URL + "/api/biz/customer-package-reset/use"
+			defer func() {
+				glmResetListURL = originalListURL
+				glmResetUseURL = originalUseURL
+			}()
+
+			body := `{"recordId":"card-valid","type":"FIVE_HOUR"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/usage/"+connID+"/glm-reset-cards", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadGateway {
+				t.Fatalf("expected status 502, got %d: %s", w.Code, w.Body.String())
+			}
+
+			var resp struct {
+				Reset       bool   `json:"reset"`
+				AlreadyUsed bool   `json:"alreadyUsed"`
+				Uncertain   bool   `json:"uncertain"`
+				Code        string `json:"code"`
+				Message     string `json:"message"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+
+			if resp.Reset {
+				t.Errorf("expected reset: false, got true")
+			}
+			if !resp.Uncertain {
+				t.Errorf("expected uncertain: true, got false")
+			}
+			if resp.Code != "uncertain" {
+				t.Errorf("expected code: 'uncertain', got %q", resp.Code)
+			}
+			if resp.AlreadyUsed != tc.wantAlready {
+				t.Errorf("expected alreadyUsed: %v, got %v", tc.wantAlready, resp.AlreadyUsed)
+			}
+		})
+	}
+}
