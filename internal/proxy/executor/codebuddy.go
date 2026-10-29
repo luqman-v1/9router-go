@@ -82,17 +82,26 @@ func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 
 	if req.IsStream {
 		if !isEventStreamResponse(resp.Header) {
-			data, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
-			if rerr != nil {
-				return fmt.Errorf("read codebuddy upstream body: %w", rerr)
-			}
-			if !proxy.LooksLikeSSE(data) {
+			// Head sniff instead of a whole-body read: a CodeBuddy stream
+			// that arrives with a JSON content-type keeps streaming frame by
+			// frame, and only a genuine document is read whole.
+			head := sniffStreamHead(resp.Body)
+			if proxy.LooksLikeSSE(head) {
+				// The upstream body stays the Closer: the stall watchdog ends
+				// a stuck stream by closing the reader, so a NopCloser here
+				// would leave it unable to.
+				resp.Body = replayBody{Reader: io.MultiReader(bytes.NewReader(head), resp.Body), Closer: resp.Body}
+			} else {
+				rest, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes-int64(len(head))))
+				if rerr != nil {
+					return fmt.Errorf("read codebuddy upstream body: %w", rerr)
+				}
+				data := append(head, rest...)
 				if isCodebuddyRateLimit(data) {
 					return proxy.UpstreamFailure(http.StatusTooManyRequests, "CodeBuddy frequency limit (6004)")
 				}
 				return jsonResponse(req.Ctx, w, bytes.NewReader(data), req.TranslateResp, req.ResponseBuf)
 			}
-			resp.Body = io.NopCloser(bytes.NewReader(data))
 		}
 		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, 0, "codebuddy-cn")
 		defer stallReader.Close() // stops the shutdown watcher + stall timer

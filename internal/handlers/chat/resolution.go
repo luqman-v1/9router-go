@@ -56,9 +56,10 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 			Transport: transport,
 			Timeout:   0, // no timeout for streaming support
 		},
-		TokenSaver:    cfg,
-		SemanticCache: sc,
-		stickyState:   make(map[string]*comboStickyState),
+		TokenSaver:      cfg,
+		SemanticCache:   sc,
+		stickyState:     make(map[string]*comboStickyState),
+		SessionAffinity: NewSessionAffinityStore(10000, 2*time.Hour),
 	}
 }
 

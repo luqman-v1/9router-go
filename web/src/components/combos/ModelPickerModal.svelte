@@ -16,6 +16,7 @@
   import { EMPTY_PICKER_EXTRAS, loadPickerExtras, type ResolvedPickerExtras } from './pickerExtras'
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   import { parseSearchQuery } from '../../lib/modelSearchFilter'
+  import { pushEscapeHandler } from '../../lib/ui/escapeStack'
 
   interface Props {
     isOpen: boolean
@@ -68,6 +69,14 @@
         fetchedExtras = extras
       })
     }
+  })
+
+  // The picker opens over Create/Edit Combo. Registering on the shared stack
+  // makes Escape close the picker alone; without it the dialog underneath
+  // took the key and closed, leaving the picker floating over nothing.
+  $effect(() => {
+    if (!isOpen) return
+    return pushEscapeHandler(() => onClose())
   })
 
   let groups = $derived(

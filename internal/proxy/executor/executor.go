@@ -35,7 +35,6 @@ type Request struct {
 	SessionID      string            // client session / conversation id
 	ConnData       map[string]any    // connection providerSpecificData (e.g. fingerprintId for client cloaking)
 	Leases         LeaseStore        // cross-process lease backend (nil = memory only)
-	ProjectID      string            // for gemini-native (antigravity)
 	ModelName      string            // extracted model name
 	Endpoint       string            // custom URL override (azure)
 	ToolNameMap    map[string]string // claude OAuth tool-cloak map (suffixed -> original)
@@ -91,6 +90,3 @@ func (r *Request) Release() {
 	r.ConnData = nil
 	r.ToolNameMap = nil
 }
-
-// IsGeminiNative checks if a config uses gemini-native format.
-func IsGeminiNative(cfg *providers.ProviderConfig) bool { return cfg.Format == "gemini-native" }

@@ -2,8 +2,12 @@ package executor
 
 import (
 	json "encoding/json/v2"
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
+
+	"9router/proxy/internal/proxy"
 )
 
 // Qoder's event stream wraps every OpenAI chunk in a
@@ -145,6 +149,26 @@ func TestQoderSSERewrite_BillingBlockIsNotAssistantText(t *testing.T) {
 	}
 	if !strings.Contains(rewrite(t, raw), "data: [DONE]") {
 		t.Error("rewound stream must terminate with [DONE]")
+	}
+}
+
+// A billing refusal must reach the caller as the 403 upstream means, not as a
+// 200 body the gateway later reports as 502. chatCore reads 403 as
+// insufficient_quota and falls back; a 502 reads as a gateway fault and the
+// model stays selectable.
+func TestQoderRewoundStreamError_BillingBlockKeepsQuotaStatus(t *testing.T) {
+	raw := envelope(t, 403, `{"code":"112","message":"{\"pricingUrl\":\"https://qoder.com/pricing\"}"}`)
+
+	err := qoderRewoundStreamError([]byte(rewrite(t, raw)))
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("billing block surfaced as %v, want an UpstreamError", err)
+	}
+	if ue.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", ue.StatusCode)
+	}
+	if !strings.Contains(string(ue.Body), "pricingUrl") {
+		t.Errorf("body = %s, want the upstream refusal preserved", ue.Body)
 	}
 }
 

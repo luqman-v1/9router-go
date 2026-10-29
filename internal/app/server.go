@@ -151,6 +151,12 @@ func ProvideServer(p ServerParams) *http.Server {
 			} else {
 				log.Println("Server stopped gracefully")
 			}
+			// Responses are all done by now, so every usage write they enqueued
+			// is in the queue: drain it so the last turns are not billed into
+			// nothing by the exit.
+			if !chat.FlushUsageWrites(3 * time.Second) {
+				log.Printf("Usage write queue did not fully drain before exit")
+			}
 			return nil
 		},
 	})

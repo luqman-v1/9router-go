@@ -7,6 +7,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"9router/proxy/internal/constants"
 )
@@ -187,6 +188,9 @@ var SessionHeaderKeys = []string{
 	"session-id",
 	"session_id",
 	"x-amp-thread-id",
+	"x-opencode-session",
+	"x-opencode-session-id",
+	"x-session-affinity",
 }
 
 // ExtractSessionID extracts the session identifier from incoming HTTP request headers.
@@ -195,7 +199,7 @@ func ExtractSessionID(r *http.Request) string {
 		return ""
 	}
 	for _, key := range SessionHeaderKeys {
-		if val := r.Header.Get(key); val != "" {
+		if val := strings.TrimSpace(r.Header.Get(key)); val != "" {
 			return val
 		}
 	}

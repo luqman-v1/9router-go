@@ -35,6 +35,10 @@ func sickStreamResponder() http.HandlerFunc {
 // member. Round-robin is preserved: rotation continues, it just skips the
 // locked connection while its cooldown holds.
 //
+// The contract holds with a model response timeout configured too: an in-band
+// error commits the candidate before the timer fires, and that commit must
+// still reach the normal lock-and-fail-over path (PR #750 review).
+//
 // Note: headers are already committed when a mid-stream error is detected, so
 // the combo loop may still append the next member's answer after the error
 // frame in the first response (pre-existing post-commit behavior, same as a
@@ -42,6 +46,21 @@ func sickStreamResponder() http.HandlerFunc {
 // first turn carries a parseable error frame instead of a silent success, and
 // the retry carries no error frame at all.
 func TestComboSkipsInbandErrorOnRetry(t *testing.T) {
+	cases := []struct {
+		name      string
+		timeoutMs int
+	}{
+		{name: "response timeout off"},
+		{name: "response timeout on", timeoutMs: 30000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertComboSkipsInbandErrorOnRetry(t, tc.timeoutMs)
+		})
+	}
+}
+
+func assertComboSkipsInbandErrorOnRetry(t *testing.T, timeoutMs int) {
 	env := newEnv(t)
 
 	sick := env.NewUpstream(t, sickStreamResponder())
@@ -50,6 +69,13 @@ func TestComboSkipsInbandErrorOnRetry(t *testing.T) {
 	env.AddConnection(t, "conn-sick", "deepseek", "Sick Account", sick, "sk-sick")
 	env.AddConnection(t, "conn-well", "groq", "Well Account", well, "sk-well")
 	env.AddCombo(t, "combo-1", "wombo", []string{"deepseek/sick-model", "groq/good-model"})
+	if timeoutMs > 0 {
+		if err := env.Repo.UpdateSettingsRaw(map[string]any{"comboStrategies": map[string]any{
+			"wombo": map[string]any{"firstTokenTimeoutMs": timeoutMs},
+		}}); err != nil {
+			t.Fatalf("seed combo response timeout: %v", err)
+		}
+	}
 
 	first := env.Post(t, "/v1/chat/completions", ChatBody("wombo", true))
 	if first.Status != http.StatusOK {

@@ -1,6 +1,7 @@
 <script lang="ts">
   // Port of decolua/9router src/shared/components/Modal.js
   import type { Snippet } from 'svelte'
+  import { pushEscapeHandler } from './escapeStack'
 
   let {
     isOpen = false,
@@ -44,13 +45,11 @@
     }
   })
 
+  // Escape closes only the topmost dialog, so a dialog opened over this one
+  // (a picker, a confirm) is dismissed without taking this one with it.
   $effect(() => {
     if (!isOpen) return
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose?.()
-    }
-    document.addEventListener('keydown', handleEscape)
-    return () => document.removeEventListener('keydown', handleEscape)
+    return pushEscapeHandler(() => onClose?.())
   })
 </script>
 

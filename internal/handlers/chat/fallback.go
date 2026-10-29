@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/headroom"
 	"9router/proxy/internal/log"
@@ -134,13 +135,43 @@ func (h *ChatHandler) handleAccountFallback(
 		return fmt.Errorf("no active connections for provider: %s", provider)
 	}
 
-	// Apply provider connection routing strategy (round-robin, sticky, random) if configured
-	if len(allConns) > 1 && h.Repo != nil {
+	var strat db.ProviderStrategy
+	affinityEligible := false
+	if h.Repo != nil {
 		if settings, sErr := h.Repo.GetSettings(); sErr == nil && settings != nil {
-			strat := connRotationStrategy(settings, provider)
-			if strat.RotateStrategy != "" && strat.RotateStrategy != "none" {
-				allConns = h.applyConnectionStrategy(allConns, strat)
+			strat = connRotationStrategy(settings, provider)
+			affinityEligible = isAffinityEligibleStrategy(strat.RotateStrategy)
+		}
+	}
+
+	// Apply provider connection routing strategy (round-robin, sticky, random) or session affinity
+	if len(allConns) > 1 && strat.RotateStrategy != "" && strat.RotateStrategy != "none" {
+		sessionID := handlerutil.GetSessionID(ctx)
+		hasAffinity := false
+		if sessionID != "" && affinityEligible {
+			if boundID, ok := h.getSessionAffinity().Get(provider, model, sessionID); ok && boundID != "" {
+				for idx, c := range allConns {
+					if c != nil && c.ID == boundID {
+						if idx > 0 {
+							bound := allConns[idx]
+							copy(allConns[1:idx+1], allConns[0:idx])
+							allConns[0] = bound
+						}
+						hasAffinity = true
+						break
+					}
+				}
+				if !hasAffinity {
+					h.getSessionAffinity().Evict(provider, model, sessionID)
+				}
 			}
+		}
+		if !hasAffinity {
+			effectiveStrat := strat
+			if sessionID != "" && affinityEligible {
+				effectiveStrat.StickyLimit = 1
+			}
+			allConns = h.applyConnectionStrategy(allConns, effectiveStrat)
 		}
 	}
 
@@ -185,11 +216,22 @@ func (h *ChatHandler) handleAccountFallback(
 			IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
 		}); err == nil {
 			RecordAttemptFromContext(ctx, connObj.ID, connObjName(connObj), provider, model, 200, nil, time.Since(attemptStart).Milliseconds())
+			if sessionID := handlerutil.GetSessionID(ctx); sessionID != "" && affinityEligible {
+				h.getSessionAffinity().Bind(provider, model, sessionID, connObj.ID)
+			}
 			return nil
 		} else {
 			lastErr = err
 			observ.IncFallback(provider, model, observ.FallbackReasonUpstreamError)
 			RecordAttemptFromContext(ctx, connObj.ID, connObjName(connObj), provider, model, 0, err, time.Since(attemptStart).Milliseconds())
+			var ue *upstreamError
+			if errors.As(lastErr, &ue) {
+				if ue.StatusCode == http.StatusTooManyRequests || ue.StatusCode == http.StatusUnauthorized || ue.StatusCode == http.StatusForbidden {
+					if sessionID := handlerutil.GetSessionID(ctx); sessionID != "" {
+						h.getSessionAffinity().Evict(provider, model, sessionID)
+					}
+				}
+			}
 		}
 		// A node-state refusal (contract ended, lifetime quota spent) answers 403, which
 		// is a retryable status, so without this it would fall into the generic branch
@@ -270,6 +312,7 @@ func (h *ChatHandler) handleAccountFallback(
 				if lockErr := h.Repo.LockConnectionRateLimit(connObj.ID, until, classification.NewBackoffLevel, ue.StatusCode, errorText); lockErr != nil {
 					log.Warn("fallback", "rate limit lock failed", "conn", connObj.ID, "error", lockErr)
 				}
+				h.getSessionAffinity().EvictConnection(connObj.ID)
 			}
 			log.Warn("fallback", "connection locked", append([]any{
 				"conn", connObj.ID, "provider", provider, "model", model,
@@ -793,6 +836,26 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			pipedBody = filtered
 		}
 	}
+
+	// A custom openai-compatible node answers 400 "max_tokens and
+	// max_completion_tokens cannot both be set" on a streaming request that
+	// carries both (repro: bansos/gpt-6-luna on api.sakoo.biz.id — whose
+	// backend is GitHub models). A client may spell either field; when both
+	// are present the explicit max_completion_tokens value wins and
+	// max_tokens is dropped, and when the client sent neither the upstream's
+	// own default is honoured.
+	//
+	// The condition is the wire the body is in, not the client endpoint that
+	// reached here: a /v1/responses client is converted to Chat Completions
+	// before this point when the target speaks Chat (a custom
+	// openai-compatible node), and that conversion keeps both fields as sent.
+	// Gating on the endpoint alone left the pair on the wire for exactly the
+	// lane this fix came from. A Claude body and a Responses body carry
+	// neither field, so the normalizer is a no-op there.
+	if !claudeNative && !upstreamClaude && !executor.UpstreamSpeaksResponses(provider, wireModel, providerCfg) {
+		pipedBody = normalizeChatTokenFields(pipedBody)
+	}
+
 	start := time.Now()
 	metrics := &streamMetrics{}
 	var fwdErr error
@@ -1234,8 +1297,14 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	return fwdErr
 }
 
+// isClientCanceled reports whether the client that asked for this response
+// went away. A deadline the gateway set for itself is not that: the dashboard
+// model probe wraps its own call in a 45s timeout, and treating that expiry as
+// a hangup reported "HTTP 499: client closed request" for a model that was
+// merely still queued upstream. Only an explicit cancel counts, plus the 499
+// this package already produced.
 func isClientCanceled(ctx context.Context, err error) bool {
-	if ctx != nil && ctx.Err() != nil {
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
 		return true
 	}
 	var ue *upstreamError
@@ -1612,11 +1681,25 @@ func isAccountAuthFailure(lower string) bool {
 		strings.Contains(lower, "insufficient funds for organization")
 }
 
+// isModelQuotaText reports a refusal that names one model's quota rather than
+// the account's standing. These lock the model, not the connection: a Qoder
+// account whose paid models are out of credits still serves its free ones, and
+// parking the whole connection answered `dfmodel` with "all in cooldown" after
+// a single `dmodel` refusal.
 func isModelQuotaText(errorText string) bool {
 	upper := strings.ToUpper(errorText)
 	return strings.Contains(upper, "QUOTA_EXHAUSTED") ||
 		strings.Contains(errorText, "Individual quota reached") ||
-		strings.Contains(upper, "MODEL_CAPACITY_EXHAUSTED")
+		strings.Contains(upper, "MODEL_CAPACITY_EXHAUSTED") ||
+		// Qoder's billing envelope: code 110/112 or a pricingUrl field
+		// (qoderIsBillingBlock). The refusal is per model — the account's
+		// free models keep working while a paid one is out of credits.
+		strings.Contains(upper, "PRICINGURL") ||
+		strings.Contains(upper, "PRICING_URL") ||
+		// Qoder's queue window (qoderQueuedTimeout): the model is briefly out
+		// of capacity, which throttles that model alone. Locking the account
+		// here parked every other model on it behind one busy queue.
+		strings.Contains(upper, "STILL QUEUED")
 }
 
 func mentionsGate(lower string) bool {

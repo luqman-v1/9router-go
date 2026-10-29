@@ -71,7 +71,7 @@ const codexResponsesLiteHeader = "x-openai-internal-codex-responses-lite"
 // responsesLite is the caller's answer rather than a decision made here: the
 // executor owns which shape a body ended up in, and the package boundary keeps
 // this one from importing that back.
-func ForwardCodex(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool, psd map[string]any, responsesLite bool) (*http.Response, error) {
+func ForwardCodex(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey string, body []byte, isStream bool, psd map[string]any, responsesLite bool, sessionID string) (*http.Response, error) {
 	headers := map[string]string{
 		"originator": "codex_cli_rs",
 	}
@@ -80,7 +80,28 @@ func ForwardCodex(ctx context.Context, client *http.Client, cfg *providers.Provi
 	} else {
 		cfg = providers.WithoutStaticHeader(cfg, codexResponsesLiteHeader)
 	}
-	if accountID, ok := psd["chatgptAccountId"].(string); ok && accountID != "" {
+
+	// Session pinning for prompt caching continuity
+	sess := sessionID
+	if sess == "" {
+		if cid, ok := psd["connectionId"].(string); ok && cid != "" {
+			sess = cid
+		} else {
+			sess = "default"
+		}
+	}
+	headers["session_id"] = sess
+
+	// Workspace / account header: prefer workspaceId, then chatgptAccountId, then accountId
+	accountID := ""
+	if ws, ok := psd["workspaceId"].(string); ok && ws != "" {
+		accountID = ws
+	} else if act, ok := psd["chatgptAccountId"].(string); ok && act != "" {
+		accountID = act
+	} else if acc, ok := psd["accountId"].(string); ok && acc != "" {
+		accountID = acc
+	}
+	if accountID != "" {
 		headers["chatgpt-account-id"] = accountID
 	}
 	setAuth(headers, cfg, apiKey)

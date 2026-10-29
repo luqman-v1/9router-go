@@ -12,6 +12,16 @@ export interface ComboStrategyInfo {
   /** System One model that evaluates the route; empty means the free default. */
   routerModel?: string
   /**
+   * Milliseconds from candidate start to first usable response; 0/absent
+   * disables. Never applied to the last candidate in the chain.
+   */
+  firstTokenTimeoutMs?: number
+  /**
+   * Milliseconds a model that timed out stays out of the chain. Absent means
+   * the backend default (5 minutes); an explicit 0 re-includes it at once.
+   */
+  firstTokenGraceMs?: number
+  /**
    * Skip the rotation strategy and walk the combo's stored model list in
    * order, so the ordering arranged in the editor is the fallback chain.
    * The capability reorder still runs: a request that needs vision must
@@ -19,8 +29,6 @@ export interface ComboStrategyInfo {
    * which orders the models itself.
    */
   respectStoredOrder?: boolean
-  /** Time-to-first-token timeout in ms for intermediate combo candidates. */
-  firstTokenTimeoutMs?: number
 }
 
 /**
@@ -176,6 +184,82 @@ export function updateComboStrategy(
   return updated
 }
 
+/** Largest whole-millisecond timeout representable by the backend duration. */
+export const MAX_FIRST_TOKEN_TIMEOUT_MS = 9223372036854
+
+/** Tooltip/help text shared by the combo card and the edit modal. */
+export const RESPONSE_TIMEOUT_HELP =
+  "Sequential failover: wait this many seconds for a model's first usable response (connection, headers and first content), then try the next model. The last model in the chain is never cut short, so this never makes a combo fail sooner. Never cuts off a response that is already streaming. Leave empty or 0 to disable. A model that times out is skipped for the grace period (5 minutes by default) before it rejoins the chain."
+
+/** Backend default grace after a model response timeout (5 minutes). */
+export const DEFAULT_FIRST_TOKEN_GRACE_SECONDS = 300
+
+/** The same ceiling in seconds, for the dashboard inputs. */
+export const MAX_FIRST_TOKEN_TIMEOUT_SECONDS = Math.floor(MAX_FIRST_TOKEN_TIMEOUT_MS / 1000)
+
+/**
+ * The dashboard edits the timeout in seconds; storage and the router keep
+ * milliseconds. Returns null for anything that is not a whole-millisecond
+ * value in range. A blank field means "disabled" (0).
+ */
+export function secondsToTimeoutMs(seconds: number | string | null | undefined): number | null {
+  if (seconds === '' || seconds == null) return 0
+  const n = typeof seconds === 'number' ? seconds : Number(seconds)
+  if (!Number.isFinite(n) || n < 0 || n > MAX_FIRST_TOKEN_TIMEOUT_SECONDS) return null
+  return Math.round(n * 1000)
+}
+
+/** Stored milliseconds as the seconds shown in the dashboard. */
+export function timeoutMsToSeconds(ms: number | undefined): number {
+  return ms && ms > 0 ? ms / 1000 : 0
+}
+
+/**
+ * Grace input in seconds -> stored milliseconds. Unlike the timeout, a blank
+ * field is not 0: it means "use the default", returned as undefined so the key
+ * is dropped from storage. null marks an invalid value.
+ */
+export function graceSecondsToMs(seconds: number | string | null | undefined): number | undefined | null {
+  if (seconds === '' || seconds == null) return undefined
+  return secondsToTimeoutMs(seconds)
+}
+
+/** Stored grace milliseconds as seconds for display; blank when defaulted. */
+export function graceMsToSeconds(ms: number | undefined): number | '' {
+  return ms === undefined ? '' : ms / 1000
+}
+
+/** Set or clear (undefined) the grace period, leaving everything else alone. */
+export function updateFirstTokenGrace(
+  currentStrategies: Record<string, ComboStrategyInfo>,
+  comboName: string,
+  firstTokenGraceMs: number | undefined
+): Record<string, ComboStrategyInfo> {
+  if (
+    firstTokenGraceMs !== undefined &&
+    (!Number.isSafeInteger(firstTokenGraceMs) || firstTokenGraceMs < 0 || firstTokenGraceMs > MAX_FIRST_TOKEN_TIMEOUT_MS)
+  ) {
+    return currentStrategies
+  }
+  const next = { ...(currentStrategies[comboName] || {}) }
+  if (firstTokenGraceMs === undefined) delete next.firstTokenGraceMs
+  else next.firstTokenGraceMs = firstTokenGraceMs
+  return { ...currentStrategies, [comboName]: next }
+}
+
+/** Update only the response timeout, leaving strategy inheritance untouched. */
+export function updateFirstTokenTimeout(
+  currentStrategies: Record<string, ComboStrategyInfo>,
+  comboName: string,
+  firstTokenTimeoutMs: number
+): Record<string, ComboStrategyInfo> {
+  if (!Number.isSafeInteger(firstTokenTimeoutMs) || firstTokenTimeoutMs < 0 || firstTokenTimeoutMs > MAX_FIRST_TOKEN_TIMEOUT_MS) return currentStrategies
+  return {
+    ...currentStrategies,
+    [comboName]: { ...(currentStrategies[comboName] || {}), firstTokenTimeoutMs }
+  }
+}
+
 export function updateJudgeModel(
   currentStrategies: Record<string, ComboStrategyInfo>,
   comboName: string,
@@ -194,9 +278,8 @@ export function clearJudgeModel(
   const updated = { ...currentStrategies }
   if (updated[comboName]) {
     const { judgeModel: _, ...rest } = updated[comboName]
-    // Only an inheriting combo loses its entry here: a combo that names
-    // `fallback` explicitly keeps it (upstream #4576).
-    if (rest.fallbackStrategy && rest.fallbackStrategy !== INHERIT_STRATEGY) {
+    // Clearing the judge must preserve timeout and other inherited settings.
+    if (Object.keys(rest).length > 0) {
       updated[comboName] = rest
     } else {
       delete updated[comboName]

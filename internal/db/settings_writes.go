@@ -119,7 +119,7 @@ func (r *Repo) SetComboStrategy(comboName string, strat ComboStrategy) error {
 			entry["firstTokenTimeoutMs"] = strat.FirstTokenTimeoutMs
 		}
 
-		if strat.Strategy == "fallback" && strat.JudgeModel == "" && strat.FirstTokenTimeoutMs == 0 {
+		if strat.Strategy == "fallback" && strat.JudgeModel == "" && len(entry) <= 2 {
 			delete(currentMap, comboName)
 		} else {
 			currentMap[comboName] = entry

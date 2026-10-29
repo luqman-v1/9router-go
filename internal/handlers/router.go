@@ -159,6 +159,9 @@ func SetupRoutes(r interface {
 	r.Get("/api/usage/{connectionId}", dashH.HandleGetConnectionUsage)
 	r.Get("/api/usage/{connectionId}/reset-credits", dashH.HandleListCodexResetCredits)
 	r.Post("/api/usage/{connectionId}/reset-credits/consume", dashH.HandleConsumeCodexResetCredit)
+	// GLM Reset Cards (Z.ai international)
+	r.Get("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleGetGLMResetCards)
+	r.Post("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleRedeemGLMResetCard)
 
 	// Debug Tracing Domain (p50/p95 latency per provider+model)
 	r.Get("/debug/traces", HandleDebugTraces)
@@ -217,6 +220,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 
 	r.Get("/api/usage/{connectionId}/reset-credits", dashH.HandleListCodexResetCredits)
 	r.Post("/api/usage/{connectionId}/reset-credits/consume", dashH.HandleConsumeCodexResetCredit)
+	// GLM Reset Cards (Z.ai international)
+	r.Get("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleGetGLMResetCards)
+	r.Post("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleRedeemGLMResetCard)
 
 	// Cache Analytics & Management
 	r.Get("/api/cache", dashH.HandleGetCache)
@@ -336,11 +342,6 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	// probes would panic instead of reaching the provider.
 	mediaH := media.NewMediaHandler(repo, nil, chatH)
 	r.Post("/api/models/test", mediaH.HandleTestModel)
-	// Batch model test. mediaH owns the runner, so a sweep keeps running (and
-	// keeps reporting) across the page navigation that started it.
-	r.Post("/api/model-tests/runs", mediaH.HandleStartModelTestRun)
-	r.Get("/api/model-tests/runs/current", mediaH.HandleModelTestRunStatus)
-	r.Delete("/api/model-tests/runs/current", mediaH.HandleCancelModelTestRun)
 	r.Get("/api/media-providers/tts/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/inworld/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/minimax/voices", mediaH.HandleAudioVoices)

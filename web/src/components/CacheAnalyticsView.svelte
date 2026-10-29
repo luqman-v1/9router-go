@@ -54,6 +54,7 @@
   let search = $state('')
   let modelFilter = $state('')
   let invalidateModelInput = $state('')
+  let hoveredTrendPoint = $state<{ timestamp: string; requests: number; cachedRequests: number; cachedTokens: number } | null>(null)
 
   async function loadStats() {
     loading = true
@@ -405,12 +406,33 @@
          once, so it can no longer sit here scoping only the chart. -->
     {#if isPanelVisible('cache.trend')}
     <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm">
-      <div class="mb-4">
-        <h3 class="text-sm font-semibold text-text-main flex items-center gap-1.5">
-          <span class="material-symbols-outlined text-[18px] text-brand-500">monitoring</span>
-          Hourly Cache Trend
-        </h3>
-        <p class="text-xs text-text-subtle">Requests and cached tokens over time.</p>
+      <div class="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h3 class="text-sm font-semibold text-text-main flex items-center gap-1.5">
+            <span class="material-symbols-outlined text-[18px] text-brand-500">monitoring</span>
+            Hourly Cache Trend
+          </h3>
+          <p class="text-xs text-text-subtle">Requests and cached tokens over time.</p>
+        </div>
+
+        {#if hoveredTrendPoint}
+          <div class="flex flex-wrap items-center gap-2.5 px-3 py-1.5 rounded-xl bg-surface-2 border border-border text-xs shadow-sm">
+            <span class="font-semibold text-text-muted flex items-center gap-1 font-mono text-[11px]">
+              <span class="material-symbols-outlined text-[14px]">schedule</span>
+              {hoveredTrendPoint.timestamp.replace('T', ' ').replace(':00:00Z', ':00')}
+            </span>
+            <span class="text-border">|</span>
+            <span class="text-text-muted">Total: <strong class="text-text-main font-mono">{hoveredTrendPoint.requests}</strong></span>
+            <span class="text-border">|</span>
+            <span class="text-emerald-500">Cached: <strong class="font-mono">{hoveredTrendPoint.cachedRequests}</strong> ({hoveredTrendPoint.requests > 0 ? ((hoveredTrendPoint.cachedRequests / hoveredTrendPoint.requests) * 100).toFixed(0) : 0}%)</span>
+            <span class="text-border">|</span>
+            <span class="text-cyan-400">Tokens: <strong class="font-mono">{hoveredTrendPoint.cachedTokens.toLocaleString()}</strong></span>
+          </div>
+        {:else}
+          <div class="text-[11px] text-text-subtle hidden sm:block">
+            Hover over any column to inspect hourly breakdown
+          </div>
+        {/if}
       </div>
 
       {#if period === 'all'}
@@ -423,42 +445,31 @@
           No cache activity recorded in the {periodLabel(period).toLowerCase()}.
         </div>
       {:else}
-        <div class="h-44 w-full flex items-end gap-1.5 pt-4 overflow-x-auto">
+        <div class="h-48 w-full flex items-end gap-1.5 pt-4 pb-1 overflow-x-auto">
           {#each stats.trend as pt}
             {@const heightPct = Math.max(8, Math.round((pt.requests / maxTrendRequests) * 100))}
             {@const cachedRatio = pt.requests > 0 ? (pt.cachedRequests / pt.requests) * 100 : 0}
-            <div class="flex-1 min-w-[20px] h-full flex flex-col justify-end items-center group relative">
-              <!-- Tooltip -->
-              <div class="absolute bottom-full mb-2 hidden group-hover:flex flex-col items-center z-20 pointer-events-none">
-                <div class="rounded-lg bg-surface-3 border border-border p-2 text-[11px] shadow-lg whitespace-nowrap text-text-main">
-                  <div class="font-semibold text-text-muted">{pt.timestamp.replace('T', ' ').replace(':00:00Z', ':00')}</div>
-                  <div class="mt-1 flex items-center justify-between gap-3">
-                    <span>Total Req:</span> <span class="font-bold">{pt.requests}</span>
-                  </div>
-                  <div class="flex items-center justify-between gap-3 text-emerald-500">
-                    <span>Cached Req:</span> <span class="font-bold">{pt.cachedRequests}</span>
-                  </div>
-                  <div class="flex items-center justify-between gap-3 text-cyan-400">
-                    <span>Cached Tokens:</span> <span class="font-bold">{pt.cachedTokens.toLocaleString()}</span>
-                  </div>
-                </div>
-              </div>
-
+            {@const isHovered = hoveredTrendPoint === pt}
+            <div
+              class="flex-1 min-w-[22px] h-full flex flex-col justify-end items-center group relative cursor-pointer"
+              onmouseenter={() => (hoveredTrendPoint = pt)}
+              onmouseleave={() => (hoveredTrendPoint = null)}
+            >
               <!-- Bar visual -->
               <div
-                class="w-full rounded-t transition-all duration-300 relative overflow-hidden bg-primary/20 hover:bg-primary/30"
+                class="w-full rounded-t transition-all duration-200 relative overflow-hidden bg-primary/20 group-hover:bg-primary/30 {isHovered ? 'ring-2 ring-brand-500 shadow-md brightness-110' : ''}"
                 style="height: {heightPct}%"
               >
                 <!-- Filled portion for cached requests -->
                 <div
-                  class="w-full bg-emerald-500 absolute bottom-0 left-0 transition-all duration-300"
+                  class="w-full bg-emerald-500 absolute bottom-0 left-0 transition-all duration-200"
                   style="height: {cachedRatio}%"
                 ></div>
               </div>
             </div>
           {/each}
         </div>
-        <div class="flex items-center justify-between text-[11px] text-text-subtle mt-2 pt-2 border-t border-border-subtle">
+        <div class="flex flex-wrap items-center justify-between text-[11px] text-text-subtle mt-2 pt-2 border-t border-border-subtle gap-2">
           <div class="flex items-center gap-4">
             <span class="inline-flex items-center gap-1.5">
               <span class="w-2.5 h-2.5 rounded-sm bg-primary/30"></span> Total Requests
@@ -487,7 +498,7 @@
         </div>
       {:else}
         <div class="overflow-x-auto">
-          <table class="w-full text-left text-xs">
+          <table class="w-full text-left text-xs min-w-[540px]">
             <thead>
               <tr class="border-b border-border text-text-muted">
                 <th class="py-2.5 px-3 font-semibold">Provider</th>
@@ -545,7 +556,7 @@
         </div>
       {:else}
         <div class="overflow-x-auto">
-          <table class="w-full text-left text-xs">
+          <table class="w-full text-left text-xs min-w-[540px]">
             <thead>
               <tr class="border-b border-border text-text-muted">
                 <th class="py-2.5 px-3 font-semibold">Model</th>

@@ -56,6 +56,13 @@ type ChatHandler struct {
 	// so later turns reuse the provider holding the warm prompt cache.
 	smartStickyMu sync.Mutex
 	smartSticky   map[string]smartStickyEntry
+	// timeoutBench holds, per combo member, when its response-timeout grace
+	// period ends. See benchTimedOutModel.
+	timeoutBenchMu sync.Mutex
+	timeoutBench   map[string]time.Time
+	// SessionAffinity pins client sessions to upstream connection accounts.
+	sessionAffinityMu sync.Mutex
+	SessionAffinity   *SessionAffinityStore
 }
 
 // Type aliases for shared types

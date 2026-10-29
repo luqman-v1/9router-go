@@ -17,7 +17,22 @@ func HasSSEContent(chunk []byte) bool {
 	if len(chunk) == 0 {
 		return false
 	}
+	// One write can contain multiple SSE events. Evaluate each line separately:
+	// an empty content_block_start must not mask a later non-empty text delta.
 	s := string(chunk)
+	for {
+		line, rest, more := strings.Cut(s, "\n")
+		if hasSSEContentLine(line) {
+			return true
+		}
+		if !more {
+			return false
+		}
+		s = rest
+	}
+}
+
+func hasSSEContentLine(s string) bool {
 	// OpenAI chat completions
 	if strings.Contains(s, `"content":"`) {
 		// Ensure it's not empty content: ""
@@ -47,14 +62,13 @@ func HasSSEContent(chunk []byte) bool {
 // StreamContentPeeker buffers initial SSE frames until content is observed.
 type StreamContentPeeker struct {
 	http.ResponseWriter
-	flusher     http.Flusher
-	mu          sync.Mutex
-	committed   bool
-	sawContent  bool
-	buf         bytes.Buffer
-	header      http.Header
-	statusCode  int
-	onFirstSeen func()
+	flusher    http.Flusher
+	mu         sync.Mutex
+	committed  bool
+	sawContent bool
+	buf        bytes.Buffer
+	header     http.Header
+	statusCode int
 }
 
 func NewStreamContentPeeker(w http.ResponseWriter) *StreamContentPeeker {
@@ -68,18 +82,6 @@ func NewStreamContentPeeker(w http.ResponseWriter) *StreamContentPeeker {
 		header:         make(http.Header),
 		statusCode:     http.StatusOK,
 	}
-}
-
-// SetOnFirstSeen registers a callback invoked as soon as the first content
-// (or in-band error) is observed. Used by combo first-token timeout cancellation.
-func (p *StreamContentPeeker) SetOnFirstSeen(cb func()) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.sawContent && cb != nil {
-		cb()
-		return
-	}
-	p.onFirstSeen = cb
 }
 
 func (p *StreamContentPeeker) Header() http.Header {
@@ -109,18 +111,12 @@ func (p *StreamContentPeeker) Write(b []byte) (int, error) {
 	// so the caller/client receives the in-band error frame as intended (e.g. TestComboSkipsInbandErrorOnRetry).
 	if _, _, isErr := DetectInbandSSEError(b); isErr || bytes.Contains(b, []byte(`"error":`)) {
 		p.sawContent = true
-		if p.onFirstSeen != nil {
-			p.onFirstSeen()
-		}
 		p.commitLocked()
 		return p.ResponseWriter.Write(b)
 	}
 
 	if HasSSEContent(b) {
 		p.sawContent = true
-		if p.onFirstSeen != nil {
-			p.onFirstSeen()
-		}
 		p.commitLocked()
 		return p.ResponseWriter.Write(b)
 	}

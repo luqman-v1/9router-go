@@ -19,6 +19,71 @@ import (
 	json "encoding/json/v2"
 )
 
+// sseSniffBytes bounds the head read that decides a mislabelled stream: SSE
+// always opens with a `data:`/`event:` field line, so the first kilobyte is
+// verdict enough and the rest of the stream stays live.
+const sseSniffBytes = 1024
+
+// sniffStreamHead reads the head of a live body: it stops as soon as one
+// field line has arrived (an SSE body announces itself in its first field
+// line) or the cap is reached, without waiting for more bytes than the peer
+// has sent. A plain io.ReadAll(LimitReader(...)) would block here until the
+// cap fills or the stream ends — exactly the buffering this sniff exists to
+// avoid.
+//
+// Leading blank lines are skipped rather than ending the sniff. A provider
+// that flushes an empty keepalive line before its first frame is still a
+// stream, and a verdict taken on that blank line folds the whole turn into a
+// single document — a client that asked for a stream then reads one.
+func sniffStreamHead(r io.Reader) []byte {
+	buf := make([]byte, sseSniffBytes)
+	head := make([]byte, 0, sseSniffBytes)
+	for len(head) < sseSniffBytes {
+		n, rerr := r.Read(buf[len(head):])
+		head = append(head, buf[len(head):len(head)+n]...)
+		if rerr != nil || n == 0 {
+			break
+		}
+		if bytes.IndexByte(head[firstLineStart(head):], '\n') >= 0 {
+			break
+		}
+	}
+	return head
+}
+
+// firstLineStart returns the offset of the first line in head that carries
+// something, so the sniff reads past leading blank lines instead of deciding
+// on one. SSE frame separators are blank lines, and a chunked provider may
+// flush one before its first field.
+func firstLineStart(head []byte) int {
+	for i := range head {
+		switch head[i] {
+		case '\n':
+			continue
+		case '\r':
+			// A trailing CR is undecided until the next byte arrives: the
+			// sniff reads on rather than judging the line.
+			if i+1 == len(head) || head[i+1] == '\n' {
+				continue
+			}
+			return i
+		default:
+			return i
+		}
+	}
+	return len(head)
+}
+
+// replayBody replays an already-read head ahead of a live upstream body while
+// keeping that body's Close. A NopCloser here would leave the socket
+// unclosable: the stall watchdog ends a stuck stream by closing the reader,
+// and the deferred close releases the connection, so both have to reach the
+// upstream body rather than a wrapper that swallows the close.
+type replayBody struct {
+	io.Reader
+	io.Closer
+}
+
 // renameMaxTokensBody moves max_tokens onto max_completion_tokens and drops
 // the old key, keeping an explicit client-sent target value. A body without
 // max_tokens, or one that does not parse as an object, returns unchanged.
@@ -72,23 +137,30 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	if req.IsStream {
 		streamBody := io.ReadCloser(resp.Body)
 		if !isEventStreamResponse(resp.Header) {
-			// A 200 that is not an event stream is one document, not a
-			// stream. Piping it through the SSE scanner yields zero frames,
+			// A 200 that is not an event stream is usually one document, not
+			// a stream. Piping it through the SSE scanner yields zero frames,
 			// SSECopy closes it with [DONE], and the client reads a
 			// successful empty completion while the router never gets a
-			// chance to fail over. Decide here, before any header is
-			// written: an SSE body mislabelled as JSON still streams, an
-			// HTML error page or a blank 200 is validated as JSON.
-			data, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
-			if rerr != nil {
-				return fmt.Errorf("read upstream body: %w", rerr)
+			// chance to fail over. A bounded head sniff decides instead of a
+			// whole-body read: SSE always announces itself in the first
+			// field lines, so a provider that mislabels its stream as JSON
+			// still streams frame by frame, and only a genuine document (an
+			// HTML error page, a blank 200) is read whole and validated as
+			// JSON.
+			head := sniffStreamHead(resp.Body)
+			if proxy.LooksLikeSSE(head) {
+				// An event stream the provider mislabelled: hand the sniffed
+				// head back and let the rest stream live. The upstream body
+				// stays the Closer so the stall watchdog and the deferred
+				// close can still reach the socket.
+				streamBody = replayBody{Reader: io.MultiReader(bytes.NewReader(head), resp.Body), Closer: resp.Body}
+			} else {
+				rest, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes-int64(len(head))))
+				if rerr != nil {
+					return fmt.Errorf("read upstream body: %w", rerr)
+				}
+				return jsonResponse(req.Ctx, w, bytes.NewReader(append(head, rest...)), req.TranslateResp, req.ResponseBuf)
 			}
-			if !proxy.LooksLikeSSE(data) {
-				return jsonResponse(req.Ctx, w, bytes.NewReader(data), req.TranslateResp, req.ResponseBuf)
-			}
-			// An event stream the provider mislabelled: replay it from the
-			// buffer so a streaming client still gets its stream.
-			streamBody = io.NopCloser(bytes.NewReader(data))
 		}
 		stallReader := proxy.NewStallReaderWithContext(req.Ctx, streamBody, 0, "openai")
 		bodyCloser = stallReader

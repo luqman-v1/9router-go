@@ -74,6 +74,10 @@ func TranslateOpenAIToResponses(chunk *OpenAIChunk, s *ResponsesState) []Respons
 	}
 
 	if choice.FinishReason != nil && *choice.FinishReason != "" {
+		// Remembered before the items close: a call that was cut by the output
+		// limit is a different truncation from one cut by a dropped connection,
+		// and closeToolCall needs to tell them apart.
+		s.FinishReason = *choice.FinishReason
 		for _, idx := range sortedIntKeys(s.MsgItemAdded) {
 			s.closeMessage(&out, idx)
 		}
@@ -157,27 +161,42 @@ func FlushResponses(s *ResponsesState) []ResponsesEvent {
 }
 
 // sendCompleted emits the terminal event carrying the finished Response object.
+//
+// A turn whose tool call closed with arguments that do not parse is reported as
+// response.incomplete, not response.completed: the arguments the client is
+// about to run were cut mid-token, and a `status: "completed"` terminal is what
+// told callers of #747 that nothing had gone wrong. The event name and the
+// status both change, because a Responses client reads the event type first and
+// the status on the object second.
 func (s *ResponsesState) sendCompleted(out *[]ResponsesEvent) {
 	if s.Completed {
 		return
 	}
 	s.Completed = true
 
+	status, event := responsesStatusCompleted, "response.completed"
+	if s.Incomplete != "" {
+		status, event = responsesStatusIncomplete, "response.incomplete"
+	}
+
 	response := map[string]any{
 		"id":         s.ResponseID,
 		"object":     "response",
 		"created_at": s.Created,
-		"status":     "completed",
+		"status":     status,
 		"background": false,
 		"error":      nil,
 		"output":     s.collectCompletedOutputItems(),
+	}
+	if s.Incomplete != "" {
+		response["incomplete_details"] = map[string]any{"reason": s.Incomplete}
 	}
 	if s.Usage != nil {
 		response["usage"] = s.Usage
 	}
 
-	s.emit(out, "response.completed", map[string]any{
-		"type":     "response.completed",
+	s.emit(out, event, map[string]any{
+		"type":     event,
 		"response": response,
 	})
 }
