@@ -222,7 +222,7 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 	// have been deferred waiting for a usage chunk that never came.
 	if shutdown.Fired() && !finished {
 		if endChunk := translator.EnsureStreamClosed(sessionKey); len(endChunk) > 0 {
-			hw.Write(endChunk)
+			_, _ = hw.Write(endChunk)
 		}
 		hw.Write([]byte("data: [DONE]\n\n"))
 		if flusher != nil {

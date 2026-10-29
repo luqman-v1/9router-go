@@ -367,7 +367,7 @@ func sseStream(o sseStreamOpts) error {
 	// never came, or the upstream died mid-turn. Both close here, before the
 	// shutdown [DONE] so the client sees delta+stop then [DONE].
 	if endChunk := translator.EnsureStreamClosed(sessionKey); len(endChunk) > 0 {
-		hw.Write(endChunk)
+		_, _ = hw.Write(endChunk)
 		if flusher != nil {
 			flusher.Flush()
 		}

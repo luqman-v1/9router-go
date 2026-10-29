@@ -50,7 +50,9 @@ func TestClaudeStreamTerminalUsageAfterFinish(t *testing.T) {
 	)
 	s := string(out)
 	// message_start legitimately reports zeros; the terminal delta must not.
-	if !strings.Contains(s, `"usage":{"input_tokens":60`) {
+	// Key order inside the marshalled map is not stable, so the assertions
+	// match the values, not their positions.
+	if !strings.Contains(s, `"input_tokens":60`) {
 		t.Errorf("expected terminal delta input_tokens 60 (100 prompt - 40 cached), got: %s", s)
 	}
 	if !strings.Contains(s, `"cache_read_input_tokens":40`) {
