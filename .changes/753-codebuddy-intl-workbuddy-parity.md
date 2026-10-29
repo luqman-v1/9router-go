@@ -125,6 +125,17 @@ the sample set measured live by CARVIN94/dsh-router-codebuddy 0.3.24 (same
 account, `max_tokens=4`: original `@`-path paragraph → 11128, rewritten → 200),
 kept as documentation of why the rewrite works rather than as a predicate.
 
+**Per-account in-flight ceiling.** The step between a per-model throttle
+(`6004`) and an account restriction (`11140`) is concurrency on one credential:
+simultaneous requests on one account read as automation. The attempt loop now
+refuses, per account, above `CODEBUDDY_MAX_IN_FLIGHT` (default 3; `0` disables;
+scoped to `codebuddy-intl`/`-cn` and their aliases) and moves to the next account
+without spending an upstream call — a provider-wide cap is not the same thing,
+because with five accounts it still allows five concurrent attempts on one of
+them. The default sits between the two figures the projects that run this
+channel publish: workbuddy2api caps at 2, Workbuddy-WB2api's
+`ADMIN_POOL_MAX_IN_FLIGHT` defaults to 3.
+
 **Gate shapes, measured on the live gateway.** Three bodies, one per mistake:
 without the `X-Conversation-*`/trace headers the same credential, host and body
 answer `11128 "request illegal"` + "Request blocked. Please send it again" (add

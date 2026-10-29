@@ -177,20 +177,36 @@ func (h *ChatHandler) handleAccountFallback(
 		// to a different account (force fallback), and the usage row, the logs
 		// and the exclusion below must all name the account that was dialled.
 		log.Debug("fallback", "connection", "conn", connObj.ID, "candidate", c.ID)
+		// One attempt at a time beyond the account's ceiling: a request that would
+		// exceed it moves to the next account here, before any upstream call is
+		// spent. Concurrency on one credential is the step between a per-model
+		// throttle and an account restriction.
+		releaseSlot, slotBusy := acquireConnectionSlot(provider, connObj.ID)
+		if slotBusy {
+			log.Info("fallback", "account at its in-flight ceiling, trying the next",
+				"provider", provider, "conn", connObj.ID, "limit", accountInFlightLimit(provider))
+			excludeIDs = append(excludeIDs, connObj.ID)
+			continue
+		}
 		attemptStart := time.Now()
-		if err := h.tryForwardWithConnection(forwardRequestParams{
-			Ctx: ctx, W: w, Provider: provider, Model: model,
-			ConnectionID: connObj.ID, ConnName: connObjName(connObj), ConnEmail: connObjEmail(connObj),
-			ConnData: connData, Body: body,
-			IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
-		}); err == nil {
+		forwardErr := func() error {
+			// Released when the attempt ends, which for a stream is when the
+			// upstream body is fully copied to the client.
+			defer releaseSlot()
+			return h.tryForwardWithConnection(forwardRequestParams{
+				Ctx: ctx, W: w, Provider: provider, Model: model,
+				ConnectionID: connObj.ID, ConnName: connObjName(connObj), ConnEmail: connObjEmail(connObj),
+				ConnData: connData, Body: body,
+				IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
+			})
+		}()
+		if forwardErr == nil {
 			RecordAttemptFromContext(ctx, connObj.ID, connObjName(connObj), provider, model, 200, nil, time.Since(attemptStart).Milliseconds())
 			return nil
-		} else {
-			lastErr = err
-			observ.IncFallback(provider, model, observ.FallbackReasonUpstreamError)
-			RecordAttemptFromContext(ctx, connObj.ID, connObjName(connObj), provider, model, 0, err, time.Since(attemptStart).Milliseconds())
 		}
+		lastErr = forwardErr
+		observ.IncFallback(provider, model, observ.FallbackReasonUpstreamError)
+		RecordAttemptFromContext(ctx, connObj.ID, connObjName(connObj), provider, model, 0, forwardErr, time.Since(attemptStart).Milliseconds())
 		// A node-state refusal (contract ended, lifetime quota spent) answers 403, which
 		// is a retryable status, so without this it would fall into the generic branch
 		// below and park the connection for two minutes on the model *and* on the
