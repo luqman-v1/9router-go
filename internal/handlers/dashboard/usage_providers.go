@@ -1024,11 +1024,21 @@ func fetchQoderUsageAt(ctx context.Context, accessToken, usageURL string) usageR
 
 // ---------- codebuddy-intl: POST billing meter ----------
 
+// codebuddyIntlHeaders is the WorkBuddy AI 5.8.4 desktop client identity the
+// intl gateway expects on its billing call. It must match the chat identity in
+// providers.go: the desktop channel is WorkBuddy, not the CN CLI, and the old
+// IDE/2.108.1 values no longer name a client the gateway is serving.
 var codebuddyIntlHeaders = map[string]string{
-	"User-Agent":          "IDE/2.108.1 CodeBuddy/2.108.1",
+	"User-Agent":          "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0",
 	"X-Product":           "SaaS",
-	"X-IDE-Type":          "IDE",
-	"X-IDE-Name":          "IDE",
+	"X-IDE-Type":          "WorkBuddy",
+	"X-IDE-Name":          "WorkBuddy",
+	"X-IDE-Version":       "5.8.4",
+	"X-Private-Data":      "true",
+	"X-Agent-Intent":      "craft",
+	"X-Agent-Purpose":     "conversation",
+	"X-Agent-Type":        "main",
+	"X-Domain":            "www.workbuddy.ai",
 	"X-Requested-With":    "XMLHttpRequest",
 	"X-Codebuddy-Request": "1",
 	"Content-Type":        "application/json",
@@ -1091,7 +1101,7 @@ func fetchCodeBuddyIntlUsage(ctx context.Context, accessToken, apiKey string) us
 	for k, v := range codebuddyIntlHeaders {
 		headers[k] = v
 	}
-	status, _, out, err := usageDo(ctx, http.MethodPost, "https://www.codebuddy.ai/v2/billing/meter/get-user-resource", headers, []byte("{}"))
+	status, _, out, err := usageDo(ctx, http.MethodPost, "https://www.workbuddy.ai/v2/billing/meter/get-user-resource", headers, []byte("{}"))
 	if err != nil {
 		return usageResult{message: fmt.Sprintf("CodeBuddy (codebuddy-intl) error: %v", err)}
 	}
