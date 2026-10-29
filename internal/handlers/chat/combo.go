@@ -845,6 +845,13 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				// served like the last member's rather than probed for a
 				// fallback that would replay the business request.
 				customJSON := isCustomJSONConn(connData)
+				// The response timeout advances a combo to the next member,
+				// which for a business endpoint would replay its operation.
+				// Its member runs to completion instead; a gate that already
+				// fired leaves the request unsent and falls back as usual.
+				if customJSON && timeoutGate != nil {
+					timeoutGate.disarm()
+				}
 				if !isStream {
 					fwdCtx = internalproxy.WithZeroContentProbe(candidateCtx, !isLastModel && !customJSON)
 				} else if !isLastModel && !customJSON {
@@ -1197,6 +1204,13 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				// served like the last member's rather than probed for a
 				// fallback that would replay the business request.
 				customJSON := isCustomJSONConn(connData)
+				// The response timeout advances a combo to the next member,
+				// which for a business endpoint would replay its operation.
+				// Its member runs to completion instead; a gate that already
+				// fired leaves the request unsent and falls back as usual.
+				if customJSON && timeoutGate != nil {
+					timeoutGate.disarm()
+				}
 				if !isStream {
 					fwdCtx = internalproxy.WithZeroContentProbe(candidateCtx, !isLastModel && !customJSON)
 				} else if !isLastModel && !customJSON {

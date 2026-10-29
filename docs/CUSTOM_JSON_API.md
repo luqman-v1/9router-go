@@ -77,7 +77,10 @@ tool-call mapping and usage-field mapping are not supported.
 
 **No replay.** A business request may have side effects, so it is sent once:
 no transient-status retry, no rotation to the node's other connections, and no
-fallback to the next model of a combo. Upstream error statuses are passed
+fallback to the next model of a combo. A combo's model response timeout does
+not apply to a custom JSON member either: the timeout exists to move on to the
+next member, which here would replay the operation, so the member runs to
+completion and its answer is served. Upstream error statuses are passed
 through. An empty reply is served as the answer rather than treated as an empty
 upstream. Separate client requests still call the endpoint independently.
 
