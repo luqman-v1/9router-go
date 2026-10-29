@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"9router/proxy/internal/models"
 )
 
 type QuotaWindow struct {
@@ -61,27 +63,32 @@ func ScoreQuotas(quotas []QuotaWindow, now time.Time) *float64 {
 		}
 	}
 
-	var anchor *QuotaWindow
-	var latestReset *time.Time
+	// Fix pickAnchor resetAt filtering (Upstream Parity):
+	// Filter quotas to only entries where resetAt != nil before checking for /month/i
+	var withReset []QuotaWindow
+	for _, q := range validQuotas {
+		if q.ResetAt != nil && !q.ResetAt.IsZero() {
+			withReset = append(withReset, q)
+		}
+	}
 
-	for i := range validQuotas {
-		qw := &validQuotas[i]
-		isMonthly := strings.Contains(strings.ToLower(qw.Name), "month")
-		if isMonthly {
-			if anchor == nil || (qw.ResetAt != nil && (anchor.ResetAt == nil || qw.ResetAt.After(*anchor.ResetAt))) {
+	var anchor *QuotaWindow
+	for i := range withReset {
+		qw := &withReset[i]
+		if strings.Contains(strings.ToLower(qw.Name), "month") {
+			if anchor == nil || qw.ResetAt.After(*anchor.ResetAt) {
 				anchor = qw
 			}
 		}
 	}
 
-	if anchor == nil {
-		for i := range validQuotas {
-			qw := &validQuotas[i]
-			if qw.ResetAt != nil {
-				if latestReset == nil || qw.ResetAt.After(*latestReset) {
-					latestReset = qw.ResetAt
-					anchor = qw
-				}
+	if anchor == nil && len(withReset) > 0 {
+		latestReset := withReset[0].ResetAt
+		anchor = &withReset[0]
+		for i := 1; i < len(withReset); i++ {
+			if withReset[i].ResetAt.After(*latestReset) {
+				latestReset = withReset[i].ResetAt
+				anchor = &withReset[i]
 			}
 		}
 	}
@@ -110,13 +117,13 @@ func ScoreQuotas(quotas []QuotaWindow, now time.Time) *float64 {
 // score == nil -> rank: 0.5
 // score == 0 -> rank: 0.0
 // Stable sort descending by rank.
-func OrderByTokenmaxxingScores(models []string, scores map[string]*float64) []string {
-	if len(models) <= 1 {
-		return models
+func OrderByTokenmaxxingScores(modelsList []string, scores map[string]*float64) []string {
+	if len(modelsList) <= 1 {
+		return modelsList
 	}
 
-	order := make([]string, len(models))
-	copy(order, models)
+	order := make([]string, len(modelsList))
+	copy(order, modelsList)
 
 	getRank := func(m string) float64 {
 		sc := scores[m]
@@ -139,8 +146,8 @@ func OrderByTokenmaxxingScores(models []string, scores map[string]*float64) []st
 }
 
 // OrderModelsByTokenmaxxing is an alias for OrderByTokenmaxxingScores.
-func OrderModelsByTokenmaxxing(models []string, scores map[string]*float64) []string {
-	return OrderByTokenmaxxingScores(models, scores)
+func OrderModelsByTokenmaxxing(modelsList []string, scores map[string]*float64) []string {
+	return OrderByTokenmaxxingScores(modelsList, scores)
 }
 
 type tokenmaxxingCacheEntry struct {
@@ -149,9 +156,10 @@ type tokenmaxxingCacheEntry struct {
 }
 
 var (
-	tokenmaxxingCacheMu sync.RWMutex
-	tokenmaxxingCache   = make(map[string]tokenmaxxingCacheEntry)
-	tokenmaxxingTTL     = 60 * time.Second
+	tokenmaxxingCacheMu      sync.RWMutex
+	tokenmaxxingCache        = make(map[string]tokenmaxxingCacheEntry)
+	tokenmaxxingTTL          = 60 * time.Second
+	maxTokenmaxxingCacheSize = 500
 )
 
 // ClearTokenmaxxingCache resets the in-memory cache (for testing).
@@ -161,106 +169,177 @@ func ClearTokenmaxxingCache() {
 	tokenmaxxingCache = make(map[string]tokenmaxxingCacheEntry)
 }
 
-func (h *ChatHandler) applyTokenmaxxingRouting(ctx context.Context, models []string) []string {
-	if len(models) <= 1 {
-		return models
+func (h *ChatHandler) applyTokenmaxxingRouting(ctx context.Context, modelsList []string) []string {
+	if len(modelsList) <= 1 {
+		return modelsList
 	}
 
 	scores := make(map[string]*float64)
 	now := time.Now()
 
-	for _, m := range models {
-		tokenmaxxingCacheMu.RLock()
-		if entry, ok := tokenmaxxingCache[m]; ok && time.Since(entry.fetchedAt) < tokenmaxxingTTL {
-			scores[m] = entry.score
-			tokenmaxxingCacheMu.RUnlock()
+	// Group models by canonical provider to avoid N+1 DB queries and resolve aliases (e.g. ag -> antigravity)
+	providerModels := make(map[string][]string)
+	for _, m := range modelsList {
+		prefix, _, ok := strings.Cut(m, "/")
+		if !ok {
+			scores[m] = nil
 			continue
 		}
-		tokenmaxxingCacheMu.RUnlock()
-
-		score := h.resolveModelTokenmaxxingScore(ctx, m, now)
-
-		tokenmaxxingCacheMu.Lock()
-		tokenmaxxingCache[m] = tokenmaxxingCacheEntry{
-			score:     score,
-			fetchedAt: now,
-		}
-		tokenmaxxingCacheMu.Unlock()
-
-		scores[m] = score
+		canonical := resolveProviderAlias(prefix)
+		providerModels[canonical] = append(providerModels[canonical], m)
 	}
 
-	return OrderByTokenmaxxingScores(models, scores)
+	for canonical, groupModels := range providerModels {
+		// Check cache first for all models in group
+		allCached := true
+		for _, m := range groupModels {
+			tokenmaxxingCacheMu.RLock()
+			entry, ok := tokenmaxxingCache[m]
+			tokenmaxxingCacheMu.RUnlock()
+			if !ok || time.Since(entry.fetchedAt) >= tokenmaxxingTTL {
+				allCached = false
+				break
+			}
+		}
+
+		if allCached && len(groupModels) > 0 {
+			for _, m := range groupModels {
+				tokenmaxxingCacheMu.RLock()
+				scores[m] = tokenmaxxingCache[m].score
+				tokenmaxxingCacheMu.RUnlock()
+			}
+			continue
+		}
+
+		score := h.resolveProviderTokenmaxxingScore(ctx, canonical, groupModels, now)
+
+		tokenmaxxingCacheMu.Lock()
+		for _, m := range groupModels {
+			if len(tokenmaxxingCache) >= maxTokenmaxxingCacheSize {
+				for k := range tokenmaxxingCache {
+					delete(tokenmaxxingCache, k)
+					break
+				}
+			}
+			tokenmaxxingCache[m] = tokenmaxxingCacheEntry{
+				score:     score,
+				fetchedAt: now,
+			}
+			scores[m] = score
+		}
+		tokenmaxxingCacheMu.Unlock()
+	}
+
+	return OrderByTokenmaxxingScores(modelsList, scores)
 }
 
-func (h *ChatHandler) resolveModelTokenmaxxingScore(ctx context.Context, modelEntry string, now time.Time) *float64 {
-	provider, _, _ := strings.Cut(modelEntry, "/")
+func (h *ChatHandler) resolveProviderTokenmaxxingScore(ctx context.Context, canonicalProvider string, modelsList []string, now time.Time) *float64 {
 	if h.Repo == nil {
 		return nil
 	}
-	conns, err := h.Repo.GetProviderConnections(provider, true)
+	conns, err := h.Repo.GetProviderConnections(canonicalProvider, true)
 	if err != nil || len(conns) == 0 {
-		return nil
+		if conns2, err2 := h.Repo.GetProviderConnections("", true); err2 == nil {
+			var filtered []*models.ProviderConnection
+			for _, c := range conns2 {
+				if c != nil && (strings.EqualFold(c.Provider, canonicalProvider) || strings.EqualFold(resolveProviderAlias(c.Provider), canonicalProvider)) {
+					filtered = append(filtered, c)
+				}
+			}
+			conns = filtered
+		}
+		if len(conns) == 0 {
+			return nil
+		}
 	}
 
 	var bestScore *float64
 
 	for _, c := range conns {
-		if c == nil || c.Data == "" {
-			continue
-		}
-		var data map[string]any
-		if json.Unmarshal([]byte(c.Data), &data) != nil {
+		if c == nil {
 			continue
 		}
 
 		var quotas []QuotaWindow
 
-		if qMap, ok := data["quotas"].(map[string]any); ok {
-			for name, qVal := range qMap {
-				qw := QuotaWindow{Name: name}
-				if qObj, ok := qVal.(map[string]any); ok {
-					if rp, ok := qObj["remainingPercentage"].(float64); ok {
-						qw.RemainingPercentage = &rp
-					} else if rpInt, ok := qObj["remainingPercentage"].(int); ok {
-						f := float64(rpInt)
-						qw.RemainingPercentage = &f
-					}
-					if used, ok := qObj["used"].(float64); ok {
-						qw.Used = &used
-					} else if usedInt, ok := qObj["used"].(int); ok {
-						f := float64(usedInt)
-						qw.Used = &f
-					}
-					if total, ok := qObj["total"].(float64); ok {
-						qw.Total = &total
-					} else if totalInt, ok := qObj["total"].(int); ok {
-						f := float64(totalInt)
-						qw.Total = &f
-					}
-					if unlim, ok := qObj["unlimited"].(bool); ok {
-						qw.Unlimited = unlim
-					} else if unlimStr, ok := qObj["isUnlimited"].(bool); ok {
-						qw.Unlimited = unlimStr
-					}
-					if resetStr, ok := qObj["resetAt"].(string); ok && resetStr != "" {
-						if t, err := time.Parse(time.RFC3339, resetStr); err == nil {
-							qw.ResetAt = &t
-						}
-					}
+		// Check agQuotaCache / agWeeklyCache for antigravity connections
+		if strings.EqualFold(canonicalProvider, "antigravity") {
+			agQuotaMu.RLock()
+			if modelQuotas, ok := agQuotaCache[c.ID]; ok {
+				for modelName, mq := range modelQuotas {
+					rp := mq.RemainingPercentage
+					reset := mq.ResetAt
+					quotas = append(quotas, QuotaWindow{
+						Name:                modelName,
+						RemainingPercentage: &rp,
+						ResetAt:             &reset,
+					})
 				}
-				quotas = append(quotas, qw)
 			}
+			if weeklyQuotas, ok := agWeeklyCache[c.ID]; ok {
+				for family, wq := range weeklyQuotas {
+					rp := wq.RemainingPercentage
+					reset := wq.ResetAt
+					quotas = append(quotas, QuotaWindow{
+						Name:                "weekly-" + family,
+						RemainingPercentage: &rp,
+						ResetAt:             &reset,
+					})
+				}
+			}
+			agQuotaMu.RUnlock()
 		}
 
-		if rateLimitedUntil, ok := data["rateLimitedUntil"].(string); ok && rateLimitedUntil != "" {
-			if t, err := time.Parse(time.RFC3339, rateLimitedUntil); err == nil && t.After(now) {
-				zeroVal := 0.0
-				quotas = append(quotas, QuotaWindow{
-					Name:                "rateLimited",
-					RemainingPercentage: &zeroVal,
-					ResetAt:             &t,
-				})
+		if c.Data != "" {
+			var data map[string]any
+			if json.Unmarshal([]byte(c.Data), &data) == nil {
+				if qMap, ok := data["quotas"].(map[string]any); ok {
+					for name, qVal := range qMap {
+						qw := QuotaWindow{Name: name}
+						if qObj, ok := qVal.(map[string]any); ok {
+							if rp, ok := qObj["remainingPercentage"].(float64); ok {
+								qw.RemainingPercentage = &rp
+							} else if rpInt, ok := qObj["remainingPercentage"].(int); ok {
+								f := float64(rpInt)
+								qw.RemainingPercentage = &f
+							}
+							if used, ok := qObj["used"].(float64); ok {
+								qw.Used = &used
+							} else if usedInt, ok := qObj["used"].(int); ok {
+								f := float64(usedInt)
+								qw.Used = &f
+							}
+							if total, ok := qObj["total"].(float64); ok {
+								qw.Total = &total
+							} else if totalInt, ok := qObj["total"].(int); ok {
+								f := float64(totalInt)
+								qw.Total = &f
+							}
+							if unlim, ok := qObj["unlimited"].(bool); ok {
+								qw.Unlimited = unlim
+							} else if unlimStr, ok := qObj["isUnlimited"].(bool); ok {
+								qw.Unlimited = unlimStr
+							}
+							if resetStr, ok := qObj["resetAt"].(string); ok && resetStr != "" {
+								if t, err := time.Parse(time.RFC3339, resetStr); err == nil {
+									qw.ResetAt = &t
+								}
+							}
+						}
+						quotas = append(quotas, qw)
+					}
+				}
+
+				if rateLimitedUntil, ok := data["rateLimitedUntil"].(string); ok && rateLimitedUntil != "" {
+					if t, err := time.Parse(time.RFC3339, rateLimitedUntil); err == nil && t.After(now) {
+						zeroVal := 0.0
+						quotas = append(quotas, QuotaWindow{
+							Name:                "rateLimited",
+							RemainingPercentage: &zeroVal,
+							ResetAt:             &t,
+						})
+					}
+				}
 			}
 		}
 

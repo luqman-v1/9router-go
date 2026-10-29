@@ -1,8 +1,11 @@
 package chat
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"9router/proxy/internal/db"
 )
 
 func TestScoreQuotas_AnchorPicking(t *testing.T) {
@@ -118,6 +121,33 @@ func TestOrderByTokenmaxxingScores_Ordering(t *testing.T) {
 		if ordered[i] != m {
 			t.Fatalf("at index %d: expected %s, got %s", i, m, ordered[i])
 		}
+	}
+}
+
+func TestHandleComboFallback_TokenmaxxingStrategy(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	if _, err := database.Exec(`
+		DELETE FROM providerConnections;
+		INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt)
+		VALUES
+		('conn-ds', 'deepseek', 'apikey', 'DS High', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z'),
+		('conn-oa', 'openai', 'apikey', 'OA Low', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')
+	`, `{"quotas":{"monthly":{"remainingPercentage":90,"resetAt":"2026-02-01T00:00:00Z"}}}`,
+		`{"quotas":{"monthly":{"remainingPercentage":10,"resetAt":"2026-02-01T00:00:00Z"}}}`); err != nil {
+		t.Fatalf("seed connections: %v", err)
+	}
+
+	handler := NewChatHandler(db.NewRepo(database))
+	models := []string{"openai/gpt-4o", "deepseek/deepseek-chat"}
+
+	ordered := handler.applyTokenmaxxingRouting(context.Background(), models)
+	if len(ordered) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(ordered))
+	}
+	if ordered[0] != "deepseek/deepseek-chat" {
+		t.Errorf("expected deepseek/deepseek-chat first due to higher quota, got %s", ordered[0])
 	}
 }
 
