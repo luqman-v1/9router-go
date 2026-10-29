@@ -191,7 +191,7 @@ func ParseOAuthConnection(data map[string]any) *OAuthConnectionData {
 // IsExpired checks if the OAuth token is expired or will expire within 60 seconds.
 func (o *OAuthConnectionData) IsExpired() bool {
 	if o.ExpiresAt == "" {
-		return true
+		return false
 	}
 	exp, err := time.Parse(time.RFC3339, o.ExpiresAt)
 	if err != nil {

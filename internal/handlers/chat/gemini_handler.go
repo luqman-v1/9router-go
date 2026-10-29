@@ -229,6 +229,9 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		if oauthData == nil || oauthData.RefreshToken == "" || !oauthData.IsExpired() {
 			return oauthTokenResult{token: currentToken, projectID: projectID, passthrough: true}, nil
 		}
+		if oauth.Get(provider) == nil {
+			return oauthTokenResult{token: currentToken, projectID: projectID, passthrough: true}, nil
+		}
 
 		// Use global OAuth refresh with deduplication and caching
 		log.Info("oauth", "token expired, refreshing via global dedup", "provider", provider, "project", projectID)

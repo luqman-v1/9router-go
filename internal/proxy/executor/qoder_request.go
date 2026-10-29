@@ -1,10 +1,12 @@
 package executor
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	json "encoding/json/v2"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
@@ -390,6 +392,36 @@ type qoderBuiltChat struct {
 // expects. modelConfig is the live catalog entry for the model, which the
 // caller must resolve first (it is not derivable from the request).
 func buildQoderChatRequest(body []byte, modelConfig map[string]any, creds QoderCosyCreds, now int64) (qoderBuiltChat, error) {
+	return buildQoderChatRequestWithAttachments(context.Background(), body, modelConfig, creds, now, QoderRegionIntl, nil, nil)
+}
+
+// qoderChatModelConfig copies the catalog entry echoed as model_config, minus
+// its `source` field. Qoder routes the chat by that field: with the catalog's
+// source:"system" the request lands in the managed lane and answers
+// 10605/queueType=p3 whenever that lane is busy — measured live against a
+// free model (dfmodel) that the same payload with the field absent (or set to
+// "user") is served immediately. Everything else stays the catalog's, so
+// max_input_tokens, is_reasoning and context_config keep steering the request
+// exactly as they do for the IDE. The X-Model-Source header keeps reporting
+// the catalog's source.
+func qoderChatModelConfig(modelConfig map[string]any) map[string]any {
+	if _, ok := modelConfig["source"]; !ok {
+		return modelConfig
+	}
+	withoutSource := make(map[string]any, len(modelConfig))
+	for k, v := range modelConfig {
+		if k == "source" {
+			continue
+		}
+		withoutSource[k] = v
+	}
+	return withoutSource
+}
+
+// buildQoderChatRequestWithAttachments maps an OpenAI chat body onto the payload
+// Qoder expects, optionally rewriting inlined attachments and uploading them
+// to Qoder's OSS endpoint.
+func buildQoderChatRequestWithAttachments(ctx context.Context, body []byte, modelConfig map[string]any, creds QoderCosyCreds, now int64, region QoderRegion, client *http.Client, uploadFn qoderUploadFn) (qoderBuiltChat, error) {
 	var request map[string]any
 	if err := json.Unmarshal(body, &request); err != nil {
 		return qoderBuiltChat{}, fmt.Errorf("parse body: %w", err)
@@ -405,6 +437,10 @@ func buildQoderChatRequest(body []byte, modelConfig map[string]any, creds QoderC
 	}
 
 	incoming, _ := request["messages"].([]any)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, _ = RewriteQoderMessageAttachments(ctx, incoming, creds, region, client, uploadFn)
 	messages, systemText := qoderNormalizedMessages(incoming)
 	tools, _ := request["tools"].([]any)
 
@@ -451,7 +487,7 @@ func buildQoderChatRequest(body []byte, modelConfig map[string]any, creds QoderC
 			"features": []any{},
 			"text":     lastUser,
 		},
-		"model_config": modelConfig,
+		"model_config": qoderChatModelConfig(modelConfig),
 		"business": map[string]any{
 			"product":  "cli",
 			"version":  "1.0.0",

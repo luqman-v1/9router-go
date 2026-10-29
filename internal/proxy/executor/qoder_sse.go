@@ -6,6 +6,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -370,16 +371,32 @@ func orDefault(value, fallback string) string {
 // Reporting it as billing turns the frame into a 403, which reads as
 // insufficient_quota and locks the model for minutes, so a queued request
 // used to fail permanently instead of waiting ~30s. See qoder_queue.go.
+var qoderBillingLegacyRegex = regexp.MustCompile(`"code"\s*:\s*"112"`)
+
 func qoderIsBillingBlock(inner string) bool {
 	if inner == "" {
 		return false
 	}
-	for _, marker := range []string{`"code":110`, `"code":112`, "pricingUrl", "pricing_url"} {
-		if strings.Contains(inner, marker) {
-			return true
+	lower := strings.ToLower(inner)
+	if strings.Contains(lower, "pricingurl") || strings.Contains(lower, "pricing_url") {
+		return true
+	}
+	var parsed struct {
+		Code any `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(inner), &parsed); err == nil && parsed.Code != nil {
+		switch c := parsed.Code.(type) {
+		case string:
+			if c == "110" || c == "112" {
+				return true
+			}
+		case float64:
+			if c == 110 || c == 112 {
+				return true
+			}
 		}
 	}
-	return false
+	return qoderBillingLegacyRegex.MatchString(inner)
 }
 
 // qoderCanonicalUsage normalizes Qoder's usage block into the shape the

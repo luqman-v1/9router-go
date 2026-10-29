@@ -1223,8 +1223,14 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	return fwdErr
 }
 
+// isClientCanceled reports whether the client that asked for this response
+// went away. A deadline the gateway set for itself is not that: the dashboard
+// model probe wraps its own call in a 45s timeout, and treating that expiry as
+// a hangup reported "HTTP 499: client closed request" for a model that was
+// merely still queued upstream. Only an explicit cancel counts, plus the 499
+// this package already produced.
 func isClientCanceled(ctx context.Context, err error) bool {
-	if ctx != nil && ctx.Err() != nil {
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
 		return true
 	}
 	var ue *upstreamError
@@ -1601,11 +1607,25 @@ func isAccountAuthFailure(lower string) bool {
 		strings.Contains(lower, "insufficient funds for organization")
 }
 
+// isModelQuotaText reports a refusal that names one model's quota rather than
+// the account's standing. These lock the model, not the connection: a Qoder
+// account whose paid models are out of credits still serves its free ones, and
+// parking the whole connection answered `dfmodel` with "all in cooldown" after
+// a single `dmodel` refusal.
 func isModelQuotaText(errorText string) bool {
 	upper := strings.ToUpper(errorText)
 	return strings.Contains(upper, "QUOTA_EXHAUSTED") ||
 		strings.Contains(errorText, "Individual quota reached") ||
-		strings.Contains(upper, "MODEL_CAPACITY_EXHAUSTED")
+		strings.Contains(upper, "MODEL_CAPACITY_EXHAUSTED") ||
+		// Qoder's billing envelope: code 110/112 or a pricingUrl field
+		// (qoderIsBillingBlock). The refusal is per model — the account's
+		// free models keep working while a paid one is out of credits.
+		strings.Contains(upper, "PRICINGURL") ||
+		strings.Contains(upper, "PRICING_URL") ||
+		// Qoder's queue window (qoderQueuedTimeout): the model is briefly out
+		// of capacity, which throttles that model alone. Locking the account
+		// here parked every other model on it behind one busy queue.
+		strings.Contains(upper, "STILL QUEUED")
 }
 
 func mentionsGate(lower string) bool {
