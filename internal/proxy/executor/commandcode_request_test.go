@@ -301,3 +301,137 @@ func TestBuildCommandcodeBody_RejectsAPreWrappedParamsThatIsNotAnObject(t *testi
 		t.Fatal("a non-object params must be refused")
 	}
 }
+
+// TestCommandcodeMaxTokensResolution pins which client field supplies the
+// output budget. max_completion_tokens is the last source, not the first: a
+// body that still carries max_tokens or max_output_tokens keeps the value it
+// carried before this branch existed.
+func TestCommandcodeMaxTokensResolution(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want any
+	}{
+		{
+			name: "max_tokens wins over max_completion_tokens",
+			body: `{"max_tokens":4096,"max_completion_tokens":2048}`,
+			want: 4096.0,
+		},
+		{
+			name: "max_output_tokens wins over max_completion_tokens",
+			body: `{"max_output_tokens":2048,"max_completion_tokens":4096}`,
+			want: 2048.0,
+		},
+		{
+			name: "max_tokens alone",
+			body: `{"max_tokens":4096}`,
+			want: 4096.0,
+		},
+		{
+			// The shape normalizeChatTokenFields leaves behind for a client
+			// that sent both: max_tokens is gone, so this is the only field
+			// left that names the budget. Reading it is what keeps the
+			// client's value instead of the 1024 default.
+			name: "max_completion_tokens alone, the post-normalizer shape",
+			body: `{"max_completion_tokens":4096}`,
+			want: 4096.0,
+		},
+		{
+			name: "no field falls back to the default",
+			body: `{}`,
+			// The default is a Go int literal, not a decoded JSON number;
+			// both serialise as 1024 on the wire.
+			want: 1024,
+		},
+		{
+			name: "a null value is an absent value",
+			body: `{"max_tokens":null,"max_completion_tokens":3000}`,
+			want: 3000.0,
+		},
+		{
+			name: "all three null falls back to the default",
+			body: `{"max_tokens":null,"max_output_tokens":null,"max_completion_tokens":null}`,
+			want: 1024,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]any
+			if err := json.Unmarshal([]byte(tt.body), &body); err != nil {
+				t.Fatalf("unmarshal body: %v", err)
+			}
+			if got := commandcodeMaxTokens(body); got != tt.want {
+				t.Errorf("commandcodeMaxTokens() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildCommandcodeBody_SingleBudgetFieldOnWire pins that resolving the
+// budget never puts a second spelling on the wire: the provider reads
+// params.max_tokens only, and a body carrying both max_tokens and
+// max_completion_tokens is exactly the shape that gets the client's budget
+// discarded when only the first is read.
+func TestBuildCommandcodeBody_SingleBudgetFieldOnWire(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantToks float64
+	}{
+		{
+			name:     "client sent both, max_tokens is kept",
+			body:     `{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":4096,"max_completion_tokens":2048}`,
+			wantToks: 4096,
+		},
+		{
+			name:     "client sent max_completion_tokens only",
+			body:     `{"model":"m","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":2048}`,
+			wantToks: 2048,
+		},
+		{
+			name:     "client sent max_tokens only",
+			body:     `{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":2048}`,
+			wantToks: 2048,
+		},
+		{
+			name:     "client sent no budget",
+			body:     `{"model":"m","messages":[{"role":"user","content":"hi"}]}`,
+			wantToks: 1024,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := buildCommandcodeBody([]byte(tt.body), "m")
+			if err != nil {
+				t.Fatalf("buildCommandcodeBody() error = %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(out, &payload); err != nil {
+				t.Fatalf("unmarshal payload: %v", err)
+			}
+
+			// The provider reads params.max_tokens; a top-level copy is dead
+			// weight the schema does not define.
+			for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+				if v, has := payload[key]; has {
+					t.Errorf("envelope carries %q at the top level = %v", key, v)
+				}
+			}
+
+			params, ok := payload["params"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected params object, got %T", payload["params"])
+			}
+			for _, key := range []string{"max_completion_tokens", "max_output_tokens"} {
+				if v, has := params[key]; has {
+					t.Errorf("params carries a second budget spelling %q = %v", key, v)
+				}
+			}
+			if got := params["max_tokens"]; got != tt.wantToks {
+				t.Errorf("params.max_tokens = %v, want %v", got, tt.wantToks)
+			}
+		})
+	}
+}

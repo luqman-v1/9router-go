@@ -2,6 +2,7 @@
   // Details-section dashboard (issue #280): activity heatmap and node health
   // above the request-details table.
   import { api, type UsageDashboardResponse, type UsageLifetime } from '../../api/client'
+  import { cachedUsageDashboard, rememberUsageDashboard } from '../../lib/usageDashboardCache'
   import { fmtTokens } from '../../lib/compactNumber'
   import Card from '../../lib/ui/Card.svelte'
   import ActivityHeatmap from './ActivityHeatmap.svelte'
@@ -84,6 +85,16 @@
       loading = false
       return
     }
+    // A fresh entry from an earlier mount is drawn immediately: the panels are
+    // the same panels, and re-reading them would be a round trip whose answer
+    // is already on screen.
+    const cached = cachedUsageDashboard()
+    if (cached) {
+      data = cached
+      loading = false
+      failed = false
+      return
+    }
     let cancelled = false
     let settled = false
     loading = true
@@ -102,16 +113,16 @@
         if (cancelled || settled) return
         settled = true
         clearTimeout(timer)
+        rememberUsageDashboard(res)
         data = res
+        loading = false
       })
       .catch(() => {
         if (cancelled || settled) return
         settled = true
         clearTimeout(timer)
         failed = true
-      })
-      .finally(() => {
-        if (!cancelled && !settled) loading = false
+        loading = false
       })
     return () => {
       cancelled = true

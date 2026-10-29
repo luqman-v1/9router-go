@@ -22,6 +22,7 @@ import {
   type UsagePanelId,
   type UsagePanelPreset,
 } from './usagePanel'
+import { forgetUsageDashboard } from './usageDashboardCache'
 import { moveBeforeInList, moveInList, normalizeListAgainst } from './orderList'
 import {
   USAGE_PANEL_DEFAULT_ORDER,
@@ -100,6 +101,10 @@ export function isPanelVisible(id: UsagePanelId): boolean {
 
 export function setPanelVisible(id: UsagePanelId, visible: boolean): void {
   if (visible) {
+    // Turning a panel back on is the operator asking for a fresh look at a
+    // section they had hidden, so the Details payload is re-read rather than
+    // served from the cache that outlives a section switch.
+    forgetUsageDashboard()
     draft = { ...draft, hidden: draft.hidden.filter((h) => h !== id) }
     return
   }

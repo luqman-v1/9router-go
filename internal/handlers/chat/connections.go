@@ -351,56 +351,98 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 			return nil, nil, h.providerLimitError(ctx, provider, refusal)
 		}
 
-		// Rotate only connections eligible for the requested model.
-		if len(connections) > 1 && settingsErr == nil && settings != nil {
-			strat := connRotationStrategy(settings, provider)
-			if strat.RotateStrategy != "" && strat.RotateStrategy != "none" {
-				connections = h.applyConnectionStrategy(connections, strat)
-			}
-		}
-
 		excludeSet := make(map[string]bool, len(excludeIDs))
 		for _, id := range excludeIDs {
 			excludeSet[id] = true
 		}
 
+		sessionID := handlerutil.GetSessionID(ctx)
 		conn = nil
 		var cooldownUntil time.Time
 		var inCooldown []*models.ProviderConnection
 		now := time.Now()
-		for _, c := range connections {
-			if excludeSet[c.ID] {
-				continue
-			}
-			// The strategy sweep reorders the whole candidate list, so the
-			// account filter runs again on the row actually reached.
-			if !codexAccountServesModel(c, model) {
-				continue
-			}
-			// Per-model lock and quota cache first: an account parked for
-			// this model carries no cooldown to shorten, so it must not enter
-			// the forced pool either (h.connectionModelBlocked).
-			if !isProbe {
-				if h.connectionModelBlocked(c, provider, model) {
-					continue
-				}
-				// Account-scoped cooldown. An account whose quota is spent, or
-				// whose OAuth grant the provider already rejected, is skipped
-				// before it is selected — round-robin otherwise kept handing out
-				// dead accounts until a live 429/401 locked them, and a rejected
-				// grant cost a token-endpoint call on every request until the IP
-				// was rate limited. Upstream parity: filterAvailableAccounts.
-				if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
-					inCooldown = append(inCooldown, c)
-					if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
-						cooldownUntil = until
-					}
-					continue
-				}
-			}
-			conn = c
-			break
+
+		var strat db.ProviderStrategy
+		hasStrat := false
+		affinityEligible := false
+		if settingsErr == nil && settings != nil {
+			strat = connRotationStrategy(settings, provider)
+			hasStrat = strat.RotateStrategy != "" && strat.RotateStrategy != "none"
+			affinityEligible = isAffinityEligibleStrategy(strat.RotateStrategy)
 		}
+
+		// Check session affinity if rotation is configured and a session is identified
+		if !isProbe && sessionID != "" && affinityEligible {
+			if boundID, ok := h.getSessionAffinity().Get(provider, model, sessionID); ok && boundID != "" {
+				var boundConn *models.ProviderConnection
+				for _, c := range connections {
+					if c.ID == boundID {
+						boundConn = c
+						break
+					}
+				}
+				if boundConn != nil && !excludeSet[boundConn.ID] && codexAccountServesModel(boundConn, model) {
+					if !h.connectionModelBlocked(boundConn, provider, model) {
+						if until, ok := db.ConnectionBlockedUntil(boundConn.Data); !ok || !until.After(now) {
+							conn = boundConn
+						}
+					}
+				}
+				// If bound connection is no longer eligible (in cooldown, blocked, or not in candidate list),
+				// evict the dead binding so rotation can advance to an eligible account.
+				if conn == nil {
+					h.getSessionAffinity().Evict(provider, model, sessionID)
+				}
+			}
+		}
+
+		if conn == nil {
+			// Rotate only connections eligible for the requested model.
+			// New session distribution uses round-robin with effective stickyLimit = 1 across
+			// candidate accounts so distinct sessions alternate evenly.
+			if len(connections) > 1 && hasStrat {
+				effectiveStrat := strat
+				if sessionID != "" && affinityEligible {
+					effectiveStrat.StickyLimit = 1
+				}
+				connections = h.applyConnectionStrategy(connections, effectiveStrat)
+			}
+
+			for _, c := range connections {
+				if excludeSet[c.ID] {
+					continue
+				}
+				// The strategy sweep reorders the whole candidate list, so the
+				// account filter runs again on the row actually reached.
+				if !codexAccountServesModel(c, model) {
+					continue
+				}
+				// Per-model lock and quota cache first: an account parked for
+				// this model carries no cooldown to shorten, so it must not enter
+				// the forced pool either (h.connectionModelBlocked).
+				if !isProbe {
+					if h.connectionModelBlocked(c, provider, model) {
+						continue
+					}
+					// Account-scoped cooldown. An account whose quota is spent, or
+					// whose OAuth grant the provider already rejected, is skipped
+					// before it is selected — round-robin otherwise kept handing out
+					// dead accounts until a live 429/401 locked them, and a rejected
+					// grant cost a token-endpoint call on every request until the IP
+					// was rate limited. Upstream parity: filterAvailableAccounts.
+					if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
+						inCooldown = append(inCooldown, c)
+						if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
+							cooldownUntil = until
+						}
+						continue
+					}
+				}
+				conn = c
+				break
+			}
+		}
+
 		if conn == nil && forceFallbackEnabled(settings) {
 			// The operator asked for traffic to keep flowing while every
 			// account is cooling down, so take the account that frees up
@@ -412,6 +454,11 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 				log.Warn("connections", "all accounts in cooldown, forcing the soonest to reset",
 					"provider", provider, "conn", forced.ID, "reset", until.UTC().Format(time.RFC3339))
 			}
+		}
+
+		// Optimistically bind session to the selected connection
+		if conn != nil && !isProbe && sessionID != "" && affinityEligible {
+			h.getSessionAffinity().Bind(provider, model, sessionID, conn.ID)
 		}
 		if conn == nil {
 			// Every candidate was in cooldown, so say when the first one comes
@@ -611,6 +658,18 @@ func quotaCacheBlocked(provider, connectionID, model string) bool {
 		return IsCodexConnectionExhausted(connectionID)
 	}
 	return false
+}
+
+func (h *ChatHandler) getSessionAffinity() *SessionAffinityStore {
+	if h == nil {
+		return nil
+	}
+	h.sessionAffinityMu.Lock()
+	defer h.sessionAffinityMu.Unlock()
+	if h.SessionAffinity == nil {
+		h.SessionAffinity = NewSessionAffinityStore(10000, 2*time.Hour)
+	}
+	return h.SessionAffinity
 }
 
 // GetProviderConfig returns the upstream configuration for a provider.

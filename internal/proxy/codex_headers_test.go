@@ -26,6 +26,24 @@ func TestForwardCodex_sendsChatGPTAccountHeader(t *testing.T) {
 			wantPresent: true,
 		},
 		{
+			name:        "account id from workspaceId fallback",
+			psd:         map[string]any{"workspaceId": "ws-1"},
+			wantHeader:  "ws-1",
+			wantPresent: true,
+		},
+		{
+			name:        "account id from accountId fallback",
+			psd:         map[string]any{"accountId": "acc-1"},
+			wantHeader:  "acc-1",
+			wantPresent: true,
+		},
+		{
+			name:        "workspaceId preferred over chatgptAccountId",
+			psd:         map[string]any{"workspaceId": "ws-primary", "chatgptAccountId": "acct-secondary"},
+			wantHeader:  "ws-primary",
+			wantPresent: true,
+		},
+		{
 			name:        "present alongside the plan type",
 			psd:         map[string]any{"chatgptAccountId": "acct-2", "chatgptPlanType": "pro"},
 			wantHeader:  "acct-2",
@@ -59,7 +77,7 @@ func TestForwardCodex_sendsChatGPTAccountHeader(t *testing.T) {
 			defer srv.Close()
 
 			cfg := &providers.ProviderConfig{BaseURL: srv.URL, AuthHeader: "Authorization", AuthScheme: "bearer"}
-			_, err := ForwardCodex(t.Context(), srv.Client(), cfg, "sk-test", []byte(`{}`), false, tt.psd, false)
+			_, err := ForwardCodex(t.Context(), srv.Client(), cfg, "sk-test", []byte(`{}`), false, tt.psd, false, "")
 			if err != nil {
 				t.Fatalf("ForwardCodex() error = %v", err)
 			}
@@ -68,6 +86,56 @@ func TestForwardCodex_sendsChatGPTAccountHeader(t *testing.T) {
 			}
 			if tt.wantPresent && (len(gotHeader) == 0 || gotHeader[0] != tt.wantHeader) {
 				t.Errorf("chatgpt-account-id = %q, want %q", gotHeader, tt.wantHeader)
+			}
+		})
+	}
+}
+
+func TestForwardCodex_sendsSessionIDHeader(t *testing.T) {
+	// session_id is required by the Codex backend to pin requests to the same
+	// server-side prompt cache worker. Matching upstream:
+	// headers["session_id"] = this._currentSessionId || credentials?.connectionId || "default"
+	tests := []struct {
+		name        string
+		sessionID   string
+		psd         map[string]any
+		wantSession string
+	}{
+		{
+			name:        "explicit session ID is forwarded",
+			sessionID:   "sess-alpha",
+			psd:         nil,
+			wantSession: "sess-alpha",
+		},
+		{
+			name:        "connectionId fallback when session ID is empty",
+			sessionID:   "",
+			psd:         map[string]any{"connectionId": "cx-conn-99"},
+			wantSession: "cx-conn-99",
+		},
+		{
+			name:        "default fallback when both are empty",
+			sessionID:   "",
+			psd:         nil,
+			wantSession: "default",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotSession string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotSession = r.Header.Get("session_id")
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+
+			cfg := &providers.ProviderConfig{BaseURL: srv.URL, AuthHeader: "Authorization", AuthScheme: "bearer"}
+			_, err := ForwardCodex(t.Context(), srv.Client(), cfg, "sk-test", []byte(`{}`), false, tt.psd, false, tt.sessionID)
+			if err != nil {
+				t.Fatalf("ForwardCodex() error = %v", err)
+			}
+			if gotSession != tt.wantSession {
+				t.Errorf("session_id = %q, want %q", gotSession, tt.wantSession)
 			}
 		})
 	}

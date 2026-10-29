@@ -2119,7 +2119,15 @@ export const api = {
   },
 
   // Usage & Telemetry
-  getUsageStats: (period = 'today') => request<any>(`/api/usage/stats?period=${encodeURIComponent(period)}`),
+  /**
+   * Usage aggregates for a window. `views` names the breakdowns to build:
+   * `none` is totals only (plus byProvider, which the totals are summed from),
+   * and omitting it returns every breakdown — the shape this call always had.
+   */
+  getUsageStats: (period = 'today', views?: string) =>
+    request<any>(
+      `/api/usage/stats?period=${encodeURIComponent(period)}${views ? `&views=${encodeURIComponent(views)}` : ''}`
+    ),
   /** One chart point: bucket label (HH:MM or MMM D), totals, and the per-model-family token split. */
   getUsageChart: (period = '7d') =>
     request<{ label: string; tokens: number; cost: number; byModel: Record<string, number> }[]>(

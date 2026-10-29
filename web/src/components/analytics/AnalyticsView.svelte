@@ -136,13 +136,43 @@
   let detailsTotal = $state(0)
   let detailsPage = $state(1)
   let detailsLoading = $state(false)
-  async function loadStats(targetPeriod: Period) {
+  /**
+   * Reads the usage aggregates for a window.
+   *
+   * `views` names the breakdowns the server should build. The five-second poll
+   * passes 'none' (totals, activeRequests and recentRequests only) because that
+   * is all the KPI row and the live pulse draw, while the four per-model maps
+   * are 98% of the payload — 415 KB at 411 models, every five seconds. The
+   * breakdown table is refreshed on its own, slower schedule and keeps its
+   * previous maps in between, so a poll that omits them must merge rather than
+   * replace: replacing would blank the table for four seconds out of every
+   * five.
+   */
+  async function loadStats(targetPeriod: Period, views?: string) {
     isFetching = true
     try {
-      const res = await api.getUsageStats(targetPeriod)
+      const res = await api.getUsageStats(targetPeriod, views)
       if (res) {
         statsError = ''
-        stats = res
+        // A totals-only poll carries empty breakdown maps, so only the fields
+        // it actually fills are merged. A plain spread would blank the
+        // breakdown table for four seconds out of every five.
+        stats =
+          views === 'none'
+            ? {
+                ...stats,
+                totalRequests: res.totalRequests,
+                totalPromptTokens: res.totalPromptTokens,
+                totalCompletionTokens: res.totalCompletionTokens,
+                totalCachedTokens: res.totalCachedTokens,
+                totalCost: res.totalCost,
+                byProvider: res.byProvider,
+                activeRequests: res.activeRequests,
+                recentRequests: res.recentRequests,
+                errorProvider: res.errorProvider,
+                pending: res.pending,
+              }
+            : res
         if (Array.isArray(res.activeRequests)) {
           activeRequests = res.activeRequests
         }
@@ -332,12 +362,27 @@
 
     connectStream()
 
-    // Auto-poll stats every 5s so KPI counters smoothly increment in real time
+    // Auto-poll stats every 5s so KPI counters smoothly increment in real time.
+    //
+    // The poll asks for totals only. The four per-model breakdown maps are 98%
+    // of the payload (415 KB at 411 models) and the breakdown table draws one
+    // of them at a time, so rebuilding all four every five seconds was 29 MB a
+    // minute of JSON nobody was looking at. They are refreshed below on a
+    // slower tick, and on a period change (which reads everything).
     const pollTimer = setInterval(() => {
+      if (section === 'overview' && (typeof document === 'undefined' || !document.hidden)) {
+        loadStats(period, 'none')
+      }
+    }, 5000)
+
+    // The breakdown maps change slowly enough that a table four seconds stale
+    // reads the same as a fresh one, and this keeps them current without
+    // paying the per-poll cost.
+    const breakdownTimer = setInterval(() => {
       if (section === 'overview' && (typeof document === 'undefined' || !document.hidden)) {
         loadStats(period)
       }
-    }, 5000)
+    }, 30000)
 
     return () => {
       isCancelled = true
@@ -345,6 +390,7 @@
       if (reconnectTimeout) clearTimeout(reconnectTimeout)
       if (pulseTimer) clearTimeout(pulseTimer)
       clearInterval(pollTimer)
+      clearInterval(breakdownTimer)
     }
   })
   let nodeNameById = $derived.by(() => {

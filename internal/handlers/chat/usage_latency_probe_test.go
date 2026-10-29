@@ -82,6 +82,18 @@ func newProbeHandler(tb testing.TB) *ChatHandler {
 }
 
 func TestUsageWriteLatencyProbe(t *testing.T) {
+	// Under -race every number this probe prints describes the detector, not
+	// the write path: the same daily-blob read-modify-write measured 18.6 ms
+	// per request plain and 152 ms under -race. The probe is a measurement
+	// harness with no pass/fail contract, so there is nothing left to assert
+	// once the measurement is invalid — and at that cost it consumed most of
+	// the Race detector job's 10m budget, timing the whole package out. The
+	// write path's concurrency contract keeps its race coverage in
+	// usage_writer_test.go, which runs under -race.
+	if raceDetectorEnabled {
+		t.Skip("latency probe: wall-clock numbers are meaningless under -race")
+	}
+
 	t.Run("idle_small_detail", func(t *testing.T) {
 		h := newProbeHandler(t)
 		var p latProbe
