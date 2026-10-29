@@ -99,7 +99,14 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		return h.forwardRequest(ctx, w, cfg, apiKey, body, isStream, translateResponse, metrics, httpClient, provider)
 	}
 
+	upstreamStarted := time.Now()
 	resp, err := proxy.ForwardGemini(ctx, httpClient, cfg, apiKey, string(body), isStream, projectID, modelName)
+	// The one number that separates "the model was thinking" from "the
+	// gateway was slow": everything this handler does before dialing is
+	// milliseconds, so a large value here is the upstream's first-token
+	// wait, not the router's.
+	log.Info("gemini", "upstream response headers",
+		"ms", time.Since(upstreamStarted).Milliseconds(), "provider", provider, "model", modelName)
 	if err != nil {
 		if uErr, ok := err.(*proxy.UpstreamError); ok {
 			if uErr.StatusCode == http.StatusConflict || uErr.StatusCode == http.StatusTooManyRequests {
