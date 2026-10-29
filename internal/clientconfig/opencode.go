@@ -1,6 +1,9 @@
 package clientconfig
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // OpenCode: ~/.config/opencode/opencode.json, JSONC.
 // docs/specs/client-schema-matrix.md §3.3.
@@ -68,9 +71,23 @@ func opencodeApplyEdits(opts Options) []Edit {
 	// passes it already (a user copying a model id out of opencode) does not end
 	// up with "9router/9router/…".
 	model := strings.TrimPrefix(opts.Model, opencodePrefix)
+	// The limit is the whole point of writing the model entry: a model unknown
+	// to opencode's models.dev snapshot has no context percentage and cannot
+	// auto-compact at all (their #10759), while an explicit limit.context
+	// gives both. A model id that carries no limits is written bare, exactly
+	// as before.
+	modelEntry := `{"name": ` + jsonString(model)
+	if limits, ok := opts.ModelLimits[opts.Model]; ok && limits.ContextWindow > 0 {
+		modelEntry += `, "limit": {"context": ` + strconv.Itoa(limits.ContextWindow)
+		if limits.MaxOutput > 0 {
+			modelEntry += `, "output": ` + strconv.Itoa(limits.MaxOutput)
+		}
+		modelEntry += `}`
+	}
+	modelEntry += `}`
 	provider := `{"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": ` +
 		jsonString(withV1(opts.BaseURL)) + `, "apiKey": ` + jsonString(opts.APIKey) +
-		`}, "models": {` + jsonString(model) + `: {"name": ` + jsonString(model) + `}}}`
+		`}, "models": {` + jsonString(model) + `: ` + modelEntry + `}}`
 	edits := []Edit{
 		{KeyPath: []string{"provider", opencodeProviderKey}, ValueJSON: provider, CreateIfMissing: true},
 	}

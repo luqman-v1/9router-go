@@ -15,7 +15,19 @@ import (
 // providerTableKey is the providers entry name crush, pi and omp all use.
 const providerTableKey = "9router"
 
+// crushContextWindow is the fallback window when the gateway could not
+// resolve the model's real one. A resolved value wins: 128000 was always a
+// guess, and a wrong guess is exactly how a client misses its compaction
+// boundary.
 const crushContextWindow = 128000
+
+// crushContextWindowFor prefers the resolved window over the default.
+func crushContextWindowFor(opts Options) int {
+	if limits, ok := opts.ModelLimits[opts.Model]; ok && limits.ContextWindow > 0 {
+		return limits.ContextWindow
+	}
+	return crushContextWindow
+}
 
 type crushAdapter struct{ baseAdapter }
 
@@ -29,7 +41,7 @@ func (a crushAdapter) Plan(opts Options) ([]FilePlan, error) {
 		return nil, err
 	}
 	models := `[{"id": ` + jsonString(opts.Model) + `, "name": ` + jsonString(opts.Model) +
-		`, "context_window": ` + strconv.Itoa(crushContextWindow) + `}]`
+		`, "context_window": ` + strconv.Itoa(crushContextWindowFor(opts)) + `}]`
 	obj := `{"type": "openai-compat", "base_url": ` + jsonString(withV1(opts.BaseURL)) +
 		`, "api_key": ` + jsonString(opts.APIKey) + `, "models": ` + models + `}`
 	return []FilePlan{{File: paths.Files[0], Edits: []Edit{{
@@ -64,6 +76,21 @@ const piContextWindow = 128000
 
 const piMaxTokens = 16384
 
+// piLimitsFor prefers the resolved capacity over the defaults, field by
+// field: a model may publish a window without an output cap.
+func piLimitsFor(opts Options) (contextWindow, maxTokens int) {
+	contextWindow, maxTokens = piContextWindow, piMaxTokens
+	if limits, ok := opts.ModelLimits[opts.Model]; ok {
+		if limits.ContextWindow > 0 {
+			contextWindow = limits.ContextWindow
+		}
+		if limits.MaxOutput > 0 {
+			maxTokens = limits.MaxOutput
+		}
+	}
+	return contextWindow, maxTokens
+}
+
 type piAdapter struct{ baseAdapter }
 
 func newPiAdapter() Adapter {
@@ -76,8 +103,9 @@ func (a piAdapter) Plan(opts Options) ([]FilePlan, error) {
 		return nil, err
 	}
 	base := []string{"providers", providerTableKey}
+	window, maxTokens := piLimitsFor(opts)
 	models := `[{"id": ` + jsonString(opts.Model) + `, "name": ` + jsonString(opts.Model) +
-		`, "contextWindow": ` + strconv.Itoa(piContextWindow) + `, "maxTokens": ` + strconv.Itoa(piMaxTokens) + `}]`
+		`, "contextWindow": ` + strconv.Itoa(window) + `, "maxTokens": ` + strconv.Itoa(maxTokens) + `}]`
 	return []FilePlan{{File: paths.Files[0], Edits: []Edit{
 		{KeyPath: append(base, "baseUrl"), Value: withV1(opts.BaseURL), CreateIfMissing: true},
 		{KeyPath: append(base, "apiKey"), Value: opts.APIKey, CreateIfMissing: true},
@@ -122,7 +150,24 @@ func (a ompAdapter) Plan(opts Options) ([]FilePlan, error) {
 	obj := `{baseUrl: ` + yamlFlowScalar(withV1(opts.BaseURL)) +
 		`, apiKey: ` + yamlFlowScalar(opts.APIKey) +
 		`, api: openai-completions, authHeader: true, disableStrictTools: true, ` +
-		`discovery: {type: proxy}}`
+		`discovery: {type: proxy}`
+	// oh-my-pi reads per-model capacity from the provider's models list, the
+	// same schema pi uses; a discovered model carries no window, and without
+	// one its context percentage is empty and auto-compact never fires. The
+	// entry is written only when the gateway resolved something, so an
+	// unknown model leaves the config exactly as before.
+	if limits, ok := opts.ModelLimits[opts.Model]; ok && (limits.ContextWindow > 0 || limits.MaxOutput > 0) {
+		entry := `{id: ` + yamlFlowScalar(opts.Model) + `, name: ` + yamlFlowScalar(opts.Model)
+		if limits.ContextWindow > 0 {
+			entry += `, contextWindow: ` + strconv.Itoa(limits.ContextWindow)
+		}
+		if limits.MaxOutput > 0 {
+			entry += `, maxTokens: ` + strconv.Itoa(limits.MaxOutput)
+		}
+		entry += `}`
+		obj += `, models: [` + entry + `]`
+	}
+	obj += `}`
 	return []FilePlan{{File: paths.Files[0], Edits: []Edit{{
 		KeyPath: []string{"providers", providerTableKey}, ValueJSON: obj, CreateIfMissing: true,
 	}}}}, nil

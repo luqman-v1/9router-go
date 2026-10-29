@@ -698,7 +698,7 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 		// Upstream gives every client its own Next route; here one handler
 		// resolves the id out of the path, so the adapter table stays the only
 		// place a client is described.
-		cliH := media.NewCLIToolHandler()
+		cliH := media.NewCLIToolHandler(engineChatH)
 		for _, id := range clientconfig.IDs() {
 			// pi has its own handler above (it merges over a previously saved
 			// block); skip it so the two cannot disagree about the same file.

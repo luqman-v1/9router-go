@@ -15,7 +15,7 @@ import (
 // call. The handler resolves the client out of the path, which means the
 // adapter table stays the single description of a client.
 func TestCLIToolGetResolvesEveryAdapter(t *testing.T) {
-	h := NewCLIToolHandler()
+	h := NewCLIToolHandler(nil)
 	for _, id := range []string{"claude", "codex", "opencode", "droid", "crush", "kilo", "cline", "omp"} {
 		t.Run(id, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/cli-tools/"+id+"-settings", nil)
@@ -42,7 +42,7 @@ func TestCLIToolGetResolvesEveryAdapter(t *testing.T) {
 
 // An alias the adapters accept must work here too: users type both spellings.
 func TestCLIToolGetAcceptsAliases(t *testing.T) {
-	h := NewCLIToolHandler()
+	h := NewCLIToolHandler(nil)
 	for alias, want := range map[string]string{
 		"claude-code": "claude",
 		"kilocode":    "kilo",
@@ -66,7 +66,7 @@ func TestCLIToolGetAcceptsAliases(t *testing.T) {
 // A typo must answer 404 with the accepted names, not silently configure
 // nothing and report success.
 func TestCLIToolGetRefusesUnknownTool(t *testing.T) {
-	h := NewCLIToolHandler()
+	h := NewCLIToolHandler(nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/cli-tools/not-a-client-settings", nil)
 	req.URL.Path = "/api/cli-tools/not-a-client-settings"
 	rec := httptest.NewRecorder()
@@ -83,7 +83,7 @@ func TestCLIToolGetRefusesUnknownTool(t *testing.T) {
 // home so no developer config is touched (schema matrix §9).
 func TestCLIToolPostWritesTheClientFile(t *testing.T) {
 	home := t.TempDir()
-	h := NewCLIToolHandler()
+	h := NewCLIToolHandler(nil)
 
 	body := `{"baseUrl":"http://localhost:20128","apiKey":"sk-test","model":"cc/claude-sonnet-5"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/cli-tools/claude-settings", strings.NewReader(body))
@@ -116,7 +116,7 @@ func TestCLIToolPostWritesTheClientFile(t *testing.T) {
 
 // A POST without a base URL is refused before anything reaches the disk.
 func TestCLIToolPostRequiresBaseURL(t *testing.T) {
-	h := NewCLIToolHandler()
+	h := NewCLIToolHandler(nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/cli-tools/codex-settings", strings.NewReader(`{"apiKey":"x"}`))
 	req.URL.Path = "/api/cli-tools/codex-settings"
 	rec := httptest.NewRecorder()
@@ -129,7 +129,7 @@ func TestCLIToolPostRequiresBaseURL(t *testing.T) {
 // The GET response must not carry the credential: it is served to a reader that
 // only asked what would be written.
 func TestCLIToolGetDoesNotLeakTheAPIKey(t *testing.T) {
-	h := NewCLIToolHandler()
+	h := NewCLIToolHandler(nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/cli-tools/claude-settings?apiKey=sk-secret-value", nil)
 	req.URL.Path = "/api/cli-tools/claude-settings"
 	req.URL.RawQuery = "apiKey=sk-secret-value"
@@ -153,7 +153,7 @@ func TestCLIToolGetAnswersNotInstalledForAMissingConfigDir(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 
-	h := NewCLIToolHandler()
+	h := NewCLIToolHandler(nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/cli-tools/droid-settings", nil)
 	req.URL.Path = "/api/cli-tools/droid-settings"
 	rec := httptest.NewRecorder()
@@ -192,7 +192,7 @@ func TestCLIToolGetInstalledFollowsTheConfigFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := NewCLIToolHandler()
+	h := NewCLIToolHandler(nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/cli-tools/droid-settings", nil)
 	req.URL.Path = "/api/cli-tools/droid-settings"
 	rec := httptest.NewRecorder()
