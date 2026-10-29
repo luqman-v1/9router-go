@@ -8,7 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
@@ -104,6 +107,12 @@ func TestForwardOpenAI_StreamRequestWithNonStreamBody(t *testing.T) {
 // A whole-body buffer would hang here until the release.
 func TestForwardOpenAI_MislabelledSSEStreamsLive(t *testing.T) {
 	release := make(chan struct{})
+	// Released on every path, including a failed assertion. The gate is
+	// registered after upstream.Close so it runs first: an early return that
+	// left the handler blocked on <-release would hang upstream.Close, and a
+	// hang reports the package timeout instead of the assertion that failed.
+	var releaseOnce sync.Once
+	releaseUpstream := func() { releaseOnce.Do(func() { close(release) }) }
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The mislabel: an SSE body under application/json.
 		w.Header().Set("Content-Type", "application/json")
@@ -116,6 +125,7 @@ func TestForwardOpenAI_MislabelledSSEStreamsLive(t *testing.T) {
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\" there\"}}]}\n\ndata: [DONE]\n\n"))
 	}))
 	defer upstream.Close()
+	defer releaseUpstream()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = ForwardOpenAI(w, &Request{
@@ -144,9 +154,134 @@ func TestForwardOpenAI_MislabelledSSEStreamsLive(t *testing.T) {
 		t.Fatalf("first line = %q, want the first mislabelled frame", first)
 	}
 
-	close(release)
+	releaseUpstream()
 	rest, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(rest), "[DONE]") {
 		t.Fatalf("stream after release lost [DONE]: %q", rest)
+	}
+}
+
+// TestForwardOpenAI_MislabelledSSEPreambleStreamsLive pins that a stream whose
+// first flushed line is blank is still a stream. The sniff takes its verdict
+// on the first line that carries something, so a keepalive blank line before
+// the first field cannot fold the turn into a single document.
+func TestForwardOpenAI_MislabelledSSEPreambleStreamsLive(t *testing.T) {
+	for name, preamble := range map[string]string{
+		"blank line": "\n",
+		"crlf":       "\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(preamble))
+				w.(http.Flusher).Flush()
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"))
+			}))
+			defer upstream.Close()
+
+			rec := httptest.NewRecorder()
+			err := ForwardOpenAI(rec, &Request{
+				Ctx:      t.Context(),
+				Client:   upstream.Client(),
+				Config:   &providers.ProviderConfig{BaseURL: upstream.URL + "/chat/completions"},
+				APIKey:   "k",
+				Body:     []byte(`{"model":"m","stream":true}`),
+				IsStream: true,
+			})
+			if err != nil {
+				t.Fatalf("ForwardOpenAI: %v", err)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+				t.Fatalf("Content-Type = %q, want text/event-stream: a blank preamble folded the stream into a document", got)
+			}
+			if !strings.Contains(rec.Body.String(), `"content":"hi"`) {
+				t.Fatalf("stream lost its frame: %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestForwardOpenAI_MislabelledSSEClosesUpstreamBody pins that the wrapper
+// replaying the sniffed head keeps the upstream body's Close. The stall
+// watchdog ends a stuck stream by closing the reader, so a wrapper that
+// swallows Close leaves both the watchdog and the deferred release unable to
+// reach the socket.
+func TestForwardOpenAI_MislabelledSSEClosesUpstreamBody(t *testing.T) {
+	var closed atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"))
+		w.(http.Flusher).Flush()
+		// Hold the turn open for a bounded moment: only a Close ends it
+		// earlier, which is what the deferred release relies on. The bound
+		// matters — an unbounded wait turns a failed assertion into a hung
+		// package instead of one reported line.
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	defer upstream.Close()
+
+	client := &http.Client{Transport: recordingTransport{base: upstream.Client().Transport, closed: &closed}}
+	rec := httptest.NewRecorder()
+	if err := ForwardOpenAI(rec, &Request{
+		Ctx:      t.Context(),
+		Client:   client,
+		Config:   &providers.ProviderConfig{BaseURL: upstream.URL + "/chat/completions"},
+		APIKey:   "k",
+		Body:     []byte(`{"model":"m","stream":true}`),
+		IsStream: true,
+	}); err != nil {
+		t.Fatalf("ForwardOpenAI: %v", err)
+	}
+	if !closed.Load() {
+		t.Fatal("upstream body was never closed: the replay wrapper dropped its Close")
+	}
+}
+
+// recordingTransport marks the response body when it is closed.
+type recordingTransport struct {
+	base   http.RoundTripper
+	closed *atomic.Bool
+}
+
+func (t recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = &recordingBody{ReadCloser: resp.Body, closed: t.closed}
+	return resp, nil
+}
+
+type recordingBody struct {
+	io.ReadCloser
+	closed *atomic.Bool
+}
+
+func (b *recordingBody) Close() error {
+	b.closed.Store(true)
+	return b.ReadCloser.Close()
+}
+
+// TestReplayBodyCloseReachesUpstream pins the property the wrapper exists for:
+// closing the replay body closes the upstream body underneath it, which is how
+// the stall watchdog interrupts a read that is already blocked.
+func TestReplayBodyCloseReachesUpstream(t *testing.T) {
+	var closed atomic.Bool
+	underlying := &recordingBody{ReadCloser: io.NopCloser(strings.NewReader("data: {}\n\n")), closed: &closed}
+	body := replayBody{Reader: io.MultiReader(strings.NewReader(""), underlying), Closer: underlying}
+
+	if _, err := io.ReadAll(body); err != nil {
+		t.Fatalf("read replay body: %v", err)
+	}
+	if err := body.Close(); err != nil {
+		t.Fatalf("close replay body: %v", err)
+	}
+	if !closed.Load() {
+		t.Fatal("closing the replay body did not close the upstream body")
 	}
 }

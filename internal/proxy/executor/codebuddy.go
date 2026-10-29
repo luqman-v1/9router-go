@@ -87,7 +87,10 @@ func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 			// frame, and only a genuine document is read whole.
 			head := sniffStreamHead(resp.Body)
 			if proxy.LooksLikeSSE(head) {
-				resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(head), resp.Body))
+				// The upstream body stays the Closer: the stall watchdog ends
+				// a stuck stream by closing the reader, so a NopCloser here
+				// would leave it unable to.
+				resp.Body = replayBody{Reader: io.MultiReader(bytes.NewReader(head), resp.Body), Closer: resp.Body}
 			} else {
 				rest, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes-int64(len(head))))
 				if rerr != nil {

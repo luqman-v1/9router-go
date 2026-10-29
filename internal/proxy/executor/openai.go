@@ -24,11 +24,17 @@ import (
 // verdict enough and the rest of the stream stays live.
 const sseSniffBytes = 1024
 
-// sniffStreamHead reads the head of a live body: it stops as soon as one line
-// has arrived (an SSE body announces itself in its first field line) or the
-// cap is reached, without waiting for more bytes than the peer has sent. A
-// plain io.ReadAll(LimitReader(...)) would block here until the cap fills or
-// the stream ends — exactly the buffering this sniff exists to avoid.
+// sniffStreamHead reads the head of a live body: it stops as soon as one
+// field line has arrived (an SSE body announces itself in its first field
+// line) or the cap is reached, without waiting for more bytes than the peer
+// has sent. A plain io.ReadAll(LimitReader(...)) would block here until the
+// cap fills or the stream ends — exactly the buffering this sniff exists to
+// avoid.
+//
+// Leading blank lines are skipped rather than ending the sniff. A provider
+// that flushes an empty keepalive line before its first frame is still a
+// stream, and a verdict taken on that blank line folds the whole turn into a
+// single document — a client that asked for a stream then reads one.
 func sniffStreamHead(r io.Reader) []byte {
 	buf := make([]byte, sseSniffBytes)
 	head := make([]byte, 0, sseSniffBytes)
@@ -38,11 +44,44 @@ func sniffStreamHead(r io.Reader) []byte {
 		if rerr != nil || n == 0 {
 			break
 		}
-		if bytes.IndexByte(head, '\n') >= 0 {
+		if bytes.IndexByte(head[firstLineStart(head):], '\n') >= 0 {
 			break
 		}
 	}
 	return head
+}
+
+// firstLineStart returns the offset of the first line in head that carries
+// something, so the sniff reads past leading blank lines instead of deciding
+// on one. SSE frame separators are blank lines, and a chunked provider may
+// flush one before its first field.
+func firstLineStart(head []byte) int {
+	for i := range head {
+		switch head[i] {
+		case '\n':
+			continue
+		case '\r':
+			// A trailing CR is undecided until the next byte arrives: the
+			// sniff reads on rather than judging the line.
+			if i+1 == len(head) || head[i+1] == '\n' {
+				continue
+			}
+			return i
+		default:
+			return i
+		}
+	}
+	return len(head)
+}
+
+// replayBody replays an already-read head ahead of a live upstream body while
+// keeping that body's Close. A NopCloser here would leave the socket
+// unclosable: the stall watchdog ends a stuck stream by closing the reader,
+// and the deferred close releases the connection, so both have to reach the
+// upstream body rather than a wrapper that swallows the close.
+type replayBody struct {
+	io.Reader
+	io.Closer
 }
 
 // renameMaxTokensBody moves max_tokens onto max_completion_tokens and drops
@@ -111,8 +150,10 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 			head := sniffStreamHead(resp.Body)
 			if proxy.LooksLikeSSE(head) {
 				// An event stream the provider mislabelled: hand the sniffed
-				// head back and let the rest stream live.
-				streamBody = io.NopCloser(io.MultiReader(bytes.NewReader(head), resp.Body))
+				// head back and let the rest stream live. The upstream body
+				// stays the Closer so the stall watchdog and the deferred
+				// close can still reach the socket.
+				streamBody = replayBody{Reader: io.MultiReader(bytes.NewReader(head), resp.Body), Closer: resp.Body}
 			} else {
 				rest, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes-int64(len(head))))
 				if rerr != nil {
