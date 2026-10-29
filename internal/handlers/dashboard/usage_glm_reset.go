@@ -18,7 +18,7 @@ var (
 	glmResetInFlight = make(map[string]bool)
 )
 
-// HandleGetGLMResetCards handles GET /api/usage/{connectionId}/reset-cards.
+// HandleGetGLMResetCards handles GET /api/usage/{connectionId}/glm-reset-cards.
 // Resolves the connection, verifies the provider is glm (international),
 // fetches reset cards, and returns them as JSON.
 func (h *DashboardHandler) HandleGetGLMResetCards(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +69,7 @@ func (h *DashboardHandler) HandleGetGLMResetCards(w http.ResponseWriter, r *http
 	handlerutil.WriteJSON(w, http.StatusOK, cards)
 }
 
-// HandleRedeemGLMResetCard handles POST /api/usage/{connectionId}/reset-cards/redeem.
+// HandleRedeemGLMResetCard handles POST /api/usage/{connectionId}/glm-reset-cards/redeem.
 // Takes { recordId, type } and calls the GLM reset-card use endpoint.
 func (h *DashboardHandler) HandleRedeemGLMResetCard(w http.ResponseWriter, r *http.Request) {
 	connID := getURLParam(r, "connectionId")
@@ -195,7 +195,7 @@ func (h *DashboardHandler) HandleRedeemGLMResetCard(w http.ResponseWriter, r *ht
 	}
 
 	reqID := uuid.New().String()
-	url := "https://api.z.ai/api/biz/customer-package-reset/use"
+	url := glmResetUseURL
 	payload := map[string]any{
 		"targetType": "PERSONAL",
 		"resetType":  body.Type,
@@ -223,7 +223,7 @@ func (h *DashboardHandler) HandleRedeemGLMResetCard(w http.ResponseWriter, r *ht
 	}
 	_ = json.Unmarshal(out, &respData)
 
-	// Determine success: HTTP 200 && (success == true || code == 0 || code == 200 || code == "SUCCESS")
+	// Determine success: HTTP 200 AND success == true AND (code == 0 || code == 200)
 	success := false
 	code := "ERROR"
 	message := "GLM reset card redeem failed."
@@ -231,29 +231,20 @@ func (h *DashboardHandler) HandleRedeemGLMResetCard(w http.ResponseWriter, r *ht
 		message = respData.Message
 	}
 
-	if status == http.StatusOK {
-		codeVal := respData.Code
-		switch v := codeVal.(type) {
-		case float64:
-			if v == 0 || v == 200 {
-				success = true
-				code = "SUCCESS"
-			}
-		case int:
-			if v == 0 || v == 200 {
-				success = true
-				code = "SUCCESS"
-			}
-		case string:
-			if v == "SUCCESS" || v == "0" || v == "200" {
-				success = true
-				code = "SUCCESS"
-			}
-		}
-		if respData.Success {
-			success = true
-			code = "SUCCESS"
-		}
+	// Check code is 0 or 200 (numeric or string)
+	codeOk := false
+	switch v := respData.Code.(type) {
+	case float64:
+		codeOk = (v == 0 || v == 200)
+	case int:
+		codeOk = (v == 0 || v == 200)
+	case string:
+		codeOk = (v == "0" || v == "200")
+	}
+
+	if status == http.StatusOK && respData.Success && codeOk {
+		success = true
+		code = "SUCCESS"
 	}
 
 	if !success {

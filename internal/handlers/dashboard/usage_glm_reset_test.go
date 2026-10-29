@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -509,5 +511,248 @@ func TestHandlerUtilWriteJSON(t *testing.T) {
 	}
 	if resp["status"] != "ok" || resp["count"] != float64(42) {
 		t.Errorf("unexpected response: %v", resp)
+	}
+}
+
+// TestParseGLMResetCardsResponse_MissingRecordID tests that missing or null recordId is filtered out.
+func TestParseGLMResetCardsResponse_MissingRecordID(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    map[string]any
+		wantZero bool
+	}{
+		{
+			name: "missing recordId key",
+			input: wrapZaiResponse(map[string]any{
+				"fiveHourResets": []any{
+					map[string]any{"available": true, "expireTime": "2026-12-31 23:59:59"},
+				},
+			}),
+			wantZero: true,
+		},
+		{
+			name: "recordId is null",
+			input: wrapZaiResponse(map[string]any{
+				"fiveHourResets": []any{
+					map[string]any{"recordId": nil, "available": true, "expireTime": "2026-12-31 23:59:59"},
+				},
+			}),
+			wantZero: true,
+		},
+		{
+			name: "recordId is empty string",
+			input: wrapZaiResponse(map[string]any{
+				"fiveHourResets": []any{
+					map[string]any{"recordId": "", "available": true, "expireTime": "2026-12-31 23:59:59"},
+				},
+			}),
+			wantZero: true,
+		},
+		{
+			name: "valid recordId passes through",
+			input: wrapZaiResponse(map[string]any{
+				"fiveHourResets": []any{
+					map[string]any{"recordId": "valid-card", "available": true, "expireTime": "2026-12-31 23:59:59"},
+				},
+			}),
+			wantZero: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := parseGLMResetCardsResponse(tc.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			availableCount, ok := result["availableCount"].(float64)
+			if !ok {
+				t.Fatal("availableCount missing")
+			}
+
+			if tc.wantZero {
+				if int(availableCount) != 0 {
+					t.Errorf("expected 0 cards, got %v", availableCount)
+				}
+			} else {
+				if int(availableCount) != 1 {
+					t.Errorf("expected 1 card, got %v", availableCount)
+				}
+			}
+		})
+	}
+}
+
+// TestParseGLMResetCardsResponse_LargeNumericRecordID tests large numeric recordId formats without scientific notation.
+func TestParseGLMResetCardsResponse_LargeNumericRecordID(t *testing.T) {
+	// 1735689600000 is a timestamp in milliseconds (Jan 2025)
+	largeID := 1735689600000
+
+	input := wrapZaiResponse(map[string]any{
+		"fiveHourResets": []any{
+			map[string]any{"recordId": largeID, "available": true, "expireTime": "2026-12-31 23:59:59"},
+		},
+	})
+
+	result, err := parseGLMResetCardsResponse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	availableCount, ok := result["availableCount"].(float64)
+	if !ok || int(availableCount) != 1 {
+		t.Fatalf("expected 1 card, got %v", availableCount)
+	}
+
+	cards, ok := result["cards"].([]any)
+	if !ok || len(cards) != 1 {
+		t.Fatal("cards missing")
+	}
+
+	firstCard := cards[0].(map[string]any)
+	recordID := firstCard["recordId"]
+	if recordID != "1735689600000" {
+		t.Errorf("expected recordId '1735689600000' without scientific notation, got %q", recordID)
+	}
+}
+
+// TestHandleRedeemGLMResetCard_InFlightLock tests that concurrent redemptions return 409.
+func TestHandleRedeemGLMResetCard_InFlightLock(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router := setupTestRouterForGLM(repo)
+	connID := "test-glm-conn-inflight"
+	if err := repo.CreateProviderConnectionFull(connID, "glm", "api_key", "Test GLM", nil, `{"apiKey":"test-glm-key"}`); err != nil {
+		t.Fatalf("failed to create connection: %v", err)
+	}
+
+	// Mock server for the list endpoint (returns a valid card)
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/biz/customer-package-reset/list" && r.URL.Query().Get("targetType") == "PERSONAL" {
+			w.Header().Set("Content-Type", "application/json")
+			response := wrapZaiResponse(map[string]any{
+				"fiveHourResets": []any{
+					map[string]any{"recordId": "card-1", "available": true, "expireTime": "2027-12-31 23:59:59"},
+				},
+			})
+			json.NewEncoder(w).Encode(response)
+		} else if r.URL.Path == "/api/biz/customer-package-reset/use" {
+			// Simulate slow response to allow concurrent request to hit
+			time.Sleep(200 * time.Millisecond)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(wrapZaiResponse(map[string]any{}))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer mockServer.Close()
+
+	originalListURL := glmResetListURL
+	originalUseURL := glmResetUseURL
+	glmResetListURL = mockServer.URL + "/api/biz/customer-package-reset/list"
+	glmResetUseURL = mockServer.URL + "/api/biz/customer-package-reset/use"
+	defer func() {
+		glmResetListURL = originalListURL
+		glmResetUseURL = originalUseURL
+	}()
+
+	// First request - should succeed (get the lock)
+	body := `{"recordId":"card-1","type":"FIVE_HOUR"}`
+	req1 := httptest.NewRequest(http.MethodPost, "/api/usage/"+connID+"/glm-reset-cards", strings.NewReader(body))
+	req1.Header.Set("Content-Type", "application/json")
+	w1 := httptest.NewRecorder()
+
+	// Second request - should get 409 conflict
+	req2 := httptest.NewRequest(http.MethodPost, "/api/usage/"+connID+"/glm-reset-cards", strings.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		router.ServeHTTP(w1, req1)
+	}()
+
+	// Small delay to let first request acquire the in-flight lock
+	time.Sleep(10 * time.Millisecond)
+
+	go func() {
+		defer wg.Done()
+		router.ServeHTTP(w2, req2)
+	}()
+
+	wg.Wait()
+
+	// One should succeed (200), one should get 409 conflict
+	successCount := 0
+	conflictCount := 0
+	if w1.Code == http.StatusOK {
+		successCount++
+	} else if w1.Code == http.StatusConflict {
+		conflictCount++
+	}
+	if w2.Code == http.StatusOK {
+		successCount++
+	} else if w2.Code == http.StatusConflict {
+		conflictCount++
+	}
+
+	if successCount != 1 {
+		t.Errorf("expected exactly 1 success, got %d (w1=%d, w2=%d)", successCount, w1.Code, w2.Code)
+	}
+	if conflictCount != 1 {
+		t.Errorf("expected exactly 1 conflict (409), got %d (w1=%d, w2=%d)", conflictCount, w1.Code, w2.Code)
+	}
+}
+
+// TestHandleRedeemGLMResetCard_ExpiredCard tests that expired card returns 409.
+func TestHandleRedeemGLMResetCard_ExpiredCard(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router := setupTestRouterForGLM(repo)
+	connID := "test-glm-conn-expired"
+	if err := repo.CreateProviderConnectionFull(connID, "glm", "api_key", "Test GLM", nil, `{"apiKey":"test-glm-key"}`); err != nil {
+		t.Fatalf("failed to create connection: %v", err)
+	}
+
+	// Mock server for the list endpoint (returns an expired card)
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/biz/customer-package-reset/list" && r.URL.Query().Get("targetType") == "PERSONAL" {
+			w.Header().Set("Content-Type", "application/json")
+			// Card expired yesterday
+			yesterday := time.Now().Add(-24 * time.Hour).Format(time.RFC3339)
+			response := wrapZaiResponse(map[string]any{
+				"fiveHourResets": []any{
+					map[string]any{"recordId": "card-expired", "available": true, "expireTime": yesterday},
+				},
+			})
+			json.NewEncoder(w).Encode(response)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer mockServer.Close()
+
+	originalURL := glmResetListURL
+	glmResetListURL = mockServer.URL + "/api/biz/customer-package-reset/list"
+	defer func() { glmResetListURL = originalURL }()
+
+	body := `{"recordId":"card-expired","type":"FIVE_HOUR"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/usage/"+connID+"/glm-reset-cards", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected status 409 (conflict) for expired card, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "expired") {
+		t.Errorf("expected error about expired card, got: %s", w.Body.String())
 	}
 }

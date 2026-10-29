@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,6 +22,8 @@ var (
 	// glmResetListURL is the international customer-package-reset/list endpoint.
 	// China (glm-cn) has no reset-card path — only international tokens hit it.
 	glmResetListURL = "https://api.z.ai/api/biz/customer-package-reset/list"
+	// glmResetUseURL is the international customer-package-reset/use endpoint.
+	glmResetUseURL = "https://api.z.ai/api/biz/customer-package-reset/use"
 )
 
 func glmQuotaURL(provider string) string {
@@ -139,9 +142,19 @@ func parseGLMResetCardsResponse(payload map[string]any) (map[string]any, error) 
 			if !available {
 				continue
 			}
-			// Accept both string and numeric recordId.
-			recordID := strings.TrimSpace(fmt.Sprint(item["recordId"]))
-			if recordID == "" {
+			// Accept both string and numeric recordId. Filter out missing or null.
+			var recordID string
+			if rawID, ok := item["recordId"]; ok && rawID != nil {
+				switch v := rawID.(type) {
+				case string:
+					recordID = strings.TrimSpace(v)
+				case float64:
+					recordID = strconv.FormatFloat(v, 'f', -1, 64)
+				case int, int64:
+					recordID = fmt.Sprintf("%d", v)
+				}
+			}
+			if recordID == "" || recordID == "<nil>" {
 				continue
 			}
 			expiresAt := parseGLMResetExpireTime(item["expireTime"])
