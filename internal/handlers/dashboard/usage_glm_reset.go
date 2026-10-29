@@ -69,7 +69,7 @@ func (h *DashboardHandler) HandleGetGLMResetCards(w http.ResponseWriter, r *http
 	handlerutil.WriteJSON(w, http.StatusOK, cards)
 }
 
-// HandleRedeemGLMResetCard handles POST /api/usage/{connectionId}/glm-reset-cards/redeem.
+// HandleRedeemGLMResetCard handles POST /api/usage/{connectionId}/glm-reset-cards.
 // Takes { recordId, type } and calls the GLM reset-card use endpoint.
 func (h *DashboardHandler) HandleRedeemGLMResetCard(w http.ResponseWriter, r *http.Request) {
 	connID := getURLParam(r, "connectionId")
@@ -248,21 +248,35 @@ func (h *DashboardHandler) HandleRedeemGLMResetCard(w http.ResponseWriter, r *ht
 	}
 
 	if !success {
-		// Return error response with appropriate status
-		if status == http.StatusUnauthorized {
-			handlerutil.WriteJSONError(w, http.StatusUnauthorized, message)
+		// Distinguish between local upstream 4xx rejection vs uncertain network/server outcome
+		if status >= 400 && status < 500 {
+			handlerutil.WriteJSON(w, status, map[string]any{
+				"reset":       false,
+				"alreadyUsed": false,
+				"uncertain":   false,
+				"code":        "rejected",
+				"message":     message,
+			})
 			return
 		}
-		handlerutil.WriteJSONError(w, http.StatusBadGateway, message)
+		handlerutil.WriteJSON(w, http.StatusBadGateway, map[string]any{
+			"reset":       false,
+			"alreadyUsed": false,
+			"uncertain":   true,
+			"code":        "uncertain",
+			"message":     "Reset outcome is unknown. Check the Z.ai dashboard before trying again.",
+		})
 		return
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"reset":     true,
-		"code":      code,
-		"message":   "GLM usage reset successfully.",
-		"recordId":  body.RecordID,
-		"type":      body.Type,
-		"requestId": reqID,
+		"reset":       true,
+		"alreadyUsed": false,
+		"uncertain":   false,
+		"code":        code,
+		"message":     "GLM usage reset successfully.",
+		"recordId":    body.RecordID,
+		"type":        body.Type,
+		"requestId":   reqID,
 	})
 }

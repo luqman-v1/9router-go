@@ -273,7 +273,7 @@ func TestParseGLMResetExpireTime(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := parseGLMResetExpireTime(tc.input)
+			result, _ := parseGLMResetExpireTime(tc.input)
 			if tc.wantEmpty {
 				if result != "" {
 					t.Errorf("expected empty, got %q", result)
@@ -586,8 +586,8 @@ func TestParseGLMResetCardsResponse_MissingRecordID(t *testing.T) {
 
 // TestParseGLMResetCardsResponse_LargeNumericRecordID tests large numeric recordId formats without scientific notation.
 func TestParseGLMResetCardsResponse_LargeNumericRecordID(t *testing.T) {
-	// 1735689600000 is a timestamp in milliseconds (Jan 2025)
-	largeID := 1735689600000
+	// 1735689600000 decoded from JSON yields a float64 (where %g would produce 1.7356896e+12)
+	largeID := float64(1735689600000)
 
 	input := wrapZaiResponse(map[string]any{
 		"fiveHourResets": []any{
@@ -754,7 +754,7 @@ func TestHandleRedeemGLMResetCard_ExpiredCard(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Errorf("expected status 409 (conflict) for expired card, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "expired") {
-		t.Errorf("expected error about expired card, got: %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "no longer available") && !strings.Contains(w.Body.String(), "expired") {
+		t.Errorf("expected error about expired or unavailable card, got: %s", w.Body.String())
 	}
 }

@@ -340,7 +340,6 @@
   let glmResetCardLoading = $state(false)
   let glmResetCardConsuming = $state(false)
   let glmResetCardError = $state('')
-  let glmResetCardIdempotencyKey = $state('')
   let glmResetCardCount = $state(0)
   let glmResetCardConfirming = $state(false)
   let glmResetCardPending = $state<GLMResetCard | null>(null)
@@ -462,7 +461,6 @@
     glmResetCardCount = 0
     glmResetCardConfirming = false
     glmResetCardPending = null
-    glmResetCardIdempotencyKey = ''
   }
 
   async function openGlmResetCards(conn: ProviderConnection) {
@@ -473,7 +471,6 @@
     glmResetCardCount = 0
     glmResetCardConfirming = false
     glmResetCardPending = null
-    glmResetCardIdempotencyKey = newResetCreditIdempotencyKey()
     glmResetCardLoading = true
     try {
       const res = await api.getGlmResetCards(conn.id)
@@ -497,11 +494,7 @@
   async function confirmGlmResetCard() {
     const conn = glmResetCardConn
     const credit = glmResetCardPending
-    // The token is carried from the confirm step, not the radio selection, so
-    // exactly the credit the warning was shown for is the one that gets spent.
-    // An empty key would let the server mint a fresh one per request, which is
-    // the double-spend this guard exists to prevent — refuse rather than send one.
-    if (!conn || !credit || glmResetCardConsuming || !glmResetCardIdempotencyKey) return
+    if (!conn || !credit || glmResetCardConsuming) return
     glmResetCardConsuming = true
     glmResetCardError = ''
     try {

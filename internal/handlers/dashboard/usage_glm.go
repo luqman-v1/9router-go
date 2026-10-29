@@ -157,9 +157,8 @@ func parseGLMResetCardsResponse(payload map[string]any) (map[string]any, error) 
 			if recordID == "" || recordID == "<nil>" {
 				continue
 			}
-			expiresAt := parseGLMResetExpireTime(item["expireTime"])
-			if expiresAt == "" {
-				// Must have a parseable expiry so the front-end can sort.
+			expiresAt, expTime := parseGLMResetExpireTime(item["expireTime"])
+			if expiresAt == "" || !time.Now().Before(expTime) {
 				continue
 			}
 			cards = append(cards, GLMResetCard{
@@ -187,25 +186,26 @@ type bucketPair struct {
 // parseGLMResetExpireTime handles the two formats the GLM list endpoint
 // returns: ISO8601 with explicit timezone and Beijing naive datetimes like
 // "2006-01-02 15:04:05" (stored without zone, meaning UTC+08:00).
-func parseGLMResetExpireTime(v any) string {
+// Returns the formatted UTC RFC3339 string and the parsed time.Time (or zero time.Time if invalid).
+func parseGLMResetExpireTime(v any) (string, time.Time) {
 	s, _ := v.(string)
 	if s == "" {
-		return ""
+		return "", time.Time{}
 	}
 	s = strings.TrimSpace(s)
 	if tm, err := time.Parse(time.RFC3339, s); err == nil {
-		return tm.UTC().Format(time.RFC3339)
+		return tm.UTC().Format(time.RFC3339), tm
 	}
 	if tm, err := time.Parse("2006-01-02T15:04:05Z07:00", s); err == nil {
-		return tm.UTC().Format(time.RFC3339)
+		return tm.UTC().Format(time.RFC3339), tm
 	}
 	// Naive datetime — interpret as Beijing UTC+08:00 per upstream.
 	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02"} {
 		if tm, err := time.ParseInLocation(layout, s, beijingZone); err == nil {
-			return tm.UTC().Format(time.RFC3339)
+			return tm.UTC().Format(time.RFC3339), tm
 		}
 	}
-	return ""
+	return "", time.Time{}
 }
 
 // beijingZone is fixed UTC+08:00. Used for naive GLM expireTime strings.

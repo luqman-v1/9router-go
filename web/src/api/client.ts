@@ -721,6 +721,8 @@ export interface GLMResetCardsResponse {
 
 export interface GLMResetCardRedeemResponse {
   reset: boolean
+  alreadyUsed?: boolean
+  uncertain?: boolean
   code: string
   message: string
   recordId: string
