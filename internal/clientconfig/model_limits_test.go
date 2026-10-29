@@ -152,6 +152,9 @@ func TestClaudeWithoutLimitsWritesNoAutoCompactWindow(t *testing.T) {
 func TestOpenCodeWritesModelLimit(t *testing.T) {
 	home := t.TempDir()
 	path := opencodePaths(home).Files[0].Path
+	// The JSONC patcher splices into an existing document, so the file starts
+	// from the config the client itself leaves behind.
+	writeFixture(t, path, "{\n  \"$schema\": \"https://opencode.ai/config.json\"\n}\n")
 	opts := Options{
 		Home: home, BaseURL: "http://h:1", APIKey: "k", Model: "glm/glm-5.3",
 		ModelLimits: map[string]ModelLimits{"glm/glm-5.3": {ContextWindow: 200000, MaxOutput: 32000}},
@@ -168,6 +171,7 @@ func TestOpenCodeWritesModelLimit(t *testing.T) {
 func TestOpenCodeWithoutLimitsKeepsBareModelEntry(t *testing.T) {
 	home := t.TempDir()
 	path := opencodePaths(home).Files[0].Path
+	writeFixture(t, path, "{\n  \"$schema\": \"https://opencode.ai/config.json\"\n}\n")
 	if _, err := newOpenCodeAdapter().Apply(Options{Home: home, BaseURL: "http://h:1", APIKey: "k", Model: "m"}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
