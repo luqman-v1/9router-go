@@ -221,9 +221,30 @@
     }
     window.addEventListener('popstate', handlePopState)
 
+    // Tabs whose own content is drawn from `connections` / `providerNodes`.
+    // Every other tab (Usage, Quota, Token Saver, Settings, …) renders
+    // nothing from these lists, so the poll below would be re-fetching 28 KB
+    // every ten seconds for a page that cannot change.
+    const READS_CONNECTIONS: ActiveTab[] = [
+      'endpoint',
+      'connections',
+      'combos',
+      'proxy-pools',
+      'media-embedding',
+      'media-image',
+      'media-tts',
+      'media-stt',
+      'media-video',
+      'media-systemone',
+      'media-web',
+    ]
     const interval = setInterval(async () => {
       if (typeof document !== 'undefined' && document.hidden) return
       if (requireLogin && !isAuthenticatedState) return
+      // A tab that does not draw these lists gets them from the navigation
+      // that leaves it: `loadData()` runs on the way in, so the poll only has
+      // to keep an already-visible list fresh.
+      if (!READS_CONNECTIONS.includes(activeTab)) return
       try {
         const [connsRes, nodesRes] = await Promise.all([
           api.getConnections().catch(() => null),
