@@ -227,6 +227,7 @@ func seedUsageHistory(repo *db.Repo, n int) error {
 		_ = tx.Rollback()
 		return err
 	}
+	defer func() { _ = stmt.Close() }()
 	ts := time.Now().UTC().Format(time.RFC3339)
 	for i := 0; i < n; i++ {
 		if _, err := stmt.Exec(ts, "prov", fmt.Sprintf("model-%d", i%40), "conn-1", "sk-****abcd", "/v1/chat/completions",
@@ -234,9 +235,6 @@ func seedUsageHistory(repo *db.Repo, n int) error {
 			_ = tx.Rollback()
 			return err
 		}
-	}
-	if err := stmt.Close(); err != nil {
-		return err
 	}
 	return tx.Commit()
 }
