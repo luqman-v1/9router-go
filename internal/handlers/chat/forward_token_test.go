@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	json "encoding/json/v2"
 	"io"
@@ -29,6 +30,7 @@ func TestForwardRequest_SingleTokenFieldOnWire(t *testing.T) {
 	tests := []struct {
 		name       string
 		body       string
+		endpoint   string
 		wantHas    string
 		wantValue  float64
 		wantAbsent []string
@@ -58,6 +60,18 @@ func TestForwardRequest_SingleTokenFieldOnWire(t *testing.T) {
 			name:       "client sent neither",
 			body:       `{"model":"gpt-6-luna","messages":[{"role":"user","content":"hi"}],"stream":true}`,
 			wantAbsent: []string{"max_tokens", "max_completion_tokens"},
+		},
+		{
+			// A /v1/responses client on a Chat-speaking custom node: the body
+			// is converted to Chat Completions before the normalizer runs, and
+			// that conversion keeps both fields as sent. Gating on the endpoint
+			// alone left the pair on the wire for this lane.
+			name:       "responses client on a chat-speaking node, client sent both",
+			body:       `{"model":"gpt-6-luna","messages":[{"role":"user","content":"hi"}],"max_tokens":1024,"max_completion_tokens":2048,"stream":true}`,
+			endpoint:   "/v1/responses",
+			wantHas:    "max_completion_tokens",
+			wantValue:  2048,
+			wantAbsent: []string{"max_tokens"},
 		},
 	}
 
@@ -90,7 +104,7 @@ func TestForwardRequest_SingleTokenFieldOnWire(t *testing.T) {
 				Body:              []byte(tt.body),
 				IsStream:          true,
 				TranslateResponse: false,
-				Endpoint:          "/v1/chat/completions",
+				Endpoint:          cmp.Or(tt.endpoint, "/v1/chat/completions"),
 			}
 			if err := h.tryForwardWithConnection(params); err != nil {
 				t.Fatalf("tryForwardWithConnection: %v", err)

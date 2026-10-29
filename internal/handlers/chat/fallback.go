@@ -789,9 +789,16 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// backend is GitHub models). A client may spell either field; when both
 	// are present the explicit max_completion_tokens value wins and
 	// max_tokens is dropped, and when the client sent neither the upstream's
-	// own default is honoured. Scoped to the Chat Completions wire — Responses
-	// carries max_output_tokens instead.
-	if endpoint == "/v1/chat/completions" {
+	// own default is honoured.
+	//
+	// The condition is the wire the body is in, not the client endpoint that
+	// reached here: a /v1/responses client is converted to Chat Completions
+	// before this point when the target speaks Chat (a custom
+	// openai-compatible node), and that conversion keeps both fields as sent.
+	// Gating on the endpoint alone left the pair on the wire for exactly the
+	// lane this fix came from. A Claude body and a Responses body carry
+	// neither field, so the normalizer is a no-op there.
+	if !claudeNative && !upstreamClaude && !executor.UpstreamSpeaksResponses(provider, wireModel, providerCfg) {
 		pipedBody = normalizeChatTokenFields(pipedBody)
 	}
 
