@@ -720,6 +720,8 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 	var models []string
 	if strategy == "smart" {
 		ctx, models = h.applySmartRouting(ctx, body, comboModels, comboName)
+	} else if strategy == "tokenmaxxing" {
+		models = h.applyTokenmaxxingRouting(ctx, comboModels)
 	} else if h.comboRespectsStoredOrder(comboName) {
 		models = slices.Clone(comboModels)
 	} else {
@@ -1146,6 +1148,8 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 	var models []string
 	if strategy == "smart" {
 		ctx, models = h.applySmartRouting(ctx, bodyJSON, comboModels, comboName)
+	} else if strategy == "tokenmaxxing" {
+		models = h.applyTokenmaxxingRouting(ctx, comboModels)
 	} else if h.comboRespectsStoredOrder(comboName) {
 		models = slices.Clone(comboModels)
 	} else {

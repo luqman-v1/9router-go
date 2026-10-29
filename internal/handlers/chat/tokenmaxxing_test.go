@@ -1,0 +1,126 @@
+package chat
+
+import (
+	"testing"
+	"time"
+)
+
+func TestScoreQuotas_AnchorPicking(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	resetLater := now.Add(10 * 24 * time.Hour)
+	resetMonthly := now.Add(5 * 24 * time.Hour)
+
+	quotas := []QuotaWindow{
+		{
+			Name:                "daily",
+			RemainingPercentage: floatPtr(80),
+			ResetAt:             &resetLater,
+		},
+		{
+			Name:                "monthly quota",
+			RemainingPercentage: floatPtr(50),
+			ResetAt:             &resetMonthly,
+		},
+	}
+
+	score := ScoreQuotas(quotas, now)
+	if score == nil {
+		t.Fatal("expected non-nil score")
+	}
+	expected := 50.0 / 5.0
+	if *score != expected {
+		t.Fatalf("expected score %f, got %f", expected, *score)
+	}
+}
+
+func TestScoreQuotas_FallbackLatestReset(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	resetSoon := now.Add(2 * 24 * time.Hour)
+	resetLate := now.Add(10 * 24 * time.Hour)
+
+	quotas := []QuotaWindow{
+		{
+			Name:                "window1",
+			RemainingPercentage: floatPtr(60),
+			ResetAt:             &resetSoon,
+		},
+		{
+			Name:                "window2",
+			RemainingPercentage: floatPtr(40),
+			ResetAt:             &resetLate,
+		},
+	}
+
+	score := ScoreQuotas(quotas, now)
+	if score == nil {
+		t.Fatal("expected non-nil score")
+	}
+	expected := 40.0 / 10.0
+	if *score != expected {
+		t.Fatalf("expected score %f, got %f", expected, *score)
+	}
+}
+
+func TestScoreQuotas_DerivePercentage(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	resetAt := now.Add(5 * 24 * time.Hour)
+
+	quotas := []QuotaWindow{
+		{
+			Name:    "derived",
+			Used:    floatPtr(25),
+			Total:   floatPtr(100),
+			ResetAt: &resetAt,
+		},
+	}
+
+	score := ScoreQuotas(quotas, now)
+	if score == nil {
+		t.Fatal("expected non-nil score")
+	}
+	expected := 75.0 / 5.0
+	if *score != expected {
+		t.Fatalf("expected score %f, got %f", expected, *score)
+	}
+}
+
+func TestScoreQuotas_ZeroQuota(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	quotas := []QuotaWindow{
+		{
+			Name:                "exhausted",
+			RemainingPercentage: floatPtr(0),
+		},
+	}
+
+	score := ScoreQuotas(quotas, now)
+	if score == nil || *score != 0.0 {
+		t.Fatalf("expected 0.0 score for exhausted quota, got %v", score)
+	}
+}
+
+func TestOrderByTokenmaxxingScores_Ordering(t *testing.T) {
+	models := []string{"modelA", "modelB", "modelC", "modelD"}
+	scores := map[string]*float64{
+		"modelA": floatPtr(2.0),
+		"modelB": nil,
+		"modelC": floatPtr(0.0),
+		"modelD": floatPtr(5.0),
+	}
+
+	ordered := OrderByTokenmaxxingScores(models, scores)
+
+	expected := []string{"modelD", "modelA", "modelB", "modelC"}
+	if len(ordered) != len(expected) {
+		t.Fatalf("expected length %d, got %d", len(expected), len(ordered))
+	}
+	for i, m := range expected {
+		if ordered[i] != m {
+			t.Fatalf("at index %d: expected %s, got %s", i, m, ordered[i])
+		}
+	}
+}
+
+func floatPtr(v float64) *float64 {
+	return &v
+}
