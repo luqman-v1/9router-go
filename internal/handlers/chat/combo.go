@@ -13,8 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
@@ -542,29 +544,118 @@ func upstreamErrorBody(message string) []byte {
 	return body
 }
 
-// lastTriedComboIndex returns the index of the last entry a pass over models
-// will actually send a request for, or -1 when none can be tried. The loop
-// skips entries that do not resolve and providers whose model is locked before
-// any request is made, so len(models)-1 is not the last candidate: keying the
-// per-candidate timeout and the zero-content probe to it cut off the one
-// remaining attempt whenever the stored tail was skipped (#776).
+// comboLastTried tracks the index of the last entry a pass over models can
+// still send a request for. The loop skips entries that do not resolve, a
+// provider whose model is locked, and a provider whose every connection is
+// excluded, cooling down or parked — none of which is knowable from
+// len(models)-1. Keying the per-candidate timeout and the zero-content probe to
+// that index cut off the one remaining attempt whenever the stored tail was
+// skipped (#776).
 //
-// Availability can only shrink during a pass — the pass itself locks
-// connections — so the index computed here is never earlier than the entry
-// that ends up last. Erring late keeps the timeout off a candidate that did
-// run, which is the direction that never fails a combo sooner.
-func (h *ChatHandler) lastTriedComboIndex(models []string) int {
-	for i := len(models) - 1; i >= 0; i-- {
-		modelInfo := h.resolveModelEntry(models[i])
+// The answer also changes while the pass runs: a retryable failure locks a
+// connection and adds it to excludeIDs, so an entry that was sendable when the
+// pass started may be unreachable by the time the loop reaches it. Erring late
+// is the failure — it arms the timer on the entry that really is last — so the
+// index is recomputed whenever the exclusion set grows rather than once before
+// the loop.
+type comboLastTried struct {
+	h      *ChatHandler
+	models []string
+	seen   []string
+	idx    int
+	valid  bool
+}
+
+// newComboLastTried returns a tracker for one pass over models.
+func newComboLastTried(h *ChatHandler, models []string) *comboLastTried {
+	return &comboLastTried{h: h, models: models, idx: -1}
+}
+
+// index reports the last sendable entry for the pass's current exclusions,
+// recomputing only when they have changed since the last call.
+func (t *comboLastTried) index(excludeIDs []string) int {
+	if t.valid && slices.Equal(t.seen, excludeIDs) {
+		return t.idx
+	}
+	t.seen = slices.Clone(excludeIDs)
+	t.idx = t.lastSendableComboIndex(t.seen)
+	t.valid = true
+	return t.idx
+}
+
+// lastSendableComboIndex returns the index of the last entry a request could
+// still be sent for under excludeIDs, or -1 when none can be.
+func (t *comboLastTried) lastSendableComboIndex(excludeIDs []string) int {
+	cache := make(map[string][]*models.ProviderConnection, len(t.models))
+	for i := len(t.models) - 1; i >= 0; i-- {
+		modelInfo := t.h.resolveModelEntry(t.models[i])
 		if modelInfo == nil {
 			continue
 		}
-		if h.Repo != nil && !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
-			continue
+		if t.h.comboEntrySendable(modelInfo, excludeIDs, cache) {
+			return i
 		}
-		return i
 	}
 	return -1
+}
+
+// comboEntrySendable reports whether a pass could still send a request for one
+// combo entry under excludeIDs. It mirrors the three skips the loop performs
+// before forwarding: a provider with no active connection, a provider whose
+// model is locked, and a provider whose every connection is excluded or
+// cooling down. A provider that needs no credentials is always sendable, the
+// same way the loop synthesizes its connection instead of selecting one.
+//
+// The connection query is memoised per pass: the predicate runs for every entry
+// on every exclusion change, and re-querying a provider's rows each time would
+// put the database back in the hot loop this tracker exists to keep it out of.
+func (h *ChatHandler) comboEntrySendable(modelInfo *ModelInfo, excludeIDs []string, cache map[string][]*models.ProviderConnection) bool {
+	if cfg, ok := providers.KnownProviders[modelInfo.Provider]; ok && (cfg.NoAuth || cfg.DefaultAPIKey != "") {
+		return true
+	}
+	if h.Repo == nil {
+		return true
+	}
+	conns, ok := cache[modelInfo.Provider]
+	if !ok {
+		var err error
+		conns, err = h.Repo.GetProviderConnections(modelInfo.Provider, true)
+		if err != nil {
+			// An unreadable table is not evidence that the entry cannot run:
+			// let the loop find out, which keeps this predicate from turning a
+			// transient database error into a shorter combo.
+			conns = nil
+		}
+		if len(conns) == 0 {
+			if fallbackProvider, has := CredentialFallbacks[modelInfo.Provider]; has {
+				conns, _ = h.Repo.GetProviderConnections(fallbackProvider, true)
+			}
+		}
+		cache[modelInfo.Provider] = conns
+	}
+	if len(conns) == 0 {
+		// No connection at all: the loop's getBestConnectionWithContext fails
+		// and it moves on, so this entry cannot be the last one tried.
+		return false
+	}
+	excluded := make(map[string]bool, len(excludeIDs))
+	for _, id := range excludeIDs {
+		excluded[id] = true
+	}
+	now := time.Now()
+	for _, c := range conns {
+		if c == nil || excluded[c.ID] {
+			continue
+		}
+		if h.connectionModelBlocked(c, modelInfo.Provider, modelInfo.Model) {
+			continue
+		}
+		if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // handleComboFallback iterates through combo model entries, trying each one.
@@ -638,16 +729,19 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 		}
 
 		// The entry tried last is the last one this pass can actually send a
-		// request for, not the last one stored: unresolved entries and
-		// model-locked providers are skipped before anything is forwarded.
-		lastTried := h.lastTriedComboIndex(models)
+		// request for, not the last one stored: unresolved entries, a
+		// model-locked provider and a provider with nothing left to dial are
+		// all skipped before anything is forwarded. The tracker recomputes
+		// when this pass excludes another connection, so a member that the
+		// pass itself takes out of reach stops counting as the last one.
+		lastTried := newComboLastTried(h, models)
 
 		for i, entry := range models {
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
 			}
-			isLastModel := i == lastTried
+			isLastModel := i == lastTried.index(excludeIDs)
 
 			// Skip unavailable (model-locked) providers
 			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
@@ -984,14 +1078,14 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 
 		// See the chat loop: the entry tried last is the last one this pass
 		// can actually send a request for, not the last one stored.
-		lastTried := h.lastTriedComboIndex(models)
+		lastTried := newComboLastTried(h, models)
 
 		for i, entry := range models {
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
 			}
-			isLastModel := i == lastTried
+			isLastModel := i == lastTried.index(excludeIDs)
 
 			// Skip unavailable (model-locked) providers
 			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
