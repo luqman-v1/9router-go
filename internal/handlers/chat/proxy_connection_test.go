@@ -70,9 +70,8 @@ func TestGetClientForConnection_ProxyPool(t *testing.T) {
 }
 
 // A Vercel relay pasted into a pool declared "http" must never be dialed as a
-// CONNECT proxy: that answers "malformed HTTP status code". The plain client is
-// returned, and getProviderConfig routes the request through the relay via its
-// x-relay-target / x-relay-path headers instead.
+// CONNECT proxy: that answers "malformed HTTP status code". It gets a client
+// whose transport moves the dial to the relay instead.
 func TestGetClientForConnection_RelayPoolDeclaredAsHTTP(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -106,8 +105,13 @@ func TestGetClientForConnection_RelayPoolDeclaredAsHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client for connection: %v", err)
 	}
-	if client != plain {
-		t.Error("a relay pool must use the plain client, not an http.ProxyURL tunnel to the relay")
+	if client == plain {
+		t.Fatal("a relay pool must not hand out the plain client: the request would leave from the operator's IP")
+	}
+	// It must not be a CONNECT tunnel either — that is what answered
+	// "malformed HTTP status code".
+	if tr, ok := client.Transport.(*http.Transport); ok && tr.Proxy != nil {
+		t.Error("a relay pool must not be dialed with http.ProxyURL")
 	}
 }
 
@@ -167,21 +171,20 @@ func TestRelayPoolAssignedToNoAuthProviderUsesRelayHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetClientForConnection: %v", err)
 	}
-	if client != h.Client {
-		t.Error("relay pool must use the plain client, not an http.ProxyURL tunnel to the relay")
+	if client == h.Client {
+		t.Fatal("relay pool must not hand out the plain client: the request would leave from the operator's IP")
 	}
 
 	cfg, err := h.getProviderConfig("opencode", connData)
 	if err != nil {
 		t.Fatalf("getProviderConfig: %v", err)
 	}
-	if want := "https://relay-deploy.vercel.app"; cfg.BaseURL != want {
-		t.Errorf("BaseURL = %q, want the relay endpoint %q", cfg.BaseURL, want)
+	// The provider keeps its own endpoint. A relay host here is what made every
+	// executor's hand-built URL land on the relay's root.
+	if want := "https://opencode.ai/inference/openai/v1/chat/completions"; cfg.BaseURL != want {
+		t.Errorf("BaseURL = %q, want the provider endpoint %q", cfg.BaseURL, want)
 	}
-	if got := cfg.StaticHeaders["x-relay-target"]; got != "https://opencode.ai" {
-		t.Errorf("x-relay-target = %q, want https://opencode.ai", got)
-	}
-	if got := cfg.StaticHeaders["x-relay-path"]; got != "/inference/openai/v1/chat/completions" {
-		t.Errorf("x-relay-path = %q, want /inference/openai/v1/chat/completions", got)
+	if cfg.RelayURL != "https://relay-deploy.vercel.app" {
+		t.Errorf("RelayURL = %q, want the assigned relay", cfg.RelayURL)
 	}
 }

@@ -471,6 +471,8 @@ func isAnthropicUpstream(provider string, cfg *providers.ProviderConfig) bool {
 		return false
 	}
 	targetURL := cfg.BaseURL
+	// Backward compatibility: if an unmigrated test or caller still supplies
+	// the old header set, resolve the destination from it.
 	if cfg.StaticHeaders != nil {
 		if relayTarget, ok := cfg.StaticHeaders["x-relay-target"]; ok && relayTarget != "" {
 			targetURL = relayTarget + cfg.StaticHeaders["x-relay-path"]

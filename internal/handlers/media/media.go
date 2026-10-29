@@ -153,8 +153,17 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// The connection's own client, not h.Client: an assigned proxy pool — a
+	// CONNECT proxy or an edge relay — is the operator's egress choice, and this
+	// lane used to skip it entirely and answer from the host's real IP.
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
+		return
+	}
+
 	start := time.Now()
-	resp, err := h.Client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
 		return

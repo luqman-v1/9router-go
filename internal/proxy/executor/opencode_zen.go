@@ -33,17 +33,17 @@ const (
 )
 
 // zenBaseURL resolves the API prefix of the request's base URL: the registry
-// default, a connection override, or a relay host with the path carried in
-// x-relay-path. Free-tier models answer behind the keyless v2 inference gate
-// (keyed /zen/v1 requests for them 403), so the prefix follows the model and
-// the lane: the v2 gate only serves the OpenAI-compatible surface, so the
-// messages lane keeps the legacy prefix (see zenFreePrefix).
+// default or a connection override. Free-tier models answer behind the keyless
+// v2 inference gate (keyed /zen/v1 requests for them 403), so the prefix follows
+// the model and the lane: the v2 gate only serves the OpenAI-compatible surface,
+// so the messages lane keeps the legacy prefix (see zenFreePrefix).
+//
+// A relayed connection needs no branch here. The relay moves the dial, not the
+// URL: cfg.BaseURL is the real opencode.ai endpoint either way, and the lane
+// path this returns is what the transport names in x-relay-path.
 func zenBaseURL(cfg *providers.ProviderConfig, cleanModel, lanePath string) string {
 	if cfg == nil {
 		return ""
-	}
-	if _, isRelay := cfg.StaticHeaders["x-relay-target"]; isRelay {
-		return strings.TrimRight(cfg.BaseURL, "/")
 	}
 	if isOpencodeFreeModel(cleanModel) {
 		if lanePath == zenMessagesPath {
@@ -56,12 +56,12 @@ func zenBaseURL(cfg *providers.ProviderConfig, cleanModel, lanePath string) stri
 	return strings.TrimSuffix(base, "/messages")
 }
 
+// isRelayConfig reports whether an edge relay fronts this connection. The relay
+// travels with the client, so the only thing an executor still needs to know is
+// whether to stand aside: opencode's stealth TLS client owns the socket and
+// would bypass the relay entirely.
 func isRelayConfig(cfg *providers.ProviderConfig) bool {
-	if cfg == nil {
-		return false
-	}
-	_, ok := cfg.StaticHeaders["x-relay-target"]
-	return ok
+	return cfg != nil && cfg.RelayURL != ""
 }
 
 // ServesMessagesEndpoint reports whether a provider answers a model on a
@@ -235,35 +235,6 @@ func zenFreePrefix(lanePath string) string {
 	return "/inference/openai/v1"
 }
 
-// zenRelayPath reports the path an edge relay should forward to for a Zen lane.
-// The relay header set is stamped from the connection's base URL
-// (BuildEdgeRelayHeaders), so the path it carries is whatever lane that base
-// URL named — /chat/completions for a default connection. Rewriting it keeps
-// the relay pointed at the endpoint the model actually lives on.
-func zenRelayPath(cfg *providers.ProviderConfig, cleanModel, lanePath string) string {
-	prefix := "/zen/v1"
-	if isOpencodeFreeModel(cleanModel) {
-		// Free-tier models live behind the v2 inference gate, so their lane
-		// carries the inference prefix instead of /zen/v1 — except messages,
-		// which the v2 gate does not serve (zenFreePrefix).
-		prefix = zenFreePrefix(lanePath)
-	}
-	if cfg != nil {
-		if target := cfg.StaticHeaders["x-relay-target"]; target != "" {
-			// An absolute origin is only a host; the lane decides the path. A
-			// relative one already carries the origin's path.
-			if strings.Contains(target, "://") {
-				return prefix + lanePath
-			}
-			if i := strings.IndexByte(target, '/'); i >= 0 {
-				return target[i:]
-			}
-			return "/"
-		}
-	}
-	return prefix + lanePath
-}
-
 func zenAuthHeaders(apiKey string) map[string]string {
 	return map[string]string{"x-api-key": apiKey}
 }
@@ -302,16 +273,10 @@ func forwardZenChat(w http.ResponseWriter, req *Request, cleanModel, sourceForma
 	// Upstream rejects stream:false on the free-tier gate even for a keyed lane.
 	body = withJSONFields(body, map[string]any{"stream": true, "model": cleanModel})
 
+	// The lane path is the URL the relay is told to forward to, so it is built
+	// exactly as it is for a direct call: no relay branch belongs here.
 	cfg := *req.Config
-	if isRelayConfig(&cfg) {
-		// The relay stamps the destination in its headers, so the lane
-		// decision belongs in x-relay-path, not in the URL we dial.
-		cfg.StaticHeaders = copyHeaders(cfg.StaticHeaders)
-		cfg.StaticHeaders["x-relay-path"] = zenRelayPath(req.Config, cleanModel, "/chat/completions")
-		cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
-	} else {
-		cfg.BaseURL = zenBaseURL(&cfg, cleanModel, "/chat/completions") + "/chat/completions"
-	}
+	cfg.BaseURL = zenBaseURL(&cfg, cleanModel, "/chat/completions") + "/chat/completions"
 	zenHint := opencodeSessionHint(req, free)
 	cfg.StaticHeaders = zenHeaders(&cfg, zenHint, true, free)
 
@@ -388,15 +353,7 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 	}
 
 	cfg := *req.Config
-	if isRelayConfig(&cfg) {
-		// The relay stamps the destination in its headers, so the lane
-		// decision belongs in x-relay-path, not in the URL we dial.
-		cfg.StaticHeaders = copyHeaders(cfg.StaticHeaders)
-		cfg.StaticHeaders["x-relay-path"] = zenRelayPath(req.Config, cleanModel, zenResponsesPath)
-		cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/") + zenResponsesPath
-	} else {
-		cfg.BaseURL = zenBaseURL(&cfg, cleanModel, zenResponsesPath) + zenResponsesPath
-	}
+	cfg.BaseURL = zenBaseURL(&cfg, cleanModel, zenResponsesPath) + zenResponsesPath
 	// zenHeaders reads from the copy so the relay headers just set survive.
 	zenHint := opencodeSessionHint(req, free)
 	cfg.StaticHeaders = zenHeaders(&cfg, zenHint, req.IsStream, free)
@@ -480,13 +437,9 @@ func forwardZenMessages(w http.ResponseWriter, req *Request, cleanModel string, 
 	}
 	mergeZenSession(msgHint)
 
-	// An edge relay carries the destination in headers, so the lane belongs in
-	// x-relay-path rather than in the URL the gateway dials.
+	// The lane is the URL the relay forwards to, built exactly as for a direct
+	// call.
 	messagesURL := zenBaseURL(req.Config, cleanModel, zenMessagesPath) + zenMessagesPath
-	if isRelayConfig(req.Config) {
-		headers["x-relay-path"] = zenRelayPath(req.Config, cleanModel, zenMessagesPath)
-		messagesURL = strings.TrimRight(req.Config.BaseURL, "/") + zenMessagesPath
-	}
 
 	ctx := reqCtx(req)
 	var (

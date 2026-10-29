@@ -57,31 +57,6 @@ func freebuffOrigin(baseURL string) string {
 	return "https://www.codebuff.com"
 }
 
-// applyRelayHeaders points a freebuff control-plane request at its real
-// destination through an edge relay.
-//
-// A relay connection rewrites BaseURL to the relay host, and the relay forwards
-// to x-relay-target + x-relay-path while ignoring the URL it was dialed at
-// (internal/handlers/media/deploy.go, netlify_relay.go). So the path has to be
-// the endpoint THIS call needs, not the one the connection stamped:
-// BuildEdgeRelayHeaders derives x-relay-path from the provider base URL, and for
-// freebuff the registry base URL is the chat route
-// (https://www.codebuff.com/api/v1/chat/completions) — copying it verbatim sent
-// every session/run/release call to the chat-completions endpoint.
-//
-// The origin is the provider host and is the same for all of these calls, so it
-// comes from StaticHeaders. Freebuff owns its CLI identity headers; nothing else
-// is copied. No x-relay-target means the connection is not relayed, so this is a
-// no-op and the call goes straight to the origin freebuffOrigin already built.
-func applyRelayHeaders(req *http.Request, headers map[string]string, path string) {
-	target := headers["x-relay-target"]
-	if target == "" {
-		return
-	}
-	req.Header.Set("x-relay-target", target)
-	req.Header.Set("x-relay-path", path)
-}
-
 func ensureFreebuffMarker(body map[string]any) {
 	rawMsgs, ok := body["messages"].([]any)
 	if !ok || len(rawMsgs) == 0 {
@@ -161,7 +136,6 @@ func startFreebuffRun(ctx context.Context, client *http.Client, baseURL, token, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", freebuffCLIUserAgent)
-	applyRelayHeaders(req, headers, freebuffRunPath)
 
 	resp, err := DoFreebuffHTTP(ctx, client, req)
 	if err != nil {
@@ -211,7 +185,6 @@ func finishFreebuffRun(ctx context.Context, client *http.Client, baseURL, token,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", freebuffCLIUserAgent)
-	applyRelayHeaders(req, headers, freebuffRunPath)
 
 	resp, err := DoFreebuffHTTP(finishCtx, client, req)
 	if err == nil {

@@ -151,25 +151,16 @@ func normalizedQuotaError(err error) error {
 	return &proxy.UpstreamError{StatusCode: status, Body: body, Header: ue.Header}
 }
 
-// minimaxCodeMessagesURL resolves the endpoint: the registry base URL, or the
-// relay host an edge proxy pool fronts with the real destination in its headers
-// (BuildEdgeRelayHeaders), which answers 400 without them.
+// minimaxCodeMessagesURL resolves the endpoint from the provider config.
+//
+// A relayed connection needs no branch: the relay travels with the client and
+// forwards to this URL, so the endpoint is the registry's own.
 func minimaxCodeMessagesURL(cfg *providers.ProviderConfig) string {
 	if cfg == nil {
 		return ""
 	}
-	if target := cfg.StaticHeaders["x-relay-target"]; target != "" {
-		if strings.Contains(target, "://") {
-			return strings.TrimRight(cfg.BaseURL, "/") + minimaxCodeMessagesPath
-		}
-		return strings.TrimRight(cfg.BaseURL, "/") + cfg.StaticHeaders["x-relay-path"]
-	}
 	return cfg.BaseURL
 }
-
-// minimaxCodeMessagesPath is appended to an absolute relay target, which is
-// only a host.
-const minimaxCodeMessagesPath = "/v1/messages"
 
 // minimaxCodeHeaders builds the outbound header set: the registry's static
 // teammates (User-Agent, X-Mavis-Agent-Id, anthropic-version), the OAuth

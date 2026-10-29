@@ -723,38 +723,53 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
 	}
 
-	// Check if this connection uses an Edge Relay Proxy Pool (Vercel, Cloudflare, Deno)
+	// An edge relay pool (vercel/cloudflare/deno/netlify) is not a CONNECT proxy:
+	// it forwards on x-relay-target / x-relay-path. It used to be applied here by
+	// rewriting BaseURL to the relay host and stamping those headers into
+	// StaticHeaders, which made relay support a per-provider convention — every
+	// executor that built its own request had to re-apply it by hand, and the
+	// ones that did not (trae, zed, windsurf, the embeddings lane) leaked the
+	// operator's real IP or sent a provider path to the relay's root.
+	//
+	// The relay now travels with the connection's client (proxy.RelayTransport),
+	// which moves the dial and names the URL the caller actually built. BaseURL
+	// therefore stays the real provider endpoint, and this function only records
+	// which relay fronts the connection so an executor can opt out of a transport
+	// the relay cannot carry.
 	if connData != nil {
-		var relayURL string
-		var noProxy string
-
-		if connData.ProxyPoolID != "" {
-			if pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID); err == nil && pool != nil && pool.IsActive {
-				if pool.IsEdgeRelay() {
-					relayURL = pool.NextURL()
-					noProxy = pool.NoProxy
-					logProxyOnce(connData.ProxyPoolID, relayURL, pool.Type)
-				}
-			}
-		}
-		if relayURL == "" && connData.ProviderSpecificData != nil {
-			if u, ok := connData.ProviderSpecificData["vercelRelayUrl"].(string); ok && u != "" {
-				relayURL = u
-				if np, ok := connData.ProviderSpecificData["connectionNoProxy"].(string); ok {
-					noProxy = np
-				}
-			}
-		}
-
+		relayURL, noProxy := h.resolveEdgeRelay(connData)
 		if relayURL != "" && !internalproxy.ShouldBypassNoProxy(baseCfg.BaseURL, noProxy) {
 			cloned := *baseCfg
-			cloned.StaticHeaders = internalproxy.BuildEdgeRelayHeaders(baseCfg.BaseURL, cloned.StaticHeaders)
-			cloned.BaseURL = relayURL
-			return h.applyProviderOverrides(provider, h.withClineIdentity(provider, &cloned)), nil
+			cloned.RelayURL = relayURL
+			baseCfg = &cloned
 		}
 	}
 
 	return h.applyProviderOverrides(provider, h.withClineIdentity(provider, baseCfg)), nil
+}
+
+// resolveEdgeRelay returns the edge relay an assigned pool puts in front of a
+// connection, plus the pool's noProxy list. An inactive or non-relay pool
+// answers "", which leaves the request direct.
+func (h *ChatHandler) resolveEdgeRelay(connData *ConnectionData) (relayURL, noProxy string) {
+	if connData.ProxyPoolID != "" && h.Repo != nil {
+		if pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID); err == nil && pool != nil && pool.IsActive {
+			if pool.IsEdgeRelay() {
+				relayURL = pool.NextURL()
+				noProxy = pool.NoProxy
+				logProxyOnce(connData.ProxyPoolID, relayURL, pool.Type)
+			}
+		}
+	}
+	if relayURL == "" && connData.ProviderSpecificData != nil {
+		if u, ok := connData.ProviderSpecificData["vercelRelayUrl"].(string); ok && u != "" {
+			relayURL = u
+			if np, ok := connData.ProviderSpecificData["connectionNoProxy"].(string); ok {
+				noProxy = np
+			}
+		}
+	}
+	return relayURL, noProxy
 }
 
 // withClineIdentity stamps the 9Router client identity onto cline/clinepass

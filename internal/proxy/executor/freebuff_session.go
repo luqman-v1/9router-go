@@ -200,7 +200,6 @@ func releaseFreebuffSession(ctx context.Context, client *http.Client, baseURL, t
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", freebuffCLIUserAgent)
 	req.Header.Set(freebuffInstanceHeader, instanceID)
-	applyRelayHeaders(req, headers, freebuffSessionPath)
 
 	resp, err := DoFreebuffHTTP(ctx, client, req)
 	if err != nil {
@@ -410,7 +409,6 @@ func postFreebuffSession(ctx context.Context, client *http.Client, baseURL, toke
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", freebuffCLIUserAgent)
-	applyRelayHeaders(req, headers, freebuffSessionPath)
 	req.Header.Set("x-freebuff-model", model)
 
 	resp, err := DoFreebuffHTTP(ctx, client, req)

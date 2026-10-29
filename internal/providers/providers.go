@@ -66,6 +66,19 @@ type ProviderConfig struct {
 	// endpoint strictly rejects tool declarations that omit the `type` field
 	// (e.g. MiniMax). When true, DefaultClaudeToolType will inject `type: "custom"`.
 	RequireClaudeToolType bool
+
+	// RelayURL is the edge relay (vercel/cloudflare/deno/netlify) an assigned
+	// proxy pool puts in front of this provider, or "" when the request leaves
+	// directly. It is a hint for the executors, not a rewrite: BaseURL stays the
+	// real provider endpoint and the connection's client moves the dial to the
+	// relay (internal/proxy.RelayTransport). Upstream expresses the same thing as
+	// proxyOptions.vercelRelayUrl.
+	//
+	// An executor reads it only to opt OUT of something the relay cannot carry.
+	// Opencode's stealth TLS client owns the socket, so it stands aside when a
+	// relay fronts the request; everything else needs no provider-specific code,
+	// which is the point.
+	RelayURL string
 }
 
 // Bedrock protocol constants. Region is substituted per request by the executor, so the
