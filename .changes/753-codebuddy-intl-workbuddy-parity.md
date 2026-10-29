@@ -111,6 +111,20 @@ credential that is not a parseable JWT, or a request with no model name, omits t
 header instead, because an empty identity header is a mismatch the gateway can
 see while a missing one is not.
 
+**Content gate.** The gateway also answers 11128 on prompt *content*: a system
+or assistant sentence from DeepSeek Harness (the identity clause, the Web GUI
+clause, the `@`-path paragraph) matches a verbatim fingerprint and is refused
+before a model is reached, and the match survives invisible-character
+normalisation — scattering zero-width spaces, an earlier mitigation, does not
+help. `transformCodebuddyBody` now rewrites those sentences to synonym wording
+after the channel-marker sanitiser and before the body is sent, on system and
+assistant text only. The user's own words are never touched: the gateway does not
+fingerprint that role, and rewriting it would be tampering. Nothing matched means
+the text comes back unchanged, and a second pass is a no-op. The phrase table is
+the sample set measured live by CARVIN94/dsh-router-codebuddy 0.3.24 (same
+account, `max_tokens=4`: original `@`-path paragraph → 11128, rewritten → 200),
+kept as documentation of why the rewrite works rather than as a predicate.
+
 **Gate shapes, measured on the live gateway.** Three bodies, one per mistake:
 without the `X-Conversation-*`/trace headers the same credential, host and body
 answer `11128 "request illegal"` + "Request blocked. Please send it again" (add

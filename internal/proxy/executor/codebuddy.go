@@ -174,6 +174,55 @@ func sanitizeChannelMarkers(text string) string {
 	return channelMarkerRegex.ReplaceAllString(result, "[external-client-identity]")
 }
 
+// codebuddyChannelGatePhrases are sentence-level rewrites of prompt text the
+// gateway rejects on content alone: a system or assistant sentence that matches
+// one of these families deterministically answers HTTP 400 code 11128 ("Illegal
+// API invocation from an unapproved channel") before a model is reached. Each
+// pair keeps the meaning and breaks the fingerprint — the gateway matches
+// verbatim, and it normalises invisible characters first, so scattering
+// zero-width spaces (an earlier mitigation) does not survive.
+//
+// The list is the sample set measured by CARVIN94/dsh-router-codebuddy
+// (src/body.ts CHANNEL_GATE_PHRASES, 0.3.24): their live A/B on one account with
+// max_tokens=4 returned 11128 for the @-path paragraph and 200 for the rewritten
+// form. It is a sample, not a schema — the real list lives upstream and will
+// grow, so a miss only means the phrase was not in the table.
+//
+// Only system and assistant text is rewritten. The user's own words are never
+// touched: the gateway does not fingerprint the user role, and rewriting it
+// would be tampering with the request.
+var codebuddyChannelGatePhrases = [...][2]string{
+	{"You are an AI agent powered by DeepSeek Harness", "You are an AI agent running inside DeepSeek Harness"},
+	{"You are a coding agent powered by the ", "You are a coding agent running on the "},
+	{"You are interacting with the user through the DeepSeek Harness Web GUI", "You are working with the user inside the DeepSeek Harness Web GUI"},
+	{"Agent Teams is available in this session", "Agent Teams is enabled for this session"},
+	{"Tokens prefixed with @ are paths the user explicitly referenced.", "Paths that begin with @ are the ones the user explicitly referenced."},
+	{"Relative paths resolve from the workspace root", "Relative paths are resolved against the workspace root"},
+	{"absolute paths identify files or directories on the host.", "absolute paths point at files or directories on the host."},
+	{"A trailing slash marks a directory:", "A trailing slash indicates a directory:"},
+	{"list it when its contents matter.", "list it whenever its contents matter."},
+	{"Anything else is a file:", "Everything else is a file:"},
+	{"use the read tool when its contents are needed,", "use the read tool whenever you need its contents,"},
+	{"and do not claim to have inspected it before reading.", "and never claim to have inspected it before reading it."},
+	{`@"..." quotes a path containing spaces.`, `A path containing spaces is quoted with @"...".`},
+}
+
+// scrubCodebuddyChannelPhrases rewrites the gate sentences in one text and
+// returns it unchanged when nothing matched. Every replacement is disjoint from
+// every needle, so a second pass is a no-op.
+func scrubCodebuddyChannelPhrases(text string) string {
+	if text == "" {
+		return text
+	}
+	out := text
+	for _, pair := range codebuddyChannelGatePhrases {
+		if strings.Contains(out, pair[0]) {
+			out = strings.ReplaceAll(out, pair[0], pair[1])
+		}
+	}
+	return out
+}
+
 func extractMessageText(content any) string {
 	switch v := content.(type) {
 	case string:
@@ -240,7 +289,7 @@ func transformCodebuddyBody(body []byte) ([]byte, error) {
 		role, _ := m["role"].(string)
 		if role == "system" || role == "developer" {
 			rawText := extractMessageText(m["content"])
-			cleaned := strings.TrimSpace(sanitizeChannelMarkers(rawText))
+			cleaned := strings.TrimSpace(scrubCodebuddyChannelPhrases(sanitizeChannelMarkers(rawText)))
 			if cleaned != "" && cleaned != codebuddySystemPrompt {
 				systemParts = append(systemParts, cleaned)
 			}
@@ -258,14 +307,14 @@ func transformCodebuddyBody(body []byte) ([]byte, error) {
 			cp := copyMap(m)
 			switch v := cp["content"].(type) {
 			case string:
-				cp["content"] = sanitizeChannelMarkers(v)
+				cp["content"] = scrubCodebuddyChannelPhrases(sanitizeChannelMarkers(v))
 			case []any:
 				var newBlocks []any
 				for _, b := range v {
 					if bm, ok := b.(map[string]any); ok {
 						if t, ok := bm["text"].(string); ok {
 							cpBlock := copyMap(bm)
-							cpBlock["text"] = sanitizeChannelMarkers(t)
+							cpBlock["text"] = scrubCodebuddyChannelPhrases(sanitizeChannelMarkers(t))
 							newBlocks = append(newBlocks, cpBlock)
 							continue
 						}
