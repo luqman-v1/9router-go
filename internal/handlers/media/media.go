@@ -123,34 +123,48 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 	embeddingsURL := buildEmbeddingsURL(providerCfg.BaseURL)
 	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
 
-	req, err := http.NewRequestWithContext(r.Context(), "POST", embeddingsURL, strings.NewReader(string(finalBody)))
+	// buildRequest is shared by the first attempt and the one refresh-and-retry
+	// the Copilot lane may need: the only thing that differs between them is
+	// which short-lived bearer goes in the Authorization header.
+	buildRequest := func(bearer string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(r.Context(), "POST", embeddingsURL, strings.NewReader(string(finalBody)))
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
+		for k, v := range providerCfg.StaticHeaders {
+			if req.Header.Get(k) == "" {
+				req.Header.Set(k, v)
+			}
+		}
+		// GitHub Copilot hands out a short-lived token alongside the OAuth
+		// credential, and the embeddings endpoint is authenticated by that token
+		// rather than by the stored one. It is set after the static-header loop
+		// because it replaces the Authorization header on purpose.
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		return req, nil
+	}
+
+	// The stored Copilot token is exchanged material, not the OAuth credential:
+	// it expires on its own schedule, so it is checked (and re-minted when the
+	// recorded expiry has passed) before the request is built. The token is a
+	// GitHub credential — upstream sends it only from the GitHub embeddings
+	// adapter (open-sse/handlers/embeddingProviders/github.js) — so the lookup
+	// is scoped to the GitHub provider: a connection for any other provider
+	// that happens to carry the key keeps its own Authorization header.
+	var copilotToken string
+	if providers.ResolveAlias(modelInfo.Provider) == "github" {
+		copilotToken = h.copilotTokenForRequest(r.Context(), conn, connData, apiKey)
+	}
+
+	req, err := buildRequest(copilotToken)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
 		return
-	}
-
-	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
-	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-	for k, v := range providerCfg.StaticHeaders {
-		if req.Header.Get(k) == "" {
-			req.Header.Set(k, v)
-		}
-	}
-	// GitHub Copilot hands out a short-lived token alongside the OAuth
-	// credential, and the embeddings endpoint is authenticated by that token
-	// rather than by the stored one. It is set after the static-header loop
-	// because it replaces the Authorization header on purpose.
-	//
-	// The override is scoped to the GitHub provider: the token is a GitHub
-	// credential, and upstream sends it only from the GitHub embeddings
-	// adapter (open-sse/handlers/embeddingProviders/github.js). Without the
-	// scope check the token was applied to whichever upstream the connection
-	// pointed at, so a connection for any other provider that happened to
-	// carry the key had its own key replaced and leaked the GitHub credential.
-	if connData != nil && providers.ResolveAlias(modelInfo.Provider) == "github" {
-		if copilotToken, ok := connData.ProviderSpecificData["copilotToken"].(string); ok && copilotToken != "" {
-			req.Header.Set("Authorization", "Bearer "+copilotToken)
-		}
 	}
 
 	start := time.Now()
@@ -158,6 +172,21 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
 		return
+	}
+	// A 401 on an exchanged token means the expiry the row recorded was wrong or
+	// the token was revoked, and the connection still holds the OAuth credential
+	// it can be traded for a new one. Retry once, on a fresh token only: a second
+	// 401 is the upstream's answer about the account, not about the token.
+	if resp.StatusCode == http.StatusUnauthorized && copilotToken != "" {
+		if refreshed, rErr := h.refreshCopilotToken(r.Context(), conn, connData, apiKey); rErr == nil && refreshed != "" {
+			retry, bErr := buildRequest(refreshed)
+			if bErr == nil {
+				_ = resp.Body.Close()
+				if retryResp, dErr := h.Client.Do(retry); dErr == nil {
+					resp = retryResp
+				}
+			}
+		}
 	}
 	defer resp.Body.Close()
 

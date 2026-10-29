@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -153,6 +154,34 @@ func strVal(m map[string]any, keys ...string) string {
 		if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
 			return strings.TrimSpace(v)
 		}
+	}
+	return ""
+}
+
+// scalarString renders a JSON scalar as the string a connection row stores.
+//
+// strVal only accepts a string, so a numeric field it is pointed at is stored
+// as "". That is what happened to the Copilot token's expiry: the endpoint
+// answers `expires_at` as a unix second count, so every github row carried a
+// short-lived token with no recorded lifetime and nothing could tell a fresh
+// one from an expired one. Numbers are rendered as integers, which is the shape
+// the readers parse.
+func scalarString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case float64:
+		return strconv.FormatInt(int64(t), 10)
+	case float32:
+		return strconv.FormatInt(int64(t), 10)
+	case int:
+		return strconv.Itoa(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case int32:
+		return strconv.FormatInt(int64(t), 10)
+	case bool:
+		return strconv.FormatBool(t)
 	}
 	return ""
 }
@@ -742,7 +771,7 @@ func githubPoll(code string) (deviceTokens, error) {
 	t.name = strVal(user, "name", "login")
 	t.extra = map[string]any{
 		"copilotToken":          strVal(copilot, "token"),
-		"copilotTokenExpiresAt": strVal(copilot, "expires_at"),
+		"copilotTokenExpiresAt": scalarString(copilot["expires_at"]),
 		"githubUserId":          user["id"], "githubLogin": strVal(user, "login"),
 		"githubName": strVal(user, "name"), "githubEmail": strVal(user, "email"),
 	}
