@@ -28,22 +28,49 @@ func ParseResponsesUsage(body []byte) *OpenAIUsage {
 		return nil
 	}
 
+	prompt := u.InputTokens
+	if prompt == 0 && u.PromptTokens > 0 {
+		prompt = u.PromptTokens
+	}
+	completion := u.OutputTokens
+	if completion == 0 && u.CompletionTokens > 0 {
+		completion = u.CompletionTokens
+	}
+
 	out := &OpenAIUsage{
-		PromptTokens:     u.InputTokens,
-		CompletionTokens: u.OutputTokens,
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
 		// The figure was counted against the Responses envelope, so the
 		// Chat-shaped prompt/completion split already includes the cache.
 		PromptCacheIncluded: true,
 	}
+
+	cached := 0
 	if u.InputTokensDetails != nil && u.InputTokensDetails.CachedTokens > 0 {
-		out.CachedTokens = u.InputTokensDetails.CachedTokens
+		cached = u.InputTokensDetails.CachedTokens
+	} else if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 {
+		cached = u.PromptTokensDetails.CachedTokens
+	} else if u.CachedTokens > 0 {
+		cached = u.CachedTokens
+	} else if u.CacheReadInputTokens > 0 {
+		cached = u.CacheReadInputTokens
+	}
+	if cached > 0 {
+		out.CachedTokens = cached
+		out.PromptTokensDetails = &PromptTokensDetails{CachedTokens: cached}
 	}
 
 	// Reasoning tokens are nested under output_tokens on the Responses wire but
 	// billed apart from the visible output, so dropping them under-counts every
 	// reasoning turn relayed from a Responses-native upstream.
+	reasoning := 0
 	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ReasoningTokens > 0 {
-		out.CompletionTokensDetails = &CompletionTokensDetails{ReasoningTokens: u.OutputTokensDetails.ReasoningTokens}
+		reasoning = u.OutputTokensDetails.ReasoningTokens
+	} else if u.CompletionTokensDetails != nil && u.CompletionTokensDetails.ReasoningTokens > 0 {
+		reasoning = u.CompletionTokensDetails.ReasoningTokens
+	}
+	if reasoning > 0 {
+		out.CompletionTokensDetails = &CompletionTokensDetails{ReasoningTokens: reasoning}
 	}
 	return out
 }

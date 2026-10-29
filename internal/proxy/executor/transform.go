@@ -117,7 +117,7 @@ func rewriteCodexUpstreamModel(body []byte) []byte {
 		return body
 	}
 	m["model"] = upstream
-	out, err := json.Marshal(m)
+	out, err := marshalStable(m)
 	if err != nil {
 		return body
 	}
@@ -261,7 +261,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			}
 
 			applyCodexModelShape(m, cleanModel)
-			out, err := json.Marshal(m)
+			out, err := marshalStable(m)
 			return out, cleanModel, err
 		}
 	}
@@ -531,7 +531,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 	}
 
 	applyCodexModelShape(respReq, cleanModel)
-	reqBody, err := json.Marshal(respReq)
+	reqBody, err := marshalStable(respReq)
 	return reqBody, cleanModel, err
 }
 
@@ -847,6 +847,40 @@ func normalizeTopLevelReasoning(reqMap map[string]any) bool {
 	return true
 }
 
+// deepSeekV4Pro is the wire id the deepseek -max/-none catalog aliases map to.
+const deepSeekV4Pro = "deepseek-v4-pro"
+
+// deepSeekV4ProAlias is 9router's own catalog alias table, ported from upstream
+// reasoningContentInjector.js DEEPSEEK_V4_PRO_ALIASES. The alias id is not a
+// wire id, so the request is sent as the base model with the thinking toggle in
+// top-level `thinking.type` and the effort in `reasoning_effort` (empty effort =
+// no reasoning_effort key, i.e. thinking disabled). The toggle is a top-level
+// field, not the SDK `extra_body` wrapper: `extra_body` is Python-SDK sugar that
+// never reaches the wire, so only the top-level shape would actually disable
+// thinking on `-none`.
+var deepSeekV4ProAlias = map[string][2]string{
+	"deepseek-v4-pro-max":  {"enabled", "max"},
+	"deepseek-v4-pro-none": {"disabled", ""},
+}
+
+// applyDeepSeekV4ProAlias rewrites reqMap in place when modelLower is one of the
+// deepseek-v4-pro alias ids. It reports whether anything changed.
+func applyDeepSeekV4ProAlias(reqMap map[string]any, modelLower string) bool {
+	alias, ok := deepSeekV4ProAlias[modelLower]
+	if !ok {
+		return false
+	}
+	reqMap["model"] = deepSeekV4Pro
+	reqMap["thinking"] = map[string]any{"type": alias[0]}
+
+	if alias[1] != "" {
+		reqMap["reasoning_effort"] = alias[1]
+	} else {
+		delete(reqMap, "reasoning_effort")
+	}
+	return true
+}
+
 // InjectReasoningContent ensures assistant messages in request body have reasoning_content
 // injected (e.g. " " placeholder) for providers like opencode, deepseek, or kimi models,
 // and strips foreign/unsupported keys (such as "reasoning", "thinking", "thought") that cause
@@ -873,7 +907,14 @@ func InjectReasoningContent(body []byte, provider string) []byte {
 		return body
 	}
 
-	changed := normalizeTopLevelReasoning(reqMap)
+	changed := false
+	if provider == "deepseek" {
+		// The -max/-none catalog ids are 9router's own aliases, not wire ids;
+		// resolve them to the base model with their thinking toggle/effort
+		// attached so the injection below runs against the id the API serves.
+		changed = applyDeepSeekV4ProAlias(reqMap, modelLower)
+	}
+	changed = normalizeTopLevelReasoning(reqMap) || changed
 
 	for i, m := range msgs {
 		msgMap, ok := m.(map[string]any)

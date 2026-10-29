@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bytes"
 	"context"
 	json "encoding/json/v2"
 	"fmt"
@@ -16,43 +15,10 @@ import (
 	"9router/proxy/internal/translator"
 )
 
-// ForwardGemini forwards to gemini-native endpoints (antigravity).
-func ForwardGemini(w http.ResponseWriter, req *Request) error {
-	ctx := req.Ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	resp, err := proxy.ForwardGemini(ctx, req.Client, req.Config, req.APIKey, string(req.Body), req.IsStream, req.ProjectID, req.ModelName)
-	if err != nil {
-		return fmt.Errorf("ForwardGemini: %w", err)
-	}
-
-	var bodyCloser io.Closer = resp.Body
-	defer func() {
-		if bodyCloser != nil {
-			bodyCloser.Close()
-		}
-	}()
-
-	if req.ProjectID != "" {
-		raw, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("read response body: %w", err)
-		}
-		unwrapped := translator.UnwrapAntigravityResponse(raw)
-		if req.IsStream {
-			return geminiStream(w, io.NopCloser(bytes.NewReader(unwrapped)), req.Ctx)
-		}
-		return geminiNonStream(w, bytes.NewReader(unwrapped))
-	}
-	if req.IsStream {
-		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, 0, "gemini")
-		bodyCloser = stallReader
-		return geminiStream(w, stallReader, req.Ctx)
-	}
-	return geminiNonStream(w, resp.Body)
-}
-
+// geminiStream replays a live Gemini-native SSE body as OpenAI chunks.
+// Served from here by ForwardOpencodeGo's gemini route; the antigravity path
+// streams through the chat handler instead (forwardGeminiNativeRequest),
+// which unwraps the {"response": ...} envelope per frame.
 func geminiStream(w http.ResponseWriter, upstream io.Reader, ctx context.Context) error {
 	hw := proxy.NewHeartbeatWriter(ctx, w, 0)
 	defer hw.Close()

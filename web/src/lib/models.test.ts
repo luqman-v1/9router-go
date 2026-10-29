@@ -12,7 +12,7 @@ describe('getModelsByProviderId', () => {
 
     const models = getModelsByProviderId('commandcode')
 
-    expect(models.length).toBe(22)
+    expect(models.length).toBe(23)
     expect(models.map((m) => m.id)).toContain('deepseek/deepseek-v4-pro')
     expect(models.map((m) => m.id)).toContain('nvidia/nemotron-3-ultra-550b-a55b')
   })
@@ -48,6 +48,7 @@ describe('commandcode catalog', () => {
   const UPSTREAM_REGISTRY_ORDER = [
     'deepseek/deepseek-v4-pro',
     'deepseek/deepseek-v4-flash',
+    'moonshotai/Kimi-K3.1-Pro',
     'moonshotai/Kimi-K2.7-Code',
     'moonshotai/Kimi-K2.7-Code-Highspeed',
     'moonshotai/Kimi-K2.6',

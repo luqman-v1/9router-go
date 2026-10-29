@@ -22,6 +22,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/thinking"
 )
 
 // Dashboard client headers, matching the Next dashboard settings/database route.
@@ -106,6 +107,17 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 		}
 	}
 
+	if err := validateProviderThinking(updates["providerThinking"]); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	normalizeProviderThinking(updates)
+
+	if err := validateNumericSettings(updates); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	// Feature Visibility stores sidebar ids, so the payload is normalized here:
 	// the sidebar must never receive an id it cannot address (navvisibility.go).
 	applyNavVisibilityUpdate(updates)
@@ -122,10 +134,20 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
+	// White-label branding is rendered by the sidebar, so the stored shape is
+	// normalized here the same way the sidebar ids are (whitelabel.go).
+	applyWhitelabelUpdate(updates)
+	// Clearing appLogoUrl removes the uploaded file with it. The previous value
+	// is read before the write so the path is known, and the file is removed
+	// only after the write succeeds: a failed write must leave the stored logo
+	// and its file in agreement, not one pointing at a deleted asset.
+	previousLogo, clearLogo := logoClearedByUpdate(h, updates)
 	if err := h.Repo.UpdateSettingsRaw(updates); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if clearLogo {
+		removeUploadedLogo(previousLogo)
 	}
 
 	if h.TokenSaver != nil {
@@ -397,6 +419,82 @@ func (h *DashboardHandler) exportAuthorized(r *http.Request) bool {
 
 // sanitizeSettings copies settings and drops secrets, exposing `hasPassword`
 // the way the Next dashboard does.
+// validateProviderThinking rejects a per-provider reasoning override whose
+// mode is outside the allowed vocabulary. The mode reaches reasoning_effort on
+// the wire, and a provider answers an unknown effort with a 400 — so a mode
+// that cannot be honoured is refused at the boundary instead.
+func validateProviderThinking(v any) error {
+	if v == nil {
+		return nil
+	}
+	pt, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("providerThinking must be an object")
+	}
+	for provider, entry := range pt {
+		vm, ok := entry.(map[string]any)
+		if !ok {
+			return fmt.Errorf("providerThinking[%s] must be an object", provider)
+		}
+		mode, _ := vm["mode"].(string)
+		if _, valid := thinking.NormalizeProviderThinkingMode(mode); !valid {
+			return fmt.Errorf("providerThinking[%s].mode must be one of %s", provider, strings.Join(thinking.ProviderThinkingModes, ", "))
+		}
+	}
+	return nil
+}
+
+// numericSettingKeys are the settings the dashboard writes as numbers.
+//
+// A value of another type is refused at the boundary: the reader coerces
+// anything that is not a positive number to zero, and zero is "no limit" on
+// the rate limiter. A quota written as a string would therefore read back as
+// unlimited while the rate limiter stays on.
+var numericSettingKeys = []string{
+	"defaultRpm", "defaultTpm", "defaultConcurrency", "rateWindowSeconds",
+	"retentionDays", "maxRequestRecords", "usageHistoryRetentionDays",
+	"rtkMaxLines", "rtkMaxChars", "headroomTimeoutMs",
+	"semanticCacheTTL", "semanticCacheMaxEntries",
+	"stickyRoundRobinLimit", "comboStickyRoundRobinLimit",
+}
+
+func validateNumericSettings(updates map[string]any) error {
+	for _, key := range numericSettingKeys {
+		v, ok := updates[key]
+		if !ok || v == nil {
+			continue
+		}
+		switch v.(type) {
+		case float64, int, int64:
+		default:
+			return fmt.Errorf("setting %s must be a number", key)
+		}
+	}
+	return nil
+}
+
+// normalizeProviderThinking rewrites the stored modes into the vocabulary the
+// enforcement uses, so the dashboard echoes back the mode that is enforced
+// rather than the spelling the operator typed.
+func normalizeProviderThinking(updates map[string]any) {
+	pt, ok := updates["providerThinking"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, entry := range pt {
+		vm, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		mode, _ := vm["mode"].(string)
+		if normalized, valid := thinking.NormalizeProviderThinkingMode(mode); valid {
+			vm["mode"] = normalized
+		}
+	}
+}
+
+// sanitizeSettings copies settings and drops secrets, exposing `hasPassword`
+// the way the Next dashboard does.
 func sanitizeSettings(raw map[string]any) map[string]any {
 	if raw == nil {
 		raw = map[string]any{}
@@ -414,6 +512,7 @@ func sanitizeSettings(raw map[string]any) map[string]any {
 	}
 	sanitizeNavVisibility(out)
 	sanitizeDisplayCurrency(out)
+	sanitizeWhitelabel(out)
 	out["hasPassword"] = hasPassword
 	return out
 }

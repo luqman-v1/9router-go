@@ -94,9 +94,11 @@ type Candidate struct {
 	Bare string
 	// AltID is a second qualified spelling of the same model that a stored
 	// member may use — the canonical provider id where it differs from the
-	// alias ("deepseek/gpt-x" beside "ds/gpt-x"). It exists so a member is
-	// never pruned for being spelled the other way round; it is never added
-	// to a combo, so it cannot create a second slot for one model.
+	// alias ("deepseek/gpt-x" beside "ds/gpt-x"), or a provider node's id
+	// beside its display prefix. It exists so a member is never pruned for
+	// being spelled the other way round; a rule pattern written with that
+	// spelling selects the candidate too, while the membership it adds still
+	// lands under ID, so it cannot create a second slot for one model.
 	AltID string
 	// Kind is KindLLM for chat-capable models and the provider's own kind
 	// otherwise.
@@ -173,11 +175,28 @@ func Validate(r Rule) (code, msg string) {
 		return "EMPTY_PATTERN", "a rule needs a pattern"
 	}
 	// The allowlist spells a deny "!term" or "-term"; a rule is a structured
-	// object with an effect field, so the sigil is refused rather than given a
-	// second meaning here.
+	// object with an effect field, so a LEADING sigil is refused rather than
+	// given a second meaning here. A `!` in the middle of a glob is a
+	// different thing: it negates one `*`-separated segment, which is how
+	// "every provider except this one" is written without one rule per
+	// provider. The leading-position refusal stays, because a pattern that
+	// opens with a negation has no positive term to select with.
 	if strings.HasPrefix(pattern, "!") || strings.HasPrefix(pattern, "-") {
 		return "INVALID_RULE_PATTERN",
 			`a pattern may not start with "!" or "-"; set effect to "exclude" instead`
+	}
+	if r.Mode == ModeGlob && strings.Contains(pattern, "!") {
+		// A `!` that opens a `*`-separated segment negates it. One buried
+		// inside a literal is part of the model id and stays literal, so only
+		// the segment-opening position is special — and a pattern that opens
+		// with a negation is already refused above, because it has no
+		// positive term left to select with.
+		for _, seg := range strings.Split(pattern, "*") {
+			if strings.HasPrefix(seg, "!") && strings.TrimPrefix(seg, "!") == "" {
+				return "INVALID_RULE_PATTERN",
+					`a "!" must be followed by the segment it excludes; write "* !term"`
+			}
+		}
 	}
 	switch r.Mode {
 	case ModeGlob, ModeKeyword:
@@ -430,6 +449,17 @@ func buildPlan(models []string, rules []Rule, candidates []Candidate) (*plan, er
 
 		matched := 0
 		desired := make([]string, 0, 8)
+		// The operator's manual removals are keyed by every spelling the
+		// candidate carries, so a member pulled out under the node-id or
+		// provider-id spelling is not offered back under the addressable one.
+		// The expansion is per candidate: an AltID two candidates share (the
+		// test helper sets AltID to the alias) must not exclude the other one,
+		// so the check below asks whether THIS candidate is excluded rather
+		// than consulting a flattened set.
+		excluded := make(map[string]bool, len(r.Excluded)*2)
+		for _, id := range r.Excluded {
+			excluded[id] = true
+		}
 		for _, cand := range candidates {
 			if !cand.Addable || !cand.Live {
 				continue
@@ -440,7 +470,8 @@ func buildPlan(models []string, rules []Rule, candidates []Candidate) (*plan, er
 			if !r.AllKinds && cand.Kind != KindLLM {
 				continue
 			}
-			if slices.Contains(r.Excluded, cand.ID) {
+			if excluded[cand.ID] || excluded[cand.Bare] ||
+				(cand.AltID != "" && excluded[cand.AltID]) {
 				continue
 			}
 			if !c.matches(cand) {
@@ -449,10 +480,30 @@ func buildPlan(models []string, rules []Rule, candidates []Candidate) (*plan, er
 			matched++
 			desired = append(desired, cand.ID)
 		}
+		// The cap keeps the models that already occupy the combo first, then
+		// fills the remaining slots in the order the gateway would try them.
+		// Sorting alphabetically instead made the cut arbitrary: a member the
+		// operator had deliberately ordered could be dropped in favour of a
+		// later one, and which one survived depended on the spelling of the id
+		// rather than on the fallback order the combo exists to express.
 		sort.Strings(desired)
 		capped := false
 		if r.MaxMembers > 0 && len(desired) > r.MaxMembers {
-			desired = desired[:r.MaxMembers]
+			kept := make([]string, 0, r.MaxMembers)
+			for _, id := range desired {
+				if presentCanonical[id] {
+					kept = append(kept, id)
+				}
+			}
+			for _, id := range desired {
+				if len(kept) >= r.MaxMembers {
+					break
+				}
+				if !presentCanonical[id] {
+					kept = append(kept, id)
+				}
+			}
+			desired = kept
 			capped = true
 		}
 
@@ -536,19 +587,31 @@ func compileAll(rules []Rule) ([]compiled, error) {
 	return out, nil
 }
 
-// matches reports whether the rule's pattern selects the candidate. Both
-// spellings are tried, so "deepseek*" and "kenari/deepseek*" both reach
-// "kenari/deepseek-v4".
+// matches reports whether the rule's pattern selects the candidate. Every
+// spelling the candidate carries is tried, so "deepseek*" and "kenari/deepseek*"
+// both reach "kenari/deepseek-v4", and a pattern written with the provider id
+// ("deepseek/*") or a node id ("node-cutad/deepseek*") reaches the same model
+// the alias spelling reaches. The AltID is guarded because an empty one is not
+// a spelling: a keyword would otherwise contain-match everything.
 func (c compiled) matches(cand Candidate) bool {
 	switch c.rule.Mode {
 	case ModeRegex:
-		return c.re.MatchString(cand.ID) || c.re.MatchString(cand.Bare)
+		if c.re.MatchString(cand.ID) || c.re.MatchString(cand.Bare) {
+			return true
+		}
+		return cand.AltID != "" && c.re.MatchString(cand.AltID)
 	case ModeKeyword:
 		term := strings.ToLower(strings.TrimSpace(c.rule.Pattern))
-		return strings.Contains(strings.ToLower(cand.ID), term) ||
-			strings.Contains(strings.ToLower(cand.Bare), term)
+		if strings.Contains(strings.ToLower(cand.ID), term) ||
+			strings.Contains(strings.ToLower(cand.Bare), term) {
+			return true
+		}
+		return cand.AltID != "" && strings.Contains(strings.ToLower(cand.AltID), term)
 	default:
-		return matchGlob(c.rule.Pattern, cand.ID) || matchGlob(c.rule.Pattern, cand.Bare)
+		if matchGlob(c.rule.Pattern, cand.ID) || matchGlob(c.rule.Pattern, cand.Bare) {
+			return true
+		}
+		return cand.AltID != "" && matchGlob(c.rule.Pattern, cand.AltID)
 	}
 }
 
@@ -556,6 +619,15 @@ func (c compiled) matches(cand Candidate) bool {
 // separators, the comparison is case-insensitive and anchored at both ends,
 // and a pattern without `*` is a whole-string match. Everything but `*` is
 // literal, so a pattern can never smuggle in regex syntax of its own.
+//
+// A `!` in front of a `*`-separated segment negates that segment, the same
+// reading the per-key allowlist gives "!term": "* !deepseek*" selects every
+// model except the deepseek family, which is the one shape a single rule could
+// not otherwise express — "every provider except this one" needed one include
+// rule per provider before this. The negation is per segment, so it narrows
+// the pattern rather than replacing it: a pattern that is nothing but
+// negations matches nothing, because there is no positive term left to select
+// with.
 //
 // This is the semantics of providers.MatchAllowPattern (upstream parity with
 // decolua/9router keyAccess.js, #365). It lives here rather than there because
@@ -577,9 +649,44 @@ func matchGlob(pattern, modelID string) bool {
 	if pattern == "*" {
 		return true
 	}
+	// A negated segment is checked against the whole target rather than built
+	// into the regex: Go's regexp has no lookahead, and the reading wanted here
+	// is "this literal must not appear anywhere", which a case-insensitive
+	// substring test states directly. The positive segments still go through
+	// the anchored regex, so a pattern keeps meaning what it meant before.
+	//
+	// Only a `!` that opens a segment negates. One buried inside a literal
+	// ("ds/deep!seek") is part of the model id and stays literal: reading it as
+	// a negation would silently match the wrong set, so the segment is put back
+	// together before the split decides anything.
+	var negatives []string
+	var positives []string
+	for _, part := range strings.Split(pattern, "*") {
+		if strings.HasPrefix(part, "!") {
+			negatives = append(negatives, strings.TrimPrefix(part, "!"))
+			continue
+		}
+		positives = append(positives, part)
+	}
+	if len(negatives) > 0 {
+		lower := strings.ToLower(target)
+		for _, neg := range negatives {
+			if neg == "" {
+				continue
+			}
+			if strings.Contains(lower, strings.ToLower(neg)) {
+				return false
+			}
+		}
+	}
+	if len(positives) == 0 || (len(positives) == 1 && positives[0] == "") {
+		// Nothing but negations selects nothing: there is no term left that
+		// says what to match.
+		return false
+	}
 	var b strings.Builder
 	b.WriteString("(?i)^")
-	for i, part := range strings.Split(pattern, "*") {
+	for i, part := range positives {
 		if i > 0 {
 			b.WriteString(".*")
 		}

@@ -1,6 +1,7 @@
 package translator
 
 import (
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
 )
@@ -80,6 +81,18 @@ func (s *ResponsesState) emitToolCall(out *[]ResponsesEvent, tc OpenAIToolCallSt
 
 // closeToolCall finalizes one tool call, defaulting to an empty argument object
 // so the item is still well-formed when the provider never sent arguments.
+//
+// A non-empty buffer that does not parse as JSON is a call cut mid-argument:
+// the stream ended between two tokens of the argument object. The item is still
+// closed with the bytes that arrived — the client can decide what to do with
+// them — but the turn is marked incomplete so the terminal event reports the
+// truncation instead of a success.
+//
+// The reason names the cause the upstream gave: a call cut by "length" hit the
+// output limit, and that is the max_output_tokens reason the Responses API
+// already defines. Anything else — including the usual case, where the stream
+// simply ends and there is no finish_reason at all — is a dropped stream.
+// Custom tools are exempt: their input is freeform text, not JSON.
 func (s *ResponsesState) closeToolCall(out *[]ResponsesEvent, idx int) {
 	callID := s.FuncCallIDs[idx]
 	if callID == "" || s.FuncItemDone[idx] {
@@ -91,6 +104,12 @@ func (s *ResponsesState) closeToolCall(out *[]ResponsesEvent, idx int) {
 		args = "{}"
 	}
 	custom := s.isCustomTool(s.FuncNames[idx])
+	if !custom && s.Incomplete == "" && !jsontext.Value(args).IsValid() {
+		s.Incomplete = responsesIncompleteToolArguments
+		if s.FinishReason == "length" {
+			s.Incomplete = responsesIncompleteMaxOutputTokens
+		}
+	}
 
 	if custom {
 		input := extractCustomToolInput(args)

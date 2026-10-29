@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -238,5 +239,56 @@ func TestModelScopedError_FreeTierForbiddenIsNotModelScoped(t *testing.T) {
 	body := []byte(`{"error":{"type":"FreeTierError","message":"free tier can only be used from within OpenCode"}}`)
 	if isModelScopedError(http.StatusForbidden, extractErrorText(body), "jev-1.13-free", body) {
 		t.Fatal("a FreeTierError 403 must not be model-scoped; the failover loop rotates the pool instead")
+	}
+}
+
+// A free-tier 429 (FreeUsageLimitError) is an egress verdict, not an account or
+// model fault: comboLockRetryable must not cool the connection down on it, and
+// only excludes it for the rest of the pass. A genuine 429 rate limit from the
+// same provider still locks normally - the refusal guard is deliberately narrow.
+func TestComboLockRetryable_OpencodeFreeUsageLimitDoesNotLock(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	dropSeededConn(t, database)
+
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES ('conn-open', 'opencode', 'apikey', 'OpenCode Conn', 1, 1, '{"apiKey":"sk-open"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed opencode connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// 1. 429 FreeUsageLimitError must NOT lock the connection or the account.
+	var excludeIDs []string
+	h.comboLockRetryable(context.Background(), &excludeIDs, "conn-open", "opencode", "deepseek-v4.1-flash-free", &upstreamError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       []byte(`{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached. Subscribe to OpenCode Go to keep going: https://opencode.ai/go"}}`),
+	})
+
+	if locked, _ := repo.IsConnectionModelLocked("conn-open", "deepseek-v4.1-flash-free"); locked {
+		t.Error("expected the free-tier 429 to NOT lock the model")
+	}
+	var rawData string
+	_ = database.QueryRow(`SELECT data FROM providerConnections WHERE id = 'conn-open'`).Scan(&rawData)
+	if _, ok := db.ConnectionCooldownUntil(rawData); ok {
+		t.Error("expected the free-tier 429 to NOT set an account cooldown")
+	}
+	if len(excludeIDs) != 1 || excludeIDs[0] != "conn-open" {
+		t.Errorf("expected conn-open to be excluded for the rest of the pass, got %v", excludeIDs)
+	}
+
+	// 2. A genuine rate-limit 429 from the same provider still locks
+	// (regression guard: the refusal token set must not silently widen).
+	var excludeIDs2 []string
+	h.comboLockRetryable(context.Background(), &excludeIDs2, "conn-open", "opencode", "deepseek-v4.1-flash-free", &upstreamError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       []byte(`{"error":{"type":"RateLimitError","message":"too many requests"}}`),
+	})
+	_ = database.QueryRow(`SELECT data FROM providerConnections WHERE id = 'conn-open'`).Scan(&rawData)
+	if _, ok := db.ConnectionCooldownUntil(rawData); !ok {
+		t.Error("expected a genuine 429 to still set an account cooldown")
+	}
+	if len(excludeIDs2) != 1 || excludeIDs2[0] != "conn-open" {
+		t.Errorf("expected conn-open to be excluded after a genuine 429, got %v", excludeIDs2)
 	}
 }

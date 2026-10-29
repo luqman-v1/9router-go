@@ -174,9 +174,13 @@ func buildQoderCosyHeaders(body []byte, requestURL string, creds QoderCosyCreds)
 
 	// Upstream persists the machine UUID on the connection so every request
 	// from one auth presents the same machine (cosy.js generateMachineId).
+	// Connections that predate machine-id persistence (PAT connections) have
+	// none stored: a random uuid per request makes each call look like a
+	// brand-new device, and a new device rejoins the back of the model queue.
+	// A stable derivation from the user id keeps the queue position instead.
 	machineID := creds.MachineID
 	if machineID == "" {
-		machineID = uuid.New().String()
+		machineID = QoderDeriveMachineID(creds.UserID)
 	}
 	bodyHash := md5Hex(body)
 	bodyLength := fmt.Sprintf("%d", len(body))
@@ -263,37 +267,167 @@ func ForwardQoder(w http.ResponseWriter, req *Request) error {
 		return err
 	}
 
-	plain, err := json.Marshal(built.Payload)
-	if err != nil {
-		return fmt.Errorf("ForwardQoder marshal payload: %w", err)
-	}
-	encoded := QoderEncodeBody(plain)
 	targetURL := qoderChatURL(qoderEndpoint(req), region, creds.AuthToken)
-	headers, err := buildQoderCosyHeaders(encoded, targetURL, creds)
-	if err != nil {
-		return fmt.Errorf("build Qoder COSY headers: %w", err)
+
+	// COSY signs the encoded body, so every attempt needs a fresh signature —
+	// replaying one reuses its requestId and upstream answers 403/code 103.
+	sendAttempt := func() (*http.Response, error) {
+		plain, err := json.Marshal(built.Payload)
+		if err != nil {
+			return nil, fmt.Errorf("ForwardQoder marshal payload: %w", err)
+		}
+		encoded := QoderEncodeBody(plain)
+		headers, err := buildQoderCosyHeaders(encoded, targetURL, creds)
+		if err != nil {
+			return nil, fmt.Errorf("build Qoder COSY headers: %w", err)
+		}
+		qoderApplyChatHeaders(headers, built)
+		resp, err := proxy.DoRequest(ctx, req.Client, http.MethodPost, targetURL, headers, encoded)
+		if err != nil {
+			return nil, fmt.Errorf("ForwardQoder: %w", err)
+		}
+		return resp, nil
 	}
-	qoderApplyChatHeaders(headers, built)
 
-	resp, err := proxy.DoRequest(ctx, req.Client, http.MethodPost, targetURL, headers, encoded)
-	if err != nil {
-		return fmt.Errorf("ForwardQoder: %w", err)
+	// While a model is out of capacity the inference endpoint answers
+	// 10605/isQueued instead of a completion. qodercli does not treat that as
+	// fatal and does not replay blindly: it polls the queue-status endpoint
+	// (keyed by the request set id) and replays once that reports
+	// isQueued:false, honouring the server's retryAfterSeconds. The poll is a
+	// cheap GET that does not consume a queue slot.
+	maxQueueWait := qoderQueueMaxWaitMs()
+	queueWaitStart := time.Now()
+	statusPollsEnabled := true
+	readyReplayUsed := false
+	for {
+		resp, err := sendAttempt()
+		if err != nil {
+			return err
+		}
+
+		peek, peekErr := qoderPeekFirstFrame(resp.Body)
+		var queueInfo *qoderQueueInfo
+		if peekErr == nil && peek.parsed && peek.envelope.StatusCodeValue != 200 {
+			queueInfo = qoderQueueInfoFromEnvelope(peek.envelope.Body)
+			if queueInfo == nil {
+				// A first-frame refusal that is not a queue signal is the
+				// upstream error itself — a billing block or a hard failure,
+				// carrying no completion bytes. Raise it as that HTTP status
+				// instead of relaying the marker inside a 200 stream: the
+				// in-band shape read as success, so a dfmodel out of credits
+				// never reached the failover loop and the client saw the raw
+				// marker. Upstream wrapQoderSSE answers the same envelope
+				// with a JSON error Response and cancels the reader.
+				_ = resp.Body.Close()
+				return qoderFirstFrameError(peek.envelope)
+			}
+		}
+
+		if queueInfo == nil {
+			// Not a queue signal: a mid-stream error is marked by the
+			// coalescer and a clean stream just continues. The peek consumed
+			// the head, so hand the already-read bytes back instead of
+			// re-sending — one upstream call per attempt.
+			defer func() { _ = resp.Body.Close() }()
+			rewoundR, rewoundW := io.Pipe()
+			go func() {
+				source := io.MultiReader(bytes.NewReader(peek.consumed), peek.reader)
+				if peekErr != nil {
+					_ = rewoundW.CloseWithError(peekErr)
+					return
+				}
+				_ = rewoundW.CloseWithError(qoderSSERewrite(source, rewoundW, built.QoderKey))
+			}()
+			if req.IsStream {
+				return execSSEStream(w, rewoundR, req)
+			}
+			return qoderNonStream(w, req, rewoundR)
+		}
+
+		// Queued: the model is briefly out of capacity, so hold the request
+		// open and replay rather than failing it as a billing block.
+		//
+		// Closing without draining is deliberate. Qoder answers a queued model
+		// with an SSE stream it holds open for the whole queue window, so
+		// draining it here blocks for retryAfterSeconds before the retry logic
+		// ever runs — measured at 44s of a 45s probe budget. The refusal is
+		// already parsed, and Close releases the connection; the body is not
+		// read to completion because it is not reused.
+		_ = resp.Body.Close()
+
+		waited := time.Since(queueWaitStart)
+		if waited >= time.Duration(maxQueueWait)*time.Millisecond {
+			return qoderQueuedTimeout(built.QoderKey, queueInfo, waited)
+		}
+
+		delayMs := computeQoderQueueDelayMs(queueInfo, false)
+		if statusPollsEnabled {
+			polled, ok := qoderFetchQueueStatus(ctx, req.Client, targetURL, creds, qoderQueueStatusQuery{
+				ModelKey:     orDefault(queueInfo.ModelKey, built.QoderKey),
+				QueueType:    queueInfo.QueueType,
+				RequestSetID: qoderPayloadString(built.Payload, "request_set_id"),
+				RequestID:    qoderPayloadString(built.Payload, "request_id"),
+				SessionID:    qoderPayloadString(built.Payload, "session_id"),
+			})
+			if !ok {
+				// No usable status endpoint — keep the timed-replay behaviour.
+				statusPollsEnabled = false
+			} else if polled.IsQueued != nil && !*polled.IsQueued {
+				// The status endpoint has been observed saying ready while the
+				// inference call is still refused. Replay once on its word; if
+				// that is refused too, stop trusting it.
+				if readyReplayUsed {
+					statusPollsEnabled = false
+				} else {
+					readyReplayUsed = true
+					delayMs = 0
+				}
+			} else {
+				delayMs = computeQoderQueueDelayMs(&qoderQueueInfo{
+					RetryAfterSec: polled.RetryAfterSec,
+					WaitTime:      polled.WaitTime,
+				}, true)
+			}
+		}
+
+		if delayMs > 0 {
+			// Sleep only when the queue can plausibly clear inside what the
+			// caller has left. Qoder's window is 30s and a dashboard probe
+			// allows 45s, so the first refusal already decides the outcome:
+			// sleeping into a deadline the request cannot survive turns a
+			// 1s answer into a 45s one and reports it as a timeout.
+			if !qoderQueueFitsBudget(ctx, delayMs, time.Since(queueWaitStart), maxQueueWait) {
+				return qoderQueuedTimeout(built.QoderKey, queueInfo, time.Since(queueWaitStart))
+			}
+			if sleepErr := qoderSleep(ctx, delayMs); sleepErr != nil {
+				// The caller gave up while the model was still queued. Its
+				// deadline is not the model's fault and says nothing about
+				// why the request stopped, so answer with the queue state
+				// instead of a bare "context canceled" that reads like a
+				// client hangup.
+				return qoderQueuedTimeout(built.QoderKey, queueInfo, time.Since(queueWaitStart))
+			}
+		}
 	}
-	defer resp.Body.Close()
+}
 
-	// Qoder wraps every chunk in a {statusCodeValue, body} envelope, so the
-	// stream is peeled before it reaches the shared SSE folder — otherwise a
-	// perfectly good upstream looks like "200 without a completion".
-	rewoundR, rewoundW := io.Pipe()
-	go func() {
-		_ = rewoundW.CloseWithError(qoderSSERewrite(resp.Body, rewoundW, built.QoderKey))
-	}()
+// qoderPayloadString reads a string field off the chat payload.
+func qoderPayloadString(payload map[string]any, key string) string {
+	s, _ := payload[key].(string)
+	return s
+}
 
-
-	if req.IsStream {
-		return execSSEStream(w, rewoundR, req)
+// qoderSleep waits ms, aborting early when the client hangs up so a long
+// queue wait does not outlive the request.
+func qoderSleep(ctx context.Context, ms int) error {
+	timer := time.NewTimer(time.Duration(ms) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	return qoderNonStream(w, req, rewoundR)
 }
 
 // qoderEndpoint is the request's configured chat endpoint, falling back to the
@@ -419,7 +553,7 @@ func qoderBuildRequest(ctx context.Context, do QoderDoer, req *Request, creds Qo
 	if err != nil {
 		return qoderBuiltChat{}, err
 	}
-	return buildQoderChatRequest(req.Body, modelConfig, creds, time.Now().UnixMilli())
+	return buildQoderChatRequestWithAttachments(ctx, req.Body, modelConfig, creds, time.Now().UnixMilli(), region, req.Client, nil)
 }
 
 // qoderRequestModelKey reads the wire model id and reduces it to the key Qoder
@@ -493,21 +627,60 @@ func qoderRewoundStreamError(body []byte) error {
 		if err := json.Unmarshal(frame, &chunk); err != nil {
 			continue
 		}
+		// A billing/quota refusal is emitted as a plain `error` envelope with
+		// its own status (403). Without this branch it reached the caller as a
+		// 200 body carrying an error, which EmptyUpstreamError turned into a
+		// 502 — a gateway fault rather than the quota refusal upstream meant,
+		// so chatCore could not read it as insufficient_quota and fall back.
+		if billing, ok := chunk["error"].(map[string]any); ok {
+			message, _ := billing["message"].(string)
+			status := int(qoderNumber(billing["status"]))
+			if status == 0 {
+				status = http.StatusForbidden
+			}
+			if message == "" {
+				message = "qoder billing block"
+			}
+			return &proxy.UpstreamError{StatusCode: status, Body: qoderErrorBody(message, status)}
+		}
 		marker, ok := chunk["qoder_error"].(map[string]any)
 		if !ok {
 			continue
 		}
-		status, _ := marker["status"].(float64)
+		status := int(qoderNumber(marker["status"]))
 		message, _ := marker["message"].(string)
 		if message == "" {
 			message = "qoder upstream error"
 		}
 		return &proxy.UpstreamError{
-			StatusCode: int(status),
-			Body:       qoderErrorBody(message, int(status)),
+			StatusCode: status,
+			Body:       qoderErrorBody(message, status),
 		}
 	}
 	return nil
+}
+
+// qoderFirstFrameError raises a refusal Qoder put on the very first SSE frame
+// as the HTTP error it already is: 403 for a billing block (chatCore reads it
+// as insufficient_quota), the envelope's own status when it is a 4xx/5xx, and
+// 502 for anything else — the mapping upstream wrapQoderSSE uses. A refusal on
+// the first frame carries no completion bytes, so there is nothing to stream.
+func qoderFirstFrameError(envelope qoderEnvelope) error {
+	inner := qoderEnvelopeBody(envelope.Body)
+	if qoderIsBillingBlock(inner) {
+		return &proxy.UpstreamError{
+			StatusCode: http.StatusForbidden,
+			Body:       qoderErrorBody(inner, http.StatusForbidden),
+		}
+	}
+	status := envelope.StatusCodeValue
+	if status < 400 || status > 599 {
+		status = http.StatusBadGateway
+	}
+	return &proxy.UpstreamError{
+		StatusCode: status,
+		Body:       qoderErrorBody(orDefault(inner, fmt.Sprintf("upstream status %d", status)), status),
+	}
 }
 
 // qoderErrorBody wraps an upstream message in the OpenAI error envelope the
@@ -521,4 +694,53 @@ func qoderErrorBody(message string, status int) []byte {
 		},
 	})
 	return body
+}
+
+// qoderQueuedTimeout reports a model that is still capacity-throttled. 503 is
+// the retryable status: 10605/RESOURCE_LIMIT is a transient queue signal, not
+// a quota block, so callers may replay it. The "still queued" wording is
+// load-bearing — isModelQuotaText matches it, so the timeout locks the model
+// alone and never the connection. The message also names the queue so an
+// operator reading the dashboard sees "throttled upstream" rather than a
+// transport failure.
+func qoderQueuedTimeout(modelKey string, info *qoderQueueInfo, waited time.Duration) error {
+	queueType := "?"
+	if info != nil {
+		queueType = orDefault(info.QueueType, "?")
+	}
+	return &proxy.UpstreamError{
+		StatusCode: http.StatusServiceUnavailable,
+		Body: qoderErrorBody(fmt.Sprintf(
+			"qoder model %q is still queued after %ds (queueType=%s); retry shortly",
+			modelKey, int(waited.Seconds()), queueType,
+		), http.StatusServiceUnavailable),
+	}
+}
+
+// qoderQueueAttemptReserve is the time kept back from a caller's deadline so
+// the request that follows a queue window can still complete and, if it is
+// refused again, answer. Without it a window that "fits" exactly consumes the
+// whole budget and the caller learns nothing it did not already know.
+const qoderQueueAttemptReserve = 2 * time.Second
+
+// qoderQueueFitsBudget reports whether one more queue window leaves room to
+// act on the result, inside both the executor's budget and the caller's
+// deadline.
+//
+// Waiting when it cannot is what made a throttled model feel broken: Qoder
+// answers 10605 with retryAfterSeconds=30, the dashboard probe allows 45s, and
+// the gateway slept through window after window until the deadline expired —
+// so a click took 45s to learn what the first response already said. Refusing
+// here keeps the 503 and its queue reason but returns it in the time the
+// refusal took.
+func qoderQueueFitsBudget(ctx context.Context, delayMs int, waited time.Duration, maxWaitMs int) bool {
+	delay := time.Duration(delayMs) * time.Millisecond
+	if waited+delay+qoderQueueAttemptReserve > time.Duration(maxWaitMs)*time.Millisecond {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return true
+	}
+	return time.Now().Add(delay + qoderQueueAttemptReserve).Before(deadline)
 }

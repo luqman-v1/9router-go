@@ -12,6 +12,11 @@ import (
 
 var proxyBase = "http://localhost:20130"
 
+// routerClient is shared across intercepted requests: a fresh client per call
+// means a fresh transport, no idle-connection pool, and a new dial to the
+// local router for every request the MITM proxy forwards.
+var routerClient = &http.Client{Timeout: 5 * time.Minute}
+
 // FetchRouter sends a request body to the 9router proxy endpoint and returns the response.
 func FetchRouter(ctx context.Context, body []byte, endpoint string, headers http.Header, apiKey string) (*http.Response, error) {
 	url := proxyBase + endpoint
@@ -34,8 +39,7 @@ func FetchRouter(ctx context.Context, body []byte, endpoint string, headers http
 		req.Header.Set("User-Agent", ua)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Minute}
-	return client.Do(req)
+	return routerClient.Do(req)
 }
 
 // PipeSSE copies streaming SSE chunks from upstream to the mitm client response.

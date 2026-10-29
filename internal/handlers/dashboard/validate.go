@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/media"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -451,6 +452,9 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validateXiaomiTokenplan(ctx, apiKey, psd)
 	case "grok-web":
 		return validateGrokWeb(ctx, apiKey)
+	case "uc-web":
+		valid, message := media.ValidateUcWebCookie(ctx, apiKey)
+		return validateOutcome{valid: valid, supported: true, message: message}
 	case "perplexity-web":
 		return validatePerplexityWeb(ctx, apiKey)
 	case "deepseek-web":
@@ -459,8 +463,42 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validateGeminiWeb(ctx, apiKey)
 	case "qoder", "qoder-cn":
 		return validateQoder(ctx, provider, apiKey, psd)
+	case "runcrate":
+		// Probe the billing/balance endpoint to validate the API key.
+		headers := validateAuthHeaders(cfg, apiKey)
+		headers["Accept"] = "application/json"
+		status, _, err := validateProbeDo(ctx, http.MethodGet,
+			"https://www.runcrate.ai/api/v1/billing/balance", headers, nil)
+		if err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return validateOutcome{supported: true, message: "Invalid API key"}
+		}
+		if status < 200 || status >= 300 {
+			return validateOutcome{supported: true, message: fmt.Sprintf("Runcrate API error (%d)", status)}
+		}
+		return validateOutcome{valid: true, supported: true}
 	case "v1m":
 		return validateV1M(ctx, apiKey)
+	case "commandcode":
+		// The registry's /alpha/generate consumes credits and needs a
+		// conversation id, so only whoami can validate a key against this
+		// upstream.
+		headers := validateAuthHeaders(cfg, apiKey)
+		headers["Accept"] = "application/json"
+		status, _, err := validateProbeDo(ctx, http.MethodGet,
+			strings.TrimSuffix(commandCodeAPIBase, "/")+"/alpha/whoami?limits=1", headers, nil)
+		if err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return validateOutcome{supported: true, message: "Invalid API key"}
+		}
+		if status < 200 || status >= 300 {
+			return validateOutcome{supported: true, message: fmt.Sprintf("Command Code API error (%d)", status)}
+		}
+		return validateOutcome{valid: true, supported: true}
 	case "bedrock", "bedrock-xai":
 		// A signed ListFoundationModels call. The registry's BaseURL carries a
 		// {region} placeholder, so the generic probe would dial a literal "{region}"

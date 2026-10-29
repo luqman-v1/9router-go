@@ -84,7 +84,6 @@ func ReadLocalStorage(profileDir, origin, key string) (string, error) {
 }
 
 // findLocalStorageValue locates one localStorage value in a LevelDB file.
-// findLocalStorageValue locates one localStorage value in a LevelDB file.
 //
 // The record is written as the origin, then the key, then the encoded
 // value. The value is read out of the JSON that follows, so a profile that

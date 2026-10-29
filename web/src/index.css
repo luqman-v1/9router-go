@@ -853,3 +853,45 @@ body {
 .cf-legend span[data-kind='failed']::before {
   background: #ef4444;
 }
+
+/*
+ * Animation level (Settings > Display).
+ *
+ * One attribute on <html> — set by lib/displayPrefs.ts — decides how much the
+ * dashboard animates. The rules are global on purpose: the components carry
+ * ~400 animation/transition/blur utilities between them, and threading a
+ * per-level class through every one of them would be a second convention that
+ * drifts the first time someone adds a spinner.
+ *
+ * `full` and `default` add nothing here, so an untouched install keeps exactly
+ * the behaviour it shipped with. `minimal` drops the blur and the transitions
+ * (state changes land instantly) but leaves looping animations alone, so a
+ * loading spinner still reads as "working". `off` stops those too: an icon that
+ * used to rotate now sits still next to its "Testing…" label, which is the
+ * honest thing to show when the operator asked for no motion.
+ */
+:root[data-anim-level='minimal'] *,
+:root[data-anim-level='off'] * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}
+
+:root[data-anim-level='off'] *,
+:root[data-anim-level='off'] *::before,
+:root[data-anim-level='off'] *::after {
+  animation: none !important;
+}
+
+/* The rotate in the spinner is a transform, not a keyframe on every surface:
+   Tailwind's animate-spin also sets an animation, so the rule above already
+   stops it. This keeps a spinner that is rotated by an inline style still. */
+:root[data-anim-level='off'] .animate-spin,
+:root[data-anim-level='off'] .animate-ping,
+:root[data-anim-level='off'] .animate-pulse,
+:root[data-anim-level='off'] .animate-bounce {
+  animation: none !important;
+  transform: none !important;
+  opacity: 1 !important;
+}

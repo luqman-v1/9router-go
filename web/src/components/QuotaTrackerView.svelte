@@ -10,6 +10,7 @@
     api,
     type CodexResetCredit,
     type ConnectionUsageResponse,
+    type GLMResetCard,
     type ProviderConnection,
   } from '../api/client'
   import {
@@ -332,6 +333,17 @@
   let resetCreditConfirming = $state(false)
   let resetCreditPending = $state<CodexResetCredit | null>(null)
 
+  // GLM Reset Cards (Z.ai international). Mirrors the Codex reset credits flow.
+  let glmResetCardConn = $state<ProviderConnection | null>(null)
+  let glmResetCardList = $state<GLMResetCard[]>([])
+  let glmResetCardSelected = $state('')
+  let glmResetCardLoading = $state(false)
+  let glmResetCardConsuming = $state(false)
+  let glmResetCardError = $state('')
+  let glmResetCardCount = $state(0)
+  let glmResetCardConfirming = $state(false)
+  let glmResetCardPending = $state<GLMResetCard | null>(null)
+
   // Redeeming spends the credit for good, so the chooser is two-step: pick a
   // credit, then confirm the irreversible action. Ported from OmniRoute's
   // CodexResetCreditsModal.
@@ -422,6 +434,89 @@
       resetCreditError = err instanceof Error ? err.message : 'Failed to redeem the reset credit.'
     } finally {
       resetCreditConsuming = false
+    }
+  }
+
+  // GLM Reset Cards handlers
+  function requestGlmResetCard(credit: GLMResetCard) {
+    if (glmResetCardConsuming) return
+    glmResetCardPending = credit
+    glmResetCardConfirming = true
+    glmResetCardError = ''
+  }
+
+  function backToGlmResetCardList() {
+    if (glmResetCardConsuming) return
+    glmResetCardConfirming = false
+    glmResetCardPending = null
+    glmResetCardError = ''
+  }
+
+  function closeGlmResetCards() {
+    if (glmResetCardConsuming) return
+    glmResetCardConn = null
+    glmResetCardList = []
+    glmResetCardSelected = ''
+    glmResetCardError = ''
+    glmResetCardCount = 0
+    glmResetCardConfirming = false
+    glmResetCardPending = null
+  }
+
+  async function openGlmResetCards(conn: ProviderConnection) {
+    glmResetCardConn = conn
+    glmResetCardList = []
+    glmResetCardSelected = ''
+    glmResetCardError = ''
+    glmResetCardCount = 0
+    glmResetCardConfirming = false
+    glmResetCardPending = null
+    glmResetCardLoading = true
+    try {
+      const res = await api.getGlmResetCards(conn.id)
+      if (res?.error) {
+        glmResetCardError = res.error
+        glmResetCardList = []
+        return
+      }
+      glmResetCardList = res?.cards ?? []
+      glmResetCardCount = res?.availableCount ?? 0
+      // The server returns them soonest-expiry first, so the default choice is
+      // the one that frees the quota soonest.
+      glmResetCardSelected = glmResetCardList[0]?.recordId ?? ''
+    } catch (err) {
+      glmResetCardError = err instanceof Error ? err.message : 'Failed to load GLM reset cards.'
+    } finally {
+      glmResetCardLoading = false
+    }
+  }
+
+  async function confirmGlmResetCard() {
+    const conn = glmResetCardConn
+    const credit = glmResetCardPending
+    if (!conn || !credit || glmResetCardConsuming) return
+    glmResetCardConsuming = true
+    glmResetCardError = ''
+    try {
+      const res = await api.redeemGlmResetCard(conn.id, { recordId: credit.recordId, type: credit.type })
+      if (res?.error) {
+        glmResetCardError = res.error
+        return
+      }
+      if (!res?.reset) {
+        glmResetCardError = res?.message || 'Failed to redeem the reset card.'
+        return
+      }
+      glmResetCardConn = null
+      glmResetCardList = []
+      glmResetCardSelected = ''
+      // The quota windows are what the user reset, so re-read them rather than
+      // leaving a stale reading on screen.
+      await refreshProvider(conn.id, conn.provider)
+    } catch (err) {
+      glmResetCardError = err instanceof Error ? err.message : 'Failed to redeem the GLM reset card.'
+    } finally {
+      glmResetCardConsuming = false
     }
   }
 
@@ -1272,6 +1367,24 @@
                   </button>
                 {/if}
 
+                {#if conn.provider === 'glm'}
+                  {@const resetCardsObj = (quota?.raw as { resetCards?: { availableCount?: number } } | undefined)?.resetCards}
+                  {@const resetCardCount = resetCardsObj?.availableCount ?? 0}
+                  <button
+                    type="button"
+                    disabled={isLoading || rowBusy || glmResetCardConsuming}
+                    onclick={() => openGlmResetCards(conn)}
+                    aria-label="Redeem a GLM reset card"
+                    title={resetCardCount > 0
+                      ? `Redeem a GLM reset card (${resetCardCount} available)`
+                      : 'Check GLM reset cards'}
+                    class="flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {resetCardCount > 0 ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10' : 'border-border-subtle bg-surface-2 text-text-muted'}"
+                  >
+                    <span class="material-symbols-outlined text-[15px]">restart_alt</span>
+                    <span>{resetCardCount}</span>
+                  </button>
+                {/if}
+
                 {#if (conn.provider === 'claude' || conn.provider === 'codex') && conn.authType === 'oauth'}
                   {@const isAutoPingActive = autoPingMaps[conn.provider]?.[conn.id] === true}
                   {@const hasSchedule =
@@ -1646,6 +1759,137 @@
             type="button"
             onclick={closeResetCredits}
             disabled={resetCreditConsuming}
+            class="px-3 py-2 rounded-lg border border-border text-xs font-semibold text-text-main hover:bg-surface-2 transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            Close
+          </button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if glmResetCardConn}
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div
+      class="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
+      onclick={closeGlmResetCards}
+      role="presentation"
+    ></div>
+    <div class="relative w-full max-w-md bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-elev)] p-6">
+      <div class="flex items-center justify-between pb-3 border-b border-border-subtle mb-4">
+        <h2 class="text-lg font-semibold text-text-main">Redeem a GLM reset card</h2>
+        <button
+          type="button"
+          onclick={closeGlmResetCards}
+          disabled={glmResetCardConsuming}
+          class="text-text-muted hover:text-text-main transition-colors disabled:opacity-50 cursor-pointer"
+          aria-label="Close"
+        >
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+
+      {#if glmResetCardConfirming && glmResetCardPending}
+        <div class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+          <div class="flex items-start gap-3">
+            <span class="material-symbols-outlined text-amber-500">warning</span>
+            <div class="min-w-0">
+              <p class="font-semibold text-text-main">Redeem this reset card?</p>
+              <p class="mt-1 text-sm text-text-muted">
+                This will immediately reset your GLM quota window. The card will be consumed permanently.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="mt-3 rounded-lg border border-border-subtle px-3 py-2.5">
+          <p class="text-sm font-medium text-text-main">
+            {glmResetCardPending.type === 'FIVE_HOUR' ? '5-Hour Reset' : 'Weekly Reset'}
+          </p>
+          <p class="mt-0.5 text-[11px] text-text-muted">
+            Expires {new Date(glmResetCardPending.expiresAt).toLocaleString()}
+          </p>
+        </div>
+        {#if glmResetCardError}
+          <p class="mt-3 text-xs text-red-500">{glmResetCardError}</p>
+        {/if}
+      {:else}
+      <p class="text-xs text-text-muted mb-4">
+        Redeeming a card resets the GLM usage window immediately instead of waiting for the
+        countdown to run out. FIVE_HOUR cards reset the 5-hour window; WEEK cards reset the weekly quota.
+      </p>
+
+      {#if glmResetCardLoading}
+        <p class="text-sm text-text-muted py-4 text-center">Loading reset cards…</p>
+      {:else if glmResetCardError && glmResetCardList.length === 0}
+        <p class="text-sm text-red-500 py-4 text-center">{glmResetCardError}</p>
+      {:else if glmResetCardList.length === 0 && glmResetCardCount > 0}
+        <p class="text-sm text-text-muted py-4 text-center">
+          Card details are currently unavailable. Refresh and try again.
+        </p>
+      {:else if glmResetCardList.length === 0}
+        <p class="text-sm text-text-muted py-4 text-center">No reset cards are available on this account.</p>
+      {:else}
+        <div class="space-y-2 max-h-64 overflow-y-auto">
+          {#each glmResetCardList as credit, index (credit.recordId)}
+            <div
+              class="flex flex-col gap-3 rounded-lg border px-3 py-2.5 sm:flex-row sm:items-center {glmResetCardSelected ===
+              credit.recordId
+                ? 'border-primary/40 bg-primary/5'
+                : 'border-border-subtle'}"
+            >
+              <span class="min-w-0 flex-1">
+                <span class="block text-sm font-medium text-text-main">
+                  {credit.type === 'FIVE_HOUR' ? '5-Hour Reset' : 'Weekly Reset'}
+                  {#if index === 0}
+                    <span class="ml-1 text-[10px] font-semibold text-primary">recommended</span>
+                  {/if}
+                </span>
+                <span class="block text-[11px] text-text-muted">
+                  Expires {new Date(credit.expiresAt).toLocaleString()}
+                </span>
+              </span>
+              <button
+                type="button"
+                onclick={() => requestGlmResetCard(credit)}
+                disabled={glmResetCardConsuming}
+                class="shrink-0 px-2.5 py-1.5 rounded-lg bg-primary text-[11px] font-semibold text-white hover:bg-primary-hover transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                Redeem
+              </button>
+            </div>
+          {/each}
+        </div>
+
+        {#if glmResetCardError}
+          <p class="mt-3 text-xs text-red-500">{glmResetCardError}</p>
+        {/if}
+      {/if}
+      {/if}
+
+      <div class="flex justify-end gap-2 mt-5">
+        {#if glmResetCardConfirming && glmResetCardPending}
+          <button
+            type="button"
+            onclick={backToGlmResetCardList}
+            disabled={glmResetCardConsuming}
+            class="px-3 py-2 rounded-lg border border-border text-xs font-semibold text-text-main hover:bg-surface-2 transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            Back
+          </button>
+          <button
+            type="button"
+            onclick={confirmGlmResetCard}
+            disabled={glmResetCardConsuming}
+            class="px-3 py-2 rounded-lg bg-primary text-xs font-semibold text-white hover:bg-primary-hover transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            {glmResetCardConsuming ? 'Redeeming…' : 'Redeem card'}
+          </button>
+        {:else}
+          <button
+            type="button"
+            onclick={closeGlmResetCards}
+            disabled={glmResetCardConsuming}
             class="px-3 py-2 rounded-lg border border-border text-xs font-semibold text-text-main hover:bg-surface-2 transition-colors disabled:opacity-50 cursor-pointer"
           >
             Close

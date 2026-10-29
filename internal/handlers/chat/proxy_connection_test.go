@@ -181,7 +181,7 @@ func TestRelayPoolAssignedToNoAuthProviderUsesRelayHeaders(t *testing.T) {
 	if got := cfg.StaticHeaders["x-relay-target"]; got != "https://opencode.ai" {
 		t.Errorf("x-relay-target = %q, want https://opencode.ai", got)
 	}
-	if got := cfg.StaticHeaders["x-relay-path"]; got != "/inference/v1/chat/completions" {
-		t.Errorf("x-relay-path = %q, want /inference/v1/chat/completions", got)
+	if got := cfg.StaticHeaders["x-relay-path"]; got != "/inference/openai/v1/chat/completions" {
+		t.Errorf("x-relay-path = %q, want /inference/openai/v1/chat/completions", got)
 	}
 }

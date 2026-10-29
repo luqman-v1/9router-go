@@ -153,7 +153,7 @@ func BuildZedCompletionBody(openAIRequest []byte, wire ZedWireModel, threadID st
 	if threadID = strings.TrimSpace(threadID); threadID != "" {
 		envelope["thread_id"] = threadID
 	}
-	payload, merr := json.Marshal(envelope)
+	payload, merr := marshalStable(envelope)
 	if merr != nil {
 		return nil, fmt.Errorf("zed: marshal completion envelope: %w", merr)
 	}
@@ -164,12 +164,13 @@ func BuildZedCompletionBody(openAIRequest []byte, wire ZedWireModel, threadID st
 // envelope. The OpenAI→Claude request conversion is the repo's own
 // (EnsureClaudeMessagesFor), so tools, tool_choice, system extraction and the
 // alternating-role invariant behave exactly as they do on every other
-// Claude-shaped lane. Anthropic's capability row is the one consulted for the
-// thinking shape: this body is literally an Anthropic request.
+// Claude-shaped lane. The lane id "zed" (not the wire provider "anthropic") is
+// the one consulted for the thinking shape: capabilities pins claude-haiku-5-5
+// to adaptive thinking on this lane, which another provider's row would not see.
 func zedClaudeProviderRequest(openAIBody []byte, model string) (map[string]any, error) {
 	claudeBody := openAIBody
 	if !zedBodyIsClaude(openAIBody) {
-		claudeBody = EnsureClaudeMessagesFor(openAIBody, "anthropic", model)
+		claudeBody = EnsureClaudeMessagesFor(openAIBody, "zed", model)
 	}
 
 	var body map[string]any
@@ -186,6 +187,12 @@ func zedClaudeProviderRequest(openAIBody []byte, model string) (map[string]any, 
 		body["max_tokens"] = zedDefaultMaxOutputTokens
 	}
 
+	// The Zed Claude lane serves adaptive thinking for claude-haiku-5-5, and
+	// Anthropic rejects temperature on a thinking request unless it is exactly
+	// 1 ("may only be set to 1 when thinking is enabled or in adaptive mode").
+	// Editors send temperature on every chat turn, so the sampling knob is
+	// dropped here rather than forwarded as a value the backend refuses.
+	delete(body, "temperature")
 	// The Messages API requires content to be an array of blocks. The shared
 	// converter leaves a plain string alone on the plain-text path, so the
 	// array is enforced here — on the envelope that actually goes upstream.

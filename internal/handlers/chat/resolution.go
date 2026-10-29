@@ -9,6 +9,7 @@ import (
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
+	"9router/proxy/internal/thinking"
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -55,9 +56,9 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 			Transport: transport,
 			Timeout:   0, // no timeout for streaming support
 		},
-		TokenSaver:  cfg,
+		TokenSaver:    cfg,
 		SemanticCache: sc,
-		stickyState: make(map[string]*comboStickyState),
+		stickyState:   make(map[string]*comboStickyState),
 	}
 }
 
@@ -152,7 +153,6 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 	return &ModelInfo{Provider: provider, Model: model}
 }
 
-
 // flattenComboModels recursively expands combo-name entries into concrete
 // "provider/model" leaves, keeping order and deduping consecutive identical
 // leaves so a nested combo can't create pointless rotation slots. Guards
@@ -226,6 +226,10 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	}
 	// Strip [1m] context marker before resolution (PR #3691)
 	modelStr = stripModelContextMarker(modelStr)
+	// A "(level)" thinking suffix is a request override, not part of the model
+	// id, so it comes off before the name is resolved against the aliases and
+	// the combos — otherwise "mycombo(high)" resolves to neither.
+	modelStr, _ = thinking.ParseSuffix(modelStr)
 
 	// 1. Standard format: "provider/model"
 	if strings.Contains(modelStr, "/") {
@@ -435,6 +439,28 @@ func (h *ChatHandler) resolvePrefixProvider(prefix string, model string) *ModelI
 		Model:        model,
 		ConnectionID: conn.ID,
 	}
+}
+
+// wireModelForNode rewrites a client-facing model id onto the id the node's
+// upstream gateway serves. A provider node publishes its models as
+// "<prefix>/<id>", and the prefix only routes the request to the node — the
+// gateway beyond it has never heard of it, so forwarding the prefixed id
+// verbatim answers 400 "no model endpoints" (kiro and zed strip their own
+// prefixes for the same reason). Only an exact "<prefix>/" match is removed;
+// a node with no prefix, a model requested unprefixed, and a registry
+// provider all pass through unchanged.
+func (h *ChatHandler) wireModelForNode(provider, model string) string {
+	if !isCompatibleProviderID(provider) {
+		return model
+	}
+	prefix := h.providerNodePrefixMap()[provider]
+	if prefix == "" {
+		return model
+	}
+	if rest, ok := strings.CutPrefix(model, prefix+"/"); ok {
+		return rest
+	}
+	return model
 }
 
 // resolveComboRouting retrieves the routing strategy, sticky limit, and judge model

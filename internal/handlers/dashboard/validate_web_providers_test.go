@@ -179,7 +179,7 @@ func TestValidateDeepSeekWebSendsBrowserFingerprint(t *testing.T) {
 	for header, want := range map[string]string{
 		"Sec-Fetch-Mode": "cors",
 		"Sec-Fetch-Site": "same-origin",
-		"Referer":        "https://chat.deepseek.com/sign_in",
+		"Referer":        "https://chat.deepseek.com/",
 		"User-Agent":     executor.DeepSeekWebUserAgent(),
 	} {
 		if got := probe.headers.Get(header); got != want {

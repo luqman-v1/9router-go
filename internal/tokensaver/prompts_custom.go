@@ -236,7 +236,7 @@ func isSystemRole(role any) bool {
 }
 
 func marshalBody(req map[string]any) ([]byte, bool) {
-	out, err := json.Marshal(req)
+	out, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		return nil, false
 	}

@@ -14,6 +14,7 @@
     Zap
   } from 'lucide-svelte'
   import { api, type Settings } from '../api/client'
+  import ModelHealthPanel from './settings/ModelHealthPanel.svelte'
 
   let {
     settings = {},
@@ -269,6 +270,17 @@
           <span>Reset Cooldown</span>
         </button>
       </div>
+    </div>
+    <!-- Card 3: Model Health -->
+    <div class="p-6 rounded-xl bg-surface border border-border space-y-4 shadow-xl lg:col-span-2">
+      <div class="flex items-center gap-2">
+        <span class="material-symbols-outlined text-[16px] text-brand-500">monitor_heart</span>
+        <h3 class="font-headline text-sm font-bold text-text-main">Model Health</h3>
+        <span class="font-code text-[10px] text-text-muted bg-surface-2 px-2 py-0.5 rounded border border-border">
+          automatic
+        </span>
+      </div>
+      <ModelHealthPanel />
     </div>
   </div>
 </div>

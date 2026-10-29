@@ -94,7 +94,11 @@ func RunDeepSeek(ctx context.Context) (*DeepSeekResult, error) {
 	if binary == "" {
 		return nil, ErrNoBrowser
 	}
-	if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+	// Same gate as the Gemini launch: the resolved environment decides, so a
+	// service-manager gateway on a desktop with a live session is not refused
+	// merely for lacking the display variables.
+	displayEnv := resolveDisplayEnv()
+	if runtime.GOOS == "linux" && !envNamesDisplay(displayEnv) {
 		return nil, errors.New("this machine has no display, so the browser cannot be opened; " +
 			"use an Incognito window instead and paste the userToken from chat.deepseek.com localStorage")
 	}
@@ -121,6 +125,7 @@ func RunDeepSeek(ctx context.Context) (*DeepSeekResult, error) {
 		"--new-window",
 		DeepSeekAppURL,
 	)
+	command.Env = displayEnv
 	if err := command.Start(); err != nil {
 		return nil, fmt.Errorf("open the browser: %w", err)
 	}

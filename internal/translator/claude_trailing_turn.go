@@ -123,7 +123,7 @@ func EnsureTrailingUserTurnBody(body []byte, intentionalPrefill bool) []byte {
 		return body
 	}
 	req["messages"] = repaired
-	out, err := json.Marshal(req)
+	out, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		return body
 	}

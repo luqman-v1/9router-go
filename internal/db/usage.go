@@ -356,6 +356,77 @@ func (r *Repo) GetRequestDetailPerf() ([]RequestDetailPerfRow, error) {
 	return res, nil
 }
 
+// ModelLatencyAgg is one model's mean responsiveness over the retained window.
+// Either average may be zero — a model whose responses never reported a
+// first-token time has a total but no TTFT — so a consumer must read the
+// Samples count alongside the numbers rather than treating zero as "fast".
+type ModelLatencyAgg struct {
+	Provider string
+	Model    string
+	TTFTMs   int64
+	TotalMs  int64
+	Samples  int64
+}
+
+// GetModelLatency aggregates the requestDetails ring into one mean-latency row
+// per provider/model pair. It lives beside the read it summarises so the two
+// cannot disagree about what a buffered flush means: the node-health table
+// folds the same rows in the handler, and a second implementation of that fold
+// would drift the moment either changed its mind.
+//
+// The aggregation is done in Go rather than SQL because the fold has a rule a
+// query cannot express cheaply — a burst faster than 300 tok/s is a buffered
+// flush, so the end-to-end total is the honest duration there, and dampening it
+// keeps fast-but-honest streams from reading as slow ones.
+func (r *Repo) GetModelLatency() ([]ModelLatencyAgg, error) {
+	rows, err := r.GetRequestDetailPerf()
+	if err != nil {
+		return nil, err
+	}
+	type acc struct {
+		total, count    int64
+		ttft, ttftCount int64
+	}
+	byKey := make(map[string]*acc, len(rows))
+	keyOf := func(provider, model string) string { return provider + "|" + model }
+	for _, row := range rows {
+		if row.TotalMs <= 0 {
+			continue
+		}
+		k := keyOf(row.Provider, row.Model)
+		a := byKey[k]
+		if a == nil {
+			a = &acc{}
+			byKey[k] = a
+		}
+		a.total += row.TotalMs
+		a.count++
+		if row.TTFTMs > 0 {
+			a.ttft += row.TTFTMs
+			a.ttftCount++
+		}
+	}
+	out := make([]ModelLatencyAgg, 0, len(byKey))
+	for k, a := range byKey {
+		provider, model := k, ""
+		for i := range len(k) {
+			if k[i] == '|' {
+				provider, model = k[:i], k[i+1:]
+				break
+			}
+		}
+		agg := ModelLatencyAgg{Provider: provider, Model: model, Samples: a.count}
+		if a.count > 0 {
+			agg.TotalMs = a.total / a.count
+		}
+		if a.ttftCount > 0 {
+			agg.TTFTMs = a.ttft / a.ttftCount
+		}
+		out = append(out, agg)
+	}
+	return out, nil
+}
+
 // UsageChartRow is one usageHistory row as the chart needs it: the bucket
 // timestamp, the model the family split is derived from, and the token and
 // cost totals. The chart reads no other column — in particular not the tokens

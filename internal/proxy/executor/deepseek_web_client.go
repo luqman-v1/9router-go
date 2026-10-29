@@ -477,18 +477,29 @@ func (t deepSeekTurn) createSession(ctx context.Context, accessToken string) (st
 // deleteSession closes an upstream chat session. Best effort by design: a
 // session left open is invisible to the user, so a failure here must not fail a
 // turn that already produced an answer.
+//
+// The Referer names the conversation's own page, which is the page a person
+// deletes a conversation from.
 func (t deepSeekTurn) deleteSession(ctx context.Context, accessToken, sessionID string) {
 	if sessionID == "" {
 		return
 	}
 	payload := map[string]any{"chat_session_id": sessionID}
-	if _, err := t.do(ctx, http.MethodPost, t.endpoints.sessionDelete, accessToken, nil, payload); err != nil {
+	if _, err := t.do(ctx, http.MethodPost, t.endpoints.sessionDelete, accessToken, map[string]string{
+		"referer": deepSeekChatPageURL(t.origin, sessionID),
+	}, payload); err != nil {
 		log.Debug("deepseek-web", "session cleanup failed", "error", err)
 	}
 }
 
 // attestationHeaders returns the client-attestation headers for a completion
 // call, or an empty map when stealth is off.
+//
+// The values are fetched through the turn itself rather than a bare client,
+// so they are collected over the same browser-fidelity transport the
+// completion will ride: the attestation hosts are part of the site's
+// anti-bot pipeline, and a value a Go TLS handshake collected is a value
+// that contradicts the Chrome handshake that presents it.
 //
 // The fetch is best effort by design: a cached value is used until its TTL
 // passes, a failed refresh falls back to the stale one, and a turn with no
@@ -498,7 +509,7 @@ func (t deepSeekTurn) attestationHeaders(ctx context.Context) map[string]string 
 	if !t.stealth.enabled {
 		return nil
 	}
-	return deepSeekHif.headers(ctx, t.client, t.origin)
+	return deepSeekHif.headers(ctx, t)
 }
 
 // deepSeekPowResponse is the proof-of-work answer, base64-encoded into the
@@ -544,9 +555,15 @@ func solveDeepSeekPow(ctx context.Context, challenge deepSeekPowChallenge) (stri
 
 // requestPow fetches and answers a fresh challenge for one completion attempt.
 // The challenge is single-use upstream, so every attempt needs a new one.
-func (t deepSeekTurn) requestPow(ctx context.Context, accessToken string) (string, error) {
+//
+// The challenge is requested for one conversation, and the browser requests
+// it from that conversation's page, so the Referer names the page rather
+// than the site root.
+func (t deepSeekTurn) requestPow(ctx context.Context, accessToken, chatSessionID string) (string, error) {
 	payload := map[string]any{"target_path": deepSeekCompletionPath}
-	data, err := t.do(ctx, http.MethodPost, t.endpoints.powChallenge, accessToken, nil, payload)
+	data, err := t.do(ctx, http.MethodPost, t.endpoints.powChallenge, accessToken, map[string]string{
+		"referer": deepSeekChatPageURL(t.origin, chatSessionID),
+	}, payload)
 	if err != nil {
 		return "", err
 	}
@@ -585,7 +602,7 @@ type deepSeekCompletionRequest struct {
 // completion endpoint streams, so holding an open body is the only way to avoid
 // buffering a whole answer.
 func (t deepSeekTurn) completion(ctx context.Context, accessToken string, request deepSeekCompletionRequest) (*http.Response, error) {
-	powAnswer, err := t.requestPow(ctx, accessToken)
+	powAnswer, err := t.requestPow(ctx, accessToken, request.ChatSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -597,6 +614,10 @@ func (t deepSeekTurn) completion(ctx context.Context, accessToken string, reques
 
 	allHeaders := t.webHeaders(map[string]string{
 		"x-ds-pow-response": powAnswer,
+		// The completion is issued from the conversation's own page, and a
+		// browser writes that page as the Referer on every fetch it makes
+		// there.
+		"referer": deepSeekChatPageURL(t.origin, request.ChatSessionID),
 	})
 	// The attestation headers belong to a completion call, not to the session
 	// or challenge calls: that is where the browser attaches them, and sending

@@ -21,6 +21,7 @@ import (
 	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/oauth"
 	"9router/proxy/internal/translator"
+	"9router/proxy/internal/updater"
 )
 
 // CredentialFallbacks maps search/tool providers to the primary chat provider whose API key can be reused.
@@ -626,7 +627,10 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		// field is typed as "http://192.168.1.10:11434"), and a host alone names
 		// no route, so the POST used to land on the server root. A URL that
 		// already names a route is passed through untouched.
-		baseURL := chatCompletionsURL(connData.BaseURL)
+		//
+		// A custom node's baseUrl is a PREFIX rather than an endpoint the
+		// operator named, so it is completed by a different rule (#768).
+		baseURL := compatibleNodeLaneURL(provider, connectionAPIType(connData), connData.BaseURL)
 		if cfg, ok := providers.KnownProviders[provider]; ok {
 			cloned := cfg
 			cloned.BaseURL = baseURL
@@ -649,7 +653,7 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		}
 		if node != nil && nodeData != nil && nodeData.BaseURL != "" {
 			baseCfg = &providers.ProviderConfig{
-				BaseURL:    chatCompletionsURL(nodeData.BaseURL),
+				BaseURL:    compatibleNodeLaneURL(provider, nodeData.APIType, nodeData.BaseURL),
 				AuthHeader: constants.HeaderAuthorization,
 				AuthScheme: constants.AuthSchemeBearer,
 			}
@@ -687,11 +691,140 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 			cloned := *baseCfg
 			cloned.StaticHeaders = internalproxy.BuildEdgeRelayHeaders(baseCfg.BaseURL, cloned.StaticHeaders)
 			cloned.BaseURL = relayURL
-			return h.applyProviderOverrides(provider, &cloned), nil
+			return h.applyProviderOverrides(provider, h.withClineIdentity(provider, &cloned)), nil
 		}
 	}
 
-	return h.applyProviderOverrides(provider, baseCfg), nil
+	return h.applyProviderOverrides(provider, h.withClineIdentity(provider, baseCfg)), nil
+}
+
+// withClineIdentity stamps the 9Router client identity onto cline/clinepass
+// configs (upstream buildClineHeaders). The version comes from the linked
+// binary; the registry literal cannot carry it (import cycle), so it is
+// applied here per request on the already-cloned config.
+func (h *ChatHandler) withClineIdentity(provider string, cfg *providers.ProviderConfig) *providers.ProviderConfig {
+	if cfg == nil || (provider != "cline" && provider != "clinepass") {
+		return cfg
+	}
+	cloned := *cfg
+	cloned.StaticHeaders = providers.ClineIdentityHeaders(updater.CurrentVersion, cfg.StaticHeaders)
+	return &cloned
+}
+
+// compatibleNodeLaneURL completes a custom provider node's baseUrl into the
+// lane its node type and apiType name, and leaves a URL that already names a
+// lane untouched.
+//
+// Upstream treats a node's baseUrl as a PREFIX and appends the lane
+// unconditionally (open-sse/executors/base.js buildUrl: `${normalized}${path}`,
+// with the path chosen by resolveOpenAICompatibleApiType). A node pointed at
+// https://developer.amd.com.cn/radeon/api/v1 therefore reaches
+// /radeon/api/v1/chat/completions there, while this port dialled the base URL
+// itself and the upstream answered 404 (#768).
+//
+// chatCompletionsURL cannot serve this case: it leaves a multi-segment path
+// alone, which is correct for the Ollama Local host field — an endpoint the
+// operator typed — and wrong for a node, whose baseUrl is a prefix by contract.
+// The two rules stay separate for that reason. The bare-host and /v1 shapes
+// resolve exactly as they did through chatCompletionsURL, so a node that
+// already worked keeps the URL it had.
+func compatibleNodeLaneURL(provider, apiType, baseURL string) string {
+	if !isCompatibleNodeProvider(provider) {
+		return chatCompletionsURL(baseURL)
+	}
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		return baseURL
+	}
+	// A base URL that already names a lane is used as-is: appending a second
+	// one would produce the same 404 this function exists to remove, and a node
+	// created before this rule may store the full route.
+	for _, lane := range compatibleNodeLanes {
+		if strings.HasSuffix(base, lane) {
+			return base
+		}
+	}
+	lane := compatibleNodeLane(provider, apiType)
+	// A URL naming no path, or only a version prefix, still needs the /v1 that
+	// makes the prefix an API root — the same completion chatCompletionsURL
+	// applies to the Ollama Local host field.
+	if compatibleNodeNeedsVersionPrefix(base) {
+		return base + "/v1" + lane
+	}
+	return base + lane
+}
+
+// compatibleNodeNeedsVersionPrefix reports whether a base URL carries no path
+// beyond its authority, so the /v1 prefix is still missing.
+func compatibleNodeNeedsVersionPrefix(base string) bool {
+	_, rest, found := strings.Cut(base, "://")
+	if !found {
+		return true
+	}
+	_, path, _ := strings.Cut(rest, "/")
+	return strings.Trim(path, "/") == ""
+}
+
+// compatibleNodeLanes are the routes a custom node baseUrl may already name.
+// A base ending in one of them is an endpoint, not a prefix. The list is the
+// parent's chatCompletionsURL route table rather than only the three lanes this
+// function appends: a node that already stored /v1/chat, /v1/completions or an
+// Ollama-shaped /api/chat was dialled as configured before this rule existed,
+// and appending a lane behind one of those would turn a working node into a
+// doubled path.
+var compatibleNodeLanes = []string{
+	"/chat/completions", "/messages", "/responses", "/completions",
+	"/chat", "/embeddings", "/api/chat", "/api/generate",
+}
+
+// compatibleNodeLane is the route a node of this type and apiType serves.
+// Anthropic-compatible nodes speak Messages, and an openai-compatible node picks
+// between Chat Completions and Responses from its apiType — the same mapping
+// upstream's buildUrl applies, including its fallback: when no apiType is stored,
+// upstream reads the node id (resolveOpenAICompatibleApiType returns "responses"
+// for a provider id containing "responses"). A connection row written before the
+// apiType sync landed carries no apiType, and a responses node created then has
+// only its id to say so.
+//
+// A custom-embedding node is deliberately NOT given an /embeddings lane here:
+// the embeddings handler derives its own URL from this one (buildEmbeddingsURL
+// swaps /chat/completions for /embeddings), so producing /embeddings here would
+// append it twice.
+func compatibleNodeLane(provider, apiType string) string {
+	switch {
+	case strings.HasPrefix(provider, "anthropic-compatible-"):
+		return "/messages"
+	case apiType == compatibleAPITypeResponses:
+		return "/responses"
+	case apiType == "" && strings.Contains(provider, compatibleAPITypeResponses):
+		return "/responses"
+	default:
+		return "/chat/completions"
+	}
+}
+
+// compatibleAPITypeResponses is the stored apiType of an openai-compatible node
+// whose upstream speaks the Responses API (upstream resolveOpenAICompatibleApiType).
+const compatibleAPITypeResponses = "responses"
+
+// isCompatibleNodeProvider reports whether a provider id belongs to a custom
+// endpoint the operator registered, matching the three node shapes the create
+// handler composes (provider_node_id.go).
+func isCompatibleNodeProvider(provider string) bool {
+	return strings.HasPrefix(provider, "openai-compatible-") ||
+		strings.HasPrefix(provider, "anthropic-compatible-") ||
+		strings.HasPrefix(provider, "custom-embedding-")
+}
+
+// connectionAPIType reads the apiType the dashboard stores on a compatible
+// node's connection, which is kept in sync with the node on create and update.
+// An absent value means Chat Completions, the same default upstream applies.
+func connectionAPIType(connData *ConnectionData) string {
+	if connData == nil || connData.ProviderSpecificData == nil {
+		return ""
+	}
+	apiType, _ := connData.ProviderSpecificData["apiType"].(string)
+	return apiType
 }
 
 // chatCompletionsURL completes a configured endpoint into the chat-completions
@@ -769,11 +902,20 @@ func isDigits(s string) bool {
 // applyProviderOverrides merges the operator's stored header overrides for a
 // provider into a per-request config.
 //
-// This is the single injection point on purpose: every executor builds its
-// outbound headers from cfg.StaticHeaders, so merging here reaches all of
-// them without each one learning the feature. It is also after the relay
-// rewrite, so a relay's own headers are on the table the override wins over —
-// which is what upstream's executor-level merge does too.
+// This is the single injection point: every executor builds its outbound
+// headers from cfg, so merging here reaches all of them without each one
+// learning the feature. It is also after the relay rewrite, so a relay's own
+// headers are on the table the override wins over — which is what upstream's
+// executor-level merge does too.
+//
+// The overrides are recorded twice, on purpose. Folding them into
+// StaticHeaders is what every forwarder already reads, so nothing that builds
+// its own header map from that field changes behaviour. Carrying them in
+// HeaderOverrides as well lets a forwarder that assembles the map itself
+// (CodeBuddy rebuilds the full channel-verification set) re-apply them after
+// its own values, which is the order upstream uses
+// (open-sse/executors/base.js:132). Without the second copy such an executor
+// silently replaces an override the dashboard accepted.
 func (h *ChatHandler) applyProviderOverrides(provider string, cfg *providers.ProviderConfig) *providers.ProviderConfig {
 	if cfg == nil || h.Repo == nil {
 		return cfg
@@ -784,6 +926,7 @@ func (h *ChatHandler) applyProviderOverrides(provider string, cfg *providers.Pro
 	}
 	merged := *cfg
 	merged.StaticHeaders = providers.MergeHeaderOverrides(cfg.StaticHeaders, stored.Headers)
+	merged.HeaderOverrides = stored.Headers
 	return &merged
 }
 

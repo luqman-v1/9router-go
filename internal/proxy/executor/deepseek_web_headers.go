@@ -79,13 +79,20 @@ func deepSeekAPIBaseHeaders(origin string) map[string]string {
 	return map[string]string{
 		"accept":          "*/*",
 		"accept-encoding": "gzip, deflate, br, zstd",
-		"accept-language": "en-US,en;q=0.9;q=0.9",
+		// The value Chrome itself serializes. The duplicated `;q=0.9;q=0.9`
+		// this provider used to send is the constant every scripted client
+		// copied from the same reference implementation — Chrome cannot even
+		// produce it — so it reads as a badge that says scripted.
+		"accept-language": "en-US,en;q=0.9",
 		"content-type":    "application/json",
-		"referer":         origin + "/sign_in",
-		"sec-fetch-dest":  "empty",
-		"sec-fetch-mode":  "cors",
-		"sec-fetch-site":  "same-origin",
-		"user-agent":      deepSeekWebUserAgent,
+		// The referer of a logged-in client is the app page it stands on.
+		// The calls that name a specific conversation override this with that
+		// conversation's page; see deepSeekChatPageURL.
+		"referer":        origin + "/",
+		"sec-fetch-dest": "empty",
+		"sec-fetch-mode": "cors",
+		"sec-fetch-site": "same-origin",
+		"user-agent":     deepSeekWebUserAgent,
 		// The site's own client sends the fetch priority on every API call.
 		// It is what a browser writes for a fetch it wants scheduled
 		// promptly, and it is the last header before the cookie in the
@@ -105,4 +112,20 @@ func deepSeekAPIBaseHeaders(origin string) map[string]string {
 func deepSeekTimezoneOffsetSeconds() int {
 	_, offsetSeconds := time.Now().Zone()
 	return offsetSeconds
+}
+
+// deepSeekChatPageURL is the page the app stands on while it talks about one
+// conversation: https://chat.deepseek.com/a/chat/s/<session id>.
+//
+// A browser sets Referer to the current page's URL on every same-origin
+// fetch, so the calls that carry a conversation — the completion and the
+// proof-of-work challenge it precedes — carry this page, not the site root.
+// The previous implementation sent /sign_in on every call, which no
+// logged-in client can produce: the sign-in page is where a user without a
+// session lands, and an Authorization header names a session.
+func deepSeekChatPageURL(origin, sessionID string) string {
+	if sessionID == "" {
+		return origin + "/"
+	}
+	return origin + "/a/chat/s/" + sessionID
 }

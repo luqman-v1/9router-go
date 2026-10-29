@@ -201,3 +201,32 @@ func TestStableOpenCodeSessionID(t *testing.T) {
 		t.Errorf("different keys share one session: %q", first)
 	}
 }
+
+// A spent-session rotation must retire exactly the session that failed: a
+// mismatched id (a race an already-rotated request won) keeps the newer
+// session and its fresh budget, the matching id swaps it for a fresh mint.
+func TestExpireStableOpenCodeSession(t *testing.T) {
+	id := proxy.StableOpenCodeSessionID("expire-a")
+
+	if proxy.ExpireStableOpenCodeSession("expire-a", "ses_wrong") {
+		t.Error("expiry with a mismatched id removed the entry")
+	}
+	if again := proxy.StableOpenCodeSessionID("expire-a"); again != id {
+		t.Errorf("failed expiry still rotated: %q -> %q", id, again)
+	}
+
+	if !proxy.ExpireStableOpenCodeSession("expire-a", id) {
+		t.Error("expiry with the matching id failed")
+	}
+	fresh := proxy.StableOpenCodeSessionID("expire-a")
+	if fresh == id {
+		t.Error("a retired stable session was reused")
+	}
+	if !proxy.IsCanonicalOpenCodeSession(fresh) {
+		t.Errorf("rotated session %q is not canonical", fresh)
+	}
+
+	if proxy.ExpireStableOpenCodeSession("expire-unknown", id) {
+		t.Error("expiry of an unknown key reported success")
+	}
+}

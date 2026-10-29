@@ -168,12 +168,16 @@ var openCodeZenModelFormats = map[string]ModelFormats{
 }
 
 // openCodeGoModelFormats mirrors open-sse/providers/registry/opencode-go.js models[].
+// The deepseek-v4.1-flash entry is upstream-curated: the family fallback only
+// matches /^deepseek-v4-(pro|flash)/, so without it the id falls to the
+// chat-only default and never reaches the /responses lane it serves.
 var openCodeGoModelFormats = map[string]ModelFormats{
 	"claude-haiku-5-5":           openCodeZenFormats(FormatClaude, FormatClaude),
 	"gemini-4-argon-contributor": openCodeZenFormats(FormatGemini, FormatGemini),
 	"longcat-2.5-preview-free":   openCodeZenFormats(FormatOpenAI, FormatOpenAI),
 	"step-5-preview":             openCodeZenFormats(FormatOpenAI, FormatOpenAI),
 	"beam-free":                  openCodeZenFormats(FormatOpenAI, FormatOpenAI),
+	"deepseek-v4.1-flash":        openCodeZenFormats(FormatOpenAI, FormatOpenAI, FormatClaude, FormatOpenAIResponses),
 }
 
 var openCodeZenResponsesFormat = openCodeZenFormats(FormatOpenAIResponses, FormatOpenAIResponses)

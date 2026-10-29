@@ -364,13 +364,16 @@ func IsZeroContentResponse(body []byte) bool {
 		t := bytes.TrimSpace(probe.Content)
 		if len(t) > 0 && t[0] == '[' {
 			var blocks []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				Thinking string `json:"thinking"`
 			}
 			if err := json.Unmarshal(t, &blocks, handlerutil.UpstreamBody); err == nil {
 				hasContent := false
 				for _, b := range blocks {
-					if (b.Type == "text" && strings.TrimSpace(b.Text) != "") || b.Type == "tool_use" {
+					if (b.Type == "text" && strings.TrimSpace(b.Text) != "") ||
+						b.Type == "tool_use" ||
+						(b.Type == "thinking" && strings.TrimSpace(b.Thinking) != "") {
 						hasContent = true
 						break
 					}

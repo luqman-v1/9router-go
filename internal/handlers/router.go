@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"9router/proxy/internal/clientconfig"
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/guardrails"
+	"9router/proxy/internal/handlers/batches"
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlers/dashboard"
 	"9router/proxy/internal/handlers/media"
@@ -84,7 +86,10 @@ func SetupRoutes(r interface {
 	r.Post("/responses", chatH.HandleResponses)
 	r.Post("/responses/compact", chatH.HandleResponsesCompact)
 	r.Post("/images/generations", mediaH.HandleImages)
+	r.Post("/images/edits", mediaH.HandleImageEdits)
 	r.Post("/audio/speech", mediaH.HandleAudioSpeech)
+	r.Post("/audio/music", mediaH.HandleAudioMusic)
+	r.Post("/v1/audio/music", mediaH.HandleAudioMusic)
 	r.Get("/audio/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/inworld/voices", mediaH.HandleAudioVoices)
@@ -92,6 +97,8 @@ func SetupRoutes(r interface {
 	r.Get("/api/media-providers/tts/deepgram/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/elevenlabs/voices", mediaH.HandleAudioVoices)
 	r.Post("/audio/transcriptions", mediaH.HandleAudioTranscriptions)
+	r.Post("/audio/sound-generation", mediaH.HandleAudioSoundGeneration)
+	r.Post("/v1/audio/sound-generation", mediaH.HandleAudioSoundGeneration)
 	r.Post("/videos/generations", mediaH.HandleVideoGenerations)
 	r.Post("/videos/edits", mediaH.HandleVideoEdits)
 	r.Post("/videos/extensions", mediaH.HandleVideoExtensions)
@@ -152,6 +159,9 @@ func SetupRoutes(r interface {
 	r.Get("/api/usage/{connectionId}", dashH.HandleGetConnectionUsage)
 	r.Get("/api/usage/{connectionId}/reset-credits", dashH.HandleListCodexResetCredits)
 	r.Post("/api/usage/{connectionId}/reset-credits/consume", dashH.HandleConsumeCodexResetCredit)
+	// GLM Reset Cards (Z.ai international)
+	r.Get("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleGetGLMResetCards)
+	r.Post("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleRedeemGLMResetCard)
 
 	// Debug Tracing Domain (p50/p95 latency per provider+model)
 	r.Get("/debug/traces", HandleDebugTraces)
@@ -210,6 +220,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 
 	r.Get("/api/usage/{connectionId}/reset-credits", dashH.HandleListCodexResetCredits)
 	r.Post("/api/usage/{connectionId}/reset-credits/consume", dashH.HandleConsumeCodexResetCredit)
+	// GLM Reset Cards (Z.ai international)
+	r.Get("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleGetGLMResetCards)
+	r.Post("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleRedeemGLMResetCard)
 
 	// Cache Analytics & Management
 	r.Get("/api/cache", dashH.HandleGetCache)
@@ -219,6 +232,28 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 
 	// Compression Analytics
 	r.Get("/api/analytics/compression", dashH.HandleGetCompressionAnalytics)
+
+	// Jailbreak: agent prompt presets + per-model binding. Registered here and in
+	// dashboard.RegisterRoutes (a tests-only table); a route added there alone
+	// 404s on the real server — the same trap as the per-node limits pair.
+	r.Get("/api/jailbreak", dashH.HandleGetJailbreak)
+	r.Put("/api/jailbreak", dashH.HandlePutJailbreak)
+	r.Get("/api/jailbreak/presets", dashH.HandleListJailbreakPresets)
+	r.Put("/api/jailbreak/presets", dashH.HandlePutJailbreakPreset)
+	r.Delete("/api/jailbreak/presets/{id}", dashH.HandleDeleteJailbreakPreset)
+	r.Post("/api/jailbreak/presets/{id}/duplicate", dashH.HandleDuplicateJailbreakPreset)
+	r.Get("/api/jailbreak/models", dashH.HandleListJailbreakModels)
+	r.Get("/api/jailbreak/models/catalog", dashH.HandleJailbreakModelCatalog)
+	r.Put("/api/jailbreak/models", dashH.HandleSetJailbreakModel)
+	r.Delete("/api/jailbreak/models", dashH.HandleDeleteJailbreakModel)
+	r.Get("/api/jailbreak/excludes", dashH.HandleGetJailbreakExcludes)
+	r.Put("/api/jailbreak/excludes", dashH.HandlePutJailbreakExcludes)
+	r.Post("/api/jailbreak/import", dashH.HandleImportJailbreak)
+	r.Post("/api/jailbreak/resolve", dashH.HandleExplainJailbreak)
+	r.Get("/api/jailbreak/usage", dashH.HandleJailbreakUsage)
+	r.Post("/api/jailbreak/preview", dashH.HandlePreviewJailbreak)
+	r.Put("/api/jailbreak/presets/order", dashH.HandleReorderJailbreakPresets)
+	r.Post("/api/jailbreak/presets/upload", dashH.HandleUploadJailbreakPreset)
 
 	r.Get("/api/provider-nodes", dashH.HandleGetProviderNodes)
 	r.Post("/api/provider-nodes", dashH.HandleCreateProviderNode)
@@ -232,6 +267,7 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Put("/api/provider-nodes/{id}/limits", dashH.HandleUpdateProviderNodeLimits)
 	r.Post("/api/provider-nodes/{id}/quota/reset", dashH.HandleResetProviderNodeQuota)
 	r.Get("/api/providers/{id}/models", dashH.HandleGetConnectionModels)
+	r.Get("/api/providers/{id}/export-keys", dashH.HandleExportProviderKeys)
 	// Bulk removal of a node's imported models; the single-row form stays at
 	// DELETE /api/models/custom/{key}.
 	r.Delete("/api/providers/{id}/models", dashH.HandleDeleteProviderModels)
@@ -253,6 +289,8 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	// smart-rules editor shipped.
 	r.Post("/api/combos/reconcile", dashH.HandleReconcileSmartCombos)
 	r.Post("/api/combos/{id}/smart/preview", dashH.HandleComboSmartPreview)
+	r.Post("/api/combos/{id}/smart/load", dashH.HandleComboSmartLoad)
+	r.Get("/api/models/meta", dashH.HandleGetModelMeta)
 	r.Delete("/api/combos/{id}", dashH.HandleDeleteCombo)
 
 	r.Get("/api/proxy-pools", dashH.HandleGetProxyPools)
@@ -304,12 +342,16 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	// probes would panic instead of reaching the provider.
 	mediaH := media.NewMediaHandler(repo, nil, chatH)
 	r.Post("/api/models/test", mediaH.HandleTestModel)
+	r.Post("/api/combos/{id}/test-models", mediaH.HandleComboTestModels)
 	r.Get("/api/media-providers/tts/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/inworld/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/minimax/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/deepgram/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/elevenlabs/voices", mediaH.HandleAudioVoices)
 	r.Put("/api/models/disabled/{provider}", dashH.HandleSaveDisabledModels)
+	r.Post("/api/models/auto-disable", dashH.HandleAutoDisableModels)
+	r.Get("/api/models/health", dashH.HandleGetModelHealth)
+	r.Put("/api/models/health", dashH.HandleSaveModelHealth)
 	r.Get("/api/models/alias", dashH.HandleGetModelAliases)
 	r.Get("/api/models/deprecations", dashH.HandleGetModelDeprecations)
 	r.Post("/api/models/sync", dashH.HandleSyncProviderModels)
@@ -330,6 +372,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/settings/database/prune-usage", dashH.HandlePruneUsageHistory)
 	r.Post("/api/settings/database/vacuum", dashH.HandleVacuumDatabase)
 	r.Post("/api/settings/proxy-test", dashH.HandleProxyTest)
+	// White-label logo upload: the file lands under DATA_DIR/uploads and
+	// appLogoUrl is rewritten to the path this gateway serves it from.
+	r.Post("/api/settings/logo", dashH.HandleUploadLogo)
 
 	// Currency rates (profile page): reads live USD rates for the catalog codes
 	// and stores the subset the display uses.
@@ -503,6 +548,13 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	if versionH != nil {
 		dashH.SemanticCache = versionH.SemanticCache
 	}
+	// Operator-supplied dashboard assets (the white-label logo). Behind the
+	// same page gate as /dashboard/*, so an install that requires a login does
+	// not serve its branding to an anonymous caller.
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.RequireDashboardPage(repo))
+		r.Get("/uploads/*", dashH.HandleServeUploads)
+	})
 	r.Get("/api/auth/status", dashH.HandleAuthStatus)
 	r.Post("/api/auth/login", dashH.HandleAuthLogin)
 	r.Post("/api/auth/logout", dashH.HandleAuthLogout)
@@ -577,6 +629,31 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 		r.Use(middleware.RequireRateLimit(rateLimiter, defaults, repo))
 		r.Use(guardrails.Inbound(guardrailStore, guardrailAudit(repo), guardrailSwitch))
 		engineChatH = SetupRoutes(r, repo, ts)
+
+		fileH := batches.NewFileHandler(repo)
+		batchH := batches.NewBatchHandler(repo)
+
+		// File endpoints (OpenAI Batch API compatible)
+		r.Post("/v1/files", fileH.HandleCreateFile)
+		r.Post("/files", fileH.HandleCreateFile)
+		r.Get("/v1/files", fileH.HandleListFiles)
+		r.Get("/files", fileH.HandleListFiles)
+		r.Get("/v1/files/{file_id}", fileH.HandleGetFile)
+		r.Get("/files/{file_id}", fileH.HandleGetFile)
+		r.Get("/v1/files/{file_id}/content", fileH.HandleGetFileContent)
+		r.Get("/files/{file_id}/content", fileH.HandleGetFileContent)
+		r.Delete("/v1/files/{file_id}", fileH.HandleDeleteFile)
+		r.Delete("/files/{file_id}", fileH.HandleDeleteFile)
+
+		// Batch endpoints (OpenAI Batch API compatible)
+		r.Post("/v1/batches", batchH.HandleCreateBatch)
+		r.Post("/batches", batchH.HandleCreateBatch)
+		r.Get("/v1/batches", batchH.HandleListBatches)
+		r.Get("/batches", batchH.HandleListBatches)
+		r.Get("/v1/batches/{batch_id}", batchH.HandleGetBatch)
+		r.Get("/batches/{batch_id}", batchH.HandleGetBatch)
+		r.Post("/v1/batches/{batch_id}/cancel", batchH.HandleCancelBatch)
+		r.Post("/batches/{batch_id}/cancel", batchH.HandleCancelBatch)
 	})
 
 	// The provider gate (docs/provider-limits-plan.md) reads the same limiter
@@ -610,6 +687,29 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 		r.Get("/api/cli-tools/hermes-settings", hermesH.HandleGet)
 		r.Post("/api/cli-tools/hermes-settings", hermesH.HandlePost)
 		r.Delete("/api/cli-tools/hermes-settings", hermesH.HandleDelete)
+		// pi writes the same kind of file Hermes does — a CLI agent's own
+		// config on the operator's disk — so it rides the same dashboard group.
+		piH := media.NewPiHandler(repo)
+		r.Get("/api/cli-tools/pi-settings", piH.HandleGet)
+		r.Post("/api/cli-tools/pi-settings", piH.HandlePost)
+		r.Delete("/api/cli-tools/pi-settings", piH.HandleDelete)
+		// The nine clientconfig adapters (claude, codex, opencode, droid,
+		// crush, kilo, cline, pi, omp) each answer the same three verbs.
+		// Upstream gives every client its own Next route; here one handler
+		// resolves the id out of the path, so the adapter table stays the only
+		// place a client is described.
+		cliH := media.NewCLIToolHandler()
+		for _, id := range clientconfig.IDs() {
+			// pi has its own handler above (it merges over a previously saved
+			// block); skip it so the two cannot disagree about the same file.
+			if id == "pi" {
+				continue
+			}
+			route := "/api/cli-tools/" + id + "-settings"
+			r.Get(route, cliH.HandleCLIToolGet)
+			r.Post(route, cliH.HandleCLIToolPost)
+			r.Delete(route, cliH.HandleCLIToolDelete)
+		}
 	})
 
 	SetupConsoleLogRoutes(r, repo)

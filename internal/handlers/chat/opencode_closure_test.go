@@ -36,6 +36,15 @@ func TestOpencodeClosureError_ClassifiesVariants(t *testing.T) {
 			wantRetryAfter: "",
 		},
 		{
+			name:           "usage limit reached (real 429 shape)",
+			provider:       "opencode",
+			upstreamStatus: 429,
+			upstreamBody:   `{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached. Subscribe to OpenCode Go to keep going: https://opencode.ai/go"}}`,
+			wantStatus:     http.StatusTooManyRequests,
+			wantType:       "free_tier_quota_exhausted",
+			wantRetryAfter: "60",
+		},
+		{
 			name:           "rate limit / quota exceeded",
 			provider:       "opencode-zen",
 			upstreamStatus: 403,
@@ -126,5 +135,91 @@ func TestOpencodeClosureError_NonFreeTierErrorPassesThrough(t *testing.T) {
 	classified := opencodeClosureError("opencode", "model", origErr)
 	if !errors.Is(classified, origErr) {
 		t.Errorf("expected original error untouched for non-FreeTierError")
+	}
+}
+
+// The gate refuses in two shapes, and both must be recognised so the failover
+// loop rotates the egress instead of cooling a healthy account. A 429 that is
+// NOT the free-tier usage limit is a genuine rate limit and keeps the normal
+// path, as does a refusal reported for another provider.
+func TestOpencodeFreeTierRefusal_ClassifiesGateShapes(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		status   int
+		body     string
+		want     bool
+	}{
+		{
+			name:     "403 free tier error",
+			provider: "opencode",
+			status:   http.StatusForbidden,
+			body:     `{"error":{"type":"FreeTierError","message":"free tier can only be used from within OpenCode"}}`,
+			want:     true,
+		},
+		{
+			name:     "429 free usage limit",
+			provider: "opencode",
+			status:   http.StatusTooManyRequests,
+			body:     `{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached. Subscribe to OpenCode Go to keep going: https://opencode.ai/go"}}`,
+			want:     true,
+		},
+		{
+			name:     "429 free usage limit on zen lane",
+			provider: "opencode-zen",
+			status:   http.StatusTooManyRequests,
+			body:     `{"error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}`,
+			want:     true,
+		},
+		{
+			name:     "429 without the usage-limit token is a real rate limit",
+			provider: "opencode",
+			status:   http.StatusTooManyRequests,
+			body:     `{"error":{"type":"RateLimitError","message":"too many requests"}}`,
+			want:     false,
+		},
+		{
+			name:     "403 without the free-tier token stays on the normal path",
+			provider: "opencode",
+			status:   http.StatusForbidden,
+			body:     `{"error":{"type":"AuthError","message":"invalid token"}}`,
+			want:     false,
+		},
+		{
+			name:     "other provider 429 untouched",
+			provider: "claude",
+			status:   http.StatusTooManyRequests,
+			body:     `{"error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}`,
+			want:     false,
+		},
+		{
+			name:     "other provider 403 untouched",
+			provider: "antigravity",
+			status:   http.StatusForbidden,
+			body:     `{"error":{"type":"FreeTierError","message":"free tier"}}`,
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ue := &upstreamError{StatusCode: tt.status, Body: []byte(tt.body)}
+			if got := isOpencodeFreeTierRefusal(tt.provider, ue); got != tt.want {
+				t.Errorf("isOpencodeFreeTierRefusal(%q, %d) = %v, want %v", tt.provider, tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
+// A genuine 429 rate limit from OpenCode is not a free-tier refusal, so it must
+// keep its own classification rather than being rewritten as a gate refusal.
+func TestOpencodeClosureError_RealRateLimitPassesThrough(t *testing.T) {
+	origErr := &upstreamError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       []byte(`{"error":{"type":"RateLimitError","message":"too many requests"}}`),
+	}
+	classified := opencodeClosureError("opencode", "deepseek-v4.1-flash-free", origErr)
+	if !errors.Is(classified, origErr) {
+		t.Errorf("expected a non-free-tier 429 to be forwarded untouched")
 	}
 }

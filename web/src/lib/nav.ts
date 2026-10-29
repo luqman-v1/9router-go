@@ -41,13 +41,19 @@ export const ALWAYS_VISIBLE_NAV_IDS: readonly string[] = ['settings']
 
 /** The Plans entry, shared with NAV_GROUPS and the Settings toggle. */
 const PLANS_LINK: NavLink = { kind: 'link', id: 'plans', label: 'Plans', icon: 'workspace_premium' }
-
 /**
  * The entries a deployment hides out of the box. Everything else the sidebar
  * draws is visible until an operator turns it off; these are the exceptions, and
  * the Settings panel offers every entry — hideable or not — for arrangement.
+ *
+ * Jailbreak is here on purpose: it rewrites outbound request bodies, so it is
+ * an advanced surface. The `advanced` preset (NAV_PRESETS below) reveals it
+ * alongside Plans, and an operator can also reveal it by hand in Settings.
  */
-export const DEFAULT_HIDDEN_NAV_ENTRIES: NavLink[] = [PLANS_LINK]
+export const DEFAULT_HIDDEN_NAV_ENTRIES: NavLink[] = [
+  PLANS_LINK,
+  { kind: 'link', id: 'jailbreak', label: 'Persona', icon: 'masks' },
+]
 
 /**
  * What a deployment that never saved a hide list hides. Only an absent or
@@ -97,10 +103,15 @@ export const NAV_GROUPS: NavGroup[] = [
       },
       { kind: 'link', id: 'proxy-pools', label: 'Proxy Pools', icon: 'lan' },
       { kind: 'link', id: 'skills', label: 'Skills', icon: 'extension' },
+      { kind: 'link', id: 'security', label: 'Security', icon: 'shield_lock' },
+      { kind: 'link', id: 'jailbreak', label: 'Persona', icon: 'masks' },
+      PLANS_LINK,
+      // Console Log and Settings sit last on purpose: they are the two entries
+      // an operator reaches for after everything else, and Settings is the one
+      // entry that must never disappear — so it is the final row, out of the
+      // way of the delete/arrange gestures above it.
       { kind: 'link', id: 'console-log', label: 'Console Log', icon: 'terminal' },
       { kind: 'link', id: 'settings', label: 'Settings', icon: 'settings' },
-      { kind: 'link', id: 'security', label: 'Security', icon: 'shield_lock' },
-      PLANS_LINK,
     ],
   },
 ]
@@ -159,13 +170,13 @@ export const NAV_PRESETS: NavPresetDef[] = [
   {
     id: 'default',
     label: 'Default',
-    hint: 'Plans hidden, everything else in place',
+    hint: 'Plans and Persona hidden, everything else in place',
     visible: NAV_ORDER.filter((id) => !DEFAULT_HIDDEN_NAV_IDS.includes(id)),
   },
   {
     id: 'advanced',
     label: 'Advanced',
-    hint: 'Every entry, Plans included',
+    hint: 'Every entry, Plans and Persona included',
     visible: [...NAV_ORDER],
   },
   {

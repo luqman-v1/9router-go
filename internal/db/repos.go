@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -23,11 +24,30 @@ type Repo struct {
 	// package state because the answer belongs to one database: two Repos over
 	// different handles would otherwise read each other's pool list.
 	activePoolIDs atomic.Value // *[]string
+	// jbRules caches the resolved jailbreak configuration (exact bindings,
+	// presets, keyword and exclude rules) as one immutable snapshot, so a
+	// request resolves injection without querying or compiling anything.
+	// Every jailbreak write stores nil to invalidate it. Like activePoolIDs
+	// it lives on the Repo because the answer belongs to one database.
+	jbRules atomic.Value // *jailbreakRuleset
+	// jbBuild serialises snapshot rebuilds so concurrent first requests after
+	// a write build it once.
+	jbBuild sync.Mutex
+	// settingsCache holds the parsed settings row. It lives on the Repo for
+	// the same reason activePoolIDs does: the answer belongs to one database.
+	settingsCache atomic.Pointer[cachedSettings]
 	// vault is the optional credential vault. It is stored rather than held by
 	// value so a key rotation can swap the live vault without touching any
 	// reader that already captured a *Repo. A nil value means "no vault", which
 	// is every install that never set ROUTER_MASTER_KEY.
 	vault atomic.Value // *vault.Vault
+}
+
+// cachedSettings is one parsed settings row and the row content it was
+// parsed from.
+type cachedSettings struct {
+	raw   string
+	value *SettingsData
 }
 
 // nowUTC is the timestamp format every connection write stamps.

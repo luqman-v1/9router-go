@@ -1,6 +1,7 @@
 package translator
 
 import (
+	"9router/proxy/internal/thinking"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"strings"
@@ -115,7 +116,8 @@ func TestConvertToolChoice(t *testing.T) {
 		{"nil", nil, "auto", nil},
 		{"auto string", &auto, "auto", nil},
 		{"any type", rawPtr(`{"type":"any"}`), "required", nil},
-		{"specific tool", rawPtr(`{"type":"tool","name":"get_weather"}`), "",
+		{
+			"specific tool", rawPtr(`{"type":"tool","name":"get_weather"}`), "",
 			func(t *testing.T, got any) {
 				m, ok := got.(map[string]any)
 				if !ok {
@@ -125,7 +127,8 @@ func TestConvertToolChoice(t *testing.T) {
 				if fn["name"] != "get_weather" {
 					t.Errorf("expected name 'get_weather', got %v", fn["name"])
 				}
-			}},
+			},
+		},
 		{"unknown type", rawPtr(`{"type":"unknown"}`), "auto", nil},
 	}
 	for _, tt := range tests {
@@ -329,24 +332,24 @@ func TestConvertClaudeMessage_EmptyBlocks(t *testing.T) {
 	}
 }
 
-// --- budgetToEffort ---
+// --- BudgetToLevel (unified map; port of upstream budgetToLevel) ---
 
-func TestBudgetToEffort(t *testing.T) {
+func TestBudgetToLevel(t *testing.T) {
 	tests := []struct {
 		budget int
 		want   string
 	}{
-		{20000, "high"},
-		{30000, "high"},
-		{5000, "medium"},
+		{24576, "high"},
+		{30000, "xhigh"},
+		{8192, "medium"},
 		{10000, "medium"},
-		{0, "low"},
-		{100, "low"},
+		{1024, "low"},
+		{100, "minimal"},
+		{0, ""},
 	}
 	for _, tt := range tests {
-		got := budgetToEffort(tt.budget)
-		if got != tt.want {
-			t.Errorf("budgetToEffort(%d) = %q, want %q", tt.budget, got, tt.want)
+		if got := thinking.BudgetToLevel(tt.budget); got != tt.want {
+			t.Errorf("BudgetToLevel(%d) = %q, want %q", tt.budget, got, tt.want)
 		}
 	}
 }
@@ -465,7 +468,7 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("thinking config → low reasoning_effort", func(t *testing.T) {
+	t.Run("thinking config → minimal reasoning_effort", func(t *testing.T) {
 		claudeJSON := []byte(`{
 			"model": "claude-3-5-sonnet",
 			"messages": [{"role":"user","content":"hello"}],
@@ -479,8 +482,9 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 		if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
 			t.Fatalf("failed to parse: %v", err)
 		}
-		if oreq["reasoning_effort"] != "low" {
-			t.Errorf("expected reasoning_effort 'low', got %v", oreq["reasoning_effort"])
+		// Unified BudgetToLevel: 100 → minimal (old 3-bucket map said low).
+		if oreq["reasoning_effort"] != "minimal" {
+			t.Errorf("expected reasoning_effort 'minimal', got %v", oreq["reasoning_effort"])
 		}
 	})
 
@@ -499,6 +503,28 @@ func TestTranslateClaudeToOpenAI_ThinkingConfig(t *testing.T) {
 		}
 		if _, exists := oreq["reasoning_effort"]; exists {
 			t.Errorf("expected no reasoning_effort, got %v", oreq["reasoning_effort"])
+		}
+	})
+
+	t.Run("thinking disabled → none reasoning_effort", func(t *testing.T) {
+		claudeJSON := []byte(`{
+			"model": "claude-3-5-sonnet",
+			"messages": [{"role":"user","content":"hello"}],
+			"thinking": {"type": "disabled"}
+		}`)
+		openaiJSON, err := TranslateClaudeToOpenAI(claudeJSON)
+		if err != nil {
+			t.Fatalf("failed to translate: %v", err)
+		}
+		var oreq map[string]any
+		if err := json.Unmarshal(openaiJSON, &oreq); err != nil {
+			t.Fatalf("failed to parse: %v", err)
+		}
+		// "none" is the OpenAI dialect the thinking pipeline reads: the
+		// disable must survive the conversion, and a provider that forbids
+		// disabling clamps it to minimal afterwards.
+		if oreq["reasoning_effort"] != "none" {
+			t.Errorf("expected reasoning_effort 'none', got %v", oreq["reasoning_effort"])
 		}
 	})
 }

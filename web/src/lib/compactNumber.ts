@@ -15,6 +15,22 @@ export function setCompactUnits(on: boolean): void {
   localStorage.setItem(COMPACT_KEY, on ? '1' : '0');
 }
 
+// Provider card toggle persistence (localStorage: providerTogglePersistent).
+// When ON the on/off switch on each provider card is always visible on every
+// width; when OFF it stays hidden behind a hover reveal at the sm breakpoint.
+const TOGGLE_PERSISTENT_KEY = 'providerTogglePersistent';
+
+export function isProviderTogglePersistent(): boolean {
+  if (typeof localStorage === 'undefined') return true;
+  const v = localStorage.getItem(TOGGLE_PERSISTENT_KEY);
+  return v === null ? true : v !== '0';
+}
+
+export function setProviderTogglePersistent(on: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  localStorage.setItem(TOGGLE_PERSISTENT_KEY, on ? '1' : '0');
+}
+
 export function fmtTokens(n?: number, locale = 'en', force = false): string {
   const v = n || 0;
   if (!force && !isCompactUnitsEnabled()) return v.toLocaleString();

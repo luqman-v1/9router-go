@@ -9,6 +9,7 @@
   export interface ModelCaps {
     vision: boolean
     reasoning: boolean
+    jailbreak: boolean
   }
 
   /** The operator's own declaration of what the endpoint takes. 0 = unknown. */
@@ -33,9 +34,10 @@
   const CAPACITY_META: Record<string, { label: string; desc: string }> = {
     vision: { label: 'Vision', desc: 'Supports image input' },
     reasoning: { label: 'Reasoning', desc: 'Supports reasoning / thinking' },
+    jailbreak: { label: 'Jailbreak', desc: 'Uncensored / unrestricted — accepts prompts a filtered model refuses' },
   }
 
-  const defaultCaps = (): ModelCaps => ({ vision: false, reasoning: false })
+  const defaultCaps = (): ModelCaps => ({ vision: false, reasoning: false, jailbreak: false })
   const defaultLimits = (): ModelLimits => ({ contextWindow: 0, maxOutput: 0 })
 
   let modelId = $state('')

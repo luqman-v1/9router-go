@@ -43,6 +43,7 @@ type modelCaps struct {
 	Vision         bool     `json:"vision"`
 	Search         bool     `json:"search"`
 	Reasoning      bool     `json:"reasoning"`
+	Jailbreak      bool     `json:"jailbreak"`
 	ContextWindow  int      `json:"contextWindow"`
 	MaxOutput      int      `json:"maxOutput"`
 	ThinkingLevels []string `json:"thinkingLevels"`
@@ -73,6 +74,7 @@ func (h *DashboardHandler) HandleGetModelCaps(w http.ResponseWriter, r *http.Req
 			Vision:        detail.Vision,
 			Search:        detail.Search,
 			Reasoning:     detail.Reasoning,
+			Jailbreak:     detail.Jailbreak,
 			ContextWindow: detail.ContextWindow,
 			MaxOutput:     detail.MaxOutput,
 			Free:          isModelFree(resolved, model),
@@ -152,6 +154,7 @@ func (h *DashboardHandler) customModelCaps(provider, resolved string, staticMode
 			Vision:        detail.Vision,
 			Search:        detail.Search,
 			Reasoning:     detail.Reasoning,
+			Jailbreak:     detail.Jailbreak,
 			ContextWindow: detail.ContextWindow,
 			MaxOutput:     detail.MaxOutput,
 			Free:          isModelFree(cm.ProviderAlias, cm.ID),
@@ -176,6 +179,8 @@ func publishCustomModelCaps(cm *db.CustomModel) {
 			caps.Vision = on
 		case "reasoning":
 			caps.Reasoning = on
+		case "jailbreak", "uncensored", "unrestricted":
+			caps.Jailbreak = on
 		case "search":
 			caps.Search = on
 		case "tools":

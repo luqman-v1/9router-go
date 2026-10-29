@@ -1,0 +1,2 @@
+### Features
+- **Images Edits Endpoint**: Added OpenAI-compatible `POST /v1/images/edits` (and `/images/edits`) supporting `multipart/form-data` image-to-image uploads (upstream `decolua/9router#5220` parity, resolving #722). Form fields `image` and optional `mask` are converted to base64 Data URIs, combined with `prompt` and scalar fields into JSON, and forwarded through the existing image generation and provider routing pipeline.

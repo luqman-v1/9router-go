@@ -18,7 +18,7 @@ import (
 //	  go test ./internal/providers/ -run TestDumpCatalogPairs -count=1
 //	node scripts/gen-thinking-levels.mjs <upstream-checkout> v0.5.99 \
 //	  internal/providers/testdata/catalog_pairs.json
-const upstreamLevelsFixtureVersion = "v0.5.99"
+const upstreamLevelsFixtureVersion = "v0.5.109"
 
 // pendingUpstreamDivergences lists (provider, model) pairs where the Go
 // resolver intentionally answers differently from the captured tag. Each entry
@@ -50,6 +50,81 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 	"agnes": {
 		"agnes-3.0-pro":   {"none", "minimal", "low", "medium", "high", "xhigh"},
 		"agnes-3.0-flash": {"none", "minimal", "low", "medium", "high", "xhigh"},
+	},
+	// Gemini 3.8 answers 400 "Thinking level MINIMAL is not supported for this
+	// model" to a thinkingLevel minimal — probed live through the antigravity
+	// lane (the tiered ids carry the tier in the model id and LOW is the
+	// floor), the same rejection Gemini 4 Argon gave before its pattern row.
+	// v0.5.109 still advertises minimal for the family, so every lane serving
+	// the model diverges. These are Go-intentional, not pending.
+	"antigravity": {
+		"gemini-3.8-flash":        {"low", "medium", "high"},
+		"gemini-3.8-flash-low":    {"low", "medium", "high"},
+		"gemini-3.8-flash-medium": {"low", "medium", "high"},
+		"gemini-3.8-flash-high":   {"low", "medium", "high"},
+	},
+	"ag": {
+		"gemini-3.8-flash":        {"low", "medium", "high"},
+		"gemini-3.8-flash-low":    {"low", "medium", "high"},
+		"gemini-3.8-flash-medium": {"low", "medium", "high"},
+		"gemini-3.8-flash-high":   {"low", "medium", "high"},
+	},
+	"gemini": {
+		"gemini-3.8-flash": {"low", "medium", "high"},
+	},
+	"github": {
+		"gemini-3.8-flash": {"low", "medium", "high"},
+	},
+	"gh": {
+		"gemini-3.8-flash": {"low", "medium", "high"},
+	},
+	"ocz": {
+		"gemini-3.8-flash":                {"low", "medium", "high"},
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"ocg": {
+		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"muse": {
+		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	// gemini-web: the Go override (providerCapabilities["gemini-web"]) narrows
+	// the site surface deliberately — the composer has no thinking toggle the
+	// executor can set, and its Lite models publish no reasoning level. The
+	// upstream rows advertise the API surface's levels, which the site cannot
+	// honour. These are Go-intentional, not pending.
+	"gemini-web": {
+		"gemini-pro":            {"minimal", "low", "medium", "high"},
+		"gemini-flash":          {"minimal", "low", "medium", "high"},
+		"gemini-argon":          {"low", "medium", "high"},
+		"gemini-3.1-flash-lite": nil,
+	},
+	// Muse-spark contributor models reject reasoning disablement upstream
+	// ("Reasoning is mandatory for this endpoint"), so Go declares
+	// ThinkingCanDisable=false and the level list drops "none". Upstream
+	// capabilities.js omits the flag; converge if upstream adds it.
+	"opencode": {
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"opencode-go": {
+		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"opencode-zen": {
+		"gemini-3.8-flash":                {"low", "medium", "high"},
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"oc": {
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"sumopod": {
+		"gemini/gemini-3.8-flash": {"low", "medium", "high"},
 	},
 }
 

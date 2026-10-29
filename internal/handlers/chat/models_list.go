@@ -11,6 +11,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/models"
+	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/providers"
 )
 
@@ -31,8 +32,9 @@ type ModelInfoObject struct {
 	// the client would read as a real limit. Upstream emits them on combo
 	// entries too (comboSeatLimits in src/app/api/v1/models/route.js), taking
 	// the smallest window in the combo's seat tree.
-	ContextLength       *int `json:"context_length,omitempty"`
-	MaxCompletionTokens *int `json:"max_completion_tokens,omitempty"`
+	ContextLength       *int                       `json:"context_length,omitempty"`
+	MaxCompletionTokens *int                       `json:"max_completion_tokens,omitempty"`
+	Pricing             *pricing.OpenRouterPricing `json:"pricing,omitempty"`
 }
 
 // ConnectionHasCredential reports whether a provider connection carries auth
@@ -491,10 +493,11 @@ func (h *ChatHandler) buildModelsListForMode(
 
 	customs := h.customModelsByProvider()
 	aliases := h.modelAliasTargets()
+	nodePrefixes := h.providerNodePrefixMap()
 
 	for _, provID := range order {
 		conn := firstPerProvider[provID]
-		data = h.appendConnectionModels(ctx, data, seen, conn, provID, customs, aliases, isDisabled)
+		data = h.appendConnectionModels(ctx, data, seen, conn, provID, customs, aliases, nodePrefixes, isDisabled)
 	}
 	// 4. Connected mode additionally publishes the noAuth registry providers
 	// that have no connection row, mirroring the dashboard picker, which keeps
@@ -520,6 +523,7 @@ func (h *ChatHandler) appendConnectionModels(
 	providerID string,
 	customs map[string][]*db.CustomModel,
 	aliases map[string]string,
+	nodePrefixes map[string]string,
 	isDisabled func(provider, modelID string) bool,
 ) []ModelInfoObject {
 	connData := parseConnectionModelData(conn)
@@ -534,6 +538,15 @@ func (h *ChatHandler) appendConnectionModels(
 		outputAlias = connData.ProviderSpecificData.Prefix
 	case connData.Prefix != "":
 		outputAlias = connData.Prefix
+	case isCompatibleProviderID(providerID):
+		// Older dashboard builds created the connection without copying the
+		// node's prefix into providerSpecificData. The node row still owns the
+		// public alias, so publish that instead of the internal node id. The
+		// disabled-model gate below checks staticAlias as well, which keeps
+		// lists written under the old node-id spelling effective.
+		if prefix := nodePrefixes[providerID]; prefix != "" {
+			outputAlias = prefix
+		}
 	}
 
 	ids := connData.EnabledModels()
@@ -661,6 +674,7 @@ func (h *ChatHandler) appendConnectionModels(
 				Capabilities:        live.Capabilities,
 				ContextLength:       optionalTokenLimit(ctxLen),
 				MaxCompletionTokens: optionalTokenLimit(maxOut),
+				Pricing:             pricing.BuildOpenRouterPricing(outputAlias, modelID),
 			})
 			continue
 		}
@@ -681,6 +695,7 @@ func (h *ChatHandler) appendConnectionModels(
 			Capabilities:        &caps,
 			ContextLength:       optionalTokenLimit(ctxLen),
 			MaxCompletionTokens: optionalTokenLimit(maxOut),
+			Pricing:             pricing.BuildOpenRouterPricing(outputAlias, modelID),
 		})
 	}
 	return data
@@ -766,6 +781,7 @@ func appendStaticModel(data []ModelInfoObject, seen map[string]bool, alias, mode
 		Capabilities:        &caps,
 		ContextLength:       optionalTokenLimit(ctxLen),
 		MaxCompletionTokens: optionalTokenLimit(maxOut),
+		Pricing:             pricing.BuildOpenRouterPricing(alias, modelID),
 	})
 }
 
@@ -826,6 +842,7 @@ func (h *ChatHandler) appendLooseCustomModels(
 				Capabilities:        &caps,
 				ContextLength:       optionalTokenLimit(ctxLen),
 				MaxCompletionTokens: optionalTokenLimit(maxOut),
+				Pricing:             pricing.BuildOpenRouterPricing(prefix, cm.ID),
 			})
 		}
 	}
@@ -1090,6 +1107,20 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 		contextWindow, maxOutput := comboSeatLimits(index, combo.Name)
 		entry.ContextLength = optionalTokenLimit(contextWindow)
 		entry.MaxCompletionTokens = optionalTokenLimit(maxOutput)
+
+		// Pricing: inherit from first leaf model
+		if combo.Models != "" {
+			var leaves []string
+			if err := json.Unmarshal([]byte(combo.Models), &leaves); err == nil && len(leaves) > 0 {
+				if flattened, err := h.flattenComboModels(leaves); err == nil && len(flattened) > 0 {
+					first := flattened[0]
+					if slash := strings.Index(first, "/"); slash > 0 {
+						entry.Pricing = pricing.BuildOpenRouterPricing(first[:slash], first[slash+1:])
+					}
+				}
+			}
+		}
+
 		data = append(data, entry)
 	}
 	return data
@@ -1228,3 +1259,16 @@ func (h *ChatHandler) modelAliasTargets() map[string]string {
 	}
 	return out
 }
+
+// BuildModelsListResult exposes the model-list builder to the dashboard, which
+// needs the same catalog the engine route serves but without the per-key
+// access filter: a dashboard session is not an engine API key, so the engine
+// route answers 401 to the SPA. mode is the caller's choice; the dashboard
+// uses ListModeCatalog to see every model the gateway can route.
+func (h *ChatHandler) BuildModelsListResult(ctx context.Context, mode ModelsListMode) ModelsListResult {
+	return h.buildModelsListResult(ctx, mode)
+}
+
+// ListModeCatalog is the mode that forces the full static catalog dump plus
+// custom models, regardless of how many connections are configured.
+const ListModeCatalog = modeListCatalog

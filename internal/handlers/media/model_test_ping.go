@@ -72,6 +72,25 @@ func (h *MediaHandler) HandleTestModel(w http.ResponseWriter, r *http.Request) {
 	handlerutil.WriteJSON(w, http.StatusOK, h.probeModel(r, req.Model, req.Kind))
 }
 
+// ProbeModelForHealth runs one probe for the model-health scheduler.
+//
+// It is the same probe the dashboard's Test button runs, reached through a
+// method rather than the HTTP handler so the scheduler does not have to build
+// a request and parse a response to ask one question. The verdict is
+// identical, which is the point: a model the scheduler judges dead is a model
+// the operator would also see fail.
+//
+// The kind is always the LLM default. The scheduler watches chat models —
+// image, audio and video rows are filtered out before they become candidates
+// — so there is no kind to dispatch on here.
+func (h *MediaHandler) ProbeModelForHealth(ctx context.Context, model string) testModelResult {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/api/models/test", nil)
+	if err != nil {
+		return testModelResult{Error: err.Error()}
+	}
+	return h.probeModel(req, model, "")
+}
+
 // probeModel runs one probe and turns whatever the kind's handler answered into
 // a verdict. A 200 is not a pass: a passthrough endpoint copies the upstream
 // status through, so a provider that answers 200 with an empty or error-shaped

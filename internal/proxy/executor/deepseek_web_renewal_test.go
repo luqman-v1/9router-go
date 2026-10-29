@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/browserlogin"
 	"9router/proxy/internal/db"
@@ -131,6 +132,42 @@ func TestDeepSeekRenewalReportsAFailedBrowser(t *testing.T) {
 	}
 	if stored := deepSeekRenewalStoredData(t, repo, conn.ID); stored != `{"apiKey":"the-old-token"}` {
 		t.Errorf("stored = %q, want the old credential untouched", stored)
+	}
+}
+
+// A renewal clears the health state that parked the account under the OLD
+// credential; otherwise the freshly renewed row would stay out of rotation
+// for the rest of the old cooldown.
+func TestDeepSeekRenewalClearsStaleHealth(t *testing.T) {
+	repo, conn := deepSeekRenewalFixture(t)
+	future := time.Now().UTC().Add(72 * time.Hour).Format(time.RFC3339)
+	deepSeekRenewalSetData(t, repo, conn, `{"apiKey":"old","rateLimitedUntil":"`+future+`","modelLock_deepseek-v4-flash-think":"`+future+`","providerSpecificData":{"deepSeekCookie":"c","other":"kept"}}`)
+
+	restoreOpen(t, func(context.Context) (*browserlogin.DeepSeekResult, error) {
+		return &browserlogin.DeepSeekResult{UserToken: "new", CookieHeader: "c2"}, nil
+	})
+
+	if _, err := RenewDeepSeekCredential(context.Background(), repo, conn.ID); err != nil {
+		t.Fatalf("RenewDeepSeekCredential: %v", err)
+	}
+
+	stored := deepSeekRenewalStoredData(t, repo, conn.ID)
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(stored), &raw); err != nil {
+		t.Fatalf("the stored payload is not JSON: %v", err)
+	}
+	if raw["apiKey"] != "new" {
+		t.Errorf("stored apiKey = %v, want the new token", raw["apiKey"])
+	}
+	if raw["rateLimitedUntil"] != nil {
+		t.Errorf("rateLimitedUntil = %v, want it cleared", raw["rateLimitedUntil"])
+	}
+	if raw["modelLock_deepseek-v4-flash-think"] != nil {
+		t.Errorf("model lock = %v, want it cleared", raw["modelLock_deepseek-v4-flash-think"])
+	}
+	providerData, _ := raw["providerSpecificData"].(map[string]any)
+	if providerData["other"] != "kept" {
+		t.Errorf("the other provider data = %v, want it kept", providerData["other"])
 	}
 }
 

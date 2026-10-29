@@ -57,6 +57,13 @@ type deepSeekFakeUpstream struct {
 	// can tell a reused session from a fresh one: a turn that continues a
 	// pinned conversation must not create a second upstream session.
 	createdSessions int
+
+	// failCompletions makes the next N completion calls answer with an HTTP
+	// error instead of the event stream — the shape of a stale upstream session
+	// that a healing turn is expected to retry on a fresh one. failStatus picks
+	// the status those failures carry; zero means 500.
+	failCompletions int
+	failStatus      int
 }
 
 // countCalls reports how many requests the upstream served on path.
@@ -78,6 +85,14 @@ func newDeepSeekFakeUpstream(t *testing.T, frames ...string) *deepSeekFakeUpstre
 	// unit test has to be given a stub for them: without this the executor
 	// would fetch an attestation value from the internet mid-test.
 	stubDeepSeekAttestation(t)
+	// The turn gap and the session-delete queue run on production timers. The
+	// gap collapses to zero so consecutive turns in one test do not sit out
+	// the quiet window, and the queue starts empty so one test's retired
+	// sessions are never flushed into another test's upstream.
+	previousGap := deepSeekTurnGapFn
+	deepSeekTurnGapFn = func(time.Duration) time.Duration { return 0 }
+	t.Cleanup(func() { deepSeekTurnGapFn = previousGap })
+	t.Cleanup(deepSeekResetSessionDeletes)
 	return &deepSeekFakeUpstream{
 		challengeSalt:   "salt-for-test",
 		challengeExpire: 1778891543095,
@@ -164,6 +179,22 @@ func (f *deepSeekFakeUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		})
 
 	case deepSeekCompletionPath:
+		f.mu.Lock()
+		failing := f.failCompletions > 0
+		if failing {
+			f.failCompletions--
+		}
+		failStatus := f.failStatus
+		f.mu.Unlock()
+		if failing {
+			status := failStatus
+			if status == 0 {
+				status = http.StatusInternalServerError
+			}
+			w.WriteHeader(status)
+			_ = json.MarshalWrite(w, map[string]any{"code": 1, "msg": "chat session is gone"})
+			return
+		}
 		if f.muteBody != "" {
 			// The account-level enforcement: HTTP 200, a JSON document, and no
 			// event stream at all.
@@ -225,15 +256,17 @@ func TestForwardDeepSeekWebStreams(t *testing.T) {
 	}
 
 	// Stealth mode is on by default, so a plain request with no client session
-	// id creates a session and closes it again when the turn ends: the session
-	// is not pinned to a conversation, so nothing will ever thread on it.
+	// id creates a session and retires it when the turn ends: the session is
+	// not pinned to a conversation, so nothing will ever thread on it. The
+	// retirement is queued rather than immediate — an instant
+	// create-then-delete is a cadence no browser produces — so the delete
+	// arrives when the queue flushes, not in the turn's own call sequence.
 	calls := upstream.callPaths()
 	wantOrder := []string{
 		"/api/v0/users/current",
 		"/api/v0/chat_session/create",
 		"/api/v0/chat/create_pow_challenge",
 		deepSeekCompletionPath,
-		"/api/v0/chat_session/delete",
 	}
 	if len(calls) != len(wantOrder) {
 		t.Fatalf("expected %d upstream calls, got %v", len(wantOrder), calls)
@@ -242,6 +275,24 @@ func TestForwardDeepSeekWebStreams(t *testing.T) {
 		if calls[i] != want {
 			t.Fatalf("call %d = %q, want %q (full order: %v)", i, calls[i], want, calls)
 		}
+	}
+
+	// The completion always asks the upstream for a stream, whatever the
+	// client asked for: the site's own client has no non-streaming mode, and
+	// a `stream: false` on this endpoint is a value no browser ever wrote.
+	if got, _ := upstream.body(t, deepSeekCompletionPath)["stream"].(bool); !got {
+		t.Error("completion carried stream = false, want the browser's constant true")
+	}
+	// The Referer names the conversation's own page, which is the page the
+	// browser stands on while it streams this answer.
+	if got := upstream.headers[deepSeekCompletionPath].Get("Referer"); got != server.URL+"/a/chat/s/session-1" {
+		t.Errorf("completion Referer = %q, want the conversation's page %q", got, server.URL+"/a/chat/s/session-1")
+	}
+
+	// The queued retirement lands on the flush, in the browser stack's shape.
+	deepSeekFlushSessionDeletes(context.Background())
+	if got := upstream.countCalls("/api/v0/chat_session/delete"); got != 1 {
+		t.Errorf("session deletes = %d, want 1 after the queue flush", got)
 	}
 
 	// The proof of work must be a real answer to this challenge, not a header
@@ -364,6 +415,11 @@ func TestForwardDeepSeekWebNonStream(t *testing.T) {
 	}
 	if completion.Choices[0].Message.ReasoningContent != "considering" {
 		t.Errorf("reasoning_content = %q, want %q", completion.Choices[0].Message.ReasoningContent, "considering")
+	}
+	// The upstream is asked for a stream even for a non-streaming client: the
+	// site's own client has no other mode, and the collector drains it.
+	if got, _ := upstream.body(t, deepSeekCompletionPath)["stream"].(bool); !got {
+		t.Error("a non-streaming client must not turn the upstream request into stream = false")
 	}
 }
 

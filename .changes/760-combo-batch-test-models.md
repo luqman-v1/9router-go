@@ -1,0 +1,2 @@
+### Features
+- **Combos Batch Model Testing**: Added dead/alive batch model testing for combos (upstream `decolua/9router#5246` parity, resolving #759). Exposes `POST /api/combos/{id}/test-models` for sequential model probing without socket exhaustion across persisted and draft combos, and adds real-time visual status pills (alive/dead/spinner), latency badges, and `X/Y Alive` summary to combo cards on the dashboard.

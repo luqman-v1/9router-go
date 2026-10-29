@@ -33,6 +33,10 @@ export interface NormalizedQuota {
   total: number
   remaining?: number
   remainingPercentage?: number
+  percentage?: number
+  colorPercentage?: number
+  percentageIsUsed?: boolean
+  emptyMessage?: string | null
   resetAt?: string | null
   unlimited?: boolean
   recurring?: boolean
@@ -364,6 +368,11 @@ export function calculatePercentage(used?: number, total?: number): number {
  * renders "—" instead of inventing a number.
  */
 export function getRemainingPercentage(quota: Partial<NormalizedQuota>): number | null {
+  if (Number.isFinite(quota?.percentage)) {
+    // Providers may report the used share; the UI renders the remaining one.
+    const value = quota.percentageIsUsed === true ? 100 - (quota.percentage as number) : (quota.percentage as number)
+    return Math.max(0, Math.round(value))
+  }
   if (Number.isFinite(quota?.remaining)) return Math.max(0, Math.round(quota.remaining as number))
   if (Number.isFinite(quota?.remainingPercentage)) {
     return Math.round(quota.remainingPercentage as number)
@@ -845,6 +854,10 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
               total: Number(quota.total) || 0,
               resetAt: (quota.resetAt as string) || null,
               remainingPercentage: quota.remainingPercentage !== undefined ? Number(quota.remainingPercentage) : undefined,
+              isCreditBalance: Boolean(quota.isCreditBalance),
+              currency: quota.currency as string | undefined,
+              unit: quota.unit as string | undefined,
+              unlimited: Boolean(quota.unlimited),
             })
           })
         }
@@ -937,7 +950,7 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
             const used = Number(quota.used) || 0
             const total = Number(quota.total) || 0
             const row: NormalizedQuota = {
-              name,
+              name: (quota.name as string) || name,
               used,
               total,
               resetAt: (quota.resetAt as string) || null,
@@ -946,6 +959,10 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
             if (quota.remainingPercentage !== undefined) {
               row.remainingPercentage = Number(quota.remainingPercentage)
             }
+            if (quota.percentage !== undefined) row.percentage = Number(quota.percentage)
+            if (quota.colorPercentage !== undefined) row.colorPercentage = Number(quota.colorPercentage)
+            if (quota.percentageIsUsed !== undefined) row.percentageIsUsed = quota.percentageIsUsed === true
+            if (quota.emptyMessage !== undefined) row.emptyMessage = (quota.emptyMessage as string) || null
             if (quota.unlimited !== undefined) row.unlimited = Boolean(quota.unlimited)
             if (quota.recurring !== undefined) row.recurring = quota.recurring !== false
             if (quota.isCreditBalance !== undefined) row.isCreditBalance = Boolean(quota.isCreditBalance)

@@ -14,13 +14,13 @@ import (
 
 const (
 	// DefaultOpenCodeUA is the official OpenCode fingerprint User-Agent.
-	// OpenCode v2 fingerprint required by the free-tier /inference/v1 API.
-	DefaultOpenCodeUA = "opencode/latest/2.0.29/cli"
+	// OpenCode v2 fingerprint required by the free-tier /inference/openai/v1 API.
+	DefaultOpenCodeUA = "opencode/latest/2.1.4/cli"
 
 	// DefaultOpenCodeV1UA is the pre-v2 identity kept by the keyed lanes
 	// (opencode-zen, opencode-go): upstream decolua/9router#4842 moves only
 	// the keyless free executor to v2 and leaves every keyed executor on v1.
-	DefaultOpenCodeV1UA = "opencode/1.18.31"
+	DefaultOpenCodeV1UA = "opencode/1.19.4"
 
 	base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 )
@@ -129,6 +129,27 @@ func StableOpenCodeSessionID(key string) string {
 		delete(opencodeStableSessions, oldest)
 	}
 	return id
+}
+
+// ExpireStableOpenCodeSession retires the stable session minted for key, but
+// only while it still holds id: a rotation that loses a race against an
+// already-rotated session must not discard the fresh budget that rotation
+// minted. It reports whether the entry was removed.
+func ExpireStableOpenCodeSession(key, id string) bool {
+	opencodeStableMu.Lock()
+	defer opencodeStableMu.Unlock()
+	entry, ok := opencodeStableSessions[key]
+	if !ok || entry.id != id {
+		return false
+	}
+	delete(opencodeStableSessions, key)
+	for i, k := range opencodeStableOrder {
+		if k == key {
+			opencodeStableOrder = append(opencodeStableOrder[:i], opencodeStableOrder[i+1:]...)
+			break
+		}
+	}
+	return true
 }
 
 // descendingTimeHex renders the 12-hex session prefix: the low 48 bits of

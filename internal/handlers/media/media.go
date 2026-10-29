@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/base64"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -284,15 +285,19 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	targetURL := providerCfg.SystemoneURL
-	if connData != nil && connData.BaseURL != "" {
-		baseURL := strings.TrimRight(connData.BaseURL, "/")
-		if strings.Contains(baseURL, "/chat/completions") {
-			targetURL = strings.Replace(baseURL, "/chat/completions", "/systemone", 1)
-		} else {
-			targetURL = baseURL + "/systemone"
-		}
-	} else if targetURL == "" {
+	override := ""
+	if connData != nil {
+		override = strings.TrimSpace(connData.BaseURL)
+	}
+	var targetURL string
+	switch {
+	case override != "" && strings.Contains(override, "/chat/completions"):
+		targetURL = strings.Replace(strings.TrimRight(override, "/"), "/chat/completions", "/systemone", 1)
+	case override != "":
+		targetURL = buildSystemoneURL(override, providerCfg.SystemoneURL, providerCfg.SystemonePath)
+	case providerCfg.SystemoneURL != "":
+		targetURL = providerCfg.SystemoneURL
+	default:
 		baseURL := strings.TrimRight(providerCfg.BaseURL, "/")
 		if strings.Contains(baseURL, "/chat/completions") {
 			targetURL = strings.Replace(baseURL, "/chat/completions", "/systemone", 1)
@@ -314,7 +319,16 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 		}
 	}
 	if modelInfo.Provider == "opencode" || modelInfo.Provider == "opencode-zen" {
-		req.Header.Set("x-opencode-session", proxy.GenerateOpenCodeSessionID())
+		// One stable session per provider+connection, like the chat lanes:
+		// minting a fresh session per request drains the egress budget at
+		// mint time and surfaces as 429 FreeUsageLimitError. A separate
+		// namespace from the chat lanes keeps media traffic from drawing on
+		// a conversation's session budget.
+		mediaSessionKey := "media:" + modelInfo.Provider
+		if modelInfo.ConnectionID != "" {
+			mediaSessionKey += ":conn:" + modelInfo.ConnectionID
+		}
+		req.Header.Set("x-opencode-session", proxy.StableOpenCodeSessionID(mediaSessionKey))
 	}
 	client, clientErr := h.ChatH.GetClientForConnection(connData)
 	if clientErr != nil {
@@ -777,7 +791,8 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					continue
 				}
 			}
-			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (subInfo.Provider == "antigravity" || subInfo.Provider == "ag") {
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+				endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (subInfo.Provider == "antigravity" || subInfo.Provider == "ag") {
 				if err := h.handleAntigravityImage(w, r, body, subInfo); err == nil {
 					return
 				} else {
@@ -785,8 +800,20 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					continue
 				}
 			}
+			// Gemini image models answer the native generateContent shape, not
+			// the OpenAI images endpoint the generic forward would dial.
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+				endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (subInfo.Provider == "gemini" || subInfo.Provider == "gm") {
+				if err := h.handleGeminiImage(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					lastErr = err.Error()
+					continue
+				}
+			}
 			// Codex image models are Responses-API models, not an image endpoint.
-			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (subInfo.Provider == "codex" || subInfo.Provider == "cx") {
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+				endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (subInfo.Provider == "codex" || subInfo.Provider == "cx") {
 				if err := h.handleCodexImage(w, r, body, subInfo); err == nil {
 					return
 				} else {
@@ -842,24 +869,39 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 
 			finalBody := handlerutil.UpdateModelInBody(body, subInfo.Model)
+			// The endpoint the caller used is a route on this gateway, not a
+			// path on the vendor's host: appending it to BaseURL built URLs the
+			// vendor never serves (tavily got api.tavily.com/search/v1/search,
+			// serper got google.serper.dev/v1/search). Each vendor publishes its
+			// own search/fetch URL and verb in the registry.
 			targetURL := strings.TrimRight(providerCfg.BaseURL, "/") + endpoint
 			method := r.Method
-			// Use provider FetchURL for web/fetch when configured (e.g., ollama cloud)
-			if endpoint == "/v1/web/fetch" && providerCfg.FetchURL != "" {
-				targetURL = providerCfg.FetchURL
-				if providerCfg.FetchMethod != "" {
-					method = providerCfg.FetchMethod
-				} else {
-					method = "POST"
-				}
-				// Ollama cloud expects {"url": "https://..."} only
-				if subInfo.Provider == "ollama" {
-					var tmp struct {
-						URL string `json:"url"`
+			switch endpoint {
+			case "/v1/search":
+				if providerCfg.SearchURL != "" {
+					targetURL = providerCfg.SearchURL
+					method = strings.ToUpper(providerCfg.SearchMethod)
+					if method == "" {
+						method = http.MethodPost
 					}
-					if err := json.Unmarshal(body, &tmp); err == nil && tmp.URL != "" {
-						if b, err := json.Marshal(map[string]string{"url": tmp.URL}); err == nil {
-							finalBody = b
+				}
+			case "/v1/web/fetch":
+				if providerCfg.FetchURL != "" {
+					targetURL = providerCfg.FetchURL
+					if providerCfg.FetchMethod != "" {
+						method = providerCfg.FetchMethod
+					} else {
+						method = "POST"
+					}
+					// Ollama cloud expects {"url": "https://..."} only
+					if subInfo.Provider == "ollama" {
+						var tmp struct {
+							URL string `json:"url"`
+						}
+						if err := json.Unmarshal(body, &tmp); err == nil && tmp.URL != "" {
+							if b, err := json.Marshal(map[string]string{"url": tmp.URL}); err == nil {
+								finalBody = b
+							}
 						}
 					}
 				}
@@ -935,15 +977,78 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
 		if err := h.handleAntigravityImage(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
 		return
 	}
+	// Gemini image models answer the native generateContent shape, not the
+	// OpenAI images endpoint the generic forward would dial.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (modelInfo.Provider == "gemini" || modelInfo.Provider == "gm") {
+		if err := h.handleGeminiImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
 	// Codex image models are Responses-API models, not an image endpoint.
-	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (modelInfo.Provider == "codex" || modelInfo.Provider == "cx") {
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (modelInfo.Provider == "codex" || modelInfo.Provider == "cx") {
 		if err := h.handleCodexImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+
+	// UC web: the persona image API needs a minted Clerk session, not a bearer
+	// key, so the generic forward cannot reach it.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (modelInfo.Provider == "uc-web" || modelInfo.Provider == "uc") {
+		if err := h.handleUcWebImage(w, r, body, modelInfo); err != nil {
+			writeUcMediaError(w, err)
+		}
+		return
+	}
+
+	// UC web video: generation posts to the persona video API and polls the
+	// result URL, so it shares the image lane's session plumbing.
+	if (endpoint == "/v1/videos/generations" || endpoint == "/videos/generations") && (modelInfo.Provider == "uc-web" || modelInfo.Provider == "uc") {
+		if err := h.handleUcWebVideo(w, r, body, modelInfo); err != nil {
+			writeUcMediaError(w, err)
+		}
+		return
+	}
+
+	// veoaifree.com free tier: WordPress AJAX with a scraped CSRF nonce, not
+	// an OpenAI-compatible endpoint.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (modelInfo.Provider == "veoaifree-web" || modelInfo.Provider == "veo-free") {
+		if err := h.handleVeoFreeWebImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+	if (endpoint == "/v1/videos/generations" || endpoint == "/videos/generations") && (modelInfo.Provider == "veoaifree-web" || modelInfo.Provider == "veo-free") {
+		if err := h.handleVeoFreeWebVideo(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+
+	// grok.com Imagine: the Cloudflare-gated conversations/new endpoint and
+	// the assets.grok.com download live in the chat executor's transport, so
+	// the lane delegates there (upstream imageProvider useExecutor: true).
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (modelInfo.Provider == "grok-web" || modelInfo.Provider == "gw") {
+		if err := h.handleGrokWebImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+	if (endpoint == "/v1/videos/generations" || endpoint == "/videos/generations") && (modelInfo.Provider == "grok-web" || modelInfo.Provider == "gw") {
+		if err := h.handleGrokWebVideo(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
 		return
@@ -960,6 +1065,25 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (modelInfo.Provider == "elevenlabs" || modelInfo.Provider == "el") {
 		if err := h.handleElevenLabsSTT(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+
+	// Codex OAuth transcription: a fixed ChatGPT endpoint addressed with the
+	// Codex account's own identity, so no connection URL override applies and
+	// only the model "transcribe" is valid here.
+	if isTranscriptionEndpoint(endpoint) && (modelInfo.Provider == "codex" || modelInfo.Provider == "cx") {
+		if modelInfo.Model != codexSTTModel {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, codexSTTModelHintMsg)
+			return
+		}
+		if err := h.handleCodexSTT(w, r, body, modelInfo); err != nil {
+			var stErr *codexSTTError
+			if errors.As(err, &stErr) {
+				handlerutil.WriteJSONError(w, stErr.status, stErr.message)
+			} else {
+				handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+			}
 		}
 		return
 	}
@@ -1062,11 +1186,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	var targetURL string
 	switch endpoint {
-	case "/v1/images/generations", "/images/generations":
+	case "/v1/images/generations", "/images/generations", "/v1/images/edits", "/images/edits":
 		if !hasCustomBaseURL && providerCfg.ImageURL != "" {
 			targetURL = providerCfg.ImageURL
 		} else {
-			targetURL = strings.TrimSuffix(baseURL, "/v1") + "/v1/images/generations"
+			targetURL = strings.TrimSuffix(baseURL, "/v1") + endpoint
 		}
 	case "/v1/audio/speech", "/audio/speech":
 		if !hasCustomBaseURL && providerCfg.TTSURL != "" {
@@ -1259,4 +1383,31 @@ func buildEmbeddingsURL(baseURL string) string {
 		return strings.Replace(baseURL, "/chat/completions", "/embeddings", 1)
 	}
 	return strings.TrimRight(baseURL, "/") + "/embeddings"
+}
+
+// buildSystemoneURL joins a saved host override with the registry path
+// without doubling a "/v1" or "/v1/systemone" the host already includes
+// (upstream buildSystemoneUrl). An override with no registry path keeps the
+// lane's "/systemone" suffix; one that already names the endpoint is used
+// as-is.
+func buildSystemoneURL(override, cfgURL, cfgPath string) string {
+	base := strings.TrimRight(strings.TrimSpace(override), "/")
+	if base == "" {
+		return cfgURL
+	}
+	if strings.HasSuffix(base, "/systemone") {
+		return base
+	}
+	if cfgPath == "" {
+		return base + "/systemone"
+	}
+	path := strings.TrimRight(cfgPath, "/")
+	if strings.HasSuffix(base, path) {
+		return base
+	}
+	prefix := path[:strings.LastIndex(path, "/")]
+	if prefix != "" && strings.HasSuffix(base, prefix) {
+		return base + path[len(prefix):]
+	}
+	return base + path
 }

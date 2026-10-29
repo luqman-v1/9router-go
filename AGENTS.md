@@ -133,6 +133,9 @@ Every upstream provider in this repository (`antigravity`, `opencode`, `claude`,
   - Use strongly typed structs for known wire protocols (OpenAI Chat Completions, Anthropic Messages, Gemini GenerateContent, Antigravity envelopes).
   - Use unexported fields or typed wrappers instead of passing untyped maps across package boundaries.
   - Reserve `any` / `map[string]any` strictly for dynamic, provider-specific, or open-ended passthrough payloads.
+- **Enumerations for closed value sets**: Represent finite, known-at-build-time choices with named enum-like types and constants instead of repeating raw string literals in logic, comparisons, switches, or serialized state. In Go, define a named type with constants; in TypeScript, prefer a string-literal union (or an `enum` when runtime enumeration is needed). Reuse the canonical definition across callers.
+- **Do not force enums onto open-ended values**: Keep strings for user input, provider/model IDs, URLs, paths, arbitrary JSON keys, protocol values that must remain extensible, and exact wire-format literals where a named constant alone is appropriate. Preserve required JSON/API wire values when introducing typed enums.
+- **No duplicated string checks for closed sets**: If a string represents a finite internal mode, status, kind, or category, compare against the named constants/type rather than embedding its literal at each use site. Validate external input against the canonical set at the boundary.
 - **Clean JSON Serialization**:
   - Use accurate struct tags (`json:"fieldName,omitempty"`). Omit zero-value fields when required by upstream provider specs.
 

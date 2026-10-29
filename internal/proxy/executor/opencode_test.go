@@ -3,6 +3,8 @@ package executor
 import (
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/translator"
+	"context"
 	json "encoding/json/v2"
 	"io"
 	"net/http"
@@ -393,8 +395,8 @@ func TestForwardOpencode_HarnessBodyIsCanonicalizedForTheGate(t *testing.T) {
 		t.Fatal("upstream received no body")
 	}
 	tools, _ := sent["tools"].([]any)
-	if len(tools) != 4 {
-		t.Fatalf("want caller Read+Task plus injected read+shell, got %d: %s", len(tools), sentRaw)
+	if len(tools) != 12 {
+		t.Fatalf("want exactly the 12 genuine built-ins declared, got %d: %s", len(tools), sentRaw)
 	}
 	names := map[string]bool{}
 	for _, tool := range tools {
@@ -411,17 +413,27 @@ func TestForwardOpencode_HarnessBodyIsCanonicalizedForTheGate(t *testing.T) {
 			t.Errorf("tool %q reached the gate without an object schema: %s", name, sentRaw)
 		}
 	}
-	for _, want := range []string{"Read", "Task", "read", "shell"} {
+	for _, want := range []string{"edit", "glob", "grep", "question", "read", "shell", "skill", "subagent", "webfetch", "websearch", "write", "execute"} {
 		if !names[want] {
-			t.Errorf("tool %q missing from the gate request: %s", want, sentRaw)
+			t.Errorf("genuine tool %q missing from the gate request: %s", want, sentRaw)
 		}
 	}
-	choice, ok := sent["tool_choice"].(map[string]any)
-	if !ok {
-		t.Fatalf("forced tool_choice must survive on the chat lane, got %v: %s", sent["tool_choice"], sentRaw)
+	for _, banned := range []string{"Read", "Task"} {
+		if names[banned] {
+			t.Errorf("caller tool %q must not travel as a declaration: %s", banned, sentRaw)
+		}
 	}
-	if fn, _ := choice["function"].(map[string]any); fn["name"] != "Task" {
-		t.Errorf("forced choice name=%v, want Task: %s", fn["name"], sentRaw)
+	// Caller tools survive as prompt text instead of declarations.
+	system, _ := sent["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.Contains(system, `"name":"Read"`) || !strings.Contains(system, `"name":"Task"`) {
+		t.Errorf("caller tools not described in the system text: %s", sentRaw)
+	}
+	if !strings.HasPrefix(system, "You are an AI agent running in OpenCode") {
+		t.Errorf("system does not start with the harness preamble: %s", sentRaw)
+	}
+	// A forced choice naming a caller tool cannot travel; the intent does.
+	if sent["tool_choice"] != "required" {
+		t.Fatalf("forced caller choice must become \"required\", got %v: %s", sent["tool_choice"], sentRaw)
 	}
 }
 
@@ -463,8 +475,8 @@ func TestForwardOpencode_MuseSpark_EdgeRelay(t *testing.T) {
 	if gotTarget != "https://opencode.ai" {
 		t.Errorf("expected x-relay-target 'https://opencode.ai', got %q", gotTarget)
 	}
-	if gotPath != "/inference/v1/responses" {
-		t.Errorf("expected x-relay-path '/inference/v1/responses', got %q", gotPath)
+	if gotPath != "/inference/openai/v1/responses" {
+		t.Errorf("expected x-relay-path '/inference/openai/v1/responses', got %q", gotPath)
 	}
 }
 
@@ -510,7 +522,7 @@ func TestForwardOpencodeGo_OpenAIRouting(t *testing.T) {
 
 func TestForwardOpencode_MuseSparkResponsesRouting(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/inference/v1/responses") {
+		if !strings.HasSuffix(r.URL.Path, "/inference/openai/v1/responses") {
 			t.Errorf("expected the zen base to be rewritten to the inference gate, got %s", r.URL.Path)
 		}
 		body, _ := io.ReadAll(r.Body)
@@ -584,17 +596,38 @@ func TestForwardOpencode_MuseSpark13_ResponsesRouting(t *testing.T) {
 
 func TestOpenCodeInferenceBase(t *testing.T) {
 	tests := []struct{ input, want string }{
-		{"https://opencode.ai/zen/v1/chat/completions", "https://opencode.ai/inference/v1"},
-		{"https://opencode.ai/zen/v1", "https://opencode.ai/inference/v1"},
-		{"http://127.0.0.1:9000/zen/v1/chat/completions", "http://127.0.0.1:9000/inference/v1"},
+		{"https://opencode.ai/zen/v1/chat/completions", "https://opencode.ai/inference/openai/v1"},
+		{"https://opencode.ai/zen/v1", "https://opencode.ai/inference/openai/v1"},
+		{"http://127.0.0.1:9000/zen/v1/chat/completions", "http://127.0.0.1:9000/inference/openai/v1"},
 		{"http://127.0.0.1:9000", "http://127.0.0.1:9000"},
 		{"https://relay.example/api", "https://relay.example/api"},
-		{"https://opencode.ai/inference/v1", "https://opencode.ai/inference/v1"},
+		{"https://opencode.ai/inference/openai/v1", "https://opencode.ai/inference/openai/v1"},
+		{"https://opencode.ai/inference/v1", "https://opencode.ai/inference/openai/v1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			if got := opencodeInferenceBase(tt.input); got != tt.want {
 				t.Errorf("opencodeInferenceBase(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// The messages lane keeps the legacy prefix: the v2 gate's
+// /inference/openai/v1 surface has no /messages route (404).
+func TestOpenCodeMessagesInferenceBase(t *testing.T) {
+	tests := []struct{ input, want string }{
+		{"https://opencode.ai/zen/v1/chat/completions", "https://opencode.ai/inference/v1"},
+		{"https://opencode.ai/zen/v1/messages", "https://opencode.ai/inference/v1"},
+		{"https://opencode.ai/inference/openai/v1", "https://opencode.ai/inference/v1"},
+		{"https://opencode.ai/inference/v1", "https://opencode.ai/inference/v1"},
+		{"http://127.0.0.1:9000", "http://127.0.0.1:9000"},
+		{"https://relay.example/api", "https://relay.example/api"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := opencodeMessagesInferenceBase(tt.input); got != tt.want {
+				t.Errorf("opencodeMessagesInferenceBase(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -628,25 +661,35 @@ func TestIsOpencodeResponsesModel(t *testing.T) {
 	}
 }
 
-func TestIsOpencodeGoResponsesModel(t *testing.T) {
-	// The paid go lane keeps its pre-v2 predicate: narrowing it to the free
-	// ids would silently move paid traffic to the chat lane.
+func TestGoTargetFormat(t *testing.T) {
+	// Upstream resolveTransport (chatCore): a client that speaks a lane the
+	// model serves is forwarded on it, anything else is translated into the
+	// model's target lane (opencode-go.js models[] supportedFormats).
+	chatCtx := context.Background()
+	responsesCtx := translator.WithClientFormat(context.Background(), translator.ClientFormatResponses)
 	tests := []struct {
+		name  string
+		ctx   context.Context
 		model string
-		want  bool
+		want  string
 	}{
-		{"muse-spark-1.2-contributor", true},
-		{"muse-spark-1.3-contributor", true},
-		{"muse-spark-1.2-contributor-free", true},
-		{"grok-4.6", true},
-		{"gpt-5.6-luna", true},
-		{"space-bunny-free", false},
-		{"glm-5.2", false},
+		{"muse-spark pins the responses lane", chatCtx, "muse-spark-1.3-contributor", providers.FormatOpenAIResponses},
+		{"grok-4.6 keeps the responses lane", chatCtx, "grok-4.6", providers.FormatOpenAIResponses},
+		{"grok-4.5 answers the grok family on responses", chatCtx, "grok-4.5", providers.FormatOpenAIResponses},
+		{"grok-4.7 answers the grok family on responses", chatCtx, "grok-4.7", providers.FormatOpenAIResponses},
+		{"gpt-5.6-luna keeps the responses lane", chatCtx, "gpt-5.6-luna", providers.FormatOpenAIResponses},
+		{"gpt-6-luna answers the gpt family on responses", chatCtx, "gpt-6-luna", providers.FormatOpenAIResponses},
+		{"chat client keeps deepseek-v4.1-flash on chat", chatCtx, "deepseek-v4.1-flash", providers.FormatOpenAI},
+		{"responses client takes deepseek-v4.1-flash to responses", responsesCtx, "deepseek-v4.1-flash", providers.FormatOpenAIResponses},
+		{"chat client keeps deepseek-v4-pro on chat", chatCtx, "deepseek-v4-pro", providers.FormatOpenAI},
+		{"responses client takes deepseek-v4-pro to responses", responsesCtx, "deepseek-v4-pro", providers.FormatOpenAIResponses},
+		{"claude-haiku-5-5 stays on messages", chatCtx, "claude-haiku-5-5", providers.FormatClaude},
+		{"unknown id defaults to chat", chatCtx, "some-future-model", providers.FormatOpenAI},
 	}
 	for _, tt := range tests {
-		t.Run(tt.model, func(t *testing.T) {
-			if got := isOpencodeGoResponsesModel(tt.model); got != tt.want {
-				t.Errorf("isOpencodeGoResponsesModel(%q) = %v, want %v", tt.model, got, tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			if got := goTargetFormat(tt.ctx, tt.model); got != tt.want {
+				t.Errorf("goTargetFormat(%q) = %q, want %q", tt.model, got, tt.want)
 			}
 		})
 	}
@@ -714,7 +757,7 @@ func TestForwardOpencodeGo_MuseSparkResponsesRouting(t *testing.T) {
 // inference chat lane with public credentials — never the user's go key.
 func TestForwardOpencodeGo_SpaceBunnyFreeTakesInferenceGate(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/inference/v1/chat/completions") {
+		if !strings.HasSuffix(r.URL.Path, "/inference/openai/v1/chat/completions") {
 			t.Errorf("expected inference chat lane, got %s", r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "Bearer public" {
@@ -872,6 +915,83 @@ func TestNormalizeMuseSparkResponsesBody_ReasoningAndToolChoice(t *testing.T) {
 	fc, _ := inList[1].(map[string]any)
 	if fc["encrypted_content"] != nil {
 		t.Errorf("expected encrypted_content deleted from function_call, got %v", fc["encrypted_content"])
+	}
+}
+
+func TestNormalizeMuseSparkResponsesBody_ReasoningNesting(t *testing.T) {
+	// Parity with the openai-responses branch of upstream applyFormat
+	// (open-sse/translator/concerns/thinkingUnified.js, #3014): the nested
+	// reasoning:{effort,summary} shape replaces the Chat-shaped fields, and
+	// "none" is expressed by omitting reasoning rather than by an effort level.
+	tests := []struct {
+		name        string
+		model       string
+		body        string
+		wantEffort  any
+		wantSummary any
+		wantOmitted bool
+	}{
+		{
+			name:        "top-level reasoning_effort nests with summary auto",
+			model:       "deepseek-v4.1-flash",
+			body:        `{"model":"deepseek-v4.1-flash","reasoning_effort":"high","input":[]}`,
+			wantEffort:  "high",
+			wantSummary: "auto",
+		},
+		{
+			name:        "nested reasoning keeps a client-set summary",
+			model:       "deepseek-v4.1-flash",
+			body:        `{"model":"deepseek-v4.1-flash","reasoning":{"effort":"high","summary":"concise"},"input":[]}`,
+			wantEffort:  "high",
+			wantSummary: "concise",
+		},
+		{
+			name:        "nested effort none omits reasoning",
+			model:       "deepseek-v4.1-flash",
+			body:        `{"model":"deepseek-v4.1-flash","reasoning":{"effort":"none"},"input":[]}`,
+			wantOmitted: true,
+		},
+		{
+			name:        "top-level effort none omits reasoning",
+			model:       "deepseek-v4.1-flash",
+			body:        `{"model":"deepseek-v4.1-flash","reasoning_effort":"none","input":[]}`,
+			wantOmitted: true,
+		},
+		{
+			name:        "muse-spark effort high nests the same way",
+			model:       "muse-spark-1.3",
+			body:        `{"model":"muse-spark-1.3","reasoning_effort":"high","input":[]}`,
+			wantEffort:  "high",
+			wantSummary: "auto",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := normalizeMuseSparkResponsesBody([]byte(tt.body), "oc/"+tt.model)
+			if err != nil {
+				t.Fatalf("normalize failed: %v", err)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(out, &parsed); err != nil {
+				t.Fatalf("unmarshal output: %v", err)
+			}
+			if tt.wantOmitted {
+				if _, ok := parsed["reasoning"]; ok {
+					t.Errorf("expected reasoning omitted, got %v", parsed["reasoning"])
+				}
+				if _, ok := parsed["reasoning_effort"]; ok {
+					t.Errorf("expected reasoning_effort dropped, got %v", parsed["reasoning_effort"])
+				}
+				return
+			}
+			rMap, _ := parsed["reasoning"].(map[string]any)
+			if rMap["effort"] != tt.wantEffort || rMap["summary"] != tt.wantSummary {
+				t.Errorf("expected reasoning {effort:%v, summary:%v}, got %v", tt.wantEffort, tt.wantSummary, parsed["reasoning"])
+			}
+			if _, ok := parsed["reasoning_effort"]; ok {
+				t.Errorf("expected Chat-shaped reasoning_effort dropped, got %v", parsed["reasoning_effort"])
+			}
+		})
 	}
 }
 

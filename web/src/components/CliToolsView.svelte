@@ -45,6 +45,10 @@
   // past the loading state. tsc does not typecheck .svelte files and the svelte
   // compiler does not scope-check templates, so nothing in CI noticed.
   let selectedTool = $state<ToolItem | null>(null)
+
+  // Claude Code specific settings
+  let autoCompactWindow = $state<'default' | '100k' | '150k' | '180k'>('default')
+  let enable1mContext = $state(false)
   // SSR fallback uses the Go default port 20130; live origin wins on mount.
   let localOrigin = $state(typeof window !== 'undefined' ? window.location.origin : 'http://localhost:20130')
   onMount(() => {
@@ -97,12 +101,35 @@
       envVars: {
         ANTHROPIC_BASE_URL: `${localOrigin}`,
         ANTHROPIC_API_KEY: 'sk-9router-local-token',
+        ...(autoCompactWindow !== 'default'
+          ? {
+              CLAUDE_CODE_AUTO_COMPACT_WINDOW:
+                autoCompactWindow === '100k'
+                  ? '100000'
+                  : autoCompactWindow === '150k'
+                    ? '150000'
+                    : '180000',
+            }
+          : {}),
       },
       instructions: [
         `Add to your shell profile (~/.zshrc or ~/.bashrc):`,
         `export ANTHROPIC_BASE_URL="${localOrigin}"`,
         `export ANTHROPIC_API_KEY="<your-api-key>"`,
-        `Run 'claude' in any directory to start coding with 9router-go routing.`,
+        ...(autoCompactWindow !== 'default'
+          ? [
+              `export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${
+                autoCompactWindow === '100k'
+                  ? '100000'
+                  : autoCompactWindow === '150k'
+                    ? '150000'
+                    : '180000'
+              }"`,
+            ]
+          : []),
+        enable1mContext
+          ? `Run 'claude --model claude-sonnet-4-6[1m]' (or append [1m] to any supported 1M context model).`
+          : `Run 'claude' in any directory to start coding with 9router-go routing.`,
       ],
     },
     {
@@ -440,6 +467,74 @@
         `Use api: openai-responses instead if a model does not stream correctly over Chat Completions.`,
       ],
     },
+    {
+      id: 'crush',
+      name: 'Crush',
+      category: 'cli',
+      image: '/providers/crush.png',
+      color: '#8B5CF6',
+      description: 'Crush AI terminal agent — configure ~/.config/crush/crush.json',
+      configType: 'guide',
+      instructions: [
+        `Add 9router-go to your Crush config in ~/.config/crush/crush.json:`,
+        `{"providers":{"9router":{"type":"openai-compat","base_url":"${localOrigin}/v1","api_key":"${snippetApiKey}","models":["claude-sonnet-4-6"]}}}`,
+        noApiKey
+          ? `No API key exists yet — create one in API Keys first, then update "api_key".`
+          : `Point your active model to 9router in crush.json or pass --provider 9router on startup.`,
+        `List available models: curl -s ${localOrigin}/v1/models -H "Authorization: Bearer ${snippetApiKey}"`,
+      ],
+    },
+    {
+      id: 'forge',
+      name: 'Forge',
+      category: 'cli',
+      image: '/providers/forge.png',
+      color: '#F97316',
+      description: 'Forge AI coding CLI — configure ~/.forge/config.toml',
+      configType: 'guide',
+      instructions: [
+        `Configure 9router-go endpoint under the [openai] section in ~/.forge/config.toml:`,
+        `[openai]\nbase_url = "${localOrigin}/v1"\napi_key = "${snippetApiKey}"`,
+        noApiKey
+          ? `No API key exists yet — create one in API Keys first, then update api_key.`
+          : `Run 'forge' to start working with models routed through 9router-go.`,
+        `Optionally override model via --model flag or config.toml default_model setting.`,
+      ],
+    },
+    {
+      id: 'smelt',
+      name: 'Smelt',
+      category: 'cli',
+      image: '/providers/smelt.svg',
+      color: '#E11D48',
+      description: 'Smelt terminal coding agent — configure ~/.smelt/config.json',
+      configType: 'guide',
+      instructions: [
+        `Add 9router-go gateway configuration to ~/.smelt/config.json:`,
+        `{"baseUrl":"${localOrigin}/v1","apiKey":"${snippetApiKey}","_managedBy":"9router"}`,
+        noApiKey
+          ? `No API key exists yet — create one in API Keys first, then update "apiKey".`
+          : `Launch 'smelt' in your workspace directory to begin.`,
+        `Compatible with standard OpenAI completions and Responses endpoints.`,
+      ],
+    },
+    {
+      id: 'codewhale',
+      name: 'CodeWhale',
+      category: 'cli',
+      image: '/providers/codewhale.svg',
+      color: '#06B6D4',
+      description: 'CodeWhale terminal developer suite — configure ~/.codewhale/config.toml',
+      configType: 'guide',
+      instructions: [
+        `Add 9router-go endpoint under [openai] in ~/.codewhale/config.toml:`,
+        `[openai]\nbase_url = "${localOrigin}/v1"\napi_key = "${snippetApiKey}"`,
+        noApiKey
+          ? `No API key exists yet — create one in API Keys first, then update api_key.`
+          : `Run 'codewhale' to begin terminal-assisted coding workflows.`,
+        `Verify connection with: codewhale check`,
+      ],
+    },
   ])
   let filteredTools = $derived(
     toolsCatalog.filter((tool) => {
@@ -580,7 +675,7 @@
                 {#if tool.image}
                   <img
                     src={tool.image}
-                    alt={tool.name}
+                    alt=""
                     class="size-8 object-contain rounded-lg"
                     onerror={(e) => {
                       const img = e.currentTarget as HTMLElement
@@ -657,7 +752,7 @@
             {#if selectedTool.image}
               <img
                 src={selectedTool.image}
-                alt={selectedTool.name}
+                alt=""
                 class="size-9 object-contain rounded-lg"
                 onerror={(e) => {
                   const img = e.currentTarget as HTMLElement
@@ -711,6 +806,45 @@
       {#if selectedTool.id === 'hermes'}
         <HermesToolCard installed={!!statuses.hermes?.installed} {apiKeys} />
       {:else}
+        <!-- Claude Code Specific Controls -->
+        {#if selectedTool.id === 'claude'}
+          <div class="p-3 rounded-xl bg-surface-2 border border-border/80 space-y-3">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <span class="text-xs font-bold text-text-main">Auto-Compact Window</span>
+                <p class="text-[11px] text-text-muted">Threshold before Claude Code auto-compacts context</p>
+              </div>
+              <div class="flex items-center gap-1 bg-surface-3 p-1 rounded-lg border border-border/60">
+                {#each ['default', '100k', '150k', '180k'] as opt}
+                  <button
+                    type="button"
+                    class="px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors {autoCompactWindow === opt ? 'bg-brand-500 text-white' : 'text-text-muted hover:text-text-main'}"
+                    onclick={() => (autoCompactWindow = opt as any)}
+                  >
+                    {opt === 'default' ? 'Default' : opt}
+                  </button>
+                {/each}
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between pt-2 border-t border-border/40">
+              <div>
+                <span class="text-xs font-bold text-text-main">1M Context Window</span>
+                <p class="text-[11px] text-text-muted">Suggest [1m] suffix for compatible models</p>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  class="sr-only peer"
+                  checked={enable1mContext}
+                  onchange={(e) => (enable1mContext = e.currentTarget.checked)}
+                />
+                <div class="w-9 h-5 bg-surface-3 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-500 border border-border"></div>
+              </label>
+            </div>
+          </div>
+        {/if}
+
         <!-- Quick Copy Snippet (if env variables available) -->
         {#if selectedTool.envVars}
           <div class="space-y-2">

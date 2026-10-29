@@ -99,7 +99,14 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		return h.forwardRequest(ctx, w, cfg, apiKey, body, isStream, translateResponse, metrics, httpClient, provider)
 	}
 
+	upstreamStarted := time.Now()
 	resp, err := proxy.ForwardGemini(ctx, httpClient, cfg, apiKey, string(body), isStream, projectID, modelName)
+	// The one number that separates "the model was thinking" from "the
+	// gateway was slow": everything this handler does before dialing is
+	// milliseconds, so a large value here is the upstream's first-token
+	// wait, not the router's.
+	log.Info("gemini", "upstream response headers",
+		"ms", time.Since(upstreamStarted).Milliseconds(), "provider", provider, "model", modelName)
 	if err != nil {
 		if uErr, ok := err.(*proxy.UpstreamError); ok {
 			if uErr.StatusCode == http.StatusConflict || uErr.StatusCode == http.StatusTooManyRequests {
@@ -180,6 +187,12 @@ func (h *ChatHandler) RefreshOAuthTokenIfExpired(connectionID, currentToken stri
 	return h.refreshOAuthTokenIfExpired(connectionID, currentToken)
 }
 
+// ForceRefreshOAuthToken refreshes unconditionally, for a media lane whose
+// upstream answered 401 on a token the lazy check considered valid.
+func (h *ChatHandler) ForceRefreshOAuthToken(connectionID string) (string, string, error) {
+	return h.forceRefreshOAuthToken(connectionID)
+}
+
 func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken string) (string, string, error) {
 	if connectionID == "" {
 		return currentToken, "", nil
@@ -221,6 +234,9 @@ func (h *ChatHandler) refreshOAuthTokenIfExpired(connectionID, currentToken stri
 		// the apiKey for `authMethod: "api_key"` connections even when an
 		// accessToken is present, and sending the other one answers 403.
 		if oauthData == nil || oauthData.RefreshToken == "" || !oauthData.IsExpired() {
+			return oauthTokenResult{token: currentToken, projectID: projectID, passthrough: true}, nil
+		}
+		if oauth.Get(provider) == nil {
 			return oauthTokenResult{token: currentToken, projectID: projectID, passthrough: true}, nil
 		}
 

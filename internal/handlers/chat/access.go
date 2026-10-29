@@ -7,6 +7,7 @@ import (
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/thinking"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -292,6 +293,12 @@ func parseAllowRules(patterns []string) (allows, denies []string, entries int) {
 // It only READS the resolved provider, for matching; it never substitutes one.
 func (h *ChatHandler) accessCandidates(modelID string) []string {
 	bare := stripModelContextMarker(strings.TrimSpace(modelID))
+	// A "(level)" suffix is a request override, not part of the model id, so
+	// it comes off before the candidates are derived: an allowlist names
+	// models, and "gpt-5(high)" is the same model as "gpt-5".
+	if clean, _ := thinking.ParseSuffix(bare); clean != "" {
+		bare = clean
+	}
 	out := make([]string, 0, 3)
 	add := func(v string) {
 		if v == "" {
@@ -464,11 +471,23 @@ func kindEntriesAsModelInfo(data []map[string]any) []ModelInfoObject {
 func kindEntriesFromModelInfo(data []ModelInfoObject, kind string, created int64) []map[string]any {
 	out := make([]map[string]any, 0, len(data))
 	for _, m := range data {
-		endpoint := kindEndpoint(kind)
+		entryKind, endpoint := kind, kindEndpoint(kind)
+		// The web listing is the one kind that publishes two lanes under one
+		// request, so its per-entry kind and endpoint come from the entry
+		// itself (`<alias>/search`, `<alias>/fetch`) rather than from the
+		// requested kind.
+		if kind == "web" {
+			switch {
+			case strings.HasSuffix(m.ID, "/search"):
+				entryKind, endpoint = "webSearch", "/v1/search"
+			case strings.HasSuffix(m.ID, "/fetch"):
+				entryKind, endpoint = "webFetch", "/v1/web/fetch"
+			}
+		}
 		out = append(out, map[string]any{
 			"id":       m.ID,
 			"object":   "model",
-			"kind":     kind,
+			"kind":     entryKind,
 			"owned_by": m.OwnedBy,
 			"endpoint": endpoint,
 			"created":  created,

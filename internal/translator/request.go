@@ -2,6 +2,7 @@ package translator
 
 import (
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/thinking"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
@@ -12,10 +13,12 @@ import (
 var billingHeaderRegex = regexp.MustCompile(`(?i)^x-anthropic-billing-header:[^\n]*(?:\r?\n)?`)
 
 // requiresMaxCompletionTokens reports whether model needs max_completion_tokens instead of max_tokens (PR #3657).
-// Matches gpt-5.x and o1/o3/o4 with hyphen, same as JS /gpt-5|o[134]-/i
+// Matches gpt-5.x/gpt-6.x and o1/o3/o4 with hyphen; gpt-6 also rejects max_tokens
+// (upstream 7c42d8f8), and the provider-scoped rename in the openai executor
+// covers the OpenAI-format clients.
 func requiresMaxCompletionTokens(model string) bool {
 	lower := strings.ToLower(model)
-	if strings.Contains(lower, "gpt-5") {
+	if strings.Contains(lower, "gpt-5") || strings.Contains(lower, "gpt-6") {
 		return true
 	}
 	if strings.Contains(lower, "o1-") || strings.Contains(lower, "o3-") || strings.Contains(lower, "o4-") {
@@ -327,17 +330,6 @@ func fixMissingToolResponsesOpenAI(messages []OpenAIMessage) []OpenAIMessage {
 	return result
 }
 
-func budgetToEffort(budget int) string {
-	switch {
-	case budget >= 20000:
-		return "high"
-	case budget >= 5000:
-		return "medium"
-	default:
-		return "low"
-	}
-}
-
 func convertToolChoice(choiceRaw *jsontext.Value) any {
 	if choiceRaw == nil {
 		return "auto"
@@ -443,10 +435,20 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		oreq.ParallelToolCalls = new(false)
 	}
 
-	// Claude thinking config → OpenAI reasoning_effort
+	// Claude thinking config → OpenAI reasoning_effort (unified maps).
 	if creq.Thinking != nil {
 		if creq.Thinking.Type == "enabled" {
-			oreq.ReasoningEffort = budgetToEffort(creq.Thinking.Budget)
+			if lvl := thinking.BudgetToLevel(creq.Thinking.Budget); lvl != "" {
+				oreq.ReasoningEffort = lvl
+			} else {
+				oreq.ReasoningEffort = "medium"
+			}
+		} else if creq.Thinking.Type == "disabled" {
+			// "none" is the OpenAI dialect the thinking pipeline reads. A
+			// provider that forbids disabling clamps it to minimal; one that
+			// allows it forwards the disable. Dropping it here would leave the
+			// client asking for no reasoning with the provider default.
+			oreq.ReasoningEffort = "none"
 		} else if creq.Thinking.Type == "adaptive" {
 			effort := "high"
 			if creq.OutputConfig != nil && creq.OutputConfig.Effort != "" {
@@ -468,7 +470,7 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 		}
 	}
 
-	out, err := json.Marshal(oreq)
+	out, err := json.Marshal(oreq, json.Deterministic(true))
 	if err != nil {
 		return nil, fmt.Errorf("marshal OpenAI request: %w", err)
 	}
@@ -544,11 +546,10 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 					continue
 				}
 			}
-			// Strip empty text blocks (Anthropic 400s on empty text). The same
-			// emptiness rule decides whether the whole message survives below,
-			// so both read it from one place — a whitespace-only block must not
-			// slip through one pass and be dropped by the other.
-			if bType == "text" && !isContentfulBlock(block) {
+			// Strip empty text blocks and invalid thinking blocks. The same
+			// contentful rule decides whether the whole message survives below,
+			// so both read it from one place.
+			if (bType == "text" || bType == "thinking") && !isContentfulBlock(block) {
 				changed = true
 				continue
 			}
@@ -612,7 +613,7 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	}
 	req["messages"] = messagesRaw
 
-	if out, err := json.Marshal(req); err == nil {
+	if out, err := json.Marshal(req, json.Deterministic(true)); err == nil {
 		return out
 	}
 	return body
@@ -639,7 +640,7 @@ func DefaultClaudeToolType(body []byte) []byte {
 		}
 	}
 	if changed {
-		if out, err := json.Marshal(req); err == nil {
+		if out, err := json.Marshal(req, json.Deterministic(true)); err == nil {
 			return out
 		}
 	}
@@ -857,7 +858,7 @@ func AnchorClaudeCache(body []byte) []byte {
 	// 4. Budget guard: if already >= the marker budget, cap and return
 	if countCacheControlBlocks(req) >= cacheControlMarkerBudget {
 		capCacheControlBlocks(req)
-		if out, err := json.Marshal(req); err == nil {
+		if out, err := json.Marshal(req, json.Deterministic(true)); err == nil {
 			return out
 		}
 		return body
@@ -870,7 +871,7 @@ func AnchorClaudeCache(body []byte) []byte {
 	// 6. Ensure total cache_control blocks <= the marker budget.
 	capCacheControlBlocks(req)
 
-	out, err := json.Marshal(req)
+	out, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		return body
 	}

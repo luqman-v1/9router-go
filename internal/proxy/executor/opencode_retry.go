@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
+	"9router/proxy/internal/constants"
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/proxy"
 )
 
@@ -44,6 +47,34 @@ func isOpenCodeRefusal(ue *proxy.UpstreamError) bool {
 	return bytes.Contains(ue.Body, []byte(openCodeRefusalToken))
 }
 
+// openCodeUsageLimitToken is the error type the gate answers with when the
+// budget accounted to the upstream session is spent. Matched as a token for
+// the same reason as the refusal above: the prose is not stable.
+const openCodeUsageLimitToken = "FreeUsageLimitError"
+
+// isOpencodeUsageLimit reports whether the gate answered 429 because the
+// budget of the upstream session the request traveled on is spent — as opposed
+// to a per-egress or per-key rate limit, which no session change cures.
+func isOpencodeUsageLimit(ue *proxy.UpstreamError) bool {
+	return ue != nil && ue.StatusCode == http.StatusTooManyRequests &&
+		bytes.Contains(ue.Body, []byte(openCodeUsageLimitToken))
+}
+
+// refusedResponseToError moves a gate answer (403/429) from the response
+// position into the error position. The stealth forward and ForwardOpenAI both
+// return a non-200 as a plain response, while the refusal classifiers read the
+// error position — without this lift a 403 FreeTierError or a 429
+// FreeUsageLimitError would sail past every retry untouched. The body is read
+// here (capped) because the token lives in it; the response is consumed.
+func refusedResponseToError(resp *http.Response) *proxy.UpstreamError {
+	if resp == nil || (resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests) {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
+	_ = resp.Body.Close()
+	return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: body}
+}
+
 // forwardOpenCode issues the request and returns the settled result: the
 // response to stream from, or the error to report. It performs the single
 // retry described above and nothing more.
@@ -52,15 +83,20 @@ func isOpenCodeRefusal(ue *proxy.UpstreamError) bool {
 // that just failed: the refusal is the gate declining this address, so a replay
 // through the same proxy repeats the refusal.
 //
-// A non-200 arrives as an *proxy.UpstreamError in the error position — the
-// request layer converts the status before returning, so the response is nil
-// there — which is why the classifier reads the error rather than the response.
-// Any other error is a transport failure; the account-failover path owns that,
-// and it is returned untouched.
+// A non-200 can arrive either as an *proxy.UpstreamError in the error position
+// (the request layer converts) or as a plain response (the stealth forward and
+// ForwardOpenAI do not convert); refusedResponseToError lifts the second shape
+// so the classifier sees both. Any other error is a transport failure; the
+// account-failover path owns that, and it is returned untouched.
 func forwardOpenCode(ctx context.Context, send, sendDirect func() (*http.Response, error)) (*http.Response, error) {
 	resp, err := send()
 	if err == nil {
-		return resp, nil
+		if ue := refusedResponseToError(resp); ue != nil {
+			// The response is consumed; the refusal now lives in err.
+			err = ue
+		} else {
+			return resp, nil
+		}
 	}
 
 	var ue *proxy.UpstreamError
@@ -86,5 +122,37 @@ func forwardOpenCode(ctx context.Context, send, sendDirect func() (*http.Respons
 		// report it rather than the replay's follow-on error.
 		return nil, ue
 	}
+	if replayUe := refusedResponseToError(directResp); replayUe != nil {
+		// The replay was refused as well; the original refusal is the answer.
+		return nil, ue
+	}
 	return directResp, nil
+}
+
+// forwardOpenCodeRotating extends the free-lane forward with one session
+// rotation. The free tier accounts its quota per upstream session, and the
+// official CLI recovers a spent session the same way it starts every
+// conversation: with a freshly minted session id and a fresh budget. When the
+// gate answers 429 FreeUsageLimitError on a router-minted stable session, the
+// same recovery applies — rotate() installs a new session on the request and
+// the replay goes out once on it. A client-supplied session travels as rotate
+// == nil: it identifies the caller's own conversation upstream and is never
+// swapped behind its back.
+//
+// Deliberately one rotation, like the refusal retry above: if the fresh
+// session also answers 429, the limit is not the session's (an egress-wide
+// budget or a genuine rate limit) and the caller's fallback machinery owns
+// the advance.
+func forwardOpenCodeRotating(ctx context.Context, send, sendDirect func() (*http.Response, error), rotate func()) (*http.Response, error) {
+	resp, err := forwardOpenCode(ctx, send, sendDirect)
+	if err == nil || rotate == nil {
+		return resp, err
+	}
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) || !isOpencodeUsageLimit(ue) {
+		return resp, err
+	}
+	log.Warn("opencode", "free session budget spent, rotating session and replaying once")
+	rotate()
+	return forwardOpenCode(ctx, send, sendDirect)
 }

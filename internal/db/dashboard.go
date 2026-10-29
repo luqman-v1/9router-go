@@ -496,24 +496,15 @@ func (r *Repo) GetSettingsRaw() (map[string]any, error) {
 
 // UpdateSettingsRaw reads settings row id=1 data JSON into map[string]any,
 // merges updates into it, re-marshals, and updates settings row id=1.
+//
+// The merge runs under the settings write lock, and a row that cannot be read
+// is not replaced: writing back only the updates would drop every other
+// setting the operator had set.
 func (r *Repo) UpdateSettingsRaw(updates map[string]any) error {
-	existing, err := r.GetSettingsRaw()
-	if err != nil {
-		existing = make(map[string]any)
-	}
-	for k, v := range updates {
-		existing[k] = v
-	}
-	b, err := json.Marshal(existing)
-	if err != nil {
-		return fmt.Errorf("marshal settings data: %w", err)
-	}
-	_, err = r.db.Exec(
-		`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
-		string(b),
-	)
-	if err != nil {
-		return fmt.Errorf("update settings raw: %w", err)
-	}
-	return nil
+	return r.updateSettings(func(existing map[string]any) error {
+		for k, v := range updates {
+			existing[k] = v
+		}
+		return nil
+	})
 }

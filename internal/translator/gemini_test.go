@@ -274,7 +274,10 @@ func TestThoughtSignatureNoSignature(t *testing.T) {
 		"usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
 	}`
 
-	openaiBytes, _, _ := TranslateGeminiResponseToOpenAI([]byte(geminiResp))
+	openaiBytes, _, err := TranslateGeminiResponseToOpenAI([]byte(geminiResp))
+	if err != nil {
+		t.Fatalf("TranslateGeminiResponseToOpenAI: %v", err)
+	}
 	var resp struct {
 		Choices []struct {
 			Message struct {
@@ -284,7 +287,12 @@ func TestThoughtSignatureNoSignature(t *testing.T) {
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	json.Unmarshal(openaiBytes, &resp)
+	if err := json.Unmarshal(openaiBytes, &resp); err != nil {
+		t.Fatalf("unmarshal the translated response: %v", err)
+	}
+	if len(resp.Choices) == 0 {
+		t.Fatal("the translated response has no choices")
+	}
 
 	tc := resp.Choices[0].Message.ToolCalls[0]
 	if strings.Contains(tc.ID, "__ts__") {
@@ -544,7 +552,7 @@ func TestTranslateOpenAIToGemini_MultipleSystemMessagesPreserved(t *testing.T) {
 	}
 }
 
-func TestTranslateOpenAIToGemini_ThinkingBudgetExceedsMaxTokensGuard(t *testing.T) {
+func TestTranslateOpenAIToGemini_ThinkingOutputFloor(t *testing.T) {
 	t.Run("reasoning effort high with small max_tokens", func(t *testing.T) {
 		openaiJSON := []byte(`{
 			"model": "gemini-3.8-flash-high",
@@ -571,16 +579,18 @@ func TestTranslateOpenAIToGemini_ThinkingBudgetExceedsMaxTokensGuard(t *testing.
 		if !ok {
 			t.Fatal("expected thinkingConfig")
 		}
-		budget := tc["thinkingBudget"].(float64)
-		maxTokens := gc["maxOutputTokens"].(float64)
-		if maxTokens <= budget {
-			t.Errorf("expected maxOutputTokens (%v) > thinkingBudget (%v)", maxTokens, budget)
+		// gemini-3.8 is a gemini-level model: thinkingLevel, not thinkingBudget.
+		if tc["thinkingLevel"] != "high" {
+			t.Errorf("thinkingLevel = %v, want high", tc["thinkingLevel"])
+		}
+		if maxTokens := gc["maxOutputTokens"].(float64); maxTokens != 65535 {
+			t.Errorf("maxOutputTokens = %v, want floor 65535", maxTokens)
 		}
 	})
 
 	t.Run("thinking budget explicit override", func(t *testing.T) {
 		openaiJSON := []byte(`{
-			"model": "gemini-3.8-flash-high",
+			"model": "gemini-2.5-pro",
 			"thinking_budget": 4096,
 			"max_tokens": 2048,
 			"messages": [{"role": "user", "content": "hi"}]
@@ -597,9 +607,16 @@ func TestTranslateOpenAIToGemini_ThinkingBudgetExceedsMaxTokensGuard(t *testing.
 		}
 
 		gc := m["generationConfig"].(map[string]any)
-		maxTokens := gc["maxOutputTokens"].(float64)
-		if maxTokens <= 4096 {
-			t.Errorf("expected maxOutputTokens (%v) > 4096", maxTokens)
+		tc, ok := gc["thinkingConfig"].(map[string]any)
+		if !ok {
+			t.Fatal("expected thinkingConfig")
+		}
+		if tc["thinkingBudget"] != 4096.0 {
+			t.Errorf("thinkingBudget = %v, want 4096", tc["thinkingBudget"])
+		}
+		// 4096 budget maps to level medium; floor 16384.
+		if maxTokens := gc["maxOutputTokens"].(float64); maxTokens != 16384 {
+			t.Errorf("maxOutputTokens = %v, want 16384", maxTokens)
 		}
 	})
 }

@@ -89,6 +89,8 @@ export interface ModelCaps {
   vision: boolean
   search: boolean
   reasoning: boolean
+  /** Uncensored / unrestricted — accepts prompts a filtered model refuses. */
+  jailbreak: boolean
   contextWindow: number
   maxOutput: number
   /** Selectable thinking levels, or empty for a model without reasoning. */
@@ -229,6 +231,8 @@ export interface ProviderStrategyConfig {
 }
 
 export interface Settings {
+  appName?: string
+  appLogoUrl?: string
   requireApiKey?: boolean
   tunnelDashboardAccess?: boolean
   rtkEnabled?: boolean
@@ -701,6 +705,32 @@ export interface CodexResetCreditConsumeResponse {
   code?: string
 }
 
+// GLM Reset Cards (Z.ai international). Mirrors the Go GLMResetCard and
+// GLMResetCardsResponse types.
+export interface GLMResetCard {
+  recordId: string
+  type: 'FIVE_HOUR' | 'WEEK'
+  expiresAt: string // RFC3339 UTC
+}
+
+export interface GLMResetCardsResponse {
+  availableCount: number
+  cards: GLMResetCard[]
+  error?: string
+}
+
+export interface GLMResetCardRedeemResponse {
+  reset: boolean
+  alreadyUsed?: boolean
+  uncertain?: boolean
+  code: string
+  message: string
+  recordId: string
+  type: string
+  requestId: string
+  error?: string
+}
+
 export interface FreebuffSessionSwitchResponse {
   status: 'active'
   currentModel: string
@@ -919,6 +949,82 @@ export interface CompressionAnalyticsSummary {
   roiTokensPerMs?: number
   topSavers?: CompressionTopSaver[]
 }
+/** Jailbreak: the default injected document (upstream decolua/9router parity). */
+export interface JailbreakDoc {
+  prompt: string
+  geminiSafety: boolean
+  source?: string
+  /** Instruction-file convention: AGENTS, SOUL, PERSONA, LOAD, … */
+  kind?: string
+  id?: string
+  name?: string
+  /** Models matching one of these rules resolve to this preset. */
+  keywords?: JailbreakKeyword[]
+  /** Models matching one of these rules never get this preset. */
+  excludes?: JailbreakKeyword[]
+  /** Operator arrangement position in the preset list. */
+  order?: number
+  /** RFC3339 UTC stamp the store filled on first write. */
+  createdAt?: string
+  /** RFC3339 UTC stamp of the last write. */
+  updatedAt?: string
+}
+
+/**
+ * One model filter rule, shared by the include and exclude lists.
+ * `mode` is `word` (default, whole token), `partial` (substring) or `regex`.
+ */
+export interface JailbreakKeyword {
+  text: string
+  mode?: string
+}
+
+/** One model's binding: whether injection is armed and which preset it uses. */
+export interface JailbreakModelConfig {
+  enabled: boolean
+  presetId: string
+}
+
+/** The global exclude list: models matching these rules are never injected. */
+export interface JailbreakExcludes {
+  excludes: JailbreakKeyword[]
+}
+
+/** One preset a GitHub import wrote. */
+export interface JailbreakImportEntry {
+  id: string
+  name: string
+  path: string
+  /** Instruction-file convention: AGENTS, SOUL, PERSONA, LOAD, … */
+  kind?: string
+  keywords: string[]
+}
+
+/** One file a GitHub import skipped, with the reason. */
+export interface JailbreakImportRefusal {
+  path: string
+  reason: string
+}
+
+/** The result of importing a prompt collection from GitHub. */
+export interface JailbreakImportResult {
+  ok: boolean
+  source: string
+  imported: JailbreakImportEntry[]
+  refused: JailbreakImportRefusal[]
+}
+
+/** Why one model id resolved (or did not resolve) to a preset. */
+export interface JailbreakMatch {
+  injected: boolean
+  /** global-exclude | exact-binding | keyword | preset-exclude | no-match */
+  reason: string
+  presetId?: string
+  presetName?: string
+  keyword?: string
+  matchedId?: string
+  detail?: string
+}
 
 export function isAuthenticated(): boolean {
   if (typeof window === 'undefined') return false
@@ -1072,10 +1178,12 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const headers = {
-    ...getAuthHeaders(),
-    ...(options.headers as Record<string, string> || {}),
-  }
+  const headers: Record<string, string> = { ...getAuthHeaders() }
+  // A FormData body must carry its own boundary. Forcing application/json here
+  // makes the server fail to parse the upload, so the header is dropped for
+  // exactly that case.
+  if (options.body instanceof FormData) delete headers['Content-Type']
+  Object.assign(headers, (options.headers as Record<string, string>) || {})
   const res = await fetch(path, { ...options, headers })
   if (res.status === 401) {
     handleUnauthorized(path)
@@ -1370,12 +1478,43 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ matchRules }),
     }),
+  /** Materialise the previewed rules into the combo's membership (merge). */
+  loadComboRules: (id: string, matchRules: SmartRule[]) =>
+    request<{
+      combo: string
+      added: string[]
+      removed: string[]
+      models: string[]
+      changed: boolean
+    }>(`/api/combos/${encodeURIComponent(id)}/smart/load`, {
+      method: 'POST',
+      body: JSON.stringify({ matchRules }),
+    }),
   /** Apply every combo's rules now, or just the named one. */
   reconcileCombos: (id?: string) =>
     request<{ status: string; reconciled: number; added: string[]; removed: string[] }>(
       id ? `/api/combos/reconcile?id=${encodeURIComponent(id)}` : '/api/combos/reconcile',
       { method: 'POST' },
     ),
+  /** Everything the combo editor's sort dropdown knows about each model. */
+  getModelMeta: () =>
+    request<{
+      meta: Record<
+        string,
+        {
+          provider: string
+          model: string
+          ttftMs: number
+          totalMs: number
+          samples: number
+          contextWindow: number
+          kind: string
+          vision: boolean
+          reasoning: boolean
+          audioInput: boolean
+        }
+      >
+    }>('/api/models/meta'),
 
   // API Keys
   getApiKeys: () => request<APIKey[]>('/api/keys'),
@@ -1551,6 +1690,79 @@ export const api = {
     request<{ success: boolean }>(`/api/models/disabled/${encodeURIComponent(provider)}`, {
       method: 'PUT',
       body: JSON.stringify(modelIds),
+    }),
+  /**
+   * Folds a list of dead model ids into the provider's disabled list.
+   *
+   * The merge happens server-side on purpose: the dashboard already holds the
+   * verdicts from its own probes, and sending only the failures avoids a
+   * read-modify-write from the browser — which is how two open tabs disable
+   * each other's models.
+   */
+  autoDisableModels: (provider: string, models: string[], dryRun = false) =>
+    request<{
+      provider: string
+      disabled: string[]
+      alreadyDisabled: string[]
+      total: number
+      dryRun: boolean
+    }>('/api/models/auto-disable', {
+      method: 'POST',
+      body: JSON.stringify({ provider, models, dryRun }),
+    }),
+  /** Reads the model-health configuration, the failure counters and the audit log. */
+  getModelHealth: () =>
+    request<{
+      config: {
+        enabled: boolean
+        intervalMin: number
+        threshold: number
+        scope: 'history' | 'failed'
+        autoEnable: boolean
+      }
+      audit: Array<{
+        provider: string
+        model: string
+        action: 'disabled' | 'enabled'
+        reason?: string
+        actor: 'scheduler' | 'operator'
+        at: string
+      }>
+      failures: Record<
+        string,
+        {
+          count: number
+          lastError?: string
+          lastFailedAt?: string
+          disabledByScheduler?: boolean
+          resetAt?: string
+        }
+      >
+    }>('/api/models/health'),
+  /**
+   * Writes the model-health configuration. The server merges the payload into
+   * the stored value, so a field this client does not send is carried over
+   * rather than reset.
+   */
+  saveModelHealth: (config: {
+    enabled?: boolean
+    intervalMin?: number
+    threshold?: number
+    scope?: 'history' | 'failed'
+    autoEnable?: boolean
+  }) =>
+    request<{
+      status: string
+      config: {
+        enabled: boolean
+        intervalMin: number
+        threshold: number
+        scope: 'history' | 'failed'
+        autoEnable: boolean
+      }
+    }>('/api/models/health', {
+      method: 'PUT',
+      body: JSON.stringify(config),
     }),
   /** Upstream GET /api/models/alias — full alias map (compatible pages merge custom + legacy rows). */
   getModelAliases: () => request<{ aliases: Record<string, string> }>('/api/models/alias'),
@@ -1852,6 +2064,29 @@ export const api = {
       body: JSON.stringify({ code, codeVerifier }),
     }),
   getSystemVersion: () => request<SystemVersionInfo>('/api/version'),
+  /**
+   * Uploads the white-label logo as multipart/form-data. The body is a
+   * FormData rather than JSON, so it is posted directly instead of through
+   * `request`, which always serializes its options as JSON.
+   *
+   * The auth header is sent without `Content-Type`: fetch sets that itself
+   * for a FormData body, together with the multipart boundary. A manually
+   * set `application/json` here would override it and leave the server
+   * parsing a multipart body as JSON.
+   */
+  uploadLogo: async (file: File): Promise<{ status: string; appLogoUrl: string }> => {
+    const token = getStoredAPIKey()
+    const body = new FormData()
+    body.append('file', file)
+    const res = await fetch('/api/settings/logo', {
+      method: 'POST',
+      ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+      body,
+    })
+    if (res.status === 401) handleUnauthorized('/api/settings/logo')
+    if (!res.ok) throw new ApiError(await responseErrorMessage(res), res.status)
+    return res.json()
+  },
   checkUpdate: () => request<SystemVersionInfo>('/api/version/check'),
   triggerUpdate: () =>
     request<{ status: string; message?: string; version?: string }>('/api/version/update', {
@@ -1962,6 +2197,20 @@ export const api = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ selectionToken, idempotencyKey }),
+      }
+    ),
+  // GLM Reset Cards (Z.ai international). Only for provider == "glm".
+  getGlmResetCards: (connectionId: string) =>
+    request<GLMResetCardsResponse>(
+      `/api/usage/${encodeURIComponent(connectionId)}/glm-reset-cards`
+    ),
+  redeemGlmResetCard: (connectionId: string, payload: { recordId: string; type: 'FIVE_HOUR' | 'WEEK' }) =>
+    request<GLMResetCardRedeemResponse>(
+      `/api/usage/${encodeURIComponent(connectionId)}/glm-reset-cards`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       }
     ),
   // Tunnel & Tailscale
@@ -2216,4 +2465,111 @@ export const api = {
     sessionStorage.removeItem('9router_auth')
     localStorage.removeItem('9router_auth')
   },
+  // Jailbreak
+  getJailbreak: () => request<JailbreakDoc>('/api/jailbreak'),
+  saveJailbreak: (doc: {
+    prompt: string
+    geminiSafety: boolean
+    source?: string
+    keywords?: JailbreakKeyword[]
+    excludes?: JailbreakKeyword[]
+  }) =>
+    request<{ success: boolean }>('/api/jailbreak', {
+      method: 'PUT',
+      body: JSON.stringify(doc),
+    }),
+  listJailbreakPresets: () => request<JailbreakDoc[]>('/api/jailbreak/presets'),
+  saveJailbreakPreset: (preset: {
+    id?: string
+    name: string
+    prompt: string
+    geminiSafety: boolean
+    source?: string
+    kind?: string
+    keywords?: JailbreakKeyword[]
+    excludes?: JailbreakKeyword[]
+    order?: number
+  }) =>
+    request<{ success: boolean }>('/api/jailbreak/presets', {
+      method: 'PUT',
+      body: JSON.stringify(preset),
+    }),
+  deleteJailbreakPreset: (id: string) =>
+    request<{ success: boolean }>(`/api/jailbreak/presets/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  listJailbreakModels: () => request<Record<string, JailbreakModelConfig>>('/api/jailbreak/models'),
+  setJailbreakModel: (id: string, presetId: string, enabled: boolean) =>
+    request<{ success: boolean }>('/api/jailbreak/models', {
+      method: 'PUT',
+      body: JSON.stringify({ id, presetId, enabled }),
+    }),
+  deleteJailbreakModel: (id: string) =>
+    request<{ ok: boolean; id: string }>('/api/jailbreak/models', {
+      method: 'DELETE',
+      body: JSON.stringify({ id }),
+    }),
+  getJailbreakExcludes: () => request<JailbreakExcludes>('/api/jailbreak/excludes'),
+  saveJailbreakExcludes: (excludes: JailbreakKeyword[]) =>
+    request<JailbreakExcludes>('/api/jailbreak/excludes', {
+      method: 'PUT',
+      body: JSON.stringify({ excludes }),
+    }),
+  importJailbreak: (target: string, name?: string) =>
+    request<JailbreakImportResult>('/api/jailbreak/import', {
+      method: 'POST',
+      body: JSON.stringify({ target, name: name || undefined }),
+    }),
+  uploadJailbreakPreset: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request<{ ok: boolean; preset: JailbreakImportEntry }>(
+      '/api/jailbreak/presets/upload',
+      { method: 'POST', body: form },
+    )
+  },
+  previewJailbreak: (id: string, messages: { role: string; content: string }[]) =>
+    request<{
+      injected: boolean
+      reason: string
+      presetId?: string
+      presetName?: string
+      prompt?: string
+      messages: { role: string; content: string }[]
+    }>('/api/jailbreak/preview', {
+      method: 'POST',
+      body: JSON.stringify({ id, messages }),
+    }),
+  reorderJailbreakPresets: (order: string[]) =>
+    request<{ ok: boolean }>('/api/jailbreak/presets/order', {
+      method: 'PUT',
+      body: JSON.stringify({ order }),
+    }),
+  getJailbreakModelCatalog: () =>
+    request<{ models: string[] }>('/api/jailbreak/models/catalog'),
+  getJailbreakUsage: () =>
+    request<{ usage: Record<string, number> }>('/api/jailbreak/usage'),
+  explainJailbreak: (id: string) =>
+    request<JailbreakMatch>('/api/jailbreak/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    }),
+  duplicateJailbreakPreset: (id: string, newId?: string) =>
+    request<{ ok: boolean; preset: JailbreakDoc }>(`/api/jailbreak/presets/${encodeURIComponent(id)}/duplicate`, {
+      method: 'POST',
+      body: JSON.stringify({ id: newId || '' }),
+    }),
+  exportProviderKeys: (providerId: string) =>
+    request<{ connections: Array<{ id: string; name: string; authType: string; key: string }> }>(
+      `/api/providers/${encodeURIComponent(providerId)}/export-keys`,
+    ),
+  testComboModels: (id: string, opts?: { models?: string[]; kind?: string }) =>
+    request<{
+      comboId: string
+      summary: { total: number; alive: number; dead: number }
+      results: Array<{ model: string; ok: boolean; latencyMs: number; error?: string; status?: number }>
+    }>(`/api/combos/${encodeURIComponent(id)}/test-models`, {
+      method: 'POST',
+      body: JSON.stringify(opts || {}),
+    }),
 }

@@ -49,7 +49,7 @@ func stripCodexUnsupportedTokenParams(body []byte) []byte {
 		return body
 	}
 
-	out, err := json.Marshal(envelope)
+	out, err := marshalStable(envelope)
 	if err != nil {
 		return body
 	}

@@ -250,6 +250,33 @@ func TestBuildZedCompletionBodyAnthropic(t *testing.T) {
 	}
 }
 
+// TestBuildZedCompletionBodyAnthropic_StripsTemperature: Zed editors send
+// temperature on every chat-completions turn, and the Claude lane serves
+// adaptive thinking (claude-haiku-5-5). Anthropic answers any temperature
+// other than 1 on a thinking request with a 400, so the knob must not reach
+// the provider_request — dropping it entirely, since 1 is the backend's
+// adaptive default anyway.
+func TestBuildZedCompletionBodyAnthropic_StripsTemperature(t *testing.T) {
+	clientBody := `{"model":"claude-haiku-5-5","stream":true,"max_tokens":64,"temperature":0.7,
+	 "messages":[{"role":"user","content":"hi"}]}`
+
+	body, err := BuildZedCompletionBody([]byte(clientBody), ZedWireModel{Provider: "anthropic", Model: "claude-haiku-5-5"}, "")
+	if err != nil {
+		t.Fatalf("BuildZedCompletionBody: %v", err)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	inner, ok := envelope["provider_request"].(map[string]any)
+	if !ok {
+		t.Fatalf("provider_request missing: %T", envelope["provider_request"])
+	}
+	if _, has := inner["temperature"]; has {
+		t.Errorf("provider_request carries temperature = %v; Anthropic rejects it on the adaptive lane", inner["temperature"])
+	}
+}
+
 func TestBuildZedCompletionBodyOpenAI(t *testing.T) {
 	request := `{"model":"gpt-5.6-luna","max_completion_tokens":128,
 	 "messages":[{"role":"user","content":"hi there"},

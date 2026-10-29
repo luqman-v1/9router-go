@@ -2,8 +2,12 @@ package executor
 
 import (
 	json "encoding/json/v2"
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
+
+	"9router/proxy/internal/proxy"
 )
 
 // Qoder's event stream wraps every OpenAI chunk in a
@@ -148,6 +152,26 @@ func TestQoderSSERewrite_BillingBlockIsNotAssistantText(t *testing.T) {
 	}
 }
 
+// A billing refusal must reach the caller as the 403 upstream means, not as a
+// 200 body the gateway later reports as 502. chatCore reads 403 as
+// insufficient_quota and falls back; a 502 reads as a gateway fault and the
+// model stays selectable.
+func TestQoderRewoundStreamError_BillingBlockKeepsQuotaStatus(t *testing.T) {
+	raw := envelope(t, 403, `{"code":"112","message":"{\"pricingUrl\":\"https://qoder.com/pricing\"}"}`)
+
+	err := qoderRewoundStreamError([]byte(rewrite(t, raw)))
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("billing block surfaced as %v, want an UpstreamError", err)
+	}
+	if ue.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", ue.StatusCode)
+	}
+	if !strings.Contains(string(ue.Body), "pricingUrl") {
+		t.Errorf("body = %s, want the upstream refusal preserved", ue.Body)
+	}
+}
+
 // A non-billing upstream failure is marked so the non-streaming path can
 // raise it as a status rather than answering 200 with the error text.
 func TestQoderSSERewrite_MarksUpstreamFailure(t *testing.T) {
@@ -252,7 +276,9 @@ func TestQoderIsBillingBlock(t *testing.T) {
 	}{
 		{"daily billing count", `{"code":110,"message":"exceeded"}`, true},
 		{"quota exhausted", `{"code":112,"message":"quota"}`, true},
-		{"queue throttle", `{"code":10605,"message":"busy"}`, true},
+		// 10605 is the model-queue throttle — a transient capacity signal the
+		// executor waits out, not a billing block.
+		{"queue throttle", `{"code":10605,"message":"busy"}`, false},
 		{"pricing page pointer", `{"message":"see pricingUrl"}`, true},
 		{"ordinary model error", `{"code":400,"message":"flow nodes not found"}`, false},
 		{"empty", ``, false},

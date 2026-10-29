@@ -71,7 +71,7 @@ func (c *HeadroomClient) Compress(ctx context.Context, body []byte, model string
 
 	rawMessages, ok := reqMap["messages"].([]any)
 	if !ok || len(rawMessages) == 0 {
-		return body, false, nil
+		return c.compressNativeToolOutputs(ctx, reqMap, model, timeoutMs, body)
 	}
 
 	// A body carrying an error result or a tool the compressor was never cleared
@@ -87,109 +87,15 @@ func (c *HeadroomClient) Compress(ctx context.Context, body []byte, model string
 		}
 	}
 
-	compressReq := map[string]any{
-		"messages": rawMessages,
-		"model":    model,
-		"config": map[string]any{
-			"mode": "lossy_inline",
-		},
-	}
-
-	payloadBytes, err := json.Marshal(compressReq)
-	if err != nil {
-		return body, false, nil
-	}
-
-	if timeoutMs <= 0 {
-		timeoutMs = DefaultTimeoutMs
-	}
-	endpoint := c.baseURL + "/v1/compress"
-
-	reqCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
-	defer cancel()
-
-	if IsLoopbackHeadroomUrl(c.baseURL) {
-		reqCtx = proxy.WithAllowLoopback(reqCtx)
-	}
-
-	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(payloadBytes))
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, false, ctx.Err()
-		}
-		return body, false, nil
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, false, ctx.Err()
-		}
-		// Compressor timeout or network error fails open safely
-		return body, false, nil
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return body, false, nil
-	}
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
+	respMsgs, savedTokens, ok := c.callCompress(ctx, rawMessages, model, timeoutMs)
+	if !ok {
 		if ctx.Err() != nil {
 			return nil, false, ctx.Err()
 		}
 		return body, false, nil
 	}
 
-	// Deep byte scan: CCR markers are strictly forbidden
-	if bytes.Contains(respBytes, []byte("<<ccr:")) {
-		return body, false, nil
-	}
-
-	type compressResponse struct {
-		Messages           []any    `json:"messages"`
-		TokensBefore       any      `json:"tokens_before,omitempty"`
-		TokensAfter        any      `json:"tokens_after,omitempty"`
-		TokensSaved        any      `json:"tokens_saved,omitempty"`
-		CompressionSkipped bool     `json:"compression_skipped,omitempty"`
-		SkipReason         string   `json:"skip_reason,omitempty"`
-		CcrHashes          []string `json:"ccr_hashes,omitempty"`
-	}
-
-	var compResp compressResponse
-	if err := json.Unmarshal(respBytes, &compResp); err != nil {
-		return body, false, nil
-	}
-
-	if compResp.CompressionSkipped {
-		return body, false, nil
-	}
-
-	if len(compResp.CcrHashes) > 0 {
-		return body, false, nil
-	}
-
-	if compResp.TokensSaved != nil {
-		if saved, ok := toFloat64(compResp.TokensSaved); ok && saved <= 0 {
-			return body, false, nil
-		}
-	}
-
-	if len(compResp.Messages) == 0 {
-		return body, false, nil
-	}
-
-	// Permitted-region diff validation
-	if !validateMessagesPreserved(rawMessages, compResp.Messages) {
-		return body, false, nil
-	}
-
-	reqMap["messages"] = compResp.Messages
+	reqMap["messages"] = respMsgs
 	newBody, err := json.Marshal(reqMap)
 	if err != nil {
 		return body, false, nil
@@ -204,13 +110,7 @@ func (c *HeadroomClient) Compress(ctx context.Context, body []byte, model string
 	// large unchanged tool schemas dominating the outbound body do not cause
 	// false phantom-savings rejections when messages shrank meaningfully.
 	rawMsgBytes, _ := json.Marshal(rawMessages)
-	compMsgBytes, _ := json.Marshal(compResp.Messages)
-	savedTokens := 0
-	if compResp.TokensSaved != nil {
-		if s, ok := toFloat64(compResp.TokensSaved); ok {
-			savedTokens = int(s)
-		}
-	}
+	compMsgBytes, _ := json.Marshal(respMsgs)
 	diag := &HeadroomDiagnostics{
 		Before: HeadroomSizes{
 			BodyBytes:    len(body),
@@ -236,6 +136,316 @@ func (c *HeadroomClient) Compress(ctx context.Context, body []byte, model string
 	}
 
 	return newBody, true, nil
+}
+
+// callCompress posts one message list to the /v1/compress endpoint and returns
+// the proxy's messages when the response passes every guard: no skipped
+// compression, no CCR hashes, positive reported savings, and the
+// permitted-region diff validation. ok=false means the caller fails open.
+func (c *HeadroomClient) callCompress(ctx context.Context, messages []any, model string, timeoutMs int) ([]any, int, bool) {
+	compressReq := map[string]any{
+		"messages": messages,
+		"model":    model,
+		"config": map[string]any{
+			"mode": "lossy_inline",
+		},
+	}
+
+	payloadBytes, err := json.Marshal(compressReq)
+	if err != nil {
+		return nil, 0, false
+	}
+
+	if timeoutMs <= 0 {
+		timeoutMs = DefaultTimeoutMs
+	}
+	endpoint := c.baseURL + "/v1/compress"
+
+	reqCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+	defer cancel()
+
+	if IsLoopbackHeadroomUrl(c.baseURL) {
+		reqCtx = proxy.WithAllowLoopback(reqCtx)
+	}
+
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return nil, 0, false
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, 0, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, 0, false
+	}
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, false
+	}
+
+	// Deep byte scan: CCR markers are strictly forbidden
+	if bytes.Contains(respBytes, []byte("<<ccr:")) {
+		return nil, 0, false
+	}
+
+	type compressResponse struct {
+		Messages           []any    `json:"messages"`
+		TokensBefore       any      `json:"tokens_before,omitempty"`
+		TokensAfter        any      `json:"tokens_after,omitempty"`
+		TokensSaved        any      `json:"tokens_saved,omitempty"`
+		CompressionSkipped bool     `json:"compression_skipped,omitempty"`
+		SkipReason         string   `json:"skip_reason,omitempty"`
+		CcrHashes          []string `json:"ccr_hashes,omitempty"`
+	}
+
+	var compResp compressResponse
+	if err := json.Unmarshal(respBytes, &compResp); err != nil {
+		return nil, 0, false
+	}
+
+	if compResp.CompressionSkipped {
+		return nil, 0, false
+	}
+
+	if len(compResp.CcrHashes) > 0 {
+		return nil, 0, false
+	}
+
+	if compResp.TokensSaved != nil {
+		if saved, ok := toFloat64(compResp.TokensSaved); ok && saved <= 0 {
+			return nil, 0, false
+		}
+	}
+
+	if len(compResp.Messages) == 0 {
+		return nil, 0, false
+	}
+
+	// Permitted-region diff validation
+	if !validateMessagesPreserved(messages, compResp.Messages) {
+		return nil, 0, false
+	}
+
+	savedTokens := 0
+	if compResp.TokensSaved != nil {
+		if s, ok := toFloat64(compResp.TokensSaved); ok {
+			savedTokens = int(s)
+		}
+	}
+	return compResp.Messages, savedTokens, true
+}
+
+// toolOutputMaxDepth bounds native tool-output traversal
+// (HEADROOM_TOOL_OUTPUT_MAX_DEPTH upstream).
+const toolOutputMaxDepth = 8
+
+// toolOutputTarget is one projected leaf: the container that receives the
+// shorter text back, and the original text the compressor was given.
+type toolOutputTarget struct {
+	container any
+	key       string
+	text      string
+}
+
+// toolOutputProjection pairs the temporary OpenAI tool messages projected out
+// of a native body with the leaves they came from.
+type toolOutputProjection struct {
+	messages []any
+	targets  []toolOutputTarget
+}
+
+// compressNativeToolOutputs handles bodies that keep tool results outside
+// OpenAI messages. Upstream a440ef43 covers the Responses envelope plus the
+// Gemini/Gemini CLI/Vertex/Antigravity ones; in this port only Responses-native
+// client bodies reach the compressor, so only that branch exists here. Only
+// plain-text leaves are projected into temporary OpenAI tool messages,
+// compressed, and written back: JSON payloads, images, reasoning items,
+// thought signatures, call ids/arguments and instructions keep their native
+// format.
+func (c *HeadroomClient) compressNativeToolOutputs(ctx context.Context, reqMap map[string]any, model string, timeoutMs int, body []byte) ([]byte, bool, error) {
+	proj := collectNativeToolOutputText(reqMap)
+	if proj == nil || len(proj.messages) == 0 {
+		return body, false, nil
+	}
+	if ctx.Err() != nil {
+		return nil, false, ctx.Err()
+	}
+	if model == "" {
+		if m, ok := reqMap["model"].(string); ok {
+			model = m
+		}
+	}
+
+	respMsgs, _, ok := c.callCompress(ctx, proj.messages, model, timeoutMs)
+	if !ok {
+		if ctx.Err() != nil {
+			return nil, false, ctx.Err()
+		}
+		return body, false, nil
+	}
+	updates := applyToolOutputText(proj, respMsgs)
+	if updates == 0 {
+		return body, false, nil
+	}
+
+	newBody, err := json.Marshal(reqMap)
+	if err != nil {
+		return body, false, nil
+	}
+	// Every write-back is strictly shorter than its source, so the committed
+	// body can only shrink.
+	if len(newBody) >= len(body) {
+		return body, false, nil
+	}
+	return newBody, true, nil
+}
+
+// collectNativeToolOutputText projects a native body's eligible tool-output
+// leaves. Like upstream, Responses bodies are only projected when they carry
+// non-message items — the case the message round-trip refuses — and only
+// function_call_output outputs are eligible.
+func collectNativeToolOutputText(reqMap map[string]any) *toolOutputProjection {
+	input, ok := reqMap["input"].([]any)
+	if !ok {
+		return nil
+	}
+	hasNativeItem := false
+	for _, item := range input {
+		m, isMap := item.(map[string]any)
+		if !isMap {
+			continue
+		}
+		if t, isStr := m["type"].(string); isStr && t != "message" {
+			hasNativeItem = true
+			break
+		}
+	}
+	if !hasNativeItem {
+		return nil
+	}
+
+	proj := &toolOutputProjection{}
+	for _, item := range input {
+		m, isMap := item.(map[string]any)
+		if !isMap {
+			continue
+		}
+		if t, _ := m["type"].(string); t == "function_call_output" {
+			visitToolOutputText(proj, m, "output", 0)
+		}
+	}
+	return proj
+}
+
+// visitToolOutputText walks one container slot. Strings become projection
+// leaves unless they parse as JSON; arrays are walked element-wise; objects
+// are entered only through their known text fields and only while they are
+// plain text containers ("text", "input_text").
+func visitToolOutputText(proj *toolOutputProjection, container any, key string, depth int) {
+	if depth > toolOutputMaxDepth {
+		return
+	}
+	switch c := container.(type) {
+	case map[string]any:
+		value, present := c[key]
+		if !present || value == nil {
+			return
+		}
+		visitToolOutputValue(proj, c, key, value, depth)
+	case []any:
+		idx, err := strconv.Atoi(key)
+		if err != nil || idx < 0 || idx >= len(c) {
+			return
+		}
+		visitToolOutputValue(proj, c, key, c[idx], depth)
+	}
+}
+
+func visitToolOutputValue(proj *toolOutputProjection, container any, key string, value any, depth int) {
+	switch v := value.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return
+		}
+		var probe any
+		if json.Unmarshal([]byte(v), &probe) == nil {
+			return
+		}
+		proj.messages = append(proj.messages, map[string]any{
+			"role":         "tool",
+			"tool_call_id": fmt.Sprintf("headroom-tool-%d", len(proj.messages)),
+			"content":      v,
+		})
+		proj.targets = append(proj.targets, toolOutputTarget{container: container, key: key, text: v})
+	case []any:
+		for i := range v {
+			visitToolOutputText(proj, v, strconv.Itoa(i), depth+1)
+		}
+	case map[string]any:
+		if t, isStr := v["type"].(string); isStr && t != "text" && t != "input_text" {
+			return
+		}
+		for _, field := range []string{"result", "output", "content", "text"} {
+			if _, has := v[field]; has {
+				visitToolOutputText(proj, v, field, depth+1)
+			}
+		}
+	}
+}
+
+// applyToolOutputText validates the compressor's response against the
+// projection: count, roles, tool_call_ids and string contents must line up,
+// and a leaf that comes back empty or longer is not written. It returns the
+// number of leaves updated, or -1 when the response does not match at all.
+func applyToolOutputText(proj *toolOutputProjection, respMessages []any) int {
+	if len(respMessages) != len(proj.messages) {
+		return -1
+	}
+	type writeBack struct {
+		target toolOutputTarget
+		text   string
+	}
+	var updates []writeBack
+	for i, raw := range respMessages {
+		m, isMap := raw.(map[string]any)
+		if !isMap {
+			return -1
+		}
+		if role, _ := m["role"].(string); role != "tool" {
+			return -1
+		}
+		projMsg := proj.messages[i].(map[string]any)
+		if fmt.Sprintf("%v", m["tool_call_id"]) != fmt.Sprintf("%v", projMsg["tool_call_id"]) {
+			return -1
+		}
+		content, isStr := m["content"].(string)
+		if !isStr {
+			return -1
+		}
+		if strings.TrimSpace(content) != "" && len(content) < len(proj.targets[i].text) {
+			updates = append(updates, writeBack{target: proj.targets[i], text: content})
+		}
+	}
+	for _, u := range updates {
+		switch c := u.target.container.(type) {
+		case map[string]any:
+			c[u.target.key] = u.text
+		case []any:
+			if idx, err := strconv.Atoi(u.target.key); err == nil && idx >= 0 && idx < len(c) {
+				c[idx] = u.text
+			}
+		}
+	}
+	return len(updates)
 }
 
 // validateMessagesPreserved verifies that candidate messages preserve all inviolable structural

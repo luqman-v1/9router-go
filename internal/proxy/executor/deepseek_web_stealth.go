@@ -27,7 +27,7 @@ import (
 // produces, and DeepSeek answers account-level enforcement for it — a plain
 // JSON 200 carrying `{"data":{"biz_code":5,"biz_msg":"user is muted"}}`.
 //
-// So stealth mode is four things, all of them observable browser behaviour
+// So stealth mode is six things, all of them observable browser behaviour
 // rather than a heuristic:
 //
 //  1. The fingerprint the current web build sends, including the
@@ -40,22 +40,44 @@ import (
 //     account into a limited one.
 //  4. Recognition of the enforcement bodies (mute, rate-limit hint) so the
 //     router cools the account down instead of retrying it.
+//  5. A randomized quiet gap between one generation and the next on the same
+//     account, because the measured trigger of the account-level restriction
+//     is two generations overlapping there — a person types, reads, then
+//     types again, and never with a variance of zero.
+//  6. Batched, delayed retirement of the sessions that will not be continued,
+//     because an instant create-then-delete is a cadence no human client
+//     produces. See deepseek_web_delete_queue.go.
 //
 // It is on by default because a browser-login provider has no other honest
 // behaviour, and off per connection (`providerSpecificData.stealth = false`)
 // for a diagnosed comparison against the plain path.
 
 const (
-	// deepSeekStealthDefaultConcurrency mirrors the sibling implementation's
-	// DEEPSEEK_MAX_CONCURRENCY (2). Requests over the cap queue rather than
-	// fail, so an agent fanning out sub-agents serializes instead of
-	// bombarding one account.
-	deepSeekStealthDefaultConcurrency = 2
+	// deepSeekStealthDefaultConcurrency is one generation at a time per
+	// account.
+	//
+	// The measured fact behind the 1: an account with two generations in
+	// flight at once — two browser windows, or a window and a gateway —
+	// picked up an account-level restriction in under six minutes, while the
+	// same account serialized stayed clean. The sibling client that measured
+	// it serializes every call for exactly this reason
+	// (dsh-deepseek-web-login's allowConcurrent: false). The previous default
+	// of 2 allowed exactly the overlap the enforcement reads.
+	deepSeekStealthDefaultConcurrency = 1
 
 	// deepSeekStealthDefaultJitterMs mirrors DEEPSEEK_JITTER_SECS (0.4s): a
 	// random pause before the first upstream call of a turn. A burst of turns
 	// that arrives in lockstep does not look like a person typing.
 	deepSeekStealthDefaultJitterMs = 400
+
+	// deepSeekStealthDefaultCallGapMs is the upper bound of the randomized
+	// quiet window held after a turn, before the account's slot is freed.
+	//
+	// A person reads the answer before asking the next question, and the
+	// sibling client that measures enforcement serializes its calls behind a
+	// randomized 2000-4000ms window. The gap is drawn from the upper half of
+	// this bound ([gap/2, gap]) so the default reads as 2-4s.
+	deepSeekStealthDefaultCallGapMs = 4000
 
 	// deepSeekStealthQueueWait bounds how long a turn waits for a slot before
 	// giving up. Long enough to absorb a fan-out, short enough that a caller
@@ -81,6 +103,10 @@ type deepSeekStealth struct {
 	// call. 0 disables it.
 	jitter time.Duration
 
+	// callGap is the upper bound of the randomized quiet window held after a
+	// turn before the account's slot is freed. 0 releases immediately.
+	callGap time.Duration
+
 	// cookie is the site's own session cookie, as the operator's browser
 	// received it. The WAF reads it, and a cookie the site never issued is a
 	// request the site does not recognise.
@@ -102,6 +128,7 @@ func deepSeekStealthFor(connData map[string]any) deepSeekStealth {
 		persistSession: deepSeekConnBool(connData, "persistSession", true),
 		maxConcurrency: deepSeekConnInt(connData, "maxConcurrency", deepSeekStealthDefaultConcurrency),
 		jitter:         time.Duration(deepSeekConnInt(connData, "jitterMs", deepSeekStealthDefaultJitterMs)) * time.Millisecond,
+		callGap:        time.Duration(deepSeekConnInt(connData, "callGapMs", deepSeekStealthDefaultCallGapMs)) * time.Millisecond,
 		cookie:         deepSeekConnString(connData, "deepSeekCookie"),
 		deviceID:       deepSeekConnString(connData, "deepSeekDeviceId"),
 	}
@@ -113,6 +140,9 @@ func deepSeekStealthFor(connData map[string]any) deepSeekStealth {
 	}
 	if stealth.jitter < 0 {
 		stealth.jitter = 0
+	}
+	if stealth.callGap < 0 {
+		stealth.callGap = 0
 	}
 	return stealth
 }
@@ -265,6 +295,35 @@ func deepSeekPause(ctx context.Context, window time.Duration) {
 	}
 }
 
+// deepSeekTurnGapFn draws the randomized quiet window from a gap's upper
+// bound: [gap/2, gap], so the 4s default reads as 2-4s. It is a variable so
+// the test suite can collapse it to zero; production always randomizes,
+// because a constant interval is a scheduler's signature.
+var deepSeekTurnGapFn = func(upper time.Duration) time.Duration {
+	if upper <= 0 {
+		return 0
+	}
+	half := upper / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1))
+}
+
+// deepSeekReleaseAfterTurn frees the account's slot after the randomized
+// quiet window, so the next turn on the same account cannot begin in the
+// same breath this one ended.
+//
+// The slot is freed by a timer rather than a blocking sleep: the client's
+// answer is already written, and a quiet account must not cost the response
+// its latency. The release stays idempotent because the gate's release
+// already is.
+func deepSeekReleaseAfterTurn(release func(), gap time.Duration) {
+	delay := deepSeekTurnGapFn(gap)
+	if delay <= 0 {
+		release()
+		return
+	}
+	time.AfterFunc(delay, release)
+}
+
 // deepSeekGate caps how many requests one account has in flight.
 //
 // The key is the credential, not the client: the cap exists to stop one
@@ -344,5 +403,6 @@ func deepSeekStealthLog(stealth deepSeekStealth, reused bool) {
 		"persist_session", stealth.persistSession,
 		"max_concurrency", stealth.maxConcurrency,
 		"jitter_ms", stealth.jitter.Milliseconds(),
+		"call_gap_ms", stealth.callGap.Milliseconds(),
 	)
 }

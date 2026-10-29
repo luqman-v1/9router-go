@@ -159,6 +159,36 @@ func (r *Repo) ClearConnectionRateLimit(connID string) error {
 	return nil
 }
 
+// ClearConnectionModelLocks drops every per-model lock a connection carries,
+// leaving the rest of its data alone. A renewed credential makes the old
+// locks moot: without this an account that was parked for a ban or a mute
+// stays parked even after the operator re-authenticates.
+func (r *Repo) ClearConnectionModelLocks(ctx context.Context, connID string) error {
+	var rawData string
+	if err := r.db.QueryRowContext(ctx, "SELECT data FROM providerConnections WHERE id = ?", connID).Scan(&rawData); err != nil {
+		return fmt.Errorf("clear connection model locks %s: %w", connID, err)
+	}
+	var dataMap map[string]any
+	if err := json.Unmarshal([]byte(rawData), &dataMap); err != nil {
+		return fmt.Errorf("clear connection model locks %s: %w", connID, err)
+	}
+	changed := false
+	for k := range dataMap {
+		if strings.HasPrefix(k, modelLockPrefix) && dataMap[k] != nil {
+			dataMap[k] = nil
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	encoded, err := json.Marshal(dataMap)
+	if err != nil {
+		return fmt.Errorf("clear connection model locks %s: %w", connID, err)
+	}
+	return r.UpdateConnectionData(connID, string(encoded))
+}
+
 // IsConnectionModelLocked checks whether the given connection has an active
 // modelLock_<model> field in its data JSON blob. Returns true when the
 // timestamp is in the future.

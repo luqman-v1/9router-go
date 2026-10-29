@@ -376,8 +376,8 @@ func TestInferenceGate_ShapedHarnessBodyAnswers200(t *testing.T) {
 	}
 
 	sent := reqs.last(t)
-	if sent.path != "/inference/v1/chat/completions" {
-		t.Errorf("upstream path = %q, want /inference/v1/chat/completions", sent.path)
+	if sent.path != "/inference/openai/v1/chat/completions" {
+		t.Errorf("upstream path = %q, want /inference/openai/v1/chat/completions", sent.path)
 	}
 	names := gateToolNames(t, sent.body)
 	if !containsName(names, "read") || !containsName(names, "shell") {

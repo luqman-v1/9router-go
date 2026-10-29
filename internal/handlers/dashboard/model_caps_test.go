@@ -45,8 +45,8 @@ func TestHandleGetModelCaps_CommandCode(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", code)
 	}
-	if len(caps) != 22 {
-		t.Fatalf("expected 22 commandcode models, got %d", len(caps))
+	if len(caps) != 23 {
+		t.Fatalf("expected 23 commandcode models, got %d", len(caps))
 	}
 
 	tests := []struct {
@@ -370,5 +370,76 @@ func TestHandleGetModelCaps_ConsecutiveCallsStaticPrecedence(t *testing.T) {
 		if !ds.Free {
 			t.Errorf("%s: non-colliding imported free model 'deepseek-v4.1-flash-free' expected Free = true", body.callName)
 		}
+	}
+}
+
+// TestHandleGetModelCaps_Jailbreak pins the three ways a row can end up
+// flagged uncensored on the dashboard: the operator's saved flag (under any
+// of its three names), and the id heuristic for a model nobody marked. The
+// chip and the row icon both read this one field, so a regression here is
+// invisible until an operator wonders why the filter is empty.
+func TestHandleGetModelCaps_Jailbreak(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	if _, err := repo.CreateProviderNode("node-nara", "openai-compatible", "Nara AI",
+		`{"prefix":"nara","apiType":"openai-compatible"}`); err != nil {
+		t.Fatalf("seed providerNode: %v", err)
+	}
+	// One row per saved name — the publisher maps all three onto the field.
+	for _, name := range []string{"jailbreak", "uncensored", "unrestricted"} {
+		key := "node-nara|marked-" + name + "|llm"
+		val := `{"providerAlias":"node-nara","id":"marked-` + name + `","type":"llm","name":"marked","caps":{"` + name + `":true}}`
+		if err := repo.SetKV("customModels", key, val); err != nil {
+			t.Fatalf("seed customModels %s: %v", key, err)
+		}
+	}
+	// A neutral id with no saved flag: the name heuristic must not invent one.
+	if err := repo.SetKV("customModels", "node-nara|perfectly-polite|llm",
+		`{"providerAlias":"node-nara","id":"perfectly-polite","type":"llm","name":"polite"}`); err != nil {
+		t.Fatalf("seed customModels polite: %v", err)
+	}
+	// An id that names itself: flagged without anyone opening the dialog.
+	if err := repo.SetKV("customModels", "node-nara|llama-3-uncensored-70b|llm",
+		`{"providerAlias":"node-nara","id":"llama-3-uncensored-70b","type":"llm","name":"Llama"}`); err != nil {
+		t.Fatalf("seed customModels llama: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/models/caps?provider=nara", nil)
+	rec := httptest.NewRecorder()
+	setupTestRouter(repo).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Caps map[string]modelCaps `json:"caps"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal caps response: %v", err)
+	}
+
+	for _, name := range []string{"jailbreak", "uncensored", "unrestricted"} {
+		entry, ok := body.Caps["marked-"+name]
+		if !ok {
+			t.Fatalf("marked-%s missing from caps map: %s", name, rec.Body.String())
+		}
+		if !entry.Jailbreak {
+			t.Errorf("marked-%s: Jailbreak = false, want true", name)
+		}
+	}
+
+	entry, ok := body.Caps["llama-3-uncensored-70b"]
+	if !ok {
+		t.Fatalf("llama-3-uncensored-70b missing from caps map: %s", rec.Body.String())
+	}
+	if !entry.Jailbreak {
+		t.Error("llama-3-uncensored-70b: Jailbreak = false, want true from the id heuristic")
+	}
+
+	entry, ok = body.Caps["perfectly-polite"]
+	if !ok {
+		t.Fatalf("perfectly-polite missing from caps map: %s", rec.Body.String())
+	}
+	if entry.Jailbreak {
+		t.Error("perfectly-polite: Jailbreak = true, want false — a neutral id must not be flagged")
 	}
 }

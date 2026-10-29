@@ -301,6 +301,42 @@ func coreSchema() []tableDef {
 				"CREATE INDEX IF NOT EXISTS idx_sce_stored ON semanticCacheEntries(storedAt)",
 			},
 		},
+		{
+			name: "files",
+			columns: [][2]string{
+				{"id", "TEXT PRIMARY KEY"},
+				{"filename", "TEXT NOT NULL"},
+				{"bytes", "INTEGER NOT NULL"},
+				{"purpose", "TEXT NOT NULL"},
+				{"created_at", "INTEGER NOT NULL"},
+				{"content", "BLOB NOT NULL"},
+			},
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS idx_files_purpose ON files(purpose)",
+				"CREATE INDEX IF NOT EXISTS idx_files_created ON files(created_at DESC)",
+			},
+		},
+		{
+			name: "batches",
+			columns: [][2]string{
+				{"id", "TEXT PRIMARY KEY"},
+				{"input_file_id", "TEXT NOT NULL"},
+				{"endpoint", "TEXT NOT NULL"},
+				{"completion_window", "TEXT NOT NULL"},
+				{"status", "TEXT NOT NULL"},
+				{"output_file_id", "TEXT"},
+				{"error_file_id", "TEXT"},
+				{"created_at", "INTEGER NOT NULL"},
+				{"completed_at", "INTEGER"},
+				{"cancelled_at", "INTEGER"},
+				{"metadata", "TEXT"},
+			},
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS idx_batches_status ON batches(status)",
+				"CREATE INDEX IF NOT EXISTS idx_batches_created ON batches(created_at DESC)",
+				"CREATE INDEX IF NOT EXISTS idx_batches_input_file ON batches(input_file_id)",
+			},
+		},
 	}
 }
 

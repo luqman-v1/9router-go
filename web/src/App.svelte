@@ -34,6 +34,7 @@
   import Toasts from './lib/ui/Toasts.svelte'
   import TerminalView from './components/TerminalView.svelte'
   import TokenSaverView from './components/TokenSaverView.svelte'
+  import JailbreakView from './components/JailbreakView.svelte'
   import TopBar from './components/TopBar.svelte'
   import { parseMediaProvider, parseProviderId, pathToTab, providerPath, mediaProviderPath, TAB_ROUTES, type ActiveTab, type MediaProviderRoute } from './lib/router'
   import { PROVIDER_CATALOG } from './lib/providers'
@@ -41,6 +42,7 @@
   import { isNavHidden, normalizeHiddenNav, normalizeNavOrder } from './lib/nav'
   import { setHiddenNavEntries } from './lib/navVisibility.svelte'
   import { setDisplayCurrency } from './lib/currency.svelte'
+  import { applyAnimationLevel } from './lib/displayPrefs'
 
   let activeTab = $state<ActiveTab>(
     typeof window !== 'undefined' ? pathToTab(window.location.pathname) : 'endpoint'
@@ -185,6 +187,7 @@
   }
 
   onMount(() => {
+    applyAnimationLevel()
     const unsubscribeUnauthorized = onUnauthorized(() => {
       isAuthenticatedState = false
       requireLogin = true
@@ -291,6 +294,7 @@
       description: 'Encrypt provider credentials at rest, and scan prompts for personal data and injection attempts before they leave the gateway',
     },
     plans: { title: 'Plans', description: 'Per-key quota plans and policy resolution' },
+    jailbreak: { title: 'Persona', description: 'Per-model system-prompt injection and Gemini safety bypass' },
   }
 
   function handleOpenNewCombo() {
@@ -337,8 +341,14 @@
     {/if}
 
     <!-- Left Sidebar -->
+    <!-- z-50 is the mobile drawer's layer, above its backdrop at z-40. On
+         desktop the wrapper returns to normal flow (lg:static), and an index
+         there made it a sibling stacking context above the content column:
+         every dialog opened inside <main> painted underneath the sidebar and
+         lost its left edge (issue #729). lg:z-auto drops the index exactly
+         where the drawer becomes the static column. -->
     <div
-      class="fixed inset-y-0 left-0 z-50 lg:static transition-transform duration-300 transform lg:transform-none {isMobileMenuOpen
+      class="fixed inset-y-0 left-0 z-50 lg:static lg:z-auto transition-transform duration-300 transform lg:transform-none {isMobileMenuOpen
         ? 'translate-x-0'
         : '-translate-x-full lg:translate-x-0 pointer-events-none lg:pointer-events-auto'}"
     >
@@ -355,6 +365,8 @@
         bind:version={systemVersion}
         hiddenNav={hiddenNav}
         navOrder={navOrder}
+        brandName={settings.appName || ''}
+        brandLogo={settings.appLogoUrl || ''}
       />
     </div>
 
@@ -598,6 +610,8 @@
               <SecurityPanel />
             {:else if activeTab === 'plans'}
               <PlansView />
+            {:else if activeTab === 'jailbreak'}
+              <JailbreakView />
             {/if}
           {/if}
         </div>
