@@ -136,22 +136,28 @@ func TestTranslateOpenAIToClaudeStream_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("stop reason — length", func(t *testing.T) {
-		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"stop-length","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`))
-		out, err := TranslateOpenAIToClaudeStream([]byte(`{"id":"stop-length","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`))
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		const key = "stop-length"
+		defer ClearStreamState(key)
+		out := streamClaude(t, key,
+			`{"id":"`+key+`","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
+			`{"id":"`+key+`","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+			// No usage chunk followed the finish, so the terminal is deferred
+			// to the [DONE] flush.
+			"[DONE]",
+		)
 		if !strings.Contains(string(out), `"stop_reason":"max_tokens"`) {
 			t.Errorf("expected max_tokens, got: %s", out)
 		}
 	})
 
 	t.Run("stop reason — stop", func(t *testing.T) {
-		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"stop-stop","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`))
-		out, err := TranslateOpenAIToClaudeStream([]byte(`{"id":"stop-stop","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`))
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		const key = "stop-stop"
+		defer ClearStreamState(key)
+		out := streamClaude(t, key,
+			`{"id":"`+key+`","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
+			`{"id":"`+key+`","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			"[DONE]",
+		)
 		if !strings.Contains(string(out), `"stop_reason":"end_turn"`) {
 			t.Errorf("expected end_turn, got: %s", out)
 		}

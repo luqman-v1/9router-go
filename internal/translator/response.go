@@ -246,6 +246,92 @@ func stopTextBlock(state *StreamState, results *[]map[string]any) {
 	state.TextBlockStarted = false
 }
 
+// claudeStopReason maps an OpenAI finish_reason to its Anthropic stop_reason.
+func claudeStopReason(finish string) string {
+	switch finish {
+	case "length":
+		return "max_tokens"
+	case "tool_calls":
+		return "tool_use"
+	case "content_filter":
+		return "refusal"
+	default:
+		return "end_turn"
+	}
+}
+
+// claudeFinalUsage renders the client-facing usage block for the terminal
+// message_delta. Anthropic and OpenAI disagree on the prompt count: OpenAI's
+// prompt_tokens is cache-INCLUSIVE while Anthropic's input_tokens counts only
+// uncached input, with cache reads reported separately. Emitting the inclusive
+// count AND cache_read_input_tokens made Claude Code (which sums them) read
+// the context meter high, so the inclusive count is split here. When the
+// upstream never reported prompt tokens at all (a chat upstream that ignores
+// stream_options.include_usage), the seeded body-size estimate stands in so
+// the client's meter still moves and auto-compact can fire.
+func claudeFinalUsage(state *StreamState) map[string]any {
+	input, output, cached, cacheCreation := 0, 0, 0, 0
+	if state.Usage != nil {
+		output = state.Usage.CompletionTokens
+		cached = state.Usage.GetCachedTokens()
+		cacheCreation = state.Usage.CacheCreationInputTokens
+		input = state.Usage.PromptTokens - cached
+		if input < 0 {
+			input = 0
+		}
+	}
+	if input == 0 && state.PromptEstimate > 0 {
+		input = state.PromptEstimate
+	}
+	finalUsage := map[string]any{
+		"input_tokens":  input,
+		"output_tokens": output,
+	}
+	if cached > 0 {
+		finalUsage["cache_read_input_tokens"] = cached
+	}
+	if cacheCreation > 0 {
+		finalUsage["cache_creation_input_tokens"] = cacheCreation
+	}
+	return finalUsage
+}
+
+// claudeTerminalEvents builds the terminal message_delta + message_stop pair.
+func claudeTerminalEvents(state *StreamState) []map[string]any {
+	return []map[string]any{
+		{
+			"type": "message_delta",
+			"delta": map[string]any{
+				"stop_reason":   claudeStopReason(state.FinishReason),
+				"stop_sequence": nil,
+			},
+			"usage": claudeFinalUsage(state),
+		},
+		{"type": "message_stop"},
+	}
+}
+
+// flushDeferredTerminal emits the terminal pair for a session that saw its
+// finish_reason but whose usage chunk never arrived before the stream ended.
+// It returns nil when there is nothing deferred.
+func flushDeferredTerminal(sessionKey string) []byte {
+	if sessionKey == "" {
+		return nil
+	}
+	statesMu.Lock()
+	defer statesMu.Unlock()
+	state, ok := states[sessionKey]
+	if !ok || state == nil || state.TerminalSent || state.FinishReason == "" {
+		return nil
+	}
+	state.TerminalSent = true
+	var buf bytes.Buffer
+	for _, res := range claudeTerminalEvents(state) {
+		buf.WriteString(formatSSE(res))
+	}
+	return buf.Bytes()
+}
+
 // TranslateOpenAIToClaude translates an OpenAI non-streaming response into a Claude non-streaming response.
 func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 	trimmed := bytes.TrimSpace(openaiResp)
@@ -363,8 +449,16 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 		CompletionTokensDetails:  details,
 		PromptCacheIncluded:      true,
 	}
+	// Anthropic's input_tokens counts only uncached input; OpenAI's
+	// prompt_tokens already includes the cached subset. Splitting them here
+	// keeps Claude Code (which sums input + cache_read + cache_creation)
+	// from double-counting the cached tokens.
+	uncachedInput := inputTokens - cachedTokens
+	if uncachedInput < 0 {
+		uncachedInput = 0
+	}
 	claudeUsageMap := map[string]any{
-		"input_tokens":  inputTokens,
+		"input_tokens":  uncachedInput,
 		"output_tokens": outputTokens,
 	}
 	if cachedTokens > 0 {
@@ -395,6 +489,11 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 // TranslateOpenAIToClaudeStream converts a single OpenAI SSE chunk JSON payload to Claude SSE format.
 // It keys the per-stream translation state by chunk.ID; callers with concurrent
 // streams should prefer TranslateOpenAIToClaudeStreamSession to scope state per request.
+//
+// Without a session key the deferred terminal cannot be flushed at [DONE] (a
+// [DONE] payload carries no chunk ID to look the state up by), so a stream
+// whose finish deferred the terminal closes only via EnsureStreamClosed —
+// which also needs the key. Production callers must use the Session variant.
 func TranslateOpenAIToClaudeStream(openaiChunk []byte) ([]byte, error) {
 	return TranslateOpenAIToClaudeStreamSession("", openaiChunk)
 }
@@ -410,6 +509,9 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 		return nil, nil
 	}
 	if string(trimmed) == "[DONE]" {
+		if tail := flushDeferredTerminal(sessionKey); len(tail) > 0 {
+			return append(tail, []byte("data: [DONE]\n\n")...), nil
+		}
 		return []byte("data: [DONE]\n\n"), nil
 	}
 
@@ -427,6 +529,9 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 	}
 
 	if isDone {
+		if tail := flushDeferredTerminal(sessionKey); len(tail) > 0 {
+			return append(tail, []byte("data: [DONE]\n\n")...), nil
+		}
 		return []byte("data: [DONE]\n\n"), nil
 	}
 
@@ -490,6 +595,8 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 	}
 	statesMu.Unlock()
 
+	var results []map[string]any
+
 	if chunk.Usage != nil {
 		if state.Usage == nil {
 			state.Usage = &OpenAIUsage{}
@@ -509,13 +616,19 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 		if chunk.Usage.CompletionTokensDetails != nil {
 			state.Usage.CompletionTokensDetails = chunk.Usage.CompletionTokensDetails
 		}
+		// Deferred terminal: the finish chunk already went by without usage,
+		// and this trailing chunk is where stream_options.include_usage
+		// delivers it. Close the message now with the real numbers.
+		if state.FinishReason != "" && !state.TerminalSent {
+			state.TerminalSent = true
+			results = append(results, claudeTerminalEvents(state)...)
+		}
 	}
-
-	var results []map[string]any
 
 	// 1. Message Start
 	if !state.MessageStartSent {
 		state.MessageStartSent = true
+		state.PromptEstimate = promptEstimateFor(sessionKey)
 		results = append(results, map[string]any{
 			"type": "message_start",
 			"message": map[string]any{
@@ -667,44 +780,19 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 				"index": toolInfo.BlockIndex,
 			})
 		}
-		finishReason := *choice.FinishReason
-		state.FinishReason = finishReason
-		claudeStop := "end_turn"
-		switch finishReason {
-		case "stop":
-			claudeStop = "end_turn"
-		case "length":
-			claudeStop = "max_tokens"
-		case "tool_calls":
-			claudeStop = "tool_use"
-		case "content_filter":
-			claudeStop = "refusal"
-		}
-		finalUsage := map[string]any{
-			"input_tokens":  0,
-			"output_tokens": 0,
-		}
+		state.FinishReason = *choice.FinishReason
 		if state.Usage != nil {
-			finalUsage["input_tokens"] = state.Usage.PromptTokens
-			finalUsage["output_tokens"] = state.Usage.CompletionTokens
-			if cached := state.Usage.GetCachedTokens(); cached > 0 {
-				finalUsage["cache_read_input_tokens"] = cached
-			}
-			if state.Usage.CacheCreationInputTokens > 0 {
-				finalUsage["cache_creation_input_tokens"] = state.Usage.CacheCreationInputTokens
-			}
+			// Usage arrived on the finish chunk itself: close the message now.
+			state.TerminalSent = true
+			results = append(results, claudeTerminalEvents(state)...)
 		}
-		results = append(results, map[string]any{
-			"type": "message_delta",
-			"delta": map[string]any{
-				"stop_reason":   claudeStop,
-				"stop_sequence": nil,
-			},
-			"usage": finalUsage,
-		})
-		results = append(results, map[string]any{
-			"type": "message_stop",
-		})
+		// Usage not known yet: the terminal is deferred. With
+		// stream_options.include_usage an OpenAI stream carries usage on a
+		// trailing zero-choice chunk AFTER the finish chunk, so emitting the
+		// message_delta here would report zeros and the client's context
+		// meter would never move. The usage chunk closes it (see the usage
+		// block above); a stream that ends without one is closed by the
+		// [DONE] flush or EnsureStreamClosed.
 		// NOTE: the state is intentionally left in the map here so callers can
 		// still read accumulated usage via GetStreamUsage(sessionKey) after the
 		// finish chunk. Cleanup is the caller's job via ClearStreamState (defer).
@@ -718,7 +806,9 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 }
 
 // EnsureStreamClosed generates closing events (message_delta, message_stop) if a stream
-// was interrupted or ended without an explicit finish_reason from upstream.
+// was interrupted or ended without an explicit terminal from upstream. That
+// covers both a finish_reason that never arrived and the deferred terminal of
+// a finish whose usage chunk never came.
 func EnsureStreamClosed(sessionKey string) []byte {
 	if sessionKey == "" {
 		return nil
@@ -729,15 +819,19 @@ func EnsureStreamClosed(sessionKey string) []byte {
 	if !exists || state == nil {
 		return nil
 	}
-	if state.FinishReason != "" {
+	if state.TerminalSent {
 		return nil // Already cleanly closed
 	}
 
-	state.FinishReason = "stop"
+	if state.FinishReason == "" {
+		state.FinishReason = "stop"
+	}
+	state.TerminalSent = true
 	var results []map[string]any
 
 	if !state.MessageStartSent {
 		state.MessageStartSent = true
+		state.PromptEstimate = promptEstimateFor(sessionKey)
 		results = append(results, map[string]any{
 			"type": "message_start",
 			"message": map[string]any{
@@ -776,25 +870,7 @@ func EnsureStreamClosed(sessionKey string) []byte {
 		})
 	}
 
-	finalUsage := map[string]any{
-		"input_tokens":  0,
-		"output_tokens": 0,
-	}
-	if state.Usage != nil {
-		finalUsage["input_tokens"] = state.Usage.PromptTokens
-		finalUsage["output_tokens"] = state.Usage.CompletionTokens
-	}
-	results = append(results, map[string]any{
-		"type": "message_delta",
-		"delta": map[string]any{
-			"stop_reason":   "end_turn",
-			"stop_sequence": nil,
-		},
-		"usage": finalUsage,
-	})
-	results = append(results, map[string]any{
-		"type": "message_stop",
-	})
+	results = append(results, claudeTerminalEvents(state)...)
 
 	var buf bytes.Buffer
 	for _, res := range results {

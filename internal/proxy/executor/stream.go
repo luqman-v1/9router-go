@@ -591,6 +591,13 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 		flusher := proxy.WriteSSEHeaders(hw)
 		sessionKey := translator.NewSessionKey("stream")
 		defer translator.ClearStreamState(sessionKey)
+		// Body-size input estimate seeded before the first chunk: the
+		// terminal usage block falls back to it when the upstream never
+		// reports usage, so the client's context meter still moves and
+		// auto-compact can fire.
+		if est := translator.PromptEstimateFromContext(req.Ctx); est > 0 {
+			translator.SeedStreamPromptEstimate(sessionKey, est)
+		}
 
 		doneSeen := false
 		err := proxy.ScanStream(upstream, func(payload []byte) {

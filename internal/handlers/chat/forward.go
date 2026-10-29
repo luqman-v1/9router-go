@@ -178,6 +178,12 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 	if reqModel := translator.RequestedModelFromContext(ctx); reqModel != "" {
 		translator.SeedStreamState(sessionKey, reqModel)
 	}
+	// Body-size input estimate seeded before the first chunk: the terminal
+	// usage block falls back to it when the upstream never reports usage, so
+	// the client's context meter still moves and auto-compact can fire.
+	if est := translator.PromptEstimateFromContext(ctx); est > 0 {
+		translator.SeedStreamPromptEstimate(sessionKey, est)
+	}
 	defer func() {
 		if endChunk := translator.EnsureStreamClosed(sessionKey); len(endChunk) > 0 {
 			hw.Write(endChunk)
@@ -212,7 +218,12 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 	// A shutdown abort cuts the stream mid-way. End it with the same terminator
 	// a natural finish emits, so the client sees a clean [DONE] instead of a
 	// truncated stream (the stall reader already closed the upstream body).
+	// The terminal message_delta + message_stop go out BEFORE [DONE]: they may
+	// have been deferred waiting for a usage chunk that never came.
 	if shutdown.Fired() && !finished {
+		if endChunk := translator.EnsureStreamClosed(sessionKey); len(endChunk) > 0 {
+			hw.Write(endChunk)
+		}
 		hw.Write([]byte("data: [DONE]\n\n"))
 		if flusher != nil {
 			flusher.Flush()
