@@ -150,9 +150,9 @@ func claudeAutoCompactWindow(opts Options) int {
 		return 1000000
 	}
 	if best < 100000 {
-		// Below the CLI's floor the variable cannot express the real window;
-		// the floor is the closest legal value and still beats the CLI's
-		// built-in assumption for every model larger than 100k.
+		// Below the floor the variable cannot express the real window, so the
+		// clamped value may fire compaction late; it is still the closest
+		// legal guess, and closer than the CLI's built-in assumption.
 		return 100000
 	}
 	return best
