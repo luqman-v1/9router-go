@@ -986,6 +986,10 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		})
 	}
 
+	// Inject served route response headers (x-9router-provider, x-9router-model, etc.)
+	// before any executor or forwarding function writes headers to w.
+	injectRouteHeaders(w, provider, model, f.ComboName, f.Attempts)
+
 	if exec := executor.Get(provider); exec != nil {
 		execReq := &executor.Request{
 			Ctx:            ctx,
@@ -1034,11 +1038,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		if rErr == nil && refreshedKey != "" && refreshedKey != apiKey {
 			log.Info("fallback", "reactive 401 token refresh success, retrying request", "conn", connectionID)
 			apiKey = NormalizeProviderToken(provider, refreshedKey)
-	// Inject served route response headers (x-9router-provider, x-9router-model, etc.)
-	// before any executor or forwarding function writes headers to w.
-	injectRouteHeaders(w, provider, model, f.ComboName, f.Attempts)
-
-	if exec := executor.Get(provider); exec != nil {
+			if exec := executor.Get(provider); exec != nil {
 				retryReq := &executor.Request{
 					Ctx:            ctx,
 					Client:         httpClient,
@@ -1099,6 +1099,9 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	completed := fwdErr == nil
 	if !completed && isClientCanceled(ctx, fwdErr) && metrics != nil && metrics.ResponseBuf.Len() > 0 {
 		completed = true
+	}
+	if !completed && (metrics == nil || metrics.ResponseBuf.Len() == 0) {
+		clearRouteHeaders(w)
 	}
 
 	status := "error"
