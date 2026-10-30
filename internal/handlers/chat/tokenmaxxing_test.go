@@ -128,6 +128,7 @@ func TestOrderByTokenmaxxingScores_Ordering(t *testing.T) {
 }
 
 func TestApplyTokenmaxxingRouting_QuotaOrdering(t *testing.T) {
+	ClearTokenmaxxingCache()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
@@ -155,8 +156,12 @@ func TestApplyTokenmaxxingRouting_QuotaOrdering(t *testing.T) {
 }
 
 func TestComboTokenmaxxing_DrivesWiringEndToEnd(t *testing.T) {
+	ClearTokenmaxxingCache()
 	sqlDB, cleanup := setupChatTestDB(t)
 	defer cleanup()
+	if _, err := sqlDB.Exec(`DELETE FROM providerConnections`); err != nil {
+		t.Fatalf("delete pre-seeded connections: %v", err)
+	}
 	repo := db.NewRepo(sqlDB)
 
 	var firstHit string

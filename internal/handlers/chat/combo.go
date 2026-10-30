@@ -714,9 +714,9 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 	//
 	// RespectStoredOrder skips the rotation and walks the stored list as-is,
 	// so the order the operator arranged in the editor is the fallback chain.
-	// The smart strategy is exempt: it orders the models itself and already
-	// keeps the combo's own order on every failure path, so honouring the flag
-	// there would fight the evaluation it exists to perform.
+	// The smart and tokenmaxxing strategies are exempt: they compute dynamic
+	// ranking (by task suitability and quota allowance respectively), so honoring
+	// stored order would defeat the evaluation they exist to perform.
 	var models []string
 	if strategy == "smart" {
 		ctx, models = h.applySmartRouting(ctx, body, comboModels, comboName)
@@ -1146,6 +1146,7 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
 	var models []string
+	// smart and tokenmaxxing compute dynamic rankings and override stored order.
 	if strategy == "smart" {
 		ctx, models = h.applySmartRouting(ctx, bodyJSON, comboModels, comboName)
 	} else if strategy == "tokenmaxxing" {
