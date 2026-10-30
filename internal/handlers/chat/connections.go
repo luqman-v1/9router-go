@@ -723,15 +723,14 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
 	}
 
-	// An anthropic-compatible node exists to front an Anthropic Messages
-	// endpoint — compatibleNodeLane routes it to /messages — so its wire format
-	// is Claude the same way a registry entry declares Format: "claude"
-	// (minimax-code). Without this, a /v1/messages client's body was converted
-	// to Chat Completions, POSTed to the Messages endpoint, and the Claude-shaped
-	// reply that came back died in TranslateOpenAIToClaude as "no choices".
-	if strings.HasPrefix(provider, "anthropic-compatible-") && baseCfg.Format == "" {
+	// A compatible node's wire format comes from the same table its lane comes
+	// from (providers.CompatibleNodeWires), so the two cannot drift apart —
+	// that drift was the "no choices in OpenAI response" bug: the lane sent
+	// the request to /messages while the format machinery still treated the
+	// upstream as Chat Completions.
+	if format := compatibleNodeFormat(provider); format != "" && baseCfg.Format == "" {
 		cloned := *baseCfg
-		cloned.Format = providers.FormatClaude
+		cloned.Format = format
 		baseCfg = &cloned
 	}
 
@@ -863,43 +862,73 @@ var compatibleNodeLanes = []string{
 	"/chat", "/embeddings", "/api/chat", "/api/generate",
 }
 
-// compatibleNodeLane is the route a node of this type and apiType serves.
-// Anthropic-compatible nodes speak Messages, and an openai-compatible node picks
+// compatibleNodeLane is the route a node of this type and apiType serves,
+// read from providers.CompatibleNodeWires — the same table getProviderConfig
+// stamps the wire format from, so the lane a request dials and the format the
+// translators speak can never disagree again. An openai-compatible node picks
 // between Chat Completions and Responses from its apiType — the same mapping
-// upstream's buildUrl applies, including its fallback: when no apiType is stored,
-// upstream reads the node id (resolveOpenAICompatibleApiType returns "responses"
-// for a provider id containing "responses"). A connection row written before the
-// apiType sync landed carries no apiType, and a responses node created then has
-// only its id to say so.
+// upstream's buildUrl applies, including its fallback: when no apiType is
+// stored, upstream reads the node id (resolveOpenAICompatibleApiType returns
+// "responses" for a provider id containing "responses"). A connection row
+// written before the apiType sync landed carries no apiType, and a responses
+// node created then has only its id to say so.
 //
-// A custom-embedding node is deliberately NOT given an /embeddings lane here:
-// the embeddings handler derives its own URL from this one (buildEmbeddingsURL
-// swaps /chat/completions for /embeddings), so producing /embeddings here would
+// A custom-embedding node's declared lane is the chat route: the embeddings
+// handler derives its own URL from this one (buildEmbeddingsURL swaps
+// /chat/completions for /embeddings), so producing /embeddings here would
 // append it twice.
 func compatibleNodeLane(provider, apiType string) string {
-	switch {
-	case strings.HasPrefix(provider, "anthropic-compatible-"):
-		return "/messages"
-	case apiType == compatibleAPITypeResponses:
-		return "/responses"
-	case apiType == "" && strings.Contains(provider, compatibleAPITypeResponses):
-		return "/responses"
-	default:
+	wire, ok := nodeWireOf(provider)
+	if !ok {
+		// Not a node id: the caller (compatibleNodeLaneURL) guards this, and
+		// chatCompletionsURL's shape rule is the historical default.
 		return "/chat/completions"
 	}
+	if compatibleNodeFormat(provider) == "" {
+		switch {
+		case apiType == compatibleAPITypeResponses:
+			return "/responses"
+		case apiType == "" && strings.Contains(provider, compatibleAPITypeResponses):
+			return "/responses"
+		}
+	}
+	return wire.Lane
 }
 
 // compatibleAPITypeResponses is the stored apiType of an openai-compatible node
 // whose upstream speaks the Responses API (upstream resolveOpenAICompatibleApiType).
 const compatibleAPITypeResponses = "responses"
 
+// nodeWireOf returns the wire contract of the custom node type behind a
+// provider id ("anthropic-compatible-<id>" → the "anthropic-compatible"
+// entry) and whether the id is a compatible node at all. The map's keys are
+// mutually exclusive prefixes, so the match is deterministic.
+func nodeWireOf(provider string) (providers.NodeWire, bool) {
+	for nodeType, wire := range providers.CompatibleNodeWires {
+		if strings.HasPrefix(provider, nodeType+"-") {
+			return wire, true
+		}
+	}
+	return providers.NodeWire{}, false
+}
+
 // isCompatibleNodeProvider reports whether a provider id belongs to a custom
-// endpoint the operator registered, matching the three node shapes the create
-// handler composes (provider_node_id.go).
+// endpoint the operator registered, matching the node shapes the create
+// handler composes (provider_node_id.go) — derived from
+// providers.CompatibleNodeWires so detection cannot outgrow the wire table.
 func isCompatibleNodeProvider(provider string) bool {
-	return strings.HasPrefix(provider, "openai-compatible-") ||
-		strings.HasPrefix(provider, "anthropic-compatible-") ||
-		strings.HasPrefix(provider, "custom-embedding-")
+	_, ok := nodeWireOf(provider)
+	return ok
+}
+
+// compatibleNodeFormat reports the format a custom node's upstream speaks
+// ("" = OpenAI Chat Completions).
+func compatibleNodeFormat(provider string) string {
+	wire, ok := nodeWireOf(provider)
+	if !ok {
+		return ""
+	}
+	return wire.Format
 }
 
 // connectionAPIType reads the apiType the dashboard stores on a compatible
