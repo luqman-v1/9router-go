@@ -723,6 +723,18 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
 	}
 
+	// An anthropic-compatible node exists to front an Anthropic Messages
+	// endpoint — compatibleNodeLane routes it to /messages — so its wire format
+	// is Claude the same way a registry entry declares Format: "claude"
+	// (minimax-code). Without this, a /v1/messages client's body was converted
+	// to Chat Completions, POSTed to the Messages endpoint, and the Claude-shaped
+	// reply that came back died in TranslateOpenAIToClaude as "no choices".
+	if strings.HasPrefix(provider, "anthropic-compatible-") && baseCfg.Format == "" {
+		cloned := *baseCfg
+		cloned.Format = providers.FormatClaude
+		baseCfg = &cloned
+	}
+
 	// An edge relay pool (vercel/cloudflare/deno/netlify) is not a CONNECT proxy:
 	// it forwards on x-relay-target / x-relay-path. It used to be applied here by
 	// rewriting BaseURL to the relay host and stamping those headers into

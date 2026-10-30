@@ -332,6 +332,21 @@ func flushDeferredTerminal(sessionKey string) []byte {
 	return buf.Bytes()
 }
 
+// IsClaudeMessageBody reports whether the body is already an Anthropic
+// Messages response (`type:"message"`, `role:"assistant"`). A Chat Completions
+// body never carries that pair — its discriminator is `object:"chat.completion"`
+// — so the check cannot sweep an OpenAI reply in.
+func IsClaudeMessageBody(body []byte) bool {
+	var probe struct {
+		Type string `json:"type"`
+		Role string `json:"role"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(body), &probe) != nil {
+		return false
+	}
+	return probe.Type == "message" && probe.Role == "assistant"
+}
+
 // TranslateOpenAIToClaude translates an OpenAI non-streaming response into a Claude non-streaming response.
 func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 	trimmed := bytes.TrimSpace(openaiResp)
@@ -342,6 +357,15 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 	var resp OpenAIResponse
 	if err := json.Unmarshal(openaiResp, &resp); err != nil {
 		return nil, nil, fmt.Errorf("failed to parse OpenAI response: %w", err)
+	}
+
+	// An upstream that answers the Messages wire (an anthropic-compatible node,
+	// minimax-code, a claude member inside a /v1/messages combo) reaches this
+	// translate=true lane with a body that is already the shape the client
+	// asked for. Relay it unchanged — "no choices" here turned a good answer
+	// into a 502 and pushed the combo to the next member.
+	if IsClaudeMessageBody(openaiResp) {
+		return openaiResp, ParseClaudeUsage(openaiResp), nil
 	}
 
 	if len(resp.Choices) == 0 {

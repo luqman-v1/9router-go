@@ -270,6 +270,27 @@ func TestTranslateOpenAIToClaude(t *testing.T) {
 		}
 	})
 
+	t.Run("claude message body passes through", func(t *testing.T) {
+		input := []byte(`{"id":"msg_01","type":"message","role":"assistant","model":"minimax-m3.1-flash","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":12,"output_tokens":5}}`)
+		out, u, err := TranslateOpenAIToClaude(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(out) != string(input) {
+			t.Errorf("claude body must be relayed unchanged, got: %s", out)
+		}
+		if u == nil || u.PromptTokens != 12 || u.CompletionTokens != 5 {
+			t.Errorf("expected claude usage extracted, got: %+v", u)
+		}
+	})
+
+	t.Run("claude error envelope still fails translation", func(t *testing.T) {
+		_, _, err := TranslateOpenAIToClaude([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}`))
+		if err == nil {
+			t.Error("expected error for a claude error envelope")
+		}
+	})
+
 	t.Run("proxy_ prefix stripped", func(t *testing.T) {
 		input := []byte(`{"id":"chatcmpl-proxy","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_p","type":"function","function":{"name":"proxy_Bash","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
 		out, _, err := TranslateOpenAIToClaude(input)

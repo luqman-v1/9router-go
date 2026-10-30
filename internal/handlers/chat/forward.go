@@ -24,6 +24,15 @@ import (
 )
 
 // forwardRequest sends the request to the upstream provider and streams/pipes the response.
+// upstreamClaude marks an upstream that answers in Claude Messages format (an
+// anthropic-compatible node, minimax-code); clientClaude marks a client whose
+// own wire is Claude Messages. Three combinations matter:
+//   - upstream Claude + client not Claude: the reply is translated to the
+//     client's Chat Completions shape (the executor's UpstreamClaude, for the
+//     providers without a custom executor).
+//   - upstream Claude + client Claude: frames are already the client's format
+//     and are relayed untouched.
+//   - neither: the historical OpenAI lanes, translateResponse as passed.
 func (h *ChatHandler) forwardRequest(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -39,6 +48,8 @@ func (h *ChatHandler) forwardRequest(
 	// pool would look bound in the dashboard and never be used.
 	httpClient *http.Client,
 	provider string,
+	upstreamClaude bool,
+	clientClaude bool,
 ) error {
 	// A nil client means the caller had no connection context; the shared one
 	// is the only sensible default.
@@ -102,14 +113,124 @@ func (h *ChatHandler) forwardRequest(
 		if !strings.HasPrefix(strings.ToLower(contentType), "text/event-stream") {
 			// Upstream returned non-streaming response (e.g. JSON error with 200 OK)
 			log.Warn("stream", "non-stream response", "contentType", contentType)
+			if upstreamClaude && !clientClaude {
+				return h.handleClaudeUpstreamJSON(ctx, w, resp.Body, metrics)
+			}
 			return h.handleJSONResponse(ctx, w, resp.Body, translateResponse, metrics)
 		}
 		// Wrap with SSE stall detection
 		stallReader := internalproxy.NewStallReaderWithContext(ctx, resp.Body, 0, "upstream")
 		bodyCloser = stallReader
+		if upstreamClaude && clientClaude {
+			// Claude client on a Claude upstream: the frames are already the
+			// client's format, so the passthrough lane relays them untouched.
+			return h.handleStreamResponse(ctx, w, stallReader, false, start, metrics)
+		}
+		if upstreamClaude {
+			// OpenAI client on a Messages upstream: translate every Claude
+			// event to an OpenAI chunk instead of relaying SSE the client
+			// cannot read.
+			return h.handleClaudeUpstreamStream(ctx, w, stallReader, start, metrics)
+		}
 		return h.handleStreamResponse(ctx, w, stallReader, translateResponse, start, metrics)
 	}
+	if upstreamClaude && !clientClaude {
+		return h.handleClaudeUpstreamJSON(ctx, w, resp.Body, metrics)
+	}
 	return h.handleJSONResponse(ctx, w, resp.Body, translateResponse, metrics)
+}
+
+// handleClaudeUpstreamJSON serves a non-streaming Claude Messages response to a
+// Chat Completions client. Translation only runs on a body that really is a
+// Claude Message; anything else (a gateway's error envelope, an OpenAI-shaped
+// reply) is relayed raw so the client — and the probe verdict — reads the
+// failure the upstream actually sent rather than an empty completion.
+func (h *ChatHandler) handleClaudeUpstreamJSON(ctx context.Context, w http.ResponseWriter, upstream io.Reader, metrics *streamMetrics) error {
+	body, err := io.ReadAll(io.LimitReader(upstream, constants.MaxUpstreamBodyBytes))
+	if err != nil {
+		return fmt.Errorf("read upstream response body: %w", err)
+	}
+	if internalproxy.LooksLikeSSE(body) {
+		// A Messages upstream answered stream:false with an event stream. Fold
+		// it into one chat.completion: translate each event to an OpenAI chunk,
+		// then aggregate the chunks the same way a forced-SSE OpenAI reply is.
+		var folded bytes.Buffer
+		state := &translator.ClaudeToOpenAIStreamState{Model: translator.RequestedModelFromContext(ctx)}
+		_ = internalproxy.ScanStream(bytes.NewReader(body), func(payload []byte) {
+			if out, terr := translator.TranslateClaudeChunkToOpenAI(payload, state); terr == nil {
+				folded.Write(out)
+			}
+		})
+		if aggregated, ok := sseToClaudeJSON(folded.Bytes()); ok {
+			body = aggregated
+		}
+	}
+	converted := body
+	if translator.IsClaudeMessageBody(body) {
+		if next, terr := translator.TranslateClaudeResponseToOpenAI(body); terr == nil {
+			converted = next
+		} else {
+			log.Warn("json", "claude response relayed untranslated", "error", terr)
+		}
+	}
+	return h.handleJSONResponse(ctx, w, bytes.NewReader(converted), false, metrics)
+}
+
+// handleClaudeUpstreamStream pipes a Claude Messages SSE stream to a Chat
+// Completions client, translating each event into an OpenAI chunk.
+func (h *ChatHandler) handleClaudeUpstreamStream(ctx context.Context, w http.ResponseWriter, upstream io.Reader, startTime time.Time, metrics *streamMetrics) error {
+	hw := internalproxy.NewHeartbeatWriter(ctx, w, 0)
+	defer func() { _ = hw.Close() }()
+	flusher := internalproxy.WriteSSEHeaders(hw)
+	// A Messages stream that omits `model` still has to echo one back, and the
+	// model the client asked for is the value that is actually true.
+	state := &translator.ClaudeToOpenAIStreamState{Model: translator.RequestedModelFromContext(ctx)}
+	done := false
+	err := internalproxy.ScanStream(upstream, func(payload []byte) {
+		if done {
+			return
+		}
+		if string(bytes.TrimSpace(payload)) == "[DONE]" {
+			done = true
+			return
+		}
+		out, terr := translator.TranslateClaudeChunkToOpenAI(payload, state)
+		if terr != nil {
+			log.Error("stream", "claude chunk translate error", "error", terr)
+			return
+		}
+		if len(out) == 0 {
+			return
+		}
+		if metrics.TTFT == 0 {
+			metrics.TTFT = time.Since(startTime).Milliseconds()
+		}
+		_, _ = metrics.ResponseBuf.Write(out)
+		if _, werr := hw.Write(out); werr != nil {
+			return
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		if bytes.Contains(out, []byte("[DONE]")) {
+			done = true
+		}
+	})
+	if state.Usage != nil {
+		translator.SetUsage(ctx, state.Usage)
+	}
+	if err != nil {
+		return err
+	}
+	if !done {
+		// The upstream drained without a terminal event: close the stream the
+		// way a natural finish would, so the client does not hang on the read.
+		_, _ = hw.Write([]byte("data: [DONE]\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	return nil
 }
 
 // handleStreamResponse pipes SSE chunks from upstream to the client.
