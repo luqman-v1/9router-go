@@ -247,7 +247,7 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 	}
 	// The context ceiling is written for the same reason: an explicit zero
 	// clears the axis, so a conditional write would leave it stale.
-	if err := h.Repo.SetApiKeyContextLimit(id, contextLimit); err != nil {
+	if err := h.Repo.SetApiKeyContextLimit(r.Context(), id, contextLimit); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

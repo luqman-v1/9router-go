@@ -121,7 +121,10 @@ func WriteJSONErrorType(w http.ResponseWriter, status int, errType, code, messag
 		},
 	}
 	if err := json.MarshalWrite(w, errResp, deterministicJSON); err != nil {
-		w.Write([]byte(`{"error":{"message":"internal error","type":"server_error","code":"internal_server_error"}}`))
+		// The header is already written, so this is the only way left to tell
+		// the client something. A failed write leaves the client with a broken
+		// body either way; there is nothing to retry and nowhere to report it.
+		_, _ = w.Write([]byte(`{"error":{"message":"internal error","type":"server_error","code":"internal_server_error"}}`))
 	}
 }
 
