@@ -23,6 +23,7 @@
   import { copyToClipboard } from '../lib/clipboard'
   import { api, type APIKey } from '../api/client'
   import HermesToolCard from './cli-tools/HermesToolCard.svelte'
+  import CliModelMappingCard from './cli-tools/CliModelMappingCard.svelte'
 
   interface Props {
     apiKeys?: APIKey[]
@@ -842,6 +843,11 @@
                 <div class="w-9 h-5 bg-surface-3 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-500 border border-border"></div>
               </label>
             </div>
+
+            <!-- CLI Model Mapping: slot → model routes for this key (Cartethyia port). -->
+            {#if apiKeys[0]}
+              <CliModelMappingCard apiKey={apiKeys[0]} />
+            {/if}
           </div>
         {/if}
 

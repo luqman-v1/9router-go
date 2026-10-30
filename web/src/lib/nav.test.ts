@@ -55,7 +55,7 @@ describe('nav model', () => {
   })
 
   it('hides only the defaults, and offers every row to the arrangement', () => {
-    expect(DEFAULT_HIDDEN_NAV_ENTRIES.map((entry) => entry.id)).toEqual(['plans', 'jailbreak'])
+    expect(DEFAULT_HIDDEN_NAV_ENTRIES.map((entry) => entry.id)).toEqual(['plans', 'jailbreak', 'prompt-injection'])
     for (const entry of DEFAULT_HIDDEN_NAV_ENTRIES) {
       expect(NAV_ORDER).toContain(entry.id)
       expect(ALWAYS_VISIBLE_NAV_IDS).not.toContain(entry.id)
@@ -75,7 +75,7 @@ describe('nav model', () => {
 
 describe('default visibility', () => {
   it('hides Plans and Jailbreak until a list is saved', () => {
-    expect([...DEFAULT_HIDDEN_NAV_IDS]).toEqual(['plans', 'jailbreak'])
+    expect([...DEFAULT_HIDDEN_NAV_IDS]).toEqual(['plans', 'jailbreak', 'prompt-injection'])
     for (const saved of [undefined, null, {}, 'plans', { hidden: 'plans' }]) {
       const ids = renderedIds(saved)
       expect(ids, JSON.stringify(saved)).not.toContain('plans')
@@ -149,8 +149,8 @@ describe('stored hide list', () => {
   })
 
   it('starts from the defaults when nothing was saved', () => {
-    expect(setNavVisible(undefined, 'plans', true)).toEqual(['jailbreak'])
-    expect(setNavVisible(undefined, 'quota', false)).toEqual(['quota', 'jailbreak', 'plans'])
+    expect(setNavVisible(undefined, 'plans', true)).toEqual(['jailbreak', 'prompt-injection'])
+    expect(setNavVisible(undefined, 'quota', false)).toEqual(['quota', 'jailbreak', 'prompt-injection', 'plans'])
   })
 
   it('survives a junk payload without losing a valid entry', () => {

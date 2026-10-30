@@ -201,6 +201,12 @@ func (r *Repo) SetGuardrailsEnabled(enabled bool) error {
 	return r.UpdateSettingsRaw(map[string]any{"guardrailsEnabled": enabled})
 }
 
+// SetPromptInjectionEnabled updates the promptInjectionEnabled flag in the
+// settings table — the master switch for the Prompt Injection Pro feature.
+func (r *Repo) SetPromptInjectionEnabled(enabled bool) error {
+	return r.UpdateSettingsRaw(map[string]any{"promptInjectionEnabled": enabled})
+}
+
 // RateLimitDefaults is the operator's fallback for keys that set no limit of
 // their own.
 //

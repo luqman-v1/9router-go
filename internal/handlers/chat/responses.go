@@ -96,6 +96,10 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CLI model mapping (routing:cli_mapping scope + CLI User-Agent gate)
+	// rewrites the slot before model policy or alias resolution sees it.
+	modelName = h.applyCliModelMapping(r, modelName)
+
 	// Per-key model policy: 403 before the responses bridge or any connection
 	// selection.
 	if !h.enforceModelAccess(w, r, modelName) {

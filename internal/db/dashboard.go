@@ -375,6 +375,39 @@ func (r *Repo) SetApiKeyMetadata(keyID, metadata string) error {
 	return nil
 }
 
+// GetApiKeyScopes returns the scopes JSON array for an API key.
+func (r *Repo) GetApiKeyScopes(keyID string) ([]string, error) {
+	var scopesJSON sql.NullString
+	err := r.db.QueryRow(`SELECT scopes FROM apiKeys WHERE id = ?`, keyID).Scan(&scopesJSON)
+	if err != nil {
+		return nil, fmt.Errorf("get api key scopes %s: %w", keyID, err)
+	}
+	if !scopesJSON.Valid || scopesJSON.String == "" {
+		return []string{}, nil
+	}
+	var scopes []string
+	if err := json.Unmarshal([]byte(scopesJSON.String), &scopes); err != nil {
+		return nil, fmt.Errorf("parse api key scopes %s: %w", keyID, err)
+	}
+	return scopes, nil
+}
+
+// SetApiKeyScopes writes the scopes JSON array for an API key.
+func (r *Repo) SetApiKeyScopes(keyID string, scopes []string) error {
+	payload, err := json.Marshal(scopes)
+	if err != nil {
+		return fmt.Errorf("marshal api key scopes %s: %w", keyID, err)
+	}
+	_, err = r.db.Exec(
+		`UPDATE apiKeys SET scopes = ? WHERE id = ?`,
+		string(payload), keyID,
+	)
+	if err != nil {
+		return fmt.Errorf("set api key scopes %s: %w", keyID, err)
+	}
+	return nil
+}
+
 // SetApiKeyName renames an API key. The name is operator-facing only — it never
 // reaches the wire — so an empty value clears it and the UI falls back to the
 // masked display.

@@ -149,7 +149,11 @@ type SettingsData struct {
 	// 0 means "keep forever", which is the default: the ledger is only pruned
 	// when an operator asks for it. See usage_retention_ledger.go.
 	UsageHistoryRetentionDays int                         `json:"usageHistoryRetentionDays,omitempty"`
-	ProviderThinking          map[string]ProviderThinking `json:"providerThinking,omitempty"`
+	// PromptInjectionEnabled is the master switch for the Prompt Injection
+	// Pro feature (system prompt or chat script per global / API key / model
+	// / combo). Off by default so the surface is opt-in.
+	PromptInjectionEnabled bool                        `json:"promptInjectionEnabled"`
+	ProviderThinking       map[string]ProviderThinking `json:"providerThinking,omitempty"`
 }
 
 // ProviderThinking is one provider's operator reasoning override, mirroring
@@ -197,6 +201,7 @@ func DefaultSettings() *SettingsData {
 		SemanticCacheTTL:        1440,
 		SemanticCacheMaxEntries: 1000,
 		AutoUpdate:              false,
+		PromptInjectionEnabled:  false,
 		CapacityAdapter: map[string]CapacityAdapterEntry{
 			"vision":     {Enabled: true, RoundRobin: false, Models: []string{}},
 			"pdf":        {Enabled: false, RoundRobin: false, Models: []string{}},

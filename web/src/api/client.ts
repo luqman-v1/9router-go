@@ -149,6 +149,8 @@ export interface APIKey {
   metadata?: string
   /** Plan template this key inherits from. Empty means no plan. */
   planId?: string
+  /** Flat scope grants, e.g. ['routing:cli_mapping']. Empty means none. */
+  scopes?: string[]
 }
 
 export interface APIKeyPolicy {
@@ -165,6 +167,47 @@ export interface APIKeyPolicy {
   name?: string
   /** Plan template to inherit. An empty string detaches the key. */
   planId?: string
+  /** Scope grants. An omitted field leaves stored scopes alone. */
+  scopes?: string[]
+}
+
+/** One CLI tool that supports remote model mapping. */
+export interface CliToolInfo {
+  id: string
+  name: string
+  /** Pipe-separated User-Agent prefixes that identify the tool, e.g. 'claude-cli/|claude-code/'. */
+  userAgent: string
+  defaultSlot: string
+}
+
+/** One slot → target-model route for a (tool, apiKey) bucket. */
+export interface CliToolMapping {
+  id: string
+  toolId: string
+  apiKeyId: string
+  slotKey: string
+  targetModel: string
+  sourceModel?: string
+  enabled: number
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface CliToolMappingInput {
+  toolId: string
+  apiKeyId: string
+  slotKey: string
+  targetModel: string
+  sourceModel?: string
+  enabled?: boolean
+}
+
+/** Per-(key, tool) switch that turns a bucket's mappings on or off. */
+export interface CliToolSettings {
+  apiKeyId: string
+  toolId: string
+  mappingsEnabled: boolean
+  mode: 'remote' | 'local'
 }
 
 /** A reusable policy template (F-3). Keys inherit its limits as defaults. */
@@ -1006,6 +1049,28 @@ export interface JailbreakImportRefusal {
   reason: string
 }
 
+/** Prompt Injection Pro: one entry in the stacked injection pipeline. */
+export interface PromptInjectionDoc {
+  id?: string
+  targetType: 'global' | 'key' | 'model' | 'key-model'
+  targetId: string
+  mode: 'system' | 'script'
+  content: string
+  enabled: boolean
+  createdAt?: string
+  updatedAt?: string
+}
+
+/** Prompt Injection template: reusable prompt content copied into injections. */
+export interface PromptInjectionTemplate {
+  id: string
+  name: string
+  content: string
+  kind?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
 /** The result of importing a prompt collection from GitHub. */
 export interface JailbreakImportResult {
   ok: boolean
@@ -1566,6 +1631,36 @@ export const api = {
     request<{ id: string; models: string[] }>(`/api/keys/${encodeURIComponent(id)}/models`, {
       method: 'PUT',
       body: JSON.stringify({ models }),
+    }),
+
+  // CLI tool model mapping: per-key slot → model routes (Cartethyia port).
+  getCliTools: () => request<{ tools: CliToolInfo[] }>('/api/cli-tools'),
+  getCliToolMappings: (apiKeyId: string, toolId: string) =>
+    request<{ mappings: CliToolMapping[] }>(
+      `/api/cli-tools/mappings?keyId=${encodeURIComponent(apiKeyId)}&toolId=${encodeURIComponent(toolId)}`
+    ),
+  getAllCliToolMappings: (apiKeyId: string) =>
+    request<{ mappings: CliToolMapping[] }>(`/api/cli-tools/mappings-all?keyId=${encodeURIComponent(apiKeyId)}`),
+  saveCliToolMapping: (m: CliToolMappingInput) =>
+    request<{ success: boolean }>('/api/cli-tools/mappings', {
+      method: 'POST',
+      body: JSON.stringify({ ...m, enabled: m.enabled === false ? 0 : 1 }),
+    }),
+  deleteCliToolMapping: (id: string) =>
+    request<{ success: boolean }>(`/api/cli-tools/mappings?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getCliToolSettings: (apiKeyId: string, toolId: string) =>
+    request<{ settings: CliToolSettings | null }>(
+      `/api/cli-tools/settings?keyId=${encodeURIComponent(apiKeyId)}&toolId=${encodeURIComponent(toolId)}`
+    ),
+  setCliToolSettings: (s: { apiKeyId: string; toolId: string; mappingsEnabled: boolean; mode?: string }) =>
+    request<{ success: boolean }>('/api/cli-tools/settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        apiKeyId: s.apiKeyId,
+        toolId: s.toolId,
+        mappingsEnabled: s.mappingsEnabled ? 1 : 0,
+        mode: s.mode || 'remote',
+      }),
     }),
 
   // F-3 plan templates: the reusable policy a key inherits from.
@@ -2566,6 +2661,38 @@ export const api = {
     request<{ ok: boolean; preset: JailbreakDoc }>(`/api/jailbreak/presets/${encodeURIComponent(id)}/duplicate`, {
       method: 'POST',
       body: JSON.stringify({ id: newId || '' }),
+    }),
+  // Prompt Injection Pro
+  getPromptInjectionSetting: () =>
+    request<{ promptInjectionEnabled: boolean }>('/api/prompt-injection/setting'),
+  setPromptInjectionSetting: (enabled: boolean) =>
+    request<{ ok: boolean }>('/api/prompt-injection/setting', {
+      method: 'PUT',
+      body: JSON.stringify({ promptInjectionEnabled: enabled }),
+    }),
+  listPromptInjections: () =>
+    request<PromptInjectionDoc[]>('/api/prompt-injection'),
+  getPromptInjection: (id: string) =>
+    request<PromptInjectionDoc>(`/api/prompt-injection/${encodeURIComponent(id)}`),
+  savePromptInjection: (injection: PromptInjectionDoc) =>
+    request<{ ok: boolean; id: string }>('/api/prompt-injection', {
+      method: 'PUT',
+      body: JSON.stringify(injection),
+    }),
+  deletePromptInjection: (id: string) =>
+    request<{ ok: boolean }>(`/api/prompt-injection/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  listPromptInjectionTemplates: () =>
+    request<PromptInjectionTemplate[]>('/api/prompt-injection/templates'),
+  savePromptInjectionTemplate: (template: PromptInjectionTemplate) =>
+    request<{ ok: boolean; id: string }>('/api/prompt-injection/templates', {
+      method: 'PUT',
+      body: JSON.stringify(template),
+    }),
+  deletePromptInjectionTemplate: (id: string) =>
+    request<{ ok: boolean }>(`/api/prompt-injection/templates/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     }),
   exportProviderKeys: (providerId: string) =>
     request<{ connections: Array<{ id: string; name: string; authType: string; key: string }> }>(

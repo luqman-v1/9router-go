@@ -77,6 +77,10 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// CLI model mapping (routing:cli_mapping scope + CLI User-Agent gate)
+	// rewrites the slot before model policy or alias resolution sees it.
+	modelName = h.applyCliModelMapping(r, modelName)
+
 	// Per-key model policy runs after the bypass path — synthetic warmup and
 	// keepalive traffic never reaches a provider, so it is not an access
 	// request — and before resolveModel, so a denied model never reaches
@@ -211,6 +215,10 @@ func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWrit
 	upstreamBody["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
 	repairToolCallIDsInMap(upstreamBody)
 	ctx = h.applyJailbreak(ctx, upstreamBody, requestedModel, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
+	// Prompt Injection Pro runs after the jailbreak layer so an operator
+	// script wraps, not replaces, the jailbreak persona, and before the
+	// marshal so the prompt-cache hash reflects the injected content.
+	ctx = h.applyPromptInjection(ctx, upstreamBody, requestedModel)
 	upstreamJSON, err := json.Marshal(upstreamBody)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal upstream request")
@@ -273,6 +281,10 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
 	}
+
+	// CLI model mapping (routing:cli_mapping scope + CLI User-Agent gate)
+	// rewrites the slot before model policy or alias resolution sees it.
+	modelName = h.applyCliModelMapping(r, modelName)
 
 	// Per-key model policy: 403 before any translation work or connection
 	// selection.
@@ -410,6 +422,8 @@ func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.Resp
 	requestedModel, _ := translatedReq["model"].(string)
 	translatedReq["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
 	ctx = h.applyJailbreak(ctx, translatedReq, requestedModel, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
+	// Same placement as the chat path: after jailbreak, before marshal.
+	ctx = h.applyPromptInjection(ctx, translatedReq, requestedModel)
 	finalBody, err := json.Marshal(translatedReq)
 	if err != nil {
 		handlerutil.WriteJSONError(cw, http.StatusInternalServerError, "failed to marshal translated request")

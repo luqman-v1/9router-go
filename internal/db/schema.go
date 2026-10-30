@@ -394,6 +394,10 @@ var goOnlyColumns = [][3]string{
 	{"usageHistory", "clientKey", "TEXT DEFAULT ''"},
 	// F-3 Plans: reusable policy template
 	{"apiKeys", "planId", "TEXT DEFAULT ''"},
+	// CLI model mapping (docs): flat scope grants per key. The only grant the
+	// gateway reads today is routing:cli_mapping, stored as a JSON array of
+	// strings; a key without the grant resolves through ordinary aliases only.
+	{"apiKeys", "scopes", "TEXT DEFAULT ''"},
 	// Per-custom-provider capacity limits (docs/provider-limits-plan.md). These
 	// bound what one upstream endpoint tolerates, which is a different axis from
 	// the apiKeys limits above (what one caller may spend): a custom provider is
@@ -612,6 +616,12 @@ func EnsureCoreSchema(db *sql.DB) error {
 		return err
 	}
 	if err := EnsureThoughtSignatureTables(db); err != nil {
+		return err
+	}
+	if err := EnsurePromptInjectionTables(db); err != nil {
+		return err
+	}
+	if err := EnsureCliToolTables(db); err != nil {
 		return err
 	}
 	if err := EnsureAdditiveColumns(db); err != nil {

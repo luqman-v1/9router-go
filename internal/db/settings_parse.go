@@ -115,6 +115,9 @@ func applyPromptSettings(s *SettingsData, raw map[string]any) {
 	if v := handlerutil.GetString(raw, "systemPromptSuffix"); v != "" {
 		s.SystemPromptSuffix = v
 	}
+	if v, ok := raw["promptInjectionEnabled"].(bool); ok {
+		s.PromptInjectionEnabled = v
+	}
 }
 
 func applyHeadroomSettings(s *SettingsData, raw map[string]any) {
