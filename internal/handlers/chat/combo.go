@@ -22,6 +22,33 @@ import (
 	"9router/proxy/internal/translator"
 )
 
+func isRetryableComboError(ue *upstreamError) bool {
+	if ue == nil {
+		return false
+	}
+	if ue.StatusCode >= 400 && ue.StatusCode < 500 && ue.StatusCode != http.StatusTooManyRequests {
+		return false
+	}
+	return true
+}
+
+func (h *ChatHandler) comboFallbackCombos(comboName string) []string {
+	if h.Repo == nil || comboName == "" {
+		return nil
+	}
+	settings, err := h.Repo.GetSettings()
+	if err != nil || settings == nil {
+		log.Warn("combo", "comboFallbackCombos GetSettings failed", "error", err)
+		return nil
+	}
+	cfg, ok := settings.ComboStrategies[comboName]
+	log.Info("combo", "comboFallbackCombos check", "comboName", comboName, "ok", ok, "fallbackCombos", cfg.FallbackCombos)
+	if !ok {
+		return nil
+	}
+	return cfg.FallbackCombos
+}
+
 // detectNewTurn reports whether the request body starts a new conversation
 // turn. A turn boundary is the most recent plain-text user message; a request
 // whose last user-type message is a tool result continues the current turn,
@@ -669,6 +696,10 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	cw := newCommittedResponseWriter(w)
 	cw.stream = isStream
 	cw.responsesClient = translator.IsResponsesClient(ctx)
+	h.handleComboFallbackWithVisited(ctx, cw, body, comboModels, strategy, isStream, translateResponse, comboName, stickyLimit, nil, adapterModels...)
+}
+
+func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *committedResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, visited map[string]bool, adapterModels ...string) {
 	var lastErr *upstreamError
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
@@ -823,7 +854,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				upstreamBodyJSON := adapterTrimmedBody(body, entry, adapterModels)
 
 				if err := json.Unmarshal(upstreamBodyJSON, &upstreamBody); err != nil {
-					handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to parse request body")
+					handlerutil.WriteJSONError(cw, http.StatusBadRequest, "failed to parse request body")
 					return
 				}
 				upstreamBody["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
@@ -1013,6 +1044,60 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 		}
 	}
 
+	if cw.IsCommitted() {
+		return
+	}
+
+	if lastErr != nil && isRetryableComboError(lastErr) {
+		if fallbackCombos := h.comboFallbackCombos(comboName); len(fallbackCombos) > 0 {
+			if visited == nil {
+				visited = make(map[string]bool)
+			}
+			visited[comboName] = true
+			for _, fbComboName := range fallbackCombos {
+				if visited[fbComboName] {
+					continue
+				}
+				if h.Repo == nil {
+					continue
+				}
+				combo, err := h.Repo.GetComboByName(fbComboName)
+				log.Info("combo", "trying fallback combo repo result", "fbComboName", fbComboName, "err", err, "comboNil", combo == nil)
+				if err != nil || combo == nil || combo.Models == "" {
+					continue
+				}
+				var fbModels []string
+				if err := json.Unmarshal([]byte(combo.Models), &fbModels); err != nil || len(fbModels) == 0 {
+					continue
+				}
+				flattened, err := h.flattenComboModels(fbModels)
+				if err != nil || len(flattened) == 0 {
+					continue
+				}
+				strat, sticky, _ := h.resolveComboRouting(combo.Name, combo.Strategy)
+
+				nextVisited := make(map[string]bool, len(visited)+1)
+				for k, v := range visited {
+					nextVisited[k] = v
+				}
+				nextVisited[fbComboName] = true
+
+				if cw.IsCommitted() {
+					return
+				}
+				clearRouteHeaders(cw)
+
+				h.handleComboFallbackWithVisited(ctx, cw, body, flattened, strat, isStream, translateResponse, fbComboName, sticky, nextVisited, adapterModels...)
+				if cw.IsCommitted() {
+					return
+				}
+			}
+		}
+	}
+
+	if cw.IsCommitted() {
+		return
+	}
 	if lastErr != nil {
 		if cw.IsCommitted() {
 			log.Error("combo", "upstream error after headers committed", "error", lastErr)
@@ -1038,6 +1123,10 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	cw := newCommittedResponseWriter(w)
 	cw.stream = isStream
 	cw.responsesClient = translator.IsResponsesClient(ctx)
+	h.handleMessagesComboFallbackWithVisited(ctx, cw, translatedReq, comboModels, strategy, isStream, comboName, stickyLimit, nil, adapterModels...)
+}
+
+func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context, cw *committedResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int, visited map[string]bool, adapterModels ...string) {
 	var lastErr *upstreamError
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
@@ -1163,7 +1252,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 
 				entryBody, err := adapterTrimmedMap(translatedReq, entry, adapterModels)
 				if err != nil {
-					handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to parse request body")
+					handlerutil.WriteJSONError(cw, http.StatusBadRequest, "failed to parse request body")
 					return
 				}
 				entryBody["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
@@ -1335,6 +1424,60 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		}
 	}
 
+	if cw.IsCommitted() {
+		return
+	}
+
+	if lastErr != nil && isRetryableComboError(lastErr) {
+		if fallbackCombos := h.comboFallbackCombos(comboName); len(fallbackCombos) > 0 {
+			if visited == nil {
+				visited = make(map[string]bool)
+			}
+			visited[comboName] = true
+			for _, fbComboName := range fallbackCombos {
+				if visited[fbComboName] {
+					continue
+				}
+				if h.Repo == nil {
+					continue
+				}
+				combo, err := h.Repo.GetComboByName(fbComboName)
+				log.Info("combo", "trying fallback combo repo result", "fbComboName", fbComboName, "err", err, "comboNil", combo == nil)
+				if err != nil || combo == nil || combo.Models == "" {
+					continue
+				}
+				var fbModels []string
+				if err := json.Unmarshal([]byte(combo.Models), &fbModels); err != nil || len(fbModels) == 0 {
+					continue
+				}
+				flattened, err := h.flattenComboModels(fbModels)
+				if err != nil || len(flattened) == 0 {
+					continue
+				}
+				strat, sticky, _ := h.resolveComboRouting(combo.Name, combo.Strategy)
+
+				nextVisited := make(map[string]bool, len(visited)+1)
+				for k, v := range visited {
+					nextVisited[k] = v
+				}
+				nextVisited[fbComboName] = true
+
+				if cw.IsCommitted() {
+					return
+				}
+				clearRouteHeaders(cw)
+
+				h.handleMessagesComboFallbackWithVisited(ctx, cw, translatedReq, flattened, strat, isStream, fbComboName, sticky, nextVisited, adapterModels...)
+				if cw.IsCommitted() {
+					return
+				}
+			}
+		}
+	}
+
+	if cw.IsCommitted() {
+		return
+	}
 	if lastErr != nil {
 		if cw.IsCommitted() {
 			log.Error("combo", "upstream error after headers committed", "error", lastErr)

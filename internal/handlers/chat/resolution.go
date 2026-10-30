@@ -3,7 +3,6 @@ package chat
 import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
-	"9router/proxy/internal/log"
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
@@ -114,7 +113,13 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 					visiting = make(map[string]bool, 4)
 				}
 				visiting[entry] = true
-				first := h.resolveModelEntryGuarded(subModels[0], visiting)
+				var first *ModelInfo
+				for _, sub := range subModels {
+					if info := h.resolveModelEntryGuarded(sub, visiting); info != nil {
+						first = info
+						break
+					}
+				}
 				delete(visiting, entry)
 				if first != nil {
 					first.ComboModels = subModels
@@ -154,6 +159,44 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 	return &ModelInfo{Provider: provider, Model: model}
 }
 
+// expandComboModels recursively expands combo names into concrete model leaves
+// with cycle detection (visiting map) and max depth guard (max 5).
+func (h *ChatHandler) expandComboModels(models []string, visiting map[string]bool, depth int) []string {
+	if depth > 5 {
+		return nil
+	}
+	var out []string
+	for _, m := range models {
+		if !strings.Contains(m, "/") {
+			if h.Repo == nil || visiting[m] {
+				continue
+			}
+			if combo, err := h.Repo.GetComboByName(m); err == nil && combo != nil && combo.Models != "" {
+				var subModels []string
+				if err := json.Unmarshal([]byte(combo.Models), &subModels); err == nil && len(subModels) > 0 {
+					if visiting == nil {
+						visiting = make(map[string]bool, 4)
+					}
+					visiting[m] = true
+					expanded := h.expandComboModels(subModels, visiting, depth+1)
+					delete(visiting, m)
+					out = append(out, expanded...)
+					continue
+				}
+			}
+			if aliasTarget, err := h.Repo.GetModelAlias(m); err == nil && aliasTarget != "" && strings.Contains(aliasTarget, "/") {
+				m = aliasTarget
+			} else {
+				continue
+			}
+		}
+		if len(out) == 0 || out[len(out)-1] != m {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 // flattenComboModels recursively expands combo-name entries into concrete
 // "provider/model" leaves, keeping order and deduping consecutive identical
 // leaves so a nested combo can't create pointless rotation slots. Guards
@@ -161,44 +204,12 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 // strategies are not applied here; the top-level combo's strategy governs
 // the flattened list.
 func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
-	out := make([]string, 0, len(models))
 	seen := make(map[string]bool)
-	var walk func([]string) error
-	walk = func(ms []string) error {
-		for _, m := range ms {
-			if !strings.Contains(m, "/") {
-				if seen[m] {
-					log.Warn("combo", "cyclic combo reference detected, skipping", "combo", m)
-					continue
-				}
-				if combo, err := h.Repo.GetComboByName(m); err == nil && combo != nil && combo.Models != "" {
-					var sub []string
-					if err := json.Unmarshal([]byte(combo.Models), &sub); err == nil {
-						seen[m] = true
-						if err := walk(sub); err != nil {
-							return err
-						}
-						delete(seen, m)
-						continue
-					}
-				}
-				if aliasTarget, err := h.Repo.GetModelAlias(m); err == nil && aliasTarget != "" && strings.Contains(aliasTarget, "/") {
-					m = aliasTarget
-				}
-			}
-			if len(out) == 0 || out[len(out)-1] != m {
-				out = append(out, m)
-			}
-		}
-		return nil
-	}
-	if err := walk(models); err != nil {
-		return nil, err
-	}
-	if len(out) == 0 {
+	expanded := h.expandComboModels(models, seen, 0)
+	if len(expanded) == 0 {
 		return nil, fmt.Errorf("combo has no valid leaf models")
 	}
-	return out, nil
+	return expanded, nil
 }
 
 // stripModelContextMarker strips trailing [1m] marker that Claude Code appends for 1M context beta.

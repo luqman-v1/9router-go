@@ -55,6 +55,15 @@ func applyComboStrategies(s *SettingsData, raw map[string]any) {
 		if rso, ok := vm["respectStoredOrder"].(bool); ok {
 			entry.RespectStoredOrder = rso
 		}
+		if fb, ok := vm["fallbackCombos"].([]any); ok {
+			var combos []string
+			for _, item := range fb {
+				if str, ok := item.(string); ok && str != "" {
+					combos = append(combos, str)
+				}
+			}
+			entry.FallbackCombos = combos
+		}
 		s.ComboStrategies[k] = entry
 	}
 }
