@@ -25,6 +25,11 @@ const ApiKeyContextKey ContextKey = "apiKey"
 func RequireApiKey(repo *db.Repo) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// CORS preflights (OPTIONS) never carry client Authorization credentials.
+			if r.Method == http.MethodOptions {
+				next.ServeHTTP(w, r)
+				return
+			}
 			apiKeyString := ExtractApiKey(r)
 			if apiKeyString == "" {
 				handlerutil.WriteJSONError(w, http.StatusUnauthorized, "Authentication required. Provide an API key via Authorization: Bearer <key> header or ?key=<key> query parameter.")

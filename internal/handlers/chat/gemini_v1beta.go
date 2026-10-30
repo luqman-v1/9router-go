@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"bufio"
 	"bytes"
 	"io"
 	"net/http"
@@ -133,8 +132,36 @@ func (h *ChatHandler) HandleGeminiGenerateContent(w http.ResponseWriter, r *http
 		return
 	}
 
-	// The Chat pipeline does the work. A capture writer sits in front so the
-	// answer can be translated instead of written straight out.
+	if stream {
+		sw := newGeminiStreamWriter(w, model)
+		inner := r.Clone(r.Context())
+		inner.Body = io.NopCloser(bytes.NewReader(chatBody))
+		inner.ContentLength = int64(len(chatBody))
+		inner.URL.Path = "/v1/chat/completions"
+		inner.Header.Set("Content-Type", "application/json")
+
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					log.Error("gemini-v1beta", "chat pipeline panicked", "error", rec)
+				}
+			}()
+			h.HandleChatCompletions(sw, inner)
+		}()
+
+		if sw.status == 0 {
+			writeGeminiError(w, http.StatusBadGateway, "INTERNAL", "upstream produced no response")
+			return
+		}
+		if sw.status != http.StatusOK {
+			writeGeminiError(w, sw.status, geminiStatusName(sw.status), strings.TrimSpace(sw.errBuf.String()))
+			return
+		}
+		sw.finish()
+		return
+	}
+
+	// Non-streaming: capture full response and convert
 	capture := &geminiCaptureWriter{header: http.Header{}}
 	inner := r.Clone(r.Context())
 	inner.Body = io.NopCloser(bytes.NewReader(chatBody))
@@ -142,8 +169,6 @@ func (h *ChatHandler) HandleGeminiGenerateContent(w http.ResponseWriter, r *http
 	inner.URL.Path = "/v1/chat/completions"
 	inner.Header.Set("Content-Type", "application/json")
 
-	// The pipeline writes the response itself; a panic or an early return still
-	// leaves the capture holding whatever was produced.
 	func() {
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -162,11 +187,6 @@ func (h *ChatHandler) HandleGeminiGenerateContent(w http.ResponseWriter, r *http
 		return
 	}
 
-	if stream {
-		h.relayGeminiStream(w, r, capture.buf.Bytes(), model)
-		return
-	}
-
 	converted, err := translator.ChatResponseToGemini(capture.buf.Bytes(), model)
 	if err != nil {
 		writeGeminiError(w, http.StatusBadGateway, "INTERNAL", err.Error())
@@ -177,39 +197,102 @@ func (h *ChatHandler) HandleGeminiGenerateContent(w http.ResponseWriter, r *http
 	_, _ = w.Write(converted)
 }
 
-// relayGeminiStream turns a captured OpenAI SSE body into Gemini SSE frames.
-//
-// Gemini SSE has no [DONE] sentinel: the stream simply ends. Emitting one would
-// make the SDK report a parse error on the last frame.
-func (h *ChatHandler) relayGeminiStream(w http.ResponseWriter, r *http.Request, captured []byte, model string) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
+// geminiStreamWriter streams translated Gemini SSE frames directly to the client
+// as chunks arrive from upstream, without buffering the entire body.
+type geminiStreamWriter struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+	model   string
+	header  http.Header
 
-	scanner := bufio.NewScanner(bytes.NewReader(captured))
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
+	status      int
+	headersSent bool
+	lineBuf     bytes.Buffer
+	errBuf      bytes.Buffer
+}
+
+func newGeminiStreamWriter(w http.ResponseWriter, model string) *geminiStreamWriter {
+	flusher, _ := w.(http.Flusher)
+	return &geminiStreamWriter{
+		w:       w,
+		flusher: flusher,
+		model:   model,
+		header:  make(http.Header),
+	}
+}
+
+func (s *geminiStreamWriter) Header() http.Header {
+	return s.header
+}
+
+func (s *geminiStreamWriter) WriteHeader(status int) {
+	if s.status == 0 {
+		s.status = status
+	}
+	if status == http.StatusOK && !s.headersSent {
+		s.w.Header().Set("Content-Type", "text/event-stream")
+		s.w.Header().Set("Cache-Control", "no-cache")
+		s.w.Header().Set("Connection", "keep-alive")
+		s.w.WriteHeader(http.StatusOK)
+		s.headersSent = true
+		if s.flusher != nil {
+			s.flusher.Flush()
 		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		// Drop the OpenAI sentinel: Gemini ends by closing.
-		if payload == "" || payload == "[DONE]" {
-			continue
+	}
+}
+
+func (s *geminiStreamWriter) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.WriteHeader(http.StatusOK)
+	}
+	if s.status != http.StatusOK {
+		s.errBuf.Write(b)
+		return len(b), nil
+	}
+
+	if !s.headersSent {
+		s.WriteHeader(http.StatusOK)
+	}
+
+	s.lineBuf.Write(b)
+	for {
+		lineBytes, err := s.lineBuf.ReadBytes('\n')
+		if err != nil {
+			// Incomplete line: restore into lineBuf
+			s.lineBuf.Write(lineBytes)
+			break
 		}
-		frame, ok := translator.ChatChunkToGemini([]byte(payload), model)
-		if !ok {
-			continue
-		}
-		_, _ = w.Write([]byte("data: "))
-		_, _ = w.Write(frame)
-		_, _ = w.Write([]byte("\n\n"))
-		if flusher != nil {
-			flusher.Flush()
-		}
+		s.processLine(lineBytes)
+	}
+	return len(b), nil
+}
+
+func (s *geminiStreamWriter) processLine(lineBytes []byte) {
+	line := strings.TrimSpace(string(lineBytes))
+	if !strings.HasPrefix(line, "data:") {
+		return
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	// Drop the OpenAI sentinel: Gemini ends by closing.
+	if payload == "" || payload == "[DONE]" {
+		return
+	}
+	frame, ok := translator.ChatChunkToGemini([]byte(payload), s.model)
+	if !ok {
+		return
+	}
+	_, _ = s.w.Write([]byte("data: "))
+	_, _ = s.w.Write(frame)
+	_, _ = s.w.Write([]byte("\n\n"))
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+}
+
+func (s *geminiStreamWriter) finish() {
+	if s.lineBuf.Len() > 0 {
+		s.processLine(s.lineBuf.Bytes())
+		s.lineBuf.Reset()
 	}
 }
 

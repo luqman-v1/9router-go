@@ -544,3 +544,28 @@ func TestSetupServerRouter_SSOLoginRoutesArePublic(t *testing.T) {
 		}
 	}
 }
+
+func TestSetupServerRouter_CORSPreflightOptionsRoutes(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	for _, path := range []string{"/health", "/api/health", "/api/tags", "/tags"} {
+		req := httptest.NewRequest(http.MethodOptions, path, nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNoContent {
+			t.Errorf("OPTIONS %s status = %d, want 204", path, rec.Code)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("OPTIONS %s Access-Control-Allow-Origin = %q, want *", path, got)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, "OPTIONS") {
+			t.Errorf("OPTIONS %s Access-Control-Allow-Methods = %q, want OPTIONS", path, got)
+		}
+	}
+}

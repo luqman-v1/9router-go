@@ -47,6 +47,7 @@ func SetupRoutes(r interface {
 	Put(pattern string, handlerFn http.HandlerFunc)
 	Patch(pattern string, handlerFn http.HandlerFunc)
 	Delete(pattern string, handlerFn http.HandlerFunc)
+	Options(pattern string, handlerFn http.HandlerFunc)
 	HandleFunc(pattern string, handlerFn http.HandlerFunc)
 }, repo *db.Repo, ts *TokenSaverConfig) *chat.ChatHandler {
 	chatH := chat.NewChatHandler(repo, ts)
@@ -112,8 +113,16 @@ func SetupRoutes(r interface {
 	r.Post("/api/chat", chatH.HandleOllamaChat)
 	// An Ollama client lists models before it chats; without this the gateway
 	// looks like an Ollama server with nothing installed.
+	ollamaTagsPreflight := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.WriteHeader(http.StatusNoContent)
+	}
 	r.Get("/api/tags", mediaH.HandleOllamaTags)
 	r.Get("/tags", mediaH.HandleOllamaTags)
+	r.Options("/api/tags", ollamaTagsPreflight)
+	r.Options("/tags", ollamaTagsPreflight)
 
 	// Media, Audio, Video & Web Tools Domain
 	r.Post("/embeddings", mediaH.HandleEmbeddings)
@@ -562,12 +571,14 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	// Upstream serves the same answer under /api as well, and an older
 	// dashboard build polls that path.
 	r.Get("/api/health", healthH)
-	r.Options("/health", func(w http.ResponseWriter, r *http.Request) {
+	healthPreflight := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
 		w.WriteHeader(http.StatusNoContent)
-	})
+	}
+	r.Options("/health", healthPreflight)
+	r.Options("/api/health", healthPreflight)
 	// Version info is public (upstream PUBLIC_API_PATHS): the Sidebar polls
 	// /api/version on every dashboard page including /login, before any
 	// session or API key exists.

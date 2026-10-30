@@ -61,6 +61,12 @@ func isSameOriginOrLocal(r *http.Request) bool {
 // is the only thing standing between an exposed tunnel and a password reset.
 // Gated strictly on RemoteAddr loopback (ignoring client-controlled Host headers)
 // and same-origin / CSRF validation.
+//
+// Caveat for reverse proxies / tunnels on the same host: if an external tunnel
+// terminates on this machine and forwards connections to localhost without
+// preserving client remote addresses, all forwarded traffic will appear as
+// loopback. Recovery assumes direct local access; operators running public tunnels
+// should avoid exposing the dashboard unauthenticated or isolate tunnels.
 func (h *DashboardHandler) HandleResetPassword(w http.ResponseWriter, r *http.Request) {
 	if !nodeRequestIsLocal(r) {
 		handlerutil.WriteJSONError(w, http.StatusForbidden, "Password reset is only available from localhost")
