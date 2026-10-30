@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { api, type APIKey, type APIKeyPolicy, type Plan } from '../../api/client'
+  import { api, type APIKey, type APIKeyPolicy, type Combo, type Plan, type ProviderConnection, type ProviderNode } from '../../api/client'
   import { Loader2, Save, X } from 'lucide-svelte'
   import { isNavEntryHidden } from '../../lib/navVisibility.svelte'
+  import { formatTokenAmount, parseTokenAmount } from '../../lib/tokenUnits'
+  import ModelPickerModal from '../combos/ModelPickerModal.svelte'
 
   interface Props {
     apiKey: APIKey
@@ -19,7 +21,12 @@
   // The lifetime budget and the concurrency wait are the two governance columns
   // the modal gained alongside the per-window rates. Both read 0 as "unset":
   // no quota, and the server's default queue timeout.
-  let tokenQuota = $state(apiKey.tokenQuota ?? 0)
+  //
+  // The two token amounts are text, not numbers: a budget of ten million is
+  // written "10M", and a seven-digit number field is unreadable. The parser
+  // is decimal, so 1M is a million tokens.
+  let tokenQuota = $state(formatTokenAmount(apiKey.tokenQuota ?? 0))
+  let contextLimit = $state(formatTokenAmount(apiKey.contextLimit ?? 0))
   let queueTimeoutMs = $state(apiKey.queueTimeoutMs ?? 0)
 
   // expiresAt is stored as RFC3339. The input is a plain datetime-local because
@@ -33,6 +40,17 @@
   let name = $state(apiKey.name ?? '')
   let models = $state<string[]>([])
   let modelDraft = $state('')
+  let isModelPickerOpen = $state(false)
+  // The picker lists what the gateway publishes, which is a question about the
+  // whole deployment rather than about this key. The three sources are read
+  // when the picker opens, not when the dialog opens: an operator who never
+  // touches the allowlist should not pay for the reads.
+  let pickerConnections = $state<ProviderConnection[]>([])
+  let pickerProviderNodes = $state<ProviderNode[]>([])
+  let pickerCombos = $state<Combo[]>([])
+  // The pattern field is the fallback for the glob and deny syntax the picker
+  // cannot express. It stays out of the way until it is asked for.
+  let showPatternInput = $state(false)
   let isLoadingModels = $state(false)
   let isSaving = $state(false)
   let error = $state<string | null>(null)
@@ -69,6 +87,21 @@
     return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
   }
 
+  // A token amount is read from the text field into a whole count. An amount
+  // the parser cannot read is refused here rather than stored as 0: 0 means
+  // "unlimited", so a typo would silently remove the ceiling the operator
+  // was trying to set.
+  function tokenAmount(value: string, label: string): number | null {
+    const trimmed = value.trim()
+    if (!trimmed) return 0
+    const parsed = parseTokenAmount(trimmed)
+    if (parsed === null) {
+      error = `${label} is not a token amount. Use a number, or a scale like 500K, 2M or 1B.`
+      return null
+    }
+    return parsed
+  }
+
   async function loadModels() {
     isLoadingModels = true
     try {
@@ -86,6 +119,40 @@
     } finally {
       isLoadingModels = false
     }
+  }
+
+  // openModelPicker reads what the gateway publishes and opens the picker.
+  //
+  // The nodes and their connections are what put a custom endpoint's own
+  // models in the list: without them the picker offers only the catalog's
+  // providers, and a model served by a custom node — the one a reseller is
+  // most likely to be selling — cannot be picked at all.
+  //
+  // Each source catches on its own: one failing request must not leave the
+  // picker empty, which would read as "this gateway publishes nothing".
+  async function openModelPicker() {
+    isModelPickerOpen = true
+    const [nodes, conns, comboList] = await Promise.all([
+      api.getProviderNodes().catch(() => [] as ProviderNode[]),
+      api.getConnections().catch(() => [] as ProviderConnection[]),
+      api.getCombos().catch(() => [] as Combo[]),
+    ])
+    pickerProviderNodes = nodes
+    pickerConnections = conns
+    pickerCombos = comboList
+  }
+
+  // A model picked in the picker joins the allowlist. It is not written
+  // straight away: the allowlist is one part of the policy this dialog saves,
+  // and a half-finished dialog must not leave half of it behind.
+  function selectModel(value: string) {
+    if (!models.includes(value)) {
+      models = [...models, value]
+    }
+  }
+
+  function deselectModel(value: string) {
+    models = models.filter((m) => m !== value)
   }
 
   // An existing allowlist is part of the policy this modal edits, exactly like
@@ -146,11 +213,22 @@
 
     try {
       isSaving = true
+      const quota = tokenAmount(tokenQuota, 'Lifetime token quota')
+      if (quota === null) {
+        isSaving = false
+        return
+      }
+      const context = tokenAmount(contextLimit, 'Context limit')
+      if (context === null) {
+        isSaving = false
+        return
+      }
       const policy: APIKeyPolicy = {
         rateLimitRpm: nonNegative(rpm),
         rateLimitTpm: nonNegative(tpm),
         rateLimitConcurrency: nonNegative(concurrency),
-        tokenQuota: nonNegative(tokenQuota),
+        tokenQuota: quota,
+        contextLimit: context,
         queueTimeoutMs: nonNegative(queueTimeoutMs),
         expiresAt: toRFC3339(expiresLocal),
         metadata: metadataValue,
@@ -322,15 +400,15 @@
             </label>
             <input
               id="pol-quota"
-              type="number"
-              min="0"
-              step="1"
+              type="text"
+              inputmode="text"
+              placeholder="1M"
               bind:value={tokenQuota}
               class="w-full bg-surface border border-border rounded-lg px-3 py-2 font-code text-xs text-text-main focus:outline-none focus:border-brand-500"
             />
             <p class="text-text-subtle mt-1">
-              Total prompt + completion tokens for the key's lifetime. Once spent, requests are
-              refused with 403.
+              Total prompt + completion tokens for the key's lifetime. Accepts a number or a scale
+              (500K, 2M, 1B). Once spent, requests are refused with 429.
             </p>
           </div>
           <div>
@@ -350,6 +428,25 @@
               Leave 0 for the server default.
             </p>
           </div>
+        </div>
+
+        <div>
+          <label for="pol-context" class="block font-semibold text-text-muted mb-1">
+            Context limit per request
+          </label>
+          <input
+            id="pol-context"
+            type="text"
+            inputmode="text"
+            placeholder="200K"
+            bind:value={contextLimit}
+            class="w-full bg-surface border border-border rounded-lg px-3 py-2 font-code text-xs text-text-main focus:outline-none focus:border-brand-500"
+          />
+          <p class="text-text-subtle mt-1">
+            The largest context one request may use. Accepts a number or a scale (200K, 1M). A
+            conversation longer than this is trimmed to fit, and the answer's budget is capped to
+            what is left. Leave empty for the model's own window.
+          </p>
         </div>
       </section>
 
@@ -399,8 +496,7 @@
           <div>
             <h3 class="font-headline text-xs font-bold text-text-main">Model access</h3>
             <p class="text-text-subtle mt-0.5">
-              Patterns may use <span class="font-code">*</span> per segment, e.g.
-              <span class="font-code">e2e/allowed-*</span>. An empty list allows every model.
+              The models this key may call. An empty list allows every model.
             </p>
           </div>
           <button
@@ -417,22 +513,17 @@
           </button>
         </div>
 
-        <div class="flex gap-2">
-          <input
-            type="text"
-            bind:value={modelDraft}
-            onkeydown={(e) => e.key === 'Enter' && (e.preventDefault(), addModel())}
-            placeholder="e2e/allowed-*"
-            class="flex-1 bg-surface border border-border rounded-lg px-3 py-2 font-code text-[11px] text-text-main focus:outline-none focus:border-brand-500"
-          />
-          <button
-            type="button"
-            onclick={addModel}
-            class="px-3 py-2 rounded-lg bg-surface-3 border border-border text-[11px] text-text-main hover:border-brand-500/40 transition cursor-pointer"
-          >
-            Add
-          </button>
-        </div>
+        <!-- The picker is the way in: what a reseller sells is a set of models
+             they can see, and typing a pattern to name one of them is
+             guesswork. The pattern field below stays for the glob and deny
+             syntax the store understands. -->
+        <button
+          type="button"
+          onclick={openModelPicker}
+          class="w-full px-3 py-2 rounded-lg bg-surface-2 border border-border text-[11px] text-text-main hover:border-brand-500/40 transition cursor-pointer"
+        >
+          Choose from the models this gateway publishes
+        </button>
 
         {#if models.length > 0}
           <div class="flex flex-wrap gap-1.5">
@@ -458,6 +549,37 @@
           </p>
         {/if}
 
+        <button
+          type="button"
+          onclick={() => (showPatternInput = !showPatternInput)}
+          class="self-start text-[11px] text-text-subtle hover:text-text-main transition cursor-pointer"
+        >
+          {showPatternInput ? 'Hide pattern input' : 'Add a pattern instead'}
+        </button>
+
+        {#if showPatternInput}
+          <div class="flex gap-2">
+            <input
+              type="text"
+              bind:value={modelDraft}
+              onkeydown={(e) => e.key === 'Enter' && (e.preventDefault(), addModel())}
+              placeholder="e2e/allowed-*"
+              class="flex-1 bg-surface border border-border rounded-lg px-3 py-2 font-code text-[11px] text-text-main focus:outline-none focus:border-brand-500"
+            />
+            <button
+              type="button"
+              onclick={addModel}
+              class="px-3 py-2 rounded-lg bg-surface-3 border border-border text-[11px] text-text-main hover:border-brand-500/40 transition cursor-pointer"
+            >
+              Add
+            </button>
+          </div>
+          <p class="text-text-subtle text-[11px]">
+            Patterns may use <span class="font-code">*</span> per segment, e.g.
+            <span class="font-code">e2e/allowed-*</span>, and
+            <span class="font-code">!</span> or <span class="font-code">-</span> denies a model.
+          </p>
+        {/if}
       </section>
 
       {#if error}
@@ -490,3 +612,15 @@
     </form>
   </div>
 </div>
+
+<ModelPickerModal
+  isOpen={isModelPickerOpen}
+  target="key"
+  connections={pickerConnections}
+  providerNodes={pickerProviderNodes}
+  combos={pickerCombos}
+  addedModelValues={models}
+  onSelect={selectModel}
+  onDeselect={deselectModel}
+  onClose={() => (isModelPickerOpen = false)}
+/>

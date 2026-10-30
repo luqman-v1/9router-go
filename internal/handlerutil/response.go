@@ -96,6 +96,35 @@ func WriteJSONErrorCode(w http.ResponseWriter, status int, code, message string)
 	}
 }
 
+// WriteJSONErrorType writes a standardized JSON error with an explicit type and
+// code.
+//
+// WriteJSONErrorCode covers the case where only the code needs to differ from
+// the status default. A few errors are also a distinct type: an exhausted
+// budget answers 429 like a rate limit, but a client has to be able to tell
+// "you are sending too fast" from "your budget is spent" — only the second one
+// is fixed by an operator, so the type is what a client branches on.
+func WriteJSONErrorType(w http.ResponseWriter, status int, errType, code, message string) {
+	if errType == "" || code == "" {
+		WriteJSONError(w, status, message)
+		return
+	}
+
+	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	w.WriteHeader(status)
+
+	errResp := map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    errType,
+			"code":    code,
+		},
+	}
+	if err := json.MarshalWrite(w, errResp, deterministicJSON); err != nil {
+		w.Write([]byte(`{"error":{"message":"internal error","type":"server_error","code":"internal_server_error"}}`))
+	}
+}
+
 // WriteJSON writes a JSON response directly to the ResponseWriter with zero intermediate byte buffering.
 func WriteJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)

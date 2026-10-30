@@ -137,6 +137,8 @@ export interface APIKey {
   rateLimitConcurrency?: number
   /** Lifetime prompt+completion token budget. 0 means unlimited. */
   tokenQuota?: number
+  /** Context window one request from this key may use, in tokens. 0 means the model's own window. */
+  contextLimit?: number
   /** Spend recorded against tokenQuota since the budget was last reset (#365). */
   usedTokens?: number
   /** How long a request waits for a free concurrency slot, in ms. 0 uses the server default. */
@@ -157,6 +159,8 @@ export interface APIKeyPolicy {
   rateLimitConcurrency?: number
   /** Lifetime token budget. 0 means unlimited. */
   tokenQuota?: number
+  /** Context window one request from this key may use, in tokens. 0 means the model's own window. */
+  contextLimit?: number
   /** Concurrency queue timeout in ms. 0 uses the server default. */
   queueTimeoutMs?: number
   expiresAt?: string
@@ -1518,7 +1522,15 @@ export const api = {
 
   // API Keys
   getApiKeys: () => request<APIKey[]>('/api/keys'),
-  createApiKey: (payload: { name?: string; machineId?: string; key?: string }) =>
+  createApiKey: (payload: {
+    name?: string
+    machineId?: string
+    key?: string
+    /** Lifetime token budget. 0 means unlimited. */
+    tokenQuota?: number
+    /** Context window one request from this key may use, in tokens. 0 means the model's own window. */
+    contextLimit?: number
+  }) =>
     request<{ success: boolean; id: string; key: string }>('/api/keys', {
       method: 'POST',
       body: JSON.stringify(payload),

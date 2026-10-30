@@ -19,6 +19,7 @@
   import { copyToClipboard } from '../lib/clipboard'
   import ApiKeysTable from './keys/ApiKeysTable.svelte'
   import { api, type APIKey, type Settings, type TunnelStatusResponse } from '../api/client'
+  import { parseTokenAmount } from '../lib/tokenUnits'
   import type { ActiveTab } from '../lib/router'
   interface Props {
     apiKeys?: APIKey[]
@@ -86,6 +87,10 @@
   // what the integration snippets above point an operator at.
   let isCreateKeyOpen = $state(false)
   let newKeyName = $state('')
+  // The optional ceilings of a new key, written as text so a budget of ten
+  // million reads as "10M" rather than as seven digits.
+  let newKeyQuota = $state('')
+  let newKeyContextLimit = $state('')
   let isSubmittingKey = $state(false)
   let newlyCreatedKey = $state<string | null>(null)
 
@@ -362,13 +367,33 @@
     e.preventDefault()
     if (!newKeyName.trim()) return
 
+    // The two ceilings are optional, but a value the parser cannot read is
+    // refused here rather than dropped: 0 means "unlimited", so a typo would
+    // hand the operator a key with no ceiling at all.
+    const quota = parseTokenAmount(newKeyQuota)
+    if (quota === null) {
+      alert('Token budget is not a token amount. Use a number, or a scale like 500K, 2M or 1B.')
+      return
+    }
+    const context = parseTokenAmount(newKeyContextLimit)
+    if (context === null) {
+      alert('Context limit is not a token amount. Use a number, or a scale like 128K, 200K or 1M.')
+      return
+    }
+
     isSubmittingKey = true
     try {
-      const res = await api.createApiKey({ name: newKeyName.trim() })
+      const res = await api.createApiKey({
+        name: newKeyName.trim(),
+        ...(quota > 0 ? { tokenQuota: quota } : {}),
+        ...(context > 0 ? { contextLimit: context } : {}),
+      })
       if (res.key) {
         newlyCreatedKey = res.key
         localStorage.setItem('9router_key', res.key)
         newKeyName = ''
+        newKeyQuota = ''
+        newKeyContextLimit = ''
         isCreateKeyOpen = false
         await loadStatus()
         onRefresh?.()
@@ -753,6 +778,38 @@
             placeholder="Production Key"
             class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-sm text-text-main focus:outline-none focus:border-brand-500"
           />
+        </div>
+
+        <div class="space-y-1">
+          <label for="key-quota-input" class="block text-xs font-semibold text-text-muted">
+            Token budget (optional)
+          </label>
+          <input
+            id="key-quota-input"
+            type="text"
+            bind:value={newKeyQuota}
+            placeholder="10M"
+            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-sm text-text-main focus:outline-none focus:border-brand-500"
+          />
+          <p class="text-[10px] text-text-subtle">
+            Lifetime tokens this key may spend. Once spent, requests are refused with 429.
+          </p>
+        </div>
+
+        <div class="space-y-1">
+          <label for="key-context-input" class="block text-xs font-semibold text-text-muted">
+            Context limit (optional)
+          </label>
+          <input
+            id="key-context-input"
+            type="text"
+            bind:value={newKeyContextLimit}
+            placeholder="200K"
+            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-sm text-text-main focus:outline-none focus:border-brand-500"
+          />
+          <p class="text-[10px] text-text-subtle">
+            Context window one request may use. A longer conversation is trimmed instead of refused.
+          </p>
         </div>
 
         <div class="flex gap-2 pt-2">

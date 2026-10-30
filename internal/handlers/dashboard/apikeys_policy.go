@@ -45,13 +45,17 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 	defer r.Body.Close()
 
 	var req struct {
-		RateLimitRPM         *int    `json:"rateLimitRpm"`
-		RateLimitTPM         *int    `json:"rateLimitTpm"`
-		RateLimitConcurrency *int    `json:"rateLimitConcurrency"`
-		TokenQuota           *int    `json:"tokenQuota"`
-		QueueTimeoutMs       *int    `json:"queueTimeoutMs"`
-		ExpiresAt            *string `json:"expiresAt"`
-		Metadata             *string `json:"metadata"`
+		RateLimitRPM         *int `json:"rateLimitRpm"`
+		RateLimitTPM         *int `json:"rateLimitTpm"`
+		RateLimitConcurrency *int `json:"rateLimitConcurrency"`
+		TokenQuota           *int `json:"tokenQuota"`
+		QueueTimeoutMs       *int `json:"queueTimeoutMs"`
+		// ContextLimit caps the context window one request from this key may
+		// use, in tokens. It is a separate axis from the token quota, which
+		// bounds what the key may spend over its whole life.
+		ContextLimit *int    `json:"contextLimit"`
+		ExpiresAt    *string `json:"expiresAt"`
+		Metadata     *string `json:"metadata"`
 		// F-3: the reusable policy template this key inherits from. Pointer so
 		// an omitted field leaves the assignment alone; an empty string is a
 		// deliberate "detach from the plan".
@@ -109,6 +113,11 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 	queueMs, err := mergeLimit(req.QueueTimeoutMs, existing.QueueTimeoutMs)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "queueTimeoutMs: "+err.Error())
+		return
+	}
+	contextLimit, err := mergeLimit(req.ContextLimit, existing.ContextLimit)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "contextLimit: "+err.Error())
 		return
 	}
 
@@ -175,6 +184,10 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := h.Repo.SetApiKeyContextLimit(id, contextLimit); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if req.ExpiresAt != nil {
 		if err := h.Repo.SetApiKeyExpiry(id, expiresAt); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
@@ -219,7 +232,7 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		"planId": planID,
 		"limits": map[string]int{
 			"rpm": rpm, "tpm": tpm, "concurrency": conc,
-			"tokenQuota": quota, "queueTimeoutMs": queueMs,
+			"tokenQuota": quota, "queueTimeoutMs": queueMs, "contextLimit": contextLimit,
 		},
 	})
 }

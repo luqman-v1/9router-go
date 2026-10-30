@@ -78,8 +78,8 @@ func TestQuotaBoundaryExactlyAtCap(t *testing.T) {
 		wantLabel string
 	}{
 		{used: 999, wantCode: http.StatusOK},
-		{used: 1000, wantCode: http.StatusForbidden, wantLabel: "1000/1000"},
-		{used: 5000, wantCode: http.StatusForbidden, wantLabel: "5000/1000"},
+		{used: 1000, wantCode: http.StatusTooManyRequests, wantLabel: "1000/1000"},
+		{used: 5000, wantCode: http.StatusTooManyRequests, wantLabel: "5000/1000"},
 	}
 	for _, tc := range cases {
 		rl := NewRateLimiter(time.Minute)

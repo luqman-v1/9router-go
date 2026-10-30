@@ -133,6 +133,12 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	// The caller's key may carry a context ceiling below the model's own
+	// window. It is applied here, once, so every attempt — single model, combo
+	// member, fusion leg — is trimmed by the same rule.
+	body = applyKeyContextLimit(body, keyContextLimit(ctx))
+
 	requiredCaps := DetectRequiredCapabilities(body)
 
 	if len(modelInfo.ComboModels) > 0 {
@@ -357,6 +363,15 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	// than wildly over.
 	if reqBody.Stream && !claudeNative && !bytes.Contains(body, []byte(";base64,")) {
 		ctx = translator.WithPromptEstimate(ctx, (len(body)+3)/4)
+	}
+
+	// The caller's key may carry a context ceiling below the model's own
+	// window. It is applied here, once, so every attempt — single model, combo
+	// member, fusion leg — is trimmed by the same rule.
+	if limit := keyContextLimit(ctx); limit > 0 {
+		if trimmed, changed := applyKeyContextLimitMap(workingBody, limit); changed {
+			workingBody = trimmed
+		}
 	}
 
 	requiredCaps := DetectRequiredCapabilities(body)

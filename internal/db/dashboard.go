@@ -328,6 +328,24 @@ func (r *Repo) SetApiKeyBudget(keyID string, tokenQuota, queueTimeoutMs int) err
 	return nil
 }
 
+// SetApiKeyContextLimit sets the largest context window one request from an
+// API key may use, in tokens.
+//
+// It is a whole non-negative count where 0 means "unset": the model's own
+// declared window applies. It bounds one request, where tokenQuota bounds what
+// the key may spend over its whole life — the two are separate axes and an
+// operator may want either without the other.
+func (r *Repo) SetApiKeyContextLimit(keyID string, contextLimit int) error {
+	_, err := r.db.Exec(
+		`UPDATE apiKeys SET contextLimit = ? WHERE id = ?`,
+		contextLimit, keyID,
+	)
+	if err != nil {
+		return fmt.Errorf("set api key context limit %s: %w", keyID, err)
+	}
+	return nil
+}
+
 // GetApiKeyTokenUsage returns the cumulative prompt+completion tokens a key has
 // spent since its budget was last reset, which is what tokenQuota is measured
 // against. A key that has never been reset spends against its whole life, the

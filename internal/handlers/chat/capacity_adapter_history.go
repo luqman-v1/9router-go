@@ -90,7 +90,11 @@ func stripHistoryForContext(body []byte, contextWindow int) []byte {
 	if err != nil {
 		return body
 	}
-	return out
+	// Dropping a middle turn can take the assistant turn that made a tool call
+	// with it, leaving the tool result in the tail orphaned — a request
+	// upstream rejects with a 400. The pairing is repaired before the trimmed
+	// body goes out.
+	return repairToolPairing(out)
 }
 
 // historyArray finds the conversation array in a request body and returns the

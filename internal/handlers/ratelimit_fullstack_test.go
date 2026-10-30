@@ -65,7 +65,7 @@ func newFullStackRouter(repo *db.Repo) http.Handler {
 
 // TestFullStackQuotaRefusesRealBearerKey is the end-to-end acceptance check:
 // a real HTTP request carrying a real API key, through the real auth middleware
-// and the real limiter, is served under budget and refused with 403 once the
+// and the real limiter, is served under budget and refused with 429 once the
 // key's usageHistory crosses its quota.
 func TestFullStackQuotaRefusesRealBearerKey(t *testing.T) {
 	repo, cleanup := setupFullStackDB(t)
@@ -102,8 +102,8 @@ func TestFullStackQuotaRefusesRealBearerKey(t *testing.T) {
 	}
 
 	rec := do()
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("over-budget status = %d, want 403: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("over-budget status = %d, want 429: %s", rec.Code, rec.Body.String())
 	}
 	if got := rec.Header().Get("X-Token-Quota-Limit"); got != "1000" {
 		t.Errorf("X-Token-Quota-Limit = %q, want 1000", got)
