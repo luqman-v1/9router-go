@@ -370,12 +370,17 @@
     // The two ceilings are optional, but a value the parser cannot read is
     // refused here rather than dropped: 0 means "unlimited", so a typo would
     // hand the operator a key with no ceiling at all.
-    const quota = parseTokenAmount(newKeyQuota)
+    //
+    // An EMPTY field is not a typo, it is the field left alone: it means the
+    // key is created without that ceiling. The parser cannot read an empty
+    // string — it answers null for it — so emptiness is settled here, before
+    // the parser is asked.
+    const quota = newKeyQuota.trim() ? parseTokenAmount(newKeyQuota) : 0
     if (quota === null) {
       alert('Token budget is not a token amount. Use a number, or a scale like 500K, 2M or 1B.')
       return
     }
-    const context = parseTokenAmount(newKeyContextLimit)
+    const context = newKeyContextLimit.trim() ? parseTokenAmount(newKeyContextLimit) : 0
     if (context === null) {
       alert('Context limit is not a token amount. Use a number, or a scale like 128K, 200K or 1M.')
       return
