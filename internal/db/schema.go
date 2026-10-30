@@ -407,6 +407,7 @@ var goOnlyColumns = [][3]string{
 	{"providerNodes", "queueTimeoutMs", "INTEGER DEFAULT 0"},
 	{"providerNodes", "quotaResetId", "INTEGER DEFAULT 0"},
 	{"providerNodes", "contractExpiresAt", "TEXT DEFAULT ''"},
+	{"providerNodes", "quotaFloor", "INTEGER DEFAULT 0"},
 	// Smart select combo: the pattern rules that keep a combo's membership in
 	// step with the models the gateway knows about. A JSON array of rule
 	// objects; "[]" means no rules, which is what every combo written before

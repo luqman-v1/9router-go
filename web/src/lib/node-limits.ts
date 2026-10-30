@@ -22,6 +22,7 @@ export interface NodeLimitsDraft {
   concurrency: string | number
   tokenQuota: string | number
   queueTimeoutMs: string | number
+  quotaFloor: string | number
   contractExpiresAt: string
 }
 
@@ -32,6 +33,7 @@ export const EMPTY_NODE_LIMITS: NodeLimitsDraft = {
   concurrency: '',
   tokenQuota: '',
   queueTimeoutMs: '',
+  quotaFloor: '',
   contractExpiresAt: '',
 }
 
@@ -50,6 +52,7 @@ export function nodeLimitsDraftOf(limits?: ProviderNodeLimits | null): NodeLimit
     concurrency: count(limits.concurrency),
     tokenQuota: count(limits.tokenQuota),
     queueTimeoutMs: count(limits.queueTimeoutMs),
+    quotaFloor: count(limits.quotaFloor),
     contractExpiresAt: expires,
   }
 }
@@ -72,6 +75,7 @@ export function nodeLimitsPatchOf(draft: NodeLimitsDraft): ProviderNodeLimitsPat
     concurrency: countOf(draft.concurrency),
     tokenQuota: countOf(draft.tokenQuota),
     queueTimeoutMs: countOf(draft.queueTimeoutMs),
+    quotaFloor: countOf(draft.quotaFloor),
     contractExpiresAt: draft.contractExpiresAt ? `${draft.contractExpiresAt}T23:59:59Z` : '',
   }
 }
@@ -88,6 +92,7 @@ export function hasAnyNodeLimit(draft: NodeLimitsDraft): boolean {
     countOf(draft.concurrency) > 0 ||
     countOf(draft.tokenQuota) > 0 ||
     countOf(draft.queueTimeoutMs) > 0 ||
+    countOf(draft.quotaFloor) > 0 ||
     draft.contractExpiresAt !== ''
   )
 }
@@ -104,6 +109,7 @@ export function hasAnyNodeLimitPatch(patch: ProviderNodeLimitsPatch): boolean {
     (patch.concurrency ?? 0) > 0 ||
     (patch.tokenQuota ?? 0) > 0 ||
     (patch.queueTimeoutMs ?? 0) > 0 ||
+    (patch.quotaFloor ?? 0) > 0 ||
     (patch.contractExpiresAt ?? '') !== ''
   )
 }
@@ -117,11 +123,13 @@ export function nodeLimitsSummary(draft: NodeLimitsDraft): string {
   const concurrency = countOf(draft.concurrency)
   const queueTimeoutMs = countOf(draft.queueTimeoutMs)
   const tokenQuota = countOf(draft.tokenQuota)
+  const quotaFloor = countOf(draft.quotaFloor)
   if (rpm > 0) parts.push(`${rpm} rpm`)
   if (tpm > 0) parts.push(`${compactCount(tpm)} tpm`)
   if (concurrency > 0) parts.push(`${concurrency} conc`)
   if (queueTimeoutMs > 0) parts.push(`${queueTimeoutMs} ms queue`)
   if (tokenQuota > 0) parts.push(`${compactCount(tokenQuota)} tok`)
+  if (quotaFloor > 0) parts.push(`${compactCount(quotaFloor)} floor`)
   if (draft.contractExpiresAt) parts.push(`ends ${shortDate(draft.contractExpiresAt)}`)
   return parts.join(' · ')
 }
@@ -133,11 +141,17 @@ export function nodeLimitsUsageSummary(limits: ProviderNodeLimits): string {
       ? `${compactCount(limits.usedTokens)} / ${compactCount(limits.tokenQuota)} tok`
       : `${compactCount(limits.usedTokens)} tok`
   const minute = limits.rpm > 0 ? `${limits.rpmUsedWindow}/${limits.rpm} this minute` : `${limits.rpmUsedWindow} this minute`
+  const floor =
+    limits.quotaFloor > 0
+      ? `${compactCount(limits.tokenQuota - limits.usedTokens)} remaining (floor ${compactCount(limits.quotaFloor)})`
+      : ""
   const flight =
     limits.concurrency > 0
       ? `${limits.activeConcurrency}/${limits.concurrency} in flight`
       : `${limits.activeConcurrency} in flight`
-  return `${tokens} · ${minute} · ${flight}`
+  const parts = [tokens, minute, flight]
+  if (floor) parts.push(floor)
+  return parts.join(" · ")
 }
 // A count field as a number: anything that is not a whole positive number means
 // unlimited. Number() rather than parseInt(), because parseInt('1.5.2') reads 1 —

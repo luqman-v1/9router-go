@@ -122,6 +122,15 @@
           hint="Prompt + completion tokens for this node. Once spent, requests to it answer 403."
         />
         <Input
+          id="node-limits-floor"
+          label="Quota floor (tokens)"
+          type="number"
+          min="0"
+          bind:value={draft.quotaFloor}
+          placeholder="0"
+          hint="Skip this node when remaining quota is at or below this value. 0 = no floor."
+        />
+        <Input
           id="node-limits-expiry"
           label="Contract ends (optional)"
           type="date"
@@ -169,6 +178,8 @@
           <p class="text-xs text-red-500">The contract has ended, so this node is skipped until the date is moved forward.</p>
         {:else if usage.tokenQuota > 0 && usage.usedTokens >= usage.tokenQuota}
           <p class="text-xs text-red-500">The lifetime quota is spent; requests to this node answer 403.</p>
+        {:else if usage.quotaFloor > 0 && (usage.tokenQuota - usage.usedTokens) <= usage.quotaFloor}
+          <p class="text-xs text-red-500">Remaining quota is at or below the floor; this node is skipped to preserve capacity.</p>
         {/if}
       {/if}
 

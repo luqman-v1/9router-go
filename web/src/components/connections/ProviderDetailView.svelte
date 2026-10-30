@@ -3412,6 +3412,8 @@
             <Badge tone="error">Contract ended</Badge>
           {:else if selectedNode.limits.tokenQuota > 0 && selectedNode.limits.usedTokens >= selectedNode.limits.tokenQuota}
             <Badge tone="error">Quota spent</Badge>
+        {:else if selectedNode.limits.quotaFloor > 0 && (selectedNode.limits.tokenQuota - selectedNode.limits.usedTokens) <= selectedNode.limits.quotaFloor}
+          <Badge tone="error">Quota floor</Badge>
           {/if}
         {/if}
       </div>

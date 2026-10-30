@@ -65,6 +65,7 @@ func TestProviderLimits_RoundTrip(t *testing.T) {
 		Concurrency:       4,
 		QueueTimeoutMs:    15_000,
 		TokenQuota:        5_000_000,
+		QuotaFloor:        100_000,
 		ContractExpiresAt: "2027-01-31T00:00:00Z",
 	}
 	if err := repo.SetProviderLimits(ctx, "node-nara", want); err != nil {
@@ -125,6 +126,7 @@ func TestSetProviderLimits_RejectsNegativeCounts(t *testing.T) {
 		{"concurrency", ProviderLimits{Concurrency: -1}},
 		{"token quota", ProviderLimits{TokenQuota: -1}},
 		{"queue timeout", ProviderLimits{QueueTimeoutMs: -1}},
+		{"quota floor", ProviderLimits{QuotaFloor: -1}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

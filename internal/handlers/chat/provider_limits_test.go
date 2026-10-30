@@ -399,3 +399,57 @@ func TestResolveModel_UnusableNodeStillResolvesToTheNode(t *testing.T) {
 		t.Errorf("ConnectionID = %q, want none: the node has no usable connection to pin", info.ConnectionID)
 	}
 }
+
+// TestAcquireProviderAttempt_QuotaFloorSkipsNearExhaustedNodes verifies the
+// usage floor: a node whose remaining quota is at or below the configured
+// floor is skipped even though the quota is not fully exhausted.
+func TestAcquireProviderAttempt_QuotaFloorSkipsNearExhaustedNodes(t *testing.T) {
+	tests := []struct {
+		name     string
+		quota    int
+		used     int
+		floor    int
+		wantDeny bool
+	}{
+		{name: "no floor keeps usable node", quota: 100, used: 50, floor: 0, wantDeny: false},
+		{name: "unlimited quota ignores floor", quota: 0, used: 0, floor: 20, wantDeny: false},
+		{name: "remaining well above floor stays usable", quota: 100, used: 70, floor: 20, wantDeny: false},
+		{name: "remaining at floor is blocked", quota: 100, used: 80, floor: 20, wantDeny: true},
+		{name: "remaining below floor is blocked", quota: 100, used: 90, floor: 20, wantDeny: true},
+		{name: "spent quota is still blocked by quota itself", quota: 100, used: 100, floor: 0, wantDeny: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, repo := newProviderLimitHandler(t)
+			seedLimitedProviderNode(t, repo, "node-floor", db.ProviderLimits{
+				TokenQuota: tt.quota,
+				QuotaFloor: tt.floor,
+			})
+			seedNodeUsage(t, repo, "node-floor", tt.used)
+			ctx := withProviderLimitState(context.Background())
+
+			slot, err := handler.acquireProviderAttempt(ctx, "node-floor", "glm-5.3", "conn-1", []byte(`{}`))
+			if !tt.wantDeny {
+				if slot != nil || err != nil {
+					t.Fatalf("usable node = slot %v err %v, want nil/nil", slot, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("a floor-blocked node was admitted (slot %v)", slot)
+			}
+			var ue *upstreamError
+			if !errors.As(err, &ue) || ue.StatusCode != 403 {
+				t.Fatalf("refusal = %v, want a 403 upstream error", err)
+			}
+			body := string(ue.Body)
+			if tt.used >= tt.quota {
+				if !strings.Contains(body, "provider_token_quota_exhausted") {
+					t.Errorf("refusal body does not name exhausted quota: %s", body)
+				}
+			} else if !strings.Contains(body, "provider_quota_floor_exhausted") {
+				t.Errorf("refusal body does not name quota floor: %s", body)
+			}
+		})
+	}
+}
