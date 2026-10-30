@@ -99,8 +99,8 @@ func (h *DashboardHandler) HandleGetUsageByAPIKey(w http.ResponseWriter, r *http
 			Cost:             row.Cost,
 			LastUsed:         row.LastUsed,
 		}
-		switch {
-		case row.ClientKey == "":
+		switch row.ClientKey {
+		case "":
 			// A request that carried no client key — the media path writes
 			// none — still spent tokens, so it gets a bucket of its own
 			// rather than disappearing from the totals.

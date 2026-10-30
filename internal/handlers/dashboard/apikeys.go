@@ -244,7 +244,7 @@ func (h *DashboardHandler) HandleCreateApiKey(w http.ResponseWriter, r *http.Req
 		}
 	}
 	if contextLimit > 0 {
-		if err := h.Repo.SetApiKeyContextLimit(req.ID, contextLimit); err != nil {
+		if err := h.Repo.SetApiKeyContextLimit(r.Context(), req.ID, contextLimit); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

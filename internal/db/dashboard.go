@@ -335,8 +335,8 @@ func (r *Repo) SetApiKeyBudget(keyID string, tokenQuota, queueTimeoutMs int) err
 // declared window applies. It bounds one request, where tokenQuota bounds what
 // the key may spend over its whole life — the two are separate axes and an
 // operator may want either without the other.
-func (r *Repo) SetApiKeyContextLimit(keyID string, contextLimit int) error {
-	_, err := r.db.Exec(
+func (r *Repo) SetApiKeyContextLimit(ctx context.Context, keyID string, contextLimit int) error {
+	_, err := r.db.ExecContext(ctx,
 		`UPDATE apiKeys SET contextLimit = ? WHERE id = ?`,
 		contextLimit, keyID,
 	)
