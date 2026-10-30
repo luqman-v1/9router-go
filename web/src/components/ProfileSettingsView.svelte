@@ -1449,6 +1449,7 @@
             advancedSettings = isAdvancedSettingsVisible()
           }}
         />
+      </div>
       <div class="flex items-center justify-between gap-3">
         <div class="min-w-0">
           <p class="text-xs font-semibold text-text-main">Provider card toggle</p>
@@ -1659,12 +1660,14 @@
               </div>
               <Toggle
                 checked={!hiddenNav.includes(entry.id)}
-                disabled={true}
-                title="Visibility is managed per deployment; use the arrows or drag to reorder"
+                disabled={ALWAYS_VISIBLE_NAV_IDS.includes(entry.id)}
+                title={ALWAYS_VISIBLE_NAV_IDS.includes(entry.id)
+                  ? 'Always visible: this is the page the panel lives on'
+                  : 'Show or hide this entry in the sidebar'}
                 size="sm"
                 label="{entry.label} in the sidebar"
                 onChange={(val: boolean) => {
-                  hiddenNav = setNavVisible(hiddenNav, entry.id, val)
+                  markLayoutEdit(() => (hiddenNav = setNavVisible(hiddenNav, entry.id, val)))
                 }}
               />
             </div>
