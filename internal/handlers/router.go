@@ -46,6 +46,7 @@ func SetupRoutes(r interface {
 	Put(pattern string, handlerFn http.HandlerFunc)
 	Patch(pattern string, handlerFn http.HandlerFunc)
 	Delete(pattern string, handlerFn http.HandlerFunc)
+	Options(pattern string, handlerFn http.HandlerFunc)
 	HandleFunc(pattern string, handlerFn http.HandlerFunc)
 }, repo *db.Repo, ts *TokenSaverConfig) *chat.ChatHandler {
 	chatH := chat.NewChatHandler(repo, ts)
@@ -65,6 +66,11 @@ func SetupRoutes(r interface {
 	r.Get("/models/{kind}", chatH.HandleModelsByKind)
 	r.Get("/models/*", chatH.HandleModelLookup)
 	r.Get("/v1/models", chatH.HandleModels)
+	// Gemini API surface. A Gemini SDK speaks only this protocol — it lists
+	// models, then posts contents[] to an action-suffixed path — so without
+	// these routes a Gemini client cannot use the gateway at all.
+	r.Get("/v1beta/models", chatH.HandleGeminiListModels)
+	r.Post("/v1beta/models/*", chatH.HandleGeminiGenerateContent)
 	r.Get("/v1/models/*", chatH.HandleModelLookup)
 	r.Get("/api/v1/models", chatH.HandleModels)
 	r.Get("/api/v1/models/*", chatH.HandleModelLookup)
@@ -77,6 +83,18 @@ func SetupRoutes(r interface {
 	r.Post("/messages", chatH.HandleMessages)
 	r.Post("/messages/count_tokens", chatH.HandleCountTokens)
 	r.Post("/api/chat", chatH.HandleOllamaChat)
+	// An Ollama client lists models before it chats; without this the gateway
+	// looks like an Ollama server with nothing installed.
+	ollamaTagsPreflight := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.WriteHeader(http.StatusNoContent)
+	}
+	r.Get("/api/tags", mediaH.HandleOllamaTags)
+	r.Get("/tags", mediaH.HandleOllamaTags)
+	r.Options("/api/tags", ollamaTagsPreflight)
+	r.Options("/tags", ollamaTagsPreflight)
 
 	// Media, Audio, Video & Web Tools Domain
 	r.Post("/embeddings", mediaH.HandleEmbeddings)
@@ -405,10 +423,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/tunnel/tailscale-enable", dashH.HandleTailscaleEnable)
 	r.Post("/api/tunnel/tailscale-disable", dashH.HandleTailscaleDisable)
 
-	// Single Sign-On settings checks + SP metadata (profile page)
+	// Single Sign-On settings checks (profile page)
 	r.Post("/api/auth/oidc/test", ssoH.HandleOidcTest)
 	r.Post("/api/auth/saml/test", ssoH.HandleSamlTest)
-	r.Get("/api/auth/saml/metadata", ssoH.HandleSamlMetadata)
 
 	// Mount OAuth routes under dashboard auth so web dashboard can initiate and exchange tokens
 	oauthH := oauth.NewOAuthHandler(repo)
@@ -488,10 +505,29 @@ func mountOAuthRoutes(r interface {
 // warning on SetupRoutes about the two PersistentStores.
 func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.ChatHandler {
 	// Public (unauthenticated) endpoints
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+	healthH := func(w http.ResponseWriter, r *http.Request) {
+		// The browser probes this endpoint from the dashboard's tunnel and
+		// Tailscale cards (EndpointView.svelte clientPingUrl). A cross-origin
+		// fetch needs CORS on the response or the probe fails on a healthy
+		// gateway, so the headers are part of the contract, not decoration.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
 		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		w.Write([]byte(`{"status":"ok"}`))
-	})
+	}
+	r.Get("/health", healthH)
+	// Upstream serves the same answer under /api as well, and an older
+	// dashboard build polls that path.
+	r.Get("/api/health", healthH)
+	healthPreflight := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.WriteHeader(http.StatusNoContent)
+	}
+	r.Options("/health", healthPreflight)
+	r.Options("/api/health", healthPreflight)
 	// Version info is public (upstream PUBLIC_API_PATHS): the Sidebar polls
 	// /api/version on every dashboard page including /login, before any
 	// session or API key exists.
@@ -558,8 +594,22 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	r.Get("/api/auth/status", dashH.HandleAuthStatus)
 	r.Post("/api/auth/login", dashH.HandleAuthLogin)
 	r.Post("/api/auth/logout", dashH.HandleAuthLogout)
+	// Deliberately outside the admin group: this is the recovery path for an
+	// operator who cannot log in, so it cannot require the session it is meant
+	// to restore. The handler refuses anything but a loopback origin, which is
+	// the same gate upstream's dashboard guard applies.
+	r.Post("/api/auth/reset-password", dashH.HandleResetPassword)
 	r.Get("/api/settings/require-login", dashH.HandleRequireLogin)
 	r.Get("/api/tunnel/status", dashH.HandleTunnelStatus)
+
+	// Single Sign-On browser login flows and metadata are public so an unauthenticated
+	// caller can authenticate before a dashboard session exists.
+	ssoH := sso.NewHandler(repo)
+	r.Get("/api/auth/oidc/start", ssoH.HandleOIDCStart)
+	r.Get("/api/auth/oidc/callback", ssoH.HandleOIDCCallback)
+	r.Get("/api/auth/saml/start", ssoH.HandleSAMLStart)
+	r.Post("/api/auth/saml/acs", ssoH.HandleSAMLACS)
+	r.Get("/api/auth/saml/metadata", ssoH.HandleSamlMetadata)
 
 	// Admin-only operations (health reset, shutdown, update) - strictly requires session cookie or CLI token.
 	// Standard client API keys are rejected, matching upstream ALWAYS_PROTECTED.

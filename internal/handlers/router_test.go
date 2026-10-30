@@ -515,3 +515,57 @@ func TestSetupServerRouter_CodexResetCreditsAreLive(t *testing.T) {
 		t.Errorf("anonymous status = %d, want 401", rec.Code)
 	}
 }
+
+// TestSetupServerRouter_SSOLoginRoutesArePublic pins that SSO browser flows and
+// metadata are accessible to anonymous callers even when requireLogin is active.
+// Mounting them under RequireDashboardAuth prevented users from logging in via SSO.
+func TestSetupServerRouter_SSOLoginRoutesArePublic(t *testing.T) {
+	t.Setenv("JWT_SECRET", "router-test-secret")
+
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	for _, tc := range []struct {
+		method, path string
+	}{
+		{http.MethodGet, "/api/auth/oidc/start"},
+		{http.MethodGet, "/api/auth/saml/start"},
+		{http.MethodGet, "/api/auth/saml/metadata"},
+	} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		// Must not be 401 Unauthorized (which RequireDashboardAuth returns).
+		if rec.Code == http.StatusUnauthorized {
+			t.Errorf("anonymous %s %s was blocked by auth with 401, want public access", tc.method, tc.path)
+		}
+	}
+}
+
+func TestSetupServerRouter_CORSPreflightOptionsRoutes(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	for _, path := range []string{"/health", "/api/health", "/api/tags", "/tags"} {
+		req := httptest.NewRequest(http.MethodOptions, path, nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNoContent {
+			t.Errorf("OPTIONS %s status = %d, want 204", path, rec.Code)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("OPTIONS %s Access-Control-Allow-Origin = %q, want *", path, got)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, "OPTIONS") {
+			t.Errorf("OPTIONS %s Access-Control-Allow-Methods = %q, want OPTIONS", path, got)
+		}
+	}
+}
