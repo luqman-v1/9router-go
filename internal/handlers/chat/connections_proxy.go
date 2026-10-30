@@ -22,6 +22,12 @@ const maxProxyClients = 128
 // connection asked second.
 const strictCachePrefix = "strict\x00"
 
+// relayCachePrefix namespaces relay clients in proxyClients. A relay and an
+// HTTP proxy can name the same URL — a pool typed "http" whose host is a
+// vercel.app deployment is recognised as a relay — so the two variants must not
+// share a cache entry.
+const relayCachePrefix = "relay\x00"
+
 var (
 	proxyClientsMu sync.RWMutex
 	proxyClients   = make(map[string]*http.Client)
@@ -103,13 +109,15 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 
 		if pool.IsEdgeRelay() {
 			// A relay is an HTTPS endpoint that forwards on x-relay-target /
-			// x-relay-path, not a CONNECT proxy. Dialing it with http.ProxyURL
+			// x-relay-path, not a CONNECT proxy: dialing it with http.ProxyURL
 			// answers "malformed HTTP status code" (see db.ProxyPool.IsEdgeRelay).
-			// getProviderConfig rewrites the base URL to the relay and injects
-			// those headers, so the plain client is the correct transport here —
-			// the request still leaves through the relay, just not as a tunnel.
+			//
+			// The client carries the relay as a RoundTripper, so every provider
+			// — including one added later, and every request an executor builds
+			// itself — leaves through the relay without provider-specific code.
+			// The dial moves; the request keeps the URL it was built for.
 			logProxyOnce(connData.ProxyPoolID, proxyURLStr, proxyType)
-			return h.Client, nil
+			return h.relayClient(proxyURLStr), nil
 		}
 	}
 
@@ -118,6 +126,9 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 		proxyEnabled := connData.ConnectionProxyEnabled
 		proxyURL := connData.ConnectionProxyURL
 		if connData.ProviderSpecificData != nil {
+			if u, ok := connData.ProviderSpecificData["vercelRelayUrl"].(string); ok && strings.TrimSpace(u) != "" {
+				return h.relayClient(strings.TrimSpace(u)), nil
+			}
 			if en, ok := connData.ProviderSpecificData["connectionProxyEnabled"].(bool); ok {
 				proxyEnabled = en
 			}
@@ -214,7 +225,44 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 		return client, nil
 	}
 
-	// For Edge Relays (vercel, cloudflare, deno), standard client is used because
-	// URL rewriting and x-relay headers are handled at request time.
+	// A pool type the transport cannot dial falls back to the connection's
+	// plain client. Relay pools never reach here: they are answered above.
 	return h.Client, nil
+}
+
+// relayClient is the client a relay pool hands out: the connection's own client
+// with an edge relay wrapped around its transport.
+//
+// Clients are cached per relay URL for the same reason the CONNECT ones are —
+// each pins a transport and its idle sockets — and the cache is the same map,
+// namespaced so a relay and an HTTP proxy on one URL cannot share an entry.
+func (h *ChatHandler) relayClient(relayURL string) *http.Client {
+	cacheKey := relayCachePrefix + relayURL
+	proxyClientsMu.RLock()
+	client, ok := proxyClients[cacheKey]
+	proxyClientsMu.RUnlock()
+	if ok {
+		return client
+	}
+
+	proxyClientsMu.Lock()
+	defer proxyClientsMu.Unlock()
+	if client, ok = proxyClients[cacheKey]; ok {
+		return client
+	}
+	base := h.Client
+	if base == nil {
+		base = http.DefaultClient
+	}
+	if len(proxyClients) >= maxProxyClients {
+		for victimURL, victim := range proxyClients {
+			victim.CloseIdleConnections()
+			delete(proxyClients, victimURL)
+			break
+		}
+	}
+	clone := *base
+	clone.Transport = internalproxy.RelayTransport(relayURL, base.Transport)
+	proxyClients[cacheKey] = &clone
+	return &clone
 }

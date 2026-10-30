@@ -764,6 +764,11 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				candidateCtx, candidateWriter = timeoutGate.ctx, timeoutGate
 			}
 			var entrySuccess bool
+			// Connections this entry already sent the request to. A failure
+			// that does not lock the account (a 400, a 500, a busy endpoint)
+			// left it selectable, so without this the next connection attempt
+			// picked the same account and resent the same request.
+			var tried []string
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
 				var connID string
@@ -779,7 +784,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				} else {
 					var cData *ConnectionData
 					var err error
-					picked, cData, err = h.getBestConnectionWithContext(candidateCtx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+					picked, cData, err = h.getBestConnectionWithContext(candidateCtx, modelInfo.Provider, modelInfo.ConnectionID, entryExcludes(excludeIDs, tried), modelInfo.Model)
 					if err != nil {
 						// A node the gateway refuses on purpose — expired contract,
 						// spent lifetime quota — must reach the client as that
@@ -847,7 +852,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				} else {
 					fwdErr = h.tryForwardWithConnection(forwardRequestParams{
 						Ctx: fwdCtx, W: targetWriter, Provider: modelInfo.Provider, Model: modelInfo.Model,
-						RequestedModel: comboName, ComboName: comboName,
+						RequestedModel: comboName, ComboName: comboName, Attempts: attemptCount(ctx),
 						ConnectionID: connID, ConnName: connObjName(picked), ConnEmail: connObjEmail(picked),
 						ConnData: connData, Body: upstreamJSON,
 						IsStream: isStream, TranslateResponse: translateResponse,
@@ -863,6 +868,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					}
 				}
 				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
+				if fwdErr != nil && connID != "" {
+					tried = append(tried, connID)
+				}
 
 				if fwdErr != nil {
 					if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
@@ -1106,6 +1114,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			}
 
 			var entrySuccess bool
+			// See the chat loop: never resend this entry to a connection it
+			// already tried.
+			var tried []string
 			// Try up to 10 connections for this model entry
 			for connAttempt := 0; connAttempt < 10; connAttempt++ {
 				var connID string
@@ -1121,7 +1132,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				} else {
 					var cData *ConnectionData
 					var err error
-					picked, cData, err = h.getBestConnectionWithContext(candidateCtx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+					picked, cData, err = h.getBestConnectionWithContext(candidateCtx, modelInfo.Provider, modelInfo.ConnectionID, entryExcludes(excludeIDs, tried), modelInfo.Model)
 					if err != nil {
 						if refusal, blocked := providerLimitRefusal(err); blocked {
 							log.Info("combo", "provider node unusable, next candidate",
@@ -1175,7 +1186,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				attemptStart := time.Now()
 				fwdErr := h.tryForwardWithConnection(forwardRequestParams{
 					Ctx: fwdCtx, W: targetWriter, Provider: modelInfo.Provider, Model: modelInfo.Model,
-					RequestedModel: comboName, ComboName: comboName,
+					RequestedModel: comboName, ComboName: comboName, Attempts: attemptCount(ctx),
 					ConnectionID: connID, ConnName: connObjName(picked), ConnEmail: connObjEmail(picked),
 					ConnData: connData, Body: upstreamJSON,
 					IsStream: isStream, TranslateResponse: !translator.IsResponsesClient(ctx),
@@ -1190,6 +1201,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					}
 				}
 				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
+				if fwdErr != nil && connID != "" {
+					tried = append(tried, connID)
+				}
 
 				if fwdErr != nil {
 					if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
@@ -1333,6 +1347,19 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		return
 	}
 	handlerutil.WriteJSONError(cw, http.StatusBadGateway, "all combo models failed: no valid entries")
+}
+
+// entryExcludes returns the connections one combo entry must not select: the
+// pass-wide exclusions plus the connections this entry already tried. The
+// tried set stays per entry on purpose — a connection that rejected this
+// model may serve the next one, and on a single-account provider excluding it
+// for the whole pass would starve every later entry (see the 410 note in the
+// chat loop). Clip forces a copy so excludeIDs is never written through.
+func entryExcludes(excludeIDs, tried []string) []string {
+	if len(tried) == 0 {
+		return excludeIDs
+	}
+	return append(slices.Clip(excludeIDs), tried...)
 }
 
 // comboLockRetryable classifies a retryable upstream error in a combo loop and

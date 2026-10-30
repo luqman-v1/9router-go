@@ -332,6 +332,12 @@ func sseStream(o sseStreamOpts) error {
 
 	sessionKey := translator.NewSessionKey("stream")
 	defer translator.ClearStreamState(sessionKey)
+	// Body-size input estimate seeded before the first chunk: the terminal
+	// usage block falls back to it when the upstream never reports usage, so
+	// the client's context meter still moves and auto-compact can fire.
+	if est := translator.PromptEstimateFromContext(ctx); est > 0 {
+		translator.SeedStreamPromptEstimate(sessionKey, est)
+	}
 	finished := false
 	err := proxy.ScanStream(upstream, func(chunk []byte) {
 		translated, err := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, chunk)
@@ -356,6 +362,16 @@ func sseStream(o sseStreamOpts) error {
 			flusher.Flush()
 		}
 	})
+	// A stream that ends without [DONE] still owes the client its terminal:
+	// the finish chunk may have deferred it waiting for a usage chunk that
+	// never came, or the upstream died mid-turn. Both close here, before the
+	// shutdown [DONE] so the client sees delta+stop then [DONE].
+	if endChunk := translator.EnsureStreamClosed(sessionKey); len(endChunk) > 0 {
+		_, _ = hw.Write(endChunk)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 	// Same shutdown terminator as the chat path: end with [DONE] on abort.
 	if shutdown.Fired() && !finished {
 		hw.Write([]byte("data: [DONE]\n\n"))

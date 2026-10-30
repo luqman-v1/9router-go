@@ -327,6 +327,18 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	workingBody["stream"] = reqBody.Stream
+	// Translated upstreams only report streaming usage when the request asks
+	// for it (stream_options.include_usage), and a Claude client cannot ask —
+	// the field does not exist in the Anthropic dialect. Without it the
+	// terminal message_delta reports zeros, the client's context meter never
+	// moves, and auto-compact never fires. Claude-format upstreams strip the
+	// key again (ensureMessagesFor), so combos with mixed member formats stay
+	// clean.
+	if reqBody.Stream && !claudeNative {
+		if _, ok := workingBody["stream_options"]; !ok {
+			workingBody["stream_options"] = map[string]any{"include_usage": true}
+		}
+	}
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
 	ctx = withProviderLimitState(ctx)
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
@@ -338,6 +350,14 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	// policy scoped to it. A keyless caller leaves it unset and the tap stays
 	// inert.
 	ctx = withGuardrailKey(ctx, requestKeyID(r))
+	// Body-size input estimate for streams whose upstream ignores
+	// include_usage: the translator falls back to it in the terminal usage
+	// block so the client's meter still moves. Inline base64 media makes the
+	// raw byte count meaningless, so those requests go unestimated rather
+	// than wildly over.
+	if reqBody.Stream && !claudeNative && !bytes.Contains(body, []byte(";base64,")) {
+		ctx = translator.WithPromptEstimate(ctx, (len(body)+3)/4)
+	}
 
 	requiredCaps := DetectRequiredCapabilities(body)
 

@@ -1,8 +1,11 @@
 package clientconfig
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
-// Claude Code: ~/.claude/settings.json, JSONC, all six settings under "env".
+// Claude Code: ~/.claude/settings.json, JSONC, all settings under "env".
 // docs/specs/client-schema-matrix.md §3.1 and connect-cli-spec.md §3.2.4.
 
 // claudeEnvKeys is every key Apply manages. Reset removes exactly these.
@@ -17,6 +20,7 @@ var claudeEnvKeys = []string{
 	"ANTHROPIC_DEFAULT_OPUS_MODEL",
 	"ANTHROPIC_DEFAULT_SONNET_MODEL",
 	"ANTHROPIC_DEFAULT_HAIKU_MODEL",
+	"CLAUDE_CODE_AUTO_COMPACT_WINDOW",
 }
 
 // claudeTierEnv maps a --<tier> flag name to the env key it sets.
@@ -99,7 +103,59 @@ func claudeApplyEdits(opts Options) []Edit {
 		ValueJSON:       "true",
 		CreateIfMissing: true,
 	})
+	// CLAUDE_CODE_AUTO_COMPACT_WINDOW is the only way to tell Claude Code a
+	// proxied model's real context window: window sizes are per-model-name
+	// built into the CLI, and a custom model id via ANTHROPIC_DEFAULT_*_MODEL
+	// gets the built-in assumption instead. The docs recommend exactly this
+	// variable for a gateway that serves a different window than the name
+	// implies — without it auto-compact fires at the wrong boundary or never.
+	// An unknown window writes nothing, leaving Claude Code's own default.
+	if w := claudeAutoCompactWindow(opts); w > 0 {
+		edits = append(edits, Edit{
+			KeyPath:         []string{"env", "CLAUDE_CODE_AUTO_COMPACT_WINDOW"},
+			Value:           strconv.Itoa(w),
+			CreateIfMissing: true,
+		})
+	}
 	return edits
+}
+
+// claudeAutoCompactWindow narrows the resolved windows to the one compaction
+// must respect. Claude Code applies the env var to every model, and a tier
+// setup serves four at once, so the narrowest window of everything this
+// connect names is the only value that never overshoots a real limit. The
+// CLI accepts 100k–1M; anything outside clamps.
+func claudeAutoCompactWindow(opts Options) int {
+	best := 0
+	consider := func(w int) {
+		if w <= 0 {
+			return
+		}
+		if best == 0 || w < best {
+			best = w
+		}
+	}
+	if limits, ok := opts.ModelLimits[opts.Model]; ok {
+		consider(limits.ContextWindow)
+	}
+	for _, model := range opts.Tiers {
+		if limits, ok := opts.ModelLimits[model]; ok {
+			consider(limits.ContextWindow)
+		}
+	}
+	if best == 0 {
+		return 0 // nothing resolved: write nothing, keep Claude Code's default
+	}
+	if best > 1000000 {
+		return 1000000
+	}
+	if best < 100000 {
+		// Below the floor the variable cannot express the real window, so the
+		// clamped value may fire compaction late; it is still the closest
+		// legal guess, and closer than the CLI's built-in assumption.
+		return 100000
+	}
+	return best
 }
 
 // claudeTierValue applies the two-source precedence for one tier.

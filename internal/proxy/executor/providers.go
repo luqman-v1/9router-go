@@ -659,21 +659,12 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 		w = NewToolNameRestoringWriter(w, toolNameMap)
 
+		// The lane URL is what the relay forwards to, so it is built the same way
+		// for a relayed connection as for a direct one.
 		cfg := *req.Config
-		isRelay := cfg.StaticHeaders != nil && cfg.StaticHeaders["x-relay-target"] != ""
-		if isRelay {
-			// Relay mode: BaseURL is the relay host (e.g. vercel-relay.vercel.app).
-			// Target endpoint must be set in x-relay-path, NOT by appending /responses to BaseURL.
-			cfg.StaticHeaders = make(map[string]string, len(req.Config.StaticHeaders))
-			for k, v := range req.Config.StaticHeaders {
-				cfg.StaticHeaders[k] = v
-			}
-			cfg.StaticHeaders["x-relay-path"] = "/inference/openai/v1/responses"
-		} else {
-			baseURL := strings.TrimRight(cfg.BaseURL, "/")
-			baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
-			cfg.BaseURL = opencodeInferenceBase(baseURL) + "/responses"
-		}
+		baseURL := strings.TrimRight(cfg.BaseURL, "/")
+		baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
+		cfg.BaseURL = opencodeInferenceBase(baseURL) + "/responses"
 		baseHeaders := cfg.StaticHeaders
 		hint := opencodeSessionHint(req, true)
 		cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(cfg.StaticHeaders, hint, req.IsStream)
@@ -750,14 +741,9 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		}
 	}
 
+	// One lane URL for both egress paths: a relay forwards to whatever this names.
 	cfg := *req.Config
-	if isRelayConfig(&cfg) {
-		cfg.StaticHeaders = copyHeaders(cfg.StaticHeaders)
-		cfg.StaticHeaders["x-relay-path"] = "/inference/openai/v1/chat/completions"
-		cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
-	} else {
-		cfg.BaseURL = opencodeChatURL(cfg.BaseURL)
-	}
+	cfg.BaseURL = opencodeChatURL(cfg.BaseURL)
 	baseHeaders := cfg.StaticHeaders
 	hint := opencodeSessionHint(req, true)
 	cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(cfg.StaticHeaders, hint, true)
@@ -1660,14 +1646,9 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 		}
 	}
 
+	// One lane URL for both egress paths: a relay forwards to whatever this names.
 	cfg := *req.Config
-	if isRelayConfig(&cfg) {
-		cfg.StaticHeaders = copyHeaders(cfg.StaticHeaders)
-		cfg.StaticHeaders["x-relay-path"] = "/inference/openai/v1/chat/completions"
-		cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
-	} else {
-		cfg.BaseURL = opencodeGoInferenceBase(cfg.BaseURL) + "/chat/completions"
-	}
+	cfg.BaseURL = opencodeGoInferenceBase(cfg.BaseURL) + "/chat/completions"
 	baseHeaders := cfg.StaticHeaders
 	hint := opencodeSessionHint(req, true)
 	cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(cfg.StaticHeaders, hint, true)
@@ -1803,16 +1784,10 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 			return fmt.Errorf("normalize opencode-go muse-spark body: %w", err)
 		}
 
+		// The lane URL is what a relay forwards to, so it is built without a relay
+		// branch.
 		cfg := *req.Config
-		isRelay := cfg.StaticHeaders != nil && cfg.StaticHeaders["x-relay-target"] != ""
-		if isRelay {
-			headersCopy := make(map[string]string, len(cfg.StaticHeaders))
-			for k, v := range cfg.StaticHeaders {
-				headersCopy[k] = v
-			}
-			headersCopy["x-relay-path"] = "/zen/go/v1/responses"
-			cfg.StaticHeaders = headersCopy
-		} else if !strings.HasSuffix(cfg.BaseURL, "/responses") {
+		if !strings.HasSuffix(cfg.BaseURL, "/responses") {
 			baseURL := strings.TrimRight(cfg.BaseURL, "/")
 			if strings.HasSuffix(baseURL, "/chat/completions") {
 				baseURL = strings.TrimSuffix(baseURL, "/chat/completions")

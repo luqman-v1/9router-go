@@ -33,6 +33,7 @@ import (
 
 const (
 	liveCatalogTTL       = 5 * time.Minute
+	liveCatalogNegTTL    = 60 * time.Second
 	liveCatalogFastHTTP  = 10 * time.Second
 	kiroCatalogHTTP      = 30 * time.Second
 	kiroRuntimeSDKVer    = "1.0.0"
@@ -106,11 +107,31 @@ var liveCatalogStore = struct {
 // node) before the first result populates the cache.
 var liveCatalogFlight singleflight.Group
 
+// pinnedEnabledModels reports whether the operator pinned a model list on the
+// connection. Such a connection already publishes exactly that list, so a live
+// catalog cannot add anything — and fetching it once per combo leaf is what made
+// /v1/models take minutes at thousands of connections.
+func pinnedEnabledModels(cd *shared.ConnectionData) bool {
+	if cd == nil || cd.ProviderSpecificData == nil {
+		return false
+	}
+	switch v := cd.ProviderSpecificData["enabledModels"].(type) {
+	case []any:
+		return len(v) > 0
+	case []string:
+		return len(v) > 0
+	}
+	return false
+}
+
 // resolveLiveCatalog returns the live catalog for a provider connection, or nil
 // when the provider has no live resolver or discovery failed. Callers fall back
 // to the static registry, exactly like upstream's `live?.models?.length` guard.
 func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.ProviderConnection, connData *shared.ConnectionData, providerID string) []LiveModel {
 	if conn == nil || connData == nil {
+		return nil
+	}
+	if pinnedEnabledModels(connData) {
 		return nil
 	}
 	accessToken := connData.AccessToken
@@ -174,6 +195,11 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 			}
 		}
 		if len(discovered) == 0 {
+			// Negative cache: a provider whose catalog endpoint times out used to be
+			// re-fetched by every combo leaf (liveCapabilityLeaf) because nothing was
+			// stored for a failure. At thousands of connections that turned
+			// /v1/models into minutes of sequential 10s timeouts.
+			liveCatalogStoreNegative(cacheKey)
 			return nil, nil
 		}
 		liveCatalogStoreModels(cacheKey, discovered)
@@ -229,6 +255,12 @@ func liveCatalogStoreModels(key string, discovered []LiveModel) {
 	liveCatalogStore.mu.Lock()
 	defer liveCatalogStore.mu.Unlock()
 	liveCatalogStore.entries[key] = liveCatalogEntry{expiresAt: time.Now().Add(liveCatalogTTL), models: discovered}
+}
+
+func liveCatalogStoreNegative(key string) {
+	liveCatalogStore.mu.Lock()
+	defer liveCatalogStore.mu.Unlock()
+	liveCatalogStore.entries[key] = liveCatalogEntry{expiresAt: time.Now().Add(liveCatalogNegTTL)}
 }
 
 // ---- Kiro (AWS CodeWhisperer ListAvailableModels) ----

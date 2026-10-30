@@ -42,6 +42,21 @@ type Options struct {
 	// lower-precedence source. A tier present in neither map keeps whatever key
 	// the user already had — see claude.go.
 	ServerTiers map[string]string
+	// ModelLimits carries the token capacity the gateway publishes for the
+	// models this connect names, keyed by the model id exactly as given in
+	// Model and in the Tiers values. It is how a client learns the real
+	// context window — the input auto-compact needs besides per-turn usage,
+	// and the one thing a proxy cannot convey through the API itself. A
+	// missing key or a zero field means "unknown": the adapter decides
+	// whether to skip the write or fall back to its previous default.
+	ModelLimits map[string]ModelLimits
+}
+
+// ModelLimits is one model's published token capacity, mirroring the
+// context_length / max_completion_tokens pair /v1/models serves.
+type ModelLimits struct {
+	ContextWindow int
+	MaxOutput     int
 }
 
 // Result reports what a write actually did.
@@ -174,7 +189,17 @@ func applyOnePlan(p FilePlan, now func() time.Time) (changed bool, backup string
 		}
 		cur = next
 	}
-	if len(cur) == 0 || string(cur) == string(old) {
+	if string(cur) == string(old) {
+		return false, "", nil
+	}
+	// An empty result is only a no-op when it mirrors an empty start. TOML's
+	// empty document is genuinely zero bytes, so a plan that deletes the last
+	// key of a TOML file lands here legitimately — dropping it silently
+	// discarded exactly that reset (a config holding nothing but this
+	// gateway's keys stayed forever). JSONC and YAML start from "{}" and
+	// never reach zero bytes from real edits, so their empty results still
+	// mean nothing was produced.
+	if len(cur) == 0 && (len(old) == 0 || p.File.Format != FormatTOML) {
 		return false, "", nil
 	}
 	wr, err := BackupAndWrite(g, old, cur, now, hooks{})

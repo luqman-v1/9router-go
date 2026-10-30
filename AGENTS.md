@@ -117,6 +117,12 @@ Every upstream provider in this repository (`antigravity`, `opencode`, `claude`,
   - Use `json.RawMessage` to forward opaque/passthrough payload segments without unmarshaling into generic intermediate `map[string]any`.
 - **HTTP Transport Hygiene**:
   - Reuse `*http.Client` instances with pooled `http.Transport` (`MaxIdleConnsPerHost`, keep-alives enabled, appropriate response header timeouts). Never instantiate an unconfigured `&http.Client{}` per request.
+- **SQLite Access: One Read Per Page, Never N+1 (STRICTLY MANDATORY)**:
+  - Never issue a query per row inside a loop over query results. A list endpoint that reads related data per row pays 1 + N statements and one ledger pass per row; on the §4.G hardware that pattern measured ~700 ms for one dashboard list (GET /api/keys on a 108k-row ledger, fixed 2026-10-29).
+  - Batch the read: one statement over the whole page with an `IN (...)` list or a `VALUES` CTE. In-repo patterns to copy: `GetAllowedModelsForKeys` (`internal/db/modelaccess.go`), `GetPlansForKeys` (`internal/db/plans.go`), `GetApiKeyTokenUsageForKeys` (`internal/db/quota_reset.go`).
+  - The batched statement must be answered from an index, not a scan. Run `EXPLAIN QUERY PLAN` before merging; any `SCAN <table>` on a large table means stop and reshape or add the index. Covering composites beat bare equality indexes when the statement aggregates columns (see the `idx_uh_apikey_tok` / `idx_uh_clientkey_tok` pair and `supersededIndexes` in `internal/db/schema.go`).
+  - Pin the plan with a unit test so a later schema edit cannot silently reintroduce the scan (patterns: `TestGetApiKeyTokenUsageForKeysQueryPlan`, `TestUsageHistoryClientKeyIndexExists`).
+  - Hoist correlated scalar subqueries out of per-row predicates: SQLite re-evaluates them for every candidate row, which cost 2.5x the whole per-key path on that same ledger. Read such a value once per page and pass it as a CTE column or bound parameter instead.
 
 ### B. Concurrency & Goroutine Safety
 - **Context Propagation**:

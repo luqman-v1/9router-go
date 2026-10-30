@@ -903,3 +903,48 @@ func TestHandleValidateProvider_RuncrateInvalidKey(t *testing.T) {
 		t.Errorf("expected 'Invalid API key', got %v", out["error"])
 	}
 }
+
+func TestHandleValidateProvider_OpencodeSuccess(t *testing.T) {
+	calls := withProbeStub(t, func(call int, p capturedProbe) (int, []byte, error) {
+		return http.StatusOK, []byte(`data: {"choices":[{"delta":{"content":"Hello!"}}]}\n\n`), nil
+	})
+
+	rec, out := postValidate(t, `{"provider":"opencode"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 probe, got %d", len(*calls))
+	}
+	p := (*calls)[0]
+	if p.url != "https://opencode.ai/inference/openai/v1/chat/completions" {
+		t.Errorf("unexpected probe url %s", p.url)
+	}
+	if !strings.Contains(p.body, `"content":"`+probeMessageContent+`"`) {
+		t.Errorf("probe body missing probeMessageContent: %s", p.body)
+	}
+	if !strings.Contains(p.body, `"stream":true`) {
+		t.Errorf("probe body missing stream:true: %s", p.body)
+	}
+	if out["valid"] != true {
+		t.Errorf("expected valid=true, got %v", out["valid"])
+	}
+}
+
+func TestHandleValidateProvider_OpencodeQuotaLimit(t *testing.T) {
+	errMsg := "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go"
+	withProbeStub(t, func(call int, p capturedProbe) (int, []byte, error) {
+		return http.StatusTooManyRequests, []byte(`{"error":{"message":"` + errMsg + `","type":"FreeUsageLimitError"},"type":"error"}`), nil
+	})
+
+	rec, out := postValidate(t, `{"provider":"opencode"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != false {
+		t.Errorf("expected valid=false, got %v", out["valid"])
+	}
+	if out["error"] != errMsg {
+		t.Errorf("expected error %q, got %q", errMsg, out["error"])
+	}
+}

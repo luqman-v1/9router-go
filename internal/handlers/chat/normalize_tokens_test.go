@@ -47,6 +47,34 @@ func TestNormalizeChatTokenFields(t *testing.T) {
 			body:     `{"model":"m","seed":9007199254740993,"max_tokens":1,"max_completion_tokens":2}`,
 			wantBody: `{"max_completion_tokens":2,"model":"m","seed":9007199254740993}`,
 		},
+		{
+			// Both keys are written with \u escapes, so neither appears as
+			// bytes on the wire while both decode to the names the parser
+			// looks for. A scan matching only the literal spelling skips this
+			// body and leaves both fields on the upstream — the exact bug this
+			// function exists to prevent. Both keys are escaped on purpose: if
+			// either were literal, the scan would find that one and the case
+			// would pass without exercising the escape rule at all.
+			name:     "both keys escaped are still the keys",
+			body:     `{"model":"m","\u006dax_tokens":1024,"\u006dax_completion_tokens":2048}`,
+			wantBody: `{"max_completion_tokens":2048,"model":"m"}`,
+		},
+		{
+			// A body with an escape anywhere may hide an escaped key, so it
+			// must never be skipped by the scan. This one carries no token
+			// field at all and still has to come back byte-identical.
+			name:     "an escaped value without token fields is untouched",
+			body:     `{"model":"m","messages":[{"role":"user","content":"caf\u00e9"}]}`,
+			wantBody: "",
+		},
+		{
+			// JSON keys are compared exactly, so this body declares neither
+			// key the normalizer looks for. The scan skips it and the parse
+			// would have left it alone too — the two agree.
+			name:     "a differently cased key is not the key",
+			body:     `{"model":"m","MAX_TOKENS":1024,"Max_Completion_Tokens":2048}`,
+			wantBody: "",
+		},
 	}
 
 	for _, tt := range tests {

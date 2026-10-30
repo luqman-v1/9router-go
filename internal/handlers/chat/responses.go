@@ -2,6 +2,7 @@ package chat
 
 import (
 	json "9router/proxy/internal/fastjson"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -119,6 +120,20 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workingBody["stream"] = reqBody.Stream
+	// A Responses client on a Chat Completions upstream gets its usage back
+	// through the bridge's response.completed, which reads the trailing usage
+	// chunk — asked for here because the Responses dialect has no way to ask
+	// itself. Native Responses upstreams always report usage and are skipped:
+	// no bridge means the body still speaks Responses, where stream_options
+	// is not a field.
+	if reqBody.Stream && translator.NeedsResponsesBridge(ctx) {
+		if _, ok := workingBody["stream_options"]; !ok {
+			workingBody["stream_options"] = map[string]any{"include_usage": true}
+		}
+		if !bytes.Contains(body, []byte(";base64,")) {
+			ctx = translator.WithPromptEstimate(ctx, (len(body)+3)/4)
+		}
+	}
 
 	requiredCaps := DetectRequiredCapabilities(body)
 

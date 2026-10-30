@@ -189,7 +189,7 @@ func (h *ChatHandler) makePanelCall(body []byte, entry, comboName string) func(c
 		rec := &responseBuffer{header: http.Header{}}
 		fwdErr := h.tryForwardWithConnection(forwardRequestParams{
 			Ctx: ctx, W: rec, Provider: modelInfo.Provider, Model: modelInfo.Model,
-			ConnectionID: connID, ConnData: connData, Body: upstreamJSON,
+			ConnectionID: connID, ConnData: connData, Body: upstreamJSON, Attempts: 1,
 			IsStream: false, TranslateResponse: false, Endpoint: "/v1/chat/completions",
 		})
 		if fwdErr != nil {

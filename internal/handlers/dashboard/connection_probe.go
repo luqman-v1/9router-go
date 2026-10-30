@@ -225,7 +225,7 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 		authHeader:   "Authorization",
 		authPrefix:   "Bearer ",
 		extraHeaders: map[string]string{"Content-Type": "application/json"},
-		body:         `{"model":"` + providers.NousValidationModel + `","messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}`,
+		body:         `{"model":"` + providers.NousValidationModel + `","messages":[{"role":"user","content":"` + probeMessageContent + `"}],"max_tokens":1,"stream":false}`,
 		refreshable:  true,
 	},
 	"cursor":         {tokenExists: true},
@@ -350,7 +350,7 @@ func (h *DashboardHandler) testSingleConnection(ctx context.Context, conn *model
 		}
 	}
 
-	if conn.AuthType == "apikey" || conn.AuthType == "cookie" || conn.AuthType == "compatible" {
+	if conn.AuthType == "apikey" || conn.AuthType == "cookie" || conn.AuthType == "compatible" || conn.AuthType == "none" || (conn != nil && providers.KnownProviders[providers.ResolveAlias(conn.Provider)].NoAuth) {
 		return h.probeAPIKeyConnection(ctx, conn, data, raw, client)
 	}
 	return h.probeOAuthConnection(ctx, conn, data, client)
@@ -489,7 +489,14 @@ func (h *DashboardHandler) probeAPIKeyConnection(ctx context.Context, conn *mode
 	}
 
 	ctx = withProbeClient(ctx, client)
-	out := validateProviderKey(ctx, provider, cfg, data.APIKey, data.ProviderSpecificData)
+	psd := data.ProviderSpecificData
+	if psd == nil {
+		psd = make(map[string]any)
+	}
+	if data.DefaultModel != "" && psd["defaultModel"] == nil {
+		psd["defaultModel"] = data.DefaultModel
+	}
+	out := validateProviderKey(ctx, provider, cfg, data.APIKey, psd)
 	if !out.supported {
 		return probeOutcome{message: "Provider test not supported"}
 	}
@@ -534,7 +541,7 @@ func (h *DashboardHandler) probeCompatibleConnection(ctx context.Context, conn *
 		body, _ := json.Marshal(map[string]any{
 			"model":      model,
 			"max_tokens": 1,
-			"messages":   []map[string]string{{"role": "user", "content": "test"}},
+			"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 		})
 		status, _, err := connectionProbeDo(ctx, client, http.MethodPost, anthropicProbeMessagesURL(base), map[string]string{
 			"x-api-key":         data.APIKey,

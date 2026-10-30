@@ -65,7 +65,7 @@ func TestForwardRequest_BearerAuth(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	body := []byte(`{"model":"x","messages":[{"role":"user","content":"hi"}]}`)
-	err := h.forwardRequest(context.Background(), rec, cfg, "sk-secret", body, false, false, nil, nil, "openai")
+	err := h.forwardRequest(context.Background(), rec, cfg, "sk-secret", body, false, false, nil, nil, "openai", false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestForwardRequest_RawAuth(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	body := []byte(`{"model":"x","messages":[]}`)
-	err := h.forwardRequest(context.Background(), rec, cfg, "raw-key", body, false, false, nil, nil, "openai")
+	err := h.forwardRequest(context.Background(), rec, cfg, "raw-key", body, false, false, nil, nil, "openai", false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestForwardRequest_DefaultAuthWhenUnknownScheme(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	err := h.forwardRequest(context.Background(), rec, cfg, "k", []byte(`{}`), false, false, nil, nil, "openai")
+	err := h.forwardRequest(context.Background(), rec, cfg, "k", []byte(`{}`), false, false, nil, nil, "openai", false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestForwardRequest_NoAuth(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	err := h.forwardRequest(context.Background(), rec, cfg, "should-not-be-sent", []byte(`{}`), false, false, nil, nil, "openai")
+	err := h.forwardRequest(context.Background(), rec, cfg, "should-not-be-sent", []byte(`{}`), false, false, nil, nil, "openai", false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestForwardRequest_StaticHeadersApplied(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	err := h.forwardRequest(context.Background(), rec, cfg, "k", []byte(`{}`), false, false, nil, nil, "openai")
+	err := h.forwardRequest(context.Background(), rec, cfg, "k", []byte(`{}`), false, false, nil, nil, "openai", false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestForwardRequest_UpstreamError(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	err := h.forwardRequest(context.Background(), rec, cfg, "k", []byte(`{}`), false, false, nil, nil, "openai")
+	err := h.forwardRequest(context.Background(), rec, cfg, "k", []byte(`{}`), false, false, nil, nil, "openai", false, false)
 	if err == nil {
 		t.Fatal("expected upstream error")
 	}
@@ -310,7 +310,7 @@ func TestForwardRequest_StreamSetsAcceptHeader(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{"model": "x", "messages": []any{}})
 	ctx := translator.WithUsageCapture(context.Background())
 	rec := httptest.NewRecorder()
-	err := h.forwardRequest(ctx, rec, cfg, "k", body, true, false, &streamMetrics{}, nil, "openai")
+	err := h.forwardRequest(ctx, rec, cfg, "k", body, true, false, &streamMetrics{}, nil, "openai", false, false)
 	if err != nil {
 		t.Fatalf("stream request: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestForwardRequest_NousWireFormat(t *testing.T) {
 	t.Run("reasoning level high", func(t *testing.T) {
 		body := []byte(`{"model":"meituan/longcat-2.0:free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`)
 		rec := httptest.NewRecorder()
-		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "nous"); err != nil {
+		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "nous", false, false); err != nil {
 			t.Fatalf("forwardRequest: %v", err)
 		}
 		var parsed map[string]any
@@ -406,7 +406,7 @@ func TestForwardRequest_NousWireFormat(t *testing.T) {
 	t.Run("thinking disabled", func(t *testing.T) {
 		body := []byte(`{"model":"meituan/longcat-2.0:free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
 		rec := httptest.NewRecorder()
-		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "nous"); err != nil {
+		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "nous", false, false); err != nil {
 			t.Fatalf("forwardRequest: %v", err)
 		}
 		var parsed map[string]any
@@ -424,7 +424,7 @@ func TestForwardRequest_NousWireFormat(t *testing.T) {
 	t.Run("reasoning auto mode", func(t *testing.T) {
 		body := []byte(`{"model":"meituan/longcat-2.0:free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"auto"}`)
 		rec := httptest.NewRecorder()
-		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "nous"); err != nil {
+		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "nous", false, false); err != nil {
 			t.Fatalf("forwardRequest: %v", err)
 		}
 		var parsed map[string]any
@@ -460,7 +460,7 @@ func TestForwardRequest_NousWireFormat(t *testing.T) {
 		}
 		body := []byte(`{"model":"stepfun/step-5-preview:free","messages":[{"role":"user","content":"hi"}]}`)
 		rec := httptest.NewRecorder()
-		if err := h.forwardRequest(context.Background(), rec, nousCfg, "test-key", body, false, false, nil, client, "nous"); err != nil {
+		if err := h.forwardRequest(context.Background(), rec, nousCfg, "test-key", body, false, false, nil, client, "nous", false, false); err != nil {
 			t.Fatalf("forwardRequest: %v", err)
 		}
 		var parsed map[string]any
@@ -490,7 +490,7 @@ func TestForwardRequest_NousWireFormat(t *testing.T) {
 		}
 		body := []byte(`{"model":"stepfun/step-5-preview:free","messages":[{"role":"user","content":"hi"}]}`)
 		rec := httptest.NewRecorder()
-		if err := h.forwardRequest(context.Background(), rec, httpCfg, "test-key", body, false, false, nil, client, "nous"); err != nil {
+		if err := h.forwardRequest(context.Background(), rec, httpCfg, "test-key", body, false, false, nil, client, "nous", false, false); err != nil {
 			t.Fatalf("forwardRequest: %v", err)
 		}
 		var parsed map[string]any
@@ -519,7 +519,7 @@ func TestForwardRequest_NousWireFormat(t *testing.T) {
 		}
 		body := []byte(`{"model":"stepfun/step-5-preview:free","messages":[{"role":"user","content":"hi"}]}`)
 		rec := httptest.NewRecorder()
-		if err := h.forwardRequest(context.Background(), rec, evilCfg, "test-key", body, false, false, nil, client, "nous"); err != nil {
+		if err := h.forwardRequest(context.Background(), rec, evilCfg, "test-key", body, false, false, nil, client, "nous", false, false); err != nil {
 			t.Fatalf("forwardRequest: %v", err)
 		}
 		var parsed map[string]any
@@ -558,7 +558,7 @@ func TestForwardRequest_NousThinkingNotAppliedToNonNousProvider(t *testing.T) {
 	t.Run("non-nous provider retains top-level reasoning_effort", func(t *testing.T) {
 		body := []byte(`{"model":"meituan/longcat-2.0:free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`)
 		rec := httptest.NewRecorder()
-		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "openai-compatible-chat-x"); err != nil {
+		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "openai-compatible-chat-x", false, false); err != nil {
 			t.Fatalf("forwardRequest: %v", err)
 		}
 		var parsed map[string]any
@@ -578,7 +578,7 @@ func TestForwardRequest_NousThinkingNotAppliedToNonNousProvider(t *testing.T) {
 	t.Run("non-nous provider with auto mode retains top-level reasoning_effort", func(t *testing.T) {
 		body := []byte(`{"model":"meituan/longcat-2.0:free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"auto"}`)
 		rec := httptest.NewRecorder()
-		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "openai-compatible-chat-x"); err != nil {
+		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "openai-compatible-chat-x", false, false); err != nil {
 			t.Fatalf("forwardRequest: %v", err)
 		}
 		var parsed map[string]any
@@ -596,7 +596,7 @@ func TestForwardRequest_NousThinkingNotAppliedToNonNousProvider(t *testing.T) {
 	t.Run("non-nous provider with thinking disabled retains top-level reasoning_effort", func(t *testing.T) {
 		body := []byte(`{"model":"meituan/longcat-2.0:free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
 		rec := httptest.NewRecorder()
-		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "openai-compatible-chat-x"); err != nil {
+		if err := h.forwardRequest(context.Background(), rec, cfg, "test-key", body, false, false, nil, nil, "openai-compatible-chat-x", false, false); err != nil {
 			t.Fatalf("forwardRequest: %v", err)
 		}
 		var parsed map[string]any

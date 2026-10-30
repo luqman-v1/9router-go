@@ -33,11 +33,8 @@ func TestResolveEgress_ReportsThePathARequestLeftBy(t *testing.T) {
 				ResolvedProxyPool:  "vercel-relay",
 			},
 			cfg: &providers.ProviderConfig{
-				BaseURL: "https://vercel-relay.vercel.app",
-				StaticHeaders: map[string]string{
-					"x-relay-target": "https://opencode.ai",
-					"x-relay-path":   "/zen/v1/responses",
-				},
+				BaseURL:  "https://opencode.ai/zen/v1/responses",
+				RelayURL: "https://vercel-relay.vercel.app",
 			},
 			// The operator named the pool in the dashboard; that name is what they
 			// will recognise when grepping a log for a slow or blocked request.
@@ -49,8 +46,8 @@ func TestResolveEgress_ReportsThePathARequestLeftBy(t *testing.T) {
 				ProxyPoolID: "06a2c494-ef06-4d3f-a034-dad29ff3aebf",
 			},
 			cfg: &providers.ProviderConfig{
-				BaseURL:       "https://relay.vercel.app",
-				StaticHeaders: map[string]string{"x-relay-target": "https://opencode.ai"},
+				BaseURL:  "https://opencode.ai/zen/v1/responses",
+				RelayURL: "https://relay.vercel.app",
 			},
 			wantKind: "relay", wantValue: "06a2c494-ef06-4d3f-a034-dad29ff3aebf",
 		},
@@ -83,8 +80,8 @@ func TestResolveEgress_ReportsThePathARequestLeftBy(t *testing.T) {
 			name: "a relay with no connection row falls back to the relay host",
 			connData: nil,
 			cfg: &providers.ProviderConfig{
-				BaseURL:       "https://relay.vercel.app",
-				StaticHeaders: map[string]string{"x-relay-target": "https://api.openai.com"},
+				BaseURL:  "https://api.openai.com/v1/chat/completions",
+				RelayURL: "https://relay.vercel.app",
 			},
 			wantKind:  "relay",
 			wantValue: "https://relay.vercel.app",
@@ -115,15 +112,16 @@ func TestResolveEgress_ReportsThePathARequestLeftBy(t *testing.T) {
 	}
 }
 
-// A relay config carries the upstream in a header, so the relay host is in
-// BaseURL. A plain proxy config has no such marker, which is exactly why the
-// resolver cannot read the proxy out of the provider config alone.
+// A relay config names the relay in RelayURL and keeps the provider endpoint in
+// BaseURL. The usage row has to report the relay, because that is where the
+// request was addressed — reporting the provider would say the request left
+// directly from the operator's IP.
 func TestResolveEgress_TargetIsTheRelayHostNotTheProvider(t *testing.T) {
 	e := resolveEgress(&ConnectionData{ProxyPoolID: "pool-9"}, &providers.ProviderConfig{
-		BaseURL:       "https://my-relay.vercel.app",
-		StaticHeaders: map[string]string{"x-relay-target": "https://api.openai.com"},
+		BaseURL:  "https://api.openai.com/v1/chat/completions",
+		RelayURL: "https://my-relay.vercel.app",
 	})
-	if e.Target == "https://api.openai.com" {
+	if e.Target == "https://api.openai.com/v1/chat/completions" {
 		t.Error("Target must be the relay host — that is where the request was addressed")
 	}
 	if e.Target != "https://my-relay.vercel.app" {

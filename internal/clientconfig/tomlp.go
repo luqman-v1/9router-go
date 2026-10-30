@@ -1,7 +1,9 @@
 package clientconfig
 
 import (
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -217,10 +219,15 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 			return verifyTOMLRemoved(removeTOMLLine(src, kv, kv.tablePath), e)
 		}
 		if e.ValueJSON != "" {
-			// TOML has no container form this package will write: inline tables
-			// are refused as unstable above, so a caller that set ValueJSON for
-			// TOML asked for something the format path cannot honour.
-			return nil, fmt.Errorf("%w: TOML writes no container value", ErrUnsupportedStructure)
+			// A scalar ValueJSON (an integer, for codex's model_context_window
+			// and friends) is written raw. TOML has no container form this
+			// package will write: inline tables are refused as unstable above,
+			// so a caller that set ValueJSON to a collection for TOML asked
+			// for something the format path cannot honour.
+			if tomlScalarLiteral(e.ValueJSON) != nil {
+				return nil, fmt.Errorf("%w: TOML writes no container value", ErrUnsupportedStructure)
+			}
+			return verifyTOML(splice(src, kv.valStart, kv.valEnd, []byte(strings.TrimSpace(e.ValueJSON))), e)
 		}
 		switch {
 		case kv.valKind == unstable.Array || kv.valKind == unstable.InlineTable:
@@ -245,6 +252,11 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 	if !e.CreateIfMissing {
 		return nil, fmt.Errorf("%w: %q", ErrKeyNotFound, strings.Join(e.KeyPath, "."))
 	}
+	// A container ValueJSON spliced raw reads back as a valid TOML inline
+	// table, so unlike the replace path the read-back cannot catch it here.
+	if e.ValueJSON != "" && tomlScalarLiteral(e.ValueJSON) != nil {
+		return nil, fmt.Errorf("%w: TOML writes no container value", ErrUnsupportedStructure)
+	}
 	// Every remaining path inserts a key. A key whose name an existing dotted
 	// key already uses as a table — "a.b = 1" and then "a = ..." — parses as
 	// the document it is, not as the one the caller asked for, and appending
@@ -254,10 +266,10 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 		return nil, err
 	}
 	if len(sectionPath) == 0 {
-		return verifyTOML(insertTOMLRootKey(src, doc, key, e.Value), e)
+		return verifyTOML(insertTOMLRootKey(src, doc, key, tomlEditLiteral(e)), e)
 	}
 	if idx := tomlFindSection(doc, sectionPath); idx >= 0 {
-		return verifyTOML(insertTOMLKey(src, doc, idx, sectionPath, key, e.Value), e)
+		return verifyTOML(insertTOMLKey(src, doc, idx, sectionPath, key, tomlEditLiteral(e)), e)
 	}
 	for _, kv := range doc.kvs {
 		if len(kv.fullPath) > len(sectionPath) && samePath(kv.fullPath[:len(sectionPath)], sectionPath) {
@@ -265,7 +277,38 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 				ErrUnsupportedStructure, strings.Join(sectionPath, "."))
 		}
 	}
-	return verifyTOML(appendTOMLSection(src, sectionPath, key, e.Value), e)
+	return verifyTOML(appendTOMLSection(src, sectionPath, key, tomlEditLiteral(e)), e)
+}
+
+// tomlEditLiteral renders an Edit's value for the wire. ValueJSON carries a
+// raw TOML scalar — an integer, for codex's model_context_window and friends
+// — and reaches the file unquoted; a plain Value is a string and is quoted.
+func tomlEditLiteral(e Edit) string {
+	if e.ValueJSON != "" {
+		return strings.TrimSpace(e.ValueJSON)
+	}
+	return tomlQuote(e.Value)
+}
+
+// tomlScalarLiteral accepts exactly the raw literals this package may write
+// for a TOML ValueJSON edit: signed integers and booleans. Everything else —
+// floats, dates, arrays, inline tables — stays refused; no adapter needs
+// them, and a tight list keeps a stray JSON blob from becoming invalid TOML.
+func tomlScalarLiteral(s string) error {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return errors.New("empty literal")
+	}
+	if strings.ContainsAny(t, "[]{}\"'\n") {
+		return errors.New("not a bare scalar")
+	}
+	if _, err := strconv.ParseInt(t, 10, 64); err == nil {
+		return nil
+	}
+	if t == "true" || t == "false" {
+		return nil
+	}
+	return errors.New("unsupported literal")
 }
 
 // tomlCreateConflict refuses a create whose key path runs through a key that
@@ -391,8 +434,9 @@ func tomlFindSection(doc *tomlDoc, path []string) int {
 	return -1
 }
 
-// insertTOMLKey adds one key line to an existing section, after the last line
-// that belongs to it — after its line comment, never inside it.
+// insertTOMLKey inserts a rendered key/value line at the end of a section,
+// after the last line that belongs to it. val is already rendered by
+// tomlEditLiteral; the function never quotes.
 func insertTOMLKey(src []byte, doc *tomlDoc, idx int, sectionPath []string, key, val string) []byte {
 	at := lineEnd(src, doc.sections[idx].headerEnd)
 	for _, kv := range doc.kvs {
@@ -403,18 +447,18 @@ func insertTOMLKey(src []byte, doc *tomlDoc, idx int, sectionPath []string, key,
 			at = le
 		}
 	}
-	line := tomlKey(key) + " = " + tomlQuote(val) + newlineFor(src)
+	line := tomlKey(key) + " = " + val + newlineFor(src)
 	return splice(src, at, at, []byte(line))
 }
 
-// insertTOMLRootKey adds a key to the root table, which by TOML's own rule must
-// stay above the first [table] header.
+// insertTOMLRootKey inserts a rendered key/value line into the root table,
+// which by TOML's own rule must sit ahead of the first section header.
 func insertTOMLRootKey(src []byte, doc *tomlDoc, key, val string) []byte {
 	at := 0
 	if len(doc.sections) > 0 {
 		at = lineStartOf(src, doc.sections[0].headerStart)
 	}
-	line := tomlKey(key) + " = " + tomlQuote(val) + newlineFor(src)
+	line := tomlKey(key) + " = " + val + newlineFor(src)
 	return splice(src, at, at, []byte(line))
 }
 
@@ -430,7 +474,7 @@ func appendTOMLSection(src []byte, sectionPath []string, key, val string) []byte
 		}
 	}
 	out = append(out, "["+tomlJoinKey(sectionPath)+"]"+nl...)
-	out = append(out, tomlKey(key)+" = "+tomlQuote(val)+nl...)
+	out = append(out, tomlKey(key)+" = "+val+nl...)
 	return out
 }
 
@@ -459,7 +503,11 @@ func verifyTOML(out []byte, e Edit) ([]byte, error) {
 		if kv.valStart < 0 || kv.valEnd > len(out) || kv.valStart >= kv.valEnd {
 			return nil, fmt.Errorf("%w: %q has no byte range", ErrInternalInconsistency, strings.Join(e.KeyPath, "."))
 		}
-		if got := string(out[kv.valStart:kv.valEnd]); got != tomlQuote(e.Value) {
+		want := tomlQuote(e.Value)
+		if e.ValueJSON != "" {
+			want = strings.TrimSpace(e.ValueJSON)
+		}
+		if got := string(out[kv.valStart:kv.valEnd]); got != want {
 			return nil, fmt.Errorf("%w: %q reads back as %s", ErrInternalInconsistency, strings.Join(e.KeyPath, "."), got)
 		}
 		return out, nil

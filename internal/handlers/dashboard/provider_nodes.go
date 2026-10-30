@@ -486,7 +486,7 @@ func validateOpenAICompatibleNode(w http.ResponseWriter, ctx context.Context, ba
 	if effectiveModel != "" {
 		payload, _ := json.Marshal(map[string]any{
 			"model":      effectiveModel,
-			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+			"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 			"max_tokens": 1,
 		})
 		chatHeaders := map[string]string{
@@ -550,7 +550,7 @@ func validateAnthropicCompatibleNode(w http.ResponseWriter, ctx context.Context,
 	if modelID != "" {
 		payload, _ := json.Marshal(map[string]any{
 			"model":      modelID,
-			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+			"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 			"max_tokens": 1,
 		})
 		chatHeaders := map[string]string{

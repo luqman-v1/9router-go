@@ -152,16 +152,26 @@ func coreSchema() []tableDef {
 				"CREATE INDEX IF NOT EXISTS idx_uh_ts_model ON usageHistory(timestamp DESC, model)",
 				// The per-key lifetime token quota sums prompt+completion tokens
 				// over `clientKey = ? OR apiKey = ? OR apiKey = ?` (tokenUsageSince,
-				// quota_reset.go). SQLite answers a disjunction with a multi-index
-				// OR only when EVERY arm is indexable, so idx_uh_apikey alone was
-				// not enough: the unindexed clientKey arm degraded the whole
-				// statement to `SCAN usageHistory`. That scan ran once per key row
-				// in GET /api/keys (apiKeyUsedTokens), which is on the dashboard's
-				// boot path — measured on a 512k-row ledger at ~127 ms per key, so
-				// a 50-key install spent ~10 s in that one request. Both columns
-				// need their own index for the OR to use indexes at all.
-				"CREATE INDEX IF NOT EXISTS idx_uh_apikey ON usageHistory(apiKey)",
-				"CREATE INDEX IF NOT EXISTS idx_uh_clientkey ON usageHistory(clientKey)",
+				// quota_reset.go, and the batched page read). SQLite answers a
+				// disjunction with a multi-index OR only when EVERY arm is
+				// indexable, so an apiKey index alone was not enough: the
+				// unindexed clientKey arm degraded the whole statement to
+				// `SCAN usageHistory`. That scan ran once per key row in
+				// GET /api/keys, which is on the dashboard's boot path — measured
+				// on a 512k-row ledger at ~127 ms per key, so a 50-key install
+				// spent ~10 s in that one request. Both columns need an index
+				// for the OR to use indexes at all.
+				//
+				// These two replace the single-column pair (supersededIndexes)
+				// with covering composites in the same shape as idx_uh_prov_tok:
+				// leading equality column, then id so a reset mark is a range
+				// inside the index, then the summed token columns. Without the
+				// token columns the sum fetched one table row per ledger entry —
+				// measured on a 108k-row page of 5 keys, 53.7 ms fell to 33.9 ms
+				// and the read's allocations fell 5x, because the whole sum is
+				// answered from the index alone.
+				"CREATE INDEX IF NOT EXISTS idx_uh_apikey_tok ON usageHistory(apiKey, id, promptTokens, completionTokens)",
+				"CREATE INDEX IF NOT EXISTS idx_uh_clientkey_tok ON usageHistory(clientKey, id, promptTokens, completionTokens)",
 				// A custom provider node's lifetime token quota is the sum of
 				// prompt+completion over the rows whose provider is that node,
 				// counted from the node's own reset mark. The upstream index on
@@ -551,10 +561,19 @@ func EnsureLedgerTables(db *sql.DB) error {
 // idx_uh_prov_tok. The composite answers the same equality search and
 // carries the token columns with it, so the narrow one is a candidate SQLite
 // no longer picks and a second index every ledger insert has to maintain.
+//
+// idx_uh_apikey and idx_uh_clientkey are the same story one step further:
+// each was created as the bare equality index the per-key token quota's
+// multi-index OR needed, then replaced by the (column, id, tokens) composite
+// that also answers the sum from the index alone. An install upgraded in
+// place would otherwise keep both shapes under CREATE IF NOT EXISTS and pay
+// a second index maintenance per ledger insert for nothing.
 var supersededIndexes = []string{
 	"DROP INDEX IF EXISTS idx_ca_ts_prov",
 	"DROP INDEX IF EXISTS idx_ca_ts_model",
 	"DROP INDEX IF EXISTS idx_uh_provider",
+	"DROP INDEX IF EXISTS idx_uh_apikey",
+	"DROP INDEX IF EXISTS idx_uh_clientkey",
 }
 
 // EnsureCoreSchema creates the upstream core tables/indexes when absent,

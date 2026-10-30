@@ -723,38 +723,64 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
 	}
 
-	// Check if this connection uses an Edge Relay Proxy Pool (Vercel, Cloudflare, Deno)
+	// A compatible node's wire format comes from the same table its lane comes
+	// from (providers.CompatibleNodeWires), so the two cannot drift apart —
+	// that drift was the "no choices in OpenAI response" bug: the lane sent
+	// the request to /messages while the format machinery still treated the
+	// upstream as Chat Completions.
+	if format := compatibleNodeFormat(provider); format != "" && baseCfg.Format == "" {
+		cloned := *baseCfg
+		cloned.Format = format
+		baseCfg = &cloned
+	}
+
+	// An edge relay pool (vercel/cloudflare/deno/netlify) is not a CONNECT proxy:
+	// it forwards on x-relay-target / x-relay-path. It used to be applied here by
+	// rewriting BaseURL to the relay host and stamping those headers into
+	// StaticHeaders, which made relay support a per-provider convention — every
+	// executor that built its own request had to re-apply it by hand, and the
+	// ones that did not (trae, zed, windsurf, the embeddings lane) leaked the
+	// operator's real IP or sent a provider path to the relay's root.
+	//
+	// The relay now travels with the connection's client (proxy.RelayTransport),
+	// which moves the dial and names the URL the caller actually built. BaseURL
+	// therefore stays the real provider endpoint, and this function only records
+	// which relay fronts the connection so an executor can opt out of a transport
+	// the relay cannot carry.
 	if connData != nil {
-		var relayURL string
-		var noProxy string
-
-		if connData.ProxyPoolID != "" {
-			if pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID); err == nil && pool != nil && pool.IsActive {
-				if pool.IsEdgeRelay() {
-					relayURL = pool.NextURL()
-					noProxy = pool.NoProxy
-					logProxyOnce(connData.ProxyPoolID, relayURL, pool.Type)
-				}
-			}
-		}
-		if relayURL == "" && connData.ProviderSpecificData != nil {
-			if u, ok := connData.ProviderSpecificData["vercelRelayUrl"].(string); ok && u != "" {
-				relayURL = u
-				if np, ok := connData.ProviderSpecificData["connectionNoProxy"].(string); ok {
-					noProxy = np
-				}
-			}
-		}
-
+		relayURL, noProxy := h.resolveEdgeRelay(connData)
 		if relayURL != "" && !internalproxy.ShouldBypassNoProxy(baseCfg.BaseURL, noProxy) {
 			cloned := *baseCfg
-			cloned.StaticHeaders = internalproxy.BuildEdgeRelayHeaders(baseCfg.BaseURL, cloned.StaticHeaders)
-			cloned.BaseURL = relayURL
-			return h.applyProviderOverrides(provider, h.withClineIdentity(provider, &cloned)), nil
+			cloned.RelayURL = relayURL
+			baseCfg = &cloned
 		}
 	}
 
 	return h.applyProviderOverrides(provider, h.withClineIdentity(provider, baseCfg)), nil
+}
+
+// resolveEdgeRelay returns the edge relay an assigned pool puts in front of a
+// connection, plus the pool's noProxy list. An inactive or non-relay pool
+// answers "", which leaves the request direct.
+func (h *ChatHandler) resolveEdgeRelay(connData *ConnectionData) (relayURL, noProxy string) {
+	if connData.ProxyPoolID != "" && h.Repo != nil {
+		if pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID); err == nil && pool != nil && pool.IsActive {
+			if pool.IsEdgeRelay() {
+				relayURL = pool.NextURL()
+				noProxy = pool.NoProxy
+				logProxyOnce(connData.ProxyPoolID, relayURL, pool.Type)
+			}
+		}
+	}
+	if relayURL == "" && connData.ProviderSpecificData != nil {
+		if u, ok := connData.ProviderSpecificData["vercelRelayUrl"].(string); ok && u != "" {
+			relayURL = u
+			if np, ok := connData.ProviderSpecificData["connectionNoProxy"].(string); ok {
+				noProxy = np
+			}
+		}
+	}
+	return relayURL, noProxy
 }
 
 // withClineIdentity stamps the 9Router client identity onto cline/clinepass
@@ -836,43 +862,73 @@ var compatibleNodeLanes = []string{
 	"/chat", "/embeddings", "/api/chat", "/api/generate",
 }
 
-// compatibleNodeLane is the route a node of this type and apiType serves.
-// Anthropic-compatible nodes speak Messages, and an openai-compatible node picks
+// compatibleNodeLane is the route a node of this type and apiType serves,
+// read from providers.CompatibleNodeWires — the same table getProviderConfig
+// stamps the wire format from, so the lane a request dials and the format the
+// translators speak can never disagree again. An openai-compatible node picks
 // between Chat Completions and Responses from its apiType — the same mapping
-// upstream's buildUrl applies, including its fallback: when no apiType is stored,
-// upstream reads the node id (resolveOpenAICompatibleApiType returns "responses"
-// for a provider id containing "responses"). A connection row written before the
-// apiType sync landed carries no apiType, and a responses node created then has
-// only its id to say so.
+// upstream's buildUrl applies, including its fallback: when no apiType is
+// stored, upstream reads the node id (resolveOpenAICompatibleApiType returns
+// "responses" for a provider id containing "responses"). A connection row
+// written before the apiType sync landed carries no apiType, and a responses
+// node created then has only its id to say so.
 //
-// A custom-embedding node is deliberately NOT given an /embeddings lane here:
-// the embeddings handler derives its own URL from this one (buildEmbeddingsURL
-// swaps /chat/completions for /embeddings), so producing /embeddings here would
+// A custom-embedding node's declared lane is the chat route: the embeddings
+// handler derives its own URL from this one (buildEmbeddingsURL swaps
+// /chat/completions for /embeddings), so producing /embeddings here would
 // append it twice.
 func compatibleNodeLane(provider, apiType string) string {
-	switch {
-	case strings.HasPrefix(provider, "anthropic-compatible-"):
-		return "/messages"
-	case apiType == compatibleAPITypeResponses:
-		return "/responses"
-	case apiType == "" && strings.Contains(provider, compatibleAPITypeResponses):
-		return "/responses"
-	default:
+	wire, ok := nodeWireOf(provider)
+	if !ok {
+		// Not a node id: the caller (compatibleNodeLaneURL) guards this, and
+		// chatCompletionsURL's shape rule is the historical default.
 		return "/chat/completions"
 	}
+	if compatibleNodeFormat(provider) == "" {
+		switch {
+		case apiType == compatibleAPITypeResponses:
+			return "/responses"
+		case apiType == "" && strings.Contains(provider, compatibleAPITypeResponses):
+			return "/responses"
+		}
+	}
+	return wire.Lane
 }
 
 // compatibleAPITypeResponses is the stored apiType of an openai-compatible node
 // whose upstream speaks the Responses API (upstream resolveOpenAICompatibleApiType).
 const compatibleAPITypeResponses = "responses"
 
+// nodeWireOf returns the wire contract of the custom node type behind a
+// provider id ("anthropic-compatible-<id>" → the "anthropic-compatible"
+// entry) and whether the id is a compatible node at all. The map's keys are
+// mutually exclusive prefixes, so the match is deterministic.
+func nodeWireOf(provider string) (providers.NodeWire, bool) {
+	for nodeType, wire := range providers.CompatibleNodeWires {
+		if strings.HasPrefix(provider, nodeType+"-") {
+			return wire, true
+		}
+	}
+	return providers.NodeWire{}, false
+}
+
 // isCompatibleNodeProvider reports whether a provider id belongs to a custom
-// endpoint the operator registered, matching the three node shapes the create
-// handler composes (provider_node_id.go).
+// endpoint the operator registered, matching the node shapes the create
+// handler composes (provider_node_id.go) — derived from
+// providers.CompatibleNodeWires so detection cannot outgrow the wire table.
 func isCompatibleNodeProvider(provider string) bool {
-	return strings.HasPrefix(provider, "openai-compatible-") ||
-		strings.HasPrefix(provider, "anthropic-compatible-") ||
-		strings.HasPrefix(provider, "custom-embedding-")
+	_, ok := nodeWireOf(provider)
+	return ok
+}
+
+// compatibleNodeFormat reports the format a custom node's upstream speaks
+// ("" = OpenAI Chat Completions).
+func compatibleNodeFormat(provider string) string {
+	wire, ok := nodeWireOf(provider)
+	if !ok {
+		return ""
+	}
+	return wire.Format
 }
 
 // connectionAPIType reads the apiType the dashboard stores on a compatible

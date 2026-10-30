@@ -1,6 +1,7 @@
 package media
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	json "encoding/json/v2"
 
 	"9router/proxy/internal/clientconfig"
+	chathandlers "9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -35,10 +37,21 @@ type cliToolSettingsRequest struct {
 }
 
 // CLIToolHandler serves the per-client settings routes.
-type CLIToolHandler struct{}
+//
+// models is the chat handler whose catalog the limits resolve against: the
+// adapters write each client's context window so auto-compact fires at the
+// real boundary, and the only source of that number is the same chain
+// /v1/models serves (declared custom limits, capability tables, combo seat
+// minimums).
+type CLIToolHandler struct {
+	chat *chathandlers.ChatHandler
+}
 
-// NewCLIToolHandler returns a CLIToolHandler.
-func NewCLIToolHandler() *CLIToolHandler { return &CLIToolHandler{} }
+// NewCLIToolHandler returns a CLIToolHandler. The chat handler may be nil in
+// tests; the limits then resolve empty and adapters keep their defaults.
+func NewCLIToolHandler(chat *chathandlers.ChatHandler) *CLIToolHandler {
+	return &CLIToolHandler{chat: chat}
+}
 
 // toolFromPath pulls the client id out of "/api/cli-tools/<tool>-settings".
 func toolFromPath(path string) string {
@@ -102,6 +115,7 @@ func (h *CLIToolHandler) HandleCLIToolGet(w http.ResponseWriter, r *http.Request
 		return
 	}
 	opts := optionsFromQuery(r)
+	h.attachModelLimits(r.Context(), &opts, opts.Model)
 	paths, err := adapter.Paths(opts)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
@@ -185,6 +199,7 @@ func (h *CLIToolHandler) HandleCLIToolPost(w http.ResponseWriter, r *http.Reques
 		Model:   strings.TrimSpace(req.Model),
 		Tiers:   req.Tiers,
 	}
+	h.attachModelLimits(r.Context(), &opts, opts.Model, req.Tiers["fable"], req.Tiers["opus"], req.Tiers["sonnet"], req.Tiers["haiku"])
 	result, err := adapter.Apply(opts)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
@@ -233,4 +248,87 @@ func optionsFromQuery(r *http.Request) clientconfig.Options {
 		APIKey:  strings.TrimSpace(q.Get("apiKey")),
 		Model:   strings.TrimSpace(q.Get("model")),
 	}
+}
+
+// attachModelLimits resolves the token capacity the gateway publishes for each
+// named model and stores it on the options. The lookup runs against the same
+// catalog /v1/models serves (catalog mode: static registry plus custom models,
+// no live-catalog network round trips), matched by exact id first and then by
+// bare model name, so "glm/glm-5.3" and "glm-5.3" both land. A model the
+// catalog does not know simply stays absent: the adapters fall back.
+func (h *CLIToolHandler) attachModelLimits(ctx context.Context, opts *clientconfig.Options, models ...string) {
+	if h.chat == nil {
+		return
+	}
+	wanted := make([]string, 0, len(models))
+	seen := make(map[string]bool, len(models))
+	for _, m := range models {
+		m = strings.TrimSpace(m)
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		wanted = append(wanted, m)
+	}
+	if len(wanted) == 0 {
+		return
+	}
+	result := h.chat.BuildModelsListResult(ctx, chathandlers.ListModeCatalog)
+	exact := make(map[string]clientconfig.ModelLimits, len(result.Models))
+	bare := make(map[string]clientconfig.ModelLimits, len(result.Models))
+	for _, entry := range result.Models {
+		limits := clientconfig.ModelLimits{}
+		if entry.ContextLength != nil {
+			limits.ContextWindow = *entry.ContextLength
+		}
+		if entry.MaxCompletionTokens != nil {
+			limits.MaxOutput = *entry.MaxCompletionTokens
+		}
+		if limits.ContextWindow == 0 && limits.MaxOutput == 0 {
+			continue
+		}
+		exact[entry.ID] = limits
+		if slash := strings.LastIndexByte(entry.ID, '/'); slash >= 0 {
+			bareName := entry.ID[slash+1:]
+			if _, ok := bare[bareName]; !ok {
+				bare[bareName] = limits
+			}
+		}
+	}
+	out := make(map[string]clientconfig.ModelLimits, len(wanted))
+	for _, m := range wanted {
+		if limits, ok := exact[m]; ok {
+			out[m] = limits
+			continue
+		}
+		base := trimLevelSuffix(m)
+		if base != m {
+			if limits, ok := exact[base]; ok {
+				out[m] = limits
+				continue
+			}
+		}
+		if limits, ok := bare[m]; ok {
+			out[m] = limits
+			continue
+		}
+		if base != m {
+			if limits, ok := bare[base]; ok {
+				out[m] = limits
+			}
+		}
+	}
+	if len(out) > 0 {
+		opts.ModelLimits = out
+	}
+}
+
+// trimLevelSuffix removes the "(level)" intent suffix a model id may carry
+// ("glm-5.3(high)"): it is a request override, not part of the catalog id.
+func trimLevelSuffix(model string) string {
+	open := strings.LastIndexByte(model, '(')
+	if open <= 0 || !strings.HasSuffix(model, ")") {
+		return model
+	}
+	return model[:open]
 }
