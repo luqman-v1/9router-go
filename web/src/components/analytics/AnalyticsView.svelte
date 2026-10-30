@@ -22,6 +22,7 @@
   import SectionMenu from './SectionMenu.svelte'
   import SummaryKpiCards from './SummaryKpiCards.svelte'
   import UsageBreakdownTable from './UsageBreakdownTable.svelte'
+  import UsageByAPIKeyTable from './UsageByAPIKeyTable.svelte'
   import RequestDetailsTab from './RequestDetailsTab.svelte'
   import UsageChart from './UsageChart.svelte'
   import ProviderTopologyCard from './ProviderTopologyCard.svelte'
@@ -683,6 +684,8 @@
         </Card>
       {:else if block.key === 'overview.breakdown'}
         <UsageBreakdownTable {stats} />
+      {:else if block.key === 'overview.byApiKey'}
+        <UsageByAPIKeyTable {period} />
       {/if}
     {/each}
   {:else if section === 'cache'}

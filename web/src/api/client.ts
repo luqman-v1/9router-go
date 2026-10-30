@@ -681,6 +681,42 @@ export interface UsageDashboardResponse {
   lifetime: UsageLifetime | null
 }
 
+/** One client API key's spend inside the window. */
+export interface UsageByAPIKeyItem {
+  /** The apiKeys row the spend belongs to; empty when the key was deleted. */
+  id: string
+  name: string
+  /** The masked key, in the form the usage ledger stores. */
+  key: string
+  /** The masked key in the API keys page's own form. */
+  keyDisplay: string
+  /** Whether the key is still enabled. */
+  active: boolean
+  requests: number
+  errors: number
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
+  cost: number
+  /** When the key last made a request inside the window. */
+  lastUsed: string
+}
+
+export interface UsageByAPIKeyTotals {
+  requests: number
+  errors: number
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
+  cost: number
+}
+
+export interface UsageByAPIKeyResponse {
+  period: string
+  keys: UsageByAPIKeyItem[]
+  totals: UsageByAPIKeyTotals
+}
+
 // Codex reset credits. `selectionToken` is the field the dashboard selects
 // with; `code` carries the typed refusal the server raised (e.g. no_credit vs
 // nothing_to_reset) so the modal can say which happened.
@@ -2147,6 +2183,15 @@ export const api = {
     ),
   /** Details-section dashboard payload: heatmap days, lifetime cards, node health. */
   getUsageDashboard: () => request<UsageDashboardResponse>('/api/usage/dashboard'),
+  /**
+   * Spend per client API key — the keys created inside the gateway.
+   *
+   * This is not the Overview's "Usage by API Key" table: that one groups the
+   * upstream credential the router spent, this one groups the key the caller
+   * presented. An operator who resells the gateway needs this one.
+   */
+  getUsageByAPIKey: (period = '7d') =>
+    request<UsageByAPIKeyResponse>(`/api/usage/api-keys?period=${encodeURIComponent(period)}`),
   /** Paged request rows; period windows the server query (?period=<preset|n>d|n>h). */
   getRequestDetails: (limit = 50, offset = 0, period = '') =>
     request<any>(
