@@ -137,7 +137,15 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// The caller's key may carry a context ceiling below the model's own
 	// window. It is applied here, once, so every attempt — single model, combo
 	// member, fusion leg — is trimmed by the same rule.
-	body = applyKeyContextLimit(body, keyContextLimit(ctx))
+	if limit := keyContextLimit(ctx); limit > 0 {
+		modelWindow, modelMaxOutput := modelContextLimits(modelInfo.Provider, modelInfo.Model)
+		trimmed, limitErr := applyKeyContextLimit(body, limit, modelWindow, modelMaxOutput)
+		if limitErr != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, limitErr.Error())
+			return
+		}
+		body = trimmed
+	}
 
 	requiredCaps := DetectRequiredCapabilities(body)
 
@@ -369,7 +377,13 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	// window. It is applied here, once, so every attempt — single model, combo
 	// member, fusion leg — is trimmed by the same rule.
 	if limit := keyContextLimit(ctx); limit > 0 {
-		if trimmed, changed := applyKeyContextLimitMap(workingBody, limit); changed {
+		modelWindow, modelMaxOutput := modelContextLimits(modelInfo.Provider, modelInfo.Model)
+		trimmed, limitErr := applyKeyContextLimitMap(workingBody, limit, modelWindow, modelMaxOutput)
+		if limitErr != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, limitErr.Error())
+			return
+		}
+		if trimmed != nil {
 			workingBody = trimmed
 		}
 	}

@@ -28,6 +28,26 @@ func estimatePromptTokens(body []byte) int {
 		return (len(body) + 3) / 4
 	}
 
+	tokens := EstimatePromptTokensFromMap(payload)
+	if tokens == 0 {
+		// Nothing the estimator recognises: count the raw bytes, which is the
+		// only honest fallback available here.
+		tokens = (len(body) + 3) / 4
+	}
+	return tokens
+}
+
+// EstimatePromptTokensFromMap counts the input tokens of a decoded request.
+//
+// It is the same estimator estimatePromptTokens runs on the bytes, exposed for
+// the paths that already hold the decoded body — the per-key context ceiling
+// trims a decoded body and has to measure what it trimmed with the same ruler
+// the limiter charges with.
+func EstimatePromptTokensFromMap(payload map[string]any) int {
+	if payload == nil {
+		return 0
+	}
+
 	var chars int
 	// The messages/system/tools triple covers OpenAI chat, Anthropic messages,
 	// and the Responses shape, which all carry prompt text in one of them.
@@ -43,7 +63,7 @@ func estimatePromptTokens(body []byte) int {
 		}
 	}
 	if chars == 0 {
-		chars = len(body)
+		return 0
 	}
 
 	tokens := (chars + 3) / 4

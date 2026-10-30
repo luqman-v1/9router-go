@@ -67,6 +67,7 @@ func clearRouteHeaders(w http.ResponseWriter) {
 	h.Del("x-9router-model")
 	h.Del("x-9router-combo")
 	h.Del("x-9router-attempts")
+	clearContextHeaders(w)
 }
 
 // attemptCount returns the number of fallback attempts recorded so far on ctx,
