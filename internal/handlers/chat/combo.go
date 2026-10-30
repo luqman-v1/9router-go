@@ -696,10 +696,10 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	cw := newCommittedResponseWriter(w)
 	cw.stream = isStream
 	cw.responsesClient = translator.IsResponsesClient(ctx)
-	h.handleComboFallbackWithVisited(ctx, cw, body, comboModels, strategy, isStream, translateResponse, comboName, stickyLimit, nil, adapterModels...)
+	h.handleComboFallbackWithVisited(ctx, cw, body, comboModels, strategy, isStream, translateResponse, comboName, stickyLimit, nil, true, adapterModels...)
 }
 
-func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *committedResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, visited map[string]bool, adapterModels ...string) {
+func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *committedResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, visited map[string]bool, isRoot bool, adapterModels ...string) {
 	var lastErr *upstreamError
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
@@ -1087,12 +1087,18 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 				}
 				clearRouteHeaders(cw)
 
-				h.handleComboFallbackWithVisited(ctx, cw, body, flattened, strat, isStream, translateResponse, fbComboName, sticky, nextVisited, adapterModels...)
+				h.handleComboFallbackWithVisited(ctx, cw, body, flattened, strat, isStream, translateResponse, fbComboName, sticky, nextVisited, false, adapterModels...)
 				if cw.IsCommitted() {
 					return
 				}
 			}
 		}
+	}
+
+	if !isRoot {
+		// As a child fallback combo, do not commit terminal error to cw so the parent
+		// combo can continue trying its remaining fallbackCombos.
+		return
 	}
 
 	if cw.IsCommitted() {
@@ -1123,10 +1129,10 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	cw := newCommittedResponseWriter(w)
 	cw.stream = isStream
 	cw.responsesClient = translator.IsResponsesClient(ctx)
-	h.handleMessagesComboFallbackWithVisited(ctx, cw, translatedReq, comboModels, strategy, isStream, comboName, stickyLimit, nil, adapterModels...)
+	h.handleMessagesComboFallbackWithVisited(ctx, cw, translatedReq, comboModels, strategy, isStream, comboName, stickyLimit, nil, true, adapterModels...)
 }
 
-func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context, cw *committedResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int, visited map[string]bool, adapterModels ...string) {
+func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context, cw *committedResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int, visited map[string]bool, isRoot bool, adapterModels ...string) {
 	var lastErr *upstreamError
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
@@ -1467,12 +1473,18 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 				}
 				clearRouteHeaders(cw)
 
-				h.handleMessagesComboFallbackWithVisited(ctx, cw, translatedReq, flattened, strat, isStream, fbComboName, sticky, nextVisited, adapterModels...)
+				h.handleMessagesComboFallbackWithVisited(ctx, cw, translatedReq, flattened, strat, isStream, fbComboName, sticky, nextVisited, false, adapterModels...)
 				if cw.IsCommitted() {
 					return
 				}
 			}
 		}
+	}
+
+	if !isRoot {
+		// As a child fallback combo, do not commit terminal error to cw so the parent
+		// combo can continue trying its remaining fallbackCombos.
+		return
 	}
 
 	if cw.IsCommitted() {

@@ -141,3 +141,69 @@ func TestNestedComboExpansion_AndCyclePrevention(t *testing.T) {
 		t.Error("expected error or failure on cyclic combo reference, got nil")
 	}
 }
+
+func TestComboFallbackChain_MultiFallback_A_to_B_to_C(t *testing.T) {
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":{"message":"server A unavailable"}}`))
+	}))
+	defer serverA.Close()
+
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":{"message":"server B unavailable"}}`))
+	}))
+	defer serverB.Close()
+
+	serverC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"answered by combo C"}}]}`))
+	}))
+	defer serverC.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	t.Cleanup(cleanup)
+
+	database.Exec(`DELETE FROM providerConnections`)
+	database.Exec(`DELETE FROM combos`)
+
+	dataA, _ := json.Marshal(map[string]any{"apiKey": "sk-mock", "baseUrl": serverA.URL})
+	database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES ('conn-a', 'openai', 'apikey', 'a', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(dataA))
+
+	dataB, _ := json.Marshal(map[string]any{"apiKey": "sk-mock", "baseUrl": serverB.URL})
+	database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES ('conn-b', 'groq', 'apikey', 'b', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(dataB))
+
+	dataC, _ := json.Marshal(map[string]any{"apiKey": "sk-mock", "baseUrl": serverC.URL})
+	database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES ('conn-c', 'deepseek', 'apikey', 'c', 0, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(dataC))
+
+	mA, _ := json.Marshal([]string{"openai/gpt-4o"})
+	mB, _ := json.Marshal([]string{"groq/qwen"})
+	mC, _ := json.Marshal([]string{"deepseek/deepseek-chat"})
+
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES ('ca', 'combo-a', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(mA))
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES ('cb', 'combo-b', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(mB))
+	database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES ('cc', 'combo-c', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(mC))
+
+	repo := db.NewRepo(database)
+	// combo-a has fallbackCombos: ["combo-b", "combo-c"]
+	// combo-b has NO fallbacks of its own (terminal failure inside combo-b)
+	_ = repo.SetComboStrategy("combo-a", db.ComboStrategy{
+		Strategy:       "fallback",
+		FallbackCombos: []string{"combo-b", "combo-c"},
+	})
+
+	h := NewChatHandler(repo)
+	req := httptest.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(`{"model":"combo-a","messages":[{"role":"user","content":"hi"}],"stream":false}`))
+	rec := httptest.NewRecorder()
+	h.HandleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from combo-c after combo-b failed, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "answered by combo C") {
+		t.Errorf("unexpected body: %s", rec.Body.String())
+	}
+	if comboHeader := rec.Header().Get("x-9router-combo"); comboHeader != "combo-c" {
+		t.Errorf("expected x-9router-combo header to be combo-c, got %q", comboHeader)
+	}
+}
