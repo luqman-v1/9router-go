@@ -3,6 +3,7 @@ package clientconfig
 import (
 	"errors"
 	"strconv"
+	"strings"
 )
 
 // OpenAI Codex CLI: ~/.codex/config.toml, TOML.
@@ -152,4 +153,38 @@ func codexPointsAtUs(file TargetFile) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func (a codexAdapter) Current(opts Options) (map[string]any, error) {
+	paths, err := a.Paths(opts)
+	if err != nil || len(paths.Files) == 0 {
+		return nil, err
+	}
+	file := paths.Files[0]
+	g, err := resolveGuard(file.Dir, relFromDir(file.Dir, file.Path))
+	if err != nil {
+		if errors.Is(err, ErrBaseMissing) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	b, err := readThroughGuard(g)
+	if err != nil || len(b) == 0 {
+		return nil, err
+	}
+	doc, err := scanTOML(parseableTOML(b), b)
+	if err != nil {
+		return nil, err
+	}
+	res := make(map[string]any)
+	for _, kv := range doc.kvs {
+		if samePath(kv.fullPath, []string{"model"}) {
+			val := string(b[kv.valStart:kv.valEnd])
+			res["model"] = strings.Trim(val, `"'`)
+		} else if samePath(kv.fullPath, []string{"model_providers", codexProviderKey, "base_url"}) {
+			val := string(b[kv.valStart:kv.valEnd])
+			res["baseUrl"] = strings.Trim(val, `"'`)
+		}
+	}
+	return res, nil
 }

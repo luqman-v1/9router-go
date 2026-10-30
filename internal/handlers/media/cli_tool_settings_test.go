@@ -267,3 +267,108 @@ func TestAttachModelLimitsResolvesThroughTheCatalog(t *testing.T) {
 		}
 	}
 }
+
+func TestCLIToolGetReportsCurrentConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	dir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := `{"model":"opus","autoCompactWindow":330000,"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:20130/v1","ANTHROPIC_DEFAULT_SONNET_MODEL":"sonnet-combo"}}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewCLIToolHandler(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/cli-tools/claude-settings", nil)
+	req.URL.Path = "/api/cli-tools/claude-settings"
+	rec := httptest.NewRecorder()
+	h.HandleCLIToolGet(rec, req)
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	curr, ok := resp["currentConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing or invalid currentConfig: %v", resp)
+	}
+	if curr["model"] != "opus" {
+		t.Errorf("model = %v, want opus", curr["model"])
+	}
+	if v, ok := curr["autoCompactWindow"].(float64); !ok || int(v) != 330000 {
+		t.Errorf("autoCompactWindow = %v, want 330000", curr["autoCompactWindow"])
+	}
+	tiers, ok := curr["tiers"].(map[string]any)
+	if !ok || tiers["sonnet"] != "sonnet-combo" {
+		t.Errorf("tiers.sonnet = %v, want sonnet-combo", tiers["sonnet"])
+	}
+}
+
+func TestCLIToolGet_NeverLeaksStoredAnthropicToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	dir := filepath.Join(home, ".claude")
+	_ = os.MkdirAll(dir, 0o755)
+	settings := `{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:20130/v1","ANTHROPIC_AUTH_TOKEN":"sk-super-secret-token"}}`
+	_ = os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o644)
+
+	h := NewCLIToolHandler(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/cli-tools/claude-settings", nil)
+	rec := httptest.NewRecorder()
+	h.HandleCLIToolGet(rec, req)
+
+	if strings.Contains(rec.Body.String(), "sk-super-secret-token") {
+		t.Fatalf("stored credential leaked in GET response: %s", rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	curr, ok := resp["currentConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing currentConfig: %v", resp)
+	}
+	if curr["hasApiKey"] != true {
+		t.Errorf("expected hasApiKey = true, got %v", curr["hasApiKey"])
+	}
+	if _, ok := curr["apiKey"]; ok {
+		t.Errorf("apiKey must not be present in currentConfig, got %v", curr["apiKey"])
+	}
+}
+
+func TestCLIToolDelete_PassesGatewayURLAndResets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	dir := filepath.Join(home, ".claude")
+	_ = os.MkdirAll(dir, 0o755)
+	settings := `{"model":"gateway-model","autoCompactWindow":200000,"env":{"ANTHROPIC_BASE_URL":"http://my-gateway.local:20130/v1","ANTHROPIC_AUTH_TOKEN":"tok"}}`
+	_ = os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o644)
+
+	h := NewCLIToolHandler(nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/cli-tools/claude-settings?home="+home, nil)
+	req.Host = "my-gateway.local:20130"
+	rec := httptest.NewRecorder()
+	h.HandleCLIToolDelete(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	content, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(content)
+	if strings.Contains(s, `"model"`) {
+		t.Errorf("model should be removed on DELETE reset matching host:\n%s", s)
+	}
+	if strings.Contains(s, "autoCompactWindow") {
+		t.Errorf("autoCompactWindow should be removed on DELETE reset:\n%s", s)
+	}
+}
