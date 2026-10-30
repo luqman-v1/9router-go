@@ -135,6 +135,21 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The caller's key may carry a context ceiling below the model's own
+	// window. It is applied here, once, so every attempt — single model, combo
+	// member, fusion leg — is trimmed by the same rule.
+	if limit := keyContextLimit(ctx); limit > 0 {
+		modelWindow, modelMaxOutput := modelContextLimits(modelInfo.Provider, modelInfo.Model)
+		trimmed, limitErr := applyKeyContextLimitMap(workingBody, limit, modelWindow, modelMaxOutput)
+		if limitErr != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, limitErr.Error())
+			return
+		}
+		if trimmed != nil {
+			workingBody = trimmed
+		}
+	}
+
 	requiredCaps := DetectRequiredCapabilities(body)
 
 	if len(modelInfo.ComboModels) > 0 {

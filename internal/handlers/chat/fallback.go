@@ -992,6 +992,10 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// before any executor or forwarding function writes headers to w.
 	injectRouteHeaders(w, provider, model, f.ComboName, f.Attempts)
 
+	// The context budget of the request that is about to be served, so a client
+	// can see how much of the window this turn used.
+	injectContextHeaders(w, resolveContextBudget(ctx, provider, model, pipedBody))
+
 	if exec := executor.Get(provider); exec != nil {
 		execReq := &executor.Request{
 			Ctx:            ctx,
