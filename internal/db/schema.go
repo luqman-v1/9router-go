@@ -370,6 +370,11 @@ var goOnlyColumns = [][3]string{
 	// wait for a concurrency slot before it is refused.
 	{"apiKeys", "tokenQuota", "INTEGER DEFAULT 0"},
 	{"apiKeys", "queueTimeoutMs", "INTEGER DEFAULT 0"},
+	// Per-key context ceiling: the largest context window one request from this
+	// key may use, in tokens. 0 means the model's own declared window applies.
+	// A different axis from tokenQuota, which bounds what the key may spend
+	// over its whole life.
+	{"apiKeys", "contextLimit", "INTEGER DEFAULT 0"},
 	// F-6 Argon2id key hashing
 	{"apiKeys", "keyHash", "TEXT DEFAULT ''"},
 	{"apiKeys", "lookupHash", "TEXT DEFAULT ''"},

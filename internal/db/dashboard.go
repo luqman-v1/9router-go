@@ -228,11 +228,11 @@ func (r *Repo) GetApiKeys() ([]*models.APIKey, error) {
 	}
 	defer rows.Close()
 
-	withBudget := r.budgetColumnsPresent()
+	withAdditive := r.additiveColumnsPresent()
 	keys := make([]*models.APIKey, 0)
 	for rows.Next() {
 		var k models.APIKey
-		dest, apply := apiKeyScan(&k, withBudget)
+		dest, apply := apiKeyScan(&k, withAdditive)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, fmt.Errorf("scan api key: %w", err)
 		}
@@ -343,6 +343,24 @@ func (r *Repo) SetApiKeyPeriodBudget(keyID string, limitMicros, limitTokens int6
 	)
 	if err != nil {
 		return fmt.Errorf("set api key period budget %s: %w", keyID, err)
+	}
+	return nil
+}
+
+// SetApiKeyContextLimit sets the largest context window one request from an
+// API key may use, in tokens.
+//
+// It is a whole non-negative count where 0 means "unset": the model's own
+// declared window applies. It bounds one request, where tokenQuota bounds what
+// the key may spend over its whole life — the two are separate axes and an
+// operator may want either without the other.
+func (r *Repo) SetApiKeyContextLimit(keyID string, contextLimit int) error {
+	_, err := r.db.Exec(
+		`UPDATE apiKeys SET contextLimit = ? WHERE id = ?`,
+		contextLimit, keyID,
+	)
+	if err != nil {
+		return fmt.Errorf("set api key context limit %s: %w", keyID, err)
 	}
 	return nil
 }
