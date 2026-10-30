@@ -38,8 +38,8 @@ func TestQuotaResetReopensAnExhaustedKey(t *testing.T) {
 	}
 
 	rejected := env.Post(t, "/v1/chat/completions", ChatBody("deepseek/deepseek-chat", false), WithAPIKey(plaintext))
-	if rejected.Status != http.StatusForbidden {
-		t.Fatalf("exhausted key = %d, want 403 (body: %s)", rejected.Status, truncate(rejected.Body))
+	if rejected.Status != http.StatusTooManyRequests {
+		t.Fatalf("exhausted key = %d, want 429 (body: %s)", rejected.Status, truncate(rejected.Body))
 	}
 	if got := rejected.Header.Get("X-Token-Quota-Limit"); got != "1" {
 		t.Errorf("X-Token-Quota-Limit = %q, want the configured 1", got)

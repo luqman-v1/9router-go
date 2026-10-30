@@ -70,6 +70,10 @@ type APIKey struct {
 	// before it is refused; 0 falls back to the server default.
 	TokenQuota     *int `json:"tokenQuota,omitempty"`
 	QueueTimeoutMs *int `json:"queueTimeoutMs,omitempty"`
+	// ContextLimit caps the context window a single request from this key may
+	// use, in tokens. 0 means the model's own window applies. It bounds one
+	// request, where TokenQuota bounds what the key may spend over its life.
+	ContextLimit *int `json:"contextLimit,omitempty"`
 	// F-6 Argon2id hashing
 	KeyHash    *string `json:"keyHash,omitempty"`
 	LookupHash *string `json:"lookupHash,omitempty"`

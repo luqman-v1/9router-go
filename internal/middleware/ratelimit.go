@@ -699,10 +699,10 @@ func RequireRateLimit(rl *RateLimiter, defaults Defaults, usage TokenUsageReader
 
 			limits := limitsFor(apiKey, defaults, rl.planSource())
 
-			// Lifetime token quota: a hard budget, refused with 403 the same way
-			// a not-yet-ported plan-tier cap would be. It is checked before
-			// RPM/TPM because an exhausted key must not consume a slot or a
-			// request stamp on its way to being told no.
+			// Lifetime token quota: a hard budget, refused with 429 before
+			// anything else is consulted. It is checked before RPM/TPM because
+			// an exhausted key must not consume a slot or a request stamp on
+			// its way to being told no.
 			if quotaCheck(w, r, apiKey, limits, usage) {
 				return
 			}
@@ -948,7 +948,7 @@ func queueScope(limits Limits) string {
 }
 
 // quotaCheck refuses a key whose lifetime token budget is spent. It returns
-// true when the request was written a 403 and the handler must stop.
+// true when the request was written a 429 and the handler must stop.
 //
 // A failed quota read allows the request: a storage blip must not lock a key
 // out of a service it has always been able to call, which mirrors how a failed
@@ -984,13 +984,18 @@ func queueRetryAfter(limits Limits) int {
 
 // rejectQuotaExhausted answers a key that has spent its lifetime token budget.
 //
-// A quota is not a per-window rate, so the answer is a plain 403 with the spend
-// it reached: Retry-After and X-RateLimit-Reset would both promise that waiting
-// helps, and for a lifetime budget only an operator raising the quota does.
+// The status is 429: the request is refused because the caller is over its
+// allowance, which is what that code means. The error TYPE is what tells a
+// client the difference — a rate limit clears by itself, a spent budget does
+// not — so the type is insufficient_quota rather than rate_limit_error.
+//
+// No Retry-After: waiting does not refill a lifetime budget, only an operator
+// raising it or resetting the spent mark does. The spend headers carry what
+// the client needs to explain the refusal.
 func rejectQuotaExhausted(w http.ResponseWriter, used, quota int) {
 	w.Header().Set("X-Token-Quota-Limit", strconv.Itoa(quota))
 	w.Header().Set("X-Token-Quota-Used", strconv.Itoa(used))
-	handlerutil.WriteJSONError(w, http.StatusForbidden,
+	handlerutil.WriteJSONErrorType(w, http.StatusTooManyRequests, "insufficient_quota", "insufficient_quota",
 		fmt.Sprintf("Token quota exhausted for this API key (%d/%d).", used, quota))
 }
 

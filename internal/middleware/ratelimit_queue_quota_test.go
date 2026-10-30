@@ -204,7 +204,7 @@ type stubUsage struct {
 
 func (s stubUsage) GetApiKeyTokenUsage(string) (int, error) { return s.tokens, s.err }
 
-// TestTokenQuotaRefusesExhaustedKey proves the lifetime budget refuses with 403
+// TestTokenQuotaRefusesExhaustedKey proves the lifetime budget refuses with 429
 // once the key's cumulative usage reaches the quota.
 func TestTokenQuotaRefusesExhaustedKey(t *testing.T) {
 	rl := NewRateLimiter(time.Minute)
@@ -222,8 +222,8 @@ func TestTokenQuotaRefusesExhaustedKey(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", rec.Code)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", rec.Code)
 	}
 	if got := rec.Header().Get("X-Token-Quota-Limit"); got != "5000" {
 		t.Errorf("X-Token-Quota-Limit = %q, want 5000", got)

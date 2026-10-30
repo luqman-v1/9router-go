@@ -18,6 +18,7 @@ export type UsagePanelId =
   | 'overview.recent'
   | 'overview.trend'
   | 'overview.breakdown'
+  | 'overview.byApiKey'
   | 'details.lifetime'
   | 'details.heatmap'
   | 'details.nodeHealth'
@@ -56,6 +57,11 @@ export const USAGE_PANEL_GROUPS: UsagePanelGroup[] = [
       { id: 'overview.topology', label: 'Provider topology map' },
       { id: 'overview.recent', label: 'Recent requests' },
       { id: 'overview.breakdown', label: 'Usage breakdown table' },
+      // Spend by the client key the caller presented — a different axis from
+      // the breakdown table, which groups the upstream credential the router
+      // spent. It sits next to that table because both answer "where did the
+      // spend go".
+      { id: 'overview.byApiKey', label: 'Usage per API key' },
       // The two collapsed-by-default panels sit at the bottom of the declared
       // order, the way upstream draws them: a chevron row is the last thing on
       // the page, not something a reader scrolls past to reach the numbers.

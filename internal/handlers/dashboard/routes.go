@@ -232,6 +232,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/tunnel/tailscale-disable", h.HandleTailscaleDisable)
 		// Usage & Quotas
 		r.Get("/usage/providers", h.HandleGetUsageProviders)
+		// Usage per client API key. Registered before the {connectionId}
+		// route: chi matches in order, so a route added after it would be
+		// read as a connection id.
+		r.Get("/usage/api-keys", h.HandleGetUsageByAPIKey)
 		r.Get("/usage/{connectionId}", h.HandleGetConnectionUsage)
 		// Codex reset credits. These sit one segment deeper than the
 		// per-connection usage route, so chi matches them without the static

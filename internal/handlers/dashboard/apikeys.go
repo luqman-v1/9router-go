@@ -102,6 +102,7 @@ func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Reque
 			"rateLimitConcurrency": intOrZero(k.RateLimitConcurrency),
 			"tokenQuota":           intOrZero(k.TokenQuota),
 			"queueTimeoutMs":       intOrZero(k.QueueTimeoutMs),
+			"contextLimit":         intOrZero(k.ContextLimit),
 			"expiresAt":            stringOrEmpty(k.ExpiresAt),
 			"lastUsedAt":           stringOrEmpty(k.LastUsedAt),
 			"usedCount":            intOrZero(k.UsedCount),
@@ -194,12 +195,32 @@ func (h *DashboardHandler) HandleCreateApiKey(w http.ResponseWriter, r *http.Req
 		Key       string `json:"key"`
 		Name      string `json:"name"`
 		MachineID string `json:"machineId"`
+		// TokenQuota caps the key's cumulative prompt+completion tokens
+		// (0 = no limit). It is accepted here so an operator can bound a key
+		// at the moment they create it, instead of creating it unbounded and
+		// then hunting for the policy dialog to set the ceiling.
+		TokenQuota *int `json:"tokenQuota"`
+		// ContextLimit caps the context window one request from the key may
+		// use, in tokens. A separate axis from the quota, which bounds what
+		// the key may spend over its whole life.
+		ContextLimit *int `json:"contextLimit"`
 	}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
 			return
 		}
+	}
+	// Validated before the insert, so a refused limit leaves no key behind.
+	quota, err := mergeLimit(req.TokenQuota, nil)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "tokenQuota: "+err.Error())
+		return
+	}
+	contextLimit, err := mergeLimit(req.ContextLimit, nil)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "contextLimit: "+err.Error())
+		return
 	}
 
 	if req.ID == "" {
@@ -212,6 +233,21 @@ func (h *DashboardHandler) HandleCreateApiKey(w http.ResponseWriter, r *http.Req
 	if err := h.Repo.CreateApiKey(req.ID, req.Key, req.Name, req.MachineID); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	// The ceiling is written after the key exists, so it lands in the same
+	// columns the policy dialog writes and the limiter reads.
+	if quota > 0 {
+		if err := h.Repo.SetApiKeyBudget(req.ID, quota, 0); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if contextLimit > 0 {
+		if err := h.Repo.SetApiKeyContextLimit(r.Context(), req.ID, contextLimit); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 
 	// The secret is stored in the clear so the dashboard can reveal and copy
@@ -311,10 +347,11 @@ func (h *DashboardHandler) HandleResetApiKeyQuota(w http.ResponseWriter, r *http
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"status":     "ok",
-		"id":         id,
-		"usedTokens": used,
-		"tokenQuota": intOrZero(existing.TokenQuota),
+		"status":       "ok",
+		"id":           id,
+		"usedTokens":   used,
+		"tokenQuota":   intOrZero(existing.TokenQuota),
+		"contextLimit": intOrZero(existing.ContextLimit),
 		// The mark is a usageHistory row id, so it is reported as one: a
 		// timestamp here would invite callers to compare it with the
 		// second-precision stamp in the history and get the boundary wrong.

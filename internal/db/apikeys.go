@@ -29,7 +29,7 @@ func (r *Repo) ValidateApiKey(key string) (bool, error) {
 
 const apiKeyColumns = `SELECT id, key, name, machineId, isActive, createdAt,
 	rateLimitRPM, rateLimitTPM, rateLimitConcurrency,
-	tokenQuota, queueTimeoutMs,
+	tokenQuota, queueTimeoutMs, contextLimit,
 	keyHash, lookupHash, keyDisplay,
 	expiresAt, lastUsedAt, usedCount, metadata, planId`
 
@@ -38,24 +38,25 @@ const apiKeyColumns = `SELECT id, key, name, machineId, isActive, createdAt,
 func apiKeyScan(k *models.APIKey) (dest []any, apply func()) {
 	var nameVal, machineVal sql.NullString
 	var rateRPM, rateTPM, rateConc sql.NullInt64
-	var tokenQuota, queueTimeout sql.NullInt64
+	var tokenQuota, queueTimeout, contextLimit sql.NullInt64
 	var keyHash, lookupHash, keyDisplay sql.NullString
 	var expiresAt, lastUsedAt, metadata sql.NullString
 	var usedCount sql.NullInt64
 	var planID sql.NullString
 	dest = []any{&k.ID, &k.Key, &nameVal, &machineVal, &k.IsActive, &k.CreatedAt,
-		&rateRPM, &rateTPM, &rateConc, &tokenQuota, &queueTimeout, &keyHash, &lookupHash, &keyDisplay,
+		&rateRPM, &rateTPM, &rateConc, &tokenQuota, &queueTimeout, &contextLimit,
+		&keyHash, &lookupHash, &keyDisplay,
 		&expiresAt, &lastUsedAt, &usedCount, &metadata, &planID}
 	apply = func() {
-		applyApiKeyNulls(k, nameVal, machineVal, rateRPM, rateTPM, rateConc, tokenQuota, queueTimeout, usedCount,
-			keyHash, lookupHash, keyDisplay, expiresAt, lastUsedAt, metadata, planID)
+		applyApiKeyNulls(k, nameVal, machineVal, rateRPM, rateTPM, rateConc, tokenQuota, queueTimeout, contextLimit,
+			usedCount, keyHash, lookupHash, keyDisplay, expiresAt, lastUsedAt, metadata, planID)
 	}
 	return dest, apply
 }
 
 // applyApiKeyNulls copies the scanned nullable columns onto the model.
 func applyApiKeyNulls(k *models.APIKey, nameVal, machineVal sql.NullString,
-	rateRPM, rateTPM, rateConc, tokenQuota, queueTimeout, usedCount sql.NullInt64,
+	rateRPM, rateTPM, rateConc, tokenQuota, queueTimeout, contextLimit, usedCount sql.NullInt64,
 	keyHash, lookupHash, keyDisplay sql.NullString,
 	expiresAt, lastUsedAt, metadata, planID sql.NullString) {
 	if nameVal.Valid {
@@ -83,6 +84,10 @@ func applyApiKeyNulls(k *models.APIKey, nameVal, machineVal sql.NullString,
 	if queueTimeout.Valid {
 		v := int(queueTimeout.Int64)
 		k.QueueTimeoutMs = &v
+	}
+	if contextLimit.Valid {
+		v := int(contextLimit.Int64)
+		k.ContextLimit = &v
 	}
 	if keyHash.Valid {
 		k.KeyHash = &keyHash.String

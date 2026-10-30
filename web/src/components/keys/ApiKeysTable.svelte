@@ -131,7 +131,12 @@
 
   // Tokens are shown compactly: a budget is read as a scale ("12.3k of 250k"),
   // not as a seven-digit number the eye has to parse.
+  //
+  // The billions tier exists because a budget may be written in billions
+  // ("1.5B"), and reading that back as "1500.0M" would not match the number the
+  // operator typed.
   function compactTokens(n: number): string {
+    if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
     if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
     return String(n)
@@ -159,6 +164,11 @@
         label: `${compactTokens(used)} / ${compactTokens(quota)} tok`,
         tone: used >= quota ? 'danger' : 'info',
       })
+    }
+    // The context ceiling is a different axis from the spend ceiling, so it
+    // gets its own badge: "128K ctx" cannot be mistaken for a budget.
+    if ((k.contextLimit ?? 0) > 0) {
+      badges.push({ label: `${compactTokens(k.contextLimit ?? 0)} ctx`, tone: 'info' })
     }
     if ((k.expiresAt ?? '') !== '') {
       badges.push({ label: isExpired(k) ? 'expired' : 'expires', tone: isExpired(k) ? 'danger' : 'info' })
