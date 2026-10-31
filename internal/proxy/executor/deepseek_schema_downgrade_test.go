@@ -84,7 +84,7 @@ func TestForwardOpenAI_DeepSeekAndCompatibleDowngrade(t *testing.T) {
 		t.Errorf("deepseek provider response_format = %s, want {\"type\":\"json_object\"}", mDeepseek["response_format"])
 	}
 
-	// Case B: openai-compatible- custom provider downgrades json_schema
+	// Case B: openai-compatible- custom provider preserves native json_schema
 	rec = httptest.NewRecorder()
 	err = ForwardOpenAI(rec, &Request{
 		Ctx:      t.Context(),
@@ -101,8 +101,14 @@ func TestForwardOpenAI_DeepSeekAndCompatibleDowngrade(t *testing.T) {
 	if err := json.Unmarshal(receivedBody, &mCompat); err != nil {
 		t.Fatalf("received body does not parse: %v", err)
 	}
-	if string(mCompat["response_format"]) != `{"type":"json_object"}` {
-		t.Errorf("openai-compatible- provider response_format = %s, want {\"type\":\"json_object\"}", mCompat["response_format"])
+	var rfCompat struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(mCompat["response_format"], &rfCompat); err != nil {
+		t.Fatalf("unmarshal response_format: %v", err)
+	}
+	if rfCompat.Type != "json_schema" {
+		t.Errorf("openai-compatible- provider response_format.type = %s, want json_schema", rfCompat.Type)
 	}
 
 	// Case C: openai provider does NOT downgrade json_schema

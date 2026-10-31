@@ -144,7 +144,7 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	if req.Provider == "openai" {
 		req.Body = renameMaxTokensBody(req.Body)
 	}
-	if req.Provider == "deepseek" || strings.HasPrefix(req.Provider, "openai-compatible-") {
+	if req.Provider == "deepseek" {
 		req.Body = DowngradeJsonSchemaToJSONObject(req.Body)
 	}
 	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
