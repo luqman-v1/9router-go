@@ -1109,6 +1109,9 @@ type CommandcodeStreamState struct {
 	OutputLength  int
 	FinishReason  string
 	Finished      bool
+	// Usage is the upstream token usage (finish totalUsage, or the last
+	// finish-step usage); nil until one arrives.
+	Usage map[string]any
 }
 
 func BuildCommandcodeChunk(state *CommandcodeStreamState, delta map[string]any, finishReason string) string {
@@ -1265,11 +1268,33 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 		flusher.Flush()
 	}
 
-	translator.SetUsage(req.Ctx, &translator.OpenAIUsage{
-		CompletionTokens: state.OutputLength / 4,
-	})
+	translator.SetUsage(req.Ctx, commandcodeUsage(state))
 
 	return scanner.Err()
+}
+
+// commandcodeUsage builds the gateway's usage record: real upstream counts
+// (input, output, cache reads, reasoning) when Command Code reported them,
+// the output-length estimate otherwise.
+func commandcodeUsage(state *CommandcodeStreamState) *translator.OpenAIUsage {
+	if len(state.Usage) == 0 {
+		return &translator.OpenAIUsage{CompletionTokens: state.OutputLength / 4}
+	}
+	u := &translator.OpenAIUsage{}
+	if in, ok := commandcodeTokenField(state.Usage, "inputTokens", "promptTokens"); ok {
+		u.PromptTokens = int(in)
+	}
+	if out, ok := commandcodeTokenField(state.Usage, "outputTokens", "completionTokens"); ok {
+		u.CompletionTokens = int(out)
+	}
+	if c, ok := state.Usage["cachedInputTokens"].(float64); ok && c > 0 {
+		u.CachedTokens = int(c)
+		u.PromptTokensDetails = &translator.PromptTokensDetails{CachedTokens: int(c)}
+	}
+	if r, ok := state.Usage["reasoningTokens"].(float64); ok && r > 0 {
+		u.CompletionTokensDetails = &translator.CompletionTokensDetails{ReasoningTokens: int(r)}
+	}
+	return u
 }
 
 func ProcessCommandcodeEvent(event map[string]any, eventType string, state *CommandcodeStreamState) []string {
@@ -1403,6 +1428,9 @@ func ProcessCommandcodeEvent(event map[string]any, eventType string, state *Comm
 		if reason, ok := event["finishReason"].(string); ok {
 			state.FinishReason = mapCommandcodeFinishReason(reason)
 		}
+		if u, ok := event["usage"].(map[string]any); ok {
+			state.Usage = u
+		}
 
 	case "finish":
 		reason := state.FinishReason
@@ -1418,7 +1446,11 @@ func ProcessCommandcodeEvent(event map[string]any, eventType string, state *Comm
 
 		chunk := BuildCommandcodeChunk(state, map[string]any{}, reason)
 
-		if totalUsage, ok := event["totalUsage"].(map[string]any); ok {
+		totalUsage, ok := event["totalUsage"].(map[string]any)
+		if ok {
+			state.Usage = totalUsage
+		}
+		if totalUsage = state.Usage; len(totalUsage) > 0 {
 			usage := map[string]any{}
 			if pt, ok := commandcodeTokenField(totalUsage, "inputTokens", "promptTokens"); ok {
 				usage["prompt_tokens"] = int(pt)
@@ -1435,6 +1467,13 @@ func ProcessCommandcodeEvent(event map[string]any, eventType string, state *Comm
 				usage["completion_tokens_details"] = map[string]any{"reasoning_tokens": int(rt)}
 			}
 			if len(usage) > 0 {
+				total, hasTotal := totalUsage["totalTokens"].(float64)
+				if !hasTotal {
+					pt, _ := usage["prompt_tokens"].(int)
+					ct, _ := usage["completion_tokens"].(int)
+					total = float64(pt + ct)
+				}
+				usage["total_tokens"] = int(total)
 				var parsed map[string]any
 				if err := json.Unmarshal([]byte(chunk), &parsed); err != nil {
 					log.Warn("executor", "commandcode unmarshal chunk", "error", err)

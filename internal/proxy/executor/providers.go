@@ -595,15 +595,21 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var envelope struct {
+		ThreadID string `json:"threadId"`
+	}
+	_ = json.Unmarshal(reqBody, &envelope)
 	for attempt := 0; ; attempt++ {
-		err = forwardCommandcodeOnce(ctx, w, req, reqBody, oreq.Model)
+		err = forwardCommandcodeOnce(ctx, w, req, reqBody, envelope.ThreadID, oreq.Model)
 		if attempt >= commandcodeMaxRetries || !isCommandcodeRetryable(err) {
 			return err
 		}
+		timer := time.NewTimer(time.Duration(attempt+1) * time.Second)
 		select {
 		case <-ctx.Done():
-			return err
-		case <-time.After(time.Duration(attempt+1) * time.Second):
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
 		}
 	}
 }
@@ -618,7 +624,7 @@ func isCommandcodeRetryable(err error) bool {
 		ue.StatusCode == http.StatusGatewayTimeout
 }
 
-func forwardCommandcodeOnce(ctx context.Context, w http.ResponseWriter, req *Request, reqBody []byte, model string) error {
+func forwardCommandcodeOnce(ctx context.Context, w http.ResponseWriter, req *Request, reqBody []byte, threadID, model string) error {
 	r, err := http.NewRequestWithContext(ctx, "POST", req.Config.BaseURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
@@ -626,11 +632,7 @@ func forwardCommandcodeOnce(ctx context.Context, w http.ResponseWriter, req *Req
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+req.APIKey)
 	// x-session-id mirrors the body's threadId, as the official CLI does.
-	var envelope struct {
-		ThreadID string `json:"threadId"`
-	}
-	_ = json.Unmarshal(reqBody, &envelope)
-	r.Header.Set("x-session-id", envelope.ThreadID)
+	r.Header.Set("x-session-id", threadID)
 	r.Header.Set("x-project-slug", commandcodeProjectSlug)
 	// Defaults mirror the registry StaticHeaders (command-code@1.88.0);
 	// the loop below lets a configured value win.

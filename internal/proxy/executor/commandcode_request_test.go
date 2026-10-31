@@ -533,3 +533,22 @@ func TestCommandcodeFinishCarriesCacheUsage(t *testing.T) {
 		t.Errorf("usage = %+v", chunk.Usage)
 	}
 }
+
+func TestCommandcodeUsageFallsBackToFinishStepAndTotals(t *testing.T) {
+	state := &CommandcodeStreamState{ToolIndexByID: map[string]int{}}
+	ProcessCommandcodeEvent(map[string]any{"type": "finish-step", "finishReason": "stop",
+		"usage": map[string]any{"inputTokens": 100.0, "outputTokens": 5.0, "cachedInputTokens": 64.0},
+	}, "finish-step", state)
+	out := ProcessCommandcodeEvent(map[string]any{"type": "finish"}, "finish", state)
+	if len(out) == 0 || !strings.Contains(out[0], `"total_tokens":105`) || !strings.Contains(out[0], `"cached_tokens":64`) {
+		t.Fatalf("chunk = %v", out)
+	}
+	u := commandcodeUsage(state)
+	if u.PromptTokens != 100 || u.CompletionTokens != 5 || u.CachedTokens != 64 {
+		t.Errorf("gateway usage = %+v", u)
+	}
+	est := commandcodeUsage(&CommandcodeStreamState{OutputLength: 40})
+	if est.CompletionTokens != 10 || est.PromptTokens != 0 {
+		t.Errorf("estimate fallback = %+v", est)
+	}
+}
