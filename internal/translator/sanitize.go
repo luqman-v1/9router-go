@@ -16,12 +16,21 @@ func sanitizeToolArgs(toolName, argsJSON string) string {
 	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		// If args is a JSON string (e.g. "\"query\""), try to unwrap
-		var s string
-		if err2 := json.Unmarshal([]byte(argsJSON), &s); err2 == nil && s != "" {
-			args = map[string]any{"query": s}
-		} else {
-			return argsJSON
+		if repaired := RepairTruncatedJSON(argsJSON); repaired != argsJSON {
+			if errRep := json.Unmarshal([]byte(repaired), &args); errRep == nil {
+				argsJSON = repaired
+			}
+		}
+	}
+	if args == nil {
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			// If args is a JSON string (e.g. "\"query\""), try to unwrap
+			var s string
+			if err2 := json.Unmarshal([]byte(argsJSON), &s); err2 == nil && s != "" {
+				args = map[string]any{"query": s}
+			} else {
+				return argsJSON
+			}
 		}
 	}
 	if args == nil {
