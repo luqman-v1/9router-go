@@ -8,6 +8,7 @@ import (
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/modelhealth"
 	"9router/proxy/internal/observ"
+	"9router/proxy/internal/resilience"
 	"9router/proxy/internal/semanticcache"
 	"github.com/go-chi/chi/v5"
 )
@@ -25,6 +26,11 @@ type DashboardHandler struct {
 	SecondaryProbeURL string
 	TokenSaver        *shared.TokenSaverConfig
 	SemanticCache     *semanticcache.Cache
+	// Resilience is the provider-level admission control the data plane
+	// consults. Held here so the dashboard reports the same layer a request was
+	// judged against rather than a second estimate that can drift from it. Nil
+	// when the handler was built outside a boot (tests, tooling).
+	Resilience *resilience.Controller
 	// Limiter is the process-wide rate limiter, shared with the data plane so the
 	// dashboard reports the same provider windows the dispatch gate enforces. It
 	// is optional: a handler built outside a boot (tests, tooling) has none, and
@@ -244,6 +250,8 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/usage/{connectionId}/glm-reset-cards", h.HandleRedeemGLMResetCard)
 
 		// Cache Analytics & Management
+		r.Get("/resilience", h.HandleGetResilience)
+		r.Post("/resilience/reset", h.HandleResetResilience)
 		r.Get("/cache", h.HandleGetCache)
 		r.Delete("/cache", h.HandleDeleteCache)
 		r.Get("/cache/entries", h.HandleGetCacheEntries)
