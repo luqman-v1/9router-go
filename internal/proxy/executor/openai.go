@@ -107,6 +107,34 @@ func renameMaxTokensBody(body []byte) []byte {
 	return out
 }
 
+// DowngradeJsonSchemaToJSONObject downgrades response_format from "json_schema"
+// to {"type":"json_object"} for providers like DeepSeek or openai-compatible nodes
+// that do not support OpenAI Structured Outputs (upstream decolua/9router PR #5304).
+func DowngradeJsonSchemaToJSONObject(body []byte) []byte {
+	var m map[string]jsontext.Value
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	rawRF, ok := m["response_format"]
+	if !ok || len(rawRF) == 0 {
+		return body
+	}
+	var rf struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(rawRF, &rf); err != nil {
+		return body
+	}
+	if rf.Type != "json_schema" {
+		return body
+	}
+	m["response_format"] = jsontext.Value(`{"type":"json_object"}`)
+	if out, err := json.Marshal(m); err == nil {
+		return out
+	}
+	return body
+}
+
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	// Provider-scoped param rules from upstream paramSupport strip unsupported
@@ -115,6 +143,9 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	// 'max_completion_tokens' instead".
 	if req.Provider == "openai" {
 		req.Body = renameMaxTokensBody(req.Body)
+	}
+	if req.Provider == "deepseek" || strings.HasPrefix(req.Provider, "openai-compatible-") {
+		req.Body = DowngradeJsonSchemaToJSONObject(req.Body)
 	}
 	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
 	if err != nil {
