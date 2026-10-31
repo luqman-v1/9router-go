@@ -146,7 +146,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		if !strings.HasPrefix(strings.ToLower(contentType), "text/event-stream") {
 			return h.handleGeminiNonStream(ctx, w, resp.Body, translateResponse, metrics)
 		}
-		stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, 0, provider)
+		stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), provider)
 		bodyCloser = stallReader
 		return h.handleGeminiStream(ctx, w, stallReader, translateResponse, metrics)
 	}

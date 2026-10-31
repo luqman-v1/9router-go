@@ -103,7 +103,7 @@ func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 				return jsonResponse(req.Ctx, w, bytes.NewReader(data), req.TranslateResp, req.ResponseBuf)
 			}
 		}
-		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, 0, "codebuddy-cn")
+		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, req.Config.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "codebuddy-cn")
 		defer stallReader.Close() // stops the shutdown watcher + stall timer
 		return execSSEStream(w, stallReader, req)
 	}
