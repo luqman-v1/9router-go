@@ -569,10 +569,10 @@ func buildCommandcodeBodyForSession(body []byte, model, sessionID string) ([]byt
 		"params": params,
 	}
 
-	// json.Marshal is deliberate here: this path mints a fresh threadId on
-	// every request, so the body differs call to call whatever the member
-	// order is. The caller-shaped `params` path above keeps a supplied
-	// threadId and is the one that must stay byte-stable.
+	// json.Marshal is fine here: encoding/json sorts map keys, and threadId
+	// is derived from the client session, so a repeat turn from one session
+	// serialises byte-identically for the prefix cache. The caller-shaped
+	// `params` path above keeps marshalStable for the same reason.
 	return json.Marshal(payload)
 }
 

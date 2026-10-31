@@ -1,3 +1,0 @@
-### Fixed
-- Command Code: send the official CLI 1.88.0 identity headers (`User-Agent: cli`, `x-command-code-version: 1.88.0`, `x-cli-environment: production`, `x-cli-surface: cli`, `x-taste-learning: false`) instead of the stale 0.25.7 set, and reuse the body `threadId` as `x-session-id` (upstream decolua/9router b1effa03 parity). Verified with `go test` on executor and chat handler packages.
-- Command Code: send `x-project-slug` (slugified working dir) and report the gateway working dir as `config.workingDir`; derive `threadId` from the client session (stable per conversation, random without one); retry 502/503/504 up to twice with 1s/2s backoff (upstream decolua/9router b1effa03 parity).

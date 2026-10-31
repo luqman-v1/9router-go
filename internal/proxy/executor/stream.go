@@ -1109,6 +1109,8 @@ type CommandcodeStreamState struct {
 	OutputLength  int
 	FinishReason  string
 	Finished      bool
+	// ErrorEvent is the raw mid-stream {"type":"error"} event; nil otherwise.
+	ErrorEvent map[string]any
 	// Usage is the upstream token usage (finish totalUsage, or the last
 	// finish-step usage); nil until one arrives.
 	Usage map[string]any
@@ -1223,6 +1225,26 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 		}
 
 		chunks := ProcessCommandcodeEvent(event, eventType, state)
+		if state.ErrorEvent != nil {
+			code, msg := ParseCommandCodeError(state.ErrorEvent)
+			frame, _ := json.Marshal(map[string]any{
+				"error": map[string]any{"message": msg, "type": "upstream_error", "code": code},
+			})
+			if !headersWritten {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				w.WriteHeader(http.StatusOK)
+			}
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", frame); err != nil {
+				return err
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			log.Warn("executor", "commandcode mid-stream error", "code", code, "message", msg)
+			return nil
+		}
 		if len(chunks) == 0 {
 			continue
 		}
@@ -1491,18 +1513,11 @@ func ProcessCommandcodeEvent(event map[string]any, eventType string, state *Comm
 		out = append(out, chunk)
 
 	case "error":
-		msg, _ := event["error"].(string)
-		if msg == "" {
-			if m, ok := event["message"].(string); ok {
-				msg = m
-			}
-		}
-		if msg == "" {
-			msg = "unknown error"
-		}
-		delta := map[string]any{"content": fmt.Sprintf("\n\n[CommandCode error: %s]", msg)}
-		out = append(out, BuildCommandcodeChunk(state, delta, ""))
-		out = append(out, BuildCommandcodeChunk(state, map[string]any{}, "stop"))
+		// Fail loudly instead of streaming the error text as fake content
+		// with finish_reason "stop" (upstream 092c84ea): the stream handler
+		// emits an in-band OpenAI error frame and ends the stream without a
+		// completion, so it reads as an error everywhere downstream.
+		state.ErrorEvent = event
 		state.Finished = true
 	}
 

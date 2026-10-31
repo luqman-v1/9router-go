@@ -142,12 +142,11 @@ func TestProcessCommandcodeEvent_Error(t *testing.T) {
 		"error": "rate limit exceeded",
 	}
 	chunks := executor.ProcessCommandcodeEvent(event, "error", state)
-	if len(chunks) == 0 {
-		t.Fatal("expected error output chunks")
+	if len(chunks) != 0 {
+		t.Errorf("error must not stream fake content, got %s", strings.Join(chunks, ""))
 	}
-	combined := strings.Join(chunks, "")
-	if !strings.Contains(combined, "rate limit exceeded") {
-		t.Errorf("expected error message, got %s", combined)
+	if state.ErrorEvent == nil {
+		t.Fatal("expected ErrorEvent recorded")
 	}
 	if !state.Finished {
 		t.Error("expected state.Finished=true after error")
