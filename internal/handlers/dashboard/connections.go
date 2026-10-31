@@ -7,6 +7,7 @@ import (
 	"9router/proxy/internal/updater"
 	"context"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1107,7 +1108,11 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		}
 		var modelsList []modelItem
 		for k, m := range agResp.Models {
-			if m.IsInternal || strings.HasPrefix(k, "chat_") || strings.HasPrefix(k, "tab_") {
+			// One filter for the picker and the quota panel: the old inline
+			// check (IsInternal || chat_/tab_ prefix) let through image, TTS
+			// and retired surfaces the backend still advertises, so the
+			// picker offered models that answer 400/404.
+			if !providers.IsDiscoverableAntigravityModel(k) {
 				continue
 			}
 			displayName := m.DisplayName
@@ -1257,6 +1262,29 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
 			"models":       models,
+		})
+		return
+	}
+	// GitHub Copilot's catalogue is entitlement-shaped: each entry carries a
+	// capabilities block and a policy block, and the account's rights are
+	// expressed through them rather than through the id. Filtering on the id
+	// alone advertises models the account is not entitled to, which then fail
+	// upstream with 400.
+	if isGitHubProvider(conn.Provider) {
+		copilotModels, err := fetchCopilotCatalogModels(r.Context(), conn.Data)
+		if err != nil {
+			status := http.StatusBadGateway
+			var usErr *upstreamStatusError
+			if errors.As(err, &usErr) && usErr.Status != 0 {
+				status = usErr.Status
+			}
+			handlerutil.WriteJSONError(w, status, "failed to fetch Copilot models: "+err.Error())
+			return
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       copilotModels,
 		})
 		return
 	}

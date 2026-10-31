@@ -254,10 +254,18 @@ func TestHandleGetConnectionModels_Antigravity(t *testing.T) {
 		}
 		fakeResp := `{
 			"models": {
-				"gemini-2.5-flash": {
-					"displayName": "Gemini 2.5 Flash",
+				"gemini-3.1-flash": {
+					"displayName": "Gemini 3.1 Flash",
 					"supportsImages": true,
 					"supportsThinking": true,
+					"isInternal": false
+				},
+				"gemini-3-pro-image-preview": {
+					"displayName": "Gemini 3 Pro Image",
+					"isInternal": false
+				},
+				"gemini-2.5-flash": {
+					"displayName": "Gemini 2.5 Flash",
 					"isInternal": false
 				},
 				"chat_internal_1": {
@@ -285,7 +293,10 @@ func TestHandleGetConnectionModels_Antigravity(t *testing.T) {
 	if out.Provider != "antigravity" {
 		t.Errorf("expected antigravity, got %s", out.Provider)
 	}
-	if len(out.Models) != 1 || out.Models[0]["id"] != "gemini-2.5-flash" {
+	// gemini-3.1-flash is the only callable chat model in the fixture:
+	// gemini-3-pro-image-preview is a non-chat surface, gemini-2.5-flash is
+	// retired, and chat_internal_1 is an internal slot.
+	if len(out.Models) != 1 || out.Models[0]["id"] != "gemini-3.1-flash" {
 		t.Fatalf("unexpected models: %v", out.Models)
 	}
 	if len(*calls) != 1 {
