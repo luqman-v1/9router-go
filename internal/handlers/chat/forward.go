@@ -122,7 +122,7 @@ func (h *ChatHandler) forwardRequest(
 			return h.handleJSONResponse(ctx, w, resp.Body, translateResponse, metrics)
 		}
 		// Wrap with SSE stall detection
-		stallReader := internalproxy.NewStallReaderWithContext(ctx, resp.Body, 0, "upstream")
+		stallReader := internalproxy.NewStallReaderWithContext(ctx, resp.Body, cfg.ResolveStallTimeout(internalproxy.ResolveDefaultStallTimeout()), "upstream")
 		bodyCloser = stallReader
 		if upstreamClaude && clientClaude {
 			// Claude client on a Claude upstream: the frames are already the

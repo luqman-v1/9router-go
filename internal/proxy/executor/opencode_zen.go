@@ -385,7 +385,7 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 	}
 
 	if req.IsStream {
-		stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, 0, "opencode-zen-responses")
+		stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "opencode-zen-responses")
 		defer stallReader.Close()
 		return handleCodexStream(w, req, stallReader)
 	}
