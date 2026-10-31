@@ -743,7 +743,7 @@ func ForwardZed(w http.ResponseWriter, req *Request) error {
 			}
 			streamBody = io.NopCloser(bytes.NewReader(data))
 		}
-		stall := proxy.NewStallReaderWithContext(req.Ctx, streamBody, 0, "zed")
+		stall := proxy.NewStallReaderWithContext(req.Ctx, streamBody, req.Config.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "zed")
 		bodyCloser = stall
 		return zedPipeStream(w, req, wire, stall)
 	}

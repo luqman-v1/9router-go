@@ -690,7 +690,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		}
 
 		if req.IsStream {
-			stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, 0, "opencode-responses")
+			stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "opencode-responses")
 			defer stallReader.Close()
 			return handleCodexStream(w, req, stallReader)
 		}
@@ -1830,7 +1830,7 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		}
 
 		if req.IsStream {
-			stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, 0, "opencode-go-responses")
+			stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "opencode-go-responses")
 			defer stallReader.Close()
 			return handleCodexStream(w, req, stallReader)
 		}

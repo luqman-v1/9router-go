@@ -157,7 +157,7 @@ func forwardMuseResponses(w http.ResponseWriter, req *Request, cleanModel string
 		return err
 	}
 	if req.IsStream {
-		stallReader := proxy.NewStallReaderWithContext(reqCtx(req), resp.Body, 0, "muse-responses")
+		stallReader := proxy.NewStallReaderWithContext(reqCtx(req), resp.Body, req.Config.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "muse-responses")
 		defer stallReader.Close()
 		return handleCodexStream(w, req, stallReader)
 	}
