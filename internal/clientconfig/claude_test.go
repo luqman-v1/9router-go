@@ -199,3 +199,259 @@ func readFixture(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+func TestClaudeCurrent(t *testing.T) {
+	home := t.TempDir()
+	paths := claudePaths(home)
+	content := `{
+	  "autoCompactWindow": 330000,
+	  "model": "opus",
+	  "env": {
+	    "ANTHROPIC_BASE_URL": "http://localhost:20130/v1",
+	    "ANTHROPIC_AUTH_TOKEN": "sk-test",
+	    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5-5[1m]",
+	    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5-5[1m]",
+	    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-5-5"
+	  }
+	}`
+	writeFixture(t, paths.Files[0].Path, content)
+
+	adapter := newClaudeAdapter()
+	reader, ok := adapter.(CurrentConfigReader)
+	if !ok {
+		t.Fatal("claudeAdapter does not implement CurrentConfigReader")
+	}
+	curr, err := reader.Current(Options{Home: home})
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if curr["baseUrl"] != "http://localhost:20130/v1" {
+		t.Errorf("baseUrl = %v, want http://localhost:20130/v1", curr["baseUrl"])
+	}
+	if curr["model"] != "opus" {
+		t.Errorf("model = %v, want opus", curr["model"])
+	}
+	if curr["autoCompactWindow"] != 330000 {
+		t.Errorf("autoCompactWindow = %v (%T), want 330000 (int)", curr["autoCompactWindow"], curr["autoCompactWindow"])
+	}
+	tiers, ok := curr["tiers"].(map[string]string)
+	if !ok {
+		t.Fatalf("tiers = %v, want map", curr["tiers"])
+	}
+	if tiers["sonnet"] != "claude-sonnet-5-5[1m]" {
+		t.Errorf("sonnet = %v, want claude-sonnet-5-5[1m]", tiers["sonnet"])
+	}
+}
+
+func TestClaudeReset_RemovesModelAndAutoCompactWindow(t *testing.T) {
+	home := t.TempDir()
+	paths := claudePaths(home)
+	opts := Options{
+		Home:              home,
+		BaseURL:           "http://localhost:20130",
+		APIKey:            "sk-test",
+		Model:             "claude-opus-5-5",
+		AutoCompactWindow: "160000",
+	}
+	adapter := newClaudeAdapter()
+	if _, err := adapter.Apply(opts); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	afterApply := readFixture(t, paths.Files[0].Path)
+	if !strings.Contains(afterApply, `"model": "claude-opus-5-5"`) {
+		t.Fatalf("model not written:\n%s", afterApply)
+	}
+	if !strings.Contains(afterApply, `"autoCompactWindow": 160000`) {
+		t.Fatalf("autoCompactWindow not written:\n%s", afterApply)
+	}
+
+	if _, err := adapter.Reset(Options{Home: home}); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	afterReset := readFixture(t, paths.Files[0].Path)
+	if strings.Contains(afterReset, "claude-opus-5-5") || strings.Contains(afterReset, `"model"`) {
+		t.Errorf("model was not removed on reset:\n%s", afterReset)
+	}
+	if strings.Contains(afterReset, "autoCompactWindow") {
+		t.Errorf("autoCompactWindow was not removed on reset:\n%s", afterReset)
+	}
+	// hasCompletedOnboarding must survive as the single documented exception
+	if !strings.Contains(afterReset, `"hasCompletedOnboarding": true`) {
+		t.Errorf("hasCompletedOnboarding must survive reset:\n%s", afterReset)
+	}
+}
+
+func TestClaudeReset_PreservesCustomModelWhenNotPointingAtUs(t *testing.T) {
+	home := t.TempDir()
+	paths := claudePaths(home)
+	content := `{
+		"model": "user-custom-model",
+		"theme": "dark"
+	}`
+	writeFixture(t, paths.Files[0].Path, content)
+
+	adapter := newClaudeAdapter()
+	if _, err := adapter.Reset(Options{Home: home}); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	afterReset := readFixture(t, paths.Files[0].Path)
+	if !strings.Contains(afterReset, `"model": "user-custom-model"`) {
+		t.Errorf("user's own model was wrongly deleted:\n%s", afterReset)
+	}
+}
+
+func TestClaudeReset_PreservesCustomModelWithForeignBaseURL(t *testing.T) {
+	for _, foreignURL := range []string{
+		"https://api.anthropic.com",
+		"https://api.anthropic.com/v1",
+		"http://localhost:8080/v1",
+		"https://my-other-proxy.com",
+	} {
+		t.Run(foreignURL, func(t *testing.T) {
+			home := t.TempDir()
+			paths := claudePaths(home)
+			content := `{
+				"model": "user-custom-model",
+				"env": {
+					"ANTHROPIC_BASE_URL": "` + foreignURL + `"
+				}
+			}`
+			writeFixture(t, paths.Files[0].Path, content)
+
+			adapter := newClaudeAdapter()
+			if _, err := adapter.Reset(Options{Home: home, BaseURL: "http://127.0.0.1:20130"}); err != nil {
+				t.Fatalf("Reset: %v", err)
+			}
+			afterReset := readFixture(t, paths.Files[0].Path)
+			if !strings.Contains(afterReset, `"model": "user-custom-model"`) {
+				t.Errorf("user's own model was wrongly deleted with foreign URL %s:\n%s", foreignURL, afterReset)
+			}
+		})
+	}
+}
+
+func TestClaudeReset_RemovesModelWhenPointingAtGateway(t *testing.T) {
+	for _, gatewayURL := range []string{
+		"http://127.0.0.1:20130/v1",
+		"http://127.0.0.1:20130",
+		"http://localhost:20130/v1",
+	} {
+		t.Run(gatewayURL, func(t *testing.T) {
+			home := t.TempDir()
+			paths := claudePaths(home)
+			content := `{
+				"model": "gateway-model",
+				"env": {
+					"ANTHROPIC_BASE_URL": "` + gatewayURL + `"
+				}
+			}`
+			writeFixture(t, paths.Files[0].Path, content)
+
+			adapter := newClaudeAdapter()
+			if _, err := adapter.Reset(Options{Home: home, BaseURL: "http://127.0.0.1:20130"}); err != nil {
+				t.Fatalf("Reset: %v", err)
+			}
+			afterReset := readFixture(t, paths.Files[0].Path)
+			if strings.Contains(afterReset, `"model"`) {
+				t.Errorf("gateway model should be removed on reset with gateway URL %s:\n%s", gatewayURL, afterReset)
+			}
+		})
+	}
+}
+
+func TestClaudeCurrent_DoesNotLeakApiKey(t *testing.T) {
+	home := t.TempDir()
+	paths := claudePaths(home)
+	content := `{
+		"env": {
+			"ANTHROPIC_BASE_URL": "http://127.0.0.1:20130/v1",
+			"ANTHROPIC_AUTH_TOKEN": "sk-ant-secret-123456"
+		}
+	}`
+	writeFixture(t, paths.Files[0].Path, content)
+
+	adapter := newClaudeAdapter()
+	curr, err := adapter.(CurrentConfigReader).Current(Options{Home: home})
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if curr["hasApiKey"] != true {
+		t.Errorf("expected hasApiKey = true, got %v", curr["hasApiKey"])
+	}
+	if _, ok := curr["apiKey"]; ok {
+		t.Errorf("apiKey must not be present in Current response, got %v", curr["apiKey"])
+	}
+}
+
+func TestClaudeApply_ClearingModelDeletesWhenPointingAtGateway(t *testing.T) {
+	home := t.TempDir()
+	paths := claudePaths(home)
+	content := `{
+		"model": "previous-custom-model",
+		"autoCompactWindow": 200000,
+		"env": {
+			"ANTHROPIC_BASE_URL": "http://127.0.0.1:20130/v1"
+		}
+	}`
+	writeFixture(t, paths.Files[0].Path, content)
+
+	adapter := newClaudeAdapter()
+	// Apply with empty Model and empty AutoCompactWindow
+	opts := Options{Home: home, BaseURL: "http://127.0.0.1:20130", Model: "", AutoCompactWindow: ""}
+	if _, err := adapter.Apply(opts); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	afterApply := readFixture(t, paths.Files[0].Path)
+	if strings.Contains(afterApply, `"model"`) {
+		t.Errorf("model key should be removed when cleared while pointing at gateway:\n%s", afterApply)
+	}
+	if strings.Contains(afterApply, "autoCompactWindow") {
+		t.Errorf("autoCompactWindow should be removed when empty:\n%s", afterApply)
+	}
+}
+
+func TestClaudeApply_ClearingModelPreservesForeignModel(t *testing.T) {
+	home := t.TempDir()
+	paths := claudePaths(home)
+	content := `{
+		"model": "user-custom-model",
+		"env": {
+			"ANTHROPIC_BASE_URL": "https://api.anthropic.com/v1"
+		}
+	}`
+	writeFixture(t, paths.Files[0].Path, content)
+
+	adapter := newClaudeAdapter()
+	opts := Options{Home: home, BaseURL: "http://127.0.0.1:20130", Model: ""}
+	if _, err := adapter.Apply(opts); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	afterApply := readFixture(t, paths.Files[0].Path)
+	// Model should be preserved because prior config pointed to foreign endpoint
+	if !strings.Contains(afterApply, `"model": "user-custom-model"`) {
+		t.Errorf("user custom model should be preserved when prior config was foreign:\n%s", afterApply)
+	}
+}
+
+func TestClaudeReset_DecisiveKnownBaseURL(t *testing.T) {
+	home := t.TempDir()
+	paths := claudePaths(home)
+	// Foreign URL that happens to contain "20130" in the path or domain
+	content := `{
+		"model": "keep-this-foreign-model",
+		"env": {
+			"ANTHROPIC_BASE_URL": "http://foreign-site.com:20130/v1"
+		}
+	}`
+	writeFixture(t, paths.Files[0].Path, content)
+
+	adapter := newClaudeAdapter()
+	// Known gateway base URL is 20999 (custom port)
+	if _, err := adapter.Reset(Options{Home: home, BaseURL: "http://127.0.0.1:20999"}); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	afterReset := readFixture(t, paths.Files[0].Path)
+	if !strings.Contains(afterReset, `"model": "keep-this-foreign-model"`) {
+		t.Errorf("foreign model was wrongly deleted because substring fallback fired despite known BaseURL:\n%s", afterReset)
+	}
+}

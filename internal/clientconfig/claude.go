@@ -1,6 +1,7 @@
 package clientconfig
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 )
@@ -42,7 +43,7 @@ func (a claudeAdapter) Plan(opts Options) ([]FilePlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	edits := claudeApplyEdits(opts)
+	edits := claudeApplyEdits(paths.Files[0], opts)
 	return []FilePlan{{File: paths.Files[0], Edits: edits}}, nil
 }
 
@@ -59,11 +60,147 @@ func (a claudeAdapter) Reset(opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	edits := make([]Edit, 0, len(claudeEnvKeys))
+	edits := make([]Edit, 0, len(claudeEnvKeys)+2)
 	for _, k := range claudeEnvKeys {
 		edits = append(edits, Edit{KeyPath: []string{"env", k}, Delete: true})
 	}
+	// autoCompactWindow is adapter-owned, removed unconditionally.
+	edits = append(edits, Edit{KeyPath: []string{"autoCompactWindow"}, Delete: true})
+
+	// `model` is the user's own key once the env block is gone, so it is only
+	// removed when Claude was configured to point at the gateway.
+	if owned, err := claudePointsAtUs(paths.Files[0], opts.BaseURL); err == nil && owned {
+		edits = append(edits, Edit{KeyPath: []string{"model"}, Delete: true})
+	}
 	return applyPlans([]FilePlan{{File: paths.Files[0], Edits: edits}}, nil)
+}
+
+func isClaudeGatewayURL(rawURL, baseURL string) bool {
+	u := strings.TrimRight(strings.TrimSpace(rawURL), "/")
+	if u == "" {
+		return false
+	}
+	// The official Anthropic API or foreign providers are never our gateway
+	if strings.Contains(u, "api.anthropic.com") {
+		return false
+	}
+	if baseURL != "" {
+		target := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+		targetV1 := strings.TrimRight(withV1(baseURL), "/")
+		normU := strings.Replace(u, "127.0.0.1", "localhost", 1)
+		normTarget := strings.Replace(target, "127.0.0.1", "localhost", 1)
+		normTargetV1 := strings.Replace(targetV1, "127.0.0.1", "localhost", 1)
+		return normU == normTarget || normU == normTargetV1
+	}
+	// Default ports when baseURL is not explicitly supplied in options
+	return strings.Contains(u, "20130") || strings.Contains(u, "20128") || strings.Contains(u, "9router")
+}
+
+func claudePointsAtUs(file TargetFile, baseURL string) (bool, error) {
+	g, err := resolveGuard(file.Dir, relFromDir(file.Dir, file.Path))
+	if err != nil {
+		if errors.Is(err, ErrBaseMissing) {
+			return false, nil
+		}
+		return false, err
+	}
+	b, err := readThroughGuard(g)
+	if err != nil || len(b) == 0 {
+		return false, err
+	}
+	p, root, err := parseJSONC(b)
+	if err != nil || root == nil {
+		return false, err
+	}
+	if envMem := findJSONMember(root, "env"); envMem != nil && envMem.val != nil && envMem.val.kind == jLBrace {
+		for _, m := range envMem.val.members {
+			if m.key == "ANTHROPIC_BASE_URL" && m.val != nil && m.val.kind == jString && m.val.tok < len(p.toks) {
+				tok := p.toks[m.val.tok]
+				if tok.off+tok.len <= len(b) {
+					if str, err := decodeJSONString(b[tok.off : tok.off+tok.len]); err == nil {
+						return isClaudeGatewayURL(str, baseURL), nil
+					}
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
+func (a claudeAdapter) Current(opts Options) (map[string]any, error) {
+	paths, err := a.Paths(opts)
+	if err != nil || len(paths.Files) == 0 {
+		return nil, err
+	}
+	file := paths.Files[0]
+	g, err := resolveGuard(file.Dir, relFromDir(file.Dir, file.Path))
+	if err != nil {
+		if errors.Is(err, ErrBaseMissing) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	b, err := readThroughGuard(g)
+	if err != nil || len(b) == 0 {
+		return nil, err
+	}
+	p, root, err := parseJSONC(b)
+	if err != nil || root == nil {
+		return nil, err
+	}
+	res := make(map[string]any)
+	tiers := make(map[string]string)
+	if envMem := findJSONMember(root, "env"); envMem != nil && envMem.val != nil && envMem.val.kind == jLBrace {
+		for _, m := range envMem.val.members {
+			if m.val != nil && m.val.kind == jString && m.val.tok < len(p.toks) {
+				tok := p.toks[m.val.tok]
+				if tok.off+tok.len <= len(b) {
+					str, err := decodeJSONString(b[tok.off : tok.off+tok.len])
+					if err == nil {
+						switch m.key {
+						case "ANTHROPIC_BASE_URL":
+							res["baseUrl"] = str
+						case "ANTHROPIC_AUTH_TOKEN":
+							if str != "" {
+								res["hasApiKey"] = true
+							}
+						case "ANTHROPIC_DEFAULT_SONNET_MODEL":
+							tiers["sonnet"] = str
+						case "ANTHROPIC_DEFAULT_OPUS_MODEL":
+							tiers["opus"] = str
+						case "ANTHROPIC_DEFAULT_HAIKU_MODEL":
+							tiers["haiku"] = str
+						case "ANTHROPIC_DEFAULT_FABLE_MODEL":
+							tiers["fable"] = str
+						}
+					}
+				}
+			}
+		}
+	}
+	if len(tiers) > 0 {
+		res["tiers"] = tiers
+	}
+	if modelMem := findJSONMember(root, "model"); modelMem != nil && modelMem.val != nil && modelMem.val.kind == jString && modelMem.val.tok < len(p.toks) {
+		tok := p.toks[modelMem.val.tok]
+		if tok.off+tok.len <= len(b) {
+			if str, err := decodeJSONString(b[tok.off : tok.off+tok.len]); err == nil {
+				res["model"] = str
+			}
+		}
+	}
+	if compactMem := findJSONMember(root, "autoCompactWindow"); compactMem != nil && compactMem.val != nil && compactMem.val.tok < len(p.toks) {
+		tok := p.toks[compactMem.val.tok]
+		if tok.off+tok.len <= len(b) {
+			rawStr := strings.TrimSpace(string(b[tok.off : tok.off+tok.len]))
+			if n, err := strconv.Atoi(rawStr); err == nil {
+				res["autoCompactWindow"] = n
+			} else {
+				res["autoCompactWindow"] = rawStr
+			}
+		}
+	}
+	return res, nil
 }
 
 // claudeApplyEdits builds the settings write.
@@ -79,10 +216,12 @@ func (a claudeAdapter) Reset(opts Options) (Result, error) {
 //
 // Every edit here is CreateIfMissing, so a first-ever connect creates "env" and
 // fills it without a separate branch.
-func claudeApplyEdits(opts Options) []Edit {
+func claudeApplyEdits(file TargetFile, opts Options) []Edit {
 	edits := []Edit{
 		{KeyPath: []string{"env", "ANTHROPIC_BASE_URL"}, Value: withV1(opts.BaseURL), CreateIfMissing: true},
-		{KeyPath: []string{"env", "ANTHROPIC_AUTH_TOKEN"}, Value: opts.APIKey, CreateIfMissing: true},
+	}
+	if apiKey := strings.TrimSpace(opts.APIKey); apiKey != "" {
+		edits = append(edits, Edit{KeyPath: []string{"env", "ANTHROPIC_AUTH_TOKEN"}, Value: apiKey, CreateIfMissing: true})
 	}
 	// Deterministic order so a dry-run prints the same plan twice.
 	for _, tier := range []string{"fable", "opus", "sonnet", "haiku"} {
@@ -103,6 +242,35 @@ func claudeApplyEdits(opts Options) []Edit {
 		ValueJSON:       "true",
 		CreateIfMissing: true,
 	})
+	if v := strings.TrimSpace(opts.AutoCompactWindow); v != "" {
+		edits = append(edits, Edit{
+			KeyPath:         []string{"autoCompactWindow"},
+			ValueJSON:       v,
+			CreateIfMissing: true,
+		})
+	} else {
+		// Choosing "Default" unsets autoCompactWindow unconditionally
+		edits = append(edits, Edit{
+			KeyPath: []string{"autoCompactWindow"},
+			Delete:  true,
+		})
+	}
+	if m := strings.TrimSpace(opts.Model); m != "" {
+		edits = append(edits, Edit{
+			KeyPath:         []string{"model"},
+			Value:           m,
+			CreateIfMissing: true,
+		})
+	} else {
+		// Choosing "Default" or clearing the model field unsets the key,
+		// but only when Claude was pointing at our gateway.
+		if owned, err := claudePointsAtUs(file, opts.BaseURL); err == nil && owned {
+			edits = append(edits, Edit{
+				KeyPath: []string{"model"},
+				Delete:  true,
+			})
+		}
+	}
 	// CLAUDE_CODE_AUTO_COMPACT_WINDOW is the only way to tell Claude Code a
 	// proxied model's real context window: window sizes are per-model-name
 	// built into the CLI, and a custom model id via ANTHROPIC_DEFAULT_*_MODEL

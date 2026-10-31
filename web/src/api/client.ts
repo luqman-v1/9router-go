@@ -470,6 +470,40 @@ export interface HermesResetResponse {
   error?: string
 }
 
+// --- CLI Tools Configuration (Claude Code, Codex, OpenCode, Droid, Crush, Kilo, Cline, Pi, OMP) ---
+export interface CliToolSettingsResponse {
+  tool: string
+  installed: boolean
+  has9Router?: boolean
+  files?: Array<{ path: string; format: string; purpose: string }>
+  plan?: Array<{ path: string; purpose: string; removeFile?: boolean; edits?: Array<{ keyPath: string[] }> }>
+  currentConfig?: {
+    baseUrl?: string
+    apiKey?: string
+    hasApiKey?: boolean
+    model?: string
+    tiers?: Record<string, string>
+    autoCompactWindow?: string | number
+  }
+  message?: string
+}
+
+export interface CliToolSettingsApplyPayload {
+  baseUrl: string
+  apiKey?: string
+  model?: string
+  tiers?: Record<string, string>
+  autoCompactWindow?: string
+}
+
+export interface CliToolSettingsApplyResponse {
+  success: boolean
+  tool: string
+  changed: boolean
+  backups?: string[]
+  message?: string
+}
+
 export interface HeadroomStatusResponse {
   installed?: boolean
   running?: boolean
@@ -2413,6 +2447,24 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(profile ? { profile } : {}),
     }),
+  // CLI Tools (Claude, Codex, OpenCode, Droid, Crush, Kilo, Cline, Pi, OMP)
+  getCliToolSettings: (tool: string) =>
+    request<CliToolSettingsResponse>(`/api/cli-tools/${encodeURIComponent(tool)}-settings`),
+  applyCliToolSettings: (tool: string, payload: CliToolSettingsApplyPayload) =>
+    request<CliToolSettingsApplyResponse>(`/api/cli-tools/${encodeURIComponent(tool)}-settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  resetCliToolSettings: (tool: string, baseUrl?: string) => {
+    const q = baseUrl ? `?baseUrl=${encodeURIComponent(baseUrl)}` : ''
+    return request<CliToolSettingsApplyResponse>(
+      `/api/cli-tools/${encodeURIComponent(tool)}-settings${q}`,
+      {
+        method: 'DELETE',
+      }
+    )
+  },
   // Auth
   checkRequireLogin: async (): Promise<RequireLoginResponse> => {
     try {
