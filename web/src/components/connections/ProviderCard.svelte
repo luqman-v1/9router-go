@@ -88,7 +88,7 @@
               </Badge>
               {#if apiType}
                 <Badge variant="default" size="sm">
-                  {apiType === 'responses' ? 'Responses' : 'Chat'}
+                  {apiType === 'custom-json' ? 'JSON' : apiType === 'responses' ? 'Responses' : 'Chat'}
                 </Badge>
               {/if}
             {:else}

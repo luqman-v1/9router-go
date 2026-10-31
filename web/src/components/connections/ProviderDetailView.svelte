@@ -89,6 +89,7 @@
   import { PauseCircle } from 'lucide-svelte'
   import ProviderHeaderOverridesModal from './ProviderHeaderOverridesModal.svelte'
   import EditCompatibleNodeModal from './EditCompatibleNodeModal.svelte'
+  import { CUSTOM_JSON_API_TYPE, type CustomJsonConfig } from '../../lib/customJsonForm'
   import ExportKeysModal from './ExportKeysModal.svelte'
   import FreebuffSessionBanner from './FreebuffSessionBanner.svelte'
   import ProviderIcon from './ProviderIcon.svelte'
@@ -227,6 +228,9 @@
   let isAnthropicCompatibleNode = $derived(!!selectedNode && selectedNode.type === 'anthropic-compatible')
   let isCompatibleNode = $derived(isOpenAICompatibleNode || isAnthropicCompatibleNode)
   let isResponsesNode = $derived(selectedNode?.apiType === 'responses')
+  // A custom JSON node fronts a business endpoint: no /models to import, and
+  // the connection test sends a real request (decolua/9router#4929).
+  let isCustomJsonNode = $derived(selectedNode?.apiType === CUSTOM_JSON_API_TYPE)
 
   // Models state
   let customModels = $state<CustomModelData[]>([])
@@ -2455,6 +2459,7 @@
     baseUrl: string
     urlSuffix: string
     limits: ProviderNodeLimitsPatch
+    customJson?: CustomJsonConfig
   }) {
     if (!selectedNode) return
     const previousId = selectedNode.id
@@ -2464,7 +2469,8 @@
         prefix: data.prefix,
         ...(selectedNode.type === 'openai-compatible' && data.apiType ? { apiType: data.apiType } : {}),
         baseUrl: data.baseUrl,
-        urlSuffix: data.urlSuffix || undefined
+        urlSuffix: data.urlSuffix || undefined,
+        ...(data.customJson ? { customJson: data.customJson } : {})
       })
       // The id the server answered with, which differs from the one we sent when the
       // URL suffix changed. The policy is written against that id: the limits columns
@@ -3367,10 +3373,12 @@
       <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div class="min-w-0">
           <h2 class="text-lg font-semibold">
-            {isAnthropicCompatibleNode ? 'Anthropic Compatible Details' : 'OpenAI Compatible Details'}
+            {isCustomJsonNode ? 'Custom JSON API Details' : isAnthropicCompatibleNode ? 'Anthropic Compatible Details' : 'OpenAI Compatible Details'}
           </h2>
           <p class="break-all text-sm text-text-muted">
-            {isAnthropicCompatibleNode
+            {isCustomJsonNode
+              ? `${selectedNode.customJson?.method || 'POST'} · ${selectedNode.baseUrl || ''}`
+              : isAnthropicCompatibleNode
               ? `Messages API · ${(selectedNode.baseUrl || '').replace(/\/$/, '')}/messages`
               : `${isResponsesNode ? 'Responses API' : 'Chat Completions'} · ${(selectedNode.baseUrl || '').replace(/\/$/, '')}/${isResponsesNode ? 'responses' : 'chat/completions'}`}
           </p>
@@ -3382,7 +3390,7 @@
             class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
           >
             <span class="material-symbols-outlined text-[18px]">add</span>
-            Add API Key
+            {isCustomJsonNode ? 'Add Connection' : 'Add API Key'}
           </button>
           <button
             type="button"
@@ -4172,7 +4180,11 @@
   <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-6">
     <div class="flex flex-col gap-4">
       <p class="text-sm text-text-muted">
-        Add {isAnthropicCompatibleNode ? 'Anthropic' : 'OpenAI'}-compatible models manually or import them from the /models endpoint.
+        {#if isCustomJsonNode}
+          {'Add a model ID to use when calling this endpoint. The request template can include it with {{model}}.'}
+        {:else}
+          Add {isAnthropicCompatibleNode ? 'Anthropic' : 'OpenAI'}-compatible models manually or import them from the /models endpoint.
+        {/if}
       </p>
       <!-- Row 1: the field and its own button. Row 2: the bulk actions, which
            are a different kind of thing — they act on the whole list, not on
@@ -4190,7 +4202,7 @@
               type="text"
               bind:value={newCompatibleModel}
               onkeydown={(e) => { if (e.key === 'Enter') handleAddCompatibleModel() }}
-              placeholder={isAnthropicCompatibleNode ? 'claude-3-opus-20240229' : 'gpt-4o — paste a list for several'}
+              placeholder={isCustomJsonNode ? 'custom-model' : isAnthropicCompatibleNode ? 'claude-3-opus-20240229' : 'gpt-4o — paste a list for several'}
               class="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-text-main placeholder:text-text-muted focus:outline-none focus:border-primary"
             />
             {#if newCompatibleModelsPlan.ids.length > 1 || newCompatibleModelsPlan.invalid.length > 0}
@@ -4216,6 +4228,7 @@
           </button>
         </div>
         <div class="flex flex-wrap items-center gap-2">
+          {#if !isCustomJsonNode}
           <button
             type="button"
             onclick={() => handleImportCompatibleModels(false)}
@@ -4236,6 +4249,7 @@
             <span class="material-symbols-outlined text-[16px]">savings</span>
             Import free only
           </button>
+          {/if}
           <button
             type="button"
             onclick={handleTestAllCompatibleModels}
@@ -4269,7 +4283,7 @@
         </div>
         <p class="text-xs text-text-muted">Test all sends a real completion per model and consumes account quota.</p>
         <p class="text-xs text-text-muted">Remove all deletes this node's imported models and the aliases pointing at them; models that ship with the build stay.</p>
-        {#if !canImportCompatible}
+        {#if !canImportCompatible && !isCustomJsonNode}
           <p class="text-xs text-text-muted">Add a connection to enable importing models.</p>
         {/if}
       </div>
@@ -5375,6 +5389,8 @@
   providerName={providerName}
   isCompatible={!!selectedNode}
   isAnthropic={selectedNode?.apiType === 'responses'}
+  customJson={isCustomJsonNode}
+  apiKeyOptional={isCustomJsonNode && selectedNode?.customJson?.authType === 'none'}
   existingNames={connections.map((c) => c.name).filter((n): n is string => !!n)}
   {proxyPools}
   error={addConnectionError}
