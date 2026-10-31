@@ -44,7 +44,8 @@ export const COMBO_STRATEGIES = [
   { value: 'sticky', label: 'Sticky — stay until the limit' },
   { value: 'capacity', label: 'Capacity — prefer free tiers' },
   { value: 'smart', label: 'Smart Router — System One' },
-  { value: 'fusion', label: 'Fusion — panel + judge' }
+  { value: 'fusion', label: 'Fusion — panel + judge' },
+  { value: 'tokenmaxxing', label: 'Tokenmaxxing — quota-aware' }
 ] as const
 
 /**
