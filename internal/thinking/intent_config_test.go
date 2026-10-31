@@ -48,7 +48,8 @@ func TestNormalizeThinkingConfigDialectKeys(t *testing.T) {
 	}{
 		{"messages user final keeps thinking", map[string]any{"thinking": map[string]any{"type": "enabled"}, "messages": turn("user")}, true, nil},
 		{"messages assistant final drops thinking", map[string]any{"thinking": map[string]any{"type": "enabled"}, "messages": turn("assistant")}, false, nil},
-		{"messages tool final drops thinking", map[string]any{"thinking": map[string]any{"type": "enabled"}, "messages": turn("tool")}, false, nil},
+		{"messages tool final keeps thinking", map[string]any{"thinking": map[string]any{"type": "enabled"}, "messages": turn("tool")}, true, nil},
+		{"messages function final keeps thinking", map[string]any{"thinking": map[string]any{"type": "enabled"}, "messages": turn("function")}, true, nil},
 		{"contents user final keeps thinking", map[string]any{"thinking": map[string]any{"type": "enabled"}, "contents": turn("user")}, true, nil},
 		{"contents assistant final drops thinking", map[string]any{"thinking": map[string]any{"type": "enabled"}, "contents": turn("assistant")}, false, nil},
 		{"messages last not a map keeps thinking", map[string]any{"thinking": map[string]any{"type": "enabled"}, "messages": []any{"plain"}}, true, nil},
