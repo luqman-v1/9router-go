@@ -460,8 +460,9 @@ func TestCommandcodeSlugifyAndSessionUUID(t *testing.T) {
 	if _, err := uuid.Parse(a); err != nil {
 		t.Errorf("not a uuid: %v", err)
 	}
-	if commandcodeSessionUUID("") == commandcodeSessionUUID("") {
-		t.Errorf("empty session must be random")
+	a1, a2 := commandcodeSessionUUID(""), commandcodeSessionUUID("")
+	if a1 == a2 {
+		t.Errorf("empty session must be random, got %s twice", a1)
 	}
 }
 
