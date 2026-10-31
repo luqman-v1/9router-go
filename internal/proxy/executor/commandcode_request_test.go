@@ -2,8 +2,15 @@ package executor
 
 import (
 	json "encoding/json/v2"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+
+	"9router/proxy/internal/providers"
 )
 
 // commandcodeParamsForTest runs buildCommandcodeBody and returns payload["params"]
@@ -433,5 +440,48 @@ func TestBuildCommandcodeBody_SingleBudgetFieldOnWire(t *testing.T) {
 				t.Errorf("params.max_tokens = %v, want %v", got, tt.wantToks)
 			}
 		})
+	}
+}
+
+func TestCommandcodeSlugifyAndSessionUUID(t *testing.T) {
+	if got := commandcodeSlugify("/home/u/My Project"); got != "home-u-my-project" {
+		t.Errorf("slug = %q", got)
+	}
+	if got := commandcodeSlugify("/srv/fooBar/Ünï"); got != "srv-foo-bar-ueni" {
+		t.Errorf("slug = %q", got)
+	}
+	a, b := commandcodeSessionUUID("s1"), commandcodeSessionUUID("s1")
+	if a != b || a == commandcodeSessionUUID("s2") {
+		t.Errorf("session uuid not stable/distinct: %s %s", a, b)
+	}
+	if _, err := uuid.Parse(a); err != nil {
+		t.Errorf("not a uuid: %v", err)
+	}
+	if commandcodeSessionUUID("") == commandcodeSessionUUID("") {
+		t.Errorf("empty session must be random")
+	}
+}
+
+func TestForwardCommandcodeRetriesTransient(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("x-project-slug") == "" {
+			t.Errorf("missing x-project-slug")
+		}
+		if calls == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`{"type":"text-delta","text":"ok"}` + "\n" + `{"type":"finish","finishReason":"stop"}` + "\n"))
+	}))
+	defer srv.Close()
+	rec := httptest.NewRecorder()
+	err := ForwardCommandcode(rec, &Request{
+		Config: &providers.ProviderConfig{BaseURL: srv.URL}, Client: srv.Client(),
+		Body: []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`), SessionID: "s",
+	})
+	if err != nil || calls != 2 || !strings.Contains(rec.Body.String(), "ok") {
+		t.Fatalf("err=%v calls=%d body=%s", err, calls, rec.Body.String())
 	}
 }

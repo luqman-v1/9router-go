@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -452,6 +453,13 @@ func toCommandcodeImageBlock(part map[string]any) map[string]any {
 // buildCommandcodeBody transforms OpenAI request payload into CommandCode schema
 // {threadId, memory, config, params} matching upstream openaiToCommandCodeRequest.
 func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
+	return buildCommandcodeBodyForSession(body, model, "")
+}
+
+// buildCommandcodeBodyForSession is buildCommandcodeBody with a
+// conversation-stable threadId derived from the client session (empty
+// session = random UUID), matching upstream toCommandCodeSessionUuid.
+func buildCommandcodeBodyForSession(body []byte, model, sessionID string) ([]byte, error) {
 	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body, err
@@ -487,14 +495,14 @@ func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
 		params["max_tokens"] = commandcodeMaxTokens(p)
 		m["params"] = params
 		if _, hasThread := m["threadId"]; !hasThread {
-			m["threadId"] = uuid.New().String()
+			m["threadId"] = commandcodeSessionUUID(sessionID)
 		}
 		if _, hasMem := m["memory"]; !hasMem {
 			m["memory"] = ""
 		}
 		if _, hasCfg := m["config"]; !hasCfg {
 			m["config"] = map[string]any{
-				"workingDir":    "/",
+				"workingDir":    commandcodeWorkingDir,
 				"date":          time.Now().UTC().Format("2006-01-02"),
 				"environment":   providers.NodePlatform(),
 				"structure":     []any{},
@@ -545,10 +553,10 @@ func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
 	}
 
 	payload := map[string]any{
-		"threadId": uuid.New().String(),
+		"threadId": commandcodeSessionUUID(sessionID),
 		"memory":   "",
 		"config": map[string]any{
-			"workingDir":    "/",
+			"workingDir":    commandcodeWorkingDir,
 			"date":          time.Now().UTC().Format("2006-01-02"),
 			"environment":   providers.NodePlatform(),
 			"structure":     []any{},
@@ -569,6 +577,8 @@ func buildCommandcodeBody(body []byte, model string) ([]byte, error) {
 }
 
 // ForwardCommandcode forwards to CommandCode with NDJSON→SSE translation.
+// 502/503/504 (HTTP status or in-stream error before any byte is written)
+// are retried twice with a linear backoff, as upstream's executor does.
 func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 	var oreq struct {
 		Model string `json:"model"`
@@ -577,25 +587,58 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 		log.Warn("executor", "commandcode unmarshal body", "error", err)
 	}
 
-	reqBody, err := buildCommandcodeBody(req.Body, oreq.Model)
+	reqBody, err := buildCommandcodeBodyForSession(req.Body, oreq.Model, req.SessionID)
 	if err != nil {
 		return fmt.Errorf("marshal commandcode body: %w", err)
 	}
-	// Build request with custom headers (not using proxy.ForwardCommandcode)
 	ctx := req.Ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	for attempt := 0; ; attempt++ {
+		err = forwardCommandcodeOnce(ctx, w, req, reqBody, oreq.Model)
+		if attempt >= commandcodeMaxRetries || !isCommandcodeRetryable(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(attempt+1) * time.Second):
+		}
+	}
+}
+
+func isCommandcodeRetryable(err error) bool {
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) {
+		return false
+	}
+	return ue.StatusCode == http.StatusBadGateway ||
+		ue.StatusCode == http.StatusServiceUnavailable ||
+		ue.StatusCode == http.StatusGatewayTimeout
+}
+
+func forwardCommandcodeOnce(ctx context.Context, w http.ResponseWriter, req *Request, reqBody []byte, model string) error {
 	r, err := http.NewRequestWithContext(ctx, "POST", req.Config.BaseURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+req.APIKey)
-	r.Header.Set("x-session-id", uuid.New().String())
-	r.Header.Set("x-command-code-version", "0.25.7")
-	r.Header.Set("x-cli-environment", "cli")
-	r.Header.Set("User-Agent", "commandcode/0.25.7 (cli)")
+	// x-session-id mirrors the body's threadId, as the official CLI does.
+	var envelope struct {
+		ThreadID string `json:"threadId"`
+	}
+	_ = json.Unmarshal(reqBody, &envelope)
+	r.Header.Set("x-session-id", envelope.ThreadID)
+	r.Header.Set("x-project-slug", commandcodeProjectSlug)
+	// Defaults mirror the registry StaticHeaders (command-code@1.88.0);
+	// the loop below lets a configured value win.
+	r.Header.Set("User-Agent", "cli")
+	r.Header.Set("x-command-code-version", "1.88.0")
+	r.Header.Set("x-cli-environment", "production")
+	r.Header.Set("x-cli-surface", "cli")
+	r.Header.Set("x-taste-learning", "false")
 	r.Header.Set("Accept", "text/event-stream")
 	if req.Config != nil && req.Config.StaticHeaders != nil {
 		for k, v := range req.Config.StaticHeaders {
@@ -616,7 +659,7 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
 	}
 
-	return handleCommandcodeStream(w, req, resp.Body, oreq.Model)
+	return handleCommandcodeStream(w, req, resp.Body, model)
 }
 
 // ForwardOpencode handles requests for opencode (free tier).

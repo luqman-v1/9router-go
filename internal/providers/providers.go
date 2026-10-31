@@ -836,9 +836,13 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 		StaticHeaders: map[string]string{
-			"User-Agent":             "commandcode/0.25.7 (cli)",
-			"x-command-code-version": "0.25.7",
-			"x-cli-environment":      "cli",
+			// Static identity headers of command-code@1.88.0
+			// buildCommandAuthHeaders() (upstream decolua/9router b1effa03).
+			"User-Agent":             "cli",
+			"x-command-code-version": "1.88.0",
+			"x-cli-environment":      "production",
+			"x-cli-surface":          "cli",
+			"x-taste-learning":       "false",
 		},
 	},
 	"ollama-local": {

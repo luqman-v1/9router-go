@@ -167,17 +167,17 @@ func TestBuildCommandcodeChunk(t *testing.T) {
 
 func TestForwardCommandcodeRequest_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("x-command-code-version") != "0.25.7" {
+		if r.Header.Get("x-command-code-version") != "1.88.0" {
 			t.Errorf("expected x-command-code-version header, got %q", r.Header.Get("x-command-code-version"))
 		}
-		if r.Header.Get("x-cli-environment") != "cli" {
+		if r.Header.Get("x-cli-environment") != "production" {
 			t.Errorf("expected x-cli-environment header")
 		}
 		if r.Header.Get("x-session-id") == "" {
 			t.Errorf("expected x-session-id header")
 		}
-		if r.Header.Get("User-Agent") != "commandcode/0.25.7 (cli)" {
-			t.Errorf("expected User-Agent header 'commandcode/0.25.7 (cli)', got %q", r.Header.Get("User-Agent"))
+		if r.Header.Get("User-Agent") != "cli" {
+			t.Errorf("expected User-Agent header 'cli', got %q", r.Header.Get("User-Agent"))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)

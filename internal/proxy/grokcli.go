@@ -336,8 +336,8 @@ func ForwardCommandcode(ctx context.Context, client *http.Client, cfg *providers
 	headers := map[string]string{
 		"Content-Type":           "application/json",
 		"Authorization":          "Bearer " + apiKey,
-		"x-command-code-version": "0.25.7",
-		"x-cli-environment":      "cli",
+		"x-command-code-version": "1.88.0",
+		"x-cli-environment":      "production",
 		"Accept":                 "text/event-stream",
 	}
 	return DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
