@@ -74,9 +74,17 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 	},
 	"github": {
 		"gemini-3.8-flash": {"low", "medium", "high"},
+		"claude-fable-5.1": {"low", "medium", "high", "xhigh", "max"},
 	},
 	"gh": {
 		"gemini-3.8-flash": {"low", "medium", "high"},
+		"claude-fable-5.1": {"low", "medium", "high", "xhigh", "max"},
+	},
+	"bedrock": {
+		"us.anthropic.claude-fable-5": {"low", "medium", "high", "xhigh", "max"},
+	},
+	"br": {
+		"us.anthropic.claude-fable-5": {"low", "medium", "high", "xhigh", "max"},
 	},
 	"ocz": {
 		"gemini-3.8-flash":                {"low", "medium", "high"},
