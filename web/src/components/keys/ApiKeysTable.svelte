@@ -479,6 +479,19 @@
         <p class="text-text-main font-medium text-sm">No API keys yet</p>
         <p class="text-xs text-text-muted">Create your first API key to get started</p>
       </div>
+      <!-- The action the empty state invites. It used to live only in the
+           populated branch, so an operator with no keys read "create your
+           first API key" with no button to do it from — the ribbon, the search
+           row and Create Key are all inside the {:else} below. -->
+      <button
+        type="button"
+        onclick={() => onCreate?.()}
+        aria-label="Create Key"
+        class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold transition cursor-pointer"
+      >
+        <Plus class="w-3.5 h-3.5" />
+        <span>Create Key</span>
+      </button>
     </div>
   {:else}
 
