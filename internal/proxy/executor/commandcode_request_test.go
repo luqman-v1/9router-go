@@ -553,3 +553,52 @@ func TestCommandcodeUsageFallsBackToFinishStepAndTotals(t *testing.T) {
 		t.Errorf("estimate fallback = %+v", est)
 	}
 }
+
+func TestBuildCommandcodeBody_ReasoningBlock(t *testing.T) {
+	input := []byte(`{
+		"model": "zai-org/GLM-5.2",
+		"messages": [
+			{"role": "user", "content": "hello"},
+			{"role": "assistant", "content": "hi", "reasoning_content": " "}
+		]
+	}`)
+
+	resBytes, err := buildCommandcodeBody(input, "zai-org/GLM-5.2")
+	if err != nil {
+		t.Fatalf("failed to build commandcode body: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resBytes, &payload); err != nil {
+		t.Fatalf("failed to parse payload: %v", err)
+	}
+
+	params, ok := payload["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing params in payload: %#v", payload)
+	}
+
+	msgs, ok := params["messages"].([]any)
+	if !ok || len(msgs) < 2 {
+		t.Fatalf("missing messages in params: %#v", params)
+	}
+
+	asstMsg := msgs[1].(map[string]any)
+	contentBlocks, ok := asstMsg["content"].([]any)
+	if !ok {
+		t.Fatalf("missing content blocks in assistant message: %#v", asstMsg)
+	}
+
+	foundReasoning := false
+	for _, block := range contentBlocks {
+		bMap, ok := block.(map[string]any)
+		if ok && bMap["type"] == "reasoning" && bMap["text"] == " " {
+			foundReasoning = true
+			break
+		}
+	}
+
+	if !foundReasoning {
+		t.Errorf("expected content blocks to contain reasoning block with text ' ', got %#v", contentBlocks)
+	}
+}
