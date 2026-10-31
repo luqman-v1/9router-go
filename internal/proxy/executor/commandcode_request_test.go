@@ -450,6 +450,9 @@ func TestCommandcodeSlugifyAndSessionUUID(t *testing.T) {
 	if got := commandcodeSlugify("/srv/fooBar/Ünï"); got != "srv-foo-bar-ueni" {
 		t.Errorf("slug = %q", got)
 	}
+	if commandcodeSlugify("/") != "" || commandcodeProjectSlug == "" {
+		t.Errorf("empty slug must fall back, got %q", commandcodeProjectSlug)
+	}
 	a, b := commandcodeSessionUUID("s1"), commandcodeSessionUUID("s1")
 	if a != b || a == commandcodeSessionUUID("s2") {
 		t.Errorf("session uuid not stable/distinct: %s %s", a, b)
