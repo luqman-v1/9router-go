@@ -488,3 +488,17 @@ func TestForwardCommandcodeRetriesTransient(t *testing.T) {
 		t.Fatalf("err=%v calls=%d body=%s", err, calls, rec.Body.String())
 	}
 }
+
+func TestCommandcodeFinishReasonMappedToOpenAI(t *testing.T) {
+	for in, want := range map[string]string{
+		"tool-calls": "tool_calls", "content-filter": "content_filter",
+		"stop": "stop", "length": "length", "error": "stop",
+	} {
+		state := &CommandcodeStreamState{ToolIndexByID: map[string]int{}}
+		ProcessCommandcodeEvent(map[string]any{"type": "finish-step", "finishReason": in}, "finish-step", state)
+		out := ProcessCommandcodeEvent(map[string]any{"type": "finish"}, "finish", state)
+		if len(out) == 0 || !strings.Contains(out[0], `"finish_reason":"`+want+`"`) {
+			t.Errorf("%s: want finish_reason %s, got %v", in, want, out)
+		}
+	}
+}

@@ -1401,14 +1401,14 @@ func ProcessCommandcodeEvent(event map[string]any, eventType string, state *Comm
 
 	case "finish-step":
 		if reason, ok := event["finishReason"].(string); ok {
-			state.FinishReason = reason
+			state.FinishReason = mapCommandcodeFinishReason(reason)
 		}
 
 	case "finish":
 		reason := state.FinishReason
 		if reason == "" {
 			if r, ok := event["finishReason"].(string); ok {
-				reason = r
+				reason = mapCommandcodeFinishReason(r)
 			}
 			if reason == "" {
 				reason = "stop"
@@ -1460,4 +1460,21 @@ func ProcessCommandcodeEvent(event map[string]any, eventType string, state *Comm
 	}
 
 	return out
+}
+
+// mapCommandcodeFinishReason converts the AI SDK finish reasons Command Code
+// emits ("tool-calls", "content-filter", …) to OpenAI finish_reason values;
+// passing them through raw makes OpenAI-shaped clients abort with
+// "unexpected finish reason 'tool-calls'" (upstream commandcode-to-openai.js).
+func mapCommandcodeFinishReason(reason string) string {
+	switch reason {
+	case "tool-calls", "tool_use":
+		return "tool_calls"
+	case "content-filter":
+		return "content_filter"
+	case "error", "":
+		return "stop"
+	default:
+		return reason
+	}
 }
