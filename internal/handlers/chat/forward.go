@@ -84,6 +84,9 @@ func (h *ChatHandler) forwardRequest(
 	if apiKey != "" && providers.ShouldApplyNousAttribution(cfg.BaseURL) {
 		body = providers.ApplyNousAttribution(body)
 	}
+	if provider == "deepseek" || strings.HasPrefix(provider, "openai-compatible-") {
+		body = executor.DowngradeJsonSchemaToJSONObject(body)
+	}
 	resp, err := internalproxy.ForwardOpenAI(ctx, httpClient, cfg, apiKey, body, isStream)
 	if err != nil {
 		return fmt.Errorf("forward to upstream: %w", err)
