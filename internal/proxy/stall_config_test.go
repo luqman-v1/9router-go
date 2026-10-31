@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -63,7 +64,7 @@ func TestStallTimeoutEnvEndToEnd(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
 
-	r := NewStallReaderWithContext(nil, pr, 0, "env-stall-e2e")
+	r := NewStallReaderWithContext(context.Background(), pr, 0, "env-stall-e2e")
 	defer r.Close()
 
 	go func() {
