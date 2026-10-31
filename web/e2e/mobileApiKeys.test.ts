@@ -60,7 +60,7 @@ async function layout(page: Page) {
 describe('api keys at 390px', () => {
   beforeAll(async () => {
     await page.setViewportSize({ width: 390, height: 844 })
-    await page.goto(`${app.baseURL}/dashboard/apikeys`)
+    await page.goto(`${app.baseURL}/dashboard/endpoint`)
     await page.getByRole('heading', { name: 'API Keys' }).waitFor({ timeout: 15_000 })
     await createKey(page, 'Layout Probe A')
     await createKey(page, 'Layout Probe B')
@@ -147,7 +147,7 @@ describe('api keys at 390px', () => {
 describe('api keys at 1440px', () => {
   beforeAll(async () => {
     await page.setViewportSize({ width: 1440, height: 900 })
-    await page.goto(`${app.baseURL}/dashboard/apikeys`)
+    await page.goto(`${app.baseURL}/dashboard/endpoint`)
     await page.getByRole('heading', { name: 'API Keys' }).waitFor({ timeout: 15_000 })
   }, SLOW)
 

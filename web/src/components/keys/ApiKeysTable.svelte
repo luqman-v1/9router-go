@@ -642,11 +642,19 @@
       <button
         type="button"
         onclick={() => onCreate?.()}
+        aria-label="Create Key"
         class="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold transition cursor-pointer"
       >
         <Plus class="w-3.5 h-3.5" />
+        <!-- One label, not a responsive pair. "Create Key" on desktop and
+             "New" on a phone gave the same control two accessible names, so
+             getByRole('button', {name: 'Create Key'}) — what the e2e suite and
+             any screen-reader user addresses it by — matched nothing below sm.
+             aria-label pins one name at every width; the visible text is
+             shortened with CSS, which changes what is read off the screen
+             without changing what the control is called. -->
         <span class="hidden sm:inline">Create Key</span>
-        <span class="sm:hidden">New</span>
+        <span class="sm:hidden" aria-hidden="true">New</span>
       </button>
     </div>
 
