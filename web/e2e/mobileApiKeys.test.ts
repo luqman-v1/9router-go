@@ -57,6 +57,20 @@ async function layout(page: Page) {
   })
 }
 
+/**
+ * Opens a phone card so its detail cells and footer actions are in the DOM.
+ *
+ * The card is a disclosure: the header row is the toggle and the body — secret,
+ * policy, usage, the Regenerate button and the overflow menu — renders only
+ * while it is expanded. A test that reaches for "Actions for …" without
+ * opening the card first finds nothing, which is the card working as designed
+ * rather than a defect.
+ */
+async function expandCard(page: Page, keyName: string): Promise<void> {
+  await keyCard(page, keyName).getByRole('button', { expanded: false }).first().click()
+  await keyCard(page, keyName).getByRole('button', { expanded: true }).first().waitFor()
+}
+
 describe('api keys at 390px', () => {
   beforeAll(async () => {
     await page.setViewportSize({ width: 390, height: 844 })
@@ -115,6 +129,7 @@ describe('api keys at 390px', () => {
   })
 
   test('the row menu opens fully on screen from the card', async () => {
+    await expandCard(page, 'Layout Probe A')
     await page.getByRole('button', { name: 'Actions for Layout Probe A' }).first().click()
 
     const panel = page.locator('[role="menu"]')
@@ -130,6 +145,7 @@ describe('api keys at 390px', () => {
 
   test('a key can be paused from the card menu', async () => {
     const card = keyCard(page, 'Layout Probe B')
+    await expandCard(page, 'Layout Probe B')
     await card.getByRole('button', { name: 'Actions for Layout Probe B' }).click()
     await page.locator('[role="menuitem"]').filter({ hasText: 'Pause key' }).click()
 
