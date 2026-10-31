@@ -861,21 +861,11 @@ func normalizeTopLevelReasoning(reqMap map[string]any) bool {
 // deepSeekV4Pro is the wire id the deepseek -max/-none catalog aliases map to.
 const deepSeekV4Pro = "deepseek-v4-pro"
 
-// deepSeekV4ProAlias is 9router's own catalog alias table, ported from upstream
-// reasoningContentInjector.js DEEPSEEK_V4_PRO_ALIASES. The alias id is not a
-// wire id, so the request is sent as the base model with the thinking toggle in
-// top-level `thinking.type` and the effort in `reasoning_effort` (empty effort =
-// no reasoning_effort key, i.e. thinking disabled). The toggle is a top-level
-// field, not the SDK `extra_body` wrapper: `extra_body` is Python-SDK sugar that
-// never reaches the wire, so only the top-level shape would actually disable
-// thinking on `-none`.
 var deepSeekV4ProAlias = map[string][2]string{
 	"deepseek-v4-pro-max":  {"enabled", "max"},
 	"deepseek-v4-pro-none": {"disabled", ""},
 }
 
-// applyDeepSeekV4ProAlias rewrites reqMap in place when modelLower is one of the
-// deepseek-v4-pro alias ids. It reports whether anything changed.
 func applyDeepSeekV4ProAlias(reqMap map[string]any, modelLower string) bool {
 	alias, ok := deepSeekV4ProAlias[modelLower]
 	if !ok {
@@ -892,8 +882,17 @@ func applyDeepSeekV4ProAlias(reqMap map[string]any, modelLower string) bool {
 	return true
 }
 
+// Closed value set gets a named type (repo AGENTS.md §4.C).
+type reasoningInjectScope int
+
+const (
+	reasoningInjectNone reasoningInjectScope = iota
+	reasoningInjectAll
+	reasoningInjectToolCalls
+)
+
 // InjectReasoningContent ensures assistant messages in request body have reasoning_content
-// injected (e.g. " " placeholder) for providers like opencode, deepseek, or kimi models,
+// injected (e.g. " " placeholder) for providers like opencode, deepseek, commandcode, or kimi models,
 // and strips foreign/unsupported keys (such as "reasoning", "thinking", "thought") that cause
 // upstream schema validation errors (e.g. "Unrecognized request argument supplied: messages[2].reasoning.").
 func InjectReasoningContent(body []byte, provider string) []byte {
@@ -910,11 +909,18 @@ func InjectReasoningContent(body []byte, provider string) []byte {
 	modelStr, _ := reqMap["model"].(string)
 	modelLower := strings.ToLower(modelStr)
 
+	scope := reasoningInjectNone
+	// Provider rule wins over model rules (upstream reasoningContentInjector.js: providerRule || modelRule, PR #5290)
 	isOpenCode := provider == "opencode" || provider == "opencode-go" || provider == "opencode-zen"
-	isDeepSeek := strings.Contains(modelLower, "deepseek") || isOpenCode
-	isKimi := strings.HasPrefix(modelLower, "kimi-")
+	if provider == "commandcode" {
+		scope = reasoningInjectAll
+	} else if strings.Contains(modelLower, "deepseek") || isOpenCode {
+		scope = reasoningInjectAll
+	} else if strings.HasPrefix(modelLower, "kimi-") {
+		scope = reasoningInjectToolCalls
+	}
 
-	if !isDeepSeek && !isKimi {
+	if scope == reasoningInjectNone {
 		return body
 	}
 
@@ -944,7 +950,7 @@ func InjectReasoningContent(body []byte, provider string) []byte {
 				changed = true
 			}
 
-			if isKimi {
+			if scope == reasoningInjectToolCalls {
 				toolCalls, hasTC := msgMap["tool_calls"].([]any)
 				if !hasTC || len(toolCalls) == 0 {
 					msgs[i] = msgMap

@@ -587,7 +587,8 @@ func ForwardCommandcode(w http.ResponseWriter, req *Request) error {
 		log.Warn("executor", "commandcode unmarshal body", "error", err)
 	}
 
-	reqBody, err := buildCommandcodeBodyForSession(req.Body, oreq.Model, req.SessionID)
+	body := InjectReasoningContent(req.Body, "commandcode")
+	reqBody, err := buildCommandcodeBodyForSession(body, oreq.Model, req.SessionID)
 	if err != nil {
 		return fmt.Errorf("marshal commandcode body: %w", err)
 	}
