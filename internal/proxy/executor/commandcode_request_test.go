@@ -502,3 +502,34 @@ func TestCommandcodeFinishReasonMappedToOpenAI(t *testing.T) {
 		}
 	}
 }
+
+func TestCommandcodeFinishCarriesCacheUsage(t *testing.T) {
+	state := &CommandcodeStreamState{ToolIndexByID: map[string]int{}}
+	out := ProcessCommandcodeEvent(map[string]any{
+		"type": "finish", "finishReason": "stop",
+		"totalUsage": map[string]any{
+			"inputTokens": 3033.0, "outputTokens": 20.0,
+			"cachedInputTokens": 2944.0, "reasoningTokens": 7.0,
+		},
+	}, "finish", state)
+	if len(out) == 0 {
+		t.Fatal("no chunk")
+	}
+	var chunk struct {
+		Usage struct {
+			PromptTokens        int `json:"prompt_tokens"`
+			PromptTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+			CompletionTokensDetails struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(out[0]), &chunk); err != nil {
+		t.Fatal(err)
+	}
+	if chunk.Usage.PromptTokens != 3033 || chunk.Usage.PromptTokensDetails.CachedTokens != 2944 || chunk.Usage.CompletionTokensDetails.ReasoningTokens != 7 {
+		t.Errorf("usage = %+v", chunk.Usage)
+	}
+}

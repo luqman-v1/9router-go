@@ -1420,11 +1420,19 @@ func ProcessCommandcodeEvent(event map[string]any, eventType string, state *Comm
 
 		if totalUsage, ok := event["totalUsage"].(map[string]any); ok {
 			usage := map[string]any{}
-			if pt, ok := totalUsage["promptTokens"].(float64); ok {
+			if pt, ok := commandcodeTokenField(totalUsage, "inputTokens", "promptTokens"); ok {
 				usage["prompt_tokens"] = int(pt)
 			}
-			if ct, ok := totalUsage["completionTokens"].(float64); ok {
+			if ct, ok := commandcodeTokenField(totalUsage, "outputTokens", "completionTokens"); ok {
 				usage["completion_tokens"] = int(ct)
+			}
+			// Cache reads and reasoning tokens are billed at their own
+			// rate; dropping them reports every turn as fully uncached.
+			if cr, ok := totalUsage["cachedInputTokens"].(float64); ok && cr > 0 {
+				usage["prompt_tokens_details"] = map[string]any{"cached_tokens": int(cr)}
+			}
+			if rt, ok := totalUsage["reasoningTokens"].(float64); ok && rt > 0 {
+				usage["completion_tokens_details"] = map[string]any{"reasoning_tokens": int(rt)}
 			}
 			if len(usage) > 0 {
 				var parsed map[string]any
@@ -1477,4 +1485,16 @@ func mapCommandcodeFinishReason(reason string) string {
 	default:
 		return reason
 	}
+}
+
+// commandcodeTokenField reads the first present numeric key; Command Code
+// emits AI SDK v5 names (inputTokens/outputTokens), older shapes used
+// promptTokens/completionTokens.
+func commandcodeTokenField(m map[string]any, keys ...string) (float64, bool) {
+	for _, k := range keys {
+		if v, ok := m[k].(float64); ok {
+			return v, true
+		}
+	}
+	return 0, false
 }
