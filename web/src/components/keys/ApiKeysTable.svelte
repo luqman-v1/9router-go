@@ -497,12 +497,13 @@
 
          Two lines per pill: label above, value below. Side by side they were
          two short strings fighting for a 216px-wide phone card; stacked, the
-         value gets the emphasis it deserves. -->
+         value gets the emphasis it deserves.
+         Every count is a total over the whole list, never over the filtered
+         view: the ribbon is the operator's fixed frame of reference while they
+         narrow the table, so filtering to "paused" must not make Active
+         read 0. -->
     {@const activeCount = apiKeys.filter((k) => isActive(k)).length}
     {@const totalReqs = apiKeys.reduce((sum, k) => sum + (k.usedCount ?? 0), 0)}
-    // Totals are over the whole list, never the filtered view: the ribbon is
-    // the operator's fixed frame of reference while they narrow the table, so
-    // filtering to "paused" must not make Active read 0.
     {@const totalTokens = apiKeys.reduce((sum, k) => sum + (k.usedTokens ?? 0), 0)}
     {@const unusedCount = apiKeys.filter((k) => (k.usedCount ?? 0) === 0).length}
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -553,9 +554,9 @@
         type="button"
         onclick={() => {
           tokensPill = cycle(tokensPill)
-          // Requests and Tokens both order by a spend figure, so engaging one
-          // releases the other: two spend sorts at once would leave the
-          // comparator ambiguous.
+          /* Requests and Tokens both order by a spend figure, so engaging one
+             releases the other: two spend sorts at once would leave the
+             comparator ambiguous. */
           if (tokensPill !== 'off') requestsPill = 'off'
         }}
         aria-pressed={tokensPill !== 'off'}
@@ -1072,8 +1073,8 @@
     apiKey={policyKey}
     onClose={() => (policyKey = null)}
     onSaved={() => {
-      // The rename lives in the same dialog, so the list is stale until the
-      // parent re-reads it.
+      /* The rename lives in the same dialog, so the list is stale until the
+         parent re-reads it. */
       policyKey = null
       onRefresh?.()
     }}
