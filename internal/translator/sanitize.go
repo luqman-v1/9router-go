@@ -342,13 +342,9 @@ func sanitizeMonitorArgs(args map[string]any) {
 	// Claude Code's Monitor tool requires "exactly one of command or ws".
 	// Models (especially Codex/GPT) frequently hallucinate a dummy ws object alongside command.
 	if cmd, hasCmd := args["command"].(string); hasCmd && strings.TrimSpace(cmd) != "" {
-		if _, hasWs := args["ws"]; hasWs {
-			delete(args, "ws")
-		}
+		delete(args, "ws")
 	} else if ws, hasWs := args["ws"]; hasWs && ws != nil {
-		if _, hasCmd := args["command"]; hasCmd {
-			delete(args, "command")
-		}
+		delete(args, "command")
 	}
 	delete(args, "thought")
 	delete(args, "explanation")
