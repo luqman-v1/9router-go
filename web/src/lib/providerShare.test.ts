@@ -10,6 +10,11 @@ import {
   shareLinkTier,
 } from './providerShare'
 
+/** base64url, the same encoding encodeSetPayload produces. */
+function toBase64(json: string): string {
+  return btoa(json).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
 describe('parseProviderShareHash — phase 1', () => {
   it('returns null without prov', () => {
     expect(parseProviderShareHash('#url=https://x.test/v1')).toBeNull()
@@ -181,6 +186,29 @@ describe('set= — phase 4', () => {
 
   it('rejects a malformed payload', () => {
     expect(() => decodeSetPayload('not-base64!!')).toThrow()
+  })
+
+  it('re-enforces both caps on decode, symmetrically with encode', () => {
+    const entry = { prov: 'p', url: 'https://a.test/v1', api: [], keys: [], models: 'auto' as const, prefix: 'a', name: '', note: '', type: 'openai-compatible', apiType: 'chat' }
+    // Nine entries: encodeSetPayload refuses to build it, and decodeSetPayload
+    // must refuse a hand-assembled one — a link is untrusted input.
+    const nine = Array.from({ length: 9 }, (_, i) => ({ ...entry, prov: `p${i}` }))
+    expect(() => encodeSetPayload(nine)).toThrow(/8/)
+    const nineB64 = toBase64(JSON.stringify(nine))
+    expect(() => decodeSetPayload(nineB64)).toThrow(/over the 8 limit/)
+
+    // Over the character cap: eight providers with long notes.
+    const bulky = Array.from({ length: 8 }, (_, i) => ({ ...entry, prov: `p${i}`, note: 'n'.repeat(900) }))
+    expect(() => encodeSetPayload(bulky)).toThrow(/4000/)
+    const bulkyB64 = toBase64(JSON.stringify(bulky))
+    expect(() => decodeSetPayload(bulkyB64)).toThrow(/over the 4000 limit/)
+  })
+
+  it('accepts a payload exactly at both caps', () => {
+    const entry = { prov: 'p', url: 'https://a.test/v1', api: [], keys: [], models: 'auto' as const, prefix: 'a', name: '', note: '', type: 'openai-compatible', apiType: 'chat' }
+    const eight = Array.from({ length: 8 }, (_, i) => ({ ...entry, prov: `p${i}` }))
+    const encoded = encodeSetPayload(eight)
+    expect(decodeSetPayload(encoded)).toHaveLength(8)
   })
 
   it('parses a whole set link into one link per entry', () => {

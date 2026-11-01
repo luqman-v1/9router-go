@@ -228,6 +228,20 @@ export function decodeSetPayload(encoded: string): ProviderShareLink[] {
     throw new Error('share link: the set= payload is not valid base64url JSON')
   }
   if (!Array.isArray(parsed)) throw new Error('share link: the set= payload is not a list')
+  // The same two caps encodeSetPayload enforces, re-checked here. A link is
+  // untrusted input: a hand-edited or truncated payload could otherwise carry
+  // fifty providers into a modal that renders fifty forms and then writes
+  // fifty nodes, and the operator would have no signal that anything was wrong.
+  if (parsed.length > SET_CAPS.maxEntries) {
+    throw new Error(
+      `share link: the set= payload carries ${parsed.length} providers, over the ${SET_CAPS.maxEntries} limit`
+    )
+  }
+  if (encoded.length > SET_CAPS.maxChars) {
+    throw new Error(
+      `share link: the set= payload is ${encoded.length} characters, over the ${SET_CAPS.maxChars} limit`
+    )
+  }
   return parsed.map((entry) => normalizeLink(entry as Record<string, unknown>))
 }
 
