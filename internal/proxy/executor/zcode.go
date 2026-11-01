@@ -14,6 +14,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"9router/proxy/internal/proxy"
@@ -31,12 +32,35 @@ type zcodeIdentityAsset struct {
 	SDKUserAgent     string `json:"sdkUserAgent"`
 }
 
-var zcodeAsset zcodeIdentityAsset
+// zcodeIdentity is the decoded asset plus the reason it could not be decoded.
+type zcodeIdentity struct {
+	asset zcodeIdentityAsset
+	err   error
+}
 
-func init() {
-	if err := json.Unmarshal(zcodeIdentityAssetRaw, &zcodeAsset); err != nil {
-		panic("zcode: failed to parse embedded zcode_identity_system.json: " + err.Error())
+// The asset is decoded once, on first use, instead of in init(): a failure
+// here must not take the whole process down (AGENTS.md §4.E, Zero Panic). The
+// embedded file is still validated at build time by
+// TestZcodeIdentityAssetParses, so a malformed asset fails CI rather than a
+// running gateway, and the failure a request sees is an explicit error.
+var zcodeIdentityOnce = sync.OnceValue(func() zcodeIdentity {
+	var id zcodeIdentity
+	if err := json.Unmarshal(zcodeIdentityAssetRaw, &id.asset); err != nil {
+		id.err = fmt.Errorf("executor.zcodeIdentity: parse embedded zcode_identity_system.json: %w", err)
 	}
+	return id
+})
+
+// zcodeIdentityValues returns the decoded identity asset. A decode failure
+// yields the zero value; the request path checks zcodeIdentityError first.
+func zcodeIdentityValues() zcodeIdentityAsset {
+	return zcodeIdentityOnce().asset
+}
+
+// zcodeIdentityError reports why the embedded identity asset could not be
+// decoded, or nil when it is usable.
+func zcodeIdentityError() error {
+	return zcodeIdentityOnce().err
 }
 
 const (
@@ -73,8 +97,8 @@ func zcodePlatform() string {
 }
 
 func zcodeSDKUserAgent() string {
-	if zcodeAsset.SDKUserAgent != "" {
-		return zcodeAsset.SDKUserAgent
+	if ua := zcodeIdentityValues().SDKUserAgent; ua != "" {
+		return ua
 	}
 	return "ZCode/" + zcodeAppVer() + " runtime/go"
 }
@@ -122,6 +146,7 @@ func zcodeSessionID(conversationKey, seed string) string {
 // zcodeLLMHeaders builds the full identity header bundle the start-plan gateway
 // inspects. Mirrors identity.js:buildLlmHeaders (g6n face).
 func zcodeLLMHeaders(sessionID, requestID, traceID, queryID string) map[string]string {
+	asset := zcodeIdentityValues()
 	h := map[string]string{
 		"http-referer":         "https://zcode.z.ai",
 		"user-agent":           zcodeSDKUserAgent(),
@@ -134,8 +159,8 @@ func zcodeLLMHeaders(sessionID, requestID, traceID, queryID string) map[string]s
 		"x-os-category":        zcodeOSCategory(),
 		"x-os-version":         zcodeEnvOr("ZCODE_IDENTITY_OS_VERSION", "unknown"),
 		"x-zcode-app-version":  zcodeAppVer(),
-		"anthropic-version":    zcodeAsset.AnthropicVersion,
-		"anthropic-beta":       zcodeAsset.AnthropicBeta,
+		"anthropic-version":    asset.AnthropicVersion,
+		"anthropic-beta":       asset.AnthropicBeta,
 		"x-zcode-session-type": "main",
 		"x-zcode-query-source": "main_turn",
 	}
@@ -195,14 +220,15 @@ func zcodeSystemBlocks(clientSystem any) []any {
 	if dynamic != "" {
 		dynamicText = "\n\n" + dynamic
 	}
+	asset := zcodeIdentityValues()
 	return []any{
 		map[string]any{
 			"type": "text",
-			"text": zcodeAsset.CliPrefix,
+			"text": asset.CliPrefix,
 		},
 		map[string]any{
 			"type":          "text",
-			"text":          zcodeAsset.StablePrefix,
+			"text":          asset.StablePrefix,
 			"cache_control": map[string]any{"type": "ephemeral"},
 		},
 		map[string]any{
@@ -318,6 +344,13 @@ func zcodeConnString(connData map[string]any, key string) string {
 //	  "accountUUID":  "<z.ai user_id>",               // optional, for metadata
 //	}
 func ForwardZcode(w http.ResponseWriter, req *Request) error {
+	// The identity asset drives every header and system block. If it did not
+	// decode, the request would reach the gateway with empty cliPrefix and
+	// stablePrefix and come back as an opaque 3012; fail here with the reason
+	// instead (§4.E: surface an error, never panic in proxy execution).
+	if err := zcodeIdentityError(); err != nil {
+		return err
+	}
 	jwt := zcodeResolveJWT(req.APIKey, req.ConnData)
 	if jwt == "" {
 		return &zcodeNoJWTError{}

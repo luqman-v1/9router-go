@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 	"unicode"
 )
 
@@ -23,10 +22,14 @@ import (
 // face empties its payload.
 
 const (
-	zcodeBillingOrigin = "https://zcode.z.ai"
-	zcodeBalancePath   = "/api/v1/zcode-plan/billing/balance"
-	zcodeCurrentPath   = "/api/v1/zcode-plan/billing/current"
+	zcodeBalancePath = "/api/v1/zcode-plan/billing/balance"
+	zcodeCurrentPath = "/api/v1/zcode-plan/billing/current"
 )
+
+// zcodeBillingOrigin is a var, not a const, so a test can point the fetcher at
+// an httptest server. Same shape as antigravityDashboardBaseURL: the paths
+// above stay constants, only the host moves.
+var zcodeBillingOrigin = "https://zcode.z.ai"
 
 // fetchZcodeUsage reads one connection's grant buckets and renders the
 // normalized {plan, quotas} shape the dashboard parser consumes: one row
@@ -38,9 +41,10 @@ func fetchZcodeUsage(ctx context.Context, jwt, deviceID string) usageResult {
 	}
 
 	body, status, err := zcodeBillingGet(ctx, zcodeBalancePath+"?app_version=3.16.3&platform=linux-amd64", jwt, zcodeDeviceMid(deviceID))
-	if err != nil {
-		return usageResult{message: fmt.Sprintf("ZCode connected. Unable to fetch usage: %v", err), bare: true}
-	}
+	// The auth answer has to be read before the generic error: zcodeBillingGet
+	// returns a non-nil error for every non-2xx, so checking err first made this
+	// branch unreachable and told a user with an expired token to "retry" a
+	// request that can only succeed after re-authorization.
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return usageResult{
 			plan:    "ZCode",
@@ -48,8 +52,10 @@ func fetchZcodeUsage(ctx context.Context, jwt, deviceID string) usageResult {
 			bare:    true,
 		}
 	}
-	if status < 200 || status >= 300 {
-		return usageResult{message: fmt.Sprintf("ZCode connected. Usage fetch returned %d.", status), bare: true}
+	// Every other non-2xx already arrives as an error carrying its status, so
+	// there is no separate status branch below.
+	if err != nil {
+		return usageResult{message: fmt.Sprintf("ZCode connected. Unable to fetch usage: %v", err), bare: true}
 	}
 
 	plans, balances := zcodePlanRows(body)
@@ -174,7 +180,10 @@ func zcodeQuotaRows(plans, balances []map[string]any) map[string]any {
 	type bucket struct {
 		display, planName string
 		total, used       float64
-		resetMs           float64
+		// resetEpoch is whatever unit upstream sent for period_end/ends_at:
+		// the live endpoint answers seconds (1793548799), but the field is
+		// named for the value, not a unit, and usageResetTime normalises both.
+		resetEpoch float64
 	}
 	buckets := map[string]*bucket{}
 	order := []string{}
@@ -187,8 +196,8 @@ func zcodeQuotaRows(plans, balances []map[string]any) map[string]any {
 		}
 		b.total += total
 		b.used += used
-		if periodEnd > b.resetMs {
-			b.resetMs = periodEnd
+		if periodEnd > b.resetEpoch {
+			b.resetEpoch = periodEnd
 		}
 	}
 
@@ -248,10 +257,7 @@ func zcodeQuotaRows(plans, balances []map[string]any) map[string]any {
 	for _, key := range order {
 		b := buckets[key]
 		model := key[:strings.IndexByte(key, '|')]
-		resetAt := ""
-		if b.resetMs > 0 {
-			resetAt = time.UnixMilli(int64(b.resetMs * 1000)).UTC().Format(time.RFC3339)
-		}
+		resetAt := usageResetTime(b.resetEpoch)
 		name := b.display
 		if b.planName != "" {
 			// "GLM-5.3 (Start Plan)" — short plan label, drop the vendor
