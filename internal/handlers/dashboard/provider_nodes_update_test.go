@@ -83,25 +83,25 @@ func TestHandleUpdateProviderNode_Validation(t *testing.T) {
 	defer cleanup()
 	router := setupTestRouter(repo)
 
-	node, err := repo.CreateProviderNode("openai-compatible-chat-abc", "openai-compatible", "Old", `{"prefix":"oc","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
+	node, err := repo.CreateProviderNode("openai-compatible-chat-abc", "openai-compatible", "Old", `{"prefix":"acme","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
 	if err != nil || node == nil {
 		t.Fatalf("seed node: %v", err)
 	}
 
 	// Missing name.
-	rec := putNode(t, router, node.ID, `{"prefix":"oc","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
+	rec := putNode(t, router, node.ID, `{"prefix":"acme","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing name, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	// Invalid apiType for openai-compatible.
-	rec = putNode(t, router, node.ID, `{"name":"N","prefix":"oc","apiType":"bogus","baseUrl":"https://a.example.com/v1"}`)
+	rec = putNode(t, router, node.ID, `{"name":"N","prefix":"acme","apiType":"bogus","baseUrl":"https://a.example.com/v1"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid apiType, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	// Unknown node.
-	rec = putNode(t, router, "openai-compatible-chat-missing", `{"name":"N","prefix":"oc","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
+	rec = putNode(t, router, "openai-compatible-chat-missing", `{"name":"N","prefix":"acme","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown node, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -112,11 +112,11 @@ func TestHandleUpdateProviderNode_SavesAndSyncsConnections(t *testing.T) {
 	defer cleanup()
 	router := setupTestRouter(repo)
 
-	node, err := repo.CreateProviderNode("openai-compatible-chat-abc", "openai-compatible", "Old", `{"prefix":"oc","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
+	node, err := repo.CreateProviderNode("openai-compatible-chat-abc", "openai-compatible", "Old", `{"prefix":"acme","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
 	if err != nil || node == nil {
 		t.Fatalf("seed node: %v", err)
 	}
-	connData := `{"apiKey":"sk-x","providerSpecificData":{"prefix":"oc","apiType":"chat","baseUrl":"https://a.example.com/v1","nodeName":"Old"}}`
+	connData := `{"apiKey":"sk-x","providerSpecificData":{"prefix":"acme","apiType":"chat","baseUrl":"https://a.example.com/v1","nodeName":"Old"}}`
 	if _, err := repo.RawDB().Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-1', 'openai-compatible-chat-abc', 'apikey', 'K', 1, 1, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, connData); err != nil {
 		t.Fatalf("seed connection: %v", err)
@@ -181,7 +181,7 @@ func TestHandleGetConnectionModels_CompatibleProbe(t *testing.T) {
 	defer cleanup()
 	router := setupTestRouter(repo)
 
-	connData := `{"apiKey":"sk-x","providerSpecificData":{"prefix":"oc","apiType":"chat","baseUrl":"http://upstream.example/v1"}}`
+	connData := `{"apiKey":"sk-x","providerSpecificData":{"prefix":"acme","apiType":"chat","baseUrl":"http://upstream.example/v1"}}`
 	if _, err := repo.RawDB().Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-oc', 'openai-compatible-chat-abc', 'apikey', 'K', 1, 1, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, connData); err != nil {
 		t.Fatalf("seed connection: %v", err)

@@ -48,27 +48,27 @@ func TestHandleCreateProviderNode_CustomSuffixReplacesUUID(t *testing.T) {
 	}{
 		{
 			name:       "openai chat",
-			body:       `{"name":"B.AI","prefix":"bai","urlSuffix":"bai","apiType":"chat","baseUrl":"https://api.b-ai.example/v1"}`,
-			wantID:     "openai-compatible-chat-bai",
-			wantSuffix: "bai",
+			body:       `{"name":"B.AI","prefix":"acme","urlSuffix":"acme","apiType":"chat","baseUrl":"https://api.b-ai.example/v1"}`,
+			wantID:     "openai-compatible-chat-acme",
+			wantSuffix: "acme",
 		},
 		{
 			name:       "openai responses pins the api type in the id",
-			body:       `{"name":"B.AI","prefix":"bai","urlSuffix":"bai","apiType":"responses","baseUrl":"https://api.b-ai.example/v1"}`,
-			wantID:     "openai-compatible-responses-bai",
-			wantSuffix: "bai",
+			body:       `{"name":"B.AI","prefix":"acme","urlSuffix":"acme","apiType":"responses","baseUrl":"https://api.b-ai.example/v1"}`,
+			wantID:     "openai-compatible-responses-acme",
+			wantSuffix: "acme",
 		},
 		{
 			name:       "anthropic has no api type segment",
-			body:       `{"name":"AC","prefix":"ac","urlSuffix":"ac-prod","type":"anthropic-compatible","baseUrl":"https://ac.example/v1"}`,
+			body:       `{"name":"AC","prefix":"acme","urlSuffix":"ac-prod","type":"anthropic-compatible","baseUrl":"https://ac.example/v1"}`,
 			wantID:     "anthropic-compatible-ac-prod",
 			wantSuffix: "ac-prod",
 		},
 		{
 			name:       "custom embedding",
-			body:       `{"name":"Voyage","prefix":"voyage","urlSuffix":"voyage","type":"custom-embedding","baseUrl":"https://voyage.example/v1"}`,
-			wantID:     "custom-embedding-voyage",
-			wantSuffix: "voyage",
+			body:       `{"name":"Voyage","prefix":"voy","urlSuffix":"voy","type":"custom-embedding","baseUrl":"https://voyage.example/v1"}`,
+			wantID:     "custom-embedding-voy",
+			wantSuffix: "voy",
 		},
 		{
 			name:       "dotted and underscored suffixes stay writable",
@@ -78,9 +78,9 @@ func TestHandleCreateProviderNode_CustomSuffixReplacesUUID(t *testing.T) {
 		},
 		{
 			name:       "surrounding whitespace is trimmed",
-			body:       `{"name":"N","prefix":"n","urlSuffix":"  bai  "}`,
-			wantID:     "openai-compatible-chat-bai",
-			wantSuffix: "bai",
+			body:       `{"name":"N","prefix":"n","urlSuffix":"  acme  "}`,
+			wantID:     "openai-compatible-chat-acme",
+			wantSuffix: "acme",
 		},
 	}
 
@@ -147,7 +147,7 @@ func TestHandleGetProviderNodes_ReportsURLSuffix(t *testing.T) {
 	router := setupTestRouter(repo)
 
 	if _, err := repo.CreateProviderNode("openai-compatible-chat-bai", "openai-compatible", "B.AI",
-		`{"prefix":"bai","apiType":"chat","baseUrl":"https://api.b-ai.example/v1"}`); err != nil {
+		`{"prefix":"acme","apiType":"chat","baseUrl":"https://api.b-ai.example/v1"}`); err != nil {
 		t.Fatalf("seed named node: %v", err)
 	}
 	generated := "openai-compatible-chat-2eb28394-dbf3-4c93-8477-2690aeea7041"
@@ -233,12 +233,12 @@ func TestHandleCreateProviderNode_SuffixCollisionIsConflict(t *testing.T) {
 	defer cleanup()
 	router := setupTestRouter(repo)
 
-	body := `{"name":"First","prefix":"bai","urlSuffix":"bai","baseUrl":"https://one.example/v1"}`
+	body := `{"name":"First","prefix":"acme","urlSuffix":"acme","baseUrl":"https://one.example/v1"}`
 	if rec := postNode(t, router, body); rec.Code != http.StatusCreated {
 		t.Fatalf("first create: expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	rec := postNode(t, router, `{"name":"Second","prefix":"bai2","urlSuffix":"bai","baseUrl":"https://two.example/v1"}`)
+	rec := postNode(t, router, `{"name":"Second","prefix":"acme2","urlSuffix":"acme","baseUrl":"https://two.example/v1"}`)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("second create: expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -257,9 +257,9 @@ func TestHandleUpdateProviderNode_RenameCarriesEverything(t *testing.T) {
 	router := setupTestRouter(repo)
 
 	const oldID = "openai-compatible-chat-bai-old"
-	const newID = "openai-compatible-chat-bai"
+	const newID = "openai-compatible-chat-acme"
 	if _, err := repo.CreateProviderNode(oldID, "openai-compatible", "B.AI",
-		`{"prefix":"bai","apiType":"chat","baseUrl":"https://api.b-ai.example/v1"}`); err != nil {
+		`{"prefix":"acme","apiType":"chat","baseUrl":"https://api.b-ai.example/v1"}`); err != nil {
 		t.Fatalf("seed node: %v", err)
 	}
 	exec := func(query string, args ...any) {
@@ -285,11 +285,11 @@ func TestHandleUpdateProviderNode_RenameCarriesEverything(t *testing.T) {
 	exec(`INSERT INTO settings (id, data) VALUES (1, ?)`, `{"providerStrategies":{"`+oldID+`":{"proxyPoolId":"pool-1","proxyRotateStrategy":"none"},"deepseek":{"proxyPoolId":"pool-2"}},"providerOverrides":{"`+oldID+`":{"headers":{"x-team":"bai"}}}}`)
 
 	rec := putNode(t, router, oldID,
-		`{"name":"B.AI","prefix":"bai","apiType":"chat","baseUrl":"https://api.b-ai.example/v1","urlSuffix":"bai"}`)
+		`{"name":"B.AI","prefix":"acme","apiType":"chat","baseUrl":"https://api.b-ai.example/v1","urlSuffix":"acme"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := decodeNode(t, rec); got.ID != newID || got.URLSuffix != "bai" {
+	if got := decodeNode(t, rec); got.ID != newID || got.URLSuffix != "acme" {
 		t.Fatalf("renamed node = %+v, want id %q", got, newID)
 	}
 
