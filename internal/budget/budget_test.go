@@ -118,10 +118,10 @@ func TestDecide(t *testing.T) {
 	reset := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name    string
-		spend   Spend
-		limits  Limits
-		want    Decision
+		name   string
+		spend  Spend
+		limits Limits
+		want   Decision
 	}{
 		{
 			name:   "under both ceilings passes",
@@ -145,11 +145,11 @@ func TestDecide(t *testing.T) {
 			spend:  Spend{Micros: 1_500_000, Tokens: 10},
 			limits: Limits{LimitMicros: 1_000_000, Period: PeriodMonthly, HardCutoff: true},
 			want: Decision{
-				Refuse:   true,
-				Axis:     "cost",
-				Spend:    Spend{Micros: 1_500_000, Tokens: 10},
-				Limits:   Limits{LimitMicros: 1_000_000, Period: PeriodMonthly, HardCutoff: true},
-				ResetAt:  reset,
+				Refuse:  true,
+				Axis:    "cost",
+				Spend:   Spend{Micros: 1_500_000, Tokens: 10},
+				Limits:  Limits{LimitMicros: 1_000_000, Period: PeriodMonthly, HardCutoff: true},
+				ResetAt: reset,
 			},
 		},
 		{

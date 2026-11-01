@@ -102,6 +102,15 @@ func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Reque
 			"rateLimitConcurrency": intOrZero(k.RateLimitConcurrency),
 			"tokenQuota":           intOrZero(k.TokenQuota),
 			"queueTimeoutMs":       intOrZero(k.QueueTimeoutMs),
+			// F-2 per-period budget. They travel with the row for the same
+			// reason the rate limits do: a key with a ceiling configured has to
+			// be distinguishable from one without at a glance, and omitting
+			// them made every row read as unbudgeted.
+			"limitMicros":  k.LimitMicros,
+			"limitTokens":  k.LimitTokens,
+			"budgetPeriod": k.BudgetPeriod,
+			"alertPct":     k.AlertPct,
+			"hardCutoff":   k.HardCutoff,
 			"expiresAt":            stringOrEmpty(k.ExpiresAt),
 			"lastUsedAt":           stringOrEmpty(k.LastUsedAt),
 			"usedCount":            intOrZero(k.UsedCount),

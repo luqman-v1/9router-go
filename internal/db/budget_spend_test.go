@@ -64,7 +64,11 @@ func TestSpendForKeySinceWindowFloor(t *testing.T) {
 	old := time.Now().UTC().Add(-48 * time.Hour).Format("2006-01-02T15:04:05.000Z")
 	recent := time.Now().UTC().Add(-time.Hour).Format("2006-01-02T15:04:05.000Z")
 	masked := handlerutil.MaskAPIKey(rawKey)
-	for _, row := range []struct{ ts string; cost float64; pt, ct int }{
+	for _, row := range []struct {
+		ts     string
+		cost   float64
+		pt, ct int
+	}{
 		{old, 5.0, 1000, 1000},
 		{recent, 1.0, 100, 50},
 	} {

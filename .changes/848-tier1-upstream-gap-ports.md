@@ -28,6 +28,15 @@ nothing read them. This closes that gap.
 - A key with no budget armed costs no database read at all, and a failed read
   fails open — the same choice the lifetime quota makes, because a spend
   ceiling is not an access grant.
+- The budget is configurable end to end: `PUT /api/keys/{id}` accepts
+  `limitMicros`, `limitTokens`, `budgetPeriod`, `alertPct` and `hardCutoff`
+  (an omitted field keeps the stored value, an explicit zero clears that
+  axis), `GET /api/keys` publishes them per row, and they survive a backup
+  round-trip — a restore that dropped them would bring every key back with
+  its ceiling silently cleared.
+- A database whose `apiKeys` table predates the columns reads every key with
+  its budget axes at zero rather than failing the listing, the same
+  degradation `quotaResetId` already gets.
 
 #### `/v1/rerank`
 
@@ -63,10 +72,20 @@ nothing read them. This closes that gap.
 
 ### Verified
 
-- `go vet ./...` clean.
-- `go test ./internal/budget/... ./internal/db/... ./internal/middleware/...
-  ./internal/handlers/... ./internal/uptime/...` pass, including new table-driven
-  tests for the window resolver, the decision thresholds, the spend reader's
-  micros rounding and window floor, the middleware's 402/alert/fail-open paths
-  and plan-vs-key precedence, the rerank forward and URL derivation, the CSV
-  and JSON exports, and the heartbeat loop's lifecycle.
+- `go vet ./...` clean; `go vet -tags=integration ./internal/integration/...`
+  clean.
+- `golangci-lint run --new-from-rev="$(git merge-base luqman/main HEAD)" ./...`
+  reports 0 issues.
+- `go test -count=1` green on `internal/budget`, `internal/db`,
+  `internal/middleware`, `internal/uptime`, `internal/handlers/media` and
+  `internal/handlers/dashboard`, including new table-driven tests for the
+  window resolver, the decision thresholds, the spend reader's micros rounding
+  and window floor, the middleware's 402/alert/fail-open paths and
+  plan-vs-key precedence, the rerank forward and URL derivation, the CSV and
+  JSON exports, the heartbeat loop's lifecycle, the backup round-trip of the
+  budget columns, and the legacy-schema degradation.
+- `go test -tags=integration -count=1 ./internal/integration/` green, with five
+  new cases driving the real router: an exhausted key is refused 402 without
+  reaching the upstream, an under-ceiling key is served, a soft ceiling alerts,
+  a monthly window excludes older spend, and a plan's budget governs a key with
+  no columns of its own.

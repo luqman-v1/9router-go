@@ -121,7 +121,7 @@ func (p *HTTPPusher) Push(ctx context.Context, status, msg string) error {
 	if err != nil {
 		return fmt.Errorf("uptime: push: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// The body is drained and discarded: a push monitor answers with a short
 	// JSON document, and leaving the body unread keeps the connection from
 	// being reused.
