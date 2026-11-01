@@ -534,6 +534,27 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"deepseek-v4-flash":   {Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 50000},
 		"deepseek-v3-2-volc":  {Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
 	},
+	"hcnsec": {
+		"auto":                {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"DeepSeek-V4-Flash":   {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"DeepSeek-V4-Pro":     {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"DeepSeek-V4.1-Flash": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"glm-5.3":             {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"glm-5.3-flash":       {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"MiniMax-M3.1-Flash":  {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"MiniMax-M3":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"qwen3.7-max":         {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"qwen3.7-plus":        {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"qwen3.8-max":         {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"qwen3.8-flash":       {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"step-3.5-flash":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"step-3.7-flash":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"mimo-v2.5":           {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"mimo-v2.6-flash":     {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"minicpm-4.5":         {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"SenseChat-6":         {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"text-embedding-v4":   {},
+	},
 	"poolside": {
 		"laguna-s-2.1":  {Reasoning: true, Tools: true, ThinkingFormat: "openai"},
 		"laguna-xs-2.1": {Reasoning: true, Tools: true, ThinkingFormat: "openai"},
@@ -693,6 +714,7 @@ func init() {
 	// Aliases share the same capabilities catalog
 	providerCapabilities["dx"] = providerCapabilities["daoxe"]
 	providerCapabilities["nan"] = providerCapabilities["nanbuilders"]
+	providerCapabilities["hc"] = providerCapabilities["hcnsec"]
 	providerCapabilities["oad"] = providerCapabilities["openadapter"]
 
 	initPatternIndex()
