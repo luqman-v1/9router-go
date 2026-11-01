@@ -11,7 +11,8 @@ import (
 // `providerOverrides` settings entry (decolua/9router v0.5.95,
 // src/app/api/providers/[id]/overrides/route.js).
 type ProviderOverrides struct {
-	Headers map[string]string `json:"headers,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	SeatBudgetMs int               `json:"seatBudgetMs,omitempty"`
 }
 
 const (
