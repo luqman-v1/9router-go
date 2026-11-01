@@ -328,3 +328,81 @@ func TestApplyCodexFastMode_TryForwardWithConnectionIntegration(t *testing.T) {
 		t.Fatalf("expected service_tier 'priority' forwarded to upstream, got %v", reqMap["service_tier"])
 	}
 }
+
+func TestApplyCodexFastMode_ModelSuffixTier(t *testing.T) {
+	testCases := []struct {
+		name         string
+		inModel      string
+		inBodyTier   any
+		wantTier     string
+		wantModel    string
+		wantModified bool
+	}{
+		{
+			name:         "fast suffix maps to priority",
+			inModel:      "cx/gpt-6.1-sol(fast)",
+			wantTier:     "priority",
+			wantModel:    "cx/gpt-6.1-sol",
+			wantModified: true,
+		},
+		{
+			name:         "standard suffix maps to default",
+			inModel:      "openai/gpt-6.1-sol(standard)",
+			wantTier:     "default",
+			wantModel:    "openai/gpt-6.1-sol",
+			wantModified: true,
+		},
+		{
+			name:         "dual modifier xhigh,fast combines effort and tier",
+			inModel:      "cx/gpt-6.1-sol(xhigh,fast)",
+			wantTier:     "priority",
+			wantModel:    "cx/gpt-6.1-sol",
+			wantModified: true,
+		},
+		{
+			name:         "dual modifier high,standard combines effort and tier",
+			inModel:      "openai/gpt-6.1-sol(high,standard)",
+			wantTier:     "default",
+			wantModel:    "openai/gpt-6.1-sol",
+			wantModified: true,
+		},
+		{
+			name:         "model suffix takes precedence over request body tier",
+			inModel:      "cx/gpt-6.1-sol(fast)",
+			inBodyTier:   "standard",
+			wantTier:     "priority",
+			wantModel:    "cx/gpt-6.1-sol",
+			wantModified: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			reqMap := map[string]any{"model": tc.inModel}
+			if tc.inBodyTier != nil {
+				reqMap["service_tier"] = tc.inBodyTier
+			}
+			body, err := json.Marshal(reqMap)
+			if err != nil {
+				t.Fatalf("marshal error: %v", err)
+			}
+
+			out, modified := ApplyCodexFastMode(body, "openai", nil)
+			if modified != tc.wantModified {
+				t.Fatalf("modified = %v, want %v", modified, tc.wantModified)
+			}
+
+			var res map[string]any
+			if err := json.Unmarshal(out, &res); err != nil {
+				t.Fatalf("unmarshal output: %v", err)
+			}
+
+			if res["model"] != tc.wantModel {
+				t.Fatalf("model = %v, want %v", res["model"], tc.wantModel)
+			}
+			if res["service_tier"] != tc.wantTier {
+				t.Fatalf("service_tier = %v, want %v", res["service_tier"], tc.wantTier)
+			}
+		})
+	}
+}
