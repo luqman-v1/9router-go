@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'bun:test'
 import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS, PROVIDER_MODELS } from './models'
-import { PROVIDER_CATALOG } from './providers'
+import { PROVIDER_CATALOG, __setProviderCatalogForTest } from './providers'
+import { parseProviderRegistry } from './providers.registry-test'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+// The catalog is served by the Go registry, so the assertions run against that
+// file rather than a TypeScript copy.
+__setProviderCatalogForTest(
+  parseProviderRegistry(readFileSync(resolve(import.meta.dirname, '../../../internal/providers/provider_registry.go'), 'utf8')),
+)
 
 // PROVIDER_MODELS is keyed by provider id, while PROVIDER_ID_TO_ALIAS holds the
 // short display prefix (uiAlias) used to render `cmc/<model>`. The two only

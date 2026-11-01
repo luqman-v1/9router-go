@@ -7,8 +7,17 @@ import { mount } from 'svelte'
 import App from './App.svelte'
 import './index.css'
 import { registerServiceWorker } from './lib/pwa'
+import { loadProviderCatalog } from './lib/providers'
 
 registerServiceWorker()
+// The provider catalog comes from the Go registry, so the app cannot render a
+// provider card before it arrives. A failure here is fatal rather than
+// degraded: every provider view would otherwise render empty and look like a
+// bug in the view rather than a missing fetch.
+loadProviderCatalog().catch((err) => {
+  document.getElementById('app')!.innerHTML =
+    '<div style="padding:2rem;font-family:system-ui">Failed to load the provider catalog: ' + String(err) + '</div>'
+})
 
 const app = mount(App, {
   target: document.getElementById('app')!,

@@ -108,6 +108,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/providers/{id}/overrides", h.HandleGetProviderOverrides)
 		r.Put("/providers/{id}/overrides", h.HandleSaveProviderOverrides)
 		r.Post("/providers/validate", h.HandleValidateProvider)
+		// The provider registry is the single source of truth for the dashboard's
+		// catalog (category, icon, colour, auth type, service kinds), so the SPA
+		// fetches it instead of shipping a second copy that can drift.
+		r.Get("/providers/catalog", h.HandleGetProviderCatalog)
 
 		// Provider Nodes (Custom Endpoints)
 		r.Get("/provider-nodes", h.HandleGetProviderNodes)
