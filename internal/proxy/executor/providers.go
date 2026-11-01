@@ -1045,6 +1045,7 @@ func ensureMessagesFor(body []byte, provider, model string) []byte {
 	delete(reqMap, "stream_options")
 	delete(reqMap, "store")
 	delete(reqMap, "reasoning_effort")
+	delete(reqMap, "n")
 
 	updated, err := marshalStable(reqMap)
 	if err != nil {

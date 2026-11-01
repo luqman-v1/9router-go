@@ -86,11 +86,11 @@ func TestEnsureClaudeMessages_ThinkingDisplay(t *testing.T) {
 // intent did not reintroduce the keys the Messages API rejects.
 func TestEnsureClaudeMessages_StripsOpenAIOnlyFields(t *testing.T) {
 	out := EnsureClaudeMessages(
-		[]byte(`{"model":"m","reasoning_effort":"high","stream_options":{"x":1},"store":true,"messages":[{"role":"user","content":"hi"}]}`),
+		[]byte(`{"model":"m","reasoning_effort":"high","stream_options":{"x":1},"store":true,"n":1,"messages":[{"role":"user","content":"hi"}]}`),
 		"m",
 	)
 
-	for _, key := range []string{"reasoning_effort", "stream_options", "store"} {
+	for _, key := range []string{"reasoning_effort", "stream_options", "store", "n"} {
 		if hasJSONKey(out, key) {
 			t.Errorf("%q survived the conversion: %s", key, out)
 		}
