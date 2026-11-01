@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"9router/proxy/internal/customjson"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 )
@@ -85,6 +86,11 @@ func providerNodeSuffixOf(id string) (suffix string, generated bool) {
 // longest first so "openai-compatible-chat-" is preferred over
 // "openai-compatible-" and the apiType segment is never mistaken for the tail.
 func providerNodeLiteralsForID(id string) []string {
+	// "custom-json" carries its own hyphen, so the generic one-segment cut
+	// below would read its apiType as "custom".
+	if customLiteral := "openai-compatible-" + customjson.APIType; strings.HasPrefix(id, customLiteral+"-") {
+		return []string{customLiteral, "anthropic-compatible", "custom-embedding", "openai-compatible"}
+	}
 	if apiType, _, ok := strings.Cut(strings.TrimPrefix(id, "openai-compatible-"), "-"); ok &&
 		(apiType == "chat" || apiType == "responses") {
 		return []string{"openai-compatible-" + apiType, "anthropic-compatible", "custom-embedding", "openai-compatible"}
@@ -122,11 +128,22 @@ func providerNodeLiterals(nodeType, apiType string) (literal, defaultBaseURL str
 	case "custom-embedding":
 		return "custom-embedding", "https://api.openai.com/v1"
 	default:
-		if apiType != "chat" && apiType != "responses" {
+		// A custom JSON endpoint is a complete URL the operator must name;
+		// there is no default to fall back to.
+		if apiType == customjson.APIType {
+			return "openai-compatible-" + apiType, ""
+		}
+		if !isOpenAICompatibleAPIType(apiType) {
 			apiType = "chat"
 		}
 		return "openai-compatible-" + apiType, "https://api.openai.com/v1"
 	}
+}
+
+// isOpenAICompatibleAPIType reports whether apiType is one an
+// openai-compatible node may store (upstream provider-nodes routes).
+func isOpenAICompatibleAPIType(apiType string) bool {
+	return apiType == "chat" || apiType == "responses" || apiType == customjson.APIType
 }
 
 // validateNodeIDSuffix checks one user-supplied suffix and reports why it is

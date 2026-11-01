@@ -1,3 +1,5 @@
+import type { CustomJsonConfig } from '../lib/customJsonForm'
+
 export interface DatabaseStats {
   databaseSizeBytes: number
   reclaimableBytes: number
@@ -541,6 +543,8 @@ export interface ProviderNode {
   prefix?: string
   apiType?: string
   baseUrl?: string
+  /** Request template and response mapping; only set when apiType is "custom-json". */
+  customJson?: CustomJsonConfig
   /**
    * The custom tail of the provider id, without the "openai-compatible-chat-"
    * literal in front of it. Empty for a node created before the field existed.
@@ -1298,6 +1302,10 @@ export const api = {
     provider: string
     apiKey?: string
     providerSpecificData?: Record<string, unknown>
+    /** Custom JSON nodes: check the stored configuration without calling the endpoint. */
+    validateOnly?: boolean
+    /** Custom JSON nodes: the model a test request names. */
+    modelId?: string
   }): Promise<ValidateProviderResult> => {
     try {
       const res = await request<{ valid?: boolean; supported?: boolean; error?: string | null }>(
@@ -1417,6 +1425,7 @@ export const api = {
     apiType?: string
     baseUrl?: string
     type?: string
+    customJson?: CustomJsonConfig
     /** Replaces the random uuid in the provider id. Omit to keep it generated. */
     urlSuffix?: string
   }) => {
@@ -1426,7 +1435,15 @@ export const api = {
     })
     return res.node
   },
-  validateProviderNode: (payload: { baseUrl: string; apiKey: string; type?: string; modelId?: string }) =>
+  validateProviderNode: (payload: {
+    baseUrl: string
+    apiKey: string
+    type?: string
+    modelId?: string
+    /** "custom-json" sends one real request built from customJson. */
+    apiType?: string
+    customJson?: CustomJsonConfig
+  }) =>
     request<{ valid: boolean; error?: string; method?: string; dimensions?: number }>(
       '/api/provider-nodes/validate',
       {
@@ -1441,7 +1458,7 @@ export const api = {
    */
   updateProviderNode: (
     id: string,
-    payload: { name: string; prefix: string; apiType?: string; baseUrl: string; urlSuffix?: string }
+    payload: { name: string; prefix: string; apiType?: string; baseUrl: string; urlSuffix?: string; customJson?: CustomJsonConfig }
   ) =>
     request<{ node: ProviderNode }>(`/api/provider-nodes/${encodeURIComponent(id)}`, {
       method: 'PUT',

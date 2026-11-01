@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"9router/proxy/internal/customjson"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -529,6 +530,11 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 		} else {
 			delete(psd, "apiType")
 		}
+		// The template and auth type come from the node, never from the
+		// request: a client-supplied {authType:"none"} must not let a
+		// connection skip the key its node requires.
+		storedAPIType, _ := psd["apiType"].(string)
+		setConnCustomJSON(psd, storedCustomJSON(storedAPIType, nodeData.CustomJSON))
 		psd["baseUrl"] = nodeData.BaseURL
 		if node.Name != nil {
 			psd["nodeName"] = *node.Name
@@ -1048,6 +1054,12 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 	}
 	if conn.Data != "" {
 		_ = json.Unmarshal([]byte(conn.Data), &connData)
+	}
+	// A custom JSON endpoint has no model list to import; its models are the
+	// IDs the operator adds by hand (upstream providers/[id]/models route).
+	if customjson.IsConnection(connData.ProviderSpecificData) {
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"models": []any{}, "message": "Custom JSON endpoints use manually configured model IDs"})
+		return
 	}
 	// The Zed catalogue branch reads the same fields through a named type.
 	zedData := &zedConnectionData{

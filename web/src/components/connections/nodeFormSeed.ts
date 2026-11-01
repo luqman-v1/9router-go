@@ -4,7 +4,7 @@ export interface NodeFormSeed {
   name: string
   /** The provider prefix the node's models already resolve under (`<prefix>/<model>`). */
   prefix: string
-  apiType: 'chat' | 'responses'
+  apiType: 'chat' | 'responses' | 'custom-json'
   baseUrl: string
   urlSuffix: string
 }
@@ -33,7 +33,7 @@ export function nodeFormSeed(
   return {
     name: node.name || '',
     prefix: node.prefix || '',
-    apiType: node.apiType === 'responses' ? 'responses' : 'chat',
+    apiType: node.apiType === 'responses' || node.apiType === 'custom-json' ? node.apiType : 'chat',
     baseUrl:
       node.baseUrl ||
       (isAnthropic ? DEFAULT_BASE_URL.anthropic : DEFAULT_BASE_URL.openai),
