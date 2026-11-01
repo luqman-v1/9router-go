@@ -1409,6 +1409,7 @@
             type="button"
             disabled={bulkEntries.length === 0 || bulkProblems.length > 0 || bulkKeyBusy}
             onclick={handleBulkCreateKeys}
+            aria-label="Create keys"
             class="flex-1 py-2 px-4 rounded-lg bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white font-semibold text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
           >
             {#if bulkKeyBusy}
