@@ -38,6 +38,9 @@
   import TopBar from './components/TopBar.svelte'
   import CommandPalette from './components/CommandPalette.svelte'
   import { parseMediaProvider, parseProviderId, pathToTab, providerPath, mediaProviderPath, TAB_ROUTES, type ActiveTab, type MediaProviderRoute } from './lib/router'
+  import { parseProviderShareHash, type ProviderShareLink } from './lib/providerShare'
+  import { notifications } from './lib/notifications'
+  import AddProviderFromLinkModal from './components/connections/AddProviderFromLinkModal.svelte'
   import { PROVIDER_CATALOG } from './lib/providers'
   import { getIconPath } from './components/connections/types'
   import { isNavHidden, NAV_ORDER, normalizeHiddenNav, normalizeNavOrder } from './lib/nav'
@@ -102,6 +105,10 @@
   let selectedMedia = $state<MediaProviderRoute | null>(
     typeof window !== 'undefined' ? parseMediaProvider(window.location.pathname) : null
   )
+  // A share link opened in this tab. Read once from the fragment (and once from
+  // the login stash, below) — not a $derived, because the operator's edits in
+  // the modal must survive the dashboard's 10s poll.
+  let pendingAddLinks = $state<ProviderShareLink[]>([])
   // OAuth callback tab (provider redirect target): standalone page, no login
   // gate — it only hands the code over to the dashboard tab via storage.
   let isOAuthCallback = $state(
@@ -198,6 +205,14 @@
 
   onMount(() => {
     applyAnimationLevel()
+    // A share link is read from the fragment on mount, and from the login stash
+    // when the redirect to /login lost it. sessionStorage, not localStorage: a
+    // pending link must not outlive the tab it was opened in.
+    const stashed = sessionStorage.getItem('9router_pending_add')
+    if (stashed) sessionStorage.removeItem('9router_pending_add')
+    const parsed = parseProviderShareHash(stashed || window.location.hash)
+    if (Array.isArray(parsed)) pendingAddLinks = parsed
+    else if (parsed) pendingAddLinks = [parsed]
     // Ctrl+K / Cmd+K opens the search palette from anywhere in the dashboard.
     // The guard on the modifier is what keeps a bare "k" from opening it while
     // the operator types in a field.
@@ -219,6 +234,11 @@
     checkAuth().then(() => {
       if (requireLogin && !isAuthenticatedState) {
         if (activeTab !== 'login') {
+          // Stash the fragment before the redirect drops it: /login is a
+          // different navigation, so the fragment does not survive it.
+          if (pendingAddLinks.length) {
+            sessionStorage.setItem('9router_pending_add', window.location.hash)
+          }
           navigate('login', true)
         }
       } else {
@@ -230,7 +250,9 @@
     })
 
     const rawPath = window.location.pathname.replace(/\/+$/, '') || '/'
-    if (isAuthenticatedState && (rawPath === '/' || rawPath === '/dashboard')) {
+    // Not while a share link is open: replaceState would drop the fragment the
+    // modal was built from.
+    if (isAuthenticatedState && (rawPath === '/' || rawPath === '/dashboard') && !pendingAddLinks.length) {
       window.history.replaceState({ tab: activeTab }, '', TAB_ROUTES[activeTab])
     }
 
@@ -376,6 +398,23 @@
 {:else}
   <div class="flex h-screen w-full overflow-hidden bg-bg text-text-main font-body transition-colors duration-300">
     <Toasts />
+    {#if pendingAddLinks.length}
+      <AddProviderFromLinkModal
+        isOpen
+        links={pendingAddLinks}
+        onClose={() => (pendingAddLinks = [])}
+        onDone={(prov, added, skipped) => {
+          pendingAddLinks = []
+          loadData()
+          navigate('connections', false, prov)
+          if (added > 0 || skipped > 0) {
+            notifications.success(`${added} model(s) added to ${prov}${skipped ? `, ${skipped} skipped` : ''}`)
+          } else {
+            notifications.success(`Provider ${prov} added`)
+          }
+        }}
+      />
+    {/if}
     <!-- Mobile sidebar drawer backdrop -->
     {#if isMobileMenuOpen}
       <div

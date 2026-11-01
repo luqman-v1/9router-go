@@ -519,6 +519,22 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	r.Get("/media-providers/*", webH.ServeHTTP)
 	r.Get("/media-providers/web", webH.ServeHTTP)
 	r.Get("/connections", webH.ServeHTTP)
+	// Provider share link: a fragment-only URL that the dashboard SPA resolves.
+	// Registered here, not under /dashboard/*, because the receiver may not have
+	// a session yet — the SPA gates the write itself and preserves the fragment
+	// across the login redirect. The fragment never reaches the server, so a key
+	// embedded in the link is never logged.
+	//
+	// The pattern is "/add", not "/v1/add": RequestLogger
+	// (internal/middleware/logging.go:70-77) strips a leading /v1/ from
+	// req.URL.Path before the router sees it, so a "/v1/add" pattern would never
+	// match. /v1/add still reaches this handler — the prefix is virtual, which
+	// is why every engine route is registered twice below.
+	//
+	// It also must not go into SetupRoutes: that whole group is mounted inside
+	// RequireApiKey (router.go:627-631), so an add route registered there would
+	// answer 401 to the browser that is supposed to open it.
+	r.Get("/add", webH.ServeHTTP)
 	r.Get("/combos", webH.ServeHTTP)
 	r.Get("/analytics", webH.ServeHTTP)
 	r.Get("/terminal", webH.ServeHTTP)

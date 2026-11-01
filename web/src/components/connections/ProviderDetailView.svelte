@@ -90,6 +90,7 @@
   import ProviderHeaderOverridesModal from './ProviderHeaderOverridesModal.svelte'
   import EditCompatibleNodeModal from './EditCompatibleNodeModal.svelte'
   import ExportKeysModal from './ExportKeysModal.svelte'
+  import ShareProviderModal from './ShareProviderModal.svelte'
   import FreebuffSessionBanner from './FreebuffSessionBanner.svelte'
   import ProviderIcon from './ProviderIcon.svelte'
 
@@ -709,6 +710,22 @@
   let showAddCustomModelModal = $state(false)
   let showEditNodeModal = $state(false)
   let showExportKeysModal = $state(false)
+  let showShareProviderModal = $state(false)
+  // Everything the Share modal can offer in a multi-provider set: the custom
+  // nodes (which carry their own endpoint) plus the registered providers this
+  // instance actually holds a connection for. A provider with no credential is
+  // not shareable — the receiver would get a row that cannot answer.
+  let shareableProviders = $derived.by(() => {
+    const withConnections = new Set(providerConnections.filter((c) => c.isActive !== 0).map((c) => c.provider))
+    const out: Array<{ id: string; name: string; isCompatible: boolean }> = []
+    for (const n of providerNodes) out.push({ id: n.id, name: n.name || n.id, isCompatible: true })
+    for (const item of PROVIDER_CATALOG) {
+      if (withConnections.has(item.id) || withConnections.has(item.alias || '')) {
+        out.push({ id: item.id, name: item.name || item.id, isCompatible: false })
+      }
+    }
+    return out
+  })
   let showHeaderOverrides = $state(false)
   // Freebuff specific state & session tracking
   let isFreebuff = $derived(
@@ -3394,6 +3411,14 @@
           </button>
           <button
             type="button"
+            onclick={() => (showShareProviderModal = true)}
+            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
+          >
+            <span class="material-symbols-outlined text-[18px]">link</span>
+            Share
+          </button>
+          <button
+            type="button"
             onclick={() => (showEditNodeModal = true)}
             class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
           >
@@ -4160,6 +4185,14 @@
         >
           <span class="material-symbols-outlined text-[18px]">download</span>
           Export Keys
+        </button>
+        <button
+          type="button"
+          onclick={() => (showShareProviderModal = true)}
+          class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
+        >
+          <span class="material-symbols-outlined text-[18px]">link</span>
+          Share
         </button>
       {/if}
     </div>
@@ -5391,4 +5424,14 @@
   providerId={providerId}
   providerName={providerName}
   onClose={() => (showExportKeysModal = false)}
+/>
+<ShareProviderModal
+  isOpen={showShareProviderModal}
+  providerId={providerId}
+  providerName={providerName}
+  isCompatibleNode={isCompatibleNode}
+  node={selectedNode}
+  connections={providerConnections}
+  availableProviders={shareableProviders}
+  onClose={() => (showShareProviderModal = false)}
 />
