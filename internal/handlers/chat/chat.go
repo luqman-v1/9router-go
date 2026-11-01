@@ -144,7 +144,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 				w.Header().Set("X-Cache", "HIT")
 				w.Header().Set("X-Prompt-Cache", "exact")
 				w.WriteHeader(entry.StatusCode)
-				w.Write(entry.Body)
+				_, _ = w.Write(entry.Body)
 				log.Info("chat", "prompt cache hit", "model", reqBody.Model, "bytes", len(entry.Body))
 				return
 			}

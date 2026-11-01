@@ -260,14 +260,19 @@ func TestHandleEmbeddings_ForwardStaticHeaders(t *testing.T) {
 		if auth := r.Header.Get("Authorization"); auth != "Bearer gh-token" {
 			t.Errorf("expected Authorization Bearer gh-token, got %q", auth)
 		}
-		if integID := r.Header.Get("copilot-integration-id"); integID != "vscode-chat" {
-			t.Errorf("expected copilot-integration-id vscode-chat, got %q", integID)
+		// The registry ships the CLI identity, not the VS Code extension
+		// identity: Copilot exposes a wider entitled catalogue to
+		// copilot-developer-cli, so the narrow vscode-chat headers made the
+		// gateway advertise models the account does not own. See
+		// providers.GitHubCopilotChatHeaders.
+		if integID := r.Header.Get("copilot-integration-id"); integID != "copilot-developer-cli" {
+			t.Errorf("expected copilot-integration-id copilot-developer-cli, got %q", integID)
 		}
-		if apiVer := r.Header.Get("x-github-api-version"); apiVer != "2025-04-01" {
-			t.Errorf("expected x-github-api-version 2025-04-01, got %q", apiVer)
+		if apiVer := r.Header.Get("x-github-api-version"); apiVer != providers.GitHubCopilotAPIVersion {
+			t.Errorf("expected x-github-api-version %s, got %q", providers.GitHubCopilotAPIVersion, apiVer)
 		}
-		if editorVer := r.Header.Get("editor-version"); editorVer != "vscode/1.110.0" {
-			t.Errorf("expected editor-version vscode/1.110.0, got %q", editorVer)
+		if editorVer := r.Header.Get("editor-version"); editorVer != "copilot/"+providers.GitHubCopilotCLIVersionString() {
+			t.Errorf("expected editor-version copilot/%s, got %q", providers.GitHubCopilotCLIVersionString(), editorVer)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -281,11 +286,6 @@ func TestHandleEmbeddings_ForwardStaticHeaders(t *testing.T) {
 		"baseUrl":    upstream.URL,
 		"authHeader": "Authorization",
 		"authScheme": "Bearer",
-		"staticHeaders": map[string]string{
-			"copilot-integration-id": "vscode-chat",
-			"x-github-api-version":   "2025-04-01",
-			"editor-version":         "vscode/1.110.0",
-		},
 	})
 	_, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-gh', 'github', 'apikey', 'GitHub Copilot', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(data))

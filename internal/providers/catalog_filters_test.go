@@ -106,9 +106,12 @@ func TestGitHubCopilotChatHeaders(t *testing.T) {
 		}
 	}
 	// The machine id must be stable across calls: minting a fresh random id
-	// per request would itself be an anti-fingerprint tell.
-	if GitHubCopilotMachineID() != GitHubCopilotMachineID() {
-		t.Error("GitHubCopilotMachineID() is not stable across calls")
+	// per request would itself be an anti-fingerprint tell. The two values are
+	// captured before comparison so the assertion compares stored results
+	// rather than re-invoking the same expression.
+	first, second := GitHubCopilotMachineID(), GitHubCopilotMachineID()
+	if first != second {
+		t.Errorf("GitHubCopilotMachineID() is not stable across calls: %q vs %q", first, second)
 	}
 }
 
