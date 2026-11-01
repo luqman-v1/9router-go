@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -717,6 +718,28 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 				AuthScheme: constants.AuthSchemeBearer,
 			}
 		}
+	}
+
+	// Upstream parity: resolve {accountId} in the transport baseUrl from the
+	// connection's providerSpecificData.accountId, with CLOUDFLARE_ACCOUNT_ID
+	// as a legacy fallback (open-sse/executors/default.js:181).
+	if baseCfg != nil && strings.Contains(baseCfg.BaseURL, "{accountId}") {
+		accountID := ""
+		if connData != nil {
+			if aid, ok := connData.ProviderSpecificData["accountId"].(string); ok && aid != "" {
+				accountID = aid
+			}
+		}
+		if accountID == "" {
+			accountID = os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+		}
+		if accountID == "" {
+			// Return nil config with a specific error, matching upstream's
+			// `${provider} requires accountId in providerSpecificData`.
+			// The caller in chat.go reads cfg == nil and produces the user-visible message.
+			return nil, fmt.Errorf("cloudflare-ai requires accountId in providerSpecificData (the Account ID field in the dashboard or CLOUDFLARE_ACCOUNT_ID env var)")
+		}
+		baseCfg.BaseURL = strings.Replace(baseCfg.BaseURL, "{accountId}", accountID, 1)
 	}
 
 	if baseCfg == nil {
