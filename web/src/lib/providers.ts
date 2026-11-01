@@ -1435,6 +1435,22 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "zcode",
+    "name": "ZCode (Z.ai)",
+    "category": "oauth",
+    "alias": "zcode",
+    "color": "#2563EB",
+    "icon": "terminal",
+    "website": "https://zcode.z.ai",
+    "notice": {"signupUrl":"https://zcode.z.ai","text":"Sign in with your Z.ai account. Consumes the free Start Plan / Weekend Build quota."},
+    "noAuth": false,
+    "authModes": ["oauth"],
+    "priority": 141,
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
     "id": "google-pse",
     "name": "Google PSE",
     "category": "apikey",

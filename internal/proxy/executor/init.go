@@ -49,6 +49,7 @@ func RegisterAll() {
 	Register("gitlab", func() Executor { return ForwardOpenAI })
 	Register("glm-cn", func() Executor { return ForwardZai })
 	Register("glm", func() Executor { return ForwardZai })
+	Register("zcode", func() Executor { return ForwardZcode })
 	Register("nebius", func() Executor { return ForwardOpenAI })
 	Register("minimax", func() Executor { return ForwardOpenAI })
 	Register("kimi", func() Executor { return ForwardKimi })

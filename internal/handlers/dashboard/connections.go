@@ -147,6 +147,7 @@ var usageSupportedProviders = []string{
 	"minimax-code-global", "ollama",
 	"opencode-go", "opencode-zen", "qoder", "qoder-cn", "trae",
 	"vercel-ai-gateway", "xiaomi-mimo", "zed",
+	"zcode",
 }
 
 // usageApikeyProviders mirrors upstream USAGE_APIKEY_PROVIDERS

@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"bytes"
+	"context"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -22,7 +23,7 @@ import (
 var deviceProviders = []string{
 	"qoder", "qoder-cn", "kilocode", "grok-cli", "github", "kiro", "kimi", "kimi-coding",
 	"codebuddy-cn", "codebuddy-intl", "muse", "minimax-code", "minimax-code-global", "nous",
-	"glm",
+	"glm", "zcode",
 }
 
 func deviceSupported(p string) bool {
@@ -174,7 +175,7 @@ func (h *OAuthHandler) HandleDeviceStart(w http.ResponseWriter, r *http.Request)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "unsupported provider for device flow")
 		return
 	}
-	out, err := deviceStart(provider, body.Region, body.StartURL, body.AuthMethod)
+	out, err := deviceStart(r.Context(), provider, body.Region, body.StartURL, body.AuthMethod)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		return
@@ -183,7 +184,7 @@ func (h *OAuthHandler) HandleDeviceStart(w http.ResponseWriter, r *http.Request)
 	handlerutil.WriteJSON(w, http.StatusOK, out)
 }
 
-func deviceStart(provider, region, startURL, authMethod string) (map[string]any, error) {
+func deviceStart(ctx context.Context, provider, region, startURL, authMethod string) (map[string]any, error) {
 	switch provider {
 	case "qoder", "qoder-cn":
 		return qoderStart(provider)
@@ -207,6 +208,8 @@ func deviceStart(provider, region, startURL, authMethod string) (map[string]any,
 		return nousStart()
 	case "glm":
 		return glmStart()
+	case "zcode":
+		return zcodeStartContext(ctx, provider)
 	default:
 		return nil, fmt.Errorf("unsupported provider")
 	}
@@ -433,7 +436,7 @@ func (h *OAuthHandler) HandleDevicePoll(w http.ResponseWriter, r *http.Request) 
 	if body.Session == nil {
 		body.Session = map[string]any{}
 	}
-	tokens, status, errMsg := devicePoll(deviceCanonical(body.Provider), code, body.Session)
+	tokens, status, errMsg := devicePoll(r.Context(), deviceCanonical(body.Provider), code, body.Session)
 	if errMsg != "" {
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": status, "error": errMsg, "provider": body.Provider})
 		return
@@ -460,7 +463,7 @@ type deviceTokens struct {
 	extra                        map[string]any
 }
 
-func devicePoll(provider, code string, session map[string]any) (deviceTokens, string, string) {
+func devicePoll(ctx context.Context, provider, code string, session map[string]any) (deviceTokens, string, string) {
 	var t deviceTokens
 	var err error
 	switch provider {
@@ -486,6 +489,8 @@ func devicePoll(provider, code string, session map[string]any) (deviceTokens, st
 		t, err = nousPoll(code)
 	case "glm":
 		t, err = glmPoll(session, code)
+	case "zcode":
+		t, err = zcodePollContext(ctx, provider, code, session)
 	default:
 		return t, "error", "unsupported provider"
 	}
@@ -516,7 +521,8 @@ func (h *OAuthHandler) saveDeviceConnection(provider string, t deviceTokens) sav
 		"qoder": "Qoder", "qoder-cn": "Qoder CN", "kilocode": "KiloCode", "grok-cli": "Grok CLI",
 		"github": "GitHub", "kiro": "Kiro", "kimi": "Kimi", "muse": "Muse",
 		"codebuddy-cn": "CodeBuddy", "codebuddy-intl": "CodeBuddy",
-		"nous": "Nous Research", "glm": "Zai GLM Coding",
+		"zcode": "ZCode",
+		"nous":  "Nous Research", "glm": "Zai GLM Coding",
 	}[provider])
 	id := provider + "-" + shortHash(t.access)
 	dataMap := map[string]any{"apiKey": t.access, "accessToken": t.access}
@@ -534,6 +540,22 @@ func (h *OAuthHandler) saveDeviceConnection(provider string, t deviceTokens) sav
 		dataMap["apiKey"] = ak
 	}
 	delete(psd, "apiKey")
+	// A re-login mints a new plan JWT, so hashing the credential would create a
+	// second active row for the same z.ai account — and the new token bumps
+	// token_version, killing the old row that rotation would still dial. Anchor
+	// the connection on the account instead and keep the identity the gateway
+	// already knows: a device that changes on every re-login is exactly what the
+	// identity gate flags.
+	if provider == "zcode" && h.Repo != nil && h.Repo.RawDB() != nil {
+		if prevID, prevPSD := zcodeExistingIdentity(context.Background(), h.Repo.RawDB(), email); prevID != "" {
+			id = prevID
+			for _, key := range []string{"deviceId", "sessionSeed", "accountUUID"} {
+				if v, ok := prevPSD[key].(string); ok && v != "" {
+					psd[key] = v
+				}
+			}
+		}
+	}
 	dataMap["providerSpecificData"] = psd
 	if t.expiresIn > 0 {
 		dataMap["expiresAt"] = time.Now().Add(time.Duration(t.expiresIn) * time.Second).UTC().Format(time.RFC3339)

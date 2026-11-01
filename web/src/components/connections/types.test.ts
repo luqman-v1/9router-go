@@ -89,6 +89,10 @@ describe('getIconPath', () => {
     // zai-search is a Go registry entry with no upstream counterpart, so
     // /providers/zai-search.png 404s; it resolves to GLM's mark instead.
     expect(getIconPath('zai-search')).toBe('/providers/glm.png')
+    // zcode is a real catalog id that shares Z.ai's mark. It resolves through
+    // the alias too, which is why no second copy of glm.png is committed: a
+    // duplicate would never be requested and would silently drift.
+    expect(getIconPath('zcode')).toBe('/providers/glm.png')
   })
 
   test('keeps the generic glyphs for compatible nodes and unknown ids', () => {
