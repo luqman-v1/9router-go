@@ -56,6 +56,8 @@ export interface CustomModelData {
 // artwork for all of those, so aliasing them here would throw away a real logo.
 const ICON_ALIASES: Record<string, string> = {
   'zai-search': 'glm',
+  // ZCode rides the GLM/Z.ai brand — same mark as glm.png.
+  'zcode': 'glm',
 }
 
 export function getIconPath(id?: string | null, apiType?: string): string {

@@ -98,6 +98,8 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 		return fetchOpenCodeZenUsage(ctx, apiKey, connectionBaseURL(data)), true
 	case "minimax-code", "minimax-code-global":
 		return fetchMiniMaxCodeUsage(ctx, provider, accessToken, psdStr(psd, "realUserID")), true
+	case "zcode":
+		return fetchZcodeUsage(ctx, firstNonEmptyStr(accessToken, apiKey), psdStr(psd, "deviceId")), true
 	case "glm", "glm-cn":
 		return fetchGLMUsage(ctx, provider, firstNonEmptyStr(apiKey, accessToken)), true
 	default:
