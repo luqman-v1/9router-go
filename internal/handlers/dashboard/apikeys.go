@@ -111,10 +111,10 @@ func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Reque
 			"budgetPeriod": k.BudgetPeriod,
 			"alertPct":     k.AlertPct,
 			"hardCutoff":   k.HardCutoff,
-			"expiresAt":            stringOrEmpty(k.ExpiresAt),
-			"lastUsedAt":           stringOrEmpty(k.LastUsedAt),
-			"usedCount":            intOrZero(k.UsedCount),
-			"metadata":             stringOrEmpty(k.Metadata),
+			"expiresAt":    stringOrEmpty(k.ExpiresAt),
+			"lastUsedAt":   stringOrEmpty(k.LastUsedAt),
+			"usedCount":    intOrZero(k.UsedCount),
+			"metadata":     stringOrEmpty(k.Metadata),
 			// #365 The spend a tokenQuota is measured against. The dashboard
 			// renders it against the quota as a progress bar and offers a
 			// reset, so it has to travel with the row: without it every

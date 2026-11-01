@@ -123,6 +123,7 @@ func (rl *RateLimiter) planSource() policy.PlanSource {
 	}
 	return *p
 }
+
 // SetBudgetReader wires the per-period spend reader (F-2). Call it before the
 // first request; the atomic pointer keeps a later rewiring safe for readers
 // already measuring a key.
@@ -132,6 +133,7 @@ func (rl *RateLimiter) SetBudgetReader(src budget.Reader) {
 	}
 	rl.budgetSpend.Store(&src)
 }
+
 // budgetReader returns the wired spend reader, or nil when none was set.
 func (rl *RateLimiter) budgetReader() budget.Reader {
 	if rl == nil {

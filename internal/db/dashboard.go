@@ -346,6 +346,7 @@ func (r *Repo) SetApiKeyPeriodBudget(keyID string, limitMicros, limitTokens int6
 	}
 	return nil
 }
+
 // GetApiKeyTokenUsage returns the cumulative prompt+completion tokens a key has
 // spent since its budget was last reset, which is what tokenQuota is measured
 // against. A key that has never been reset spends against its whole life, the
