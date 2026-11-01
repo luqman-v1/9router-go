@@ -60,3 +60,18 @@ func TestClassifyErrorForProvider_CbaiAliasResolves(t *testing.T) {
 		t.Errorf("cbai alias classified %+v", cls)
 	}
 }
+
+func TestClassifyError_CodebuddyCodes(t *testing.T) {
+	cls1 := ClassifyError(400, "11158: model_not_in_plan", 0)
+	if !cls1.ShouldFallback {
+		t.Error("expected fallback for 11158")
+	}
+	cls2 := ClassifyError(400, "14018: credits exhausted", 0)
+	if !cls2.ShouldFallback || cls2.CooldownMs != cooldownLong {
+		t.Errorf("14018 classified %+v, want cooldownLong", cls2)
+	}
+	cls3 := ClassifyError(400, "11140: account has been restricted due to unusual activity", 0)
+	if !cls3.ShouldFallback || cls3.CooldownMs != cooldownAddressRefused {
+		t.Errorf("11140 classified %+v, want cooldownAddressRefused", cls3)
+	}
+}

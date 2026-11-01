@@ -621,3 +621,65 @@ func TestForwardCodebuddyCN_OverrideCaseInsensitive(t *testing.T) {
 		t.Errorf("X-IDE-Type sent %d times, want exactly 1", n)
 	}
 }
+
+func TestCodebuddyHeaders_CKAPIKey(t *testing.T) {
+	key := "ck_testkey12345678"
+	req := &Request{
+		APIKey: key,
+		Body:   []byte(`{}`),
+	}
+	cfg := &providers.ProviderConfig{
+		BaseURL: "https://www.codebuddy.ai/v2/chat/completions",
+	}
+	h := codebuddyHeaders(req, cfg, req.Body)
+	if h["Authorization"] != "Bearer "+key {
+		t.Errorf("Authorization = %q, want Bearer %s", h["Authorization"], key)
+	}
+	if h["X-API-Key"] != key {
+		t.Errorf("X-API-Key = %q, want %s", h["X-API-Key"], key)
+	}
+	if _, ok := h["X-Domain"]; ok {
+		t.Error("X-Domain should be omitted for ck_ keys")
+	}
+	if h["X-User-Id"] != "anonymous_12345678" {
+		t.Errorf("X-User-Id = %q, want anonymous_12345678", h["X-User-Id"])
+	}
+	if h["X-IDE-Type"] != "WorkBuddy" {
+		t.Errorf("X-IDE-Type = %q, want WorkBuddy", h["X-IDE-Type"])
+	}
+	if h["X-Agent-Runtime"] != "local-agent" {
+		t.Errorf("X-Agent-Runtime = %q, want local-agent", h["X-Agent-Runtime"])
+	}
+}
+
+func TestTransformCodebuddyBody_ReasoningMapping(t *testing.T) {
+	input := `{"model":"glm-5.2","messages":[{"role":"assistant","content":"hello","reasoning_content":"my reasoning"}]}`
+	out, err := transformCodebuddyBody([]byte(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var m struct {
+		Messages []struct {
+			Role             string `json:"role"`
+			Content          any    `json:"content"`
+			Reasoning        string `json:"reasoning"`
+			ReasoningContent string `json:"reasoning_content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(m.Messages) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(m.Messages))
+	}
+	asst := m.Messages[1]
+	if asst.Role != "assistant" {
+		t.Fatalf("expected assistant role, got %q", asst.Role)
+	}
+	if asst.Reasoning != "my reasoning" {
+		t.Errorf("expected reasoning = 'my reasoning', got %q", asst.Reasoning)
+	}
+	if asst.ReasoningContent != "" {
+		t.Errorf("reasoning_content should be deleted/mapped, got %q", asst.ReasoningContent)
+	}
+}
