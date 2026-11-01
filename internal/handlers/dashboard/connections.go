@@ -1335,7 +1335,7 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 	// plain /models URL, and the two namespaces are disjoint, so the branch
 	// resolves which connection it is before fetching.
 	if isClineFamily(conn.Provider) {
-		items, warning, ferr := fetchClineModels(conn.Provider, conn.Data, clineCatalogTimeout)
+		items, warning, ferr := fetchClineModels(r.Context(), conn.Provider, conn.Data, clineCatalogTimeout)
 		if ferr != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to fetch Cline models: "+ferr.Error())
 			return

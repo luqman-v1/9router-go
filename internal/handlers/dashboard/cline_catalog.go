@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"encoding/json/v2"
 	"io"
 	"net/http"
@@ -129,7 +130,7 @@ func clineCanonical(providerID string) string {
 // Every failure path falls back to the offline catalogue with a Warning rather
 // than returning an error: the Import button completes and the operator sees why
 // the list is static, which is more useful than a dead button.
-func fetchClineModels(providerID, data string, timeout time.Duration) ([]clineModelItem, string, error) {
+func fetchClineModels(ctx context.Context, providerID, data string, timeout time.Duration) ([]clineModelItem, string, error) {
 	canonical := clineCanonical(providerID)
 	isPass := canonical == "clinepass"
 
@@ -137,7 +138,7 @@ func fetchClineModels(providerID, data string, timeout time.Duration) ([]clineMo
 	if token == "" {
 		return clineFallbackModels(isPass), "No Cline credential on this connection — using the built-in fallback catalogue.", nil
 	}
-	raw, status, err := getClineCatalog(clineEndpointFor(isPass), token, timeout)
+	raw, status, err := getClineCatalog(ctx, clineEndpointFor(isPass), token, timeout)
 	if err != nil {
 		return clineFallbackModels(isPass), "Live Cline catalogue unreachable (" + err.Error() + ") — using the built-in fallback catalogue.", nil
 	}
@@ -213,8 +214,10 @@ func clineEndpointFor(isPass bool) string {
 // The token is normalized to the `workos:` form here, so a connection saved
 // before that normalization still imports correctly. ClinePass keys ride plain
 // Bearer — NormalizeProviderToken makes exactly that distinction.
-func getClineCatalog(url, token string, timeout time.Duration) ([]byte, int, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func getClineCatalog(ctx context.Context, url, token string, timeout time.Duration) ([]byte, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -223,12 +226,11 @@ func getClineCatalog(url, token string, timeout time.Duration) ([]byte, int, err
 	for k, v := range providers.ClineIdentityHeaders(updater.CurrentVersion, nil) {
 		req.Header.Set(k, v)
 	}
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return nil, resp.StatusCode, err
