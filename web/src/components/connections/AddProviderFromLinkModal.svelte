@@ -43,6 +43,11 @@
   let error = $state('')
   let validateState = $state<Record<string, 'checking' | 'valid' | 'invalid' | null>>({})
   let validateError = $state<Record<string, string>>({})
+  // Per-card selection and collapse state. A multi-provider link is a list the
+  // operator triages, so "which of these do I actually want" and "show me the
+  // details of this one" are per-card, not modal-wide.
+  let cardChecked = $state<Record<string, boolean>>({})
+  let cardExpanded = $state<Record<string, boolean>>({})
   // A node that already exists here with a different endpoint: the link must not
   // silently rewrite it, so the operator is asked once per card.
   let endpointChoice = $state<Record<string, 'stored' | 'link'>>({})
@@ -84,6 +89,17 @@
     validateState = {}
     validateError = {}
     endpointChoice = {}
+    // Every card starts selected; only the first is expanded, so a 4-provider
+    // link opens as a compact list the operator can triage rather than four
+    // full forms stacked on top of each other.
+    const checked: Record<string, boolean> = {}
+    const expanded: Record<string, boolean> = {}
+    links.forEach((l, i) => {
+      checked[l.prov] = true
+      expanded[l.prov] = i === 0
+    })
+    cardChecked = checked
+    cardExpanded = expanded
     // Two reads the write path needs: the nodes already here (adopt or create)
     // and the connection names (so a bulk name collision becomes Key 2).
     Promise.all([api.getProviderNodes(), api.getConnections()])
@@ -152,6 +168,12 @@
     }
   }
 
+  /** Per-card write result. `modelError` names a provider whose catalogue failed. */
+  interface AddOutcome {
+    added: number
+    skipped: number
+    modelError: string
+  }
   async function saveModels(alias: string, ids: string[]): Promise<{ added: number; skipped: number }> {
     if (!ids.length) return { added: 0, skipped: 0 }
     const res = await api.saveCustomModelsBulk({
@@ -161,8 +183,15 @@
     return { added: res.added?.length ?? 0, skipped: res.skipped?.length ?? 0 }
   }
 
-  /** Adds one provider card. Returns the outcome so Add all can report per card. */
-  async function addOne(link: ProviderShareLink): Promise<{ added: number; skipped: number }> {
+  /**
+   * Adds one provider card. Returns the outcome so Add all can report per card.
+   *
+   * A model-import failure is reported in `modelError` rather than thrown: the
+   * node and the connection are already persisted at that point, so throwing
+   * would discard a provider that works while telling the operator nothing
+   * landed. Only a failure of the node or connection write itself throws.
+   */
+  async function addOne(link: ProviderShareLink): Promise<AddOutcome> {
     const form = formOf(link.prov)
     if (!form) throw new Error('form not seeded')
     const existing = existingNodes.find((n) => n.id === link.prov)
@@ -189,19 +218,26 @@
     })
     let added = 0
     let skipped = 0
-    if (form.modelMode === 'auto') {
-      const res = await api.getConnectionModels(created.id)
-      const raw = (res.models || []).map((m) => (typeof m === 'string' ? m : (m.id || m.model || ''))).filter(Boolean)
-      const filtered = applyModelFilters(raw.map((id) => ({ id })) as CatalogModel[], modelSelectionFor(link))
-      ;({ added, skipped } = await saveModels(link.prov, filtered.map((m) => m.id)))
-    } else {
-      ;({ added, skipped } = await saveModels(link.prov, modelIDsFor(link)))
+    let modelError = ''
+    try {
+      if (form.modelMode === 'auto') {
+        const res = await api.getConnectionModels(created.id)
+        const raw = (res.models || []).map((m) => (typeof m === 'string' ? m : (m.id || m.model || ''))).filter(Boolean)
+        const filtered = applyModelFilters(raw.map((id) => ({ id })) as CatalogModel[], modelSelectionFor(link))
+        ;({ added, skipped } = await saveModels(link.prov, filtered.map((m) => m.id)))
+      } else {
+        ;({ added, skipped } = await saveModels(link.prov, modelIDsFor(link)))
+      }
+    } catch (err) {
+      // The provider is live; only its catalogue did not arrive. Name the
+      // provider so a multi-card link says which one, and keep going.
+      modelError = `${link.name || link.prov}: ${err instanceof Error ? err.message : String(err)}`
     }
-    return { added, skipped }
+    return { added, skipped, modelError }
   }
 
   /** Bulk scope: the node once, then one connection per key, named collision-free. */
-  async function addBulk(link: ProviderShareLink): Promise<{ added: number; skipped: number }> {
+  async function addBulk(link: ProviderShareLink): Promise<AddOutcome> {
     const form = formOf(link.prov)
     if (!form) throw new Error('form not seeded')
     const existing = existingNodes.find((n) => n.id === link.prov)
@@ -220,60 +256,101 @@
     // as rows land: a set= link runs several cards in sequence, and a stale list
     // would let card 2 propose a name card 1 just took — a 409 the operator
     // cannot explain, because both names came from the same link.
+    //
+    // planBulkAdd always appends " <n>", which is right for the paste-a-list
+    // modal (its input is usually bare keys) but wrong here: a shared link names
+    // its keys deliberately, and "Foxtrot A" should stay "Foxtrot A" unless that
+    // name is genuinely taken. So the name is taken verbatim when it is free,
+    // and the helper's gap-filled form is used only for the names that collide.
     let names = [...existingNames]
-    for (const entry of planBulkAdd(
+    const taken = new Set(names.map((n) => n.toLowerCase()))
+    const planned = planBulkAdd(
       link.keys.map((k) => `${k.name || 'Key'}|${k.key}`),
       names,
-    )) {
+    )
+    for (const entry of planned) {
+      const wanted = link.keys[planned.indexOf(entry)]?.name?.trim() || ''
+      const finalName = wanted && !taken.has(wanted.toLowerCase()) ? wanted : entry.name
+      taken.add(finalName.toLowerCase())
       await api.createConnection({
         provider: link.prov,
         authType: 'compatible',
         apiKey: entry.apiKey,
-        name: entry.name,
+        name: finalName,
         priority: 1,
       })
-      names.push(entry.name)
+      names.push(finalName)
     }
     let added = 0
     let skipped = 0
-    if (form.modelMode === 'auto') {
-      const conns = await api.getConnections()
-      const mine = conns.find((c) => c.provider === link.prov)
-      if (mine) {
-        const res = await api.getConnectionModels(mine.id)
-        const raw = (res.models || []).map((m) => (typeof m === 'string' ? m : (m.id || m.model || ''))).filter(Boolean)
-        ;({ added, skipped } = await saveModels(link.prov, raw))
+    let modelError = ''
+    try {
+      if (form.modelMode === 'auto') {
+        const conns = await api.getConnections()
+        const mine = conns.find((c) => c.provider === link.prov)
+        if (mine) {
+          const res = await api.getConnectionModels(mine.id)
+          const raw = (res.models || []).map((m) => (typeof m === 'string' ? m : (m.id || m.model || ''))).filter(Boolean)
+          ;({ added, skipped } = await saveModels(link.prov, raw))
+        }
+      } else {
+        ;({ added, skipped } = await saveModels(link.prov, modelIDsFor(link)))
       }
-    } else {
-      ;({ added, skipped } = await saveModels(link.prov, modelIDsFor(link)))
+    } catch (err) {
+      // Every key is stored at this point; only the catalogue failed.
+      modelError = `${link.name || link.prov}: ${err instanceof Error ? err.message : String(err)}`
     }
-    return { added, skipped }
+    return { added, skipped, modelError }
   }
-
   async function addAll() {
     if (busy || links.length === 0) return
+    // Only the checked cards. An unchecked card is a deliberate "not this one",
+    // and adding it anyway would make the checkbox decorative.
+    const selected = links.filter((l) => cardChecked[l.prov] !== false)
+    if (selected.length === 0) {
+      error = 'Select at least one provider to add.'
+      return
+    }
     busy = true
     error = ''
     let added = 0
     let skipped = 0
-    try {
-      for (const link of links) {
-        // keys.length, not >1: a keys= link with one entry still leaves form.apiKey
-        // empty (api= and keys= are mutually exclusive), so addOne would store a
-        // blank credential.
+    const modelErrors: string[] = []
+    const cardErrors: string[] = []
+    for (const link of selected) {
+      // keys.length, not >1: a keys= link with one entry still leaves form.apiKey
+      // empty (api= and keys= are mutually exclusive), so addOne would store a
+      // blank credential.
+      try {
         const outcome = link.keys.length > 0 ? await addBulk(link) : await addOne(link)
         added += outcome.added
         skipped += outcome.skipped
+        if (outcome.modelError) modelErrors.push(outcome.modelError)
+      } catch (err) {
+        // A node/connection write failed. Record which provider and keep going:
+        // the other cards are independent, and stopping here would leave a
+        // half-applied link with no account of what landed.
+        cardErrors.push(`${link.name || link.prov}: ${err instanceof Error ? err.message : String(err)}`)
       }
-      onDone(links[0].prov, added, skipped)
-    } catch (err) {
-      // A failure mid-sequence leaves the earlier cards written. Say so rather
-      // than implying nothing landed.
-      error = err instanceof Error ? err.message : String(err)
-    } finally {
-      busy = false
     }
+    busy = false
+    if (modelErrors.length || cardErrors.length) {
+      const parts: string[] = []
+      if (added > 0) parts.push(`${added} model(s) added`)
+      if (modelErrors.length) parts.push(`model import failed — ${modelErrors.join('; ')}`)
+      if (cardErrors.length) parts.push(`could not add — ${cardErrors.join('; ')}`)
+      error = parts.join('. ')
+      return
+    }
+    onDone(selected[0].prov, added, skipped)
   }
+  function toggleCard(prov: string) {
+    cardExpanded = { ...cardExpanded, [prov]: !cardExpanded[prov] }
+  }
+  function setChecked(prov: string, value: boolean) {
+    cardChecked = { ...cardChecked, [prov]: value }
+  }
+  const checkedCount = $derived(links.filter((l) => cardChecked[l.prov] !== false).length)
 
   function keysOf(link: ProviderShareLink): KeyEntry[] {
     return link.keys
@@ -292,14 +369,40 @@
       {#each links as link (link.prov)}
         {@const form = formOf(link.prov)}
         {@const existing = existingNodes.find((n) => n.id === link.prov)}
-        <div class="rounded-lg border border-border-subtle bg-surface-2/40 p-3">
-          <div class="mb-2 flex items-center justify-between gap-2">
-            <span class="font-mono text-xs text-text-main">{link.prov}</span>
-            {#if existing}
-              <span class="rounded bg-surface-3 px-2 py-0.5 text-[10px] text-text-muted">already here</span>
-            {/if}
+        {@const expanded = cardExpanded[link.prov] === true}
+        {@const checked = cardChecked[link.prov] !== false}
+        <div class="rounded-lg border border-border-subtle bg-surface-2/40 {checked ? '' : 'opacity-60'}">
+          <!-- Header row: the checkbox selects this provider, the rest of the row
+               expands it. Two separate hit targets, because "don't add this one"
+               and "let me look at this one" are different intents. -->
+          <div class="flex items-center gap-2 p-3">
+            <input
+              type="checkbox"
+              {checked}
+              onchange={(e) => setChecked(link.prov, e.currentTarget.checked)}
+              aria-label={`Add ${link.name || link.prov}`}
+              class="shrink-0 accent-brand-500"
+            />
+            <button
+              type="button"
+              onclick={() => toggleCard(link.prov)}
+              aria-expanded={expanded}
+              class="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer"
+            >
+              <span class="material-symbols-outlined shrink-0 text-[16px] text-text-muted transition-transform {expanded ? 'rotate-90' : ''}">
+                chevron_right
+              </span>
+              <span class="min-w-0 flex-1 truncate font-mono text-xs text-text-main">{link.prov}</span>
+              {#if link.name && link.name !== link.prov}
+                <span class="shrink-0 text-[11px] text-text-muted">{link.name}</span>
+              {/if}
+              {#if existing}
+                <span class="shrink-0 rounded bg-surface-3 px-2 py-0.5 text-[10px] text-text-muted">already here</span>
+              {/if}
+            </button>
           </div>
-
+          {#if expanded}
+            <div class="border-t border-border-subtle p-3">
           {#if link.note}
             <p class="mb-2 text-xs text-text-muted italic">“{link.note}”</p>
           {/if}
@@ -435,6 +538,8 @@
               {/if}
             </div>
           {/if}
+            </div>
+          {/if}
         </div>
       {/each}
 
@@ -447,8 +552,16 @@
   {#snippet footer()}
     <div class="flex items-center justify-end gap-2">
       <Button variant="secondary" onclick={onClose}>Cancel</Button>
-      <Button variant="primary" disabled={busy || links.length === 0} onclick={addAll}>
-        {busy ? 'Adding…' : links.length === 1 ? 'Add provider' : `Add all ${links.length}`}
+      <Button variant="primary" disabled={busy || checkedCount === 0} onclick={addAll}>
+        {#if busy}
+          Adding…
+        {:else if links.length === 1}
+          Add provider
+        {:else if checkedCount === links.length}
+          Add all {links.length}
+        {:else}
+          Add {checkedCount} of {links.length}
+        {/if}
       </Button>
     </div>
   {/snippet}
