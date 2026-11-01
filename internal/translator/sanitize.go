@@ -109,6 +109,10 @@ func sanitizeToolArgs(toolName, argsJSON string) string {
 		sanitizeFetchArgs(args, origArgsJSON)
 	case nameLower == "bash" || nameLower == "run_command" || nameLower == "terminal":
 		sanitizeBashArgs(args)
+	case nameLower == "monitor":
+		sanitizeMonitorArgs(args)
+	case nameLower == "skill":
+		sanitizeSkillArgs(args)
 	}
 
 	// Final ensure web_search has a string query if it has any query key that is not a string (e.g. null)
@@ -324,6 +328,37 @@ func sanitizePatternArgs(args map[string]any) {
 		for _, alt := range []string{"dir", "directory", "folder"} {
 			if v, ok := args[alt].(string); ok && strings.TrimSpace(v) != "" {
 				args["path"] = strings.TrimSpace(v)
+				delete(args, alt)
+				break
+			}
+		}
+	}
+	delete(args, "thought")
+	delete(args, "explanation")
+	delete(args, "n") // models often hallucinate grep -n flag as argument "n"
+}
+
+func sanitizeMonitorArgs(args map[string]any) {
+	// Claude Code's Monitor tool requires "exactly one of command or ws".
+	// Models (especially Codex/GPT) frequently hallucinate a dummy ws object alongside command.
+	if cmd, hasCmd := args["command"].(string); hasCmd && strings.TrimSpace(cmd) != "" {
+		if _, hasWs := args["ws"]; hasWs {
+			delete(args, "ws")
+		}
+	} else if ws, hasWs := args["ws"]; hasWs && ws != nil {
+		if _, hasCmd := args["command"]; hasCmd {
+			delete(args, "command")
+		}
+	}
+	delete(args, "thought")
+	delete(args, "explanation")
+}
+
+func sanitizeSkillArgs(args map[string]any) {
+	if _, ok := args["skill"]; !ok {
+		for _, alt := range []string{"name", "skill_name", "skillName"} {
+			if v, ok := args[alt].(string); ok && strings.TrimSpace(v) != "" {
+				args["skill"] = strings.TrimSpace(v)
 				delete(args, alt)
 				break
 			}
