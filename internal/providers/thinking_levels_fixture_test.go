@@ -51,7 +51,7 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"agnes-3.0-pro":   {"none", "minimal", "low", "medium", "high", "xhigh"},
 		"agnes-3.0-flash": {"none", "minimal", "low", "medium", "high", "xhigh"},
 	},
-	// Gemini 3.8 answers 400 "Thinking level MINIMAL is not supported for this
+	// Gemini 3.6/3.7/3.8 answers 400 "Thinking level MINIMAL is not supported for this
 	// model" to a thinkingLevel minimal — probed live through the antigravity
 	// lane (the tiered ids carry the tier in the model id and LOW is the
 	// floor), the same rejection Gemini 4 Argon gave before its pattern row.
@@ -62,22 +62,44 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"gemini-3.8-flash-low":    {"low", "medium", "high"},
 		"gemini-3.8-flash-medium": {"low", "medium", "high"},
 		"gemini-3.8-flash-high":   {"low", "medium", "high"},
+		"gemini-3.7-flash":        {"low", "medium", "high"},
+		"gemini-3.7-flash-low":    {"low", "medium", "high"},
+		"gemini-3.7-flash-medium": {"low", "medium", "high"},
+		"gemini-3.7-flash-high":   {"low", "medium", "high"},
+		"gemini-3.6-flash":        {"low", "medium", "high"},
+		"gemini-3.6-flash-low":    {"low", "medium", "high"},
+		"gemini-3.6-flash-medium": {"low", "medium", "high"},
+		"gemini-3.6-flash-high":   {"low", "medium", "high"},
 	},
 	"ag": {
 		"gemini-3.8-flash":        {"low", "medium", "high"},
 		"gemini-3.8-flash-low":    {"low", "medium", "high"},
 		"gemini-3.8-flash-medium": {"low", "medium", "high"},
 		"gemini-3.8-flash-high":   {"low", "medium", "high"},
+		"gemini-3.7-flash":        {"low", "medium", "high"},
+		"gemini-3.7-flash-low":    {"low", "medium", "high"},
+		"gemini-3.7-flash-medium": {"low", "medium", "high"},
+		"gemini-3.7-flash-high":   {"low", "medium", "high"},
+		"gemini-3.6-flash":        {"low", "medium", "high"},
+		"gemini-3.6-flash-low":    {"low", "medium", "high"},
+		"gemini-3.6-flash-medium": {"low", "medium", "high"},
+		"gemini-3.6-flash-high":   {"low", "medium", "high"},
 	},
 	"gemini": {
 		"gemini-3.8-flash": {"low", "medium", "high"},
+		"gemini-3.7-flash": {"low", "medium", "high"},
+		"gemini-3.6-flash": {"low", "medium", "high"},
 	},
 	"github": {
 		"gemini-3.8-flash": {"low", "medium", "high"},
+		"gemini-3.7-flash": {"low", "medium", "high"},
+		"gemini-3.6-flash": {"low", "medium", "high"},
 		"claude-fable-5.1": {"low", "medium", "high", "xhigh", "max"},
 	},
 	"gh": {
 		"gemini-3.8-flash": {"low", "medium", "high"},
+		"gemini-3.7-flash": {"low", "medium", "high"},
+		"gemini-3.6-flash": {"low", "medium", "high"},
 		"claude-fable-5.1": {"low", "medium", "high", "xhigh", "max"},
 	},
 	"bedrock": {
@@ -88,6 +110,8 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 	},
 	"ocz": {
 		"gemini-3.8-flash":                {"low", "medium", "high"},
+		"gemini-3.7-flash":                {"low", "medium", "high"},
+		"gemini-3.6-flash":                {"low", "medium", "high"},
 		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
 		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
 	},
@@ -108,6 +132,8 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"gemini-pro":            {"minimal", "low", "medium", "high"},
 		"gemini-flash":          {"minimal", "low", "medium", "high"},
 		"gemini-argon":          {"low", "medium", "high"},
+		"gemini-3.7-flash":      {"low", "medium", "high"},
+		"gemini-3.6-flash":      {"low", "medium", "high"},
 		"gemini-3.1-flash-lite": nil,
 	},
 	// Muse-spark contributor models reject reasoning disablement upstream
@@ -124,6 +150,8 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 	},
 	"opencode-zen": {
 		"gemini-3.8-flash":                {"low", "medium", "high"},
+		"gemini-3.7-flash":                {"low", "medium", "high"},
+		"gemini-3.6-flash":                {"low", "medium", "high"},
 		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
 		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
 	},
@@ -133,6 +161,13 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 	},
 	"sumopod": {
 		"gemini/gemini-3.8-flash": {"low", "medium", "high"},
+		"gemini/gemini-3.7-flash": {"low", "medium", "high"},
+		"gemini/gemini-3.6-flash": {"low", "medium", "high"},
+	},
+	"tokenrouter": {
+		"google/gemini-3.8-flash": {"low", "medium", "high"},
+		"google/gemini-3.7-flash": {"low", "medium", "high"},
+		"google/gemini-3.6-flash": {"low", "medium", "high"},
 	},
 }
 

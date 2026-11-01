@@ -82,6 +82,8 @@ var patternThinking = []thinkingPattern{
 	// probed live via the antigravity lane. LOW is the floor here too, so a
 	// disable request clamps to low instead of reaching Google as minimal.
 	{Pattern: "*gemini-3.8*", Levels: []string{"low", "medium", "high"}},
+	{Pattern: "*gemini-3.7*", Levels: []string{"low", "medium", "high"}},
+	{Pattern: "*gemini-3.6*", Levels: []string{"low", "medium", "high"}},
 	{Pattern: "*claude*4.6*", Levels: levelClaudeNoXHigh},
 	{Pattern: "*claude*4-6*", Levels: levelClaudeNoXHigh},
 	{Provider: "codex", Pattern: "*gpt-6*", Levels: codexGPT56Levels()},
