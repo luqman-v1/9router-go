@@ -66,6 +66,14 @@ const (
 // ErrorRules is the ordered list of error classification rules, matching Next.js ERROR_RULES.
 // Checked top-to-bottom: text rules first (by order), then status rules.
 var ErrorRules = []ErrorRule{
+	{Text: "11158", CooldownMs: cooldownLong},
+	{Text: "model_not_in_plan", CooldownMs: cooldownLong},
+	{Text: "当前账号类型暂不支持该模型", CooldownMs: cooldownLong},
+	{Text: "14018", CooldownMs: cooldownLong},
+	{Text: "额度已用尽", CooldownMs: cooldownLong},
+	{Text: "11140", CooldownMs: cooldownAddressRefused},
+	{Text: "account has been restricted due to unusual activity", CooldownMs: cooldownAddressRefused},
+	{Text: "账号存在异常行为", CooldownMs: cooldownAddressRefused},
 	// --- Quota / credit exhaustion (checked before generic rules) ---
 	// A spent budget is not a transient throttle: give it the long cooldown
 	// instead of the 30s transient default. Without this, "insufficient
@@ -117,6 +125,15 @@ var ErrorRules = []ErrorRule{
 	{Text: "resource has been exhausted", Backoff: true},
 	{Text: "model_capacity_exhausted", Backoff: true},
 	{Text: "server is temporarily unavailable", Backoff: true},
+
+	{Text: "11158", CooldownMs: cooldownLong},
+	{Text: "model_not_in_plan", CooldownMs: cooldownLong},
+	{Text: "当前账号类型暂不支持该模型", CooldownMs: cooldownLong},
+	{Text: "14018", CooldownMs: cooldownLong},
+	{Text: "额度已用尽", CooldownMs: cooldownLong},
+	{Text: "11140", CooldownMs: cooldownAddressRefused},
+	{Text: "account has been restricted due to unusual activity", CooldownMs: cooldownAddressRefused},
+	{Text: "账号存在异常行为", CooldownMs: cooldownAddressRefused},
 
 	// --- Status-based rules (fallback when text doesn't match) ---
 	{Status: 401, CooldownMs: cooldownLong},
