@@ -151,6 +151,12 @@ type SettingsData struct {
 	// when an operator asks for it. See usage_retention_ledger.go.
 	UsageHistoryRetentionDays int                         `json:"usageHistoryRetentionDays,omitempty"`
 	ProviderThinking          map[string]ProviderThinking `json:"providerThinking,omitempty"`
+	// Uptime Kuma (or any Push-Monitor-compatible) heartbeat. Off by default:
+	// an operator who has not configured a push URL must not have the gateway
+	// dialling anything on a timer.
+	UptimeKumaEnabled  bool   `json:"uptimeKumaEnabled,omitempty"`
+	UptimeKumaPushURL  string `json:"uptimeKumaPushUrl,omitempty"`
+	UptimeKumaInterval int    `json:"uptimeKumaInterval,omitempty"`
 }
 
 // ProviderThinking is one provider's operator reasoning override, mirroring

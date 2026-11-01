@@ -120,3 +120,68 @@ func TestBackupExportIncludesApiKeyLimitKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestBackupPreservesApiKeyPeriodBudget proves the F-2 budget columns survive a
+// backup round-trip. Without them in the export/import column lists, a restore
+// would bring every key back with its ceiling silently cleared — the same
+// "disaster recovery opens the throttle" failure the rate-limit columns above
+// were guarded against.
+func TestBackupPreservesApiKeyPeriodBudget(t *testing.T) {
+	authTestEnv(t)
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	if err := repo.CreateApiKey("bk3", "sk-budget-backup-abcdefgh", "budget backup key", "m"); err != nil {
+		t.Fatalf("CreateApiKey: %v", err)
+	}
+	if err := repo.SetApiKeyPeriodBudget("bk3", 5_000_000, 1_000_000, "weekly", 75, true); err != nil {
+		t.Fatalf("SetApiKeyPeriodBudget: %v", err)
+	}
+	router := setupTestRouter(repo)
+	// Export.
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/database", nil)
+	req.Header.Set(cliTokenHeader, auth.CLIToken())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export failed: %d %s", rec.Code, rec.Body.String())
+	}
+	exported := rec.Body.Bytes()
+	// The columns must be present in the payload, not merely derivable.
+	var payload map[string]any
+	if err := json.Unmarshal(exported, &payload); err != nil {
+		t.Fatalf("unmarshal export: %v", err)
+	}
+	rows, _ := payload["apiKeys"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("exported %d api keys, want 1", len(rows))
+	}
+	row, _ := rows[0].(map[string]any)
+	for _, key := range []string{"limitMicros", "limitTokens", "budgetPeriod", "alertPct", "hardCutoff"} {
+		if _, ok := row[key]; !ok {
+			t.Errorf("exported api key is missing %q", key)
+		}
+	}
+	// Wipe, then restore.
+	if _, err := repo.RawDB().Exec(`DELETE FROM apiKeys`); err != nil {
+		t.Fatalf("wipe failed: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/settings/database", bytes.NewReader(exported))
+	req.Header.Set(cliTokenHeader, auth.CLIToken())
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import failed: %d %s", rec.Code, rec.Body.String())
+	}
+	restored, err := repo.GetApiKeyByID("bk3")
+	if err != nil || restored == nil {
+		t.Fatalf("GetApiKeyByID after restore: %v", err)
+	}
+	if restored.LimitMicros != 5_000_000 || restored.LimitTokens != 1_000_000 {
+		t.Errorf("restored limits = %d/%d, want 5000000/1000000", restored.LimitMicros, restored.LimitTokens)
+	}
+	if restored.BudgetPeriod != "weekly" || restored.AlertPct != 75 || !restored.HardCutoff {
+		t.Errorf("restored budget = %q/%d/%v, want weekly/75/true",
+			restored.BudgetPeriod, restored.AlertPct, restored.HardCutoff)
+	}
+}

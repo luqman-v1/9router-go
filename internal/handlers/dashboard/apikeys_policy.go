@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/keikey"
 )
@@ -50,6 +51,15 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		RateLimitConcurrency *int    `json:"rateLimitConcurrency"`
 		TokenQuota           *int    `json:"tokenQuota"`
 		QueueTimeoutMs       *int    `json:"queueTimeoutMs"`
+		// F-2 per-period budget. Pointers so an omitted field leaves the
+		// stored value alone; an explicit 0 / "" is a deliberate "disable this
+		// axis", which is what the dashboard sends when the operator blanks
+		// the field.
+		LimitMicros  *int64  `json:"limitMicros"`
+		LimitTokens  *int64  `json:"limitTokens"`
+		BudgetPeriod *string `json:"budgetPeriod"`
+		AlertPct     *int    `json:"alertPct"`
+		HardCutoff   *bool   `json:"hardCutoff"`
 		ExpiresAt            *string `json:"expiresAt"`
 		Metadata             *string `json:"metadata"`
 		// F-3: the reusable policy template this key inherits from. Pointer so
@@ -110,6 +120,48 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "queueTimeoutMs: "+err.Error())
 		return
+	}
+	// Per-period budget. The same merge rule as the rate limits: an omitted
+	// field keeps what is stored, an explicit zero clears that axis. The
+	// period is validated against the four windows the engine resolves, so a
+	// typo cannot silently fall back to monthly — the engine's own fallback
+	// would otherwise make a misconfigured key look correctly configured.
+	budgetMicros := existing.LimitMicros
+	if req.LimitMicros != nil {
+		if *req.LimitMicros < 0 {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "limitMicros: must be zero or a positive amount")
+			return
+		}
+		budgetMicros = *req.LimitMicros
+	}
+	budgetTokens := existing.LimitTokens
+	if req.LimitTokens != nil {
+		if *req.LimitTokens < 0 {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "limitTokens: must be zero or a positive count")
+			return
+		}
+		budgetTokens = *req.LimitTokens
+	}
+	budgetPeriod := existing.BudgetPeriod
+	if req.BudgetPeriod != nil {
+		budgetPeriod = strings.TrimSpace(*req.BudgetPeriod)
+		if budgetPeriod != "" && !db.IsValidPlanPeriod(budgetPeriod) {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest,
+				"budgetPeriod: must be daily, weekly, monthly or total")
+			return
+		}
+	}
+	alertPct := existing.AlertPct
+	if req.AlertPct != nil {
+		if *req.AlertPct < 0 || *req.AlertPct > 100 {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "alertPct: must be between 0 and 100")
+			return
+		}
+		alertPct = *req.AlertPct
+	}
+	hardCutoff := existing.HardCutoff
+	if req.HardCutoff != nil {
+		hardCutoff = *req.HardCutoff
 	}
 
 	// Every field is validated before the first write, so a refused request
@@ -172,6 +224,13 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if err := h.Repo.SetApiKeyBudget(id, quota, queueMs); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// The per-period budget is written unconditionally, like the rate limits
+	// above: the handler already holds the merged value, and a conditional
+	// write would leave a cleared axis stale.
+	if err := h.Repo.SetApiKeyPeriodBudget(id, budgetMicros, budgetTokens, budgetPeriod, alertPct, hardCutoff); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

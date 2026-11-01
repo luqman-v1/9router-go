@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -31,11 +32,71 @@ const apiKeyColumns = `SELECT id, key, name, machineId, isActive, createdAt,
 	rateLimitRPM, rateLimitTPM, rateLimitConcurrency,
 	tokenQuota, queueTimeoutMs,
 	keyHash, lookupHash, keyDisplay,
+	expiresAt, lastUsedAt, usedCount, metadata, planId,
+	limitMicros, limitTokens, budgetPeriod, alertPct, hardCutoff`
+
+// apiKeyColumnsLegacy is the pre-F-2 read: everything above except the five
+// budget columns.
+const apiKeyColumnsLegacy = `SELECT id, key, name, machineId, isActive, createdAt,
+	rateLimitRPM, rateLimitTPM, rateLimitConcurrency,
+	tokenQuota, queueTimeoutMs,
+	keyHash, lookupHash, keyDisplay,
 	expiresAt, lastUsedAt, usedCount, metadata, planId`
 
-// apiKeyScan returns the Scan destinations for apiKeyColumns plus an applier
+// budgetColumnsPresent reports whether the apiKeys table carries the F-2 budget
+// columns. The answer is cached because it is a property of the schema, which
+// does not change while the process runs, and the probe sits on the dashboard's
+// boot path.
+func (r *Repo) budgetColumnsPresent() bool {
+	if r == nil || r.db == nil {
+		return false
+	}
+	r.budgetColsOnce.Do(func() {
+		rows, err := r.db.QueryContext(context.Background(), `PRAGMA table_info(apiKeys)`)
+		if err != nil {
+			return
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notNull, pk int
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+				return
+			}
+			if name == "limitMicros" {
+				r.budgetCols = true
+				return
+			}
+		}
+		// A mid-iteration failure would otherwise leave the probe answering
+		// "no budget columns" for a database that has them, which silently
+		// degrades every key read to the legacy query.
+		_ = rows.Err()
+	})
+	return r.budgetCols
+}
+
+// apiKeyColumnsFor returns the key read for the schema in hand: the full read
+// when the budget columns exist, the pre-F-2 read when they do not. A legacy
+// database reads every key with its budget axes at zero rather than failing the
+// whole listing — the same degradation quotaResetId already gets.
+func (r *Repo) apiKeyColumnsFor() string {
+	if r.budgetColumnsPresent() {
+		return apiKeyColumns
+	}
+	return apiKeyColumnsLegacy
+}
+
+// apiKeyScan returns the Scan destinations for the key read plus an applier
 // that must run after Scan has filled the nullable columns.
-func apiKeyScan(k *models.APIKey) (dest []any, apply func()) {
+//
+// withBudget selects between the full read and the pre-F-2 one, so the
+// destination count always matches the column count of the query that produced
+// the row. Passing the full 24 destinations against a 19-column row is a scan
+// error, not a zero — which is how the legacy-schema test caught this.
+func apiKeyScan(k *models.APIKey, withBudget bool) (dest []any, apply func()) {
 	var nameVal, machineVal sql.NullString
 	var rateRPM, rateTPM, rateConc sql.NullInt64
 	var tokenQuota, queueTimeout sql.NullInt64
@@ -43,12 +104,28 @@ func apiKeyScan(k *models.APIKey) (dest []any, apply func()) {
 	var expiresAt, lastUsedAt, metadata sql.NullString
 	var usedCount sql.NullInt64
 	var planID sql.NullString
+	// F-2 per-period budget. limitMicros and limitTokens are plain int64 on
+	// the model rather than pointers: 0 is the meaningful "not set" value, so
+	// there is no NULL to preserve.
+	var limitMicros, limitTokens int64
+	var budgetPeriod string
+	var alertPct, hardCutoff int
 	dest = []any{&k.ID, &k.Key, &nameVal, &machineVal, &k.IsActive, &k.CreatedAt,
 		&rateRPM, &rateTPM, &rateConc, &tokenQuota, &queueTimeout, &keyHash, &lookupHash, &keyDisplay,
 		&expiresAt, &lastUsedAt, &usedCount, &metadata, &planID}
+	if withBudget {
+		dest = append(dest, &limitMicros, &limitTokens, &budgetPeriod, &alertPct, &hardCutoff)
+	}
 	apply = func() {
 		applyApiKeyNulls(k, nameVal, machineVal, rateRPM, rateTPM, rateConc, tokenQuota, queueTimeout, usedCount,
 			keyHash, lookupHash, keyDisplay, expiresAt, lastUsedAt, metadata, planID)
+		if withBudget {
+			k.LimitMicros = limitMicros
+			k.LimitTokens = limitTokens
+			k.BudgetPeriod = budgetPeriod
+			k.AlertPct = alertPct
+			k.HardCutoff = hardCutoff != 0
+		}
 	}
 	return dest, apply
 }
@@ -131,8 +208,9 @@ func (r *Repo) FindApiKeyByLookup(lookupHash string) (*models.APIKey, error) {
 // queryApiKey runs a single-row apiKeys read and maps the scanned columns.
 func (r *Repo) queryApiKey(whereClause string, arg string) (*models.APIKey, error) {
 	var apiKey models.APIKey
-	dest, apply := apiKeyScan(&apiKey)
-	err := r.db.QueryRow(apiKeyColumns+" "+whereClause, arg).Scan(dest...)
+	withBudget := r.budgetColumnsPresent()
+	dest, apply := apiKeyScan(&apiKey, withBudget)
+	err := r.db.QueryRowContext(context.Background(), r.apiKeyColumnsFor()+" "+whereClause, arg).Scan(dest...)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

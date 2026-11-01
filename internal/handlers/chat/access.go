@@ -511,6 +511,8 @@ func kindEndpoint(kind string) string {
 		return "/v1/audio/transcriptions"
 	case "embedding":
 		return "/v1/embeddings"
+	case "rerank":
+		return "/v1/rerank"
 	case "systemone":
 		return "/v1/systemone"
 	default:
