@@ -80,3 +80,17 @@ func TestParsePipList(t *testing.T) {
 		t.Error("expected installed=false for invalid JSON")
 	}
 }
+
+func TestGetInstalledHeadroomExtras(t *testing.T) {
+	python := FindPython310()
+	if python == "" {
+		t.Skip("no python found")
+	}
+	st := GetInstalledHeadroomExtras(python)
+	if !st.Installed {
+		t.Skip("headroom-ai not installed in environment")
+	}
+	if st.Version == "" {
+		t.Errorf("expected non-empty version")
+	}
+}

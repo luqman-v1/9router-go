@@ -29,20 +29,25 @@ func TestClassifyError_ResourceExhausted429(t *testing.T) {
 	}
 }
 
-func TestClassifyError_CreditExhaustionBacksOff(t *testing.T) {
-	// Out-of-credits 400s are account-scoped: fall back and cool the account
-	// down with an incremented backoff level instead of leaving it healthy
-	// (upstream b82f5c4a).
-	for _, text := range []string{"Insufficient credits to complete this request", "Your credit balance is too low to access the API"} {
+func TestClassifyError_CreditExhaustionParksForAnHour(t *testing.T) {
+	// A spent budget is not a rate limit: the exponential ladder must not
+	// advance, and the account must be parked for the long quota cooldown
+	// instead of the 2-second backoff floor. Retrying a zero balance every
+	// two seconds burns a guaranteed-failed upstream call and makes the
+	// dashboard show a false recovery.
+	for _, text := range []string{
+		"Insufficient credits to complete this request",
+		"Your credit balance is too low to access the API",
+	} {
 		cls := ClassifyError(http.StatusBadRequest, text, 0)
 		if !cls.ShouldFallback {
 			t.Errorf("expected fallback for %q, got %+v", text, cls)
 		}
-		if cls.NewBackoffLevel != 1 {
-			t.Errorf("expected backoff level 1 for %q, got %d", text, cls.NewBackoffLevel)
+		if cls.NewBackoffLevel != 0 {
+			t.Errorf("expected backoff level unchanged for %q, got %d", text, cls.NewBackoffLevel)
 		}
-		if cls.CooldownMs != BackoffConfig.BaseMs {
-			t.Errorf("expected %dms cooldown for %q, got %d", BackoffConfig.BaseMs, text, cls.CooldownMs)
+		if cls.CooldownMs != QuotaExhaustedCooldownMs {
+			t.Errorf("expected %dms cooldown for %q, got %d", QuotaExhaustedCooldownMs, text, cls.CooldownMs)
 		}
 	}
 	// A 400 that carries no account fault still says nothing about the credential.

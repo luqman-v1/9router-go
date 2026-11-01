@@ -396,7 +396,11 @@
   let nodeNameById = $derived.by(() => {
     const m = new Map<string, string>()
     for (const n of providerNodes || []) {
-      if (n?.id && n?.name) m.set(n.id, n.name)
+      if (n?.id && n?.name) {
+        m.set(n.id, n.name)
+        // Also index by lowercased id so lookups from lowercased keys still match
+        m.set(n.id.toLowerCase().trim(), n.name)
+      }
     }
     return m
   })
@@ -404,9 +408,13 @@
   function topologyName(providerId: string, fallbackName?: string): string {
     // The fallback is a connection name, and for OAuth connections that is
     // the account email — mask it the same way the connection lists do.
-    const nodeName = formatEmailLabel(nodeNameById.get(providerId) ?? '', $emailPrivacy)
+    const raw = (providerId || '').trim()
+    const resolvedName = nodeNameById.get(raw) ?? nodeNameById.get(raw.toLowerCase())
+    const nodeName = formatEmailLabel(resolvedName ?? '', $emailPrivacy)
     if (nodeName) return nodeName
-    const cat = PROVIDER_CATALOG.find((p) => p.id === providerId || p.alias === providerId)
+    const cat = PROVIDER_CATALOG.find(
+      (p) => p.id === raw || p.alias === raw || p.id.toLowerCase() === raw.toLowerCase() || p.alias?.toLowerCase() === raw.toLowerCase()
+    )
     if (cat?.name) return cat.name
     // Only fall back to the connection label if it isn't a numeric ID (a
     // connection label like "12") and isn't an OAuth account email: an email
@@ -429,24 +437,32 @@
     // canonical provider id, while a connection row can hold either that or
     // the published alias, so both are tried before a provider counts as idle.
     const usedInPeriod = (provId: string) => {
-      const canonical = provId.toLowerCase().trim()
+      const raw = provId.trim()
+      const canonical = raw.toLowerCase()
       const cat = PROVIDER_CATALOG.find((p) => p.id.toLowerCase() === canonical || p.alias?.toLowerCase() === canonical)
-      const keys = [canonical, cat?.id, cat?.alias].filter(Boolean) as string[]
+      // A custom node id is stored verbatim by the backend ("openai-compatible-chat-Wildy"),
+      // so `stats.byProvider` is keyed by that raw case. Check both raw and lowercased
+      // variants alongside catalog ids so mixed-case nodes aren't judged idle.
+      const keys = [raw, canonical, cat?.id, cat?.alias].filter(Boolean) as string[]
       return keys.some((k) => (stats.byProvider?.[k]?.requests || 0) > 0)
     }
     const addProvider = (provId: string, type: string, customName?: string) => {
       if (!provId) return
-      const canonical = provId.toLowerCase().trim()
+      const raw = provId.trim()
+      const canonical = raw.toLowerCase()
       const cat = PROVIDER_CATALOG.find((p) => p.id.toLowerCase() === canonical || (p.alias && p.alias.toLowerCase() === canonical))
       // A provider the registry hides stays routable, but it has no place in a
       // map that reads as "who is on the bus" — the same reason it is kept out
       // of the provider list.
       if (cat?.hidden) return
-      const targetId = cat?.id || canonical
-      if (seen.has(targetId)) return
+      // Custom compatible nodes keep the operator's casing ("...-Wildy") so
+      // node-name lookups, icon paths, and usage history agree with what the
+      // database actually stored.
+      const targetId = cat?.id || raw
+      if (seen.has(canonical) || seen.has(targetId)) return
       seen.add(targetId)
-      if (cat?.alias) seen.add(cat.alias.toLowerCase())
       seen.add(canonical)
+      if (cat?.alias) seen.add(cat.alias.toLowerCase())
 
       list.push({
         id: targetId,
@@ -682,7 +698,7 @@
           {/if}
         </Card>
       {:else if block.key === 'overview.breakdown'}
-        <UsageBreakdownTable {stats} />
+        <UsageBreakdownTable {stats} {providerNodes} />
       {/if}
     {/each}
   {:else if section === 'cache'}

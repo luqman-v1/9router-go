@@ -56,19 +56,25 @@ func TestFindBrowserFindsNothingWhenThereIsNone(t *testing.T) {
 // operator gets the "no browser found" message instead of a window.
 func TestBrowserNamesCoverTheBrowsersTheFlowCanDrive(t *testing.T) {
 	names := browserNames()
-	for _, want := range []string{"google-chrome", "chromium", "brave-browser", "microsoft-edge"} {
-		if runtime.GOOS == "windows" && want == "google-chrome" {
-			continue
-		}
+	// Each browser ships under a different executable name per platform: the
+	// Linux package is brave-browser and the Windows installer is brave.exe,
+	// which LookPath finds as "brave". Asserting the Linux spelling on
+	// Windows fails for a reason that has nothing to do with the lookup, so
+	// the expected name is per-platform.
+	want := []string{"google-chrome", "chromium", "brave-browser", "microsoft-edge"}
+	if runtime.GOOS == "windows" {
+		want = []string{"chrome", "chromium", "brave", "msedge"}
+	}
+	for _, expected := range want {
 		found := false
 		for _, name := range names {
-			if name == want {
+			if name == expected {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Errorf("the browser list %v does not name %q", names, want)
+			t.Errorf("the browser list %v does not name %q", names, expected)
 		}
 	}
 }

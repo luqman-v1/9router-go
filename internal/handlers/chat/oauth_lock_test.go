@@ -449,6 +449,7 @@ func TestOAuthRefresh_SharedFlightKeepsEachCallersToken(t *testing.T) {
 // with â€” the leader's token is not a fallback for anyone else.
 func TestOAuthRefresh_FailedSharedFlightKeepsEachCallersToken(t *testing.T) {
 	oauth.ResetRefreshCache()
+	oauth.ResetRefreshSlots()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 	dropSeededConn(t, database)

@@ -121,6 +121,73 @@ func TestSanitizeToolArgs(t *testing.T) {
 			t.Errorf("expected query extracted from input wrapper, got %v", m["query"])
 		}
 	})
+
+	t.Run("Read tool normalizes path aliases to file_path", func(t *testing.T) {
+		args := `{"path":"/tmp/code.go","thought":"reading file"}`
+		got := sanitizeToolArgs("Read", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["file_path"] != "/tmp/code.go" {
+			t.Errorf("expected file_path '/tmp/code.go', got %v", m["file_path"])
+		}
+		if _, ok := m["path"]; ok {
+			t.Errorf("expected path to be removed, got %v", m["path"])
+		}
+		if _, ok := m["thought"]; ok {
+			t.Errorf("expected thought to be stripped, got %v", m["thought"])
+		}
+	})
+
+	t.Run("Write tool normalizes path and contents aliases", func(t *testing.T) {
+		args := `{"filePath":"/tmp/main.go","contents":"package main","description":"saving file"}`
+		got := sanitizeToolArgs("Write", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["file_path"] != "/tmp/main.go" {
+			t.Errorf("expected file_path '/tmp/main.go', got %v", m["file_path"])
+		}
+		if m["content"] != "package main" {
+			t.Errorf("expected content 'package main', got %v", m["content"])
+		}
+		if _, ok := m["description"]; ok {
+			t.Errorf("expected description to be stripped, got %v", m["description"])
+		}
+	})
+
+	t.Run("Edit tool normalizes old/new string aliases and replaceAll", func(t *testing.T) {
+		args := `{"path":"/tmp/test.go","old_text":"foo","new_text":"bar","replaceAll":true,"explanation":"replace"}`
+		got := sanitizeToolArgs("Edit", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["file_path"] != "/tmp/test.go" {
+			t.Errorf("expected file_path '/tmp/test.go', got %v", m["file_path"])
+		}
+		if m["old_string"] != "foo" {
+			t.Errorf("expected old_string 'foo', got %v", m["old_string"])
+		}
+		if m["new_string"] != "bar" {
+			t.Errorf("expected new_string 'bar', got %v", m["new_string"])
+		}
+		if m["replace_all"] != true {
+			t.Errorf("expected replace_all true, got %v", m["replace_all"])
+		}
+		if _, ok := m["explanation"]; ok {
+			t.Errorf("expected explanation to be stripped, got %v", m["explanation"])
+		}
+	})
+
+	t.Run("Grep/Glob tool normalizes query and dir aliases", func(t *testing.T) {
+		args := `{"query":"func Test","dir":"/workspace"}`
+		got := sanitizeToolArgs("Grep", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["pattern"] != "func Test" {
+			t.Errorf("expected pattern 'func Test', got %v", m["pattern"])
+		}
+		if m["path"] != "/workspace" {
+			t.Errorf("expected path '/workspace', got %v", m["path"])
+		}
+	})
 }
 
 // --- isValidPdfPagesArg ---

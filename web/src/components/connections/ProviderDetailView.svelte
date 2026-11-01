@@ -1865,6 +1865,8 @@
   }
 
 
+  let isPollingDevice = $state(false)
+
   async function openDeviceOAuth() {
     oauthError = null
     callbackInput = ''
@@ -1881,7 +1883,6 @@
       if (typeof window !== 'undefined' && oauthAuthUrl) {
         window.open(oauthAuthUrl, '_blank')
       }
-      pollDeviceOnce()
       devicePollTimer = setInterval(pollDeviceOnce, deviceInterval * 1000)
     } catch (err) {
       oauthError = err instanceof Error ? err.message : String(err)
@@ -1890,9 +1891,17 @@
   }
 
   async function pollDeviceOnce() {
-    if (!showOAuthModal || !deviceCode) return
+    if (!showOAuthModal || !deviceCode || isPollingDevice) return
+    isPollingDevice = true
     try {
       const res = await api.devicePoll(providerId, deviceCode, deviceSession)
+      if (res?.interval && res.interval > deviceInterval) {
+        deviceInterval = res.interval
+        if (devicePollTimer) {
+          clearInterval(devicePollTimer)
+          devicePollTimer = setInterval(pollDeviceOnce, deviceInterval * 1000)
+        }
+      }
       if (res?.status === 'authorized') {
         stopDevicePoll()
         showOAuthModal = false
@@ -1903,6 +1912,8 @@
       }
     } catch {
       // Biarkan polling berikutnya mencoba lagi.
+    } finally {
+      isPollingDevice = false
     }
   }
 
@@ -5141,6 +5152,7 @@
             </div>
           </div>
         {/if}
+        {#if !deviceUserCode}
         <div>
           <p class="text-sm font-medium mb-1">
             {providerId === 'freebuff'
@@ -5168,6 +5180,7 @@
                   : 'Paste the access token here, then click Connect.'}
           </p>
         </div>
+        {/if}
 
         {#if oauthError}
           <p class="text-xs text-red-500">{oauthError}</p>
@@ -5183,10 +5196,10 @@
                 submitManualCallback()
               }
             }}
-            disabled={isConnecting}
+            disabled={isConnecting || isPollingDevice}
             class="flex-1 py-1.5 text-xs font-semibold rounded-[8px] bg-brand-500 hover:bg-brand-600 text-white shadow-sm disabled:opacity-50 cursor-pointer"
           >
-            {isConnecting ? 'Checking…' : deviceUserCode ? 'Check now' : providerId === 'freebuff' ? 'Check & Connect' : 'Connect'}
+            {isConnecting || isPollingDevice ? 'Checking…' : deviceUserCode ? 'Check now' : providerId === 'freebuff' ? 'Check & Connect' : 'Connect'}
           </button>
           <button
             type="button"

@@ -796,7 +796,19 @@ func (h *ChatHandler) appendLooseCustomModels(
 ) []ModelInfoObject {
 	prefixMap := h.providerNodePrefixMap()
 	customs := h.customModelsByProvider()
+	alive := h.aliveAliases()
 	for providerID, list := range customs {
+		if !alive[providerID] {
+			continue
+		}
+		// A custom row whose alias names no live provider is an orphan: the
+		// node it pointed at was deleted, or a backup restored rows for a
+		// gateway that no longer exists. Upstream never advertises them —
+		// buildConnectedProviderIds only emits models for aliases backed by
+		// an active connection — and a request for one fails with "no active
+		// connections for provider" anyway, so listing it only pollutes the
+		// picker. Measured on a real database: 1504 uuid-prefixed rows, all
+		// orphaned, went from advertised to hidden.
 		if filterConnected && !isUsableProvider(providerID, usable) {
 			continue
 		}
@@ -1237,6 +1249,55 @@ func (h *ChatHandler) customModelsByProvider() map[string][]*db.CustomModel {
 		out[cm.ProviderAlias] = append(out[cm.ProviderAlias], cm)
 	}
 	return out
+}
+
+// aliveAliases is the set of provider aliases that name something that can
+// actually serve a request: a built-in registry provider, a known static
+// alias, a configured compatible node (by id or by its prefix), or any
+// provider that has at least one connection row.
+//
+// A custom model whose providerAlias is not in this set is an orphan — the
+// node it belonged to was deleted, or a backup restored rows for a gateway
+// that no longer exists. Upstream never advertises those
+// (buildConnectedProviderIds only emits models for aliases backed by an
+// active connection), and a request for one fails with "no active
+// connections for provider" anyway, so listing it only pollutes the picker.
+//
+// ProviderAliasMap is load-bearing: `gh`, `oc`, `cl` and `cbai` are aliases
+// (github, opencode, cline, codebuddy-intl), not connections, and must keep
+// being listed. Dropping them would hide working routes.
+func (h *ChatHandler) aliveAliases() map[string]bool {
+	alive := make(map[string]bool)
+	for id := range providers.KnownProviders {
+		alive[id] = true
+	}
+	for alias := range providers.ProviderAliasMap {
+		alive[alias] = true
+	}
+	if h.Repo == nil {
+		return alive
+	}
+	if nodes, err := h.Repo.GetProviderNodes(); err == nil {
+		prefixes := h.providerNodePrefixMap()
+		for _, n := range nodes {
+			if n == nil || n.ID == "" {
+				continue
+			}
+			alive[n.ID] = true
+			if p := prefixes[n.ID]; p != "" {
+				alive[p] = true
+			}
+		}
+	}
+	if conns, err := h.Repo.GetProviderConnections("", false); err == nil {
+		for _, c := range conns {
+			if c == nil || c.Provider == "" {
+				continue
+			}
+			alive[c.Provider] = true
+		}
+	}
+	return alive
 }
 
 // modelAliasTargets returns the alias name → target model mapping. Upstream

@@ -439,7 +439,11 @@ func (h *OAuthHandler) HandleDevicePoll(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if status != "authorized" || strings.TrimSpace(tokens.access) == "" {
-		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "pending", "provider": body.Provider})
+		resp := map[string]any{"status": "pending", "provider": body.Provider}
+		if tokens.interval > 0 {
+			resp["interval"] = tokens.interval
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, resp)
 		return
 	}
 	conn := h.saveDeviceConnection(deviceCanonical(body.Provider), tokens)
@@ -452,6 +456,7 @@ func (h *OAuthHandler) HandleDevicePoll(w http.ResponseWriter, r *http.Request) 
 type deviceTokens struct {
 	access, refresh, email, name string
 	expiresIn                    int
+	interval                     int
 	extra                        map[string]any
 }
 
@@ -692,6 +697,9 @@ func grokcliPoll(code string) (deviceTokens, error) {
 		return t, fmt.Errorf("poll_failed: %v", err)
 	}
 	if e := strVal(data, "error"); e == "authorization_pending" || e == "slow_down" {
+		if inv, ok := data["interval"].(float64); ok && inv > 0 {
+			t.interval = int(inv)
+		}
 		return t, errors.New(e)
 	}
 	t.access = strVal(data, "access_token")
@@ -721,6 +729,9 @@ func githubPoll(code string) (deviceTokens, error) {
 		return t, fmt.Errorf("poll_failed: %v", err)
 	}
 	if e := strVal(data, "error"); e == "authorization_pending" || e == "slow_down" {
+		if inv, ok := data["interval"].(float64); ok && inv > 0 {
+			t.interval = int(inv)
+		}
 		return t, errors.New(e)
 	}
 	t.access = strVal(data, "access_token")

@@ -84,7 +84,11 @@ func (h *DashboardHandler) HandleGetProvidersClient(w http.ResponseWriter, r *ht
 	}
 	accountFiltered := make([]*models.ProviderConnection, 0, len(providerFiltered))
 	for _, c := range providerFiltered {
-		active := c.IsActive != 0
+		// "active" means the account can serve a request, not that the toggle
+		// is on. A credit-exhausted connection with isActive=1 is not active,
+		// so filtering on the toggle alone hides the accounts the operator
+		// most needs to see.
+		active := providers.IsEffectivelyActive(c.IsActive, "", providers.HasActiveCooldown(c.Data))
 		if accountStatus == "active" && !active {
 			continue
 		}
@@ -252,11 +256,22 @@ func maskConnectionName(name string) string {
 // the edit-connection form (issue #154): enough to confirm *which* key is on
 // file, never enough to replay it. Same shape as maskClientKey, which the
 // dashboard already uses for client API keys.
+//
+// The mask keeps the credential's exact length. Collapsing the middle to a
+// single ellipsis told the reader two things it had no business knowing: that
+// the secret was longer than twelve characters, and roughly how much longer. A
+// mask whose length tracks the thing it hides is not a mask — it is a length
+// oracle.
 func maskConnectionSecret(secret string) string {
-	if handlerutil.RuneCount(secret) <= 12 {
+	n := handlerutil.RuneCount(secret)
+	if n <= 12 {
 		return "***"
 	}
-	return handlerutil.RunePrefix(secret, 6) + "…" + handlerutil.RuneSuffix(secret, 4)
+	const prefix = 6
+	const suffix = 4
+	return handlerutil.RunePrefix(secret, prefix) +
+		strings.Repeat("•", n-prefix-suffix) +
+		handlerutil.RuneSuffix(secret, suffix)
 }
 
 // connectionSecretHint returns the credential a connection actually
@@ -364,6 +379,15 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 			safe["providerSpecificData"] = out
 		}
 	}
+	// Effective status: the toggle being on is not evidence the account
+	// works. Derived from testStatus + live cooldown + stored lastError with
+	// the same vocabulary the request path uses, so the dashboard stops
+	// counting a credit-exhausted account as connected.
+	lastError, _ := safe["lastError"].(string)
+	effective := providers.EffectiveStatusWithError(c.IsActive, fmt.Sprintf("%v", safe["testStatus"]), providers.HasActiveCooldown(c.Data), lastError)
+	safe["effectiveStatus"] = effective
+	safe["isEffectivelyActive"] = providers.IsEffectivelyActiveWithError(c.IsActive, fmt.Sprintf("%v", safe["testStatus"]), providers.HasActiveCooldown(c.Data), lastError)
+	safe["statusVariant"] = providers.StatusVariant(c.IsActive, effective)
 	return safe
 }
 
@@ -389,6 +413,10 @@ type createConnectionRequest struct {
 	// explicit edit and never needs the flag.
 	AllowOverwrite bool `json:"allowOverwrite"`
 	Overwrite      bool `json:"overwrite"`
+	// Replace states that a duplicate-account collision is intended: the
+	// existing connection is refreshed in place instead of a second row being
+	// inserted for the same account.
+	Replace bool `json:"replace"`
 }
 
 // isCompatibleNodeProviderID reports whether providerID names a custom
@@ -551,6 +579,51 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 				"status":   "ok",
 				"id":       existing.ID,
 				"replaced": existing.ID,
+			})
+			return
+		}
+	}
+
+	// Re-running an OAuth flow for an account that is already connected used to
+	// insert a second row. That is not cosmetic: the account fallback logic
+	// walks connections in order and locks the failing one per model, so a
+	// duplicate makes the router "fall back" to the same account's quota and
+	// lock it twice.
+	//
+	// The default is to refuse with a 409 naming the row that already holds
+	// this account, so the UI can offer "update that account instead" rather
+	// than dead-ending. `replace: true` refreshes the existing connection in
+	// place, keeping its id and priority and clearing the model locks that
+	// described the old token.
+	if !explicitID {
+		if dup, dupData := h.findDuplicateConnection(req.Provider, dataMap); dup != nil {
+			if !req.Replace {
+				handlerutil.WriteJSON(w, http.StatusConflict, map[string]any{
+					"error": "This account is already connected.",
+					"code":  "duplicate",
+					"duplicate": map[string]any{
+						"existingId":   dup.ID,
+						"existingName": connectionDisplayName(dup),
+						"identityKind": IdentityOf(req.Provider, dupData).Kind,
+					},
+				})
+				return
+			}
+			// Replace in place: the old failure state described the old token,
+			// so keeping it would leave a healthy account cooling down.
+			if err := h.Repo.ClearConnectionModelLocks(r.Context(), dup.ID); err != nil {
+				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if err := h.Repo.ReplaceProviderConnectionPayload(dup.ID, connectionDisplayName(dup), dataStr); err != nil {
+				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+				"status":     "ok",
+				"id":         dup.ID,
+				"replaced":   true,
+				"connection": sanitizeProviderConnection(dup),
 			})
 			return
 		}

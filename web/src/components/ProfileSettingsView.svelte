@@ -32,6 +32,12 @@
     setAnimationLevel,
   } from '../lib/displayPrefs'
   import {
+    isFavoritesEnabled,
+    isIconRailEnabled,
+    setFavoritesEnabled,
+    setIconRailEnabled,
+  } from '../lib/sidebarPrefs.svelte'
+  import {
     USAGE_PANEL_FIXED_POSITION,
     USAGE_PANEL_GROUPS,
     USAGE_PANEL_ORDERABLE_GROUPS,
@@ -126,6 +132,13 @@
   // Usage detail panels (Activity Heatmap, Node Health) start collapsed; the
   // switch below flips that default (detailsExpandedByDefault, localStorage).
   let detailsExpanded = $state(isDetailsExpandedByDefault())
+  // Pinned sidebar entries (navFavoritesEnabled, localStorage). On by default:
+  // the section is empty until something is pinned, so an untouched install
+  // gains nothing and loses nothing.
+  let favoritesEnabled = $state(isFavoritesEnabled())
+  // Collapse to icons (navIconRail, localStorage). Off by default because it
+  // hides every label at once, which is a layout to opt into.
+  let iconRail = $state(isIconRailEnabled())
 
   // The heavy blocks below — the currency rate grid, the per-panel Usage list
   // with its arrangement controls, and the sidebar feature-visibility row — stay
@@ -1449,6 +1462,7 @@
             advancedSettings = isAdvancedSettingsVisible()
           }}
         />
+      </div>
       <div class="flex items-center justify-between gap-3">
         <div class="min-w-0">
           <p class="text-xs font-semibold text-text-main">Provider card toggle</p>
@@ -1464,6 +1478,42 @@
           onChange={(val) => {
             setProviderTogglePersistent(val)
             providerTogglePersistent = val
+          }}
+        />
+      </div>
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="text-xs font-semibold text-text-main">Pinned entries</p>
+          <p class="text-[11px] text-text-subtle">
+            A Pinned section at the top of the sidebar for the 2–3 entries you use most. Pin one from
+            the search palette, or from the star beside a search result.
+          </p>
+        </div>
+        <Toggle
+          checked={favoritesEnabled}
+          size="sm"
+          label="Pinned entries"
+          onChange={(val) => {
+            setFavoritesEnabled(val)
+            favoritesEnabled = val
+          }}
+        />
+      </div>
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="text-xs font-semibold text-text-main">Collapse to icons</p>
+          <p class="text-[11px] text-text-subtle">
+            Shrink the sidebar to a 56px icon rail. Every label is replaced by its icon with a
+            tooltip, which frees the width for the page beside it.
+          </p>
+        </div>
+        <Toggle
+          checked={iconRail}
+          size="sm"
+          label="Collapse to icons"
+          onChange={(val) => {
+            setIconRailEnabled(val)
+            iconRail = val
           }}
         />
       </div>
@@ -1659,12 +1709,14 @@
               </div>
               <Toggle
                 checked={!hiddenNav.includes(entry.id)}
-                disabled={true}
-                title="Visibility is managed per deployment; use the arrows or drag to reorder"
+                disabled={ALWAYS_VISIBLE_NAV_IDS.includes(entry.id)}
+                title={ALWAYS_VISIBLE_NAV_IDS.includes(entry.id)
+                  ? 'Always visible: this is the page the panel lives on'
+                  : 'Show or hide this entry in the sidebar'}
                 size="sm"
                 label="{entry.label} in the sidebar"
                 onChange={(val: boolean) => {
-                  hiddenNav = setNavVisible(hiddenNav, entry.id, val)
+                  markLayoutEdit(() => (hiddenNav = setNavVisible(hiddenNav, entry.id, val)))
                 }}
               />
             </div>

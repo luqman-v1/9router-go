@@ -40,7 +40,8 @@ type ComboStrategy struct {
 	// and fail. The "smart" strategy always orders the models itself (System
 	// One evaluation plus session stickiness) and keeps the combo's own order
 	// on every failure path, so this flag is a no-op there.
-	RespectStoredOrder bool `json:"respectStoredOrder,omitempty"`
+	RespectStoredOrder bool     `json:"respectStoredOrder,omitempty"`
+	FallbackCombos     []string `json:"fallbackCombos,omitempty"`
 }
 
 // DefaultFirstTokenGraceMs is the grace period applied after a model response

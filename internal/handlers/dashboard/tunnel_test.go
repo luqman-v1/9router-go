@@ -71,17 +71,25 @@ func TestHandleTunnelEndpoints(t *testing.T) {
 
 		var res struct {
 			Tunnel struct {
-				Enabled   bool   `json:"enabled"`
-				TunnelURL string `json:"tunnelUrl"`
-				Running   bool   `json:"running"`
+				Enabled         bool   `json:"enabled"`
+				SettingsEnabled bool   `json:"settingsEnabled"`
+				TunnelURL       string `json:"tunnelUrl"`
+				Running         bool   `json:"running"`
 			} `json:"tunnel"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
 			t.Fatalf("unmarshal status response: %v", err)
 		}
 
-		if !res.Tunnel.Enabled || !res.Tunnel.Running {
-			t.Errorf("expected tunnel to be enabled and running when url is configured")
+		// `enabled` in the response is settingsEnabled AND running: a settings
+		// flag with no live connector is a dead tunnel, and the dashboard has to
+		// say so rather than showing a green dot over nothing. `settingsEnabled`
+		// is the raw flag, and that is the one the setting alone turns on.
+		if !res.Tunnel.SettingsEnabled {
+			t.Errorf("expected settingsEnabled to be true when the setting is on")
+		}
+		if res.Tunnel.Enabled || res.Tunnel.Running {
+			t.Errorf("expected enabled and running to be false: no process was started")
 		}
 		if res.Tunnel.TunnelURL != "https://test.trycloudflare.com" {
 			t.Errorf("unexpected tunnel URL: %s", res.Tunnel.TunnelURL)

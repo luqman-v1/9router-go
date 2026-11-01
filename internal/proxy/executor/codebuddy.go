@@ -76,7 +76,7 @@ func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 		}
 		return fmt.Errorf("ForwardCodebuddyCN upstream: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	forwardUpstreamResponseHeaders(w, resp.Header)
 
@@ -104,7 +104,7 @@ func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 			}
 		}
 		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, 0, "codebuddy-cn")
-		defer stallReader.Close() // stops the shutdown watcher + stall timer
+		defer func() { _ = stallReader.Close() }() // stops the shutdown watcher + stall timer
 		return execSSEStream(w, stallReader, req)
 	}
 
@@ -280,6 +280,15 @@ func codebuddyHeaders(req *Request, cfg *providers.ProviderConfig, body []byte) 
 	reqID := strings.ReplaceAll(uuid.NewString(), "-", "")
 	convReqID := strings.ReplaceAll(uuid.NewString(), "-", "")
 
+	// The CN lane tracks the current Tencent CLI build (anti-ban: an outdated
+	// UA reads as a silent/bot client); the intl lane keeps its own identity,
+	// which is set where the provider is configured. Mirrors upstream registry
+	// #3257 (codebuddy-cn.js: CLI/2.133.1 + X-IDE-Version).
+	cliVersion := "2.108.1"
+	if req != nil && req.Provider == "codebuddy-cn" {
+		cliVersion = codebuddyCLIVersion
+	}
+
 	sessionKey := req.SessionID
 	if sessionKey == "" && req.ConnData != nil {
 		if m, ok := req.ConnData["sessionId"].(string); ok {
@@ -305,15 +314,18 @@ func codebuddyHeaders(req *Request, cfg *providers.ProviderConfig, body []byte) 
 	if domain == "www.codebuddy.ai" && cfg != nil && (strings.Contains(cfg.BaseURL, "tencent.com") || strings.Contains(cfg.BaseURL, "copilot.")) {
 		domain = "copilot.tencent.com"
 	}
+	if req != nil && req.Provider == "codebuddy-cn" && domain == "www.codebuddy.ai" {
+		domain = "www.codebuddy.cn"
+	}
 
 	return map[string]string{
 		"Content-Type":                "application/json; charset=utf-8",
-		"User-Agent":                  "CLI/2.108.1 CodeBuddy/2.108.1",
+		"User-Agent":                  "CLI/" + cliVersion + " CodeBuddy/" + cliVersion,
 		"X-Product":                   "SaaS",
 		"X-App":                       "cli",
 		"X-IDE-Type":                  "CLI",
 		"X-IDE-Name":                  "CLI",
-		"X-IDE-Version":               "2.108.1",
+		"X-IDE-Version":               cliVersion,
 		"X-Private-Data":              "false",
 		"X-Requested-With":            "XMLHttpRequest",
 		"X-CodeBuddy-Request":         "1",

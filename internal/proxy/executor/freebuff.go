@@ -296,6 +296,9 @@ func ForwardFreebuff(w http.ResponseWriter, req *Request) error {
 		if req.IsStream {
 			headers["Accept"] = "text/event-stream"
 		}
+		// Freebuff requires x-freebuff-sse-gzip-recovery: 1 for all chat completions.
+		// Without it, upstream returns 410 freebuff_update_required.
+		headers["x-freebuff-sse-gzip-recovery"] = "1"
 		for k, v := range req.Config.StaticHeaders {
 			headers[k] = v
 		}

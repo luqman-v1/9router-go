@@ -2,8 +2,15 @@ package executor
 
 import (
 	json "encoding/json/v2"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+
+	"9router/proxy/internal/providers"
 )
 
 // commandcodeParamsForTest runs buildCommandcodeBody and returns payload["params"]
@@ -433,5 +440,165 @@ func TestBuildCommandcodeBody_SingleBudgetFieldOnWire(t *testing.T) {
 				t.Errorf("params.max_tokens = %v, want %v", got, tt.wantToks)
 			}
 		})
+	}
+}
+
+func TestCommandcodeSlugifyAndSessionUUID(t *testing.T) {
+	if got := commandcodeSlugify("/home/u/My Project"); got != "home-u-my-project" {
+		t.Errorf("slug = %q", got)
+	}
+	if got := commandcodeSlugify("/srv/fooBar/Ünï"); got != "srv-foo-bar-ueni" {
+		t.Errorf("slug = %q", got)
+	}
+	if commandcodeSlugify("/") != "" || commandcodeProjectSlug == "" {
+		t.Errorf("empty slug must fall back, got %q", commandcodeProjectSlug)
+	}
+	a, b := commandcodeSessionUUID("s1"), commandcodeSessionUUID("s1")
+	if a != b || a == commandcodeSessionUUID("s2") {
+		t.Errorf("session uuid not stable/distinct: %s %s", a, b)
+	}
+	if _, err := uuid.Parse(a); err != nil {
+		t.Errorf("not a uuid: %v", err)
+	}
+	a1, a2 := commandcodeSessionUUID(""), commandcodeSessionUUID("")
+	if a1 == a2 {
+		t.Errorf("empty session must be random, got %s twice", a1)
+	}
+}
+
+func TestForwardCommandcodeRetriesTransient(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("x-project-slug") == "" {
+			t.Errorf("missing x-project-slug")
+		}
+		if calls == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`{"type":"text-delta","text":"ok"}` + "\n" + `{"type":"finish","finishReason":"stop"}` + "\n"))
+	}))
+	defer srv.Close()
+	rec := httptest.NewRecorder()
+	err := ForwardCommandcode(rec, &Request{
+		Config: &providers.ProviderConfig{BaseURL: srv.URL}, Client: srv.Client(),
+		Body: []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`), SessionID: "s",
+	})
+	if err != nil || calls != 2 || !strings.Contains(rec.Body.String(), "ok") {
+		t.Fatalf("err=%v calls=%d body=%s", err, calls, rec.Body.String())
+	}
+}
+
+func TestCommandcodeFinishReasonMappedToOpenAI(t *testing.T) {
+	for in, want := range map[string]string{
+		"tool-calls": "tool_calls", "content-filter": "content_filter",
+		"stop": "stop", "length": "length", "error": "stop",
+	} {
+		state := &CommandcodeStreamState{ToolIndexByID: map[string]int{}}
+		ProcessCommandcodeEvent(map[string]any{"type": "finish-step", "finishReason": in}, "finish-step", state)
+		out := ProcessCommandcodeEvent(map[string]any{"type": "finish"}, "finish", state)
+		if len(out) == 0 || !strings.Contains(out[0], `"finish_reason":"`+want+`"`) {
+			t.Errorf("%s: want finish_reason %s, got %v", in, want, out)
+		}
+	}
+}
+
+func TestCommandcodeFinishCarriesCacheUsage(t *testing.T) {
+	state := &CommandcodeStreamState{ToolIndexByID: map[string]int{}}
+	out := ProcessCommandcodeEvent(map[string]any{
+		"type": "finish", "finishReason": "stop",
+		"totalUsage": map[string]any{
+			"inputTokens": 3033.0, "outputTokens": 20.0,
+			"cachedInputTokens": 2944.0, "reasoningTokens": 7.0,
+		},
+	}, "finish", state)
+	if len(out) == 0 {
+		t.Fatal("no chunk")
+	}
+	var chunk struct {
+		Usage struct {
+			PromptTokens        int `json:"prompt_tokens"`
+			PromptTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+			CompletionTokensDetails struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(out[0]), &chunk); err != nil {
+		t.Fatal(err)
+	}
+	if chunk.Usage.PromptTokens != 3033 || chunk.Usage.PromptTokensDetails.CachedTokens != 2944 || chunk.Usage.CompletionTokensDetails.ReasoningTokens != 7 {
+		t.Errorf("usage = %+v", chunk.Usage)
+	}
+}
+
+func TestCommandcodeUsageFallsBackToFinishStepAndTotals(t *testing.T) {
+	state := &CommandcodeStreamState{ToolIndexByID: map[string]int{}}
+	ProcessCommandcodeEvent(map[string]any{"type": "finish-step", "finishReason": "stop",
+		"usage": map[string]any{"inputTokens": 100.0, "outputTokens": 5.0, "cachedInputTokens": 64.0},
+	}, "finish-step", state)
+	out := ProcessCommandcodeEvent(map[string]any{"type": "finish"}, "finish", state)
+	if len(out) == 0 || !strings.Contains(out[0], `"total_tokens":105`) || !strings.Contains(out[0], `"cached_tokens":64`) {
+		t.Fatalf("chunk = %v", out)
+	}
+	u := commandcodeUsage(state)
+	if u.PromptTokens != 100 || u.CompletionTokens != 5 || u.CachedTokens != 64 {
+		t.Errorf("gateway usage = %+v", u)
+	}
+	est := commandcodeUsage(&CommandcodeStreamState{OutputLength: 40})
+	if est.CompletionTokens != 10 || est.PromptTokens != 0 {
+		t.Errorf("estimate fallback = %+v", est)
+	}
+}
+
+func TestBuildCommandcodeBody_ReasoningBlock(t *testing.T) {
+	input := []byte(`{
+		"model": "zai-org/GLM-5.2",
+		"messages": [
+			{"role": "user", "content": "hello"},
+			{"role": "assistant", "content": "hi", "reasoning_content": " "}
+		]
+	}`)
+
+	resBytes, err := buildCommandcodeBody(input, "zai-org/GLM-5.2")
+	if err != nil {
+		t.Fatalf("failed to build commandcode body: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resBytes, &payload); err != nil {
+		t.Fatalf("failed to parse payload: %v", err)
+	}
+
+	params, ok := payload["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing params in payload: %#v", payload)
+	}
+
+	msgs, ok := params["messages"].([]any)
+	if !ok || len(msgs) < 2 {
+		t.Fatalf("missing messages in params: %#v", params)
+	}
+
+	asstMsg := msgs[1].(map[string]any)
+	contentBlocks, ok := asstMsg["content"].([]any)
+	if !ok {
+		t.Fatalf("missing content blocks in assistant message: %#v", asstMsg)
+	}
+
+	foundReasoning := false
+	for _, block := range contentBlocks {
+		bMap, ok := block.(map[string]any)
+		if ok && bMap["type"] == "reasoning" && bMap["text"] == " " {
+			foundReasoning = true
+			break
+		}
+	}
+
+	if !foundReasoning {
+		t.Errorf("expected content blocks to contain reasoning block with text ' ', got %#v", contentBlocks)
 	}
 }

@@ -38,6 +38,7 @@ describe('resolveComboStrategy', () => {
       'sticky',
       'capacity',
       'fusion',
+      'tokenmaxxing',
       'nonsense-from-a-hand-edited-backup'
     ]
 
@@ -54,7 +55,7 @@ describe('resolveComboStrategy', () => {
   })
 
   it('passes a real per-combo strategy through unchanged', () => {
-    for (const value of ['round-robin', 'sticky', 'capacity', 'fusion']) {
+    for (const value of ['round-robin', 'sticky', 'capacity', 'fusion', 'tokenmaxxing']) {
       expect(resolveComboStrategy(value)).toBe(value)
     }
   })

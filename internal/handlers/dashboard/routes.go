@@ -223,6 +223,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/tunnel/status", h.HandleTunnelStatus)
 		r.Post("/tunnel/enable", h.HandleTunnelEnable)
 		r.Post("/tunnel/disable", h.HandleTunnelDisable)
+		// Rewrites the tunnel's ingress rule to point at this gateway's own
+		// origin. Separate from enable: an operator who moved the gateway to a
+		// new port needs the rule fixed without tearing the tunnel down.
+		r.Post("/tunnel/repair-origin", h.HandleTunnelRepairOrigin)
 		r.Get("/tunnel/tailscale-check", h.HandleTailscaleCheck)
 		r.Post("/tunnel/tailscale-enable", h.HandleTailscaleEnable)
 		r.Post("/tunnel/tailscale-disable", h.HandleTailscaleDisable)

@@ -44,7 +44,7 @@ func RegisterAll() {
 	Register("alicode", func() Executor { return ForwardOpenAI })
 	Register("alicode-intl", func() Executor { return ForwardOpenAI })
 	Register("byteplus", func() Executor { return ForwardOpenAI })
-	Register("codebuddy-cn", func() Executor { return ForwardCodebuddyCN })
+	Register("codebuddy-cn", func() Executor { return ForwardCodebuddyCNWithTelemetry })
 	Register("codebuddy-intl", func() Executor { return ForwardCodebuddyCN })
 	Register("gitlab", func() Executor { return ForwardOpenAI })
 	Register("glm-cn", func() Executor { return ForwardZai })

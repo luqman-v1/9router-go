@@ -168,6 +168,19 @@ func TestPrepareInboundKeepsTheOperatorOverrideOnAPrefill(t *testing.T) {
 	}
 }
 
+func TestPrepareInboundThinking_ToolResultTurnKeepsThinking(t *testing.T) {
+	h := wireHandler()
+	body := []byte(`{"model":"gpt-4o","thinking":{"type":"enabled"},"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[]},{"role":"tool","content":"result"}]}`)
+	out, _, _ := h.prepareInboundThinking(context.Background(), "openai", "gpt-4o", body, false)
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, has := m["thinking"]; !has {
+		t.Fatalf("tool result turn dropped thinking config: %s", out)
+	}
+}
+
 // TestPrepareInboundDialectCapture dispositions every client dialect key on
 // the inbound wire surface: the intent it yields, and the fact that inbound
 // only captures — the dialect field itself is left for the outbound strip.

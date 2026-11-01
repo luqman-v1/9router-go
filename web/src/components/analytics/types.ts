@@ -174,18 +174,22 @@ export const TABLE_OPTIONS: { value: TableView; label: string }[] = [
 
 // providerDisplayName resolves a stored provider id to the label the dashboard
 // shows. Custom compatible nodes persist under a synthetic id
-// ("openai-compatible-chat-<uuid>") and the catalog carries the display name for
-// everything else, so the column never renders an opaque id. Unknown ids pass
-// through unchanged.
+// ("openai-compatible-chat-<suffix>") whose suffix can be mixed-case ("Wildy"),
+// while the catalog carries the display name for everything else. Lookups fold
+// case so a lowercased caller key ("...-wildy") still matches the stored node
+// row. Unknown ids pass through unchanged.
 export function providerDisplayName(
   providerId?: string | null,
   nodes?: { id: string; name?: string }[]
 ): string {
   const id = (providerId || '').trim()
   if (!id) return 'unknown'
-  const node = nodes?.find((n) => n?.id === id)
+  const lower = id.toLowerCase()
+  const node = nodes?.find((n) => n?.id === id || n?.id?.toLowerCase().trim() === lower)
   if (node?.name) return node.name
-  const cat = PROVIDER_CATALOG.find((p) => p.id === id || p.alias === id)
+  const cat = PROVIDER_CATALOG.find(
+    (p) => p.id === id || p.alias === id || p.id.toLowerCase() === lower || p.alias?.toLowerCase() === lower
+  )
   return cat?.name || id
 }
 
@@ -235,4 +239,50 @@ export function formatLocalTimestamp(ts?: string | null): string {
   } catch {
     return ts
   }
+}
+
+export function formatDetailStatus(detail: RequestDetailItem | null | undefined): string {
+  if (!detail) return '—'
+  if (detail.status === 'success' || detail.status === 'ok') return '200 OK'
+  const code = detail.response?.status ?? (detail.attempts?.length ? detail.attempts[detail.attempts.length - 1]?.statusCode : undefined)
+  if (code != null) {
+    const num = typeof code === 'string' ? parseInt(code, 10) : code
+    if (!Number.isNaN(num)) {
+      const reasons: Record<number, string> = {
+        400: 'Bad Request',
+        401: 'Unauthorized',
+        402: 'Payment Required',
+        403: 'Forbidden',
+        404: 'Not Found',
+        408: 'Request Timeout',
+        409: 'Conflict',
+        422: 'Unprocessable Entity',
+        429: 'Too Many Requests',
+        499: 'Client Closed',
+        500: 'Internal Error',
+        502: 'Bad Gateway',
+        503: 'Service Unavailable',
+        504: 'Gateway Timeout',
+      }
+      return reasons[num] ? `${num} ${reasons[num]}` : `${num} Error`
+    }
+  }
+  return detail.status ? (detail.status.charAt(0).toUpperCase() + detail.status.slice(1)) : 'Error'
+}
+
+export function extractDetailError(detail: RequestDetailItem | null | undefined): { status?: number | string; message?: string } | null {
+  if (!detail || detail.status === 'success' || detail.status === 'ok') return null
+  const status = detail.response?.status ?? (detail.attempts?.length ? detail.attempts[detail.attempts.length - 1]?.statusCode : undefined)
+  let lastAttemptErr: string | undefined
+  if (detail.attempts?.length) {
+    for (let i = detail.attempts.length - 1; i >= 0; i--) {
+      if (detail.attempts[i]?.error) {
+        lastAttemptErr = detail.attempts[i].error
+        break
+      }
+    }
+  }
+  const message = detail.response?.error || detail.error || lastAttemptErr || detail.response?.content
+  if (!status && !message) return null
+  return { status, message }
 }

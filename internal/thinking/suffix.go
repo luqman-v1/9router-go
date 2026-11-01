@@ -144,7 +144,8 @@ func dialectKeyPresent(body map[string]any) bool {
 
 // NormalizeThinkingConfig ports services/provider.js normalizeThinkingConfig:
 // a `thinking` block is request-scoped tool-state, valid only when the
-// conversation ends on a user turn. OpenAI reasoning_effort is request-level
+// conversation ends on a user turn or tool result turn (which continue the
+// conversation and keep thinking). OpenAI reasoning_effort is request-level
 // and survives. Empty/absent messages → no-op (isLastMessageFromUser true).
 // The bool reports whether the block was dropped.
 func NormalizeThinkingConfig(body map[string]any) bool {
@@ -171,7 +172,7 @@ func isLastMessageFromUser(body map[string]any) bool {
 		return true
 	}
 	role, _ := last["role"].(string)
-	return role == "user"
+	return role == "user" || role == "tool" || role == "function"
 }
 
 // SnapshotKeys exposes the wire keys this package reads, for fast-path scans.

@@ -16,6 +16,8 @@
     providerDisplayName,
     timeAgo,
     formatLocalTimestamp,
+    formatDetailStatus,
+    extractDetailError,
     type RequestDetailItem,
   } from './types'
   import { costIn } from '../../lib/currency.svelte'
@@ -376,10 +378,40 @@
           <div class="p-3 rounded-lg bg-surface-2 border border-border">
             <div class="text-text-muted text-[10px] uppercase font-bold tracking-wider">Status</div>
             <div class="font-code text-sm font-bold {selectedDetail.status === 'success' || selectedDetail.status === 'ok' ? 'text-success' : 'text-danger'} mt-1">
-              {selectedDetail.status === 'success' || selectedDetail.status === 'ok' ? '200 OK' : (selectedDetail.status || 'Error')}
+              {formatDetailStatus(selectedDetail)}
             </div>
           </div>
         </div>
+
+        <!-- Error Details (when request failed) -->
+        {#if selectedDetail.status !== 'success' && selectedDetail.status !== 'ok'}
+          {@const errInfo = extractDetailError(selectedDetail)}
+          {#if errInfo}
+            <div class="p-3.5 rounded-xl bg-red-500/10 border border-red-500/25 space-y-1.5">
+              <div class="text-[10px] text-red-600 dark:text-red-400 uppercase font-bold tracking-wider flex items-center justify-between">
+                <span class="flex items-center gap-1.5">
+                  <span class="material-symbols-outlined text-[15px]">error</span>
+                  Error Details {#if errInfo.status}({errInfo.status}){/if}
+                </span>
+                {#if errInfo.message}
+                  <button
+                    type="button"
+                    onclick={() => copyToClipboard(errInfo.message || '')}
+                    class="text-red-500 hover:text-red-700 dark:hover:text-red-300 p-0.5 rounded hover:bg-red-500/20 transition-colors shrink-0 cursor-pointer"
+                    title="Copy Error Message"
+                  >
+                    <span class="material-symbols-outlined text-[13px]">content_copy</span>
+                  </button>
+                {/if}
+              </div>
+              {#if errInfo.message}
+                <div class="font-code text-xs text-red-600 dark:text-red-300 break-words whitespace-pre-wrap select-all">
+                  {errInfo.message}
+                </div>
+              {/if}
+            </div>
+          {/if}
+        {/if}
 
         <!-- Token Group: Input (OmniRoute style) -->
         {#if selectedDetail.tokens}

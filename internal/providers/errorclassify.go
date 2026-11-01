@@ -16,6 +16,10 @@ type ErrorRule struct {
 	// Provider scopes a text rule to one canonical provider id; empty applies
 	// to every provider.
 	Provider string
+	// Quota marks an error that means the account's credit/billing budget is
+	// spent. These do NOT clear on a short timer, so they get a long cooldown
+	// and are surfaced as a distinct status instead of a transient blip.
+	Quota bool
 }
 
 // BackoffConfig controls exponential backoff scaling.
@@ -49,11 +53,41 @@ const (
 	// is not, so the account waits out a short window instead of absorbing
 	// every turn the same address is refused on.
 	cooldownAddressRefused = 30 * 60 * 1000
+
+	// QuotaExhaustedCooldownMs is how long an account is parked after the
+	// upstream reports its credit/quota budget is spent. Ported from the
+	// upstream classify429 helper (QUOTA_EXHAUSTED_COOLDOWN_MS): a rate limit
+	// clears in a minute, but "insufficient balance" will not fix itself in 30
+	// seconds — retrying that often just burns a guaranteed-failed upstream
+	// call and keeps the dashboard showing a false recovery.
+	QuotaExhaustedCooldownMs = 60 * 60 * 1000 // 1 hour
 )
 
 // ErrorRules is the ordered list of error classification rules, matching Next.js ERROR_RULES.
 // Checked top-to-bottom: text rules first (by order), then status rules.
 var ErrorRules = []ErrorRule{
+	// --- Quota / credit exhaustion (checked before generic rules) ---
+	// A spent budget is not a transient throttle: give it the long cooldown
+	// instead of the 30s transient default. Without this, "insufficient
+	// balance" heals itself every 30 seconds and the dashboard keeps
+	// claiming a guaranteed-failing account is connected.
+	{Text: "insufficient balance", CooldownMs: QuotaExhaustedCooldownMs, Quota: true},
+	{Text: "insufficient credit", CooldownMs: QuotaExhaustedCooldownMs, Quota: true},
+	{Text: "credits exhausted", CooldownMs: QuotaExhaustedCooldownMs, Quota: true},
+	{Text: "credit exhausted", CooldownMs: QuotaExhaustedCooldownMs, Quota: true},
+	{Text: "no remaining credits", CooldownMs: QuotaExhaustedCooldownMs, Quota: true},
+	{Text: "quota exceeded", CooldownMs: QuotaExhaustedCooldownMs, Quota: true},
+	{Text: "insufficient quota", CooldownMs: QuotaExhaustedCooldownMs, Quota: true},
+	{Text: "monthly limit", CooldownMs: QuotaExhaustedCooldownMs, Quota: true},
+	{Text: "frequency limit", CooldownMs: QuotaExhaustedCooldownMs, Quota: true},
+	{Text: "payment required", CooldownMs: QuotaExhaustedCooldownMs, Quota: true},
+	// TokenHarbor's free tier answers 429 with "You've used this period's free
+	// allowance. Your next rolling 7-day period starts on ...". The status
+	// alone reads as a throttle, so it only ever earned a 2s→5min backoff and
+	// the spent account was re-dialled all window. The allowance is spent for
+	// days, which is what this cooldown family is for.
+	{Text: "free allowance", CooldownMs: QuotaExhaustedCooldownMs, Quota: true},
+
 	// --- Text-based rules (checked first, order = priority) ---
 	// Intl gateway blocks affect the account/IP, so let the connection back
 	// off (upstream 3b137aa6): without a provider-scoped rule the messages
@@ -73,14 +107,10 @@ var ErrorRules = []ErrorRule{
 	{Text: "improperly formed request", CooldownMs: cooldownLong},
 	{Text: "rate limit", Backoff: true},
 	{Text: "too many requests", Backoff: true},
-	{Text: "quota exceeded", Backoff: true},
-	// Out-of-credits arrives as a 400 from several providers ("insufficient
-	// credits" / Anthropic's "credit balance is too low"). The combo advance
-	// happens through the request-scoped 4xx path, but without these rules
-	// the spent account reads as healthy and is retried on every pass
-	// (upstream b82f5c4a).
-	{Text: "insufficient credit", Backoff: true},
-	{Text: "credit balance is too low", Backoff: true},
+	// "credit balance is too low" stays here: it is Anthropic's wording for a
+	// spent balance but does not contain "insufficient credit", so the head
+	// quota rules above do not match it.
+	{Text: "credit balance is too low", CooldownMs: QuotaExhaustedCooldownMs, Quota: true},
 	{Text: "capacity", Backoff: true},
 	{Text: "overloaded", Backoff: true},
 	{Text: "resource_exhausted", Backoff: true},
@@ -97,6 +127,176 @@ var ErrorRules = []ErrorRule{
 	{Status: 502, Backoff: true},
 	{Status: 503, Backoff: true},
 	{Status: 504, Backoff: true},
+}
+
+// quotaExhaustedPatterns mirror the upstream classify429 QUOTA_EXHAUSTED_PATTERNS
+// (plus the credit-balance wording gateways actually return). Matched
+// case-insensitively against the error body.
+var quotaExhaustedPatterns = []string{
+	"monthly limit",
+	"monthly quota",
+	"per month limit",
+	"per-month limit",
+	"quota exceeded",
+	"exceeded quota",
+	"exceed quota",
+	"exceeded your current quota",
+	"insufficient quota",
+	"insufficient balance",
+	"insufficient credit",
+	"billing cap",
+	"credit exhausted",
+	"credits exhausted",
+	"out of credits",
+	"no remaining credit",
+	"hard limit",
+	"plan limit",
+	"resource exhausted",
+	"individual quota reached",
+	"enable overages",
+	"billing required",
+	"payment required",
+	"balance=0",
+	// CodeBuddy words a spent model quota as a frequency limit and states when
+	// it resets: "usage exceeds frequency limit ... reset at <timestamp>". It is
+	// not a transient throttle, so it belongs with the exhausted budgets rather
+	// than the 2-second backoff floor.
+	"frequency limit",
+}
+
+// LooksLikeQuotaExhausted reports whether an error body reads as a spent
+// credit/quota budget rather than a transient failure. Exposed so the
+// dashboard can classify stored errors (which predate any live request) with
+// the same vocabulary the request path uses.
+func LooksLikeQuotaExhausted(errorText string) bool {
+	if errorText == "" {
+		return false
+	}
+	lower := strings.ToLower(errorText)
+	for _, pat := range quotaExhaustedPatterns {
+		if strings.Contains(lower, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+// rateLimitPatterns mark a throttle: the account is fine, it is being asked to
+// slow down. Kept separate from quota exhaustion because the remedy differs --
+// one waits, the other tops up. Matched case-insensitively against the error.
+var rateLimitPatterns = []string{
+	"rate limit",
+	"rate_limit",
+	"ratelimit",
+	"too many requests",
+	"resource_exhausted",
+	"resource has been exhausted",
+	"requests per minute",
+	"rpm limit",
+	"tpm limit",
+	"tokens per minute",
+	"requests per day",
+	"rpd limit",
+	"429",
+}
+
+// permanentFailurePatterns mark errors that will not clear by waiting: the
+// credential is rejected, revoked, or points at something gone. Distinct from
+// quota (needs money) and throttle (needs time) -- this needs the operator to
+// fix the key.
+var permanentFailurePatterns = []string{
+	"invalid api key",
+	"invalid_api_key",
+	"invalid key",
+	"apikey is invalid",
+	"incorrect api key",
+	"unauthorized",
+	"authentication_error",
+	"authentication failed",
+	"permission denied",
+	"access denied",
+	"not authorized",
+	"invalid_grant",
+	"invalid_token",
+	"token expired",
+	"token has expired",
+	"revoked",
+	"no credentials",
+	"account suspended",
+	"account disabled",
+	"not found",
+}
+
+// LooksLikePermanentFailure reports whether an error means the credential is
+// dead rather than temporarily unusable. Used by the dashboard so a rejected
+// key is not silently reported as recovered once its cooldown lapses.
+func LooksLikePermanentFailure(errorText string) bool {
+	if errorText == "" {
+		return false
+	}
+	lower := strings.ToLower(errorText)
+	for _, pat := range permanentFailurePatterns {
+		if strings.Contains(lower, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+// throttleWindowPatterns name an explicit short window (per minute, per second,
+// rpm/tpm). These are throttles no matter what other words they carry: "quota
+// exceeded per minute" is a rate limit, not a spent balance, and telling the
+// operator to top up an account that only needs to wait is wrong advice.
+var throttleWindowPatterns = []string{
+	"per minute",
+	"per-minute",
+	"per second",
+	"per-second",
+	"per hour",
+	"requests per minute",
+	"requests per second",
+	"tokens per minute",
+	"tokens per second",
+	"rpm limit",
+	"tpm limit",
+	"rps limit",
+	"too many requests",
+}
+
+// LooksLikeThrottleWindow reports whether an error names a short rolling window
+// that resets on its own. The dashboard uses it to keep such a message out of
+// the quota-exhausted bucket, whose advice ("top up the account") would be
+// wrong. Deliberately NOT applied to the request-path quota cooldown: parking a
+// per-minute limit for an hour is wasteful, but mis-parking a real balance
+// exhaustion for 30 seconds is worse, and that path already matches the
+// narrower rules in ErrorRules.
+func LooksLikeThrottleWindow(errorText string) bool {
+	if errorText == "" {
+		return false
+	}
+	lower := strings.ToLower(errorText)
+	for _, pat := range throttleWindowPatterns {
+		if strings.Contains(lower, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+// LooksLikeRateLimited reports whether an error body reads as a throttle rather
+// than a dead account. Mirrors LooksLikeQuotaExhausted for the dashboard's
+// stored-error path.
+func LooksLikeRateLimited(errorText string) bool {
+	if errorText == "" {
+		return false
+	}
+	lower := strings.ToLower(errorText)
+	for _, pat := range rateLimitPatterns {
+		if strings.Contains(lower, pat) {
+			return true
+		}
+	}
+	return false
 }
 
 // ModelFitErrorPatterns are the upstream messages that mean "this model cannot

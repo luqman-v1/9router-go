@@ -87,7 +87,11 @@ func TestCLIDetectors_ClaudeHas9Router(t *testing.T) {
 		t.Setenv("NINEROUTER_URL", "")
 		tmpHome := t.TempDir()
 		t.Setenv("HOME", tmpHome)
-
+		// Windows resolves the home directory from USERPROFILE first and only
+		// falls back to HOME, so setting HOME alone leaves os.UserHomeDir()
+		// pointing at the real profile: the temp file is never read and the
+		// assertion fails on a machine whose real profile has no config.
+		t.Setenv("USERPROFILE", tmpHome)
 		claudeDir := filepath.Join(tmpHome, ".claude")
 		if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 			t.Fatal(err)
@@ -107,7 +111,11 @@ func TestCLIDetectors_ClaudeHas9Router(t *testing.T) {
 		t.Setenv("NINEROUTER_URL", "")
 		tmpHome := t.TempDir()
 		t.Setenv("HOME", tmpHome)
-
+		// Windows resolves the home directory from USERPROFILE first and only
+		// falls back to HOME, so setting HOME alone leaves os.UserHomeDir()
+		// pointing at the real profile: the temp file is never read and the
+		// assertion fails on a machine whose real profile has no config.
+		t.Setenv("USERPROFILE", tmpHome)
 		claudeDir := filepath.Join(tmpHome, ".claude")
 		if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 			t.Fatal(err)

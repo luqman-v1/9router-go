@@ -617,7 +617,7 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 
 	tokenExpired := connectionTokenExpired(provider, data)
 	if cfg.refreshable && tokenExpired && data.RefreshToken != "" {
-		tokens = h.refreshConnectionToken(ctx, provider, data, client)
+		tokens = h.refreshConnectionToken(ctx, conn.ID, provider, data, client)
 		if tokens == nil {
 			return probeOutcome{message: "Token expired and refresh failed"}
 		}
@@ -645,7 +645,7 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 			return probeOutcome{valid: true, refreshed: refreshed, tokens: tokens}
 		}
 		if attempt.status == http.StatusUnauthorized && cfg.refreshable && !refreshed && data.RefreshToken != "" {
-			retryTokens := h.refreshConnectionToken(ctx, provider, data, client)
+			retryTokens := h.refreshConnectionToken(ctx, conn.ID, provider, data, client)
 			if retryTokens == nil || retryTokens.AccessToken == "" {
 				return probeOutcome{message: "Token invalid or revoked"}
 			}
@@ -657,24 +657,24 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 		}
 		return probeOutcome{message: attempt.message, refreshed: refreshed, tokens: tokens}
 	case "cline", "clinepass":
-		return h.probeCline(ctx, data, client, accessToken, refreshed, tokens)
+		return h.probeCline(ctx, conn.ID, data, client, accessToken, refreshed, tokens)
 	case "zed":
 		return h.probeZed(ctx, data, client)
 	case "freebuff":
 		return h.probeFreebuff(ctx, conn, data, client)
 	}
 
-	return h.probeOAuthEndpoint(ctx, provider, cfg, client, accessToken, refreshed, tokens, data)
+	return h.probeOAuthEndpoint(ctx, conn.ID, provider, cfg, client, accessToken, refreshed, tokens, data)
 }
 
 // probeOAuthEndpoint runs the generic configured probe plus the 401 retry path.
-func (h *DashboardHandler) probeOAuthEndpoint(ctx context.Context, provider string, cfg oauthProbeConfig, client *http.Client, accessToken string, refreshed bool, tokens *oauth.TokenResult, data connectionProbeData) probeOutcome {
+func (h *DashboardHandler) probeOAuthEndpoint(ctx context.Context, connectionID, provider string, cfg oauthProbeConfig, client *http.Client, accessToken string, refreshed bool, tokens *oauth.TokenResult, data connectionProbeData) probeOutcome {
 	attempt := runOAuthProbe(ctx, cfg, client, accessToken, data)
 	if attempt.valid {
 		return probeOutcome{valid: true, message: attempt.message, refreshed: refreshed, tokens: tokens}
 	}
 	if attempt.status == http.StatusUnauthorized && cfg.refreshable && !refreshed && data.RefreshToken != "" {
-		retryTokens := h.refreshConnectionToken(ctx, provider, data, client)
+		retryTokens := h.refreshConnectionToken(ctx, connectionID, provider, data, client)
 		if retryTokens != nil {
 			retryToken := retryTokens.AccessToken
 			if provider == "nous" && retryTokens.APIKey != "" {
@@ -691,7 +691,7 @@ func (h *DashboardHandler) probeOAuthEndpoint(ctx context.Context, provider stri
 }
 
 // probeCline ports the cline branch: probe users/me, refresh on 401, retry.
-func (h *DashboardHandler) probeCline(ctx context.Context, data connectionProbeData, client *http.Client, accessToken string, refreshed bool, tokens *oauth.TokenResult) probeOutcome {
+func (h *DashboardHandler) probeCline(ctx context.Context, connectionID string, data connectionProbeData, client *http.Client, accessToken string, refreshed bool, tokens *oauth.TokenResult) probeOutcome {
 	try := func(token string) probeOutcome {
 		// JWT-only workos: prefix (parity with upstream
 		// open-sse/shared/clineAuth.js): ClinePass API keys ride plain.
@@ -722,7 +722,7 @@ func (h *DashboardHandler) probeCline(ctx context.Context, data connectionProbeD
 	if initial.valid || initial.message != "Token invalid or revoked" || data.RefreshToken == "" {
 		return initial
 	}
-	retryTokens := h.refreshConnectionToken(ctx, "cline", data, client)
+	retryTokens := h.refreshConnectionToken(ctx, connectionID, "cline", data, client)
 	if retryTokens == nil || retryTokens.AccessToken == "" {
 		return probeOutcome{message: "Token invalid or revoked"}
 	}
@@ -925,23 +925,32 @@ func probeProviderErrorMessage(body []byte, fallback string) string {
 }
 
 // refreshConnectionToken refreshes a connection's OAuth token through the
-// shared refresher registry. A nil result means "cannot refresh", which the
-// callers surface exactly like upstream's failed refresh.
-func (h *DashboardHandler) refreshConnectionToken(ctx context.Context, provider string, data connectionProbeData, client *http.Client) *oauth.TokenResult {
+// shared refresher registry, holding a per-connection lock so two callers
+// can never race the same refresh token. A nil result means "cannot refresh",
+// which the callers surface exactly like upstream's failed refresh.
+func (h *DashboardHandler) refreshConnectionToken(ctx context.Context, connectionID, provider string, data connectionProbeData, client *http.Client) *oauth.TokenResult {
 	if data.RefreshToken == "" {
 		return nil
 	}
 	if client == nil {
 		client = &http.Client{Timeout: connectionProbeTimeout}
 	}
-	result, err := oauth.Refresh(ctx, &oauth.Params{
-		Client:               client,
-		Provider:             providers.ResolveAlias(provider),
-		RefreshToken:         data.RefreshToken,
-		AccessToken:          data.AccessToken,
-		ProviderSpecificData: oauth.StringMap(data.ProviderSpecificData),
+	var result *oauth.TokenResult
+	err := oauth.WithRefreshLock(connectionID, func() error {
+		res, err := oauth.Refresh(ctx, &oauth.Params{
+			Client:               client,
+			Provider:             providers.ResolveAlias(provider),
+			RefreshToken:         data.RefreshToken,
+			AccessToken:          data.AccessToken,
+			ProviderSpecificData: oauth.StringMap(data.ProviderSpecificData),
+		})
+		if err != nil || res == nil || res.AccessToken == "" {
+			return err
+		}
+		result = res
+		return nil
 	})
-	if err != nil || result == nil || result.AccessToken == "" {
+	if err != nil || result == nil {
 		return nil
 	}
 	return result

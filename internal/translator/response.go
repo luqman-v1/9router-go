@@ -424,7 +424,7 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 		var input jsontext.Value
 		if tc.Function != nil && tc.Function.Arguments != "" {
 			sanitized := sanitizeToolArgs(toolName, tc.Function.Arguments)
-			input = jsontext.Value(sanitized)
+			input = SafeToolCallInput(sanitized)
 		} else {
 			input = jsontext.Value("{}")
 		}
