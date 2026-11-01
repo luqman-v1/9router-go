@@ -80,6 +80,7 @@ func SetupRoutes(r interface {
 
 	// Media, Audio, Video & Web Tools Domain
 	r.Post("/embeddings", mediaH.HandleEmbeddings)
+	r.Post("/rerank", mediaH.HandleRerank)
 	// /v1/responses needs model resolution, combos, account fallback and usage
 	// logging, none of which the media passthrough has, so it lives with the
 	// chat handlers — the same place /v1/messages does.
@@ -154,6 +155,7 @@ func SetupRoutes(r interface {
 	r.Get("/api/usage/chart", HandleUsageChart(repo))
 	r.Get("/api/usage/dashboard", HandleUsageDashboard(repo))
 	r.Get("/api/usage/request-details", HandleRequestDetails(repo))
+	r.Get("/api/usage/export", HandleUsageExport(repo))
 	r.Get("/api/usage/request-details/{id}", HandleRequestDetail(repo))
 	r.Get("/api/usage/providers", dashH.HandleGetUsageProviders)
 	r.Get("/api/usage/{connectionId}", dashH.HandleGetConnectionUsage)
@@ -214,6 +216,7 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Get("/api/usage/chart", HandleUsageChart(repo))
 	r.Get("/api/usage/dashboard", HandleUsageDashboard(repo))
 	r.Get("/api/usage/request-details", HandleRequestDetails(repo))
+	r.Get("/api/usage/export", HandleUsageExport(repo))
 	r.Get("/api/usage/request-details/{id}", HandleRequestDetail(repo))
 	r.Get("/api/usage/providers", dashH.HandleGetUsageProviders)
 	r.Get("/api/usage/{connectionId}", dashH.HandleGetConnectionUsage)
@@ -608,6 +611,10 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	// The plan tier (F-3) is resolved from the repository, so a plan change
 	// applies to the next request without a restart.
 	rateLimiter.SetPlanSource(repo)
+	// The per-period budget (F-2) measures its spend from the same ledger the
+	// Usage dashboard reads, so the ceiling and the dashboard cannot disagree
+	// about what a key has spent.
+	rateLimiter.SetBudgetReader(repo)
 	// The fallback itself is read per request, so an operator can raise or drop
 	// a global default without a restart. Only the window, which the live
 	// windows already depend on, is pinned at boot.

@@ -753,6 +753,13 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 				match = cfg.SystemoneURL != ""
 			case "embedding":
 				match = strings.Contains(cfg.BaseURL, "/embeddings")
+			case "rerank":
+				// Rerank shares the provider's OpenAI-compatible base, so the
+				// lane is derived rather than declared: a provider that serves
+				// embeddings serves rerank on the same host. Matching on the
+				// embeddings marker keeps the listing honest without a second
+				// registry column nothing else reads.
+				match = strings.Contains(cfg.BaseURL, "/embeddings")
 			case "image-to-text":
 				match = true
 			}

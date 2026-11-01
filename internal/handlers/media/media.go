@@ -188,6 +188,112 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// HandleRerank forwards /v1/rerank requests to upstream providers.
+//
+// Rerank is the same shape as embeddings — a model in, a JSON body out, no
+// streaming — so it follows the embeddings handler's structure exactly: resolve
+// the model, pick a connection, forward with the provider's auth and static
+// headers, and log the usage. The URL is derived from the provider's base the
+// same way buildEmbeddingsURL does, because a rerank lane lives on the same
+// OpenAI-compatible host as the embeddings one.
+func (h *MediaHandler) HandleRerank(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	defer r.Body.Close()
+	var reqBody struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if reqBody.Model == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
+		return
+	}
+	if !h.ChatH.EnforceModelAccess(w, r, reqBody.Model) {
+		return
+	}
+	modelInfo, err := h.ChatH.ResolveModel(reqBody.Model)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	apiKey := chat.ExtractAPIKey(connData)
+	if apiKey == "" {
+		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
+		return
+	}
+	rerankURL := buildRerankURL(providerCfg.BaseURL)
+	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
+	req, err := http.NewRequestWithContext(r.Context(), "POST", rerankURL, strings.NewReader(string(finalBody)))
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
+		return
+	}
+	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
+	for k, v := range providerCfg.StaticHeaders {
+		if req.Header.Get(k) == "" {
+			req.Header.Set(k, v)
+		}
+	}
+	// The connection's own client, not h.Client: an assigned proxy pool is the
+	// operator's egress choice, and this lane must not bypass it.
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
+		return
+	}
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+	if resp.StatusCode == http.StatusOK {
+		h.Repo.UpdateConnectionLastUsed(conn.ID)
+		latencyMs := time.Since(start).Milliseconds()
+		logInfo := &shared.UsageLogInfo{
+			Provider:     modelInfo.Provider,
+			Model:        modelInfo.Model,
+			ConnectionID: conn.ID,
+			APIKey:       apiKey,
+			Endpoint:     "/v1/rerank",
+		}
+		h.ChatH.LogUsage(r.Context(), logInfo, nil, latencyMs, body, nil)
+	}
+}
+
+// buildRerankURL derives the rerank lane from a provider's base URL. A base
+// that already names a chat or embeddings lane is rewritten to the rerank
+// sibling, so a connection saved with either spelling still resolves.
+func buildRerankURL(baseURL string) string {
+	for _, lane := range []string{"/chat/completions", "/embeddings"} {
+		if strings.Contains(baseURL, lane) {
+			return strings.Replace(baseURL, lane, "/rerank", 1)
+		}
+	}
+	return strings.TrimRight(baseURL, "/") + "/rerank"
+}
+
 // HandleImages handles /v1/images/generations.
 func (h *MediaHandler) HandleImages(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)

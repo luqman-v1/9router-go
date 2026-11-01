@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"9router/proxy/internal/budget"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
@@ -47,6 +48,11 @@ type RateLimiter struct {
 	// late wiring call cannot race a request in flight; nil means the install
 	// has no plan tier, which is every setup that has not configured one.
 	plans atomic.Pointer[policy.PlanSource]
+	// budgetSpend reads a key's per-period spend (F-2). Atomic for the same
+	// reason as plans; nil means no budget is wired, and the engine's Armed()
+	// short-circuit means a nil reader is never dereferenced for a key that
+	// has no budget configured.
+	budgetSpend atomic.Pointer[budget.Reader]
 }
 
 // waitQueue is the FIFO of parked requests for one key.
@@ -112,6 +118,26 @@ func (rl *RateLimiter) planSource() policy.PlanSource {
 		return nil
 	}
 	p := rl.plans.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+// SetBudgetReader wires the per-period spend reader (F-2). Call it before the
+// first request; the atomic pointer keeps a later rewiring safe for readers
+// already measuring a key.
+func (rl *RateLimiter) SetBudgetReader(src budget.Reader) {
+	if rl == nil {
+		return
+	}
+	rl.budgetSpend.Store(&src)
+}
+// budgetReader returns the wired spend reader, or nil when none was set.
+func (rl *RateLimiter) budgetReader() budget.Reader {
+	if rl == nil {
+		return nil
+	}
+	p := rl.budgetSpend.Load()
 	if p == nil {
 		return nil
 	}
@@ -698,12 +724,30 @@ func RequireRateLimit(rl *RateLimiter, defaults Defaults, usage TokenUsageReader
 			}
 
 			limits := limitsFor(apiKey, defaults, rl.planSource())
+			// The budget reader lives on the limiter, and budgetCheck is a
+			// sibling function rather than a closure over it, so the limiter
+			// travels on the request context. It is recorded only when a
+			// budget is actually armed: a key with no budget configured —
+			// which is every key on an install that has not set one — must not
+			// pay a context allocation on the hot path.
+			if limits.Budget.Armed() {
+				r = withRateLimiter(r, rl)
+			}
 
 			// Lifetime token quota: a hard budget, refused with 403 the same way
 			// a not-yet-ported plan-tier cap would be. It is checked before
 			// RPM/TPM because an exhausted key must not consume a slot or a
 			// request stamp on its way to being told no.
 			if quotaCheck(w, r, apiKey, limits, usage) {
+				return
+			}
+			// Per-period budget (F-2): a spend ceiling over daily/weekly/
+			// monthly/total. It runs after the lifetime quota for the same
+			// reason — an exhausted key must not spend a queue slot on its way
+			// to a refusal — and before TPM so an over-budget request is
+			// answered with 402 rather than a token-bucket 429 that would send
+			// the client looking at the wrong limit.
+			if budgetCheck(w, r, apiKey, limits) {
 				return
 			}
 
@@ -982,6 +1026,90 @@ func queueRetryAfter(limits Limits) int {
 	return int(limits.QueueTimeout.Seconds()) + 1
 }
 
+// budgetCheck refuses a key that has spent its per-period budget (F-2).
+// It returns true when the request was written a 402 and the handler must
+// stop.
+//
+// The spend read is skipped entirely for a key with no budget armed, so an
+// install that has not configured one pays nothing per request. A failed read
+// fails open for the same reason quotaCheck does: a storage blip must not
+// lock a key out of a service it has always been able to call.
+//
+// A key that is over its alert threshold but under a soft ceiling is served
+// with a warning header rather than refused, so a client can see the budget
+// closing without being cut off mid-session.
+func budgetCheck(w http.ResponseWriter, r *http.Request, apiKey *models.APIKey, limits Limits) bool {
+	if !limits.Budget.Armed() || apiKey == nil || apiKey.Key == "" {
+		return false
+	}
+	reader := rlFromRequest(r)
+	if reader == nil {
+		return false
+	}
+	d := budget.Check(r.Context(), reader.budgetReader(), apiKey.Key, limits.Budget, time.Now())
+	if d.Alerting && !d.Refuse {
+		w.Header().Set("X-Budget-Status", "approaching")
+	}
+	if !d.Refuse {
+		return false
+	}
+	log.Warn("rate limit", "budget exhausted", "key", apiKey.ID, "axis", d.Axis,
+		"spendMicros", d.Spend.Micros, "spendTokens", d.Spend.Tokens)
+	observ.IncRateLimitReject("budget_"+d.Axis, apiKey.ID)
+	rejectBudgetExhausted(w, d)
+	return true
+}
+
+// rlFromRequest recovers the limiter that is running this middleware. The
+// closure in RequireRateLimit holds it, but the helper is called from a
+// sibling function rather than from inside that closure, so it travels on the
+// request context instead.
+type rlCtxKey struct{}
+
+// withRateLimiter records the limiter on the request context.
+func withRateLimiter(r *http.Request, rl *RateLimiter) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), rlCtxKey{}, rl))
+}
+
+// rlFromRequest returns the limiter recorded by withRateLimiter, or nil.
+func rlFromRequest(r *http.Request) *RateLimiter {
+	if r == nil {
+		return nil
+	}
+	rl, _ := r.Context().Value(rlCtxKey{}).(*RateLimiter)
+	return rl
+}
+
+// rejectBudgetExhausted answers a key that has spent its period budget.
+//
+// 402 rather than 403: the lifetime token quota is an access decision, while
+// this one is a payment-adjacent one — the request is well-formed and the key
+// is valid, it simply has no budget left to spend. Retry-After names the
+// period reset, which for a total budget is absent because waiting never
+// helps there.
+func rejectBudgetExhausted(w http.ResponseWriter, d budget.Decision) {
+	if !d.ResetAt.IsZero() {
+		secs := int(time.Until(d.ResetAt).Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+	}
+	if d.Axis == "cost" {
+		w.Header().Set("X-Budget-Limit", budget.FormatMicros(d.Limits.LimitMicros))
+		w.Header().Set("X-Budget-Spent", budget.FormatMicros(d.Spend.Micros))
+		handlerutil.WriteJSONError(w, http.StatusPaymentRequired,
+			fmt.Sprintf("Budget exhausted for this API key ($%s of $%s this %s period).",
+				budget.FormatMicros(d.Spend.Micros), budget.FormatMicros(d.Limits.LimitMicros), d.Limits.Period))
+		return
+	}
+	w.Header().Set("X-Budget-Limit", strconv.FormatInt(d.Limits.LimitTokens, 10))
+	w.Header().Set("X-Budget-Spent", strconv.FormatInt(d.Spend.Tokens, 10))
+	handlerutil.WriteJSONError(w, http.StatusPaymentRequired,
+		fmt.Sprintf("Token budget exhausted for this API key (%d of %d this %s period).",
+			d.Spend.Tokens, d.Limits.LimitTokens, d.Limits.Period))
+}
+
 // rejectQuotaExhausted answers a key that has spent its lifetime token budget.
 //
 // A quota is not a per-window rate, so the answer is a plain 403 with the spend
@@ -1065,6 +1193,9 @@ type Limits struct {
 	// QueueTimeout is how long a request may wait for a free concurrency slot
 	// before it is refused instead of served.
 	QueueTimeout time.Duration
+	// Budget is the per-period spend ceiling. Zero-valued means no budget,
+	// which is what every key without one resolves to.
+	Budget budget.Limits
 }
 
 // limitsFor resolves the effective limits for a key.
@@ -1104,6 +1235,17 @@ func limitsFor(apiKey *models.APIKey, d Defaults, plans policy.PlanSource) Limit
 	// budget the budget engine enforces — a different guarantee.
 	if pol.TokenQuota > 0 {
 		out.TokenQuota = pol.TokenQuota
+	}
+	// Per-period budget. It comes from the same resolution as everything
+	// else here — global default has no budget axis, so it is plan-then-key
+	// only — and a key with no plan and no columns resolves to the zero
+	// Limits, which the engine short-circuits without a database read.
+	out.Budget = budget.Limits{
+		LimitMicros: pol.LimitMicros,
+		LimitTokens: pol.LimitTokens,
+		Period:      pol.Period,
+		AlertPct:    pol.AlertPct,
+		HardCutoff:  pol.HardCutoff,
 	}
 
 	// Queue timeout. The default only applies when the CONCURRENCY cap is the
