@@ -1210,7 +1210,12 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if conn.Provider == "cline" || conn.Provider == "clinepass" {
+	// Cline / ClinePass. The full catalogue is published at /api/v1/models; the
+	// subscription namespace lives only on the recommended feed, so the two are
+	// resolved separately and kept disjoint — advertising a cline-pass/* id on the
+	// free connection gets a 403 ENTITLEMENT_ERROR. Both take the 9Router identity
+	// headers plus the WorkOS bearer for OAuth connections.
+	if isClineFamily(conn.Provider) {
 		token := connData.AccessToken
 		if token == "" {
 			token = connData.APIKey
@@ -1219,21 +1224,22 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no valid token found")
 			return
 		}
-		// OAuth connections present the 9Router identity plus the WorkOS
-		// bearer (upstream buildModelListHeaders); API-key connections send
-		// only Accept + Authorization.
+		// OAuth connections present the 9Router identity plus the WorkOS bearer
+		// (upstream buildModelListHeaders); API-key connections send only
+		// Accept + Authorization.
 		var headers map[string]string
 		if connData.AccessToken != "" {
 			headers = providers.ClineIdentityHeaders(updater.CurrentVersion, map[string]string{"Accept": "application/json"})
 		} else {
 			headers = map[string]string{"Accept": "application/json"}
 		}
-		authHeaderVal := token
-		if strings.HasPrefix(token, "eyJ") {
-			authHeaderVal = "workos:" + token
+		headers["Authorization"] = "Bearer " + clineAuthHeader(token)
+		isPass := isClinePassProvider(conn.Provider)
+		url := clineModelsURL
+		if isPass {
+			url = clineRecommendedModelsURL
 		}
-		headers["Authorization"] = "Bearer " + authHeaderVal
-		status, body, err := validateProbeDo(r.Context(), http.MethodGet, "https://api.cline.bot/api/v1/models", headers, nil)
+		status, body, err := validateProbeDo(r.Context(), http.MethodGet, url, headers, nil)
 		if err != nil {
 			statusCode, _, errMsg := ClassifyUpstreamNetworkError(err)
 			handlerutil.WriteJSONError(w, statusCode, "failed to fetch cline models: "+errMsg)
@@ -1243,21 +1249,33 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			handlerutil.WriteJSONError(w, status, fmt.Sprintf("failed to fetch models: %d", status))
 			return
 		}
-		var clineResp struct {
-			Data   []any `json:"data"`
-			Models []any `json:"models"`
+		var models []any
+		if isPass {
+			// The subscription namespace is only published on the recommended feed,
+			// under its own key. Reading Data/Models here would find nothing.
+			var rec struct {
+				ClinePass []any `json:"clinePass"`
+			}
+			_ = json.Unmarshal(body, &rec)
+			models = rec.ClinePass
+		} else {
+			var cat struct {
+				Data   []any `json:"data"`
+				Models []any `json:"models"`
+			}
+			_ = json.Unmarshal(body, &cat)
+			models = cat.Data
+			if len(models) == 0 {
+				models = cat.Models
+			}
+			models = filterClineNamespace(models, false)
 		}
-		_ = json.Unmarshal(body, &clineResp)
-		models := clineResp.Data
-		if len(models) == 0 {
-			models = clineResp.Models
+		if !isPass {
+			// The free tier is published on a separate feed: the catalogue carries no
+			// cline-free/* ids at all. The feed is additive and a dead feed must never
+			// take the catalogue down with it, so ids already present win.
+			models = mergeClineFreeTier(models, clineFreeTierModels(r.Context()))
 		}
-
-		// The free tier is published on a separate feed: /api/v1/models carries
-		// no `cline-free/*` ids at all. The feed is additive and a dead feed must
-		// never take the catalogue down with it, so ids already present win —
-		// the same "first writer wins" rule upstream uses.
-		models = mergeClineFreeTier(models, clineFreeTierModels(r.Context()))
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
@@ -1265,6 +1283,7 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		})
 		return
 	}
+
 	// GitHub Copilot's catalogue is entitlement-shaped: each entry carries a
 	// capabilities block and a policy block, and the account's rights are
 	// expressed through them rather than through the id. Filtering on the id
@@ -1286,6 +1305,50 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			"connectionId": conn.ID,
 			"models":       copilotModels,
 		})
+		return
+	}
+	// CodeBuddy (both variants) and WorkBuddy expose no /models route at all —
+	// probed live, every candidate path answers 404 — so the generic branch
+	// reported "does not support models listing" and the dashboard's fetch
+	// button was dead. The catalogue lives in the Go registry
+	// (providers.ProviderModels), which is the same list the chat router serves,
+	// so Import offers exactly what a request can reach.
+	//
+	// WorkBuddy is a separate service with its own smaller catalogue and must not
+	// inherit the CodeBuddy list: ids CodeBuddy still serves are rejected by
+	// WorkBuddy, and importing them seeds models that fail on first use.
+	if isCodebuddyFamily(conn.Provider) {
+		ids := codebuddyCatalogModels(conn.Provider)
+		items := make([]map[string]any, 0, len(ids))
+		for _, id := range ids {
+			items = append(items, map[string]any{"id": id, "name": id})
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       items,
+			"warning":      "CodeBuddy exposes no /models endpoint — using the built-in catalogue.",
+		})
+		return
+	}
+	// Cline / ClinePass publish live catalogues on their own host rather than a
+	// plain /models URL, and the two namespaces are disjoint, so the branch
+	// resolves which connection it is before fetching.
+	if isClineFamily(conn.Provider) {
+		items, warning, ferr := fetchClineModels(conn.Provider, conn.Data, clineCatalogTimeout)
+		if ferr != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to fetch Cline models: "+ferr.Error())
+			return
+		}
+		payload := map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       items,
+		}
+		if warning != "" {
+			payload["warning"] = warning
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, payload)
 		return
 	}
 	// Qoder's catalogue lives behind a COSY-signed gateway endpoint rather than
