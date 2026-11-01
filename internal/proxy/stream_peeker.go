@@ -11,8 +11,9 @@ import (
 // ErrStreamingZeroContent indicates that an upstream SSE stream completed without producing usable content.
 var ErrStreamingZeroContent = errors.New("streaming upstream finished without content")
 
-// HasSSEContent reports whether an SSE chunk carries client-visible assistant content.
-// Delta role, reasoning/thinking, and empty finish frames do not count as content.
+// HasSSEContent reports whether an SSE chunk carries client-visible assistant content
+// (visible text, reasoning/thinking, or tool calls).
+// Delta role, empty reasoning/thinking, and empty finish frames do not count as content.
 func HasSSEContent(chunk []byte) bool {
 	if len(chunk) == 0 {
 		return false
@@ -40,6 +41,12 @@ func hasSSEContentLine(s string) bool {
 			return true
 		}
 	}
+	if strings.Contains(s, `"reasoning_content":"`) && !strings.Contains(s, `"reasoning_content":""`) && !strings.Contains(s, `"reasoning_content":null`) {
+		return true
+	}
+	if strings.Contains(s, `"reasoning":"`) && !strings.Contains(s, `"reasoning":""`) && !strings.Contains(s, `"reasoning":null`) {
+		return true
+	}
 	if strings.Contains(s, `"tool_calls":[`) && !strings.Contains(s, `"tool_calls":[]`) {
 		return true
 	}
@@ -49,12 +56,24 @@ func hasSSEContentLine(s string) bool {
 			return true
 		}
 	}
+	if strings.Contains(s, `"type":"content_block_delta"`) && strings.Contains(s, `"thinking":"`) {
+		if !strings.Contains(s, `"thinking":""`) && !strings.Contains(s, `"thinking":null`) {
+			return true
+		}
+	}
 	if strings.Contains(s, `"type":"content_block_start"`) && strings.Contains(s, `"type":"tool_use"`) {
 		return true
 	}
 	// Responses API
 	if strings.Contains(s, `"response.output_text.delta"`) || strings.Contains(s, `"response.output_item.added"`) {
 		return true
+	}
+	if strings.Contains(s, `"response.reasoning_text.delta"`) ||
+		strings.Contains(s, `"response.reasoning_summary_text.delta"`) ||
+		strings.Contains(s, `"response.reasoning_summary_text.done"`) {
+		if !strings.Contains(s, `"delta":""`) && !strings.Contains(s, `"text":""`) {
+			return true
+		}
 	}
 	return false
 }
