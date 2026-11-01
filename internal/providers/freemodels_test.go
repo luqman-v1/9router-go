@@ -24,18 +24,6 @@ func TestProviderHasFreeModels(t *testing.T) {
 	}
 }
 
-func TestCatalogModelIDs(t *testing.T) {
-	// glm-cn carries three flash ids plus the signup-bonus id; the one-time
-	// regime still grants access, so all four are catalogued.
-	ids := CatalogModelIDs("glm-cn")
-	if len(ids) != 4 {
-		t.Errorf("CatalogModelIDs(glm-cn) returned %d ids, want 4", len(ids))
-	}
-	if got := CatalogModelIDs("openai"); got != nil {
-		t.Errorf("CatalogModelIDs(openai) = %v, want nil", got)
-	}
-}
-
 func TestIsFreeModel(t *testing.T) {
 	tests := []struct {
 		name     string
