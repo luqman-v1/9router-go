@@ -448,10 +448,19 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		if rEffort == "max" {
 			rEffort = "xhigh"
 		}
-		respReq["reasoning"] = map[string]any{
-			"effort":  rEffort,
+		reasoningMap := map[string]any{
 			"summary": "auto",
+			"effort":  rEffort,
 		}
+		if oreq.Reasoning != nil {
+			if existing, ok := oreq.Reasoning.(map[string]any); ok {
+				for k, v := range existing {
+					reasoningMap[k] = v
+				}
+				reasoningMap["effort"] = rEffort
+			}
+		}
+		respReq["reasoning"] = reasoningMap
 	} else if oreq.Reasoning != nil {
 		respReq["reasoning"] = oreq.Reasoning
 	}
