@@ -1,14 +1,12 @@
-### Provider catalogue correctness: Antigravity filter, image models, Copilot CLI identity, free-model badge
+### Provider catalogue correctness: Antigravity filter, Copilot CLI identity, free-model badge
 
-Four catalogue fixes ported from `arewedaks/9router-go`. Each one closes a case where the gateway advertised a model it could not serve, or served it as the wrong client.
+Three catalogue fixes ported from `arewedaks/9router-go`. Each one closes a case where the gateway advertised a model it could not serve, or served it as the wrong client.
 
 **Antigravity: one filter for the picker and the quota panel.** `providers.IsDiscoverableAntigravityModel` replaces an inline check (`IsInternal || chat_/tab_ prefix`) that let three classes of unusable surface through: image and TTS previews the backend still advertises, ids it has retired that now answer 400/404, and internal `chat_*` / `tab_*` slots. The filter is a **blocklist**, not an allow-list, deliberately — the backend adds models faster than a curated list can track, so a new id is callable by default and only known-bad surfaces are removed. Non-chat surfaces are matched on segment boundaries (`image-`, `-image`, `-image-`), so a legitimate id that merely contains the letters is never rejected.
 
-The same filter now serves the model picker and the quota panel. They were two lists, and the quota one was a hardcoded allow-list that had gone stale — it reported seven fewer models than the picker offered.
+The filter is wired into the model picker. The quota panel keeps its own list, deliberately: it must show `gemini-3.1-flash-image`, which this filter rejects as a non-chat surface, so reusing one list for both would silently drop a quota row an operator reads. Unifying them is a separate change with its own decision to make — what the quota panel should show for a model the picker refuses.
 
-`providers.AntigravityQuotaHosts` records why the quota RPC has two hosts and which one comes first: measured on one account with the same token and model seconds apart, `daily-cloudcode-pa` reported `remainingFraction 0.734` while `cloudcode-pa` reported `1.0`. `cloudcode-pa` keeps answering "full" for the Gemini family after the 5-hour window is consumed, so a caller reading only that host shows a spent allowance as untouched. Daily is probed first because it is the host that reflects consumption.
 
-**Image models are detected by name.** `providers.IsImageModelID` answers "does this model PRODUCE images", which is the opposite of the existing vision tables that answer "does it TAKE image input" — a vision model (qwen3-vl-plus) takes images and returns text, an image model (dall-e-3) returns images. Kept as a separate file so the two cannot be conflated. `FilterImageModels` and `DefaultImageModel` let `/v1/models/image` stop handing out ids that resolution rejects.
 
 **GitHub Copilot presents the CLI identity, not the VS Code extension identity.** `providers.GitHubCopilotChatHeaders` sends exactly the header set the real `@github/copilot` CLI sends: `copilot-integration-id: copilot-developer-cli`, `openai-intent: conversation-agent`, `x-interaction-type: conversation-user`, `copilot-harness-id: copilot-sdk`, `x-github-api-version: 2026-08-01`, and a stable per-process `x-client-machine-id`.
 
@@ -24,6 +22,5 @@ One filter is deliberately **not** applied: `model_picker_enabled`. It means "sh
 
 Two traps are pinned by tests. A truthy-but-not-`true` `free` value such as the string `"false"` must **not** badge — it is truthy in JavaScript and was the original bug. And OpenCode's free ids end in `-free`, not OpenRouter's `:free`, so the payload signal never fires for them and the catalogue entry is the only thing that can badge them; seeding an id that the chat endpoint then refuses is worse than seeding fewer, because every such request burns a fallback attempt before reaching one that works. Two ids (`deepseek-v4-flash-free`, `jev-1.13-free`) are deliberately absent for exactly that reason.
 
-`KeylessModelIDs` seeds a fresh install: a keyless provider owns no connection row and therefore no cached models, so without it OpenCode Free lists zero models on a brand-new database and the operator must click Import before the provider works — even though nothing about it needs configuring.
 
-Verified: `go build ./...` clean; `go test ./internal/providers/ ./internal/proxy/oauth/ ./internal/handlers/dashboard/ ./internal/handlers/chat/` all pass. New tests pin the Antigravity blocklist (15 cases including segment-boundary matching), image detection, the Copilot CLI header set and its absent VS Code headers, machine-id stability, version-override rejection, the entitlement filter, and the free-badge rules.
+Verified: `go build ./...` clean; `go test ./internal/providers/ ./internal/proxy/oauth/ ./internal/handlers/dashboard/ ./internal/handlers/chat/` all pass. New tests pin the Antigravity blocklist (15 cases including segment-boundary matching), the Copilot CLI header set and its absent VS Code headers, machine-id stability, version-override rejection, the entitlement filter, and the free-badge rules.

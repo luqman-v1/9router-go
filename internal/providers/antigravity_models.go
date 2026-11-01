@@ -4,11 +4,12 @@ import "strings"
 
 // Antigravity catalogue filter.
 //
-// Lives here rather than in the dashboard because two callers need the same
-// answer: the model picker (what can this account call?) and the quota panel
-// (which allowances are worth showing?). They were separate lists, and the
-// quota one was a hardcoded allow-list that had gone stale — it reported seven
-// fewer models than the picker offered, which is the bug this move fixes.
+// Lives here rather than in the dashboard because the model picker needs it and
+// the dashboard package must not own provider-catalogue rules.
+//
+// The quota panel deliberately keeps its own list: it must show
+// gemini-3.1-flash-image, which this filter rejects as a non-chat surface, so
+// sharing one list would silently drop a quota row an operator reads.
 //
 // The filter is a BLOCKLIST, not an allow-list, deliberately: the backend adds
 // models faster than a curated list can track, so a new id is callable by
@@ -78,20 +79,4 @@ func IsDiscoverableAntigravityModel(modelID string) bool {
 		}
 	}
 	return true
-}
-
-// AntigravityQuotaHosts are the Cloud Code endpoints that answer the quota
-// RPCs, in probe order.
-//
-// They are a list because they do NOT agree, and the disagreement is the reason
-// quota looked wrong: measured on one account, same token, same model, seconds
-// apart, daily reported remainingFraction 0.734 for gemini-3.1-pro-high while
-// cloudcode-pa reported 1.0. cloudcode-pa keeps answering "full" for the Gemini
-// family after the 5-hour window is consumed, so anything reading only that host
-// shows a spent allowance as untouched.
-//
-// Daily is first because it is the host that reflects consumption.
-var AntigravityQuotaHosts = []string{
-	"https://daily-cloudcode-pa.googleapis.com",
-	"https://cloudcode-pa.googleapis.com",
 }

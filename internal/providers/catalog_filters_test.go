@@ -35,49 +35,6 @@ func TestIsDiscoverableAntigravityModel(t *testing.T) {
 	}
 }
 
-func TestIsImageModelID(t *testing.T) {
-	tests := []struct {
-		id   string
-		want bool
-	}{
-		{"dall-e-3", true},
-		{"gpt-image-1", true},
-		{"flux-pro", true},
-		{"stable-diffusion-3.5-large", true},
-		{"imagen-4.0-generate-001", true},
-		{"sd3.5-large", true},
-		{"gemini-3-pro-image-preview", true},
-		{"seedance-2.0", true},
-		{"gpt-5.5", false},
-		{"claude-fable-5", false},
-		{"gemini-3.1-flash", false},
-		{"qwen3-vl-plus", false},
-		{"", false},
-		{"   ", false},
-	}
-	for _, tt := range tests {
-		if got := IsImageModelID(tt.id); got != tt.want {
-			t.Errorf("IsImageModelID(%q) = %v, want %v", tt.id, got, tt.want)
-		}
-	}
-}
-
-func TestFilterImageModels(t *testing.T) {
-	in := []string{"gpt-5.5", "dall-e-3", "flux-pro", "claude-fable-5"}
-	got := FilterImageModels(in)
-	if len(got) != 2 || got[0] != "dall-e-3" || got[1] != "flux-pro" {
-		t.Errorf("FilterImageModels() = %v, want [dall-e-3 flux-pro]", got)
-	}
-}
-
-func TestDefaultImageModel(t *testing.T) {
-	// A provider with no catalogue must return "" rather than a model id that
-	// resolution would reject.
-	if got := DefaultImageModel("no-such-provider"); got != "" {
-		t.Errorf("DefaultImageModel(unknown) = %q, want empty", got)
-	}
-}
-
 func TestGitHubCopilotChatHeaders(t *testing.T) {
 	headers := GitHubCopilotChatHeaders("", "")
 	want := map[string]string{

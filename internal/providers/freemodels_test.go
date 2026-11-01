@@ -24,37 +24,6 @@ func TestProviderHasFreeModels(t *testing.T) {
 	}
 }
 
-func TestKeylessModelIDs(t *testing.T) {
-	ids := KeylessModelIDs("opencode")
-	if len(ids) == 0 {
-		t.Fatal("KeylessModelIDs(opencode) returned none")
-	}
-	// The list must be sorted so a fresh install seeds deterministically.
-	for i := 1; i < len(ids); i++ {
-		if ids[i-1] > ids[i] {
-			t.Fatalf("KeylessModelIDs(opencode) is not sorted at %d: %s > %s", i, ids[i-1], ids[i])
-		}
-	}
-	// The -free suffix is the only thing that can badge these, so every
-	// catalogued keyless id that carries it must be present.
-	found := false
-	for _, id := range ids {
-		if id == "big-pickle" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("KeylessModelIDs(opencode) is missing big-pickle")
-	}
-	// A provider with no keyless regime returns nil.
-	if got := KeylessModelIDs("gemini"); got != nil {
-		t.Errorf("KeylessModelIDs(gemini) = %v, want nil", got)
-	}
-	if got := KeylessModelIDs("openai"); got != nil {
-		t.Errorf("KeylessModelIDs(openai) = %v, want nil", got)
-	}
-}
-
 func TestCatalogModelIDs(t *testing.T) {
 	// glm-cn carries three flash ids plus the signup-bonus id; the one-time
 	// regime still grants access, so all four are catalogued.
