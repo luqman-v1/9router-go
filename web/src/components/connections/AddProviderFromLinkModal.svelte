@@ -216,12 +216,15 @@
       })
     }
     // planBulkAdd gap-fills against the names already here, so a shared "Key 1"
-    // becomes "Key 2" instead of replacing the stored row.
-    const planned = planBulkAdd(
+    // becomes "Key 2" instead of replacing the stored row. The list is refreshed
+    // as rows land: a set= link runs several cards in sequence, and a stale list
+    // would let card 2 propose a name card 1 just took — a 409 the operator
+    // cannot explain, because both names came from the same link.
+    let names = [...existingNames]
+    for (const entry of planBulkAdd(
       link.keys.map((k) => `${k.name || 'Key'}|${k.key}`),
-      existingNames,
-    )
-    for (const entry of planned) {
+      names,
+    )) {
       await api.createConnection({
         provider: link.prov,
         authType: 'compatible',
@@ -229,6 +232,7 @@
         name: entry.name,
         priority: 1,
       })
+      names.push(entry.name)
     }
     let added = 0
     let skipped = 0
