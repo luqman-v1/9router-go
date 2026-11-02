@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 
 	"go.uber.org/fx"
 
@@ -49,6 +50,12 @@ func ProvideDatabase(lc fx.Lifecycle, cfg *config.Config) (*sql.DB, error) {
 			return nil, fmt.Errorf("database schema: %w", err)
 		}
 	}
+	// The schema bootstrap is the first write, so this is where SQLite creates
+	// the -wal and -shm sidecars. They carry the process umask rather than the
+	// 0600 OpenDatabase set, and they hold the same page images as the main
+	// file — the same plaintext credentials. Re-assert the modes now that they
+	// exist.
+	db.RestrictSQLiteModes(filepath.Dir(cfg.DatabasePath), cfg.DatabasePath)
 
 	// Best-effort: a row stuck on a provider id the catalog dropped should
 	// not block startup, it should just keep failing the way it already was.
