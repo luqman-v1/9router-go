@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -46,7 +47,7 @@ func TestMusePendingMintGet_missing(t *testing.T) {
 
 func TestMuseAccountEmail_prefersMintResponse(t *testing.T) {
 	key := map[string]any{"user_email": "User@Example.COM"}
-	if got := museAccountEmail(key, "not-a-jwt"); got != "user@example.com" {
+	if got := museAccountEmail(context.Background(), key, "not-a-jwt"); got != "user@example.com" {
 		t.Fatalf("expected mint user_email, got %q", got)
 	}
 }
@@ -54,13 +55,13 @@ func TestMuseAccountEmail_prefersMintResponse(t *testing.T) {
 func TestMuseAccountEmail_fallsBackToAccountTokenClaims(t *testing.T) {
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"email":"Fallback@Example.com"}`))
 	token := "header." + payload + ".sig"
-	if got := museAccountEmail(map[string]any{}, token); got != "fallback@example.com" {
+	if got := museAccountEmail(context.Background(), map[string]any{}, token); got != "fallback@example.com" {
 		t.Fatalf("expected JWT claim email, got %q", got)
 	}
 }
 
 func TestMuseAccountEmail_empty(t *testing.T) {
-	if got := museAccountEmail(map[string]any{}, "not-a-jwt"); got != "" {
+	if got := museAccountEmail(context.Background(), map[string]any{}, "not-a-jwt"); got != "" {
 		t.Fatalf("expected empty, got %q", got)
 	}
 }

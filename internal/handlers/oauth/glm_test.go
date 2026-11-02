@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -162,7 +163,7 @@ func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 	}()
 
 	t.Run("StartReturnsAuthorizeURLAndSession", func(t *testing.T) {
-		res, err := glmStart()
+		res, err := glmStart(context.Background())
 		if err != nil {
 			t.Fatalf("glmStart failed: %v", err)
 		}
@@ -179,7 +180,7 @@ func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 	})
 
 	t.Run("PollTokenIsHexLikeTheCLI", func(t *testing.T) {
-		res, err := glmStart()
+		res, err := glmStart(context.Background())
 		if err != nil {
 			t.Fatalf("glmStart failed: %v", err)
 		}
@@ -192,7 +193,7 @@ func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 	t.Run("PendingPollReturnsAuthorizationPending", func(t *testing.T) {
 		pollPending = true
 		session := map[string]any{"zcodePollToken": "dummy"}
-		_, err := glmPoll(session, "flow-123")
+		_, err := glmPoll(context.Background(), session, "flow-123")
 		if err == nil || !strings.Contains(err.Error(), "authorization_pending") {
 			t.Fatalf("expected authorization_pending, got %v", err)
 		}
@@ -201,7 +202,7 @@ func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 	t.Run("ReadyDerivesCodingPlanKeyAndPsd", func(t *testing.T) {
 		pollPending = false
 		session := map[string]any{"zcodePollToken": "dummy"}
-		toks, err := glmPoll(session, "flow-123")
+		toks, err := glmPoll(context.Background(), session, "flow-123")
 		if err != nil {
 			t.Fatalf("glmPoll failed: %v", err)
 		}
@@ -232,7 +233,7 @@ func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 	})
 
 	t.Run("MissingPollTokenFailsCleanly", func(t *testing.T) {
-		_, err := glmPoll(map[string]any{}, "flow-123")
+		_, err := glmPoll(context.Background(), map[string]any{}, "flow-123")
 		if err == nil || !strings.Contains(err.Error(), "access_denied") {
 			t.Fatalf("expected access_denied, got %v", err)
 		}

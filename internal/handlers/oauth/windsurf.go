@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"bytes"
+	"context"
 	json "encoding/json/v2"
 	"fmt"
 	"io"
@@ -25,12 +26,12 @@ var (
 	windsurfUserAgent        = "antigravity-cockpit-tools"
 )
 
-func windsurfSeatPost(baseURL, path string, body any) (map[string]any, error) {
+func windsurfSeatPost(ctx context.Context, baseURL, path string, body any) (map[string]any, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, strings.TrimSuffix(baseURL, "/")+path, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(baseURL, "/")+path, bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +153,7 @@ func (h *OAuthHandler) HandleWindsurfExchange(w http.ResponseWriter, r *http.Req
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing access_token")
 			return
 		}
-		reg, err := windsurfSeatPost(windsurfRegisterBase, windsurfRegisterPath, map[string]string{"firebase_id_token": firebaseJWT})
+		reg, err := windsurfSeatPost(r.Context(), windsurfRegisterBase, windsurfRegisterPath, map[string]string{"firebase_id_token": firebaseJWT})
 		if err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("Windsurf RegisterUser failed: %v", err))
 			return
@@ -170,9 +171,9 @@ func (h *OAuthHandler) HandleWindsurfExchange(w http.ResponseWriter, r *http.Req
 
 	email, name := "", ""
 	if firebaseJWT != "" {
-		if auth, err := windsurfSeatPost(apiServerURL, windsurfOneTimePath, map[string]string{"firebaseIdToken": firebaseJWT}); err == nil {
+		if auth, err := windsurfSeatPost(r.Context(), apiServerURL, windsurfOneTimePath, map[string]string{"firebaseIdToken": firebaseJWT}); err == nil {
 			if tok := windsurfStr(auth, "authToken", "auth_token"); tok != "" {
-				if user, err := windsurfSeatPost(apiServerURL, windsurfCurrentUserPath, map[string]any{"authToken": tok, "includeSubscription": true}); err == nil {
+				if user, err := windsurfSeatPost(r.Context(), apiServerURL, windsurfCurrentUserPath, map[string]any{"authToken": tok, "includeSubscription": true}); err == nil {
 					if u, ok := user["user"].(map[string]any); ok {
 						user = u
 					}

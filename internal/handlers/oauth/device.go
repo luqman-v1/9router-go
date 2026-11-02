@@ -58,12 +58,12 @@ var deviceClient = &http.Client{
 	Timeout:   15 * time.Second,
 }
 
-func postJSON(url string, body any, headers map[string]string) (map[string]any, int, error) {
+func postJSON(ctx context.Context, url string, body any, headers map[string]string) (map[string]any, int, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, 0, err
 	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -88,8 +88,8 @@ func postJSON(url string, body any, headers map[string]string) (map[string]any, 
 	return data, resp.StatusCode, nil
 }
 
-func postForm(url string, form url.Values, headers map[string]string) (map[string]any, int, error) {
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(form.Encode()))
+func postForm(ctx context.Context, url string, form url.Values, headers map[string]string) (map[string]any, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -114,8 +114,8 @@ func postForm(url string, form url.Values, headers map[string]string) (map[strin
 	return data, resp.StatusCode, nil
 }
 
-func getJSON(url string, headers map[string]string) (map[string]any, int, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func getJSON(ctx context.Context, url string, headers map[string]string) (map[string]any, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -187,27 +187,27 @@ func (h *OAuthHandler) HandleDeviceStart(w http.ResponseWriter, r *http.Request)
 func deviceStart(ctx context.Context, provider, region, startURL, authMethod string) (map[string]any, error) {
 	switch provider {
 	case "qoder", "qoder-cn":
-		return qoderStart(provider)
+		return qoderStart(ctx, provider)
 	case "kilocode":
-		return kilocodeStart()
+		return kilocodeStart(ctx)
 	case "grok-cli":
-		return grokcliStart()
+		return grokcliStart(ctx)
 	case "github":
-		return githubStart()
+		return githubStart(ctx)
 	case "kiro":
-		return kiroStart(region, startURL, authMethod)
+		return kiroStart(ctx, region, startURL, authMethod)
 	case "kimi":
-		return kimiStart()
+		return kimiStart(ctx)
 	case "codebuddy-cn", "codebuddy-intl":
-		return codebuddyStart(provider)
+		return codebuddyStart(ctx, provider)
 	case "muse":
-		return museStart()
+		return museStart(ctx)
 	case "minimax-code", "minimax-code-global":
-		return minimaxCodeStart(provider)
+		return minimaxCodeStart(ctx, provider)
 	case "nous":
-		return nousStart()
+		return nousStart(ctx)
 	case "glm":
-		return glmStart()
+		return glmStart(ctx)
 	case "zcode":
 		return zcodeStartContext(ctx, provider)
 	default:
@@ -226,7 +226,7 @@ func qoderLoginURL(provider string) string {
 	return "https://qoder.com/device/selectAccounts"
 }
 
-func qoderStart(provider string) (map[string]any, error) {
+func qoderStart(ctx context.Context, provider string) (map[string]any, error) {
 	verifier := pkceVerifier()
 	challenge := sha256Base64(verifier)
 	nonce, machineID := randomUUID(), randomUUID()
@@ -253,8 +253,8 @@ func firstN(s string, n int) string {
 
 // --- kilocode: POST initiate, GET poll ---
 
-func kilocodeStart() (map[string]any, error) {
-	data, status, err := postJSON("https://api.kilo.ai/api/device-auth/codes", map[string]string{}, nil)
+func kilocodeStart(ctx context.Context) (map[string]any, error) {
+	data, status, err := postJSON(ctx, "https://api.kilo.ai/api/device-auth/codes", map[string]string{}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("device auth initiation failed: %v", err)
 	}
@@ -277,13 +277,13 @@ func kilocodeStart() (map[string]any, error) {
 
 var grokcliUA = providers.GrokCLIPagerUserAgent
 
-func grokcliStart() (map[string]any, error) {
+func grokcliStart(ctx context.Context) (map[string]any, error) {
 	form := url.Values{
 		"client_id": {"b1a00492-073a-47ea-816f-4c329264a828"},
 		"scope":     {"openid profile email offline_access grok-cli:access api:access conversations:read conversations:write"},
 		"referrer":  {"grok-build"},
 	}
-	data, status, err := postForm("https://auth.x.ai/oauth2/device/code", form, map[string]string{"User-Agent": grokcliUA})
+	data, status, err := postForm(ctx, "https://auth.x.ai/oauth2/device/code", form, map[string]string{"User-Agent": grokcliUA})
 	if err != nil || status != http.StatusOK {
 		return nil, fmt.Errorf("grok CLI device code request failed: %v status=%d", err, status)
 	}
@@ -293,9 +293,9 @@ func grokcliStart() (map[string]any, error) {
 
 // --- github: standard device flow ---
 
-func githubStart() (map[string]any, error) {
+func githubStart(ctx context.Context) (map[string]any, error) {
 	form := url.Values{"client_id": {"Iv1.b507a08c87ecfe98"}, "scope": {"read:user"}}
-	data, status, err := postForm("https://github.com/login/device/code", form, nil)
+	data, status, err := postForm(ctx, "https://github.com/login/device/code", form, nil)
 	if err != nil || status != http.StatusOK {
 		return nil, fmt.Errorf("device code request failed: %v status=%d", err, status)
 	}
@@ -305,7 +305,7 @@ func githubStart() (map[string]any, error) {
 
 // --- kiro: AWS SSO OIDC register + device ---
 
-func kiroStart(region, startURL, authMethod string) (map[string]any, error) {
+func kiroStart(ctx context.Context, region, startURL, authMethod string) (map[string]any, error) {
 	if strings.TrimSpace(region) == "" {
 		region = "us-east-1"
 	}
@@ -318,7 +318,7 @@ func kiroStart(region, startURL, authMethod string) (map[string]any, error) {
 	if authMethod != "idc" {
 		authMethod = "builder-id"
 	}
-	reg, status, err := postJSON("https://oidc."+region+".amazonaws.com/client/register", map[string]any{
+	reg, status, err := postJSON(ctx, "https://oidc."+region+".amazonaws.com/client/register", map[string]any{
 		"clientName": "kiro-oauth-client", "clientType": "public",
 		"scopes":     []string{"codewhisperer:completions", "codewhisperer:analysis", "codewhisperer:conversations"},
 		"grantTypes": []string{"urn:ietf:params:oauth:grant-type:device_code", "refresh_token"},
@@ -327,7 +327,7 @@ func kiroStart(region, startURL, authMethod string) (map[string]any, error) {
 	if err != nil || status != http.StatusOK {
 		return nil, fmt.Errorf("client registration failed: %v status=%d", err, status)
 	}
-	dev, status, err := postJSON("https://oidc."+region+".amazonaws.com/device_authorization", map[string]any{
+	dev, status, err := postJSON(ctx, "https://oidc."+region+".amazonaws.com/device_authorization", map[string]any{
 		"clientId": strVal(reg, "clientId"), "clientSecret": strVal(reg, "clientSecret"), "startUrl": startURL,
 	}, nil)
 	if err != nil || status != http.StatusOK {
@@ -363,10 +363,10 @@ func kimiHeaders(deviceID string) map[string]string {
 	}
 }
 
-func kimiStart() (map[string]any, error) {
+func kimiStart(ctx context.Context) (map[string]any, error) {
 	deviceID := randomUUID()
 	form := url.Values{"client_id": {"17e5f671-d194-4dfb-9706-5516cb48c098"}}
-	data, status, err := postForm("https://auth.kimi.com/api/oauth/device_authorization", form, kimiHeaders(deviceID))
+	data, status, err := postForm(ctx, "https://auth.kimi.com/api/oauth/device_authorization", form, kimiHeaders(deviceID))
 	if err != nil || status != http.StatusOK {
 		return nil, fmt.Errorf("device code request failed: %v status=%d", err, status)
 	}
@@ -383,13 +383,13 @@ func codebuddyVariant(provider string) (base, ua, domain, platform string) {
 	return "https://copilot.tencent.com", "CLI/2.63.2 CodeBuddy/2.63.2", "copilot.tencent.com", "CLI"
 }
 
-func codebuddyStart(provider string) (map[string]any, error) {
+func codebuddyStart(ctx context.Context, provider string) (map[string]any, error) {
 	base, ua, domain, platform := codebuddyVariant(provider)
 	headers := map[string]string{
 		"User-Agent": ua, "X-Requested-With": "XMLHttpRequest",
 		"X-Domain": domain, "X-No-Authorization": "true", "X-No-User-Id": "true", "X-Product": "SaaS",
 	}
-	data, status, err := postJSON(base+"/v2/plugin/auth/state?platform="+platform, map[string]string{}, headers)
+	data, status, err := postJSON(ctx, base+"/v2/plugin/auth/state?platform="+platform, map[string]string{}, headers)
 	if err != nil || status != http.StatusOK {
 		return nil, fmt.Errorf("CodeBuddy state request failed: %v status=%d", err, status)
 	}
@@ -468,27 +468,27 @@ func devicePoll(ctx context.Context, provider, code string, session map[string]a
 	var err error
 	switch provider {
 	case "qoder", "qoder-cn":
-		t, err = qoderPoll(provider, session, code)
+		t, err = qoderPoll(ctx, provider, session, code)
 	case "kilocode":
-		t, err = kilocodePoll(code)
+		t, err = kilocodePoll(ctx, code)
 	case "grok-cli":
-		t, err = grokcliPoll(code)
+		t, err = grokcliPoll(ctx, code)
 	case "github":
-		t, err = githubPoll(code)
+		t, err = githubPoll(ctx, code)
 	case "kiro":
-		t, err = kiroPoll(session, code)
+		t, err = kiroPoll(ctx, session, code)
 	case "kimi":
-		t, err = kimiPoll(session, code)
+		t, err = kimiPoll(ctx, session, code)
 	case "codebuddy-cn", "codebuddy-intl":
-		t, err = codebuddyPoll(provider, code)
+		t, err = codebuddyPoll(ctx, provider, code)
 	case "muse":
-		t, err = musePoll(code)
+		t, err = musePoll(ctx, code)
 	case "minimax-code", "minimax-code-global":
-		t, err = minimaxCodePoll(provider, code, session)
+		t, err = minimaxCodePoll(ctx, provider, code, session)
 	case "nous":
-		t, err = nousPoll(code)
+		t, err = nousPoll(ctx, code)
 	case "glm":
-		t, err = glmPoll(session, code)
+		t, err = glmPoll(ctx, session, code)
 	case "zcode":
 		t, err = zcodePollContext(ctx, provider, code, session)
 	default:
@@ -604,7 +604,7 @@ func qoderOpenAPIBase(provider string) string {
 	return "https://openapi.qoder.sh"
 }
 
-func qoderPoll(provider string, session map[string]any, nonce string) (deviceTokens, error) {
+func qoderPoll(ctx context.Context, provider string, session map[string]any, nonce string) (deviceTokens, error) {
 	var t deviceTokens
 	verifier, _ := session["verifier"].(string)
 	machineID, _ := session["machineId"].(string)
@@ -614,7 +614,7 @@ func qoderPoll(provider string, session map[string]any, nonce string) (deviceTok
 	openapi := qoderOpenAPIBase(provider)
 	u := openapi + "/api/v1/deviceToken/poll?nonce=" + url.QueryEscape(nonce) +
 		"&verifier=" + url.QueryEscape(verifier) + "&challenge_method=S256"
-	req, _ := http.NewRequest(http.MethodGet, u, nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "Go-http-client/2.0")
 	resp, err := deviceClient.Do(req)
@@ -651,7 +651,7 @@ func qoderPoll(provider string, session map[string]any, nonce string) (deviceTok
 	if uid != "" {
 		t.extra["userId"] = uid
 	}
-	if ui, _, _ := getJSON(openapi+"/api/v1/userinfo",
+	if ui, _, _ := getJSON(ctx, openapi+"/api/v1/userinfo",
 		map[string]string{"Authorization": "Bearer " + token, "User-Agent": "Go-http-client/2.0"}); ui != nil {
 		t.name = strVal(ui, "name", "username")
 		t.email = strVal(ui, "email")
@@ -667,9 +667,9 @@ func qoderPoll(provider string, session map[string]any, nonce string) (deviceTok
 	return t, nil
 }
 
-func kilocodePoll(code string) (deviceTokens, error) {
+func kilocodePoll(ctx context.Context, code string) (deviceTokens, error) {
 	var t deviceTokens
-	req, _ := http.NewRequest(http.MethodGet, "https://api.kilo.ai/api/device-auth/codes/"+code, nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.kilo.ai/api/device-auth/codes/"+code, nil)
 	req.Header.Set("Accept", "application/json")
 	resp, err := deviceClient.Do(req)
 	if err != nil {
@@ -697,7 +697,7 @@ func kilocodePoll(code string) (deviceTokens, error) {
 	}
 	t.access = strVal(data, "token")
 	t.email = strVal(data, "userEmail")
-	if ui, _, _ := getJSON("https://api.kilo.ai/api/profile",
+	if ui, _, _ := getJSON(ctx, "https://api.kilo.ai/api/profile",
 		map[string]string{"Authorization": "Bearer " + t.access}); ui != nil {
 		if orgs, ok := ui["organizations"].([]any); ok && len(orgs) > 0 {
 			if m, ok := orgs[0].(map[string]any); ok {
@@ -708,13 +708,13 @@ func kilocodePoll(code string) (deviceTokens, error) {
 	return t, nil
 }
 
-func grokcliPoll(code string) (deviceTokens, error) {
+func grokcliPoll(ctx context.Context, code string) (deviceTokens, error) {
 	var t deviceTokens
 	form := url.Values{
 		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 		"device_code": {code}, "client_id": {"b1a00492-073a-47ea-816f-4c329264a828"},
 	}
-	data, _, err := postForm("https://auth.x.ai/oauth2/token", form, map[string]string{"User-Agent": grokcliUA})
+	data, _, err := postForm(ctx, "https://auth.x.ai/oauth2/token", form, map[string]string{"User-Agent": grokcliUA})
 	if err != nil {
 		return t, fmt.Errorf("poll_failed: %v", err)
 	}
@@ -732,7 +732,7 @@ func grokcliPoll(code string) (deviceTokens, error) {
 		}
 		return t, fmt.Errorf("authorization_pending")
 	}
-	if ui, _, _ := getJSON("https://cli-chat-proxy.grok.com/v1/user",
+	if ui, _, _ := getJSON(ctx, "https://cli-chat-proxy.grok.com/v1/user",
 		map[string]string{"Authorization": "Bearer " + t.access}); ui != nil {
 		t.email = strVal(ui, "email")
 		t.name = strVal(ui, "name", "username")
@@ -740,13 +740,13 @@ func grokcliPoll(code string) (deviceTokens, error) {
 	return t, nil
 }
 
-func githubPoll(code string) (deviceTokens, error) {
+func githubPoll(ctx context.Context, code string) (deviceTokens, error) {
 	var t deviceTokens
 	form := url.Values{
 		"client_id": {"Iv1.b507a08c87ecfe98"}, "device_code": {code},
 		"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"},
 	}
-	data, _, err := postForm("https://github.com/login/oauth/access_token", form, nil)
+	data, _, err := postForm(ctx, "https://github.com/login/oauth/access_token", form, nil)
 	if err != nil {
 		return t, fmt.Errorf("poll_failed: %v", err)
 	}
@@ -769,8 +769,8 @@ func githubPoll(code string) (deviceTokens, error) {
 		"User-Agent": "GitHubCopilotChat/0.26.7",
 	}
 	var copilot, user map[string]any
-	copilot, _, _ = getJSON("https://api.github.com/copilot_internal/v2/token", ghH)
-	user, _, _ = getJSON("https://api.github.com/user", ghH)
+	copilot, _, _ = getJSON(ctx, "https://api.github.com/copilot_internal/v2/token", ghH)
+	user, _, _ = getJSON(ctx, "https://api.github.com/user", ghH)
 	t.email = strVal(user, "email")
 	t.name = strVal(user, "name", "login")
 	t.extra = map[string]any{
@@ -782,7 +782,7 @@ func githubPoll(code string) (deviceTokens, error) {
 	return t, nil
 }
 
-func kiroPoll(session map[string]any, code string) (deviceTokens, error) {
+func kiroPoll(ctx context.Context, session map[string]any, code string) (deviceTokens, error) {
 	var t deviceTokens
 	region, _ := session["region"].(string)
 	if region == "" {
@@ -791,7 +791,7 @@ func kiroPoll(session map[string]any, code string) (deviceTokens, error) {
 	if !awsRegionPattern.MatchString(region) {
 		return t, fmt.Errorf("invalid region")
 	}
-	data, _, err := postJSON("https://oidc."+region+".amazonaws.com/token", map[string]any{
+	data, _, err := postJSON(ctx, "https://oidc."+region+".amazonaws.com/token", map[string]any{
 		"clientId": strVal(session, "clientId"), "clientSecret": strVal(session, "clientSecret"),
 		"deviceCode": code, "grantType": "urn:ietf:params:oauth:grant-type:device_code",
 	}, nil)
@@ -811,15 +811,15 @@ func kiroPoll(session map[string]any, code string) (deviceTokens, error) {
 		"clientId": strVal(session, "clientId"), "clientSecret": strVal(session, "clientSecret"),
 		"region": region, "authMethod": strVal(session, "authMethod"), "startUrl": strVal(session, "startUrl"),
 	}
-	if arn := kiroProfileArn(t.access); arn != "" {
+	if arn := kiroProfileArn(ctx, t.access); arn != "" {
 		t.extra["profileArn"] = arn
 	}
 	return t, nil
 }
 
-func kiroProfileArn(accessToken string) string {
+func kiroProfileArn(ctx context.Context, accessToken string) string {
 	body, _ := json.Marshal(map[string]any{"maxResults": 10})
-	req, err := http.NewRequest(http.MethodPost, "https://codewhisperer.us-east-1.amazonaws.com/ListAvailableProfiles", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://codewhisperer.us-east-1.amazonaws.com/ListAvailableProfiles", bytes.NewReader(body))
 	if err != nil {
 		return ""
 	}
@@ -848,7 +848,7 @@ func kiroProfileArn(accessToken string) string {
 	return ""
 }
 
-func kimiPoll(session map[string]any, code string) (deviceTokens, error) {
+func kimiPoll(ctx context.Context, session map[string]any, code string) (deviceTokens, error) {
 	var t deviceTokens
 	deviceID, _ := session["deviceId"].(string)
 	form := url.Values{
@@ -856,7 +856,7 @@ func kimiPoll(session map[string]any, code string) (deviceTokens, error) {
 		"client_id":   {"17e5f671-d194-4dfb-9706-5516cb48c098"},
 		"device_code": {code},
 	}
-	data, _, err := postForm("https://auth.kimi.com/api/oauth/token", form, kimiHeaders(deviceID))
+	data, _, err := postForm(ctx, "https://auth.kimi.com/api/oauth/token", form, kimiHeaders(deviceID))
 	if err != nil {
 		return t, fmt.Errorf("poll_failed: %v", err)
 	}
@@ -875,7 +875,7 @@ func kimiPoll(session map[string]any, code string) (deviceTokens, error) {
 	return t, nil
 }
 
-func codebuddyPoll(provider, state string) (deviceTokens, error) {
+func codebuddyPoll(ctx context.Context, provider, state string) (deviceTokens, error) {
 	var t deviceTokens
 	base, ua, domain := "https://copilot.tencent.com", "CLI/2.63.2 CodeBuddy/2.63.2", "copilot.tencent.com"
 	if provider == "codebuddy-intl" {
@@ -886,7 +886,7 @@ func codebuddyPoll(provider, state string) (deviceTokens, error) {
 		"X-Domain": domain, "X-No-Authorization": "true", "X-No-User-Id": "true",
 		"X-No-Enterprise-Id": "true", "X-No-Department-Info": "true", "X-Product": "SaaS",
 	}
-	req, _ := http.NewRequest(http.MethodGet, base+"/v2/plugin/auth/token?state="+url.QueryEscape(state), nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v2/plugin/auth/token?state="+url.QueryEscape(state), nil)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

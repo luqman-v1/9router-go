@@ -177,12 +177,13 @@ func (h *OAuthHandler) HandleKimchiExchange(w http.ResponseWriter, r *http.Reque
 	if raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)); err == nil && len(raw) > 0 {
 		_ = json.Unmarshal(raw, &body)
 	}
+	ctx := r.Context()
 	token := strings.TrimSpace(body.Code)
 	if token == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing Kimchi token")
 		return
 	}
-	vreq, _ := http.NewRequest(http.MethodGet, kimchiValidate, nil)
+	vreq, _ := http.NewRequestWithContext(ctx, http.MethodGet, kimchiValidate, nil)
 	vreq.Header.Set("Accept", "application/json")
 	vreq.Header.Set("Authorization", "Bearer "+token)
 	if vresp, err := (&http.Client{Timeout: 15 * time.Second}).Do(vreq); err != nil || vresp.StatusCode != http.StatusOK {
@@ -197,7 +198,7 @@ func (h *OAuthHandler) HandleKimchiExchange(w http.ResponseWriter, r *http.Reque
 		vresp.Body.Close()
 	}
 	var userID, username, email, display string
-	if ureq, _ := http.NewRequest(http.MethodGet, kimchiUserInfo, nil); ureq != nil {
+	if ureq, _ := http.NewRequestWithContext(ctx, http.MethodGet, kimchiUserInfo, nil); ureq != nil {
 		ureq.Header.Set("Accept", "application/json")
 		ureq.Header.Set("Authorization", "Bearer "+token)
 		if uresp, err := (&http.Client{Timeout: 10 * time.Second}).Do(ureq); err == nil {
@@ -251,6 +252,7 @@ func (h *OAuthHandler) HandleGitlabPAT(w http.ResponseWriter, r *http.Request) {
 	if raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)); err == nil && len(raw) > 0 {
 		_ = json.Unmarshal(raw, &body)
 	}
+	ctx := r.Context()
 	token := strings.TrimSpace(body.Token)
 	if token == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Personal Access Token is required")
@@ -260,7 +262,7 @@ func (h *OAuthHandler) HandleGitlabPAT(w http.ResponseWriter, r *http.Request) {
 	if base == "" {
 		base = "https://gitlab.com"
 	}
-	ureq, _ := http.NewRequest(http.MethodGet, base+"/api/v4/user", nil)
+	ureq, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v4/user", nil)
 	ureq.Header.Set("Accept", "application/json")
 	ureq.Header.Set("Private-Token", token)
 	uresp, err := (&http.Client{Timeout: 15 * time.Second}).Do(ureq)
@@ -318,6 +320,7 @@ func (h *OAuthHandler) HandleIflowCookie(w http.ResponseWriter, r *http.Request)
 	if raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)); err == nil && len(raw) > 0 {
 		_ = json.Unmarshal(raw, &body)
 	}
+	ctx := r.Context()
 	cookie := strings.TrimSpace(body.Cookie)
 	if cookie == "" || !strings.Contains(cookie, "BXAuth=") {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "cookie must contain BXAuth field")
@@ -327,7 +330,7 @@ func (h *OAuthHandler) HandleIflowCookie(w http.ResponseWriter, r *http.Request)
 		cookie += ";"
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
-	getReq, _ := http.NewRequest(http.MethodGet, "https://platform.iflow.cn/api/openapi/apikey", nil)
+	getReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://platform.iflow.cn/api/openapi/apikey", nil)
 	for k, v := range iflowCookieHeaders {
 		getReq.Header.Set(k, v)
 	}
@@ -359,7 +362,7 @@ func (h *OAuthHandler) HandleIflowCookie(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	postBody, _ := json.Marshal(map[string]string{"name": getResult.Data.Name})
-	postReq, _ := http.NewRequest(http.MethodPost, "https://platform.iflow.cn/api/openapi/apikey", strings.NewReader(string(postBody)))
+	postReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://platform.iflow.cn/api/openapi/apikey", strings.NewReader(string(postBody)))
 	for k, v := range iflowCookieHeaders {
 		postReq.Header.Set(k, v)
 	}
