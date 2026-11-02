@@ -739,9 +739,9 @@ func (r *Repo) GetRequestDetailByID(id string) (string, error) {
 }
 
 // GetRequestDetailsErrorCountSince returns the count of failed requests recorded in requestDetails since cutoff.
-func (r *Repo) GetRequestDetailsErrorCountSince(since string) (int, error) {
+func (r *Repo) GetRequestDetailsErrorCountSince(ctx context.Context, since string) (int, error) {
 	var count int
-	err := r.db.QueryRow(`SELECT COUNT(*) FROM requestDetails WHERE status = 'error' AND timestamp >= ?`, since).Scan(&count)
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM requestDetails WHERE status = 'error' AND timestamp >= ?`, since).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count requestDetails errors since %s: %w", since, err)
 	}

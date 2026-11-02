@@ -166,6 +166,8 @@
                 totalCompletionTokens: res.totalCompletionTokens,
                 totalCachedTokens: res.totalCachedTokens,
                 totalCost: res.totalCost,
+                totalErrors: res.totalErrors,
+                successRate: res.successRate,
                 byProvider: res.byProvider,
                 activeRequests: res.activeRequests,
                 recentRequests: res.recentRequests,

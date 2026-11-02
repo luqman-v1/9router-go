@@ -530,7 +530,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 			applyRawAggregate(&resp, agg, nodeNameMap, connMap, keyNames, views)
 			if !window.since.IsZero() {
 				cutoff := window.since.UTC().Format("2006-01-02T15:04:05.000Z")
-				if errCount, err := repo.GetRequestDetailsErrorCountSince(cutoff); err == nil {
+				if errCount, err := repo.GetRequestDetailsErrorCountSince(r.Context(), cutoff); err == nil {
 					resp.TotalErrors = errCount
 				}
 			}
