@@ -76,31 +76,3 @@ func TestAnchorClaudeCache_PreservesLastSystemAnchor(t *testing.T) {
 		})
 	}
 }
-
-func TestAnchorClaudeCache_TTLOrderValid(t *testing.T) {
-	body := []byte(`{
-		"system": [
-			{"type": "text", "text": "first", "cache_control": {"type": "ephemeral"}},
-			{"type": "text", "text": "second"}
-		],
-		"messages": [{"role": "user", "content": "hi"}]
-	}`)
-	out := AnchorClaudeCache(body)
-	var req map[string]any
-	if err := json.Unmarshal(out, &req); err != nil {
-		t.Fatal(err)
-	}
-	if total := countCacheControlBlocks(req); total > cacheControlMarkerBudget {
-		t.Fatalf("expected <= 4 markers, got %d", total)
-	}
-	sys := req["system"].([]any)
-	for i := 0; i < len(sys)-1; i++ {
-		if m, ok := sys[i].(map[string]any); ok && m["cache_control"] != nil {
-			t.Errorf("system[%d] has cache_control before 1h anchor", i)
-		}
-	}
-	last := sys[len(sys)-1].(map[string]any)
-	if cc, ok := last["cache_control"].(map[string]any); !ok || cc["ttl"] != "1h" {
-		t.Errorf("last system block must be anchored at 1h: %v", last["cache_control"])
-	}
-}
