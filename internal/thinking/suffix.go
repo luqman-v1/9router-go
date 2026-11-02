@@ -25,28 +25,52 @@ func ParseSuffix(model string) (string, *Intent) {
 		return model, nil
 	}
 	clean := strings.TrimSpace(trimmed[:open])
-	raw := strings.ToLower(strings.TrimSpace(inner))
-	switch {
-	case raw == "none" || raw == "off":
-		return clean, &Intent{Mode: ModeNone}
-	case raw == "auto":
-		return clean, &Intent{Mode: ModeAuto}
-	case raw == "ultra":
-		return clean, &Intent{Mode: ModeLevel, Level: "ultra"}
-	case allDigits(raw):
-		n, err := strconv.Atoi(raw)
-		if err != nil {
-			// A number that does not fit is not a budget: the suffix is still
-			// stripped, but no intent is expressed.
-			return clean, nil
+	parts := strings.Split(inner, ",")
+	intent := &Intent{}
+	hasAny := false
+
+	for _, p := range parts {
+		raw := strings.ToLower(strings.TrimSpace(p))
+		if raw == "" {
+			continue
 		}
-		return clean, &Intent{Mode: ModeBudget, Budget: n}
-	default:
-		if _, ok := LevelToBudget[raw]; ok {
-			return clean, &Intent{Mode: ModeLevel, Level: raw}
+		switch raw {
+		case "fast", "priority":
+			intent.Tier = "priority"
+			hasAny = true
+		case "standard", "default":
+			intent.Tier = "default"
+			hasAny = true
+		case "none", "off":
+			intent.Mode = ModeNone
+			hasAny = true
+		case "auto":
+			intent.Mode = ModeAuto
+			hasAny = true
+		case "ultra":
+			intent.Mode = ModeLevel
+			intent.Level = "ultra"
+			hasAny = true
+		default:
+			if allDigits(raw) {
+				n, err := strconv.Atoi(raw)
+				if err == nil {
+					intent.Mode = ModeBudget
+					intent.Budget = n
+					hasAny = true
+				}
+			} else if _, ok := LevelToBudget[raw]; ok {
+				intent.Mode = ModeLevel
+				intent.Level = raw
+				hasAny = true
+			}
 		}
+	}
+
+	if !hasAny {
 		return clean, nil
 	}
+	return clean, intent
 }
 
 func allDigits(s string) bool {
