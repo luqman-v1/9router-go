@@ -99,13 +99,20 @@ jobs:
             exit 1
           }
           # Every sidebar link must resolve, or a reader clicks a dead link.
+          # One pipeline over all pages at once, so a page with no relative
+          # links cannot look like a failure the way a per-page `while read`
+          # does: that loop exits 1 on the EOF that ends it, which is how the
+          # redirect stub's empty result read as a dead link.
           dead=0
-          for page in _site/*.html; do
-            grep -o 'href="[a-z][a-z0-9-]*\.html"' "$page" | sed 's/href="//;s/"//' | sort -u |
-              while read -r link; do
-                [ -f "_site/$link" ] || { echo "::error::$page links to missing $link"; exit 1; }
-              done || dead=1
-          done
+          while read -r page link; do
+            [ -n "$link" ] || continue
+            [ -f "_site/$link" ] || { echo "::error::$page links to missing $link"; dead=1; }
+          done < <(
+            for page in _site/*.html; do
+              grep -o 'href="[a-z][a-z0-9-]*\.html"' "$page" |
+                sed "s|href=\"||;s|\"$||;s|^|$page |"
+            done
+          )
           [ "$dead" -eq 0 ] || exit 1
           # The index has to carry page bodies, not just headings: a feature
           # documented only in prose is unreachable through search otherwise.
