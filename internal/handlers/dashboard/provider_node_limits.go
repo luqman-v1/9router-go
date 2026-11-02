@@ -41,6 +41,7 @@ type ProviderNodeLimitsResponse struct {
 	// QuotaResetID is the usageHistory row the token quota is measured from, and
 	// the reason usedTokens can fall back to zero without the history changing.
 	QuotaResetID      int    `json:"quotaResetId"`
+	QuotaFloor        int    `json:"quotaFloor"`
 	ContractExpiresAt string `json:"contractExpiresAt,omitempty"`
 
 	// UsedTokens is the number the quota gate compares against TokenQuota: the
@@ -69,6 +70,7 @@ func (h *DashboardHandler) providerNodeLimitsFrom(nodeID string, limits db.Provi
 		TokenQuota:        limits.TokenQuota,
 		QueueTimeoutMs:    limits.QueueTimeoutMs,
 		QuotaResetID:      limits.QuotaResetID,
+		QuotaFloor:        limits.QuotaFloor,
 		ContractExpiresAt: limits.ContractExpiresAt,
 		UsedTokens:        used,
 		Expired:           limits.Expired(time.Now()),
@@ -113,6 +115,7 @@ func (h *DashboardHandler) HandleUpdateProviderNodeLimits(w http.ResponseWriter,
 		Concurrency       *int    `json:"concurrency"`
 		TokenQuota        *int    `json:"tokenQuota"`
 		QueueTimeoutMs    *int    `json:"queueTimeoutMs"`
+		QuotaFloor        *int    `json:"quotaFloor"`
 		ContractExpiresAt *string `json:"contractExpiresAt"`
 	}
 	if len(body) > 0 {
@@ -150,6 +153,7 @@ func (h *DashboardHandler) HandleUpdateProviderNodeLimits(w http.ResponseWriter,
 		{"concurrency", patch.Concurrency, &merged.Concurrency},
 		{"tokenQuota", patch.TokenQuota, &merged.TokenQuota},
 		{"queueTimeoutMs", patch.QueueTimeoutMs, &merged.QueueTimeoutMs},
+		{"quotaFloor", patch.QuotaFloor, &merged.QuotaFloor},
 	}
 	for _, p := range pairs {
 		v, err := mergeLimit(p.patch, p.target)

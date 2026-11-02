@@ -56,18 +56,22 @@ type ProviderLimits struct {
 	// QuotaResetID is the usageHistory row id TokenQuota is measured from. It is
 	// written by ResetProviderQuota, never by SetProviderLimits.
 	QuotaResetID int
+	// QuotaFloor is the minimum remaining quota the node must have to be
+	// considered usable. When quota - used <= floor, the node is skipped.
+	// 0 = no floor (default).
+	QuotaFloor int
 	// ContractExpiresAt is an RFC3339 UTC timestamp, or "" for no expiry.
 	ContractExpiresAt string
 }
 
 // providerLimitColumns is the shared column list for every provider limit read.
-const providerLimitColumns = `rpmLimit, tpmLimit, concurrencyLimit, tokenQuota, queueTimeoutMs, quotaResetId, COALESCE(contractExpiresAt, '')`
+const providerLimitColumns = `rpmLimit, tpmLimit, concurrencyLimit, tokenQuota, queueTimeoutMs, quotaResetId, quotaFloor, COALESCE(contractExpiresAt, '')`
 
 // scanProviderLimits fills limits from a row shaped like providerLimitColumns.
 func scanProviderLimits(scan func(dest ...any) error, limits *ProviderLimits) error {
 	return scan(
 		&limits.RPM, &limits.TPM, &limits.Concurrency, &limits.TokenQuota,
-		&limits.QueueTimeoutMs, &limits.QuotaResetID, &limits.ContractExpiresAt,
+		&limits.QueueTimeoutMs, &limits.QuotaResetID, &limits.QuotaFloor, &limits.ContractExpiresAt,
 	)
 }
 
@@ -128,7 +132,7 @@ func (r *Repo) ListProviderLimits(ctx context.Context) (map[string]ProviderLimit
 		var limits ProviderLimits
 		if err := rows.Scan(&id,
 			&limits.RPM, &limits.TPM, &limits.Concurrency, &limits.TokenQuota,
-			&limits.QueueTimeoutMs, &limits.QuotaResetID, &limits.ContractExpiresAt,
+			&limits.QueueTimeoutMs, &limits.QuotaResetID, &limits.QuotaFloor, &limits.ContractExpiresAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan provider limits: %w", err)
 		}
@@ -162,7 +166,7 @@ func (r *Repo) SetProviderLimits(ctx context.Context, nodeID string, limits Prov
 		return fmt.Errorf("set provider limits: empty node id")
 	}
 	if limits.RPM < 0 || limits.TPM < 0 || limits.Concurrency < 0 ||
-		limits.TokenQuota < 0 || limits.QueueTimeoutMs < 0 {
+		limits.TokenQuota < 0 || limits.QueueTimeoutMs < 0 || limits.QuotaFloor < 0 {
 		return fmt.Errorf("set provider limits %s: limits are counts and cannot be negative", nodeID)
 	}
 	expiresAt := strings.TrimSpace(limits.ContractExpiresAt)
@@ -176,10 +180,10 @@ func (r *Repo) SetProviderLimits(ctx context.Context, nodeID string, limits Prov
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE providerNodes
 		   SET rpmLimit = ?, tpmLimit = ?, concurrencyLimit = ?, tokenQuota = ?,
-		       queueTimeoutMs = ?, contractExpiresAt = ?
+		       queueTimeoutMs = ?, quotaFloor = ?, contractExpiresAt = ?
 		 WHERE id = ?`,
 		limits.RPM, limits.TPM, limits.Concurrency, limits.TokenQuota,
-		limits.QueueTimeoutMs, expiresAt, nodeID,
+		limits.QueueTimeoutMs, limits.QuotaFloor, expiresAt, nodeID,
 	)
 	if err != nil {
 		return fmt.Errorf("set provider limits %s: %w", nodeID, err)

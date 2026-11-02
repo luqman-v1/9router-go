@@ -20,6 +20,7 @@ import (
 const (
 	axisContract   = "contract"
 	axisTokenQuota = "token_quota"
+	axisQuotaFloor = "quota_floor"
 )
 
 // providerRefusalStatus derives the HTTP status from the axis. Congestion is a 429:
@@ -27,7 +28,7 @@ const (
 // contract, so Retry-After would promise something that cannot happen.
 func providerRefusalStatus(axis string) int {
 	switch axis {
-	case axisContract, axisTokenQuota:
+	case axisContract, axisTokenQuota, axisQuotaFloor:
 		return http.StatusForbidden
 	default:
 		return http.StatusTooManyRequests
@@ -41,6 +42,8 @@ func providerRefusalType(axis string) string {
 		return "provider_contract_expired"
 	case axisTokenQuota:
 		return "provider_token_quota_exhausted"
+	case axisQuotaFloor:
+		return "provider_quota_floor_exhausted"
 	default:
 		return "rate_limit_exceeded"
 	}
@@ -114,6 +117,8 @@ func providerRefusalMessage(provider string, attempt providerLimitAttempt) strin
 		return fmt.Sprintf("provider %s contract has ended; an operator must renew it", provider)
 	case axisTokenQuota:
 		return fmt.Sprintf("provider %s lifetime token quota is spent (%d)", provider, attempt.Limit)
+	case axisQuotaFloor:
+		return fmt.Sprintf("provider %s remaining quota is at or below floor (%d)", provider, attempt.Limit)
 	default:
 		return fmt.Sprintf("provider %s refused this request at its %s limit (%d)", provider, attempt.Axis, attempt.Limit)
 	}

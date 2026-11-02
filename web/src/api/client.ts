@@ -570,6 +570,7 @@ export interface ProviderNodeLimits {
   tokenQuota: number
   queueTimeoutMs: number
   quotaResetId: number
+  quotaFloor: number
   contractExpiresAt?: string
   usedTokens: number
   expired: boolean
@@ -588,6 +589,7 @@ export interface ProviderNodeLimitsPatch {
   concurrency?: number
   tokenQuota?: number
   queueTimeoutMs?: number
+  quotaFloor?: number
   /** RFC3339 or a date (YYYY-MM-DD); "" clears the expiry. */
   contractExpiresAt?: string
 }

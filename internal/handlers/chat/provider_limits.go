@@ -232,10 +232,14 @@ func (h *ChatHandler) providerNodeVerdict(ctx context.Context, provider string, 
 			"provider", provider, "error", err)
 		return nil
 	}
-	if used < limits.TokenQuota {
-		return nil
+	if used >= limits.TokenQuota {
+		return &providerLimitAttempt{Provider: provider, Axis: axisTokenQuota, Limit: limits.TokenQuota}
 	}
-	return &providerLimitAttempt{Provider: provider, Axis: axisTokenQuota, Limit: limits.TokenQuota}
+	remaining := limits.TokenQuota - used
+	if limits.QuotaFloor > 0 && remaining <= limits.QuotaFloor {
+		return &providerLimitAttempt{Provider: provider, Axis: axisQuotaFloor, Limit: limits.QuotaFloor}
+	}
+	return nil
 }
 
 // middlewareLimits maps the stored policy onto the limiter's own type.

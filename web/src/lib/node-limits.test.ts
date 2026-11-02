@@ -19,13 +19,14 @@ const draft = (overrides: Partial<NodeLimitsDraft> = {}): NodeLimitsDraft => ({ 
 
 describe('nodeLimitsPatchOf', () => {
   it('sends numbers, not the strings the form holds', () => {
-    const patch = nodeLimitsPatchOf(draft({ rpm: '60', tpm: '90000', concurrency: '4', tokenQuota: '5000000', queueTimeoutMs: '15000' }))
+    const patch = nodeLimitsPatchOf(draft({ rpm: '60', tpm: '90000', concurrency: '4', tokenQuota: '5000000', queueTimeoutMs: '15000', quotaFloor: '50000' }))
     assert.deepStrictEqual(patch, {
       rpm: 60,
       tpm: 90000,
       concurrency: 4,
       tokenQuota: 5000000,
       queueTimeoutMs: 15000,
+      quotaFloor: 50000,
       contractExpiresAt: '',
     })
   })
@@ -59,6 +60,7 @@ describe('a draft holding numbers from number inputs', () => {
     concurrency: 4,
     tokenQuota: 5000000,
     queueTimeoutMs: 15000,
+      quotaFloor: 50000,
   })
 
   it('converts without throwing', () => {
@@ -68,13 +70,14 @@ describe('a draft holding numbers from number inputs', () => {
       concurrency: 4,
       tokenQuota: 5000000,
       queueTimeoutMs: 15000,
+      quotaFloor: 50000,
       contractExpiresAt: '',
     })
   })
 
   it('summarises and gates the same as the string form', () => {
     assert.ok(hasAnyNodeLimit(typed()))
-    assert.strictEqual(nodeLimitsSummary(typed()), '60 rpm · 90k tpm · 4 conc · 15000 ms queue · 5M tok')
+    assert.strictEqual(nodeLimitsSummary(typed()), '60 rpm · 90k tpm · 4 conc · 15000 ms queue · 5M tok · 50k floor')
   })
 
   it('treats 0, negatives and fractions as unlimited', () => {
