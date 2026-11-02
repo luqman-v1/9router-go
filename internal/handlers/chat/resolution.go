@@ -162,6 +162,19 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 		return info
 	}
 
+	if h.Repo != nil {
+		if conn, err := h.Repo.GetProviderConnectionByID(prefix); err == nil && conn != nil && conn.Provider != "" {
+			return &ModelInfo{Provider: conn.Provider, Model: model, ConnectionID: conn.ID}
+		}
+		if conns, err := h.Repo.GetProviderConnections("", false); err == nil {
+			for _, conn := range conns {
+				if conn != nil && (conn.ID == prefix || (conn.Name != nil && *conn.Name == prefix)) {
+					return &ModelInfo{Provider: conn.Provider, Model: model, ConnectionID: conn.ID}
+				}
+			}
+		}
+	}
+
 	provider := resolveProviderAlias(prefix)
 	if provider != prefix {
 		if info := h.resolvePrefixProvider(provider, model); info != nil {

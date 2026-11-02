@@ -1016,9 +1016,11 @@ func isNonLLMComboSeat(seat string) bool {
 // capability block, mirroring upstream comboSeatCapabilities: the seat's
 // prefix is a UI alias, and the tables are keyed by provider id, so the alias
 // is mapped first.
-func comboSeatCapabilities(seat string) providers.CapabilitiesDetail {
+func (h *ChatHandler) comboSeatCapabilities(seat string) providers.CapabilitiesDetail {
 	providerID, modelID := "", seat
-	if slash := strings.IndexByte(seat, '/'); slash > 0 {
+	if info := h.resolveModelEntry(seat); info != nil {
+		providerID, modelID = info.Provider, info.Model
+	} else if slash := strings.IndexByte(seat, '/'); slash > 0 {
 		prefix := seat[:slash]
 		modelID = seat[slash+1:]
 		providerID = providers.ResolveAlias(prefix)
@@ -1036,13 +1038,13 @@ func comboSeatCapabilities(seat string) providers.CapabilitiesDetail {
 // A seat that is itself a combo name contributes its own leaves' minimum, and
 // cycles are cut: a name already on the walk contributes nothing, which is
 // what bounds a self-referencing combo (upstream's `visiting` set).
-func comboSeatLimits(index comboIndex, comboName string) (contextWindow, maxOutput int) {
+func (h *ChatHandler) comboSeatLimits(index comboIndex, comboName string) (contextWindow, maxOutput int) {
 	visiting := make(map[string]bool, 4)
 	visiting[comboName] = true
-	return minComboSeatLimits(index, index[comboName], visiting)
+	return h.minComboSeatLimits(index, index[comboName], visiting)
 }
 
-func minComboSeatLimits(index comboIndex, seats []string, visiting map[string]bool) (contextWindow, maxOutput int) {
+func (h *ChatHandler) minComboSeatLimits(index comboIndex, seats []string, visiting map[string]bool) (contextWindow, maxOutput int) {
 	for _, seat := range seats {
 		if !strings.Contains(seat, "/") {
 			nested, ok := index[seat]
@@ -1050,7 +1052,7 @@ func minComboSeatLimits(index comboIndex, seats []string, visiting map[string]bo
 				continue
 			}
 			visiting[seat] = true
-			nestedWindow, nestedMax := minComboSeatLimits(index, nested, visiting)
+			nestedWindow, nestedMax := h.minComboSeatLimits(index, nested, visiting)
 			delete(visiting, seat)
 			contextWindow, maxOutput = foldTokenMinimum(contextWindow, maxOutput, nestedWindow, nestedMax)
 			continue
@@ -1058,7 +1060,7 @@ func minComboSeatLimits(index comboIndex, seats []string, visiting map[string]bo
 		if isNonLLMComboSeat(seat) {
 			continue
 		}
-		caps := comboSeatCapabilities(seat)
+		caps := h.comboSeatCapabilities(seat)
 		contextWindow, maxOutput = foldTokenMinimum(contextWindow, maxOutput, caps.ContextWindow, caps.MaxOutput)
 	}
 	return contextWindow, maxOutput
@@ -1116,7 +1118,7 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 		// seat can serve the request, so the window is the smallest one in the
 		// tree). A combo with no LLM seat at all publishes neither key rather
 		// than a guess.
-		contextWindow, maxOutput := comboSeatLimits(index, combo.Name)
+		contextWindow, maxOutput := h.comboSeatLimits(index, combo.Name)
 		entry.ContextLength = optionalTokenLimit(contextWindow)
 		entry.MaxCompletionTokens = optionalTokenLimit(maxOutput)
 
