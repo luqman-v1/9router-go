@@ -111,3 +111,72 @@ func TestExtractToolCallsFromOpenAIMessages(t *testing.T) {
 		t.Errorf("unexpected tool names: %+v", tools)
 	}
 }
+
+func TestExtractToolCallsFromAnthropicMessages(t *testing.T) {
+	msgs := []OpenAIMessage{
+		{
+			Role: "assistant",
+			Content: []any{
+				map[string]any{
+					"type": "tool_use",
+					"id":   "toolu_01",
+					"name": "Bash",
+					"input": map[string]any{"command": "cat /nonexistent"},
+				},
+			},
+		},
+		{
+			Role: "user",
+			Content: []any{
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": "toolu_01",
+					"content":     "cat: /nonexistent: No such file or directory",
+					"is_error":    true,
+				},
+			},
+		},
+	}
+	tools := ExtractToolCallsFromOpenAIMessages(msgs)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 extracted tool, got %d", len(tools))
+	}
+	if tools[0].Name != "Bash" {
+		t.Errorf("expected tool Bash, got %s", tools[0].Name)
+	}
+	if tools[0].Error == "" {
+		t.Errorf("expected Error populated from Anthropic tool_result, got empty")
+	}
+}
+
+func TestDetectLoops_PrefersTrailingLoops(t *testing.T) {
+	// Ancient loop at beginning
+	tools := []ToolCallItem{
+		{Name: "Read"}, {Name: "Read"}, {Name: "Read"},
+		{Name: "Grep"}, {Name: "Edit"}, {Name: "Grep"}, {Name: "Edit"},
+		// Active trailing loop at the end
+		{Name: "Bash"}, {Name: "Bash"}, {Name: "Bash"}, {Name: "Bash"},
+	}
+	findings := DetectLoops(tools, "")
+	if len(findings) == 0 {
+		t.Fatalf("expected findings, got 0")
+	}
+	// The first finding should be the active trailing loop (Bash)
+	if findings[0].Tool != "Bash" {
+		t.Errorf("expected findings[0] to be active trailing tool Bash, got %s", findings[0].Tool)
+	}
+}
+
+func TestDetectLoops_RuneSafeTruncation(t *testing.T) {
+	// Vietnamese string with multi-byte characters
+	vnErr := "Lỗi thực thi lệnh hệ thống rất dài vượt quá một trăm ký tự để kiểm tra việc cắt chuỗi an toàn không bị lỗi rune"
+	tools := []ToolCallItem{
+		{Name: "Tool1", Error: vnErr},
+		{Name: "Tool2", Error: vnErr},
+		{Name: "Tool3", Error: vnErr},
+	}
+	findings := DetectLoops(tools, "")
+	if len(findings) == 0 {
+		t.Fatalf("expected repeated_error finding, got 0")
+	}
+}

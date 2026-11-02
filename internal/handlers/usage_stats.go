@@ -554,24 +554,24 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 		seen := make(map[string]bool)
 		for _, rh := range recentHistory {
 			promptTok, complTok := translator.ResolveTokensCounts([]byte(rh.Tokens), rh.PromptTokens, rh.CompletionTokens)
-			if promptTok == 0 && complTok == 0 {
+			status := "ok"
+			if rh.Status != "success" && rh.Status != "ok" && rh.Status != "" {
+				status = rh.Status
+			}
+			if promptTok == 0 && complTok == 0 && status == "ok" {
 				continue
 			}
 			min := ""
 			if len(rh.Timestamp) >= 16 {
 				min = rh.Timestamp[:16]
 			}
-			k := rh.Model + "|" + rh.Provider + "|" + strconv.FormatInt(promptTok, 10) + "|" + strconv.FormatInt(complTok, 10) + "|" + min
+			k := rh.Model + "|" + rh.Provider + "|" + strconv.FormatInt(promptTok, 10) + "|" + strconv.FormatInt(complTok, 10) + "|" + status + "|" + min
 			if seen[k] {
 				continue
 			}
 			seen[k] = true
 
 			cachedTok := int(translator.CachedTokensFromJSON([]byte(rh.Tokens)))
-			status := "ok"
-			if rh.Status != "success" && rh.Status != "ok" && rh.Status != "" {
-				status = rh.Status
-			}
 
 			dedupedRecent = append(dedupedRecent, usagetracker.RecentRequest{
 				Timestamp:        rh.Timestamp,
@@ -606,6 +606,7 @@ type detailListItem struct {
 	Cost         float64          `json:"cost,omitempty"`
 	Combo        string           `json:"combo,omitempty"`
 	Protocol     string           `json:"protocol,omitempty"`
+	LoopWarning  string           `json:"loopWarning,omitempty"`
 }
 
 // HandleRequestDetails returns paged request detail objects for the Details tab.
@@ -705,6 +706,7 @@ func newDetailListItem(row db.RequestDetailListRow) detailListItem {
 		Cost:         row.Cost,
 		Combo:        row.Combo,
 		Protocol:     protocol,
+		LoopWarning:  row.LoopWarning,
 	}
 }
 

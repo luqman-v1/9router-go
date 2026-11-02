@@ -113,8 +113,11 @@ type rawTotals struct {
 }
 
 func (t *rawTotals) add(row db.UsageHistoryRow, promptTok, complTok, cachedTok int64) {
+	if row.Status == "canceled" {
+		return
+	}
 	t.requests++
-	if row.Status != "ok" && row.Status != "success" && row.Status != "canceled" && row.Status != "" {
+	if row.Status != "ok" && row.Status != "success" && row.Status != "" {
 		t.errors++
 	}
 	t.promptTokens += promptTok
@@ -321,8 +324,11 @@ func (a *rawAggregate) unfoldRow(row db.UsageHistoryRow) {
 }
 
 func subtractFrom(t *rawTotals, row db.UsageHistoryRow, promptTok, complTok, cachedTok int64) {
+	if row.Status == "canceled" {
+		return
+	}
 	t.requests--
-	if row.Status != "ok" && row.Status != "success" && row.Status != "canceled" && row.Status != "" {
+	if row.Status != "ok" && row.Status != "success" && row.Status != "" {
 		t.errors--
 	}
 	t.promptTokens -= promptTok

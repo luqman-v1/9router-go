@@ -20,6 +20,7 @@ type LoopFinding struct {
 }
 
 type ToolCallItem struct {
+	ID        string
 	Name      string
 	Arguments string
 	Error     string
