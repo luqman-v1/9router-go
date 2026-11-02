@@ -1,11 +1,17 @@
-// Command sitegen renders README.md into the GitHub Pages site published at
+// Command sitegen renders the project page published at
 // https://luqman-v1.github.io/9router-go.
 //
 // The homepage is the README, not a second copy of it: a landing page written
 // separately drifts from the README within a release, and every fix then has to
 // be made twice. So the build reads README.md, renders it, and wraps it in the
-// small amount of chrome a hosted page needs (a header with the three links a
-// visitor actually wants, a footer, a stylesheet).
+// small amount of chrome a hosted page needs (a header with the links a visitor
+// actually wants, a footer, a stylesheet).
+//
+// Next to the README it renders the wiki/ directory into the same site, so a
+// visitor reads one thing and not two. Each wiki page keeps the relative link
+// treatment the README gets: repository-relative links become github.com blob
+// URLs, and the wiki's own page links stay relative so they resolve inside the
+// site.
 //
 // Relative links inside the README are the other half of the problem. On
 // github.com `docs/screenshots/providers.png` resolves against the repository;
@@ -36,12 +42,22 @@ func main() {
 	readmePath := flag.String("readme", "README.md", "markdown file rendered as the site homepage")
 	assetsDir := flag.String("assets", "site", "directory of static files copied verbatim into the site")
 	outDir := flag.String("out", "_site", "directory the site is written to")
+	wikiDir := flag.String("wiki", "wiki", "directory of wiki pages rendered next to the README")
 	repo := flag.String("repo", "luqman-v1/9router-go", "owner/name used to resolve relative repository links")
 	flag.Parse()
 
 	if err := generate(*readmePath, *assetsDir, *outDir, *repo); err != nil {
 		fmt.Fprintln(os.Stderr, "sitegen:", err)
 		os.Exit(1)
+	}
+
+	// The wiki is optional: a checkout without it still produces the project
+	// page, which is what the Pages job has always published.
+	if info, err := os.Stat(*wikiDir); err == nil && info.IsDir() {
+		if err := generateWiki(*wikiDir, *outDir, *repo); err != nil {
+			fmt.Fprintln(os.Stderr, "sitegen:", err)
+			os.Exit(1)
+		}
 	}
 }
 
@@ -119,7 +135,6 @@ func rewriteRelativeLinks(doc ast.Node, repo string, images map[string]struct{})
 		if !entering {
 			return ast.WalkContinue, nil
 		}
-
 		switch n := node.(type) {
 		case *ast.Link:
 			n.Destination = blobURL(repo, n.Destination)
