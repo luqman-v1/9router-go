@@ -1,6 +1,7 @@
 package detection
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -16,7 +17,13 @@ func truncateRuneSafe(s string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "..."
 }
 
-// DetectLoops runs deterministic detection rules over a list of tool calls and errors.
+// cleanArg cleans and normalizes tool argument strings for comparison.
+func cleanArg(arg string) string {
+	return strings.TrimSpace(arg)
+}
+
+// DetectLoops runs smart deterministic detection rules over a list of tool calls and errors.
+// Focuses on the recent trailing window of the conversation to avoid false positives on large codebases.
 func DetectLoops(tools []ToolCallItem, lastError string) []LoopFinding {
 	var findings []LoopFinding
 
@@ -24,74 +31,112 @@ func DetectLoops(tools []ToolCallItem, lastError string) []LoopFinding {
 		return findings
 	}
 
+	// Focus detection on recent trailing window (up to last 15 tool calls)
+	// so ancient exploratory sequences from 50 turns ago do not trigger warnings.
+	window := tools
+	const trailingWindowSize = 15
+	if len(window) > trailingWindowSize {
+		window = window[len(window)-trailingWindowSize:]
+	}
+
 	// Rule 1: consecutive_tool
-	// Scan segments. We prioritize trailing segments (closer to session end) so active
-	// loops appear at findings[0] rather than ancient loops from early turns.
-	var consecutiveFindings []LoopFinding
-	for i := 0; i < len(tools); {
-		name := tools[i].Name
+	for i := 0; i < len(window); {
+		name := window[i].Name
 		if name == "" {
 			i++
 			continue
 		}
 		end := i + 1
-		for end < len(tools) && tools[end].Name == name {
+		for end < len(window) && window[end].Name == name {
 			end++
 		}
 		length := end - i
-		if length >= 3 {
-			severity := SeverityWarning
-			if length >= 5 {
-				severity = SeverityCritical
+
+		// Check if arguments are identical across the consecutive calls
+		allSameArgs := true
+		firstArg := cleanArg(window[i].Arguments)
+		for k := i + 1; k < end; k++ {
+			if cleanArg(window[k].Arguments) != firstArg {
+				allSameArgs = false
+				break
 			}
-			consecutiveFindings = append(consecutiveFindings, LoopFinding{
+		}
+
+		if allSameArgs && length >= 3 {
+			// Stuck loop: exact same tool called with exact same arguments 3+ times
+			severity := SeverityCritical
+			findings = append(findings, LoopFinding{
 				Rule:     "consecutive_tool",
 				Severity: severity,
-				Message:  fmt.Sprintf("Possible loop: \"%s\" called %d times in a row", name, length),
+				Message:  fmt.Sprintf("Stuck loop: \"%s\" called with identical arguments %d times in a row", name, length),
+				Tool:     name,
+				Count:    length,
+			})
+		} else if !allSameArgs && length >= 12 {
+			// High repetition of same tool across different arguments (only flag if >= 12 calls)
+			findings = append(findings, LoopFinding{
+				Rule:     "consecutive_tool",
+				Severity: SeverityWarning,
+				Message:  fmt.Sprintf("High repetition: \"%s\" called %d times in a row across different inputs", name, length),
 				Tool:     name,
 				Count:    length,
 			})
 		}
-		i = end
-	}
 
-	// Reverse consecutive findings so trailing ones come first
-	for i := len(consecutiveFindings) - 1; i >= 0; i-- {
-		findings = append(findings, consecutiveFindings[i])
+		i = end
 	}
 
 	// Rule 2: cycle_pattern (2-tool and 3-tool trailing cycles)
 	for block := 2; block <= 3; block++ {
-		if len(tools) < block*2 {
+		// A cycle needs at least 2 full repetitions (block * 2) or 3 for 2-tool cycles
+		minReps := 2
+		if block == 2 {
+			minReps = 3 // [A, B, A, B, A, B] = 6 calls
+		}
+		totalNeeded := block * minReps
+		if len(window) < totalNeeded {
 			continue
 		}
-		start := len(tools) - block*2
+		start := len(window) - totalNeeded
 		repeated := true
 		var blockNames []string
 		distinct := make(map[string]struct{})
-		for k := 0; k < block; k++ {
-			left := tools[start+k].Name
-			right := tools[start+block+k].Name
-			blockNames = append(blockNames, left)
-			distinct[left] = struct{}{}
-			if left != right || left == "" {
-				repeated = false
+
+		for r := 0; r < minReps; r++ {
+			for k := 0; k < block; k++ {
+				curr := window[start+r*block+k].Name
+				if curr == "" {
+					repeated = false
+					break
+				}
+				if r == 0 {
+					blockNames = append(blockNames, curr)
+					distinct[curr] = struct{}{}
+				} else {
+					if curr != blockNames[k] {
+						repeated = false
+						break
+					}
+				}
+			}
+			if !repeated {
 				break
 			}
 		}
+
 		if repeated && len(distinct) >= 2 {
 			findings = append(findings, LoopFinding{
 				Rule:     "cycle_pattern",
 				Severity: SeverityCritical,
-				Message:  fmt.Sprintf("Possible loop: pattern [%s] repeated", strings.Join(blockNames, ", ")),
-				Count:    2,
+				Message:  fmt.Sprintf("Possible loop: pattern [%s] repeated %d times", strings.Join(blockNames, ", "), minReps),
+				Count:    minReps,
 			})
 		}
 	}
 
 	// Rule 3: repeated_error
 	errCounts := make(map[string]int)
-	for _, t := range tools {
+	for _, t := range window {
 		if strings.TrimSpace(t.Error) != "" {
 			errSig := truncateRuneSafe(strings.TrimSpace(t.Error), 100)
 			errCounts[errSig]++
@@ -122,6 +167,25 @@ func DetectLoops(tools []ToolCallItem, lastError string) []LoopFinding {
 	}
 
 	return findings
+}
+
+func isGenuineError(content string, isErrFlag bool) bool {
+	if isErrFlag {
+		return true
+	}
+	lower := strings.ToLower(content)
+	for _, marker := range []string{
+		"exit code 1", "exit code 2", "exit code 127", "exit status",
+		"command not found", "no such file or directory",
+		"syntaxerror:", "typeerror:", "referenceerror:",
+		"permission denied", "fatal error:", "panic:",
+		"traceback (most recent call last):",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // ExtractToolCallsFromOpenAIMessages extracts tool calls from messages history.
@@ -156,10 +220,17 @@ func ExtractToolCallsFromOpenAIMessages(messages []OpenAIMessage) []ToolCallItem
 				if bType == "tool_use" {
 					name, _ := bm["name"].(string)
 					id, _ := bm["id"].(string)
+					var argsStr string
+					if input, exists := bm["input"]; exists && input != nil {
+						if inputBytes, err := json.Marshal(input); err == nil {
+							argsStr = string(inputBytes)
+						}
+					}
 					idx := len(tools)
 					tools = append(tools, ToolCallItem{
-						ID:   id,
-						Name: name,
+						ID:        id,
+						Name:      name,
+						Arguments: argsStr,
 					})
 					if id != "" {
 						toolIndexByID[id] = idx
@@ -181,9 +252,7 @@ func ExtractToolCallsFromOpenAIMessages(messages []OpenAIMessage) []ToolCallItem
 						}
 					}
 
-					lower := strings.ToLower(contentStr)
-					hasErrText := strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "exit code")
-					if isErr || hasErrText {
+					if isGenuineError(contentStr, isErr) {
 						if targetIdx, ok := toolIndexByID[toolUseID]; ok && targetIdx < len(tools) {
 							tools[targetIdx].Error = contentStr
 						} else if len(tools) > 0 {
@@ -201,8 +270,7 @@ func ExtractToolCallsFromOpenAIMessages(messages []OpenAIMessage) []ToolCallItem
 			case string:
 				contentStr = c
 			}
-			lower := strings.ToLower(contentStr)
-			if strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "exit code") {
+			if isGenuineError(contentStr, false) {
 				if m.ToolCallID != "" {
 					if targetIdx, ok := toolIndexByID[m.ToolCallID]; ok && targetIdx < len(tools) {
 						tools[targetIdx].Error = contentStr
