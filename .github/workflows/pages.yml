@@ -93,7 +93,7 @@ jobs:
             echo "::error::_site/search-index.json missing; the wiki search reads it"
             exit 1
           }
-          count=$(ls _site/*.html | wc -l)
+          count=$(find _site -maxdepth 1 -name '*.html' | wc -l)
           [ "$count" -gt 1 ] || {
             echo "::error::only the project page was generated; the wiki produced no pages"
             exit 1
@@ -101,9 +101,10 @@ jobs:
           # Every sidebar link must resolve, or a reader clicks a dead link.
           dead=0
           for page in _site/*.html; do
-            for link in $(grep -o 'href="[a-z][a-z0-9-]*\.html"' "$page" | sed 's/href="//;s/"//' | sort -u); do
-              [ -f "_site/$link" ] || { echo "::error::$page links to missing $link"; dead=1; }
-            done
+            grep -o 'href="[a-z][a-z0-9-]*\.html"' "$page" | sed 's/href="//;s/"//' | sort -u |
+              while read -r link; do
+                [ -f "_site/$link" ] || { echo "::error::$page links to missing $link"; exit 1; }
+              done || dead=1
           done
           [ "$dead" -eq 0 ] || exit 1
           # The index has to carry page bodies, not just headings: a feature
