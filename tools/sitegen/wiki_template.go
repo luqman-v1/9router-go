@@ -9,12 +9,14 @@ type wikiData struct {
 	Groups []pageGroup
 	Repo   string
 }
+
 // pageGroup is one sidebar section: its heading (empty for the first group, which
 // renders without one) and the pages under it, already sorted.
 type pageGroup struct {
 	Label string
 	Pages []*page
 }
+
 // groupBySection splits the ordered pages into sidebar sections. A page with no
 // section joins the first group — the one that renders without a heading — so a
 // page that forgets the field still shows up, and no stray unnamed heading

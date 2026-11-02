@@ -16,6 +16,7 @@ var projectCSS = func() string {
 	}
 	return string(b)
 }()
+
 // teamMarkdown is the contributors page, read by the test that checks the roster
 // is complete and real.
 var teamMarkdown = func() string {

@@ -200,7 +200,7 @@ func renderWikiPage(path, outDir string) (*page, error) {
 
 	title := fm.Title
 	if title == "" {
-		title = firstHeading(doc)
+		title = firstHeading(body)
 	}
 	if title == "" {
 		title = slug
@@ -226,12 +226,12 @@ func imageSize(path string) (int, int, bool) {
 	if err != nil {
 		return 0, 0, false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	// Read what the file has, not a fixed 32: a minimal PNG header is 29 bytes
 	// and demanding 32 would reject it. A short read is only fatal when the
 	// header itself is too small to hold a signature.
 	hdr := make([]byte, 32)
-	n, err := io.ReadFull(f, hdr)
+	n, _ := io.ReadFull(f, hdr)
 	if n < 24 {
 		return 0, 0, false
 	}
@@ -313,7 +313,6 @@ func wrapTables(html string) string {
 	}
 }
 
-
 // outDirFor returns the directory a wiki page's assets are copied into. It
 // mirrors the page's own location in the wiki directory so a nested page keeps
 // its relative image paths.
@@ -367,19 +366,20 @@ func atoi(s string) int {
 
 // firstHeading returns the text of the document's first heading, used as the
 // page title when the frontmatter does not carry one.
-func firstHeading(doc ast.Node) string {
-	title := ""
-	_ = ast.Walk(doc, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering || title != "" {
-			return ast.WalkContinue, nil
+//
+// It reads the raw markdown rather than walking the parsed tree: the page body
+// is already in hand, a first `# ` line is unambiguously the top heading, and
+// goldmark's Heading.Text is deprecated with no non-deprecated equivalent that
+// is not more code than the line it replaces.
+func firstHeading(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "# ") {
+			continue
 		}
-		if h, ok := node.(*ast.Heading); ok && h.Level == 1 {
-			title = string(h.Text(nil))
-			return ast.WalkStop, nil
-		}
-		return ast.WalkContinue, nil
-	})
-	return strings.TrimSpace(title)
+		return strings.TrimSpace(strings.TrimPrefix(line, "# "))
+	}
+	return ""
 }
 
 // renderSearchIndex writes the JSON the client-side search reads. It carries
