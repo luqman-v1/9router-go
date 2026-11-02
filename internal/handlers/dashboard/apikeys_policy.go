@@ -46,11 +46,11 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 	defer r.Body.Close()
 
 	var req struct {
-		RateLimitRPM         *int    `json:"rateLimitRpm"`
-		RateLimitTPM         *int    `json:"rateLimitTpm"`
-		RateLimitConcurrency *int    `json:"rateLimitConcurrency"`
-		TokenQuota           *int    `json:"tokenQuota"`
-		QueueTimeoutMs       *int    `json:"queueTimeoutMs"`
+		RateLimitRPM         *int `json:"rateLimitRpm"`
+		RateLimitTPM         *int `json:"rateLimitTpm"`
+		RateLimitConcurrency *int `json:"rateLimitConcurrency"`
+		TokenQuota           *int `json:"tokenQuota"`
+		QueueTimeoutMs       *int `json:"queueTimeoutMs"`
 		// F-2 per-period budget. Pointers so an omitted field leaves the
 		// stored value alone; an explicit 0 / "" is a deliberate "disable this
 		// axis", which is what the dashboard sends when the operator blanks

@@ -259,7 +259,6 @@ func (h *DashboardHandler) HandleCreateApiKey(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-
 	if req.ID == "" {
 		req.ID = uuid.New().String()
 	}
