@@ -743,9 +743,13 @@ var ProviderModelKinds = map[string]map[string]string{
 	},
 	"hcnsec": {
 		"Qwen3-Embedding-8B": "embedding",
+		"stepaudio-2.5-asr":  "stt",
+		"stepaudio-2.5-tts":  "tts",
 	},
 	"hc": {
 		"Qwen3-Embedding-8B": "embedding",
+		"stepaudio-2.5-asr":  "stt",
+		"stepaudio-2.5-tts":  "tts",
 	},
 }
 

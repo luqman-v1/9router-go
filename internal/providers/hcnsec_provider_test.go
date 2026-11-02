@@ -51,4 +51,19 @@ func TestHCNSecProvider_Capabilities(t *testing.T) {
 	if kind := GetProviderModelKind("hcnsec", "Qwen3-Embedding-8B"); kind != "embedding" {
 		t.Errorf("GetProviderModelKind('hcnsec', 'Qwen3-Embedding-8B') = %q, want 'embedding'", kind)
 	}
+	if kind := GetProviderModelKind("hcnsec", "stepaudio-2.5-asr"); kind != "stt" {
+		t.Errorf("GetProviderModelKind('hcnsec', 'stepaudio-2.5-asr') = %q, want 'stt'", kind)
+	}
+	if kind := GetProviderModelKind("hcnsec", "stepaudio-2.5-tts"); kind != "tts" {
+		t.Errorf("GetProviderModelKind('hcnsec', 'stepaudio-2.5-tts') = %q, want 'tts'", kind)
+	}
+
+	glmCaps := GetCapabilitiesForModel("hcnsec", "glm-5.3")
+	if glmCaps.ContextWindow != 1000000 || glmCaps.MaxOutput != 131072 {
+		t.Errorf("glm-5.3 caps: ContextWindow=%d, MaxOutput=%d", glmCaps.ContextWindow, glmCaps.MaxOutput)
+	}
+	qwenCaps := GetCapabilitiesForModel("hcnsec", "Qwen3.8-27B")
+	if qwenCaps.ContextWindow != 200000 || qwenCaps.MaxOutput != 65536 {
+		t.Errorf("Qwen3.8-27B caps: ContextWindow=%d, MaxOutput=%d", qwenCaps.ContextWindow, qwenCaps.MaxOutput)
+	}
 }
