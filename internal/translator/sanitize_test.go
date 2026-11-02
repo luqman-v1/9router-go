@@ -176,8 +176,8 @@ func TestSanitizeToolArgs(t *testing.T) {
 		}
 	})
 
-	t.Run("Grep/Glob tool normalizes query and dir aliases", func(t *testing.T) {
-		args := `{"query":"func Test","dir":"/workspace"}`
+	t.Run("Grep/Glob tool normalizes query and dir aliases and strips n", func(t *testing.T) {
+		args := `{"query":"func Test","dir":"/workspace","n":true}`
 		got := sanitizeToolArgs("Grep", args)
 		var m map[string]any
 		json.Unmarshal([]byte(got), &m)
@@ -186,6 +186,35 @@ func TestSanitizeToolArgs(t *testing.T) {
 		}
 		if m["path"] != "/workspace" {
 			t.Errorf("expected path '/workspace', got %v", m["path"])
+		}
+		if _, ok := m["n"]; ok {
+			t.Errorf("expected n to be stripped, got %v", m["n"])
+		}
+	})
+
+	t.Run("Monitor tool strips dummy ws when command is present", func(t *testing.T) {
+		args := `{"command":"python3 script.py","ws":{"protocols":[],"url":"wss://localhost"}}`
+		got := sanitizeToolArgs("Monitor", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["command"] != "python3 script.py" {
+			t.Errorf("expected command preserved, got %v", m["command"])
+		}
+		if _, ok := m["ws"]; ok {
+			t.Errorf("expected ws stripped to prevent 'exactly one of command or ws' validation error, got %v", m["ws"])
+		}
+	})
+
+	t.Run("Skill tool normalizes name alias to skill", func(t *testing.T) {
+		args := `{"name":"impeccable","args":"init"}`
+		got := sanitizeToolArgs("Skill", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["skill"] != "impeccable" {
+			t.Errorf("expected skill 'impeccable', got %v", m["skill"])
+		}
+		if _, ok := m["name"]; ok {
+			t.Errorf("expected name alias removed, got %v", m["name"])
 		}
 	})
 }
