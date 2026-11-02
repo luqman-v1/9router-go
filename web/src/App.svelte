@@ -362,7 +362,7 @@
   }
   let isUpdateModalOpen = $state(false)
   let systemUpdateInfo = $state<SystemVersionInfo | null>(null)
-  let systemVersion = $state('')
+  let systemVersion = $state(typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '')
 </script>
 
 {#if isOAuthCallback}

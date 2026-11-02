@@ -51,6 +51,7 @@ const INPUT_FILES = [
   'tsconfig.json',
   'tsconfig.app.json',
   'tsconfig.node.json',
+  'VERSION',
 ]
 
 /** Never hashed: generated output, dependencies, and VCS metadata. */
