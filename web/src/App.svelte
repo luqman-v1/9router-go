@@ -424,7 +424,6 @@
         onClose={() => (isMobileMenuOpen = false)}
         bind:showUpdateModal={isUpdateModalOpen}
         bind:updateInfo={systemUpdateInfo}
-        bind:version={systemVersion}
         hiddenNav={hiddenNav}
         navOrder={navOrder}
         brandName={settings.appName || ''}
