@@ -738,6 +738,64 @@ func countCacheControlBlocks(req map[string]any) int {
 }
 
 func capCacheControlBlocks(req map[string]any) {
+	// Ensure non-decreasing TTL order across tools, system, and messages (no 1h after 5m).
+	type ccItem struct {
+		m   map[string]any
+		ttl string
+	}
+	var items []ccItem
+
+	addCC := func(m map[string]any) {
+		if m == nil || m["cache_control"] == nil {
+			return
+		}
+		if cc, ok := m["cache_control"].(map[string]any); ok && cc != nil {
+			ttl := "5m"
+			if t, ok := cc["ttl"].(string); ok && t != "" {
+				ttl = t
+			}
+			items = append(items, ccItem{m: m, ttl: ttl})
+		}
+	}
+
+	if tools, ok := req["tools"].([]any); ok {
+		for _, t := range tools {
+			if tm, ok := t.(map[string]any); ok {
+				addCC(tm)
+			}
+		}
+	}
+	if sys, ok := req["system"].([]any); ok {
+		for _, sb := range sys {
+			if sm, ok := sb.(map[string]any); ok {
+				addCC(sm)
+			}
+		}
+	}
+	if msgs, ok := req["messages"].([]any); ok {
+		for _, m := range msgs {
+			if mRaw, ok := m.(map[string]any); ok {
+				if content, ok := mRaw["content"].([]any); ok {
+					for _, b := range content {
+						if bm, ok := b.(map[string]any); ok {
+							addCC(bm)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for j := range items {
+		if items[j].ttl == "1h" {
+			for i := 0; i < j; i++ {
+				if items[i].ttl != "1h" {
+					delete(items[i].m, "cache_control")
+				}
+			}
+		}
+	}
+
 	var headMarkers []map[string]any
 	var restMarkers []map[string]any
 
