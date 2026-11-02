@@ -67,6 +67,14 @@ export interface FallbackAttemptItem {
   latencyMs?: number
 }
 
+export interface LoopFindingItem {
+  rule: string
+  severity: 'warning' | 'critical'
+  message: string
+  tool?: string
+  count?: number
+}
+
 export interface RequestDetailItem {
   id?: string
   status?: string
@@ -86,6 +94,8 @@ export interface RequestDetailItem {
   cacheSource?: string
   cost?: number
   error?: string
+  loopWarning?: string
+  anomalies?: LoopFindingItem[]
   attempts?: FallbackAttemptItem[]
   latency?: {
     total?: number
