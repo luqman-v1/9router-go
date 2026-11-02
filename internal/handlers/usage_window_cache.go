@@ -104,6 +104,7 @@ func (s windowShape) key() string {
 // that change independently of the ledger.
 type rawTotals struct {
 	requests         int
+	errors           int
 	promptTokens     int64
 	completionTokens int64
 	cachedTokens     int64
@@ -113,6 +114,9 @@ type rawTotals struct {
 
 func (t *rawTotals) add(row db.UsageHistoryRow, promptTok, complTok, cachedTok int64) {
 	t.requests++
+	if row.Status != "ok" && row.Status != "success" && row.Status != "canceled" && row.Status != "" {
+		t.errors++
+	}
 	t.promptTokens += promptTok
 	t.completionTokens += complTok
 	t.cachedTokens += cachedTok
@@ -318,6 +322,9 @@ func (a *rawAggregate) unfoldRow(row db.UsageHistoryRow) {
 
 func subtractFrom(t *rawTotals, row db.UsageHistoryRow, promptTok, complTok, cachedTok int64) {
 	t.requests--
+	if row.Status != "ok" && row.Status != "success" && row.Status != "canceled" && row.Status != "" {
+		t.errors--
+	}
 	t.promptTokens -= promptTok
 	t.completionTokens -= complTok
 	t.cachedTokens -= cachedTok
@@ -587,6 +594,7 @@ func applyRawAggregate(resp *UsageStatsResponse, agg *rawAggregate, nodeNameMap,
 	for key, t := range agg.byProvider {
 		p := resp.ByProvider[key]
 		p.Requests = t.requests
+		p.Errors = t.errors
 		p.PromptTokens = t.promptTokens
 		p.CompletionTokens = t.completionTokens
 		p.CachedTokens = t.cachedTokens

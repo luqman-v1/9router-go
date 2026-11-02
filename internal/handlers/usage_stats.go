@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	json "encoding/json/v2"
 	"errors"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -89,6 +90,7 @@ func usagePeriodCount(raw, unit string) (int, bool) {
 
 type ProviderUsageItem struct {
 	Requests         int     `json:"requests"`
+	Errors           int     `json:"errors,omitempty"`
 	PromptTokens     int64   `json:"promptTokens"`
 	CompletionTokens int64   `json:"completionTokens"`
 	CachedTokens     int64   `json:"cachedTokens"`
@@ -151,6 +153,8 @@ type EndpointUsageItem struct {
 
 type UsageStatsResponse struct {
 	TotalRequests         int                          `json:"totalRequests"`
+	TotalErrors           int                          `json:"totalErrors"`
+	SuccessRate           *float64                     `json:"successRate"`
 	TotalPromptTokens     int64                        `json:"totalPromptTokens"`
 	TotalCompletionTokens int64                        `json:"totalCompletionTokens"`
 	TotalCachedTokens     int64                        `json:"totalCachedTokens"`
@@ -367,6 +371,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 						if pm, ok := pVal.(map[string]any); ok {
 							cur := resp.ByProvider[prov]
 							cur.Requests += getMapInt(pm, "requests")
+							cur.Errors += getMapInt(pm, "errors")
 							cur.PromptTokens += getMapInt64(pm, "promptTokens")
 							cur.CompletionTokens += getMapInt64(pm, "completionTokens")
 							cur.CachedTokens += getMapInt64(pm, "cachedTokens")
@@ -528,10 +533,15 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 		// Calculate total aggregates from byProvider
 		for _, p := range resp.ByProvider {
 			resp.TotalRequests += p.Requests
+			resp.TotalErrors += p.Errors
 			resp.TotalPromptTokens += p.PromptTokens
 			resp.TotalCompletionTokens += p.CompletionTokens
 			resp.TotalCachedTokens += p.CachedTokens
 			resp.TotalCost += p.Cost
+		}
+		if resp.TotalRequests > 0 {
+			rate := math.Round(float64(resp.TotalRequests-resp.TotalErrors)/float64(resp.TotalRequests)*1000) / 10
+			resp.SuccessRate = &rate
 		}
 
 		// Build recent requests list (20 deduped from usageHistory)

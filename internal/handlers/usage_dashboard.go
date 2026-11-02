@@ -44,6 +44,7 @@ type dashboardLifetime struct {
 	LongestStreak int                `json:"longestStreak"`
 	TopModel      *dashboardTopModel `json:"topModel"`
 	CacheHitRate  *float64           `json:"cacheHitRate"`
+	SuccessRate   *float64           `json:"successRate"`
 }
 
 // dashboardNode is one node-health row (a provider, or a model under it).
@@ -127,11 +128,13 @@ func computeScore(successRate float64, latencyScore, speedScore *int) int {
 func dashboardDaily(rows []db.UsageDailyRow, now time.Time) ([]dashboardDailyPoint, *dashboardLifetime) {
 	type dayData struct {
 		Requests         int64   `json:"requests"`
+		Errors           int64   `json:"errors"`
 		PromptTokens     int64   `json:"promptTokens"`
 		CompletionTokens int64   `json:"completionTokens"`
 		Cost             float64 `json:"cost"`
 	}
 	lifetime := &dashboardLifetime{}
+	var totalErrors int64
 	streak := 0
 	var prevKey string
 	active := map[string]bool{}
@@ -146,6 +149,7 @@ func dashboardDaily(rows []db.UsageDailyRow, now time.Time) ([]dashboardDailyPoi
 		tokens := d.PromptTokens + d.CompletionTokens
 		lifetime.TotalRequests += d.Requests
 		lifetime.TotalTokens += tokens
+		totalErrors += d.Errors
 		if tokens > lifetime.PeakTokens {
 			lifetime.PeakTokens = tokens
 			lifetime.PeakDate = row.DateKey
@@ -198,6 +202,10 @@ func dashboardDaily(rows []db.UsageDailyRow, now time.Time) ([]dashboardDailyPoi
 			Tokens:   d.PromptTokens + d.CompletionTokens,
 			Cost:     d.Cost,
 		})
+	}
+	if lifetime.TotalRequests > 0 {
+		rate := round1(float64(lifetime.TotalRequests-totalErrors) / float64(lifetime.TotalRequests) * 100)
+		lifetime.SuccessRate = &rate
 	}
 	return points, lifetime
 }
