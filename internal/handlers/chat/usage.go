@@ -118,6 +118,12 @@ func (h *ChatHandler) LogFailure(
 		status = "canceled"
 	}
 
+	var openaiReq translator.OpenAIRequest
+	_ = json.Unmarshal(requestBody, &openaiReq)
+	tools := detection.ExtractToolCallsFromOpenAIMessages(openaiReq.Messages)
+	findings := detection.DetectLoops(tools, message)
+	var loopWarning string
+
 	failurePayload := map[string]any{
 		"id":             reqID,
 		"provider":       info.Provider,
@@ -140,15 +146,9 @@ func (h *ChatHandler) LogFailure(
 			"total": latencyMs,
 		},
 		"tokens":   tokens,
-		"request":  map[string]any{"messages": extractRequestMessages(requestBody)},
+		"request":  map[string]any{"messages": extractMessagesForLogging(openaiReq.Messages)},
 		"response": map[string]any{"error": message, "status": statusCode, "content": responseContent},
 	}
-
-	var openaiReq translator.OpenAIRequest
-	_ = json.Unmarshal(requestBody, &openaiReq)
-	tools := detection.ExtractToolCallsFromOpenAIMessages(openaiReq.Messages)
-	findings := detection.DetectLoops(tools, message)
-	var loopWarning string
 	if len(findings) > 0 {
 		failurePayload["anomalies"] = findings
 		loopWarning = findings[0].Message
@@ -396,7 +396,12 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 			_ = compressionRepo.InsertCompressionAnalytics(context.Background(), compressionRec)
 		})
 	}
-	reqMsgs := extractRequestMessages(requestBody)
+	var openaiReq translator.OpenAIRequest
+	_ = json.Unmarshal(requestBody, &openaiReq)
+	tools := detection.ExtractToolCallsFromOpenAIMessages(openaiReq.Messages)
+	findings := detection.DetectLoops(tools, "")
+	var loopWarning string
+	reqMsgs := extractMessagesForLogging(openaiReq.Messages)
 
 	tokensMap := map[string]int{
 		"prompt_tokens":               usage.PromptTokens,
@@ -416,12 +421,6 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 	if startedAtUsage.IsZero() {
 		startedAtUsage = now.Add(-time.Duration(latencyMs) * time.Millisecond)
 	}
-
-	var openaiReq translator.OpenAIRequest
-	_ = json.Unmarshal(requestBody, &openaiReq)
-	tools := detection.ExtractToolCallsFromOpenAIMessages(openaiReq.Messages)
-	findings := detection.DetectLoops(tools, "")
-	var loopWarning string
 
 	detailPayload := map[string]any{
 		"id":             reqID,
@@ -498,11 +497,18 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 // extractRequestMessages extracts truncated messages from the request body for logging.
 func extractRequestMessages(body []byte) []map[string]string {
 	var req translator.OpenAIRequest
-	if err := json.Unmarshal(body, &req); err != nil || len(req.Messages) == 0 {
+	if err := json.Unmarshal(body, &req); err != nil {
 		return nil
 	}
-	msgs := make([]map[string]string, 0, len(req.Messages))
-	for _, m := range req.Messages {
+	return extractMessagesForLogging(req.Messages)
+}
+
+func extractMessagesForLogging(messages []translator.OpenAIMessage) []map[string]string {
+	if len(messages) == 0 {
+		return nil
+	}
+	msgs := make([]map[string]string, 0, len(messages))
+	for _, m := range messages {
 		content := extractContent(m.Content)
 		content = truncateDetailText(content, constants.MaxMessageContentLen, "...")
 		msgs = append(msgs, map[string]string{"role": m.Role, "content": content})
