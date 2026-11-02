@@ -53,6 +53,19 @@
         valueClass: 'text-success',
       },
       {
+        label: 'Success Rate',
+        value: l.successRate != null ? `${l.successRate.toFixed(1)}%` : '—',
+        sub: 'All time',
+        valueClass:
+          l.successRate == null
+            ? 'text-text-muted'
+            : l.successRate >= 95
+              ? 'text-success'
+              : l.successRate >= 80
+                ? 'text-warning'
+                : 'text-red-500',
+      },
+      {
         label: 'Most Used Model',
         value: l.topModel?.model || '—',
         sub: l.topModel

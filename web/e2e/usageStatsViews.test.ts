@@ -93,6 +93,8 @@ describe('usage stats poll payload', () => {
       const page = app.page
       await page.goto(`${app.baseURL}/dashboard/usage`)
       await page.getByText('Usage & Analytics').waitFor({ timeout: SLOW })
+      // Wait for initial full read to render before recording poll requests
+      await page.getByText('7', { exact: true }).first().waitFor({ timeout: SLOW })
 
       const urls: string[] = []
       page.on('request', (req) => {

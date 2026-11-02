@@ -639,6 +639,7 @@ type RequestDetailListRow struct {
 	Cost         float64
 	Combo        string
 	Protocol     string
+	LoopWarning  string
 }
 
 // requestDetailListSelect pulls the renderable values straight out of the
@@ -656,6 +657,7 @@ const requestDetailListSelect = `
 	       COALESCE(json_extract(data, '$.cost'), 0.0),
 	       COALESCE(json_extract(data, '$.combo'), ''),
 	       COALESCE(json_extract(data, '$.protocol'), ''),
+	       COALESCE(json_extract(data, '$.loopWarning'), COALESCE(json_extract(data, '$.anomalies[0].message'), '')),
 	       json_valid(data)
 	FROM requestDetails
 	%s
@@ -702,6 +704,7 @@ func (r *Repo) GetRequestDetailsPaged(ctx context.Context, limit, offset int, si
 		if err := rows.Scan(&row.ID, &row.Timestamp, &row.Provider, &row.Model,
 			&row.ConnectionID, &row.Status, &row.LatencyTTFT, &row.LatencyTotal, &row.TokensJSON,
 			&row.Account, &row.Cost, &row.Combo, &row.Protocol,
+			&row.LoopWarning,
 			&dataValid); err != nil {
 			return nil, total, fmt.Errorf("scan requestDetails: %w", err)
 		}
@@ -733,4 +736,14 @@ func (r *Repo) GetRequestDetailByID(id string) (string, error) {
 		return "", fmt.Errorf("get request detail %s: %w", id, err)
 	}
 	return data, nil
+}
+
+// GetRequestDetailsErrorCountSince returns the count of failed requests recorded in requestDetails since cutoff.
+func (r *Repo) GetRequestDetailsErrorCountSince(ctx context.Context, since string) (int, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM requestDetails WHERE status = 'error' AND timestamp >= ?`, since).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count requestDetails errors since %s: %w", since, err)
+	}
+	return count, nil
 }

@@ -35,7 +35,6 @@ import (
 //   - response_format maps to an `additional_formats` render that is served
 //     verbatim, never synthesized from the JSON body.
 
-
 // elevenLabsResponseFormats maps the OpenAI response_format onto the Scribe
 // `additional_formats[].format` names. Mirrors upstream sttConfig.responseFormats.
 type elevenLabsResponseFormats struct {
