@@ -286,6 +286,17 @@ const usageClientKeyCachedTokens = `
 	), 0)
 `
 
+// usageGroupByClientKeyQuery is the statement GetUsageGroupByClientKeySince
+// runs.
+//
+// It is a named constant for the reason the three usageHistory reads above
+// are: the query-plan test runs EXPLAIN QUERY PLAN against it, and a copy of
+// the SQL in the test would pin the copy rather than the read — the day the
+// two drifted, the test would still be green while the read scanned the
+// ledger.
+const usageGroupByClientKeyQuery = `SELECT COALESCE(clientKey, ''), ` + usageGroupStats + `, ` + usageClientKeyCachedTokens +
+	` FROM usageHistory WHERE timestamp >= ? GROUP BY COALESCE(clientKey, '')`
+
 // GetUsageGroupByClientKeySince aggregates usageHistory per client key since
 // the cutoff.
 //
@@ -293,8 +304,7 @@ const usageClientKeyCachedTokens = `
 // where the spend went, this describes who caused it.
 func (r *Repo) GetUsageGroupByClientKeySince(since string) ([]UsageClientKeyRow, error) {
 	rows, err := r.db.Query( //nolint:noctx,rowserrcheck
-		`SELECT COALESCE(clientKey, ''), `+usageGroupStats+`, `+usageClientKeyCachedTokens+`
-		   FROM usageHistory WHERE timestamp >= ? GROUP BY COALESCE(clientKey, '')`, since)
+		usageGroupByClientKeyQuery, since)
 	if err != nil {
 		return nil, fmt.Errorf("query usage group by client key: %w", err)
 	}

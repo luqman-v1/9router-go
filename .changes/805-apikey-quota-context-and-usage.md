@@ -20,7 +20,8 @@ and share, per key the callers presented. The table it replaces grouped the
 upstream credential the router spent — a connection, not the key that was
 sold. A key deleted after it spent still gets a row, under its masked form,
 and a request that carried no client key gets a bucket of its own rather than
-disappearing from the totals.
+disappearing from the totals — that row is the media path, which presents no
+client key, and not a misconfigured one.
 In the dashboard both amounts are written as scales ("10M", "500K", "1B"), and
 model access now picks from the models the gateway publishes instead of from a
 free-text field, with the pattern syntax kept for the glob and deny forms the

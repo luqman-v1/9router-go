@@ -11,32 +11,17 @@ import (
 // A scan here is the regression the panel would carry on a big ledger: the
 // Overview's other usage reads group the same window, and a panel that
 // scans it pays a full pass every time the window changes.
+//
+// The plan is explained for usageGroupByClientKeyQuery — the statement
+// GetUsageGroupByClientKeySince runs — rather than for a copy of it written
+// here. A copy would answer a question about the copy: the day the two
+// drifted, this test would still be green while the read scanned the ledger.
 func TestUsageGroupByClientKeyQueryPlan(t *testing.T) {
 	r := openEphemeralSchemaDB(t)
 
-	rows, err := r.db.Query(`EXPLAIN QUERY PLAN `+
-		`SELECT COALESCE(clientKey, ''), `+usageGroupStats+`, `+usageClientKeyCachedTokens+
-		` FROM usageHistory WHERE timestamp >= ? GROUP BY COALESCE(clientKey, '')`,
-		"2026-01-01T00:00:00Z")
-	if err != nil {
-		t.Fatalf("explain query plan: %v", err)
-	}
-	defer rows.Close()
+	plan := explainQueryPlan(t, r.db, usageGroupByClientKeyQuery, "2026-01-01T00:00:00Z")
 
-	var plans []string
-	for rows.Next() {
-		var id, parent, notused int
-		var detail string
-		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
-			t.Fatalf("scan plan: %v", err)
-		}
-		plans = append(plans, detail)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate plan: %v", err)
-	}
-
-	joined := strings.Join(plans, "\n")
+	joined := strings.Join(plan, "\n")
 	if strings.Contains(joined, "SCAN usageHistory") {
 		t.Errorf("the per-client-key read scans usageHistory instead of using the timestamp index:\n%s", joined)
 	}
