@@ -29,8 +29,8 @@ func TestResolveEgress_ReportsThePathARequestLeftBy(t *testing.T) {
 		{
 			name: "a relay pool is named, not printed as a UUID",
 			connData: &ConnectionData{
-				ProxyPoolID:        "06a2c494-ef06-4d3f-a034-dad29ff3aebf",
-				ResolvedProxyPool:  "vercel-relay",
+				ProxyPoolID:       "06a2c494-ef06-4d3f-a034-dad29ff3aebf",
+				ResolvedProxyPool: "vercel-relay",
 			},
 			cfg: &providers.ProviderConfig{
 				BaseURL:  "https://opencode.ai/zen/v1/responses",
@@ -77,7 +77,7 @@ func TestResolveEgress_ReportsThePathARequestLeftBy(t *testing.T) {
 			wantValue: "direct",
 		},
 		{
-			name: "a relay with no connection row falls back to the relay host",
+			name:     "a relay with no connection row falls back to the relay host",
 			connData: nil,
 			cfg: &providers.ProviderConfig{
 				BaseURL:  "https://api.openai.com/v1/chat/completions",

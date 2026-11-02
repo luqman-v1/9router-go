@@ -65,7 +65,6 @@ func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
 	}
 }
 
-
 func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
 	requireLiveUpstream(t)
 	executor.RegisterAll()
@@ -252,4 +251,3 @@ func TestIntegration_OpenCode_MuseSpark13_ChatCompletions(t *testing.T) {
 		t.Fatalf("unexpected FreeTierError: %s", rec.Body.String())
 	}
 }
-

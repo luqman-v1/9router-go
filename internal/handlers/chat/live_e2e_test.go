@@ -18,7 +18,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-
 // getRealUserDB returns a throwaway in-memory database seeded with the
 // operator's real connections and combos, so a live test exercises the same
 // routing and credential handling the installed gateway uses.

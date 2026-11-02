@@ -47,19 +47,19 @@ type ConnectionData struct {
 // connections behind one provider, provider+model says nothing about which
 // key or subscription paid for it.
 type UsageLogInfo struct {
-	Provider     string
-	Model        string
-	ConnectionID string
-	ConnName     string
-	ConnEmail    string
-	APIKey       string
-	APIKeyName   string
-	Endpoint     string
-	Protocol     string
+	Provider       string
+	Model          string
+	ConnectionID   string
+	ConnName       string
+	ConnEmail      string
+	APIKey         string
+	APIKeyName     string
+	Endpoint       string
+	Protocol       string
 	RequestedModel string
-	ComboName    string
-	CacheSource  string
-	StartedAt    time.Time
+	ComboName      string
+	CacheSource    string
+	StartedAt      time.Time
 	// Egress is the proxy pool or relay a request left the host through, empty
 	// for a direct one. Without it the log cannot answer "did this turn use the
 	// proxy?", which is the first question asked whenever a provider's rate limit
@@ -67,9 +67,9 @@ type UsageLogInfo struct {
 	Egress string
 
 	// RTK token compression metrics
-	OriginalInputTokens int
-	SavedTokens         int
-	SavedPercent        int
+	OriginalInputTokens   int
+	SavedTokens           int
+	SavedPercent          int
 	CompressionDurationMs int
 }
 

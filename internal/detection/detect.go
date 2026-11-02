@@ -217,7 +217,8 @@ func ExtractToolCallsFromOpenAIMessages(messages []OpenAIMessage) []ToolCallItem
 				}
 				bType, _ := bm["type"].(string)
 
-				if bType == "tool_use" {
+				switch bType {
+				case "tool_use":
 					name, _ := bm["name"].(string)
 					id, _ := bm["id"].(string)
 					var argsStr string
@@ -235,7 +236,7 @@ func ExtractToolCallsFromOpenAIMessages(messages []OpenAIMessage) []ToolCallItem
 					if id != "" {
 						toolIndexByID[id] = idx
 					}
-				} else if bType == "tool_result" {
+				case "tool_result":
 					toolUseID, _ := bm["tool_use_id"].(string)
 					isErr, _ := bm["is_error"].(bool)
 					var contentStr string

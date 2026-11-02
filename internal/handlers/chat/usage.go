@@ -12,8 +12,8 @@ import (
 	"unicode/utf8"
 
 	"9router/proxy/internal/constants"
-	"9router/proxy/internal/detection"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/detection"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
@@ -164,6 +164,11 @@ func (h *ChatHandler) LogFailure(
 		return
 	}
 
+	isProxyBlocked := false
+	if upstreamErr != nil && strings.Contains(string(upstreamErr.Body), `"proxy_error"`) {
+		isProxyBlocked = true
+	}
+
 	failureRepo := h.Repo
 	failureID, failureProvider := reqID, info.Provider
 	failureModel, failureConn := info.Model, info.ConnectionID
@@ -188,24 +193,26 @@ func (h *ChatHandler) LogFailure(
 				log.Error("usage", "insert failed request detail failed", "error", insertErr)
 			}
 		}
-		if histErr := failureRepo.InsertUsageHistory(
-			failureProvider,
-			failureModel,
-			failureConn,
-			maskAPIKey(failureAPIKey),
-			failureEndpoint,
-			usage.PromptTokens,
-			usage.CompletionTokens,
-			0.0,
-			status,
-			usage.PromptTokens+usage.CompletionTokens,
-			"{}",
-			"{}",
-			clientKey,
-		); histErr != nil {
-			log.Error("usage", "insert failure usage history failed", "error", histErr)
+		if !isProxyBlocked {
+			if histErr := failureRepo.InsertUsageHistory(
+				failureProvider,
+				failureModel,
+				failureConn,
+				maskAPIKey(failureAPIKey),
+				failureEndpoint,
+				usage.PromptTokens,
+				usage.CompletionTokens,
+				0.0,
+				status,
+				usage.PromptTokens+usage.CompletionTokens,
+				"{}",
+				"{}",
+				clientKey,
+			); histErr != nil {
+				log.Error("usage", "insert failure usage history failed", "error", histErr)
+			}
+			h.upsertDailyUsageError(failureProvider, failureModel, failureEndpoint, failureConn, failureAPIKey, status)
 		}
-		h.upsertDailyUsageError(failureProvider, failureModel, failureEndpoint, failureConn, failureAPIKey, status)
 	})
 
 	usagetracker.GetTracker().PushRecent(usagetracker.RecentRequest{
