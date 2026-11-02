@@ -249,10 +249,20 @@ docker:
 docker-build:
 	docker build -t $(BINARY_NAME) .
 
+## wiki-build — generate the project page + wiki into _site/
+wiki-build:
+	go run ./tools/sitegen -out _site
+	@echo "Site written to _site/ — serve with: cd _site && python -m http.server 8000"
+
+## wiki-serve — generate and serve the site locally on :8000
+wiki-serve: wiki-build
+	cd _site && python -m http.server 8000
+
 ## clean — remove build artifacts
 clean:
 	rm -f $(BINARY_NAME) $(BINARY_NAME)-*
 	rm -rf web/dist
+	rm -rf _site
 
 ## help — show targets
 help:

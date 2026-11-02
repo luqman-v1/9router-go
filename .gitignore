@@ -78,3 +78,9 @@ stitch-screenshots/
 .omo/run-continuation/
 .omo/omo.jsonc
 .omp/settings.json
+
+# Screenshots captured for a pull-request body. They are untracked on purpose:
+# the body's raw URLs point at the commit they were pushed in, so they keep
+# resolving without a second copy entering history. Add one here if you want it
+# kept; docs/screenshots/ is for the ones the site and README reference.
+/pr-*.png
