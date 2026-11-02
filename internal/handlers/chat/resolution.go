@@ -114,7 +114,7 @@ func resolveProviderAlias(alias string) string {
 // If the entry has no "/" (i.e. it's a combo name), it resolves the combo
 // and returns its first concrete model with the combined model list.
 func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
-	return h.resolveModelEntryGuarded(entry, nil)
+	return h.resolveModelEntryGuarded(entry, nil, nil)
 }
 
 // resolveModelEntryGuarded is resolveModelEntry with the set of combo names
@@ -122,7 +122,7 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 // through another combo) otherwise re-enters the branch below forever and
 // takes the whole process down with a stack overflow — every single-name hop
 // re-queries the database, so nothing else bounds it.
-func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string]bool) *ModelInfo {
+func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string]bool, connMap map[string]*ModelInfo) *ModelInfo {
 	if !strings.Contains(entry, "/") {
 		if h.Repo == nil || visiting[entry] {
 			return nil
@@ -136,7 +136,7 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 				visiting[entry] = true
 				var first *ModelInfo
 				for _, sub := range subModels {
-					if info := h.resolveModelEntryGuarded(sub, visiting); info != nil {
+					if info := h.resolveModelEntryGuarded(sub, visiting, connMap); info != nil {
 						first = info
 						break
 					}
@@ -160,6 +160,12 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 
 	if info := h.resolvePrefixProvider(prefix, model); info != nil {
 		return info
+	}
+
+	if connMap != nil {
+		if connInfo, ok := connMap[prefix]; ok && connInfo != nil {
+			return &ModelInfo{Provider: connInfo.Provider, Model: model, ConnectionID: connInfo.ConnectionID}
+		}
 	}
 
 	provider := resolveProviderAlias(prefix)

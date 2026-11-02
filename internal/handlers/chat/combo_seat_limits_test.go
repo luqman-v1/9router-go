@@ -195,3 +195,21 @@ func TestHandleModels_WebSeatDoesNotDragMinimumDown(t *testing.T) {
 	wantLimit(t, "context_length", entry.ContextLength, 131072)
 	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 8192)
 }
+
+func TestHandleModels_ComboSeatConnectionAliasResolvesCapabilities(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	if err := db.NewRepo(database).CreateProviderConnection("custom-conn-id", "openai", "apikey", "my-openai-alias", `{"apiKey":"sk-test"}`); err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-alias', 'alias-combo', 'llm', '["custom-conn-id/gpt-4o"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(db.NewRepo(database))), "alias-combo")
+	wantLimit(t, "context_length", entry.ContextLength, 128000)
+	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 16384)
+}

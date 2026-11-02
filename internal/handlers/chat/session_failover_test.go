@@ -29,6 +29,7 @@ func TestFallback_RebindsAffinityOn429(t *testing.T) {
 
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
+	_, _ = database.Exec("DELETE FROM providerConnections")
 
 	repo := db.NewRepo(database)
 	h := NewChatHandler(repo)
