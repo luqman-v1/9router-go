@@ -56,6 +56,11 @@ func OpenDatabase(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("chmod db file %s: %w", path, err)
 	}
+	// The -wal and -shm sidecars are created by the driver on the first write,
+	// which is after this point, so they carry the process umask rather than
+	// the intended mode. They hold the same page images as the main file, so
+	// they are re-tightened after the schema bootstrap, once they exist.
+	RestrictSQLiteModes(dbDir, path)
 
 	// Configure connection pool limits for SQLite to reduce lock contention
 	db.SetMaxOpenConns(sqliteMaxOpenConns)
@@ -63,6 +68,28 @@ func OpenDatabase(path string) (*sql.DB, error) {
 	db.SetConnMaxLifetime(time.Hour)
 
 	return db, nil
+}
+
+// RestrictSQLiteModes re-asserts the private modes on the database file and
+// every sidecar the driver has created, and on the directory holding them.
+//
+// The sidecars are the reason this exists as a separate call rather than two
+// inline chmods: SQLite creates `-wal` and `-shm` on the first *write*, which
+// is after OpenDatabase returns, so at open time they do not exist and at
+// write time nothing re-asserts the mode. They carry the same page images as
+// the main file, and therefore the same plaintext credentials.
+//
+// Best-effort throughout: a sidecar that has not been created yet is skipped
+// rather than treated as an error, and on a platform where the mode is not
+// enforced the chmod is a no-op. Call it again after the first write — the
+// schema bootstrap in internal/app is that first write.
+func RestrictSQLiteModes(dbDir, path string) {
+	_ = os.Chmod(dbDir, 0700)
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if err := os.Chmod(path+suffix, 0600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+	}
 }
 
 // InitGlobalDatabase opens the process-wide database connection once. Later
