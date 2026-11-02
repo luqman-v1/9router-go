@@ -24,6 +24,13 @@
   import { copyToClipboard } from '../lib/clipboard'
   import type { Snippet } from 'svelte'
   import ApiKeysTable from './keys/ApiKeysTable.svelte'
+  import {
+    duplicateBatchKeyNames,
+    fillBatchKeyNames,
+    formatKeyDownload,
+    planBulkKeys,
+    type BulkKeyProblem,
+  } from '../lib/bulk-keys'
   import { api, type APIKey, type Settings, type TunnelStatusResponse } from '../api/client'
   import type { ActiveTab } from '../lib/router'
   interface Props {
@@ -190,9 +197,22 @@
   // only issuing a new key still belongs to the endpoint page, because it is
   // what the integration snippets above point an operator at.
   let isCreateKeyOpen = $state(false)
+  // The create dialog is tabbed Single / Bulk, the way the Proxy Pools dialog
+  // is: one button opens one dialog, and the two ways to add are a choice
+  // inside it rather than two entry points.
+  let createKeyTab = $state<'single' | 'bulk'>('single')
   let newKeyName = $state('')
   let isSubmittingKey = $state(false)
   let newlyCreatedKey = $state<string | null>(null)
+  // Bulk-create state. The pasted block is planned (not created) on every
+  // keystroke so the preview counts what will happen before anything is sent,
+  // and the results are held so the download and the success dialog can show
+  // every secret the batch minted — a secret appears once, in this dialog and
+  // in the downloaded file.
+  let bulkKeyText = $state('')
+  let bulkKeyBusy = $state(false)
+  let bulkKeyError = $state<string | null>(null)
+  let bulkKeyResults = $state<{ name: string; machineId: string; key: string }[]>([])
 
   $effect(() => {
     if (settings) {
@@ -840,6 +860,62 @@
       isSubmittingKey = false
     }
   }
+  // Bulk create. Each planned line is one POST /api/keys — the same endpoint
+  // the single tab calls — so the batch path cannot mint a credential the
+  // dashboard never saw and needs no new contract. Requests are issued one at
+  // a time rather than with Promise.all: a burst of concurrent writes is the
+  // pattern that produced the N+1 and race findings this repo keeps fixing,
+  // and a batch of a dozen keys is not worth a parallel write path.
+  const bulkPlan = $derived(planBulkKeys(bulkKeyText))
+  const bulkEntries = $derived(fillBatchKeyNames(bulkPlan.entries))
+  const bulkProblems = $derived.by(() => {
+    const parse: BulkKeyProblem[] = bulkPlan.problems.map((p) => ({ ...p, reason: `line ${p.line}: ${p.reason}` }))
+    const dupes = duplicateBatchKeyNames(bulkEntries, apiKeys.map((k) => k.name || ''))
+    return [...parse, ...dupes]
+  })
+  function resetBulkKeyForm() {
+    bulkKeyText = ''
+    bulkKeyError = null
+    bulkKeyResults = []
+  }
+  async function handleBulkCreateKeys() {
+    if (bulkEntries.length === 0 || bulkProblems.length > 0) return
+    bulkKeyBusy = true
+    bulkKeyError = null
+    const created: { name: string; machineId: string; key: string }[] = []
+    try {
+      for (const entry of bulkEntries) {
+        const res = await api.createApiKey({ name: entry.name, machineId: entry.machineId })
+        if (!res.key) throw new Error(`no secret returned for "${entry.name}"`)
+        created.push({ name: entry.name, machineId: entry.machineId, key: res.key })
+      }
+      bulkKeyResults = created
+      // The last key minted is the one the snippets and the session use, so a
+      // batch leaves the dashboard pointed at a credential that exists.
+      localStorage.setItem('9router_key', created[created.length - 1].key)
+      bulkKeyText = ''
+      await loadStatus()
+      onRefresh?.()
+    } catch (err) {
+      // A partial batch is a real outcome, not a failure to hide: the keys
+      // created before the error exist and their secrets were shown once. The
+      // dialog stays open with what succeeded so the operator can save it.
+      bulkKeyResults = created
+      bulkKeyError = `Created ${created.length} of ${bulkEntries.length}: ${err instanceof Error ? err.message : String(err)}`
+    } finally {
+      bulkKeyBusy = false
+    }
+  }
+  function downloadBulkKeys() {
+    const text = formatKeyDownload(bulkKeyResults)
+    const blob = new Blob([text], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = '9router-api-keys.txt'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
 </script>
 
@@ -1195,7 +1271,7 @@
 <!-- MODAL: Create API Key -->
 {#if isCreateKeyOpen}
   <div class="fixed inset-0 z-\[100\] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-    <div class="w-full max-w-md p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
+    <div class="w-full {createKeyTab === 'bulk' ? 'max-w-lg' : 'max-w-md'} p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
       <div class="flex items-center justify-between pb-3 border-b border-border">
         <h3 class="text-base font-bold text-text-main">Create API Key</h3>
         <button
@@ -1203,13 +1279,37 @@
           onclick={() => {
             isCreateKeyOpen = false
             newKeyName = ''
+            createKeyTab = 'single'
+            resetBulkKeyForm()
           }}
           class="text-text-muted hover:text-text-main cursor-pointer"
         >
           <X class="w-4 h-4" />
         </button>
       </div>
-
+      <!-- Single / Bulk. The same segmented control the Proxy Pools dialog
+           uses, so the two "one by hand vs many at once" dialogs match. -->
+      <div class="flex gap-1 rounded-lg border border-border bg-surface-2/50 p-1">
+        <button
+          type="button"
+          onclick={() => (createKeyTab = 'single')}
+          class="flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition cursor-pointer {createKeyTab === 'single'
+            ? 'bg-surface text-text-main shadow-sm'
+            : 'text-text-muted hover:text-text-main'}"
+        >
+          Single
+        </button>
+        <button
+          type="button"
+          onclick={() => (createKeyTab = 'bulk')}
+          class="flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition cursor-pointer {createKeyTab === 'bulk'
+            ? 'bg-surface text-text-main shadow-sm'
+            : 'text-text-muted hover:text-text-main'}"
+        >
+          Bulk
+        </button>
+      </div>
+      {#if createKeyTab === 'single'}
       <form onsubmit={handleCreateKey} class="space-y-4">
         <div class="space-y-1">
           <label for="key-name-input" class="block text-xs font-semibold text-text-muted">
@@ -1249,10 +1349,164 @@
           </button>
         </div>
       </form>
+      {:else}
+      <!-- Bulk. One line per key, "name | machineId", both halves optional.
+           The preview counts what will happen before anything is sent, and a
+           secret is minted by the server exactly as the single tab does — the
+           batch never invents one. -->
+      <div class="space-y-3">
+        <div class="space-y-1">
+          <label for="bulk-keys-input" class="block text-xs font-semibold text-text-muted">
+            One key per line — <span class="font-code">name | machineId</span>
+          </label>
+          <textarea
+            id="bulk-keys-input"
+            bind:value={bulkKeyText}
+            rows={7}
+            placeholder={'office | m-abc-123\nlaptop\n| m-def-456'}
+            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-xs font-mono text-text-main placeholder:text-text-subtle focus:outline-none focus:border-brand-500 resize-y"
+          />
+          <p class="text-[11px] text-text-subtle">
+            Both halves are optional. A blank name becomes <span class="font-code">Key N</span>.
+          </p>
+        </div>
+
+        {#if bulkEntries.length > 0 || bulkProblems.length > 0}
+          <div class="rounded-lg border border-border bg-surface-2/50 px-3 py-2 space-y-1">
+            <p class="text-xs font-semibold text-text-main">
+              {bulkEntries.length} key{bulkEntries.length === 1 ? '' : 's'} will be created
+            </p>
+            {#each bulkEntries.slice(0, 8) as entry (entry.name + entry.machineId)}
+              <p class="text-[11px] font-mono text-text-muted truncate">
+                {entry.name || '(unnamed)'}{entry.machineId ? ` · ${entry.machineId}` : ''}
+              </p>
+            {/each}
+            {#if bulkEntries.length > 8}
+              <p class="text-[11px] text-text-subtle">+{bulkEntries.length - 8} more</p>
+            {/if}
+          </div>
+        {/if}
+
+        {#if bulkProblems.length > 0}
+          <div class="rounded-lg border border-error/30 bg-error/10 px-3 py-2 space-y-1">
+            <p class="text-xs font-semibold text-error">
+              {bulkProblems.length} problem{bulkProblems.length === 1 ? '' : 's'} to fix first
+            </p>
+            {#each bulkProblems.slice(0, 6) as problem (problem.line + problem.reason)}
+              <p class="text-[11px] text-error/90">{problem.reason}</p>
+            {/each}
+          </div>
+        {/if}
+
+        {#if bulkKeyError}
+          <div class="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2">
+            <p class="text-xs font-semibold text-warning">{bulkKeyError}</p>
+          </div>
+        {/if}
+
+        <div class="flex gap-2 pt-1">
+          <button
+            type="button"
+            disabled={bulkEntries.length === 0 || bulkProblems.length > 0 || bulkKeyBusy}
+            onclick={handleBulkCreateKeys}
+            aria-label="Create keys"
+            class="flex-1 py-2 px-4 rounded-lg bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white font-semibold text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
+          >
+            {#if bulkKeyBusy}
+              <Loader2 class="w-3.5 h-3.5 animate-spin" />
+              <span>Creating…</span>
+            {:else}
+              <span>Create {bulkEntries.length || ''}</span>
+            {/if}
+          </button>
+          <button
+            type="button"
+            onclick={() => {
+              isCreateKeyOpen = false
+              createKeyTab = 'single'
+              resetBulkKeyForm()
+            }}
+            class="flex-1 py-2 px-4 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-semibold text-xs transition cursor-pointer border border-border"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+      {/if}
     </div>
   </div>
 {/if}
-<!-- MODAL: API Key Created -->
+<!-- MODAL: Bulk Keys Created -->
+{#if bulkKeyResults.length > 0}
+  <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+    <div class="w-full max-w-lg p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
+      <div class="flex items-center justify-between pb-3 border-b border-border">
+        <h3 class="text-base font-bold text-text-main">
+          {bulkKeyResults.length} API Key{bulkKeyResults.length === 1 ? '' : 's'} Created
+        </h3>
+      </div>
+
+      <div class="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 space-y-1 text-amber-700 dark:text-amber-300">
+        <p class="text-sm font-bold">Save these keys now!</p>
+        <p class="text-xs leading-relaxed">
+          This is the only time the secrets are shown. Each one can be revealed again from the
+          table below, but anyone who reaches this dashboard can read it there — treat the file
+          you download as a credential.
+        </p>
+      </div>
+
+      <!-- Every secret in one scrollable list, so nothing is hidden behind a
+           hover or a second click. -->
+      <div class="max-h-64 overflow-y-auto rounded-lg border border-border bg-bg divide-y divide-border">
+        {#each bulkKeyResults as result (result.key)}
+          <div class="px-3 py-2 space-y-0.5">
+            <p class="text-xs font-semibold text-text-main">
+              {result.name}{result.machineId ? ` · ${result.machineId}` : ''}
+            </p>
+            <div class="flex items-center gap-2">
+              <code class="flex-1 font-mono text-[11px] text-text-main truncate">{result.key}</code>
+              <button
+                type="button"
+                onclick={() => copy(result.key, `bulk_${result.key}`)}
+                class="shrink-0 text-text-muted hover:text-text-main cursor-pointer"
+                aria-label={`Copy key for ${result.name}`}
+              >
+                {#if copiedId === `bulk_${result.key}`}
+                  <Check class="w-3.5 h-3.5 text-success" />
+                {:else}
+                  <Copy class="w-3.5 h-3.5" />
+                {/if}
+              </button>
+            </div>
+          </div>
+        {/each}
+      </div>
+
+      <div class="flex gap-2 pt-1">
+        <button
+          type="button"
+          onclick={downloadBulkKeys}
+          class="flex-1 py-2 px-4 rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-semibold text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
+        >
+          <CloudUpload class="w-3.5 h-3.5" />
+          <span>Download .txt</span>
+        </button>
+        <button
+          type="button"
+          onclick={() => {
+            bulkKeyResults = []
+            isCreateKeyOpen = false
+            createKeyTab = 'single'
+          }}
+          class="flex-1 py-2 px-4 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-semibold text-xs transition cursor-pointer border border-border"
+        >
+          Done
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if newlyCreatedKey}
   <div class="fixed inset-0 z-\[100\] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
     <div class="w-full max-w-md p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
