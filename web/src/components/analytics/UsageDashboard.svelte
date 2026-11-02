@@ -55,7 +55,7 @@
       {
         label: 'Success Rate',
         value: l.successRate != null ? `${l.successRate.toFixed(1)}%` : '—',
-        sub: 'Lifetime requests',
+        sub: 'All time',
         valueClass:
           l.successRate == null
             ? 'text-text-muted'

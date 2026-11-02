@@ -171,10 +171,7 @@ func (h *ChatHandler) LogFailure(
 	failureModel, failureConn := info.Model, info.ConnectionID
 	failureData := string(reqData)
 	failureAPIKey, failureEndpoint := info.APIKey, info.Endpoint
-	clientKey := ""
-	if caller := middleware.AuthenticatedApiKeyFromContext(ctx); caller != nil {
-		clientKey = maskAPIKey(caller.Key)
-	}
+
 	logDetail := shouldLogRequestDetail(h.Repo, true)
 
 	enqueueUsageWrite(func() {
@@ -191,23 +188,6 @@ func (h *ChatHandler) LogFailure(
 			}
 		}
 		if !isProxyBlocked {
-			if histErr := failureRepo.InsertUsageHistory(
-				failureProvider,
-				failureModel,
-				failureConn,
-				maskAPIKey(failureAPIKey),
-				failureEndpoint,
-				usage.PromptTokens,
-				usage.CompletionTokens,
-				0.0,
-				status,
-				usage.PromptTokens+usage.CompletionTokens,
-				"{}",
-				"{}",
-				clientKey,
-			); histErr != nil {
-				log.Error("usage", "insert failure usage history failed", "error", histErr)
-			}
 			h.upsertDailyUsageError(failureProvider, failureModel, failureEndpoint, failureConn, failureAPIKey, status)
 		}
 	})

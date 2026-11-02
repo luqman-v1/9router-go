@@ -528,19 +528,26 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				return
 			}
 			applyRawAggregate(&resp, agg, nodeNameMap, connMap, keyNames, views)
+			if !window.since.IsZero() {
+				cutoff := window.since.UTC().Format("2006-01-02T15:04:05.000Z")
+				if errCount, err := repo.GetRequestDetailsErrorCountSince(cutoff); err == nil {
+					resp.TotalErrors = errCount
+				}
+			}
 		}
 
 		// Calculate total aggregates from byProvider
+		successfulRequests := 0
 		for _, p := range resp.ByProvider {
-			resp.TotalRequests += p.Requests
-			resp.TotalErrors += p.Errors
+			successfulRequests += p.Requests
 			resp.TotalPromptTokens += p.PromptTokens
 			resp.TotalCompletionTokens += p.CompletionTokens
 			resp.TotalCachedTokens += p.CachedTokens
 			resp.TotalCost += p.Cost
 		}
+		resp.TotalRequests = successfulRequests + resp.TotalErrors
 		if resp.TotalRequests > 0 {
-			rate := math.Round(float64(resp.TotalRequests-resp.TotalErrors)/float64(resp.TotalRequests)*1000) / 10
+			rate := math.Round(float64(successfulRequests)/float64(resp.TotalRequests)*1000) / 10
 			resp.SuccessRate = &rate
 		}
 

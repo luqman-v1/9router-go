@@ -31,6 +31,8 @@ func TestLogFailure_DifferentiatesCanceledFromError(t *testing.T) {
 		nil,
 	)
 
+	time.Sleep(5 * time.Millisecond)
+
 	// Case 2: Upstream error (500)
 	infoErr := &UsageLogInfo{Provider: "openai", Model: "gpt-4o", Endpoint: "/v1/chat/completions", ConnectionID: "c1"}
 	handler.LogFailure(
@@ -70,19 +72,21 @@ func TestLogFailure_DifferentiatesCanceledFromError(t *testing.T) {
 		t.Errorf("expected canceled status recorded in recent requests, got: %+v", recent)
 	}
 
-	// Verify in usageHistory table
-	var canceledCount, errorCount int
-	if err := database.QueryRow(`SELECT COUNT(*) FROM usageHistory WHERE status = 'canceled'`).Scan(&canceledCount); err != nil {
-		t.Fatalf("count canceled in usageHistory: %v", err)
+	// Verify failure recorded in requestDetails for diagnostics
+	var errorDetailsCount int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM requestDetails WHERE status = 'error'`).Scan(&errorDetailsCount); err != nil {
+		t.Fatalf("count error in requestDetails: %v", err)
 	}
-	if err := database.QueryRow(`SELECT COUNT(*) FROM usageHistory WHERE status = 'error'`).Scan(&errorCount); err != nil {
-		t.Fatalf("count error in usageHistory: %v", err)
+	if errorDetailsCount < 2 {
+		t.Errorf("expected at least 2 diagnostic rows in requestDetails, got %d", errorDetailsCount)
 	}
 
-	if canceledCount < 1 {
-		t.Errorf("expected at least 1 canceled row in usageHistory, got %d", canceledCount)
+	// Verify usageHistory is untouched (billed spend ledger must not record failures)
+	var usageHistoryCount int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM usageHistory`).Scan(&usageHistoryCount); err != nil {
+		t.Fatalf("count usageHistory: %v", err)
 	}
-	if errorCount < 1 {
-		t.Errorf("expected at least 1 error row in usageHistory, got %d", errorCount)
+	if usageHistoryCount != 0 {
+		t.Errorf("usageHistory rows = %d, want 0: failures must not be logged as billed spend", usageHistoryCount)
 	}
 }

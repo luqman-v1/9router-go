@@ -17,13 +17,13 @@ func TestUsageStats_CalculatesSuccessRate(t *testing.T) {
 	defer cleanup()
 	repo := db.NewRepo(database)
 
-	// Seed 3 successful requests and 1 error request
+	// Seed 3 successful requests in usageHistory and 1 error request in requestDetails
 	for i := 0; i < 3; i++ {
 		if err := repo.InsertUsageHistory("openai", "gpt-4o", "c1", "sk-1", "/v1/chat/completions", 10, 10, 0.01, "success", 20, "{}", "{}"); err != nil {
 			t.Fatalf("insert success: %v", err)
 		}
 	}
-	if err := repo.InsertUsageHistory("openai", "gpt-4o", "c1", "sk-1", "/v1/chat/completions", 0, 0, 0, "error", 0, "{}", "{}"); err != nil {
+	if err := repo.InsertRequestDetail("req-err-1", "openai", "gpt-4o", "c1", "error", "{}"); err != nil {
 		t.Fatalf("insert error: %v", err)
 	}
 
