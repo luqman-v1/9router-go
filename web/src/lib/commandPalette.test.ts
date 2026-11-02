@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'bun:test'
 import { buildPaletteIndex, resetPaletteIndex, searchPalette } from './commandPalette'
+import { __setProviderCatalogForTest } from './providers'
+import { parseProviderRegistry } from './providers.registry-test'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+// The provider rows come from the Go registry, so the index is built from that
+// file rather than a TypeScript copy.
+__setProviderCatalogForTest(
+  parseProviderRegistry(readFileSync(resolve(import.meta.dirname, '../../../internal/providers/provider_registry.go'), 'utf8')),
+)
 
 describe('command palette index', () => {
   it('indexes pages, settings, providers and models', () => {
