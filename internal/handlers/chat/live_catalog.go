@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/singleflight"
 
+	"9router/proxy/internal/customjson"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
@@ -467,6 +468,11 @@ func (h *ChatHandler) fetchGrokCLILiveCatalog(ctx context.Context, conn *models.
 // node without configured models is asked directly (`GET <baseUrl>/models`),
 // which is how a node can publish models its custom-model rows do not cover.
 func (h *ChatHandler) fetchCompatibleNodeModels(ctx context.Context, conn *models.ProviderConnection, connData *shared.ConnectionData, providerID string) []LiveModel {
+	// A custom JSON node's URL is a business endpoint, not an API root with a
+	// model list: its models are only the IDs the operator configured.
+	if customjson.IsConnection(connData.ProviderSpecificData) {
+		return nil
+	}
 	apiKey := connData.APIKey
 	if apiKey == "" {
 		apiKey = connData.AccessToken

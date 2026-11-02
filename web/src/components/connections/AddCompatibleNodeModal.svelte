@@ -5,8 +5,12 @@
   import Input from '../../lib/ui/Input.svelte'
   import Modal from '../../lib/ui/Modal.svelte'
   import ProviderNodeLimitsField from './ProviderNodeLimitsField.svelte'
+  import CustomJsonFields from './CustomJsonFields.svelte'
   import { EMPTY_NODE_LIMITS, nodeLimitsPatchOf, type NodeLimitsDraft } from '../../lib/node-limits'
+  import { CUSTOM_JSON_API_TYPE, customJsonForm, parseCustomJsonForm, type CustomJsonConfig } from '../../lib/customJsonForm'
   import type { ProviderNodeLimitsPatch } from '../../api/client'
+
+  type OpenAIApiType = 'chat' | 'responses' | 'custom-json'
 
   export type CompatibleNodeType = 'openai-compatible' | 'anthropic-compatible' | 'custom-embedding'
 
@@ -22,9 +26,11 @@
       name: string
       prefix: string
       baseUrl: string
-      apiType?: 'chat' | 'responses'
+      apiType?: OpenAIApiType
       type: string
       urlSuffix: string
+      /** Request template and response mapping when apiType is "custom-json". */
+      customJson?: CustomJsonConfig
       /** Capacity limits to apply once the node exists; all zero means unlimited. */
       limits: ProviderNodeLimitsPatch
     }) => Promise<void> | void
@@ -54,7 +60,7 @@
   }> = {
     'openai-compatible': {
       label: 'OpenAI Compatible',
-      summary: 'Chat Completions or Responses endpoints',
+      summary: 'Chat Completions, Responses or custom JSON endpoints',
       title: 'Add Custom Provider',
       defaultBaseUrl: 'https://api.openai.com/v1',
       namePlaceholder: 'OpenAI Compatible (Prod)',
@@ -104,13 +110,15 @@
   let formName = $state('')
   let formPrefix = $state('')
   let formUrlSuffix = $state('')
-  let formApiType = $state<'chat' | 'responses'>('chat')
+  let formApiType = $state<OpenAIApiType>('chat')
   let formBaseUrl = $state('')
   let checkKey = $state('')
   let checkModelId = $state('')
   let validating = $state(false)
   let validationResult = $state<{ valid: boolean; error?: string; method?: string; dimensions?: number } | null>(null)
   let submitting = $state(false)
+  let formError = $state('')
+  let jsonForm = $state(customJsonForm())
   // A new node has no policy yet, so the section starts closed; the values travel
   // with the create and are written right after it (the limits endpoint needs the
   // node id, which only exists once the create answers).
@@ -118,6 +126,9 @@
 
   let typeOptions = $derived(allowedTypes.map((t) => ({ value: t, ...VARIANT_CONFIG[t] })))
   let config = $derived(VARIANT_CONFIG[selectedType])
+  let isCustomJson = $derived(config.hasApiType && formApiType === CUSTOM_JSON_API_TYPE)
+  // A no-auth business endpoint can be tested without a key.
+  let checkNeedsKey = $derived(!(isCustomJson && jsonForm.authType === 'none'))
 
   // The literal the backend pins in front of the suffix, so the field can show
   // the provider id the user is about to create instead of a bare "suffix".
@@ -142,6 +153,8 @@
       checkModelId = ''
       validationResult = null
       submitting = false
+      formError = ''
+      jsonForm = customJsonForm()
       formBaseUrl = (VARIANT_CONFIG[type] ?? VARIANT_CONFIG[selectedType]).defaultBaseUrl
     }
   })
@@ -161,6 +174,17 @@
   }
 
 
+  // A custom JSON endpoint is a complete URL with no sensible default, so the
+  // OpenAI default is cleared when switching to it and restored on the way back.
+  function selectApiType(next: OpenAIApiType) {
+    const defaultBaseUrl = VARIANT_CONFIG['openai-compatible'].defaultBaseUrl
+    const wasCustom = formApiType === CUSTOM_JSON_API_TYPE
+    formApiType = next
+    validationResult = null
+    if (next === CUSTOM_JSON_API_TYPE && formBaseUrl.trim() === defaultBaseUrl) formBaseUrl = ''
+    if (wasCustom && next !== CUSTOM_JSON_API_TYPE && formBaseUrl.trim() === '') formBaseUrl = defaultBaseUrl
+  }
+
   async function handleCheck() {
     validating = true
     try {
@@ -169,6 +193,7 @@
         apiKey: checkKey.trim(),
         type: selectedType,
         modelId: checkModelId.trim() || undefined,
+        ...(isCustomJson ? { apiType: CUSTOM_JSON_API_TYPE, customJson: parseCustomJsonForm(jsonForm) } : {}),
       })
     } catch (err) {
       validationResult = {
@@ -183,6 +208,14 @@
   function handleSubmit(e?: SubmitEvent) {
     e?.preventDefault()
     if (!formName.trim() || !formPrefix.trim() || !formBaseUrl.trim() || submitting) return
+    formError = ''
+    let customJson: CustomJsonConfig | undefined
+    try {
+      customJson = isCustomJson ? parseCustomJsonForm(jsonForm) : undefined
+    } catch (err) {
+      formError = err instanceof Error ? err.message : String(err)
+      return
+    }
     submitting = true
     Promise.resolve(onSubmit({
       name: formName.trim(),
@@ -192,13 +225,14 @@
       type: selectedType,
       urlSuffix: formUrlSuffix.trim(),
       limits: nodeLimitsPatchOf(limitsDraft),
+      customJson,
     })).finally(() => {
       submitting = false
     })
   }
 </script>
 
-<Modal {isOpen} title={config.title} {onClose}>
+<Modal {isOpen} title={isCustomJson ? 'Add Custom JSON API' : config.title} {onClose} size={isCustomJson ? 'xl' : 'md'}>
   <div class="flex flex-col gap-4">
     <fieldset class="flex flex-col gap-2">
       <legend class="text-sm font-medium text-text-main">Provider Type</legend>
@@ -259,26 +293,35 @@
         <label for="api-type" class="text-sm font-medium text-text-main mb-1.5 block">API Type</label>
         <select
           id="api-type"
-          bind:value={formApiType}
+          value={formApiType}
+          onchange={(e) => selectApiType((e.currentTarget as HTMLSelectElement).value as OpenAIApiType)}
           class="w-full py-2.5 px-3 text-sm text-text-main bg-surface-2 rounded-[10px] border border-transparent focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/40 transition-all duration-150 ease-out text-[16px] sm:text-sm"
         >
           <option value="chat">Chat Completions</option>
           <option value="responses">Responses API</option>
+          <option value="custom-json">Custom JSON API</option>
         </select>
       </div>
     {/if}
 
     <Input
-      label="Base URL"
+      label={isCustomJson ? 'Endpoint URL' : 'Base URL'}
       bind:value={formBaseUrl}
-      placeholder={config.defaultBaseUrl}
-      hint={config.baseUrlHint}
+      placeholder={isCustomJson ? 'https://example.com/api/chat' : config.defaultBaseUrl}
+      hint={isCustomJson ? 'Enter the complete HTTP(S) endpoint URL. No path is appended.' : config.baseUrlHint}
       inputClass="font-mono"
       required
     />
 
+    {#if isCustomJson}
+      <CustomJsonFields bind:value={jsonForm} idPrefix="add-custom-json" />
+    {/if}
+    {#if formError}
+      <p role="alert" class="text-sm text-red-500">{formError}</p>
+    {/if}
+
     <Input
-      label="API Key (for Check)"
+      label={checkNeedsKey ? 'API Key (for Check)' : 'API Key (not required)'}
       type="password"
       bind:value={checkKey}
     />
@@ -287,17 +330,17 @@
       label="Model ID (for Check)"
       bind:value={checkModelId}
       placeholder={config.modelIdPlaceholder}
-      hint={config.modelIdHint}
+      hint={isCustomJson ? 'Optional model ID used for the test request.' : config.modelIdHint}
     />
 
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
       <Button
         onclick={handleCheck}
-        disabled={!checkKey.trim() || validating || !formBaseUrl.trim()}
+        disabled={(checkNeedsKey && !checkKey.trim()) || validating || !formBaseUrl.trim()}
         variant="secondary"
         class="w-full sm:w-auto"
       >
-        {validating ? 'Checking...' : 'Check'}
+        {validating ? 'Checking...' : isCustomJson ? 'Send Test Request' : 'Check'}
       </Button>
       {#if validationResult}
         {#if validationResult.valid}

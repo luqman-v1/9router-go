@@ -471,7 +471,7 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 			return &proxy.ZeroContentError{Body: body}
 		}
 		// The last member of a combo serves its zero-content response normally (FR3).
-	} else if err := proxy.EmptyUpstreamError(body); err != nil {
+	} else if err := proxy.EmptyUpstreamError(body); err != nil && !proxy.EmptyCompletionAllowed(ctx) {
 		return err
 	}
 
