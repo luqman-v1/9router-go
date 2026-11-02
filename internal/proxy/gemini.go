@@ -70,9 +70,18 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 			}
 		}
 
-		// Wrap for antigravity if needed
+		// Wrap for the lane that needs an envelope.
 		sendBody = geminiBody
-		if projectID != "" {
+		switch {
+		case cfg.Format == "gemini-cli":
+			// Cloud Code Assist: {project, model, request} with no userId,
+			// requestType or requestId — the CLI's own shape.
+			wrapped, err := translator.WrapForGeminiCLI(geminiBody, projectID, modelName)
+			if err != nil {
+				return nil, fmt.Errorf("wrap for gemini-cli: %w", err)
+			}
+			sendBody = wrapped
+		case projectID != "":
 			wrapped, err := translator.WrapForAntigravity(geminiBody, projectID, modelName)
 			if err != nil {
 				return nil, fmt.Errorf("wrap for antigravity: %w", err)
@@ -94,16 +103,32 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		action = "streamGenerateContent?alt=sse"
 	}
 	var requestURL string
-	if projectID != "" {
+	switch {
+	case cfg.Format == "gemini-cli":
+		// The v1internal root takes the action directly; the model rides in
+		// the envelope, not the path.
+		requestURL = fmt.Sprintf("%s:%s", baseURL, action)
+	case projectID != "":
 		requestURL = fmt.Sprintf("%s/v1internal:%s", baseURL, action)
-	} else {
+	default:
 		requestURL = fmt.Sprintf("%s/v1beta/models/%s:%s", baseURL, modelName, action)
 	}
 
+	userAgent := providers.AntigravityCLIUserAgent
 	headers := map[string]string{
 		"Content-Type":  "application/json",
 		"Authorization": "Bearer " + apiKey,
-		"User-Agent":    providers.AntigravityCLIUserAgent,
+		"User-Agent":    userAgent,
+	}
+	if cfg.Format == "gemini-cli" {
+		// Cloud Code Assist identifies the CLI in two more headers and answers
+		// 403 without them.
+		headers["User-Agent"] = translator.GeminiCLIUserAgent(modelName)
+		headers["X-Goog-Api-Client"] = translator.GeminiCLIApiClient
+		headers["Accept"] = "application/json"
+		if isStream {
+			headers["Accept"] = "text/event-stream"
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewReader(sendBody))
