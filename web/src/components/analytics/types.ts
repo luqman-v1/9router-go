@@ -43,6 +43,7 @@ export interface RecentRequestItem {
   cachedTokens?: number
   completionTokens?: number
   timestamp?: string
+  loopWarning?: string
 }
 export interface ActiveRequestItem {
   model?: string
@@ -115,6 +116,8 @@ export interface RequestDetailItem {
 
 export interface StatsData {
   totalRequests?: number
+  totalErrors?: number
+  successRate?: number | null
   totalPromptTokens?: number
   totalCompletionTokens?: number
   totalCachedTokens?: number
