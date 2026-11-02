@@ -48,6 +48,7 @@ type RecentRequest struct {
 	// only: a refused member has a rejection time, not a latency, and the map
 	// must not present one as the other.
 	LatencyMs int64 `json:"latencyMs,omitempty"`
+	LoopWarning string `json:"loopWarning,omitempty"`
 }
 
 // StreamPayload represents the payload sent over SSE on /api/usage/stream.
@@ -202,6 +203,15 @@ func (t *Tracker) PushRecent(req RecentRequest, repo *db.Repo) {
 	}
 
 	t.scheduleBroadcastLocked(repo)
+}
+
+// GetRecent returns a copy of the in-memory recent requests ring buffer.
+func (t *Tracker) GetRecent() []RecentRequest {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	res := make([]RecentRequest, len(t.recentRing))
+	copy(res, t.recentRing)
+	return res
 }
 
 // ensureRingInitialized seeds the in-memory ring from DB history once under a write lock.
