@@ -42,6 +42,8 @@ type Options struct {
 	// lower-precedence source. A tier present in neither map keeps whatever key
 	// the user already had — see claude.go.
 	ServerTiers map[string]string
+	// AutoCompactWindow is an optional override for Claude Code's autoCompactWindow.
+	AutoCompactWindow string
 	// ModelLimits carries the token capacity the gateway publishes for the
 	// models this connect names, keyed by the model id exactly as given in
 	// Model and in the Tiers values. It is how a client learns the real
@@ -83,6 +85,12 @@ type Adapter interface {
 	Apply(opts Options) (Result, error)
 	// Reset removes what Apply wrote.
 	Reset(opts Options) (Result, error)
+}
+
+// CurrentConfigReader is an optional interface adapters implement to report
+// what is currently written in the client's configuration file.
+type CurrentConfigReader interface {
+	Current(opts Options) (map[string]any, error)
 }
 
 // FilePlan is one file's worth of edits, resolved but not yet applied.
