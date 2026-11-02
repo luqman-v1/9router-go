@@ -165,6 +165,31 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 	if req.BaseURL == "" {
 		req.BaseURL = defaultBaseURL
 	}
+	// The same URL gate HandleValidateProviderNode applies, and it runs after the
+	// default is filled in so a body that omits baseUrl (which means "the
+	// provider's own endpoint") is not refused for having none. Without it a node
+	// pointing at a cloud-metadata or RFC1918 address is stored and only refused
+	// later, when a chat request dials it — the write succeeds, the operator sees
+	// a working provider row, and the first request fails with a dial error naming
+	// an address the operator never typed. A share link can carry an arbitrary
+	// url=, so this is the one path where an untrusted string reaches the node
+	// table. The socket-level guard still backs it up (chat/resolution.go builds
+	// its client from proxy.NewSafeTransport), but a refusal at write time is the
+	// one the operator can act on.
+	if !isValidHTTPURL(req.BaseURL) {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Base URL must be an absolute http(s) URL")
+		return
+	}
+	if handlerutil.IsCloudMetadataURL(r.Context(), req.BaseURL) {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Base URL is not allowed")
+		return
+	}
+	if !nodeRequestIsLocal(r) {
+		if err := handlerutil.AssertPublicURL(req.BaseURL); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Base URL is not allowed")
+			return
+		}
+	}
 	id, suffix, ok := h.resolveProviderNodeID(w, nodeType, apiType, req.URLSuffix, "")
 	if !ok {
 		return
