@@ -31,12 +31,12 @@ func TestHCNSecProvider_Aliases(t *testing.T) {
 
 func TestHCNSecProvider_Models(t *testing.T) {
 	models := GetProviderModels("hcnsec")
-	if len(models) == 0 {
-		t.Error("expected non-empty model list for 'hcnsec'")
+	if len(models) != 19 {
+		t.Errorf("expected 19 models for 'hcnsec', got %d", len(models))
 	}
 	hcModels := GetProviderModels("hc")
-	if len(hcModels) == 0 {
-		t.Error("expected non-empty model list for alias 'hc'")
+	if len(hcModels) != 19 {
+		t.Errorf("expected 19 models for alias 'hc', got %d", len(hcModels))
 	}
 }
 
@@ -47,5 +47,8 @@ func TestHCNSecProvider_Capabilities(t *testing.T) {
 	}
 	if !caps.Tools {
 		t.Error("expected Tools=true for DeepSeek-V4-Flash on hcnsec")
+	}
+	if kind := GetProviderModelKind("hcnsec", "Qwen3-Embedding-8B"); kind != "embedding" {
+		t.Errorf("GetProviderModelKind('hcnsec', 'Qwen3-Embedding-8B') = %q, want 'embedding'", kind)
 	}
 }
