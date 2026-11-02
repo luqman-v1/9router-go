@@ -4,6 +4,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Category mirrors the section a provider is grouped under in the dashboard.
@@ -141,43 +142,70 @@ func ClassifyProvider(providerID string) (category Category, categoryLabel strin
 // renders, in CategoryOrder. The custom section is seeded with the two endpoint
 // shapes the dashboard offers before any node exists, so an empty install still
 // shows what can be created.
+// The three reads below are derived entirely from ProviderRegistry, which is a
+// package-level literal written once at init and never mutated at runtime. They
+// are computed once and shared: on the 1-vCPU target (§4.G) recomputing them
+// per request cost 181 µs of CPU and 158 KB of garbage for data that cannot
+// have changed — measured on the endpoint that serves them.
+//
+// The slices are handed out by reference, so a caller must treat them as
+// read-only. Both are internal to this package and their only production
+// consumer is the catalog handler, which marshals them and returns.
+var (
+	catalogByCategoryOnce sync.Once
+	catalogByCategory     map[Category][]ProviderMeta
+	noAuthProvidersOnce   sync.Once
+	noAuthProviders       []ProviderMeta
+)
+
 func GetCatalogByCategory() map[Category][]ProviderMeta {
-	catalog := make(map[Category][]ProviderMeta, len(CategoryOrder))
-	for _, cat := range CategoryOrder {
-		catalog[cat] = nil
-	}
-	catalog[CategoryCustom] = []ProviderMeta{
-		{
-			ID:           "openai-compatible",
-			Name:         "OpenAI Compatible",
-			Alias:        "openai-compatible",
-			Category:     CategoryCustom,
-			AuthType:     "apikey",
-			Description:  "Any OpenAI-compatible endpoint (Ollama, vLLM, LiteLLM, LM Studio)",
-			ServiceKinds: []string{"llm"},
-		},
-		{
-			ID:           "anthropic-compatible",
-			Name:         "Anthropic Compatible",
-			Alias:        "anthropic-compatible",
-			Category:     CategoryCustom,
-			AuthType:     "apikey",
-			Description:  "Any Anthropic-compatible endpoint",
-			ServiceKinds: []string{"llm"},
-		},
-	}
-	for _, meta := range ProviderRegistry {
-		catalog[meta.Category] = append(catalog[meta.Category], meta)
-	}
-	for cat := range catalog {
-		sort.SliceStable(catalog[cat], func(i, j int) bool {
-			if catalog[cat][i].Priority != catalog[cat][j].Priority {
-				return catalog[cat][i].Priority < catalog[cat][j].Priority
-			}
-			return catalog[cat][i].ID < catalog[cat][j].ID
-		})
-	}
-	return catalog
+	catalogByCategoryOnce.Do(func() {
+		catalog := make(map[Category][]ProviderMeta, len(CategoryOrder))
+		for _, cat := range CategoryOrder {
+			catalog[cat] = nil
+		}
+		catalog[CategoryCustom] = []ProviderMeta{
+			{
+				ID:           "openai-compatible",
+				Name:         "OpenAI Compatible",
+				Alias:        "openai-compatible",
+				Category:     CategoryCustom,
+				AuthType:     "apikey",
+				Description:  "Any OpenAI-compatible endpoint (Ollama, vLLM, LiteLLM, LM Studio)",
+				ServiceKinds: []string{"llm"},
+			},
+			{
+				ID:           "anthropic-compatible",
+				Name:         "Anthropic Compatible",
+				Alias:        "anthropic-compatible",
+				Category:     CategoryCustom,
+				AuthType:     "apikey",
+				Description:  "Any Anthropic-compatible endpoint",
+				ServiceKinds: []string{"llm"},
+			},
+		}
+		for _, meta := range ProviderRegistry {
+			catalog[meta.Category] = append(catalog[meta.Category], meta)
+		}
+		for cat := range catalog {
+			sort.SliceStable(catalog[cat], func(i, j int) bool {
+				if catalog[cat][i].Priority != catalog[cat][j].Priority {
+					return catalog[cat][i].Priority < catalog[cat][j].Priority
+				}
+				return catalog[cat][i].ID < catalog[cat][j].ID
+			})
+		}
+		// Trim every slice to len == cap. A shared slice a caller appends to
+		// would otherwise be written in place once the spare capacity is there,
+		// which silently changes what the next caller reads. At full capacity
+		// append must realocate, so the shared backing array stays untouched
+		// without anyone having to copy it per request.
+		for cat, metas := range catalog {
+			catalog[cat] = slices.Clip(metas)
+		}
+		catalogByCategory = catalog
+	})
+	return catalogByCategory
 }
 
 // NoAuthProviders returns the registry providers that need no credential and
@@ -192,23 +220,26 @@ func GetCatalogByCategory() map[Category][]ProviderMeta {
 // the providers page would be noise an operator cannot act on: they cannot
 // answer a chat request. Only a no-auth entry declaring llm is offered.
 func NoAuthProviders() []ProviderMeta {
-	out := make([]ProviderMeta, 0, len(ProviderRegistry))
-	for _, meta := range ProviderRegistry {
-		if !meta.NoAuth {
-			continue
+	noAuthProvidersOnce.Do(func() {
+		out := make([]ProviderMeta, 0, len(ProviderRegistry))
+		for _, meta := range ProviderRegistry {
+			if !meta.NoAuth {
+				continue
+			}
+			if !slices.Contains(meta.ServiceKinds, "llm") {
+				continue
+			}
+			out = append(out, meta)
 		}
-		if !slices.Contains(meta.ServiceKinds, "llm") {
-			continue
-		}
-		out = append(out, meta)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Priority != out[j].Priority {
-			return out[i].Priority < out[j].Priority
-		}
-		return out[i].ID < out[j].ID
+		sort.SliceStable(out, func(i, j int) bool {
+			if out[i].Priority != out[j].Priority {
+				return out[i].Priority < out[j].Priority
+			}
+			return out[i].ID < out[j].ID
+		})
+		noAuthProviders = slices.Clip(out)
 	})
-	return out
+	return noAuthProviders
 }
 
 // IsNoAuthMeta reports whether a registry entry authenticates with no
