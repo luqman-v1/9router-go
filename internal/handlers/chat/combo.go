@@ -786,6 +786,20 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 			}
 
 			candidateCtx := ctx
+			var seatBudgetMs int
+			if h.Repo != nil {
+				if settings, err := h.Repo.GetSettings(); err == nil && settings != nil {
+					seatBudgetMs = settings.SeatAttemptBudgetMs
+					if settings.ProviderOverrides != nil {
+						if ov, ok := settings.ProviderOverrides[modelInfo.Provider]; ok && ov.SeatBudgetMs > 0 {
+							seatBudgetMs = ov.SeatBudgetMs
+						}
+					}
+				}
+			}
+			if seatBudgetMs > 0 {
+				candidateCtx = internalproxy.WithSeatBudget(candidateCtx, seatBudgetMs)
+			}
 			candidateWriter := http.ResponseWriter(cw)
 			// The candidate tried last keeps the global deadline: the response
 			// timeout only advances a combo, it never makes one fail sooner
