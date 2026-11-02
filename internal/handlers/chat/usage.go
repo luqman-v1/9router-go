@@ -164,10 +164,7 @@ func (h *ChatHandler) LogFailure(
 		return
 	}
 
-	isProxyBlocked := false
-	if upstreamErr != nil && strings.Contains(string(upstreamErr.Body), `"proxy_error"`) {
-		isProxyBlocked = true
-	}
+	isProxyBlocked := upstreamErr != nil && strings.Contains(string(upstreamErr.Body), `"proxy_error"`)
 
 	failureRepo := h.Repo
 	failureID, failureProvider := reqID, info.Provider
