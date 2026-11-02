@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
@@ -19,6 +20,28 @@ import (
 	"9router/proxy/internal/proxy/oauth"
 	"9router/proxy/internal/translator"
 )
+
+// antigravityConnData resolves a connection's data blob for the Antigravity
+// onboarding path. The chat lane knows only the connection id, but the
+// discovery RPCs must be sent as the client that connection signed in as — see
+// antigravityProjectUserAgent for why the identity changes the answer.
+//
+// A nil result is safe: the caller falls back to the CLI profile, which is the
+// identity that keeps working for the Gemini 4 Argon tiers.
+func (h *ChatHandler) antigravityConnData(connectionID string) *shared.ConnectionData {
+	if connectionID == "" || h.Repo == nil {
+		return nil
+	}
+	conn, err := h.Repo.GetProviderConnectionByID(connectionID)
+	if err != nil || conn == nil || strings.TrimSpace(conn.Data) == "" {
+		return nil
+	}
+	var cd shared.ConnectionData
+	if err := json.Unmarshal([]byte(conn.Data), &cd); err != nil {
+		return nil
+	}
+	return &cd
+}
 
 // forwardGeminiNativeRequest handles forwarding for gemini-native providers (antigravity).
 func (h *ChatHandler) forwardGeminiNativeRequest(
@@ -58,7 +81,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	}
 
 	if (provider == "antigravity" || provider == "gemini-cli") && projectID == "" && !projectProbeCached(connectionID) {
-		pid, authFailed, noProject := fetchAntigravityProjectID(ctx, httpClient, apiKey)
+		pid, authFailed, noProject := fetchAntigravityProjectID(ctx, httpClient, apiKey, h.antigravityConnData(connectionID))
 		switch {
 		case pid != "":
 			projectID = pid
@@ -74,7 +97,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 				if pid2 != "" {
 					projectID = pid2
 					h.storeAntigravityProjectID(connectionID, pid2)
-				} else if pid2, _, _ := fetchAntigravityProjectID(ctx, httpClient, apiKey); pid2 != "" {
+				} else if pid2, _, _ := fetchAntigravityProjectID(ctx, httpClient, apiKey, h.antigravityConnData(connectionID)); pid2 != "" {
 					projectID = pid2
 					h.storeAntigravityProjectID(connectionID, pid2)
 				}

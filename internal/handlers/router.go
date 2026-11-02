@@ -55,6 +55,11 @@ func SetupRoutes(r interface {
 	dashH := dashboard.NewDashboardHandler(repo, ts)
 	if chatH != nil {
 		dashH.SemanticCache = chatH.SemanticCache
+		// The resilience layer is owned by the data plane, because that is the
+		// side that consults it on every request. The dashboard holds the same
+		// instance so its panel reports the layer a request was judged
+		// against, not a second one that can disagree with it.
+		dashH.Resilience = chatH.Resilience
 	}
 	// Chat & Models Domain (no version here: the four version GETs are
 	// public in SetupServerRouter, upstream PUBLIC_API_PATHS parity).
@@ -186,6 +191,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 		// windows with, so the dashboard reports the same numbers the gate
 		// enforces instead of its own private view of them.
 		dashH.Limiter = chatH.RateLimiter
+		// Same instance as the resilience panel reads: the data plane owns the
+		// layer it consults on every request.
+		dashH.Resilience = chatH.Resilience
 	}
 	ssoH := sso.NewHandler(repo)
 
@@ -194,6 +202,11 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Get("/api/providers/client", dashH.HandleGetProvidersClient)
 	r.Post("/api/connections", dashH.HandleCreateConnection)
 	r.Post("/api/providers/validate", dashH.HandleValidateProvider)
+	// The provider registry the dashboard renders its catalog from. Registered here as
+	// well as in dashboard.RegisterRoutes, because that table is mounted by tests
+	// only: a route added there alone is reachable in a unit test and 404s on the
+	// real server.
+	r.Get("/api/providers/catalog", dashH.HandleGetProviderCatalog)
 	r.Post("/api/providers/gemini-web/browser-login", dashH.HandleGeminiWebBrowserLogin)
 	r.Post("/api/providers/gemini-web/import-chrome", dashH.HandleGeminiWebImportChrome)
 	r.Post("/api/providers/deepseek-web/browser-login", dashH.HandleDeepSeekWebBrowserLogin)
@@ -550,6 +563,7 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	dashH := dashboard.NewDashboardHandler(repo, ts)
 	if versionH != nil {
 		dashH.SemanticCache = versionH.SemanticCache
+		dashH.Resilience = versionH.Resilience
 	}
 	// Operator-supplied dashboard assets (the white-label logo). Behind the
 	// same page gate as /dashboard/*, so an install that requires a login does

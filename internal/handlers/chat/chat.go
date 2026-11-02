@@ -6,6 +6,7 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/promptcache"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/semanticcache"
 	"9router/proxy/internal/thinking"
@@ -125,6 +126,43 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 				}
 			}()
 			ctx = semanticcache.WithCachedRequest(ctx, &openAIReq)
+		}
+	}
+	// Exact-prompt cache: a second, cheaper layer for a byte-identical request.
+	// The semantic layer above answers "close enough"; this one answers
+	// "identical", which is what makes its footprint predictable enough to
+	// bound in bytes. Both are gated on the same setting because they are two
+	// halves of one feature.
+	//
+	// Only non-streaming requests: a streamed answer cannot be replayed as a
+	// whole, and hashing it would mean buffering the response this layer exists
+	// to avoid.
+	if !reqBody.Stream && h.PromptCache != nil && h.SemanticCache != nil && h.SemanticCache.Enabled() {
+		if key, ok := promptcache.HashRequest(reqBody.Model, body); ok {
+			if entry, hit := h.PromptCache.Get(key); hit {
+				w.Header().Set("Content-Type", entry.ContentType)
+				w.Header().Set("X-Cache", "HIT")
+				w.Header().Set("X-Prompt-Cache", "exact")
+				w.WriteHeader(entry.StatusCode)
+				_, _ = w.Write(entry.Body)
+				log.Info("chat", "prompt cache hit", "model", reqBody.Model, "bytes", len(entry.Body))
+				return
+			}
+			// Store on the way out. The writer is only armed when the request is
+			// hashable, so a miss on an unhashable body never allocates a
+			// capture for nothing.
+			capture := &cacheCaptureWriter{ResponseWriter: w}
+			w = capture
+			defer func() {
+				if capture.statusCode == http.StatusOK && capture.body.Len() > 0 {
+					// The per-entry cap is read from the cache rather than
+					// assumed here, so the two cannot disagree about what is
+					// storable.
+					if int64(capture.body.Len()) <= h.PromptCache.MaxEntryBytes() {
+						h.PromptCache.Set(key, reqBody.Model, "application/json", http.StatusOK, capture.body.Bytes(), false)
+					}
+				}
+			}()
 		}
 	}
 

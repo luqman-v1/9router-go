@@ -160,7 +160,7 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	if projectID == "" {
-		if p, _, _ := chat.FetchAntigravityProjectID(r.Context(), h.Client, apiKey); p != "" {
+		if p, _, _ := chat.FetchAntigravityProjectID(r.Context(), h.Client, apiKey, connData); p != "" {
 			projectID = p
 			h.ChatH.StoreAntigravityProjectID(conn.ID, p)
 		}

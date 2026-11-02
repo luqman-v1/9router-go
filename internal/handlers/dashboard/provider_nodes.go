@@ -15,6 +15,8 @@ import (
 	json "encoding/json/v2"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/models"
+	"9router/proxy/internal/providers"
 )
 
 // ProviderNodeResponse is the JSON representation of a provider node with unpacked data fields.
@@ -150,6 +152,20 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "prefix is required")
 		return
 	}
+	// A prefix is the alias every model this node serves is published under, so
+	// two owners of one prefix is not a cosmetic clash: resolution walks the
+	// registry aliases first, so a node claiming `gh` shadows GitHub Copilot
+	// entirely and its models answer from the wrong upstream. Refuse rather
+	// than let the operator discover it from a misrouted request.
+	if conflict := h.providerNodePrefixConflict(req.Prefix, ""); conflict != "" {
+		handlerutil.WriteJSON(w, http.StatusConflict, map[string]any{
+			"error":    "Prefix \"" + req.Prefix + "\" is already used by " + conflict + ". Choose a different prefix.",
+			"code":     "PREFIX_CONFLICT",
+			"prefix":   req.Prefix,
+			"conflict": conflict,
+		})
+		return
+	}
 
 	nodeType := req.Type
 	if nodeType == "" {
@@ -252,6 +268,20 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 	}
 	if prefix == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "prefix is required")
+		return
+	}
+	// Same rule as create: a prefix is the alias every model this node serves is
+	// published under, and resolution walks the registry aliases first, so a
+	// collision silently shadows the other owner. The node being edited is
+	// excluded — keeping its own prefix across an unrelated edit is not a
+	// conflict.
+	if conflict := h.providerNodePrefixConflict(prefix, id); conflict != "" {
+		handlerutil.WriteJSON(w, http.StatusConflict, map[string]any{
+			"error":    "Prefix \"" + prefix + "\" is already used by " + conflict + ". Choose a different prefix.",
+			"code":     "PREFIX_CONFLICT",
+			"prefix":   prefix,
+			"conflict": conflict,
+		})
 		return
 	}
 	nodeType := ""
@@ -714,4 +744,67 @@ func validateNodeChatStatusMessage(status int) string {
 		}
 		return fmt.Sprintf("Chat request failed (%d)", status)
 	}
+}
+
+// providerNodePrefixConflict reports what already owns a prefix, or "" when the
+// prefix is free.
+//
+// Two owners of one prefix is not cosmetic. A prefix is the alias every model a
+// node serves is published under, and model resolution walks the registry
+// aliases first (`resolveProviderAlias`), so a node claiming `gh` shadows GitHub
+// Copilot entirely — every `gh/*` request answers from the wrong upstream with
+// no error anywhere. The same applies to another node: two nodes sharing a
+// prefix make routing non-deterministic, and which one wins depends on map
+// iteration order.
+//
+// excludeID is the node being edited, so keeping its own prefix across an
+// unrelated edit is not reported as a conflict.
+func (h *DashboardHandler) providerNodePrefixConflict(prefix, excludeID string) string {
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	if prefix == "" {
+		return ""
+	}
+	// A registry alias wins resolution over any node, so claiming one is the
+	// more damaging of the two collisions and is checked first.
+	if _, taken := providers.ProviderAliasMap[prefix]; taken {
+		return "provider alias \"" + prefix + "\""
+	}
+	// A canonical registry id is published under itself when it has no alias,
+	// so it is an owner too.
+	if _, taken := providers.KnownProviders[prefix]; taken {
+		return "provider \"" + prefix + "\""
+	}
+	nodes, err := h.Repo.GetProviderNodes()
+	if err != nil {
+		// A lookup failure must not block the write: the create/update path
+		// already validated everything else, and refusing on a transient read
+		// error would strand an operator mid-edit. The worst case is the
+		// collision this check exists to prevent, which the old behaviour had
+		// anyway.
+		return ""
+	}
+	for _, n := range nodes {
+		if n == nil || n.ID == excludeID {
+			continue
+		}
+		_, data, err := h.Repo.GetProviderNodeByID(n.ID)
+		if err != nil || data == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(data.Prefix), prefix) {
+			return "provider node \"" + providerNodeName(n) + "\""
+		}
+	}
+	return ""
+}
+
+// providerNodeName is the label shown to the operator for a node.
+func providerNodeName(n *models.ProviderNode) string {
+	if n != nil && n.Name != nil && strings.TrimSpace(*n.Name) != "" {
+		return *n.Name
+	}
+	if n != nil {
+		return n.ID
+	}
+	return ""
 }

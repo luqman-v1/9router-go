@@ -83,25 +83,25 @@ func TestHandleUpdateProviderNode_Validation(t *testing.T) {
 	defer cleanup()
 	router := setupTestRouter(repo)
 
-	node, err := repo.CreateProviderNode("openai-compatible-chat-abc", "openai-compatible", "Old", `{"prefix":"oc","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
+	node, err := repo.CreateProviderNode("openai-compatible-chat-abc", "openai-compatible", "Old", `{"prefix":"acme","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
 	if err != nil || node == nil {
 		t.Fatalf("seed node: %v", err)
 	}
 
 	// Missing name.
-	rec := putNode(t, router, node.ID, `{"prefix":"oc","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
+	rec := putNode(t, router, node.ID, `{"prefix":"acme","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing name, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	// Invalid apiType for openai-compatible.
-	rec = putNode(t, router, node.ID, `{"name":"N","prefix":"oc","apiType":"bogus","baseUrl":"https://a.example.com/v1"}`)
+	rec = putNode(t, router, node.ID, `{"name":"N","prefix":"acme","apiType":"bogus","baseUrl":"https://a.example.com/v1"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid apiType, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	// Unknown node.
-	rec = putNode(t, router, "openai-compatible-chat-missing", `{"name":"N","prefix":"oc","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
+	rec = putNode(t, router, "openai-compatible-chat-missing", `{"name":"N","prefix":"acme","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown node, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -112,11 +112,11 @@ func TestHandleUpdateProviderNode_SavesAndSyncsConnections(t *testing.T) {
 	defer cleanup()
 	router := setupTestRouter(repo)
 
-	node, err := repo.CreateProviderNode("openai-compatible-chat-abc", "openai-compatible", "Old", `{"prefix":"oc","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
+	node, err := repo.CreateProviderNode("openai-compatible-chat-abc", "openai-compatible", "Old", `{"prefix":"acme","apiType":"chat","baseUrl":"https://a.example.com/v1"}`)
 	if err != nil || node == nil {
 		t.Fatalf("seed node: %v", err)
 	}
-	connData := `{"apiKey":"sk-x","providerSpecificData":{"prefix":"oc","apiType":"chat","baseUrl":"https://a.example.com/v1","nodeName":"Old"}}`
+	connData := `{"apiKey":"sk-x","providerSpecificData":{"prefix":"acme","apiType":"chat","baseUrl":"https://a.example.com/v1","nodeName":"Old"}}`
 	if _, err := repo.RawDB().Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-1', 'openai-compatible-chat-abc', 'apikey', 'K', 1, 1, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, connData); err != nil {
 		t.Fatalf("seed connection: %v", err)
@@ -181,7 +181,7 @@ func TestHandleGetConnectionModels_CompatibleProbe(t *testing.T) {
 	defer cleanup()
 	router := setupTestRouter(repo)
 
-	connData := `{"apiKey":"sk-x","providerSpecificData":{"prefix":"oc","apiType":"chat","baseUrl":"http://upstream.example/v1"}}`
+	connData := `{"apiKey":"sk-x","providerSpecificData":{"prefix":"acme","apiType":"chat","baseUrl":"http://upstream.example/v1"}}`
 	if _, err := repo.RawDB().Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-oc', 'openai-compatible-chat-abc', 'apikey', 'K', 1, 1, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, connData); err != nil {
 		t.Fatalf("seed connection: %v", err)
@@ -254,10 +254,18 @@ func TestHandleGetConnectionModels_Antigravity(t *testing.T) {
 		}
 		fakeResp := `{
 			"models": {
-				"gemini-2.5-flash": {
-					"displayName": "Gemini 2.5 Flash",
+				"gemini-3.1-flash": {
+					"displayName": "Gemini 3.1 Flash",
 					"supportsImages": true,
 					"supportsThinking": true,
+					"isInternal": false
+				},
+				"gemini-3-pro-image-preview": {
+					"displayName": "Gemini 3 Pro Image",
+					"isInternal": false
+				},
+				"gemini-2.5-flash": {
+					"displayName": "Gemini 2.5 Flash",
 					"isInternal": false
 				},
 				"chat_internal_1": {
@@ -285,7 +293,10 @@ func TestHandleGetConnectionModels_Antigravity(t *testing.T) {
 	if out.Provider != "antigravity" {
 		t.Errorf("expected antigravity, got %s", out.Provider)
 	}
-	if len(out.Models) != 1 || out.Models[0]["id"] != "gemini-2.5-flash" {
+	// gemini-3.1-flash is the only callable chat model in the fixture:
+	// gemini-3-pro-image-preview is a non-chat surface, gemini-2.5-flash is
+	// retired, and chat_internal_1 is an internal slot.
+	if len(out.Models) != 1 || out.Models[0]["id"] != "gemini-3.1-flash" {
 		t.Fatalf("unexpected models: %v", out.Models)
 	}
 	if len(*calls) != 1 {

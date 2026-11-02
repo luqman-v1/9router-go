@@ -38,7 +38,7 @@
   import TopBar from './components/TopBar.svelte'
   import CommandPalette from './components/CommandPalette.svelte'
   import { parseMediaProvider, parseProviderId, pathToTab, providerPath, mediaProviderPath, TAB_ROUTES, type ActiveTab, type MediaProviderRoute } from './lib/router'
-  import { PROVIDER_CATALOG } from './lib/providers'
+  import { PROVIDER_CATALOG, loadProviderCatalog } from './lib/providers'
   import { getIconPath } from './components/connections/types'
   import { isNavHidden, NAV_ORDER, normalizeHiddenNav, normalizeNavOrder } from './lib/nav'
   import { setHiddenNavEntries } from './lib/navVisibility.svelte'
@@ -152,6 +152,17 @@
   }
 
   async function loadData() {
+    // The provider catalog is the one input no provider view can render without:
+    // every card reads its icon, colour and category from it. It is fetched
+    // here, inside the authenticated branch, rather than at module scope,
+    // because an unauthenticated fetch answers 401 and leaves the catalog empty
+    // for the whole session — the login page does not need it, and a fresh
+    // install would render an error where the login form belongs.
+    try {
+      await loadProviderCatalog()
+    } catch (err) {
+      console.error('provider catalog failed to load', err)
+    }
     try {
       const [connsRes, nodesRes, combosRes, keysRes, settingsRes] = await Promise.all([
         api.getConnections().catch(() => []),
