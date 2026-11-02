@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	json "encoding/json/v2"
@@ -83,7 +84,7 @@ func newMCodeServer(t *testing.T, deviceBody, tokenBody string, tokenStatus int)
 func TestMiniMaxCodeStart_SendsPKCEChallenge(t *testing.T) {
 	m := newMCodeServer(t, `{"device_code":"dev-1","user_code":"ABCD-1234","verification_uri":"https://account.minimax.cn/activate","expires_in":300,"interval":5}`, `{}`, http.StatusOK)
 
-	out, err := minimaxCodeStart("minimax-code")
+	out, err := minimaxCodeStart(context.Background(), "minimax-code")
 	if err != nil {
 		t.Fatalf("minimaxCodeStart: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestMiniMaxCodeStart_FallsBackToUserCodePolling(t *testing.T) {
 	body := `{"user_code":"XYZ-9","verification_uri":"https://account.minimax.cn/activate","interval":1500}`
 	m := newMCodeServer(t, body, `{}`, http.StatusOK)
 
-	out, err := minimaxCodeStart("minimax-code")
+	out, err := minimaxCodeStart(context.Background(), "minimax-code")
 	if err != nil {
 		t.Fatalf("minimaxCodeStart: %v", err)
 	}
@@ -202,7 +203,7 @@ func TestMiniMaxCodePoll_StatusEnvelope(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			newMCodeServer(t, `{}`, tt.body, http.StatusOK)
 
-			_, err := minimaxCodePoll("minimax-code", "dev-1", map[string]any{})
+			_, err := minimaxCodePoll(context.Background(), "minimax-code", "dev-1", map[string]any{})
 			if err == nil {
 				t.Fatalf("%s produced no error", tt.name)
 			}
@@ -218,7 +219,7 @@ func TestMiniMaxCodePoll_StatusEnvelope(t *testing.T) {
 func TestMiniMaxCodePoll_PostsTheRightCodeField(t *testing.T) {
 	m := newMCodeServer(t, `{}`, `{"access_token":"at","refresh_token":"rt","expires_in":3600}`, http.StatusOK)
 
-	tokens, err := minimaxCodePoll("minimax-code", "XYZ-9",
+	tokens, err := minimaxCodePoll(context.Background(), "minimax-code", "XYZ-9",
 		map[string]any{miniMaxCodePollByUser: true, "codeVerifier": "v"})
 	if err != nil {
 		t.Fatalf("user-code poll: %v", err)
@@ -238,7 +239,7 @@ func TestMiniMaxCodePoll_PostsTheRightCodeField(t *testing.T) {
 	}
 
 	m = newMCodeServer(t, `{}`, `{"status":"pending"}`, http.StatusOK)
-	if _, err := minimaxCodePoll("minimax-code", "dev-1", map[string]any{}); err == nil {
+	if _, err := minimaxCodePoll(context.Background(), "minimax-code", "dev-1", map[string]any{}); err == nil {
 		t.Fatal("a pending answer produced no error")
 	}
 	form = m.tokenForms[0]

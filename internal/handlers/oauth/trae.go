@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	json "encoding/json/v2"
 	"fmt"
@@ -35,12 +36,12 @@ var (
 	traeUserAgent    = "Trae/1.0.0 antigravity-cockpit-tools"
 )
 
-func traePostJSON(url string, body any, headers map[string]string) ([]byte, int, error) {
+func traePostJSON(ctx context.Context, url string, body any, headers map[string]string) ([]byte, int, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, 0, err
 	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -87,7 +88,7 @@ func (h *OAuthHandler) HandleTraeAuthorize(w http.ResponseWriter, r *http.Reques
 	var lastErr string
 	guidanceBody := map[string]string{"loginTraceID": traceID, "login_trace_id": traceID}
 	for _, u := range traeGuidanceURLs {
-		out, status, err := traePostJSON(u, guidanceBody, nil)
+		out, status, err := traePostJSON(r.Context(), u, guidanceBody, nil)
 		if err != nil || status != http.StatusOK {
 			lastErr = fmt.Sprintf("%s err=%v status=%d", u, err, status)
 			continue
@@ -208,7 +209,7 @@ func (h *OAuthHandler) HandleTraeExchange(w http.ResponseWriter, r *http.Request
 		}
 		var lastErr string
 		for _, origin := range traeAPIOrigins {
-			out, status, err := traePostJSON(strings.TrimSuffix(origin, "/")+traeExchangePath, exBody, headers)
+			out, status, err := traePostJSON(r.Context(), strings.TrimSuffix(origin, "/")+traeExchangePath, exBody, headers)
 			if err != nil || status != http.StatusOK {
 				lastErr = fmt.Sprintf("%s err=%v status=%d", origin, err, status)
 				continue
@@ -253,7 +254,7 @@ func (h *OAuthHandler) HandleTraeExchange(w http.ResponseWriter, r *http.Request
 	email, name, aiRegion, region, tenant, userID := "", "", "US-East", "", "marscode", ""
 	if accessToken != "" {
 		for _, origin := range traeAPIOrigins {
-			out, status, err := traePostJSON(strings.TrimSuffix(origin, "/")+traeUserInfoPath,
+			out, status, err := traePostJSON(r.Context(), strings.TrimSuffix(origin, "/")+traeUserInfoPath,
 				map[string]string{}, map[string]string{"x-cloudide-token": accessToken})
 			if err != nil || status != http.StatusOK {
 				continue

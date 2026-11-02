@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -44,7 +45,7 @@ var (
 	glmPollDefaultSource = 300
 )
 
-func glmStart() (map[string]any, error) {
+func glmStart(ctx context.Context) (map[string]any, error) {
 	// The site parses the bearer poll token as a hex flow identifier: the CLI
 	// and upstream send 32 random bytes hex-encoded, and anything else is
 	// answered with HTTP 400 code 3004 "invalid_flow" (confirmed against the
@@ -54,7 +55,7 @@ func glmStart() (map[string]any, error) {
 		return nil, fmt.Errorf("ZCode OAuth init failed: %w", err)
 	}
 	pollToken := hex.EncodeToString(raw)
-	data, status, err := postJSON(glmCLIInitURL, map[string]any{"provider": "zai"},
+	data, status, err := postJSON(ctx, glmCLIInitURL, map[string]any{"provider": "zai"},
 		map[string]string{"Authorization": "Bearer " + pollToken})
 	if err != nil {
 		return nil, fmt.Errorf("ZCode OAuth init failed: %w", err)
@@ -106,7 +107,7 @@ func glmRelativeSeconds(epoch float64, now time.Time) int {
 // the long-lived coding-plan API key. Mirrors upstream pollToken +
 // resolveCodingPlanApiKey; the provider-specific tokens ride along in
 // deviceTokens.extra exactly as upstream's mapTokens stores them.
-func glmPoll(session map[string]any, code string) (deviceTokens, error) {
+func glmPoll(ctx context.Context, session map[string]any, code string) (deviceTokens, error) {
 	var t deviceTokens
 	pollToken, _ := session["zcodePollToken"].(string)
 	if pollToken == "" {
@@ -118,7 +119,7 @@ func glmPoll(session map[string]any, code string) (deviceTokens, error) {
 
 	// GET {cliPollUrl}/{flow_id} — Bearer pollToken
 	u := glmCLIPollURL + "/" + url.PathEscape(code)
-	data, status, err := getJSON(u, map[string]string{"Authorization": "Bearer " + pollToken})
+	data, status, err := getJSON(ctx, u, map[string]string{"Authorization": "Bearer " + pollToken})
 	if err != nil {
 		return t, fmt.Errorf("poll_failed: %w", err)
 	}
@@ -153,7 +154,7 @@ func glmPoll(session map[string]any, code string) (deviceTokens, error) {
 		return t, fmt.Errorf("access_denied: ZCode poll response missing access token")
 	}
 
-	planKey, businessToken, err := glmResolveCodingPlanKey(zaiAccessToken)
+	planKey, businessToken, err := glmResolveCodingPlanKey(ctx, zaiAccessToken)
 	if err != nil {
 		return t, err
 	}
@@ -183,8 +184,8 @@ func glmPoll(session map[string]any, code string) (deviceTokens, error) {
 // login → getCustomerInfo → default org/project → api_keys list/create("zcode-api-key")
 // → copy → "apiKey.secretKey". The business JWT is returned for
 // providerSpecificData (quota/usage debugging), bounded like upstream.
-func glmResolveCodingPlanKey(zaiAccessToken string) (planKey, businessToken string, err error) {
-	businessToken, err = glmExchangeBusinessToken(zaiAccessToken)
+func glmResolveCodingPlanKey(ctx context.Context, zaiAccessToken string) (planKey, businessToken string, err error) {
+	businessToken, err = glmExchangeBusinessToken(ctx, zaiAccessToken)
 	if err != nil {
 		return "", "", err
 	}
@@ -193,7 +194,7 @@ func glmResolveCodingPlanKey(zaiAccessToken string) (planKey, businessToken stri
 		"Content-Type":  "application/json",
 	}
 
-	customerInfo, status, gerr := getJSON(glmBizAPIBaseURL+"/api/biz/customer/getCustomerInfo", headers)
+	customerInfo, status, gerr := getJSON(ctx, glmBizAPIBaseURL+"/api/biz/customer/getCustomerInfo", headers)
 	if gerr != nil || status != http.StatusOK || !glmSuccessCode(strVal(customerInfo, "code")) {
 		return "", "", fmt.Errorf("getCustomerInfo for Z.ai failed (HTTP %d): %w", status, gerr)
 	}
@@ -210,7 +211,7 @@ func glmResolveCodingPlanKey(zaiAccessToken string) (planKey, businessToken stri
 
 	keysURL := fmt.Sprintf("%s/api/biz/v1/organization/%s/projects/%s/api_keys",
 		glmBizAPIBaseURL, url.PathEscape(location.organizationID), url.PathEscape(location.projectID))
-	keys, status, gerr := getJSON(keysURL, headers)
+	keys, status, gerr := getJSON(ctx, keysURL, headers)
 	if gerr != nil || status != http.StatusOK {
 		return "", "", fmt.Errorf("listing api_keys for Z.ai failed (HTTP %d): %w", status, gerr)
 	}
@@ -226,7 +227,7 @@ func glmResolveCodingPlanKey(zaiAccessToken string) (planKey, businessToken stri
 	if apiKey == "" {
 		// No coding-plan key yet: create it. The single-key reply nests under
 		// data like the rest of the business API: { code: 200, data: { apiKey, name } }.
-		created, cstatus, cerr := postJSON(keysURL, map[string]any{"name": glmPlanAPIKeyName}, headers)
+		created, cstatus, cerr := postJSON(ctx, keysURL, map[string]any{"name": glmPlanAPIKeyName}, headers)
 		if cerr != nil || cstatus != http.StatusOK {
 			return "", "", fmt.Errorf("creating api_key for Z.ai failed (HTTP %d): %w", cstatus, cerr)
 		}
@@ -239,7 +240,7 @@ func glmResolveCodingPlanKey(zaiAccessToken string) (planKey, businessToken stri
 		return "", "", fmt.Errorf("api_keys response from Z.ai is missing apiKey")
 	}
 
-	copied, cstatus, cerr := getJSON(keysURL+"/copy/"+url.PathEscape(apiKey), headers)
+	copied, cstatus, cerr := getJSON(ctx, keysURL+"/copy/"+url.PathEscape(apiKey), headers)
 	if cerr != nil || cstatus != http.StatusOK {
 		return "", "", fmt.Errorf("copying api key for Z.ai failed (HTTP %d): %w", cstatus, cerr)
 	}
@@ -256,8 +257,8 @@ func glmResolveCodingPlanKey(zaiAccessToken string) (planKey, businessToken stri
 
 // glmExchangeBusinessToken mirrors upstream exchangeBusinessToken: the Z.AI
 // OAuth token is spent once for a platform business JWT.
-func glmExchangeBusinessToken(zaiAccessToken string) (string, error) {
-	data, status, err := postJSON(glmBusinessLoginURL, map[string]any{"token": zaiAccessToken},
+func glmExchangeBusinessToken(ctx context.Context, zaiAccessToken string) (string, error) {
+	data, status, err := postJSON(ctx, glmBusinessLoginURL, map[string]any{"token": zaiAccessToken},
 		map[string]string{"Content-Type": "application/json"})
 	if err != nil {
 		return "", fmt.Errorf("business login for Z.ai failed: %w", err)
