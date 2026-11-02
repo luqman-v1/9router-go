@@ -371,3 +371,119 @@ export function applyModelFilters(models: CatalogModel[], selection: ModelSelect
   if (selection.limit) out = out.slice(0, selection.limit)
   return out
 }
+
+// ---------------------------------------------------------------------------
+// 9router:// scheme
+// ---------------------------------------------------------------------------
+
+/**
+ * The scheme form: `9router://<base64url JSON>`.
+ *
+ * The same payload as `set=`, without the `#`-fragment wrapping. It exists
+ * because a query-string URL grows past what a chat client or an SMS will
+ * carry once a link holds several providers or a block of keys — one token
+ * stays a fixed, short, copyable size instead.
+ *
+ * A credential still does NOT travel in the scheme body: the same rule as the
+ * URL form holds, because an explicit scheme makes the link look ordinary
+ * enough to be pasted somewhere it will be logged. Identity and models only.
+ */
+export const SHARE_SCHEME = '9router://'
+/** Max decoded payload, mirroring SET_CAPS so both forms refuse the same input. */
+export const SCHEME_CAPS = { maxEntries: 8, maxChars: 4000 } as const
+
+/** A `.9router.json` file: the same array, on disk. */
+export interface ShareFile {
+  version: 1
+  links: ProviderShareLink[]
+}
+
+export function encodeScheme(links: ProviderShareLink[]): string {
+  if (links.length === 0) throw new Error('share link: nothing to encode')
+  if (links.length > SCHEME_CAPS.maxEntries) {
+    throw new Error(`share link: a set may carry at most ${SCHEME_CAPS.maxEntries} providers`)
+  }
+  // The bare array, not the versioned wrapper: set= carries the same shape, so
+  // the two forms stay length-comparable and neither has an edge the other lacks.
+  const encoded = toBase64Url(JSON.stringify(links))
+  if (encoded.length > SCHEME_CAPS.maxChars) {
+    throw new Error(
+      `share link: this set encodes to ${encoded.length} characters, over the ${SCHEME_CAPS.maxChars} limit — export the credentials separately and share fewer providers`
+    )
+  }
+  return SHARE_SCHEME + encoded
+}
+
+/** Decodes a `9router://…` token, enforcing the same caps as the encoder. */
+export function decodeScheme(token: string): ProviderShareLink[] {
+  const trimmed = token.trim()
+  const body = trimmed.startsWith(SHARE_SCHEME) ? trimmed.slice(SHARE_SCHEME.length) : trimmed
+  if (!body) throw new Error('share link: the 9router:// payload is empty')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fromBase64Url(body))
+  } catch {
+    throw new Error('share link: the 9router:// payload is not valid base64url JSON')
+  }
+  // A bare array is accepted too, so a hand-assembled token without the version
+  // wrapper still loads rather than failing on a shape nobody was told about.
+  const raw = Array.isArray(parsed)
+    ? parsed
+    : (parsed as ShareFile | null)?.links
+  if (!Array.isArray(raw)) throw new Error('share link: the 9router:// payload is not a provider list')
+  if (raw.length === 0) throw new Error('share link: the 9router:// payload carries no providers')
+  if (raw.length > SCHEME_CAPS.maxEntries) {
+    throw new Error(`share link: the 9router:// payload carries ${raw.length} providers, over the ${SCHEME_CAPS.maxEntries} limit`)
+  }
+  if (body.length > SCHEME_CAPS.maxChars) {
+    throw new Error(`share link: the 9router:// payload is ${body.length} characters, over the ${SCHEME_CAPS.maxChars} limit`)
+  }
+  return raw.map((entry) => normalizeLink(entry as Record<string, unknown>))
+}
+
+/** Serialises links for a `.9router.json` download. */
+export function encodeShareFile(links: ProviderShareLink[]): string {
+  const payload: ShareFile = { version: 1, links }
+  return JSON.stringify(payload, null, 2)
+}
+
+/** Parses the contents of a `.9router.json` file. */
+export function decodeShareFile(text: string): ProviderShareLink[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new Error('share file: not valid JSON')
+  }
+  const raw = Array.isArray(parsed) ? parsed : (parsed as ShareFile | null)?.links
+  if (!Array.isArray(raw)) throw new Error('share file: expected a "links" array')
+  if (raw.length === 0) throw new Error('share file: carries no providers')
+  if (raw.length > SCHEME_CAPS.maxEntries) {
+    throw new Error(`share file: carries ${raw.length} providers, over the ${SCHEME_CAPS.maxEntries} limit`)
+  }
+  return raw.map((entry) => normalizeLink(entry as Record<string, unknown>))
+}
+
+/**
+ * The one entry point every import path goes through.
+ *
+ * Accepts, in order: a `9router://` token, a `.9router.json` body, or a
+ * `/add#…` URL (the original form). Returns `null` for text that is none of
+ * those, so a caller can tell "not a share link" from "a malformed one" —
+ * the latter throws.
+ */
+export function parseShareInput(input: string): ProviderShareLink[] | null {
+  const trimmed = input.trim()
+  if (!trimmed) return null
+  if (trimmed.startsWith(SHARE_SCHEME)) return decodeScheme(trimmed)
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) return decodeShareFile(trimmed)
+  // A fragment, with or without its leading '#', or a full /add URL. The '#'
+  // check comes first so a bare "prov=…" fragment is recognised rather than
+  // being dismissed for lacking a '#'.
+  if (trimmed.startsWith('#') || trimmed.includes('/add') || /^prov=/.test(trimmed)) {
+    const parsed = parseProviderShareHash(trimmed)
+    if (parsed === null) return null
+    return Array.isArray(parsed) ? parsed : [parsed]
+  }
+  return null
+}

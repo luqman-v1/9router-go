@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Play, Plus, Search, Server } from 'lucide-svelte'
+  import { Download, Play, Plus, Search, Server } from 'lucide-svelte'
   import type { ProviderConnection, ProviderNode } from '../../api/client'
   import Button from '../../lib/ui/Button.svelte'
   import { PROVIDER_CATALOG, isChatProvider } from '../../lib/providers'
@@ -13,6 +13,8 @@
     onToggleAll: (id: string, active: boolean) => void
     /** Opens the unified add-custom-provider dialog; the modal owns the type. */
     onAddCustom: () => void
+    /** Opens the import surface. Optional so existing callers keep working. */
+    onImport?: () => void
   }
 
   let {
@@ -21,6 +23,7 @@
     onSelectProvider,
     onToggleAll,
     onAddCustom,
+    onImport,
   }: Props = $props()
 
   let searchQuery = $state('')
@@ -98,9 +101,16 @@
       <h2 class="text-lg sm:text-xl font-semibold leading-tight text-text-main">
         Custom Providers (OpenAI, Anthropic, Embedding)
       </h2>
-      <Button size="sm" onclick={onAddCustom} class="w-full sm:w-auto">
-        <Plus class="w-4 h-4 mr-1" /> Add Custom Provider
-      </Button>
+      <div class="flex flex-col gap-2 sm:flex-row sm:w-auto">
+        <Button size="sm" onclick={onAddCustom} class="w-full sm:w-auto">
+          <Plus class="w-4 h-4 mr-1" /> Add Custom Provider
+        </Button>
+        {#if onImport}
+          <Button size="sm" variant="secondary" onclick={onImport} class="w-full sm:w-auto">
+            <Download class="w-4 h-4 mr-1" /> Import
+          </Button>
+        {/if}
+      </div>
     </div>
 
     {#if customNodes.length === 0}

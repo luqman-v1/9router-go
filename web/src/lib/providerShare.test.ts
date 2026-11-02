@@ -2,10 +2,15 @@ import { describe, expect, it } from 'bun:test'
 import {
   applyModelFilters,
   buildProviderShareURL,
+  decodeScheme,
   decodeSetPayload,
+  decodeShareFile,
+  encodeScheme,
   encodeSetPayload,
+  encodeShareFile,
   parseKeysBlock,
   parseProviderShareHash,
+  parseShareInput,
   SHARE_LINK_TIERS,
   shareLinkTier,
 } from './providerShare'
@@ -261,5 +266,109 @@ describe('shareLinkTier', () => {
   it('pins the boundary constants', () => {
     expect(SHARE_LINK_TIERS.splitAt).toBe(2000)
     expect(SHARE_LINK_TIERS.refuseAt).toBe(4000)
+  })
+})
+
+
+const baseLink = {
+  prov: 'openai-compatible-chat-a', url: 'https://a.test/v1', api: ['sk-a'], keys: [],
+  models: 'auto' as const, prefix: 'a', name: 'A', note: '', type: 'openai-compatible', apiType: 'chat',
+}
+
+describe('9router:// scheme', () => {
+  it('round-trips through base64url', () => {
+    const token = encodeScheme([baseLink])
+    expect(token.startsWith('9router://')).toBe(true)
+    expect(decodeScheme(token)).toEqual([baseLink])
+  })
+
+  it('is shorter than the set= URL for the same payload', () => {
+    const links = Array.from({ length: 4 }, (_, i) => ({ ...baseLink, prov: `openai-compatible-chat-p${i}`, api: [`sk-${i}`] }))
+    const scheme = encodeScheme(links).length
+    const setURL = `https://g.test/add#set=${encodeSetPayload(links)}`.length
+    expect(scheme).toBeLessThan(setURL)
+  })
+
+  it('carries no credential in the token when the list has none', () => {
+    const token = encodeScheme([{ ...baseLink, api: [], keys: [] }])
+    expect(token).not.toContain('sk-')
+  })
+
+  it('rejects over the entry cap', () => {
+    const nine = Array.from({ length: 9 }, (_, i) => ({ ...baseLink, prov: `p${i}` }))
+    expect(() => encodeScheme(nine)).toThrow(/8/)
+  })
+
+  it('rejects an empty payload', () => {
+    expect(() => encodeScheme([])).toThrow(/nothing to encode/)
+    expect(() => decodeScheme('9router://')).toThrow(/empty/)
+  })
+
+  it('rejects malformed base64', () => {
+    expect(() => decodeScheme('9router://not-base64!!')).toThrow(/not valid base64url/)
+  })
+
+  it('re-enforces the caps on decode', () => {
+    const nine = Array.from({ length: 9 }, (_, i) => ({ ...baseLink, prov: `p${i}` }))
+    const b64 = btoa(JSON.stringify({ version: 1, links: nine })).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')
+    expect(() => decodeScheme('9router://' + b64)).toThrow(/over the 8 limit/)
+  })
+
+  it('accepts a bare array without the version wrapper', () => {
+    const b64 = btoa(JSON.stringify([baseLink])).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')
+    expect(decodeScheme('9router://' + b64)).toEqual([baseLink])
+  })
+})
+
+describe('.9router.json file', () => {
+  it('round-trips', () => {
+    const text = encodeShareFile([baseLink, { ...baseLink, prov: 'anthropic-compatible-b', type: 'anthropic-compatible', apiType: '' }])
+    const parsed = JSON.parse(text)
+    expect(parsed.version).toBe(1)
+    expect(decodeShareFile(text)).toHaveLength(2)
+  })
+
+  it('rejects non-JSON', () => {
+    expect(() => decodeShareFile('not json')).toThrow(/not valid JSON/)
+  })
+
+  it('rejects an empty list', () => {
+    expect(() => decodeShareFile('{"version":1,"links":[]}')).toThrow(/no providers/)
+  })
+})
+
+describe('parseShareInput — the unified entry point', () => {
+  it('accepts a scheme token', () => {
+    expect(parseShareInput(encodeScheme([baseLink]))).toEqual([baseLink])
+  })
+
+  it('accepts a file body', () => {
+    expect(parseShareInput(encodeShareFile([baseLink]))).toHaveLength(1)
+  })
+
+  it('accepts the original /add# URL', () => {
+    const url = buildProviderShareURL('https://g.test', baseLink)
+    expect(parseShareInput(url)).toEqual([baseLink])
+  })
+
+  it('accepts a bare fragment', () => {
+    const frag = '#prov=openai-compatible-chat-a&api=sk-a'
+    const got = parseShareInput(frag)
+    expect(Array.isArray(got) ? got[0].prov : null).toBe('openai-compatible-chat-a')
+    expect(Array.isArray(got) ? got[0].api : null).toEqual(['sk-a'])
+  })
+
+  it('accepts a fragment without its leading #', () => {
+    const got = parseShareInput('prov=openai-compatible-chat-a&api=sk-a')
+    expect(Array.isArray(got) ? got[0].prov : null).toBe('openai-compatible-chat-a')
+  })
+
+  it('returns null for text that is not a share link', () => {
+    expect(parseShareInput('hello world')).toBeNull()
+    expect(parseShareInput('')).toBeNull()
+  })
+
+  it('throws for a malformed scheme token rather than returning null', () => {
+    expect(() => parseShareInput('9router://garbage!!')).toThrow()
   })
 })
