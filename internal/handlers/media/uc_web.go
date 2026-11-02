@@ -470,8 +470,8 @@ func ucDownload(ctx context.Context, url string) (b64, mime string, err error) {
 		return "", "", err
 	}
 	mime = strings.Split(resp.Header.Get("Content-Type"), ";")[0]
-	if mime == "" {
-		mime = "application/octet-stream"
+	if mime == "" || mime == "application/octet-stream" {
+		mime = http.DetectContentType(buf)
 	}
 	return base64.StdEncoding.EncodeToString(buf), mime, nil
 }
