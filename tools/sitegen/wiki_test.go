@@ -1355,14 +1355,25 @@ func TestSearchIsAnIconButtonInTheHeadRow(t *testing.T) {
 	if strings.Contains(wikiTemplate, "wiki-search-hint") {
 		t.Error("the 'Click to search' hint is still there")
 	}
-	// The button must live in the head row, which is where the product name is.
+	// The button must live in the head row, the row that carries the product
+	// name. The name itself is hidden on desktop, but it is still the row the
+	// button belongs to, and the markup must not move.
 	headAt := strings.Index(wikiTemplate, `<div class="wiki-sheet-head">`)
 	btnAt := strings.Index(wikiTemplate, `class="wiki-search-btn"`)
 	if headAt < 0 || btnAt < headAt {
 		t.Fatal("the search button is not inside the sidebar's head row")
 	}
 	if !strings.Contains(wikiTemplate[headAt:btnAt], `<strong>`) {
-		t.Error("the search button is not beside the product name in the head row")
+		t.Error("the search button is not in the row that carries the product name")
+	}
+	// That name - the logo and the label together, since <strong> holds both -
+	// is hidden on desktop: the masthead already shows them, and a second copy
+	// put two logos in one view. It is restored on a phone, where the sheet is
+	// the only chrome that is always visible.
+	strongBase := wikiTemplate[strings.Index(wikiTemplate, ".wiki-sheet-head strong {"):]
+	strongBase = strongBase[:strings.Index(strongBase, "}")]
+	if !strings.Contains(strongBase, "display: none") {
+		t.Errorf("the sidebar's logo and label are shown on desktop, duplicating the masthead:\n%s", strongBase)
 	}
 	// It must be pushed to the right of that row, not left sitting next to the
 	// close control.

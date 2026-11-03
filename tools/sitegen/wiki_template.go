@@ -640,6 +640,17 @@ const wikiTemplate = `<!doctype html>
         flex-shrink: 0;
         margin-bottom: 0.75rem;
       }
+      /* The logo and the product name are phone-only, for the same reason the
+         close control is: they belong to the sheet. On desktop the masthead
+         above already carries the mark and the name on every screen, so a
+         second copy in the sidebar put two logos in one view - which is what it
+         did when this row was first shown at every width to hold the search
+         button. The row itself stays: it carries the search button, and hiding
+         only its first child leaves the button at the top of the column where a
+         reader looks for it. */
+      .wiki-sheet-head strong {
+        display: none;
+      }
       /* The close control is a phone-only affordance: it dismisses the sheet,
          and a sheet is a phone thing. On desktop the sidebar is always open, so
          the control would be a button that does nothing. The head row it sits
