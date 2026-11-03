@@ -396,6 +396,50 @@ jobs:
 
       - name: Test with race detector
         run: go test -race -count=1 -timeout 10m ./...
+  # ROADMAP §4 asks for a coverage profile CI publishes *and* a non-regression
+  # rule; until now the suite produced neither. The profile is the artifact; the
+  # rule is scripts/coverage-gate.sh comparing the total against
+  # .github/coverage-baseline.txt.
+  #
+  # The gate runs on the un-raced suite on purpose: `-race` instruments every
+  # allocation, which is orthogonal to which statements execute, and pairing the
+  # two would double the job's runtime to produce the same total. It needs
+  # web/dist for the same reason every other Go job does.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Build Web SPA
+        run: |
+          cd web
+          bun install --frozen-lockfile
+          bun run build
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+      # `-covermode=atomic` even without -race: the default `set` mode is
+      # undefined under concurrent execution, and several packages run tests in
+      # parallel, which would make the total vary between runs for no reason.
+      - name: Test with coverage
+        run: go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Coverage gate
+        run: bash scripts/coverage-gate.sh coverage.out
+      # Published so a reviewer can see *which* functions moved, not just that
+      # the total did. The gate's message names the file to bump when a drop is
+      # deliberate; this artifact is what makes that decision reviewable.
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-profile
+          path: coverage.out
+          if-no-files-found: error
 
   # Unit tests exercise handlers with a hand-built router, so they cannot see a
   # regression in the wiring that production actually mounts: a route

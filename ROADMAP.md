@@ -47,6 +47,13 @@ This roadmap is for the current native Go gateway and its embedded Svelte dashbo
 - The repository records a baseline and a non-regression rule; any reduction requires an explicit review rather than silently lowering or ignoring the result.
 - New security, routing, migration, and concurrency changes include tests for the affected behavior, including error and boundary cases.
 
+**Status (2026-11-03): the first two criteria are met.** The `coverage` job runs
+`go test -covermode=atomic -coverprofile=coverage.out ./...`, uploads the profile
+as an artifact, and fails when `scripts/coverage-gate.sh` reports a total below
+`.github/coverage-baseline.txt` (68.0%; measured 68.7% on `main` at that commit).
+The third criterion is unchanged and still open — it is a per-change expectation,
+not something a CI job can decide.
+
 ### 5. Frontend test and type-safety gate
 
 **Acceptance criteria**
