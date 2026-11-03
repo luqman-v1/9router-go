@@ -557,16 +557,37 @@ func TestNavTriggerLivesInTheHeaderBar(t *testing.T) {
 	if got := strings.Count(wikiTemplate, `class="wiki-foot-icon"`); got != 3 {
 		t.Errorf("found %d footer icons, want 3 (project, repository, telegram)", got)
 	}
-	// The footer is links only. It used to also carry the version caption, which
-	// was the one piece of text in that column that was not a control; a reader
-	// scanning the list could not tell at a glance that "Version 1.9.14" does
-	// not go anywhere. The theme control went the other way, up to the bar, so
-	// neither sits beside the links any more.
-	if strings.Contains(wikiTemplate, `class="wiki-version"`) {
-		t.Error("the footer still carries the version caption")
+	// The footer links are icons only, in a row. Each one lost its label, so the
+	// accessible name has to come from somewhere: aria-label on the link, with
+	// the SVG aria-hidden. Without it a screen reader announces "link" three
+	// times and the reader cannot tell project from repository.
+	for _, name := range []string{"Project", "Repository", "Telegram group"} {
+		if !strings.Contains(wikiTemplate, `aria-label="`+name+`"`) {
+			t.Errorf("footer icon %q has no aria-label: it is icon-only, so its name is unreachable", name)
+		}
+	}
+	if !strings.Contains(wikiTemplate, `aria-label="Project" title="Project"`) {
+		t.Error("the icon-only footer link carries no title: a pointer reader gets no name on hover")
+	}
+	// The row is horizontal, not a column: three labelled rows spent the sidebar's
+	// height to say what the marks already say.
+	if !strings.Contains(wikiTemplate, "#project-links {\n        display: flex;\n        flex-direction: row;") {
+		t.Error("the footer links are not laid out as a row")
+	}
+	// The release line is back, but it is the release the wiki documents — read
+	// from version.json — not the build the binary was compiled from. On an
+	// experimental line those differ, and naming the build told readers the docs
+	// described a release nobody could download.
+	if !strings.Contains(wikiTemplate, `class="wiki-version">Documents release {{ .StableVersion }}`) {
+		t.Error("the footer no longer names the release the wiki documents")
 	}
 	if strings.Contains(wikiTemplate, "{{ .Version }}") {
-		t.Error("the template still renders a version: the field is unused and the footer is links only")
+		t.Error("the template renders the build version, not the release the wiki documents")
+	}
+	// It must be omitted when the generator was given no version, so a local run
+	// without the manifest does not print an empty label.
+	if !strings.Contains(wikiTemplate, "{{ if .StableVersion }}") {
+		t.Error("the release line has no guard: an empty version would render as bare text")
 	}
 	// The theme button must be the bar's last child, so it is the rightmost
 	// control — the position the reader looks to for a view setting.

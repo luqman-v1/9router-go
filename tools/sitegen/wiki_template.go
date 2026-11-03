@@ -8,6 +8,13 @@ type wikiData struct {
 	// heading, which is how the dashboard's own top nav group renders.
 	Groups []pageGroup
 	Repo   string
+	// StableVersion is the release the wiki documents, read from version.json by
+	// the generator. It is rendered under the footer links so a reader can check
+	// which release the contract on these pages belongs to — the docs for two
+	// releases sit at the same URL and are otherwise indistinguishable. It is
+	// deliberately not the build version: on an experimental line that is a
+	// version nobody can download.
+	StableVersion string
 }
 
 // pageGroup is one sidebar section: its heading (empty for the first group, which
@@ -204,21 +211,30 @@ const wikiTemplate = `<!doctype html>
       }
       #project-links {
         display: flex;
-        flex-direction: column;
-        gap: 0.125rem;
+        flex-direction: row;
+        gap: 0.25rem;
       }
-      /* The three project links. Rows, in the same idiom as the nav above them,
-         so the footer reads as more of the same list rather than a second kind
-         of control. Each carries a glyph: a bare word in a column of wiki
-         pages reads as another wiki page, and two of the three leave the site. */
+      /* The three project links. Icons only, in one row: these are three
+         destinations a reader recognises by their mark, and a label beside each
+         would spend three lines of the sidebar's height to say what the mark
+         already says. Horizontal, so the row costs about a line and a half and
+         leaves the release line beneath it room to be read.
+         Icon-only, so the accessible name lives in aria-label and the SVG is
+         aria-hidden — a screen reader announces the destination, not the
+         picture of it. title is what a pointer reader gets on hover, which is
+         the one thing aria-label does not cover. */
       #project-links a {
         display: flex;
         align-items: center;
-        gap: 0.6rem;
-        padding: 0.4rem 0.75rem;
+        justify-content: center;
+        /* 44px square, the same comfortable target the nav rows use, so an
+           icon-only control is not harder to hit than the labelled ones above
+           it. Without this a 18px icon is a target well under the 24px floor. */
+        width: 2.75rem;
+        height: 2.75rem;
+        padding: 0;
         border-radius: var(--radius);
         color: var(--text-muted);
-        font-size: 0.875rem;
         text-decoration: none;
       }
       #project-links a:hover {
@@ -229,17 +245,28 @@ const wikiTemplate = `<!doctype html>
         outline: 2px solid var(--brand);
         outline-offset: 1px;
       }
-      /* The glyph is muted by default and lifts on hover with the label, so the
-         row lights up as one thing. Fixed width keeps the labels aligned down
-         the column regardless of which icon each row carries. */
+      /* The glyph is muted by default and lifts on hover, so the control lights
+         up as one thing. It is larger than the row version was: an icon that
+         carries the label's whole job needs to be readable at a glance, and
+         18px inside a 44px target reads as a speck. */
       .wiki-foot-icon {
-        width: 1.125rem;
-        height: 1.125rem;
+        width: 1.25rem;
+        height: 1.25rem;
         flex-shrink: 0;
         color: var(--text-subtle);
       }
       #project-links a:hover .wiki-foot-icon {
         color: var(--brand);
+      }
+      /* The release the wiki documents. It sits under the links because it is
+         metadata about them, not a fourth destination: it is the one number a
+         reader can check the update command against. Muted and small so it
+         reads as build provenance rather than something to click — it is the
+         only text in the footer, and every other thing here is a control. */
+      .wiki-version {
+        margin: 0.25rem 0 0;
+        font-size: 0.75rem;
+        color: var(--text-subtle);
       }
       /* A section heading, in the dashboard's own idiom: small, uppercase, and
          tracked, so it reads as a label for the rows beneath it rather than as
@@ -805,22 +832,23 @@ const wikiTemplate = `<!doctype html>
         <!-- The footer. These three links left the masthead: a bar that carried
              the nav trigger, the wordmark, three links and a theme control had
              more chrome than content on a narrow desktop, and none of the three
-             links acts on the page the reader is on. Here they are rows in the
-             same list idiom as the nav above them, each with a glyph so the row
-             reads as an external action rather than another wiki page. Nothing
-             else lives here: the theme control is in the bar, where it is
-             reachable at any width, and the version caption moved out so the
-             footer is a list of links and nothing that only looks like one. -->
+             links acts on the page the reader is on. Here they are a single row
+             of icons: three destinations a reader recognises by their mark, so
+             the row costs three glyphs of height instead of three rows, and the
+             release line beneath it has room to be read.
+             Icon-only, so every glyph is hidden from assistive tech and the
+             accessible name lives in aria-label — a screen reader announces the
+             destination, not the picture of it. The theme control is in the bar,
+             where it is reachable at any width. -->
         <div class="wiki-side-foot">
           <nav aria-label="Project" id="project-links">
-            <a href="index.html">
+            <a href="index.html" aria-label="Project" title="Project">
               <svg class="wiki-foot-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M3 10.5 12 3l9 7.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
                 <path d="M5.5 9.5V20h13V9.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
-              Project
             </a>
-            <a href="https://github.com/{{ .Repo }}">
+            <a href="https://github.com/{{ .Repo }}" aria-label="Repository" title="Repository">
               <!-- The GitHub mark. An inline SVG rather than a glyph: the ⌥
                    character rendered as an odd box on some systems, and a
                    misdrawn icon on a link that leaves the site is worse than no
@@ -828,16 +856,23 @@ const wikiTemplate = `<!doctype html>
               <svg class="wiki-foot-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path fill="currentColor" d="M12 2C6.48 2 2 6.58 2 12.26c0 4.5 2.87 8.32 6.84 9.67.5.1.68-.22.68-.49 0-.24-.01-1.05-.01-1.9-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.1-1.5-1.1-1.5-.91-.63.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.06 10.06 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z"/>
               </svg>
-              Repository
             </a>
-            <a href="tg">
+            <a href="tg" aria-label="Telegram group" title="Telegram group">
               <svg class="wiki-foot-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M21.5 4.3 2.9 11.2c-.9.3-.9 1.6.1 1.9l4.3 1.3 1.6 4.9c.2.7 1.2.8 1.7.3l2.3-2.6 4.3 3.2c.6.5 1.5.1 1.7-.6l3.6-14.2c.2-.8-.6-1.5-1.4-1.2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
                 <path d="M7.3 14.4 16.9 7.6l-6.9 6.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
-              Telegram group
             </a>
           </nav>
+          {{ if .StableVersion }}
+          <!-- The release the wiki documents, from version.json — not the build
+               the binary was compiled from, which on an experimental line is a
+               version nobody can download. This is the one number a reader can
+               check the update command against, so it sits under the links as
+               metadata rather than inside them, and it is a plain sentence of
+               text so a screen reader reads it as one. -->
+          <p class="wiki-version">Documents release {{ .StableVersion }}</p>
+          {{ end }}
         </div>
       </aside>
 
