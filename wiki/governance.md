@@ -1,7 +1,7 @@
 ---
 title: Governance
 order: 16
-section: Contributing
+section: Using the Gateway
 since: 1.9.14
 ---
 

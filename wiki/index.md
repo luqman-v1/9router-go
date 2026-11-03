@@ -53,7 +53,17 @@ since: 1.9.14
 
 **What differs by design:** SSE streams flow through `io.Reader`/`io.Writer` and are never buffered whole, and SQLite reads are batched — one query per page, never N+1.
 
-Full detail, including what is still unported: [Parity](parity.html).
+**What upstream still has and 9router-go does not** — the other half of the comparison, from the repository's [comparison document](https://github.com/luqman-v1/9router-go/blob/main/COMPARISON.md):
+- **Public route aliases are incomplete.** 9router-go is root-native (`POST /chat/completions`, not `/v1/chat/completions`); upstream's blanket `/api/v1/*` and `/v1/*` rewrites are not implemented, so a client that depends on them must use the routes the Go server actually exposes.
+- **Provider and model coverage is partial.** Route parity does not imply provider parity — executors, aliases, capabilities, cloaking and OAuth behaviour can differ per release, and only a path-specific comparison classifies a feature as parity.
+- **No cloud sync and no npm tray.** The dashboard handles local configuration only; upstream's cloud synchronisation and the npm tray launcher are not ported.
+- **OIDC/SAML is not a working login flow.** The configuration and metadata routes exist, but the login links target start/callback routes the Go router does not mount — the UI advertises a login path that does not run.
+- **Dynamic CLI-tool configuration, dashboard MITM management and the Translator workbench are not ported.** 9router-go has a MITM engine and a console stream, not upstream's management surfaces.
+- **A blank database is not production-ready for 9router-go alone.** Bootstrap with a compatible upstream database first; migration-free fresh installation is not claimed.
+- **Credentials are not encrypted at rest.** The database is upstream-compatible plaintext SQLite; filesystem controls reduce exposure but do not replace encryption.
+- **One active writer is the supported model.** WAL avoids immediate lock errors, but settings merges, daily aggregates and caches are not process-coherent.
+
+Full detail, including what is still unported: [Parity](parity.html) and the repository's [comparison document](https://github.com/luqman-v1/9router-go/blob/main/COMPARISON.md).
 
 ## Running in 30 seconds
 

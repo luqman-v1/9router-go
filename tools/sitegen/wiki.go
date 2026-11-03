@@ -166,10 +166,15 @@ func renderWikiPage(path, outDir string) (*page, error) {
 			// through to the github.com fallback below.
 			file, fragment, hasFragment := strings.Cut(dest, "#")
 			switch {
-			case strings.HasSuffix(file, ".md"):
+			case strings.HasSuffix(file, ".md") && !hasScheme(dest) && !strings.HasPrefix(dest, "/"):
 				// A link to another wiki page. It stays relative so it resolves
 				// inside the site, and the .md suffix is swapped for .html
 				// because that is what is published.
+				// The scheme and site-absolute checks come first: an absolute
+				// github.com URL to a repository file also ends in .md, and
+				// rewriting that one produced .../COMPARISON.html — a URL that
+				// 404s on both the site and GitHub. Only a relative destination
+				// names a wiki page.
 				slug := strings.TrimSuffix(file, ".md")
 				wikiLinks[slug] = struct{}{}
 				out := slug + ".html"

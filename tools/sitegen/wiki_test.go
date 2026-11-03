@@ -3,9 +3,13 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
+// mdLinkRe matches an inline markdown link and captures its destination, so a
+// test can audit where a link points without a markdown parser.
+var mdLinkRe = regexp.MustCompile(`\[[^\]]*\]\(([^)\s]+)\)`)
 
 // projectCSS is the stylesheet shared with the project page. The tests read it
 // to keep a wiki-only rule from leaking into a page that has no sidebar.
@@ -1040,6 +1044,83 @@ func TestReleaseNewer(t *testing.T) {
 				t.Errorf("releaseNewer(%q, %q) = %v, want %v", tt.page, tt.built, got, tt.want)
 			}
 		})
+	}
+}
+
+// A link to a repository file that is not a wiki page must be an absolute
+// github.com URL, not a rewritten .html sibling. The wiki linker treats every
+// `*.md` destination as an internal page and swaps the suffix, so a link like
+// `COMPARISON.md` in wiki/index.md published as `COMPARISON.html` — a URL that
+// does not exist on the site and 404s. The rule is the same one the linker
+// already applies to images and anchors, and this test pins the visible
+// consequence rather than the mechanism.
+func TestHomeComparisonLinksResolve(t *testing.T) {
+	home, err := os.ReadFile(filepath.Join("..", "..", "wiki", "index.md"))
+	if err != nil {
+		t.Fatalf("read wiki/index.md: %v", err)
+	}
+	src := string(home)
+	// Every wiki-internal link in the comparison section must name a page that
+	// exists, and every repository file link must be absolute.
+	section := src[strings.Index(src, "## How it compares with 9Router"):]
+	if next := strings.Index(section[4:], "\n## "); next >= 0 {
+		section = section[:next+4]
+	}
+	for _, m := range mdLinkRe.FindAllStringSubmatch(section, -1) {
+		dest := m[1]
+		if strings.HasPrefix(dest, "http") {
+			continue
+		}
+		if strings.HasSuffix(strings.SplitN(dest, "#", 2)[0], ".md") {
+			slug := strings.TrimSuffix(strings.SplitN(dest, "#", 2)[0], ".md")
+			if _, err := os.Stat(filepath.Join("..", "..", "wiki", slug+".md")); err != nil {
+				t.Errorf("wiki/index.md links %q as a wiki page, but wiki/%s.md does not exist: it publishes as %s.html and 404s", dest, slug, slug)
+			}
+		}
+	}
+}
+
+// An absolute github.com URL to a repository file also ends in .md, and the
+// wiki linker used to rewrite every .md destination as a wiki page — so a link
+// to the repository's COMPARISON.md published as `.../COMPARISON.html`, a URL
+// that 404s on both the site and GitHub. The scheme check has to come before
+// the suffix test. This runs the real generator rather than the snippet, so it
+// catches the case where the rule moves back below the check.
+func TestAbsoluteMarkdownLinkKeepsItsSuffix(t *testing.T) {
+	const target = "https://github.com/luqman-v1/9router-go/blob/main/COMPARISON.md"
+	root := t.TempDir()
+	out := filepath.Join(root, "site")
+	if err := os.MkdirAll(filepath.Join(root, "wiki"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "version.json"), []byte(`{"latestVersion":"1.9.14"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "wiki", "index.md"), []byte("---\ntitle: Home\norder: 1\n---\n# Home\n[comparison document]("+target+") and [Parity](parity.md).\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "wiki", "parity.md"), []byte("---\ntitle: Parity\norder: 2\n---\n# Parity\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const repo = "luqman-v1/9router-go"
+	if err := generateWiki(filepath.Join(root, "wiki"), out, repo, "1.9.14"); err != nil {
+		t.Fatalf("generateWiki: %v", err)
+	}
+	html, err := os.ReadFile(filepath.Join(out, "index.html"))
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	got := string(html)
+	if strings.Contains(got, "COMPARISON.html") {
+		t.Error("the absolute .md link was rewritten to .html: it now 404s on the site and on GitHub")
+	}
+	if !strings.Contains(got, `href="`+target+`"`) {
+		t.Errorf("the absolute link did not survive untouched; want href=%q in:\n%s", target, got)
+	}
+	// The relative wiki link must still be rewritten — the fix must not disable
+	// the rule that makes the site navigable.
+	if !strings.Contains(got, `href="parity.html"`) {
+		t.Errorf("the relative wiki link was not rewritten to .html:\n%s", got)
 	}
 }
 
