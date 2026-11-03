@@ -2,10 +2,19 @@ package translator
 
 import (
 	"regexp"
+	"strings"
 )
 
-// isValidRegex reports whether pattern is a valid Go regexp (proxy for JS RegExp validity).
+func hasLookaround(p string) bool {
+	return strings.Contains(p, "(?=") || strings.Contains(p, "(?!") || strings.Contains(p, "(?<=") || strings.Contains(p, "(?<!")
+}
+
+// isValidRegex reports whether pattern is a valid regex constraint without lookarounds
+// (lookarounds are rejected by OpenAI, DeepSeek, and strict JSON Schema validators).
 func isValidRegex(pattern string) bool {
+	if hasLookaround(pattern) {
+		return false
+	}
 	_, err := regexp.Compile(pattern)
 	return err == nil
 }
