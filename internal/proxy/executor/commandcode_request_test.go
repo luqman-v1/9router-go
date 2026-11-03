@@ -466,6 +466,75 @@ func TestCommandcodeSlugifyAndSessionUUID(t *testing.T) {
 	}
 }
 
+func TestCommandcodeBodySession(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"no session", `{"model":"m","messages":[]}`, ""},
+		{
+			"claude _session_ suffix",
+			`{"metadata":{"user_id":"user_abc_account__session_9f0c1a2b-3d4e-5f60-7a8b-9c0d1e2f3a4b"}}`,
+			"claude\0009f0c1a2b-3d4e-5f60-7a8b-9c0d1e2f3a4b",
+		},
+		{
+			"claude JSON user_id",
+			`{"metadata":{"user_id":"{\"account_id\":\"acc\",\"session_id\":\"abc123\"}"}}`,
+			"claude\000abc123",
+		},
+		{"raw claude user id", `{"metadata":{"user_id":"user_abc"}}`, "claude\000user_abc"},
+		{"prompt_cache_key", `{"prompt_cache_key":"conv-1"}`, "conv-1"},
+		{"session_id", `{"session_id":"conv-2"}`, "conv-2"},
+		{"conversation_id", `{"conversation_id":"conv-3"}`, "conv-3"},
+		{"prompt_cache_key wins over session_id", `{"prompt_cache_key":"a","session_id":"b"}`, "a"},
+		{"metadata.user_id wins over prompt_cache_key", `{"metadata":{"user_id":"u1"},"prompt_cache_key":"a"}`, "claude\000u1"},
+		{"blank values ignored", `{"prompt_cache_key":"  "}`, ""},
+		{"invalid json", `not json`, ""},
+	}
+	for _, tt := range tests {
+		if got := commandcodeBodySession([]byte(tt.body)); got != tt.want {
+			t.Errorf("%s: commandcodeBodySession = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestCommandcodeSessionKeyStablePerConversation(t *testing.T) {
+	system := []byte(`{"model":"m","system":"You are helpful.","messages":[{"role":"user","content":"first turn"}]}`)
+
+	// A later turn appends messages; the prefix key must not move.
+	turn1 := commandcodeSessionKey(system, "", "conn-1")
+	turn2 := []byte(`{"model":"m","system":"You are helpful.","messages":[{"role":"user","content":"first turn"},{"role":"assistant","content":"ok"},{"role":"user","content":"second turn"}]}`)
+	if got := commandcodeSessionKey(turn2, "", "conn-1"); got != turn1 {
+		t.Errorf("prefix key moved across turns: %q vs %q", turn1, got)
+	}
+
+	// A different first turn is a different conversation.
+	other := []byte(`{"model":"m","system":"You are helpful.","messages":[{"role":"user","content":"different"}]}`)
+	if got := commandcodeSessionKey(other, "", "conn-1"); got == turn1 {
+		t.Errorf("different first user turn must hash differently")
+	}
+
+	// Headers win, then body fields, then prefix, then connection.
+	if got := commandcodeSessionKey(system, "hdr-1", "conn-1"); got != "hdr-1" {
+		t.Errorf("header session must win, got %q", got)
+	}
+	if got := commandcodeSessionKey([]byte(`{"prompt_cache_key":"pc"}`), "", "conn-1"); got != "pc" {
+		t.Errorf("body session must beat prefix/connection, got %q", got)
+	}
+	if got := commandcodeSessionKey(nil, "", "conn-1"); got != "conn\000conn-1" {
+		t.Errorf("connection fallback = %q", got)
+	}
+	if got := commandcodeSessionKey(nil, "", ""); got != "" {
+		t.Errorf("nothing to key on = %q", got)
+	}
+
+	// Whatever the layer, the derived threadId must stay a valid UUID.
+	if _, err := uuid.Parse(commandcodeSessionUUID(turn1)); err != nil {
+		t.Errorf("prefix-derived threadId not a uuid: %v", err)
+	}
+}
+
 func TestForwardCommandcodeRetriesTransient(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -487,6 +556,45 @@ func TestForwardCommandcodeRetriesTransient(t *testing.T) {
 	})
 	if err != nil || calls != 2 || !strings.Contains(rec.Body.String(), "ok") {
 		t.Fatalf("err=%v calls=%d body=%s", err, calls, rec.Body.String())
+	}
+}
+
+// Two requests with no client session must not mint a fresh threadId each:
+// the upstream prompt cache is keyed on it, and a per-request random id
+// re-cached the whole prefix on every turn (decolua/9router#5006).
+func TestForwardCommandcodeThreadIDStableWithoutSession(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("x-session-id"))
+		_, _ = w.Write([]byte(`{"type":"text-delta","text":"ok"}` + "\n" + `{"type":"finish","finishReason":"stop"}` + "\n"))
+	}))
+	defer srv.Close()
+	send := func(connID, firstUser string) {
+		seen = nil
+		rec := httptest.NewRecorder()
+		err := ForwardCommandcode(rec, &Request{
+			Config: &providers.ProviderConfig{BaseURL: srv.URL}, Client: srv.Client(),
+			Body:         []byte(`{"model":"m","messages":[{"role":"user","content":"` + firstUser + `"}]}`),
+			ConnectionID: connID,
+		})
+		if err != nil {
+			t.Fatalf("ForwardCommandcode: %v", err)
+		}
+	}
+	// Same prefix (system + first user turn) → same threadId even across
+	// connections: identical prefixes are cache-compatible upstream.
+	send("conn-1", "hi")
+	first := seen[0]
+	send("conn-1", "hi")
+	if seen[0] != first {
+		t.Errorf("same conversation minted a second threadId: %q then %q", first, seen[0])
+	}
+	if _, err := uuid.Parse(first); err != nil {
+		t.Errorf("threadId not a uuid: %v", err)
+	}
+	send("conn-1", "a different first turn")
+	if seen[0] == first {
+		t.Errorf("different first user turn must get a different threadId")
 	}
 }
 
