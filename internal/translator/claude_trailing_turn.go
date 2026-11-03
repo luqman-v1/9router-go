@@ -4,6 +4,7 @@ import (
 	json "encoding/json/v2"
 	"reflect"
 	"strings"
+	"unicode"
 )
 
 // TrailingUserPlaceholder is the one-token user turn appended when cleanup
@@ -167,6 +168,61 @@ func sameTail(repaired, original []any) bool {
 	return reflect.DeepEqual(a, b)
 }
 
+// NormalizeClaudeFinalAssistantWhitespace trims trailing whitespace from a
+// conversation ending on an assistant turn. Anthropic reads that turn as a
+// prefill and rejects one whose final text ends in whitespace ("final assistant
+// content cannot end with trailing whitespace"), which token compression can
+// leave behind. Only the tail block is touched: whitespace inside the text is
+// the caller's own and is preserved. A trailing text block that trims to
+// nothing is removed, along with any further whitespace-only text block the
+// removal exposes; a message left with no content is dropped by the emptiness
+// pass. It reports whether it changed anything.
+func NormalizeClaudeFinalAssistantWhitespace(messages []any) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	last, ok := messages[len(messages)-1].(map[string]any)
+	if !ok {
+		return false
+	}
+	if role, _ := last["role"].(string); role != "assistant" {
+		return false
+	}
+
+	changed := false
+	switch content := last["content"].(type) {
+	case string:
+		trimmed := strings.TrimRightFunc(content, unicode.IsSpace)
+		if trimmed != content {
+			last["content"] = trimmed
+			changed = true
+		}
+	case []any:
+		for len(content) > 0 {
+			block, ok := content[len(content)-1].(map[string]any)
+			if !ok {
+				break
+			}
+			if bType, _ := block["type"].(string); bType != claudeBlockText {
+				break
+			}
+			text, _ := block["text"].(string)
+			trimmed := strings.TrimRightFunc(text, unicode.IsSpace)
+			if trimmed != "" {
+				if trimmed != text {
+					block["text"] = trimmed
+					changed = true
+				}
+				break
+			}
+			content = content[:len(content)-1]
+			last["content"] = content
+			changed = true
+		}
+	}
+	return changed
+}
+
 // DropNonContentfulClaudeMessages drops the turns Anthropic rejects for
 // carrying no content, then repairs a tail the removal promoted to an
 // assistant turn. It is the third pass of SanitizeClaudePassthrough, exported
@@ -175,13 +231,16 @@ func sameTail(repaired, original []any) bool {
 // string or only dropped parts is a 400 from the provider whichever path
 // produced it.
 //
+// It also normalizes the final assistant prefill's trailing whitespace, which
+// both paths can carry after compression.
+//
 // The trailing user turn is not invented around: a conversation the filter
 // empties completely is returned empty rather than carrying placeholder text,
 // and the caller decides. It reports whether anything changed, so a caller
 // holding the client's own bytes can forward them untouched.
 func DropNonContentfulClaudeMessages(messages []any, intentionalPrefill bool) ([]any, bool) {
 	filtered := make([]any, 0, len(messages))
-	changed := false
+	changed := NormalizeClaudeFinalAssistantWhitespace(messages)
 	for i, mRaw := range messages {
 		msgMap, ok := mRaw.(map[string]any)
 		if !ok {
