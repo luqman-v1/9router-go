@@ -131,7 +131,7 @@ const wikiTemplate = `<!doctype html>
         overflow: hidden;
         overscroll-behavior: contain;
       }
-      /* The header row is the sidebar's own wordmark. It does not need
+      /* The header row carries the sidebar's own wordmark. It does not need
          position:sticky: the column is a flex box whose middle child is the
          only part that scrolls, so this row is pinned by the layout itself and
          the nav links scroll past underneath it. A sticky header here would be
@@ -142,25 +142,53 @@ const wikiTemplate = `<!doctype html>
         background: var(--bg);
         padding: 0 0 0.75rem;
       }
-      /* The sidebar's own title, not a second wordmark: the masthead already
-         carries the product name, and two copies of it in one view is the
-         duplicate-action pattern — a reader checks whether they differ. */
+      /* The sidebar's own wordmark, in the same shape as the masthead's: the
+         mark beside the product name, so the two rows in this view agree instead
+         of the sidebar naming the section ("Wiki") while the bar above it names
+         the product. The mark is a span rather than an <img>: it is the same
+         glyph the masthead draws, so there is one logo definition, and an image
+         here would need its own asset for a 1.25rem square. */
       .wiki-side-title {
-        display: inline-block;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
         font-weight: 650;
         font-size: 0.9375rem;
         color: var(--text);
         text-decoration: none;
         letter-spacing: -0.01em;
       }
+      .wiki-side-mark {
+        display: grid;
+        place-items: center;
+        width: 1.25rem;
+        height: 1.25rem;
+        border-radius: 6px;
+        /* The same measured pair the masthead's wordmark plate uses, so the two
+           marks in this view are the same colour and both pass AA. */
+        background: var(--mark-bg, #b03e1f);
+        color: var(--mark-fg, #ffffff);
+        font-size: 0.75rem;
+        font-weight: 700;
+        line-height: 1;
+      }
       .wiki-side-title:hover {
         color: var(--brand);
       }
-      /* The middle of the column: the search box and the nav groups. It is the
-         only part that scrolls, so the header above and the footer below are
-         both pinned without a second scroll container. min-height 0 is what
-         makes a flex child actually able to shrink and scroll — without it the
-         child keeps its content height and pushes the footer off the bottom. */
+      /* The search box, pinned the same way the header above it is: it is a flex
+         child of the column, so the layout holds it while the middle scrolls.
+         It was the first item inside the scrolling area, which meant it left
+         with the nav — 20 links down, a reader who wanted a different page had
+         to scroll all the way back to type. */
+      .wiki-search {
+        flex-shrink: 0;
+        margin-bottom: 0.75rem;
+      }
+      /* The middle of the column: the nav groups. It is the only part that
+         scrolls, so the header and search above it and the footer below are all
+         pinned without a second scroll container. min-height 0 is what makes a
+         flex child actually able to shrink and scroll — without it the child
+         keeps its content height and pushes the footer off the bottom. */
       .wiki-side-scroll {
         flex: 1 1 auto;
         min-height: 0;
@@ -357,9 +385,6 @@ const wikiTemplate = `<!doctype html>
       .wiki-side a:focus-visible {
         outline: 2px solid var(--brand);
         outline-offset: -2px;
-      }
-      .wiki-search {
-        margin-bottom: 1.25rem;
       }
       .wiki-search input {
         width: 100%;
@@ -565,8 +590,16 @@ const wikiTemplate = `<!doctype html>
           gap: 0.75rem;
           margin-bottom: 1.25rem;
         }
+        /* The mark inside the sheet head, the same square the desktop sidebar
+           header draws. Aligned to the text by the same flex row, so the sheet
+           and the desktop view do not disagree about the logo's size. */
         .wiki-sheet-head strong {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.5rem;
           font-size: 0.9375rem;
+          font-weight: 650;
+          letter-spacing: -0.01em;
         }
         /* Icon-only, square, and at the left edge of the sheet — the same
            treatment the header trigger gets, so the two controls read as a
@@ -785,24 +818,37 @@ const wikiTemplate = `<!doctype html>
           >
             <span class="wiki-sheet-close-icon" aria-hidden="true">✕</span>
           </button>
-          <strong>Wiki</strong>
+          <strong>
+            <span class="wiki-side-mark" aria-hidden="true">9</span>
+            9router-go
+          </strong>
         </div>
         <!-- The desktop header. It is hidden below 60rem, where the sheet head
              above takes over: two copies of the same row would render as a
-             stutter at the top of the sheet. It carries the sidebar's own title
-             rather than the wordmark, which the masthead already shows — a
-             second wordmark in the same view is the duplicate-action pattern.
-             It is pinned by the flex layout, not by position:sticky, because the
+             stutter at the top of the sheet. It carries the sidebar's own
+             wordmark, matching the masthead's mark and name rather than naming
+             the section ("Wiki") while the bar above it names the product. It is
+             pinned by the flex layout, not by position:sticky, because the
              middle child is the only part of the column that scrolls. -->
         <div class="wiki-side-head">
-          <a class="wiki-side-title" href="index.html">Wiki</a>
+          <a class="wiki-side-title" href="index.html">
+            <span class="wiki-side-mark" aria-hidden="true">9</span>
+            <span>9router-go</span>
+          </a>
+        </div>
+        <!-- The search box is its own flex child rather than the first thing
+             inside the scrolling area below, so it stays pinned while the nav
+             scrolls under it. A reader who scrolls 20 links down and wants a
+             different page should not have to scroll back up to type. It is not
+             position:sticky either: nothing scrolls this element's parent, and a
+             sticky child in a column whose sibling scrolls is pushed by that
+             sibling's content. -->
+        <div class="wiki-search">
+          <label class="skip-link" for="q">Search the wiki</label>
+          <input id="q" type="search" placeholder="Search features…" autocomplete="off" />
+          <ul class="wiki-results" id="results" hidden></ul>
         </div>
         <div class="wiki-side-scroll">
-          <div class="wiki-search">
-            <label class="skip-link" for="q">Search the wiki</label>
-            <input id="q" type="search" placeholder="Search features…" autocomplete="off" />
-            <ul class="wiki-results" id="results" hidden></ul>
-          </div>
           {{ range .Groups }}
           <div class="wiki-group">
             {{ if .Label }}

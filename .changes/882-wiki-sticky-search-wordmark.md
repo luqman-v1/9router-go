@@ -1,0 +1,9 @@
+### Wiki: the search box stays pinned, and the sidebar header is the wordmark
+
+The search box was the first item inside the scrolling part of the sidebar, so it left with the nav — twenty links down, a reader who wanted a different page had to scroll all the way back up to type. The sidebar header read "Wiki" while the masthead above it read "9router-go", so the two rows in one view named different things.
+
+- **Search pinned.** It is now its own flex child of the sidebar column, between the header and the scrolling nav, so the layout holds it while the nav moves under it. Not `position:sticky`: nothing scrolls that element's parent, and a sticky child in a column whose sibling scrolls is pushed by that sibling's content — the same reason the header and footer above and below it are pinned by layout.
+- **Sidebar header is the wordmark**, the same mark and product name the masthead draws, so the two rows agree. The mark is a `<span>`, not an `<img>`: it is the glyph the masthead already renders, so there is one logo definition and no asset for a 1.25rem square. The phone sheet head matches.
+- **The wordmark plate now passes AA.** It was `--brand` behind white text at 3.23:1 — a pre-existing failure the sidebar mark would have inherited, at 3.11:1. `--mark-bg` / `--mark-fg` are a measured pair: 5.91:1 in both themes, against `--brand` unchanged for rings and hovers, where it is a stroke rather than a background.
+
+Verified in a browser at 1280px and 390px: the search box holds at `top: 146` after the nav is scrolled 500px, the page itself does not scroll, and the footer stays at the bottom of the viewport. The phone sheet head reads "9 9router-go" with the mark visible and the search box at the top. Contrast measured on both marks in both themes after the change: 5.91:1, all four passing. The theme toggle was checked too — it swaps the `dark` class, which is the mechanism the stylesheet uses, so an attribute check reads `null`.
