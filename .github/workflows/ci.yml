@@ -588,6 +588,7 @@ jobs:
           check 9router-go-darwin-amd64       darwin/amd64  "Mach-O 64-bit x86_64"
           check 9router-go-darwin-arm64       darwin/arm64  "Mach-O 64-bit arm64"
           check 9router-go-windows-amd64.exe  windows/amd64 "PE32+"
+          check 9router-go-tray-windows-amd64.exe windows/amd64 "PE32+"
           exit "$fail"
 
       # The updater verifies a download against SHA256SUMS.txt before it renames
@@ -599,7 +600,7 @@ jobs:
           set -euo pipefail
           for f in 9router-go-linux-amd64 9router-go-linux-arm64 \
                    9router-go-darwin-amd64 9router-go-darwin-arm64 \
-                   9router-go-windows-amd64.exe; do
+                   9router-go-windows-amd64.exe 9router-go-tray-windows-amd64.exe; do
             grep -q "  $f\$" SHA256SUMS.txt || {
               echo "::error::SHA256SUMS.txt has no entry for $f"
               exit 1

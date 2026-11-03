@@ -71,7 +71,7 @@ func runMenu(cCtx *cli.Context) error {
 				return err
 			}
 		case "6":
-			return startTray()
+			return startTray(cCtx)
 		default:
 			return nil
 		}
@@ -138,7 +138,7 @@ func parseChoice(line string) string {
 //
 // Only the sibling binary is tried: a PATH lookup could pick up a different
 // install's tray, which would then talk to a gateway that is not this one.
-func startTray() error {
+func startTray(cCtx *cli.Context) error {
 	self, err := proc.SelfExecutable()
 	if err != nil {
 		return fmt.Errorf("tray: locate this binary: %w", err)
@@ -148,7 +148,8 @@ func startTray() error {
 		exe += ".exe"
 	}
 	if _, err := os.Stat(exe); err != nil {
-		return fmt.Errorf("tray: %s not found next to %s — install the 9router-tray package", filepath.Base(exe), filepath.Base(self))
+		fmt.Printf("tray companion %s not found next to %s; falling back to background server...\n", filepath.Base(exe), filepath.Base(self))
+		return startDetached(cCtx)
 	}
 	// CommandContext with a context that is never cancelled, not a deadline:
 	// this process is released immediately below and is meant to outlive the
