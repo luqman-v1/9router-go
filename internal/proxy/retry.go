@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
 	"9router/proxy/internal/log"
@@ -30,24 +32,43 @@ type transientRetry struct {
 	delay    time.Duration
 }
 
+type seatBudgetCtxKey struct{}
+
+// WithSeatBudget attaches a seat attempt budget in milliseconds to ctx.
+func WithSeatBudget(ctx context.Context, ms int) context.Context {
+	return context.WithValue(ctx, seatBudgetCtxKey{}, ms)
+}
+
+func resolveSeatBudget(ctx context.Context) int {
+	if ctx != nil {
+		if val, ok := ctx.Value(seatBudgetCtxKey{}).(int); ok && val > 0 {
+			return val
+		}
+	}
+	for _, envVar := range []string{"SEAT_ATTEMPT_BUDGET_MS", "NINEROUTER_SEAT_ATTEMPT_BUDGET_MS"} {
+		if val := os.Getenv(envVar); val != "" {
+			if ms, err := strconv.Atoi(val); err == nil && ms > 0 {
+				return ms
+			}
+		}
+	}
+	return 0
+}
+
 // retryTransientUpstream repeats a failed transient attempt per
-// transientRetryPolicy, so an upstream that answers `503 service_overloaded`
-// (opencode-zen's Console backend under load) gets another chance inside the same
-// client turn instead of surfacing as a failed request.
-//
-// The retry lives at the transport choke point rather than in each provider,
-// because upstream applies it in BaseExecutor.execute — the shared path every
-// provider inherits. It only ever runs before any response byte has reached the
-// client, so a repeat cannot duplicate a partially delivered answer.
-//
-// Transport-level errors are not repeated: DoRequest already re-dials directly
-// when a configured proxy refuses the tunnel, and a client that has gone away
-// must not be kept waiting out a backoff.
+// transientRetryPolicy, bounded by per-seat attempt budget (upstream #5341).
 func retryTransientUpstream(
 	ctx context.Context,
-	send func() (*http.Response, error),
+	send func(context.Context) (*http.Response, error),
 ) (*http.Response, error) {
-	resp, err := send()
+	seatBudgetMs := resolveSeatBudget(ctx)
+	startTime := time.Now()
+
+	executeAttempt := func() (*http.Response, error) {
+		return send(ctx)
+	}
+
+	resp, err := executeAttempt()
 	var ue *UpstreamError
 	if !errors.As(err, &ue) {
 		return resp, err
@@ -55,15 +76,23 @@ func retryTransientUpstream(
 
 	policy, retryable := transientRetryPolicy[ue.StatusCode]
 	for attempt := 1; retryable && attempt <= policy.attempts; attempt++ {
+		elapsed := time.Since(startTime).Milliseconds()
+		waitMs := policy.delay.Milliseconds()
+
+		if seatBudgetMs > 0 {
+			if elapsed+waitMs > int64(seatBudgetMs) {
+				log.Debug("retry", "seat attempt budget exceeded, skipping retry", "status", ue.StatusCode, "elapsed_ms", elapsed, "budget_ms", seatBudgetMs, "wait_ms", waitMs)
+				return resp, err
+			}
+		}
+
 		if waitErr := sleepCtx(ctx, policy.delay); waitErr != nil {
-			// The client is gone or the deadline passed: report the upstream
-			// failure already in hand rather than starting a turn nobody reads.
 			log.Debug("retry", "retry abandoned, client gone", "status", ue.StatusCode, "attempt", attempt)
 			return nil, err
 		}
 		log.Debug("retry", "transient upstream failure, retrying", "status", ue.StatusCode, "attempt", attempt, "max", policy.attempts, "delay_ms", policy.delay.Milliseconds())
 
-		resp, err = send()
+		resp, err = executeAttempt()
 		if !errors.As(err, &ue) {
 			return resp, err
 		}

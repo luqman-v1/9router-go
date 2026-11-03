@@ -131,6 +131,7 @@ type SettingsData struct {
 	ForceFallback              bool                            `json:"forceFallback,omitempty"`
 	ComboStrategy              string                          `json:"comboStrategy,omitempty"`
 	ComboStickyRoundRobinLimit int                             `json:"comboStickyRoundRobinLimit,omitempty"`
+	SeatAttemptBudgetMs        int                             `json:"seatAttemptBudgetMs,omitempty"`
 	ComboStrategies            map[string]ComboStrategy        `json:"comboStrategies,omitempty"`
 	ProviderStrategies         map[string]ProviderStrategy     `json:"providerStrategies,omitempty"`
 	CapacityAdapter            map[string]CapacityAdapterEntry `json:"capacityAdapter,omitempty"`
