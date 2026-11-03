@@ -50,7 +50,7 @@ type frontmatter struct {
 
 // generateWiki renders every .md in wikiDir into outDir, plus the search index
 // the pages' client-side search reads.
-func generateWiki(wikiDir, outDir, repo string) error {
+func generateWiki(wikiDir, outDir, repo, version string) error {
 	entries, err := filepath.Glob(filepath.Join(wikiDir, "*.md"))
 	if err != nil {
 		return fmt.Errorf("list wiki pages: %w", err)
@@ -89,7 +89,7 @@ func generateWiki(wikiDir, outDir, repo string) error {
 
 	for _, p := range pages {
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, wikiData{Page: p, Pages: pages, Groups: groupBySection(pages), Repo: repo}); err != nil {
+		if err := tmpl.Execute(&buf, wikiData{Page: p, Pages: pages, Groups: groupBySection(pages), Repo: repo, Version: version}); err != nil {
 			return fmt.Errorf("render wiki page %s: %w", p.Slug, err)
 		}
 		if err := writeFile(filepath.Join(outDir, p.Slug+".html"), buf.Bytes()); err != nil {

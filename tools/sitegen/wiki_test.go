@@ -187,7 +187,7 @@ func TestGenerateWiki(t *testing.T) {
 		t.Fatalf("MkdirAll(out): %v", err)
 	}
 
-	if err := generateWiki(wiki, out, "luqman-v1/9router-go"); err != nil {
+	if err := generateWiki(wiki, out, "luqman-v1/9router-go", "9.9.9"); err != nil {
 		t.Fatalf("generateWiki: %v", err)
 	}
 
@@ -399,7 +399,7 @@ func TestThemeSwitcherUsesTheDashboardContract(t *testing.T) {
 	if !strings.Contains(wikiTemplate, ".wiki-theme-btn-bar {\n          display: none;") {
 		t.Error("the bar copy is not hidden on a phone")
 	}
-	if !strings.Contains(wikiTemplate, "@media (min-width: 60.0625rem) {\n        #project-links .wiki-theme-btn {\n          display: none;") {
+	if !strings.Contains(wikiTemplate, "@media (min-width: 60.0625rem) {\n        .wiki-theme-btn-foot {\n          display: none;") {
 		t.Error("the sheet copy is not hidden on a desktop")
 	}
 	// Both copies must be painted together: switching in the sheet and then
@@ -512,32 +512,39 @@ func TestNavTriggerLivesInTheHeaderBar(t *testing.T) {
 	if strings.Count(wikiTemplate, `id="nav-open"`) != 1 {
 		t.Errorf("found %d Menu buttons, want exactly 1", strings.Count(wikiTemplate, `id="nav-open"`))
 	}
-	// The project links need an id, so the toggle can name what it controls.
+	// The project links need an id, so the footer can be referenced and styled
+	// as one group, and so a test can assert the links are still there.
 	if !strings.Contains(wikiTemplate, `id="project-links"`) {
-		t.Error("project links have no id: the toggle cannot reference them")
+		t.Error("project links have no id")
 	}
-	if !strings.Contains(wikiTemplate, `id="links-open"`) {
-		t.Error("no toggle for the project links")
+	// They must live in the sidebar footer, not the masthead: a bar carrying the
+	// nav trigger, the wordmark, three links and a theme control has more chrome
+	// than content on a narrow desktop, and none of the three acts on the page
+	// the reader is on.
+	if !strings.Contains(wikiTemplate, `class="wiki-side-foot"`) {
+		t.Error("the sidebar has no footer: the project links have nowhere to live")
 	}
-	if !strings.Contains(wikiTemplate, `aria-controls="project-links"`) {
-		t.Error("the links toggle does not name the list it controls")
+	// The old toggle is gone: the links are always visible in the footer, so a
+	// control that shows and hides them is dead weight a reader has to open.
+	if strings.Contains(wikiTemplate, `id="links-open"`) {
+		t.Error("the links toggle is still present: the footer links are always visible")
 	}
-	// Both controls are icon-only, so each must carry an accessible name. Without
-	// aria-label a screen reader announces "button" and nothing else, and the
-	// whole navigation becomes unreachable for a blind reader on a phone.
+	if strings.Contains(wikiTemplate, `wiki-links-toggle`) {
+		t.Error("the links toggle CSS is still present: no toggle is rendered")
+	}
+	if strings.Contains(wikiTemplate, `aria-controls="project-links"`) {
+		t.Error("a control still names the project links: nothing shows or hides them")
+	}
+	// Both header controls are icon-only, so each must carry an accessible name.
+	// Without aria-label a screen reader announces "button" and nothing else, and
+	// the whole navigation becomes unreachable for a blind reader on a phone.
 	if !strings.Contains(wikiTemplate, `aria-label="Open wiki navigation"`) {
 		t.Error("Menu button has no accessible name: it is icon-only")
-	}
-	if !strings.Contains(wikiTemplate, `aria-label="Show project links"`) {
-		t.Error("links toggle has no accessible name: it is icon-only")
 	}
 	// The glyph itself must be hidden from assistive tech, or the name is read
 	// twice — once as the aria-label and once as the character.
 	if !strings.Contains(wikiTemplate, `class="wiki-menu-icon" aria-hidden="true"`) {
 		t.Error("the menu glyph is not hidden: its name is announced twice")
-	}
-	if !strings.Contains(wikiTemplate, `class="wiki-links-icon" aria-hidden="true"`) {
-		t.Error("the links glyph is not hidden: its name is announced twice")
 	}
 	// Neither button may show a text label any more.
 	for _, label := range []string{"> Menu</span>", "> Links</span>"} {
@@ -545,18 +552,24 @@ func TestNavTriggerLivesInTheHeaderBar(t *testing.T) {
 			t.Errorf("header button still shows a text label %q", label)
 		}
 	}
-	// Both controls must be hidden above the breakpoint, where the sidebar is
-	// already open and the links already have their row.
-	if !strings.Contains(wikiTemplate, ".wiki-menu-btn,\n        .wiki-links-toggle {\n          display: inline-flex;") {
-		t.Error("the two header controls are not revealed together at the breakpoint")
+	// The nav trigger must be hidden above the breakpoint, where the sidebar is
+	// already open.
+	if !strings.Contains(wikiTemplate, ".wiki-menu-btn {\n          display: inline-flex;") {
+		t.Error("the header control is not revealed at the breakpoint")
 	}
-	// The links must actually hide below it, or the toggle opens nothing.
-	if !strings.Contains(wikiTemplate, ".masthead nav {\n          display: none;\n        }") {
-		t.Error("the project links do not hide below the breakpoint: the toggle has nothing to show")
+	// Each footer link carries an inline SVG icon, so the row reads as an
+	// external action rather than another wiki page — and so it does not depend
+	// on a glyph the reader's font may not have.
+	if got := strings.Count(wikiTemplate, `class="wiki-foot-icon"`); got != 3 {
+		t.Errorf("found %d footer icons, want 3 (project, repository, telegram)", got)
 	}
-	// Escape must close the links too, and focus must come back to the control.
-	if !strings.Contains(wikiTemplate, "if (e.key === \"Escape\" && links.classList.contains(\"is-open\"))") {
-		t.Error("Escape does not close the project links")
+	// The version must be rendered from the template's data, not hardcoded, so a
+	// release can bump it without an edit to the chrome.
+	if !strings.Contains(wikiTemplate, `class="wiki-version"`) {
+		t.Error("the footer has no version line")
+	}
+	if !strings.Contains(wikiTemplate, "{{ .Version }}") {
+		t.Error("the version is not rendered from the generator's data")
 	}
 }
 
@@ -790,7 +803,7 @@ func TestGenerateWikiFailsWithoutPages(t *testing.T) {
 	if err := os.MkdirAll(wiki, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	err := generateWiki(wiki, filepath.Join(root, "_site"), "luqman-v1/9router-go")
+	err := generateWiki(wiki, filepath.Join(root, "_site"), "luqman-v1/9router-go", "")
 	if err == nil {
 		t.Fatal("generateWiki() succeeded with no pages, want an error")
 	}
@@ -859,7 +872,7 @@ func TestAnchorIDMatchesGoldmarkOutput(t *testing.T) {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := generateWiki(wiki, out, "luqman-v1/9router-go"); err != nil {
+	if err := generateWiki(wiki, out, "luqman-v1/9router-go", "9.9.9"); err != nil {
 		t.Fatalf("generateWiki: %v", err)
 	}
 
@@ -887,27 +900,43 @@ func TestAnchorIDMatchesGoldmarkOutput(t *testing.T) {
 }
 
 // The desktop nav is taller than a short window, so it has to scroll on its
-// own. Without a max-height in viewport units plus overflow-y, the sticky
-// sidebar spills past the fold with no way to reach the lower links — the
-// page scrolls, the sidebar does not, and the last entries are simply gone.
+// own. Without a height bound plus overflow, the sticky sidebar spills past
+// the fold with no way to reach the lower links — the page scrolls, the sidebar
+// does not, and the last entries are simply gone.
 // Measured before the fix: 21 links, sidebar 1103px tall against a 600px
-// viewport, overflow-y visible.
+// viewport, overflow-y visible. After the first attempt it still failed: the
+// box was 680px against a 700px column, so it stopped 20px short of the bottom.
 func TestWikiSidebarScrollsOnDesktop(t *testing.T) {
 	// Pin the base rule, not the mobile one: the sheet overrides it with its
 	// own overflow-y, and that one is already covered.
 	base := wikiTemplate[:strings.Index(wikiTemplate, "@media")]
 	side := base[strings.Index(base, ".wiki-side {"):]
 	side = side[:strings.Index(side, "}")]
-	if !strings.Contains(side, "max-height: calc(100vh") {
-		t.Errorf("desktop sidebar has no viewport-bounded max-height; a short window loses the lower links:\n%s", side)
+	if !strings.Contains(side, "height: calc(100vh") {
+		t.Errorf("desktop sidebar has no viewport-bounded height; a short window loses the lower links:\n%s", side)
 	}
-	if !strings.Contains(side, "overflow-y: auto") {
-		t.Errorf("desktop sidebar does not scroll; the nav spills past the fold:\n%s", side)
+	if !strings.Contains(side, "overflow: hidden") {
+		t.Errorf("desktop sidebar does not bound its overflow; the nav spills past the fold:\n%s", side)
 	}
-	// The bound must leave room below the sticky top offset, or the box is
-	// exactly the viewport tall and the last link sits on the window edge.
-	if !strings.Contains(side, "100vh - 9.5rem") {
-		t.Errorf("sidebar max-height does not leave room below the sticky offset; the last link is flush with the window edge:\n%s", side)
+	// The height must equal the distance from the top of the column to the
+	// bottom of the window, so the box reaches the bottom edge. Measured: the
+	// masthead is 68px and the shell adds 32px of padding, so the column starts
+	// 100px down and the box needs 100vh minus 6.25rem — 7.5rem stopped 20px
+	// short and the footer floated above the bottom edge.
+	if !strings.Contains(side, "100vh - 6.25rem") {
+		t.Errorf("sidebar height does not reach the bottom of the window:\n%s", side)
+	}
+	// The sticky offset must match that same distance, or the column starts
+	// lower than the box was sized for and the bottom edge stops short again.
+	if !strings.Contains(side, "top: 6.25rem") {
+		t.Errorf("sidebar sticky offset does not match its height:\n%s", side)
+	}
+	// The middle child is the only part that scrolls, so the header and footer
+	// stay pinned by the flex layout. min-height:0 is what lets a flex child
+	// shrink and scroll at all; without it the child keeps its content height
+	// and pushes the footer off the bottom.
+	if !strings.Contains(base, ".wiki-side-scroll {\n        flex: 1 1 auto;\n        min-height: 0;\n        overflow-y: auto;") {
+		t.Error("the sidebar's middle child is not the scroll container")
 	}
 	// A wheel over the nav must not scroll the page once the nav bottoms out.
 	if !strings.Contains(side, "overscroll-behavior: contain") {

@@ -44,6 +44,7 @@ func main() {
 	outDir := flag.String("out", "_site", "directory the site is written to")
 	wikiDir := flag.String("wiki", "wiki", "directory of wiki pages rendered next to the README")
 	repo := flag.String("repo", "luqman-v1/9router-go", "owner/name used to resolve relative repository links")
+	version := flag.String("version", "", "release version rendered in the wiki sidebar footer; empty omits it")
 	flag.Parse()
 
 	if err := generate(*readmePath, *assetsDir, *outDir, *repo); err != nil {
@@ -54,7 +55,7 @@ func main() {
 	// The wiki is optional: a checkout without it still produces the project
 	// page, which is what the Pages job has always published.
 	if info, err := os.Stat(*wikiDir); err == nil && info.IsDir() {
-		if err := generateWiki(*wikiDir, *outDir, *repo); err != nil {
+		if err := generateWiki(*wikiDir, *outDir, *repo, *version); err != nil {
 			fmt.Fprintln(os.Stderr, "sitegen:", err)
 			os.Exit(1)
 		}

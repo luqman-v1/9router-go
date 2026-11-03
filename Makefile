@@ -251,7 +251,7 @@ docker-build:
 
 ## wiki-build — generate the project page + wiki into _site/
 wiki-build:
-	go run ./tools/sitegen -out _site
+	go run ./tools/sitegen -out _site -version "$(VERSION)"
 	@echo "Site written to _site/ — serve with: cd _site && python -m http.server 8000"
 
 ## wiki-serve — generate and serve the site locally on :8000

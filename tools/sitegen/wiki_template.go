@@ -8,6 +8,11 @@ type wikiData struct {
 	// heading, which is how the dashboard's own top nav group renders.
 	Groups []pageGroup
 	Repo   string
+	// Version is the release the wiki was built from, read from the repo's
+	// VERSION file. It is rendered in the sidebar footer so a reader can tell
+	// which build the documentation describes — the docs for two releases sit
+	// at the same URL and are otherwise indistinguishable.
+	Version string
 }
 
 // pageGroup is one sidebar section: its heading (empty for the first group, which
@@ -98,21 +103,166 @@ const wikiTemplate = `<!doctype html>
         padding: 2rem 1.25rem 4rem;
         align-items: start;
       }
+      /* The sidebar is a sticky column that runs the full height of the window
+         minus the masthead, and scrolls its own contents. Before the fix it was
+         sticky with no height bound: on a short window the 21 nav links ran
+         past the bottom of the screen with no scrollbar, because the article
+         scrolled and the sidebar did not. align-self stretch on the grid child
+         plus a height in viewport units is what makes it full height instead of
+         only as tall as its content. */
       .wiki-side {
         position: sticky;
-        top: 5.5rem;
+        /* The sticky offset equals the measured distance from the top of the
+           window to the top of the column: the 68px masthead plus the shell's
+           32px of padding. It used to be 5.5rem, which left the box 12px lower
+           than it needed to be. */
+        top: 6.25rem;
+        /* Full height means the box reaches the bottom of the window, not that
+           it is as tall as its content. Measured: the masthead is 68px and the
+           shell adds 32px of padding above the sidebar, so the column starts
+           100px down and needs the window height minus that to reach the
+           bottom edge — not 7.5rem, which stops 20px short. */
+        height: calc(100vh - 6.25rem);
+        align-self: stretch;
         border-right: 1px solid var(--border-subtle);
         padding-right: 1.5rem;
-        /* The nav is taller than any phone-height desktop window, so it gets a
-           scroll of its own instead of spilling past the fold. A max-height in
-           viewport units plus overflow-y turns on that scroll, but a sticky box
-           exactly as tall as the viewport leaves the last link flush against
-           the bottom edge; the room below it is what keeps that link clickable
-           and keeps the scrollbar off the window edge. */
-        max-height: calc(100vh - 9.5rem);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        overscroll-behavior: contain;
+      }
+      /* The header row is the sidebar's own wordmark. It does not need
+         position:sticky: the column is a flex box whose middle child is the
+         only part that scrolls, so this row is pinned by the layout itself and
+         the nav links scroll past underneath it. A sticky header here would be
+         dead code — nothing scrolls this element's parent — and a negative
+         top margin to align it was measured overlapping the middle by 4px. */
+      .wiki-side-head {
+        flex-shrink: 0;
+        background: var(--bg);
+        padding: 0 0 0.75rem;
+      }
+      /* The sidebar's own title, not a second wordmark: the masthead already
+         carries the product name, and two copies of it in one view is the
+         duplicate-action pattern — a reader checks whether they differ. */
+      .wiki-side-title {
+        display: inline-block;
+        font-weight: 650;
+        font-size: 0.9375rem;
+        color: var(--text);
+        text-decoration: none;
+        letter-spacing: -0.01em;
+      }
+      .wiki-side-title:hover {
+        color: var(--brand);
+      }
+      /* The middle of the column: the search box and the nav groups. It is the
+         only part that scrolls, so the header above and the footer below are
+         both pinned without a second scroll container. min-height 0 is what
+         makes a flex child actually able to shrink and scroll — without it the
+         child keeps its content height and pushes the footer off the bottom. */
+      .wiki-side-scroll {
+        flex: 1 1 auto;
+        min-height: 0;
         overflow-y: auto;
         overscroll-behavior: contain;
         scrollbar-gutter: stable;
+      }
+      /* The footer is the last flex child of the column, so it sits at the
+         bottom and never scrolls: the middle above it is the part that moves.
+         It is not position:sticky — a sticky child inside a flex column whose
+         sibling scrolls would still be pushed by that sibling's content. */
+      .wiki-side-foot {
+        flex-shrink: 0;
+        margin-top: auto;
+        padding: 0.75rem 0 0.25rem;
+        background: var(--bg);
+        border-top: 1px solid var(--border-subtle);
+      }
+      #project-links {
+        display: flex;
+        flex-direction: column;
+        gap: 0.125rem;
+      }
+      /* The three project links. Rows, in the same idiom as the nav above them,
+         so the footer reads as more of the same list rather than a second kind
+         of control. Each carries a glyph: a bare word in a column of wiki
+         pages reads as another wiki page, and two of the three leave the site. */
+      #project-links a {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.4rem 0.75rem;
+        border-radius: var(--radius);
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        text-decoration: none;
+      }
+      #project-links a:hover {
+        background: var(--bg-alt);
+        color: var(--text);
+      }
+      #project-links a:focus-visible {
+        outline: 2px solid var(--brand);
+        outline-offset: 1px;
+      }
+      /* The glyph is muted by default and lifts on hover with the label, so the
+         row lights up as one thing. Fixed width keeps the labels aligned down
+         the column regardless of which icon each row carries. */
+      .wiki-foot-icon {
+        width: 1.125rem;
+        height: 1.125rem;
+        flex-shrink: 0;
+        color: var(--text-subtle);
+      }
+      #project-links a:hover .wiki-foot-icon {
+        color: var(--brand);
+      }
+      /* The version line. It is the last thing in the column, below the links,
+         and it is the only text here that is not a control: muted and small so
+         it reads as metadata about the build rather than something to click. */
+      .wiki-version {
+        margin: 0.5rem 0 0;
+        padding: 0 0.75rem;
+        font-size: 0.75rem;
+        color: var(--text-subtle);
+      }
+      /* The phone copy of the theme control. It is a link-styled row like the
+         three above it, because it sits in the same list; on a desktop the
+         bar's own copy is the one in play and this one is hidden. */
+      .wiki-theme-btn-foot {
+        display: none;
+      }
+      @media (max-width: 60rem) {
+        .wiki-theme-btn-foot {
+          display: flex;
+          align-items: center;
+          gap: 0.6rem;
+          width: 100%;
+          margin-top: 0.5rem;
+          padding: 0.4rem 0.75rem;
+          border: 0;
+          border-radius: var(--radius);
+          background: none;
+          color: var(--text-muted);
+          font: inherit;
+          font-size: 0.875rem;
+          text-align: left;
+          cursor: pointer;
+        }
+        .wiki-theme-btn-foot:hover {
+          background: var(--bg-alt);
+          color: var(--text);
+        }
+        .wiki-theme-btn-foot:focus-visible {
+          outline: 2px solid var(--brand);
+          outline-offset: 1px;
+        }
+        /* The desktop header is the sheet head's job below 60rem; showing both
+           would put two wordmarks at the top of the same column. */
+        .wiki-side-head {
+          display: none;
+        }
       }
       /* A section heading, in the dashboard's own idiom: small, uppercase, and
          tracked, so it reads as a label for the rows beneath it rather than as
@@ -304,35 +454,6 @@ const wikiTemplate = `<!doctype html>
         outline: 2px solid var(--brand);
         outline-offset: 1px;
       }
-      /* The copy inside the sheet. It is a link-styled row, not a chip: it sits
-         in a list of links and has to read as one of them, with a word beside
-         the glyph because a bare icon in a list of text rows looks broken. */
-      #project-links .wiki-theme-btn {
-        display: flex;
-        align-items: center;
-        gap: 0.6rem;
-        width: 100%;
-        padding: 0.55rem 0.7rem;
-        border: 0;
-        border-radius: var(--radius);
-        background: none;
-        color: inherit;
-        font: inherit;
-        font-size: 0.9375rem;
-        text-align: left;
-        cursor: pointer;
-      }
-      #project-links .wiki-theme-btn:hover {
-        background: var(--bg-alt);
-      }
-      #project-links .wiki-theme-btn:focus-visible {
-        outline: 2px solid var(--brand);
-        outline-offset: 1px;
-      }
-      #project-links .wiki-theme-icon {
-        font-size: 1.0625rem;
-        line-height: 1;
-      }
       /* On a phone the sheet is the only way to reach the theme, and on a
          desktop the sheet is hidden — so each copy exists only where it is the
          one a reader can use. Both are in the DOM: moving one by script would
@@ -343,12 +464,11 @@ const wikiTemplate = `<!doctype html>
         }
       }
       @media (min-width: 60.0625rem) {
-        #project-links .wiki-theme-btn {
+        .wiki-theme-btn-foot {
           display: none;
         }
       }
-      .wiki-menu-btn,
-      .wiki-links-toggle {
+      .wiki-menu-btn {
         display: none;
         align-items: center;
         justify-content: center;
@@ -366,17 +486,14 @@ const wikiTemplate = `<!doctype html>
         line-height: 1;
         cursor: pointer;
       }
-      .wiki-menu-btn:hover,
-      .wiki-links-toggle:hover {
+      .wiki-menu-btn:hover {
         background: var(--bg-alt);
       }
-      .wiki-menu-btn:focus-visible,
-      .wiki-links-toggle:focus-visible {
+      .wiki-menu-btn:focus-visible {
         outline: 2px solid var(--brand);
         outline-offset: 1px;
       }
-      .wiki-menu-icon,
-      .wiki-links-icon {
+      .wiki-menu-icon {
         font-size: 1.25rem;
         line-height: 1;
       }
@@ -388,36 +505,8 @@ const wikiTemplate = `<!doctype html>
           grid-template-columns: minmax(0, 1fr);
           padding: 1.25rem 1rem 3rem;
         }
-        .wiki-menu-btn,
-        .wiki-links-toggle {
+        .wiki-menu-btn {
           display: inline-flex;
-        }
-        /* The project links fold into a sheet of their own. They are the
-           secondary job — the reader came for the wiki — so they give up their
-           row in the bar rather than crowding the nav trigger. */
-        .masthead nav {
-          display: none;
-        }
-        .masthead-inner {
-          justify-content: space-between;
-        }
-        .masthead nav.is-open {
-          display: flex;
-          flex-direction: column;
-          position: absolute;
-          top: 100%;
-          right: 0;
-          left: auto;
-          z-index: 40;
-          min-width: 12rem;
-          padding: 0.5rem;
-          border: 1px solid var(--border);
-          border-radius: var(--radius);
-          background: var(--surface);
-          box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
-        }
-        .masthead nav.is-open a {
-          padding: 0.55rem 0.7rem;
         }
         /* The sidebar becomes a full-screen sheet. It is taken out of flow
            rather than merely hidden, so the article starts at the top of the
@@ -425,8 +514,16 @@ const wikiTemplate = `<!doctype html>
         .wiki-side {
           position: fixed;
           inset: 0;
+          /* inset:0 alone does not fill the screen when an earlier rule set a
+             height: the fixed box would keep that height and its bottom edge
+             would stop short of the window. Measured: 744px against an 844px
+             viewport, leaving the footer 100px above the bottom. height auto
+             lets the inset win. */
+          height: auto;
           z-index: 50;
-          overflow-y: auto;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
           padding: 1.25rem 1.25rem 3rem;
           background: var(--bg);
           border-right: 0;
@@ -495,10 +592,6 @@ const wikiTemplate = `<!doctype html>
       @media (max-width: 40rem) {
         .masthead-inner {
           gap: 0.5rem;
-        }
-        .masthead nav {
-          gap: 0.65rem;
-          font-size: 0.875rem;
         }
         .wiki-search input {
           font-size: 1rem;
@@ -641,29 +734,13 @@ const wikiTemplate = `<!doctype html>
           <span class="wordmark-mark" aria-hidden="true">9</span>
           <span>9router-go</span>
         </a>
-        <nav aria-label="Project" id="project-links">
-          <a href="index.html">Project</a>
-          <a href="https://github.com/{{ .Repo }}">Repository</a>
-          <a href="tg">Telegram group</a>
-          <!-- The theme switcher lives in this sheet on a phone, where the bar
-               already carries the nav trigger and this toggle beside the
-               wordmark — three controls in a row too narrow for them. It is the
-               same button, moved: on a desktop the sheet is hidden and the
-               button is placed in the bar directly. -->
-          <button
-            type="button"
-            class="wiki-theme-btn"
-            id="theme-toggle"
-            aria-label="Switch to dark theme"
-          >
-            <span class="wiki-theme-icon" aria-hidden="true">☾</span>
-            <span class="wiki-theme-label">Theme</span>
-          </button>
-        </nav>
-        <!-- The same button, for a screen wide enough to show it in the bar.
-             Duplicated in the markup rather than moved by script, because the
-             page is static: a script that relocated it would run after the
-             first paint, and the bar would jump as the button arrived. -->
+        <!-- The theme switcher lives in the bar on a desktop, and in the sheet
+             on a phone: the bar already carries the nav trigger and this toggle
+             beside the wordmark — three controls in a row too narrow for them.
+             It is the same button, moved, not a second one doing a different
+             job. The project links left the bar entirely; they are now rows in
+             the sidebar footer, where a reader who wants the repo looks for
+             them, and the bar keeps only the controls that act on this page. -->
         <button
           type="button"
           class="wiki-theme-btn wiki-theme-btn-bar"
@@ -671,18 +748,6 @@ const wikiTemplate = `<!doctype html>
           aria-label="Switch to dark theme"
         >
           <span class="wiki-theme-icon" aria-hidden="true">☾</span>
-        </button>
-        <!-- The same three links, behind one control, once the bar is too narrow
-             to show them beside the nav trigger. -->
-        <button
-          type="button"
-          class="wiki-links-toggle"
-          id="links-open"
-          aria-label="Show project links"
-          aria-expanded="false"
-          aria-controls="project-links"
-        >
-          <span class="wiki-links-icon" aria-hidden="true">⋯</span>
         </button>
       </div>
     </header>
@@ -704,23 +769,87 @@ const wikiTemplate = `<!doctype html>
           </button>
           <strong>Wiki</strong>
         </div>
-        <div class="wiki-search">
-          <label class="skip-link" for="q">Search the wiki</label>
-          <input id="q" type="search" placeholder="Search features…" autocomplete="off" />
-          <ul class="wiki-results" id="results" hidden></ul>
+        <!-- The desktop header. It is hidden below 60rem, where the sheet head
+             above takes over: two copies of the same row would render as a
+             stutter at the top of the sheet. It carries the sidebar's own title
+             rather than the wordmark, which the masthead already shows — a
+             second wordmark in the same view is the duplicate-action pattern.
+             It is pinned by the flex layout, not by position:sticky, because the
+             middle child is the only part of the column that scrolls. -->
+        <div class="wiki-side-head">
+          <a class="wiki-side-title" href="index.html">Wiki</a>
         </div>
-        {{ range .Groups }}
-        <div class="wiki-group">
-          {{ if .Label }}
-          <h2 class="wiki-group-title">{{ .Label }}</h2>
-          {{ end }}
-          <ol>
-            {{ range .Pages }}
-            <li><a href="{{ .Slug }}.html"{{ if eq .Slug $.Page.Slug }} aria-current="page"{{ end }}>{{ .Title }}</a></li>
+        <div class="wiki-side-scroll">
+          <div class="wiki-search">
+            <label class="skip-link" for="q">Search the wiki</label>
+            <input id="q" type="search" placeholder="Search features…" autocomplete="off" />
+            <ul class="wiki-results" id="results" hidden></ul>
+          </div>
+          {{ range .Groups }}
+          <div class="wiki-group">
+            {{ if .Label }}
+            <h2 class="wiki-group-title">{{ .Label }}</h2>
             {{ end }}
-          </ol>
+            <ol>
+              {{ range .Pages }}
+              <li><a href="{{ .Slug }}.html"{{ if eq .Slug $.Page.Slug }} aria-current="page"{{ end }}>{{ .Title }}</a></li>
+              {{ end }}
+            </ol>
+          </div>
+          {{ end }}
         </div>
-        {{ end }}
+        <!-- The footer. These three links left the masthead: a bar that carried
+             the nav trigger, the wordmark, three links and a theme control had
+             more chrome than content on a narrow desktop, and none of the three
+             links acts on the page the reader is on. Here they are rows in the
+             same list idiom as the nav above them, each with a glyph so the row
+             reads as an external action rather than another wiki page. -->
+        <div class="wiki-side-foot">
+          <nav aria-label="Project" id="project-links">
+            <a href="index.html">
+              <svg class="wiki-foot-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M3 10.5 12 3l9 7.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M5.5 9.5V20h13V9.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Project
+            </a>
+            <a href="https://github.com/{{ .Repo }}">
+              <!-- The GitHub mark. An inline SVG rather than a glyph: the ⌥
+                   character rendered as an odd box on some systems, and a
+                   misdrawn icon on a link that leaves the site is worse than no
+                   icon. currentColor keeps it in step with the label. -->
+              <svg class="wiki-foot-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path fill="currentColor" d="M12 2C6.48 2 2 6.58 2 12.26c0 4.5 2.87 8.32 6.84 9.67.5.1.68-.22.68-.49 0-.24-.01-1.05-.01-1.9-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.1-1.5-1.1-1.5-.91-.63.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.06 10.06 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z"/>
+              </svg>
+              Repository
+            </a>
+            <a href="tg">
+              <svg class="wiki-foot-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M21.5 4.3 2.9 11.2c-.9.3-.9 1.6.1 1.9l4.3 1.3 1.6 4.9c.2.7 1.2.8 1.7.3l2.3-2.6 4.3 3.2c.6.5 1.5.1 1.7-.6l3.6-14.2c.2-.8-.6-1.5-1.4-1.2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M7.3 14.4 16.9 7.6l-6.9 6.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Telegram group
+            </a>
+          </nav>
+          <!-- The theme control, on a phone only. The bar above keeps its own
+               copy for a desktop; this one is for the sheet, which is the only
+               surface a phone reader has. Same button, moved. -->
+          <button
+            type="button"
+            class="wiki-theme-btn wiki-theme-btn-foot"
+            id="theme-toggle"
+            aria-label="Switch to dark theme"
+          >
+            <span class="wiki-theme-icon" aria-hidden="true">☾</span>
+            <span class="wiki-theme-label">Theme</span>
+          </button>
+          {{ if .Version }}
+          <!-- The build the docs describe. Rendered only when the generator was
+               given a version, so a local run without one does not print an
+               empty label. -->
+          <p class="wiki-version">Version {{ .Version }}</p>
+          {{ end }}
+        </div>
       </aside>
 
       <!-- No "back to project" link here: the wordmark in the masthead already
