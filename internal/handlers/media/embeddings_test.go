@@ -461,3 +461,77 @@ func TestHandleEmbeddings_CopilotTokenOverrideViaAlias(t *testing.T) {
 		t.Fatalf("expected Authorization Bearer tid=copilot-token-alias, got %q", auth)
 	}
 }
+
+func TestEmbeddings_ForwardGeminiOutputDimensions(t *testing.T) {
+	database, cleanup := setupEmbeddingsTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+
+	var mu sync.Mutex
+	var capturedBody map[string]any
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		_ = json.Unmarshal(body, &capturedBody)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"model":"text-embedding-004","usage":{"prompt_tokens":5,"total_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	providers.KnownProviders["gemini"] = providers.ProviderConfig{
+		BaseURL:    upstream.URL + "/v1beta/openai/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		Format:     "gemini-openai",
+	}
+
+	connDataJSON, _ := json.Marshal(map[string]any{
+		"apiKey": "gemini-test-key",
+	})
+	if err := repo.CreateProviderConnectionFull("conn-gemini-emb", "gemini", "apikey", "Gemini Emb Test", nil, string(connDataJSON)); err != nil {
+		t.Fatalf("failed to seed provider connection: %v", err)
+	}
+
+	handler := newTestMediaHandler(repo)
+
+	// Case 1: with dimensions: 1536
+	req := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(`{"model":"gemini/text-embedding-004","input":"hello world","dimensions":1536}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.HandleEmbeddings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	dimVal, ok := capturedBody["outputDimensionality"].(float64)
+	mu.Unlock()
+	if !ok || int(dimVal) != 1536 {
+		t.Errorf("expected outputDimensionality=1536 forwarded to Gemini, got %v", capturedBody["outputDimensionality"])
+	}
+
+	// Case 2: without dimensions (omitted)
+	mu.Lock()
+	capturedBody = nil
+	mu.Unlock()
+	req2 := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(`{"model":"gemini/text-embedding-004","input":"hello world"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	handler.HandleEmbeddings(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	mu.Lock()
+	_, exists := capturedBody["outputDimensionality"]
+	mu.Unlock()
+	if exists {
+		t.Errorf("expected no outputDimensionality when dimensions omitted, got %v", capturedBody["outputDimensionality"])
+	}
+}

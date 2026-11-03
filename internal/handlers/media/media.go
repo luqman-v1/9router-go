@@ -123,6 +123,11 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 	embeddingsURL := buildEmbeddingsURL(providerCfg.BaseURL)
 	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
 
+	// Google Gemini embeddings forward dimensions as outputDimensionality (upstream #1366).
+	if providers.ResolveAlias(modelInfo.Provider) == "gemini" {
+		finalBody = forwardGeminiEmbeddingDimensions(finalBody)
+	}
+
 	req, err := http.NewRequestWithContext(r.Context(), "POST", embeddingsURL, strings.NewReader(string(finalBody)))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
@@ -1525,4 +1530,34 @@ func buildSystemoneURL(override, cfgURL, cfgPath string) string {
 		return base + path[len(prefix):]
 	}
 	return base + path
+}
+
+// forwardGeminiEmbeddingDimensions maps incoming OpenAI "dimensions" to
+// Google Gemini's "outputDimensionality" property (upstream decolua/9router#1366 parity).
+func forwardGeminiEmbeddingDimensions(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	dimsRaw, exists := payload["dimensions"]
+	if !exists || dimsRaw == nil {
+		return body
+	}
+	dims := 0
+	switch v := dimsRaw.(type) {
+	case float64:
+		dims = int(v)
+	case int:
+		dims = v
+	case int64:
+		dims = int(v)
+	}
+	if dims <= 0 {
+		return body
+	}
+	payload["outputDimensionality"] = dims
+	if updated, err := json.Marshal(payload); err == nil {
+		return updated
+	}
+	return body
 }
