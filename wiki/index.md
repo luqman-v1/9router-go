@@ -35,6 +35,26 @@ since: 1.9.14
 | Contribute | [Contributing](contributing.html) |
 | Browse screenshots | [Screenshots](screenshots.html) |
 
+## How it compares with 9Router
+[9Router](https://github.com/decolua/9router) is the upstream project this is built against: a Node.js + Next.js gateway. 9router-go is a reimplementation of the same contract in Go, and the difference is not the API — it is what you have to run.
+
+| | 9router-go | 9Router (upstream) |
+|---|---|---|
+| Runtime | Single Go binary | Node.js + Next.js |
+| Dashboard | Embedded Svelte 5 | React 19 |
+| Database | SQLite (modernc, pure Go) | SQLite |
+| Schema | Same, additive | Same |
+| Docker | Single binary | Node |
+| Port | `20130` | `20128` |
+
+**What is identical:** request and response schemas for `/v1/*` (Chat Completions, Messages, Embeddings, Audio, Models), dashboard endpoints `/api/*` (Connections, Combos, ProxyPools, Settings, ProviderNodes, Usage, Auth), combo expansion, model fallback, account rotation, and strike-breaker quota handling. Both read the same `~/.9router/db/data.sqlite`, so a connection you add in either dashboard shows up in the other — no import, no export, no migration step.
+
+**What 9router-go adds:** per-custom-provider limits (RPM/TPM/concurrency/quota/expiry), per-API-key rate limiting with a FIFO queue, USD and token budgets with hard cutoff, an AES-GCM credential vault, Argon2id API key hashing, PII and injection guardrails, a semantic response cache, and Prometheus metrics.
+
+**What differs by design:** SSE streams flow through `io.Reader`/`io.Writer` and are never buffered whole, and SQLite reads are batched — one query per page, never N+1.
+
+Full detail, including what is still unported: [Parity](parity.html).
+
 ## Running in 30 seconds
 
 ```bash
