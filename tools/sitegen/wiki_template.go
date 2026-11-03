@@ -8,11 +8,6 @@ type wikiData struct {
 	// heading, which is how the dashboard's own top nav group renders.
 	Groups []pageGroup
 	Repo   string
-	// Version is the release the wiki was built from, read from the repo's
-	// VERSION file. It is rendered in the sidebar footer so a reader can tell
-	// which build the documentation describes — the docs for two releases sit
-	// at the same URL and are otherwise indistinguishable.
-	Version string
 }
 
 // pageGroup is one sidebar section: its heading (empty for the first group, which
@@ -246,52 +241,6 @@ const wikiTemplate = `<!doctype html>
       #project-links a:hover .wiki-foot-icon {
         color: var(--brand);
       }
-      /* The version line. It is the last thing in the column, below the links,
-         and it is the only text here that is not a control: muted and small so
-         it reads as metadata about the build rather than something to click. */
-      .wiki-version {
-        margin: 0.5rem 0 0;
-        padding: 0 0.75rem;
-        font-size: 0.75rem;
-        color: var(--text-subtle);
-      }
-      /* The phone copy of the theme control. It is a link-styled row like the
-         three above it, because it sits in the same list; on a desktop the
-         bar's own copy is the one in play and this one is hidden. */
-      .wiki-theme-btn-foot {
-        display: none;
-      }
-      @media (max-width: 60rem) {
-        .wiki-theme-btn-foot {
-          display: flex;
-          align-items: center;
-          gap: 0.6rem;
-          width: 100%;
-          margin-top: 0.5rem;
-          padding: 0.4rem 0.75rem;
-          border: 0;
-          border-radius: var(--radius);
-          background: none;
-          color: var(--text-muted);
-          font: inherit;
-          font-size: 0.875rem;
-          text-align: left;
-          cursor: pointer;
-        }
-        .wiki-theme-btn-foot:hover {
-          background: var(--bg-alt);
-          color: var(--text);
-        }
-        .wiki-theme-btn-foot:focus-visible {
-          outline: 2px solid var(--brand);
-          outline-offset: 1px;
-        }
-        /* The desktop header is the sheet head's job below 60rem; showing both
-           would put two wordmarks at the top of the same column. */
-        .wiki-side-head {
-          display: none;
-        }
-      }
       /* A section heading, in the dashboard's own idiom: small, uppercase, and
          tracked, so it reads as a label for the rows beneath it rather than as
          a page in its own right. */
@@ -497,20 +446,11 @@ const wikiTemplate = `<!doctype html>
         outline: 2px solid var(--brand);
         outline-offset: 1px;
       }
-      /* On a phone the sheet is the only way to reach the theme, and on a
-         desktop the sheet is hidden — so each copy exists only where it is the
-         one a reader can use. Both are in the DOM: moving one by script would
-         paint the bar after load and make it jump. */
-      @media (max-width: 60rem) {
-        .wiki-theme-btn-bar {
-          display: none;
-        }
-      }
-      @media (min-width: 60.0625rem) {
-        .wiki-theme-btn-foot {
-          display: none;
-        }
-      }
+      /* On a phone the bar keeps the theme button: it is the one control a
+         reader may want at any width, and it was moved into the links sheet
+         below 60rem because three controls plus a wordmark did not fit. The bar
+         is a flex row with the trigger, the wordmark and this button, so it
+         fits at 320px as long as the button keeps its square geometry. */
       .wiki-menu-btn {
         display: none;
         align-items: center;
@@ -785,13 +725,13 @@ const wikiTemplate = `<!doctype html>
           <span class="wordmark-mark" aria-hidden="true">9</span>
           <span>9router-go</span>
         </a>
-        <!-- The theme switcher lives in the bar on a desktop, and in the sheet
-             on a phone: the bar already carries the nav trigger and this toggle
-             beside the wordmark — three controls in a row too narrow for them.
-             It is the same button, moved, not a second one doing a different
-             job. The project links left the bar entirely; they are now rows in
-             the sidebar footer, where a reader who wants the repo looks for
-             them, and the bar keeps only the controls that act on this page. -->
+        <!-- The theme switcher, in the bar's far right. It sits beside the
+             wordmark because it acts on this page, not on the wiki's contents,
+             and it stays at every width: a reader who wants the other theme
+             should not have to open a sheet to get it. The bar is a flex row of
+             three items — trigger, wordmark, this — so it fits a 320px phone
+             without one of them leaving. The project links are rows in the
+             sidebar footer, where a reader who wants the repo looks for them. -->
         <button
           type="button"
           class="wiki-theme-btn wiki-theme-btn-bar"
@@ -867,7 +807,10 @@ const wikiTemplate = `<!doctype html>
              more chrome than content on a narrow desktop, and none of the three
              links acts on the page the reader is on. Here they are rows in the
              same list idiom as the nav above them, each with a glyph so the row
-             reads as an external action rather than another wiki page. -->
+             reads as an external action rather than another wiki page. Nothing
+             else lives here: the theme control is in the bar, where it is
+             reachable at any width, and the version caption moved out so the
+             footer is a list of links and nothing that only looks like one. -->
         <div class="wiki-side-foot">
           <nav aria-label="Project" id="project-links">
             <a href="index.html">
@@ -895,24 +838,6 @@ const wikiTemplate = `<!doctype html>
               Telegram group
             </a>
           </nav>
-          <!-- The theme control, on a phone only. The bar above keeps its own
-               copy for a desktop; this one is for the sheet, which is the only
-               surface a phone reader has. Same button, moved. -->
-          <button
-            type="button"
-            class="wiki-theme-btn wiki-theme-btn-foot"
-            id="theme-toggle"
-            aria-label="Switch to dark theme"
-          >
-            <span class="wiki-theme-icon" aria-hidden="true">☾</span>
-            <span class="wiki-theme-label">Theme</span>
-          </button>
-          {{ if .Version }}
-          <!-- The build the docs describe. Rendered only when the generator was
-               given a version, so a local run without one does not print an
-               empty label. -->
-          <p class="wiki-version">Version {{ .Version }}</p>
-          {{ end }}
         </div>
       </aside>
 
@@ -1088,20 +1013,19 @@ const wikiTemplate = `<!doctype html>
       // reader's choice carries between the two surfaces instead of being asked
       // for twice.
       //
-      // There are two buttons, because the page is static: one in the bar for a
-      // desktop, one inside the links sheet for a phone, where the bar has no
-      // room for it. CSS shows exactly one of them, but both are wired here and
-      // painted together — a reader who switches in the sheet and then rotates
-      // to landscape must see the bar button already showing the new theme.
+      // One button, in the bar, at every width. It used to be two — a bar copy
+      // for a desktop and a row inside the links sheet for a phone — because the
+      // bar had no room below 60rem. The sheet copy was removed with the footer
+      // caption it sat beside; the bar is a flex row of three items, so it fits
+      // at 320px without one.
       //
       // The stored value is read before the body renders, by the inline script
       // in <head>. This listener only handles the click; it must not re-read
       // localStorage on load, because that would race the head script and could
       // repaint the page from the OS preference after a choice was applied.
       (function () {
-        var barBtn = document.getElementById("theme-toggle-bar");
-        var sheetBtn = document.getElementById("theme-toggle");
-        if (!barBtn && !sheetBtn) return;
+        var btn = document.getElementById("theme-toggle-bar");
+        if (!btn) return;
 
         function current() {
           return document.documentElement.classList.contains("dark") ? "dark" : "light";
@@ -1110,13 +1034,10 @@ const wikiTemplate = `<!doctype html>
           var dark = current() === "dark";
           // The icon shows the theme a click would switch TO, so it reads as an
           // affordance rather than as a status badge.
-          [barBtn, sheetBtn].forEach(function (btn) {
-            if (!btn) return;
-            var icon = btn.querySelector(".wiki-theme-icon");
-            if (icon) icon.textContent = dark ? "☀" : "☾";
-            btn.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
-            btn.setAttribute("aria-pressed", dark ? "true" : "false");
-          });
+          var icon = btn.querySelector(".wiki-theme-icon");
+          if (icon) icon.textContent = dark ? "☀" : "☾";
+          btn.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
+          btn.setAttribute("aria-pressed", dark ? "true" : "false");
         }
         function apply(next) {
           // Both classes are always set: leaving a stale one behind would make
@@ -1131,24 +1052,9 @@ const wikiTemplate = `<!doctype html>
           }
           paint();
         }
-        [barBtn, sheetBtn].forEach(function (btn) {
-          if (!btn) return;
-          btn.addEventListener("click", function () {
-            apply(current() === "dark" ? "light" : "dark");
-          });
+        btn.addEventListener("click", function () {
+          apply(current() === "dark" ? "light" : "dark");
         });
-        // Switching from inside the sheet closes it, so the reader sees the new
-        // theme rather than a menu still covering the page.
-        if (sheetBtn) {
-          sheetBtn.addEventListener("click", function () {
-            var links = document.getElementById("project-links");
-            var linksToggle = document.getElementById("links-open");
-            if (links && links.classList.contains("is-open")) {
-              links.classList.remove("is-open");
-              if (linksToggle) linksToggle.setAttribute("aria-expanded", "false");
-            }
-          });
-        }
         // Another tab changed the theme: follow it, so the two stay in step.
         window.addEventListener("storage", function (e) {
           if (e.key !== "9router-theme") return;

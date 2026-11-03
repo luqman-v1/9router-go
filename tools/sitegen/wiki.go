@@ -116,7 +116,7 @@ func generateWiki(wikiDir, outDir, repo, version string) error {
 
 	for _, p := range pages {
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, wikiData{Page: p, Pages: pages, Groups: groupBySection(pages), Repo: repo, Version: version}); err != nil {
+		if err := tmpl.Execute(&buf, wikiData{Page: p, Pages: pages, Groups: groupBySection(pages), Repo: repo}); err != nil {
 			return fmt.Errorf("render wiki page %s: %w", p.Slug, err)
 		}
 		if err := writeFile(filepath.Join(outDir, p.Slug+".html"), buf.Bytes()); err != nil {

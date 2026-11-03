@@ -383,39 +383,33 @@ func TestThemeSwitcherUsesTheDashboardContract(t *testing.T) {
 	if !strings.Contains(body, `localStorage.setItem("9router-theme", next)`) {
 		t.Error("the toggle does not store its choice under the dashboard's key")
 	}
-	if !strings.Contains(body, `id="theme-toggle"`) {
-		t.Error("the template has no theme toggle button inside the links sheet")
-	}
+	// One toggle, in the bar, at every width. It used to be two — a bar copy and
+	// a row inside the links sheet — because the bar had no room below 60rem. A
+	// second copy in the footer caption's place would be a control that appears
+	// beside a caption that no longer exists, and a reader would have to work out
+	// which one is live.
 	if !strings.Contains(body, `id="theme-toggle-bar"`) {
 		t.Error("the template has no theme toggle button in the bar")
 	}
-	// Each copy must be visible only where a reader can reach it. The bar copy is
-	// hidden below 60rem (where the links sheet is the only way in) and the sheet
-	// copy is hidden above it (where the sheet itself never opens). If both were
-	// always visible, a phone bar would carry two theme controls.
-	if !strings.Contains(wikiTemplate, "@media (max-width: 60rem) {\n        .wiki-theme-btn-bar {\n          display: none;") {
-		t.Error("the bar copy is not hidden on a phone")
+	if strings.Contains(body, `id="theme-toggle"`) {
+		t.Error("the links sheet still carries its own theme button; the bar's copy must be the only one")
 	}
-	if !strings.Contains(wikiTemplate, ".wiki-theme-btn-bar {\n          display: none;") {
-		t.Error("the bar copy is not hidden on a phone")
+	// The bar copy must never be hidden by width: the reason the sheet copy
+	// existed was that the bar gave it up below 60rem. If that media query comes
+	// back, a phone reader has no way to switch themes at all.
+	if strings.Contains(wikiTemplate, ".wiki-theme-btn-bar {\n          display: none;") {
+		t.Error("the bar copy is still hidden on a phone, which would leave no reachable theme control")
 	}
-	if !strings.Contains(wikiTemplate, "@media (min-width: 60.0625rem) {\n        .wiki-theme-btn-foot {\n          display: none;") {
-		t.Error("the sheet copy is not hidden on a desktop")
-	}
-	// Both copies must be painted together: switching in the sheet and then
-	// rotating to landscape must show the bar button already on the new theme.
-	if !strings.Contains(body, "[barBtn, sheetBtn].forEach") {
-		t.Error("the two buttons are not painted as one control")
+	// The single button must still be painted on every switch, or its icon keeps
+	// pointing at the theme that was just replaced.
+	if !strings.Contains(body, "paint();") {
+		t.Error("the toggle never repaints its own icon")
 	}
 	// Both classes are set on every switch; a stale one would leave the two rules
 	// disagreeing about which theme applies.
 	if !strings.Contains(body, `classList.toggle("dark", next === "dark")`) ||
 		!strings.Contains(body, `classList.toggle("light", next === "light")`) {
 		t.Error("the toggle does not set both classes, so a stale class can survive a switch")
-	}
-	// The icon must be re-painted, or it keeps pointing at the wrong theme.
-	if !strings.Contains(body, "paint();") {
-		t.Error("the toggle never repaints its own icon")
 	}
 }
 
@@ -563,13 +557,27 @@ func TestNavTriggerLivesInTheHeaderBar(t *testing.T) {
 	if got := strings.Count(wikiTemplate, `class="wiki-foot-icon"`); got != 3 {
 		t.Errorf("found %d footer icons, want 3 (project, repository, telegram)", got)
 	}
-	// The version must be rendered from the template's data, not hardcoded, so a
-	// release can bump it without an edit to the chrome.
-	if !strings.Contains(wikiTemplate, `class="wiki-version"`) {
-		t.Error("the footer has no version line")
+	// The footer is links only. It used to also carry the version caption, which
+	// was the one piece of text in that column that was not a control; a reader
+	// scanning the list could not tell at a glance that "Version 1.9.14" does
+	// not go anywhere. The theme control went the other way, up to the bar, so
+	// neither sits beside the links any more.
+	if strings.Contains(wikiTemplate, `class="wiki-version"`) {
+		t.Error("the footer still carries the version caption")
 	}
-	if !strings.Contains(wikiTemplate, "{{ .Version }}") {
-		t.Error("the version is not rendered from the generator's data")
+	if strings.Contains(wikiTemplate, "{{ .Version }}") {
+		t.Error("the template still renders a version: the field is unused and the footer is links only")
+	}
+	// The theme button must be the bar's last child, so it is the rightmost
+	// control — the position the reader looks to for a view setting.
+	bar := wikiTemplate[strings.Index(wikiTemplate, `<div class="masthead-inner">`):]
+	bar = bar[:strings.Index(bar, "</div>")]
+	themeAt := strings.Index(bar, `id="theme-toggle-bar"`)
+	if themeAt < 0 {
+		t.Fatal("no theme button in the bar")
+	}
+	if wordmarkAt := strings.Index(bar, `class="wordmark"`); themeAt < wordmarkAt {
+		t.Error("theme button is not after the wordmark: it is not at the bar's right edge")
 	}
 }
 
