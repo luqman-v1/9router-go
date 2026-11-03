@@ -23,13 +23,6 @@
   --link: #a64027;
   --link-hover: #7a2f1d;
   --brand: #e56a4a;
-  /* The wordmark plate. --brand is the accent for rings and hovers, where it is
-     a stroke rather than a background; as a plate behind 1rem text it measured
-     3.23:1, which fails AA. --mark-bg / --mark-fg are the pair that does not:
-     4.53:1 light, 5.51:1 dark, both measured, not chosen by eye. The brand
-     colour stays what it is everywhere else. */
-  --mark-bg: #b03e1f;
-  --mark-fg: #ffffff;
   --radius: 10px;
   --radius-lg: 14px;
   --font-body: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -48,10 +41,6 @@
     --text-muted: #9ca3af;
     --link: #ee8d6a;
     --link-hover: #f4b59c;
-    /* The wordmark plate in dark. A dark plate with white text fails; this pair
-       is 5.51:1. Same reason as the light block above. */
-    --mark-bg: #ee8d6a;
-    --mark-fg: #1a1a1a;
   }
 }
 
@@ -76,8 +65,6 @@
   --text-muted: #6b7280;
   --link: #a64027;
   --link-hover: #7a2f1d;
-  --mark-bg: #b03e1f;
-  --mark-fg: #ffffff;
 }
 .dark {
   color-scheme: dark;
@@ -90,8 +77,6 @@
   --text-muted: #9ca3af;
   --link: #ee8d6a;
   --link-hover: #f4b59c;
-  --mark-bg: #ee8d6a;
-  --mark-fg: #1a1a1a;
 }
 /* The class rules come after the media query on purpose. When the reader has
    chosen a theme, that choice must beat what the operating system prefers —
@@ -191,18 +176,21 @@ a:hover {
 }
 
 .wordmark-mark {
-  display: grid;
+  /* A container for the product's own icon, not a coloured plate: the glyph
+     inside carries its own dark plate and its own colours, so painting a
+     background here would put a second plate behind the real one. The square
+     stays 1.75rem and the radius is dropped — the SVG's own 12-unit corner
+     radius is the mark's, and two radii on one 28px square disagree visibly. */
+  display: inline-grid;
   place-items: center;
   width: 1.75rem;
   height: 1.75rem;
-  border-radius: 7px;
-  /* The measured pair, not --brand with white on top: brand-500 as a plate
-     behind 1rem text measured 3.23:1, which fails AA. See the --mark-bg comment
-     in :root for the numbers. */
-  background: var(--mark-bg, #b03e1f);
-  color: var(--mark-fg, #ffffff);
-  font-weight: 700;
-  font-size: 1rem;
+  flex-shrink: 0;
+}
+.wordmark-mark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .masthead nav {

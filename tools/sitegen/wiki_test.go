@@ -610,11 +610,20 @@ func TestNavTriggerLivesInTheHeaderBar(t *testing.T) {
 	if !strings.Contains(wikiTemplate, ".wiki-sheet-mark {") {
 		t.Error("the sheet mark has no rule, so the phone sheet head renders as bare text")
 	}
-	// Both marks must draw from the same token pair, or the two logos a phone
-	// reader sees are different colours.
-	if !strings.Contains(wikiTemplate, ".wiki-sheet-mark {") ||
-		!strings.Contains(wikiTemplate, "background: var(--mark-bg") {
-		t.Error("the sheet mark does not use the masthead's colour pair")
+	// Both marks must be the product's own icon — the same SVG the dashboard and
+	// the repository serve — rather than two different drawings of it. The glyph
+	// carries its own plate and its own colours, so neither mark paints a
+	// background: a plate behind it would be a second plate, and the two radii
+	// on one 28px square would disagree visibly.
+	iconCore := `<circle cx="24" cy="24" r="7" fill="#FF5C35"/>`
+	if !strings.Contains(wikiTemplate, iconCore) {
+		t.Error("the masthead no longer draws the product's own icon")
+	}
+	if got := strings.Count(wikiTemplate, iconCore); got != 2 {
+		t.Errorf("found %d copies of the icon core, want 2 (masthead + phone sheet head)", got)
+	}
+	if strings.Contains(wikiTemplate, ".wiki-sheet-mark {\n          display: grid;\n          place-items: center;\n          width: 1.25rem;\n          height: 1.25rem;\n          border-radius: 6px;") {
+		t.Error("the sheet mark still paints its own plate behind the real icon")
 	}
 	// The masthead wordmark must remain the only route to the project page.
 	if got := strings.Count(wikiTemplate, `class="wordmark"`); got != 1 {

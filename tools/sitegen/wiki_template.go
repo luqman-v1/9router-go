@@ -71,7 +71,14 @@ const wikiTemplate = `<!doctype html>
     <title>{{ .Page.Title }} — 9router-go Wiki</title>
     <meta name="description" content="9router-go documentation: {{ .Page.Title }}" />
     <link rel="stylesheet" href="style.css" />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e56a4a'/%3E%3Ctext x='16' y='23' font-family='system-ui,sans-serif' font-size='19' font-weight='700' fill='%23fff' text-anchor='middle'%3E9%3C/text%3E%3C/svg%3E" />
+    <!-- The product's own icon, not a stand-in: the same SVG the dashboard
+         serves from web/public/favicon.svg. The dark plate, the orange core and
+         the four coloured satellites are the mark a reader already knows from
+         the dashboard and the repository, so the wiki agrees with them instead
+         of drawing a second "9" plate in a different colour. Inlined as a data
+         URI rather than shipped as a file: the wiki embeds one stylesheet and
+         would otherwise need a second asset for a 48px image. -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' fill='%23181D27' rx='12'/%3E%3Crect width='47' height='47' x='.5' y='.5' stroke='%232B3245' rx='11.5'/%3E%3Ccircle cx='24' cy='24' r='7' fill='%23FF5C35'/%3E%3Ccircle cx='14' cy='16' r='3.5' fill='%23FF8469'/%3E%3Ccircle cx='34' cy='16' r='3.5' fill='%2338BDF8'/%3E%3Ccircle cx='14' cy='32' r='3.5' fill='%2334D399'/%3E%3Ccircle cx='34' cy='32' r='3.5' fill='%23A78BFA'/%3E%3Cpath stroke='%2394A3B8' stroke-linecap='round' stroke-width='1.75' d='M16.5 18L21 21.5M31.5 18L27 21.5M16.5 30L21 26.5M31.5 30L27 26.5'/%3E%3C/svg%3E" />
     <script>
       // Apply the stored theme before the first paint. Without this the page
       // renders in whatever the OS prefers and then repaints a moment later,
@@ -528,19 +535,22 @@ const wikiTemplate = `<!doctype html>
           font-weight: 650;
           letter-spacing: -0.01em;
         }
-        /* The same measured colour pair the masthead plate uses, so the two
-           marks a phone reader sees are the same colour and both pass AA. */
+        /* The same icon the masthead draws, at the sheet head's own size: a
+           container for the SVG, not a coloured plate. The glyph carries its own
+           dark plate and its own colours, so a background here would put a
+           second plate behind the real one. 1.25rem is the masthead's mark at
+           0.71 scale — the sheet head's text is 0.9375rem, so the mark tracks it. */
         .wiki-sheet-mark {
-          display: grid;
+          display: inline-grid;
           place-items: center;
           width: 1.25rem;
           height: 1.25rem;
-          border-radius: 6px;
-          background: var(--mark-bg, #b03e1f);
-          color: var(--mark-fg, #ffffff);
-          font-size: 0.75rem;
-          font-weight: 700;
-          line-height: 1;
+          flex-shrink: 0;
+        }
+        .wiki-sheet-mark svg {
+          display: block;
+          width: 100%;
+          height: 100%;
         }
         /* Icon-only, square, and at the left edge of the sheet — the same
            treatment the header trigger gets, so the two controls read as a
@@ -723,7 +733,23 @@ const wikiTemplate = `<!doctype html>
           <span class="wiki-menu-icon" aria-hidden="true">☰</span>
         </button>
         <a class="wordmark" href="index.html">
-          <span class="wordmark-mark" aria-hidden="true">9</span>
+          <!-- The product's own icon: the same mark the dashboard and the
+               repository use. A 1.75rem square holding the 48-unit glyph, drawn
+               as inline SVG rather than a span of text so it is the real mark at
+               any size and not a letter in a coloured box. aria-hidden, because
+               the word beside it is the accessible name. -->
+          <span class="wordmark-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" focusable="false">
+              <rect width="48" height="48" fill="#181D27" rx="12"/>
+              <rect width="47" height="47" x=".5" y=".5" stroke="#2B3245" rx="11.5"/>
+              <circle cx="24" cy="24" r="7" fill="#FF5C35"/>
+              <circle cx="14" cy="16" r="3.5" fill="#FF8469"/>
+              <circle cx="34" cy="16" r="3.5" fill="#38BDF8"/>
+              <circle cx="14" cy="32" r="3.5" fill="#34D399"/>
+              <circle cx="34" cy="32" r="3.5" fill="#A78BFA"/>
+              <path stroke="#94A3B8" stroke-linecap="round" stroke-width="1.75" d="M16.5 18L21 21.5M31.5 18L27 21.5M16.5 30L21 26.5M31.5 30L27 26.5"/>
+            </svg>
+          </span>
           <span>9router-go</span>
         </a>
         <!-- The theme switcher, in the bar's far right. It sits beside the
@@ -760,7 +786,22 @@ const wikiTemplate = `<!doctype html>
             <span class="wiki-sheet-close-icon" aria-hidden="true">✕</span>
           </button>
           <strong>
-            <span class="wiki-sheet-mark" aria-hidden="true">9</span>
+            <!-- The same icon the masthead draws, at the sheet head's own size.
+               The sheet is where a phone reader lands, so it is the one place
+               besides the bar that names the product — and it should be the
+               real mark, not a second drawing of it. -->
+            <span class="wiki-sheet-mark" aria-hidden="true">
+              <svg viewBox="0 0 48 48" focusable="false">
+                <rect width="48" height="48" fill="#181D27" rx="12"/>
+                <rect width="47" height="47" x=".5" y=".5" stroke="#2B3245" rx="11.5"/>
+                <circle cx="24" cy="24" r="7" fill="#FF5C35"/>
+                <circle cx="14" cy="16" r="3.5" fill="#FF8469"/>
+                <circle cx="34" cy="16" r="3.5" fill="#38BDF8"/>
+                <circle cx="14" cy="32" r="3.5" fill="#34D399"/>
+                <circle cx="34" cy="32" r="3.5" fill="#A78BFA"/>
+                <path stroke="#94A3B8" stroke-linecap="round" stroke-width="1.75" d="M16.5 18L21 21.5M31.5 18L27 21.5M16.5 30L21 26.5M31.5 30L27 26.5"/>
+              </svg>
+            </span>
             9router-go
           </strong>
         </div>
