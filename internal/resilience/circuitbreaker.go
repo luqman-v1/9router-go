@@ -288,22 +288,55 @@ var (
 	registry   = map[string]*Breaker{}
 )
 
-// BreakerFor returns the breaker for a provider, creating it on first use with
-// the given options. Later calls do not change an existing breaker's options,
-// so a provider's threshold stays stable once it has state.
+// BreakerKey builds the registry key for a provider plus its egress.
+//
+// The egress is the proxy pool a connection routed through, or "" when none
+// did. It is part of the key because a dead egress is not a dead provider: one
+// pool whose endpoint refuses connections must not open the breaker for the
+// provider's direct path or for its other pools, or a single broken pool takes
+// the whole provider out of rotation.
+//
+// "direct" is the conventional spelling the semaphore uses for a request with
+// no pool, and it is accepted here so a caller that carries that spelling
+// still lands on the same breaker as one that carries none at all.
+//
+// This is the granularity ExtremeRouter's proxy-aware breaker uses, and the
+// reason the account semaphore has always carried this component while the
+// breaker did not.
+func BreakerKey(provider, proxyHash string) string {
+	if proxyHash == "" || proxyHash == "direct" {
+		return provider
+	}
+	return provider + "|" + proxyHash
+}
+
+// BreakerFor returns the breaker for a provider's direct path, creating it on
+// first use with the given options. Later calls do not change an existing
+// breaker's options, so a provider's threshold stays stable once it has state.
 func BreakerFor(provider string, opts BreakerOptions) *Breaker {
+	return BreakerForKey(provider, "", opts)
+}
+
+// BreakerForKey returns the breaker for one provider egress, creating it on
+// first use. An empty egress is the provider's direct path.
+//
+// The direct breaker is looked up under the bare provider name, so the
+// dashboard's per-provider panel keeps working and a deployment that routes
+// every connection directly keeps exactly one breaker per provider, as before.
+func BreakerForKey(provider, proxyHash string, opts BreakerOptions) *Breaker {
+	key := BreakerKey(provider, proxyHash)
 	registryMu.Lock()
 	defer registryMu.Unlock()
-	if b, ok := registry[provider]; ok {
+	if b, ok := registry[key]; ok {
 		return b
 	}
 	b := &Breaker{
-		name:  provider,
+		name:  key,
 		opts:  opts.withDefaults(),
 		state: StateClosed,
 		now:   time.Now,
 	}
-	registry[provider] = b
+	registry[key] = b
 	return b
 }
 

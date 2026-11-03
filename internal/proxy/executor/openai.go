@@ -11,6 +11,7 @@ import (
 
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/guardrails"
+	"9router/proxy/internal/jsonfence"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/shutdown"
@@ -486,6 +487,13 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 		return guardrailBlockFailure(gerr)
 	}
 	body = filtered
+	// A model asked for machine-readable JSON may still answer with a ```json
+	// fence. Unwrap it here — after the guardrail has seen the model's own
+	// words, before either write path hands bytes to the client — so the
+	// unwrapped body is what the log buffer and both the OpenAI and Claude
+	// write paths send. Only a body whose contents parse as JSON is unwrapped,
+	// and only for a request that asked for JSON.
+	body = jsonfence.ApplyContents(ctx, body)
 
 	if buf != nil {
 		buf.Write(body)

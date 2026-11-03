@@ -15,6 +15,7 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/observ"
+	"9router/proxy/internal/usagetracker"
 	"9router/proxy/web"
 	json "encoding/json/v2"
 	"github.com/go-chi/chi/v5"
@@ -60,6 +61,28 @@ func SetupRoutes(r interface {
 		// instance so its panel reports the layer a request was judged
 		// against, not a second one that can disagree with it.
 		dashH.Resilience = chatH.Resilience
+		// The same instance feeds the usage SSE stream, so an operator watching
+		// the request flow sees an egress's breaker go OPEN beside the requests
+		// that stopped being served. The tracker takes a closure rather than
+		// the controller because it must not import the resilience package
+		// (see usagetracker.StreamPayload.Breakers).
+		usagetracker.GetTracker().SetBreakerStatus(func() []usagetracker.BreakerSnapshot {
+			if chatH.Resilience == nil {
+				return nil
+			}
+			breakers, _ := chatH.Resilience.Statuses()
+			out := make([]usagetracker.BreakerSnapshot, 0, len(breakers))
+			for _, b := range breakers {
+				out = append(out, usagetracker.BreakerSnapshot{
+					Name:         b.Name,
+					State:        string(b.State),
+					FailureCount: b.FailureCount,
+					SuccessCount: b.SuccessCount,
+					RetryAfterMs: b.RetryAfterMs,
+				})
+			}
+			return out
+		})
 	}
 	// Chat & Models Domain (no version here: the four version GETs are
 	// public in SetupServerRouter, upstream PUBLIC_API_PATHS parity).

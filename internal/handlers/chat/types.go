@@ -67,6 +67,10 @@ type ChatHandler struct {
 	// period ends. See benchTimedOutModel.
 	timeoutBenchMu sync.Mutex
 	timeoutBench   map[string]time.Time
+	// comboBudgetMu guards comboBudget, the per-combo call counter behind the
+	// BudgetCalls admission gate. See comboBudgetExhausted.
+	comboBudgetMu sync.Mutex
+	comboBudget   map[string]*comboBudgetCounter
 	// SessionAffinity pins client sessions to upstream connection accounts.
 	sessionAffinityMu sync.Mutex
 	SessionAffinity   *SessionAffinityStore

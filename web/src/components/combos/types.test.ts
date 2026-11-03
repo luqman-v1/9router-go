@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'bun:test'
 import {
+  budgetWindowMsToMinutes,
   clearJudgeModel,
   COMBO_SORT_OPTIONS,
   COMBO_STRATEGIES,
   effectiveComboStrategy,
   isComboSorted,
+  MAX_BUDGET_CALLS,
+  MAX_BUDGET_WINDOW_MINUTES,
   MAX_FIRST_TOKEN_TIMEOUT_MS,
   MAX_FIRST_TOKEN_TIMEOUT_SECONDS,
   graceMsToSeconds,
   graceSecondsToMs,
+  updateComboBudgetCalls,
+  updateComboBudgetWindow,
   updateFirstTokenGrace,
   secondsToTimeoutMs,
   timeoutMsToSeconds,
@@ -402,5 +407,45 @@ describe('timeout grace period', () => {
     const cleared = updateFirstTokenGrace(set, 'primary', undefined)
     expect(cleared.primary).toEqual(current.primary)
     expect(updateFirstTokenGrace(current, 'primary', -5)).toBe(current)
+  })
+})
+
+describe('combo call budget', () => {
+  it('sets the ceiling and the window without touching sibling keys', () => {
+    const current: Record<string, ComboStrategyInfo> = {
+      primary: { fallbackStrategy: 'cascade', judgeModel: 'judge' },
+      other: { budgetCalls: 5 }
+    }
+    const set = updateComboBudgetCalls(current, 'primary', 100)
+    expect(set.primary).toEqual({ fallbackStrategy: 'cascade', judgeModel: 'judge', budgetCalls: 100 })
+    expect(set.other).toBe(current.other)
+    expect(current.primary.budgetCalls).toBeUndefined()
+
+    const windowed = updateComboBudgetWindow(set, 'primary', 300000)
+    expect(windowed.primary).toEqual({ fallbackStrategy: 'cascade', judgeModel: 'judge', budgetCalls: 100, budgetWindowMs: 300000 })
+  })
+  it('clearing the ceiling removes the key, and the last key removes the combo', () => {
+    const current = { primary: { budgetCalls: 10, budgetWindowMs: 60000 } }
+    const cleared = updateComboBudgetCalls(current, 'primary', 0)
+    expect(cleared.primary).toEqual({ budgetWindowMs: 60000 })
+    const gone = updateComboBudgetWindow(cleared, 'primary', 0)
+    expect(gone.primary).toBeUndefined()
+    expect(current.primary).toEqual({ budgetCalls: 10, budgetWindowMs: 60000 })
+  })
+  it('refuses out-of-range and non-integer input', () => {
+    const current = { primary: { budgetCalls: 10 } }
+    expect(updateComboBudgetCalls(current, 'primary', -1)).toBe(current)
+    expect(updateComboBudgetCalls(current, 'primary', 1.5)).toBe(current)
+    expect(updateComboBudgetCalls(current, 'primary', MAX_BUDGET_CALLS + 1)).toBe(current)
+    expect(updateComboBudgetWindow(current, 'primary', 0)).not.toBe(current)
+    expect(updateComboBudgetWindow(current, 'primary', -1)).toBe(current)
+    expect(updateComboBudgetWindow(current, 'primary', 1.5)).toBe(current)
+    expect(updateComboBudgetWindow(current, 'primary', MAX_BUDGET_WINDOW_MINUTES * 60000 + 60000)).toBe(current)
+  })
+  it('reports an absent window as the backend default', () => {
+    expect(budgetWindowMsToMinutes(undefined)).toBe(60)
+    expect(budgetWindowMsToMinutes(0)).toBe(60)
+    expect(budgetWindowMsToMinutes(300000)).toBe(5)
+    expect(budgetWindowMsToMinutes(90000)).toBe(2)
   })
 })

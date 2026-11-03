@@ -42,6 +42,18 @@ type ComboStrategy struct {
 	// on every failure path, so this flag is a no-op there.
 	RespectStoredOrder bool     `json:"respectStoredOrder,omitempty"`
 	FallbackCombos     []string `json:"fallbackCombos,omitempty"`
+	// BudgetCalls caps how many requests this combo may serve inside one
+	// budget window. Zero (the default) means unlimited. Reaching the ceiling
+	// withholds the combo for the rest of the window, so the caller falls
+	// through to whatever it would have used without the combo.
+	//
+	// The counter is process-local and in memory: a restart opens a fresh
+	// window, because a durable counter would come back from an outage still
+	// capped from before it, which is a spend the operator cannot account for.
+	BudgetCalls int `json:"budgetCalls,omitempty"`
+	// BudgetWindowMs is the window a BudgetCalls ceiling spans. Zero means
+	// DefaultBudgetWindowMs.
+	BudgetWindowMs int `json:"budgetWindowMs,omitempty"`
 }
 
 // DefaultFirstTokenGraceMs is the grace period applied after a model response

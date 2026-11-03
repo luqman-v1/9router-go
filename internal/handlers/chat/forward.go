@@ -14,6 +14,7 @@ import (
 	json "9router/proxy/internal/fastjson"
 	"9router/proxy/internal/guardrails"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/jsonfence"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	internalproxy "9router/proxy/internal/proxy"
@@ -574,6 +575,13 @@ func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWri
 		return guardrailBlockedError()
 	}
 	body = filtered
+	// A model asked for machine-readable JSON may still answer with a ```json
+	// fence. Unwrap it here — after the guardrail has seen the model's own
+	// words, before either write path hands bytes to the client — so the
+	// unwrapped body is what the cache stores and what both the OpenAI and
+	// Claude write paths send. Only a body whose contents parse as JSON is
+	// unwrapped, and only for a request that asked for JSON.
+	body = jsonfence.ApplyContents(ctx, body)
 
 	// A /v1/responses client on a Chat Completions upstream needs the answer in
 	// the Responses shape; translate marks a Claude client, which it is not.
