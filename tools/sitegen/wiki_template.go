@@ -168,7 +168,12 @@ const wikiTemplate = `<!doctype html>
       .wiki-side-foot {
         flex-shrink: 0;
         margin-top: auto;
-        padding: 0.75rem 0 0.25rem;
+        /* The footer is chrome, and every pixel it costs is a pixel the nav
+           loses. It measured 85px — 44 of which was one row of icons at a
+           target size the nav rows above it do not need either (they are 33px).
+           Padding is now even and smaller, and the icon row is 32px: still above
+           the 24px minimum target floor, and 13px shorter. */
+        padding: 0.5rem 0 0.375rem;
         background: var(--bg);
         border-top: 1px solid var(--border-subtle);
       }
@@ -190,11 +195,13 @@ const wikiTemplate = `<!doctype html>
         display: flex;
         align-items: center;
         justify-content: center;
-        /* 44px square, the same comfortable target the nav rows use, so an
-           icon-only control is not harder to hit than the labelled ones above
-           it. Without this a 18px icon is a target well under the 24px floor. */
-        width: 2.75rem;
-        height: 2.75rem;
+        /* 32px square, not the 44 the first icon-only version used. 44 was
+           measured against the nav rows and found to be the same — but they are
+           33px, so the footer was the one place demanding a target its own
+           siblings do not get. 32px is still above the 24px floor and is what
+           makes the footer 13px shorter, which the nav spends on links. */
+        width: 2rem;
+        height: 2rem;
         padding: 0;
         border-radius: var(--radius);
         color: var(--text-muted);
@@ -209,12 +216,12 @@ const wikiTemplate = `<!doctype html>
         outline-offset: 1px;
       }
       /* The glyph is muted by default and lifts on hover, so the control lights
-         up as one thing. It is larger than the row version was: an icon that
-         carries the label's whole job needs to be readable at a glance, and
-         18px inside a 44px target reads as a speck. */
+         up as one thing. 18px, not 20: at a 32px target a 20px glyph leaves 6px
+         of breathing room and the hover tint behind it barely shows. 18 leaves
+         7px per side and the tint reads as a plate under the icon. */
       .wiki-foot-icon {
-        width: 1.25rem;
-        height: 1.25rem;
+        width: 1.125rem;
+        height: 1.125rem;
         flex-shrink: 0;
         color: var(--text-subtle);
       }
@@ -227,7 +234,7 @@ const wikiTemplate = `<!doctype html>
          reads as build provenance rather than something to click — it is the
          only text in the footer, and every other thing here is a control. */
       .wiki-version {
-        margin: 0.25rem 0 0;
+        margin: 0.1875rem 0 0;
         font-size: 0.75rem;
         color: var(--text-subtle);
       }
