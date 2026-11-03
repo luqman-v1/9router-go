@@ -125,11 +125,11 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 	}
 
 	if projectID == "" {
-			if p, _, _ := chat.FetchAntigravityProjectID(r.Context(), client, apiKey, connData); p != "" {
-				projectID = p
-				h.ChatH.StoreAntigravityProjectID(conn.ID, p)
-			}
+		if p, _, _ := chat.FetchAntigravityProjectID(r.Context(), client, apiKey, connData); p != "" {
+			projectID = p
+			h.ChatH.StoreAntigravityProjectID(conn.ID, p)
 		}
+	}
 	if projectID == "" {
 		return fmt.Errorf("antigravity: no project ID — onboard the account in Antigravity (antigravity.google) then re-login")
 	}
