@@ -2,10 +2,19 @@ package translator
 
 import (
 	"regexp"
+	"strings"
 )
 
-// isValidRegex reports whether pattern is a valid Go regexp (proxy for JS RegExp validity).
+func hasLookaround(p string) bool {
+	return strings.Contains(p, "(?=") || strings.Contains(p, "(?!") || strings.Contains(p, "(?<=") || strings.Contains(p, "(?<!")
+}
+
+// isValidRegex reports whether pattern is a valid regex constraint without lookarounds
+// (lookarounds are rejected by OpenAI, DeepSeek, and strict JSON Schema validators).
 func isValidRegex(pattern string) bool {
+	if hasLookaround(pattern) {
+		return false
+	}
 	_, err := regexp.Compile(pattern)
 	return err == nil
 }
@@ -52,11 +61,10 @@ func stripPatterns(schema any, removed *int) any {
 	}
 }
 
-// NormalizeToolSchemasForProvider strips invalid pattern constraints for OpenRouter.
-// Only provider == "openrouter" is affected; other providers return tools unchanged.
-// Port of open-sse/utils/toolSchemaCompatibility.js normalizeToolSchemasForProvider (PR #3665).
+// NormalizeToolSchemasForProvider strips invalid pattern constraints (including regex lookarounds
+// like (?=...), (?!...), (?<=...), (?<!...) which OpenAI, DeepSeek, and strict JSON Schema validators reject).
 func NormalizeToolSchemasForProvider(provider string, tools []any) ([]any, int) {
-	if provider != "openrouter" || len(tools) == 0 {
+	if provider == "anthropic" || len(tools) == 0 {
 		return tools, 0
 	}
 	removed := 0

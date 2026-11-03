@@ -863,6 +863,12 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		pipedBody = normalizeChatTokenFields(pipedBody)
 	}
 
+	// Strict pattern validation: strip regex lookarounds and malformed patterns
+	// that OpenAI, DeepSeek, and strict JSON Schema validators reject with HTTP 400.
+	if !claudeNative && !upstreamClaude {
+		pipedBody = sanitizeOutboundToolSchemas(pipedBody, provider)
+	}
+
 	start := time.Now()
 	metrics := &streamMetrics{}
 	var fwdErr error
@@ -1827,4 +1833,25 @@ func isModelScopedError(statusCode int, errorText string, model string, bodies .
 	}
 
 	return false
+}
+
+func sanitizeOutboundToolSchemas(body []byte, provider string) []byte {
+	var bodyMap map[string]any
+	if err := json.Unmarshal(body, &bodyMap); err != nil {
+		return body
+	}
+	tools, ok := bodyMap["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		return body
+	}
+	normalized, removed := translator.NormalizeToolSchemasForProvider(provider, tools)
+	if removed == 0 {
+		return body
+	}
+	bodyMap["tools"] = normalized
+	log.Debug("tool_schema", "stripped invalid patterns", "provider", provider, "removed", removed)
+	if newBody, err := json.Marshal(bodyMap); err == nil {
+		return newBody
+	}
+	return body
 }

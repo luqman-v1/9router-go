@@ -258,3 +258,40 @@ func TestFixAntigravityContents(t *testing.T) {
 		t.Errorf("expected signature backfilled, got %q", req.Contents[1].Parts[0].ThoughtSignature)
 	}
 }
+
+func TestNormalizeToolSchemasForProvider_StripsLookaround(t *testing.T) {
+	tools := []any{
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": "query_collection",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"collection": map[string]any{
+							"type":    "string",
+							"pattern": "^(?![0-9])(?=.*[a-z]).*$",
+						},
+						"limit": map[string]any{
+							"type":    "integer",
+							"pattern": "^[0-9]+$",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// 1. OpenAI strips lookaround regex
+	toolsOpenAI, removed := NormalizeToolSchemasForProvider("openai", tools)
+	if removed != 1 {
+		t.Fatalf("expected 1 lookaround pattern removed, got %d", removed)
+	}
+	raw, _ := json.Marshal(toolsOpenAI)
+	if bytes.Contains(raw, []byte("(?![0-9])")) {
+		t.Errorf("expected lookaround to be stripped, got %s", string(raw))
+	}
+	if !bytes.Contains(raw, []byte("^[0-9]+$")) {
+		t.Errorf("expected valid regex pattern to be kept, got %s", string(raw))
+	}
+}
