@@ -39,12 +39,19 @@ var codebuddyRateLimitRegex = regexp.MustCompile(`(?i)超出频率限制|frequen
 // Identity the official WorkBuddy AI 5.8.4 desktop client — the international
 // channel of CodeBuddy since the host moved off www.codebuddy.ai — puts on
 // POST /v2/chat/completions. Capture-verified upstream (open-sse
-// providers/registry/codebuddy-intl.js). The CLI/2.108.1 values in
-// codebuddyHeaders below belong to the Tencent CN channel only.
+// providers/registry/codebuddy-intl.js). The CLI values in codebuddyHeaders
+// below belong to the Tencent CN channel only: they are the official
+// @tencent-ai/codebuddy-code client, unpacked from 2.179.3 on 2026-11-03.
+// Its UA is two segments because the shipped adapter drops the OpenAI SDK's
+// own user-agent, and its runtime is the node build its launcher downloads.
 const (
 	codebuddyIntlUserAgent = "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0"
 	codebuddyIntlIDEVer    = "5.8.4"
 	codebuddyIntlDomain    = "www.workbuddy.ai"
+
+	codebuddyCLIVersion     = "2.179.3"
+	codebuddyCLINodeVersion = "v22.23.3"
+	codebuddyCLISDKVersion  = "7.39.0"
 
 	// codebuddyConversationHeader* name the family the intl gateway's channel
 	// verification demands: without it every chat request is answered
@@ -372,26 +379,28 @@ func codebuddyDomain(req *Request, cfg *providers.ProviderConfig, intl bool) str
 func codebuddyIdentityHeaders(req *Request, cfg *providers.ProviderConfig) map[string]string {
 	return map[string]string{
 		"Content-Type":                "application/json; charset=utf-8",
-		"User-Agent":                  "CLI/2.108.1 CodeBuddy/2.108.1",
+		"User-Agent":                  "CLI/" + codebuddyCLIVersion + " CodeBuddy/" + codebuddyCLIVersion,
 		"X-Product":                   "SaaS",
 		"X-App":                       "cli",
 		"X-IDE-Type":                  "CLI",
 		"X-IDE-Name":                  "CLI",
-		"X-IDE-Version":               "2.108.1",
+		"X-IDE-Version":               codebuddyCLIVersion,
 		"X-Private-Data":              "false",
 		"X-Requested-With":            "XMLHttpRequest",
 		"X-CodeBuddy-Request":         "1",
 		"X-Domain":                    codebuddyDomain(req, cfg, false),
 		"X-Stainless-Runtime":         "node",
-		"X-Stainless-Runtime-Version": "v24.11.1",
+		"X-Stainless-Runtime-Version": codebuddyCLINodeVersion,
 		"X-Stainless-Lang":            "js",
 		"X-Stainless-Arch":            "x64",
 		"X-Stainless-Os":              "Windows",
-		"X-Stainless-Package-Version": "6.25.0",
+		"X-Stainless-Package-Version": codebuddyCLISDKVersion,
 		"X-Stainless-Helper-Method":   "stream",
 		"X-Stainless-Retry-Count":     "0",
 		"X-Agent-Intent":              "craft",
 		"X-Agent-Purpose":             "conversation",
+		"X-Agent-Runtime":             "other",
+		"X-Agent-Type":                "main",
 	}
 }
 

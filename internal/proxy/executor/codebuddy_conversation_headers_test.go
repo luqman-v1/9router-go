@@ -95,13 +95,13 @@ func TestCodebuddyHeaders_ChannelVerification(t *testing.T) {
 
 	cnHeaders := codebuddyHeaders(cnReq, cnCfg, cnReq.Body)
 
-	if cnHeaders["User-Agent"] != "CLI/2.108.1 CodeBuddy/2.108.1" {
+	if cnHeaders["User-Agent"] != "CLI/2.179.3 CodeBuddy/2.179.3" {
 		t.Errorf("cn User-Agent = %q", cnHeaders["User-Agent"])
 	}
 	if cnHeaders["X-App"] != "cli" {
 		t.Errorf("cn X-App = %q", cnHeaders["X-App"])
 	}
-	if cnHeaders["X-IDE-Type"] != "CLI" || cnHeaders["X-IDE-Name"] != "CLI" || cnHeaders["X-IDE-Version"] != "2.108.1" {
+	if cnHeaders["X-IDE-Type"] != "CLI" || cnHeaders["X-IDE-Name"] != "CLI" || cnHeaders["X-IDE-Version"] != "2.179.3" {
 		t.Errorf("cn IDE headers mismatch: type=%q name=%q ver=%q", cnHeaders["X-IDE-Type"], cnHeaders["X-IDE-Name"], cnHeaders["X-IDE-Version"])
 	}
 	if cnHeaders["X-Domain"] != "copilot.tencent.com" {
@@ -109,6 +109,17 @@ func TestCodebuddyHeaders_ChannelVerification(t *testing.T) {
 	}
 	if cnHeaders["X-Stainless-Lang"] != "js" || cnHeaders["X-Stainless-Runtime"] != "node" {
 		t.Errorf("cn Stainless headers mismatch: lang=%q runtime=%q", cnHeaders["X-Stainless-Lang"], cnHeaders["X-Stainless-Runtime"])
+	}
+	// Read off a real 2.179.3 run: SDK 7.39.0, the launcher's bundled node, and
+	// the two agent headers the CLI always sends.
+	if cnHeaders["X-Stainless-Package-Version"] != "7.39.0" {
+		t.Errorf("cn X-Stainless-Package-Version = %q, want 7.39.0", cnHeaders["X-Stainless-Package-Version"])
+	}
+	if cnHeaders["X-Stainless-Runtime-Version"] != "v22.23.3" {
+		t.Errorf("cn X-Stainless-Runtime-Version = %q, want v22.23.3", cnHeaders["X-Stainless-Runtime-Version"])
+	}
+	if cnHeaders["X-Agent-Runtime"] != "other" || cnHeaders["X-Agent-Type"] != "main" {
+		t.Errorf("cn agent runtime/type = %q/%q, want other/main", cnHeaders["X-Agent-Runtime"], cnHeaders["X-Agent-Type"])
 	}
 	if !hex32RE.MatchString(cnHeaders["X-Request-ID"]) {
 		t.Errorf("cn X-Request-ID = %q, want 32 hex chars", cnHeaders["X-Request-ID"])

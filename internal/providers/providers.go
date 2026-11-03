@@ -718,7 +718,9 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme:     "bearer",
 		ThinkingFormat: "openai",
 		StaticHeaders: map[string]string{
-			"User-Agent":          "CLI/2.108.1 CodeBuddy/2.108.1",
+			// Official @tencent-ai/codebuddy-code 2.179.3 UA (see
+			// executor/codebuddy.go codebuddyCLIVersion).
+			"User-Agent":          "CLI/2.179.3 CodeBuddy/2.179.3",
 			"X-Product":           "SaaS",
 			"X-IDE-Type":          "CLI",
 			"X-IDE-Name":          "CLI",

@@ -146,6 +146,18 @@ fingerprint mismatch answers "Illegal API invocation from an unapproved
 channel". The classifier now tells them apart instead of reporting one generic
 channel-verification cause: missing family, wrong identity, or a gate that moved.
 
+**CN identity refreshed.** The Tencent channel's client was pinned at
+`CLI/2.108.1 CodeBuddy/2.108.1` with `X-Stainless-Runtime-Version: v24.11.1`,
+`X-Stainless-Package-Version: 6.25.0` and no agent-runtime/type headers. Running
+the published client (`@tencent-ai/codebuddy-code@2.179.3`, 2026-11-03) against a
+local sink shows what it actually puts on the wire: two-segment
+`CLI/2.179.3 CodeBuddy/2.179.3` (the shipped adapter drops the OpenAI SDK's own
+user-agent), `X-IDE-Version: 2.179.3`, SDK `7.39.0`, node `v22.23.3` (the build
+its launcher downloads and verifies, not the host interpreter), plus
+`X-Agent-Runtime: other` and `X-Agent-Type: main`. All of it now comes from
+`codebuddyCLIVersion` / `codebuddyCLINodeVersion` / `codebuddyCLISDKVersion`, so
+the next bump is one line each.
+
 **Residual risk.** The 5.8.4 identity and the trace family are upstream
 capture-verified, not re-derived here without an intl credential; if the gateway
 adds a required header, the 11128 diagnostic now says so instead of surfacing a

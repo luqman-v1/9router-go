@@ -358,7 +358,7 @@ func TestForwardCodebuddy_RelayKeepsChannel(t *testing.T) {
 	}{
 		{"intl relay", "codebuddy-intl", "https://www.workbuddy.ai", codebuddyIntlUserAgent, true},
 		{"intl alias relay", "cbai", "https://www.workbuddy.ai", codebuddyIntlUserAgent, true},
-		{"cn relay", "codebuddy-cn", "https://copilot.tencent.com", "CLI/2.108.1 CodeBuddy/2.108.1", false},
+		{"cn relay", "codebuddy-cn", "https://copilot.tencent.com", "CLI/2.179.3 CodeBuddy/2.179.3", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var captured *http.Request

@@ -400,7 +400,7 @@ func TestForwardCodebuddyCN_WireHeadersAndBody(t *testing.T) {
 	cfg := &providers.ProviderConfig{
 		BaseURL: ts.URL,
 		StaticHeaders: map[string]string{
-			"User-Agent":          "CLI/2.108.1 CodeBuddy/2.108.1",
+			"User-Agent":          "CLI/2.179.3 CodeBuddy/2.179.3",
 			"X-Product":           "SaaS",
 			"X-IDE-Type":          "CLI",
 			"X-IDE-Name":          "CLI",
@@ -435,13 +435,13 @@ func TestForwardCodebuddyCN_WireHeadersAndBody(t *testing.T) {
 	}
 
 	// Verify headers
-	if capturedReq.Header.Get("User-Agent") != "CLI/2.108.1 CodeBuddy/2.108.1" {
+	if capturedReq.Header.Get("User-Agent") != "CLI/2.179.3 CodeBuddy/2.179.3" {
 		t.Errorf("User-Agent = %q", capturedReq.Header.Get("User-Agent"))
 	}
 	if capturedReq.Header.Get("X-App") != "cli" {
 		t.Errorf("X-App = %q", capturedReq.Header.Get("X-App"))
 	}
-	if capturedReq.Header.Get("X-IDE-Type") != "CLI" || capturedReq.Header.Get("X-IDE-Name") != "CLI" || capturedReq.Header.Get("X-IDE-Version") != "2.108.1" {
+	if capturedReq.Header.Get("X-IDE-Type") != "CLI" || capturedReq.Header.Get("X-IDE-Name") != "CLI" || capturedReq.Header.Get("X-IDE-Version") != "2.179.3" {
 		t.Errorf("X-IDE-* mismatch")
 	}
 	if capturedReq.Header.Get("X-Private-Data") != "false" {
