@@ -642,11 +642,43 @@ func TestNavTriggerLivesInTheHeaderBar(t *testing.T) {
 	}
 }
 
-// The search index must be reachable from every keystroke, which means the
-// variable holding it has to outlive the fetch that fills it. It previously
-// lived only as a parameter of render(), so the input handler threw a
-// ReferenceError and search silently returned nothing on every page — a defect
-// no render or CSS check can see, because the box still looks correct.
+// The shell is the sticky sidebar's containing block, so bottom padding on it
+// bounds how far down the sidebar can travel. With 4rem there the sidebar
+// stopped 64px short of the window bottom at the end of a page and its search
+// box was pushed up over the masthead — measured 32px of the bar covered. The
+// padding moved to the article column, where it is breathing room for the text
+// and cannot move the sidebar.
+func TestShellDoesNotBoundTheStickySidebar(t *testing.T) {
+	if !strings.Contains(wikiTemplate, ".wiki-shell {") {
+		t.Fatal("no .wiki-shell rule found")
+	}
+	rule := cssRule(t, wikiTemplate, ".wiki-shell")
+	if strings.Contains(rule, "padding-bottom: 4rem") || strings.Contains(rule, "padding: 2rem 1.25rem 4rem") {
+		t.Error("the shell still carries bottom padding: it bounds the sticky sidebar and pushes the search box over the masthead at the end of a page")
+	}
+	if !strings.Contains(wikiTemplate, "margin-bottom: 4rem;") {
+		t.Error("the article column has no bottom margin: the shell's 4rem of breathing room was dropped instead of moved")
+	}
+	// The phone override keeps the shell's own padding and must zero the
+	// article's margin, or the two add up to 7rem of dead space at the bottom.
+	if !strings.Contains(wikiTemplate, "@media (max-width: 60rem) {\n        .wiki-main {\n          margin-bottom: 0;\n        }\n      }") {
+		t.Error("the phone override does not zero the article's bottom margin")
+	}
+}
+// cssRule returns the body of the first CSS rule whose selector is exactly sel.
+func cssRule(t *testing.T, css, sel string) string {
+	t.Helper()
+	at := strings.Index(css, sel+" {")
+	if at < 0 {
+		t.Fatalf("no rule for %s", sel)
+	}
+	body := css[at+len(sel)+2:]
+	if end := strings.Index(body, "}"); end >= 0 {
+		body = body[:end]
+	}
+	return body
+}
+
 func TestSearchIndexIsInScopeForEveryKeystroke(t *testing.T) {
 	// The closure variable that survives the fetch.
 	if !strings.Contains(wikiTemplate, "var index = [];") {

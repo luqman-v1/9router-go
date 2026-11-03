@@ -109,7 +109,16 @@ const wikiTemplate = `<!doctype html>
         gap: 2rem;
         max-width: 76rem;
         margin: 0 auto;
-        padding: 2rem 1.25rem 4rem;
+        /* No bottom padding here. The shell is the grid area that the sticky
+           sidebar is measured against, and a sticky box cannot travel further
+           down than the bottom of its containing block — so this padding used
+           to stop the sidebar 64px short of the window bottom and push the
+           search box up over the masthead once the reader reached the end of
+           the page. Measured at the bottom of the longest page: the sidebar's
+           top was 36px against a 68px masthead, so the search box covered 32px
+           of the bar. The bottom margin belongs on the article column, where it
+           is breathing room for the text and cannot move the sidebar. */
+        padding: 2rem 1.25rem 0;
         align-items: start;
       }
       /* The sidebar is a sticky column that runs the full height of the window
@@ -384,7 +393,20 @@ const wikiTemplate = `<!doctype html>
            URL shrink the column instead of pushing the shell open. */
         min-width: 0;
         max-width: 100%;
+        /* The bottom breathing room the shell used to carry. It moved here
+           because on the shell it also bounded the sticky sidebar: the shell is
+           the sidebar's containing block, so padding there ended the sidebar
+           64px above the window bottom and pushed the search box over the
+           masthead at the end of the page. 4rem, the value the shell had.
+           Only from the tablet up: below 60rem the shell is a single column
+           with its own 3rem bottom padding, and this column would double it. */
+        margin-bottom: 4rem;
         overflow-wrap: break-word;
+      }
+      @media (max-width: 60rem) {
+        .wiki-main {
+          margin-bottom: 0;
+        }
       }
       /* The 68-character reading measure is a comfort rule, not a desktop
          decoration. The cap applies from the tablet up — and to a tablet it
