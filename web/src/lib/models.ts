@@ -926,9 +926,7 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "@cf/black-forest-labs/flux-1-schnell",
       "name": "FLUX.1 Schnell",
-      "params": [
-        "size"
-      ],
+      "params": [],
       "kind": "image"
     },
     {
