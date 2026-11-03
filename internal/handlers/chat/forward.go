@@ -644,6 +644,17 @@ func (h *ChatHandler) respondAsResponses(ctx context.Context, w http.ResponseWri
 			body = aggregated
 		}
 	}
+	// The aggregated body is itself the error when the stream carried one:
+	// sseToClaudeJSON folds a failing SSE frame into {"error":{...}}. That
+	// envelope must not reach ChatResponseToResponses, which reads the absent
+	// choices as an empty turn and answers status:"completed" with an empty
+	// output — a 200 for what was a 429 or a 502 (upstream v0.5.112, 56dbf46).
+	//
+	// handleJSONResponse already guards the Chat Completions path via
+	// EmptyUpstreamError; this bridge wrote 200 directly and had no such gate.
+	if err := internalproxy.EmptyUpstreamError(body); err != nil {
+		return err
+	}
 	converted, err := translator.ChatResponseToResponses(body)
 	if err == nil {
 		if usage := translator.ParseResponseUsage(body); usage != nil {
