@@ -218,6 +218,7 @@ cross-darwin-arm64:
 
 cross-windows-amd64:
 	@$(MAKE) --no-print-directory cross-one CROSS_OS=windows CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-windows-amd64.exe
+	@$(MAKE) --no-print-directory cross-tray-one CROSS_OS=windows CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-tray-windows-amd64.exe
 
 CROSS_BUILD_TARGETS := cross-linux-amd64 cross-linux-arm64 cross-darwin-amd64 cross-darwin-arm64 cross-windows-amd64
 
@@ -226,9 +227,12 @@ cross: web-build
 	@ls -lh $(CROSS_BIN)-*
 	@(sha256sum $(CROSS_BIN)-* || shasum -a 256 $(CROSS_BIN)-*) > SHA256SUMS.txt
 	@cat SHA256SUMS.txt
-.PHONY: cross-one $(CROSS_BUILD_TARGETS)
+.PHONY: cross-one cross-tray-one $(CROSS_BUILD_TARGETS)
 cross-one:
 	go build -ldflags="$(LDFLAGS)" -o $(OUT) ./cmd/9router-go/
+
+cross-tray-one:
+	go build -ldflags="$(LDFLAGS)" -o $(OUT) ./cmd/9router-tray/
 ## mitm-enable — start MITM proxy
 mitm-enable: build
 	$(BINARY) mitm enable
