@@ -2,6 +2,7 @@
 title: Architecture
 order: 10
 section: Under the Hood
+since: 1.9.14
 ---
 
 # Architecture

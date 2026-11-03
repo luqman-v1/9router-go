@@ -2,6 +2,7 @@
 title: Client Setup
 order: 3
 section: Getting Started
+since: 1.9.14
 ---
 
 # Client Setup

@@ -2,6 +2,7 @@
 title: Usage & Analytics
 order: 17
 section: Using the Gateway
+since: 1.9.14
 ---
 
 # Usage & Analytics

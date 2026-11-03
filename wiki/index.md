@@ -2,6 +2,7 @@
 title: Home
 order: 1
 section: Getting Started
+since: 1.9.14
 ---
 
 # 9router-go
@@ -55,6 +56,15 @@ Some features on this site arrived in a specific release. Where that matters, th
 page says so — for example the [Advanced Features](advanced-features.html) page
 lists which release each port landed in, and flags the ones that are still on a
 branch rather than in a release you can download.
+
+The version in the sidebar footer is the release these pages document, not the
+binary the site was built from. The two differ while experimental work is in
+flight: the build being developed is `1.9.15-exp.16`, while the release
+`9router-go update` offers is still `1.9.14` — so the footer reads `1.9.14`,
+because that is the release whose behaviour the pages describe. A page whose
+`since` frontmatter is newer than that release is marked **new** in the sidebar:
+the docs for two releases sit at the same URL, and without the mark a reader
+takes an experimental flag as the shipped contract.
 
 ## What is in the box
 

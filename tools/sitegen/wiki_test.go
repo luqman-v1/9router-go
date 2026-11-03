@@ -906,6 +906,42 @@ func TestAnchorIDMatchesGoldmarkOutput(t *testing.T) {
 // Measured before the fix: 21 links, sidebar 1103px tall against a 600px
 // viewport, overflow-y visible. After the first attempt it still failed: the
 // box was 680px against a 700px column, so it stopped 20px short of the bottom.
+
+// The wiki's "new" badge marks pages that document a release newer than the one
+// the wiki was built from, so a reader does not take an experimental flag as the
+// shipped contract. The direction of the comparison is the whole feature: a wiki
+// built from 1.9.15 must not flag a page documented in 1.9.14, and equality must
+// mean no badge. The parts are compared numerically, because a string compare
+// orders 1.10.0 before 1.9.0.
+func TestReleaseNewer(t *testing.T) {
+	tests := []struct {
+		name  string
+		page  string
+		built string
+		want  bool
+	}{
+		{"page ahead of the wiki", "1.9.14", "1.9.13", true},
+		{"same release", "1.9.14", "1.9.14", false},
+		{"page behind the wiki", "1.9.14", "1.9.15", false},
+		{"experimental build ahead of a stable manifest", "1.9.15-exp.16", "1.9.14", true},
+		{"experimental build of the documented line", "1.9.15-exp.16", "1.9.15", false},
+		{"major bump ahead", "2.0.0", "1.9.15", true},
+		{"minor ten ahead of nine", "1.10.0", "1.9.0", true},
+		{"minor ten behind nine", "1.9.0", "1.10.0", false},
+		// A value that is not a version cannot be ordered. Flagging every page on
+		// a typo would make the badge noise, so it reads as current instead.
+		{"not a version", "notaversion", "1.9.14", false},
+		{"empty", "", "1.9.14", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := releaseNewer(tt.page, tt.built); got != tt.want {
+				t.Errorf("releaseNewer(%q, %q) = %v, want %v", tt.page, tt.built, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWikiSidebarScrollsOnDesktop(t *testing.T) {
 	// Pin the base rule, not the mobile one: the sheet overrides it with its
 	// own overflow-y, and that one is already covered.

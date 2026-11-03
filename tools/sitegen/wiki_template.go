@@ -292,6 +292,24 @@ const wikiTemplate = `<!doctype html>
       .wiki-side li + li {
         margin-top: 0.125rem;
       }
+      /* Marks a page that documents behaviour newer than the release this wiki
+         describes. It sits after the link rather than inside it, so the badge is
+         not part of the row's hit area and does not inherit its hover. The
+         border carries the colour: at 0.6875rem a filled pill in --warning
+         fails contrast against the sidebar background, and the failure is on a
+         piece of text a reader relies on to know the page is ahead. */
+      .wiki-since {
+        margin-left: 0.375rem;
+        padding: 0.0625rem 0.3125rem;
+        border: 1px solid var(--warning, #d97706);
+        border-radius: 999px;
+        color: var(--text-subtle);
+        font-size: 0.6875rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        vertical-align: 0.05em;
+      }
       .wiki-side a {
         display: flex;
         align-items: center;
@@ -792,7 +810,7 @@ const wikiTemplate = `<!doctype html>
             {{ end }}
             <ol>
               {{ range .Pages }}
-              <li><a href="{{ .Slug }}.html"{{ if eq .Slug $.Page.Slug }} aria-current="page"{{ end }}>{{ .Title }}</a></li>
+              <li><a href="{{ .Slug }}.html"{{ if eq .Slug $.Page.Slug }} aria-current="page"{{ end }}>{{ .Title }}</a>{{ if .Unreleased }}<span class="wiki-since" title="Documents {{ .Since }}, which is newer than the release this wiki describes">new</span>{{ end }}</li>
               {{ end }}
             </ol>
           </div>
