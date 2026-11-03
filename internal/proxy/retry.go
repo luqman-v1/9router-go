@@ -65,25 +65,7 @@ func retryTransientUpstream(
 	startTime := time.Now()
 
 	executeAttempt := func() (*http.Response, error) {
-		attemptCtx := ctx
-		if seatBudgetMs > 0 {
-			elapsed := time.Since(startTime).Milliseconds()
-			remaining := int64(seatBudgetMs) - elapsed
-			if remaining <= 0 {
-				remaining = 1
-			}
-			attemptTimeout := time.Duration(remaining) * time.Millisecond
-			if deadline, ok := ctx.Deadline(); ok {
-				dRem := time.Until(deadline)
-				if dRem < attemptTimeout {
-					attemptTimeout = dRem
-				}
-			}
-			var cancel context.CancelFunc
-			attemptCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
-			defer cancel()
-		}
-		return send(attemptCtx)
+		return send(ctx)
 	}
 
 	resp, err := executeAttempt()
