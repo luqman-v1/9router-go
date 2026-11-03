@@ -170,6 +170,12 @@ func TestParseSuffix(t *testing.T) {
 		{"a(b) (high)", "a(b)", &Intent{Mode: ModeLevel, Level: "high"}},
 		{"model(high)  ", "model", &Intent{Mode: ModeLevel, Level: "high"}},
 		{"ns/model(low)", "ns/model", &Intent{Mode: ModeLevel, Level: "low"}},
+		{"model(fast)", "model", &Intent{Tier: "priority"}},
+		{"model(standard)", "model", &Intent{Tier: "default"}},
+		{"cx/gpt-6.1-sol(fast)", "cx/gpt-6.1-sol", &Intent{Tier: "priority"}},
+		{"cx/gpt-6.1-sol(xhigh,fast)", "cx/gpt-6.1-sol", &Intent{Mode: ModeLevel, Level: "xhigh", Tier: "priority"}},
+		{"model(fast,low)", "model", &Intent{Mode: ModeLevel, Level: "low", Tier: "priority"}},
+		{"openai/gpt-6.1-sol(high,standard)", "openai/gpt-6.1-sol", &Intent{Mode: ModeLevel, Level: "high", Tier: "default"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
