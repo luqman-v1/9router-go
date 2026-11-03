@@ -1042,6 +1042,7 @@ func ensureMessagesFor(body []byte, provider, model string) []byte {
 	// (upstream thinkingUnified captureThinking)
 	applyClaudeThinkingDisplay(reqMap)
 	applyClaudeThinkingType(reqMap, provider, model)
+	enforceClaudeThinkingSampling(reqMap)
 	delete(reqMap, "stream_options")
 	delete(reqMap, "store")
 	delete(reqMap, "reasoning_effort")
@@ -1052,6 +1053,29 @@ func ensureMessagesFor(body []byte, provider, model string) []byte {
 		return body
 	}
 	return updated
+}
+
+// enforceClaudeThinkingSampling ensures that when Claude thinking is enabled,
+// temperature is pinned to 1.0 only if a sampling parameter (temperature or top_p)
+// was present in the request. If neither was sent, temperature remains unset so newer
+// models don't reject the request with "temperature is deprecated" (OmniRoute #18639).
+func enforceClaudeThinkingSampling(reqMap map[string]any) {
+	thinking, _ := reqMap["thinking"].(map[string]any)
+	if thinking == nil {
+		return
+	}
+	tType, _ := thinking["type"].(string)
+	if tType != "enabled" && tType != "adaptive" {
+		return
+	}
+
+	_, hasTemp := reqMap["temperature"]
+	_, hasTopP := reqMap["top_p"]
+
+	if hasTemp || hasTopP {
+		reqMap["temperature"] = 1.0
+		delete(reqMap, "top_p")
+	}
 }
 
 func convertOpenAIToolsToClaude(tools []any) []any {
