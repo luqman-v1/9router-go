@@ -851,7 +851,6 @@ func AnchorClaudeCache(body []byte) []byte {
 						m["cache_control"] = want
 					}
 				} else {
-					// Client markers belong to the pre-normalized prompt.
 					delete(m, "cache_control")
 				}
 			}
