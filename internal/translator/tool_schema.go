@@ -52,11 +52,10 @@ func stripPatterns(schema any, removed *int) any {
 	}
 }
 
-// NormalizeToolSchemasForProvider strips invalid pattern constraints for OpenRouter.
-// Only provider == "openrouter" is affected; other providers return tools unchanged.
-// Port of open-sse/utils/toolSchemaCompatibility.js normalizeToolSchemasForProvider (PR #3665).
+// NormalizeToolSchemasForProvider strips invalid pattern constraints (including regex lookarounds
+// like (?=...), (?!...), (?<=...), (?<!...) which OpenAI, DeepSeek, and strict JSON Schema validators reject).
 func NormalizeToolSchemasForProvider(provider string, tools []any) ([]any, int) {
-	if provider != "openrouter" || len(tools) == 0 {
+	if provider == "anthropic" || len(tools) == 0 {
 		return tools, 0
 	}
 	removed := 0
