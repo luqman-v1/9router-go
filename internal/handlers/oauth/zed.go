@@ -181,7 +181,7 @@ func (h *OAuthHandler) HandleZedExchange(w http.ResponseWriter, r *http.Request)
 
 	// Best-effort userinfo + organization.
 	email, name, orgID := "", "", ""
-	ureq, _ := http.NewRequest(http.MethodGet, zedCloudBase+zedMePath, nil)
+	ureq, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, zedCloudBase+zedMePath, nil)
 	ureq.Header.Set("Accept", "application/json")
 	ureq.Header.Set("Authorization", userID+" "+accessToken)
 	systemID := body.SystemID

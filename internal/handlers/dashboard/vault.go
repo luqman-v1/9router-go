@@ -23,8 +23,8 @@ func (h *DashboardHandler) HandleGetVaultStatus(w http.ResponseWriter, r *http.R
 		return
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"enabled":       v != nil && v.Enabled(),
-		"sealedCount":   sealed,
+		"enabled":        v != nil && v.Enabled(),
+		"sealedCount":    sealed,
 		"plaintextCount": plaintext,
 	})
 }
@@ -85,8 +85,8 @@ func (h *DashboardHandler) HandleRotateVault(w http.ResponseWriter, r *http.Requ
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"status":     "ok",
-		"rewrapped":  rewrapped,
-		"failures":   failures,
+		"status":    "ok",
+		"rewrapped": rewrapped,
+		"failures":  failures,
 	})
 }

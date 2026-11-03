@@ -39,11 +39,11 @@ func (h *MediaHandler) handleGrokWebImage(w http.ResponseWriter, r *http.Request
 	if n > 4 {
 		n = 4
 	}
-	cookie, err := h.grokCookie(r.Context())
+	cookie, client, err := h.grokCookie(r.Context())
 	if err != nil {
 		return err
 	}
-	results, err := executor.GenerateGrokMedia(r.Context(), nil, cookie, req.Prompt, "image", req.Size, 0, n)
+	results, err := executor.GenerateGrokMedia(r.Context(), client, cookie, req.Prompt, "image", req.Size, 0, n)
 	if err != nil {
 		return err
 	}
@@ -76,11 +76,11 @@ func (h *MediaHandler) handleGrokWebVideo(w http.ResponseWriter, r *http.Request
 	if req.Prompt == "" {
 		return fmt.Errorf("missing required field: prompt")
 	}
-	cookie, err := h.grokCookie(r.Context())
+	cookie, client, err := h.grokCookie(r.Context())
 	if err != nil {
 		return err
 	}
-	results, err := executor.GenerateGrokMedia(r.Context(), nil, cookie, req.Prompt, "video", req.Size, req.Seconds, 1)
+	results, err := executor.GenerateGrokMedia(r.Context(), client, cookie, req.Prompt, "video", req.Size, req.Seconds, 1)
 	if err != nil {
 		return err
 	}
@@ -94,13 +94,17 @@ func (h *MediaHandler) handleGrokWebVideo(w http.ResponseWriter, r *http.Request
 // Cookie header. The reference client handed to the generator is nil — a
 // proxy assignment is resolved per chat turn on that path; the media lanes
 // for the other web-cookie providers run the same way.
-func (h *MediaHandler) grokCookie(ctx context.Context) (string, error) {
+func (h *MediaHandler) grokCookie(ctx context.Context) (string, *http.Client, error) {
 	conn, connData, err := h.ChatH.GetBestConnectionWithContext(ctx, "grok-web", "", nil, "")
 	if err != nil || connData == nil {
-		return "", fmt.Errorf("no active connection for grok-web: %w", err)
+		return "", nil, fmt.Errorf("no active connection for grok-web: %w", err)
+	}
+	client, err := h.ChatH.GetClientForConnection(connData)
+	if err != nil {
+		return "", nil, err
 	}
 	if h.Repo != nil && conn != nil {
 		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 	}
-	return chat.ExtractAPIKey(connData), nil
+	return chat.ExtractAPIKey(connData), client, nil
 }

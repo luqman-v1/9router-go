@@ -29,7 +29,14 @@ func parseSettings(rawData string) (*SettingsData, bool) {
 	applyProviderThinking(s, raw)
 	applyCapacityAdapters(s, raw)
 	applyProviderOverrides(s, raw)
+	applySeatAttemptBudget(s, raw)
 	return s, true
+}
+
+func applySeatAttemptBudget(s *SettingsData, raw map[string]any) {
+	if sab, ok := raw["seatAttemptBudgetMs"].(float64); ok && sab >= 0 {
+		s.SeatAttemptBudgetMs = int(sab)
+	}
 }
 
 func applyRTKSettings(s *SettingsData, raw map[string]any) {

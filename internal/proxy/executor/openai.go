@@ -193,7 +193,7 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 				return jsonResponse(req.Ctx, w, bytes.NewReader(append(head, rest...)), req.TranslateResp, req.ResponseBuf)
 			}
 		}
-		stallReader := proxy.NewStallReaderWithContext(req.Ctx, streamBody, 0, "openai")
+		stallReader := proxy.NewStallReaderWithContext(req.Ctx, streamBody, req.Config.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "openai")
 		bodyCloser = stallReader
 		if req.UpstreamClaude {
 			// Upstream is Claude Messages, client is OpenAI (/v1/chat/completions):

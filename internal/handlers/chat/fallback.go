@@ -175,6 +175,21 @@ func (h *ChatHandler) handleAccountFallback(
 		}
 	}
 
+	var seatBudgetMs int
+	if h.Repo != nil {
+		if settings, err := h.Repo.GetSettings(); err == nil && settings != nil {
+			seatBudgetMs = settings.SeatAttemptBudgetMs
+			if settings.ProviderOverrides != nil {
+				if ov, ok := settings.ProviderOverrides[provider]; ok && ov.SeatBudgetMs > 0 {
+					seatBudgetMs = ov.SeatBudgetMs
+				}
+			}
+		}
+	}
+	if seatBudgetMs > 0 {
+		ctx = internalproxy.WithSeatBudget(ctx, seatBudgetMs)
+	}
+
 	var excludeIDs []string
 	// Pools already refused by an OpenCode free-tier gate in this turn. The
 	// resolver filters them out, so the retry walks to the next egress instead
@@ -781,7 +796,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			accountFastOpt = &v
 		}
 	}
-	if fastBody, modified := ApplyCodexFastMode(pipedBody, provider, accountFastOpt); modified {
+	if fastBody, modified := ApplyCodexFastMode(ctx, pipedBody, provider, accountFastOpt); modified {
 		pipedBody = fastBody
 	}
 

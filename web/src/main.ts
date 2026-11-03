@@ -9,9 +9,7 @@ import './index.css'
 import { registerServiceWorker } from './lib/pwa'
 
 registerServiceWorker()
-
 const app = mount(App, {
   target: document.getElementById('app')!,
 })
-
 export default app

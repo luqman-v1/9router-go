@@ -14,6 +14,7 @@ export interface ProviderModel {
 }
 
 export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
+  "zcode": "zcode",
   "agnes": "agnes",
   "bai": "bai",
   "atria": "atria",
@@ -2486,6 +2487,16 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "glm-4.5-air",
       "name": "GLM-4.5-Air"
+    }
+  ],
+  "zcode": [
+    {
+      "id": "glm-5.3",
+      "name": "GLM 5.3"
+    },
+    {
+      "id": "glm-5.3-flash",
+      "name": "GLM 5.3 Flash"
     }
   ],
   "glm": [

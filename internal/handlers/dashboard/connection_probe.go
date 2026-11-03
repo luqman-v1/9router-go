@@ -238,10 +238,10 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 	"codebuddy-intl": {tokenExists: true},
 	// The stored credential only authorizes the account API; model access
 	// needs a minted LLM token, so the test walks both layers (probeZed).
-	"windsurf":       {tokenExists: true},
-	"trae":           {tokenExists: true},
-	"devin":          {tokenExists: true},
-	"devin-cli":      {tokenExists: true},
+	"windsurf":  {tokenExists: true},
+	"trae":      {tokenExists: true},
+	"devin":     {tokenExists: true},
+	"devin-cli": {tokenExists: true},
 	"kimchi": {
 		url: kimchiProbeURL, method: http.MethodGet,
 		authHeader: "Authorization", authPrefix: "Bearer ",

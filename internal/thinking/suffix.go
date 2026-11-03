@@ -25,28 +25,85 @@ func ParseSuffix(model string) (string, *Intent) {
 		return model, nil
 	}
 	clean := strings.TrimSpace(trimmed[:open])
-	raw := strings.ToLower(strings.TrimSpace(inner))
-	switch {
-	case raw == "none" || raw == "off":
-		return clean, &Intent{Mode: ModeNone}
-	case raw == "auto":
-		return clean, &Intent{Mode: ModeAuto}
-	case raw == "ultra":
-		return clean, &Intent{Mode: ModeLevel, Level: "ultra"}
-	case allDigits(raw):
-		n, err := strconv.Atoi(raw)
-		if err != nil {
-			// A number that does not fit is not a budget: the suffix is still
-			// stripped, but no intent is expressed.
+	parts := strings.Split(inner, ",")
+	intent := &Intent{}
+	hasAny := false
+	hasTier := false
+	hasLevelOrMode := false
+
+	for _, p := range parts {
+		raw := strings.ToLower(strings.TrimSpace(p))
+		if raw == "" {
 			return clean, nil
 		}
-		return clean, &Intent{Mode: ModeBudget, Budget: n}
-	default:
-		if _, ok := LevelToBudget[raw]; ok {
-			return clean, &Intent{Mode: ModeLevel, Level: raw}
+		switch raw {
+		case "fast", "priority":
+			if hasTier {
+				return clean, nil
+			}
+			intent.Tier = "priority"
+			hasTier = true
+			hasAny = true
+		case "standard", "default":
+			if hasTier {
+				return clean, nil
+			}
+			intent.Tier = "default"
+			hasTier = true
+			hasAny = true
+		case "none", "off":
+			if hasLevelOrMode {
+				return clean, nil
+			}
+			intent.Mode = ModeNone
+			hasLevelOrMode = true
+			hasAny = true
+		case "auto":
+			if hasLevelOrMode {
+				return clean, nil
+			}
+			intent.Mode = ModeAuto
+			hasLevelOrMode = true
+			hasAny = true
+		case "ultra":
+			if hasLevelOrMode {
+				return clean, nil
+			}
+			intent.Mode = ModeLevel
+			intent.Level = "ultra"
+			hasLevelOrMode = true
+			hasAny = true
+		default:
+			if allDigits(raw) {
+				if hasLevelOrMode {
+					return clean, nil
+				}
+				n, err := strconv.Atoi(raw)
+				if err != nil {
+					return clean, nil
+				}
+				intent.Mode = ModeBudget
+				intent.Budget = n
+				hasLevelOrMode = true
+				hasAny = true
+			} else if _, ok := LevelToBudget[raw]; ok {
+				if hasLevelOrMode {
+					return clean, nil
+				}
+				intent.Mode = ModeLevel
+				intent.Level = raw
+				hasLevelOrMode = true
+				hasAny = true
+			} else {
+				return clean, nil
+			}
 		}
+	}
+
+	if !hasAny {
 		return clean, nil
 	}
+	return clean, intent
 }
 
 func allDigits(s string) bool {

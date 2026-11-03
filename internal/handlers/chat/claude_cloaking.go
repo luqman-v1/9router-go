@@ -1,10 +1,10 @@
 package chat
 
 import (
+	json "9router/proxy/internal/fastjson"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	json "9router/proxy/internal/fastjson"
 	"fmt"
 	"strings"
 
@@ -172,6 +172,13 @@ func ensureMetadata(meta any, userID string) map[string]any {
 // pad the tool list to the Claude Code native set.
 const claudeToolSuffix = "_ide"
 
+func suffixClaudeToolName(name string) string {
+	if strings.HasSuffix(name, claudeToolSuffix) {
+		return name
+	}
+	return name + claudeToolSuffix
+}
+
 // cloakClaudeTools mirrors cloakClaudeTools: renames client tools (those
 // without a "type" — server-side built-ins keep reserved names) with the
 // _ide suffix in tools[] and every tool_use block in messages[], and appends
@@ -203,9 +210,12 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 			clientDeclarations = append(clientDeclarations, tool)
 			continue
 		}
-		suffixed := name + claudeToolSuffix
-		toolNameMap[suffixed] = name
+		suffixed := suffixClaudeToolName(name)
+		baseName := strings.TrimSuffix(name, claudeToolSuffix)
+		toolNameMap[suffixed] = baseName
 		clientToolNames[name] = true
+		clientToolNames[suffixed] = true
+		clientToolNames[baseName] = true
 		renamed := make(map[string]any, len(tool))
 		for k, v := range tool {
 			renamed[k] = v
@@ -252,7 +262,7 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 					continue
 				}
 				if name, ok := block["name"].(string); ok && clientToolNames[name] {
-					block["name"] = name + claudeToolSuffix
+					block["name"] = suffixClaudeToolName(name)
 				}
 			}
 		}
@@ -262,7 +272,7 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 	if tc, ok := req["tool_choice"].(map[string]any); ok {
 		if tc["type"] == "tool" {
 			if name, ok := tc["name"].(string); ok && clientToolNames[name] {
-				tc["name"] = name + claudeToolSuffix
+				tc["name"] = suffixClaudeToolName(name)
 			}
 		}
 	}

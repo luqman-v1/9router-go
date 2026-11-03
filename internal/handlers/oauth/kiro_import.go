@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"fmt"
 	"io"
@@ -244,7 +245,7 @@ func (h *OAuthHandler) HandleKiroAPIKey(w http.ResponseWriter, r *http.Request) 
 		region = "us-east-1"
 	}
 
-	if err := validateKiroAPIKey(apiKey, region); err != nil {
+	if err := validateKiroAPIKey(r.Context(), apiKey, region); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, "API key validation failed")
 		return
 	}
@@ -426,9 +427,9 @@ func normalizeKiroProfileArn(arn string) string {
 }
 
 // validateKiroAPIKey probes the Amazon Q model catalog with the key.
-func validateKiroAPIKey(apiKey, region string) error {
+func validateKiroAPIKey(ctx context.Context, apiKey, region string) error {
 	body, _ := json.Marshal(map[string]any{"origin": "AI_EDITOR"})
-	req, err := http.NewRequest(http.MethodPost, "https://codewhisperer.us-east-1.amazonaws.com/", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://codewhisperer.us-east-1.amazonaws.com/", strings.NewReader(string(body)))
 	if err != nil {
 		return err
 	}

@@ -407,7 +407,7 @@ func ForwardFreebuff(w http.ResponseWriter, req *Request) error {
 	runStatus = "completed"
 
 	if req.IsStream {
-		stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, 0, "freebuff")
+		stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, req.Config.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "freebuff")
 		defer stallReader.Close()
 		return execSSEStream(w, stallReader, req)
 	}

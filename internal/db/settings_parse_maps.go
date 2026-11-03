@@ -181,6 +181,10 @@ func applyProviderOverrides(s *SettingsData, raw map[string]any) {
 		if !ok {
 			continue
 		}
-		s.ProviderOverrides[k] = ProviderOverrides{Headers: stringMap(entry["headers"])}
+		ov := ProviderOverrides{Headers: stringMap(entry["headers"])}
+		if sb, ok := entry["seatBudgetMs"].(float64); ok && sb >= 0 {
+			ov.SeatBudgetMs = int(sb)
+		}
+		s.ProviderOverrides[k] = ov
 	}
 }

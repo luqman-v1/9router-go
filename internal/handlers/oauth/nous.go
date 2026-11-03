@@ -24,13 +24,13 @@ const (
 	nousDeviceGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 )
 
-func nousStart() (map[string]any, error) {
+func nousStart(ctx context.Context) (map[string]any, error) {
 	form := url.Values{
 		"client_id": {nousOAuthClientID},
 		"scope":     {nousOAuthScope},
 	}
 
-	data, status, err := postForm(nousDeviceCodeURL, form, nil)
+	data, status, err := postForm(ctx, nousDeviceCodeURL, form, nil)
 	if err != nil {
 		return nil, fmt.Errorf("nous device code request failed: %w", err)
 	}
@@ -65,7 +65,7 @@ func nousStart() (map[string]any, error) {
 	}, nil
 }
 
-func nousPoll(code string) (deviceTokens, error) {
+func nousPoll(ctx context.Context, code string) (deviceTokens, error) {
 	var t deviceTokens
 	if code == "" {
 		return t, fmt.Errorf("authorization_pending")
@@ -77,7 +77,7 @@ func nousPoll(code string) (deviceTokens, error) {
 		"device_code": {code},
 	}
 
-	data, status, err := postForm(nousTokenURL, form, nil)
+	data, status, err := postForm(ctx, nousTokenURL, form, nil)
 	if err != nil {
 		return t, fmt.Errorf("poll_failed: %w", err)
 	}

@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -32,7 +33,7 @@ func TestNousDeviceCodeStart(t *testing.T) {
 	nousDeviceCodeURL = server.URL
 	defer func() { nousDeviceCodeURL = origURL }()
 
-	res, err := nousStart()
+	res, err := nousStart(context.Background())
 	if err != nil {
 		t.Fatalf("nousStart failed: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestNousDeviceCodePoll(t *testing.T) {
 		nousAgentKeyURL = origAgentKeyURL
 	}()
 
-	tokens, err := nousPoll("dev_123")
+	tokens, err := nousPoll(context.Background(), "dev_123")
 	if err != nil {
 		t.Fatalf("nousPoll failed: %v", err)
 	}

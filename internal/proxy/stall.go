@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +19,20 @@ import (
 // stream is considered stalled and the connection is closed.
 // Matches Next.js STREAM_STALL_TIMEOUT_MS = 360000 (6 minutes).
 const DefaultStallTimeout = 6 * time.Minute
+
+// ResolveDefaultStallTimeout reads environment variables STREAM_STALL_TIMEOUT_MS
+// and NINEROUTER_STREAM_STALL_TIMEOUT_MS. If set to a positive integer (milliseconds),
+// returns that duration. Otherwise returns DefaultStallTimeout.
+func ResolveDefaultStallTimeout() time.Duration {
+	for _, envVar := range []string{"STREAM_STALL_TIMEOUT_MS", "NINEROUTER_STREAM_STALL_TIMEOUT_MS"} {
+		if val := os.Getenv(envVar); val != "" {
+			if ms, err := strconv.Atoi(val); err == nil && ms > 0 {
+				return time.Duration(ms) * time.Millisecond
+			}
+		}
+	}
+	return DefaultStallTimeout
+}
 
 // ErrStreamStall reports that the stall watchdog fired, so a pending Read
 // fails with this instead of the bare "file already closed" the Close would
@@ -35,7 +51,7 @@ type StallReader struct {
 	once     sync.Once
 	doneOnce sync.Once
 	done     chan struct{} // closed on Close; stops the shutdown watcher
-	stalled   atomic.Bool // watchdog fired; Read reports ErrStreamStall
+	stalled  atomic.Bool   // watchdog fired; Read reports ErrStreamStall
 }
 
 // NewStallReader wraps rc with stall detection. If no data is read within
@@ -52,7 +68,7 @@ func NewStallReader(rc io.ReadCloser, timeout time.Duration, label string) io.Re
 // and prevent socket leaks on Windows (FIN_WAIT_1 / CLOSE_WAIT).
 func NewStallReaderWithContext(ctx context.Context, rc io.ReadCloser, timeout time.Duration, label string) io.ReadCloser {
 	if timeout <= 0 {
-		timeout = DefaultStallTimeout
+		timeout = ResolveDefaultStallTimeout()
 	}
 	s := &StallReader{
 		reader:  rc,

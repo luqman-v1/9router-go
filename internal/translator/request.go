@@ -850,6 +850,8 @@ func AnchorClaudeCache(body []byte) []byte {
 					if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != "1h" {
 						m["cache_control"] = want
 					}
+				} else {
+					delete(m, "cache_control")
 				}
 			}
 		}

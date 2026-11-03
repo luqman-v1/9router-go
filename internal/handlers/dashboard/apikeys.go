@@ -102,10 +102,19 @@ func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Reque
 			"rateLimitConcurrency": intOrZero(k.RateLimitConcurrency),
 			"tokenQuota":           intOrZero(k.TokenQuota),
 			"queueTimeoutMs":       intOrZero(k.QueueTimeoutMs),
-			"expiresAt":            stringOrEmpty(k.ExpiresAt),
-			"lastUsedAt":           stringOrEmpty(k.LastUsedAt),
-			"usedCount":            intOrZero(k.UsedCount),
-			"metadata":             stringOrEmpty(k.Metadata),
+			// F-2 per-period budget. They travel with the row for the same
+			// reason the rate limits do: a key with a ceiling configured has to
+			// be distinguishable from one without at a glance, and omitting
+			// them made every row read as unbudgeted.
+			"limitMicros":  k.LimitMicros,
+			"limitTokens":  k.LimitTokens,
+			"budgetPeriod": k.BudgetPeriod,
+			"alertPct":     k.AlertPct,
+			"hardCutoff":   k.HardCutoff,
+			"expiresAt":    stringOrEmpty(k.ExpiresAt),
+			"lastUsedAt":   stringOrEmpty(k.LastUsedAt),
+			"usedCount":    intOrZero(k.UsedCount),
+			"metadata":     stringOrEmpty(k.Metadata),
 			// #365 The spend a tokenQuota is measured against. The dashboard
 			// renders it against the quota as a progress bar and offers a
 			// reset, so it has to travel with the row: without it every

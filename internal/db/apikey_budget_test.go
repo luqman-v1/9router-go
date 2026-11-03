@@ -164,3 +164,73 @@ func assertIntPtr(t *testing.T, name string, got *int, want int) {
 		t.Errorf("%s = %d, want %d", name, *got, want)
 	}
 }
+
+// TestGetApiKeysLegacySchemaHasNoBudgetColumns proves the key reader degrades on
+// a database whose apiKeys table predates the F-2 budget columns: the listing
+// still returns every key, with the budget axes at zero, instead of failing the
+// whole read. A fixture-built table (or a backup restored from before F-2) is
+// exactly this shape.
+func TestGetApiKeysLegacySchemaHasNoBudgetColumns(t *testing.T) {
+	r := openLegacyQuotaDB(t)
+	if err := r.CreateApiKey("lg", "sk-legacy-budget-key-0001", "legacy key", "m"); err != nil {
+		t.Fatalf("CreateApiKey: %v", err)
+	}
+	keys, err := r.GetApiKeys()
+	if err != nil {
+		t.Fatalf("GetApiKeys on a legacy schema must not fail: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("GetApiKeys returned %d keys, want 1", len(keys))
+	}
+	if keys[0].LimitMicros != 0 || keys[0].LimitTokens != 0 || keys[0].BudgetPeriod != "" {
+		t.Errorf("legacy key budget = %d/%d/%q, want all zero",
+			keys[0].LimitMicros, keys[0].LimitTokens, keys[0].BudgetPeriod)
+	}
+	// The single-key reader takes the same path.
+	got, err := r.GetApiKeyByID("lg")
+	if err != nil || got == nil {
+		t.Fatalf("GetApiKeyByID on a legacy schema: %v", err)
+	}
+	if got.LimitMicros != 0 {
+		t.Errorf("legacy key LimitMicros = %d, want 0", got.LimitMicros)
+	}
+}
+
+// TestSetApiKeyPeriodBudgetRoundTrip proves the per-period budget columns
+// survive a write and a read through the shared key reader, and that a fresh
+// key reads them as zero (no budget) rather than as a configured one.
+func TestSetApiKeyPeriodBudgetRoundTrip(t *testing.T) {
+	r := openEphemeralSchemaDB(t)
+	if err := r.CreateApiKey("pb", "sk-period-budget-key-001", "period budget key", "m"); err != nil {
+		t.Fatalf("CreateApiKey: %v", err)
+	}
+	got, err := r.GetApiKeyByID("pb")
+	if err != nil || got == nil {
+		t.Fatalf("GetApiKeyByID: %v", err)
+	}
+	if got.LimitMicros != 0 || got.BudgetPeriod != "" || got.HardCutoff {
+		t.Errorf("fresh key budget = %d/%q/%v, want all unset",
+			got.LimitMicros, got.BudgetPeriod, got.HardCutoff)
+	}
+	if err := r.SetApiKeyPeriodBudget("pb", 2_500_000, 500_000, "daily", 90, true); err != nil {
+		t.Fatalf("SetApiKeyPeriodBudget: %v", err)
+	}
+	got, err = r.GetApiKeyByID("pb")
+	if err != nil || got == nil {
+		t.Fatalf("GetApiKeyByID after set: %v", err)
+	}
+	if got.LimitMicros != 2_500_000 || got.LimitTokens != 500_000 {
+		t.Errorf("limits = %d/%d, want 2500000/500000", got.LimitMicros, got.LimitTokens)
+	}
+	if got.BudgetPeriod != "daily" || got.AlertPct != 90 || !got.HardCutoff {
+		t.Errorf("budget = %q/%d/%v, want daily/90/true", got.BudgetPeriod, got.AlertPct, got.HardCutoff)
+	}
+	// The listing path uses the same reader and must agree.
+	keys, err := r.GetApiKeys()
+	if err != nil {
+		t.Fatalf("GetApiKeys: %v", err)
+	}
+	if len(keys) != 1 || keys[0].LimitMicros != 2_500_000 {
+		t.Errorf("listed LimitMicros = %d, want 2500000", keys[0].LimitMicros)
+	}
+}

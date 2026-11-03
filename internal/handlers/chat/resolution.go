@@ -4,10 +4,12 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/promptcache"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
+	"9router/proxy/internal/resilience"
 	"9router/proxy/internal/thinking"
 	json "encoding/json/v2"
 	"fmt"
@@ -49,6 +51,23 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 			SimilarityThreshold: 0.95,
 		}, store, cfg.SemanticCacheEnabled)
 	}
+	// Exact-prompt cache: keyed on an identical request body, bounded in BYTES
+	// rather than entries so its footprint stays predictable on the small host
+	// this gateway runs on. Only armed when the semantic cache is on — they are
+	// two halves of one feature and a caller that turned caching off does not
+	// want either half running.
+	var pc *promptcache.Cache
+	if cfg != nil && cfg.SemanticCacheEnabled() {
+		pc = promptcache.NewWithConfig(promptcache.Config{
+			Capacity:      cfg.SemanticCacheMaxEntries(),
+			TTL:           time.Duration(cfg.SemanticCacheTTL()) * time.Minute,
+			MaxBytes:      promptcache.DefaultMaxBytes,
+			MaxEntryBytes: promptcache.DefaultMaxEntryBytes,
+		})
+	}
+	// Provider-level admission control. Defaults only: the breaker is
+	// per-provider and the semaphore per provider:account:proxy, so neither
+	// needs per-connection configuration to be useful.
 	return &ChatHandler{
 		Repo: repo,
 		Client: &http.Client{
@@ -57,6 +76,8 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 		},
 		TokenSaver:      cfg,
 		SemanticCache:   sc,
+		PromptCache:     pc,
+		Resilience:      resilience.DefaultController(),
 		stickyState:     make(map[string]*comboStickyState),
 		SessionAffinity: NewSessionAffinityStore(10000, 2*time.Hour),
 	}
@@ -93,7 +114,7 @@ func resolveProviderAlias(alias string) string {
 // If the entry has no "/" (i.e. it's a combo name), it resolves the combo
 // and returns its first concrete model with the combined model list.
 func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
-	return h.resolveModelEntryGuarded(entry, nil)
+	return h.resolveModelEntryGuarded(entry, nil, nil)
 }
 
 // resolveModelEntryGuarded is resolveModelEntry with the set of combo names
@@ -101,7 +122,7 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 // through another combo) otherwise re-enters the branch below forever and
 // takes the whole process down with a stack overflow — every single-name hop
 // re-queries the database, so nothing else bounds it.
-func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string]bool) *ModelInfo {
+func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string]bool, connMap map[string]*ModelInfo) *ModelInfo {
 	if !strings.Contains(entry, "/") {
 		if h.Repo == nil || visiting[entry] {
 			return nil
@@ -115,7 +136,7 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 				visiting[entry] = true
 				var first *ModelInfo
 				for _, sub := range subModels {
-					if info := h.resolveModelEntryGuarded(sub, visiting); info != nil {
+					if info := h.resolveModelEntryGuarded(sub, visiting, connMap); info != nil {
 						first = info
 						break
 					}
@@ -139,6 +160,12 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 
 	if info := h.resolvePrefixProvider(prefix, model); info != nil {
 		return info
+	}
+
+	if connMap != nil {
+		if connInfo, ok := connMap[prefix]; ok && connInfo != nil {
+			return &ModelInfo{Provider: connInfo.Provider, Model: model, ConnectionID: connInfo.ConnectionID}
+		}
 	}
 
 	provider := resolveProviderAlias(prefix)

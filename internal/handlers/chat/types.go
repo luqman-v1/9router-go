@@ -9,7 +9,9 @@ import (
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/models"
+	"9router/proxy/internal/promptcache"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/resilience"
 	"9router/proxy/internal/semanticcache"
 )
 
@@ -39,8 +41,18 @@ type ChatHandler struct {
 	// pre-dispatch, but only the response knows what the turn actually cost.
 	RateLimiter   *middleware.RateLimiter
 	SemanticCache *semanticcache.Cache
-	stickyMu      sync.Mutex
-	stickyState   map[string]*comboStickyState
+	// PromptCache is the byte-bounded exact-prompt cache. Distinct from
+	// SemanticCache: this one keys on an identical request body and stores the
+	// response verbatim, which is what makes its footprint predictable enough
+	// to bound in bytes.
+	PromptCache *promptcache.Cache
+	// Resilience is the provider-level admission control: one breaker per
+	// provider plus one semaphore per provider:account:proxy. In-memory and
+	// process-local — the persisted per-connection model locks stay the
+	// per-account layer, this one is per-provider and fast.
+	Resilience  *resilience.Controller
+	stickyMu    sync.Mutex
+	stickyState map[string]*comboStickyState
 
 	// deprecationCache throttles kv writes when a provider retires a model:
 	// every request at a dead combo entry arrives as a fresh 410, and each

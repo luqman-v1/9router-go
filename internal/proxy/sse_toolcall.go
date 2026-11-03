@@ -32,6 +32,38 @@ func NewStreamToolCallIDFill() *StreamToolCallIDFill {
 
 const streamToolCallNoIndex = -1
 
+// isNonEmptyToolCallDelta reports whether a tool-call delta carries client-meaningful
+// data (id, function name, arguments fragment), non-function tool types, or provider
+// extensions. Known empty function-call placeholders are dropped before allocating ids.
+func isNonEmptyToolCallDelta(tc map[string]any) bool {
+	if t, ok := tc["type"].(string); ok && t != "" && t != "function" {
+		return true
+	}
+	for k := range tc {
+		if k != "index" && k != "id" && k != "type" && k != "function" {
+			return true
+		}
+	}
+	fn, _ := tc["function"].(map[string]any)
+	for k := range fn {
+		if k != "name" && k != "arguments" {
+			return true
+		}
+	}
+	if id, ok := tc["id"].(string); ok && id != "" {
+		return true
+	}
+	if fn != nil {
+		if name, ok := fn["name"].(string); ok && name != "" {
+			return true
+		}
+		if args, ok := fn["arguments"].(string); ok && args != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // fill patches one OpenAI chat-completion data payload, returning the new
 // payload and whether it changed. Payloads without "tool_calls" skip parsing
 // entirely, so plain content chunks keep their zero-copy path; a payload that
@@ -58,6 +90,22 @@ func (f *StreamToolCallIDFill) Fill(payload []byte) ([]byte, bool) {
 		calls, ok := delta["tool_calls"].([]any)
 		if !ok {
 			continue
+		}
+		nonEmpty := make([]any, 0, len(calls))
+		for _, raw := range calls {
+			tc, ok := raw.(map[string]any)
+			if !ok || isNonEmptyToolCallDelta(tc) {
+				nonEmpty = append(nonEmpty, raw)
+			}
+		}
+		if len(nonEmpty) != len(calls) {
+			changed = true
+			if len(nonEmpty) == 0 {
+				delete(delta, "tool_calls")
+				continue
+			}
+			delta["tool_calls"] = nonEmpty
+			calls = nonEmpty
 		}
 		for _, raw := range calls {
 			tc, ok := raw.(map[string]any)

@@ -55,6 +55,11 @@ func SetupRoutes(r interface {
 	dashH := dashboard.NewDashboardHandler(repo, ts)
 	if chatH != nil {
 		dashH.SemanticCache = chatH.SemanticCache
+		// The resilience layer is owned by the data plane, because that is the
+		// side that consults it on every request. The dashboard holds the same
+		// instance so its panel reports the layer a request was judged
+		// against, not a second one that can disagree with it.
+		dashH.Resilience = chatH.Resilience
 	}
 	// Chat & Models Domain (no version here: the four version GETs are
 	// public in SetupServerRouter, upstream PUBLIC_API_PATHS parity).
@@ -80,6 +85,7 @@ func SetupRoutes(r interface {
 
 	// Media, Audio, Video & Web Tools Domain
 	r.Post("/embeddings", mediaH.HandleEmbeddings)
+	r.Post("/rerank", mediaH.HandleRerank)
 	// /v1/responses needs model resolution, combos, account fallback and usage
 	// logging, none of which the media passthrough has, so it lives with the
 	// chat handlers — the same place /v1/messages does.
@@ -154,6 +160,7 @@ func SetupRoutes(r interface {
 	r.Get("/api/usage/chart", HandleUsageChart(repo))
 	r.Get("/api/usage/dashboard", HandleUsageDashboard(repo))
 	r.Get("/api/usage/request-details", HandleRequestDetails(repo))
+	r.Get("/api/usage/export", HandleUsageExport(repo))
 	r.Get("/api/usage/request-details/{id}", HandleRequestDetail(repo))
 	r.Get("/api/usage/providers", dashH.HandleGetUsageProviders)
 	r.Get("/api/usage/{connectionId}", dashH.HandleGetConnectionUsage)
@@ -184,6 +191,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 		// windows with, so the dashboard reports the same numbers the gate
 		// enforces instead of its own private view of them.
 		dashH.Limiter = chatH.RateLimiter
+		// Same instance as the resilience panel reads: the data plane owns the
+		// layer it consults on every request.
+		dashH.Resilience = chatH.Resilience
 	}
 	ssoH := sso.NewHandler(repo)
 
@@ -192,6 +202,11 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Get("/api/providers/client", dashH.HandleGetProvidersClient)
 	r.Post("/api/connections", dashH.HandleCreateConnection)
 	r.Post("/api/providers/validate", dashH.HandleValidateProvider)
+	// The provider registry the dashboard renders its catalog from. Registered here as
+	// well as in dashboard.RegisterRoutes, because that table is mounted by tests
+	// only: a route added there alone is reachable in a unit test and 404s on the
+	// real server.
+	r.Get("/api/providers/catalog", dashH.HandleGetProviderCatalog)
 	r.Post("/api/providers/gemini-web/browser-login", dashH.HandleGeminiWebBrowserLogin)
 	r.Post("/api/providers/gemini-web/import-chrome", dashH.HandleGeminiWebImportChrome)
 	r.Post("/api/providers/deepseek-web/browser-login", dashH.HandleDeepSeekWebBrowserLogin)
@@ -214,6 +229,7 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Get("/api/usage/chart", HandleUsageChart(repo))
 	r.Get("/api/usage/dashboard", HandleUsageDashboard(repo))
 	r.Get("/api/usage/request-details", HandleRequestDetails(repo))
+	r.Get("/api/usage/export", HandleUsageExport(repo))
 	r.Get("/api/usage/request-details/{id}", HandleRequestDetail(repo))
 	r.Get("/api/usage/providers", dashH.HandleGetUsageProviders)
 	r.Get("/api/usage/{connectionId}", dashH.HandleGetConnectionUsage)
@@ -519,6 +535,22 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	r.Get("/media-providers/*", webH.ServeHTTP)
 	r.Get("/media-providers/web", webH.ServeHTTP)
 	r.Get("/connections", webH.ServeHTTP)
+	// Provider share link: a fragment-only URL that the dashboard SPA resolves.
+	// Registered here, not under /dashboard/*, because the receiver may not have
+	// a session yet — the SPA gates the write itself and preserves the fragment
+	// across the login redirect. The fragment never reaches the server, so a key
+	// embedded in the link is never logged.
+	//
+	// The pattern is "/add", not "/v1/add": RequestLogger
+	// (internal/middleware/logging.go:70-77) strips a leading /v1/ from
+	// req.URL.Path before the router sees it, so a "/v1/add" pattern would never
+	// match. /v1/add still reaches this handler — the prefix is virtual, which
+	// is why every engine route is registered twice below.
+	//
+	// It also must not go into SetupRoutes: that whole group is mounted inside
+	// RequireApiKey (router.go:627-631), so an add route registered there would
+	// answer 401 to the browser that is supposed to open it.
+	r.Get("/add", webH.ServeHTTP)
 	r.Get("/combos", webH.ServeHTTP)
 	r.Get("/analytics", webH.ServeHTTP)
 	r.Get("/terminal", webH.ServeHTTP)
@@ -547,6 +579,7 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	dashH := dashboard.NewDashboardHandler(repo, ts)
 	if versionH != nil {
 		dashH.SemanticCache = versionH.SemanticCache
+		dashH.Resilience = versionH.Resilience
 	}
 	// Operator-supplied dashboard assets (the white-label logo). Behind the
 	// same page gate as /dashboard/*, so an install that requires a login does
@@ -608,6 +641,10 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	// The plan tier (F-3) is resolved from the repository, so a plan change
 	// applies to the next request without a restart.
 	rateLimiter.SetPlanSource(repo)
+	// The per-period budget (F-2) measures its spend from the same ledger the
+	// Usage dashboard reads, so the ceiling and the dashboard cannot disagree
+	// about what a key has spent.
+	rateLimiter.SetBudgetReader(repo)
 	// The fallback itself is read per request, so an operator can raise or drop
 	// a global default without a restart. Only the window, which the live
 	// windows already depend on, is pinned at boot.

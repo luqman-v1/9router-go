@@ -286,6 +286,7 @@ jobs:
             9router-go-darwin-amd64
             9router-go-darwin-arm64
             9router-go-windows-amd64.exe
+            9router-go-tray-windows-amd64.exe
             SHA256SUMS.txt
           body_path: /tmp/notes.md
           generate_release_notes: false

@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"net/http"
@@ -69,7 +70,7 @@ func miniMaxCodeSiteFor(provider string) (miniMaxCodeSite, bool) {
 // minimaxCodeStart requests a device code. The PKCE verifier rides along in
 // the session so the poll can present it: MiniMax's device grant requires a
 // code_verifier, and the dashboard has no other place to keep it.
-func minimaxCodeStart(provider string) (map[string]any, error) {
+func minimaxCodeStart(ctx context.Context, provider string) (map[string]any, error) {
 	site, ok := miniMaxCodeSiteFor(provider)
 	if !ok {
 		return nil, fmt.Errorf("unsupported MiniMax Code site: %s", provider)
@@ -84,7 +85,7 @@ func minimaxCodeStart(provider string) (map[string]any, error) {
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
 	}
-	data, status, err := postForm(site.accountBase+"/oauth2/device/code", form, nil)
+	data, status, err := postForm(ctx, site.accountBase+"/oauth2/device/code", form, nil)
 	if err != nil {
 		return nil, fmt.Errorf("MiniMax device code request failed: %w", err)
 	}
@@ -190,7 +191,7 @@ func positiveIntOr(data map[string]any, key string, fallback int) int {
 
 // minimaxCodePoll exchanges the device code for tokens, or reports that the
 // user has not finished signing in yet.
-func minimaxCodePoll(provider, code string, session map[string]any) (deviceTokens, error) {
+func minimaxCodePoll(ctx context.Context, provider, code string, session map[string]any) (deviceTokens, error) {
 	var t deviceTokens
 	site, ok := miniMaxCodeSiteFor(provider)
 	if !ok {
@@ -213,7 +214,7 @@ func minimaxCodePoll(provider, code string, session map[string]any) (deviceToken
 		form.Set("code_verifier", verifier)
 	}
 
-	data, _, err := postForm(site.accountBase+"/oauth2/token", form, nil)
+	data, _, err := postForm(ctx, site.accountBase+"/oauth2/token", form, nil)
 	if err != nil {
 		return t, fmt.Errorf("poll_failed: %w", err)
 	}

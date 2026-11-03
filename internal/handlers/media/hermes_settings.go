@@ -422,7 +422,6 @@ func resolveHermesHomeParam(w http.ResponseWriter, profile string) (hermesHome, 
 	return home, true
 }
 
-
 // writeHermesConfig writes config.yaml. The default home is created on demand;
 // a named profile's directory is never fabricated, so a typo cannot leave an
 // orphan directory behind that Hermes would later treat as a profile.

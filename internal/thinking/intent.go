@@ -34,6 +34,7 @@ type Intent struct {
 	Mode    Mode
 	Level   string // minimal|low|medium|high|xhigh|max|ultra when Mode == ModeLevel
 	Budget  int    // tokens when Mode == ModeBudget
+	Tier    string // priority|default when tier modifier specified
 	Display string // "summarized"|"omitted"; "" when unset
 }
 

@@ -25,7 +25,6 @@
     onClose,
     showUpdateModal = $bindable(false),
     updateInfo = $bindable(null),
-    version = $bindable(''),
     hiddenNav,
     navOrder,
     brandName = '',
@@ -41,12 +40,12 @@
     onClose?: () => void
     showUpdateModal?: boolean
     updateInfo?: SystemVersionInfo | null
-    version?: string
     hiddenNav?: string[]
     navOrder?: string[]
     brandName?: string
     brandLogo?: string
   } = $props()
+  let version = $state<string>(__APP_VERSION__ || '')
   // The white-label branding card in Settings writes these two; an empty value
   // falls back to the project's own name and favicon, so an operator who never
   // opens that card sees exactly what the sidebar showed before.
@@ -248,7 +247,7 @@
             {displayBrandName}
           </h1>
           <span class="text-xs text-text-muted leading-tight">
-            {version ? `v${version}` : 'v1.9.9'}
+            {version ? `v${version}` : ''}
           </span>
         </div>
       {/if}

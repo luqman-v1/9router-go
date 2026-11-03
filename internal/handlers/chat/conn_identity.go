@@ -65,7 +65,7 @@ func (h *ChatHandler) connIdentityKVOr(f forwardRequestParams, connectionID stri
 		}
 	}
 	kv := make([]any, 0, 6)
-kv = append(kv, "conn", connectionID)
+	kv = append(kv, "conn", connectionID)
 	if f.ConnName != "" {
 		kv = append(kv, "connName", f.ConnName)
 	}
@@ -84,7 +84,7 @@ func identityNames(kv []any) (name, email string) {
 			name, _ = kv[i+1].(string)
 		case "email":
 			email, _ = kv[i+1].(string)
-	}
+		}
 	}
 	return name, email
 }

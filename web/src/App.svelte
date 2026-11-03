@@ -15,6 +15,9 @@
   import CliToolsView from './components/CliToolsView.svelte'
   import CombosView from './components/combos/CombosView.svelte'
   import ConnectionsView from './components/connections/ConnectionsView.svelte'
+  import AddProviderFromLinkModal from './components/connections/AddProviderFromLinkModal.svelte'
+  import ImportProviderModal from './components/connections/ImportProviderModal.svelte'
+  import { parseProviderShareHash, type ProviderShareLink } from './lib/providerShare'
   import OAuthCallbackView from './components/connections/OAuthCallbackView.svelte'
   import EndpointView from './components/EndpointView.svelte'
   import LoginView from './components/LoginView.svelte'
@@ -32,13 +35,14 @@
   import UpdateModal from './components/UpdateModal.svelte'
   import type { SystemVersionInfo } from './api/client'
   import Toasts from './lib/ui/Toasts.svelte'
+  import { notifications } from './lib/notifications'
   import TerminalView from './components/TerminalView.svelte'
   import TokenSaverView from './components/TokenSaverView.svelte'
   import JailbreakView from './components/JailbreakView.svelte'
   import TopBar from './components/TopBar.svelte'
   import CommandPalette from './components/CommandPalette.svelte'
   import { parseMediaProvider, parseProviderId, pathToTab, providerPath, mediaProviderPath, TAB_ROUTES, type ActiveTab, type MediaProviderRoute } from './lib/router'
-  import { PROVIDER_CATALOG } from './lib/providers'
+  import { PROVIDER_CATALOG, loadProviderCatalog } from './lib/providers'
   import { getIconPath } from './components/connections/types'
   import { isNavHidden, NAV_ORDER, normalizeHiddenNav, normalizeNavOrder } from './lib/nav'
   import { setHiddenNavEntries } from './lib/navVisibility.svelte'
@@ -89,6 +93,10 @@
   let isLoading = $state(true)
   let isAuthChecking = $state(true)
   let isAuthenticatedState = $state(false)
+  // A share link waiting to be reviewed, and the import surface that fills it.
+  // The receiver modal is the only place a link is confirmed and written.
+  let pendingAddLinks = $state<ProviderShareLink[]>([])
+  let isImportOpen = $state(false)
   let requireLogin = $state(false)
   let isCreateComboOpen = $state(false)
   let isMobileMenuOpen = $state(false)
@@ -152,6 +160,17 @@
   }
 
   async function loadData() {
+    // The provider catalog is the one input no provider view can render without:
+    // every card reads its icon, colour and category from it. It is fetched
+    // here, inside the authenticated branch, rather than at module scope,
+    // because an unauthenticated fetch answers 401 and leaves the catalog empty
+    // for the whole session — the login page does not need it, and a fresh
+    // install would render an error where the login form belongs.
+    try {
+      await loadProviderCatalog()
+    } catch (err) {
+      console.error('provider catalog failed to load', err)
+    }
     try {
       const [connsRes, nodesRes, combosRes, keysRes, settingsRes] = await Promise.all([
         api.getConnections().catch(() => []),
@@ -198,6 +217,25 @@
 
   onMount(() => {
     applyAnimationLevel()
+    // A share link is read from the fragment on mount, and from the login stash
+    // when the redirect to /login lost it. sessionStorage, not localStorage: a
+    // pending link must not outlive the tab it was opened in.
+    const stashed = sessionStorage.getItem('9router_pending_add')
+    if (stashed) sessionStorage.removeItem('9router_pending_add')
+    const parsed = parseProviderShareHash(stashed || window.location.hash)
+    if (Array.isArray(parsed)) pendingAddLinks = parsed
+    else if (parsed) pendingAddLinks = [parsed]
+    // ?import=1 opens the paste surface directly. It is stashed for the same
+    // reason the fragment is: navigate('login', true) drops the query string, so
+    // an operator who arrives unauthenticated would otherwise land on the
+    // dashboard instead of the paste surface.
+    if (new URLSearchParams(window.location.search).get('import') === '1') {
+      sessionStorage.setItem('9router_pending_import', '1')
+    }
+    if (sessionStorage.getItem('9router_pending_import') === '1') {
+      sessionStorage.removeItem('9router_pending_import')
+      isImportOpen = true
+    }
     // Ctrl+K / Cmd+K opens the search palette from anywhere in the dashboard.
     // The guard on the modifier is what keeps a bare "k" from opening it while
     // the operator types in a field.
@@ -351,7 +389,7 @@
   }
   let isUpdateModalOpen = $state(false)
   let systemUpdateInfo = $state<SystemVersionInfo | null>(null)
-  let systemVersion = $state('')
+  let systemVersion = $state(typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '')
 </script>
 
 {#if isOAuthCallback}
@@ -376,6 +414,41 @@
 {:else}
   <div class="flex h-screen w-full overflow-hidden bg-bg text-text-main font-body transition-colors duration-300">
     <Toasts />
+    {#if isImportOpen}
+      <ImportProviderModal
+        isOpen
+        onClose={() => {
+          isImportOpen = false
+          // Drop ?import=1 so a reload does not reopen the modal.
+          if (typeof window !== 'undefined' && window.location.search.includes('import=1')) {
+            const url = new URL(window.location.href)
+            url.searchParams.delete('import')
+            window.history.replaceState({ tab: activeTab }, '', url.pathname + url.hash)
+          }
+        }}
+        onImport={(links) => {
+          isImportOpen = false
+          pendingAddLinks = links
+        }}
+      />
+    {/if}
+    {#if pendingAddLinks.length}
+      <AddProviderFromLinkModal
+        isOpen
+        links={pendingAddLinks}
+        onClose={() => (pendingAddLinks = [])}
+        onDone={(prov, added, skipped) => {
+          pendingAddLinks = []
+          loadData()
+          navigate('connections', false, prov)
+          if (added > 0 || skipped > 0) {
+            notifications.success(`${added} model(s) added to ${prov}${skipped ? `, ${skipped} skipped` : ''}`)
+          } else {
+            notifications.success(`Provider ${prov} added`)
+          }
+        }}
+      />
+    {/if}
     <!-- Mobile sidebar drawer backdrop -->
     {#if isMobileMenuOpen}
       <div
@@ -413,7 +486,6 @@
         onClose={() => (isMobileMenuOpen = false)}
         bind:showUpdateModal={isUpdateModalOpen}
         bind:updateInfo={systemUpdateInfo}
-        bind:version={systemVersion}
         hiddenNav={hiddenNav}
         navOrder={navOrder}
         brandName={settings.appName || ''}
@@ -479,6 +551,7 @@
                 bind:selectedProviderId
                 onSelectProvider={(id) => navigate('connections', false, id)}
                 onBackToOverview={() => navigate('connections', false, null)}
+                onImport={() => (isImportOpen = true)}
               />
             {:else if activeTab === 'combos'}
               <CombosView {combos} {connections} {providerNodes} onRefresh={loadData} bind:isCreatingOpen={isCreateComboOpen} />
