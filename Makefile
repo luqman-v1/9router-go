@@ -197,7 +197,7 @@ bench-go:
 # so an empty GOARCH can never leak into the normal build target.
 CROSS_TARGETS := linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64
 
-ifneq ($(filter cross-one,$(MAKECMDGOALS)),)
+ifneq ($(filter cross-one cross-tray-one,$(MAKECMDGOALS)),)
 export GOOS := $(CROSS_OS)
 export GOARCH := $(CROSS_ARCH)
 endif
