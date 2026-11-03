@@ -66,6 +66,15 @@ func TestAggregatorProviders(t *testing.T) {
 			aliases: []string{"systemone"},
 		},
 		{
+			// Nace Drex — the second System One lane (upstream v0.5.112,
+			// f7f6f5e). Same shape as v1m: decision models only, one
+			// /v1/systemone endpoint, no chat base URL. drex-v2.0 is text-only
+			// and answers 422 when a request carries an `images` array.
+			id: "nace", baseURL: "",
+			models:  []string{"drex-max", "drex-v2.0"},
+			aliases: []string{"drex"},
+		},
+		{
 			// SumoPod — Indonesian OpenAI-compatible gateway. Catalogue from
 			// the live /v1/models response (61 chat models; embeddings excluded).
 			id: "sumopod", baseURL: "https://ai.sumopod.com/v1/chat/completions",

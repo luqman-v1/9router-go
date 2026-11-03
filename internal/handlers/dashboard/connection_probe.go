@@ -59,6 +59,11 @@ const (
 	// the provider's chat base URL).
 	v1mProbeURL   = "https://v1m.ir/v1/systemone"
 	v1mProbeModel = "rev-latest"
+	// Nace Drex answers the same System One shape on its own host. The
+	// cheapest call that proves a key is a single-token noul evaluation,
+	// exactly as v1m (upstream v0.5.112, f7f6f5e).
+	naceProbeURL   = "https://console.nace.ai/v1/systemone"
+	naceProbeModel = "drex-max"
 	// MiniMax Code publishes its model catalogue on the agent gateway (the
 	// same endpoint the dashboard imports from), so a connection probe is a
 	// plain bearer call there: a 401/403 is the only invalid answer.

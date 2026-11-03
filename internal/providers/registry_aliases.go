@@ -78,6 +78,7 @@ var RegistryAliases = map[string]string{
 	"tencent":             "hunyuan",
 	"tinyfish":            "tinyfish",
 	"v1m":                 "v1m",
+	"nace":                "nace",
 	"vercel-ai-gateway":   "vercel",
 	"vertex":              "vx",
 	"vertex-partner":      "vxp",
