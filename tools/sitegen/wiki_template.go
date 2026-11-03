@@ -177,6 +177,19 @@ const wikiTemplate = `<!doctype html>
       .wiki-side-foot {
         flex-shrink: 0;
         margin-top: auto;
+        /* Centre the footer's contents against the sidebar column, the way the
+           nav rows above it are centred by their own padding. The footer is a
+           block, so its two children — the icon row and the release line — both
+           default to the left edge of the column. Centring here rather than on
+           each child keeps the two rows on one axis, and it survives a fourth
+           child being added later without a second rule to remember.
+           The alignment is to the column, not the viewport: the sidebar has
+           1.5rem of right padding and sits inside the shell's grid, so the
+           visual centre of the column is the sidebar's own content box. */
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
         /* The footer is chrome, and every pixel it costs is a pixel the nav
            loses. It measured 85px — 44 of which was one row of icons at a
            target size the nav rows above it do not need either (they are 33px).

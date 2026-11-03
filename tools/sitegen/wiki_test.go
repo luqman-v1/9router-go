@@ -1237,6 +1237,40 @@ func TestAbsoluteMarkdownLinkKeepsItsSuffix(t *testing.T) {
 	}
 }
 
+// The sidebar footer's contents are centred against the sidebar column. The
+// footer is a block, so its two children — the icon row and the release line —
+// both default to the left edge of the column, which read as a stray element
+// under the centred nav rows above it.
+//
+// The alignment is asserted on .wiki-side-foot itself rather than on each
+// child: centring the parent keeps the two rows on one axis, so a fourth child
+// added later is centred without a second rule to remember. text-align is the
+// companion — without it the release line's text still hugs the left edge of
+// its own (now centred) box, and only the box is centred.
+func TestWikiSideFooterIsCentred(t *testing.T) {
+	at := strings.Index(wikiTemplate, ".wiki-side-foot {")
+	if at < 0 {
+		t.Fatal("no .wiki-side-foot rule found")
+	}
+	body := cssRule(t, wikiTemplate, ".wiki-side-foot")
+	if !strings.Contains(body, "align-items: center") {
+		t.Errorf("the footer's children are not centred against the column:\n%s", body)
+	}
+	if !strings.Contains(body, "text-align: center") {
+		t.Errorf("the release line is not centred inside its own box:\n%s", body)
+	}
+	// It is still a flex column: centring must not collapse the two rows into
+	// one, or the icon row and the release line overlap.
+	if !strings.Contains(body, "flex-direction: column") {
+		t.Errorf("the footer is no longer a column; its two rows would not stack:\n%s", body)
+	}
+	// The centring must not move the footer's height: it is the last flex child
+	// of the column and every pixel it costs is a pixel the nav loses.
+	if !strings.Contains(body, "flex-shrink: 0") {
+		t.Errorf("the footer can shrink and the nav loses rows:\n%s", body)
+	}
+}
+
 func TestWikiSidebarScrollsOnDesktop(t *testing.T) {
 	// Pin the base rule, not the mobile one: the sheet overrides it with its
 	// own overflow-y, and that one is already covered.
