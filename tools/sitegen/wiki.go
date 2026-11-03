@@ -398,6 +398,7 @@ func atoi(s string) int {
 	}
 	return n
 }
+
 // releaseCore reduces a version to the line it belongs to, so two versions can
 // be compared without a full semver parser. `1.9.15-exp.16` and `1.9.15` are
 // builds of the same release line and compare equal; `1.9.14` does not. The
@@ -421,6 +422,7 @@ func releaseNewer(page, built string) bool {
 	}
 	return false
 }
+
 // releaseParts splits a version into its release line and numeric parts,
 // dropping any prerelease suffix: `1.9.15-exp.16` is a build of `1.9.15`, so it
 // compares against another release line by its 1.9.15. It reports false when

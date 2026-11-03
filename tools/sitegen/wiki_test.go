@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 )
+
 // mdLinkRe matches an inline markdown link and captures its destination, so a
 // test can audit where a link points without a markdown parser.
 var mdLinkRe = regexp.MustCompile(`\[[^\]]*\]\(([^)\s]+)\)`)
@@ -669,6 +670,7 @@ func TestShellDoesNotBoundTheStickySidebar(t *testing.T) {
 		t.Error("the phone override does not zero the article's bottom margin")
 	}
 }
+
 // cssRule returns the body of the first CSS rule whose selector is exactly sel.
 func cssRule(t *testing.T, css, sel string) string {
 	t.Helper()
@@ -704,12 +706,123 @@ func TestSearchIndexIsInScopeForEveryKeystroke(t *testing.T) {
 	if strings.Contains(wikiTemplate, "render(index || [], q)") {
 		t.Error("a caller still passes the index as render()'s first argument")
 	}
-	// Every call site must pass exactly one argument.
-	for _, call := range []string{"render(query)", "render(q)"} {
-		if !strings.Contains(wikiTemplate, call) {
-			t.Errorf("no call site %q; search never renders", call)
+	// Every call site must pass a single argument: the query. A second
+	// argument is the old two-parameter signature, which passed the array
+	// where the string goes. The call sites changed when search moved into a
+	// dialog — they are `render(modalInput.value)` now, and pinning the old
+	// spellings would fail a correct implementation for the wrong reason. What
+	// matters is that every call passes exactly one argument and that argument
+	// is not the index, so that is what is checked.
+	for _, call := range renderCalls(wikiTemplate) {
+		args := strings.TrimSuffix(strings.TrimPrefix(call, "render("), ")")
+		if strings.Contains(args, "index") {
+			t.Errorf("call site %q passes the index to render()", call)
+		}
+		if strings.Count(args, ",") > 0 {
+			t.Errorf("call site %q passes more than one argument to render()", call)
 		}
 	}
+	if len(renderCalls(wikiTemplate)) == 0 {
+		t.Error("render() is never called: search cannot produce output")
+	}
+}
+
+// Search opens a dialog instead of rendering into the sidebar. The sidebar box
+// is now a read-only trigger, because the list it used to render was squeezed
+// into a 15rem column and, on a phone, lived inside the full-screen nav sheet.
+// These cases pin the four things that make that work: the trigger is
+// read-only and clickable, the dialog exists and is a direct child of <body>
+// (inside the sidebar it would be trapped by the sheet's transform), the
+// results render into the dialog's own list, and the query is replayed when a
+// shared link arrives.
+func TestSearchOpensAModal(t *testing.T) {
+	// The trigger must not accept typing: a read-only box that still renders
+	// results is the broken state this replaced.
+	if !strings.Contains(wikiTemplate, `id="q" type="search" placeholder="Search features…" autocomplete="off" readonly`) {
+		t.Error("the sidebar search box is not a read-only trigger")
+	}
+	if !strings.Contains(wikiTemplate, `aria-haspopup="dialog"`) {
+		t.Error("the trigger does not declare that it opens a dialog")
+	}
+	// The dialog and its controls.
+	for _, want := range []string{
+		`<dialog class="wiki-search-modal" id="search-modal"`,
+		`id="search-modal-input"`,
+		`id="results-modal"`,
+		`id="search-modal-close"`,
+	} {
+		if !strings.Contains(wikiTemplate, want) {
+			t.Errorf("the search dialog is missing %q", want)
+		}
+	}
+	// Results render into the dialog's list, not the sidebar's.
+	if !strings.Contains(wikiTemplate, "modalResults.innerHTML") {
+		t.Error("search results are not rendered into the dialog's list")
+	}
+	if strings.Contains(wikiTemplate, "results.innerHTML = hits") {
+		t.Error("search results still render into the sidebar list")
+	}
+	// Clicking the trigger opens it, and a keyboard user gets the same path.
+	if !strings.Contains(wikiTemplate, `trigger.addEventListener("click", openSearch)`) {
+		t.Error("clicking the search box does not open the dialog")
+	}
+	if !strings.Contains(wikiTemplate, `if (e.key === "Enter" || e.key === " ")`) {
+		t.Error("the search trigger has no keyboard path to open the dialog")
+	}
+	// A shared link carrying ?q= shows the results without retyping.
+	if !strings.Contains(wikiTemplate, "if (query) openSearch();") {
+		t.Error("a shared ?q= link does not open the search already showing results")
+	}
+	// The index may still be in flight when the dialog opens; an empty list
+	// would read as "no results".
+	if !strings.Contains(wikiTemplate, "var indexLoaded = false;") {
+		t.Error("there is no loaded flag: an in-flight index renders as no results")
+	}
+	// The template writes the ellipsis as a \u2026 escape, because it lives
+	// inside a JS string literal in a Go raw string.
+	if !strings.Contains(wikiTemplate, "Loading\\u2026") {
+		t.Error("the dialog does not say the index is still loading")
+	}
+	// The cap must be stated, or a reader believes nothing else matched.
+	if !strings.Contains(wikiTemplate, "more match") {
+		t.Error("a capped result list does not say how many matches were cut")
+	}
+}
+
+// The dialog must be a direct child of <body>. Inside the sidebar it is
+// trapped: below 60rem that aside is position:fixed with transform and
+// visibility transitions, so the dialog would inherit the sheet's transform,
+// be unreachable while the sheet is closed, and cover a sheet that is itself
+// full-screen. Measured in the browser before the move: the dialog rendered
+// inside the aside and the click on the sidebar box did nothing at all.
+func TestSearchDialogIsOutsideTheSidebar(t *testing.T) {
+	at := strings.Index(wikiTemplate, `<dialog class="wiki-search-modal"`)
+	if at < 0 {
+		t.Fatal("no search dialog in the template")
+	}
+	before := wikiTemplate[:at]
+	// The dialog must come after the aside's closing tag. Before that tag the
+	// dialog is inside the sidebar, which below 60rem is a transformed fixed
+	// sheet — it traps the dialog and hides it with the sheet.
+	if strings.LastIndex(before, "</aside>") < strings.LastIndex(before, "<aside") {
+		t.Errorf("the search dialog is inside <aside>: below 60rem the sidebar is a transformed fixed sheet, which traps the dialog")
+	}
+}
+
+// renderCalls returns every `render(...)` call site in the template, so a test
+// can audit them without pinning the exact spelling of the argument.
+var renderCallRe = regexp.MustCompile(`render\([^)]*\)`)
+
+func renderCalls(tmpl string) []string {
+	var calls []string
+	for _, m := range renderCallRe.FindAllString(tmpl, -1) {
+		// The declaration is not a call site.
+		if strings.HasPrefix(m, "render(q) {") || strings.Contains(m, "function ") {
+			continue
+		}
+		calls = append(calls, m)
+	}
+	return calls
 }
 
 // The wiki-main rule is the one that decides the article column's width, so the

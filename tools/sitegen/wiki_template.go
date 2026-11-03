@@ -388,6 +388,119 @@ const wikiTemplate = `<!doctype html>
         color: var(--text-muted);
         font-size: 0.75rem;
       }
+      /* The search modal. It is a <dialog>, so the browser supplies the layer,
+         the top layer placement and the Escape key; this only gives it the same
+         surface tokens as the rest of the shell. The sidebar box that opens it
+         is read-only — typing happened there before and produced a list
+         squeezed into a 15rem column. */
+      .wiki-search-modal {
+        width: min(38rem, calc(100vw - 2rem));
+        max-height: min(32rem, calc(100vh - 4rem));
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--surface);
+        color: var(--text);
+        box-shadow: 0 24px 60px rgb(0 0 0 / 0.22);
+        flex-direction: column;
+        overflow: hidden;
+      }
+      /* A dialog that is not open must not reserve layout, and must not be
+         reachable by keyboard. */
+      .wiki-search-modal:not([open]) {
+        display: none;
+      }
+      .wiki-search-modal[open] {
+        display: flex;
+      }
+      .wiki-search-modal::backdrop {
+        background: rgb(15 23 42 / 0.45);
+        backdrop-filter: blur(2px);
+      }
+      .wiki-search-modal-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1rem 1.25rem 0.75rem;
+        border-bottom: 1px solid var(--border-subtle);
+      }
+      .wiki-search-modal-title {
+        margin: 0;
+        font-size: 0.9375rem;
+        font-weight: 600;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .wiki-search-modal-close {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        height: 2rem;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .wiki-search-modal-close:hover {
+        background: var(--bg-alt);
+        color: var(--text);
+      }
+      .wiki-search-modal-close:focus-visible {
+        outline: 2px solid var(--brand);
+        outline-offset: 1px;
+      }
+      .wiki-search-modal-field {
+        padding: 0.875rem 1.25rem 0.75rem;
+      }
+      .wiki-search-modal-field input {
+        width: 100%;
+        padding: 0.625rem 0.875rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg);
+        color: var(--text);
+        font: inherit;
+        font-size: 1rem;
+      }
+      .wiki-search-modal-field input:focus-visible {
+        outline: 2px solid var(--brand);
+        outline-offset: 1px;
+      }
+      /* The result list is the only part that scrolls, so the head and the
+         field stay put while a long list moves under them. */
+      .wiki-search-modal-results {
+        margin: 0;
+        padding: 0 1.25rem 1.25rem;
+        font-size: 0.9375rem;
+        max-height: 20rem;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+      }
+      .wiki-search-modal-results a {
+        padding: 0.5rem 0.75rem;
+        font-size: 0.9375rem;
+      }
+      /* The trigger in the sidebar reads as a control, not as a dead text box:
+         a pointer cursor and a focus ring, because a read-only input that
+         behaves like a button is otherwise indistinguishable from a broken
+         one. The hint names the gesture once; after the first open the reader
+         already knows. */
+      .wiki-search input[readonly] {
+        cursor: pointer;
+      }
+      .wiki-search-hint {
+        margin: 0.375rem 0 0;
+        padding: 0 0.75rem;
+        color: var(--text-muted);
+        font-size: 0.75rem;
+      }
       .wiki-main {
         /* The article column. min-width: 0 is what lets a wide table or a long
            URL shrink the column instead of pushing the shell open. */
@@ -848,8 +961,9 @@ const wikiTemplate = `<!doctype html>
              sibling's content. -->
         <div class="wiki-search">
           <label class="skip-link" for="q">Search the wiki</label>
-          <input id="q" type="search" placeholder="Search features…" autocomplete="off" />
-          <ul class="wiki-results" id="results" hidden></ul>
+          <input id="q" type="search" placeholder="Search features…" autocomplete="off" readonly
+                 aria-haspopup="dialog" aria-expanded="false" />
+          <p class="wiki-search-hint">Click to search</p>
         </div>
         <div class="wiki-side-scroll">
           {{ range .Groups }}
@@ -920,39 +1034,138 @@ const wikiTemplate = `<!doctype html>
         {{ .Page.Body }}
       </main>
     </div>
+    <!-- The search modal, a direct child of <body>. It cannot live inside the
+         sidebar: below 60rem that aside is position:fixed with
+         transform/visibility transitions, and a <dialog> inside it would be
+         trapped by the sheet's transform and its hidden state — it would be
+         reachable only when the nav sheet is open, and would cover a sheet that
+         is itself full-screen. At the body level the dialog is its own layer
+         over the whole page on every screen.
+         The sidebar input is a read-only trigger that opens this: typing there
+         showed results in a list squeezed into a 15rem column, and a phone
+         reader got that same list inside a full-screen sheet. A dialog gives
+         the query its own surface — the input, the results, and the keyboard
+         all get the room the sidebar never had. Escape and the backdrop close
+         it, and picking a result navigates. <dialog> carries the semantics
+         (role, focus trap, Escape) and ::backdrop paints the scrim, so no JS
+         reimplements them. -->
+    <dialog class="wiki-search-modal" id="search-modal" aria-labelledby="search-modal-title">
+      <div class="wiki-search-modal-head">
+        <h2 id="search-modal-title" class="wiki-search-modal-title">Search</h2>
+        <button type="button" class="wiki-search-modal-close" id="search-modal-close" aria-label="Close search">
+          <span aria-hidden="true">&#10005;</span>
+        </button>
+      </div>
+      <div class="wiki-search-modal-field">
+        <input id="search-modal-input" type="search" placeholder="Search features…" autocomplete="off" />
+      </div>
+      <ul class="wiki-results wiki-search-modal-results" id="results-modal" hidden></ul>
+    </dialog>
 
     <script>
       // Search reads the index the generator wrote beside these pages. The URL
       // carries the query (?q=) and the target section (#), so a result can be
       // shared as a link and reopened exactly where it was found.
+      //
+      // The sidebar box is a read-only trigger that opens a <dialog>. It is
+      // read-only on purpose: the search that used to run there rendered into a
+      // 15rem column, which truncated every heading to an unreadable width, and
+      // on a phone that same list lived inside the full-screen nav sheet. The
+      // query now belongs to the dialog, where the input and the results share
+      // a surface wide enough for both.
       (function () {
-        var input = document.getElementById("q");
-        var results = document.getElementById("results");
-        if (!input || !results) return;
+        var trigger = document.getElementById("q");
+        var modal = document.getElementById("search-modal");
+        var modalInput = document.getElementById("search-modal-input");
+        var modalResults = document.getElementById("results-modal");
+        var closeBtn = document.getElementById("search-modal-close");
+        if (!trigger || !modal || !modalInput || !modalResults) return;
         // The index is fetched once and kept in the closure, so every keystroke
         // reads it without a second request. Declaring it here rather than
         // relying on a parameter name is what makes the listener work at all:
         // index was previously only a parameter of render(), so the input
         // handler threw a ReferenceError and search returned nothing.
         var index = [];
-
+        var indexLoaded = false;
         var params = new URLSearchParams(location.search);
         var query = params.get("q") || "";
-        if (query) input.value = query;
-
+        // A shared link carries the query, so opening the page with ?q= shows
+        // the dialog rather than a search the reader has to repeat.
+        if (query) trigger.value = query;
         fetch("search-index.json")
           .then(function (r) { return r.json(); })
           .then(function (data) {
             index = data || [];
-            render(query);
+            indexLoaded = true;
+            // Only render if the dialog is already open — a ?q= on load opens
+            // it below, and a query typed before the fetch resolved renders
+            // once the index arrives.
+            if (modal.open) render(modalInput.value);
           })
-          .catch(function () { results.hidden = true; });
+          .catch(function () { modalResults.hidden = true; });
+        // The dialog gives the query a surface wide enough for the results, so
+        // the sidebar box that used to render them is only a trigger now.
+        function openSearch() {
+          // A browser without <dialog>.showModal would throw; the fallback
+          // opens the element as a plain overlay so the search still works.
+          if (typeof modal.showModal === "function") modal.showModal();
+          else modal.setAttribute("open", "");
+          trigger.setAttribute("aria-expanded", "true");
+          modalInput.value = trigger.value;
+          // The index may still be in flight. An empty list here reads as "no
+          // results", so the previous query is replayed when it lands.
+          render(modalInput.value);
+          modalInput.focus();
+          modalInput.select();
+        }
+        function closeSearch() {
+          if (typeof modal.close === "function") modal.close();
+          else modal.removeAttribute("open");
+          trigger.setAttribute("aria-expanded", "false");
+        }
+        trigger.addEventListener("click", openSearch);
+        // A read-only input still takes focus, and Enter on a focused read-only
+        // field does nothing on its own — so the key is handled explicitly.
+        trigger.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openSearch();
+          }
+        });
+        closeBtn.addEventListener("click", closeSearch);
+        // Clicking the backdrop closes. The dialog element is the target only
+        // when the click lands outside its box, and because the box fills the
+        // dialog's content area the check is the dialog's own bounding rect.
+        modal.addEventListener("click", function (e) {
+          var r = modal.getBoundingClientRect();
+          var outside =
+            e.clientX < r.left || e.clientX > r.right ||
+            e.clientY < r.top || e.clientY > r.bottom;
+          if (outside) closeSearch();
+        });
+        // The dialog is dismissed with Escape by the browser, and that fires a
+        // cancel event — the only signal that closes it from the keyboard.
+        modal.addEventListener("cancel", function () {
+          trigger.setAttribute("aria-expanded", "false");
+        });
+        // Picking a result navigates, so the dialog closes behind it.
+        modalResults.addEventListener("click", function (e) {
+          if (e.target.closest("a")) closeSearch();
+        });
 
         function render(q) {
-          q = q.trim().toLowerCase();
+          q = (q || "").trim().toLowerCase();
+          // The index is fetched once on load. While it is in flight an empty
+          // list would read as "no results", which is a lie - say what is
+          // actually happening instead.
+          if (!indexLoaded) {
+            modalResults.hidden = false;
+            modalResults.innerHTML = '<li><span class="where">Loading\u2026</span></li>';
+            return;
+          }
           if (!q) {
-            results.hidden = true;
-            results.innerHTML = "";
+            modalResults.hidden = true;
+            modalResults.innerHTML = "";
             return;
           }
           var hits = [];
@@ -978,13 +1191,14 @@ const wikiTemplate = `<!doctype html>
             }
           }
           if (!hits.length) {
-            results.hidden = false;
-            results.innerHTML = '<li><span class="where">No match for "' + escapeHTML(q) + '"</span></li>';
+            modalResults.hidden = false;
+            modalResults.innerHTML = '<li><span class="where">No match for "' + escapeHTML(q) + '"</span></li>';
             return;
           }
-          results.hidden = false;
-          results.innerHTML = hits
-            .slice(0, 12)
+          // The cap is part of the answer: a reader who typed a broad term
+          // needs to know the list was cut, not that nothing else matched.
+          var shown = hits.slice(0, 12);
+          var html = shown
             .map(function (h) {
               var anchor = h.where === "Page" ? "" : "#" + anchorOf(h.title);
               return (
@@ -994,6 +1208,13 @@ const wikiTemplate = `<!doctype html>
               );
             })
             .join("");
+          var rest = hits.length - shown.length;
+          if (rest > 0) {
+            html += '<li><span class="where">' + rest + " more match" +
+              (rest === 1 ? "" : "es") + " \u2014 refine the query to narrow them down.</span></li>";
+          }
+          modalResults.innerHTML = html;
+          modalResults.hidden = false;
         }
 
         function anchorOf(text) {
@@ -1010,17 +1231,14 @@ const wikiTemplate = `<!doctype html>
         }
 
         var debounce;
-        input.addEventListener("input", function () {
+        modalInput.addEventListener("input", function () {
           clearTimeout(debounce);
           debounce = setTimeout(function () {
-            var q = input.value;
-            var url = new URL(location.href);
-            if (q) url.searchParams.set("q", q);
-            else url.searchParams.delete("q");
-            history.replaceState(null, "", url);
-            render(q);
+            render(modalInput.value);
           }, 120);
         });
+        // A shared link with ?q= opens the search already showing its results.
+        if (query) openSearch();
       })();
 
       // Nav disclosure. On a phone or tablet the sidebar is a full-screen sheet,
