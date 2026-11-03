@@ -42,6 +42,7 @@ func cleanGeminiSchema(schema map[string]any) {
 		// catches the vendor-prefixed spellings.
 		"errorMessage", "errorMessages", "markdownDescription",
 		"doNotSuggest", "suggestSortText", "minProperties", "maxProperties",
+		"encrypted",
 	}
 
 	// stripUnsupported removes keywords Gemini rejects. Called again after anyOf/oneOf

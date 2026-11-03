@@ -19,15 +19,30 @@ func (c *responsesRequestConv) applyTools(envelope map[string]any) {
 
 	converted := make([]any, 0, len(all))
 	for _, raw := range all {
-		tool, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		if decl := convertResponsesTool(tool, c); decl != nil {
-			converted = append(converted, decl)
-		}
+		c.unpackTool(raw, &converted)
 	}
 	envelope["tools"] = converted
+}
+
+func (c *responsesRequestConv) unpackTool(raw any, out *[]any) {
+	tool, ok := raw.(map[string]any)
+	if !ok {
+		return
+	}
+	toolType, _ := tool["type"].(string)
+	if toolType == "namespace" {
+		for _, key := range []string{"tools", "functions", "items"} {
+			if subList, ok := tool[key].([]any); ok {
+				for _, sub := range subList {
+					c.unpackTool(sub, out)
+				}
+			}
+		}
+		return
+	}
+	if decl := convertResponsesTool(tool, c); decl != nil {
+		*out = append(*out, decl)
+	}
 }
 
 // convertResponsesTool maps one Responses tool declaration to a Chat function
@@ -41,6 +56,7 @@ func convertResponsesTool(tool map[string]any, c *responsesRequestConv) map[stri
 	}
 
 	name, _ := tool["name"].(string)
+	name = strings.TrimPrefix(name, "functions.")
 	if strings.TrimSpace(name) == "" {
 		return nil
 	}
@@ -101,6 +117,3 @@ func normalizeToolParameters(raw any) map[string]any {
 	}
 	return params
 }
-
-// convertResponsesContent maps a Responses content value to Chat content:
-// input_text/output_text become text parts, input_image becomes an image_url part,

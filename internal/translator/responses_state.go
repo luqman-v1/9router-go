@@ -3,6 +3,7 @@ package translator
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -204,11 +205,15 @@ func (s *ResponsesState) SetCustomToolNames(names []string) {
 	s.CustomToolNames = make(map[string]bool, len(names))
 	for _, name := range names {
 		s.CustomToolNames[name] = true
+		s.CustomToolNames[strings.TrimPrefix(name, "functions.")] = true
 	}
 }
 
 func (s *ResponsesState) isCustomTool(name string) bool {
-	return name != "" && s.CustomToolNames[name]
+	if name == "" {
+		return false
+	}
+	return s.CustomToolNames[name] || s.CustomToolNames[strings.TrimPrefix(name, "functions.")]
 }
 
 // recordCompletedOutputItem remembers a finished item for response.completed.
