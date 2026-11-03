@@ -133,50 +133,6 @@ const wikiTemplate = `<!doctype html>
         overflow: hidden;
         overscroll-behavior: contain;
       }
-      /* The header row carries the sidebar's own wordmark. It does not need
-         position:sticky: the column is a flex box whose middle child is the
-         only part that scrolls, so this row is pinned by the layout itself and
-         the nav links scroll past underneath it. A sticky header here would be
-         dead code — nothing scrolls this element's parent — and a negative
-         top margin to align it was measured overlapping the middle by 4px. */
-      .wiki-side-head {
-        flex-shrink: 0;
-        background: var(--bg);
-        padding: 0 0 0.75rem;
-      }
-      /* The sidebar's own wordmark, in the same shape as the masthead's: the
-         mark beside the product name, so the two rows in this view agree instead
-         of the sidebar naming the section ("Wiki") while the bar above it names
-         the product. The mark is a span rather than an <img>: it is the same
-         glyph the masthead draws, so there is one logo definition, and an image
-         here would need its own asset for a 1.25rem square. */
-      .wiki-side-title {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-        font-weight: 650;
-        font-size: 0.9375rem;
-        color: var(--text);
-        text-decoration: none;
-        letter-spacing: -0.01em;
-      }
-      .wiki-side-mark {
-        display: grid;
-        place-items: center;
-        width: 1.25rem;
-        height: 1.25rem;
-        border-radius: 6px;
-        /* The same measured pair the masthead's wordmark plate uses, so the two
-           marks in this view are the same colour and both pass AA. */
-        background: var(--mark-bg, #b03e1f);
-        color: var(--mark-fg, #ffffff);
-        font-size: 0.75rem;
-        font-weight: 700;
-        line-height: 1;
-      }
-      .wiki-side-title:hover {
-        color: var(--brand);
-      }
       /* The search box, pinned the same way the header above it is: it is a flex
          child of the column, so the layout holds it while the middle scrolls.
          It was the first item inside the scrolling area, which meant it left
@@ -557,9 +513,13 @@ const wikiTemplate = `<!doctype html>
           gap: 0.75rem;
           margin-bottom: 1.25rem;
         }
-        /* The mark inside the sheet head, the same square the desktop sidebar
-           header draws. Aligned to the text by the same flex row, so the sheet
-           and the desktop view do not disagree about the logo's size. */
+        /* The mark inside the sheet head, the same square the masthead's
+           wordmark plate draws. Aligned to the text by the same flex row, so the
+           sheet and the masthead do not disagree about the logo's size. The
+           sidebar's own header row was removed — the masthead above already
+           carries this mark on every screen, so a second copy put two logos in
+           one view — which leaves the sheet head as the only other place the
+           product is named, and it is where a phone reader looks first. */
         .wiki-sheet-head strong {
           display: inline-flex;
           align-items: center;
@@ -567,6 +527,20 @@ const wikiTemplate = `<!doctype html>
           font-size: 0.9375rem;
           font-weight: 650;
           letter-spacing: -0.01em;
+        }
+        /* The same measured colour pair the masthead plate uses, so the two
+           marks a phone reader sees are the same colour and both pass AA. */
+        .wiki-sheet-mark {
+          display: grid;
+          place-items: center;
+          width: 1.25rem;
+          height: 1.25rem;
+          border-radius: 6px;
+          background: var(--mark-bg, #b03e1f);
+          color: var(--mark-fg, #ffffff);
+          font-size: 0.75rem;
+          font-weight: 700;
+          line-height: 1;
         }
         /* Icon-only, square, and at the left edge of the sheet — the same
            treatment the header trigger gets, so the two controls read as a
@@ -786,23 +760,15 @@ const wikiTemplate = `<!doctype html>
             <span class="wiki-sheet-close-icon" aria-hidden="true">✕</span>
           </button>
           <strong>
-            <span class="wiki-side-mark" aria-hidden="true">9</span>
+            <span class="wiki-sheet-mark" aria-hidden="true">9</span>
             9router-go
           </strong>
         </div>
-        <!-- The desktop header. It is hidden below 60rem, where the sheet head
-             above takes over: two copies of the same row would render as a
-             stutter at the top of the sheet. It carries the sidebar's own
-             wordmark, matching the masthead's mark and name rather than naming
-             the section ("Wiki") while the bar above it names the product. It is
-             pinned by the flex layout, not by position:sticky, because the
-             middle child is the only part of the column that scrolls. -->
-        <div class="wiki-side-head">
-          <a class="wiki-side-title" href="index.html">
-            <span class="wiki-side-mark" aria-hidden="true">9</span>
-            <span>9router-go</span>
-          </a>
-        </div>
+        <!-- No header row here: the masthead above already carries the wordmark
+             on every screen, so a second copy at the top of the sidebar put two
+             logos in one view. On a phone, where the bar is the only chrome that
+             is always visible, the sheet head below supplies the mark next to the
+             close control instead. -->
         <!-- The search box is its own flex child rather than the first thing
              inside the scrolling area below, so it stays pinned while the nav
              scrolls under it. A reader who scrolls 20 links down and wants a

@@ -589,6 +589,37 @@ func TestNavTriggerLivesInTheHeaderBar(t *testing.T) {
 	if !strings.Contains(wikiTemplate, "{{ if .StableVersion }}") {
 		t.Error("the release line has no guard: an empty version would render as bare text")
 	}
+	// One logo per view. The masthead carries the wordmark on every screen, so
+	// the sidebar's own header row was a second copy of the same mark and name in
+	// the same view — a reader sees two logos and has to work out whether they
+	// differ. The sidebar now starts at the search box, which is the first thing
+	// it does that the masthead does not.
+	if strings.Contains(wikiTemplate, `class="wiki-side-head"`) {
+		t.Error("the sidebar still carries its own header row: the masthead already names the product")
+	}
+	if strings.Contains(wikiTemplate, `class="wiki-side-title"`) {
+		t.Error("the sidebar still has its own wordmark link: two links to index.html in one view")
+	}
+	// The phone sheet head keeps a mark, because there the bar is the only chrome
+	// that is always visible and the sheet is where a phone reader lands. It has
+	// its own class, so it cannot be deleted with the desktop row's CSS by
+	// mistake — which is what happened the first time the row was cut.
+	if !strings.Contains(wikiTemplate, `class="wiki-sheet-mark"`) {
+		t.Error("the phone sheet head has no mark class: the sheet's logo lost its styling")
+	}
+	if !strings.Contains(wikiTemplate, ".wiki-sheet-mark {") {
+		t.Error("the sheet mark has no rule, so the phone sheet head renders as bare text")
+	}
+	// Both marks must draw from the same token pair, or the two logos a phone
+	// reader sees are different colours.
+	if !strings.Contains(wikiTemplate, ".wiki-sheet-mark {") ||
+		!strings.Contains(wikiTemplate, "background: var(--mark-bg") {
+		t.Error("the sheet mark does not use the masthead's colour pair")
+	}
+	// The masthead wordmark must remain the only route to the project page.
+	if got := strings.Count(wikiTemplate, `class="wordmark"`); got != 1 {
+		t.Errorf("found %d wordmarks, want exactly 1 (in the masthead)", got)
+	}
 	// The theme button must be the bar's last child, so it is the rightmost
 	// control — the position the reader looks to for a view setting.
 	bar := wikiTemplate[strings.Index(wikiTemplate, `<div class="masthead-inner">`):]
