@@ -103,6 +103,16 @@ const wikiTemplate = `<!doctype html>
         top: 5.5rem;
         border-right: 1px solid var(--border-subtle);
         padding-right: 1.5rem;
+        /* The nav is taller than any phone-height desktop window, so it gets a
+           scroll of its own instead of spilling past the fold. A max-height in
+           viewport units plus overflow-y turns on that scroll, but a sticky box
+           exactly as tall as the viewport leaves the last link flush against
+           the bottom edge; the room below it is what keeps that link clickable
+           and keeps the scrollbar off the window edge. */
+        max-height: calc(100vh - 9.5rem);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
       }
       /* A section heading, in the dashboard's own idiom: small, uppercase, and
          tracked, so it reads as a label for the rows beneath it rather than as

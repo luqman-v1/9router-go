@@ -885,3 +885,32 @@ func TestAnchorIDMatchesGoldmarkOutput(t *testing.T) {
 		t.Errorf("index anchor does not match published id %q", publishedID)
 	}
 }
+
+// The desktop nav is taller than a short window, so it has to scroll on its
+// own. Without a max-height in viewport units plus overflow-y, the sticky
+// sidebar spills past the fold with no way to reach the lower links — the
+// page scrolls, the sidebar does not, and the last entries are simply gone.
+// Measured before the fix: 21 links, sidebar 1103px tall against a 600px
+// viewport, overflow-y visible.
+func TestWikiSidebarScrollsOnDesktop(t *testing.T) {
+	// Pin the base rule, not the mobile one: the sheet overrides it with its
+	// own overflow-y, and that one is already covered.
+	base := wikiTemplate[:strings.Index(wikiTemplate, "@media")]
+	side := base[strings.Index(base, ".wiki-side {"):]
+	side = side[:strings.Index(side, "}")]
+	if !strings.Contains(side, "max-height: calc(100vh") {
+		t.Errorf("desktop sidebar has no viewport-bounded max-height; a short window loses the lower links:\n%s", side)
+	}
+	if !strings.Contains(side, "overflow-y: auto") {
+		t.Errorf("desktop sidebar does not scroll; the nav spills past the fold:\n%s", side)
+	}
+	// The bound must leave room below the sticky top offset, or the box is
+	// exactly the viewport tall and the last link sits on the window edge.
+	if !strings.Contains(side, "100vh - 9.5rem") {
+		t.Errorf("sidebar max-height does not leave room below the sticky offset; the last link is flush with the window edge:\n%s", side)
+	}
+	// A wheel over the nav must not scroll the page once the nav bottoms out.
+	if !strings.Contains(side, "overscroll-behavior: contain") {
+		t.Errorf("sidebar does not contain overscroll; scrolling past its end scrolls the article:\n%s", side)
+	}
+}
