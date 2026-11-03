@@ -149,15 +149,6 @@ const wikiTemplate = `<!doctype html>
         overflow: hidden;
         overscroll-behavior: contain;
       }
-      /* The search box, pinned the same way the header above it is: it is a flex
-         child of the column, so the layout holds it while the middle scrolls.
-         It was the first item inside the scrolling area, which meant it left
-         with the nav — 20 links down, a reader who wanted a different page had
-         to scroll all the way back to type. */
-      .wiki-search {
-        flex-shrink: 0;
-        margin-bottom: 0.75rem;
-      }
       /* The middle of the column: the nav groups. It is the only part that
          scrolls, so the header and search above it and the footer below are all
          pinned without a second scroll container. min-height 0 is what makes a
@@ -354,20 +345,6 @@ const wikiTemplate = `<!doctype html>
         outline: 2px solid var(--brand);
         outline-offset: -2px;
       }
-      .wiki-search input {
-        width: 100%;
-        padding: 0.5rem 0.75rem;
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        background: var(--surface);
-        color: var(--text);
-        font: inherit;
-        font-size: 0.9375rem;
-      }
-      .wiki-search input:focus-visible {
-        outline: 2px solid var(--brand);
-        outline-offset: 1px;
-      }
       .wiki-results {
         list-style: none;
         margin: 0.5rem 0 0;
@@ -505,15 +482,6 @@ const wikiTemplate = `<!doctype html>
          behaves like a button is otherwise indistinguishable from a broken
          one. The hint names the gesture once; after the first open the reader
          already knows. */
-      .wiki-search input[readonly] {
-        cursor: pointer;
-      }
-      .wiki-search-hint {
-        margin: 0.375rem 0 0;
-        padding: 0 0.75rem;
-        color: var(--text-muted);
-        font-size: 0.75rem;
-      }
       .wiki-main {
         /* The article column. min-width: 0 is what lets a wide table or a long
            URL shrink the column instead of pushing the shell open. */
@@ -533,6 +501,39 @@ const wikiTemplate = `<!doctype html>
         .wiki-main {
           margin-bottom: 0;
         }
+      }
+
+      .wiki-search-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2.5rem;
+        height: 2.5rem;
+        padding: 0;
+        margin-left: auto;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--text-muted);
+        font: inherit;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .wiki-search-btn:hover {
+        background: var(--bg-alt);
+        color: var(--text);
+      }
+      .wiki-search-btn:focus-visible {
+        outline: 2px solid var(--brand);
+        outline-offset: 1px;
+      }
+
+      /* The magnifier. currentColor so it lifts with the button on hover, the
+         way the theme glyph beside it does. 1.25rem matches the menu icon. */
+      .wiki-search-icon {
+        width: 1.25rem;
+        height: 1.25rem;
+        flex-shrink: 0;
       }
       /* The 68-character reading measure is a comfort rule, not a desktop
          decoration. The cap applies from the tablet up — and to a tablet it
@@ -625,7 +626,26 @@ const wikiTemplate = `<!doctype html>
         font-size: 1.25rem;
         line-height: 1;
       }
+      /* The row that names the product. It was phone-only - the masthead above
+         carried the wordmark on desktop, so a second copy put two logos in one
+         view. It is now shown at every width because it is where the search
+         button lives: the search field moved into a dialog, and the control
+         that opens it belongs beside the product name rather than in a box that
+         spends a whole row of the column to say "click me". The wordmark itself
+         stays masthead-only; only this row and its two controls are here. */
       .wiki-sheet-head {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex-shrink: 0;
+        margin-bottom: 0.75rem;
+      }
+      /* The close control is a phone-only affordance: it dismisses the sheet,
+         and a sheet is a phone thing. On desktop the sidebar is always open, so
+         the control would be a button that does nothing. The head row it sits
+         in is now shown at every width, so this has to be said here rather than
+         assumed from the row's old display:none. */
+      .wiki-sheet-close {
         display: none;
       }
       @media (max-width: 60rem) {
@@ -669,10 +689,11 @@ const wikiTemplate = `<!doctype html>
         body.nav-open {
           overflow: hidden;
         }
+        /* The head row is defined once, above the media query, and shown at
+           every width. The only thing the sheet needs here is more space under
+           it before the nav starts, because the sheet's own padding is larger
+           than the desktop column's. */
         .wiki-sheet-head {
-          display: flex;
-          align-items: center;
-          gap: 0.75rem;
           margin-bottom: 1.25rem;
         }
         /* The mark inside the sheet head, the same square the masthead's
@@ -727,6 +748,11 @@ const wikiTemplate = `<!doctype html>
           line-height: 1;
           cursor: pointer;
         }
+        /* The close control is a phone-only affordance: it dismisses the sheet,
+      }
+      @media (max-width: 60rem) {
+        /* The sheet's own hover and focus states. They were defined in this
+           block all along; a rule moved out of it took them with it. */
         .wiki-sheet-close:hover {
           background: var(--bg-alt);
         }
@@ -749,9 +775,6 @@ const wikiTemplate = `<!doctype html>
       @media (max-width: 40rem) {
         .masthead-inner {
           gap: 0.5rem;
-        }
-        .wiki-search input {
-          font-size: 1rem;
         }
       }
       /* Contributor cards. One grid, not 24 stacked blocks: the section is a
@@ -959,24 +982,26 @@ const wikiTemplate = `<!doctype html>
             </span>
             9router-go
           </strong>
-        </div>
-        <!-- No header row here: the masthead above already carries the wordmark
-             on every screen, so a second copy at the top of the sidebar put two
-             logos in one view. On a phone, where the bar is the only chrome that
-             is always visible, the sheet head below supplies the mark next to the
-             close control instead. -->
-        <!-- The search box is its own flex child rather than the first thing
-             inside the scrolling area below, so it stays pinned while the nav
-             scrolls under it. A reader who scrolls 20 links down and wants a
-             different page should not have to scroll back up to type. It is not
-             position:sticky either: nothing scrolls this element's parent, and a
-             sticky child in a column whose sibling scrolls is pushed by that
-             sibling's content. -->
-        <div class="wiki-search">
-          <label class="skip-link" for="q">Search the wiki</label>
-          <input id="q" type="search" placeholder="Search features…" autocomplete="off" readonly
-                 aria-haspopup="dialog" aria-expanded="false" />
-          <p class="wiki-search-hint">Click to search</p>
+          <!-- Search. An icon-only button at the right end of the row that
+               names the product, because the search field itself lives in a
+               dialog: a read-only box that only opened it cost a whole row of
+               the column to say "click me". The glyph carries the action and
+               aria-label carries the name, the same contract the close control
+               beside it uses. margin-left:auto is what puts it at the far
+               right, beside the product name. -->
+          <button
+            type="button"
+            class="wiki-search-btn"
+            id="search-open"
+            aria-label="Search the wiki"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+          >
+            <svg class="wiki-search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="10.5" cy="10.5" r="6.25" fill="none" stroke="currentColor" stroke-width="1.8"/>
+              <path d="m15.4 15.4 4.1 4.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+          </button>
         </div>
         <div class="wiki-side-scroll">
           {{ range .Groups }}
@@ -1087,7 +1112,7 @@ const wikiTemplate = `<!doctype html>
       // query now belongs to the dialog, where the input and the results share
       // a surface wide enough for both.
       (function () {
-        var trigger = document.getElementById("q");
+        var trigger = document.getElementById("search-open");
         var modal = document.getElementById("search-modal");
         var modalInput = document.getElementById("search-modal-input");
         var modalResults = document.getElementById("results-modal");
@@ -1104,7 +1129,6 @@ const wikiTemplate = `<!doctype html>
         var query = params.get("q") || "";
         // A shared link carries the query, so opening the page with ?q= shows
         // the dialog rather than a search the reader has to repeat.
-        if (query) trigger.value = query;
         fetch("search-index.json")
           .then(function (r) { return r.json(); })
           .then(function (data) {
@@ -1124,7 +1148,9 @@ const wikiTemplate = `<!doctype html>
           if (typeof modal.showModal === "function") modal.showModal();
           else modal.setAttribute("open", "");
           trigger.setAttribute("aria-expanded", "true");
-          modalInput.value = trigger.value;
+          // A shared ?q= seeds the field; anything else starts empty, because a
+          // button carries no text of its own to copy across.
+          modalInput.value = query || "";
           // The index may still be in flight. An empty list here reads as "no
           // results", so the previous query is replayed when it lands.
           render(modalInput.value);
@@ -1137,13 +1163,12 @@ const wikiTemplate = `<!doctype html>
           trigger.setAttribute("aria-expanded", "false");
         }
         trigger.addEventListener("click", openSearch);
-        // A read-only input still takes focus, and Enter on a focused read-only
-        // field does nothing on its own — so the key is handled explicitly.
+        // A <button> fires click on Enter and Space on its own, so the click
+        // listener above already covers the keyboard. Only Space needs a guard:
+        // the browser scrolls the page on Space, and that scroll would move the
+        // sheet the button sits in while the dialog opened over it.
         trigger.addEventListener("keydown", function (e) {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            openSearch();
-          }
+          if (e.key === " ") e.preventDefault();
         });
         closeBtn.addEventListener("click", closeSearch);
         // Clicking the backdrop closes. The dialog element is the target only

@@ -736,13 +736,31 @@ func TestSearchIndexIsInScopeForEveryKeystroke(t *testing.T) {
 // results render into the dialog's own list, and the query is replayed when a
 // shared link arrives.
 func TestSearchOpensAModal(t *testing.T) {
-	// The trigger must not accept typing: a read-only box that still renders
-	// results is the broken state this replaced.
-	if !strings.Contains(wikiTemplate, `id="q" type="search" placeholder="Search features…" autocomplete="off" readonly`) {
-		t.Error("the sidebar search box is not a read-only trigger")
+	// The trigger is an icon-only button, not a text box: a read-only input
+	// spent a whole row of the sidebar column to say "click me", and its
+	// placeholder text was the only thing that made it look like a control.
+	if !strings.Contains(wikiTemplate, `class="wiki-search-btn"`) ||
+		!strings.Contains(wikiTemplate, `id="search-open"`) {
+		t.Error("the search trigger is not the icon button in the sidebar's head row")
+	}
+	if !strings.Contains(wikiTemplate, `aria-label="Search the wiki"`) {
+		t.Error("the search button has no accessible name")
 	}
 	if !strings.Contains(wikiTemplate, `aria-haspopup="dialog"`) {
 		t.Error("the trigger does not declare that it opens a dialog")
+	}
+	// The old text box is gone. Leaving it would give the column two ways to
+	// search, one of which is a field that no longer accepts typing.
+	if strings.Contains(wikiTemplate, `id="q"`) {
+		t.Error("the sidebar still carries the old read-only search input")
+	}
+	if strings.Contains(wikiTemplate, "wiki-search-hint") {
+		t.Error("the 'Click to search' hint is still there; the button needs no hint")
+	}
+	// The button lives in the head row beside the product name, not in a block
+	// of its own inside the column.
+	if !strings.Contains(wikiTemplate, `margin-left: auto;`) {
+		t.Error("the search button is not pushed to the right of the head row")
 	}
 	// The dialog and its controls.
 	for _, want := range []string{
@@ -766,8 +784,14 @@ func TestSearchOpensAModal(t *testing.T) {
 	if !strings.Contains(wikiTemplate, `trigger.addEventListener("click", openSearch)`) {
 		t.Error("clicking the search box does not open the dialog")
 	}
-	if !strings.Contains(wikiTemplate, `if (e.key === "Enter" || e.key === " ")`) {
-		t.Error("the search trigger has no keyboard path to open the dialog")
+	// A <button> activates on Enter and Space natively, so the keyboard path is
+	// the click listener. Only Space needs a guard, and that guard is what the
+	// page-behind-the-dialog scroll depends on.
+	if !strings.Contains(wikiTemplate, `if (e.key === " ") e.preventDefault();`) {
+		t.Error("the search button does not stop Space from scrolling the page behind the dialog")
+	}
+	if !strings.Contains(wikiTemplate, `trigger.addEventListener("click", openSearch)`) {
+		t.Error("the search button has no click handler, so the keyboard cannot open the dialog either")
 	}
 	// A shared link carrying ?q= shows the results without retyping.
 	if !strings.Contains(wikiTemplate, "if (query) openSearch();") {
@@ -1306,5 +1330,83 @@ func TestWikiSidebarScrollsOnDesktop(t *testing.T) {
 	// A wheel over the nav must not scroll the page once the nav bottoms out.
 	if !strings.Contains(side, "overscroll-behavior: contain") {
 		t.Errorf("sidebar does not contain overscroll; scrolling past its end scrolls the article:\n%s", side)
+	}
+}
+
+// Search is an icon-only button in the sidebar's head row, not a text box in
+// the column. Two things this pins. First, the old read-only input is gone: it
+// spent a whole row of a 15rem column to say "click me", and its placeholder
+// was the only thing making it look like a control. Second, the button is
+// inside .wiki-sheet-head and not in a .wiki-search block, so it cannot drift
+// back into the column.
+func TestSearchIsAnIconButtonInTheHeadRow(t *testing.T) {
+	if !strings.Contains(wikiTemplate, `class="wiki-search-btn"`) {
+		t.Error("there is no .wiki-search-btn: search is not an icon button")
+	}
+	if !strings.Contains(wikiTemplate, `id="search-open"`) {
+		t.Error("the search button has no id for the script to bind to")
+	}
+	if !strings.Contains(wikiTemplate, `aria-label="Search the wiki"`) {
+		t.Error("the icon button has no accessible name")
+	}
+	if strings.Contains(wikiTemplate, `id="q"`) {
+		t.Error("the old read-only search input is still in the template")
+	}
+	if strings.Contains(wikiTemplate, "wiki-search-hint") {
+		t.Error("the 'Click to search' hint is still there")
+	}
+	// The button must live in the head row, which is where the product name is.
+	headAt := strings.Index(wikiTemplate, `<div class="wiki-sheet-head">`)
+	btnAt := strings.Index(wikiTemplate, `class="wiki-search-btn"`)
+	if headAt < 0 || btnAt < headAt {
+		t.Fatal("the search button is not inside the sidebar's head row")
+	}
+	if !strings.Contains(wikiTemplate[headAt:btnAt], `<strong>`) {
+		t.Error("the search button is not beside the product name in the head row")
+	}
+	// It must be pushed to the right of that row, not left sitting next to the
+	// close control.
+	if !strings.Contains(wikiTemplate, ".wiki-search-btn {") ||
+		!strings.Contains(wikiTemplate[strings.Index(wikiTemplate, ".wiki-search-btn {"):], "margin-left: auto;") {
+		t.Error("the search button is not pushed to the right of the head row")
+	}
+}
+
+// The head row is shown at every width now, which means the close control it
+// used to be paired with has to be hidden explicitly. A close button that does
+// nothing on desktop is a dead control.
+func TestSheetHeadCloseIsPhoneOnly(t *testing.T) {
+	at := strings.Index(wikiTemplate, ".wiki-sheet-close {")
+	if at < 0 {
+		t.Fatal("no .wiki-sheet-close rule")
+	}
+	body := cssRule(t, wikiTemplate, ".wiki-sheet-close")
+	if !strings.Contains(body, "display: none") {
+		t.Errorf("the close control is not hidden outside the sheet:\n%s", body)
+	}
+	// And the phone override must still be able to bring it back.
+	if !strings.Contains(wikiTemplate, "@media (max-width: 60rem)") {
+		t.Fatal("no phone media block for the close control to be restored in")
+	}
+	phone := wikiTemplate[strings.Index(wikiTemplate, "@media (max-width: 60rem)"):]
+	if !strings.Contains(phone, ".wiki-sheet-close {") {
+		t.Error("the phone sheet does not restore the close control")
+	}
+}
+
+// The stylesheet must parse. A stray or missing brace does not fail the build:
+// CSS error recovery silently drops every rule after the damage, which is how
+// the search button ended up 16x21 and the phone nav trigger display:none while
+// every Go test still passed.
+func TestStylesheetBracesAreBalanced(t *testing.T) {
+	at := strings.Index(wikiTemplate, "<style>")
+	if at < 0 {
+		t.Fatal("no <style> block")
+	}
+	end := strings.Index(wikiTemplate[at:], "</style>")
+	css := wikiTemplate[at+len("<style>") : at+end]
+	if strings.Count(css, "{") != strings.Count(css, "}") {
+		t.Errorf("the stylesheet has %d { and %d }: the browser will drop every rule after the damage",
+			strings.Count(css, "{"), strings.Count(css, "}"))
 	}
 }
