@@ -118,10 +118,7 @@ func (c *responsesRequestConv) consumeToolCall(item ResponsesInputItem, itemType
 		c.attachReasoning(c.assistant)
 	}
 
-	name := item.Name
-	if strings.HasPrefix(name, "functions.") {
-		name = strings.TrimPrefix(name, "functions.")
-	}
+	name := strings.TrimPrefix(item.Name, "functions.")
 	// Codex and OpenAI reject a nameless tool call outright, so an item that
 	// carries no usable name is skipped rather than forwarded.
 	if strings.TrimSpace(name) == "" {
