@@ -297,6 +297,54 @@ func TestExtractRequestMessages(t *testing.T) {
 	})
 }
 
+// The detail modal used to show assistant turns as content:"" because
+// extractMessagesForLogging dropped tool_calls entirely — a loop warning
+// was unverifiable. It now keeps "name#hash8" per call: name says what ran,
+// hash says whether the arguments were really identical (the stuck-loop
+// definition), without storing the (possibly large/secret) arguments.
+func TestExtractRequestMessagesToolCallsPreserved(t *testing.T) {
+	body := buildRequestBody([]translator.OpenAIMessage{
+		{
+			Role: "assistant", Content: "",
+			ToolCalls: []translator.OpenAIToolCall{
+				{ID: "call_1", Type: "function", Function: translator.OpenAIFunctionCall{Name: "terminal", Arguments: `{"command":"grep socketFile"}`}},
+				{ID: "call_2", Type: "function", Function: translator.OpenAIFunctionCall{Name: "terminal", Arguments: `{"command":"grep capabilityLen"}`}},
+			},
+		},
+		{Role: "tool", Content: "some output", ToolCallID: "call_1"},
+	})
+	msgs := extractRequestMessages(body)
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	got := msgs[0]["tool_calls"]
+	if got == "" {
+		t.Fatalf("expected tool_calls preserved, got empty: %v", msgs[0])
+	}
+	parts := strings.Split(got, ",")
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 tool call signatures, got %q", got)
+	}
+	if !strings.HasPrefix(parts[0], "terminal#") || !strings.HasPrefix(parts[1], "terminal#") {
+		t.Errorf("expected name#hash8 signatures, got %q", got)
+	}
+	if parts[0] == parts[1] {
+		t.Errorf("different arguments must hash differently: %q", got)
+	}
+	// Identical arguments must hash identically (that is what makes the
+	// stuck-loop claim checkable in the modal).
+	if toolCallSignature("terminal", `{"command":"grep socketFile"}`) == toolCallSignature("terminal", `{"command":"grep capabilityLen"}`) {
+		t.Errorf("distinct arguments collapsed to the same signature")
+	}
+	if toolCallSignature("terminal", ` {"command":"grep socketFile"} `) != toolCallSignature("terminal", `{"command":"grep socketFile"}`) {
+		t.Errorf("whitespace-only difference must not change the hash")
+	}
+	// Tool-result turn must not sprout a phantom tool_calls field.
+	if _, ok := msgs[1]["tool_calls"]; ok {
+		t.Errorf("tool role message must not carry tool_calls: %v", msgs[1])
+	}
+}
+
 func TestTruncateDetailText(t *testing.T) {
 	tests := []struct {
 		name   string

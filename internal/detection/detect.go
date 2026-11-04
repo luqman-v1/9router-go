@@ -62,22 +62,16 @@ func DetectLoops(tools []ToolCallItem, lastError string) []LoopFinding {
 			}
 		}
 
-		if allSameArgs && length >= 3 {
+		if !allSameArgs {
+			i = end
+			continue
+		}
+		if length >= 3 {
 			// Stuck loop: exact same tool called with exact same arguments 3+ times
-			severity := SeverityCritical
 			findings = append(findings, LoopFinding{
 				Rule:     "consecutive_tool",
-				Severity: severity,
+				Severity: SeverityCritical,
 				Message:  fmt.Sprintf("Stuck loop: \"%s\" called with identical arguments %d times in a row", name, length),
-				Tool:     name,
-				Count:    length,
-			})
-		} else if !allSameArgs && length >= 12 {
-			// High repetition of same tool across different arguments (only flag if >= 12 calls)
-			findings = append(findings, LoopFinding{
-				Rule:     "consecutive_tool",
-				Severity: SeverityWarning,
-				Message:  fmt.Sprintf("High repetition: \"%s\" called %d times in a row across different inputs", name, length),
 				Tool:     name,
 				Count:    length,
 			})
