@@ -14,6 +14,7 @@ import (
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/shutdown"
 )
+
 // DefaultStallTimeout is the default maximum idle time (no data) before an SSE
 // stream is considered stalled and the connection is closed.
 // Matches Next.js STREAM_STALL_TIMEOUT_MS = 360000 (6 minutes).
@@ -27,7 +28,6 @@ const DefaultFirstEventTimeout = 5 * time.Minute
 // FlashFirstEventTimeout is the tighter first-event budget for Gemini Flash
 // families (OMP classes/gemini.kdl stream-first-event-timeout-ms 60000).
 const FlashFirstEventTimeout = 60 * time.Second
-
 
 // ResolveDefaultStallTimeout reads environment variables STREAM_STALL_TIMEOUT_MS
 // and NINEROUTER_STREAM_STALL_TIMEOUT_MS. If set to a positive integer (milliseconds),
@@ -48,12 +48,12 @@ func ResolveDefaultStallTimeout() time.Duration {
 // otherwise produce. Callers that must tell a timeout apart from a lost
 // socket (an in-band SSE error frame, for instance) match on it.
 var ErrStreamStall = errors.New("stream stall timeout")
+
 // ErrStreamFirstEvent reports that no first event arrived within the
 // provider-owned first-event deadline. Antigravity/Cloud Code Assist can
 // return headers then never emit an SSE event; the distinction lets
 // callers fail over to a fallback endpoint before writing to the client.
 var ErrStreamFirstEvent = errors.New("stream first event timeout")
-
 
 // StallReader wraps an io.ReadCloser with a timer that fires if no data is
 // read within the timeout. When the timer fires, the underlying reader is
@@ -71,6 +71,7 @@ type StallReader struct {
 	done              chan struct{} // closed on Close; stops the shutdown watcher
 	stalled           atomic.Bool   // watchdog fired; Read reports ErrStreamStall
 }
+
 // NewStallReaderWithFirstEvent wraps rc with a dual watchdog: the first
 // event must arrive within firstEventTimeout (else ErrStreamFirstEvent),
 // then idle gaps are bounded by timeout. A zero firstEventTimeout disables
@@ -90,32 +91,31 @@ func NewStallReaderWithFirstEvent(ctx context.Context, rc io.ReadCloser, timeout
 		s.firstExpired.Store(true)
 		log.Warn("stream", "first event timeout", "label", label, "timeout", firstEventTimeout)
 		s.stalled.Store(true)
-		s.Close()
+		_ = s.Close()
 	})
 	go func() {
 		if ctx != nil && ctx.Done() != nil {
 			select {
 			case <-shutdown.Done():
 				log.Info("stream", "shutdown, closing stream", "label", label)
-				s.Close()
+				_ = s.Close()
 			case <-ctx.Done():
 				log.Info("stream", "client context canceled, closing stream", "label", label)
-				s.Close()
+				_ = s.Close()
 			case <-s.done:
 			}
 		} else {
 			select {
 			case <-shutdown.Done():
 				log.Info("stream", "shutdown, closing stream", "label", label)
-				s.Close()
+				_ = s.Close()
 			case <-s.done:
 			}
 		}
 	}()
+
 	return s
 }
-
-
 
 // NewStallReader wraps rc with stall detection. If no data is read within
 // timeout, the reader is closed and subsequent reads return an error. It also
@@ -198,7 +198,6 @@ func (s *StallReader) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
-
 
 // Close implements io.Closer. Stops the stall timer, stops the shutdown
 // watcher, and closes the reader. Idempotent and synchronized with the timer
