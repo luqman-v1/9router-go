@@ -140,12 +140,37 @@ func TestLeaseProviders(t *testing.T) {
 	}
 }
 
-// findLeaseConnection keys idempotency on (provider, data dir): an OAuth
-// connection for the same provider must not be mistaken for a lease one.
+// findLeaseConnection keys idempotency on (provider, data dir). A key-based
+// connection on the same provider and data dir must not be mistaken for an
+// existing lease: the idempotency check would then report "reused" for a
+// connection that never borrowed the sign-in, and the dashboard would hide
+// the button that creates one.
 func TestFindLeaseConnectionDistinguishesAuthType(t *testing.T) {
 	h := leaseTestHandler(t)
-	if got := h.findLeaseConnection("minimax-code", "/some/dir"); got != "" {
-		t.Errorf("found %q on an empty database", got)
+	dataDir := t.TempDir()
+	keyData, err := json.Marshal(map[string]any{"mcodeDataDir": dataDir})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := h.Repo.CreateProviderConnectionFull(
+		"minimax-code-key-1", "minimax-code", "api_key", "Stored Key", nil, string(keyData),
+	); err != nil {
+		t.Fatalf("seed key connection: %v", err)
+	}
+	if got := h.findLeaseConnection("minimax-code", dataDir); got != "" {
+		t.Errorf("an api_key connection was reported as a lease: %q", got)
+	}
+	leaseData, err := json.Marshal(map[string]any{"mcodeDataDir": dataDir})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := h.Repo.CreateProviderConnectionFull(
+		"minimax-code-lease-1", "minimax-code", "mcode-lease", "Desktop App", nil, string(leaseData),
+	); err != nil {
+		t.Fatalf("seed lease connection: %v", err)
+	}
+	if got := h.findLeaseConnection("minimax-code", dataDir); got != "minimax-code-lease-1" {
+		t.Errorf("lease connection = %q, want minimax-code-lease-1", got)
 	}
 }
 

@@ -292,8 +292,16 @@ func sendRequest(ctx context.Context, ep endpoint, req leaseRequest, timeout tim
 // It is separate from the dial so the codec can be exercised against any
 // net.Conn — including net.Pipe, which has no platform dependence.
 func exchangeFrame(ctx context.Context, conn net.Conn, req leaseRequest, timeout time.Duration) (*leaseResponse, error) {
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(deadline)
+	// The context governs the exchange whenever it carries a deadline: the
+	// ctx.Done() branch below closes the connection, and that close is what
+	// unblocks the parked write. A transport deadline set to the same instant
+	// would race it — both expire together, the netpoller's coarser clock
+	// usually delivers the transport timeout first, and the caller then sees
+	// "i/o timeout" instead of context.DeadlineExceeded. So the transport
+	// deadline is only armed when there is no context deadline to honour, as
+	// the backstop for a broker that stops answering mid-exchange.
+	if _, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(time.Time{})
 	} else {
 		_ = conn.SetDeadline(time.Now().Add(timeout))
 	}
@@ -545,7 +553,14 @@ func (m *manager) invalidate() {
 
 var (
 	managersMu sync.Mutex
-	managers   = map[string]*manager{}
+	// managers is keyed by data dir and holds one entry per desktop install
+	// an operator has ever pointed a connection at. The key is never
+	// request-supplied — it comes from the connection row or the env var — so
+	// the map grows with operator actions, not with traffic, and each entry is
+	// a single cached token. It is deliberately never pruned: deleting a
+	// connection would have to reach this package, and a stale entry costs
+	// one struct.
+	managers = map[string]*manager{}
 )
 
 func managerFor(dataDir string) *manager {
