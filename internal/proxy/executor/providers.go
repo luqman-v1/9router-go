@@ -14,6 +14,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1044,6 +1045,13 @@ func ensureMessagesFor(body []byte, provider, model string) []byte {
 		}
 	}
 
+	// 4b. When talking directly to Anthropic, drop leading system blocks
+	// that carry Claude Code identity, Agent SDK, or billing-header text,
+	// which are not appropriate for the raw Anthropic API.
+	if strings.EqualFold(provider, "anthropic") {
+		reqMap["system"] = dropClaudeIdentitySystemBlock(reqMap["system"])
+	}
+
 	// 5. Clean OpenAI-specific fields that strict Claude API rejects.
 	// Claude returns thinking text only with thinking.display "summarized", a
 	// field OpenAI has no equivalent for, so the client's ask cannot survive
@@ -2013,4 +2021,77 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		return execSSEStream(w, resp.Body, req)
 	}
 	return jsonResponse(req.Ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
+}
+
+// dropClaudeIdentitySystemBlock removes leading system blocks that carry
+// Claude Code identity, Agent SDK, or billing-header text, which are not
+// appropriate for the raw Anthropic API.
+//
+// system may be a string (legacy OpenAI shape) or an array of content
+// blocks [{type,text,...}]. Only leading blocks are dropped so legitimate
+// system text after them survives.
+func dropClaudeIdentitySystemBlock(system any) any {
+	switch s := system.(type) {
+	case string:
+		if isIdentitySystemText(s) {
+			return ""
+		}
+		return system
+	case []any:
+		return dropLeadingIdentityBlocks(s)
+	default:
+		return system
+	}
+}
+
+// dropLeadingIdentityBlocks strips identity blocks from the front of a system
+// block array. It stops at the first non-identity block so legitimate system
+// text below survives.
+func dropLeadingIdentityBlocks(blocks []any) []any {
+	start := 0
+	for start < len(blocks) {
+		b, ok := blocks[start].(map[string]any)
+		if !ok {
+			break
+		}
+		if t, _ := b["type"].(string); t != "" && t != "text" {
+			break
+		}
+		text, _ := b["text"].(string)
+		if !isIdentitySystemText(text) {
+			break
+		}
+		start++
+	}
+	if start == 0 {
+		return blocks
+	}
+	if start >= len(blocks) {
+		return []any{}
+	}
+	out := make([]any, 0, len(blocks)-start)
+	out = append(out, blocks[start:]...)
+	return out
+}
+
+var claudeIdentityMarkers = []string{
+	"You are Claude Code",
+	"Agent SDK",
+	"x-anthropic-billing-header",
+}
+
+var claudeIdentityRegex = regexp.MustCompile(`(?i)you are claude code|agent sdk|x-anthropic-billing-header|claude.?code.+official.+cli|anthropic.+official.+cli`)
+
+func isIdentitySystemText(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	low := strings.ToLower(s)
+	for _, m := range claudeIdentityMarkers {
+		if strings.Contains(low, strings.ToLower(m)) {
+			return true
+		}
+	}
+	return claudeIdentityRegex.MatchString(s)
 }
