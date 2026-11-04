@@ -593,3 +593,55 @@ func TestResolveModel_CodexSlugStillResolvesWithoutCombo(t *testing.T) {
 		t.Errorf("ComboModels = %v, want none", info.ComboModels)
 	}
 }
+
+func TestResolveModel_WebComboBareProviderNames(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	h := NewChatHandler(db.NewRepo(database))
+
+	// WebSearch combo with legacy bare provider names
+	searchModels, _ := json.Marshal([]string{"exa", "serper", "tavily"})
+	kindSearch := "webSearch"
+	_, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"c-search", "my-search-combo", kindSearch, string(searchModels), "2026-11-04T00:00:00Z", "2026-11-04T00:00:00Z")
+	if err != nil {
+		t.Fatalf("insert search combo: %v", err)
+	}
+
+	info, err := h.resolveModel("my-search-combo")
+	if err != nil {
+		t.Fatalf("resolveModel(my-search-combo) error = %v", err)
+	}
+	wantSearch := []string{"exa/search", "serper/search", "tavily/search"}
+	if len(info.ComboModels) != len(wantSearch) {
+		t.Fatalf("got %d ComboModels, want %d: %v", len(info.ComboModels), len(wantSearch), info.ComboModels)
+	}
+	for i := range wantSearch {
+		if info.ComboModels[i] != wantSearch[i] {
+			t.Errorf("at index %d: expected %q, got %q", i, wantSearch[i], info.ComboModels[i])
+		}
+	}
+
+	// WebFetch combo with legacy bare provider names
+	fetchModels, _ := json.Marshal([]string{"exa", "firecrawl"})
+	kindFetch := "webFetch"
+	_, err = database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"c-fetch", "my-fetch-combo", kindFetch, string(fetchModels), "2026-11-04T00:00:00Z", "2026-11-04T00:00:00Z")
+	if err != nil {
+		t.Fatalf("insert fetch combo: %v", err)
+	}
+
+	fetchInfo, err := h.resolveModel("my-fetch-combo")
+	if err != nil {
+		t.Fatalf("resolveModel(my-fetch-combo) error = %v", err)
+	}
+	wantFetch := []string{"exa/fetch", "firecrawl/fetch"}
+	if len(fetchInfo.ComboModels) != len(wantFetch) {
+		t.Fatalf("got %d ComboModels, want %d: %v", len(fetchInfo.ComboModels), len(wantFetch), fetchInfo.ComboModels)
+	}
+	for i := range wantFetch {
+		if fetchInfo.ComboModels[i] != wantFetch[i] {
+			t.Errorf("at index %d: expected %q, got %q", i, wantFetch[i], fetchInfo.ComboModels[i])
+		}
+	}
+}

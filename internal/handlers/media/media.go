@@ -729,6 +729,40 @@ func (h *MediaHandler) HandleVideoGet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// defaultWebSearchModel returns "search-combo" if available, then any webSearch combo, then falls back to tavily/search.
+func (h *MediaHandler) defaultWebSearchModel() string {
+	if h.Repo != nil {
+		if combo, err := h.Repo.GetComboByName("search-combo"); err == nil && combo != nil && combo.Models != "" {
+			return "search-combo"
+		}
+		if combos, err := h.Repo.GetCombos(); err == nil {
+			for _, c := range combos {
+				if c != nil && c.Kind != nil && *c.Kind == "webSearch" && c.Models != "" {
+					return c.Name
+				}
+			}
+		}
+	}
+	return "gpt-4o"
+}
+
+// defaultWebFetchModel returns "fetch-combo" if available, then any webFetch combo, then falls back to jina-reader.
+func (h *MediaHandler) defaultWebFetchModel() string {
+	if h.Repo != nil {
+		if combo, err := h.Repo.GetComboByName("fetch-combo"); err == nil && combo != nil && combo.Models != "" {
+			return "fetch-combo"
+		}
+		if combos, err := h.Repo.GetCombos(); err == nil {
+			for _, c := range combos {
+				if c != nil && c.Kind != nil && *c.Kind == "webFetch" && c.Models != "" {
+					return c.Name
+				}
+			}
+		}
+	}
+	return "jina-reader"
+}
+
 // HandleSearch handles /v1/search.
 func (h *MediaHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -737,7 +771,7 @@ func (h *MediaHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	h.forwardMediaRequest(w, r, body, "gpt-4o", "/v1/search")
+	h.forwardMediaRequest(w, r, body, h.defaultWebSearchModel(), "/v1/search")
 }
 
 // HandleScrape handles /v1/scrape.
@@ -748,7 +782,7 @@ func (h *MediaHandler) HandleScrape(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	h.forwardMediaRequest(w, r, body, "gpt-4o", "/v1/scrape")
+	h.forwardMediaRequest(w, r, body, h.defaultWebFetchModel(), "/v1/scrape")
 }
 
 // HandleWebFetch handles /v1/web/fetch.
@@ -795,7 +829,7 @@ func (h *MediaHandler) HandleWebFetch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	h.forwardMediaRequest(w, r, body, "jina-reader", "/v1/web/fetch")
+	h.forwardMediaRequest(w, r, body, h.defaultWebFetchModel(), "/v1/web/fetch")
 }
 
 // targetPrivate reports whether host names an address the gateway must not
@@ -858,6 +892,12 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				}
 			}
 		}
+	}
+	if (endpoint == "/v1/search" || endpoint == "/v1/scrape") && (model == "search" || model == "default" || model == "web" || model == "webSearch") {
+		model = h.defaultWebSearchModel()
+	}
+	if endpoint == "/v1/web/fetch" && (model == "fetch" || model == "default" || model == "web" || model == "webFetch") {
+		model = h.defaultWebFetchModel()
 	}
 	// Per-API-key access control. This is the single funnel for images, TTS,
 	// STT, video, search, scrape and fetch, so gating here covers all of them
@@ -1360,6 +1400,14 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	method := r.Method
+	if endpoint == "/v1/search" && providerCfg.SearchURL != "" && !hasCustomBaseURL {
+		targetURL = providerCfg.SearchURL
+		if providerCfg.SearchMethod != "" {
+			method = strings.ToUpper(providerCfg.SearchMethod)
+		} else {
+			method = http.MethodPost
+		}
+	}
 	if endpoint == "/v1/web/fetch" && providerCfg.FetchURL != "" {
 		targetURL = providerCfg.FetchURL
 		if providerCfg.FetchMethod != "" {
