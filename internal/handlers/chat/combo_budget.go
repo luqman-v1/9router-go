@@ -69,7 +69,7 @@ func (h *ChatHandler) comboBudgetExhausted(comboName string) bool {
 		// A fresh (or recycled) window always admits the combo: the counter
 		// counts what was spent inside this window, and nothing was spent in
 		// one that just started.
-		h.comboBudget[key] = &comboBudgetCounter{WindowStart: now}
+		h.comboBudget[key] = &comboBudgetCounter{WindowStart: now, WindowMs: budgetWindow(cfg)}
 		return false
 	}
 	return entry.Count >= cfg.BudgetCalls
@@ -101,23 +101,43 @@ func (h *ChatHandler) recordComboBudgetCall(comboName string) {
 	}
 	entry, ok := h.comboBudget[key]
 	if !ok || now.Sub(entry.WindowStart) >= window {
-		entry = &comboBudgetCounter{WindowStart: now}
+		entry = &comboBudgetCounter{WindowStart: now, WindowMs: budgetWindow(cfg)}
 		h.comboBudget[key] = entry
 	}
 	entry.Count++
-
 	// Prune other combos' expired windows so a long-lived gateway with many
 	// capped combos does not accumulate one dead entry per window per combo.
+	//
+	// Each entry is expired against the window *it* was created under, not this
+	// combo's. Comparing against this combo's window deleted a neighbour's live
+	// counter whenever this combo's window was the shorter of the two: a
+	// per-hour budget behind a per-minute capped combo lost its whole spend
+	// every time the short combo recorded, so the operator's cap quietly
+	// reopened. An entry that never recorded a window (zero) is judged by this
+	// combo's, which is what it would have been created with.
 	for k, v := range h.comboBudget {
-		if k != key && now.Sub(v.WindowStart) >= window {
+		if k == key {
+			continue
+		}
+		w := v.WindowMs
+		if w <= 0 {
+			w = budgetWindow(cfg)
+		}
+		if now.Sub(v.WindowStart) >= time.Duration(w)*time.Millisecond {
 			delete(h.comboBudget, k)
 		}
 	}
 }
 
 // comboBudgetCounter is one combo's spend inside one window.
+//
+// WindowMs is the window this entry was created under, carried on the entry
+// rather than re-read from settings: another combo's prune pass compares
+// against *its* window, so an entry that recorded its own window is expired on
+// its own terms instead of a neighbour's.
 type comboBudgetCounter struct {
 	WindowStart time.Time
+	WindowMs    int
 	Count       int
 }
 

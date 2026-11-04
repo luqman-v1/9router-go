@@ -101,6 +101,44 @@ func TestStrip(t *testing.T) {
 			body: "```json\n{\"a\":1}\n```\nHope that helps",
 			want: "```json\n{\"a\":1}\n```\nHope that helps",
 		},
+		{
+			// A block whose contents carry a fence of their own is opened
+			// with a longer delimiter than three. Hardcoding three left that
+			// answer fenced for a client that had asked for JSON.
+			name: "four backtick fence",
+			body: "````json\n{\"a\":1}\n````",
+			want: `{"a":1}`,
+		},
+		{
+			name: "five backtick fence",
+			body: "`````json\n{\"a\":1}\n`````",
+			want: `{"a":1}`,
+		},
+		{
+			// A three-backtick run inside a four-backtick block is content,
+			// not the end of the block: the closing delimiter has to be at
+			// least as long as the opening one.
+			name: "short closing run inside a long block is content",
+			body: "````json\n{\"snippet\":\"```\\ncode\\n```\"}\n````",
+			want: "{\"snippet\":\"```\\ncode\\n```\"}",
+		},
+		{
+			name: "four backtick fence with prose after is left alone",
+			body: "````json\n{\"a\":1}\n````\nHope that helps",
+			want: "````json\n{\"a\":1}\n````\nHope that helps",
+		},
+		{
+			// An unclosed long fence is left alone, exactly as a three is.
+			name: "unclosed four backtick fence is left alone",
+			body: "````json\n{\"a\":1}",
+			want: "````json\n{\"a\":1}",
+		},
+		{
+			// Two backticks is not a fence at all.
+			name: "two backticks is not a fence",
+			body: "``json\n{\"a\":1}\n``",
+			want: "``json\n{\"a\":1}\n``",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

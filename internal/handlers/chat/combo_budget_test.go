@@ -2,6 +2,7 @@ package chat
 
 import (
 	"testing"
+	"time"
 
 	"9router/proxy/internal/db"
 )
@@ -84,6 +85,81 @@ func TestComboBudgetPerComboIsolation(t *testing.T) {
 	}
 	if h.comboBudgetExhausted("b") {
 		t.Fatal("combo b must not inherit combo a's spend")
+	}
+}
+
+// TestComboBudgetPruneUsesEachEntryOwnWindow pins that the prune pass expires a
+// neighbour's counter against the window *it* was created under, not the
+// recording combo's.
+//
+// This was a real bug: the prune compared every entry against the current
+// combo's window, so a combo with a short window deleted a combo with a long
+// window's live counter. The long combo then came back with a full ceiling,
+// which is the operator's cap reopening — the one thing a budget exists to
+// prevent. The pairing that makes it reachable is ordinary: a per-minute
+// rate-limit cap next to a per-hour spend cap.
+func TestComboBudgetPruneUsesEachEntryOwnWindow(t *testing.T) {
+	repo := budgetComboDB(t, `"slow":{"budgetCalls":2,"budgetWindowMs":3600000},"fast":{"budgetCalls":2,"budgetWindowMs":5000}`)
+	h := &ChatHandler{Repo: repo}
+
+	// slow spends its whole ceiling inside its own window.
+	h.recordComboBudgetCall("slow")
+	h.recordComboBudgetCall("slow")
+	if !h.comboBudgetExhausted("slow") {
+		t.Fatal("setup: slow must be at its ceiling after 2 calls")
+	}
+
+	// Age slow's entry by 10s: expired inside fast's 5s window, still live
+	// inside slow's own hour.
+	h.comboBudgetMu.Lock()
+	h.comboBudget["slow"].WindowStart = h.comboBudget["slow"].WindowStart.Add(-10 * time.Second)
+	h.comboBudgetMu.Unlock()
+	if !h.comboBudgetExhausted("slow") {
+		t.Fatal("setup: slow must still be capped 10s into its hour")
+	}
+
+	// fast records once, which runs the prune pass.
+	h.recordComboBudgetCall("fast")
+
+	if !h.comboBudgetExhausted("slow") {
+		t.Fatal("slow must keep its spend: it is 10s into its own hour, not expired")
+	}
+}
+
+// TestComboBudgetPruneStillCollectsExpiredEntries pins that the prune still
+
+// TestComboBudgetPruneStillCollectsExpiredEntries is the negative control for
+// the fix above: the prune still does its job, so carrying each entry's own
+// window cannot be mistaken for "prune does nothing".
+//
+// The prune skips the entry of the combo that is recording — that entry was
+// just touched and is fresh by construction — so the expired entry has to
+// belong to a third combo, and a *different* combo has to do the recording.
+func TestComboBudgetPruneStillCollectsExpiredEntries(t *testing.T) {
+	repo := budgetComboDB(t, `"short":{"budgetCalls":2,"budgetWindowMs":1},"long":{"budgetCalls":2,"budgetWindowMs":3600000}`)
+	h := &ChatHandler{Repo: repo}
+	// long spends its own ceiling, so the assertion is about the prune
+	// preserving an already-capped neighbour rather than about counting.
+	h.recordComboBudgetCall("long")
+	h.recordComboBudgetCall("long")
+	if !h.comboBudgetExhausted("long") {
+		t.Fatal("setup: long must be at its ceiling before the prune runs")
+	}
+	h.recordComboBudgetCall("short")
+	h.comboBudgetMu.Lock()
+	// short is expired in its own 1ms window; long is fresh in its hour.
+	h.comboBudget["short"].WindowStart = h.comboBudget["short"].WindowStart.Add(-2 * time.Second)
+	h.comboBudgetMu.Unlock()
+	// long records again, which runs the prune pass over the other entries.
+	h.recordComboBudgetCall("long")
+	h.comboBudgetMu.Lock()
+	_, shortAlive := h.comboBudget["short"]
+	h.comboBudgetMu.Unlock()
+	if shortAlive {
+		t.Fatal("short must be pruned: it is past its own window")
+	}
+	if !h.comboBudgetExhausted("long") {
+		t.Fatal("long must keep its spend across the prune that removed short")
 	}
 }
 

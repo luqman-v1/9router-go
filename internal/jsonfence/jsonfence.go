@@ -154,6 +154,30 @@ func ApplyContents(ctx context.Context, body []byte) []byte {
 	return out
 }
 
+// lastBacktickRun returns the start index and length of the last run of
+// backticks in s that is at least minLen long, or (-1, 0) when there is none.
+//
+// A closing delimiter must be at least as long as the opening one: a block
+// opened with four backticks is closed by four, and a three-backtick run
+// inside it is content, not the end of the block.
+func lastBacktickRun(s string, minLen int) (int, int) {
+	end, length := -1, 0
+	for i := 0; i < len(s); {
+		if s[i] != '`' {
+			i++
+			continue
+		}
+		start := i
+		for i < len(s) && s[i] == '`' {
+			i++
+		}
+		if run := i - start; run >= minLen {
+			end, length = start, run
+		}
+	}
+	return end, length
+}
+
 // Strip removes a ```json / ``` code fence wrapping an otherwise valid JSON
 // document. Anything that is not a fenced JSON document is returned unchanged.
 func Strip(body []byte) []byte {
@@ -161,13 +185,21 @@ func Strip(body []byte) []byte {
 		return body
 	}
 	s := strings.TrimSpace(string(body))
-	if !strings.HasPrefix(s, "```") {
+	// The opening run of backticks, measured rather than assumed to be three: a
+	// model wrapping a block that itself contains a fence opens with four or
+	// more, and hardcoding three leaves that answer fenced for a client that
+	// asked for JSON. A shorter run is not a fence at all.
+	fenceLen := 0
+	for fenceLen < len(s) && s[fenceLen] == '`' {
+		fenceLen++
+	}
+	if fenceLen < 3 {
 		// Not a fence at all. A mid-text fence is left as the model wrote it:
 		// unwrapping it would drop the prose around it.
 		return body
 	}
 	// The opening line is the fence plus an optional language tag.
-	rest := s[3:]
+	rest := s[fenceLen:]
 	if i := strings.IndexByte(rest, '\n'); i >= 0 {
 		rest = rest[i+1:]
 	} else {
@@ -177,14 +209,14 @@ func Strip(body []byte) []byte {
 	// other than whitespace means the answer is not a fenced document — a
 	// fenced block followed by prose — so the whole body is left as written:
 	// unwrapping it would drop that prose.
-	tail := rest
-	end := strings.LastIndex(strings.TrimRight(tail, "\r\n \t"), "```")
+	tail := strings.TrimRight(rest, "\r\n \t")
+	end, closeLen := lastBacktickRun(tail, fenceLen)
 	if end < 0 {
 		// Unclosed fence: the client would receive a half-open JSON string
 		// either way, so the answer is left exactly as produced.
 		return body
 	}
-	if strings.TrimSpace(tail[end+3:]) != "" {
+	if strings.TrimSpace(tail[end+closeLen:]) != "" {
 		return body
 	}
 	inner := strings.TrimSpace(rest[:end])
