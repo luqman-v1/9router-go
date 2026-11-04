@@ -112,7 +112,6 @@ var ErrorRules = []ErrorRule{
 	{Provider: "deepseek-web", Text: "refused this address", CooldownMs: cooldownAddressRefused},
 	{Text: "no credentials", CooldownMs: cooldownLong},
 	{Text: "request not allowed", CooldownMs: cooldownShort},
-	{Text: "improperly formed request", CooldownMs: cooldownLong},
 	{Text: "rate limit", Backoff: true},
 	{Text: "too many requests", Backoff: true},
 	// "credit balance is too low" stays here: it is Anthropic's wording for a
