@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/codexquota"
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -27,8 +28,9 @@ import (
 
 // codexResetCreditTarget resolves the connection behind a reset-credit request.
 type codexResetCreditTarget struct {
-	AccessToken string
-	AccountID   string
+	ConnectionID string
+	AccessToken  string
+	AccountID    string
 }
 
 // resolveCodexResetCreditTarget validates that the connection is one Codex can
@@ -76,8 +78,9 @@ func (h *DashboardHandler) resolveCodexResetCreditTarget(w http.ResponseWriter, 
 	}
 
 	return codexResetCreditTarget{
-		AccessToken: accessToken,
-		AccountID:   psdStr(psd, "chatgptAccountId", "chatgpt_account_id"),
+		ConnectionID: conn.ID,
+		AccessToken:  accessToken,
+		AccountID:    psdStr(psd, "chatgptAccountId", "chatgpt_account_id"),
 	}, true
 }
 
@@ -187,6 +190,10 @@ func (h *DashboardHandler) HandleConsumeCodexResetCredit(w http.ResponseWriter, 
 	if err != nil {
 		writeResetCreditError(w, err)
 		return
+	}
+	chat.ClearCodexQuotaBlock(target.ConnectionID)
+	if h.Repo != nil {
+		_ = h.Repo.ResetProviderHealth("codex", "")
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"outcome":        outcome,

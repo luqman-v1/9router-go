@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -751,6 +752,9 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if a {
+			chat.ClearCodexQuotaBlock(id)
+		}
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id, "isActive": a})
 		return
 	}
@@ -857,6 +861,9 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	if err := h.Repo.UpdateProviderConnection(id, name, priority, isActive, dataStr); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if hasIsActive && a {
+		chat.ClearCodexQuotaBlock(id)
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})

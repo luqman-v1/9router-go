@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -982,6 +983,9 @@ func (h *DashboardHandler) persistProbeResult(conn *models.ProviderConnection, r
 		} else {
 			raw["lastError"] = nil
 			raw["lastErrorAt"] = nil
+		}
+		if conn != nil && conn.Provider == "codex" {
+			chat.ClearCodexQuotaBlock(conn.ID)
 		}
 	} else if out.message == "Provider test not supported" {
 		// Do not mark connection as broken in DB when probe is unsupported

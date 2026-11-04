@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"io"
+	"time"
 
 	"9router/proxy/internal/db"
 	"bytes"
@@ -12,6 +13,7 @@ import (
 
 	"9router/proxy/internal/auth"
 	"9router/proxy/internal/codexquota"
+	"9router/proxy/internal/handlers/chat"
 )
 
 // insertResetCreditConn seeds a provider connection the reset-credit handlers
@@ -113,6 +115,11 @@ func TestCodexResetCreditConsumeRoute(t *testing.T) {
 	defer srv.Close()
 	pointCodexResetURLs(t, srv.URL)
 	insertResetCreditConn(t, repo, "codex-1", "codex", "oauth", codexOAuthData("tok-1", "acct-1"))
+	chat.BlockCodexConnectionUntil("codex-1", time.Now().UTC().Add(time.Hour))
+	repo.LockConnectionModel("codex-1", "gpt-6.1-sol", 3600, 1)
+	if !chat.IsCodexConnectionExhausted("codex-1") {
+		t.Fatal("precondition: expected codex-1 to be blocked in quota cache")
+	}
 
 	body, _ := json.Marshal(map[string]string{"selectionToken": "c1", "idempotencyKey": "idem-1"})
 	req := httptest.NewRequest(http.MethodPost, "/api/usage/codex-1/reset-credits/consume", bytes.NewReader(body))
@@ -122,6 +129,13 @@ func TestCodexResetCreditConsumeRoute(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("consume: %d %s", rec.Code, rec.Body.String())
+	}
+
+	if chat.IsCodexConnectionExhausted("codex-1") {
+		t.Error("expected reset-credit consume to unblock quota cache")
+	}
+	if locked, _ := repo.IsConnectionModelLocked("codex-1", "gpt-6.1-sol"); locked {
+		t.Error("expected reset-credit consume to clear model lock")
 	}
 
 	var out struct {
