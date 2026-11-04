@@ -350,7 +350,10 @@ func sseStream(o sseStreamOpts) error {
 		if liftAliases {
 			patchers = append(patchers, liftReasoningAliasesPayload)
 		}
-		patchers = append(patchers, decodeComposerThinkingPayload)
+		// One stateful decoder per stream: visible Composer text can span chunks and
+	// the  closing tag can be split across chunk boundaries.
+	composerDecoder := &composerThinkingDecoder{}
+	patchers = append(patchers, composerDecoder.Process)
 		return proxy.SSECopy(hw, upstream, flusher, func(chunk []byte) {
 			if ttft != nil && *ttft == 0 {
 				*ttft = time.Since(startTime).Milliseconds()
