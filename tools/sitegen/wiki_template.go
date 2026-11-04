@@ -503,14 +503,27 @@ const wikiTemplate = `<!doctype html>
         }
       }
 
-      .wiki-search-btn {
-        display: inline-flex;
+      /* Search lives in the masthead, at the bar's far right after the theme
+         switcher. It is hidden below 60rem: the phone bar is a flex row of
+         three items that already fits a 320px screen, and a fourth control
+         pushed the wordmark off it. On a phone the same control appears in the
+         sidebar's head row instead — see .wiki-search-btn-side below.
+         margin-left:auto is what puts it at the bar's far right, after the
+         theme switcher: the bar is a flex row with justify-content:
+         space-between, so without it the button would sit beside the theme
+         button instead of at the edge. */
+      /* Shared geometry for both copies of the button. The two classes are
+         listed together rather than one inheriting the other, because each copy
+         also has its own display rule below and the selectors must stay
+         independent: sharing .wiki-search-btn made the desktop media block
+         render the phone copy too. */
+      .wiki-search-btn,
+      .wiki-search-btn-side {
         align-items: center;
         justify-content: center;
         width: 2.5rem;
         height: 2.5rem;
         padding: 0;
-        margin-left: auto;
         border: 1px solid var(--border);
         border-radius: var(--radius);
         background: var(--surface);
@@ -519,11 +532,41 @@ const wikiTemplate = `<!doctype html>
         line-height: 1;
         cursor: pointer;
       }
-      .wiki-search-btn:hover {
+      /* The masthead copy. Hidden at the base level and restored above the
+         phone breakpoint below. margin-left:auto is what puts it at the bar's
+         far right, after the theme switcher: the bar is a flex row with
+         justify-content:space-between, and the button is its last child, so
+         without the auto margin it would sit beside the theme button instead of
+         at the edge. */
+      .wiki-search-btn {
+        display: none;
+      }
+      /* The phone copy. Hidden at the base level and shown below 60rem, where
+         the bar has no room for a fourth control. margin-left:auto is what puts
+         it at the far right of the sheet's head row, beside the mark and the
+         name. */
+      .wiki-search-btn-side {
+        display: none;
+        margin-left: auto;
+      }
+      /* Above the phone breakpoint the masthead copy is the one that renders.
+         The bar is a flex row with justify-content:space-between, and the
+         button is its last child, so margin-left:auto pushes it to the far
+         right - after the theme switcher, which is the control it sits beside
+         because search acts on the wiki's contents rather than on this page's
+         appearance. */
+      @media (min-width: 60.0625rem) {
+        .wiki-search-btn {
+          display: inline-flex;
+        }
+      }
+      .wiki-search-btn:hover,
+      .wiki-search-btn-side:hover {
         background: var(--bg-alt);
         color: var(--text);
       }
-      .wiki-search-btn:focus-visible {
+      .wiki-search-btn:focus-visible,
+      .wiki-search-btn-side:focus-visible {
         outline: 2px solid var(--brand);
         outline-offset: 1px;
       }
@@ -568,8 +611,14 @@ const wikiTemplate = `<!doctype html>
          sits beside. It shares the menu buttons' geometry so the two read as one
          set. Below 60rem the bar gives it up — three controls plus a wordmark do
          not fit a phone bar — and the copy inside the links sheet takes over. */
+      /* margin-left:auto is what groups this control with the search button at
+         the bar's far right. The bar is justify-content:space-between, so
+         without it the theme button sat beside the wordmark and the search
+         button was left at the opposite edge, with the whole article width
+         between two controls that belong together. */
       .wiki-theme-btn-bar {
         display: inline-flex;
+        margin-left: auto;
         align-items: center;
         justify-content: center;
         width: 2.5rem;
@@ -775,7 +824,14 @@ const wikiTemplate = `<!doctype html>
           font-size: 1.125rem;
           line-height: 1;
         }
-        /* Larger targets: a phone reader is tapping, not clicking. The hover
+
+        /* Search, in the sheet head's own row: the bar above has no room for a
+           fourth control below 60rem, so this is where the control lives on a
+           phone. 2.5rem square, the same size as the close control beside it,
+           so the two read as one set. */
+        .wiki-search-btn-side {
+          display: inline-flex;
+        }        /* Larger targets: a phone reader is tapping, not clicking. The hover
            rule is inherited from the desktop row, so only the size changes
            here — a second hover definition is how the two drift apart. */
         .wiki-side a {
@@ -956,6 +1012,28 @@ const wikiTemplate = `<!doctype html>
         >
           <span class="wiki-theme-icon" aria-hidden="true">☾</span>
         </button>
+        <!-- Search, at the bar's far right, after the theme switcher: it acts
+             on the wiki's contents rather than on this page's appearance, so it
+             belongs beside the control that changes appearance rather than in
+             the sidebar. Desktop only — below 60rem the bar is a flex row of
+             three items that already fits a 320px phone, and a fourth control
+             pushed the wordmark off it. On a phone the search button lives in
+             the sidebar's head row instead, where the sheet has room.
+             The glyph carries the action and aria-label carries the name, the
+             same contract the theme button beside it uses. -->
+        <button
+          type="button"
+          class="wiki-search-btn"
+          id="search-open"
+          aria-label="Search the wiki"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+        >
+          <svg class="wiki-search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="10.5" cy="10.5" r="6.25" fill="none" stroke="currentColor" stroke-width="1.8"/>
+            <path d="m15.4 15.4 4.1 4.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </button>
       </div>
     </header>
 
@@ -993,17 +1071,16 @@ const wikiTemplate = `<!doctype html>
             </span>
             9router-go
           </strong>
-          <!-- Search. An icon-only button at the right end of the row that
-               names the product, because the search field itself lives in a
-               dialog: a read-only box that only opened it cost a whole row of
-               the column to say "click me". The glyph carries the action and
-               aria-label carries the name, the same contract the close control
-               beside it uses. margin-left:auto is what puts it at the far
-               right, beside the product name. -->
+          <!-- The phone copy of search. Desktop has its own in the masthead,
+               after the theme switcher; below 60rem the bar has no room for a
+               fourth control, so the button moves here, into the sheet's head
+               row, where the mark and the name already live. Same glyph, same
+               accessible name, same dialog - a reader who switches screens
+               finds the same control in the place that screen can hold it. -->
           <button
             type="button"
-            class="wiki-search-btn"
-            id="search-open"
+            class="wiki-search-btn-side"
+            id="search-open-side"
             aria-label="Search the wiki"
             aria-haspopup="dialog"
             aria-expanded="false"
@@ -1123,12 +1200,25 @@ const wikiTemplate = `<!doctype html>
       // query now belongs to the dialog, where the input and the results share
       // a surface wide enough for both.
       (function () {
+        // Two triggers: one in the masthead for desktop, one in the sidebar's
+        // head row for a phone. Only one is rendered at a time - CSS hides the
+        // other - so both are bound and whichever is visible answers.
         var trigger = document.getElementById("search-open");
+        var triggerSide = document.getElementById("search-open-side");
         var modal = document.getElementById("search-modal");
         var modalInput = document.getElementById("search-modal-input");
         var modalResults = document.getElementById("results-modal");
         var closeBtn = document.getElementById("search-modal-close");
-        if (!trigger || !modal || !modalInput || !modalResults) return;
+        if ((!trigger && !triggerSide) || !modal || !modalInput || !modalResults) return;
+        // A plain array of the two, with the absent one dropped: a build that
+        // carries only one copy still works, and the loop below does not have to
+        // nil-check each one.
+        var triggers = [trigger, triggerSide].filter(Boolean);
+        function paintTriggers(open) {
+          triggers.forEach(function (btn) {
+            btn.setAttribute("aria-expanded", open ? "true" : "false");
+          });
+        }
         // The index is fetched once and kept in the closure, so every keystroke
         // reads it without a second request. Declaring it here rather than
         // relying on a parameter name is what makes the listener work at all:
@@ -1158,7 +1248,7 @@ const wikiTemplate = `<!doctype html>
           // opens the element as a plain overlay so the search still works.
           if (typeof modal.showModal === "function") modal.showModal();
           else modal.setAttribute("open", "");
-          trigger.setAttribute("aria-expanded", "true");
+          paintTriggers(true);
           // A shared ?q= seeds the field; anything else starts empty, because a
           // button carries no text of its own to copy across.
           modalInput.value = query || "";
@@ -1171,15 +1261,21 @@ const wikiTemplate = `<!doctype html>
         function closeSearch() {
           if (typeof modal.close === "function") modal.close();
           else modal.removeAttribute("open");
-          trigger.setAttribute("aria-expanded", "false");
+          paintTriggers(false);
         }
-        trigger.addEventListener("click", openSearch);
-        // A <button> fires click on Enter and Space on its own, so the click
-        // listener above already covers the keyboard. Only Space needs a guard:
-        // the browser scrolls the page on Space, and that scroll would move the
-        // sheet the button sits in while the dialog opened over it.
-        trigger.addEventListener("keydown", function (e) {
-          if (e.key === " ") e.preventDefault();
+        // Both copies of the button answer, whichever one this screen shows.
+        // Only one is rendered at a time - CSS hides the other - but a reader
+        // who resizes the window does not get a dead control on the screen they
+        // just switched to.
+        triggers.forEach(function (btn) {
+          btn.addEventListener("click", openSearch);
+          // A <button> fires click on Enter and Space on its own, so the click
+          // listener above already covers the keyboard. Only Space needs a
+          // guard: the browser scrolls the page on Space, and that scroll would
+          // move the sheet the button sits in while the dialog opened over it.
+          btn.addEventListener("keydown", function (e) {
+            if (e.key === " ") e.preventDefault();
+          });
         });
         closeBtn.addEventListener("click", closeSearch);
         // Clicking the backdrop closes. The dialog element is the target only
@@ -1195,7 +1291,7 @@ const wikiTemplate = `<!doctype html>
         // The dialog is dismissed with Escape by the browser, and that fires a
         // cancel event — the only signal that closes it from the keyboard.
         modal.addEventListener("cancel", function () {
-          trigger.setAttribute("aria-expanded", "false");
+          paintTriggers(false);
         });
         // Picking a result navigates, so the dialog closes behind it.
         modalResults.addEventListener("click", function (e) {

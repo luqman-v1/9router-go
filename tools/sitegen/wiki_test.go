@@ -781,7 +781,8 @@ func TestSearchOpensAModal(t *testing.T) {
 		t.Error("search results still render into the sidebar list")
 	}
 	// Clicking the trigger opens it, and a keyboard user gets the same path.
-	if !strings.Contains(wikiTemplate, `trigger.addEventListener("click", openSearch)`) {
+	if !strings.Contains(wikiTemplate, `triggers.forEach(function (btn) {`) ||
+		!strings.Contains(wikiTemplate, `btn.addEventListener("click", openSearch)`) {
 		t.Error("clicking the search box does not open the dialog")
 	}
 	// A <button> activates on Enter and Space natively, so the keyboard path is
@@ -790,8 +791,19 @@ func TestSearchOpensAModal(t *testing.T) {
 	if !strings.Contains(wikiTemplate, `if (e.key === " ") e.preventDefault();`) {
 		t.Error("the search button does not stop Space from scrolling the page behind the dialog")
 	}
-	if !strings.Contains(wikiTemplate, `trigger.addEventListener("click", openSearch)`) {
-		t.Error("the search button has no click handler, so the keyboard cannot open the dialog either")
+	// Both copies are bound: one in the masthead for desktop, one in the
+	// sidebar's head row for a phone. Only one is rendered at a time, but a
+	// reader who resizes the window must not get a dead control on the screen
+	// they just switched to.
+	if !strings.Contains(wikiTemplate, `id="search-open-side"`) {
+		t.Error("there is no phone copy of the search button in the sidebar")
+	}
+	if !strings.Contains(wikiTemplate, `var triggers = [trigger, triggerSide].filter(Boolean);`) {
+		t.Error("the script does not bind both search buttons")
+	}
+	if !strings.Contains(wikiTemplate, `paintTriggers(true)`) ||
+		!strings.Contains(wikiTemplate, `paintTriggers(false)`) {
+		t.Error("aria-expanded is not kept in step across both search buttons")
 	}
 	// A shared link carrying ?q= shows the results without retyping.
 	if !strings.Contains(wikiTemplate, "if (query) openSearch();") {
@@ -1355,16 +1367,28 @@ func TestSearchIsAnIconButtonInTheHeadRow(t *testing.T) {
 	if strings.Contains(wikiTemplate, "wiki-search-hint") {
 		t.Error("the 'Click to search' hint is still there")
 	}
-	// The button must live in the head row, the row that carries the product
-	// name. The name itself is hidden on desktop, but it is still the row the
-	// button belongs to, and the markup must not move.
-	headAt := strings.Index(wikiTemplate, `<div class="wiki-sheet-head">`)
-	btnAt := strings.Index(wikiTemplate, `class="wiki-search-btn"`)
-	if headAt < 0 || btnAt < headAt {
-		t.Fatal("the search button is not inside the sidebar's head row")
+	// The desktop copy lives in the masthead, at the bar's far right, after the
+	// theme switcher. It acts on the wiki's contents rather than on this page's
+	// appearance, so it belongs beside the control that changes appearance.
+	mastheadAt := strings.Index(wikiTemplate, `<header class="masthead">`)
+	barAt := strings.Index(wikiTemplate, `id="theme-toggle-bar"`)
+	btnAt := strings.Index(wikiTemplate, `id="search-open"`)
+	if mastheadAt < 0 || barAt < 0 || btnAt < 0 {
+		t.Fatal("the masthead is missing the theme switcher or the search button")
 	}
-	if !strings.Contains(wikiTemplate[headAt:btnAt], `<strong>`) {
-		t.Error("the search button is not in the row that carries the product name")
+	if btnAt < barAt {
+		t.Error("the search button is not after the theme switcher in the masthead")
+	}
+	// The phone copy lives in the sidebar's head row, the row that carries the
+	// product name. The name itself is hidden on desktop, but the row is where
+	// a phone reader looks for the control the bar has no room for.
+	headAt := strings.Index(wikiTemplate, `<div class="wiki-sheet-head">`)
+	sideAt := strings.Index(wikiTemplate, `id="search-open-side"`)
+	if headAt < 0 || sideAt < headAt {
+		t.Fatal("the phone search button is not inside the sidebar's head row")
+	}
+	if !strings.Contains(wikiTemplate[headAt:sideAt], `<strong>`) {
+		t.Error("the phone search button is not in the row that carries the product name")
 	}
 	// That name - the logo and the label together, since <strong> holds both -
 	// is hidden on desktop: the masthead already shows them, and a second copy
@@ -1419,5 +1443,71 @@ func TestStylesheetBracesAreBalanced(t *testing.T) {
 	if strings.Count(css, "{") != strings.Count(css, "}") {
 		t.Errorf("the stylesheet has %d { and %d }: the browser will drop every rule after the damage",
 			strings.Count(css, "{"), strings.Count(css, "}"))
+	}
+}
+
+// Search sits in two places, one per screen. In the masthead at the bar's far
+// right on desktop; in the sidebar's head row below 60rem, where the bar has no
+// room for a fourth control. The rule that decides which is rendered must be
+// CSS, not JS, so a window resize switches the control without a reload.
+func TestSearchPlacementIsPerScreen(t *testing.T) {
+	// The masthead copy is hidden at the base level, so it cannot appear on a
+	// phone, and is restored above 60rem.
+	base := wikiTemplate[strings.Index(wikiTemplate, ".wiki-search-btn {"):]
+	base = base[:strings.Index(base, "}")]
+	if !strings.Contains(base, "display: none") {
+		t.Errorf("the masthead search button is not desktop-only:\n%s", base)
+	}
+	phone := wikiTemplate[strings.Index(wikiTemplate, "@media (max-width: 60rem)"):]
+	if !strings.Contains(phone, ".wiki-search-btn {\n          display: inline-flex;") &&
+		!strings.Contains(phone, ".wiki-search-btn {") {
+		t.Error("the masthead search button is never restored above 60rem")
+	}
+	// The phone copy is the mirror image: hidden at the base level, shown in the
+	// phone media block.
+	// The selector appears twice now: once in the shared geometry rule, which
+	// carries no display, and once in its own display rule. Find the one that
+	// owns display.
+	sideBase := wikiTemplate[strings.Index(wikiTemplate, ".wiki-search-btn-side {\n        display:"):]
+	if sideBase == "" {
+		t.Fatal("no .wiki-search-btn-side rule that sets display")
+	}
+	sideBase = sideBase[:strings.Index(sideBase, "}")]
+	if !strings.Contains(sideBase, "display: none") {
+		t.Errorf("the sidebar search button is not phone-only:\n%s", sideBase)
+	}
+	if !strings.Contains(phone, ".wiki-search-btn-side {\n          display: inline-flex;") {
+		t.Error("the sidebar search button is never shown on a phone")
+	}
+	// Both carry the same accessible name, so the control reads the same on
+	// whichever screen it is on.
+	if n := strings.Count(wikiTemplate, `aria-label="Search the wiki"`); n != 2 {
+		t.Errorf("found %d search buttons with an accessible name, want 2", n)
+	}
+}
+
+// The masthead bar is a flex row that fits a 320px phone with three items. A
+// fourth control pushed the wordmark off it, which is why the search button is
+// desktop-only there. This pins the count so a fifth item cannot be added
+// silently.
+func TestMastheadBarHasNoRoomForAFourthControl(t *testing.T) {
+	bar := wikiTemplate[strings.Index(wikiTemplate, `<div class="masthead-inner">`):]
+	// The header closes with the bar's own </div> and then </header>. Slicing on
+	// that pair is what keeps the sidebar's controls out of this count.
+	end := strings.Index(bar, "</header>")
+	bar = bar[:end]
+	children := 0
+	for _, tag := range []string{`class="wiki-menu-btn"`, `class="wordmark"`, `class="wiki-theme-btn`, `class="wiki-search-btn"`} {
+		if strings.Contains(bar, tag) {
+			children++
+		}
+	}
+	if children > 4 {
+		t.Errorf("the masthead bar carries %d controls; the phone bar fits three plus a wordmark", children)
+	}
+	// The theme switcher must come before the search button, so the search button
+	// is the one at the bar's far right.
+	if strings.Index(bar, `id="theme-toggle-bar"`) > strings.Index(bar, `id="search-open"`) {
+		t.Error("the search button is not at the bar's far right, after the theme switcher")
 	}
 }

@@ -1,0 +1,15 @@
+### Wiki: search moved to the masthead, at the theme switcher's right — desktop only
+
+The search button now lives in the header bar, immediately right of the theme switcher. Below 60rem it moves back into the sidebar's head row, beside the mark and the name.
+
+**Why it moved.** Search acts on the wiki's contents, not on this page's appearance, so it belongs beside the control that changes appearance rather than alone in the sidebar — and a reader looking for it should find it without opening anything. It was already at the top of the sidebar; this puts it in the bar that is visible on every screen without a click.
+
+**Why it is desktop-only.** The bar is a flex row of three items — nav trigger, wordmark, theme switcher — sized to fit a 320px phone. A fourth control pushed the wordmark off it, which is why the trigger is already hidden on desktop: the bar has exactly one slot left. The phone copy takes the slot the sidebar's head row already had, where the mark and the name live.
+
+**The two copies are separate elements, not one element moved by JS.** CSS decides which renders, so a window resize switches the control with no reload and no flash. `.wiki-search-btn` is `display: none` at the base level and restored above `60.0625rem`; `.wiki-search-btn-side` is the mirror. The two classes are **not** nested — the phone copy does not carry `.wiki-search-btn` — because the desktop media block targets that class and sharing it rendered both copies on both screens. Both are bound in the script, so whichever is visible answers, and a reader who resizes mid-session gets a working control on the screen they switched to.
+
+**The bar's grouping changed with it.** The theme switcher now takes `margin-left: auto`, which pulls it and the search button together at the bar's far right. Before, the search button had the auto margin, and `justify-content: space-between` left the theme button beside the wordmark with the whole article width between the two controls that belong together. Measured: theme ends at 1164px, search starts at 1188px — the bar's own 0.75rem gap.
+
+**Geometry is unchanged.** Both copies are the same 2.5rem square, 1px border, hover and focus-visible treatment as the bar's other buttons, and the same 1.25rem magnifier glyph — so a reader who learned one control finds the same size and shape in its new place.
+
+Verified in a real browser across 1440, 1024, 961, 960, 768, 390 and 320px. At 961px and above the masthead copy renders at the bar's far right beside the theme switcher and the sidebar copy is absent from the layout; at 960px and below the masthead copy is `display: none` and the sidebar copy renders in the sheet's head row at 40×40, with the close control at its left and the name beside it. The breakpoint boundary is exact: `max-width: 60rem` and `min-width: 60.0625rem` leave no 1px gap where neither copy renders. Click, Enter and Space all open the dialog from either copy; typing `combo` renders 13 rows; Escape closes it and resets `aria-expanded` on both copies. In light and dark. No 4xx, no console errors.
