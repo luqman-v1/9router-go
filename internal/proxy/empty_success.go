@@ -222,8 +222,12 @@ func carriesValue(raw jsontext.Value) bool {
 //
 // errorEnvelopeStatus reads the status a `{"error":{...}}` envelope carries,
 // so an error that arrived inside a 200 body is reported with the status the
-// provider actually meant. Anything outside 400..599, or a value that is not
-// an integer, falls back to 502: the gateway cannot invent a status, and a
+// provider meant. Only the `status` field is read: `code` is not an HTTP
+// status in the OpenAI family (OpenAI writes application error codes there —
+// `model_not_found`, `invalid_api_key` — and some providers write a number),
+// so treating it as one would turn `"code":404` into a 404 for what is an
+// application-level "not found". Anything outside 400..599, or a value that is
+// not an integer, falls back to 502: the gateway cannot invent a status, and a
 // 200-shaped failure has to be reported as a failure.
 func errorEnvelopeStatus(raw jsontext.Value) int {
 	trimmed := bytes.TrimSpace(raw)
@@ -232,15 +236,12 @@ func errorEnvelopeStatus(raw jsontext.Value) int {
 	}
 	var envelope struct {
 		Status jsontext.Value `json:"status"`
-		Code   jsontext.Value `json:"code"`
 	}
 	if err := json.Unmarshal(trimmed, &envelope, handlerutil.UpstreamBody); err != nil {
 		return http.StatusBadGateway
 	}
-	for _, candidate := range []jsontext.Value{envelope.Status, envelope.Code} {
-		if status, ok := statusFromValue(candidate); ok {
-			return status
-		}
+	if status, ok := statusFromValue(envelope.Status); ok {
+		return status
 	}
 	return http.StatusBadGateway
 }

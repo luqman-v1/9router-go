@@ -256,9 +256,13 @@ func TestEmptyUpstreamError_ErrorEnvelopeKeepsUpstreamStatus(t *testing.T) {
 			wantCode: http.StatusServiceUnavailable,
 		},
 		{
-			name:     "code field is read when status is absent",
-			body:     `{"error":{"code":401,"message":"bad key"}}`,
-			wantCode: http.StatusUnauthorized,
+			// `code` is not an HTTP status in the OpenAI family: OpenAI
+			// writes an application error code there (`model_not_found`,
+			// `invalid_api_key`), so a numeric `code` is an error class, not
+			// a status. Forwarding it would answer 404 for a missing model.
+			name:     "code field is not read as a status",
+			body:     `{"error":{"code":404,"message":"model not found"}}`,
+			wantCode: http.StatusBadGateway,
 		},
 		{
 			name:     "non-error status falls back to 502",
