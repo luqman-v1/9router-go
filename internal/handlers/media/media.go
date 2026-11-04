@@ -1671,7 +1671,6 @@ func stripDimensionsForFluxSchnell(body []byte) []byte {
 	return body
 }
 
-<<<<<<< HEAD
 // isCloudflareFlux2Model reports whether info is a Cloudflare Flux-2 model
 // (@cf/black-forest-labs/flux-2*) served through the cloudflare-ai/cf provider.
 // Flux-2 models accept an optional reference image, which is handled by the
