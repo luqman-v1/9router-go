@@ -18,7 +18,7 @@ func (h *ChatHandler) parkRejectedOAuthAccount(connectionID string, refreshErr e
 	if connectionID == "" || h.Repo == nil || !providers.IsRefreshUnauthorized(refreshErr) {
 		return false
 	}
-	until, failures, err := h.Repo.RecordConnectionOAuthFailure(connectionID, http.StatusUnauthorized, refreshErr.Error())
+	until, failures, err := h.Repo.RecordConnectionOAuthFailure(connectionID, http.StatusUnauthorized, refreshErr)
 	if err != nil {
 		log.Warn("oauth", "park rejected account failed", "conn", connectionID, "error", err)
 		return false

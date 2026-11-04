@@ -172,7 +172,7 @@ func refreshBackgroundConnection(ctx context.Context, repo *db.Repo, c Connectio
 		// Record the rejection so the tick, and the request path, stop
 		// hammering the token endpoint for a grant only a re-login fixes.
 		if providers.IsRefreshUnauthorized(err) {
-			if until, failures, lockErr := repo.RecordConnectionOAuthFailure(c.ID, http.StatusUnauthorized, err.Error()); lockErr != nil {
+			if until, failures, lockErr := repo.RecordConnectionOAuthFailure(c.ID, http.StatusUnauthorized, err); lockErr != nil {
 				log.Printf("[BG_TOKEN_REFRESH] park failed conn=%s: %v", c.ID, lockErr)
 			} else {
 				log.Printf("[BG_TOKEN_REFRESH] parked conn=%s until=%s failures=%d", c.ID, until.Format(time.RFC3339), failures)

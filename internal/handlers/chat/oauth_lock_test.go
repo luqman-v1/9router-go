@@ -67,6 +67,59 @@ func expiredOAuthData(t *testing.T) string {
 	return string(raw)
 }
 
+// A revoked grant leaves the account parked and stamped testStatus =
+// reauth_required so the dashboard can surface "re-auth required" instead of
+// retrying a grant only a re-login can fix.
+func TestRejectedOAuthRefreshSurfacesReauthRequired(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	dropSeededConn(t, database)
+	installRefresher(t, &oauthRefresherStub{status: http.StatusUnauthorized})
+	insertOAuthConn(t, database, "conn-dead-oauth", 1, expiredOAuthData(t))
+
+	handler := NewChatHandler(db.NewRepo(database))
+	if _, _, err := handler.forceRefreshOAuthToken("conn-dead-oauth"); err == nil {
+		t.Fatal("expected the rejected refresh to report an error")
+	}
+
+	until, parked := db.ConnectionOAuthLockUntil(string(mustConnData(t, database, "conn-dead-oauth")))
+	if !parked {
+		t.Fatal("expected the account to be parked")
+	}
+	if !until.After(time.Now()) {
+		t.Error("park until is not in the future")
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(mustConnData(t, database, "conn-dead-oauth"), &raw); err != nil {
+		t.Fatalf("unmarshal connection data: %v", err)
+	}
+	if got, ok := raw["testStatus"].(string); !ok || got != providers.StatusReauthRequired {
+		t.Errorf("testStatus = %q (ok=%v), want %q", got, ok, providers.StatusReauthRequired)
+	}
+
+	// A successful refresh releases the park and clears the quarantine marker.
+	installRefresher(t, &oauthRefresherStub{})
+	token, _, err := handler.forceRefreshOAuthToken("conn-dead-oauth")
+	if err != nil {
+		t.Fatalf("refresh after repair: %v", err)
+	}
+	if token != "fresh-token" {
+		t.Fatalf("token = %q, want fresh-token", token)
+	}
+	if _, parked := db.ConnectionOAuthLockUntil(string(mustConnData(t, database, "conn-dead-oauth"))); parked {
+		t.Error("a successful refresh must release the park")
+	}
+	raw2 := mustConnData(t, database, "conn-dead-oauth")
+	var fixed map[string]any
+	if err := json.Unmarshal(raw2, &fixed); err != nil {
+		t.Fatalf("unmarshal connection data: %v", err)
+	}
+	if got, ok := fixed["testStatus"]; ok && got != nil {
+		t.Errorf("after clear testStatus = %v, want nil", got)
+	}
+}
+
 // parkAccount drives a connection through a rejected refresh and reports
 // whether the account was left parked.
 func parkAccount(t *testing.T, database *sql.DB, status int) *oauthRefresherStub {

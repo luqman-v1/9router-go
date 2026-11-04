@@ -27,6 +27,7 @@ const (
 	StatusRateLimited    = "rate_limited"
 	StatusError          = "error"
 	StatusExpired        = "expired"
+	StatusReauthRequired = "reauth_required"
 	StatusUnknown        = "unknown"
 )
 
@@ -226,7 +227,7 @@ func StatusVariant(isActive int, effectiveStatus string) string {
 		// A throttle is temporary: amber, not red. Red trains the operator to
 		// ignore it, and this account recovers on its own.
 		return "warn"
-	case StatusError, StatusExpired, StatusUnavailable, StatusQuotaExhausted:
+	case StatusError, StatusExpired, StatusUnavailable, StatusQuotaExhausted, StatusReauthRequired:
 		return "error"
 	default:
 		return "default"
