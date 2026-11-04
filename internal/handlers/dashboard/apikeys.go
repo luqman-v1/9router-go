@@ -111,6 +111,9 @@ func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Reque
 			"budgetPeriod": k.BudgetPeriod,
 			"alertPct":     k.AlertPct,
 			"hardCutoff":   k.HardCutoff,
+			// The context ceiling of one request. 0 means the model's own
+			// window applies.
+			"contextLimit": intOrZero(k.ContextLimit),
 			"expiresAt":    stringOrEmpty(k.ExpiresAt),
 			"lastUsedAt":   stringOrEmpty(k.LastUsedAt),
 			"usedCount":    intOrZero(k.UsedCount),
@@ -217,6 +220,15 @@ func (h *DashboardHandler) HandleCreateApiKey(w http.ResponseWriter, r *http.Req
 		Key       string `json:"key"`
 		Name      string `json:"name"`
 		MachineID string `json:"machineId"`
+		// TokenQuota caps the key's cumulative prompt+completion tokens
+		// (0 = no limit). It is accepted here so an operator can bound a key
+		// at the moment they create it, instead of creating it unbounded and
+		// then hunting for the policy dialog to set the ceiling.
+		TokenQuota *int `json:"tokenQuota"`
+		// ContextLimit caps the context window one request from the key may
+		// use, in tokens. A separate axis from the quota, which bounds what
+		// the key may spend over its whole life.
+		ContextLimit *int `json:"contextLimit"`
 	}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -234,6 +246,19 @@ func (h *DashboardHandler) HandleCreateApiKey(w http.ResponseWriter, r *http.Req
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "name is too long")
 		return
 	}
+
+	// Validated before the insert, so a refused limit leaves no key behind.
+	quota, err := mergeLimit(req.TokenQuota, nil)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "tokenQuota: "+err.Error())
+		return
+	}
+	contextLimit, err := mergeLimit(req.ContextLimit, nil)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "contextLimit: "+err.Error())
+		return
+	}
+
 	if req.ID == "" {
 		req.ID = uuid.New().String()
 	}
@@ -241,20 +266,19 @@ func (h *DashboardHandler) HandleCreateApiKey(w http.ResponseWriter, r *http.Req
 		req.Key = "sk-" + strings.ReplaceAll(uuid.New().String(), "-", "")
 	}
 
-	if err := h.Repo.CreateApiKey(req.ID, req.Key, req.Name, req.MachineID); err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-		return
+	// The key, its display mask, and any initial ceilings are written
+	// atomically in one transaction. If configuring the limits fails, the
+	// transaction rolls back and leaves no unbounded key in the ledger.
+	params := db.CreateApiKeyParams{
+		ID:           req.ID,
+		Key:          req.Key,
+		Name:         req.Name,
+		MachineID:    req.MachineID,
+		KeyDisplay:   keikey.Mask(req.Key),
+		TokenQuota:   quota,
+		ContextLimit: contextLimit,
 	}
-
-	// The secret is stored in the clear so the dashboard can reveal and copy
-	// it again later (issue #199). This reopens the F-6/DB-02 trade-off — a
-	// database dump exposes every client key — but an operator who cannot
-	// read a key back cannot use the row they just created either.
-
-	// The masked value is kept alongside it: the list still renders a compact
-	// identifier, and a row that predates this change has no plaintext to show.
-	if err := h.Repo.SetApiKeyDisplay(req.ID, keikey.Mask(req.Key)); err != nil {
-		log.Error("apikeys", "store api key display failed", "error", err)
+	if err := h.Repo.CreateApiKeyWithLimits(r.Context(), params); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -343,10 +367,11 @@ func (h *DashboardHandler) HandleResetApiKeyQuota(w http.ResponseWriter, r *http
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"status":     "ok",
-		"id":         id,
-		"usedTokens": used,
-		"tokenQuota": intOrZero(existing.TokenQuota),
+		"status":       "ok",
+		"id":           id,
+		"usedTokens":   used,
+		"tokenQuota":   intOrZero(existing.TokenQuota),
+		"contextLimit": intOrZero(existing.ContextLimit),
 		// The mark is a usageHistory row id, so it is reported as one: a
 		// timestamp here would invite callers to compare it with the
 		// second-precision stamp in the history and get the boundary wrong.

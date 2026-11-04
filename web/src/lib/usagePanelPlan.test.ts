@@ -17,6 +17,7 @@ test('the order repair appends panels this build knows that storage predates', (
     'overview.kpi',
     'overview.topology',
     'overview.recent',
+    'overview.byApiKey',
     'overview.trend',
     'overview.comboFlow',
   ])

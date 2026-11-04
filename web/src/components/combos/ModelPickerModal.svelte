@@ -20,7 +20,7 @@
 
   interface Props {
     isOpen: boolean
-    target: 'combo' | 'vision' | 'audio' | 'judge' | 'router'
+    target: 'combo' | 'vision' | 'audio' | 'judge' | 'router' | 'key'
     connections?: ProviderConnection[]
     combos?: Combo[]
     providerNodes?: ProviderNode[]
@@ -144,7 +144,9 @@
                   ? 'Select Judge Model'
                   : target === 'router'
                     ? 'Select System One Router'
-                    : 'Add Model to Combo'}
+                    : target === 'key'
+                      ? 'Models this key may call'
+                      : 'Add Model to Combo'}
           </h2>
         </div>
         <button
@@ -160,7 +162,11 @@
       <!-- Info bar -->
       <div class="flex items-center gap-2 mb-3 px-2.5 py-2 bg-brand-500/10 border border-brand-500/20 rounded-lg text-xs text-text-muted">
         <Info class="w-3.5 h-3.5 text-brand-500 shrink-0" />
-        <span>Click to add, click again to remove. Changes are saved automatically.</span>
+        <span>
+          {target === 'key'
+            ? 'Click to add or remove a model. The change is applied when the policy is saved.'
+            : 'Click to add, click again to remove. Changes are saved automatically.'}
+        </span>
       </div>
 
       <!-- Search -->

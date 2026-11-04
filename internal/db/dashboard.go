@@ -228,11 +228,11 @@ func (r *Repo) GetApiKeys() ([]*models.APIKey, error) {
 	}
 	defer rows.Close()
 
-	withBudget := r.budgetColumnsPresent()
+	withAdditive := r.additiveColumnsPresent()
 	keys := make([]*models.APIKey, 0)
 	for rows.Next() {
 		var k models.APIKey
-		dest, apply := apiKeyScan(&k, withBudget)
+		dest, apply := apiKeyScan(&k, withAdditive)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, fmt.Errorf("scan api key: %w", err)
 		}
@@ -245,24 +245,90 @@ func (r *Repo) GetApiKeys() ([]*models.APIKey, error) {
 	return keys, nil
 }
 
-// CreateApiKey inserts a new client API key with isActive set to 1.
-func (r *Repo) CreateApiKey(id, key, name, machineID string) error {
+// CreateApiKeyParams holds the initial values for a new client API key.
+type CreateApiKeyParams struct {
+	ID           string
+	Key          string
+	Name         string
+	MachineID    string
+	KeyDisplay   string
+	TokenQuota   int
+	ContextLimit int
+}
+
+// CreateApiKeyWithLimits inserts a new client API key and writes its initial
+// ceilings atomically inside a single transaction.
+//
+// Writing the key and its ceilings in one transaction guarantees that a failure
+// while applying the limits never leaves behind an unbounded key in the database.
+func (r *Repo) CreateApiKeyWithLimits(ctx context.Context, p CreateApiKeyParams) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	var nameVal, machineVal any
-	if name != "" {
-		nameVal = name
+	if p.Name != "" {
+		nameVal = p.Name
 	}
-	if machineID != "" {
-		machineVal = machineID
+	if p.MachineID != "" {
+		machineVal = p.MachineID
 	}
-	_, err := r.db.Exec(
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin create api key %s: %w", p.ID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO apiKeys (id, key, name, machineId, isActive, createdAt) VALUES (?, ?, ?, ?, 1, ?)`,
-		id, key, nameVal, machineVal, now,
+		p.ID, p.Key, nameVal, machineVal, now,
 	)
 	if err != nil {
-		return fmt.Errorf("create api key %s: %w", id, err)
+		return fmt.Errorf("insert api key %s: %w", p.ID, err)
+	}
+
+	if p.TokenQuota > 0 {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE apiKeys SET tokenQuota = ?, queueTimeoutMs = 0 WHERE id = ?`,
+			p.TokenQuota, p.ID,
+		)
+		if err != nil {
+			return fmt.Errorf("set api key quota %s: %w", p.ID, err)
+		}
+	}
+
+	if p.ContextLimit > 0 {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE apiKeys SET contextLimit = ? WHERE id = ?`,
+			p.ContextLimit, p.ID,
+		)
+		if err != nil {
+			return fmt.Errorf("set api key context limit %s: %w", p.ID, err)
+		}
+	}
+
+	if p.KeyDisplay != "" {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE apiKeys SET keyDisplay = ? WHERE id = ?`,
+			p.KeyDisplay, p.ID,
+		)
+		if err != nil {
+			return fmt.Errorf("set api key display %s: %w", p.ID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit create api key %s: %w", p.ID, err)
 	}
 	return nil
+}
+
+// CreateApiKey inserts a new client API key with isActive set to 1.
+func (r *Repo) CreateApiKey(id, key, name, machineID string) error {
+	return r.CreateApiKeyWithLimits(context.Background(), CreateApiKeyParams{
+		ID:        id,
+		Key:       key,
+		Name:      name,
+		MachineID: machineID,
+	})
 }
 
 // DeleteApiKey deletes a client API key by its ID.
@@ -343,6 +409,24 @@ func (r *Repo) SetApiKeyPeriodBudget(keyID string, limitMicros, limitTokens int6
 	)
 	if err != nil {
 		return fmt.Errorf("set api key period budget %s: %w", keyID, err)
+	}
+	return nil
+}
+
+// SetApiKeyContextLimit sets the largest context window one request from an
+// API key may use, in tokens.
+//
+// It is a whole non-negative count where 0 means "unset": the model's own
+// declared window applies. It bounds one request, where tokenQuota bounds what
+// the key may spend over its whole life — the two are separate axes and an
+// operator may want either without the other.
+func (r *Repo) SetApiKeyContextLimit(ctx context.Context, keyID string, contextLimit int) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE apiKeys SET contextLimit = ? WHERE id = ?`,
+		contextLimit, keyID,
+	)
+	if err != nil {
+		return fmt.Errorf("set api key context limit %s: %w", keyID, err)
 	}
 	return nil
 }

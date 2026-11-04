@@ -46,11 +46,11 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 	defer r.Body.Close()
 
 	var req struct {
-		RateLimitRPM         *int    `json:"rateLimitRpm"`
-		RateLimitTPM         *int    `json:"rateLimitTpm"`
-		RateLimitConcurrency *int    `json:"rateLimitConcurrency"`
-		TokenQuota           *int    `json:"tokenQuota"`
-		QueueTimeoutMs       *int    `json:"queueTimeoutMs"`
+		RateLimitRPM         *int `json:"rateLimitRpm"`
+		RateLimitTPM         *int `json:"rateLimitTpm"`
+		RateLimitConcurrency *int `json:"rateLimitConcurrency"`
+		TokenQuota           *int `json:"tokenQuota"`
+		QueueTimeoutMs       *int `json:"queueTimeoutMs"`
 		// F-2 per-period budget. Pointers so an omitted field leaves the
 		// stored value alone; an explicit 0 / "" is a deliberate "disable this
 		// axis", which is what the dashboard sends when the operator blanks
@@ -60,8 +60,12 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		BudgetPeriod *string `json:"budgetPeriod"`
 		AlertPct     *int    `json:"alertPct"`
 		HardCutoff   *bool   `json:"hardCutoff"`
-		ExpiresAt            *string `json:"expiresAt"`
-		Metadata             *string `json:"metadata"`
+		// ContextLimit caps the context window one request from this key may
+		// use, in tokens. It is a separate axis from the token quota, which
+		// bounds what the key may spend over its whole life.
+		ContextLimit *int    `json:"contextLimit"`
+		ExpiresAt    *string `json:"expiresAt"`
+		Metadata     *string `json:"metadata"`
 		// F-3: the reusable policy template this key inherits from. Pointer so
 		// an omitted field leaves the assignment alone; an empty string is a
 		// deliberate "detach from the plan".
@@ -163,6 +167,13 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 	if req.HardCutoff != nil {
 		hardCutoff = *req.HardCutoff
 	}
+	// The context ceiling. The same merge rule as the rate limits: an omitted
+	// field keeps what is stored, an explicit zero clears that axis.
+	contextLimit, err := mergeLimit(req.ContextLimit, existing.ContextLimit)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "contextLimit: "+err.Error())
+		return
+	}
 
 	// Every field is validated before the first write, so a refused request
 	// leaves the row exactly as it was instead of applying the fields that
@@ -234,6 +245,17 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// The context ceiling is written for the same reason: an explicit zero
+	// clears the axis, so a conditional write would leave it stale.
+	//
+	// On a legacy database opened without migrations, existing.ContextLimit
+	// is nil and this write fails rather than silently dropping the ceiling.
+	// In production, EnsureAdditiveColumns on boot guarantees the column
+	// exists before any policy write arrives.
+	if err := h.Repo.SetApiKeyContextLimit(r.Context(), id, contextLimit); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if req.ExpiresAt != nil {
 		if err := h.Repo.SetApiKeyExpiry(id, expiresAt); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
@@ -278,7 +300,7 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		"planId": planID,
 		"limits": map[string]int{
 			"rpm": rpm, "tpm": tpm, "concurrency": conc,
-			"tokenQuota": quota, "queueTimeoutMs": queueMs,
+			"tokenQuota": quota, "queueTimeoutMs": queueMs, "contextLimit": contextLimit,
 		},
 	})
 }

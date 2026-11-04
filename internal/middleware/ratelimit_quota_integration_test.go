@@ -77,11 +77,11 @@ func TestQuotaEnforcedEndToEnd(t *testing.T) {
 		t.Fatalf("usage = %d, want 1100", used)
 	}
 
-	// Over budget: refused with 403 and the spend headers.
+	// Over budget: refused with 429 and the spend headers.
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, mkReq())
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("over budget status = %d, want 403", rec.Code)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("over budget status = %d, want 429", rec.Code)
 	}
 	if got := rec.Header().Get("X-Token-Quota-Limit"); got != "1000" {
 		t.Errorf("X-Token-Quota-Limit = %q, want 1000", got)
@@ -127,15 +127,15 @@ func TestQuotaAndRPMOrdering(t *testing.T) {
 	}))
 
 	// Two requests, both over quota. If the quota check ran after the RPM
-	// limiter, the first would 403 but consume the single RPM stamp and the
-	// second would 429; with quota first, both are 403.
+	// limiter, the first would refuse but consume the single RPM stamp and the
+	// second would 429; with quota first, both are refused by the quota.
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 		req = req.WithContext(withAPIKey(req, key))
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("request %d status = %d, want 403 (quota must precede RPM)", i, rec.Code)
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("request %d status = %d, want 429 (quota must precede RPM)", i, rec.Code)
 		}
 	}
 }

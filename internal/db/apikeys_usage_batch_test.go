@@ -206,6 +206,7 @@ func openLegacyQuotaDB(t *testing.T) *Repo {
 		rateLimitConcurrency INTEGER DEFAULT 0,
 		tokenQuota INTEGER DEFAULT 0,
 		queueTimeoutMs INTEGER DEFAULT 0,
+		contextLimit INTEGER DEFAULT 0,
 		keyHash TEXT DEFAULT '',
 		lookupHash TEXT DEFAULT '',
 		keyDisplay TEXT DEFAULT '',
