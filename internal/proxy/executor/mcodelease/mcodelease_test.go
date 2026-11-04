@@ -261,7 +261,13 @@ func startBroker(t *testing.T, handler func(req leaseRequest) leaseResponse) str
 		t.Skip("broker fixture uses a unix socket")
 	}
 	dir := t.TempDir()
-	sock := filepath.Join(dir, socketFile)
+	// Production resolves the socket under <dataDir>/run, the same directory
+	// the capability file lives in. A listener anywhere else is a fixture that
+	// dials a path nobody serves.
+	if err := os.MkdirAll(filepath.Join(dir, "run"), 0o755); err != nil {
+		t.Fatalf("mkdir run: %v", err)
+	}
+	sock := filepath.Join(dir, "run", socketFile)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -380,7 +386,33 @@ func TestLeaseAuthRequiredCode(t *testing.T) {
 	}
 }
 
-// Concurrent getToken calls must issue one lease, not one per waiter: the
+// A capability file without a socket behind it is the "desktop app installed
+// but not running" case, and must be reported as the broker being unavailable
+// rather than surfacing a raw dial error.
+func TestLeaseSocketMissing(t *testing.T) {
+	if isWindows() {
+		t.Skip("broker fixture uses a unix socket")
+	}
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, capabilityFile), []byte(strings.Repeat("a", capabilityLen)), 0o600); err != nil {
+		t.Fatalf("write capability: %v", err)
+	}
+	_, err := Lease(context.Background(), dir, MaxMinValidityMs)
+	if err == nil {
+		t.Fatal("a missing socket was not reported")
+	}
+	var le *AuthLeaseError
+	if !errors.As(err, &le) {
+		t.Fatalf("err = %v (%T), want *AuthLeaseError", err, err)
+	}
+	if le.Code != CodeBrokerUnavailable {
+		t.Errorf("code = %s, want %s", le.Code, CodeBrokerUnavailable)
+	}
+}
 
 // Concurrent getToken calls must issue one lease, not one per waiter: the
 // desktop broker is a single local process and a burst would queue behind it.
@@ -502,9 +534,6 @@ func drainRequest(c net.Conn) {
 		return
 	}
 	body := make([]byte, binary.BigEndian.Uint32(header))
-	if body == nil {
-		return
-	}
 	_, _ = io.ReadFull(c, body)
 }
 

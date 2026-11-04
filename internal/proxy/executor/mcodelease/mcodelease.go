@@ -283,7 +283,7 @@ func sendRequest(ctx context.Context, ep endpoint, req leaseRequest, timeout tim
 		return nil, leaseError(CodeBrokerUnavailable,
 			"Cannot reach auth broker at %s: %v. Is the MiniMax Code desktop app running?", ep.address, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	return exchangeFrame(ctx, conn, req, timeout)
 }
 
@@ -319,7 +319,10 @@ func exchangeFrame(ctx context.Context, conn net.Conn, req leaseRequest, timeout
 	case <-ctx.Done():
 		// Closing the conn is what actually unblocks the parked write.
 		_ = conn.Close()
-		<-writeErr
+		// The error the parked write finally reports is deliberately
+		// discarded: the caller is being handed ctx.Err(), and the write's
+		// own error is the consequence of that close.
+		<-writeErr //nolint:errcheck // drained on purpose; the caller gets ctx.Err()
 		return nil, ctx.Err()
 	}
 	header := make([]byte, 4)

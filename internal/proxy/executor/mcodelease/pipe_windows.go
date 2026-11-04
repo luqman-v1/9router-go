@@ -4,6 +4,7 @@ package mcodelease
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"sync"
@@ -80,7 +81,9 @@ func (c *pipeConn) SetDeadline(t time.Time) error {
 	}
 	d := time.Until(t)
 	if d <= 0 {
-		c.Close()
+		// An already-expired deadline means close now: the only way a
+		// blocking read on a file-backed pipe returns.
+		_ = c.Close()
 		return nil
 	}
 	time.AfterFunc(d, func() { _ = c.Close() })
@@ -98,5 +101,5 @@ func (a pipeAddr) String() string  { return string(a) }
 // isPipeClosed reports whether an I/O error is the "handle closed" the
 // deadline path produces.
 func isPipeClosed(err error) bool {
-	return os.IsTimeout(err) || err == os.ErrClosed
+	return os.IsTimeout(err) || errors.Is(err, os.ErrClosed)
 }
