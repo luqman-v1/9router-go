@@ -404,3 +404,23 @@ func TestNewProvidersRegistry_v061(t *testing.T) {
 		}
 	}
 }
+
+func TestNewProvidersRegistry_v062(t *testing.T) {
+	// Gemini 3.8 Flash TTS and 3.8 Flash Lite TTS models must be registered under
+	// the gemini provider catalog and carry the tts service kind.
+	for _, model := range []string{"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"} {
+		found := false
+		for _, m := range GetProviderModels("gemini") {
+			if m == model {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("GetProviderModels(gemini) missing %s", model)
+		}
+		if got := GetProviderModelKind("gemini", model); got != "tts" {
+			t.Errorf("GetProviderModelKind(gemini, %q) = %q, want tts", model, got)
+		}
+	}
+}
