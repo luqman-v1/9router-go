@@ -68,6 +68,12 @@ func TestStreamContentPeeker_ReasoningContentCommits(t *testing.T) {
 			expectErr:    nil,
 		},
 		{
+			name:         "OpenAI empty reasoning alias does not commit",
+			chunks:       []string{"data: {\"choices\":[{\"delta\":{\"reasoning\":\"\"}}]}\n\n", "data: [DONE]\n\n"},
+			expectCommit: false,
+			expectErr:    ErrStreamingZeroContent,
+		},
+		{
 			name:         "OpenAI empty reasoning_content does not commit",
 			chunks:       []string{"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"\"}}]}\n\n", "data: [DONE]\n\n"},
 			expectCommit: false,
