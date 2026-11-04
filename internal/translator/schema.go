@@ -3,6 +3,7 @@ package translator
 import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"strconv"
 
 	"9router/proxy/internal/log"
 )
@@ -16,8 +17,8 @@ func cleanGeminiSchema(schema map[string]any) {
 
 	// Keywords rejected by Gemini
 	unsupported := []string{
-		"minLength", "maxLength", "exclusiveMinimum", "exclusiveMaximum",
-		"minItems", "maxItems", "format", "multipleOf",
+		"exclusiveMinimum", "exclusiveMaximum",
+		"format", "multipleOf",
 		// Array/2020-12 keywords the Gemini schema proto has no field for.
 		// Agent tool schemas set these routinely; one occurrence rejects the
 		// whole request (Next.js UNSUPPORTED_SCHEMA_CONSTRAINTS parity).
@@ -60,6 +61,13 @@ func cleanGeminiSchema(schema map[string]any) {
 	}
 	stripUnsupported(schema)
 
+	// Coerce string-encoded integer constraints to integers. Generators emit
+	// these as strings ("1") and Gemini's protobuf schema rejects non-integers,
+	// so parse them here. minLength/maxLength/minItems/maxItems are legitimate
+	// Gemini constraints once they carry integer values, so they are no longer
+	// blanket-stripped (see unsupported list above).
+	parseStringIntConstraints(schema)
+
 	// Ensure type="object" if properties exist (Gemini requirement)
 	if _, hasProps := schema["properties"]; hasProps {
 		if _, hasType := schema["type"]; !hasType {
@@ -67,29 +75,42 @@ func cleanGeminiSchema(schema map[string]any) {
 		}
 	}
 
-	// Ensure enum is string array and type="string" (Gemini requirement)
-	if enumRaw, hasEnum := schema["enum"]; hasEnum {
-		if enumArr, ok := enumRaw.([]any); ok {
-			strArr := make([]string, 0, len(enumArr))
-			for _, item := range enumArr {
-				if s, ok := item.(string); ok {
-					strArr = append(strArr, s)
-				} else {
-					if b, err := json.Marshal(item); err == nil {
+	// cleanEnum coerces enum to a string array, drops empty entries, removes the
+	// key when nothing remains, and sets type="string" when missing. Called both
+	// before and after anyOf/oneOf flattening because a merged branch can re-inject
+	// an enum (with empty strings) that the first pass already cleaned.
+	cleanEnum := func() {
+		if enumRaw, hasEnum := schema["enum"]; hasEnum {
+			if enumArr, ok := enumRaw.([]any); ok {
+				strArr := make([]string, 0, len(enumArr))
+				for _, item := range enumArr {
+					var s string
+					if itemStr, ok := item.(string); ok {
+						s = itemStr
+					} else if b, err := json.Marshal(item); err == nil {
 						if len(b) >= 2 && b[0] == '"' && b[len(b)-1] == '"' {
-							strArr = append(strArr, string(b[1:len(b)-1]))
+							s = string(b[1 : len(b)-1])
 						} else {
-							strArr = append(strArr, string(b))
+							s = string(b)
 						}
+					}
+					if s == "" {
+						continue // filter out empty strings from enum
+					}
+					strArr = append(strArr, s)
+				}
+				if len(strArr) == 0 {
+					delete(schema, "enum")
+				} else {
+					schema["enum"] = strArr
+					if _, hasType := schema["type"]; !hasType {
+						schema["type"] = "string"
 					}
 				}
 			}
-			schema["enum"] = strArr
-			if _, hasType := schema["type"]; !hasType {
-				schema["type"] = "string"
-			}
 		}
 	}
+	cleanEnum()
 
 	// Flatten anyOf/oneOf (Google doesn't support them)
 	for _, key := range []string{"anyOf", "oneOf"} {
@@ -112,6 +133,8 @@ func cleanGeminiSchema(schema map[string]any) {
 
 	// anyOf/oneOf merge copies branch keys (including const/$ref/etc.) back in.
 	stripUnsupported(schema)
+	parseStringIntConstraints(schema)
+	cleanEnum()
 
 	// Flatten type arrays
 	if typeRaw, hasType := schema["type"]; hasType {
@@ -284,6 +307,33 @@ func cleanGeminiSchema(schema map[string]any) {
 			},
 		}
 		schema["required"] = []string{"reason"}
+	}
+}
+
+// stringIntConstraints are JSON Schema integer-ish keywords that tool
+// generators sometimes emit as strings ("1") instead of numbers. Gemini's
+// protobuf schema rejects non-integer values here, so coerce them to int.
+// minLength/maxLength/minItems/maxItems are legitimate Gemini constraints once
+// they carry integer values, so they were removed from the blanket-strip list
+// above instead of being deleted outright.
+var stringIntConstraints = []string{"minLength", "maxLength", "minItems", "maxItems", "minimum", "maximum"}
+
+// parseStringIntConstraints coerces any string-encoded integer constraints on
+// the given schema node to real integers. Non-string values and strings that
+// are not valid integers are left untouched.
+func parseStringIntConstraints(schema map[string]any) {
+	for _, k := range stringIntConstraints {
+		v, ok := schema[k]
+		if !ok {
+			continue
+		}
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if n, err := strconv.Atoi(s); err == nil {
+			schema[k] = n
+		}
 	}
 }
 
