@@ -128,6 +128,9 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 		finalBody = forwardGeminiEmbeddingDimensions(finalBody)
 	}
 
+	if isGitHubCopilotProvider(modelInfo.Provider) {
+		finalBody = wrapCopilotEmbeddingInput(finalBody)
+	}
 	req, err := http.NewRequestWithContext(r.Context(), "POST", embeddingsURL, strings.NewReader(string(finalBody)))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
@@ -1668,6 +1671,7 @@ func stripDimensionsForFluxSchnell(body []byte) []byte {
 	return body
 }
 
+<<<<<<< HEAD
 // isCloudflareFlux2Model reports whether info is a Cloudflare Flux-2 model
 // (@cf/black-forest-labs/flux-2*) served through the cloudflare-ai/cf provider.
 // Flux-2 models accept an optional reference image, which is handled by the
@@ -1830,4 +1834,32 @@ func (h *MediaHandler) forwardCloudflareFlux2Image(w http.ResponseWriter, r *htt
 		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 	}
 	return nil
+}
+
+// isGitHubCopilotProvider reports whether the resolved provider is GitHub Copilot.
+func isGitHubCopilotProvider(provider string) bool {
+	return providers.ResolveAlias(provider) == "github"
+}
+
+// wrapCopilotEmbeddingInput wraps a bare "input" string into an array of
+// strings ([input]), which Copilot requires. It leaves an existing array
+// untouched and leaves bodies without "input" alone.
+func wrapCopilotEmbeddingInput(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
+		return body
+	}
+	input, ok := payload["input"]
+	if !ok {
+		return body
+	}
+	if _, isArray := input.([]any); isArray {
+		return body
+	}
+	payload["input"] = []any{input}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
 }
