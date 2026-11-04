@@ -2010,6 +2010,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ provider, code, codeVerifier, redirectUri, name }),
     }),
+  // MiniMax Code lease auth: borrow the desktop app's sign-in over its local
+  // broker instead of a browser login. No refresh token is stored.
+  minimaxLeaseStatus: (providerId: string, dataDir?: string) =>
+    request<{
+      found: boolean;
+      dataDir?: string;
+      status?: string;
+      generation?: number;
+      expiresAtMs?: number;
+      error?: string;
+      message?: string;
+    }>(
+      `/api/oauth/${encodeURIComponent(providerId)}/lease-status${dataDir ? `?data_dir=${encodeURIComponent(dataDir)}` : ''}`
+    ),
+  minimaxLeaseConnect: (providerId: string, dataDir?: string) =>
+    request<{ success: boolean; connection?: { id: string; provider: string }; reused?: boolean }>(
+      `/api/oauth/${encodeURIComponent(providerId)}/lease-connect`,
+      { method: 'POST', body: JSON.stringify({ dataDir }) },
+    ),
   importOAuthToken: (provider: string, accessToken: string, refreshToken?: string, name?: string) =>
     request<{ id: string; connection: string; error?: string }>(`/api/oauth/${encodeURIComponent(provider)}/import`, {
       method: 'POST',
