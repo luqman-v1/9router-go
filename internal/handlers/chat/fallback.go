@@ -19,6 +19,7 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"slices"
@@ -544,6 +545,25 @@ type forwardRequestParams struct {
 	Endpoint          string
 }
 
+// streamNoteWriter wraps an io.Writer and stamps each non-empty write with the
+// current time via note, so every streamed chunk is timed for gap/rate metrics.
+// A nil note is a no-op.
+type streamNoteWriter struct {
+	w    io.Writer
+	note func(time.Time)
+}
+
+func (s *streamNoteWriter) Write(p []byte) (int, error) {
+	if s == nil || s.w == nil {
+		return 0, nil
+	}
+	n, err := s.w.Write(p)
+	if n > 0 && s.note != nil {
+		s.note(time.Now())
+	}
+	return n, err
+}
+
 func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	ctx, w := f.Ctx, f.W
 	provider, model := f.Provider, f.Model
@@ -1032,7 +1052,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			SessionID:      sessionID,
 			ToolNameMap:    claudeToolMap,
 			UpstreamClaude: upstreamClaude && !claudeNative,
-			ResponseBuf:    &metrics.ResponseBuf,
+			ResponseBuf:    &streamNoteWriter{w: &metrics.ResponseBuf, note: metrics.NoteOutput},
 			StartTime:      start,
 			TTFT:           &metrics.TTFT,
 		}
@@ -1080,7 +1100,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 					SessionID:      sessionID,
 					ToolNameMap:    claudeToolMap,
 					UpstreamClaude: upstreamClaude && !claudeNative,
-					ResponseBuf:    &metrics.ResponseBuf,
+					ResponseBuf:    &streamNoteWriter{w: &metrics.ResponseBuf, note: metrics.NoteOutput},
 					StartTime:      start,
 					TTFT:           &metrics.TTFT,
 				}

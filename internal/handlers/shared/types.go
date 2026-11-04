@@ -2,6 +2,7 @@ package shared
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"9router/proxy/internal/proxy"
@@ -167,6 +168,70 @@ func (b *ResponseBuf) Reset() {
 type StreamMetrics struct {
 	TTFT        int64       // ms from request start to first chunk
 	ResponseBuf ResponseBuf // accumulated response content (capped)
+
+	// Output generation rate metrics (streaming turns). OutputTokens counts
+	// output tokens captured in the streamed response buffer; FirstToken and
+	// LastToken bracket the streamed output; MaxGapMs is the widest gap between
+	// two consecutive streamed chunks, in milliseconds. All are logged in the
+	// stream summary without touching the SSE wire protocol.
+	OutputTokens int
+	FirstToken   time.Time
+	LastToken    time.Time
+	MaxGapMs     int64
+	mu           sync.Mutex
+}
+
+// NoteOutput records one streamed chunk arriving at now, updating the first
+// token time, last token time and the max inter-token gap. Safe for concurrent
+// callers; a nil receiver is a no-op.
+func (m *StreamMetrics) NoteOutput(now time.Time) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FirstToken.IsZero() {
+		m.FirstToken = now
+	} else if gap := now.Sub(m.LastToken).Milliseconds(); gap > m.MaxGapMs {
+		m.MaxGapMs = gap
+	}
+	m.LastToken = now
+}
+
+// ElapsedMs returns the ms from the first streamed chunk to the last, or zero
+// when nothing was streamed.
+func (m *StreamMetrics) ElapsedMs() int64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.elapsedMsLocked()
+}
+
+// TokPerSec returns output tokens per second of streamed generation, or zero
+// when nothing was streamed or no time elapsed.
+func (m *StreamMetrics) TokPerSec() float64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.OutputTokens == 0 {
+		return 0
+	}
+	if elapsed := m.elapsedMsLocked(); elapsed > 0 {
+		return float64(m.OutputTokens) / (float64(elapsed) / 1000)
+	}
+	return 0
+}
+
+// elapsedMsLocked is ElapsedMs with the lock already held.
+func (m *StreamMetrics) elapsedMsLocked() int64 {
+	if m.FirstToken.IsZero() || m.LastToken.IsZero() {
+		return 0
+	}
+	return m.LastToken.Sub(m.FirstToken).Milliseconds()
 }
 
 // UpstreamError is an alias for proxy.UpstreamError — retryable errors from upstream.

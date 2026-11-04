@@ -2,39 +2,64 @@ package shared
 
 import (
 	"testing"
+	"time"
 )
 
-func TestResponseBuf_Reset(t *testing.T) {
-	b := &ResponseBuf{}
-	data := make([]byte, ResponseCaptureMax)
-	for i := range data {
-		data[i] = 'a'
+func TestStreamMetrics_TokPerSec(t *testing.T) {
+	now := time.Now()
+	m := &StreamMetrics{}
+
+	// Nothing streamed: zero on every axis.
+	if m.TokPerSec() != 0 || m.ElapsedMs() != 0 || m.OutputTokens != 0 {
+		t.Fatalf("empty metrics must report zero: tokPerSec=%v elapsed=%d tokens=%d",
+			m.TokPerSec(), m.ElapsedMs(), m.OutputTokens)
 	}
-	n, err := b.Write(data)
-	if err != nil || n != len(data) {
-		t.Fatalf("write failed: n=%d err=%v", n, err)
+
+	// First chunk seeds both ends.
+	m.OutputTokens = 3
+	m.NoteOutput(now)
+	m.NoteOutput(now)
+	if got := m.ElapsedMs(); got != 0 {
+		t.Errorf("simultaneous chunks: elapsed=%d, want 0", got)
 	}
-	if b.Len() != ResponseCaptureMax {
-		t.Fatalf("expected len %d, got %d", ResponseCaptureMax, b.Len())
+	if got := m.TokPerSec(); got != 0 {
+		t.Errorf("zero elapsed: tokPerSec=%v, want 0", got)
 	}
-	// writing more should be dropped (done flag set)
-	_, _ = b.Write([]byte("more"))
-	if b.String() != string(data) {
-		t.Error("expected no extra content after cap")
+
+	// A gap later: rate scales with elapsed time, max gap tracks.
+	m.OutputTokens = 10
+	oneSec := now.Add(time.Second)
+	m.NoteOutput(oneSec)
+	if got := m.ElapsedMs(); got != 1000 {
+		t.Errorf("elapsed=%d, want 1000", got)
 	}
-	b.Reset()
-	if b.Len() != 0 {
-		t.Errorf("expected len 0 after reset, got %d", b.Len())
+	if got := m.MaxGapMs; got != 1000 {
+		t.Errorf("maxGap=%d, want 1000", got)
 	}
-	if b.String() != "" {
-		t.Errorf("expected empty string after reset, got %q", b.String())
+	if got := m.TokPerSec(); got != 10 {
+		t.Errorf("tokPerSec=%v, want 10 (10 tok / 1 s)", got)
 	}
-	// done flag reset: can write again
-	n, err = b.Write([]byte("abc"))
-	if err != nil || n != 3 {
-		t.Fatalf("write after reset failed: n=%d err=%v", n, err)
+
+	// An in-stream stall: two chunks far apart, then more tokens.
+	m.OutputTokens = 20
+	twoSec := oneSec.Add(2 * time.Second)
+	m.NoteOutput(twoSec)
+	if got := m.MaxGapMs; got != 2000 {
+		t.Errorf("maxGap=%d, want 2000", got)
 	}
-	if b.String() != "abc" {
-		t.Errorf("expected abc, got %q", b.String())
+	// Rate = total output tokens over total elapsed time: 20 tok / 3 s.
+	if got := m.TokPerSec(); got < 6.6 || got > 6.8 {
+		t.Errorf("tokPerSec=%v, want ~6.67 (20 tok / 3 s)", got)
 	}
+}
+
+func TestStreamMetrics_NilReceiver(t *testing.T) {
+	var m *StreamMetrics
+	if got := m.TokPerSec(); got != 0 {
+		t.Errorf("nil TokPerSec=%v, want 0", got)
+	}
+	if got := m.ElapsedMs(); got != 0 {
+		t.Errorf("nil ElapsedMs=%d, want 0", got)
+	}
+	m.NoteOutput(time.Now()) // must not panic
 }
