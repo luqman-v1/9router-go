@@ -218,7 +218,7 @@ func stripMinimaxOutputConfig(body []byte) []byte {
 	}
 	if _, exists := m["output_config"]; exists {
 		delete(m, "output_config")
-		if updated, err := json.Marshal(m); err == nil {
+		if updated, err := marshalStable(m); err == nil {
 			return updated
 		}
 	}
