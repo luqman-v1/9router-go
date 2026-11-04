@@ -66,8 +66,20 @@ func systemReminderText(content string) string {
 }
 
 func collapseTextParts(parts []OpenAIContentBlock) any {
-	if len(parts) == 1 && parts[0].Type == "text" {
-		return parts[0].Text
+	// Only flatten content when every part is text. Any non-text part
+	// (image_url, file, …) keeps the content as an array so vision models
+	// receive their image parts. For text-only parts, join into one string.
+	allText := true
+	texts := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p.Type != "text" {
+			allText = false
+			break
+		}
+		texts = append(texts, p.Text)
+	}
+	if allText {
+		return strings.Join(texts, "\n")
 	}
 	return parts
 }

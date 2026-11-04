@@ -704,6 +704,15 @@ func init() {
 		"gpt-3.5-turbo": {Tools: true},
 	}
 
+	// Cloudflare AI (workers-ai). Mistral Small 3.1 and Kimi K2.6 are vision
+	// models: keep their image_url parts instead of flattening them to text.
+	// Cloudflare AI speaks the OpenAI wire format, so they take openai thinking.
+	// Kimi K2.6 uses the kimi thinking level set (levelMax) per the fixture.
+	providerCapabilities["cloudflare-ai"] = map[string]Capabilities{
+		"@cf/mistralai/mistral-small-3.1-24b-instruct": {Vision: true, Tools: true, ThinkingFormat: "openai"},
+		"@cf/moonshotai/kimi-k2.6":                     {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi"},
+	}
+
 	// NaN.Builders (nanbuilders) — OpenAI-compatible free tier
 	providerCapabilities["nanbuilders"] = map[string]Capabilities{
 		"gpt-4o":        {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 16384},
