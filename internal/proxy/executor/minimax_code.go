@@ -100,6 +100,7 @@ func ForwardMinimaxCode(w http.ResponseWriter, req *Request) error {
 	body := req.Body
 	if req.ClaudeClient {
 		body = translator.SanitizeClaudePassthrough(body, translator.ClaudeIntentionalPrefill(req.Body))
+		body = stripMinimaxOutputConfig(body)
 	} else {
 		body = EnsureClaudeMessagesFor(body, "minimax-code", req.ModelName)
 	}
@@ -207,4 +208,19 @@ func randomSessionID() string {
 		return "9router-go-session"
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// stripMinimaxOutputConfig removes output_config from Claude requests destined for MiniMax (upstream #820).
+func stripMinimaxOutputConfig(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	if _, exists := m["output_config"]; exists {
+		delete(m, "output_config")
+		if updated, err := marshalStable(m); err == nil {
+			return updated
+		}
+	}
+	return body
 }

@@ -1057,6 +1057,12 @@ func ensureMessagesFor(body []byte, provider, model string) []byte {
 	delete(reqMap, "reasoning_effort")
 	delete(reqMap, "n")
 
+	// MiniMax exposes a Claude-compatible endpoint but rejects Anthropic's extended
+	// output_config parameter with a generic 400 "invalid params" (upstream #820).
+	if provider == "minimax" || provider == "minimax-cn" {
+		delete(reqMap, "output_config")
+	}
+
 	updated, err := marshalStable(reqMap)
 	if err != nil {
 		return body
