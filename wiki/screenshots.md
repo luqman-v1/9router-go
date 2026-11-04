@@ -1,7 +1,8 @@
 ---
 title: Screenshots
-order: 20
-section: Contributing
+order: 19
+section: Under the Hood
+since: 1.9.14
 ---
 
 # Screenshots

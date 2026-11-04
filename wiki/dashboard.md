@@ -2,6 +2,7 @@
 title: Dashboard
 order: 5
 section: Using the Gateway
+since: 1.9.14
 ---
 
 # Dashboard
