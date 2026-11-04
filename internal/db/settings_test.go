@@ -542,3 +542,66 @@ func TestGetSettings_ObservabilityAndRetention(t *testing.T) {
 		t.Errorf("MaxRequestRecords = %d, want 2500", s.MaxRequestRecords)
 	}
 }
+
+// newSettingsRepoForBudgetTest inserts one settings document and returns the
+// repo to read it back, for the parser-bound tests.
+func newSettingsRepoForBudgetTest(t *testing.T, settingsJSON string) *Repo {
+	t.Helper()
+	database, cleanup := setupTestDB(t)
+	t.Cleanup(cleanup)
+	if _, err := database.Exec(`INSERT INTO settings (id, data) VALUES (1, ?)
+		ON CONFLICT(id) DO UPDATE SET data = excluded.data`, settingsJSON); err != nil {
+		t.Fatalf("insert settings: %v", err)
+	}
+	return NewRepo(database)
+}
+
+// TestBudgetCallsCappedAtParse pins that a ceiling above the accepted maximum is
+// refused rather than stored as a wrapped negative.
+//
+// A JSON number arrives as float64, so an unvalidated value past the int range
+// converts to a negative int — and the gate reads a non-positive ceiling as
+// "unlimited" (internal/handlers/chat combo_budget.go), so a budget that asked
+// for a cap would silently disarm itself. The window already had this bound;
+// the ceiling did not.
+func TestBudgetCallsCappedAtParse(t *testing.T) {
+	settingsJSON := `{
+		"comboStrategies": {
+			"within-cap":   {"budgetCalls": 1000000},
+			"above-cap":    {"budgetCalls": 1000001},
+			"wrapped":      {"budgetCalls": 9223372036854775808},
+			"fractional":   {"budgetCalls": 10.5},
+			"zero":         {"budgetCalls": 0},
+			"negative":     {"budgetCalls": -5}
+		}
+	}`
+	repo := newSettingsRepoForBudgetTest(t, settingsJSON)
+	s, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	cases := []struct {
+		combo string
+		want  int
+	}{
+		{"within-cap", 1000000},
+		// Above the cap: dropped, which leaves the gate off rather than
+		// storing a ceiling the operator did not ask for.
+		{"above-cap", 0},
+		// Past the int64 range: dropped. Storing it would have made the gate
+		// read "unlimited" for a combo the operator capped.
+		{"wrapped", 0},
+		{"fractional", 0},
+		{"zero", 0},
+		{"negative", 0},
+	}
+	for _, tc := range cases {
+		got := s.ComboStrategies[tc.combo].BudgetCalls
+		if got != tc.want {
+			t.Errorf("combo %q BudgetCalls = %d, want %d", tc.combo, got, tc.want)
+		}
+		if got < 0 {
+			t.Errorf("combo %q stored a negative ceiling %d — the gate reads that as unlimited", tc.combo, got)
+		}
+	}
+}

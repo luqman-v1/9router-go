@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"strings"
 	"time"
 
 	"9router/proxy/internal/db"
@@ -145,24 +144,39 @@ type comboBudgetCounter struct {
 // for the first member of the chain, so a withheld combo degrades into the
 // same request the client would have made without the combo.
 //
-// The member is resolved through the normal prefix path rather than split by
-// hand: "provider/model" has aliases and connection-map spellings that
-// resolvePrefixProvider already handles, and a second implementation of that
-// split would disagree with the first the moment a new spelling landed.
+// The member is resolved through resolveModelEntry, the same function the
+// non-combo path uses, rather than through resolvePrefixProvider or a
+// hand-written split:
+//
+//   - resolvePrefixProvider only resolves provider *node* prefixes. It returns
+//     nil for an ordinary registry provider ("openai/gpt-4o"), and the
+//     fallback used to store the whole "provider/model" string in both
+//     Provider and Model, so the request went upstream with the prefixed id
+//     and was answered 400. A combo whose first member is a registry provider
+//     is the common case, not an edge one.
+//   - resolveModelEntry handles the alias, the connection-map spelling and the
+//     provider/model split, and sets Model to the unprefixed upstream id, so a
+//     degraded request is byte-identical to the one the client would have made
+//     without the combo.
+//
+// The single-name branch (a combo nested in another combo's list) is left to
+// resolveModelEntry as well: it expands the nested combo and returns its first
+// concrete model, which is what the client's own request for that name would
+// have produced.
 func (h *ChatHandler) singleModelFromCombo(info *ModelInfo, augmented []string) *ModelInfo {
 	out := &ModelInfo{ComboModels: nil, Strategy: "", StickyLimit: 0, JudgeModel: ""}
 	if len(augmented) > 0 {
-		entry := augmented[0]
-		if parts := strings.SplitN(entry, "/", 2); len(parts) == 2 {
-			if resolved := h.resolvePrefixProvider(parts[0], parts[1]); resolved != nil {
-				out.Provider = resolved.Provider
-				out.Model = resolved.Model
-				out.ConnectionID = resolved.ConnectionID
-				return out
-			}
+		if resolved := h.resolveModelEntry(augmented[0]); resolved != nil {
+			out.Provider = resolved.Provider
+			out.Model = resolved.Model
+			out.ConnectionID = resolved.ConnectionID
+			return out
 		}
-		out.Provider = entry
-		out.Model = entry
+		// Resolution refused the entry outright. Keep it as the target so the
+		// failure the client sees names the member that could not be resolved,
+		// rather than silently dispatching to some other model.
+		out.Provider = augmented[0]
+		out.Model = augmented[0]
 		return out
 	}
 	if info != nil {

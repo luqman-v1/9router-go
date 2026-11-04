@@ -10,14 +10,14 @@ import (
 )
 
 // poolConfig returns a config that routes through the named proxy pool. The
-// connection records its pool on HeaderOverrides, which is where the
-// resilience layer reads it from.
+// connection records its pool on the config's ProxyPoolID field, which is where
+// the resilience layer reads it from.
 func poolConfig(pool string) *providers.ProviderConfig {
 	return &providers.ProviderConfig{
-		BaseURL:         "https://upstream.example/v1/chat/completions",
-		AuthHeader:      "Authorization",
-		AuthScheme:      "bearer",
-		HeaderOverrides: map[string]string{"x-9router-proxy-pool": pool},
+		BaseURL:     "https://upstream.example/v1/chat/completions",
+		AuthHeader:  "Authorization",
+		AuthScheme:  "bearer",
+		ProxyPoolID: pool,
 	}
 }
 

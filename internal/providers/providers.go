@@ -80,6 +80,17 @@ type ProviderConfig struct {
 	// relay fronts the request; everything else needs no provider-specific code,
 	// which is the point.
 	RelayURL string
+	// ProxyPoolID is the proxy pool this connection routed through, or "" when
+	// the request leaves directly. It is the gateway's own identity for the
+	// egress, not a request header: the breaker and the semaphore key on
+	// provider+pool so one dead pool opens its own gate instead of taking every
+	// other egress for that provider with it (internal/handlers/chat
+	// resilienceProxyKey).
+	//
+	// It is deliberately NOT written into HeaderOverrides: that map is applied
+	// to the outbound request (internal/proxy/openai.go ApplyHeaderOverrides),
+	// so an internal key there would be sent to every upstream provider.
+	ProxyPoolID string
 
 	// StallTimeoutMs is the optional per-provider stall timeout in milliseconds.
 	StallTimeoutMs int `json:"stallTimeoutMs,omitempty"`

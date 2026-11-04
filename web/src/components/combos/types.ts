@@ -210,8 +210,17 @@ export const MAX_BUDGET_CALLS = 1000000
 export const DEFAULT_BUDGET_WINDOW_MS = 3600000
 /** The same default in minutes, for the dashboard input. */
 export const DEFAULT_BUDGET_WINDOW_MINUTES = 60
-/** Largest window the backend stores (int64 milliseconds, in minutes). */
-export const MAX_BUDGET_WINDOW_MINUTES = 92233720368
+/**
+ * Largest window the backend stores, in minutes.
+ *
+ * The server caps budgetWindowMs at (2^63-1)/1000000 milliseconds
+ * (internal/db settings_parse_maps.go), which is 153722867280 minutes. This
+ * value matches it: the previous constant (92233720368) was the cap on a
+ * *different* field, firstTokenTimeoutMs, so the dashboard accepted a window
+ * the server then dropped silently — the combo appeared budgeted while its
+ * window had reverted to the one-hour default.
+ */
+export const MAX_BUDGET_WINDOW_MINUTES = 153722867280
 
 /** Tooltip/help text shared by the combo card and the edit modal. */
 export const RESPONSE_TIMEOUT_HELP =

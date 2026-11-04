@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,5 +181,106 @@ func TestComboBudgetWindowRecycles(t *testing.T) {
 	h.comboBudgetMu.Unlock()
 	if h.comboBudgetExhausted("cheap") {
 		t.Fatal("expired window must admit the combo again")
+	}
+}
+
+// TestSingleModelFromComboResolvesRegistryProvider pins the reviewer's finding:
+// a combo whose first member is an ordinary registry provider must degrade into
+// the same request the client would have made without the combo.
+//
+// The old implementation resolved through resolvePrefixProvider, which only
+// knows provider *node* prefixes and returns nil for "openai/gpt-4o". Its
+// fallback then stored the whole "provider/model" string in both Provider and
+// Model, so a withheld request went upstream with the prefixed id and was
+// answered 400. A registry provider as the first member is the common case.
+func TestSingleModelFromComboResolvesRegistryProvider(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	got := h.singleModelFromCombo(nil, []string{"deepseek/deepseek-chat"})
+	if got == nil {
+		t.Fatal("expected a resolved single-model target")
+	}
+	if got.Provider != "deepseek" {
+		t.Errorf("Provider = %q, want %q", got.Provider, "deepseek")
+	}
+	if got.Model != "deepseek-chat" {
+		t.Errorf("Model = %q, want %q — the prefixed id must not reach upstream", got.Model, "deepseek-chat")
+	}
+	if strings.Contains(got.Model, "/") {
+		t.Errorf("Model = %q must not carry the provider prefix", got.Model)
+	}
+	if got.ComboModels != nil || got.Strategy != "" || got.StickyLimit != 0 || got.JudgeModel != "" {
+		t.Errorf("combo-only fields must be cleared, got %+v", got)
+	}
+}
+
+// TestSingleModelFromComboNestedComboName pins that a single-name entry — a
+// combo nested in another combo's list — is expanded to its first concrete
+// model, which is what the client's own request for that name produced.
+func TestSingleModelFromComboNestedComboName(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	innerModels, _ := json.Marshal([]string{"deepseek/deepseek-chat"})
+	if _, err := database.Exec(
+		`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"inner", "inner-combo", "fallback", string(innerModels), "2026-07-19T00:00:00Z", "2026-07-19T00:00:00Z"); err != nil {
+		t.Fatalf("insert inner combo: %v", err)
+	}
+
+	got := h.singleModelFromCombo(nil, []string{"inner-combo"})
+	if got == nil {
+		t.Fatal("expected the nested combo to resolve")
+	}
+	if got.Provider != "deepseek" || got.Model != "deepseek-chat" {
+		t.Errorf("got %s/%s, want deepseek/deepseek-chat", got.Provider, got.Model)
+	}
+}
+
+// TestSingleModelFromComboSplitsUnknownProvider pins the boundary: resolution
+// does not require a live connection, so an unknown registry provider still
+// resolves into its provider and unprefixed model. The degraded request must
+// therefore carry the split, not the raw "provider/model" string — that is the
+// whole bug this replaces.
+func TestSingleModelFromComboSplitsUnknownProvider(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	h := NewChatHandler(db.NewRepo(database))
+
+	got := h.singleModelFromCombo(nil, []string{"no-such-provider/no-such-model"})
+	if got == nil {
+		t.Fatal("expected a target")
+	}
+	if got.Provider != "no-such-provider" {
+		t.Errorf("Provider = %q, want no-such-provider", got.Provider)
+	}
+	if got.Model != "no-such-model" {
+		t.Errorf("Model = %q, want the unprefixed no-such-model", got.Model)
+	}
+}
+
+// TestSingleModelFromComboFallsBackToComboInfo pins the empty-chain case: the
+// combo's own ModelInfo is used, so a combo with no augmenting models still
+// degrades into a single-model request rather than into nothing.
+func TestSingleModelFromComboFallsBackToComboInfo(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	h := NewChatHandler(db.NewRepo(database))
+
+	info := &ModelInfo{Provider: "deepseek", Model: "deepseek-chat", ConnectionID: "conn-1", ComboModels: []string{"a", "b"}}
+	got := h.singleModelFromCombo(info, nil)
+	if got.Provider != "deepseek" || got.Model != "deepseek-chat" {
+		t.Errorf("got %s/%s, want the combo info's own target", got.Provider, got.Model)
+	}
+	if got.ConnectionID != "conn-1" {
+		t.Errorf("ConnectionID = %q, want conn-1", got.ConnectionID)
+	}
+	if got.ComboModels != nil {
+		t.Errorf("ComboModels must be cleared, got %v", got.ComboModels)
 	}
 }

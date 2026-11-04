@@ -209,13 +209,67 @@ func TestResilienceDistinguishesCredentials(t *testing.T) {
 func TestResilienceProxyKeySeparatesGates(t *testing.T) {
 	direct := resilienceTestConfig()
 	pooled := resilienceTestConfig()
-	pooled.HeaderOverrides = map[string]string{"x-9router-proxy-pool": "pool-1"}
-
+	pooled.ProxyPoolID = "pool-1"
 	if resilienceProxyKey(direct) != "direct" {
 		t.Errorf("resilienceProxyKey(no pool) = %q, want direct", resilienceProxyKey(direct))
 	}
+	if resilienceProxyKey(pooled) != "pool-1" {
+		t.Errorf("resilienceProxyKey(pooled) = %q, want pool-1", resilienceProxyKey(pooled))
+	}
 	if resilienceProxyKey(pooled) == resilienceProxyKey(direct) {
 		t.Error("a pooled connection and a direct one share a gate key")
+	}
+}
+
+// TestResilienceProxyKeyIgnoresHeaderOverrides pins that the pool identity is
+// not carried on the outbound header map.
+//
+// HeaderOverrides is applied to the request sent upstream
+// (internal/proxy/openai.go), so anything written there is forwarded to every
+// provider. The gateway's own egress identity has to live on a field the
+// executors read but never send, which is what ProxyPoolID is for. The header
+// spelling is still accepted so a config assembled outside getProviderConfig
+// keeps working.
+func TestResilienceProxyKeyIgnoresHeaderOverrides(t *testing.T) {
+	cfg := resilienceTestConfig()
+	cfg.HeaderOverrides = map[string]string{"x-9router-proxy-pool": "legacy-pool"}
+	if got := resilienceProxyKey(cfg); got != "legacy-pool" {
+		t.Errorf("resilienceProxyKey(header spelling) = %q, want legacy-pool", got)
+	}
+	cfg.ProxyPoolID = "field-pool"
+	if got := resilienceProxyKey(cfg); got != "field-pool" {
+		t.Errorf("resilienceProxyKey(field) = %q, want field-pool — the field must win", got)
+	}
+}
+
+// TestGetProviderConfigStampsProxyPool pins the production path the review
+// found missing: the pool a connection routed through must reach the config the
+// resilience layer keys on. Before this the stamp did not exist at all, so the
+// egress component of every gate key was "direct" and one dead pool took the
+// provider's other egresses with it.
+func TestGetProviderConfigStampsProxyPool(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	h := NewChatHandler(db.NewRepo(database))
+
+	cfg, err := h.getProviderConfig("deepseek", &ConnectionData{ProxyPoolID: "pool-abc"})
+	if err != nil {
+		t.Fatalf("getProviderConfig: %v", err)
+	}
+	if cfg.ProxyPoolID != "pool-abc" {
+		t.Errorf("ProxyPoolID = %q, want pool-abc", cfg.ProxyPoolID)
+	}
+	// The stamp must not leak into the headers the request sends upstream.
+	if _, ok := cfg.HeaderOverrides["x-9router-proxy-pool"]; ok {
+		t.Error("the pool id must not be written into HeaderOverrides — that map is forwarded upstream")
+	}
+	// A direct connection keeps the empty stamp, which keys as "direct".
+	direct, err := h.getProviderConfig("deepseek", &ConnectionData{})
+	if err != nil {
+		t.Fatalf("getProviderConfig(direct): %v", err)
+	}
+	if direct.ProxyPoolID != "" {
+		t.Errorf("ProxyPoolID = %q, want empty for a direct connection", direct.ProxyPoolID)
 	}
 }
 
