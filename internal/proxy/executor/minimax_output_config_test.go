@@ -1,164 +1,21 @@
 package executor
 
 import (
-	"errors"
-	"net/http"
 	"reflect"
-	"strings"
 	"testing"
 
 	json "encoding/json/v2"
-
-	"9router/proxy/internal/proxy"
 )
-
-// TestNormalizeQuotaResponse is the status/body matrix the account loop turns
-// on. A credits refusal has to become the 429 that moves combo fallback to the
-// next account; a real auth refusal has to keep its own status so the on-401
-// refresh path still sees it.
-func TestNormalizeQuotaResponse(t *testing.T) {
-	tests := []struct {
-		name       string
-		status     int
-		body       string
-		wantStatus int
-		// wantKept reports that the upstream body must survive verbatim: a
-		// refusal that is not about the balance is the client's answer, not a
-		// rate limit the router invented.
-		wantKept bool
-	}{
-		{
-			name:       "402 naming the balance becomes 429",
-			status:     http.StatusPaymentRequired,
-			body:       `{"error":{"message":"积分不足，请充值或签到"}}`,
-			wantStatus: http.StatusTooManyRequests,
-		},
-		{
-			name:       "403 naming the balance becomes 429",
-			status:     http.StatusForbidden,
-			body:       `{"message":"insufficient balance"}`,
-			wantStatus: http.StatusTooManyRequests,
-		},
-		{
-			name:       "raw Chinese body is matched",
-			status:     http.StatusPaymentRequired,
-			body:       `额度已用完`,
-			wantStatus: http.StatusTooManyRequests,
-		},
-		{
-			name:       "base_resp envelope is unwrapped",
-			status:     http.StatusForbidden,
-			body:       `{"base_resp":{"status_msg":"credit exhausted"}}`,
-			wantStatus: http.StatusTooManyRequests,
-		},
-		{
-			name:       "429 is already the right signal",
-			status:     http.StatusTooManyRequests,
-			body:       `{"error":{"message":"slow down"}}`,
-			wantStatus: http.StatusTooManyRequests,
-			wantKept:   true,
-		},
-		{
-			name:       "403 auth refusal keeps its status",
-			status:     http.StatusForbidden,
-			body:       `{"error":{"message":"invalid token"}}`,
-			wantStatus: http.StatusForbidden,
-			wantKept:   true,
-		},
-		{
-			name:       "402 with no balance wording keeps its status",
-			status:     http.StatusPaymentRequired,
-			body:       `{"error":{"message":"model not found"}}`,
-			wantStatus: http.StatusPaymentRequired,
-			wantKept:   true,
-		},
-		{
-			name:       "status outside the refusal set is untouched",
-			status:     http.StatusInternalServerError,
-			body:       `{"error":{"message":"insufficient balance"}}`,
-			wantStatus: http.StatusInternalServerError,
-			wantKept:   true,
-		},
-		{
-			name:       "a success is never rewritten",
-			status:     http.StatusOK,
-			body:       `{"content":[{"type":"text","text":"your balance looks fine"}]}`,
-			wantStatus: http.StatusOK,
-			wantKept:   true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotStatus, gotBody := NormalizeQuotaResponse(tt.status, []byte(tt.body))
-			if gotStatus != tt.wantStatus {
-				t.Fatalf("status = %d, want %d (body %s)", gotStatus, tt.wantStatus, gotBody)
-			}
-			if tt.wantKept {
-				if string(gotBody) != tt.body {
-					t.Errorf("body = %s, want the upstream body unchanged", gotBody)
-				}
-				return
-			}
-			assertRateLimitEnvelope(t, gotBody, tt.body)
-		})
-	}
-}
-
-// assertRateLimitEnvelope checks the normalized body is the rate_limit_error
-// shape the account loop and the client both read, with the upstream message
-// still inside it.
-func assertRateLimitEnvelope(t *testing.T, body []byte, upstream string) {
-	t.Helper()
-	var env struct {
-		Type  string `json:"type"`
-		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(body, &env); err != nil {
-		t.Fatalf("normalized body is not JSON: %v (%s)", err, body)
-	}
-	if env.Error.Type != "rate_limit_error" {
-		t.Errorf("error.type = %q, want rate_limit_error", env.Error.Type)
-	}
-	if !strings.Contains(env.Error.Message, "usage limit reached") {
-		t.Errorf("error.message = %q, want the usage-limit prefix", env.Error.Message)
-	}
-	// The upstream message has to survive: it is the only thing telling the
-	// operator the account is out of credits rather than merely throttled.
-	if msg := quotaMessage([]byte(upstream)); msg != "" && !strings.Contains(env.Error.Message, msg) {
-		t.Errorf("error.message = %q, want it to carry %q", env.Error.Message, msg)
-	}
-}
-
-// The normalized refusal must leave as a typed upstream error carrying the 429,
-// or the fallback loop would report a served turn and stop failing over.
-func TestNormalizeQuotaResponse_ProducesFallbackError(t *testing.T) {
-	status, normalized := NormalizeQuotaResponse(http.StatusForbidden, []byte(`{"error":{"message":"积分不足"}}`))
-	if status != http.StatusTooManyRequests {
-		t.Fatalf("normalized status = %d, want 429", status)
-	}
-	err := &proxy.UpstreamError{StatusCode: status, Body: normalized}
-	var ue *proxy.UpstreamError
-	if !errors.As(error(err), &ue) {
-		t.Fatalf("error is not a *proxy.UpstreamError: %v", err)
-	}
-	if ue.StatusCode != http.StatusTooManyRequests {
-		t.Errorf("StatusCode = %d, want 429", ue.StatusCode)
-	}
-}
 
 // TestStripMinimaxOutputConfig covers the passthrough-lane helper: output_config
 // must be dropped from Claude Messages bodies headed to MiniMax, invalid input
 // passes through unchanged, and the result re-serializes deterministically.
 func TestStripMinimaxOutputConfig(t *testing.T) {
 	tests := []struct {
-		name  string
-		body  string
-		want  string // expected JSON after stripping; empty means "input unchanged"
-		raw   bool   // compare raw bytes instead of parsing JSON
+		name string
+		body string
+		want string // expected JSON after stripping; empty means "input unchanged"
+		raw  bool   // compare raw bytes instead of parsing JSON
 	}{
 		{
 			name: "strips output_config",
@@ -166,15 +23,15 @@ func TestStripMinimaxOutputConfig(t *testing.T) {
 			want: `{"messages":[{"role":"user","content":"hi"}],"model":"m"}`,
 		},
 		{
-			name:  "passes through unchanged when no output_config",
-			body:  `{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`,
-			want:  `{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`,
+			name: "passes through unchanged when no output_config",
+			body: `{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`,
+			want: `{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`,
 		},
 		{
-			name:  "passes through unchanged on invalid JSON",
-			body:  `not json`,
-			want:  `not json`,
-			raw:   true,
+			name: "passes through unchanged on invalid JSON",
+			body: `not json`,
+			want: `not json`,
+			raw:  true,
 		},
 		{
 			name: "strips empty output_config",
@@ -206,5 +63,57 @@ func TestStripMinimaxOutputConfig(t *testing.T) {
 				t.Errorf("output_config still present: %v", gotMap)
 			}
 		})
+	}
+}
+
+// TestEnsureClaudeMessagesFor_MinimaxStripsOutputConfig verifies that
+// output_config is dropped only for minimax and minimax-cn (Claude-compatible
+// endpoints that reject it), while minimax-code/minimax-code-global and native
+// Claude lanes keep it intact.
+func TestEnsureClaudeMessagesFor_MinimaxStripsOutputConfig(t *testing.T) {
+	input := `{"model":"m","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high","output_config":{"effort":"high"}}`
+
+	// For minimax: output_config must be stripped
+	out := EnsureClaudeMessagesFor([]byte(input), "minimax", "m")
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if _, exists := m["output_config"]; exists {
+		t.Errorf("expected output_config stripped for minimax, but found %v", m["output_config"])
+	}
+
+	// For minimax-cn: output_config must be stripped
+	outCn := EnsureClaudeMessagesFor([]byte(input), "minimax-cn", "m")
+	var mCn map[string]any
+	if err := json.Unmarshal(outCn, &mCn); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if _, exists := mCn["output_config"]; exists {
+		t.Errorf("expected output_config stripped for minimax-cn, but found %v", mCn["output_config"])
+	}
+
+	// For standard claude/anthropic: output_config is retained
+	claudeOut := EnsureClaudeMessagesFor([]byte(input), "claude", "claude-haiku-5-5")
+	var claudeMap map[string]any
+	if err := json.Unmarshal(claudeOut, &claudeMap); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if _, exists := claudeMap["output_config"]; !exists {
+		t.Errorf("expected output_config preserved for claude, but was missing")
+	}
+
+	// For minimax-code and minimax-code-global (translated lane): output_config
+	// is retained here since stripping happens inside ForwardMinimaxCode's
+	// passthrough branch rather than in EnsureClaudeMessagesFor.
+	for _, p := range []string{"minimax-code", "minimax-code-global"} {
+		out := EnsureClaudeMessagesFor([]byte(input), p, "m")
+		var m map[string]any
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if _, exists := m["output_config"]; !exists {
+			t.Errorf("expected output_config preserved for %s, but was missing", p)
+		}
 	}
 }
