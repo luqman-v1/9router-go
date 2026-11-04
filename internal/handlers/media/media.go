@@ -989,6 +989,12 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 
 			finalBody := handlerutil.UpdateModelInBody(body, subInfo.Model)
+			// Cloudflare AI's flux-1-schnell schema rejects width/height (upstream #5373).
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") &&
+				(providers.ResolveAlias(subInfo.Provider) == "cloudflare-ai" || providers.ResolveAlias(subInfo.Provider) == "cf") &&
+				isFluxSchnellModel(subInfo.Model) {
+				finalBody = stripDimensionsForFluxSchnell(finalBody)
+			}
 			// The endpoint the caller used is a route on this gateway, not a
 			// path on the vendor's host: appending it to BaseURL built URLs the
 			// vendor never serves (tavily got api.tavily.com/search/v1/search,
@@ -1268,6 +1274,12 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	finalBody := body
 	if !isMultipartRequest(r) {
 		finalBody = handlerutil.UpdateModelInBody(body, modelInfo.Model)
+		// Cloudflare AI's flux-1-schnell schema rejects width/height (upstream #5373).
+		if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") &&
+			(providers.ResolveAlias(modelInfo.Provider) == "cloudflare-ai" || providers.ResolveAlias(modelInfo.Provider) == "cf") &&
+			isFluxSchnellModel(modelInfo.Model) {
+			finalBody = stripDimensionsForFluxSchnell(finalBody)
+		}
 	} else if model != "" && model != modelInfo.Model {
 		// Upstream parity (videoGeneration byte-exact multipart): never
 		// rewrite inside the binary payload — a byte.Replace could corrupt
@@ -1556,6 +1568,31 @@ func forwardGeminiEmbeddingDimensions(body []byte) []byte {
 		return body
 	}
 	payload["outputDimensionality"] = dims
+	if updated, err := json.Marshal(payload); err == nil {
+		return updated
+	}
+	return body
+}
+
+// isFluxSchnellModel reports whether model is Cloudflare's FLUX.1 Schnell, whose
+// closed image schema rejects width/height/size (upstream #5373). Match on the
+// full model id (@cf/black-forest-labs/flux-1-schnell) or the bare id
+// (flux-1-schnell), anchored at the end so flux-2-dev and flux-1-schnell-dev are
+// not mistaken for it.
+func isFluxSchnellModel(model string) bool {
+	return strings.HasSuffix(model, "flux-1-schnell")
+}
+
+// stripDimensionsForFluxSchnell removes width, height, and size from Cloudflare FLUX.1 Schnell
+// image generation requests because Cloudflare's schema for it is closed and rejects them (upstream #5373).
+func stripDimensionsForFluxSchnell(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	delete(payload, "width")
+	delete(payload, "height")
+	delete(payload, "size")
 	if updated, err := json.Marshal(payload); err == nil {
 		return updated
 	}
