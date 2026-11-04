@@ -17,12 +17,12 @@ import (
 // so each case starts from a cold, production-shaped state.
 func resetLiveCatalog(t *testing.T) {
 	t.Helper()
-	prevKiro, prevGrok := kiroCatalogBaseURL, grokCLICatalogURL
+	prevKiro, prevGrok, prevAnthro := kiroCatalogBaseURL, grokCLICatalogURL, anthropicCatalogURL
 	liveCatalogStore.mu.Lock()
 	liveCatalogStore.entries = make(map[string]liveCatalogEntry)
 	liveCatalogStore.mu.Unlock()
 	t.Cleanup(func() {
-		kiroCatalogBaseURL, grokCLICatalogURL = prevKiro, prevGrok
+		kiroCatalogBaseURL, grokCLICatalogURL, anthropicCatalogURL = prevKiro, prevGrok, prevAnthro
 		liveCatalogStore.mu.Lock()
 		liveCatalogStore.entries = make(map[string]liveCatalogEntry)
 		liveCatalogStore.mu.Unlock()
@@ -199,6 +199,85 @@ func TestHandleModels_GrokCLILiveCatalog(t *testing.T) {
 	}
 	if gotHeaders.Get("x-email") != "dev@example.com" {
 		t.Errorf("expected x-email header from providerSpecificData, got %q", gotHeaders.Get("x-email"))
+	}
+}
+
+// Anthropic live catalog lists models from the live catalog with the proper
+// x-api-key and anthropic-version headers.
+func TestHandleModels_AnthropicLiveCatalog(t *testing.T) {
+	resetLiveCatalog(t)
+
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[{"id":"claude-opus-5-5-20260101","name":"Claude Opus 5.5"},{"id":"claude-sonnet-5-5-20260101","name":"Claude Sonnet 5.5"}]}`))
+	}))
+	defer srv.Close()
+	anthropicCatalogURL = srv.URL + "/v1/models"
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections`); err != nil {
+		t.Fatalf("delete connections: %v", err)
+	}
+	if _, err := database.Exec(`DELETE FROM kv WHERE scope='customModels'`); err != nil {
+		t.Fatalf("delete customs: %v", err)
+	}
+	connData := `{"apiKey":"anthropic-test-key","providerSpecificData":{}}`
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-anthropic-live', 'anthropic', 'apikey', 'Anthropic Live', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, connData); err != nil {
+		t.Fatalf("seed anthropic: %v", err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	h.Client = srv.Client()
+	joined := strings.Join(modelsIDs(t, h), "\n")
+
+	if !strings.Contains(joined, "anthropic/claude-opus-5-5-20260101") {
+		t.Errorf("live anthropic model missing, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "anthropic/claude-sonnet-5-5-20260101") {
+		t.Errorf("live anthropic model missing, got:\n%s", joined)
+	}
+	if gotHeaders.Get("x-api-key") != "anthropic-test-key" {
+		t.Errorf("expected x-api-key header, got %q", gotHeaders.Get("x-api-key"))
+	}
+	if gotHeaders.Get("anthropic-version") != "2023-06-01" {
+		t.Errorf("expected anthropic-version header, got %q", gotHeaders.Get("anthropic-version"))
+	}
+}
+
+// A live catalog failure must fall back to the static registry, never to an
+// empty provider.
+func TestHandleModels_AnthropicLiveCatalogFallsBackToStatic(t *testing.T) {
+	resetLiveCatalog(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	anthropicCatalogURL = srv.URL + "/v1/models"
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`DELETE FROM providerConnections`); err != nil {
+		t.Fatalf("delete connections: %v", err)
+	}
+	if _, err := database.Exec(`DELETE FROM kv WHERE scope='customModels'`); err != nil {
+		t.Fatalf("delete customs: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-anthropic-dead', 'anthropic', 'apikey', 'Anthropic Dead', 1, 1, '{"apiKey":"anthropic-dead-key"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed anthropic: %v", err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	h.Client = srv.Client()
+	joined := strings.Join(modelsIDs(t, h), "\n")
+
+	if !strings.Contains(joined, "anthropic/claude-sonnet-4-20250514") {
+		t.Errorf("static catalog must be used when the live catalog fails, got:\n%s", joined)
 	}
 }
 

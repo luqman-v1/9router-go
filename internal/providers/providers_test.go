@@ -41,6 +41,19 @@ func TestKnownProviders_AuthSchemes(t *testing.T) {
 	}
 }
 
+func TestKnownProviders_AnthropicModelsFetcher(t *testing.T) {
+	cfg := ProviderRegistry["anthropic"]
+	if cfg.ModelsFetcher == nil {
+		t.Fatal("anthropic ModelsFetcher is nil")
+	}
+	if cfg.ModelsFetcher.URL != "https://api.anthropic.com/v1/models?limit=1000" {
+		t.Errorf("unexpected ModelsFetcher URL: %q", cfg.ModelsFetcher.URL)
+	}
+	if cfg.ModelsFetcher.Type != "anthropic" {
+		t.Errorf("unexpected ModelsFetcher type: %q", cfg.ModelsFetcher.Type)
+	}
+}
+
 func TestKnownProviders_PerplexityWebIsParked(t *testing.T) {
 	// Upstream 38a0c449 parks perplexity-web with serviceKinds: [] — no
 	// executor sits behind it, so it must stay out of the pickers while the

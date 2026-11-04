@@ -162,6 +162,10 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 		fetch = func(ctx context.Context, _ string) []LiveModel {
 			return h.fetchCompatibleNodeModels(ctx, conn, connData, providerID)
 		}
+	case providerID == "anthropic":
+		fetch = func(ctx context.Context, token string) []LiveModel {
+			return h.fetchAnthropicLiveCatalog(ctx, conn, connData, token)
+		}
 	default:
 		return nil
 	}
@@ -646,4 +650,69 @@ func firstPositiveInt(item map[string]any, keys ...string) int {
 		}
 	}
 	return 0
+}
+
+// ---- Anthropic ----
+
+// anthropicCatalogURL is the live catalog endpoint for the Anthropic provider.
+var anthropicCatalogURL = "https://api.anthropic.com/v1/models?limit=1000"
+
+// fetchAnthropicLiveCatalog ports upstream's Anthropic models listing: it calls
+// https://api.anthropic.com/v1/models with x-api-key and anthropic-version
+// headers, subject to a 10s timeout, and falls back to the static registry on
+// any error (empty result).
+func (h *ChatHandler) fetchAnthropicLiveCatalog(ctx context.Context, conn *models.ProviderConnection, connData *shared.ConnectionData, apiKey string) []LiveModel {
+	if apiKey == "" {
+		return nil
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, liveCatalogFastHTTP)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, anthropicCatalogURL, nil)
+	if err != nil {
+		log.Warn("models", "anthropic catalog request failed", "conn", conn.ID, "error", err)
+		return nil
+	}
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := h.Client.Do(req)
+	if err != nil {
+		log.Warn("models", "anthropic catalog fetch failed", "conn", conn.ID, "error", err)
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		log.Warn("models", "anthropic catalog rejected", "conn", conn.ID, "status", resp.StatusCode)
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil
+	}
+	return parseAnthropicLiveModels(body)
+}
+
+// parseAnthropicLiveModels reads the Anthropic /v1/models response, whose model
+// entries live under `data` and expose `id`/`name`.
+func parseAnthropicLiveModels(body []byte) []LiveModel {
+	var payload struct {
+		Data []map[string]any `json:"data"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return nil
+	}
+
+	seen := make(map[string]bool, len(payload.Data))
+	out := make([]LiveModel, 0, len(payload.Data))
+	for _, entry := range payload.Data {
+		id := firstNonEmptyString(entry, "id", "name")
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, LiveModel{ID: id})
+	}
+	return out
 }
