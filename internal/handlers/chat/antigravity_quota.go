@@ -36,18 +36,17 @@ type AntigravityWeeklyQuota struct {
 var antigravityQuotaBaseURL = "https://cloudcode-pa.googleapis.com"
 
 var (
-	agQuotaMu       sync.RWMutex
-	agQuotaCache    = make(map[string]map[string]AntigravityModelQuota) // connectionID -> model -> quota
+	agQuotaMu    sync.RWMutex
+	agQuotaCache = make(map[string]map[string]AntigravityModelQuota) // connectionID -> model -> quota
 	// agRosterCache mirrors OMP dynamic-models-authoritative: the account's
 	// served roster from fetchAvailableModels. Bundled catalog rows that
 	// the account does not serve must be blocked before routing, or every
 	// request to them 404s at Cloud Code.
-	agRosterMu    sync.RWMutex
-	agRosterCache = make(map[string]map[string]struct{}) // connectionID -> served model id set
-	agLastRefreshAt = make(map[string]time.Time)                        // connectionID -> last refresh timestamp
+	agRosterMu      sync.RWMutex
+	agRosterCache   = make(map[string]map[string]struct{}) // connectionID -> served model id set
+	agLastRefreshAt = make(map[string]time.Time)           // connectionID -> last refresh timestamp
 	agInflightMu    sync.Mutex
 	agInflight      = make(map[string]chan struct{}) // connectionID -> in-flight barrier channel
-
 
 	// MinAntigravityQuotaRefreshInterval prevents hammering quota API during 429 bursts.
 	MinAntigravityQuotaRefreshInterval = 30 * time.Second
@@ -121,7 +120,6 @@ func ClearAntigravityQuotaCache() {
 	agWeeklyMu.Unlock()
 }
 
-
 // BlockAntigravityModelUntil caches an exhausted model quota in memory until resetAt.
 func BlockAntigravityModelUntil(connectionID, model string, resetAt time.Time) {
 	if connectionID == "" || model == "" || resetAt.IsZero() {
@@ -149,6 +147,7 @@ func BlockAntigravityModelUntil(connectionID, model string, resetAt time.Time) {
 	shortConn := shortConnID(connectionID)
 	log.Warn("ag_quota", "model locked until reset", "connection", shortConn, "model", model, "resetAt", resetAt.Format(time.RFC3339))
 }
+
 // IsAntigravityModelServed reports whether the account's roster lists model.
 // Absence is false only when the roster is known; an unknown roster (never
 // refreshed) lets the request through so a fresh account is not blanked by
@@ -171,7 +170,6 @@ func IsAntigravityModelServed(connectionID, model string) bool {
 	return false
 }
 
-
 // IsAntigravityModelBlocked reports whether connectionID has an exhausted quota for model until resetAt.
 func IsAntigravityModelBlocked(connectionID, model string) bool {
 	if connectionID == "" || model == "" {
@@ -180,7 +178,6 @@ func IsAntigravityModelBlocked(connectionID, model string) bool {
 	if !IsAntigravityModelServed(connectionID, model) {
 		return true
 	}
-
 
 	agQuotaMu.RLock()
 	modelsMap, ok := agQuotaCache[connectionID]

@@ -54,11 +54,11 @@ func TestForwardUpstreamResponseHeaders_NilSafe(t *testing.T) {
 func TestForwardUpstreamResponseHeaders_SlowMode(t *testing.T) {
 	rec := httptest.NewRecorder()
 	upstream := http.Header{
-		"Anthropic-Usage-Limit":                    []string{"slow"},
-		"Anthropic-Ratelimit-Unified-Slow-Status":  []string{"active"},
-		"Anthropic-Ratelimit-Unified-Reset":        []string{"1700000000"},
-		"Retry-After":                              []string{"30"},
-		"X-Unrelated":                              []string{"ignore"},
+		"Anthropic-Usage-Limit":                   []string{"slow"},
+		"Anthropic-Ratelimit-Unified-Slow-Status": []string{"active"},
+		"Anthropic-Ratelimit-Unified-Reset":       []string{"1700000000"},
+		"Retry-After":                             []string{"30"},
+		"X-Unrelated":                             []string{"ignore"},
 	}
 
 	forwardUpstreamResponseHeaders(rec, upstream)

@@ -15,7 +15,6 @@ import (
 	"sync"
 )
 
-
 // Claude OAuth cloaking — ports the Next.js dashboard's
 // open-sse/utils/claudeCloaking.js. Anthropic expects Claude-Code-shaped
 // requests for subscription OAuth tokens (sk-ant-oat): a billing-header
@@ -75,7 +74,6 @@ func AdoptRequiredClaudeCodeVersion(errBody []byte) bool {
 	}
 	return false
 }
-
 
 // deriveUuid mirrors the JS deriveUuid: deterministic UUID-v4-shaped string
 // from a seed (stable per account).
