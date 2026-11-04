@@ -1,0 +1,8 @@
+### Report a forced-SSE error as the failure it is, not an empty 200
+
+A provider that ignores `stream:false` and answers with an event stream anyway gets its stream folded into one document — but a *failing* stream folds into a 200-shaped error envelope, and the `/v1/responses` bridge handed that envelope straight to the translator. `ChatResponseToResponses` reads the absent `choices` as an empty turn, so the client got `{"status":"completed","output":[],"error":null}` with HTTP 200 for what was a 429 or a 502 (upstream v0.5.112, `56dbf46`).
+
+- `respondAsResponses` now calls `EmptyUpstreamError` before translating. The Chat Completions path already did this; the bridge wrote 200 directly and had no such gate.
+- `EmptyUpstreamError` now reports the status the envelope itself names, so a rate limit reaches the client as a 429 instead of being flattened to 502. Only the `status` field is read, numeric or string; `code` is deliberately not, because in the OpenAI family `code` is an application error code (`model_not_found`, `invalid_api_key`) and a numeric one would turn a missing model into a 404. Anything outside 400..599 falls back to 502. Every forwarded value is in `providers.RetryableStatusCodes`, so combo fallback still moves on to the next connection — the assertion is in the test.
+
+Verified: `TestParityForcedSSEErrorIsNotAnEmptyAnswer` pins both halves that had to meet — the fold keeps the envelope, and the envelope is rejected rather than translated. It logs the exact regression shape (`status:"completed"`, `output:[]`, `error:null`) so a future change that reintroduces it names what the client saw.

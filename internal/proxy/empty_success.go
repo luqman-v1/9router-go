@@ -81,7 +81,12 @@ func EmptyUpstreamError(body []byte) error {
 		return UpstreamFailure(http.StatusBadGateway, "upstream returned an unparseable body with status 200")
 	}
 	if msg := errorEnvelopeMessage(probe.Error); msg != "" {
-		return UpstreamFailure(http.StatusBadGateway, "upstream answered 200 with an error: "+msg)
+		// The envelope's own status is kept when it names a 4xx/5xx the
+		// fallback layer already treats as retryable, so a 429 reaches the
+		// client as a 429 rather than being flattened to 502 (upstream
+		// v0.5.112, 56dbf46). Every other value stays 502: an unrecognised
+		// status is the gateway's problem, not the provider's.
+		return UpstreamFailure(errorEnvelopeStatus(probe.Error), "upstream answered 200 with an error: "+msg)
 	}
 	if reason := missingCompletion(probe); reason != "" {
 		return UpstreamFailure(http.StatusBadGateway, "upstream answered 200 without a completion: "+reason)
@@ -213,8 +218,57 @@ func carriesValue(raw jsontext.Value) bool {
 }
 
 // errorEnvelopeMessage returns a human-readable message from an `error`
-// field, or "" when there is no error to report. A JSON null is not an
-// error, so it reads as absent.
+// envelope, or "" when there is none.
+//
+// errorEnvelopeStatus reads the status a `{"error":{...}}` envelope carries,
+// so an error that arrived inside a 200 body is reported with the status the
+// provider meant. Only the `status` field is read: `code` is not an HTTP
+// status in the OpenAI family (OpenAI writes application error codes there —
+// `model_not_found`, `invalid_api_key` — and some providers write a number),
+// so treating it as one would turn `"code":404` into a 404 for what is an
+// application-level "not found". Anything outside 400..599, or a value that is
+// not an integer, falls back to 502: the gateway cannot invent a status, and a
+// 200-shaped failure has to be reported as a failure.
+func errorEnvelopeStatus(raw jsontext.Value) int {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return http.StatusBadGateway
+	}
+	var envelope struct {
+		Status jsontext.Value `json:"status"`
+	}
+	if err := json.Unmarshal(trimmed, &envelope, handlerutil.UpstreamBody); err != nil {
+		return http.StatusBadGateway
+	}
+	if status, ok := statusFromValue(envelope.Status); ok {
+		return status
+	}
+	return http.StatusBadGateway
+}
+
+// statusFromValue accepts both the numeric form (`"status":429`) and the
+// string form (`"status":"429"`), which providers use interchangeably.
+func statusFromValue(v jsontext.Value) (int, bool) {
+	trimmed := bytes.TrimSpace(v)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return 0, false
+	}
+	var numeric float64
+	if err := json.Unmarshal(trimmed, &numeric, handlerutil.UpstreamBody); err == nil {
+		if status := int(numeric); status >= 400 && status <= 599 {
+			return status, true
+		}
+		return 0, false
+	}
+	var text string
+	if err := json.Unmarshal(trimmed, &text, handlerutil.UpstreamBody); err == nil {
+		if status, err := strconv.Atoi(strings.TrimSpace(text)); err == nil && status >= 400 && status <= 599 {
+			return status, true
+		}
+	}
+	return 0, false
+}
+
 func errorEnvelopeMessage(raw jsontext.Value) string {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {

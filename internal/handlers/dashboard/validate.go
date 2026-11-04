@@ -488,6 +488,8 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validateOutcome{valid: true, supported: true}
 	case "v1m":
 		return validateV1M(ctx, apiKey)
+	case "nace":
+		return validateSystemOneLane(ctx, apiKey, naceProbeURL, naceProbeModel)
 	case "commandcode":
 		// The registry's /alpha/generate consumes credits and needs a
 		// conversation id, so only whoami can validate a key against this
@@ -639,17 +641,17 @@ func validateCloudflareAI(ctx context.Context, cfg providers.ProviderConfig, api
 	return out
 }
 
-// validateV1M probes v1m's only endpoint. The registry ships no /models for
-// it, so the cheapest call that proves the key works is a one-token System One
-// evaluation; a rejected body still proves the credential, so only 401/403
-// count as invalid.
-func validateV1M(ctx context.Context, apiKey string) validateOutcome {
+// validateSystemOneLane proves a key against a System One lane with the
+// cheapest call the protocol offers: one single-token noul evaluation. Both
+// v1m and Nace Drex answer exactly this shape, so the body, the auth header
+// and the rule that only a 401/403 means an invalid key are shared.
+func validateSystemOneLane(ctx context.Context, apiKey, probeURL, probeModel string) validateOutcome {
 	payload, _ := json.Marshal(map[string]any{
-		"model":     v1mProbeModel,
+		"model":     probeModel,
 		"state":     "probe",
 		"questions": map[string]any{"probe": map[string]string{"type": "noul"}},
 	})
-	status, _, err := validateProbeDo(ctx, http.MethodPost, v1mProbeURL, map[string]string{
+	status, _, err := validateProbeDo(ctx, http.MethodPost, probeURL, map[string]string{
 		"Authorization": "Bearer " + apiKey,
 		"Content-Type":  "application/json",
 	}, payload)
@@ -660,6 +662,10 @@ func validateV1M(ctx context.Context, apiKey string) validateOutcome {
 		valid:     status != http.StatusUnauthorized && status != http.StatusForbidden,
 		supported: true,
 	}
+}
+
+func validateV1M(ctx context.Context, apiKey string) validateOutcome {
+	return validateSystemOneLane(ctx, apiKey, v1mProbeURL, v1mProbeModel)
 }
 
 func validateAzure(ctx context.Context, apiKey string, psd map[string]any) validateOutcome {
