@@ -68,10 +68,15 @@
   function openManageDialog(combo: Combo) {
     managingCombo = combo
     manageName = combo.name
-    manageModels = parseModels(combo)
+    const suffix = combo.kind === 'webFetch' ? '/fetch' : '/search'
+    manageModels = parseModels(combo).map((m) => (m.includes('/') ? m : `${m}${suffix}`))
   }
-  function addModelToManage(id: string) {
-    if (!manageModels.includes(id)) manageModels = [...manageModels, id]
+  function addModelToManage(p: ProviderCatalogItem) {
+    const suffix = managingCombo?.kind === 'webFetch' ? '/fetch' : '/search'
+    const id = `${p.id}${suffix}`
+    if (!manageModels.includes(id) && !manageModels.includes(p.id)) {
+      manageModels = [...manageModels, id]
+    }
   }
   function removeModelFromManage(idx: number) {
     manageModels = manageModels.filter((_, i) => i !== idx)
@@ -141,6 +146,9 @@
               <code class="text-sm font-mono font-medium flex-1 truncate text-text-main group-hover:text-brand-500 transition-colors">
                 {combo.name}
               </code>
+              {#if combo.name === (kind === 'webSearch' ? 'search-combo' : 'fetch-combo') || sectionCombos.indexOf(combo) === 0}
+                <Badge variant="success" size="sm">Active Default</Badge>
+              {/if}
               <div class="flex flex-wrap items-center gap-1 sm:shrink-0">
                 {#each models.slice(0, 6) as model}
                   {@const pid = model.includes('/') ? model.split('/')[0] : model}
@@ -260,7 +268,14 @@
         {/if}
         <div class="flex flex-wrap gap-2">
           {#each (managingCombo.kind === 'webFetch' ? fetchProviders : searchProviders) as p}
-            <button type="button" onclick={() => addModelToManage(p.id)} class="px-2.5 py-1 text-xs rounded-lg border border-border bg-surface-2 hover:bg-surface-3 text-text-main flex items-center gap-1.5 cursor-pointer">
+            {@const suffix = managingCombo.kind === 'webFetch' ? '/fetch' : '/search'}
+            {@const isAdded = manageModels.includes(`${p.id}${suffix}`) || manageModels.includes(p.id)}
+            <button
+              type="button"
+              onclick={() => addModelToManage(p)}
+              disabled={isAdded}
+              class="px-2.5 py-1 text-xs rounded-lg border border-border bg-surface-2 hover:bg-surface-3 text-text-main flex items-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
               <Plus class="w-3.5 h-3.5" /> {p.name}
             </button>
           {/each}
