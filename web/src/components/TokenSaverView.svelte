@@ -57,6 +57,7 @@
   } | null>(null)
 
   let headroomEnabled = $state(false)
+  let headroomAutostart = $state(false)
   let headroomUrl = $state('http://localhost:8787')
   let headroomTimeoutMs = $state(3000)
   let headroomStatus = $state<{
@@ -156,6 +157,7 @@
     adhdLevel = 'full'
     ponytailEnabled = false
     headroomEnabled = false
+    headroomAutostart = false
 
     await patchSetting({
       rtkEnabled: true,
@@ -165,6 +167,7 @@
       adhdLevel: 'full',
       ponytailEnabled: false,
       headroomEnabled: false,
+      headroomAutostart: false,
     })
 
     recommendedApplied = true
@@ -241,6 +244,7 @@
       if (settings.rtkRawRetention === 'never' || settings.rtkRawRetention === 'failures' || settings.rtkRawRetention === 'always') rtkRawRetention = settings.rtkRawRetention
 
       if (typeof settings.headroomEnabled === 'boolean') headroomEnabled = settings.headroomEnabled
+      if (typeof settings.headroomAutostart === 'boolean') headroomAutostart = settings.headroomAutostart
       if (typeof settings.headroomUrl === 'string' && settings.headroomUrl) headroomUrl = settings.headroomUrl
       if (typeof settings.headroomTimeoutMs === 'number' && settings.headroomTimeoutMs > 0) {
         headroomTimeoutMs = settings.headroomTimeoutMs
@@ -485,6 +489,11 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     headroomUrl = nextUrl
     headroomEnabled = value
     await patchSetting({ headroomEnabled: value, headroomUrl: nextUrl })
+  }
+
+  async function handleToggleHeadroomAutostart(value: boolean) {
+    headroomAutostart = value
+    await patchSetting({ headroomAutostart: value })
   }
 
   async function handleHeadroomUrlBlur() {
@@ -760,6 +769,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
         if (data.rtkRawRetention === 'never' || data.rtkRawRetention === 'failures' || data.rtkRawRetention === 'always') rtkRawRetention = data.rtkRawRetention
 
         headroomEnabled = !!data.headroomEnabled
+        headroomAutostart = data.headroomAutostart === true
         headroomUrl = data.headroomUrl || 'http://localhost:8787'
         if (typeof data.headroomTimeoutMs === 'number') headroomTimeoutMs = data.headroomTimeoutMs
         codeAware = data.headroomCodeAware === true
@@ -1341,6 +1351,18 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
 
     {#if headroomStatus.installed && headroomExpanded}
       <div class="mb-3 ml-1 pl-3 pb-4 border-l-2 border-border">
+        <!-- Autostart with 9router -->
+        <div class="flex items-center justify-between gap-4 py-2 border-b border-border/50 mb-3 max-w-lg">
+          <div>
+            <p class="text-xs font-medium text-text-main">Autostart with 9router</p>
+            <p class="text-[11px] text-text-muted">Automatically launch local Headroom proxy when 9router-go boots</p>
+          </div>
+          <Toggle
+            size="sm"
+            checked={headroomAutostart}
+            onChange={() => handleToggleHeadroomAutostart(!headroomAutostart)}
+          />
+        </div>
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-xs text-text-muted">
             Compression extras{headroomExtras.version ? ` · v${headroomExtras.version}` : ''}:
@@ -1967,6 +1989,17 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
       <p class="text-xs text-text-muted">
         Request timeout in milliseconds. Defaults to 3000 ms.
       </p>
+    </div>
+
+    <div class="flex items-center justify-between py-2 border-t border-border">
+      <div>
+        <p class="text-sm font-medium text-text-main">Autostart with 9router</p>
+        <p class="text-xs text-text-muted">Launch local Headroom proxy on 9router-go startup</p>
+      </div>
+      <Toggle
+        checked={headroomAutostart}
+        onChange={() => handleToggleHeadroomAutostart(!headroomAutostart)}
+      />
     </div>
 
     {#if headroomManaged}

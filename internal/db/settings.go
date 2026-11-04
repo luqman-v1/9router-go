@@ -141,6 +141,7 @@ type SettingsData struct {
 	// Off by default: an unconfigured proxy must not be a slow path on every
 	// request.
 	HeadroomEnabled            bool                            `json:"headroomEnabled"`
+	HeadroomAutostart          bool                            `json:"headroomAutostart"`
 	HeadroomCodeAware          bool                            `json:"headroomCodeAware"`
 	HeadroomKompress           bool                            `json:"headroomKompress"`
 	HeadroomTimeoutMs          int                             `json:"headroomTimeoutMs"`
@@ -221,6 +222,7 @@ func DefaultSettings() *SettingsData {
 		SystemPromptPrefix:      "",
 		SystemPromptSuffix:      "",
 		HeadroomUrl:             "http://localhost:8787",
+		HeadroomAutostart:       false,
 		HeadroomKompress:        true,
 		HeadroomTimeoutMs:       3000,
 		SemanticCacheEnabled:    false,
