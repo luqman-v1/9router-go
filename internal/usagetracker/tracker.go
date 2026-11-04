@@ -57,6 +57,35 @@ type StreamPayload struct {
 	RecentRequests []RecentRequest `json:"recentRequests"`
 	ErrorProvider  string          `json:"errorProvider"`
 	Pending        PendingState    `json:"pending"`
+	// Breakers is the resilience layer's per-egress circuit breaker snapshot.
+	// The dashboard needs it on the same stream as the request flow so an
+	// operator watching traffic sees an egress go OPEN next to the requests
+	// that stopped being served, rather than inferring it from a dry list.
+	//
+	// It is populated by a provider function rather than by importing the
+	// resilience package: this one is on the request path of every provider,
+	// and it must not take a dependency on an admission-control layer that in
+	// turn reports outcomes for those same requests.
+	Breakers []BreakerSnapshot `json:"breakers,omitempty"`
+}
+
+// BreakerSnapshot is one circuit breaker's state as the dashboard shows it.
+//
+// It mirrors resilience.BreakerStatus deliberately rather than importing it:
+// the usage stream is a published contract, and a type from an internal
+// admission package would make every field rename there a breaking change
+// here.
+type BreakerSnapshot struct {
+	// Name is the provider, or "provider|pool" when the breaker is scoped to
+	// one proxy egress.
+	Name string `json:"name"`
+	// State is CLOSED, DEGRADED, OPEN or HALF_OPEN.
+	State string `json:"state"`
+	// FailureCount and SuccessCount are the breaker's running totals.
+	FailureCount int `json:"failureCount"`
+	SuccessCount int `json:"successCount"`
+	// RetryAfterMs is how long until an OPEN breaker admits a probe.
+	RetryAfterMs int64 `json:"retryAfterMs,omitempty"`
 }
 
 // PendingState represents in-flight counts by model and account.
@@ -76,6 +105,12 @@ type Tracker struct {
 	// on one member at once, the later start names the row and the row goes
 	// back to unnamed once the count drains. Completed requests do not rely on
 	// it — each carries its own names on the ring entry.
+	// requestedByKey maps the same "model (provider)" key the counters use to
+	// the names behind the request. The counters cannot tell two requests for
+	// the same member apart, so neither can this: if two combos are in flight
+	// on one member at once, the later start names the row and the row goes
+	// back to unnamed once the count drains. Completed requests do not rely on
+	// it — each carries its own names on the ring entry.
 	requestedByKey    map[string]pendingNames
 	lastErrorProvider string
 	lastErrorTs       int64
@@ -83,6 +118,11 @@ type Tracker struct {
 	ringInitialized   bool
 	subscribers       map[chan []byte]struct{}
 	broadcastDebounce *time.Timer
+	// breakerStatus is the hook that fills StreamPayload.Breakers. It is set
+	// by the wiring layer at boot, because the resilience package must not be
+	// imported here (see StreamPayload.Breakers). Nil means no resilience
+	// layer is running, and the field is omitted from the payload.
+	breakerStatus func() []BreakerSnapshot
 }
 
 var globalTracker *Tracker
@@ -186,6 +226,19 @@ func (t *Tracker) TrackPendingRequested(requested, combo, model, provider, conne
 	}
 
 	t.scheduleBroadcastLocked(nil)
+}
+
+// SetBreakerStatus registers the hook that fills StreamPayload.Breakers on
+// every broadcast. It is called once at boot by the wiring layer that owns the
+// resilience controller.
+//
+// The hook runs while the tracker's read lock is held, so it must not call
+// back into the tracker. Reading the breaker registry takes its own lock and
+// releases it, which satisfies that.
+func (t *Tracker) SetBreakerStatus(fn func() []BreakerSnapshot) {
+	t.mu.Lock()
+	t.breakerStatus = fn
+	t.mu.Unlock()
 }
 
 // PushRecent adds a completed request to the ring buffer and notifies subscribers.
@@ -361,7 +414,10 @@ func (t *Tracker) buildPayloadLocked(repo *db.Repo) StreamPayload {
 		}
 		byAccountCopy[k] = inner
 	}
-
+	var breakers []BreakerSnapshot
+	if t.breakerStatus != nil {
+		breakers = t.breakerStatus()
+	}
 	return StreamPayload{
 		ActiveRequests: active,
 		RecentRequests: recent,
@@ -370,6 +426,7 @@ func (t *Tracker) buildPayloadLocked(repo *db.Repo) StreamPayload {
 			ByModel:   byModelCopy,
 			ByAccount: byAccountCopy,
 		},
+		Breakers: breakers,
 	}
 }
 

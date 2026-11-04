@@ -64,6 +64,21 @@ func applyComboStrategies(s *SettingsData, raw map[string]any) {
 			}
 			entry.FallbackCombos = combos
 		}
+		// A call ceiling and its window. Zero (the default) means unlimited,
+		// so an absent field leaves the gate off rather than arming a ceiling
+		// of zero that would cap every combo written before the feature.
+		//
+		// The ceiling is capped, not just positivity-checked: a JSON number
+		// above the int range converts to a wrapped negative, which the gate
+		// reads as "unlimited" — a budget that silently disarms itself. The
+		// window already had its bound; this closes the same hole on the
+		// ceiling.
+		if bc, ok := vm["budgetCalls"].(float64); ok && bc > 0 && bc <= BudgetCallsMax && bc == float64(int64(bc)) {
+			entry.BudgetCalls = int(bc)
+		}
+		if bw, ok := vm["budgetWindowMs"].(float64); ok && bw > 0 && bw <= float64((1<<63-1)/1000000) && bw == float64(int64(bw)) {
+			entry.BudgetWindowMs = int(bw)
+		}
 		s.ComboStrategies[k] = entry
 	}
 }

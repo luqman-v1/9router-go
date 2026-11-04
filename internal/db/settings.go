@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -42,7 +43,28 @@ type ComboStrategy struct {
 	// on every failure path, so this flag is a no-op there.
 	RespectStoredOrder bool     `json:"respectStoredOrder,omitempty"`
 	FallbackCombos     []string `json:"fallbackCombos,omitempty"`
+	// BudgetCalls caps how many requests this combo may serve inside one
+	// budget window. Zero (the default) means unlimited. Reaching the ceiling
+	// withholds the combo for the rest of the window, so the caller falls
+	// through to whatever it would have used without the combo.
+	//
+	// The counter is process-local and in memory: a restart opens a fresh
+	// window, because a durable counter would come back from an outage still
+	// capped from before it, which is a spend the operator cannot account for.
+	BudgetCalls int `json:"budgetCalls,omitempty"`
+	// BudgetWindowMs is the window a BudgetCalls ceiling spans. Zero means
+	// DefaultBudgetWindowMs.
+	BudgetWindowMs int `json:"budgetWindowMs,omitempty"`
 }
+
+// BudgetCallsMax is the largest per-window ceiling the settings parser
+// accepts. A JSON number arrives as float64, so an unvalidated value can be
+// stored as an int that has wrapped negative — and a negative ceiling reads as
+// "unlimited" at the gate, which is the one thing a budget must never be.
+//
+// The dashboard refuses the same value (MAX_BUDGET_CALLS), so the two agree on
+// what a stored budget means rather than the server silently normalizing it.
+const BudgetCallsMax = 1000000
 
 // DefaultFirstTokenGraceMs is the grace period applied after a model response
 // timeout when the combo does not set its own: five minutes.
@@ -229,7 +251,7 @@ func DefaultSettings() *SettingsData {
 // not a failure: that is a fresh install.
 func (r *Repo) GetSettings() (*SettingsData, error) {
 	var rawData string
-	err := r.db.QueryRow(`SELECT data FROM settings WHERE id = 1`).Scan(&rawData)
+	err := r.db.QueryRowContext(context.Background(), `SELECT data FROM settings WHERE id = 1`).Scan(&rawData)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return DefaultSettings(), nil

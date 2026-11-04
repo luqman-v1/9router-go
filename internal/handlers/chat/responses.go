@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/jsonfence"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/middleware"
 	internalproxy "9router/proxy/internal/proxy"
@@ -186,6 +187,12 @@ func (h *ChatHandler) newResponsesContext(r *http.Request, requestedModel string
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(requestedModel))
 	// The dispatching key decides which guardrail policy governs the response.
 	ctx = withGuardrailKey(ctx, requestKeyID(r))
+	// A Responses client can ask for structured output too; the flag has to be
+	// on the context before the answer is written, and this is where the
+	// request's own body is still in hand.
+	if jsonfence.Wants(*body) {
+		ctx = jsonfence.With(ctx)
+	}
 
 	providerCfg, err := h.getProviderConfig(modelInfo.Provider, nil)
 	if err == nil && executor.UpstreamSpeaksResponses(modelInfo.Provider, modelInfo.Model, providerCfg) {

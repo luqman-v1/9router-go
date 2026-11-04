@@ -532,6 +532,11 @@ func (h *ChatHandler) applyComboStrategy(strategy string, models []string, combo
 		}
 
 		return rotated
+	case "cascade":
+		// Escalation is the combo loop's own failure path; cascade's job is
+		// only to start that walk at the cheapest member. See
+		// OrderModelsByCascade.
+		return OrderModelsByCascade(models)
 	case "capacity":
 		fallthrough
 	default:
@@ -716,14 +721,17 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 	//
 	// RespectStoredOrder skips the rotation and walks the stored list as-is,
 	// so the order the operator arranged in the editor is the fallback chain.
-	// The smart and tokenmaxxing strategies are exempt: they compute dynamic
-	// ranking (by task suitability and quota allowance respectively), so honoring
-	// stored order would defeat the evaluation they exist to perform.
+	// The smart, tokenmaxxing, and cascade strategies are exempt: they compute
+	// dynamic ranking (by task suitability, quota allowance, and unit price
+	// respectively), so honoring stored order would defeat the evaluation they
+	// exist to perform.
 	var models []string
 	if strategy == "smart" {
 		ctx, models = h.applySmartRouting(ctx, body, comboModels, comboName)
 	} else if strategy == "tokenmaxxing" {
 		models = h.applyTokenmaxxingRouting(ctx, comboModels)
+	} else if strategy == "cascade" {
+		models = OrderModelsByCascade(comboModels)
 	} else if h.comboRespectsStoredOrder(comboName) {
 		models = slices.Clone(comboModels)
 	} else {
@@ -1160,11 +1168,13 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
 	var models []string
-	// smart and tokenmaxxing compute dynamic rankings and override stored order.
+	// smart, tokenmaxxing, and cascade compute dynamic rankings and override stored order.
 	if strategy == "smart" {
 		ctx, models = h.applySmartRouting(ctx, bodyJSON, comboModels, comboName)
 	} else if strategy == "tokenmaxxing" {
 		models = h.applyTokenmaxxingRouting(ctx, comboModels)
+	} else if strategy == "cascade" {
+		models = OrderModelsByCascade(comboModels)
 	} else if h.comboRespectsStoredOrder(comboName) {
 		models = slices.Clone(comboModels)
 	} else {

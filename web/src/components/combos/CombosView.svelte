@@ -7,8 +7,9 @@
     getComboModels,
     INHERIT_STRATEGY,
     parseCapacityAdapterSettings,
-    resolveComboStrategy,
     updateComboStrategy,
+    updateComboBudgetCalls,
+    updateComboBudgetWindow,
     updateFirstTokenGrace,
     updateFirstTokenTimeout,
     updateJudgeModel,
@@ -273,6 +274,36 @@
     } catch (e) {
       if (comboStrategies === updated) comboStrategies = previous
       console.error('Failed to update model response timeout:', e)
+    }
+  }
+  // The budget ceiling sits beside the strategy for the same reason the
+  // stored-order flag does: it decides how long the combo keeps serving.
+  async function handleSetBudgetCalls(combo: Combo, budgetCalls: number) {
+    const previous = comboStrategies
+    const updated = updateComboBudgetCalls(comboStrategies, combo.name, budgetCalls)
+    if (updated === previous) return
+    comboStrategies = updated
+    try {
+      await api.patchSettings({ comboStrategies: updated })
+      onRefresh()
+    } catch (e) {
+      if (comboStrategies === updated) comboStrategies = previous
+      console.error('Failed to update combo budget:', e)
+    }
+  }
+  // The window rides along with the ceiling: setting a ceiling without a
+  // window leaves the backend default, so the two are edited in one place.
+  async function handleSetBudgetWindow(combo: Combo, windowMs: number) {
+    const previous = comboStrategies
+    const updated = updateComboBudgetWindow(comboStrategies, combo.name, windowMs)
+    if (updated === previous) return
+    comboStrategies = updated
+    try {
+      await api.patchSettings({ comboStrategies: updated })
+      onRefresh()
+    } catch (e) {
+      if (comboStrategies === updated) comboStrategies = previous
+      console.error('Failed to update combo budget window:', e)
     }
   }
 
@@ -661,6 +692,8 @@
             onSetStrategy={handleSetStrategy}
             onSetResponseTimeout={handleSetResponseTimeout}
             onToggleStoredOrder={handleToggleStoredOrder}
+            onSetBudgetCalls={handleSetBudgetCalls}
+            onSetBudgetWindow={handleSetBudgetWindow}
             onOpenJudgePicker={(c) => { editingCombo = c; openModelPicker('judge') }}
             onClearJudge={clearJudge}
             onOpenRouterPicker={(c) => { editingCombo = c; openModelPicker('router') }}

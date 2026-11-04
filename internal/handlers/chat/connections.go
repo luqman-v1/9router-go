@@ -779,6 +779,25 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		}
 	}
 
+	// Stamp the pool this connection routed through onto the config, so
+	// resilienceProxyKey reads it back and the breaker and semaphore key on
+	// provider+pool rather than on the provider alone.
+	//
+	// Without this the egress component was always "direct": nothing in the
+	// production path recorded the pool, only tests fabricated it, so one dead
+	// pool still opened the provider's single breaker and took every other
+	// egress with it.
+	//
+	// This is a field on ProviderConfig rather than a HeaderOverrides entry,
+	// which is where it used to be expected to live: that map is applied to the
+	// outbound request (internal/proxy/openai.go), so an internal key written
+	// there is sent to every upstream provider. It follows RelayURL — a
+	// gateway-internal value the executors read, never one they forward.
+	if connData != nil && connData.ProxyPoolID != "" {
+		cloned := *baseCfg
+		cloned.ProxyPoolID = connData.ProxyPoolID
+		baseCfg = &cloned
+	}
 	return h.applyProviderOverrides(provider, h.withClineIdentity(provider, baseCfg)), nil
 }
 

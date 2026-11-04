@@ -122,16 +122,28 @@ func resilienceAccountKey(cfg *providers.ProviderConfig, apiKey string) string {
 	return "key:" + hex.EncodeToString(sum[:8])
 }
 
-// resilienceProxyKey returns the proxy component of the semaphore key. The
-// connection that built the config records its pool on HeaderOverrides; absent
-// that the traffic is direct.
+// resilienceProxyKey returns the proxy component of the semaphore key.
+//
+// The config's ProxyPoolID field is the production channel: getProviderConfig
+// stamps the pool the connection routed through (internal/handlers/chat
+// connections.go). A HeaderOverrides entry is still honoured so a config built
+// any other way keeps working, but it is not what the request path writes —
+// that map is forwarded upstream, so it must never carry an internal key.
+//
+// Absent both, the traffic is direct, and all direct traffic for the provider
+// shares one gate.
 func resilienceProxyKey(cfg *providers.ProviderConfig) string {
-	if cfg == nil || cfg.HeaderOverrides == nil {
+	if cfg == nil {
 		return "direct"
 	}
-	for _, k := range []string{"x-9router-proxy-pool", "X-9Router-Proxy-Pool"} {
-		if v, ok := cfg.HeaderOverrides[k]; ok && v != "" {
-			return v
+	if cfg.ProxyPoolID != "" {
+		return cfg.ProxyPoolID
+	}
+	if cfg.HeaderOverrides != nil {
+		for _, k := range []string{"x-9router-proxy-pool", "X-9Router-Proxy-Pool"} {
+			if v, ok := cfg.HeaderOverrides[k]; ok && v != "" {
+				return v
+			}
 		}
 	}
 	return "direct"

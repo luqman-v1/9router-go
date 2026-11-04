@@ -29,6 +29,18 @@ export interface ComboStrategyInfo {
    * which orders the models itself.
    */
   respectStoredOrder?: boolean
+  /**
+   * Requests this combo may serve per window. 0/absent means unlimited, so a
+   * combo written before the field existed is unaffected. Reaching the
+   * ceiling withholds the combo and serves the turn on its first member.
+   */
+  budgetCalls?: number
+  /**
+   * Milliseconds the call ceiling spans. Absent means the backend default of
+   * one hour; only meaningful alongside budgetCalls. A window longer than the
+   * process uptime is never recycled within it.
+   */
+  budgetWindowMs?: number
 }
 
 /**
@@ -45,7 +57,8 @@ export const COMBO_STRATEGIES = [
   { value: 'capacity', label: 'Capacity — prefer free tiers' },
   { value: 'smart', label: 'Smart Router — System One' },
   { value: 'fusion', label: 'Fusion — panel + judge' },
-  { value: 'tokenmaxxing', label: 'Tokenmaxxing — quota-aware' }
+  { value: 'tokenmaxxing', label: 'Tokenmaxxing — quota-aware' },
+  { value: 'cascade', label: 'Cascade — cheapest first' }
 ] as const
 
 /**
@@ -187,6 +200,27 @@ export function updateComboStrategy(
 
 /** Largest whole-millisecond timeout representable by the backend duration. */
 export const MAX_FIRST_TOKEN_TIMEOUT_MS = 9223372036854
+/**
+ * Largest per-window request ceiling the backend accepts. The server caps a
+ * budget at one million calls per window, so a larger field is refused rather
+ * than stored.
+ */
+export const MAX_BUDGET_CALLS = 1000000
+/** Backend default budget window: one hour, in milliseconds. */
+export const DEFAULT_BUDGET_WINDOW_MS = 3600000
+/** The same default in minutes, for the dashboard input. */
+export const DEFAULT_BUDGET_WINDOW_MINUTES = 60
+/**
+ * Largest window the backend stores, in minutes.
+ *
+ * The server caps budgetWindowMs at (2^63-1)/1000000 milliseconds
+ * (internal/db settings_parse_maps.go), which is 153722867280 minutes. This
+ * value matches it: the previous constant (92233720368) was the cap on a
+ * *different* field, firstTokenTimeoutMs, so the dashboard accepted a window
+ * the server then dropped silently — the combo appeared budgeted while its
+ * window had reverted to the one-hour default.
+ */
+export const MAX_BUDGET_WINDOW_MINUTES = 153722867280
 
 /** Tooltip/help text shared by the combo card and the edit modal. */
 export const RESPONSE_TIMEOUT_HELP =
@@ -194,6 +228,12 @@ export const RESPONSE_TIMEOUT_HELP =
 
 /** Backend default grace after a model response timeout (5 minutes). */
 export const DEFAULT_FIRST_TOKEN_GRACE_SECONDS = 300
+/** Tooltip for the per-window call ceiling input. */
+export const BUDGET_CALLS_HELP =
+  'Sequential failover spend cap: the number of requests this combo may serve per window (60 minutes by default). After the ceiling is reached the combo is withheld and the turn is served by its first member, so the request still succeeds instead of failing. Blank or 0 means unlimited. The counter lives in the gateway process, so a restart resets it.'
+/** Tooltip for the window the call ceiling spans. */
+export const BUDGET_WINDOW_HELP =
+  'How long the call budget lasts before the counter resets. Blank means the default of 60 minutes. A window only matters once a call budget is set.'
 
 /** The same ceiling in seconds, for the dashboard inputs. */
 export const MAX_FIRST_TOKEN_TIMEOUT_SECONDS = Math.floor(MAX_FIRST_TOKEN_TIMEOUT_MS / 1000)
@@ -259,6 +299,59 @@ export function updateFirstTokenTimeout(
     ...currentStrategies,
     [comboName]: { ...(currentStrategies[comboName] || {}), firstTokenTimeoutMs }
   }
+}
+
+/**
+ * Set (or clear, with 0) a combo's per-window request ceiling. The counter is
+ * process-local server-side, so the value is a spend limit for this process,
+ * not a durable budget.
+ */
+export function updateComboBudgetCalls(
+  currentStrategies: Record<string, ComboStrategyInfo>,
+  comboName: string,
+  budgetCalls: number
+): Record<string, ComboStrategyInfo> {
+  if (!Number.isSafeInteger(budgetCalls) || budgetCalls < 0 || budgetCalls > MAX_BUDGET_CALLS) return currentStrategies
+  const updated = { ...currentStrategies }
+  const current = { ...(updated[comboName] || {}) }
+  if (budgetCalls === 0) {
+    delete current.budgetCalls
+    if (Object.keys(current).length === 0) delete updated[comboName]
+    else updated[comboName] = current
+    return updated
+  }
+  updated[comboName] = { ...current, budgetCalls }
+  return updated
+}
+
+/**
+ * Set (or clear, with 0) the window a combo's call ceiling spans. A blank
+ * field means "the backend default", not "zero window": an explicit 0 clears
+ * the field so the default applies again, while a window that never recycles
+ * would cap the combo permanently after the first `budgetCalls` requests.
+ */
+export function updateComboBudgetWindow(
+  currentStrategies: Record<string, ComboStrategyInfo>,
+  comboName: string,
+  windowMs: number
+): Record<string, ComboStrategyInfo> {
+  if (!Number.isSafeInteger(windowMs) || windowMs < 0 || windowMs > MAX_BUDGET_WINDOW_MINUTES * 60000) return currentStrategies
+  const updated = { ...currentStrategies }
+  const current = { ...(updated[comboName] || {}) }
+  if (windowMs === 0) {
+    delete current.budgetWindowMs
+    if (Object.keys(current).length === 0) delete updated[comboName]
+    else updated[comboName] = current
+    return updated
+  }
+  updated[comboName] = { ...current, budgetWindowMs: windowMs }
+  return updated
+}
+
+/** The window in minutes for the dashboard input, defaulting to one hour. */
+export function budgetWindowMsToMinutes(windowMs: number | undefined | null): number {
+  if (!windowMs || windowMs <= 0) return DEFAULT_BUDGET_WINDOW_MINUTES
+  return Math.round(windowMs / 60000)
 }
 
 export function updateJudgeModel(

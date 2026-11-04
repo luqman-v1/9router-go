@@ -4,6 +4,7 @@ import (
 	"9router/proxy/internal/changelogfrag"
 	json "9router/proxy/internal/fastjson"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/jsonfence"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/promptcache"
@@ -100,6 +101,12 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// Record the dispatching key so the outbound guardrail tap can resolve the
 	// right policy. A keyless caller leaves it unset and the tap stays inert.
 	ctx = withGuardrailKey(ctx, requestKeyID(r))
+	// Record that this client wants machine-readable JSON before the request
+	// fans out: the answer that has to be unwrapped is written several layers
+	// down, behind the combo fallback loop, so the intent has to travel.
+	if jsonfence.Wants(body) {
+		ctx = jsonfence.With(ctx)
+	}
 
 	// Check prompt/response cache for non-streaming requests before model
 	// resolution: a hit answers the turn without touching a provider, so it
@@ -187,6 +194,18 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		// let a text-only upstream reject the whole conversation on a block
 		// this turn does not need.
 		body = maybeStripLegacyMediaBytes(body, augmented)
+		if h.comboBudgetExhausted(reqBody.Model) {
+			// The combo spent its call ceiling inside this window, so it is
+			// withheld rather than reordered: a budget exists to stop the spend
+			// behind the combo, not to try a different model next. The first
+			// member is served as a plain single-model request, which is the
+			// same shape the request would have had without the combo.
+			log.Info("combo", "budget ceiling reached, combo withheld", "combo", reqBody.Model)
+			h.recordComboBudgetCall(reqBody.Model)
+			h.handleSingleModel(ctx, w, body, h.singleModelFromCombo(modelInfo, augmented), reqBody.Stream, false)
+			return
+		}
+		h.recordComboBudgetCall(reqBody.Model)
 		h.handleComboFallback(ctx, w, body, augmented, comboStrategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, injected...)
 		return
 	}
@@ -417,6 +436,16 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		if cleaned, changed := maybeStripLegacyMedia(workingBody, augmented); changed {
 			workingBody = cleaned
 		}
+		if h.comboBudgetExhausted(reqBody.Model) {
+			// Same admission gate as the Chat Completions path: the combo spent
+			// its ceiling, so it is withheld rather than reordered, and the
+			// first member serves the turn as a plain single-model request.
+			log.Info("combo", "budget ceiling reached, combo withheld", "combo", reqBody.Model)
+			h.recordComboBudgetCall(reqBody.Model)
+			h.handleMessagesSingleModel(ctx, w, workingBody, h.singleModelFromCombo(modelInfo, augmented), reqBody.Stream, translateResponse)
+			return
+		}
+		h.recordComboBudgetCall(reqBody.Model)
 		h.handleMessagesComboFallback(ctx, w, workingBody, augmented, comboStrategy, reqBody.Stream, reqBody.Model, modelInfo.StickyLimit, injected...)
 		return
 	}
