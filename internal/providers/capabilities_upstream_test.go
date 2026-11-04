@@ -78,6 +78,35 @@ func TestGetCapabilitiesForModel_DeepseekV41FlashAlias(t *testing.T) {
 	}
 }
 
+// Cloudflare AI vision models keep their image parts: Mistral Small 3.1 and
+// Kimi K2.6 must resolve to Vision: true so the request path preserves
+// image_url blocks instead of flattening them away. Kimi K2.6 uses the kimi
+// thinking level set; Mistral Small 3.1 is text + images only (no reasoning).
+func TestGetCapabilitiesForModel_CloudflareAIVision(t *testing.T) {
+	cases := []struct {
+		model     string
+		format    string
+		reasoning bool
+	}{
+		{"@cf/mistralai/mistral-small-3.1-24b-instruct", "openai", false},
+		{"@cf/moonshotai/kimi-k2.6", "kimi", true},
+	}
+	for _, c := range cases {
+		t.Run(c.model, func(t *testing.T) {
+			caps := capabilitiesOf(t, "cloudflare-ai", c.model)
+			if !caps.Vision {
+				t.Errorf("Vision = false, want true for %s", c.model)
+			}
+			if caps.ThinkingFormat != c.format {
+				t.Errorf("ThinkingFormat = %q, want %q", caps.ThinkingFormat, c.format)
+			}
+			if caps.Reasoning != c.reasoning {
+				t.Errorf("Reasoning = %v, want %v", caps.Reasoning, c.reasoning)
+			}
+		})
+	}
+}
+
 // Port of upstream tests/unit/tokenharbor-free-models.test.js (decolua/9router
 // PR #4564): the offline seed list Token Harbor shows before a key is saved
 // must carry the rotating free tier, and the ":free" suffix must not knock an

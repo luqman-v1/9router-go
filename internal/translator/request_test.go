@@ -77,14 +77,24 @@ func TestSystemReminderText(t *testing.T) {
 // --- collapseTextParts ---
 
 func TestCollapseTextParts(t *testing.T) {
-	// Single text parts → string
+	// Single text part → string
 	single := []OpenAIContentBlock{{Type: "text", Text: "hello"}}
 	got := collapseTextParts(single)
 	if s, ok := got.(string); !ok || s != "hello" {
 		t.Errorf("expected string 'hello', got %#v", got)
 	}
 
-	// Multiple parts → array
+	// Multiple text parts → flattened string (all text)
+	multiText := []OpenAIContentBlock{
+		{Type: "text", Text: "hello"},
+		{Type: "text", Text: "world"},
+	}
+	got = collapseTextParts(multiText)
+	if s, ok := got.(string); !ok || s != "hello\nworld" {
+		t.Errorf("expected flattened string 'hello\nworld', got %#v", got)
+	}
+
+	// Text + image → array preserved (vision model keeps image_url)
 	multi := []OpenAIContentBlock{
 		{Type: "text", Text: "hello"},
 		{Type: "image_url", ImageUrl: &OpenAIImageUrl{URL: "data:test"}},
@@ -99,6 +109,13 @@ func TestCollapseTextParts(t *testing.T) {
 	got = collapseTextParts(onlyImg)
 	if _, ok := got.([]OpenAIContentBlock); !ok {
 		t.Errorf("expected array for non-text single block, got %#v", got)
+	}
+
+	// Empty → empty string (content with no parts is "")
+	empty := []OpenAIContentBlock{}
+	got = collapseTextParts(empty)
+	if s, ok := got.(string); !ok || s != "" {
+		t.Errorf("expected empty string, got %#v", got)
 	}
 }
 
