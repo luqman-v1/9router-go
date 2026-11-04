@@ -3,6 +3,7 @@
 package bootfx
 
 import (
+	"9router/proxy/internal/db"
 	"fmt"
 	"io"
 	"net/http"
@@ -71,9 +72,15 @@ func TestRealApplicationBootAndServesTraffic(t *testing.T) {
 	}
 
 	t.Run("the request was recorded in usage history", func(t *testing.T) {
-		rows, err := repo.GetRecentUsageHistory(5)
-		if err != nil {
-			t.Fatalf("read usage history: %v", err)
+		var rows []db.UsageHistoryRow
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			var err error
+			rows, err = repo.GetRecentUsageHistory(5)
+			if err == nil && len(rows) >= 1 {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
 		}
 		if len(rows) != 1 {
 			t.Fatalf("usageHistory rows = %d, want 1", len(rows))
