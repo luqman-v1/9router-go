@@ -682,7 +682,7 @@ func (h *ChatHandler) fetchAnthropicLiveCatalog(ctx context.Context, conn *model
 		log.Warn("models", "anthropic catalog fetch failed", "conn", conn.ID, "error", err)
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		log.Warn("models", "anthropic catalog rejected", "conn", conn.ID, "status", resp.StatusCode)
 		return nil

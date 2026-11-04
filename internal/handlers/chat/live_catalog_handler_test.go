@@ -281,7 +281,6 @@ func TestHandleModels_AnthropicLiveCatalogFallsBackToStatic(t *testing.T) {
 	}
 }
 
-
 // Concurrency guard: a cold cache must not fan out once per request. Ten
 // simultaneous /v1/models calls have to collapse into a single upstream fetch.
 func TestHandleModels_LiveCatalogCoalescesConcurrentRequests(t *testing.T) {
