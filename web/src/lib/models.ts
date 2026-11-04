@@ -2277,6 +2277,16 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "kind": "tts"
     },
     {
+      "id": "gemini-3.8-flash-tts",
+      "name": "Gemini 3.8 Flash TTS",
+      "kind": "tts"
+    },
+    {
+      "id": "gemini-3.8-flash-lite-tts",
+      "name": "Gemini 3.8 Flash Lite TTS",
+      "kind": "tts"
+    },
+    {
       "id": "embedding-001",
       "name": "Embedding 001",
       "dimensions": 768,
