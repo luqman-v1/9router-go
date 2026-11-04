@@ -37,20 +37,32 @@ type page struct {
 	Body template.HTML
 	// Text is the markdown with frontmatter stripped, indexed for search.
 	Text string
+	// Since is the release that first documented this page, from frontmatter.
+	Since string
+	// Unreleased is set when Since names a release newer than the one the wiki
+	// was built from: the page describes behaviour no published version has, so
+	// the sidebar marks it instead of the reader assuming it is the contract.
+	Unreleased bool
 }
 
 // frontmatter is the small YAML subset the wiki pages use. The pages only need
-// title, order, and section, so a full YAML parser is not worth the dependency;
-// the format is deliberately the shape go-yaml emits for those three scalars.
+// title, order, section, and since, so a full YAML parser is not worth the
+// dependency; the format is deliberately the shape go-yaml emits for those
+// scalars.
 type frontmatter struct {
 	Title   string
 	Order   int
 	Section string
+	// Since is the release that first documented this page. A page whose since
+	// is newer than the release the wiki was built from describes behaviour that
+	// no published version has yet, so the sidebar marks it as unreleased rather
+	// than letting a reader take an experimental flag as the shipped contract.
+	Since string
 }
 
 // generateWiki renders every .md in wikiDir into outDir, plus the search index
 // the pages' client-side search reads.
-func generateWiki(wikiDir, outDir, repo string) error {
+func generateWiki(wikiDir, outDir, repo, version string) error {
 	entries, err := filepath.Glob(filepath.Join(wikiDir, "*.md"))
 	if err != nil {
 		return fmt.Errorf("list wiki pages: %w", err)
@@ -77,6 +89,21 @@ func generateWiki(wikiDir, outDir, repo string) error {
 		}
 		return pages[i].Slug < pages[j].Slug
 	})
+	// A page documenting behaviour newer than the release the wiki claims to
+	// describe is marked unreleased. The comparison is on the release line, not
+	// the whole string: `1.9.15-exp.16` is a build of the `1.9.15` line, and a
+	// page whose since is that build is ahead of a wiki built from the stable
+	// `1.9.14` manifest — which is what `9router-go update` advertises. The
+	// direction matters: a wiki built from 1.9.15 must not flag pages that were
+	// already documented in 1.9.14.
+	for _, p := range pages {
+		if p.Since == "" || version == "" {
+			continue
+		}
+		if releaseNewer(p.Since, version) {
+			p.Unreleased = true
+		}
+	}
 
 	tmpl, err := template.New("wiki").Funcs(template.FuncMap{
 		"blob": func(p string) string {
@@ -89,7 +116,7 @@ func generateWiki(wikiDir, outDir, repo string) error {
 
 	for _, p := range pages {
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, wikiData{Page: p, Pages: pages, Groups: groupBySection(pages), Repo: repo}); err != nil {
+		if err := tmpl.Execute(&buf, wikiData{Page: p, Pages: pages, Groups: groupBySection(pages), Repo: repo, StableVersion: version}); err != nil {
 			return fmt.Errorf("render wiki page %s: %w", p.Slug, err)
 		}
 		if err := writeFile(filepath.Join(outDir, p.Slug+".html"), buf.Bytes()); err != nil {
@@ -139,10 +166,15 @@ func renderWikiPage(path, outDir string) (*page, error) {
 			// through to the github.com fallback below.
 			file, fragment, hasFragment := strings.Cut(dest, "#")
 			switch {
-			case strings.HasSuffix(file, ".md"):
+			case strings.HasSuffix(file, ".md") && !hasScheme(dest) && !strings.HasPrefix(dest, "/"):
 				// A link to another wiki page. It stays relative so it resolves
 				// inside the site, and the .md suffix is swapped for .html
 				// because that is what is published.
+				// The scheme and site-absolute checks come first: an absolute
+				// github.com URL to a repository file also ends in .md, and
+				// rewriting that one produced .../COMPARISON.html — a URL that
+				// 404s on both the site and GitHub. Only a relative destination
+				// names a wiki page.
 				slug := strings.TrimSuffix(file, ".md")
 				wikiLinks[slug] = struct{}{}
 				out := slug + ".html"
@@ -213,6 +245,7 @@ func renderWikiPage(path, outDir string) (*page, error) {
 		Section: fm.Section,
 		Body:    template.HTML(rendered),
 		Text:    body,
+		Since:   fm.Since,
 	}, nil
 }
 
@@ -348,6 +381,8 @@ func splitFrontmatter(src string) (frontmatter, string) {
 			fm.Order = atoi(value)
 		case "section":
 			fm.Section = value
+		case "since":
+			fm.Since = value
 		}
 	}
 	return fm, body
@@ -362,6 +397,55 @@ func atoi(s string) int {
 		n = n*10 + int(r-'0')
 	}
 	return n
+}
+
+// releaseCore reduces a version to the line it belongs to, so two versions can
+// be compared without a full semver parser. `1.9.15-exp.16` and `1.9.15` are
+// builds of the same release line and compare equal; `1.9.14` does not. The
+// wiki needs exactly this question — "does this page describe a release newer
+// than the one the wiki was built from?" — and a numeric comparison, because
+// equality is the wrong test: a wiki built from 1.9.15 must not flag pages
+// documented in 1.9.14.
+func releaseNewer(page, built string) bool {
+	a, okA := releaseParts(page)
+	b, okB := releaseParts(built)
+	if !okA || !okB {
+		// A version that does not parse as three dot-separated numbers is not a
+		// version this comparison can order. Treating it as newer would flag
+		// every page on a typo, so it is treated as current instead.
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] > b[i]
+		}
+	}
+	return false
+}
+
+// releaseParts splits a version into its release line and numeric parts,
+// dropping any prerelease suffix: `1.9.15-exp.16` is a build of `1.9.15`, so it
+// compares against another release line by its 1.9.15. It reports false when
+// the string is not three dot-separated numbers, which keeps a malformed value
+// from silently comparing as zero.
+func releaseParts(v string) ([3]int, bool) {
+	var out [3]int
+	core := v
+	if i := strings.IndexByte(core, '-'); i >= 0 {
+		core = core[:i]
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
 }
 
 // firstHeading returns the text of the document's first heading, used as the

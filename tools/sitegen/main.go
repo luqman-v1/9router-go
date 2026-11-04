@@ -44,6 +44,15 @@ func main() {
 	outDir := flag.String("out", "_site", "directory the site is written to")
 	wikiDir := flag.String("wiki", "wiki", "directory of wiki pages rendered next to the README")
 	repo := flag.String("repo", "luqman-v1/9router-go", "owner/name used to resolve relative repository links")
+	version := flag.String("version", "", "release version rendered in the wiki sidebar footer; empty omits it")
+	// The release the wiki documents, as distinct from the version the binary
+	// was built from. `VERSION` carries the build being developed — an
+	// experimental line such as 1.9.15-exp.16 — while `9router-go update`
+	// advertises whatever `version.json` names, which for that build is still
+	// 1.9.14. Rendering the build instead of the manifest told readers the docs
+	// described a release nobody had. When this is empty the build version is
+	// used, so a one-off local run without the manifest still shows one.
+	stable := flag.String("stable-version", "", "release the wiki documents, read from version.json; empty falls back to -version")
 	flag.Parse()
 
 	if err := generate(*readmePath, *assetsDir, *outDir, *repo); err != nil {
@@ -54,7 +63,11 @@ func main() {
 	// The wiki is optional: a checkout without it still produces the project
 	// page, which is what the Pages job has always published.
 	if info, err := os.Stat(*wikiDir); err == nil && info.IsDir() {
-		if err := generateWiki(*wikiDir, *outDir, *repo); err != nil {
+		wikiVersion := *version
+		if *stable != "" {
+			wikiVersion = *stable
+		}
+		if err := generateWiki(*wikiDir, *outDir, *repo, wikiVersion); err != nil {
 			fmt.Fprintln(os.Stderr, "sitegen:", err)
 			os.Exit(1)
 		}

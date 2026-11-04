@@ -2,6 +2,7 @@
 title: Parity
 order: 12
 section: Under the Hood
+since: 1.9.14
 ---
 
 # Parity

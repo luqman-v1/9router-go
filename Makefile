@@ -19,6 +19,16 @@ endif
 ifeq ($(VERSION),)
 VERSION := 1.0.0
 endif
+# STABLE_VERSION is the release the documentation describes, which is not the
+# same thing as the build being developed. VERSION carries the experimental line
+# (1.9.15-exp.16); version.json carries the release `9router-go update`
+# advertises, which for that build is still the last stable one. The wiki is
+# built from this, so its footer and its "new" badges answer "which release do
+# these docs describe?" rather than "which binary was compiled?".
+STABLE_VERSION ?= $(strip $(shell cat version.json 2>/dev/null | grep -o '"latestVersion": *"[^"]*"' | cut -d'"' -f4))
+ifeq ($(STABLE_VERSION),)
+STABLE_VERSION := $(VERSION)
+endif
 # On Windows (cmd.exe), invoking `./$(BINARY_NAME)` fails with "'.' is not recognized".
 # On macOS/Linux, `.` is not on PATH, so a bare command fails with "command not found".
 ifeq ($(findstring Windows_NT,$(OS)),Windows_NT)
@@ -197,7 +207,7 @@ bench-go:
 # so an empty GOARCH can never leak into the normal build target.
 CROSS_TARGETS := linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64
 
-ifneq ($(filter cross-one cross-tray-one,$(MAKECMDGOALS)),)
+ifneq ($(filter cross-one,$(MAKECMDGOALS)),)
 export GOOS := $(CROSS_OS)
 export GOARCH := $(CROSS_ARCH)
 endif
@@ -218,7 +228,6 @@ cross-darwin-arm64:
 
 cross-windows-amd64:
 	@$(MAKE) --no-print-directory cross-one CROSS_OS=windows CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-windows-amd64.exe
-	@$(MAKE) --no-print-directory cross-tray-one CROSS_OS=windows CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-tray-windows-amd64.exe
 
 CROSS_BUILD_TARGETS := cross-linux-amd64 cross-linux-arm64 cross-darwin-amd64 cross-darwin-arm64 cross-windows-amd64
 
@@ -227,12 +236,9 @@ cross: web-build
 	@ls -lh $(CROSS_BIN)-*
 	@(sha256sum $(CROSS_BIN)-* || shasum -a 256 $(CROSS_BIN)-*) > SHA256SUMS.txt
 	@cat SHA256SUMS.txt
-.PHONY: cross-one cross-tray-one $(CROSS_BUILD_TARGETS)
+.PHONY: cross-one $(CROSS_BUILD_TARGETS)
 cross-one:
 	go build -ldflags="$(LDFLAGS)" -o $(OUT) ./cmd/9router-go/
-
-cross-tray-one:
-	go build -ldflags="$(LDFLAGS)" -o $(OUT) ./cmd/9router-tray/
 ## mitm-enable — start MITM proxy
 mitm-enable: build
 	$(BINARY) mitm enable
@@ -254,8 +260,14 @@ docker-build:
 	docker build -t $(BINARY_NAME) .
 
 ## wiki-build — generate the project page + wiki into _site/
+## Two versions are passed on purpose. -version is the build being developed
+## (VERSION, an experimental line such as 1.9.15-exp.16); -stable-version is the
+## release the docs describe, read from version.json — the manifest `9router-go
+## update` advertises, which for an experimental build is still the last stable
+## one. Rendering the build instead told readers the docs described a release
+## nobody had. The release workflow requires the two to differ.
 wiki-build:
-	go run ./tools/sitegen -out _site
+	go run ./tools/sitegen -out _site -version "$(VERSION)" -stable-version "$(STABLE_VERSION)"
 	@echo "Site written to _site/ — serve with: cd _site && python -m http.server 8000"
 
 ## wiki-serve — generate and serve the site locally on :8000

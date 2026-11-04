@@ -188,6 +188,25 @@ func TestGenerate(t *testing.T) {
 	if strings.Contains(page, "https://github.com/decolua") {
 		t.Error("absolute link was rewritten")
 	}
+	// The product's own icon, in the tab and in the bar. It used to be a
+	// terracotta plate with the letter 9 in it — a stand-in a reader had already
+	// seen in the dashboard in a different colour, so the two surfaces disagreed
+	// about what the mark looks like. The core circle is what makes it the real
+	// one: if this assertion goes, the wiki and the project page have each gone
+	// back to drawing their own.
+	iconCore := `<circle cx="24" cy="24" r="7" fill="#FF5C35"/>`
+	if !strings.Contains(page, iconCore) {
+		t.Error("the project page no longer draws the product's own icon")
+	}
+	// The favicon is a data URI, so its copy of the same glyph is percent-encoded
+	// and a raw string match finds only the wordmark's. Both must be present: the
+	// encoded one is what the tab shows, the raw one is what the bar shows.
+	if !strings.Contains(page, `%3Ccircle cx='24' cy='24' r='7' fill='%23FF5C35'/%3E`) {
+		t.Error("the project page's tab icon is not the product's own icon")
+	}
+	if strings.Contains(page, ">9</span>") {
+		t.Error("the wordmark is still the letter 9 in a plate instead of the product's icon")
+	}
 }
 
 // A README link to a file that is not in the repository must fail the build

@@ -2,6 +2,7 @@
 title: Advanced Features
 order: 13
 section: Under the Hood
+since: 1.9.14
 ---
 
 # Advanced Features
