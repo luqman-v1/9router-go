@@ -544,6 +544,33 @@ type forwardRequestParams struct {
 	Endpoint          string
 }
 
+// resolveExecutor returns the executor that owns a provider, falling back to
+// the Responses lane forwarder for a custom openai-compatible node.
+//
+// executor.Get is an exact map lookup, so a custom node — whose id is dynamic
+// ("openai-compatible-responses-<suffix>") — can never claim one. A node whose
+// stored apiType is "responses" therefore reached the generic chat forwarder,
+// which posts messages[] and nested tools to an endpoint that accepts only
+// input[] and flat tools ("function tool name is required"). The fallback is
+// consulted only when no registered executor matched, so codex, grok-cli, muse
+// and opencode* keep their own.
+func resolveExecutor(
+	provider, wireModel string,
+	cfg *providers.ProviderConfig,
+	claudeNative, upstreamClaude bool,
+) executor.Executor {
+	if exec := executor.Get(provider); exec != nil {
+		return exec
+	}
+	if claudeNative || upstreamClaude {
+		return nil
+	}
+	if executor.UpstreamSpeaksResponses(provider, wireModel, cfg) {
+		return executor.ForwardCompatibleResponses
+	}
+	return nil
+}
+
 func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	ctx, w := f.Ctx, f.W
 	provider, model := f.Provider, f.Model
@@ -1013,7 +1040,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// before any executor or forwarding function writes headers to w.
 	injectRouteHeaders(w, provider, model, f.ComboName, f.Attempts)
 
-	if exec := executor.Get(provider); exec != nil {
+	if exec := resolveExecutor(provider, wireModel, providerCfg, claudeNative, upstreamClaude); exec != nil {
 		execReq := &executor.Request{
 			Ctx:            ctx,
 			Client:         httpClient,
@@ -1061,7 +1088,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		if rErr == nil && refreshedKey != "" && refreshedKey != apiKey {
 			log.Info("fallback", "reactive 401 token refresh success, retrying request", "conn", connectionID)
 			apiKey = NormalizeProviderToken(provider, refreshedKey)
-			if exec := executor.Get(provider); exec != nil {
+			if exec := resolveExecutor(provider, wireModel, providerCfg, claudeNative, upstreamClaude); exec != nil {
 				retryReq := &executor.Request{
 					Ctx:            ctx,
 					Client:         httpClient,
