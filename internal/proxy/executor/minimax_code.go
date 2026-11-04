@@ -13,6 +13,7 @@ import (
 
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/proxy/executor/mcodelease"
 	"9router/proxy/internal/translator"
 )
 
@@ -97,6 +98,16 @@ func quotaMessage(body []byte) string {
 // forwarded in its own wire format and a Chat Completions caller is converted
 // the same way every other Claude upstream is.
 func ForwardMinimaxCode(w http.ResponseWriter, req *Request) error {
+	// A lease connection borrows the desktop app's sign-in instead of holding
+	// its own refresh token, so the bearer has to be fetched from the local
+	// broker before the request is built. Anything else keeps the stored key.
+	if mcodelease.IsLeaseConnection(req.ConnData) {
+		lease, err := mcodelease.GetLeaseToken(reqCtx(req), req.ConnData)
+		if err != nil {
+			return err
+		}
+		req.APIKey = lease.AccessToken
+	}
 	body := req.Body
 	if req.ClaudeClient {
 		body = translator.SanitizeClaudePassthrough(body, translator.ClaudeIntentionalPrefill(req.Body))
@@ -107,6 +118,14 @@ func ForwardMinimaxCode(w http.ResponseWriter, req *Request) error {
 	resp, err := proxy.DoRequest(reqCtx(req), req.Client, http.MethodPost,
 		minimaxCodeMessagesURL(req.Config), minimaxCodeHeaders(req), body)
 	if err != nil {
+		// A leased token that the desktop app has rotated since it was
+		// cached answers 401, so the cached copy is dropped before the
+		// caller's refresh-and-retry asks the broker again.
+		var ue *proxy.UpstreamError
+		if mcodelease.IsLeaseConnection(req.ConnData) && errors.As(err, &ue) &&
+			ue.StatusCode == http.StatusUnauthorized {
+			mcodelease.InvalidateLeaseToken(req.ConnData)
+		}
 		// DoRequest turns any non-200 into a typed error, so the credits
 		// refusal arrives here rather than as a response to inspect.
 		return normalizedQuotaError(err)

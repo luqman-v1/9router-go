@@ -449,6 +449,10 @@ func mountOAuthRoutes(r interface {
 	Post(pattern string, handlerFn http.HandlerFunc)
 }, oauthH *oauth.OAuthHandler) {
 	r.Post("/api/oauth/{provider}/import", oauthH.HandleOAuthImport)
+	// MiniMax Code lease auth: probe the desktop broker, then create a
+	// connection that borrows the desktop app's sign-in.
+	r.Get("/api/oauth/{provider}/lease-status", oauthH.HandleLeaseStatus)
+	r.Post("/api/oauth/{provider}/lease-connect", oauthH.HandleLeaseConnect)
 	r.Get("/api/oauth/kiro/social-authorize", oauthH.HandleOAuthKiroSocialAuthorize)
 	r.Post("/api/oauth/kiro/social-exchange", oauthH.HandleOAuthKiroSocialExchange)
 	r.Post("/api/oauth/kiro/import", oauthH.HandleKiroImport)
