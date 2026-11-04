@@ -982,6 +982,7 @@ func loadComboIndex(combos []*models.Combo) comboIndex {
 		if json.Unmarshal([]byte(combo.Models), &seats) != nil {
 			continue
 		}
+		normalizeWebComboSeats(combo.Kind, seats)
 		index[combo.Name] = seats
 	}
 	return index
@@ -1148,6 +1149,7 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 		if combo.Models != "" {
 			var leaves []string
 			if err := json.Unmarshal([]byte(combo.Models), &leaves); err == nil && len(leaves) > 0 {
+				normalizeWebComboSeats(combo.Kind, leaves)
 				if flattened, err := h.flattenComboModels(leaves); err == nil && len(flattened) > 0 {
 					first := flattened[0]
 					if info := h.resolveModelEntryGuarded(first, nil, connMap); info != nil && info.Provider != "" && info.Model != "" {
@@ -1179,6 +1181,7 @@ func (h *ChatHandler) aggregateComboCapabilities(combo *models.Combo, connMap ..
 	if err := json.Unmarshal([]byte(combo.Models), &leaves); err != nil || len(leaves) == 0 {
 		return nil, false
 	}
+	normalizeWebComboSeats(combo.Kind, leaves)
 	flattened, flatErr := h.flattenComboModels(leaves)
 	if flatErr != nil {
 		flattened = leaves

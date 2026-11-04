@@ -186,6 +186,28 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 	return &ModelInfo{Provider: provider, Model: model}
 }
 
+// normalizeWebComboSeats auto-appends /search or /fetch for bare provider names
+// in webSearch and webFetch combos, preserving compatibility with legacy combo definitions.
+func normalizeWebComboSeats(kind *string, seats []string) {
+	if kind == nil {
+		return
+	}
+	suffix := ""
+	switch *kind {
+	case "webSearch":
+		suffix = "/search"
+	case "webFetch":
+		suffix = "/fetch"
+	default:
+		return
+	}
+	for i, seat := range seats {
+		if !strings.Contains(seat, "/") {
+			seats[i] = seat + suffix
+		}
+	}
+}
+
 // expandComboModels recursively expands combo names into concrete model leaves
 // with cycle detection (visiting map) and max depth guard (max 5).
 func (h *ChatHandler) expandComboModels(models []string, visiting map[string]bool, depth int) []string {
@@ -201,6 +223,7 @@ func (h *ChatHandler) expandComboModels(models []string, visiting map[string]boo
 			if combo, err := h.Repo.GetComboByName(m); err == nil && combo != nil && combo.Models != "" {
 				var subModels []string
 				if err := json.Unmarshal([]byte(combo.Models), &subModels); err == nil && len(subModels) > 0 {
+					normalizeWebComboSeats(combo.Kind, subModels)
 					if visiting == nil {
 						visiting = make(map[string]bool, 4)
 					}
@@ -341,6 +364,7 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		if err == nil && combo != nil && combo.Models != "" {
 			var modelStrings []string
 			if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err == nil && len(modelStrings) > 0 {
+				normalizeWebComboSeats(combo.Kind, modelStrings)
 				// Flatten nested combos into concrete leaves so rotation covers
 				// every reachable model (a nested combo entry used to collapse to
 				// its first leaf, so combo-wombo -> free-tier never rotated).
