@@ -205,3 +205,34 @@ func TestPricingTablesPopulated(t *testing.T) {
 		t.Errorf("providerPricing has %d entries, expected the full upstream table", providerEntries)
 	}
 }
+
+func TestCommandCodePricing_OMPParity(t *testing.T) {
+	cases := []struct {
+		model string
+		in    float64
+		out   float64
+		cache float64
+	}{
+		{"claude-sonnet-5", 2.0, 10.0, 0.2},
+		{"deepseek/deepseek-v4-pro", 0.66, 1.98, 0.022},
+		{"Qwen/Qwen3.8-Flash", 0.16, 0.47, 0.016},
+		{"typesafe/jev", 0.042, 0.0, 0.0},
+	}
+
+	for _, c := range cases {
+		p, ok := GetPricingForModel("commandcode", c.model)
+		if !ok {
+			t.Fatalf("model %s missing from commandcode pricing", c.model)
+		}
+		if p.InputPer1M != c.in || p.OutputPer1M != c.out || p.CachedPer1M != c.cache {
+			t.Errorf("%s rates = (in:%v, out:%v, cache:%v), want (%v, %v, %v)",
+				c.model, p.InputPer1M, p.OutputPer1M, p.CachedPer1M, c.in, c.out, c.cache)
+		}
+	}
+
+	// Alias cmc resolves same rates
+	p, ok := GetPricingForModel("cmc", "claude-sonnet-5")
+	if !ok || p.InputPer1M != 2.0 {
+		t.Errorf("cmc alias failed to resolve pricing")
+	}
+}

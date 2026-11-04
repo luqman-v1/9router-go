@@ -974,9 +974,14 @@ func convertContentToGeminiParts(content any) []GeminiPart {
 								mimeType := url[5:semi]
 								if comma := strings.Index(url, ","); comma > 0 {
 									data := url[comma+1:]
-									parts = append(parts, GeminiPart{
-										InlineData: &GeminiInlineData{MimeType: mimeType, Data: data},
-									})
+									// Claude under Antigravity rejects images >5MB base64
+									// (OMP max-image-payload-bytes 5242880 in google-antigravity.kdl).
+									// Dropping over-budget frames keeps the turn alive.
+									if len(data) <= 5242880 {
+										parts = append(parts, GeminiPart{
+											InlineData: &GeminiInlineData{MimeType: mimeType, Data: data},
+										})
+									}
 								}
 							}
 						} else if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {

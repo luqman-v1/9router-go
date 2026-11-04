@@ -169,7 +169,14 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		if !strings.HasPrefix(strings.ToLower(contentType), "text/event-stream") {
 			return h.handleGeminiNonStream(ctx, w, resp.Body, translateResponse, metrics)
 		}
-		stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), provider)
+		// First-event watchdog (OMP GOOGLE_GEMINI_CLI_STREAM_LIMITS): Flash
+		// gets a 60s budget, everything else 5m — headers without an SSE
+		// event fail over fast instead of holding the client until stall.
+		firstEventTimeout := proxy.DefaultFirstEventTimeout
+		if strings.Contains(modelName, "flash") {
+			firstEventTimeout = proxy.FlashFirstEventTimeout
+		}
+		stallReader := proxy.NewStallReaderWithFirstEvent(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), firstEventTimeout, provider)
 		bodyCloser = stallReader
 		return h.handleGeminiStream(ctx, w, stallReader, translateResponse, metrics)
 	}
