@@ -596,3 +596,47 @@ func TestParseWeeklyQuotaSummary_PointerDecode(t *testing.T) {
 		}
 	})
 }
+
+func TestAntigravityRoster_DropsUnservedModel(t *testing.T) {
+	ClearAntigravityQuotaCache()
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"models": map[string]any{
+				"gemini-3.8-flash-high": map[string]any{
+					"isInternal": false,
+					"quotaInfo": map[string]any{
+						"remainingFraction": 1.0,
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.MarshalWrite(w, resp)
+	}))
+	defer mockServer.Close()
+
+	oldBase := antigravityQuotaBaseURL
+	antigravityQuotaBaseURL = mockServer.URL
+	defer func() { antigravityQuotaBaseURL = oldBase }()
+
+	client := mockServer.Client()
+	connID := "conn-roster-test"
+
+	if _, err := RefreshAntigravityQuota(context.Background(), client, connID, "tok", "proj"); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	// Served model should pass
+	if !IsAntigravityModelServed(connID, "gemini-3.8-flash-high") {
+		t.Errorf("served model rejected")
+	}
+
+	// Unserved bundled model (e.g. claude-opus-5-5) must be reported as unserved and blocked
+	if IsAntigravityModelServed(connID, "claude-opus-5-5") {
+		t.Errorf("unserved model accepted")
+	}
+	if !IsAntigravityModelBlocked(connID, "claude-opus-5-5") {
+		t.Errorf("unserved model must be blocked from routing")
+	}
+}
