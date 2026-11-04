@@ -245,6 +245,39 @@ func TestContextLimitKeepsTheToolPairingIntact(t *testing.T) {
 	}
 }
 
+// TestContextLimitKeepsTheOpenAIToolPairingIntact proves an OpenAI-style
+// conversation with tool_calls on the assistant turn and role:"tool" result
+// messages drops orphaned tool results when the assistant turn is trimmed.
+func TestContextLimitKeepsTheOpenAIToolPairingIntact(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{
+		"model": "test/model",
+		"messages": []map[string]any{
+			{"role": "user", "content": strings.Repeat("a", 40000)},
+			{"role": "assistant", "tool_calls": []map[string]any{
+				{"id": "call_openai_1", "type": "function", "function": map[string]any{"name": "search"}},
+			}},
+			{"role": "tool", "tool_call_id": "call_openai_1", "content": "search results"},
+			{"role": "user", "content": strings.Repeat("b", 40000)},
+		},
+		"max_tokens": 4096,
+	})
+	out, err := applyKeyContextLimit(body, 20000, 200000, 4096)
+	if err != nil {
+		t.Fatalf("applyKeyContextLimit: %v", err)
+	}
+	var req map[string]any
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal trimmed body: %v", err)
+	}
+	msgs, _ := req["messages"].([]any)
+	for _, m := range msgs {
+		mm, _ := m.(map[string]any)
+		if mm["role"] == "tool" {
+			t.Errorf("an orphaned role:\"tool\" message survived the trim: %v", mm)
+		}
+	}
+}
+
 // TestContextLimitWithoutACeilingLeavesTheBodyAlone proves a key without a
 // ceiling sends exactly what it sent.
 func TestContextLimitWithoutACeilingLeavesTheBodyAlone(t *testing.T) {

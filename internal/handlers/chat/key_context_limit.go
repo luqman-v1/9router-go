@@ -126,6 +126,10 @@ func applyKeyContextLimitMap(req map[string]any, limit, modelWindow, modelMaxOut
 	_, declaredOutput, _ := outputBudgetField(req)
 	window, maxInput, _ := contextAllowance(limit, modelWindow, modelMaxOutput, declaredOutput)
 
+	// EstimatePromptTokensFromMap measures tokens across the prompt keys of every
+	// wire format the gateway accepts (messages, system, tools, input, contents,
+	// prompt). If an atypical request carries none of these, used evaluates to 0
+	// and the input ceiling does not trim; the output clamp below still binds the answer.
 	used := middleware.EstimatePromptTokensFromMap(req)
 	trimmed := false
 	if used > maxInput {
@@ -154,7 +158,7 @@ func applyKeyContextLimitMap(req map[string]any, limit, modelWindow, modelMaxOut
 	if room < 1 {
 		room = 1
 	}
-	for _, field := range outputBudgetFields(req) {
+	for _, field := range outputBudgetFields {
 		if v, ok := numberField(req, field); ok && v > room {
 			req[field] = room
 			trimmed = true
@@ -205,14 +209,12 @@ func mustDecode(body []byte) map[string]any {
 // Claude Messages and OpenAI Chat use max_tokens; OpenAI also has
 // max_completion_tokens, which is the only spelling an o-series model
 // accepts; the Responses dialect uses max_output_tokens.
-func outputBudgetFields(req map[string]any) []string {
-	return []string{"max_tokens", "max_completion_tokens", "max_output_tokens"}
-}
+var outputBudgetFields = []string{"max_tokens", "max_completion_tokens", "max_output_tokens"}
 
 // outputBudgetField finds the field that declares how many tokens the answer
 // may use, and how large it is.
 func outputBudgetField(req map[string]any) (string, int, bool) {
-	for _, name := range outputBudgetFields(req) {
+	for _, name := range outputBudgetFields {
 		if v, ok := numberField(req, name); ok {
 			return name, v, true
 		}

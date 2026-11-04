@@ -266,35 +266,19 @@ func (h *DashboardHandler) HandleCreateApiKey(w http.ResponseWriter, r *http.Req
 		req.Key = "sk-" + strings.ReplaceAll(uuid.New().String(), "-", "")
 	}
 
-	if err := h.Repo.CreateApiKey(req.ID, req.Key, req.Name, req.MachineID); err != nil {
-		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-		return
+	// The key, its display mask, and any initial ceilings are written
+	// atomically in one transaction. If configuring the limits fails, the
+	// transaction rolls back and leaves no unbounded key in the ledger.
+	params := db.CreateApiKeyParams{
+		ID:           req.ID,
+		Key:          req.Key,
+		Name:         req.Name,
+		MachineID:    req.MachineID,
+		KeyDisplay:   keikey.Mask(req.Key),
+		TokenQuota:   quota,
+		ContextLimit: contextLimit,
 	}
-
-	// The ceiling is written after the key exists, so it lands in the same
-	// columns the policy dialog writes and the limiter reads.
-	if quota > 0 {
-		if err := h.Repo.SetApiKeyBudget(req.ID, quota, 0); err != nil {
-			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	}
-	if contextLimit > 0 {
-		if err := h.Repo.SetApiKeyContextLimit(r.Context(), req.ID, contextLimit); err != nil {
-			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	}
-
-	// The secret is stored in the clear so the dashboard can reveal and copy
-	// it again later (issue #199). This reopens the F-6/DB-02 trade-off — a
-	// database dump exposes every client key — but an operator who cannot
-	// read a key back cannot use the row they just created either.
-
-	// The masked value is kept alongside it: the list still renders a compact
-	// identifier, and a row that predates this change has no plaintext to show.
-	if err := h.Repo.SetApiKeyDisplay(req.ID, keikey.Mask(req.Key)); err != nil {
-		log.Error("apikeys", "store api key display failed", "error", err)
+	if err := h.Repo.CreateApiKeyWithLimits(r.Context(), params); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

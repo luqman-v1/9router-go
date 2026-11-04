@@ -150,8 +150,9 @@ type usageClientKeyInfo struct {
 // written before the mask format changed — and the last four characters are
 // the part that tells two keys of the same machine apart.
 type usageClientKeyIndex struct {
-	byMask   map[string]usageClientKeyInfo
-	bySuffix map[string]usageClientKeyInfo
+	byMask    map[string]usageClientKeyInfo
+	bySuffix  map[string]usageClientKeyInfo
+	ambiguous map[string]bool
 }
 
 // lookup finds the key a masked ledger row belongs to.
@@ -160,7 +161,7 @@ func (m usageClientKeyIndex) lookup(mask string) (usageClientKeyInfo, bool) {
 		return info, true
 	}
 	suffix := keyTail(mask)
-	if suffix == "" {
+	if suffix == "" || m.ambiguous[suffix] {
 		return usageClientKeyInfo{}, false
 	}
 	if info, ok := m.bySuffix[suffix]; ok {
@@ -172,8 +173,9 @@ func (m usageClientKeyIndex) lookup(mask string) (usageClientKeyInfo, bool) {
 // resolveUsageClientKeys reads the key rows and indexes them by mask.
 func (h *DashboardHandler) resolveUsageClientKeys() usageClientKeyIndex {
 	index := usageClientKeyIndex{
-		byMask:   map[string]usageClientKeyInfo{},
-		bySuffix: map[string]usageClientKeyInfo{},
+		byMask:    map[string]usageClientKeyInfo{},
+		bySuffix:  map[string]usageClientKeyInfo{},
+		ambiguous: map[string]bool{},
 	}
 	if h.Repo == nil {
 		return index
@@ -182,6 +184,23 @@ func (h *DashboardHandler) resolveUsageClientKeys() usageClientKeyIndex {
 	if err != nil {
 		return index
 	}
+	addSuffix := func(suffix string, info usageClientKeyInfo) {
+		if suffix == "" {
+			return
+		}
+		if existing, ok := index.bySuffix[suffix]; ok {
+			if existing.id != info.id {
+				index.ambiguous[suffix] = true
+				delete(index.bySuffix, suffix)
+			}
+			return
+		}
+		if index.ambiguous[suffix] {
+			return
+		}
+		index.bySuffix[suffix] = info
+	}
+
 	for _, k := range apiKeys {
 		if k == nil {
 			continue
@@ -198,19 +217,13 @@ func (h *DashboardHandler) resolveUsageClientKeys() usageClientKeyIndex {
 			if k.KeyDisplay != nil {
 				display = *k.KeyDisplay
 			}
-			if suffix := keyTail(display); suffix != "" {
-				index.bySuffix[suffix] = info
-			}
+			addSuffix(keyTail(display), info)
 			continue
 		}
 		if mask := handlerutil.MaskAPIKey(k.Key); mask != "" && mask != "***" {
 			index.byMask[mask] = info
 		}
-		if suffix := keyTail(k.Key); suffix != "" {
-			if _, exists := index.bySuffix[suffix]; !exists {
-				index.bySuffix[suffix] = info
-			}
-		}
+		addSuffix(keyTail(k.Key), info)
 	}
 	return index
 }

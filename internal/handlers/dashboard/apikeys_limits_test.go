@@ -2,10 +2,13 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"9router/proxy/internal/db"
 )
 
 // TestCreateApiKeyAcceptsTheCeilings proves a key can be bounded at the moment
@@ -161,5 +164,37 @@ func TestUpdateApiKeyPolicyRejectsANegativeContextLimit(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCreateApiKeyAtomicityOnFailure proves that if creating a key or applying
+// its limits fails, the entire transaction is rolled back and no partial,
+// unbounded key record remains in the database.
+func TestCreateApiKeyAtomicityOnFailure(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancelled context to trigger rollback during transaction execution
+
+	err := repo.CreateApiKeyWithLimits(ctx, db.CreateApiKeyParams{
+		ID:           "atomic-fail-id",
+		Key:          "sk-atomic-fail-key-0000000000000000",
+		Name:         "Atomic Fail Key",
+		TokenQuota:   500_000,
+		ContextLimit: 64_000,
+	})
+	if err == nil {
+		t.Fatal("expected error with cancelled context, got nil")
+	}
+
+	keys, err := repo.GetApiKeys()
+	if err != nil {
+		t.Fatalf("GetApiKeys: %v", err)
+	}
+	for _, k := range keys {
+		if k.ID == "atomic-fail-id" {
+			t.Fatalf("unbounded key %s survived rolled-back transaction", k.ID)
+		}
 	}
 }

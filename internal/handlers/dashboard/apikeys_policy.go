@@ -247,6 +247,11 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 	}
 	// The context ceiling is written for the same reason: an explicit zero
 	// clears the axis, so a conditional write would leave it stale.
+	//
+	// On a legacy database opened without migrations, existing.ContextLimit
+	// is nil and this write fails rather than silently dropping the ceiling.
+	// In production, EnsureAdditiveColumns on boot guarantees the column
+	// exists before any policy write arrives.
 	if err := h.Repo.SetApiKeyContextLimit(r.Context(), id, contextLimit); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
