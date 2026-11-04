@@ -116,3 +116,16 @@ func TestClassifyDeepSeekWebAccountRefusals(t *testing.T) {
 		t.Errorf("other provider 403 cooldown = %dms, want %dms", other.CooldownMs, cooldownLong)
 	}
 }
+
+func TestClassifyError_ImproperlyFormedRequestNoPark(t *testing.T) {
+	// "improperly formed request" is a caller payload error, not an account
+	// outage: it must not park a healthy account behind cooldownLong. With the
+	// rule removed, a 400 that matches no rule falls through to no-fallback.
+	cls := ClassifyError(http.StatusBadRequest, "improperly formed request", 0)
+	if cls.ShouldFallback {
+		t.Errorf("expected no fallback for improperly formed request, got %+v", cls)
+	}
+	if cls.CooldownMs != 0 {
+		t.Errorf("expected zero cooldown for improperly formed request, got %d", cls.CooldownMs)
+	}
+}
