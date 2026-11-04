@@ -1,0 +1,6 @@
+### Fixed
+
+- **Antigravity header timeout now fails over instead of failing the turn** (`ForwardGemini (antigravity/gemini-3.8-flash-medium): upstream request: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent": http2: timeout awaiting response headers` → `request failed`/`499`):
+  - Root cause: the 120s `ResponseHeaderTimeout` fires as a plain `client.Do` error. `ForwardGemini` wrapped it in `fmt.Errorf("upstream request: %w")`, which is not `*UpstreamError`, so the combo loop never entered the `RetryableStatusCodes` (502) lock/exclusion path and the turn died on one dead account.
+  - Fix (`internal/proxy/gemini.go`): classify transient transport faults (`http2: timeo`, `timeout awaiting response headers`, `EOF`, `connection reset by peer`, `connection refused`, `context.DeadlineExceeded`, `url.Error.Timeout()`) as `UpstreamFailure(502)` via `isTransientGeminiTransportError`, mirroring upstream decolua/9router `ANTIGRAVITY_TRANSIENT_ERROR_PATTERNS` (`/timeout/i`) and `DEFAULT_RETRY_CONFIG` 502 handling. `ctx.Err() != nil` (client disconnect / 499) stays terminal and is never retried.
+  - Perf: classifier runs only on the error path (~370 ns/op); the 200-OK path is byte-identical with zero added allocation. Live E2E `gemini-3.8-flash-medium` (chat + stream) and `MultiToolCall` all pass against real upstream.
