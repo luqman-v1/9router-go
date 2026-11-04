@@ -2,6 +2,7 @@
 title: Settings
 order: 14
 section: Using the Gateway
+since: 1.9.14
 ---
 
 # Settings

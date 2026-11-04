@@ -39,3 +39,27 @@ Verified with `go build ./tools/sitegen/`, `go vet ./tools/sitegen/`,
 and 1440px covering the toggle, its persistence across pages, and the theme
 carrying over after a rotation. Every assertion the Pages job makes was run
 against the generated `_site` before the PR was opened.
+
+### fix(wiki): give the desktop sidebar a scroll of its own
+
+The nav is 21 links in five groups plus the search box — 1103px tall — and the
+sidebar was sticky at `top: 5.5rem` with no height bound. On any window shorter
+than that the lower links ran off the bottom of the screen with no way to reach
+them: the article scrolled, the sidebar did not, because `overflow-y` was
+visible.
+- **`tools/sitegen/wiki_template.go`** bounds the sidebar at
+  `max-height: calc(100vh - 9.5rem)` with `overflow-y: auto`, so the nav
+  scrolls on its own and every link stays reachable. The bound leaves room
+  below the sticky offset so the last link is not flush with the window edge,
+  and `overscroll-behavior: contain` keeps a wheel over the nav from scrolling
+  the article once the nav bottoms out.
+- **`tools/sitegen/wiki_test.go`** pins the base rule (the mobile sheet keeps
+  its own `overflow-y`), and was checked against a negative control: removing
+  the `max-height` fails it.
+
+Measured before at 1280x600, 1366x768 and 1920x1080: sidebar bottom past
+1207px, 21 links, `overflow-y: visible`, `scrollHeight` equal to
+`clientHeight`. Measured after: the sidebar scrolls and every link is
+reachable by scrolling it alone at every height down to 480px, with the
+current-page marker still visible at the top. The mobile sheet is unchanged —
+it still hides by transform when closed and navigates on click.

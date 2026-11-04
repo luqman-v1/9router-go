@@ -176,15 +176,21 @@ a:hover {
 }
 
 .wordmark-mark {
-  display: grid;
+  /* A container for the product's own icon, not a coloured plate: the glyph
+     inside carries its own dark plate and its own colours, so painting a
+     background here would put a second plate behind the real one. The square
+     stays 1.75rem and the radius is dropped — the SVG's own 12-unit corner
+     radius is the mark's, and two radii on one 28px square disagree visibly. */
+  display: inline-grid;
   place-items: center;
   width: 1.75rem;
   height: 1.75rem;
-  border-radius: 7px;
-  background: var(--brand);
-  color: #ffffff;
-  font-weight: 700;
-  font-size: 1rem;
+  flex-shrink: 0;
+}
+.wordmark-mark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .masthead nav {

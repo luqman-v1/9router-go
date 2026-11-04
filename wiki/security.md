@@ -2,6 +2,7 @@
 title: Security
 order: 8
 section: Using the Gateway
+since: 1.9.14
 ---
 
 # Security

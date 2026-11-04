@@ -3,9 +3,14 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// mdLinkRe matches an inline markdown link and captures its destination, so a
+// test can audit where a link points without a markdown parser.
+var mdLinkRe = regexp.MustCompile(`\[[^\]]*\]\(([^)\s]+)\)`)
 
 // projectCSS is the stylesheet shared with the project page. The tests read it
 // to keep a wiki-only rule from leaking into a page that has no sidebar.
@@ -187,7 +192,7 @@ func TestGenerateWiki(t *testing.T) {
 		t.Fatalf("MkdirAll(out): %v", err)
 	}
 
-	if err := generateWiki(wiki, out, "luqman-v1/9router-go"); err != nil {
+	if err := generateWiki(wiki, out, "luqman-v1/9router-go", "9.9.9"); err != nil {
 		t.Fatalf("generateWiki: %v", err)
 	}
 
@@ -383,39 +388,33 @@ func TestThemeSwitcherUsesTheDashboardContract(t *testing.T) {
 	if !strings.Contains(body, `localStorage.setItem("9router-theme", next)`) {
 		t.Error("the toggle does not store its choice under the dashboard's key")
 	}
-	if !strings.Contains(body, `id="theme-toggle"`) {
-		t.Error("the template has no theme toggle button inside the links sheet")
-	}
+	// One toggle, in the bar, at every width. It used to be two — a bar copy and
+	// a row inside the links sheet — because the bar had no room below 60rem. A
+	// second copy in the footer caption's place would be a control that appears
+	// beside a caption that no longer exists, and a reader would have to work out
+	// which one is live.
 	if !strings.Contains(body, `id="theme-toggle-bar"`) {
 		t.Error("the template has no theme toggle button in the bar")
 	}
-	// Each copy must be visible only where a reader can reach it. The bar copy is
-	// hidden below 60rem (where the links sheet is the only way in) and the sheet
-	// copy is hidden above it (where the sheet itself never opens). If both were
-	// always visible, a phone bar would carry two theme controls.
-	if !strings.Contains(wikiTemplate, "@media (max-width: 60rem) {\n        .wiki-theme-btn-bar {\n          display: none;") {
-		t.Error("the bar copy is not hidden on a phone")
+	if strings.Contains(body, `id="theme-toggle"`) {
+		t.Error("the links sheet still carries its own theme button; the bar's copy must be the only one")
 	}
-	if !strings.Contains(wikiTemplate, ".wiki-theme-btn-bar {\n          display: none;") {
-		t.Error("the bar copy is not hidden on a phone")
+	// The bar copy must never be hidden by width: the reason the sheet copy
+	// existed was that the bar gave it up below 60rem. If that media query comes
+	// back, a phone reader has no way to switch themes at all.
+	if strings.Contains(wikiTemplate, ".wiki-theme-btn-bar {\n          display: none;") {
+		t.Error("the bar copy is still hidden on a phone, which would leave no reachable theme control")
 	}
-	if !strings.Contains(wikiTemplate, "@media (min-width: 60.0625rem) {\n        #project-links .wiki-theme-btn {\n          display: none;") {
-		t.Error("the sheet copy is not hidden on a desktop")
-	}
-	// Both copies must be painted together: switching in the sheet and then
-	// rotating to landscape must show the bar button already on the new theme.
-	if !strings.Contains(body, "[barBtn, sheetBtn].forEach") {
-		t.Error("the two buttons are not painted as one control")
+	// The single button must still be painted on every switch, or its icon keeps
+	// pointing at the theme that was just replaced.
+	if !strings.Contains(body, "paint();") {
+		t.Error("the toggle never repaints its own icon")
 	}
 	// Both classes are set on every switch; a stale one would leave the two rules
 	// disagreeing about which theme applies.
 	if !strings.Contains(body, `classList.toggle("dark", next === "dark")`) ||
 		!strings.Contains(body, `classList.toggle("light", next === "light")`) {
 		t.Error("the toggle does not set both classes, so a stale class can survive a switch")
-	}
-	// The icon must be re-painted, or it keeps pointing at the wrong theme.
-	if !strings.Contains(body, "paint();") {
-		t.Error("the toggle never repaints its own icon")
 	}
 }
 
@@ -512,32 +511,39 @@ func TestNavTriggerLivesInTheHeaderBar(t *testing.T) {
 	if strings.Count(wikiTemplate, `id="nav-open"`) != 1 {
 		t.Errorf("found %d Menu buttons, want exactly 1", strings.Count(wikiTemplate, `id="nav-open"`))
 	}
-	// The project links need an id, so the toggle can name what it controls.
+	// The project links need an id, so the footer can be referenced and styled
+	// as one group, and so a test can assert the links are still there.
 	if !strings.Contains(wikiTemplate, `id="project-links"`) {
-		t.Error("project links have no id: the toggle cannot reference them")
+		t.Error("project links have no id")
 	}
-	if !strings.Contains(wikiTemplate, `id="links-open"`) {
-		t.Error("no toggle for the project links")
+	// They must live in the sidebar footer, not the masthead: a bar carrying the
+	// nav trigger, the wordmark, three links and a theme control has more chrome
+	// than content on a narrow desktop, and none of the three acts on the page
+	// the reader is on.
+	if !strings.Contains(wikiTemplate, `class="wiki-side-foot"`) {
+		t.Error("the sidebar has no footer: the project links have nowhere to live")
 	}
-	if !strings.Contains(wikiTemplate, `aria-controls="project-links"`) {
-		t.Error("the links toggle does not name the list it controls")
+	// The old toggle is gone: the links are always visible in the footer, so a
+	// control that shows and hides them is dead weight a reader has to open.
+	if strings.Contains(wikiTemplate, `id="links-open"`) {
+		t.Error("the links toggle is still present: the footer links are always visible")
 	}
-	// Both controls are icon-only, so each must carry an accessible name. Without
-	// aria-label a screen reader announces "button" and nothing else, and the
-	// whole navigation becomes unreachable for a blind reader on a phone.
+	if strings.Contains(wikiTemplate, `wiki-links-toggle`) {
+		t.Error("the links toggle CSS is still present: no toggle is rendered")
+	}
+	if strings.Contains(wikiTemplate, `aria-controls="project-links"`) {
+		t.Error("a control still names the project links: nothing shows or hides them")
+	}
+	// Both header controls are icon-only, so each must carry an accessible name.
+	// Without aria-label a screen reader announces "button" and nothing else, and
+	// the whole navigation becomes unreachable for a blind reader on a phone.
 	if !strings.Contains(wikiTemplate, `aria-label="Open wiki navigation"`) {
 		t.Error("Menu button has no accessible name: it is icon-only")
-	}
-	if !strings.Contains(wikiTemplate, `aria-label="Show project links"`) {
-		t.Error("links toggle has no accessible name: it is icon-only")
 	}
 	// The glyph itself must be hidden from assistive tech, or the name is read
 	// twice — once as the aria-label and once as the character.
 	if !strings.Contains(wikiTemplate, `class="wiki-menu-icon" aria-hidden="true"`) {
 		t.Error("the menu glyph is not hidden: its name is announced twice")
-	}
-	if !strings.Contains(wikiTemplate, `class="wiki-links-icon" aria-hidden="true"`) {
-		t.Error("the links glyph is not hidden: its name is announced twice")
 	}
 	// Neither button may show a text label any more.
 	for _, label := range []string{"> Menu</span>", "> Links</span>"} {
@@ -545,26 +551,140 @@ func TestNavTriggerLivesInTheHeaderBar(t *testing.T) {
 			t.Errorf("header button still shows a text label %q", label)
 		}
 	}
-	// Both controls must be hidden above the breakpoint, where the sidebar is
-	// already open and the links already have their row.
-	if !strings.Contains(wikiTemplate, ".wiki-menu-btn,\n        .wiki-links-toggle {\n          display: inline-flex;") {
-		t.Error("the two header controls are not revealed together at the breakpoint")
+	// The nav trigger must be hidden above the breakpoint, where the sidebar is
+	// already open.
+	if !strings.Contains(wikiTemplate, ".wiki-menu-btn {\n          display: inline-flex;") {
+		t.Error("the header control is not revealed at the breakpoint")
 	}
-	// The links must actually hide below it, or the toggle opens nothing.
-	if !strings.Contains(wikiTemplate, ".masthead nav {\n          display: none;\n        }") {
-		t.Error("the project links do not hide below the breakpoint: the toggle has nothing to show")
+	// Each footer link carries an inline SVG icon, so the row reads as an
+	// external action rather than another wiki page — and so it does not depend
+	// on a glyph the reader's font may not have.
+	if got := strings.Count(wikiTemplate, `class="wiki-foot-icon"`); got != 3 {
+		t.Errorf("found %d footer icons, want 3 (project, repository, telegram)", got)
 	}
-	// Escape must close the links too, and focus must come back to the control.
-	if !strings.Contains(wikiTemplate, "if (e.key === \"Escape\" && links.classList.contains(\"is-open\"))") {
-		t.Error("Escape does not close the project links")
+	// The footer links are icons only, in a row. Each one lost its label, so the
+	// accessible name has to come from somewhere: aria-label on the link, with
+	// the SVG aria-hidden. Without it a screen reader announces "link" three
+	// times and the reader cannot tell project from repository.
+	for _, name := range []string{"Project", "Repository", "Telegram group"} {
+		if !strings.Contains(wikiTemplate, `aria-label="`+name+`"`) {
+			t.Errorf("footer icon %q has no aria-label: it is icon-only, so its name is unreachable", name)
+		}
+	}
+	if !strings.Contains(wikiTemplate, `aria-label="Project" title="Project"`) {
+		t.Error("the icon-only footer link carries no title: a pointer reader gets no name on hover")
+	}
+	// The row is horizontal, not a column: three labelled rows spent the sidebar's
+	// height to say what the marks already say.
+	if !strings.Contains(wikiTemplate, "#project-links {\n        display: flex;\n        flex-direction: row;") {
+		t.Error("the footer links are not laid out as a row")
+	}
+	// The release line is back, but it is the release the wiki documents — read
+	// from version.json — not the build the binary was compiled from. On an
+	// experimental line those differ, and naming the build told readers the docs
+	// described a release nobody could download.
+	if !strings.Contains(wikiTemplate, `class="wiki-version">Documents release {{ .StableVersion }}`) {
+		t.Error("the footer no longer names the release the wiki documents")
+	}
+	if strings.Contains(wikiTemplate, "{{ .Version }}") {
+		t.Error("the template renders the build version, not the release the wiki documents")
+	}
+	// It must be omitted when the generator was given no version, so a local run
+	// without the manifest does not print an empty label.
+	if !strings.Contains(wikiTemplate, "{{ if .StableVersion }}") {
+		t.Error("the release line has no guard: an empty version would render as bare text")
+	}
+	// One logo per view. The masthead carries the wordmark on every screen, so
+	// the sidebar's own header row was a second copy of the same mark and name in
+	// the same view — a reader sees two logos and has to work out whether they
+	// differ. The sidebar now starts at the search box, which is the first thing
+	// it does that the masthead does not.
+	if strings.Contains(wikiTemplate, `class="wiki-side-head"`) {
+		t.Error("the sidebar still carries its own header row: the masthead already names the product")
+	}
+	if strings.Contains(wikiTemplate, `class="wiki-side-title"`) {
+		t.Error("the sidebar still has its own wordmark link: two links to index.html in one view")
+	}
+	// The phone sheet head keeps a mark, because there the bar is the only chrome
+	// that is always visible and the sheet is where a phone reader lands. It has
+	// its own class, so it cannot be deleted with the desktop row's CSS by
+	// mistake — which is what happened the first time the row was cut.
+	if !strings.Contains(wikiTemplate, `class="wiki-sheet-mark"`) {
+		t.Error("the phone sheet head has no mark class: the sheet's logo lost its styling")
+	}
+	if !strings.Contains(wikiTemplate, ".wiki-sheet-mark {") {
+		t.Error("the sheet mark has no rule, so the phone sheet head renders as bare text")
+	}
+	// Both marks must be the product's own icon — the same SVG the dashboard and
+	// the repository serve — rather than two different drawings of it. The glyph
+	// carries its own plate and its own colours, so neither mark paints a
+	// background: a plate behind it would be a second plate, and the two radii
+	// on one 28px square would disagree visibly.
+	iconCore := `<circle cx="24" cy="24" r="7" fill="#FF5C35"/>`
+	if !strings.Contains(wikiTemplate, iconCore) {
+		t.Error("the masthead no longer draws the product's own icon")
+	}
+	if got := strings.Count(wikiTemplate, iconCore); got != 2 {
+		t.Errorf("found %d copies of the icon core, want 2 (masthead + phone sheet head)", got)
+	}
+	if strings.Contains(wikiTemplate, ".wiki-sheet-mark {\n          display: grid;\n          place-items: center;\n          width: 1.25rem;\n          height: 1.25rem;\n          border-radius: 6px;") {
+		t.Error("the sheet mark still paints its own plate behind the real icon")
+	}
+	// The masthead wordmark must remain the only route to the project page.
+	if got := strings.Count(wikiTemplate, `class="wordmark"`); got != 1 {
+		t.Errorf("found %d wordmarks, want exactly 1 (in the masthead)", got)
+	}
+	// The theme button must be the bar's last child, so it is the rightmost
+	// control — the position the reader looks to for a view setting.
+	bar := wikiTemplate[strings.Index(wikiTemplate, `<div class="masthead-inner">`):]
+	bar = bar[:strings.Index(bar, "</div>")]
+	themeAt := strings.Index(bar, `id="theme-toggle-bar"`)
+	if themeAt < 0 {
+		t.Fatal("no theme button in the bar")
+	}
+	if wordmarkAt := strings.Index(bar, `class="wordmark"`); themeAt < wordmarkAt {
+		t.Error("theme button is not after the wordmark: it is not at the bar's right edge")
 	}
 }
 
-// The search index must be reachable from every keystroke, which means the
-// variable holding it has to outlive the fetch that fills it. It previously
-// lived only as a parameter of render(), so the input handler threw a
-// ReferenceError and search silently returned nothing on every page — a defect
-// no render or CSS check can see, because the box still looks correct.
+// The shell is the sticky sidebar's containing block, so bottom padding on it
+// bounds how far down the sidebar can travel. With 4rem there the sidebar
+// stopped 64px short of the window bottom at the end of a page and its search
+// box was pushed up over the masthead — measured 32px of the bar covered. The
+// padding moved to the article column, where it is breathing room for the text
+// and cannot move the sidebar.
+func TestShellDoesNotBoundTheStickySidebar(t *testing.T) {
+	if !strings.Contains(wikiTemplate, ".wiki-shell {") {
+		t.Fatal("no .wiki-shell rule found")
+	}
+	rule := cssRule(t, wikiTemplate, ".wiki-shell")
+	if strings.Contains(rule, "padding-bottom: 4rem") || strings.Contains(rule, "padding: 2rem 1.25rem 4rem") {
+		t.Error("the shell still carries bottom padding: it bounds the sticky sidebar and pushes the search box over the masthead at the end of a page")
+	}
+	if !strings.Contains(wikiTemplate, "margin-bottom: 4rem;") {
+		t.Error("the article column has no bottom margin: the shell's 4rem of breathing room was dropped instead of moved")
+	}
+	// The phone override keeps the shell's own padding and must zero the
+	// article's margin, or the two add up to 7rem of dead space at the bottom.
+	if !strings.Contains(wikiTemplate, "@media (max-width: 60rem) {\n        .wiki-main {\n          margin-bottom: 0;\n        }\n      }") {
+		t.Error("the phone override does not zero the article's bottom margin")
+	}
+}
+
+// cssRule returns the body of the first CSS rule whose selector is exactly sel.
+func cssRule(t *testing.T, css, sel string) string {
+	t.Helper()
+	at := strings.Index(css, sel+" {")
+	if at < 0 {
+		t.Fatalf("no rule for %s", sel)
+	}
+	body := css[at+len(sel)+2:]
+	if end := strings.Index(body, "}"); end >= 0 {
+		body = body[:end]
+	}
+	return body
+}
+
 func TestSearchIndexIsInScopeForEveryKeystroke(t *testing.T) {
 	// The closure variable that survives the fetch.
 	if !strings.Contains(wikiTemplate, "var index = [];") {
@@ -586,12 +706,159 @@ func TestSearchIndexIsInScopeForEveryKeystroke(t *testing.T) {
 	if strings.Contains(wikiTemplate, "render(index || [], q)") {
 		t.Error("a caller still passes the index as render()'s first argument")
 	}
-	// Every call site must pass exactly one argument.
-	for _, call := range []string{"render(query)", "render(q)"} {
-		if !strings.Contains(wikiTemplate, call) {
-			t.Errorf("no call site %q; search never renders", call)
+	// Every call site must pass a single argument: the query. A second
+	// argument is the old two-parameter signature, which passed the array
+	// where the string goes. The call sites changed when search moved into a
+	// dialog — they are `render(modalInput.value)` now, and pinning the old
+	// spellings would fail a correct implementation for the wrong reason. What
+	// matters is that every call passes exactly one argument and that argument
+	// is not the index, so that is what is checked.
+	for _, call := range renderCalls(wikiTemplate) {
+		args := strings.TrimSuffix(strings.TrimPrefix(call, "render("), ")")
+		if strings.Contains(args, "index") {
+			t.Errorf("call site %q passes the index to render()", call)
+		}
+		if strings.Count(args, ",") > 0 {
+			t.Errorf("call site %q passes more than one argument to render()", call)
 		}
 	}
+	if len(renderCalls(wikiTemplate)) == 0 {
+		t.Error("render() is never called: search cannot produce output")
+	}
+}
+
+// Search opens a dialog instead of rendering into the sidebar. The sidebar box
+// is now a read-only trigger, because the list it used to render was squeezed
+// into a 15rem column and, on a phone, lived inside the full-screen nav sheet.
+// These cases pin the four things that make that work: the trigger is
+// read-only and clickable, the dialog exists and is a direct child of <body>
+// (inside the sidebar it would be trapped by the sheet's transform), the
+// results render into the dialog's own list, and the query is replayed when a
+// shared link arrives.
+func TestSearchOpensAModal(t *testing.T) {
+	// The trigger is an icon-only button, not a text box: a read-only input
+	// spent a whole row of the sidebar column to say "click me", and its
+	// placeholder text was the only thing that made it look like a control.
+	if !strings.Contains(wikiTemplate, `class="wiki-search-btn"`) ||
+		!strings.Contains(wikiTemplate, `id="search-open"`) {
+		t.Error("the search trigger is not the icon button in the sidebar's head row")
+	}
+	if !strings.Contains(wikiTemplate, `aria-label="Search the wiki"`) {
+		t.Error("the search button has no accessible name")
+	}
+	if !strings.Contains(wikiTemplate, `aria-haspopup="dialog"`) {
+		t.Error("the trigger does not declare that it opens a dialog")
+	}
+	// The old text box is gone. Leaving it would give the column two ways to
+	// search, one of which is a field that no longer accepts typing.
+	if strings.Contains(wikiTemplate, `id="q"`) {
+		t.Error("the sidebar still carries the old read-only search input")
+	}
+	if strings.Contains(wikiTemplate, "wiki-search-hint") {
+		t.Error("the 'Click to search' hint is still there; the button needs no hint")
+	}
+	// The button lives in the head row beside the product name, not in a block
+	// of its own inside the column.
+	if !strings.Contains(wikiTemplate, `margin-left: auto;`) {
+		t.Error("the search button is not pushed to the right of the head row")
+	}
+	// The dialog and its controls.
+	for _, want := range []string{
+		`<dialog class="wiki-search-modal" id="search-modal"`,
+		`id="search-modal-input"`,
+		`id="results-modal"`,
+		`id="search-modal-close"`,
+	} {
+		if !strings.Contains(wikiTemplate, want) {
+			t.Errorf("the search dialog is missing %q", want)
+		}
+	}
+	// Results render into the dialog's list, not the sidebar's.
+	if !strings.Contains(wikiTemplate, "modalResults.innerHTML") {
+		t.Error("search results are not rendered into the dialog's list")
+	}
+	if strings.Contains(wikiTemplate, "results.innerHTML = hits") {
+		t.Error("search results still render into the sidebar list")
+	}
+	// Clicking the trigger opens it, and a keyboard user gets the same path.
+	if !strings.Contains(wikiTemplate, `triggers.forEach(function (btn) {`) ||
+		!strings.Contains(wikiTemplate, `btn.addEventListener("click", openSearch)`) {
+		t.Error("clicking the search box does not open the dialog")
+	}
+	// A <button> activates on Enter and Space natively, so the keyboard path is
+	// the click listener. Only Space needs a guard, and that guard is what the
+	// page-behind-the-dialog scroll depends on.
+	if !strings.Contains(wikiTemplate, `if (e.key === " ") e.preventDefault();`) {
+		t.Error("the search button does not stop Space from scrolling the page behind the dialog")
+	}
+	// Both copies are bound: one in the masthead for desktop, one in the
+	// sidebar's head row for a phone. Only one is rendered at a time, but a
+	// reader who resizes the window must not get a dead control on the screen
+	// they just switched to.
+	if !strings.Contains(wikiTemplate, `id="search-open-side"`) {
+		t.Error("there is no phone copy of the search button in the sidebar")
+	}
+	if !strings.Contains(wikiTemplate, `var triggers = [trigger, triggerSide].filter(Boolean);`) {
+		t.Error("the script does not bind both search buttons")
+	}
+	if !strings.Contains(wikiTemplate, `paintTriggers(true)`) ||
+		!strings.Contains(wikiTemplate, `paintTriggers(false)`) {
+		t.Error("aria-expanded is not kept in step across both search buttons")
+	}
+	// A shared link carrying ?q= shows the results without retyping.
+	if !strings.Contains(wikiTemplate, "if (query) openSearch();") {
+		t.Error("a shared ?q= link does not open the search already showing results")
+	}
+	// The index may still be in flight when the dialog opens; an empty list
+	// would read as "no results".
+	if !strings.Contains(wikiTemplate, "var indexLoaded = false;") {
+		t.Error("there is no loaded flag: an in-flight index renders as no results")
+	}
+	// The template writes the ellipsis as a \u2026 escape, because it lives
+	// inside a JS string literal in a Go raw string.
+	if !strings.Contains(wikiTemplate, "Loading\\u2026") {
+		t.Error("the dialog does not say the index is still loading")
+	}
+	// The cap must be stated, or a reader believes nothing else matched.
+	if !strings.Contains(wikiTemplate, "more match") {
+		t.Error("a capped result list does not say how many matches were cut")
+	}
+}
+
+// The dialog must be a direct child of <body>. Inside the sidebar it is
+// trapped: below 60rem that aside is position:fixed with transform and
+// visibility transitions, so the dialog would inherit the sheet's transform,
+// be unreachable while the sheet is closed, and cover a sheet that is itself
+// full-screen. Measured in the browser before the move: the dialog rendered
+// inside the aside and the click on the sidebar box did nothing at all.
+func TestSearchDialogIsOutsideTheSidebar(t *testing.T) {
+	at := strings.Index(wikiTemplate, `<dialog class="wiki-search-modal"`)
+	if at < 0 {
+		t.Fatal("no search dialog in the template")
+	}
+	before := wikiTemplate[:at]
+	// The dialog must come after the aside's closing tag. Before that tag the
+	// dialog is inside the sidebar, which below 60rem is a transformed fixed
+	// sheet — it traps the dialog and hides it with the sheet.
+	if strings.LastIndex(before, "</aside>") < strings.LastIndex(before, "<aside") {
+		t.Errorf("the search dialog is inside <aside>: below 60rem the sidebar is a transformed fixed sheet, which traps the dialog")
+	}
+}
+
+// renderCalls returns every `render(...)` call site in the template, so a test
+// can audit them without pinning the exact spelling of the argument.
+var renderCallRe = regexp.MustCompile(`render\([^)]*\)`)
+
+func renderCalls(tmpl string) []string {
+	var calls []string
+	for _, m := range renderCallRe.FindAllString(tmpl, -1) {
+		// The declaration is not a call site.
+		if strings.HasPrefix(m, "render(q) {") || strings.Contains(m, "function ") {
+			continue
+		}
+		calls = append(calls, m)
+	}
+	return calls
 }
 
 // The wiki-main rule is the one that decides the article column's width, so the
@@ -790,7 +1057,7 @@ func TestGenerateWikiFailsWithoutPages(t *testing.T) {
 	if err := os.MkdirAll(wiki, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	err := generateWiki(wiki, filepath.Join(root, "_site"), "luqman-v1/9router-go")
+	err := generateWiki(wiki, filepath.Join(root, "_site"), "luqman-v1/9router-go", "")
 	if err == nil {
 		t.Fatal("generateWiki() succeeded with no pages, want an error")
 	}
@@ -859,7 +1126,7 @@ func TestAnchorIDMatchesGoldmarkOutput(t *testing.T) {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := generateWiki(wiki, out, "luqman-v1/9router-go"); err != nil {
+	if err := generateWiki(wiki, out, "luqman-v1/9router-go", "9.9.9"); err != nil {
 		t.Fatalf("generateWiki: %v", err)
 	}
 
@@ -883,5 +1150,364 @@ func TestAnchorIDMatchesGoldmarkOutput(t *testing.T) {
 
 	if !strings.Contains(index, `"anchor":"`+publishedID+`"`) {
 		t.Errorf("index anchor does not match published id %q", publishedID)
+	}
+}
+
+// The desktop nav is taller than a short window, so it has to scroll on its
+// own. Without a height bound plus overflow, the sticky sidebar spills past
+// the fold with no way to reach the lower links — the page scrolls, the sidebar
+// does not, and the last entries are simply gone.
+// Measured before the fix: 21 links, sidebar 1103px tall against a 600px
+// viewport, overflow-y visible. After the first attempt it still failed: the
+// box was 680px against a 700px column, so it stopped 20px short of the bottom.
+
+// The wiki's "new" badge marks pages that document a release newer than the one
+// the wiki was built from, so a reader does not take an experimental flag as the
+// shipped contract. The direction of the comparison is the whole feature: a wiki
+// built from 1.9.15 must not flag a page documented in 1.9.14, and equality must
+// mean no badge. The parts are compared numerically, because a string compare
+// orders 1.10.0 before 1.9.0.
+func TestReleaseNewer(t *testing.T) {
+	tests := []struct {
+		name  string
+		page  string
+		built string
+		want  bool
+	}{
+		{"page ahead of the wiki", "1.9.14", "1.9.13", true},
+		{"same release", "1.9.14", "1.9.14", false},
+		{"page behind the wiki", "1.9.14", "1.9.15", false},
+		{"experimental build ahead of a stable manifest", "1.9.15-exp.16", "1.9.14", true},
+		{"experimental build of the documented line", "1.9.15-exp.16", "1.9.15", false},
+		{"major bump ahead", "2.0.0", "1.9.15", true},
+		{"minor ten ahead of nine", "1.10.0", "1.9.0", true},
+		{"minor ten behind nine", "1.9.0", "1.10.0", false},
+		// A value that is not a version cannot be ordered. Flagging every page on
+		// a typo would make the badge noise, so it reads as current instead.
+		{"not a version", "notaversion", "1.9.14", false},
+		{"empty", "", "1.9.14", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := releaseNewer(tt.page, tt.built); got != tt.want {
+				t.Errorf("releaseNewer(%q, %q) = %v, want %v", tt.page, tt.built, got, tt.want)
+			}
+		})
+	}
+}
+
+// A link to a repository file that is not a wiki page must be an absolute
+// github.com URL, not a rewritten .html sibling. The wiki linker treats every
+// `*.md` destination as an internal page and swaps the suffix, so a link like
+// `COMPARISON.md` in wiki/index.md published as `COMPARISON.html` — a URL that
+// does not exist on the site and 404s. The rule is the same one the linker
+// already applies to images and anchors, and this test pins the visible
+// consequence rather than the mechanism.
+func TestHomeComparisonLinksResolve(t *testing.T) {
+	home, err := os.ReadFile(filepath.Join("..", "..", "wiki", "index.md"))
+	if err != nil {
+		t.Fatalf("read wiki/index.md: %v", err)
+	}
+	src := string(home)
+	// Every wiki-internal link in the comparison section must name a page that
+	// exists, and every repository file link must be absolute.
+	section := src[strings.Index(src, "## How it compares with 9Router"):]
+	if next := strings.Index(section[4:], "\n## "); next >= 0 {
+		section = section[:next+4]
+	}
+	for _, m := range mdLinkRe.FindAllStringSubmatch(section, -1) {
+		dest := m[1]
+		if strings.HasPrefix(dest, "http") {
+			continue
+		}
+		if strings.HasSuffix(strings.SplitN(dest, "#", 2)[0], ".md") {
+			slug := strings.TrimSuffix(strings.SplitN(dest, "#", 2)[0], ".md")
+			if _, err := os.Stat(filepath.Join("..", "..", "wiki", slug+".md")); err != nil {
+				t.Errorf("wiki/index.md links %q as a wiki page, but wiki/%s.md does not exist: it publishes as %s.html and 404s", dest, slug, slug)
+			}
+		}
+	}
+}
+
+// An absolute github.com URL to a repository file also ends in .md, and the
+// wiki linker used to rewrite every .md destination as a wiki page — so a link
+// to the repository's COMPARISON.md published as `.../COMPARISON.html`, a URL
+// that 404s on both the site and GitHub. The scheme check has to come before
+// the suffix test. This runs the real generator rather than the snippet, so it
+// catches the case where the rule moves back below the check.
+func TestAbsoluteMarkdownLinkKeepsItsSuffix(t *testing.T) {
+	const target = "https://github.com/luqman-v1/9router-go/blob/main/COMPARISON.md"
+	root := t.TempDir()
+	out := filepath.Join(root, "site")
+	if err := os.MkdirAll(filepath.Join(root, "wiki"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "version.json"), []byte(`{"latestVersion":"1.9.14"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "wiki", "index.md"), []byte("---\ntitle: Home\norder: 1\n---\n# Home\n[comparison document]("+target+") and [Parity](parity.md).\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "wiki", "parity.md"), []byte("---\ntitle: Parity\norder: 2\n---\n# Parity\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const repo = "luqman-v1/9router-go"
+	if err := generateWiki(filepath.Join(root, "wiki"), out, repo, "1.9.14"); err != nil {
+		t.Fatalf("generateWiki: %v", err)
+	}
+	html, err := os.ReadFile(filepath.Join(out, "index.html"))
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	got := string(html)
+	if strings.Contains(got, "COMPARISON.html") {
+		t.Error("the absolute .md link was rewritten to .html: it now 404s on the site and on GitHub")
+	}
+	if !strings.Contains(got, `href="`+target+`"`) {
+		t.Errorf("the absolute link did not survive untouched; want href=%q in:\n%s", target, got)
+	}
+	// The relative wiki link must still be rewritten — the fix must not disable
+	// the rule that makes the site navigable.
+	if !strings.Contains(got, `href="parity.html"`) {
+		t.Errorf("the relative wiki link was not rewritten to .html:\n%s", got)
+	}
+}
+
+// The sidebar footer's contents are centred against the sidebar column. The
+// footer is a block, so its two children — the icon row and the release line —
+// both default to the left edge of the column, which read as a stray element
+// under the centred nav rows above it.
+//
+// The alignment is asserted on .wiki-side-foot itself rather than on each
+// child: centring the parent keeps the two rows on one axis, so a fourth child
+// added later is centred without a second rule to remember. text-align is the
+// companion — without it the release line's text still hugs the left edge of
+// its own (now centred) box, and only the box is centred.
+func TestWikiSideFooterIsCentred(t *testing.T) {
+	at := strings.Index(wikiTemplate, ".wiki-side-foot {")
+	if at < 0 {
+		t.Fatal("no .wiki-side-foot rule found")
+	}
+	body := cssRule(t, wikiTemplate, ".wiki-side-foot")
+	if !strings.Contains(body, "align-items: center") {
+		t.Errorf("the footer's children are not centred against the column:\n%s", body)
+	}
+	if !strings.Contains(body, "text-align: center") {
+		t.Errorf("the release line is not centred inside its own box:\n%s", body)
+	}
+	// It is still a flex column: centring must not collapse the two rows into
+	// one, or the icon row and the release line overlap.
+	if !strings.Contains(body, "flex-direction: column") {
+		t.Errorf("the footer is no longer a column; its two rows would not stack:\n%s", body)
+	}
+	// The centring must not move the footer's height: it is the last flex child
+	// of the column and every pixel it costs is a pixel the nav loses.
+	if !strings.Contains(body, "flex-shrink: 0") {
+		t.Errorf("the footer can shrink and the nav loses rows:\n%s", body)
+	}
+}
+
+func TestWikiSidebarScrollsOnDesktop(t *testing.T) {
+	// Pin the base rule, not the mobile one: the sheet overrides it with its
+	// own overflow-y, and that one is already covered.
+	base := wikiTemplate[:strings.Index(wikiTemplate, "@media")]
+	side := base[strings.Index(base, ".wiki-side {"):]
+	side = side[:strings.Index(side, "}")]
+	if !strings.Contains(side, "height: calc(100vh") {
+		t.Errorf("desktop sidebar has no viewport-bounded height; a short window loses the lower links:\n%s", side)
+	}
+	if !strings.Contains(side, "overflow: hidden") {
+		t.Errorf("desktop sidebar does not bound its overflow; the nav spills past the fold:\n%s", side)
+	}
+	// The height must equal the distance from the top of the column to the
+	// bottom of the window, so the box reaches the bottom edge. Measured: the
+	// masthead is 68px and the shell adds 32px of padding, so the column starts
+	// 100px down and the box needs 100vh minus 6.25rem — 7.5rem stopped 20px
+	// short and the footer floated above the bottom edge.
+	if !strings.Contains(side, "100vh - 6.25rem") {
+		t.Errorf("sidebar height does not reach the bottom of the window:\n%s", side)
+	}
+	// The sticky offset must match that same distance, or the column starts
+	// lower than the box was sized for and the bottom edge stops short again.
+	if !strings.Contains(side, "top: 6.25rem") {
+		t.Errorf("sidebar sticky offset does not match its height:\n%s", side)
+	}
+	// The middle child is the only part that scrolls, so the header and footer
+	// stay pinned by the flex layout. min-height:0 is what lets a flex child
+	// shrink and scroll at all; without it the child keeps its content height
+	// and pushes the footer off the bottom.
+	if !strings.Contains(base, ".wiki-side-scroll {\n        flex: 1 1 auto;\n        min-height: 0;\n        overflow-y: auto;") {
+		t.Error("the sidebar's middle child is not the scroll container")
+	}
+	// A wheel over the nav must not scroll the page once the nav bottoms out.
+	if !strings.Contains(side, "overscroll-behavior: contain") {
+		t.Errorf("sidebar does not contain overscroll; scrolling past its end scrolls the article:\n%s", side)
+	}
+}
+
+// Search is an icon-only button in the sidebar's head row, not a text box in
+// the column. Two things this pins. First, the old read-only input is gone: it
+// spent a whole row of a 15rem column to say "click me", and its placeholder
+// was the only thing making it look like a control. Second, the button is
+// inside .wiki-sheet-head and not in a .wiki-search block, so it cannot drift
+// back into the column.
+func TestSearchIsAnIconButtonInTheHeadRow(t *testing.T) {
+	if !strings.Contains(wikiTemplate, `class="wiki-search-btn"`) {
+		t.Error("there is no .wiki-search-btn: search is not an icon button")
+	}
+	if !strings.Contains(wikiTemplate, `id="search-open"`) {
+		t.Error("the search button has no id for the script to bind to")
+	}
+	if !strings.Contains(wikiTemplate, `aria-label="Search the wiki"`) {
+		t.Error("the icon button has no accessible name")
+	}
+	if strings.Contains(wikiTemplate, `id="q"`) {
+		t.Error("the old read-only search input is still in the template")
+	}
+	if strings.Contains(wikiTemplate, "wiki-search-hint") {
+		t.Error("the 'Click to search' hint is still there")
+	}
+	// The desktop copy lives in the masthead, at the bar's far right, after the
+	// theme switcher. It acts on the wiki's contents rather than on this page's
+	// appearance, so it belongs beside the control that changes appearance.
+	mastheadAt := strings.Index(wikiTemplate, `<header class="masthead">`)
+	barAt := strings.Index(wikiTemplate, `id="theme-toggle-bar"`)
+	btnAt := strings.Index(wikiTemplate, `id="search-open"`)
+	if mastheadAt < 0 || barAt < 0 || btnAt < 0 {
+		t.Fatal("the masthead is missing the theme switcher or the search button")
+	}
+	if btnAt < barAt {
+		t.Error("the search button is not after the theme switcher in the masthead")
+	}
+	// The phone copy lives in the sidebar's head row, the row that carries the
+	// product name. The name itself is hidden on desktop, but the row is where
+	// a phone reader looks for the control the bar has no room for.
+	headAt := strings.Index(wikiTemplate, `<div class="wiki-sheet-head">`)
+	sideAt := strings.Index(wikiTemplate, `id="search-open-side"`)
+	if headAt < 0 || sideAt < headAt {
+		t.Fatal("the phone search button is not inside the sidebar's head row")
+	}
+	if !strings.Contains(wikiTemplate[headAt:sideAt], `<strong>`) {
+		t.Error("the phone search button is not in the row that carries the product name")
+	}
+	// That name - the logo and the label together, since <strong> holds both -
+	// is hidden on desktop: the masthead already shows them, and a second copy
+	// put two logos in one view. It is restored on a phone, where the sheet is
+	// the only chrome that is always visible.
+	strongBase := wikiTemplate[strings.Index(wikiTemplate, ".wiki-sheet-head strong {"):]
+	strongBase = strongBase[:strings.Index(strongBase, "}")]
+	if !strings.Contains(strongBase, "display: none") {
+		t.Errorf("the sidebar's logo and label are shown on desktop, duplicating the masthead:\n%s", strongBase)
+	}
+	// It must be pushed to the right of that row, not left sitting next to the
+	// close control.
+	if !strings.Contains(wikiTemplate, ".wiki-search-btn {") ||
+		!strings.Contains(wikiTemplate[strings.Index(wikiTemplate, ".wiki-search-btn {"):], "margin-left: auto;") {
+		t.Error("the search button is not pushed to the right of the head row")
+	}
+}
+
+// The head row is shown at every width now, which means the close control it
+// used to be paired with has to be hidden explicitly. A close button that does
+// nothing on desktop is a dead control.
+func TestSheetHeadCloseIsPhoneOnly(t *testing.T) {
+	at := strings.Index(wikiTemplate, ".wiki-sheet-close {")
+	if at < 0 {
+		t.Fatal("no .wiki-sheet-close rule")
+	}
+	body := cssRule(t, wikiTemplate, ".wiki-sheet-close")
+	if !strings.Contains(body, "display: none") {
+		t.Errorf("the close control is not hidden outside the sheet:\n%s", body)
+	}
+	// And the phone override must still be able to bring it back.
+	if !strings.Contains(wikiTemplate, "@media (max-width: 60rem)") {
+		t.Fatal("no phone media block for the close control to be restored in")
+	}
+	phone := wikiTemplate[strings.Index(wikiTemplate, "@media (max-width: 60rem)"):]
+	if !strings.Contains(phone, ".wiki-sheet-close {") {
+		t.Error("the phone sheet does not restore the close control")
+	}
+}
+
+// The stylesheet must parse. A stray or missing brace does not fail the build:
+// CSS error recovery silently drops every rule after the damage, which is how
+// the search button ended up 16x21 and the phone nav trigger display:none while
+// every Go test still passed.
+func TestStylesheetBracesAreBalanced(t *testing.T) {
+	at := strings.Index(wikiTemplate, "<style>")
+	if at < 0 {
+		t.Fatal("no <style> block")
+	}
+	end := strings.Index(wikiTemplate[at:], "</style>")
+	css := wikiTemplate[at+len("<style>") : at+end]
+	if strings.Count(css, "{") != strings.Count(css, "}") {
+		t.Errorf("the stylesheet has %d { and %d }: the browser will drop every rule after the damage",
+			strings.Count(css, "{"), strings.Count(css, "}"))
+	}
+}
+
+// Search sits in two places, one per screen. In the masthead at the bar's far
+// right on desktop; in the sidebar's head row below 60rem, where the bar has no
+// room for a fourth control. The rule that decides which is rendered must be
+// CSS, not JS, so a window resize switches the control without a reload.
+func TestSearchPlacementIsPerScreen(t *testing.T) {
+	// The masthead copy is hidden at the base level, so it cannot appear on a
+	// phone, and is restored above 60rem.
+	base := wikiTemplate[strings.Index(wikiTemplate, ".wiki-search-btn {"):]
+	base = base[:strings.Index(base, "}")]
+	if !strings.Contains(base, "display: none") {
+		t.Errorf("the masthead search button is not desktop-only:\n%s", base)
+	}
+	phone := wikiTemplate[strings.Index(wikiTemplate, "@media (max-width: 60rem)"):]
+	if !strings.Contains(phone, ".wiki-search-btn {\n          display: inline-flex;") &&
+		!strings.Contains(phone, ".wiki-search-btn {") {
+		t.Error("the masthead search button is never restored above 60rem")
+	}
+	// The phone copy is the mirror image: hidden at the base level, shown in the
+	// phone media block.
+	// The selector appears twice now: once in the shared geometry rule, which
+	// carries no display, and once in its own display rule. Find the one that
+	// owns display.
+	sideBase := wikiTemplate[strings.Index(wikiTemplate, ".wiki-search-btn-side {\n        display:"):]
+	if sideBase == "" {
+		t.Fatal("no .wiki-search-btn-side rule that sets display")
+	}
+	sideBase = sideBase[:strings.Index(sideBase, "}")]
+	if !strings.Contains(sideBase, "display: none") {
+		t.Errorf("the sidebar search button is not phone-only:\n%s", sideBase)
+	}
+	if !strings.Contains(phone, ".wiki-search-btn-side {\n          display: inline-flex;") {
+		t.Error("the sidebar search button is never shown on a phone")
+	}
+	// Both carry the same accessible name, so the control reads the same on
+	// whichever screen it is on.
+	if n := strings.Count(wikiTemplate, `aria-label="Search the wiki"`); n != 2 {
+		t.Errorf("found %d search buttons with an accessible name, want 2", n)
+	}
+}
+
+// The masthead bar is a flex row that fits a 320px phone with three items. A
+// fourth control pushed the wordmark off it, which is why the search button is
+// desktop-only there. This pins the count so a fifth item cannot be added
+// silently.
+func TestMastheadBarHasNoRoomForAFourthControl(t *testing.T) {
+	bar := wikiTemplate[strings.Index(wikiTemplate, `<div class="masthead-inner">`):]
+	// The header closes with the bar's own </div> and then </header>. Slicing on
+	// that pair is what keeps the sidebar's controls out of this count.
+	end := strings.Index(bar, "</header>")
+	bar = bar[:end]
+	children := 0
+	for _, tag := range []string{`class="wiki-menu-btn"`, `class="wordmark"`, `class="wiki-theme-btn`, `class="wiki-search-btn"`} {
+		if strings.Contains(bar, tag) {
+			children++
+		}
+	}
+	if children > 4 {
+		t.Errorf("the masthead bar carries %d controls; the phone bar fits three plus a wordmark", children)
+	}
+	// The theme switcher must come before the search button, so the search button
+	// is the one at the bar's far right.
+	if strings.Index(bar, `id="theme-toggle-bar"`) > strings.Index(bar, `id="search-open"`) {
+		t.Error("the search button is not at the bar's far right, after the theme switcher")
 	}
 }

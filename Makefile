@@ -19,6 +19,16 @@ endif
 ifeq ($(VERSION),)
 VERSION := 1.0.0
 endif
+# STABLE_VERSION is the release the documentation describes, which is not the
+# same thing as the build being developed. VERSION carries the experimental line
+# (1.9.15-exp.16); version.json carries the release `9router-go update`
+# advertises, which for that build is still the last stable one. The wiki is
+# built from this, so its footer and its "new" badges answer "which release do
+# these docs describe?" rather than "which binary was compiled?".
+STABLE_VERSION ?= $(strip $(shell cat version.json 2>/dev/null | grep -o '"latestVersion": *"[^"]*"' | cut -d'"' -f4))
+ifeq ($(STABLE_VERSION),)
+STABLE_VERSION := $(VERSION)
+endif
 # On Windows (cmd.exe), invoking `./$(BINARY_NAME)` fails with "'.' is not recognized".
 # On macOS/Linux, `.` is not on PATH, so a bare command fails with "command not found".
 ifeq ($(findstring Windows_NT,$(OS)),Windows_NT)
@@ -264,8 +274,14 @@ docker-build:
 	docker build -t $(BINARY_NAME) .
 
 ## wiki-build — generate the project page + wiki into _site/
+## Two versions are passed on purpose. -version is the build being developed
+## (VERSION, an experimental line such as 1.9.15-exp.16); -stable-version is the
+## release the docs describe, read from version.json — the manifest `9router-go
+## update` advertises, which for an experimental build is still the last stable
+## one. Rendering the build instead told readers the docs described a release
+## nobody had. The release workflow requires the two to differ.
 wiki-build:
-	go run ./tools/sitegen -out _site
+	go run ./tools/sitegen -out _site -version "$(VERSION)" -stable-version "$(STABLE_VERSION)"
 	@echo "Site written to _site/ — serve with: cd _site && python -m http.server 8000"
 
 ## wiki-serve — generate and serve the site locally on :8000
