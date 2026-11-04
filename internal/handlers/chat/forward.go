@@ -230,6 +230,7 @@ func (h *ChatHandler) handleClaudeUpstreamStream(ctx context.Context, w http.Res
 			metrics.TTFT = time.Since(startTime).Milliseconds()
 		}
 		_, _ = metrics.ResponseBuf.Write(out)
+		metrics.NoteOutput(time.Now())
 		if _, werr := hw.Write(out); werr != nil {
 			return
 		}
@@ -304,6 +305,7 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 			frame := append([]byte("data: "), payload...)
 			frame = append(frame, '\n', '\n')
 			metrics.ResponseBuf.Write(frame)
+			metrics.NoteOutput(time.Now())
 			_, _ = hw.Write(frame)
 			if flusher != nil {
 				flusher.Flush()
@@ -355,6 +357,7 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 			metrics.TTFT = time.Since(startTime).Milliseconds()
 		}
 		metrics.ResponseBuf.Write(translated)
+		metrics.NoteOutput(time.Now())
 		hw.Write(translated)
 		if flusher != nil {
 			flusher.Flush()
