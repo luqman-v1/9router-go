@@ -33,6 +33,42 @@ func TestDetectLoops_ConsecutiveToolDifferentArgsNotLoop(t *testing.T) {
 	}
 }
 
+// Regression for the false positive seen in production: an agentic coding
+// session ran the same tool ("terminal") 15 times in a row, each with a
+// different command (grep socketFile, grep capabilityLen, git diff ...).
+// The removed "!allSameArgs && length >= 12" rule flagged that as a loop.
+// Same-tool exploration with varying arguments is normal workflow, not a loop.
+func TestDetectLoops_SameToolDifferentArgsNeverFlagsEvenAt15(t *testing.T) {
+	commands := []string{"grep socketFile", "grep ResolveDataDir", "grep capabilityLen", "grep mcode-auth-lease-v1.sock", "grep capabilityFile", "grep isBase64URL", "grep claudeIdentityRegex", "git diff media.go", "git diff live_catalog.go", "grep fallback", "grep ResolveEndpoint", "grep socketFile runDir", "grep capabilityLen cap", "grep truncateRuneSafe", "git diff usage.go"}
+	tools := make([]ToolCallItem, 0, len(commands))
+	for _, cmd := range commands {
+		tools = append(tools, ToolCallItem{Name: "terminal", Arguments: `{"command":"` + cmd + `"}`})
+	}
+	findings := DetectLoops(tools, "")
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for 15 terminal calls with different arguments, got %+v", findings)
+	}
+}
+
+// Sanity floor: the stuck loop itself (identical args) must still fire after
+// removing the frequency rule, at any length, including when a single call
+// in the run differs (falls back to frequency territory, must not fire).
+func TestDetectLoops_SameArgsStillFlagsAtAnyLength(t *testing.T) {
+	for _, n := range []int{3, 5, 15} {
+		tools := make([]ToolCallItem, 0, n)
+		for range n {
+			tools = append(tools, ToolCallItem{Name: "terminal", Arguments: `{"command":"pytest"}`})
+		}
+		findings := DetectLoops(tools, "")
+		if len(findings) == 0 {
+			t.Fatalf("expected stuck-loop finding for %d identical calls, got none", n)
+		}
+		if findings[0].Rule != "consecutive_tool" || findings[0].Severity != SeverityCritical {
+			t.Errorf("expected critical consecutive_tool for %d identical calls, got %+v", n, findings[0])
+		}
+	}
+}
+
 func TestDetectLoops_CyclePattern(t *testing.T) {
 	// 2-tool cycle: [Read, Edit] repeated 3 times
 	tools := []ToolCallItem{

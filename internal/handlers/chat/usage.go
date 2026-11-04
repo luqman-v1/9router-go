@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"strings"
 	"sync"
@@ -511,12 +512,31 @@ func extractMessagesForLogging(messages []translator.OpenAIMessage) []map[string
 	for _, m := range messages {
 		content := extractContent(m.Content)
 		content = truncateDetailText(content, constants.MaxMessageContentLen, "...")
-		msgs = append(msgs, map[string]string{"role": m.Role, "content": content})
+		entry := map[string]string{"role": m.Role, "content": content}
+		if len(m.ToolCalls) > 0 {
+			names := make([]string, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				names = append(names, toolCallSignature(tc.Function.Name, tc.Function.Arguments))
+			}
+			entry["tool_calls"] = strings.Join(names, ",")
+		}
+		msgs = append(msgs, entry)
 	}
 	if len(msgs) > constants.MaxLoggedMessages {
 		msgs = msgs[len(msgs)-constants.MaxLoggedMessages:]
 	}
 	return msgs
+}
+
+// toolCallSignature renders one tool call as "name#hash8" for request-detail logs.
+// The full arguments can be large, secret-laden or schema-quirked, so the log
+// keeps only the name (what the loop detector actually reports) plus a short
+// hash of the arguments (enough to prove in the detail modal whether the
+// flagged calls were really identical, which is the stuck-loop definition).
+func toolCallSignature(name, args string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strings.TrimSpace(args)))
+	return fmt.Sprintf("%s#%08x", name, h.Sum32())
 }
 
 // extractContent handles content that is either a string or array of content blocks.
