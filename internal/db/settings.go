@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -250,7 +251,7 @@ func DefaultSettings() *SettingsData {
 // not a failure: that is a fresh install.
 func (r *Repo) GetSettings() (*SettingsData, error) {
 	var rawData string
-	err := r.db.QueryRow(`SELECT data FROM settings WHERE id = 1`).Scan(&rawData)
+	err := r.db.QueryRowContext(context.Background(), `SELECT data FROM settings WHERE id = 1`).Scan(&rawData)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return DefaultSettings(), nil
