@@ -989,6 +989,12 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 
 			finalBody := handlerutil.UpdateModelInBody(body, subInfo.Model)
+			// Cloudflare AI's flux-1-schnell schema rejects width/height (upstream #5373).
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") &&
+				(providers.ResolveAlias(subInfo.Provider) == "cloudflare-ai" || providers.ResolveAlias(subInfo.Provider) == "cf") &&
+				isFluxSchnellModel(subInfo.Model) {
+				finalBody = stripDimensionsForFluxSchnell(finalBody)
+			}
 			// The endpoint the caller used is a route on this gateway, not a
 			// path on the vendor's host: appending it to BaseURL built URLs the
 			// vendor never serves (tavily got api.tavily.com/search/v1/search,
@@ -1271,7 +1277,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		// Cloudflare AI's flux-1-schnell schema rejects width/height (upstream #5373).
 		if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") &&
 			(providers.ResolveAlias(modelInfo.Provider) == "cloudflare-ai" || providers.ResolveAlias(modelInfo.Provider) == "cf") &&
-			strings.Contains(modelInfo.Model, "flux-1-schnell") {
+			isFluxSchnellModel(modelInfo.Model) {
 			finalBody = stripDimensionsForFluxSchnell(finalBody)
 		}
 	} else if model != "" && model != modelInfo.Model {
@@ -1566,6 +1572,15 @@ func forwardGeminiEmbeddingDimensions(body []byte) []byte {
 		return updated
 	}
 	return body
+}
+
+// isFluxSchnellModel reports whether model is Cloudflare's FLUX.1 Schnell, whose
+// closed image schema rejects width/height/size (upstream #5373). Match on the
+// full model id (@cf/black-forest-labs/flux-1-schnell) or the bare id
+// (flux-1-schnell), anchored at the end so flux-2-dev and flux-1-schnell-dev are
+// not mistaken for it.
+func isFluxSchnellModel(model string) bool {
+	return strings.HasSuffix(model, "flux-1-schnell")
 }
 
 // stripDimensionsForFluxSchnell removes width, height, and size from Cloudflare FLUX.1 Schnell
