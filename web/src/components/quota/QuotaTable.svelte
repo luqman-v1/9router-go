@@ -157,10 +157,10 @@
         {@const countdownLabel = recurring ? `in ${countdown}` : `expires in ${countdown}`}
 
         <div
-          class="flex items-center gap-2 border-b border-border-subtle/60 hover:bg-surface-2/60 transition-colors {cellPad}"
+          class="flex flex-col sm:flex-row items-start sm:items-center gap-2 border-b border-border-subtle/60 hover:bg-surface-2/60 transition-colors {cellPad}"
         >
           <!-- Name -->
-          <div class="flex w-36 min-w-0 items-center gap-1.5">
+          <div class="flex w-full sm:w-36 min-w-0 items-center gap-1.5">
             <span class="text-[10px] shrink-0">{colors.emoji}</span>
             <span class="{nameText} font-medium text-text-main truncate">
               {quota.name}
@@ -168,7 +168,7 @@
           </div>
 
           <!-- Progress + used/total -->
-          <div class="min-w-0 flex-1 {compact ? 'space-y-1' : 'space-y-1.5'}">
+          <div class="min-w-0 w-full sm:flex-1 {compact ? 'space-y-1' : 'space-y-1.5'}">
             {#if !isUnlimited && !isCreditBalance && !isUnknown}
               <div
                 class="{compact ? 'h-1' : 'h-1.5'} rounded-full overflow-hidden border {colors.bgLight} {quota.remainingPct ===
@@ -215,7 +215,7 @@
           </div>
 
           <!-- Reset time -->
-          <div class="min-w-0 shrink">
+          <div class="min-w-0 w-full sm:w-auto shrink">
             {#if countdown !== '-' || resetDisplay}
               {#if compact}
                 <div
