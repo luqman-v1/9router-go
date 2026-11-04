@@ -551,6 +551,13 @@ When tasked with syncing a feature, bugfix, or provider from upstream:
      `scripts/bump-version.sh`. It files every fragment under
      `## [TAG] - <date>`, drops the emptied `[Unreleased]` section, and clears
      `.changes/`. Contributors do not run this per PR.
+   - **The one-command release.** `./scripts/release.sh <version>` (or
+     `make release VER=<version>`) chains the whole flow: bump-version.sh →
+     changelog-merge (when fragments are pending) → commit `chore: bump to
+     <version>` → tag `v<version>` → push branch, then the tag. The tag goes
+     last because release.yml's channel gate refuses a tag whose commit does
+     not carry the matching VERSION. `--dry-run` previews the plan without
+     touching anything; the manual sequence above stays valid as a fallback.
    - Format reference: [`.changes/README.md`](.changes/README.md).
 
 7. **Branch & PR Targeting (`main` ONLY — MANDATORY)**:
@@ -665,6 +672,9 @@ make dev
 go run ./cmd/changelog-merge --tag v1.9.11 --dry-run
 # Release time only — files the fragments under ## [TAG], clears .changes/:
 make changelog-merge TAG=v1.9.11
+# The whole release in one command (bump + changelog-merge + commit + tag + push):
+./scripts/release.sh 1.9.16-exp.3      # add --dry-run to preview, --yes to skip prompts
+make release VER=1.9.16-exp.3          # same thing via make
 
 # Prove a PR does not touch CHANGELOG.md (prints nothing when clean)
 { rtk git diff --name-only HEAD; rtk git diff --name-only main...HEAD; \

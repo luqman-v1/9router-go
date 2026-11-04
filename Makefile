@@ -128,6 +128,16 @@ changelog-merge:
 	@test -n "$(TAG)" || { echo "TAG is required: make changelog-merge TAG=v1.9.11"; exit 1; }
 	go run ./cmd/changelog-merge --tag $(TAG)
 
+# release is the whole manual flow in one command: bump-version.sh folds the
+# version into VERSION/updater.go (+ version.json for stable), changelog-merge
+# files the pending fragments, then it commits "chore: bump to <ver>", tags and
+# pushes. release.yml validates tag ↔ VERSION on the pushed tag, so pushing the
+# tag last (which release.sh does) is what keeps the gate green.
+## release — one-command release: bump + changelog + commit + tag + push (VER=required)
+release:
+	@test -n "$(VER)" || { echo "VER is required: make release VER=1.9.16-exp.3"; exit 1; }
+	./scripts/release.sh $(VER)
+
 ## test — run all unit tests
 test:
 	go test ./... -v
