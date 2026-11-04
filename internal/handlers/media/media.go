@@ -743,7 +743,7 @@ func (h *MediaHandler) defaultWebSearchModel() string {
 			}
 		}
 	}
-	return "tavily/search"
+	return "gpt-4o"
 }
 
 // defaultWebFetchModel returns "fetch-combo" if available, then any webFetch combo, then falls back to jina-reader.
