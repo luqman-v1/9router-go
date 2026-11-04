@@ -2,7 +2,6 @@ package providers
 
 import (
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
@@ -80,6 +79,7 @@ type ProviderConfig struct {
 	// relay fronts the request; everything else needs no provider-specific code,
 	// which is the point.
 	RelayURL string
+
 	// ProxyPoolID is the proxy pool this connection routed through, or "" when
 	// the request leaves directly. It is the gateway's own identity for the
 	// egress, not a request header: the breaker and the semaphore key on
@@ -91,7 +91,6 @@ type ProviderConfig struct {
 	// to the outbound request (internal/proxy/openai.go ApplyHeaderOverrides),
 	// so an internal key there would be sent to every upstream provider.
 	ProxyPoolID string
-
 	// StallTimeoutMs is the optional per-provider stall timeout in milliseconds.
 	StallTimeoutMs int `json:"stallTimeoutMs,omitempty"`
 }
@@ -245,6 +244,7 @@ var modelsListURL = map[string]string{
 	// is absent, so the shape needs no special case here.
 	"ollama":     "https://ollama.com/api/tags",
 	"openrouter": "https://openrouter.ai/api/v1/models",
+	"hcnsec":     "https://api.hcnsec.cn/v1/models",
 }
 
 // modelsListHeaders carries the extra headers one live-catalogue endpoint
@@ -466,6 +466,13 @@ var KnownProviders = map[string]ProviderConfig{
 	// SumoPod — Indonesian AI gateway (ai.sumopod.com), OpenAI-compatible
 	// chat completions with 60+ models across Claude, Gemini, GPT, DeepSeek,
 	// Qwen, GLM, Kimi, MiniMax, Seed, Grok, Hy and Mimo.
+	"hcnsec": {
+		BaseURL:        "https://api.hcnsec.cn/v1/chat/completions",
+		AuthHeader:     "Authorization",
+		AuthScheme:     "bearer",
+		ThinkingFormat: "openai",
+		TTSURL:         "https://api.hcnsec.cn/v1/audio/speech",
+	},
 	"sumopod": {
 		BaseURL:    "https://ai.sumopod.com/v1/chat/completions",
 		AuthHeader: "Authorization",
@@ -626,7 +633,7 @@ var KnownProviders = map[string]ProviderConfig{
 		ImageURL:   "https://token.sensenova.cn/v1/images/generations",
 	},
 	"cloudflare-ai": {
-		BaseURL:        "https://api.cloudflare.com/client/v4/accounts/" + os.Getenv("CLOUDFLARE_ACCOUNT_ID") + "/ai/v1/chat/completions",
+		BaseURL:        "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1/chat/completions",
 		AuthHeader:     "Authorization",
 		AuthScheme:     "bearer",
 		ThinkingFormat: "openai",

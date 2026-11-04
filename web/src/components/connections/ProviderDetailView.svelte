@@ -4355,8 +4355,8 @@
               </span>
               <div class="flex-1 min-w-0">
                 <p class="text-sm font-medium truncate">{row.id}</p>
-                <div class="flex items-center gap-1 mt-1">
-                  <code class="text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded">{displayAlias()}/{row.id}</code>
+                <div class="flex items-center gap-1 mt-1 flex-wrap">
+                  <code class="max-w-[72vw] truncate text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded sm:max-w-[360px]">{displayAlias()}/{row.id}</code>
                   <!-- Capability icons, mirroring the registered grid's row:
                        the same model id can be imported into a compatible
                        node, and a row that shows nothing there reads as a

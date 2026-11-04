@@ -276,3 +276,26 @@ func TestSiblingResponsesProviderKeepsFlex(t *testing.T) {
 		t.Fatalf("service_tier = %v, want flex kept — the Codex rule must not leak into the shared builder", got)
 	}
 }
+
+// TestCodexModelSuffixServiceTier verifies model suffix cx/gpt-6.1-sol(fast) delivers service_tier: priority on the wire.
+func TestCodexModelSuffixServiceTier(t *testing.T) {
+	env, up := codexTierEnv(t)
+	res := env.Post(t, "/v1/chat/completions", map[string]any{
+		"model":  "cx/gpt-6.1-sol(fast)",
+		"stream": true,
+		"messages": []map[string]any{
+			{"role": "user", "content": "ping"},
+		},
+	})
+	if res.Status != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Status, truncate(res.Body))
+	}
+	sent := sentBody(t, up)
+	assertResponsesShape(t, sent)
+	if sent["model"] != "gpt-6.1-sol" {
+		t.Fatalf("model = %v, want gpt-6.1-sol (suffix must be stripped)", sent["model"])
+	}
+	if sent["service_tier"] != "priority" {
+		t.Fatalf("service_tier = %v, want priority", sent["service_tier"])
+	}
+}

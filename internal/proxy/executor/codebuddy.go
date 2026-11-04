@@ -233,6 +233,10 @@ func transformCodebuddyBody(body []byte) ([]byte, error) {
 		if role == "user" {
 			if s, ok := m["content"].(string); ok {
 				cp := copyMap(m)
+				if rc, ok := cp["reasoning_content"].(string); ok && rc != "" {
+					cp["reasoning"] = rc
+					delete(cp, "reasoning_content")
+				}
 				cp["content"] = []any{map[string]any{"type": "text", "text": s}}
 				otherMessages = append(otherMessages, cp)
 				continue
@@ -240,6 +244,10 @@ func transformCodebuddyBody(body []byte) ([]byte, error) {
 		}
 		if role == "assistant" {
 			cp := copyMap(m)
+			if rc, ok := cp["reasoning_content"].(string); ok && rc != "" {
+				cp["reasoning"] = rc
+				delete(cp, "reasoning_content")
+			}
 			switch v := cp["content"].(type) {
 			case string:
 				cp["content"] = sanitizeChannelMarkers(v)
@@ -318,7 +326,7 @@ func codebuddyHeaders(req *Request, cfg *providers.ProviderConfig, body []byte) 
 		domain = "www.codebuddy.cn"
 	}
 
-	return map[string]string{
+	h := map[string]string{
 		"Content-Type":                "application/json; charset=utf-8",
 		"User-Agent":                  "CLI/" + cliVersion + " CodeBuddy/" + cliVersion,
 		"X-Product":                   "SaaS",
@@ -345,6 +353,22 @@ func codebuddyHeaders(req *Request, cfg *providers.ProviderConfig, body []byte) 
 		"X-Agent-Intent":              "craft",
 		"X-Agent-Purpose":             "conversation",
 	}
+	if req != nil && strings.HasPrefix(req.APIKey, "ck_") {
+		h["Authorization"] = "Bearer " + req.APIKey
+		h["X-API-Key"] = req.APIKey
+		delete(h, "X-Domain")
+		h["X-User-Id"] = "anonymous_" + last8(req.APIKey)
+		h["X-IDE-Type"] = "WorkBuddy"
+		h["X-Agent-Runtime"] = "local-agent"
+	}
+	return h
+}
+
+func last8(s string) string {
+	if len(s) > 8 {
+		return s[len(s)-8:]
+	}
+	return s
 }
 
 func codebuddyConversationHeaders(req *Request, body []byte) map[string]string {

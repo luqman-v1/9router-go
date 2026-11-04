@@ -65,17 +65,16 @@ func (h *ChatHandler) forwardRequest(
 			body = sanitized
 		}
 	}
-	// OpenRouter strict pattern validation (PR #3665): strip malformed regex patterns
-	if strings.Contains(cfg.BaseURL, "openrouter.ai") {
-		var bodyMap map[string]any
-		if err := json.Unmarshal(body, &bodyMap); err == nil {
-			if tools, ok := bodyMap["tools"].([]any); ok && len(tools) > 0 {
-				if normalized, removed := translator.NormalizeToolSchemasForProvider("openrouter", tools); removed > 0 {
-					bodyMap["tools"] = normalized
-					log.Debug("tool_schema", "openrouter stripped invalid patterns", "removed", removed)
-					if newBody, err := json.Marshal(bodyMap); err == nil {
-						body = newBody
-					}
+	// Strict pattern validation: strip regex lookarounds and malformed patterns
+	// that OpenAI, DeepSeek, and strict JSON Schema validators reject with HTTP 400.
+	var bodyMap map[string]any
+	if err := json.Unmarshal(body, &bodyMap); err == nil {
+		if tools, ok := bodyMap["tools"].([]any); ok && len(tools) > 0 {
+			if normalized, removed := translator.NormalizeToolSchemasForProvider(provider, tools); removed > 0 {
+				bodyMap["tools"] = normalized
+				log.Debug("tool_schema", "stripped invalid patterns", "provider", provider, "removed", removed)
+				if newBody, err := json.Marshal(bodyMap); err == nil {
+					body = newBody
 				}
 			}
 		}
@@ -551,6 +550,10 @@ func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWri
 			return internalproxy.UpstreamFailure(http.StatusBadGateway, internalproxy.NoCompletionInStream)
 		}
 		body = folded
+	} else if leadingJSON, ok := extractLeadingJSONObject(body); ok {
+		// Defensive: some upstreams return a valid JSON object followed by a stray
+		// SSE frame (e.g. `{...}data: [DONE]`) on non-streaming requests (#4733).
+		body = leadingJSON
 	}
 
 	if armed, canFallback := internalproxy.ZeroContentProbe(ctx); armed && internalproxy.IsZeroContentResponse(body) {
@@ -662,4 +665,54 @@ func (h *ChatHandler) respondAsResponses(ctx context.Context, w http.ResponseWri
 	w.WriteHeader(http.StatusOK)
 	w.Write(body)
 	return nil
+}
+
+// extractLeadingJSONObject extracts the first balanced top-level JSON object from a byte slice
+// that may have trailing SSE framing (e.g. `{...}data: [DONE]\n\n`). Upstream #5384 (#4733).
+func extractLeadingJSONObject(b []byte) ([]byte, bool) {
+	start := bytes.IndexByte(b, '{')
+	if start == -1 {
+		return nil, false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+
+	for i := start; i < len(b); i++ {
+		ch := b[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				candidate := b[start : i+1]
+				var check any
+				if json.Unmarshal(candidate, &check) == nil {
+					// Only report stripped if there actually was trailing content
+					if i+1 < len(b) && len(bytes.TrimSpace(b[i+1:])) > 0 {
+						return candidate, true
+					}
+					return nil, false
+				}
+				return nil, false
+			}
+		}
+	}
+	return nil, false
 }

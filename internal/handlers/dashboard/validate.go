@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"syscall"
 	"time"
@@ -612,7 +613,7 @@ func validateNous(ctx context.Context, apiKey string) validateOutcome {
 func validateCloudflareAI(ctx context.Context, cfg providers.ProviderConfig, apiKey string, psd map[string]any) validateOutcome {
 	accountID := psdStr(psd, "accountId")
 	if accountID == "" {
-		accountID = cloudflareAccountFromBaseURL(cfg.BaseURL)
+		accountID = os.Getenv("CLOUDFLARE_ACCOUNT_ID")
 	}
 	if accountID == "" {
 		return validateOutcome{supported: true, message: "Missing Account ID"}
@@ -659,21 +660,6 @@ func validateV1M(ctx context.Context, apiKey string) validateOutcome {
 		valid:     status != http.StatusUnauthorized && status != http.StatusForbidden,
 		supported: true,
 	}
-}
-
-// cloudflareAccountFromBaseURL extracts the account id baked into the registry
-// BaseURL from a CLOUDFLARE_ACCOUNT_ID env var, if any.
-func cloudflareAccountFromBaseURL(baseURL string) string {
-	const marker = "/accounts/"
-	idx := strings.Index(baseURL, marker)
-	if idx < 0 {
-		return ""
-	}
-	rest := baseURL[idx+len(marker):]
-	if end := strings.Index(rest, "/"); end >= 0 {
-		return rest[:end]
-	}
-	return rest
 }
 
 func validateAzure(ctx context.Context, apiKey string, psd map[string]any) validateOutcome {

@@ -175,6 +175,21 @@ func (h *ChatHandler) handleAccountFallback(
 		}
 	}
 
+	var seatBudgetMs int
+	if h.Repo != nil {
+		if settings, err := h.Repo.GetSettings(); err == nil && settings != nil {
+			seatBudgetMs = settings.SeatAttemptBudgetMs
+			if settings.ProviderOverrides != nil {
+				if ov, ok := settings.ProviderOverrides[provider]; ok && ov.SeatBudgetMs > 0 {
+					seatBudgetMs = ov.SeatBudgetMs
+				}
+			}
+		}
+	}
+	if seatBudgetMs > 0 {
+		ctx = internalproxy.WithSeatBudget(ctx, seatBudgetMs)
+	}
+
 	var excludeIDs []string
 	// Pools already refused by an OpenCode free-tier gate in this turn. The
 	// resolver filters them out, so the retry walks to the next egress instead
@@ -781,7 +796,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			accountFastOpt = &v
 		}
 	}
-	if fastBody, modified := ApplyCodexFastMode(pipedBody, provider, accountFastOpt); modified {
+	if fastBody, modified := ApplyCodexFastMode(ctx, pipedBody, provider, accountFastOpt); modified {
 		pipedBody = fastBody
 	}
 
@@ -846,6 +861,12 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// neither field, so the normalizer is a no-op there.
 	if !claudeNative && !upstreamClaude && !executor.UpstreamSpeaksResponses(provider, wireModel, providerCfg) {
 		pipedBody = normalizeChatTokenFields(pipedBody)
+	}
+
+	// Strict pattern validation: strip regex lookarounds and malformed patterns
+	// that OpenAI, DeepSeek, and strict JSON Schema validators reject with HTTP 400.
+	if !claudeNative && !upstreamClaude {
+		pipedBody = sanitizeOutboundToolSchemas(pipedBody, provider)
 	}
 
 	start := time.Now()
@@ -1812,4 +1833,25 @@ func isModelScopedError(statusCode int, errorText string, model string, bodies .
 	}
 
 	return false
+}
+
+func sanitizeOutboundToolSchemas(body []byte, provider string) []byte {
+	var bodyMap map[string]any
+	if err := json.Unmarshal(body, &bodyMap); err != nil {
+		return body
+	}
+	tools, ok := bodyMap["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		return body
+	}
+	normalized, removed := translator.NormalizeToolSchemasForProvider(provider, tools)
+	if removed == 0 {
+		return body
+	}
+	bodyMap["tools"] = normalized
+	log.Debug("tool_schema", "stripped invalid patterns", "provider", provider, "removed", removed)
+	if newBody, err := json.Marshal(bodyMap); err == nil {
+		return newBody
+	}
+	return body
 }
