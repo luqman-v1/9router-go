@@ -84,11 +84,13 @@ func TestCloakAntigravityRequest_WebSearchGetsRenamed(t *testing.T) {
 				}
 				props, _ := params["properties"].(map[string]any)
 				query, _ := props["query"].(map[string]any)
-				if _, has := query["minLength"]; has {
-					t.Errorf("web_search_ide query schema still has minLength (should be cleaned)")
+				// minLength/maxLength are legitimate Gemini constraints and are
+				// kept (coerced to int) by cleanGeminiSchema, not stripped.
+				if f64, ok := num(query["minLength"]); !ok || f64 != 1 {
+					t.Errorf("web_search_ide query minLength should be kept as 1, got %v", query["minLength"])
 				}
-				if _, has := query["maxLength"]; has {
-					t.Errorf("web_search_ide query schema still has maxLength (should be cleaned)")
+				if f64, ok := num(query["maxLength"]); !ok || f64 != 4000 {
+					t.Errorf("web_search_ide query maxLength should be kept as 4000, got %v", query["maxLength"])
 				}
 			case "search_web":
 				foundSW = true
@@ -106,6 +108,19 @@ func TestCloakAntigravityRequest_WebSearchGetsRenamed(t *testing.T) {
 	if !foundSW {
 		t.Error("search_web decoy not found in cloaked tools")
 	}
+}
+
+// num extracts a float64 from a JSON-decoded number (int or float64).
+func num(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	}
+	return 0, false
 }
 
 func TestCloakAntigravityRequest_RenamesAndInjectsDecoys(t *testing.T) {
