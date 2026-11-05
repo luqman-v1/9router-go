@@ -25,20 +25,28 @@ not:
   under concurrent execution and several packages run tests in parallel — which
   would otherwise make the total vary between runs for no reason.
 
-The baseline is 68.0%, measured 68.7% on `main`. The margin is deliberate: an
-exact baseline would fail on ordinary run-to-run variation.
+The baseline is 69.0%, measured on `main` at `d1f046ed` — the base this PR was
+rebased onto, not this branch, which carried the #901 changes #902 was stacked
+on. The margin below the measured total is deliberate: an exact baseline would
+fail on ordinary run-to-run variation.
 
-The gate was verified against the real profile, including a negative control —
-a baseline above the measured total fails, and a baseline exactly equal to it
-passes.
+The baseline is validated as exactly one decimal number, not merely as
+"contains digits": `tr -dc '0-9.'` also accepts a file holding two numbers
+(`68.0\n69.0` collapses to `68.069.0`) or a malformed one (`8.8.1`), and awk's
+`+0` then reads the leading prefix, so the gate fails against a number nobody
+wrote. Anything not matching `^[0-9]+(\.[0-9]+)?$` is rejected with the file's
+content named in the error, so a typo is diagnosable without reading the script.
 
 ### Verified
 
-- `go test -count=1 -coverprofile=coverage.out ./...` — suite passes, profile
-  written, `go tool cover -func` reports `total: 68.7%`.
-- `scripts/coverage-gate.sh coverage.out` logic verified against the real
-  profile: 68.7% vs baseline 68.0% passes; vs 99% fails; vs 68.7% (equality)
-  passes.
+- `go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...` on the
+  rebased base — suite passes, `go tool cover -func` reports `total: 69.0%`.
+- `scripts/coverage-gate.sh coverage.out` run against the real profile on the
+  rebased base: 69.0% vs baseline 69.0% passes (equality); a baseline above the
+  measured total fails.
+- Baseline validation negative controls: `68.0\n69.0` and `8.8.1` — both
+  accepted by the previous `tr -dc '0-9.'` — are now rejected; `68` and `68.5`
+  are still accepted.
 - `go vet ./...` clean; `go build ./...` clean.
 - `coverage.out` is covered by the existing `*.out` gitignore rule, so the
   profile never enters the tree.

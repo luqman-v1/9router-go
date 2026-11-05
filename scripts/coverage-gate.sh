@@ -47,10 +47,15 @@ if [[ ! -f "$BASELINE_FILE" ]]; then
   exit 1
 fi
 
-BASELINE="$(tr -dc '0-9.' < "$BASELINE_FILE")"
+BASELINE="$(tr -d '[:space:]' < "$BASELINE_FILE")"
 
-if [[ -z "$BASELINE" ]]; then
-  echo "::error::coverage baseline is not a number: $(cat "$BASELINE_FILE")"
+# A baseline is exactly one decimal number. `tr -dc '0-9.'` would also accept
+# "68.0\n69.0" (it collapses to "68.069.0") or "8.8.1", and awk's `+0` then
+# reads the leading prefix and the gate fails against a number nobody wrote.
+# Reject anything else outright, so the failure names the file's content
+# instead of implying the coverage moved.
+if [[ ! "$BASELINE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "::error::coverage baseline is not a single number: $(cat "$BASELINE_FILE")"
   exit 1
 fi
 
