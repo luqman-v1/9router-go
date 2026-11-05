@@ -110,6 +110,11 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := thinking.WithSuffixIntent(h.newResponsesContext(r, modelName, modelInfo, &body), suffixIntent)
+	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
+	// every token saver; the flag travels on ctx to applyTokenSavers.
+	if isTokenSaverBypassValue(r.Header.Get("X-9Router-Token-Saver")) {
+		ctx = WithTokenSaverBypass(ctx)
+	}
 	// The operator's providerThinking overrides are read once here, not once
 	// per connection attempt.
 	ctx = h.withProviderThinkingModes(ctx)

@@ -291,6 +291,96 @@ func TestHandleResponses_ComboRotatesAndStaysInWireFormat(t *testing.T) {
 	}
 }
 
+// TestHandleResponses_TokenSaverBypass verifies that the X-9Router-Token-Saver
+// header opts a /v1/responses request out of every token saver, matching the
+// /v1/chat/completions and /v1/messages paths. With the header set the body
+// reaches the upstream untouched; without it RTK compresses repetitive output.
+func TestHandleResponses_TokenSaverBypass(t *testing.T) {
+	// Repetitive tool output that RTK compresses when saving is on.
+	repeated := strings.Repeat("repeated log line\n", 300)
+	payload := map[string]any{
+		"model": "codex/gpt-5.1",
+		"input": []any{
+			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": repeated},
+		},
+		"stream": true,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	// The JSON-escaped form of the repetitive output as it appears in the wire body.
+	outputJSON, _ := json.Marshal(repeated)
+
+	newHandler := func(t *testing.T) (*ChatHandler, *httptest.Server, *[]byte) {
+		var received []byte
+		var mu sync.Mutex
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			received = append(received[:0], raw...)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"))
+		}))
+		database, cleanup := setupChatTestDB(t)
+		t.Cleanup(cleanup)
+		seedConnDB(t, database, "codex", "conn-responses-bypass", "sk-codex", upstream.URL+"/responses")
+		handler := NewChatHandler(db.NewRepo(database))
+		handler.TokenSaver.SetRTK(true)
+		return handler, upstream, &received
+	}
+
+	assertBodyUntouched := func(t *testing.T, header string) {
+		t.Helper()
+		handler, upstream, received := newHandler(t)
+		defer upstream.Close()
+
+		req := httptest.NewRequest("POST", "/v1/responses", bytes.NewReader(body))
+		if header != "" {
+			req.Header.Set("X-9Router-Token-Saver", header)
+		}
+		rec := httptest.NewRecorder()
+		handler.HandleResponses(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if !bytes.Contains(*received, outputJSON) {
+			t.Errorf("expected body untouched (header=%q); RTK compressed the output:\n%s", header, string(*received))
+		}
+	}
+
+	t.Run("bypass header leaves body untouched", func(t *testing.T) {
+		assertBodyUntouched(t, "off")
+	})
+
+	t.Run("all bypass values opt out", func(t *testing.T) {
+		bypassValues := []string{"off", "false", "0", "bypass", "OFF", "False", " 0 "}
+		for _, val := range bypassValues {
+			t.Run(val, func(t *testing.T) {
+				assertBodyUntouched(t, val)
+			})
+		}
+	})
+
+	t.Run("without header RTK compresses", func(t *testing.T) {
+		handler, upstream, received := newHandler(t)
+		defer upstream.Close()
+
+		req := httptest.NewRequest("POST", "/v1/responses", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.HandleResponses(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if bytes.Contains(*received, outputJSON) {
+			t.Errorf("without the bypass header RTK should compress the repetitive output:\n%s", string(*received))
+		}
+	})
+}
+
 // TestHandleGeminiStream_ResponsesClient covers the antigravity hop: Gemini
 // events become OpenAI chunks and those become Responses events. Without the
 // bridge this path wrote the intermediate Chat chunks straight to the client,

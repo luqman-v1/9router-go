@@ -489,3 +489,82 @@ func TestApplyTokenSavers_HeadroomFailsOpen(t *testing.T) {
 		t.Fatalf("a dead proxy must leave the body untouched")
 	}
 }
+
+func TestApplyTokenSavers_BypassHeader(t *testing.T) {
+	// Every documented opt-out value (and case variants) skips every token saver
+	// — RTK, Caveman, Ponytail, ADHD, Headroom, system prompt — and returns the
+	// body untouched with 0 tokens saved.
+	values := []string{"false", "0", "off", "bypass", "FALSE", "Off", "BYPASS", " 0 ", " Off "}
+	for _, val := range values {
+		t.Run(val, func(t *testing.T) {
+			h, cleanup := setupHandlerForForward(t)
+			defer cleanup()
+			h.TokenSaver.SetRTK(true)
+			h.TokenSaver.SetCaveman(true)
+
+			// Long repetitive tool output that RTK would otherwise compress.
+			var sb strings.Builder
+			for i := 0; i < 200; i++ {
+				sb.WriteString("repeated log line ")
+				sb.WriteString(strconv.Itoa(i))
+				sb.WriteString("\n")
+			}
+			body, err := json.Marshal(map[string]any{
+				"messages": []any{
+					map[string]any{"role": "tool", "content": sb.String()},
+				},
+			})
+			if err != nil {
+				t.Fatalf("marshal body: %v", err)
+			}
+
+			ctx := WithTokenSaverBypass(context.Background())
+			got, orig, saved, pct := h.applyTokenSavers(ctx, body, false)
+			if string(got) != string(body) {
+				t.Errorf("expected body untouched under bypass (%q), got %s", val, got)
+			}
+			if orig != 0 || saved != 0 || pct != 0 {
+				t.Errorf("expected zero token metrics under bypass (%q), got orig=%d saved=%d pct=%d", val, orig, saved, pct)
+			}
+		})
+	}
+}
+
+func TestApplyTokenSavers_NonBypassValueStillProcessed(t *testing.T) {
+	// Anything that is not a documented opt-out value runs the savers normally.
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	h.TokenSaver.SetRTK(true)
+
+	var sb strings.Builder
+	for i := 0; i < 300; i++ {
+		sb.WriteString("unique log line number ")
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString("\n")
+	}
+	body, err := json.Marshal(map[string]any{
+		"messages": []any{
+			map[string]any{"role": "tool", "content": sb.String()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
+	if string(got) == string(body) {
+		t.Error("expected RTK to process body when header is not a bypass value")
+	}
+}
+
+func TestIsTokenSaverBypassValue(t *testing.T) {
+	for _, v := range []string{"false", "0", "off", "bypass", "FALSE", "Off", "BYPASS", " 0 ", " Off "} {
+		if !isTokenSaverBypassValue(v) {
+			t.Errorf("expected %q to be a bypass value", v)
+		}
+	}
+	for _, v := range []string{"", "true", "1", "on", "yes", "maybe"} {
+		if isTokenSaverBypassValue(v) {
+			t.Errorf("expected %q to NOT be a bypass value", v)
+		}
+	}
+}

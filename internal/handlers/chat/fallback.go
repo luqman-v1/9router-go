@@ -1370,6 +1370,12 @@ func isClientCanceled(ctx context.Context, err error) bool {
 // a role:"system" message is rejected by the Anthropic API.
 // false from compress/inject means nothing changed (or unparseable) — keep original, not a failure.
 func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeNative bool) ([]byte, int, int, int) {
+	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
+	// every token saver — RTK, Caveman, Ponytail, ADHD, Headroom, system prompt
+	// prefix/suffix — and the body is forwarded untouched with 0 tokens saved.
+	if TokenSaverBypassEnabled(ctx) {
+		return body, 0, 0, 0
+	}
 	if h.TokenSaver == nil {
 		return body, 0, 0, 0
 	}
@@ -1468,6 +1474,36 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 		}
 	}
 	return out, origTokens, savedTokens, savedPct
+}
+
+// tokenSaverBypassKey carries the X-9Router-Token-Saver opt-out on the context.
+type tokenSaverBypassKey struct{}
+
+// WithTokenSaverBypass marks ctx as a token-saver bypass: no compression or
+// prompt injection may run on this request.
+func WithTokenSaverBypass(ctx context.Context) context.Context {
+	return context.WithValue(ctx, tokenSaverBypassKey{}, true)
+}
+
+// TokenSaverBypassEnabled reports whether the request opted out of token saving.
+func TokenSaverBypassEnabled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, ok := ctx.Value(tokenSaverBypassKey{}).(bool)
+	return ok && v
+}
+
+// isTokenSaverBypassValue reports whether an X-9Router-Token-Saver header value
+// opts the request out of every token saver (false, 0, off, bypass,
+// case-insensitive).
+func isTokenSaverBypassValue(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "false", "0", "off", "bypass":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveProtocol(endpoint string) string {
