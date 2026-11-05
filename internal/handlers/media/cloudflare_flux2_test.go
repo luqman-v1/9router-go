@@ -14,10 +14,10 @@ import (
 
 func TestIsCloudflareFlux2Model(t *testing.T) {
 	tests := []struct {
-		name    string
+		name     string
 		provider string
-		model   string
-		want    bool
+		model    string
+		want     bool
 	}{
 		{"flux-2-dev cf", "cf", "@cf/black-forest-labs/flux-2-dev", true},
 		{"flux-2-dev cloudflare-ai", "cloudflare-ai", "@cf/black-forest-labs/flux-2-dev", true},

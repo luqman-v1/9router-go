@@ -1181,14 +1181,14 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-			// Cloudflare Flux-2 with a reference image on the direct path: dedicated lane.
-			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") &&
-				isCloudflareFlux2Model(modelInfo) && flux2ReferenceImage(body) {
-				if err := h.forwardCloudflareFlux2Image(w, r, body, modelInfo); err != nil {
-					handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
-				}
-				return
-			}
+	// Cloudflare Flux-2 with a reference image on the direct path: dedicated lane.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") &&
+		isCloudflareFlux2Model(modelInfo) && flux2ReferenceImage(body) {
+		if err := h.forwardCloudflareFlux2Image(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
 	// UC web: the persona image API needs a minted Clerk session, not a bearer
 	// key, so the generic forward cannot reach it.
 	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
@@ -1709,7 +1709,7 @@ func (h *MediaHandler) resolveImageInput(ctx context.Context, imageURL string) (
 	if ip == nil {
 		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
 		if err != nil || len(ips) == 0 {
-			return "", fmt.Errorf("resolve image host %q: %v", host, err)
+			return "", fmt.Errorf("resolve image host %q: %w", host, err)
 		}
 		ip = ips[0]
 	}
@@ -1825,7 +1825,7 @@ func (h *MediaHandler) forwardCloudflareFlux2Image(w http.ResponseWriter, r *htt
 	defer func() { _ = resp.Body.Close() }()
 	copyUpstreamHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, resp.Body)
 	if resp.StatusCode == http.StatusOK && conn != nil {
 		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 	}
