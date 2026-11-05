@@ -22,6 +22,7 @@ const oauthLockTestProvider = "oauth-lock-test"
 
 type oauthRefresherStub struct {
 	status int // 0 = succeed
+	body   string
 	calls  atomic.Int32
 }
 
@@ -31,12 +32,13 @@ func (s *oauthRefresherStub) refresher() oauth.Refresher {
 		if s.status == 0 {
 			return &oauth.TokenResult{AccessToken: "fresh-token", RefreshToken: "fresh-refresh", ExpiresIn: 3600}, nil
 		}
-		return nil, &providers.OAuthRefreshError{Status: s.status, Body: "invalid_grant"}
+		return nil, &providers.OAuthRefreshError{Status: s.status, Body: s.body}
 	}
 }
 
 func installRefresher(t *testing.T, stub *oauthRefresherStub) {
 	oauth.ResetRefreshCache()
+	oauth.ResetRefreshSlots()
 	t.Helper()
 	previous := oauth.Get(oauthLockTestProvider)
 	oauth.Register(oauthLockTestProvider, stub.refresher())
@@ -165,11 +167,14 @@ func TestRejectedOAuthRefreshParksAccount(t *testing.T) {
 	tests := []struct {
 		name       string
 		status     int
+		body       string
 		wantParked bool
 	}{
-		{"revoked grant is parked", http.StatusUnauthorized, true},
-		{"invalid request is not parked", http.StatusBadRequest, false},
-		{"token endpoint down is not parked", http.StatusInternalServerError, false},
+		{"revoked grant is parked", http.StatusUnauthorized, "invalid_grant", true},
+		{"400 invalid_grant is parked", http.StatusBadRequest, "invalid_grant", true},
+		{"400 refresh_token_reused is parked", http.StatusBadRequest, "refresh_token_reused", true},
+		{"invalid request is not parked", http.StatusBadRequest, "invalid_scope", false},
+		{"token endpoint down is not parked", http.StatusInternalServerError, "", false},
 	}
 
 	for _, entry := range entryPoints {
@@ -178,7 +183,7 @@ func TestRejectedOAuthRefreshParksAccount(t *testing.T) {
 				database, cleanup := setupChatTestDB(t)
 				defer cleanup()
 				dropSeededConn(t, database)
-				installRefresher(t, &oauthRefresherStub{status: tt.status})
+				installRefresher(t, &oauthRefresherStub{status: tt.status, body: tt.body})
 				insertOAuthConn(t, database, "conn-broken", 1, expiredOAuthData(t))
 
 				handler := NewChatHandler(db.NewRepo(database))

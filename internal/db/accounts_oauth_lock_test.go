@@ -221,8 +221,8 @@ func TestRecordConnectionOAuthFailure_RecordsWhy(t *testing.T) {
 // testStatus untouched: only a re-login fixes a dead grant.
 func TestRecordConnectionOAuthFailure_SetsReauthRequiredForDeadGrant(t *testing.T) {
 	deadCases := []struct {
-		name  string
-		err   error
+		name   string
+		err    error
 		status int
 	}{
 		{"401 invalid_grant", &providers.OAuthRefreshError{Status: 401, Body: "invalid_grant"}, 401},

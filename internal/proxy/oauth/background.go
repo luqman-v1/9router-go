@@ -223,5 +223,11 @@ func refreshBackgroundConnection(ctx context.Context, repo *db.Repo, c Connectio
 		log.Printf("[BG_TOKEN_REFRESH] persist failed conn=%s: %v", c.ID, err)
 		return
 	}
+	// A successful refresh sheds the quarantine marker so the account is
+	// selectable again on the next tick instead of staying parked out of
+	// rotation for the rest of the cooldown window.
+	if err := repo.ClearConnectionOAuthLock(c.ID); err != nil {
+		log.Printf("[BG_TOKEN_REFRESH] clear lock failed conn=%s: %v", c.ID, err)
+	}
 	log.Printf("[BG_TOKEN_REFRESH] refreshed conn=%s provider=%s", c.ID, c.Provider)
 }
