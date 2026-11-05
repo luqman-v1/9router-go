@@ -264,6 +264,7 @@ export interface Settings {
   adhdEnabled?: boolean
   adhdLevel?: string
   headroomEnabled?: boolean
+  headroomAutostart?: boolean
   headroomUrl?: string
   headroomTimeoutMs?: number
   headroomKompress?: boolean

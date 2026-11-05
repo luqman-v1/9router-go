@@ -131,6 +131,9 @@ func applyHeadroomSettings(s *SettingsData, raw map[string]any) {
 	if v, ok := raw["headroomEnabled"].(bool); ok {
 		s.HeadroomEnabled = v
 	}
+	if v, ok := raw["headroomAutostart"].(bool); ok {
+		s.HeadroomAutostart = v
+	}
 	if v, ok := raw["headroomCodeAware"].(bool); ok {
 		s.HeadroomCodeAware = v
 	}

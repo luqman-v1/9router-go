@@ -140,7 +140,11 @@ type SettingsData struct {
 	// in, so "a URL exists" cannot stand in for "the operator turned this on".
 	// Off by default: an unconfigured proxy must not be a slow path on every
 	// request.
-	HeadroomEnabled            bool                            `json:"headroomEnabled"`
+	HeadroomEnabled bool `json:"headroomEnabled"`
+	// HeadroomAutostart launches the local Headroom proxy daemon on 9router boot.
+	// It is decoupled from HeadroomEnabled so operators who run Headroom standalone or
+	// selectively toggle request compression still have the proxy ready on startup.
+	HeadroomAutostart          bool                            `json:"headroomAutostart"`
 	HeadroomCodeAware          bool                            `json:"headroomCodeAware"`
 	HeadroomKompress           bool                            `json:"headroomKompress"`
 	HeadroomTimeoutMs          int                             `json:"headroomTimeoutMs"`
@@ -221,6 +225,7 @@ func DefaultSettings() *SettingsData {
 		SystemPromptPrefix:      "",
 		SystemPromptSuffix:      "",
 		HeadroomUrl:             "http://localhost:8787",
+		HeadroomAutostart:       false,
 		HeadroomKompress:        true,
 		HeadroomTimeoutMs:       3000,
 		SemanticCacheEnabled:    false,

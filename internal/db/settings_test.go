@@ -605,3 +605,31 @@ func TestBudgetCallsCappedAtParse(t *testing.T) {
 		}
 	}
 }
+
+func TestSettings_HeadroomAutostart(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := NewRepo(database)
+
+	settingsJSON := `{
+		"headroomEnabled": true,
+		"headroomAutostart": true,
+		"headroomUrl": "http://localhost:8787"
+	}`
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, settingsJSON); err != nil {
+		t.Fatalf("failed to insert settings: %v", err)
+	}
+	s, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	if !s.HeadroomAutostart {
+		t.Errorf("expected HeadroomAutostart to be true, got %v", s.HeadroomAutostart)
+	}
+}

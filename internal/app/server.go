@@ -16,6 +16,7 @@ import (
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/chat"
+	"9router/proxy/internal/headroom"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
@@ -119,6 +120,7 @@ func ProvideServer(p ServerParams) *http.Server {
 			startAutoPingScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
 			startModelHealthScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
 			startUptimeHeartbeat(shutdown.Context(), p.Repo)
+			startHeadroomOnBoot(p.Repo, config.ResolveDataDir())
 
 			log.Printf("9router-go Proxy (%s) starting on port %d", updater.CurrentVersion, p.Config.Port)
 
@@ -239,4 +241,45 @@ func startUptimeHeartbeat(ctx context.Context, repo *db.Repo) {
 	)
 	go loop.Run(ctx)
 	log.Println("[uptime] heartbeat loop started")
+}
+
+// startHeadroomOnBoot launches the local Headroom proxy sidecar if enabled in settings.
+// The proxy is spawned detached (proc.Detached, tracked via PID file) so it persists
+// across server restarts independently and is deliberately not cancelled by server shutdown.
+func startHeadroomOnBoot(repo *db.Repo, dataDir string) {
+	if repo == nil {
+		return
+	}
+	settings, err := repo.GetSettings()
+	if err != nil || settings == nil {
+		return
+	}
+	if !settings.HeadroomAutostart {
+		return
+	}
+	hurl := settings.HeadroomUrl
+	if hurl == "" {
+		hurl = "http://localhost:8787"
+	}
+	if !headroom.IsLoopbackHeadroomUrl(hurl) {
+		return
+	}
+	port := headroom.ParsePortFromURL(hurl)
+	if port == 0 {
+		port = headroom.DefaultPort
+	}
+	codeAware := settings.HeadroomCodeAware
+	kompress := settings.HeadroomKompress
+	go func() {
+		res, err := headroom.StartHeadroomProxy(dataDir, port, codeAware, kompress)
+		if err != nil {
+			log.Printf("[headroom] autostart failed: %v", err)
+			return
+		}
+		if res.AlreadyRunning {
+			log.Printf("[headroom] autostart: proxy already running on port %d (pid %d)", port, res.PID)
+		} else {
+			log.Printf("[headroom] autostart: started proxy on port %d (pid %d)", port, res.PID)
+		}
+	}()
 }
