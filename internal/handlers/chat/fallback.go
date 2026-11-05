@@ -1484,8 +1484,8 @@ func TokenSaverBypassEnabled(ctx context.Context) bool {
 	if ctx == nil {
 		return false
 	}
-	_, ok := ctx.Value(tokenSaverBypassKey{}).(bool)
-	return ok
+	v, ok := ctx.Value(tokenSaverBypassKey{}).(bool)
+	return ok && v
 }
 
 // isTokenSaverBypassValue reports whether an X-9Router-Token-Saver header value
