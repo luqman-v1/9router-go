@@ -1,5 +1,55 @@
 # Changelog
 
+## [v1.9.16-exp.4] - 2026-11-05
+
+### fix(errorclassify): do not cool down accounts for generic 400 improperly formed requests
+
+- Port of upstream `decolua/9router#4958`, **deliberate divergence**: upstream retains `{text:"improperly formed request", cooldownMs:2m}` (Kiro model-tier lock), this port removes it. The text's provenance in the Go port is generic 400 (Codex/Claude malformed payloads), so parking all accounts for 2 minutes for a client payload error is wrong here — every account is parked by a request no account could serve. Upstream's own comment ("model not available on this account tier") no longer describes the Go port's error source.
+- A 400 containing this text now matches no cooldown rule and falls through to `ShouldFallback: false` (request-scoped error), leaving accounts unparked.
+- Add unit test `TestClassifyError_ImproperlyFormedRequestNoPark` in `internal/providers/errorclassify_test.go`.
+
+Part of #927.
+
+### fix(commandcode): advertise and enforce the real 200000 max_tokens cap
+
+`/v1/models` advertised `maxOutput: 384000` for every `cmc/*` model (ported from upstream `capabilities.js`), but the live `/alpha/generate` endpoint validates `params.max_tokens <= 200000` and rejects larger budgets with `400 Too big: expected number to be <=200000` (upstream decolua/9router#5268). Clients that trust the advertised cap (pi agent, etc.) sent 384000 and hard-failed; a client sending 200000 worked. The requested model `cmc/deepseek/deepseek-v4-flash` hit this on 2026-11-05.
+
+- `commandCodeMaxOutput` lowered to 200000 in `internal/providers/capabilities_commandcode.go`, so `/v1/models` and the dashboard caps advertise the enforced cap. Context window stays 1M (prompt-side validation is separate and not capped at 200000).
+- `commandcodeMaxTokens` now clamps a resolved client budget above 200000 down to 200000 instead of forwarding it verbatim (`internal/proxy/executor/commandcode_request.go`), so a stale client still cached at 384000 succeeds instead of 400ing. Budgets at or under the cap, the 1024 default, and null handling are unchanged.
+
+Verified: `TestCommandcodeMaxTokensResolution` adds clamped/exact-cap cases (fail pre-fix); `TestGetCapabilitiesDetailForModel_CommandCode` and `TestHandleGetModelCaps_CommandCode` updated to 200000; `go test ./internal/proxy/executor/ ./internal/providers/` green; dashboard caps test green in isolation (2 pre-existing unrelated failures in the package: allowPrivateNetworking persistence).
+
+### fix(gemini): preserve tools and functionCall/functionResponse for Gemini-native clients on /v1beta/models/*
+
+- In `internal/translator/gemini.go`, parse `tool_choice` from OpenAI requests and map it to Gemini's `toolConfig.mode`: `none` → `NONE` (no tool declarations), `required` → `ANY`, `auto`/unset → `VALIDATED` (default). Previously `tool_choice` was ignored and tools were always emitted with `VALIDATED` mode, so `tool_choice: none` still sent function declarations to Gemini.
+- Unit tests in `internal/translator/gemini_tool_preserve_test.go` cover tool_choice mapping (none/required/auto), functionCall and functionResponse preservation in both OpenAI→Gemini and Gemini→OpenAI directions, and stream chunk functionCall preservation.
+- Parity with upstream decolua/9router#5386 (fixes #5385): tools, functionCall, and functionResponse parts survive the OpenAI ↔ Gemini native round trip instead of being dropped.
+
+### fix(proxy): per-connection opt-out for private-network dials (SSRF guard)
+
+- A connection pointed at a local gateway (a second 9router on `127.0.0.x`, an
+  Ollama-style daemon, a LAN peer) was refused by the SSRF guard's socket-level
+  `ControlContext`, surfacing as `502: request to private/reserved IP blocked by
+  SSRF protection` (issue #840). Unlike upstream, which never guards chat
+  upstreams, 9router-go's dial guard is a deliberate hardening — so the fix is
+  an opt-in, not a removal.
+- Adding `allowPrivateNetworking: true` to a connection's data (persisted via
+  POST/PUT `/api/connections`, read back through the sanitize allowlist, and
+  plumbed to chat (`internal/handlers/chat/fallback.go:tryForwardWithConnection`)
+  and the connection probe (`connection_probe.go:testSingleConnection`))
+  lifts the guard for that connection only, riding
+  the request context (`proxy.WithAllowPrivateNetworking`) so both the plain
+  forwarder and every executor apply it at dial time. The process-wide
+  `ALLOW_PRIVATE_NETWORKING` escape hatch is unchanged and still required for
+  anything that is not a connection (media, search, etc.).
+- Verified with two end-to-end chat handler tests on a loopback httptest
+  upstream with `ALLOW_PRIVATE_NETWORKING=false`: the same connection is
+  refused without the flag and served with it. Additionally
+  `TestNewSafeDialer_PermitsPrivateViaContextOptIn` pins the dial-guard seam,
+  and `TestHandleCreateConnection_PersistsAllowPrivateNetworking` /
+  `TestHandleUpdateConnection_AllowPrivateNetworkingPersistence` pin the
+  dashboard create/update persistence (toggle on/off round-trip).
+
 ## [v1.9.16-exp.3] - 2026-11-05
 
 ### feat(stream): output generation rate (tok/s) and max gap
