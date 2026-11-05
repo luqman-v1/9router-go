@@ -633,4 +633,3 @@ func TestSettings_HeadroomAutostart(t *testing.T) {
 		t.Errorf("expected HeadroomAutostart to be true, got %v", s.HeadroomAutostart)
 	}
 }
-}
