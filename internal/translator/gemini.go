@@ -181,7 +181,7 @@ func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]
 		TopK                *int           `json:"top_k,omitempty"`
 		Stream              bool           `json:"stream,omitempty"`
 		Tools               jsontext.Value `json:"tools,omitempty"`
-		ToolChoice          string         `json:"tool_choice,omitempty"`
+		ToolChoice          jsontext.Value `json:"tool_choice,omitempty"`
 		ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
 		Thinking            *struct {
 			Type         string `json:"type"`
@@ -403,15 +403,22 @@ func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]
 	//   "required" -> ANY (force at least one tool call)
 	//   "auto"/unset -> VALIDATED (default)
 	toolConfigMode := "VALIDATED"
-	if oreq.ToolChoice != "" {
-		switch oreq.ToolChoice {
+	toolChoiceStr := ""
+	if len(oreq.ToolChoice) > 0 {
+		var s string
+		if json.Unmarshal(oreq.ToolChoice, &s) == nil {
+			toolChoiceStr = s
+		}
+	}
+	if toolChoiceStr != "" {
+		switch toolChoiceStr {
 		case "none":
 			toolConfigMode = "NONE"
 		case "required":
 			toolConfigMode = "ANY"
 		}
 	}
-	if oreq.ToolChoice != "none" && len(oreq.Tools) > 0 {
+	if toolChoiceStr != "none" && len(oreq.Tools) > 0 {
 		var openaiTools []OpenAITool
 		if err := json.Unmarshal(oreq.Tools, &openaiTools); err != nil {
 			return nil, fmt.Errorf("parse tools: %w", err)
@@ -435,7 +442,7 @@ func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]
 			}
 		}
 	}
-	if oreq.ToolChoice == "none" && req.ToolConfig == nil {
+	if toolChoiceStr == "none" && req.ToolConfig == nil {
 		// No tool declarations but tool_choice: none — still tell Gemini not to
 		// invoke any built-in capability.
 		req.ToolConfig = map[string]any{

@@ -89,6 +89,29 @@ func TestPreserveToolChoiceNone(t *testing.T) {
 	}
 }
 
+func TestPreserveToolChoiceObjectDoesNotBreakUnmarshal(t *testing.T) {
+	// OpenAI request with object-shaped tool_choice: {"type":"function","function":{"name":"get_weather"}}
+	openaiReq := `{
+		"model": "gemini-3.5-flash",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"tools": [{
+			"type": "function",
+			"function": {"name": "get_weather", "parameters": {"type": "object"}}
+		}],
+		"tool_choice": {"type":"function","function":{"name":"get_weather"}}
+	}`
+
+	geminiBytes, err := TranslateOpenAIToGemini([]byte(openaiReq))
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini must not fail on object tool_choice: %v", err)
+	}
+
+	body := string(geminiBytes)
+	if !strings.Contains(body, "functionDeclarations") {
+		t.Errorf("expected functionDeclarations preserved with object tool_choice, got: %s", body)
+	}
+}
+
 func TestPreserveFunctionResponseInOpenAIToGemini(t *testing.T) {
 	// Multi-turn: user → assistant tool_call → tool result → final
 	openaiReq := `{
