@@ -41,14 +41,14 @@ func TestForwardGithubClaudeMessagesNonStream(t *testing.T) {
 		},
 	}
 	req := &Request{
-		Ctx:          t.Context(),
-		Client:       server.Client(),
-		Provider:     "github",
-		Config:       cfg,
-		APIKey:       "test-key",
-		ModelName:    "claude-3-7-sonnet",
-		Body:         []byte(`{"model":"claude-3-7-sonnet","messages":[{"role":"user","content":"hi"}]}`),
-		IsStream:     false,
+		Ctx:           t.Context(),
+		Client:        server.Client(),
+		Provider:      "github",
+		Config:        cfg,
+		APIKey:        "test-key",
+		ModelName:     "claude-3-7-sonnet",
+		Body:          []byte(`{"model":"claude-3-7-sonnet","messages":[{"role":"user","content":"hi"}]}`),
+		IsStream:      false,
 		TranslateResp: false,
 	}
 
@@ -89,17 +89,17 @@ func TestForwardGithubRoutesNonClaudeToOpenAI(t *testing.T) {
 	defer server.Close()
 
 	cfg := &providers.ProviderConfig{
-		BaseURL: server.URL,
+		BaseURL: server.URL + "/chat/completions",
 	}
 	req := &Request{
-		Ctx:         t.Context(),
-		Client:      server.Client(),
-		Provider:    "github",
-		Config:      cfg,
-		APIKey:      "test-key",
-		ModelName:   "gpt-4o",
-		Body:        []byte(`{"model":"gpt-4o","messages":[]}`),
-		IsStream:    false,
+		Ctx:       t.Context(),
+		Client:    server.Client(),
+		Provider:  "github",
+		Config:    cfg,
+		APIKey:    "test-key",
+		ModelName: "gpt-4o",
+		Body:      []byte(`{"model":"gpt-4o","messages":[]}`),
+		IsStream:  false,
 	}
 
 	rec := httptest.NewRecorder()

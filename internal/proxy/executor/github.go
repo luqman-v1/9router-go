@@ -82,7 +82,7 @@ func ForwardGithubClaudeMessages(w http.ResponseWriter, req *Request, model stri
 	if err != nil {
 		return fmt.Errorf("ForwardGithubClaudeMessages upstream: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if req.IsStream {
 		return handleClaudeMessagesStream(w, req, resp.Body)
