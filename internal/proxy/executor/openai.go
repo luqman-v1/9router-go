@@ -108,6 +108,57 @@ func renameMaxTokensBody(body []byte) []byte {
 	return out
 }
 
+// volcengineArkGLM5OutputCeiling is the Volcengine Ark output-token ceiling
+// for GLM-5 models. Ark answers HTTP 400 for a GLM-5 request that asks for
+// more than this, so a client budget above it is folded down before dispatch.
+const volcengineArkGLM5OutputCeiling = 4096
+
+// clampVolcengineArkGLM5OutputTokens folds a GLM-5 output budget above the
+// Ark ceiling down to 4096. A budget at or below the ceiling, a request that
+// sets no budget, and every non-GLM-5 model are left byte-identical.
+func clampVolcengineArkGLM5OutputTokens(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	model, _ := m["model"].(string)
+	if !isVolcengineArkGLM5Model(model) {
+		return body
+	}
+	changed := false
+	for _, field := range []string{"max_tokens", "max_completion_tokens"} {
+		v, ok := m[field]
+		if !ok {
+			continue
+		}
+		n, ok := outputBudgetOf(v)
+		if !ok || n <= volcengineArkGLM5OutputCeiling {
+			continue
+		}
+		m[field] = volcengineArkGLM5OutputCeiling
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	out, err := marshalStable(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// isVolcengineArkGLM5Model reports whether a Volcengine Ark model id is a
+// GLM-5 model, whose output is capped at 4096 tokens: either a bare glm-5 id
+// or a Doubao-family id carrying the glm-5 qualifier.
+func isVolcengineArkGLM5Model(model string) bool {
+	lower := strings.ToLower(model)
+	if strings.HasPrefix(lower, "glm-5") {
+		return true
+	}
+	return strings.HasPrefix(lower, "doubao") && strings.Contains(lower, "glm-5")
+}
+
 // DowngradeJsonSchemaToJSONObject downgrades response_format from "json_schema"
 // to {"type":"json_object"} for providers like DeepSeek or openai-compatible nodes
 // that do not support OpenAI Structured Outputs (upstream decolua/9router PR #5304).
@@ -147,6 +198,12 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	}
 	if req.Provider == "deepseek" {
 		req.Body = DowngradeJsonSchemaToJSONObject(req.Body)
+	}
+	if req.Provider == "volcengine-ark" {
+		// Volcengine Ark answers HTTP 400 when a GLM-5 model is asked for more
+		// than its 4096 output-token ceiling, so a client budget above it is
+		// folded down before the request leaves the gateway.
+		req.Body = clampVolcengineArkGLM5OutputTokens(req.Body)
 	}
 	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
 	if err != nil {
