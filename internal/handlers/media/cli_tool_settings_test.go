@@ -371,4 +371,14 @@ func TestCLIToolDelete_PassesGatewayURLAndResets(t *testing.T) {
 	if strings.Contains(s, "autoCompactWindow") {
 		t.Errorf("autoCompactWindow should be removed on DELETE reset:\n%s", s)
 	}
+
+	// Foreign URL containing 20130 must survive DELETE when BaseURL is plumbed through
+	foreignSettings := `{"model":"foreign-model","env":{"ANTHROPIC_BASE_URL":"http://foreign-site.com:20130/v1"}}`
+	_ = os.WriteFile(filepath.Join(dir, "settings.json"), []byte(foreignSettings), 0o644)
+	rec2 := httptest.NewRecorder()
+	h.HandleCLIToolDelete(rec2, req)
+	content2, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if !strings.Contains(string(content2), `"model"`) {
+		t.Errorf("foreign model must survive DELETE whose host is gateway:\n%s", string(content2))
+	}
 }

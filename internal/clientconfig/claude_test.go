@@ -390,7 +390,8 @@ func TestClaudeApply_ClearingModelDeletesWhenPointingAtGateway(t *testing.T) {
 		"model": "previous-custom-model",
 		"autoCompactWindow": 200000,
 		"env": {
-			"ANTHROPIC_BASE_URL": "http://127.0.0.1:20130/v1"
+			"ANTHROPIC_BASE_URL": "http://127.0.0.1:20130/v1",
+			"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000"
 		}
 	}`
 	writeFixture(t, paths.Files[0].Path, content)
@@ -407,6 +408,9 @@ func TestClaudeApply_ClearingModelDeletesWhenPointingAtGateway(t *testing.T) {
 	}
 	if strings.Contains(afterApply, "autoCompactWindow") {
 		t.Errorf("autoCompactWindow should be removed when empty:\n%s", afterApply)
+	}
+	if strings.Contains(afterApply, "CLAUDE_CODE_AUTO_COMPACT_WINDOW") {
+		t.Errorf("CLAUDE_CODE_AUTO_COMPACT_WINDOW should be removed when AutoCompactWindow is empty:\n%s", afterApply)
 	}
 }
 

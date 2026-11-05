@@ -254,6 +254,10 @@ func claudeApplyEdits(file TargetFile, opts Options) []Edit {
 			KeyPath: []string{"autoCompactWindow"},
 			Delete:  true,
 		})
+		edits = append(edits, Edit{
+			KeyPath: []string{"env", "CLAUDE_CODE_AUTO_COMPACT_WINDOW"},
+			Delete:  true,
+		})
 	}
 	if m := strings.TrimSpace(opts.Model); m != "" {
 		edits = append(edits, Edit{
