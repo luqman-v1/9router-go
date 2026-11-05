@@ -227,6 +227,11 @@ func commandcodeConvertMessages(rawMsgs []any) (messages []any, system string) {
 	return converted, strings.Join(systemTexts, "\n\n")
 }
 
+// commandCodeMaxTokensLimit is the ceiling the live /alpha/generate endpoint
+// enforces on params.max_tokens. A larger budget is rejected with a 400, so
+// an over-limit client budget is clamped down to it rather than forwarded.
+const commandCodeMaxTokensLimit = 200000
+
 // commandcodeMaxTokens mirrors upstream `body.max_tokens ?? body.max_output_tokens
 // ?? DEFAULT_MAX_TOKENS`, with one spelling appended: max_completion_tokens.
 // The fallback stays 1024 (upstream 64000): the free tier the provider bills
@@ -238,17 +243,32 @@ func commandcodeConvertMessages(rawMsgs []any) (messages []any, system string) {
 // because normalizeChatTokenFields drops max_tokens from a body that carries
 // both, and this provider reads only max_tokens: without this branch the
 // client's budget was discarded and the 1024 default was billed in its place.
+//
+// The resolved budget is clamped to commandCodeMaxTokensLimit (upstream
+// decolua/9router#5268): /v1/models advertises 384000 maxOutput for cmc/*,
+// but the endpoint rejects max_tokens above 200000, so an unclamped value
+// turns a working client (pi etc.) into a 400.
 func commandcodeMaxTokens(body map[string]any) any {
-	if v, ok := body["max_tokens"]; ok && v != nil {
-		return v
+	var v any
+	if x, ok := body["max_tokens"]; ok && x != nil {
+		v = x
+	} else if x, ok := body["max_output_tokens"]; ok && x != nil {
+		v = x
+	} else if x, ok := body["max_completion_tokens"]; ok && x != nil {
+		v = x
+	} else {
+		return 1024
 	}
-	if v, ok := body["max_output_tokens"]; ok && v != nil {
-		return v
+	if n, ok := v.(float64); ok && n > commandCodeMaxTokensLimit {
+		return float64(commandCodeMaxTokensLimit)
 	}
-	if v, ok := body["max_completion_tokens"]; ok && v != nil {
-		return v
+	if n, ok := v.(int); ok && n > commandCodeMaxTokensLimit {
+		return commandCodeMaxTokensLimit
 	}
-	return 1024
+	if n, ok := v.(int64); ok && n > commandCodeMaxTokensLimit {
+		return int64(commandCodeMaxTokensLimit)
+	}
+	return v
 }
 
 // commandcodeTools projects the tool declarations onto the three keys the

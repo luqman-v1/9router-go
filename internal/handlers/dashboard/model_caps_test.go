@@ -59,17 +59,17 @@ func TestHandleGetModelCaps_CommandCode(t *testing.T) {
 		{
 			// denylisted: no image input, but the effort picker still applies
 			model: "deepseek/deepseek-v4-pro", wantVision: false,
-			wantContext: 1000000, wantMaxOutput: 384000,
+			wantContext: 1000000, wantMaxOutput: 200000,
 			wantThinkingLvls: []string{"none", "low", "medium", "high", "xhigh", "max"},
 		},
 		{
 			model: "moonshotai/Kimi-K2.7-Code", wantVision: true,
-			wantContext: 1000000, wantMaxOutput: 384000,
+			wantContext: 1000000, wantMaxOutput: 200000,
 			wantThinkingLvls: []string{"none", "low", "medium", "high", "xhigh", "max"},
 		},
 		{
 			model: "nvidia/nemotron-3-ultra-550b-a55b", wantVision: false,
-			wantContext: 1000000, wantMaxOutput: 384000,
+			wantContext: 1000000, wantMaxOutput: 200000,
 			wantThinkingLvls: []string{"none", "low", "medium", "high", "xhigh", "max"},
 		},
 	}
