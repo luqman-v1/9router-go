@@ -168,6 +168,7 @@ var modelsListURL = map[string]string{
 	"atria":       "https://api.atria-asi.ai/v1/models",
 	"agnes":       "https://apihub.agnes-ai.com/v1/models",
 	"bai":         "https://api.b.ai/v1/models",
+	"nutaraline":  "https://nutaraline.co.uk/v1/models",
 	// Meta's Model API refuses /v1/models without the protocol version header,
 	// so the live-catalog fetch carries it on top of the bearer token
 	// (upstream PROVIDER_MODELS_CONFIG.muse).

@@ -54,7 +54,7 @@ func ClassifyUpstreamNetworkError(err error) (int, string, string) {
 }
 
 // validateProbeTimeout mirrors upstream's AbortSignal.timeout(8000) on probes.
-const validateProbeTimeout = 8 * time.Second
+const validateProbeTimeout = 20 * time.Second
 
 // probeClientKey carries the *http.Client a probe should use (e.g. the
 // connection's proxy-bound client during a dashboard connection test).
