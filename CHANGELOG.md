@@ -1,5 +1,1433 @@
 # Changelog
 
+## [v1.9.16-exp.3] - 2026-11-05
+
+### feat(stream): output generation rate (tok/s) and max gap
+
+- Track token generation timing during SSE streaming in `internal/handlers/shared/types.go`:
+  `StreamMetrics` now records `OutputTokens`, `FirstToken`, `LastToken` and `MaxGapMs`.
+- `StreamMetrics.NoteOutput` stamps each streamed chunk and widens the max inter-token gap;
+  `TokPerSec` reports output tokens divided by elapsed seconds (tok/s).
+- Each streamed chunk is timed in the chat forwarder (`forward.go`, the Claude translation
+  branch) and via a `streamNoteWriter` wrapper around the response buffer in `fallback.go`,
+  so executor-backed providers are covered too without touching the SSE wire protocol.
+- The stream summary log line (`logUsage` in `usage.go`) now carries `tok_per_sec` and
+  `max_gap_ms` alongside the existing TTFT, latency and token figures.
+- Added unit tests in `internal/handlers/shared/types_test.go`.
+
+### fix(dashboard): stack quota rows vertically on narrow mobile viewports (#941)
+
+- On mobile viewports below 390px, the horizontal QuotaTable row let the w-36 progress bar, usage text, and reset badges collide and overflow past the card edge.
+- Switched each row to `flex-col sm:flex-row` so the quota bar, value text, and reset badges stack vertically on small screens and return to a horizontal row from the `sm` breakpoint up, using existing Tailwind tokens only.
+
+### fix(codex): unblock quota cache and clear model locks on reset credit, probe, and connection enable
+- **Reset Credits**: In `HandleConsumeCodexResetCredit`, clear the in-memory Codex quota block (`ClearCodexQuotaBlock`) and reset health locks when a reset credit is consumed successfully.
+- **Connection Enable & Probing**: Clear in-memory quota blocks when a connection is toggled active in `HandleUpdateConnection` or successfully verified in `HandleTestConnection`.
+- **Model Lock Path Escaping**: Quote JSON path segments in `clearSpecificModelLock` and `clearConnectionModelLocks` so models containing dots (e.g. `gpt-6.1-sol`) are correctly matched and unlocked in SQLite.
+
+### fix(media): honor SearchURL on direct search, prioritize combos, and fix web combo UI
+- **Direct Search Forwarding**:
+  - In `internal/handlers/media/media.go`, forward single `/v1/search` requests directly to `providerCfg.SearchURL` when configured, preventing incorrect suffix concatenation `<baseURL>/v1/search` which resulted in HTTP 404 from search providers (such as Tavily, Exa, Serper).
+- **Web Combo Prioritization & Resolution**:
+  - Default `/v1/search` to `search-combo` (and `/v1/web/fetch` to `fetch-combo`) when configured, prioritizing combo failover over single provider fallback.
+  - In `internal/handlers/chat/resolution.go` and `models_list.go`, auto-normalize bare provider names (e.g. `["exa", "serper", "tavily"]`) in `webSearch` and `webFetch` combos to `/search` or `/fetch`, preventing `combo has no valid leaf models` error on legacy combo configurations.
+- **Web Combo Management UI**:
+  - In `web/src/components/media/MediaWebView.svelte`, append `/search` or `/fetch` when clicking providers to add them to combos (e.g. adding `antigravity/search` instead of `antigravity`).
+  - Badge active default combo in Web Fetch & Search view.
+
+### Fixes
+
+- **proxy**: Recognize `delta.reasoning` in SSE stream chunk parsing alongside `delta.reasoning_content` so open-weights reasoning models (e.g. SGLang/Qwen3.8 emitting `delta.reasoning`) are treated as valid non-empty streaming content and not dropped.
+
+### feat(skills): bring AI agent skills into repository and point SkillsView to 9router-go
+- **In-Repo Skills**:
+  - Add `skills/` directory containing complete, self-contained Agent skills for 9router capabilities (chat, embeddings, image, stt, tts, video, web-search, web-fetch).
+  - Update default gateway port to `20130` across all skill setup guides.
+  - Update `web/src/components/SkillsView.svelte` to point prompt copy links and GitHub URLs directly to `luqman-v1/9router-go` on branch `main`.
+  - Add missing `9router-video` entry to the skills catalog view.
+
+### Gemini schema normalization
+
+`cleanGeminiSchema` now keeps `minLength`, `maxLength`, `minItems`, `maxItems`,
+`minimum` and `maximum` instead of blanket-stripping them, coercing string-encoded
+values (`"1"` → `1`) so they reach Gemini as valid integers. Enum arrays have
+empty strings filtered out (`["", "foo"]` → `["foo"]`), and the `enum` key is
+removed entirely when nothing remains. String constraints that were already
+stripped (`exclusiveMinimum`, `exclusiveMaximum`, `format`, `multipleOf`) stay
+stripped.
+
+### feat(gemini): register Gemini 3.8 Flash TTS and 3.8 Flash Lite TTS models
+
+- Add `gemini-3.8-flash-tts` and `gemini-3.8-flash-lite-tts` to the gemini provider model catalog in `internal/providers/registry_models.go`.
+- Declare both models with the `tts` service kind in `ProviderModelKinds` so they are routed to audio/TTS handling rather than leaking into the LLM list.
+- Added unit tests in `internal/providers/providers_test.go` confirming both models are registered under `gemini` and carry the `tts` kind (upstream `decolua/9router#5321` parity).
+
+### Fixed
+
+- **errorclassify: do not park accounts on improperly formed requests** (upstream #4958): Removed the `improperly formed request` text rule that triggered `cooldownLong`. A malformed client request is an error in the caller payload, not an account outage, so it must not park healthy accounts behind a 2-minute cooldown.
+
+### feat(providers): port wire contracts and catalog policies from can1357/oh-my-pi
+
+- **Antigravity first-event watchdog**: ported the provider-owned first-event deadline from can1357/oh-my-pi (`GOOGLE_GEMINI_CLI_STREAM_LIMITS`). Flash models receive a 60s first-event budget (`FlashFirstEventTimeout`), everything else 5m (`DefaultFirstEventTimeout`, matching OMP's `DEFAULT_FIRST_EVENT_TIMEOUT_MS`). The dual watchdog in `proxy.NewStallReaderWithFirstEvent` detects when Cloud Code Assist returns successful headers but drops silent before any SSE event, returning `ErrStreamFirstEvent` distinct from a steady-state stall.
+- **Antigravity roster-authoritative discovery**: ported OMP's `dynamic-models-authoritative #true` policy from `google-antigravity.kdl`. Models absent from the account's live `fetchAvailableModels` roster are dropped from the active cache and rejected via `IsAntigravityModelBlocked`, preventing 404s on unserved bundled rows (e.g. Claude 5.5 on plans without it).
+- **Claude Code version auto-adopt**: ported `adoptRequiredClaudeCodeVersion` from OMP's `claude-code-fingerprint.ts`. When Anthropic returns a 400 rejection for `claude_code_version_too_old`, the required version is parsed and adopted for the rest of the process across the billing header and User-Agent, so a stale pinned constant costs one failed request instead of taking the account down until a binary release.
+- **Claude slow-mode headers pass-through**: forwarded the `anthropic-usage-limit` request header and response headers (`anthropic-ratelimit-unified-slow-*`) matching OMP's `anthropic-slow-mode.ts` so subscription accounts can use the spare-capacity slow lane.
+- **CommandCode display pricing**: ported the 39-row per-1M-token display tariff from OMP's `providers/commandcode.kdl` into `internal/pricing/tables.go` under both `commandcode` and `cmc` aliases, covering Claude, DeepSeek, Qwen, GLM, Kimi, MiniMax, StepFun, and `typesafe/jev`.
+- **Antigravity image size clamp**: clamped base64 image payloads to 5 MB (5,242,880 bytes) per image matching OMP's `max-image-payload-bytes` in `google-antigravity.kdl`.
+- **Deliberate divergences from OMP (per AGENTS.md §1 secondary reference protocol)**:
+  - *CommandCode `/provider/v1` vs `/alpha/generate`*: 9router-go retains the official CLI's `/alpha/generate` NDJSON wire with conversation-stable thread derivation (#905). OMP routes `/provider/v1` via OpenAI-compat; the upstream decolua/9router implementation uses `/alpha/generate` and that contract is preserved.
+  - *Devin Windsurf Cascade Connect-proto*: OMP implements 3,500+ lines of protobuf/Connect HTTP/1.1 framing (`devin.ts`, `devin-proto.ts`, `connect-frame.ts`). 9router-go keeps its `devin://acp/stdio` CLI subprocess transport; reimplementing Cascade protobuf in pure Go is deferred to a dedicated issue.
+  - *Cursor Agent HTTP/2*: OMP's 16,000+ line TypeScript/proto implementation is skipped per plan (out of scope for gateway role).
+- Fixes #926.
+
+### fix(model test ping): sanitize HTML error pages into readable dashboard chips
+
+- probeErrorText now detects HTML error bodies and strips them to plain text instead of rendering raw '<!DOCTYPE html>' in UI chips.
+- Cloudflare WAF / challenge pages ('cloudflare' + 'attention required') summarize as 'Cloudflare WAF challenge (Attention Required!)'.
+- Otherwise the <title> text is used when present; remaining tags are removed before truncation at probeTextLimit (240 chars).
+- Unit tests cover 429 Cloudflare, 502 with title, bare HTML, truncation, and pass-through of non-HTML error bodies.
+
+### Fixed
+
+- **Antigravity header timeout now fails over instead of failing the turn** (`ForwardGemini (antigravity/gemini-3.8-flash-medium): upstream request: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent": http2: timeout awaiting response headers` → `request failed`/`499`):
+  - Root cause: the 120s `ResponseHeaderTimeout` fires as a plain `client.Do` error. `ForwardGemini` wrapped it in `fmt.Errorf("upstream request: %w")`, which is not `*UpstreamError`, so the combo loop never entered the `RetryableStatusCodes` (502) lock/exclusion path and the turn died on one dead account.
+  - Fix (`internal/proxy/gemini.go`): classify transient transport faults (`http2: timeo`, `timeout awaiting response headers`, `EOF`, `connection reset by peer`, `connection refused`, `context.DeadlineExceeded`, `url.Error.Timeout()`) as `UpstreamFailure(502)` via `isTransientGeminiTransportError`, mirroring upstream decolua/9router `ANTIGRAVITY_TRANSIENT_ERROR_PATTERNS` (`/timeout/i`) and `DEFAULT_RETRY_CONFIG` 502 handling. `ctx.Err() != nil` (client disconnect / 499) stays terminal and is never retried.
+  - Perf: classifier runs only on the error path (~370 ns/op); the 200-OK path is byte-identical with zero added allocation. Live E2E `gemini-3.8-flash-medium` (chat + stream) and `MultiToolCall` all pass against real upstream.
+
+### fix(providers): preserve image parts for Cloudflare AI vision models
+
+Cloudflare Workers AI vision models (Kimi K2.6, Mistral Small 3.1) had their
+`image_url` content parts flattened into a single text string whenever a turn
+held more than one block, so an image sent beside text reached the model as a
+dead placeholder instead of an image.
+
+Only flatten content to a string when every part is text; any non-text part
+(`image_url`, `file`, …) keeps the content as an array so vision models
+receive their image parts. `collapseTextParts` now joins text-only parts with
+newlines and returns the array unchanged otherwise.
+
+Mark `Vision: true` for `@cf/mistralai/mistral-small-3.1-24b-instruct` and
+`@cf/moonshotai/kimi-k2.6` in the `cloudflare-ai` capability table so the
+request path preserves their image parts, and add unit tests covering both
+models plus the flatten behavior.
+
+### feat(anthropic): list live model catalog in /v1/models
+
+- Register dynamic `ModelsFetcher` for `anthropic` pointing to `https://api.anthropic.com/v1/models?limit=1000`.
+- Add `fetchAnthropicLiveCatalog` in `internal/handlers/chat/live_catalog.go` propagating `x-api-key` and `anthropic-version`.
+- Gracefully fall back to static model registry on error or absent connection.
+- Upstream parity with `decolua/9router#5432`.
+
+### fix(detection): drop same-tool frequency rule that flagged normal exploration as a loop
+
+- **False positive fix**: `DetectLoops` flagged any tool called ≥12 times in a row with *different* arguments as `High repetition: "terminal" called 15 times ...` (warning). That is normal agentic workflow (grepping different symbols, running different diffs) — every argument differs, every call succeeds, no repeated error. It was removed; `consecutive_tool` now only fires when tool **and** arguments are identical (≥3, critical), which is the stuck-loop definition used by `deer-flow` (identical-signature count) and `gemini-cli` (identical name+args hash). `cycle_pattern` and `repeated_error` are unchanged.
+- **Verifiable warnings**: `extractMessagesForLogging` dropped `tool_calls`, so assistant turns logged as `content: ""` and a loop warning could not be checked in the request-detail modal. Each turn that carried tool calls now keeps `tool_calls: "name#hash8,name#hash8,..."` — the name (what the finding reports) plus a short fnv hash of the trimmed arguments (enough to prove whether the flagged calls were identical, without storing full, possibly large or secret-laden arguments).
+- Verified: `TestDetectLoops_SameToolDifferentArgsNeverFlagsEvenAt15` (the 15× different-commands case that filed this), `TestDetectLoops_SameArgsStillFlagsAtAnyLength`, `TestExtractRequestMessagesToolCallsPreserved`; `go vet` + `go test ./internal/detection/... ./internal/handlers/chat/...`.
+
+<<<<<<< HEAD
+### Normalize NVIDIA NIM assistant reasoning aliases before forwarding
+
+NVIDIA NIM treats `reasoning` and `reasoning_content` as aliases for one field, so a client that sends both on an assistant turn gets a duplicate-field 400. Assistant `reasoning` is now renamed to `reasoning_content` before the request leaves the gateway (upstream v0.5.112, `ced0cf6`, upstream PR #5247).
+
+- The rename only fills a canonical field that is absent, null, or whitespace, so a non-blank `reasoning_content` the client already sent always wins — the alias is a fallback, never an override.
+- `reasoning` is deleted either way, which is what removes the duplicate.
+- Only `role: "assistant"` messages are touched; that is the only place clients replay reasoning.
+
+Verified: `nvidia_test.go` covers both branches (alias fills a blank canonical field; a populated canonical field survives and the alias is dropped), and `wire_body_determinism_test.go` pins that the rewrite marshals stably, so the request prefix stays byte-stable across turns.
+=======
+### Normalize NVIDIA NIM assistant reasoning aliases before forwarding
+
+NVIDIA NIM treats `reasoning` and `reasoning_content` as aliases for one field, so a client that sends both on an assistant turn gets a duplicate-field 400. Assistant `reasoning` is now renamed to `reasoning_content` before the request leaves the gateway (upstream v0.5.112, `ced0cf6`, upstream PR #5247).
+
+- The rename only fills a canonical field that is absent, null, or whitespace, so a non-blank `reasoning_content` the client already sent always wins — the alias is a fallback, never an override.
+- `reasoning` is deleted either way, which is what removes the duplicate.
+- Only `role: "assistant"` messages are touched; that is the only place clients replay reasoning.
+
+Verified: `nvidia_test.go` covers both branches (alias fills a blank canonical field; a populated canonical field survives and the alias is dropped), and `wire_body_determinism_test.go` pins that the rewrite marshals stably, so the request prefix stays byte-stable across turns.
+>>>>>>> 1b5688b (docs(changes): fragments for the Nace and NVIDIA NIM ports)
+
+### fix(commandcode): conversation-stable session identity so the upstream prompt cache actually hits
+
+- Resolved the CommandCode `threadId`/`x-session-id` pair from a conversation-stable key instead of falling back to a per-request random UUID when the client sends no session header (`commandcodeSessionKey`): session headers → body session fields (Claude Code's `metadata.user_id`, OpenAI's `prompt_cache_key`/`session_id`/`conversation_id`) → conversation prefix (system + first user turn) → connection id.
+- Kept the pair byte-identical to the official CLI's derivation (`toCommandCodeSessionUuid`), matching upstream `decolua/9router` #5006, so one conversation keeps one warm prompt-cache key even for clients that carry their session only in the body.
+- Added unit tests for body-field session extraction, per-conversation stability, and an end-to-end check that session-less requests no longer mint a fresh `threadId` per request.
+
+<<<<<<< HEAD
+### Register the Nace Drex System One lane
+
+Nace Drex serves decision models on the System One protocol from `console.nace.ai` — the same lane shape as v1m: a state plus typed questions (`noul` / `choice` / `score`) in, calibrated probabilities out. The lane forwards the body and the JSON reply untouched, so a score answer's `legend` array and every `confidence` reach the client as Drex returns them. `drex-max` also reads a top-level `images` array; the text-only `drex-v2.0` answers 422 when it is non-empty, so nothing rewrites images here (upstream v0.5.112, `f7f6f5e`; catalog verified live against `console.nace.ai/v1/models`).
+
+- `providers.go`: `nace` rides the System One endpoint only; `BaseURL` stays empty so an empty base never resolves a chat connection, exactly as v1m.
+- `registry_models.go`: `drex-max` and `drex-v2.0` in both the catalog (`ProviderModels`) and the model-kind map (`ProviderModelKinds`).
+- `aliases.go`: `drex -> nace`, so `drex/<model>` reaches the lane.
+- `validate.go`: `validateV1M`'s body becomes a shared `validateSystemOneLane`, since both lanes prove a key with one single-token noul evaluation and only a 401/403 means an invalid key.
+
+Verified: `TestAggregatorProviders/nace` pins the registration (catalog, alias, empty chat base), and the `providers` and `dashboard` packages pass.
+=======
+### Register the Nace Drex System One lane
+
+Nace Drex serves decision models on the System One protocol from `console.nace.ai` — the same lane shape as v1m: a state plus typed questions (`noul` / `choice` / `score`) in, calibrated probabilities out. The lane forwards the body and the JSON reply untouched, so a score answer's `legend` array and every `confidence` reach the client as Drex returns them. `drex-max` also reads a top-level `images` array; the text-only `drex-v2.0` answers 422 when it is non-empty, so nothing rewrites images here (upstream v0.5.112, `f7f6f5e`; catalog verified live against `console.nace.ai/v1/models`).
+
+- `providers.go`: `nace` rides the System One endpoint only; `BaseURL` stays empty so an empty base never resolves a chat connection, exactly as v1m.
+- `registry_models.go`: `drex-max` and `drex-v2.0` in both the catalog (`ProviderModels`) and the model-kind map (`ProviderModelKinds`).
+- `aliases.go`: `drex -> nace`, so `drex/<model>` reaches the lane.
+- `validate.go`: `validateV1M`'s body becomes a shared `validateSystemOneLane`, since both lanes prove a key with one single-token noul evaluation and only a 401/403 means an invalid key.
+
+Verified: `TestAggregatorProviders/nace` pins the registration (catalog, alias, empty chat base), and the `providers` and `dashboard` packages pass.
+>>>>>>> 1b5688b (docs(changes): fragments for the Nace and NVIDIA NIM ports)
+
+### fix(claude): normalize final Claude assistant whitespace after compression
+
+- Trim trailing whitespace from final assistant prefill message.
+- Remove empty trailing text blocks resulting from trimming, preventing HTTP 400 from Anthropic.
+- Verified with unit tests in `internal/translator/claude_whitespace_test.go` (upstream `decolua/9router#5415` parity).
+
+### Report a forced-SSE error as the failure it is, not an empty 200
+
+A provider that ignores `stream:false` and answers with an event stream anyway gets its stream folded into one document — but a *failing* stream folds into a 200-shaped error envelope, and the `/v1/responses` bridge handed that envelope straight to the translator. `ChatResponseToResponses` reads the absent `choices` as an empty turn, so the client got `{"status":"completed","output":[],"error":null}` with HTTP 200 for what was a 429 or a 502 (upstream v0.5.112, `56dbf46`).
+
+- `respondAsResponses` now calls `EmptyUpstreamError` before translating. The Chat Completions path already did this; the bridge wrote 200 directly and had no such gate.
+- `EmptyUpstreamError` now reports the status the envelope itself names, so a rate limit reaches the client as a 429 instead of being flattened to 502. Only the `status` field is read, numeric or string; `code` is deliberately not, because in the OpenAI family `code` is an application error code (`model_not_found`, `invalid_api_key`) and a numeric one would turn a missing model into a 404. Anything outside 400..599 falls back to 502. Every forwarded value is in `providers.RetryableStatusCodes`, so combo fallback still moves on to the next connection — the assertion is in the test.
+
+Verified: `TestParityForcedSSEErrorIsNotAnEmptyAnswer` pins both halves that had to meet — the fold keeps the envelope, and the envelope is rejected rather than translated. It logs the exact regression shape (`status:"completed"`, `output:[]`, `error:null`) so a future change that reintroduces it names what the client saw.
+
+### Publish the Go coverage profile, and gate against a baseline
+
+ROADMAP §4 asked for two things the suite produced neither of: a coverage
+profile CI publishes, and a non-regression rule. The `coverage` job now runs
+`go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...`, uploads
+the profile as an artifact, and fails when `scripts/coverage-gate.sh` reports a
+total below `.github/coverage-baseline.txt`.
+
+Two decisions worth stating, because both are the kind that look right and are
+not:
+
+- **The gate is a single total, not a per-package floor.** A per-package floor
+  sounds stricter but is the opposite: it pins every package's number, so any
+  refactor that legitimately moves logic between two files fails the gate, and
+  the only way to keep it green is to keep widening the baseline — which is
+  exactly the "silently lowering or ignoring the result" the roadmap warns
+  against. The total tracks the property a reviewer actually cares about (is
+  the suite still covering the code?) while leaving the distribution free to
+  move. A deliberate reduction is a one-line edit to the baseline file plus a
+  reason in the PR body.
+- **The gate runs on the un-raced suite.** `-race` instruments every allocation,
+  which is orthogonal to which statements execute, so pairing the two would
+  double the job's runtime to produce the same total. The profile uses
+  `-covermode=atomic` regardless, because the default `set` mode is undefined
+  under concurrent execution and several packages run tests in parallel — which
+  would otherwise make the total vary between runs for no reason.
+
+The baseline is 68.0%, measured 68.7% on `main`. The margin is deliberate: an
+exact baseline would fail on ordinary run-to-run variation.
+
+The gate was verified against the real profile, including a negative control —
+a baseline above the measured total fails, and a baseline exactly equal to it
+passes.
+
+### Verified
+
+- `go test -count=1 -coverprofile=coverage.out ./...` — suite passes, profile
+  written, `go tool cover -func` reports `total: 68.7%`.
+- `scripts/coverage-gate.sh coverage.out` logic verified against the real
+  profile: 68.7% vs baseline 68.0% passes; vs 99% fails; vs 68.7% (equality)
+  passes.
+- `go vet ./...` clean; `go build ./...` clean.
+- `coverage.out` is covered by the existing `*.out` gitignore rule, so the
+  profile never enters the tree.
+- ROADMAP §4 and TECHNICAL_DEBT CI-01 updated to record what is now in place
+  rather than leaving the register overstating open work.
+
+### Added
+- **Combo call budget** (`BudgetCalls` / `BudgetWindowMs` on `ComboStrategies`): a combo can now be capped at N requests per window. Reaching the ceiling withholds the combo for the rest of the window and degrades the request to a single-model dispatch on the combo's first member, rather than failing it. The counter is process-local on purpose: a durable counter would come back from an outage still capped from before it, which is a spend the operator cannot account for. A withheld request is charged too, so the gate cannot be beaten by issuing refused requests. Default (unset) is unlimited, so every combo written before the field existed is unaffected. The dashboard edits both the ceiling and its window (default 60 minutes); a blank window field restores the default rather than storing zero, which would never recycle.
+- **Cascade combo strategy** (`strategy: "cascade"`): ranks a combo's members cheapest-first by blended per-million-token rate (input + output), so the existing escalation-on-failure path starts at the least expensive candidate and only spends on a capable model when the cheap one cannot serve the turn. A member with no known price sorts after every priced model rather than being dropped — an unpriced member is usually a new or private-endpoint model, and it stays as a last resort. Exempt from `respectStoredOrder` alongside `smart` and `tokenmaxxing`, because the ranking it performs is the strategy's whole purpose.
+- **JSON fence unwrapping for structured-output requests**: when a request carries `response_format` (`json_object`, `json_schema`, or the string form), a non-streaming answer wrapped in a ```` ```json ```` fence is unwrapped before it reaches the client. Two conditions are load-bearing — a request that did not ask for JSON keeps the fence the model produced, and a body whose fenced contents do not parse as JSON is left exactly as the model wrote it, so prose that happens to open with a code fence survives verbatim. An unclosed fence is also left alone, as is a fence followed by prose: what follows a closing fence other than whitespace means the answer is not a fenced document, and unwrapping it would drop that prose. The unwrap covers both shapes a fenced answer arrives in — a body that is entirely the fenced document, and the far more common case of a well-formed chat completion whose `message.content` holds the fence. The latter rewrites only the `content` values; every other field of the envelope (`id`, `usage`, `finish_reason`, ordering) is carried through untouched, because a rewrite that round-tripped the answer through a probe struct silently dropped them. Manual verification against a local upstream on :20999: with `response_format` the fence is gone from `content` and the envelope is intact; without it the same answer is relayed byte for byte.
+
+### Fixed
+- **Combo budget prune deleted a neighbour's live counter.** The prune pass in `recordComboBudgetCall` compared every other combo's window start against the *recording* combo's window, so a combo with a short window deleted a combo with a long window's live counter whenever the short one recorded. The long combo then came back with a full ceiling — the operator's cap reopening, which is the one thing a budget exists to prevent. The pairing that made it reachable is ordinary: a per-minute rate-limit cap next to a per-hour spend cap. Each counter now carries the window it was created under and is expired against that.
+- **The budget degradation path sent the prefixed model id upstream.** `singleModelFromCombo` resolved its member through `resolvePrefixProvider`, which only knows custom provider *node* prefixes and returns nil for an ordinary registry provider like `openai/gpt-4o`. The fallback then stored the whole `provider/model` string in both `Provider` and `Model`, so a withheld request went out with the prefixed id and was answered 400. It now goes through `resolveModelEntry` — the same function the non-combo path uses — so a degraded request is byte-identical to the one the client would have made without the combo. A registry provider as a combo's first member is the common case, not an edge one.
+- **Per-egress breakers never armed in production.** `resilienceProxyKey` read the pool id off `ProviderConfig.HeaderOverrides`, but nothing in the request path ever wrote it — only tests fabricated it, so the egress half of every gate key was `direct` and one dead pool still opened the provider's single breaker and took every other egress with it. `getProviderConfig` now stamps the pool the connection routed through. The stamp is a new `ProviderConfig.ProxyPoolID` field, *not* a `HeaderOverrides` entry: that map is applied to the outbound request (`internal/proxy/openai.go`), so an internal key written there would be forwarded to every upstream provider. It follows `RelayURL` — a gateway-internal value the executors read but never send. The header spelling is still accepted as a fallback.
+- **`budgetCalls` accepted a ceiling that wrapped negative.** The parser checked only `> 0`, and a JSON number above the int range converts to a wrapped negative int — which the gate reads as "unlimited". A budget that asked for a cap silently disarmed itself. Capped at 1,000,000, the same ceiling the dashboard refuses, so both sides agree on what a stored budget means. The window already had this bound.
+- **The dashboard accepted a budget window the server dropped.** `MAX_BUDGET_WINDOW_MINUTES` was the cap for a different field (`firstTokenTimeoutMs`), 92233720368 minutes, while the server caps `budgetWindowMs` at `(2^63-1)/1000000` ms — 153722867280 minutes. A window between the two was accepted by the UI and then dropped by the parser, leaving the combo looking budgeted while its window had reverted to the one-hour default. The constant now matches the server.
+- **JSON fence unwrapping ignored a fence longer than three backticks.** A model wrapping a block that itself contains a fence opens with four or more backticks, and the hardcoded three left that answer fenced for a client that had asked for JSON. The opening run is now measured, and the closing delimiter must be at least as long as the opening one — a three-backtick run inside a four-backtick block is content, not the end of the block.
+
+### Verification
+- `go test ./internal/handlers/chat/ ./internal/db/ ./internal/pricing/ -count=1` — passes.
+- `go vet ./internal/handlers/chat/ ./internal/db/` — clean.
+- `cd web && bun run ratchet:svelte` — 0 unresolved identifiers, 74 errors (baseline 74; one pre-existing unused import removed). `bun run build` — 4.6 MB `dist/`, unchanged from baseline.
+- Boundary coverage: admission until the ceiling and withholding on the request after it; unlimited by default; unconfigured combos never gated; per-combo isolation; window recycle.
+- Prune regression coverage: a long-window combo keeps its spend when a short-window combo records (the bug above), and a genuinely expired entry is still collected — the second test is the negative control, so carrying each entry's own window cannot be mistaken for "prune does nothing".
+- Degradation-path coverage (`TestSingleModelFromCombo*`, 4 tests): a registry provider splits into provider + unprefixed model with no `/` left in either field, so the withheld request matches the client's own; a nested combo name expands to its first concrete model; an unknown provider still splits rather than being stored whole; the empty chain falls back to the combo's own info and clears the combo-only fields. Three of these fail against the pre-fix code (`Provider = "deepseek/deepseek-chat"`).
+- Egress-key coverage (`TestGetProviderConfigStampsProxyPool`, `TestResilienceProxyKeyIgnoresHeaderOverrides`): the pool reaches `cfg.ProxyPoolID` from a `ConnectionData`, a direct connection leaves it empty (keyed `direct`), and the pool id never appears in `HeaderOverrides` — that map is forwarded upstream, which is why the stamp is a field and not a header. The stamp test fails with `ProxyPoolID = ""` against the pre-fix code.
+- Ceiling-bound coverage (`TestBudgetCallsCappedAtParse`): 1,000,000 stored; 1,000,001, `2^63` (the wrapped case), `10.5`, `0` and `-5` all refused. The wrapped case is the one that matters: stored as an int it becomes negative, and the gate reads a non-positive ceiling as unlimited.
+- Fence length coverage: four- and five-backtick fences unwrapped; a short closing run inside a long block treated as content; a long fence followed by prose left alone; an unclosed long fence left alone; two backticks is not a fence. The three new unwrap cases fail against the pre-fix implementation, which is how the fix was confirmed rather than assumed.
+- Cascade coverage: cheapest-first ranking, stored-order stability on equal prices, unpriced-last, input slice not mutated (the combo failure loop indexes the stored list after the strategy runs), single-member passthrough, and the strategy name reaching the ordering through `applyComboStrategy`.
+- Fence coverage: which `response_format` shapes arm the unwrapper; object/array/bare/nested-fence unwraps; prose, unclosed, empty, and mid-text fences left alone; the context gate that keeps a text request's fence byte-for-byte; the in-content sweep over every `choices` entry; and that the rewritten envelope keeps every field the sweep does not model (`id`, `usage`, `finish_reason`).
+- Manual run on :20999 against a local fenced upstream: `response_format` present → `message.content` becomes the bare JSON object and the envelope is intact; `response_format` absent → the same answer relayed byte for byte. Also confirmed `strategy: cascade` and `budgetCalls: 3` / `budgetWindowMs: 300000` round-trip through `GET /api/combos` and `GET /api/settings`, and that the fourth request past the ceiling changes its failure from a combo-level "no valid entries" to a provider-level "no active connections", which is the gate withholding the combo.
+- Helper coverage (`web/src/components/combos/types.test.ts`, 45 tests): ceiling and window set without touching sibling keys; clearing the ceiling removes the key and the last key removes the combo entry; negative, fractional, and over-range input refused; absent window reported as the 60-minute default.
+
+### Fixed
+- **One dead proxy pool no longer takes its whole provider out of rotation** (`fix(resilience)`). The circuit breaker was keyed on the provider alone, while the per-account semaphore beside it was keyed on provider plus egress. A pool whose endpoint refuses connections therefore opened the *provider's* breaker, and every connection under that provider stopped being dispatched — including the ones routing directly, which had never touched the broken pool. `resilience.BreakerKey` now carries the egress component the semaphore already had, and `resilienceProxyKey` records the pool a connection routed through on `HeaderOverrides`. The direct path keeps the bare provider name, so a deployment with no proxy pools behaves exactly as before and the dashboard's per-provider panel still finds its breaker; `BreakerStatus` is the direct-path read and `Statuses` is the full per-egress set. A breaker in OPEN still only closes on the outcome of a probe it admitted, so a success reported by a request that went out before it opened does not close it.
+
+### Added
+- **Per-egress breaker state on the usage SSE stream** (`feat(dashboard)`). The dashboard's resilience panel had to be opened to learn that an egress had gone OPEN, while the request flow it was stopping kept streaming as if nothing had happened. `GET /api/usage/stream` now carries the same per-egress snapshots beside the traffic, so an operator watching requests sees an egress open next to the requests that stopped being served. `usagetracker.StreamPayload.Breakers` is a published contract, so it holds its own `BreakerSnapshot` type rather than importing `internal/resilience` — a field rename in the admission layer must not break the dashboard's stream. The tracker takes the snapshots through a hook installed at boot, so the usage tracker stays on the request path of every provider without taking a dependency on the admission-control layer that reports outcomes for those same requests.
+
+### fix(claude): only pin thinking temperature when a sampling param is present
+
+- Only pin `temperature = 1.0` on Claude thinking requests when `temperature` or `top_p` was sent in the request.
+- Leaves `temperature` unset when no sampling parameter was provided, preventing HTTP 400 "temperature is deprecated" errors on newer Claude models.
+- Verified with unit tests in `internal/proxy/executor/claude_thinking_sampling_test.go` (upstream `diegosouzapw/OmniRoute#18639` parity).
+
+### fix(cursor): decode Composer visible output after last think tag
+
+- Decode visible answer text appearing after the last `</think>` tag in thinking streams for Composer models.
+- Keeps private thinking separated while emitting visible suffix text into assistant content.
+- Verified with unit tests in `internal/proxy/executor/cursor_composer_thinking_test.go` (upstream `decolua/9router#1310` parity).
+
+### fix(chat): default stream to false when omitted and strip trailing SSE framing
+
+- Defensively extract leading balanced JSON object when upstream appends stray trailing SSE frames (e.g. `data: [DONE]`) to non-streaming responses.
+- Prevents client JSON parse failures and ensures usage accounting is retained.
+- Verified with unit tests in `internal/handlers/chat/nonstream_trailing_sse_test.go` (upstream `decolua/9router#5384` parity).
+
+### fix(minimax): strip output_config for Claude-compatible endpoints
+
+- Automatically delete `output_config` from Claude Messages payloads destined for `minimax` and `minimax-cn` only.
+- Fixes generic HTTP 400 "invalid params" rejected by MiniMax on Anthropic structured output requests.
+- Retains `output_config` for native Anthropic lanes.
+- Verified with unit tests in `internal/proxy/executor/minimax_output_config_test.go` (upstream `decolua/9router#820` parity).
+
+### fix(cloudflare-ai): don't send width/height to FLUX.1 Schnell
+
+- Strip `width`, `height`, and `size` parameters on Cloudflare AI requests for `@cf/black-forest-labs/flux-1-schnell`.
+- Prevent HTTP 400 (code 5006) error caused by closed input schema on Cloudflare FLUX.1 Schnell.
+- Remove `size` from `params` for `flux-1-schnell` in `web/src/lib/models.ts`.
+- Verified with unit tests in `internal/handlers/media/multimodal_test.go` (upstream `decolua/9router#5373` parity).
+
+### feat(embeddings): forward OpenAI dimensions to Gemini outputDimensionality
+
+- Map incoming `dimensions` property in `/v1/embeddings` requests to Gemini's native `outputDimensionality`.
+- Ensures pgvector schema queries requesting specific vector lengths (e.g. 1536) receive properly dimensioned vectors from Gemini.
+- Verified with unit tests in `internal/handlers/media/embeddings_test.go` (upstream `decolua/9router#1366` parity).
+
+### feat(codex): unpack namespace tools and sanitize encrypted schema constraint
+
+- Unpack namespace tools from `tools` and `additional_tools` when `type === "namespace"`, ensuring downstream models receive real function declarations.
+- Add `"encrypted"` keyword to Gemini unsupported schema constraints in `cleanGeminiSchema`.
+- Tolerate `functions.` prefix in custom tool call resolution for Codex CLI.
+- Verified with unit tests in `internal/translator/codex_namespace_tools_test.go` (upstream `decolua/9router#5378` parity).
+
+### fix(translator): strip regex lookarounds from tool schemas for all OpenAI-compatible targets
+- **Regex Lookaround Sanitization**:
+  - OpenAI, DeepSeek, and strict JSON Schema validators strictly prohibit regex lookarounds (`(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)`) in tool parameter `pattern` definitions, rejecting requests with HTTP 400 (`Invalid JSON schema: regex lookaround is not supported`).
+  - Update `isValidRegex` in `internal/translator/tool_schema.go` to explicitly identify and reject lookaround assertions.
+  - Expand `NormalizeToolSchemasForProvider` to sanitize tool parameter schemas across all OpenAI-compatible providers, rather than solely `openrouter.ai`.
+  - Add outbound tool schema sanitization in `internal/handlers/chat/fallback.go` to ensure all dispatch routes (including custom executors like Codex and Azure) sanitize tool schemas before forwarding to upstream.
+  - Add comprehensive test coverage in `internal/translator/tool_schema_test.go`.
+
+### fix(tray,menu): build Windows tray binary in cross-release and fall back gracefully when missing
+- **Windows Tray Artifact**:
+  - Update `Makefile`, `ci.yml`, and `release.yml` to build `9router-go-tray-windows-amd64.exe` alongside the core server in `make cross`. Because `getlantern/systray` uses pure Win32 system APIs on Windows without requiring CGO, it builds cleanly in `CGO_ENABLED=0` cross-compilation environments.
+- **Graceful Background Fallback in Menu**:
+  - In `cmd/9router-go/menu.go`, when option `6` (Run in background with tray icon) is chosen and the companion tray executable is not found next to the server binary, print an informative notice and fall back to `startDetached` (running in background without tray). This fulfills the user's intent to free the terminal without exiting with an error.
+
+### Tighten the WAL sidecars, and prove the modes the credential vault relies on
+
+`OpenDatabase` has chmod'ed the data directory to `0700` and the database file
+to `0600` since the permission fix — the database holds provider API keys and
+OAuth tokens, so that is the at-rest protection the whole threat model rests
+on. Two gaps remained, and neither was visible without a probe:
+
+- **The `-wal` and `-shm` sidecars were never chmod'ed.** SQLite creates both
+  on the first *write*, which is after `OpenDatabase` returns, so the modes set
+  at open time cannot reach them. They carry the process umask, commonly
+  `0644`, and they hold the same page images as the main file — a reader with
+  directory access could recover the plaintext credentials from them even with
+  the main file at `0600`.
+- **Nothing proved any of it.** The existing suite asserted nothing about the
+  modes, and the first attempt at a test asserted the sidecars *after an open
+  with no write*, so both files were absent and the assertion loop skipped
+  them without checking anything. A mode comparison that always passes looks
+  exactly like a passing suite.
+
+`RestrictSQLiteModes(dbDir, path)` now re-asserts `0700` on the directory and
+`0600` on the main file and every sidecar (`-wal`, `-shm`, `-journal`). It runs
+at open time, and again after the schema bootstrap in `internal/app`, which is
+the first write and therefore the moment the sidecars come into existence.
+Best-effort: a sidecar that does not exist yet is skipped rather than treated
+as an error, and on a platform where the mode is not enforced the chmod is a
+no-op.
+
+Four cases, all skipped on Windows where POSIX modes are not enforced and run
+for real on the `ubuntu-latest` CI job: a fresh open ends at `0600`/`0700`; the
+sidecars exist and end at `0600` after the first write; a sidecar left loose is
+tightened on the next call; and a data directory that does not exist yet is
+created private rather than at the `MkdirAll` default, which follows the
+process umask and is commonly `0755`.
+
+The assertion helper was itself probed for vacuity, and the sidecar test was
+probed by mutation: dropping the sidecars from the chmod loop turns seven
+assertions red, including `db wal` and `db shm`. The sibling-existence check is
+asserted before the mode check, so a driver change that stops creating them
+fails loudly instead of going vacuous.
+
+### Verified
+
+- `go test -count=1 ./internal/db/` passes.
+- `go build ./...` and `go vet ./internal/db/ ./internal/app/` clean.
+- Mutation probe: sidecars removed from the chmod loop → 7 assertions red
+  (`db file`, `db wal`, `db shm`, both fresh and tighten cases). Restored,
+  suite green.
+- `gofmt` verified against the git blob, not the worktree — this checkout is
+  `core.autocrlf=true`, so the worktree copy is CRLF and `gofmt -l` flags every
+  file in the package. The stored blob is clean.
+
+### Wiki: the search box stays pinned, and the sidebar header is the wordmark
+
+The search box was the first item inside the scrolling part of the sidebar, so it left with the nav — twenty links down, a reader who wanted a different page had to scroll all the way back up to type. The sidebar header read "Wiki" while the masthead above it read "9router-go", so the two rows in one view named different things.
+
+- **Search pinned.** It is now its own flex child of the sidebar column, between the header and the scrolling nav, so the layout holds it while the nav moves under it. Not `position:sticky`: nothing scrolls that element's parent, and a sticky child in a column whose sibling scrolls is pushed by that sibling's content — the same reason the header and footer above and below it are pinned by layout.
+- **Sidebar header is the wordmark**, the same mark and product name the masthead draws, so the two rows agree. The mark is a `<span>`, not an `<img>`: it is the glyph the masthead already renders, so there is one logo definition and no asset for a 1.25rem square. The phone sheet head matches.
+- **The wordmark plate now passes AA.** It was `--brand` behind white text at 3.23:1 — a pre-existing failure the sidebar mark would have inherited, at 3.11:1. `--mark-bg` / `--mark-fg` are a measured pair: 5.91:1 in both themes, against `--brand` unchanged for rings and hovers, where it is a stroke rather than a background.
+
+Verified in a browser at 1280px and 390px: the search box holds at `top: 146` after the nav is scrolled 500px, the page itself does not scroll, and the footer stays at the bottom of the viewport. The phone sheet head reads "9 9router-go" with the mark visible and the search box at the top. Contrast measured on both marks in both themes after the change: 5.91:1, all four passing. The theme toggle was checked too — it swaps the `dark` class, which is the mechanism the stylesheet uses, so an attribute check reads `null`.
+
+### Wiki: the sticky search box no longer covers the masthead at the end of a page
+
+Reported: the search box is sticky, but once a reader reached the end of a page it rose and covered the top bar.
+
+**Cause.** `.wiki-side` is `position: sticky`, and a sticky box cannot travel further down than the bottom of its *containing block* — here the `.wiki-shell` grid area, which ended 64px above the bottom of the document because of the shell's own `padding-bottom: 4rem`. So on every page, at the end of the scroll, the sidebar was pushed up by exactly that 64px. Measured at the bottom of the longest page: the sidebar's top was 36px against a 68px masthead, so the search box covered **32px of the bar**.
+
+**Fix.** The bottom padding moved off the shell and onto `.wiki-main`, the article column. It is the same 4rem of breathing room for the text, and on the article column it cannot bound the sidebar. The phone override keeps the shell's own 3rem and zeroes the article's margin, so the two do not add up to 7rem of dead space below 60rem.
+
+**Pinned.** `TestShellDoesNotBoundTheStickySidebar` fails if `padding-bottom: 4rem` returns to the shell, if the article column loses the margin that replaced it, or if the phone override stops zeroing it. Verified with a negative control: reintroducing the shell padding fails the test, and restoring it passes.
+
+Verified in a browser at 1280×800: at the top, middle and bottom of the page — and at the bottom of the longest page, `providers.html` — the search box holds `top: 100px` and overlaps the masthead by **0px**, where before it sat at 36px and covered 32px.
+
+### Wiki: the sidebar's logo and label are hidden on desktop
+
+The sidebar's head row no longer shows the product mark or the `9router-go` name above 60rem. On a phone the sheet still shows both.
+
+**Why.** The row was phone-only, because the masthead already carried the mark and the name on desktop and a second copy put two logos in one view. It then became visible at every width to hold the search button — which reintroduced exactly that duplication: a logo and a label in the sidebar, and the same logo and label in the masthead above it, in the same view.
+
+**What stays and what goes.** `.wiki-sheet-head strong` is `display: none` at the base level and restored inside `@media (max-width: 60rem)`, the same contract the close control uses. The `<strong>` element itself stays in the markup: it is what makes the row the product's row, and on a phone it is the only chrome that is always visible and names the product. Only its rendering is scoped.
+
+**The row itself does not go.** It carries the search button, so hiding the row would hide search with it. Hiding only its first child leaves the button at the top of the column where a reader looks for it — measured at the column's top edge, 25px from the sidebar's right edge, which is the column's own 1.5rem padding. On desktop the row is 40px tall, which is exactly the button: nothing of the logo's 1.25rem mark or its label is left to space.
+
+**The article gains that space back.** The sidebar's first link used to start below a 40px row that held a 20px mark and a label. It now starts below the button alone, so the nav's first row sits higher and the column reads as a list of destinations rather than as a page with a header.
+
+Verified in a real browser. Desktop 1280×900: the `<strong>` is `display: none` and has zero width, the masthead still carries the mark and the name, the head row is 40px tall and holds only the search button, and clicking the button still opens the dialog. Phone 390×844 with the sheet open: the `<strong>` is `display: flex`, visible, and reads `9router-go`; the close control is back at the row's left and the search button at its right. No 4xx, no console errors.
+
+### Wiki docs site: project links move to a sidebar footer, the sidebar reaches the bottom of the window, and every page shows its version
+
+The wiki's masthead carried the nav trigger, the wordmark, three project links and a theme control. On a narrow desktop that bar had more chrome than content, and none of the three links acted on the page the reader was on — two of them left the site entirely.
+
+- **Project, Repository and Telegram now live in the sidebar footer**, as rows in the same list idiom as the nav above them, each with an inline SVG icon so a row reads as an external action rather than another wiki page. The `⋯` toggle that used to reveal them is deleted: the links are always visible, so a control that shows and hides them was dead weight a reader had to open. The icons are inline SVG rather than glyphs — the `⌥` character rendered as an odd box on some systems, and a misdrawn icon on a link that leaves the site is worse than no icon.
+- **The sidebar now reaches the bottom of the window.** It was sticky with no height bound, so on a short window the 21 nav links ran past the fold with no scrollbar: the article scrolled and the sidebar did not. It is now a flex column with an explicit height, whose middle child is the only part that scrolls — the header and footer stay pinned by the layout, not by `position: sticky`, which was dead code here. Two measurements drove the numbers: the masthead is 68px and the shell adds 32px of padding, so the column starts 100px down and the box needs `100vh - 6.25rem` (the first attempt used `7.5rem` and stopped 20px short), and `min-height: 0` is what lets the middle child shrink and scroll at all.
+- **Every page carries the version it was built from**, rendered from a new `-version` flag that `make wiki-build` passes the repo's `VERSION` file. The docs for two releases sit at the same URL and were otherwise indistinguishable.
+- The masthead keeps only the controls that act on this page: the nav trigger and the theme switcher.
+
+Verified in a real browser: the sidebar is full height and the last link is reachable at 1280×800, 1366×768, 1920×1080, 1280×600 and 1280×480; scrolling the nav 400px moves neither the header nor the footer and does not scroll the page; the phone sheet fills the screen with the footer pinned inside it; footer text and icons clear WCAG AA in both themes (4.65 light / 6.86 dark for links, 19.03 / 14.87 for the version line).
+
+### Wiki: the sidebar footer is centred against the column
+
+The footer's contents — the three project icons and the release line beneath them — are now centred against the sidebar column instead of sitting at its left edge.
+
+**Why.** `.wiki-side-foot` is a block, so both of its children took the column's left edge. The nav rows above it are inset by their own padding, so the footer read as a stray element hanging off the side rather than as the column's footer.
+
+**How.** Centred on `.wiki-side-foot` itself — `display: flex; flex-direction: column; align-items: center; text-align: center` — rather than on each child. That keeps the two rows on one axis and survives a fourth child being added later without a second rule to remember. `text-align` is the companion: without it only the release line's *box* is centred, and its text still hugs the left edge inside it.
+
+**The axis is the column, not the viewport.** The sidebar has 1.5rem of right padding and sits inside the shell's grid, so the visual centre is the sidebar's own content box — which is what `align-items` resolves against. Measured in the browser: the icon row and the release line both land 0px from the column's centre, against -8px for a nav row (which carries its own padding and is not the target here).
+
+**Height unchanged.** `flex-shrink: 0` and `margin-top: auto` are untouched: the footer is the column's last flex child, and every pixel it costs is a pixel the nav loses — the measurement that took it from 85px to 59px earlier is not given back.
+
+Verified in a browser at 1280×900 and at 390×844 (inside the nav sheet): footer, icon row and release line each 0px from the column centre on both, and no request or console error. `TestWikiSideFooterIsCentred` pins the four declarations — `align-items: center`, `text-align: center`, `flex-direction: column` (centring must not collapse the two rows into one) and `flex-shrink: 0` — and was checked against a negative control that removes the centring.
+
+### Wiki: search is an icon button beside the product name, not a text box in the column
+
+The sidebar's search box is gone. In its place is an icon button at the right end of the sidebar's head row — the row that carries the product name — and the search field itself lives in a dialog.
+
+**Why the box went away.** It was a 15rem column with a full-width text input and a `Click to search` hint under it. That is a row of the column spent saying "click me", in the one part of the layout where every pixel the footer and the nav compete for is measured. The icon button costs one 2.5rem square, and it sits where a reader already looks for a product-level control: beside the name, at the top of the column.
+
+**The head row is now shown at every width.** It was phone-only, because the masthead above already carried the wordmark on desktop and a second copy put two logos in one view. Only the row and its two controls moved up; the wordmark itself is still masthead-only, so there is still exactly one logo in a desktop view. What changed is that the row now exists on desktop to hold the search button.
+
+**The close control is phone-only, explicitly.** It dismisses the sheet, and a sheet is a phone thing. It used to be hidden by the row's old `display: none`, which was an accident of that rule rather than a statement about the control. Now it is `display: none` at the base level and restored inside `@media (max-width: 60rem)`, so the row can be visible everywhere without putting a button on desktop that does nothing.
+
+**Same geometry as the controls a reader already knows.** The search button is a 2.5rem square with a 1px border and the same hover and focus-visible treatment as the bar's menu and theme buttons, so a reader who learned one does not have to learn a second size. `margin-left: auto` is what pushes it to the far right of the row — the button is the row's last child, after the product name, so the auto margin has something to push against.
+
+**What the button keeps from the box it replaced.** The same `aria-haspopup="dialog"` and `aria-expanded` contract, the same dialog, the same `?q=` replay, the same `Loading…` and `N more matches` messages. A `<button>` activates on Enter and Space natively, so the explicit keydown handler is gone; only Space keeps a guard, because the browser scrolls the page on Space and that would scroll the sheet the button sits in while the dialog opened over it.
+
+**Dead rules removed with the markup.** `.wiki-search`, `.wiki-search input`, `.wiki-search input:focus-visible`, `.wiki-search input[readonly]`, `.wiki-search-hint`, and the phone-only `font-size: 1rem` bump for the input — none of them matched anything after the move.
+
+**One thing worth knowing about this change.** Two of the CSS rules above were, for a while, still nested inside `@media (max-width: 60rem)` after being moved, and one `}` was lost in the same edit. CSS error recovery silently dropped every rule after the damage: the search button rendered at 16×21 instead of 40×40, and the phone nav trigger stayed `display: none` at 390px. Every Go test passed, because nothing asserted the stylesheet parsed. `TestStylesheetBracesAreBalanced` now fails the build on an unbalanced `<style>` block, and `TestSheetHeadCloseIsPhoneOnly` pins the close control's base `display: none` together with its phone restoration.
+
+Verified in a real browser. Desktop 1280×900: the head row is visible, the product name sits at the left and the search button at the right of it (measured 25px from the sidebar's right edge, which is the column's own 1.5rem padding), the button is 40×40, the old input and its hint are absent from the DOM. Phone 390×844 with the sheet open: the close control is visible again at the row's left, the search button at its right at 40×40, and the nav trigger is 40×40 and clickable. Clicking the button opens the dialog with focus in its field; typing `combo` renders 13 rows plus a `162 more matches` footer; Escape closes it; Enter on the focused button opens it; Space does not scroll the page. No 4xx, no console errors, on any viewport.
+
+### Wiki: search moved to the masthead, at the theme switcher's right — desktop only
+
+The search button now lives in the header bar, immediately right of the theme switcher. Below 60rem it moves back into the sidebar's head row, beside the mark and the name.
+
+**Why it moved.** Search acts on the wiki's contents, not on this page's appearance, so it belongs beside the control that changes appearance rather than alone in the sidebar — and a reader looking for it should find it without opening anything. It was already at the top of the sidebar; this puts it in the bar that is visible on every screen without a click.
+
+**Why it is desktop-only.** The bar is a flex row of three items — nav trigger, wordmark, theme switcher — sized to fit a 320px phone. A fourth control pushed the wordmark off it, which is why the trigger is already hidden on desktop: the bar has exactly one slot left. The phone copy takes the slot the sidebar's head row already had, where the mark and the name live.
+
+**The two copies are separate elements, not one element moved by JS.** CSS decides which renders, so a window resize switches the control with no reload and no flash. `.wiki-search-btn` is `display: none` at the base level and restored above `60.0625rem`; `.wiki-search-btn-side` is the mirror. The two classes are **not** nested — the phone copy does not carry `.wiki-search-btn` — because the desktop media block targets that class and sharing it rendered both copies on both screens. Both are bound in the script, so whichever is visible answers, and a reader who resizes mid-session gets a working control on the screen they switched to.
+
+**The bar's grouping changed with it.** The theme switcher now takes `margin-left: auto`, which pulls it and the search button together at the bar's far right. Before, the search button had the auto margin, and `justify-content: space-between` left the theme button beside the wordmark with the whole article width between the two controls that belong together. Measured: theme ends at 1164px, search starts at 1188px — the bar's own 0.75rem gap.
+
+**Geometry is unchanged.** Both copies are the same 2.5rem square, 1px border, hover and focus-visible treatment as the bar's other buttons, and the same 1.25rem magnifier glyph — so a reader who learned one control finds the same size and shape in its new place.
+
+Verified in a real browser across 1440, 1024, 961, 960, 768, 390 and 320px. At 961px and above the masthead copy renders at the bar's far right beside the theme switcher and the sidebar copy is absent from the layout; at 960px and below the masthead copy is `display: none` and the sidebar copy renders in the sheet's head row at 40×40, with the close control at its left and the name beside it. The breakpoint boundary is exact: `max-width: 60rem` and `min-width: 60.0625rem` leave no 1px gap where neither copy renders. Click, Enter and Space all open the dialog from either copy; typing `combo` renders 13 rows; Escape closes it and resets `aria-expanded` on both copies. In light and dark. No 4xx, no console errors.
+
+### Wiki docs: the footer names the release the docs describe, and pages ahead of it are marked
+
+The wiki reported `1.9.15-exp.16` — the build being developed — while `9router-go update` advertises `1.9.14`, the last stable release. A reader could not tell whether the pages described a release they could download or a build nobody had. The two numbers are required to differ: `release.yml` fails an experimental release whose manifest version matches the build, so this is not a mismatch to reconcile but a distinction to render.
+
+- **`-stable-version` flag**, read from `version.json`, is what the sidebar footer now renders. `make wiki-build` passes both it and `-version`, with `STABLE_VERSION` derived in the Makefile the same way `VERSION` is. The flag falls back to `-version`, so a one-off local run without the manifest still shows a version.
+- **`since:` frontmatter**, the release that first documented a page, seeded as `1.9.14` across all 21 pages. A page whose `since` is newer than the release the wiki was built from is marked **new** in the sidebar — the docs for two releases sit at the same URL, and without the mark a reader takes an experimental flag as the shipped contract.
+- The comparison is on the release line and is **ordered**, not an equality test: `1.9.15-exp.16` is a build of the `1.9.15` line, and a wiki built from `1.9.15` must not flag a page documented in `1.9.14`. Equality flagged every page on a wiki built one release ahead; the parts are compared numerically, because a string compare orders `1.10.0` before `1.9.0`.
+- The "Which version am I on?" page now explains both numbers and the mark.
+
+Verified in a browser: the footer reads `Version 1.9.14` on the homepage and five other pages, with no badge while every page matches that release. The badge appears on all 21 pages when the wiki is built from `1.9.13` and disappears at `1.9.14` and `1.9.15`, which is the direction the feature depends on.
+
+### Wiki: the product's own icon, not a stand-in
+
+The wiki and the project page each drew their own logo: a terracotta plate with the letter **9** in it, in `#e56a4a`. The product's actual icon — the one the dashboard serves from `web/public/favicon.svg` and the one a reader sees in the repository — is a dark plate with an orange core and four coloured satellites. The wiki was showing a different logo in a different colour, on every page.
+
+- **The real icon is now the mark.** The masthead wordmark, the phone sheet head, and both favicons draw the same SVG: plate `#181D27`, core `#FF5C35`, satellites `#FF8469` / `#38BDF8` / `#34D399` / `#A78BFA`. Inline SVG rather than a letter in a coloured box, so it is the actual glyph at any size.
+- **No second plate.** `.wordmark-mark` and `.wiki-sheet-mark` were painting `--mark-bg` behind the glyph. The real icon carries its own dark plate, so a background here was a plate behind a plate — and the CSS radius and the SVG's own 12-unit corner radius were two radii on one 28px square. Both rules are now transparent containers sized to hold the SVG.
+- **`--mark-bg` and `--mark-fg` are gone.** They existed only to colour that stand-in plate. Four blocks across light, dark, `prefers-color-scheme` and the class overrides — all dead once the mark became the real icon.
+- **Pinned.** Both test files now fail if the icon's core circle disappears, if the sheet mark paints a plate again, or if the wordmark goes back to `>9</span>`.
+
+Verified in a browser: the masthead mark is 28×28 with `background-color: rgba(0,0,0,0)`, five circles, core `#FF5C35`, plate `#181D27`, and no text. The phone sheet head's mark is 20×20 with the same glyph.
+
+### Wiki: one logo, in the masthead
+
+The sidebar carried its own header row — the same square mark and the same product name as the masthead above it. In one view a reader saw two logos and two `9router-go` wordmarks, and had to work out whether the two differed. They did not: both linked to `index.html`.
+
+- **The sidebar header row is gone.** The sidebar now begins at the search box, which is the first thing it does that the masthead does not. The wordmark stays where it was, in the bar, on every screen — so nothing that used to be reachable from the sidebar's copy became unreachable.
+- **The phone sheet head keeps its mark, under its own class.** There the bar is the only chrome that is always visible, and the sheet is where a phone reader lands, so the mark is doing a job the masthead cannot do from behind it. It was sharing `.wiki-side-mark` with the desktop row, which meant the class was deleted along with the row's CSS and the phone sheet head lost its styling — it now has `.wiki-sheet-mark` and its own rule, drawing from the same `--mark-bg`/`--mark-fg` pair so the two marks a phone reader sees are the same colour.
+- **Pinned by a test.** `TestNavTriggerLivesInTheHeaderBar` now fails if `wiki-side-head` or `wiki-side-title` comes back, if the sheet mark loses its class or its colour pair, or if a second wordmark appears anywhere.
+
+Verified in a browser: at 1280px exactly one logo is visible (`wordmark-mark`), the sidebar's first element is the search box, and the nav still lists 21 links. At 390px with the sheet closed one logo is visible; with it open there are two — the masthead's and the sheet head's — and the sheet mark renders at `rgb(176, 62, 31)`, the same terracotta as the masthead plate.
+
+### Wiki: the home page compares with upstream 9Router
+
+The wiki's home page listed "Compare with upstream 9Router" as one row among nineteen in the "Start here" table, and the comparison itself lived only on the Parity page. A reader deciding whether to switch from the Node.js version had to navigate away to find out whether the API is the same — which is the one thing they were choosing between.
+
+- **A "How it compares with 9Router" section** now sits on the home page, between the entry-point table and "Running in 30 seconds": the six-row table from Parity (runtime, dashboard, database, schema, Docker, port), then what is identical, what 9router-go adds, and what differs by design, with a link to Parity for the rest.
+- **Facts come from `wiki/parity.md`**, not from memory. The table is the same table, so the two pages cannot drift.
+- **Every number is the shipped one.** `20130` and `20128`, Svelte 5 and React 19, and the `~/.9router/db/data.sqlite` path the project already documents.
+
+Verified in a browser: the heading is `How it compares with 9Router`, the table renders all 6 rows with 3 columns, and at 390px it fits inside its own scroll wrapper (`overflow-x: auto`, 318px) without widening the document.
+
+### Wiki: the sidebar footer is 15px shorter
+
+The footer measured 85px, and 44 of those pixels were one row of icon links at a target size the rest of the sidebar does not get — the nav rows above it are 33px tall. The footer is chrome that sits at the bottom of a fixed-height column, so every pixel it costs is a pixel the nav loses.
+
+- **The icon row is 32px, not 44.** 44 was chosen to match the nav rows and then never measured against them; it does not match. 32px is still above the 24px minimum target floor.
+- **The glyph is 18px, not 20.** At a 32px target a 20px glyph leaves 6px and the hover tint barely shows; 18px leaves 7px per side so the tint reads as a plate under the icon.
+- **Padding is even and smaller** — 8px top, 6px bottom, against 12px and 4px — and the release line's top margin drops to 3px.
+
+85px → **70px**, at both 1280px and 390px. The row is still clickable at the new size: `elementFromPoint` over the centre of the first icon hits the link at both widths.
+
+### Wiki: the sidebar footer is links only, and the theme switcher lives in the header
+
+The sidebar footer carried two things that were not links: a `Version 1.9.14` caption and the phone's theme control. A reader scanning a list of rows could not tell at a glance that the version line does not go anywhere, and the theme row below it was one more thing to work out before reaching the links.
+
+- **The version caption is gone.** It was the only text in that column that was not a control, and it sat under three rows that all were. Nothing else depends on it: the release the wiki describes is still in the page source and the search index.
+- **The theme switcher is in the header bar, at its right edge, at every width.** It used to be two buttons — the bar's copy for a desktop, and a row in the footer for a phone, because the bar had no room below 60rem. The bar is a flex row of three items — trigger, wordmark, this — so it fits a 320px phone without one of them leaving. The sheet copy is deleted, and the media queries that swapped the two are deleted with it: if the query that hides the bar copy came back, a phone reader would have no theme control at all, which is what the new test pins.
+- **`wikiData.Version` is removed.** The footer was the only consumer, so the field was set on every page and read by nothing.
+
+Verified in a browser at 1280px and 390px: the footer reads "Project Repository Telegram group" — three links, zero buttons, no caption — and the bar button is 20px from the right edge and 14px from the top at both widths. The toggle was clicked on the phone: the `dark` class lands on `<html>`, the body repaints, and the accessible name flips to "Switch to light theme".
+
+### Wiki: footer links are icon-only, and the release the docs describe is named
+
+The sidebar footer spent three rows of the sidebar's height on three links whose labels repeat what their marks already say, and a reader who wants to know which release the pages describe had no number to check against.
+
+- **Icon-only, in a row.** The three links — project page, repository, Telegram — are now glyphs at 44×44, one line tall instead of three. The glyph grew to 20px: an icon carrying the label's whole job has to be readable at a glance, and 18px inside a 44px target reads as a speck.
+- **The accessible name moved to `aria-label`.** Removing the visible label removes the only text a screen reader had, so each link now carries `aria-label` with the SVG `aria-hidden` — the destination is announced, not the picture of it. `title` covers the pointer reader on hover, which is the one thing `aria-label` does not.
+- **The release line is back, and it is the right one.** `Documents release 1.9.14` sits under the row, rendered from `version.json` rather than the build version — on an experimental line those differ, and naming the build told readers the docs described a release nobody could download. It is omitted when the generator is given no version, so a local run does not print a bare label.
+
+Verified in a browser at 1280px and 390px: the row is `flex-direction: row`, three links, no visible text on any of them, each a 44×44 target, and the release line reads `Documents release 1.9.14` 61px below the top of the footer at both widths. On the phone the links are inside the sheet, which is closed on load — with it open, `elementFromPoint` over the first icon hits the link, so the row is genuinely clickable and not covered by the article behind it.
+
+### docs(wiki): publish the wiki next to the project page, with a dark theme
+
+The site generator already turned `README.md` into a hosted page, so the
+documentation for everything the README points at lived nowhere: the repo's
+guides (`ARCHITECTURE.md`, `DATABASE.md`, `docs/`) were separate files with
+separate styling, and the dashboard's own docs were a screenshot.
+
+- **`tools/sitegen/wiki.go` + `wiki_template.go`** render the `wiki/`
+  directory into the same site the README page already uses, so a visitor
+  reads one thing and not two. Each page gets the sidebar, the search box and
+  the deep-link treatment, and repository-relative links resolve against
+  GitHub the same way the README's do.
+- **`site/style.css`** gains `.light` / `.dark` class rules beside the
+  existing `prefers-color-scheme` query, reusing the dashboard's storage key
+  (`9router-theme`) and its `.dark` class contract. A reader who picks a theme
+  in the dashboard does not pick it again in the docs. The class rules come
+  after the media query, so a stored choice beats the OS preference.
+- **The theme switcher sits in the ⋯ sheet on a phone**, where the bar already
+  carries the nav trigger and the wordmark. It is the same button as the
+  desktop's, wired and painted as one control, so a reader who switches in the
+  sheet and then rotates to landscape sees the bar button already on the new
+  theme.
+- **`sitegen/main.go`** takes a `-wiki` flag, defaulting to `wiki`, and the
+  directory is optional: a checkout without it still builds the project page
+  it always did.
+- **`.github/workflows/pages.yml`** triggers on `wiki/**` as well, so a docs
+  change rebuilds and re-validates the site. The job now also asserts the
+  search index exists, that it carries page bodies rather than headings only,
+  that every anchor in it is an id a page actually publishes, that every
+  sidebar link resolves, and that no intermediate screenshot is published.
+- **`Makefile`** gains `wiki-build` / `wiki-serve`; `clean` removes `_site`.
+
+The README points at the wiki, and at the Owner & Contributors page, which
+credits every committer with their GitHub profile photo, username and
+contribution count.
+
+Verified with `go build ./tools/sitegen/`, `go vet ./tools/sitegen/`,
+`go test ./tools/sitegen/ -count=1` (28 pass), and a browser check at 390px
+and 1440px covering the toggle, its persistence across pages, and the theme
+carrying over after a rotation. Every assertion the Pages job makes was run
+against the generated `_site` before the PR was opened.
+
+### fix(wiki): give the desktop sidebar a scroll of its own
+
+The nav is 21 links in five groups plus the search box — 1103px tall — and the
+sidebar was sticky at `top: 5.5rem` with no height bound. On any window shorter
+than that the lower links ran off the bottom of the screen with no way to reach
+them: the article scrolled, the sidebar did not, because `overflow-y` was
+visible.
+- **`tools/sitegen/wiki_template.go`** bounds the sidebar at
+  `max-height: calc(100vh - 9.5rem)` with `overflow-y: auto`, so the nav
+  scrolls on its own and every link stays reachable. The bound leaves room
+  below the sticky offset so the last link is not flush with the window edge,
+  and `overscroll-behavior: contain` keeps a wheel over the nav from scrolling
+  the article once the nav bottoms out.
+- **`tools/sitegen/wiki_test.go`** pins the base rule (the mobile sheet keeps
+  its own `overflow-y`), and was checked against a negative control: removing
+  the `max-height` fails it.
+
+Measured before at 1280x600, 1366x768 and 1920x1080: sidebar bottom past
+1207px, 21 links, `overflow-y: visible`, `scrollHeight` equal to
+`clientHeight`. Measured after: the sidebar scrolls and every link is
+reachable by scrolling it alone at every height down to 480px, with the
+current-page marker still visible at the top. The mobile sheet is unchanged —
+it still hides by transform when closed and navigates on click.
+
+### Wiki: the comparison section names what upstream still has, and Contributing holds only contributing
+
+Two things on the wiki's home page and sidebar.
+
+**The comparison was one-sided.** "How it compares with 9Router" listed what is identical, what 9router-go adds, and what differs by design — three lists that all describe 9router-go. A reader choosing between the two had no way to learn what upstream still has and this does not, which is the half that decides whether the switch works for them. The section now carries **"What upstream still has and 9router-go does not"**: eight points taken from the repository's `COMPARISON.md`, not from memory — incomplete `/api/v1/*` and `/v1/*` route aliases (9router-go is root-native, `POST /chat/completions`), partial provider and model coverage, no cloud sync and no npm tray, OIDC/SAML configuration routes whose login links the router does not mount, unported CLI-tool configuration / dashboard MITM management / Translator workbench, a blank database that is not production-ready for 9router-go alone, credentials not encrypted at rest, and one active writer as the supported model.
+
+**A link to `COMPARISON.md` published as `COMPARISON.html`.** The wiki linker rewrote *every* destination ending in `.md` as a wiki page, including absolute github.com URLs — so the comparison link became `.../COMPARISON.html`, a URL that 404s on both the site and GitHub. The linker now checks the scheme first: only a relative destination names a wiki page. `TestAbsoluteMarkdownLinkKeepsItsSuffix` runs the real generator and fails if the suffix check comes back before the scheme check, and `TestHomeComparisonLinksResolve` audits the published home page for any `.md` link that does not resolve to a wiki page. Both verified with a negative control: reintroducing the old rule fails them.
+
+**Contributing held four pages that are not about contributing.** Governance, Operations, Screenshots and Owner & Contributors all sat under that heading, because each carried `section: Contributing` while no other section fitted. The section is now what it says: Governance and Operations move to Using the Gateway (both are things an operator does in the product), Screenshots to Under the Hood, and Contributing keeps only Contributing and Owner & Contributors. Sidebar order was made unique at the same time — `order` had two pages on 21 and a gap at 19.
+
+Verified in a browser: the sidebar renders four groups — Getting Started (4), Using the Gateway (10), Under the Hood (5), Contributing (2) — with Governance and Operations inside Using the Gateway and Screenshots inside Under the Hood. The comparison section holds the 6-row table plus 8 bullets, and no request failed.
+
+### Cut the provider artwork that never reaches the screen
+
+The icons in `public/providers/` are drawn in a 32×32 box (`size-8 object-contain` in CliToolsView). Three of them were not icons:
+
+- `crush.png` was a **2700×1392 screenshot at 792 KB** — 19× the next-largest asset in the directory, downloaded whole to render inside 32×32. 99.98% of its bytes were discarded. Now 128×66 at 9 KB.
+- `nebius.png`, `reka.png` and `siliconflow.png` were **JPEG files carrying a `.png` extension**. The browser renders them by sniffing the body, so nothing looked wrong — but every consumer that reads the extension (the budget test below, a future image pipeline, `file` on a support ticket) gets the wrong answer.
+
+Measured, not assumed: `dist/` went from 4.5 MB to 3.9 MB, and the crush asset is served as 9.015 bytes.
+
+Verified in a real browser, not just by file size: the resized icon loads (`complete: true`), renders at 30×32, and its aspect ratio is preserved (128/66 against the original 2700/1392, within 0.05) — so the card is not distorted. At 32×32 the two versions differ on 1.7% of pixels, below the threshold of a visible change.
+
+A new test pins the budget so a screenshot pasted into this directory fails the suite instead of reaching a phone. It bounds **bytes**, not dimensions: a 512×512 PNG that compresses to 4 KB costs nothing on a slow uplink, while a 792 KB screenshot does. The directory ceiling is 1.5 MB, which catches the single-large-asset case the crush screenshot was rather than the long tail of legitimate 40 KB icons.
+
+### Memoize the provider-catalog grouping
+
+`GetCatalogByCategory`, `NoAuthProviders` and `ServiceKindLabels` derive entirely from `ProviderRegistry`, a package-level literal written once at init and never mutated at runtime. They recomputed the whole thing per request: a map allocation, 151 appends and a `sort.SliceStable` per category.
+
+Measured on the endpoint that serves them, per request:
+
+| | before | after |
+|:---|:---|:---|
+| `GetCatalogByCategory` | 181.142 µs · 158.349 B · 50 allocs | 2.140 ns · 0 B · 0 allocs |
+| `NoAuthProviders` | 40.122 µs | 2.820 ns · 0 B · 0 allocs |
+
+On the 1-vCPU target (§4.G) that was 181 µs of CPU and 158 KB of garbage spent on data that cannot have changed.
+
+The slices are handed out by reference, so each is `slices.Clip`-ed to `len == cap`: an append by a caller must realocate rather than write into the shared backing array, without paying a per-request copy. `ServiceKindLabels` still returns a copy, because its map is the one thing a caller could reasonably write to.
+
+Verified: `go build ./...` clean; `go test ./internal/providers/ ./internal/handlers/dashboard/` pass. Six new tests pin the data (every registered provider present and sorted, the two synthetic custom endpoints, the llm-only rule on the no-auth list, complete coverage of eligible entries) and the sharing contract (stable across calls, append does not escape, the label map is a copy).
+
+### OAuth device flow honours request context; technical-debt register corrected
+
+Two things: the OAuth-01 risk is closed, and the register that tracks it is
+brought back in line with the tree.
+
+#### OAuth-01 — every outbound call in the device flow carries the caller's context
+
+`internal/handlers/oauth/device.go` and its siblings built requests with
+`http.NewRequest`, so client cancellation, gateway shutdown and deadlines had
+nothing to cancel. A client that hung up mid-login left a goroutine and an
+upstream connection parked until the 15-second client timeout expired — and
+the same applied to the shutdown path, where nothing aborted an in-flight
+device exchange.
+
+- `postJSON`, `postForm` and `getJSON` — the three primitives every provider
+  family funnels through — now take a `ctx` first parameter and build their
+  requests with `NewRequestWithContext`.
+- The per-provider start and poll wrappers thread it through, and so do the
+  nested helpers that were easy to miss: `glmResolveCodingPlanKey`,
+  `glmExchangeBusinessToken`, `museAccountEmail`, `museMintKey`,
+  `kiroProfileArn` and `validateKiroAPIKey`.
+- The same fix was applied to the inline requests in `special.go`
+  (Kimchi, GitLab PAT, iFlow), `kiro_import.go`, `trae.go`, `windsurf.go` and
+  `zed.go`, which had the same defect outside the device flow.
+
+`device_context_test.go` pins the contract: cancellation and deadline abort
+each primitive, and a live-context control proves a broken request cannot pass
+as a cancelled one.
+
+#### DOC-01 — the debt register no longer overstates open risk
+
+`TECHNICAL_DEBT.md` still declared `v1.9.1` and listed three rows as open long
+after their fixes landed. A register that overstates open risk sends the next
+reader auditing work that is already done; one that understates it hides live
+risk. Each row was re-verified against the current tree before this revision:
+
+- **DB-02** — closed. The AES-256-GCM envelope vault (`internal/db/vault.go`,
+  `internal/vault/`) seals credentials before every data write and hydrates
+  them on read. The remaining limitation is stated rather than dropped: the
+  vault is opt-in, so a deployment without `ROUTER_MASTER_KEY` is still
+  plaintext at rest.
+- **OPS-01** — closed. A manifest carrying no sha256 is now a dead end:
+  `PerformSelfUpdate` refuses it, and the GitHub Releases fallback supplies
+  version metadata only, never an unverified binary. The fallback still has no
+  signed attestation, which is recorded as the remaining gap.
+- **DATA-01** — closed. `PruneRequestDetails` bounds both age and row count
+  and runs on a timer from `StartRetentionLoop`, wired in
+  `internal/app/server.go`. What remains is stated: retention bounds how long
+  content lives, not what it holds — there is still no redaction of
+  secret-like strings inside a stored message.
+- **OAuth-01** — closed by the change above.
+
+COMP-01 (OAuth scope preservation) and DB-03 (multi-process writes) are still
+open and are left as they were.
+
+### Verified
+
+- `golangci-lint run --new-from-rev="$(git merge-base luqman/main HEAD)" ./...`
+  reports 0 issues.
+- `go vet ./...` and `go vet -tags=integration ./internal/integration/...`
+  clean.
+- `go test -count=1 ./internal/handlers/oauth/` passes, including the five new
+  cancellation/deadline/control cases.
+
+### feat(usage): add Success Rate metric and Hallucination / Stuck Loop detection
+- **Success Rate Metrics**:
+  - Add `TotalErrors` and `SuccessRate` to `/api/usage/stats` and lifetime aggregates in `/api/usage/dashboard`.
+  - Accurately record failed requests in `usageHistory` and `usageDaily`, distinguishing client cancellations (`status: "canceled"`, e.g. Ctrl+C) from genuine upstream failures (`status: "error"`).
+  - Add responsive `Success Rate` KPI card on Overview tab (`SummaryKpiCards.svelte`) with dynamic color thresholds and `Lifetime Success Rate` on Details dashboard (`UsageDashboard.svelte`).
+- **Hallucination & Stuck Loop Detection**:
+  - Add deterministic, zero-allocation loop detection engine `internal/detection` inspired by Blazo:
+    - `consecutive_tool`: flags $\ge 3$ consecutive calls to the same tool.
+    - `cycle_pattern`: flags 2-tool ($A \leftrightarrow B$) or 3-tool ($A \to B \to C$) repeated cycles at the tail.
+    - `repeated_error`: flags error signatures occurring $\ge 3$ times in turn history.
+  - Surface real-time warning icons ⚠️ next to model names on Recent Requests (via SSE `/api/usage/stream`).
+  - Add dedicated **Anomaly Detected: Possible Loop** alert banner and breakdown table in Request Detail Modal.
+
+### fix(dashboard): inject build-time version into sidebar instead of hardcoded fallback
+
+- In `web/vite.config.ts`, read the single source of truth `VERSION` file at build time and inject `__APP_VERSION__` via Vite's `define` configuration.
+- In `web/src/components/Sidebar.svelte`, initialize `version` with `__APP_VERSION__` and remove the obsolete hardcoded `'v1.9.9'` fallback.
+- Added `web/src/vite-env.d.ts` declaring `__APP_VERSION__`.
+- Prevents initial render from flashing `'v1.9.9'` on newer releases before `api.getSystemVersion()` resolves, providing an accurate 0ms version display without layout shift.
+
+### fix(proxy-pool): route media and MCP traffic through the configured pool
+
+- In media forwarders (Antigravity image generation and Grok web media) and MCP forwarders, route outbound requests through the connection's assigned proxy pool via `GetClientForConnection` (porting upstream `decolua/9router` PR #5370).
+- Prevents media and MCP requests from bypassing configured proxy pools.
+
+### fix(images): derive binary Content-Type from image bytes
+
+- In media download and image handlers, derive binary `Content-Type` from image bytes via `http.DetectContentType` when upstream header is empty or generic `application/octet-stream` (porting upstream `decolua/9router` PR #5372).
+- Ensures correct MIME type handling (PNG, JPEG, WebP) for downstream clients.
+- Added unit tests in `internal/handlers/media/image_content_type_test.go`.
+
+### fix(v1/models): resolve combo seat provider identity from live connections
+
+- In `internal/handlers/chat/models_list.go` and `resolution.go`, resolve combo seat provider identities from live connection records before resolving model capabilities (porting upstream `decolua/9router` PR #5347).
+- Ensures combo seats referencing custom connection aliases or provider IDs inherit accurate model capabilities (vision, reasoning, context limits) in `/v1/models` instead of unmapped defaults.
+- Added unit tests in `internal/handlers/chat/combo_seat_limits_test.go`.
+
+### fix(stream): abort upstream immediately on disconnect
+
+Abort upstream HTTP requests and stream reader loops synchronously when downstream client context is canceled or disconnects, preventing lingering connections and wasted token quotas.
+
+### fix(claude): clean up stale comment on system cache markers (#866)
+
+- Removed stale comment `// Client markers belong to the pre-normalized prompt.` from system prompt caching in `internal/translator/request.go` (earlier system markers are already stripped by #839).
+
+### fix(providers): resolve cloudflare-ai `{accountId}` from connection data
+
+Cloudflare Workers AI requests were failing with an upstream 404 on `/accounts//ai/v1/chat/completions` (empty account segment). The Go port baked the account id into the `cloudflare-ai` registry `BaseURL` from `os.Getenv("CLOUDFLARE_ACCOUNT_ID")`, so a connection whose Account ID lives in `providerSpecificData` (exactly as upstream 9router reads it) still produced an empty segment when the env var was unset — the same SQLite database works on upstream and 404s here.
+
+Fixed to match upstream parity (`decolua/9router` `open-sse/executors/default.js:181`): the registry `BaseURL` now carries the `{accountId}` template, and `getProviderConfig` resolves it from the connection's `providerSpecificData.accountId`, falling back to `CLOUDFLARE_ACCOUNT_ID`, with a clear `requires accountId in providerSpecificData` error when absent. The dashboard validate probe reads the same two sources, and the now-dead `cloudflareAccountFromBaseURL` helper is removed.
+
+Verified: `go build ./cmd/9router-go/` OK; `go test ./internal/handlers/chat/ ./internal/handlers/dashboard/ ./internal/providers/ ./internal/proxy/...` all pass, including the new table-driven `TestGetProviderConfigCloudflareAccountID`. The only `go test ./...` failures are the known `web/dist` placeholder-stub SPA/embed tests, identical on the clean base.
+
+### fix(dashboard): wrap model path badge and action buttons on narrow mobile viewports (#863)
+
+- On mobile viewports (e.g. Android devices at 360–390px), compatible node model cards overflowed horizontally past the card border when model paths were long and action icons (copy, test latency, visibility toggle) were present.
+- Wrapped model path badge container with `flex-wrap` and bounded code badge with `max-w-[72vw] sm:max-w-[360px] truncate`, preventing card edge clipping on mobile displays.
+
+### fix(translator): auto-heal Monitor, Skill, and Grep tool argument hallucinations
+
+When non-Claude models (such as OpenAI Codex) execute tool calls in Claude Code, they frequently hallucinate conflicting or aliased parameters:
+- `Monitor`: model provides both `command` and a dummy `ws` object (`{"protocols":[], "url":"wss://localhost"}`), triggering Claude Code's schema error `"exactly one of command or ws"`.
+- `Skill`: model emits `name` instead of `skill`.
+- `Grep`: model hallucinates a boolean parameter `n` (borrowed from the shell command flag `grep -n`).
+
+Fixes applied:
+- Add `sanitizeMonitorArgs`: strips dummy `ws` when `command` is set, preserving single-source monitor requirements.
+- Add `sanitizeSkillArgs`: normalizes `name`, `skill_name`, and `skillName` to `skill`.
+- Update `sanitizePatternArgs`: strips hallucinated parameter `n`.
+- Add test coverage in `internal/translator/sanitize_test.go`.
+
+### feat(zcode): serve the ZCode Start/Weekend plan lane
+- Adds the `zcode` provider: a device-flow login whose **plan JWT** is dialled straight at `https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages`, the endpoint that spends the free **Start Plan** and **Weekend Build** grants.
+- Unlike the existing `glm` provider (which exchanges the ZCode login for a paid **coding-plan API key** and calls `api.z.ai/api/coding/paas/v4`), this lane never mints an API key. The two are independent: `glm` bills the paid Coding Plan, `zcode` bills the free plan buckets.
+- The plan gateway inspects the caller, so the executor reproduces the required identity: a three-block `system` array (`cliPrefix`, `stablePrefix`, client system, `cache_control` on blocks 2-3), `metadata.user_id` carrying `device_id`/`account_uuid`/`session_id`, and the `X-ZCode-*` / `X-OS-*` header bundle. A request without them answers `405` code `3012`.
+- Identity is minted once per login and stored on the connection (`deviceId`, `sessionSeed`, `accountUUID`); session ids derive from that seed so two accounts never share a session namespace. A re-login reuses the account's row and keeps its identity instead of hashing the new credential — a re-login bumps `token_version` and invalidates the previous JWT, which would otherwise leave rotation dialling a dead token.
+- Drain conditions arrive inside an HTTP 200 envelope and are mapped to statuses the shared classifier already treats as account-scoped: `1005`/`1113`/`3008` → `429`, `3012` → `403`. `3009` (model concurrency) is retried in place first, because that slot is per model rather than per account.
+- Dashboard: usage rows read `zcode-plan/billing/balance` (requires a UUID `X-Device-Mid`) with `billing/current` as the definitions-only fallback, and render one bar per model x entitlement carrying the plan name (`GLM-5.3-Flash (Weekend Build)`) plus the remaining percentage the quota table expects.
+- Registered in `KnownProviders`, `ProviderModels`, `providerCapabilities`, the device-flow provider list, the usage-supported list, and the catalog web UI.
+- Verified live: `zcode/glm-5.3-flash` answers 200 through the gateway; a drained account answers `429` with the upstream envelope instead of a generic 502.
+- The embedded identity asset is decoded lazily through `sync.OnceValue` instead of `init()`: a decode failure now surfaces as an explicit error on the request path rather than a `panic()` in proxy execution (§4.E), and `TestZcodeIdentityAssetParses` fails the build when the asset is malformed, so neither a crash nor a silent empty-prefix request can reach a release.
+- The balance fetcher resolves `401`/`403` before the generic transport error. `zcodeBillingGet` already turns every non-2xx into an error, so the "authentication expired, please re-authorize" branch was unreachable and an expired token was reported as a retryable failure.
+- `resetAt` goes through the shared `usageResetTime` helper, which normalises a seconds or milliseconds `period_end` instead of assuming seconds and multiplying by 1000 again. The live endpoint answers seconds today; the row no longer depends on that staying true.
+- `usage_zcode.go` gains table-driven coverage for the plan/balance merge (`zcodeQuotaRows`) and the fetcher (`fetchZcodeUsage`): percentage clamping, row-key collision suffixes, the `current` definitions fallback, the envelope error inside HTTP 200, and the no-token path that must not touch the network. `zcodeBillingOrigin` became a `var` so a test can point the fetcher at an `httptest` server, matching `antigravityDashboardBaseURL`.
+- `web/public/providers/zcode.png` is dropped: it was a byte-identical copy of `glm.png` that `getIconPath` never requested, because `ICON_ALIASES['zcode']` resolves first. The alias stays and is now pinned by a test.
+
+**Known limit (by design of the upstream, not an oversight):** the plan JWT carries no `exp` claim and the CLI poll response carries no refresh token, so there is no silent renewal. A token stays valid until the account's `token_version` is bumped by a later login; recovery from a `401` is a fresh login, which is also what the official ZCode client requires.
+
+### feat(models): select OpenAI and Codex service tiers via model modifiers
+
+- Allow clients to select service tiers (Fast/Priority vs Standard/Default) via model name suffixes (`(fast)`, `(standard)`, `(priority)`, `(default)`), including combined dual modifiers such as `(xhigh,fast)` or `(high,standard)` (porting upstream `decolua/9router` PR #5356).
+- Model tier suffix overrides request body `service_tier` and strips cleanly from the canonical model name.
+- Added comprehensive unit tests in `internal/thinking/intent_test.go` and `internal/handlers/chat/codex_fast_test.go`.
+
+### feat(executors): bound per-seat retry budget before combo fallback
+
+- In combo execution and retry handling, bound wall-clock retry time per member seat via `SEAT_ATTEMPT_BUDGET_MS` and `providerOverrides.seatBudgetMs` (porting upstream `decolua/9router` PR #5341).
+- Skips retry delay and advances to the next combo member immediately when seat elapsed time exceeds the allocated budget, preventing mute seats from exhausting downstream client deadlines (e.g. Cloudflare 524).
+- Added unit tests in `internal/handlers/chat/combo_seat_budget_test.go`.
+
+### fix(codebuddy): support WorkBuddy ck_ API keys across headers, test, validate, and plan-restriction fallback
+
+- In `internal/proxy/executor/codebuddy.go`, support WorkBuddy API keys starting with `ck_` (porting upstream `decolua/9router` PR #5342).
+- When `ck_` API key is detected: send dual auth headers (`Authorization: Bearer` and `X-API-Key`), omit `X-Domain`, set `X-User-Id: "anonymous_" + last8(key)`, and set `X-IDE-Type: WorkBuddy` and `X-Agent-Runtime: local-agent`.
+- Map assistant `reasoning_content` to `reasoning` in message history translation for both CN and Intl endpoints.
+- In `internal/providers/errorclassify.go`, add classification rules for error codes 11158 (model not in plan), 14018 (credit exhausted, 2m cooldown), and 11140 (account restricted, 30m cooldown).
+- Added comprehensive unit tests in `internal/proxy/executor/codebuddy_test.go` and `internal/providers/errorclassify_codebuddy_test.go`.
+
+### feat(providers): add HCNSec (hc) OpenAI-compatible gateway
+
+- Added HCNSec (`hcnsec`, alias `hc`) OpenAI-compatible gateway (`https://api.hcnsec.cn`) relaying GLM, DeepSeek, Qwen, Step, MiMo, MiniCPM, and SenseNova models (porting upstream `decolua/9router` PR #5343).
+- Added `hcnsec` provider configuration with chat completions, messages, embeddings, and speech endpoints.
+- Registered 19 models in catalog and mapped `ThinkingFormat: "openai"` to keep relayed vendors on standard reasoning effort.
+- Added alias `hc` <-> `hcnsec` and capabilities resolution.
+- Added unit tests in `internal/providers/hcnsec_provider_test.go`.
+
+### fix(thinking): floor MINIMAL tier on tiered Gemini 3.6/3.7/3.8 flash
+
+- In `internal/providers/thinking_levels.go`, add pattern entries for `*gemini-3.7*` and `*gemini-3.6*` declaring levels `["low", "medium", "high"]` (porting upstream `decolua/9router` PR #5355).
+- Prevents HTTP 400 "Thinking level MINIMAL is not supported for this model" when tiered Gemini 3.6/3.7/3.8 flash models are called with `none` or `minimal` reasoning effort.
+- Floors minimal-producing intents to `low` while preserving `minimal` tier for original Gemini 3 models (`gemini-3-flash-preview`, `gemini-3.1-pro-preview`).
+- Added unit tests in `internal/providers/gemini_tiered_minimal_test.go` and updated thinking levels fixture.
+
+### fix(claude-cloaking): prevent double-suffixing tools in multi-turn history
+
+- In `internal/handlers/chat/claude_cloaking.go`, make `suffixClaudeToolName` idempotent so tool names ending with `_ide` are not double-suffixed to `_ide_ide` (porting upstream `decolua/9router` PR #5339, fixing #5170).
+- Maps `suffixed` to `baseName` in `toolNameMap` (`baseName := strings.TrimSuffix(name, claudeToolSuffix)`).
+- Registers original, suffixed, and base names in `clientToolNames` so history matching works whether the reflected tool call was already suffixed or not.
+- Prevents unresolvable tool calls in downstream clients during multi-turn agent conversations.
+- Added comprehensive unit test in `internal/handlers/chat/claude_cloaking_test.go`.
+
+### Tier 1 upstream-gap ports: budget enforcement, `/v1/rerank`, usage export, uptime heartbeat
+
+Four features taken from `QuantumNous/new-api` and the F-2 budget work that
+`docs/keirouter-port-plan.md` had specified but never implemented. Each is
+additive: no existing route, column or behaviour changed.
+
+#### Budget engine (F-2) — the plan budget is now enforced
+
+The `plans` table and the `apiKeys` budget columns have carried
+`LimitMicros`, `LimitTokens`, `Period`, `AlertPct` and `HardCutoff` since F-3
+landed, and `policy.Resolve` has resolved them since the same commit, but
+nothing read them. This closes that gap.
+
+- `internal/budget/` is the engine: `ResolveWindow` maps a period
+  (`daily|weekly|monthly|total`) onto a timestamp floor, `Check` measures one
+  key's spend and returns a `Decision`, and `decide` applies the ceilings.
+- `internal/db/budget_spend.go` adds `SpendForKeySince`, which sums cost and
+  tokens over `usageHistory` inside the window. Cost is converted to integer
+  micros exactly once, in SQL, so no float reaches the comparison that refuses
+  a request.
+- `internal/middleware/ratelimit.go` enforces it after the lifetime token
+  quota and before TPM: an over-budget key is answered with **402** rather than
+  a token-bucket 429 that would send the client looking at the wrong limit.
+  A soft ceiling (hardCutoff off) serves the request with
+  `X-Budget-Status: approaching` instead of refusing.
+- The key's own budget columns override its plan's, the same precedence
+  `rateLimitRPM` already uses.
+- A key with no budget armed costs no database read at all, and a failed read
+  fails open — the same choice the lifetime quota makes, because a spend
+  ceiling is not an access grant.
+- The budget is configurable end to end: `PUT /api/keys/{id}` accepts
+  `limitMicros`, `limitTokens`, `budgetPeriod`, `alertPct` and `hardCutoff`
+  (an omitted field keeps the stored value, an explicit zero clears that
+  axis), `GET /api/keys` publishes them per row, and they survive a backup
+  round-trip — a restore that dropped them would bring every key back with
+  its ceiling silently cleared.
+- A database whose `apiKeys` table predates the columns reads every key with
+  its budget axes at zero rather than failing the listing, the same
+  degradation `quotaResetId` already gets.
+
+#### `/v1/rerank`
+
+- `MediaHandler.HandleRerank` forwards to the provider's `/rerank` sibling,
+  following the embeddings handler's structure: model resolution, per-key
+  access gate, connection pick, provider auth and static headers, proxy-pool
+  egress, usage logging.
+- `buildRerankURL` derives the lane from whichever spelling the connection was
+  saved with, so a base naming `/chat/completions` or `/embeddings` still
+  resolves rather than producing a doubled path.
+- `GET /v1/models/rerank` lists the providers that serve the lane.
+
+#### Usage log export
+
+- `GET /api/usage/export?format=csv|json&period=<window>` streams the
+  `requestDetails` ledger as a downloadable file. It walks the same paged
+  reader the dashboard uses, so the export cannot disagree with what the UI
+  showed, and it is streamed so a large window never has to fit in memory.
+- The period resolver is the dashboard's own, so `24h` here means what `24h`
+  means there.
+
+#### Uptime Kuma heartbeat
+
+- `internal/uptime/` pushes a heartbeat to any Push-Monitor-compatible URL on
+  a timer, so an operator learns the gateway is down from their monitor rather
+  than from a CLI tool that stopped answering.
+- The configuration is read from settings on every tick, so a URL saved in the
+  dashboard takes effect without a restart. A tick with no configuration is a
+  no-op, and a failed push is logged and dropped rather than stalling the loop
+  on a monitor that is already gone.
+- Settings gains `uptimeKumaEnabled`, `uptimeKumaPushUrl` and
+  `uptimeKumaInterval`, all off by default.
+
+### Verified
+
+- `go vet ./...` clean; `go vet -tags=integration ./internal/integration/...`
+  clean.
+- `golangci-lint run --new-from-rev="$(git merge-base luqman/main HEAD)" ./...`
+  reports 0 issues.
+- `go test -count=1` green on `internal/budget`, `internal/db`,
+  `internal/middleware`, `internal/uptime`, `internal/handlers/media` and
+  `internal/handlers/dashboard`, including new table-driven tests for the
+  window resolver, the decision thresholds, the spend reader's micros rounding
+  and window floor, the middleware's 402/alert/fail-open paths and
+  plan-vs-key precedence, the rerank forward and URL derivation, the CSV and
+  JSON exports, the heartbeat loop's lifecycle, the backup round-trip of the
+  budget columns, and the legacy-schema degradation.
+- `go test -tags=integration -count=1 ./internal/integration/` green, with five
+  new cases driving the real router: an exhausted key is refused 402 without
+  reaching the upstream, an under-ceiling key is served, a soft ceiling alerts,
+  a monthly window excludes older spend, and a plan's budget governs a key with
+  no columns of its own.
+
+### fix(stream): drop empty tool-call deltas before assigning ids
+
+- In `internal/proxy/sse_toolcall.go`, filter known empty function-call placeholders before assigning tool-call IDs (porting upstream `decolua/9router` PR #5349, fixing #5345).
+- Drops all-null, indexed-null, and index-only function fragments that carry no name or argument delta, preventing phantom tool-call emission to downstream clients.
+- Removes `delta.tool_calls` entirely if all items in the delta are empty placeholders.
+- Preserves custom tool types, provider extensions, meaningful fragments (id-only, name-only, argument fragments), and sibling content fields.
+- Added comprehensive unit tests in `internal/proxy/sse_toolcall_test.go`.
+
+### fix(combo): treat reasoning streams as non-empty
+
+- In `internal/proxy/stream_peeker.go`, treat reasoning/thinking streaming chunks as non-empty content in `StreamContentPeeker` (porting upstream `decolua/9router` PR #5331).
+- Recognizes OpenAI `reasoning_content` and `reasoning`, Anthropic `thinking_delta`, and Responses API `response.reasoning_text.delta` events.
+- Prevents premature combo failover when reasoning models (e.g. DeepSeek-R1, o1, o3, Kimi) stream reasoning tokens before regular content.
+- Added comprehensive unit tests in `internal/proxy/stream_peeker_test.go`.
+
+### feat(keys): bulk-create API keys, and hand back the batch as a file
+
+Standing up N clients meant clicking the create modal N times and copying N
+secrets one at a time. The create dialog is now tabbed Single / Bulk — the
+segmented control the Proxy Pools dialog uses — and Bulk takes one key per
+line, `name | machineId` with both halves optional.
+
+**Bulk create, and the secrets as a file.** The create dialog is tabbed
+Single / Bulk — the segmented control the Proxy Pools dialog uses, so the two
+"one by hand vs many at once" dialogs match. Bulk takes one key per line,
+`name | machineId` with both halves optional, and plans the paste on every
+keystroke so the preview counts what will happen before anything is sent: a
+line with too many separators is refused rather than truncated, because the
+dropped text is a machineId the operator meant to send, and a name that
+collides with an existing key or repeats inside the batch is named as the
+problem it is rather than silently renumbered.
+
+Each planned line is one `POST /api/keys` — the same endpoint the single tab
+calls — so the batch path cannot mint a credential the dashboard never saw and
+needs no new contract. Requests go one at a time rather than with
+`Promise.all`: a burst of concurrent writes is the pattern behind the N+1 and
+race findings this repo keeps fixing, and a dozen keys is not worth a parallel
+write path. A partial batch is reported as what it is — "created 2 of 3" — with
+the secrets that did succeed, because those keys exist and their secrets were
+shown once.
+
+The result dialog lists every secret in one scrollable list with a per-row
+copy, and offers **Download .txt** as `name<TAB>machineId<TAB>secret`. Tab
+separation rather than CSV because a machineId is free text and a name may
+contain a comma. A secret appears exactly twice — in the dialog and in the file
+— which is the point of the file: an operator creating five keys should not
+have to copy five secrets one at a time before the dialog closes.
+
+**Verified:** `bun run build`, `bun run ratchet:svelte` (0 unresolved
+identifiers, 75 errors against a baseline of 76), `bun test src scripts`
+(695 pass), `go test ./internal/handlers/dashboard/ ./internal/keikey/
+./internal/db/`, and the Playwright suites `e2e/apiKeys.test.ts` (6 pass) and
+`e2e/mobileApiKeys.test.ts` (7 pass) driving a real binary and a real Chromium —
+the row menu's confirmation guards, the copy-while-hidden path and the phone card
+layout all still hold against the new ribbon and search bar.
+
+### fix(claude): prevent invalid prompt-cache TTL ordering
+
+- Fixed Claude Code requests failing with Anthropic HTTP 400 when a client-supplied 5-minute cache marker on an earlier system block appeared before the final 1-hour system cache anchor.
+- `AnchorClaudeCache` now removes stale `cache_control` markers from earlier system blocks while keeping the final 1-hour anchor, matching upstream `decolua/9router` behavior.
+- Added regression tests for the invalid 5m → 1h sequence and preservation of the final system cache anchor (Closes #838).
+
+### fix(translator): auto-heal tool argument aliases and strip extraneous fields
+
+Non-Claude models (e.g. OpenAI Codex, GPT, DeepSeek) frequently produce parameter aliases or hallucinate extra metadata when calling tools defined with strict Claude Code schemas:
+- `Read`: `path`, `filename`, `filePath` instead of `file_path`.
+- `Write`: `path`, `filename` instead of `file_path`; `contents`, `text`, `body`, `data` instead of `content`.
+- `Edit`: `old_text`, `old_str` instead of `old_string`; `new_text`, `new_str` instead of `new_string`; `replaceAll` instead of `replace_all`.
+- `Grep` / `Glob`: `query`, `regex`, `search` instead of `pattern`; `dir`, `directory`, `folder` instead of `path`.
+- Hallucinated fields such as `description`, `title`, `comment`, `explanation`, and `thought` placed inside tool inputs.
+
+Fixes applied:
+- Normalize parameter aliases for `Read`, `Write`, `Edit`, and `Grep`/`Glob` in `sanitizeToolArgs`.
+- Strip hallucinated metadata fields inside tool inputs to comply with strict schemas.
+
+### fix(executor): strip OpenAI-only `n` param off the Claude body
+
+- Fixed a parity bug: a client sending OpenAI-format Chat Completions with the
+  `n` (number-of-choices) field for a Claude provider forwarded `n` straight to
+  the Anthropic Messages API, which rejects it with
+  `400 "n": Extra inputs are not permitted`.
+- `ensureMessagesFor` now deletes top-level `n` alongside the existing
+  `stream_options` / `store` / `reasoning_effort` cleanup, matching upstream
+  `decolua/9router` `openaiToClaudeRequest`, which rebuilds the Claude body so
+  `n` never survives.
+- Extended `TestEnsureClaudeMessages_StripsOpenAIOnlyFields` to lock the
+  regression.
+
+### feat(share): one link that adds a provider on another instance
+
+A compatible provider node is now shareable as a single URL. `GET /add` (and
+`/v1/add`, whose `/v1` prefix `RequestLogger` strips before the router runs)
+serves the dashboard SPA; the fragment carries the whole payload, so a
+credential never reaches the server, an access log or a `Referer`.
+
+**Sharing.** A *Share* button on the provider page opens a modal with three
+scopes — one provider, one provider with a block of keys, or several providers
+— and a live preview of the exact link. Credential scope defaults to *None*;
+carrying a key raises a warning on the preview itself, and a link over 2000
+characters is told to use *Export Keys* instead of shipping credentials.
+
+**Parameters.** `prov`, `url`, `prefix`, `type`, `apiType`, `name` and `note`
+describe the endpoint; `api=` carries one key and `keys=` a bulk block
+(`name|key[|pool=…][|prio=…]`, `;`-separated, mutually exclusive with `api=`);
+`models=` takes `auto`, `ask`, `none`, `free`, `caps:<cap>`, `ctx>=<n>`,
+`limit=<n>` or an explicit id list, with the filters applied over the catalogue
+the node reports; `set=` carries up to eight providers as base64url JSON.
+`api`+`keys` and `prov`+`set` are parse errors rather than a silent precedence,
+and a `keys=` value containing `;` or `|` is refused with the reason instead of
+being truncated.
+
+**Receiving.** The link opens a confirmation modal that creates-or-adopts the
+node, stores the key with `authType: "compatible"` (the probe path a node needs),
+and imports the catalogue through the existing batch endpoint. A link whose
+base URL differs from a node already on the instance asks *keep stored* / *use
+link* rather than rewriting it, a taken suffix reports the resolver's 409, and a
+bulk block names its connections through `planBulkAdd` so a shared "Key 1"
+becomes "Key 2" instead of replacing a stored row. The fragment is stashed in
+`sessionStorage` across the `/login` redirect so a receiver without a session
+still lands on the modal.
+
+Verified on a booted router: `GET /add` returns the SPA document on both
+spellings, the full add flow (node → connection → `/models` → chat request)
+reaches a fake upstream, and an embedded key appears nowhere in the gateway log.
+Unit: 31 cases over the codec (round-trips for every accepted form, refusals for
+the malformed ones, the model filters) plus 8 table cases pinning the node URL
+gate. Client weight unchanged at 4.5 MB / 273 KB brotli.
+
+`POST /api/provider-nodes` now applies the same URL gate as
+`POST /api/provider-nodes/validate` — `isValidHTTPURL`, `IsCloudMetadataURL` and
+`AssertPublicURL`, run after the default base URL is filled in so a body that
+omits `baseUrl` still means "the provider's own endpoint". A share link's `url=`
+is the one path where an untrusted string reaches the node table: before this a
+node pointing at `169.254.169.254` or an RFC1918 address was stored with a 201
+and only failed later, on the first request, with a dial error naming an address
+the operator never typed. The socket-level guard in `proxy.NewSafeTransport`
+still backs the gate up, so the refusal is now both early and clear.
+
+### Provider-level admission control and a byte-bounded prompt cache
+
+Two packages ported from `arewedaks/9router-go`, both addressing failures that only show up under real traffic.
+
+**`internal/resilience` — circuit breaker + per-account semaphore.**
+
+The breaker stops hammering a provider that is failing. Four states, not two: CLOSED passes everything, DEGRADED passes but logs (failures are elevated but the threshold has not been reached), OPEN short-circuits until the reset timeout, HALF_OPEN admits a limited number of probes to test recovery.
+
+Two design points are load-bearing:
+
+- **429 is deliberately not counted.** It is per-account rate limiting, so counting it would trip the breaker once a few accounts are individually throttled — blocking every healthy account with them. Only provider-level failures count (408, 500, 502, 503, 504, 520, 524).
+- **A probe that never reports must not stall the breaker.** If the caller returns early or the process stalls mid-request, the admitted probe never records an outcome and the breaker would sit in HALF_OPEN forever admitting nothing. The elapsed reset timeout is treated as the probe having failed to prove recovery, and the breaker reopens.
+
+The reset timeout escalates: each `BackoffEscalationCount` failed probe cycles doubles it, capped at `MaxBackoffMultiplier`. A provider that keeps failing on recovery is probed less often rather than every 30 seconds forever. `BreakerStatus` exposes the state, failure count and `retryAfterMs` for the dashboard.
+
+The semaphore caps concurrent requests per `provider:account:proxy` so one account cannot trigger a 429 cascade. A request beyond the cap **waits** for a slot rather than failing, up to a timeout; the queue is bounded so a burst cannot grow without limit. `Block` holds a gate for a duration when an account answers 429, so queued and future requests wait instead of piling on. The proxy hash is part of the key so one dead proxy's limit does not throttle another account sharing it. `Acquire`'s release is idempotent — calling it twice must not over-decrement and hand a phantom slot to a later waiter.
+
+Both are in-memory and process-local. The existing per-connection model locks (`db.LockConnectionModel`) stay: they are per-account and persisted, this layer is per-provider and fast.
+
+**`internal/promptcache` — bounded in bytes, not entries.**
+
+The entry count alone is not a memory bound: with a 512 KiB per-response cap, 1000 entries can hold 512 MB. A production deployment reached **194 MB of retained response bodies — 92% of the process heap — while serving a 0.5% hit rate**. The byte budget is what makes the footprint predictable on the small host this gateway runs on, and `StatsDetail` reports it so an operator can tell a cache holding a few small entries from one holding the process's whole heap.
+
+Three details worth knowing:
+
+- **A per-entry cap above the total budget is clamped.** Otherwise one huge response would evict the whole cache to make room for data unlikely to repeat, and the two limits would contradict each other.
+- **Updating an entry releases the size difference.** Replacing a 100-byte body with a 50-byte one must free 50 bytes rather than accumulate, or the budget drifts and evicts live entries.
+- **`HashRequest` hashes raw JSON bytes, not a re-encoded map.** Go randomises map iteration and json/v2 does not sort object keys, so decoding into `[]map[string]any` and re-encoding produced two different digests for the *same* input about 15% of the time — the cache then missed on requests that should have hit, silently defeating the feature. Only fields that change the answer participate (`messages`, `system`, `tools`, `temperature`, `top_p`, `max_tokens`, model); `stream` and `user` are ignored so two requests differing only there still share an entry.
+
+The TTL is a real bound, not a filter on reads: with eviction driven only by capacity, an idle server holds every entry until new traffic pushes it out, so a burst of large responses pins memory for as long as nothing else arrives. `Set` sweeps expired entries from the least-recently-used end, bounded by `sweepInterval` so it does not walk the list on every write.
+
+Verified: `go build ./...` clean; `go test ./internal/promptcache/ ./internal/resilience/` pass (34 tests, run repeatedly). New tests pin byte-budget eviction order, update accounting, cap clamping, TTL expiry, breaker state transitions including the unreported-probe reopen and backoff escalation, semaphore queueing/timeout/cancel/block semantics, and hash determinism.
+
+### The provider catalog has one source of truth: the Go registry
+
+The dashboard's provider catalog — category, icon, colour, auth type, service
+kinds, the free-tier fetcher — lived in two places. `internal/providers` decided
+how a request routed, and `web/src/lib/providers.ts` decided how a provider was
+rendered, as a 2455-line TypeScript literal covering 149 providers. A provider
+added to one and not the other either vanished from the UI or rendered as a bare
+id, and nothing caught it: the two files share no test and no import.
+
+`internal/providers/provider_registry.go` is now the single source of truth,
+generated from that literal so the port is lossless, and
+`GET /api/providers/catalog` serves it grouped by the section the dashboard
+renders. The SPA fetches it before mounting and reads the same objects it always
+did, so every consumer (`PROVIDER_CATALOG`, `PROVIDER_CATALOG_MAP`,
+`getProvidersByKind`, `isChatProvider`) keeps working unchanged.
+
+`ClassifyProvider`, `SectionCategory` and `GetCatalogByCategory` mirror the
+upstream section grouping, including the fold of `free` into `Free Tier`.
+`GetProviderMeta` resolves a short alias first — `ag` and `antigravity` must
+report the same icon and auth type, or the same provider renders two ways
+depending on which spelling a connection row stored. `NoAuthProviders` keeps the
+`llm` requirement arewedaks documents: `AuthType: "none"` alone also matches the
+local media servers, and promoting those onto the providers page is noise an
+operator cannot act on.
+
+The registry is emitted in `CategoryOrder` with a per-section count and the
+service-kind vocabulary, so the client derives neither.
+
+One trap worth naming: a route added to `dashboard.RegisterRoutes` alone is
+reachable in a unit test and 404s on the real server, because that table is
+mounted by tests only. The catalog route is registered in
+`internal/handlers/router.go` as well — the same pair the per-node limits routes
+already document.
+
+### Compatible endpoints refuse a prefix that already has an owner
+
+Creating a provider node accepted any prefix. A prefix is the alias every model
+the node serves is published under, and model resolution walks the registry
+aliases first (`resolveProviderAlias`), so a collision is not cosmetic:
+
+- A node claiming `gh` shadows GitHub Copilot entirely — every `gh/*` request
+  answers from the wrong upstream, with no error anywhere.
+- A node claiming `oc` shadows OpenCode, `cbai` shadows CodeBuddy INTL, `cl`
+  shadows Cline. The registry has ~140 such aliases.
+- A node claiming a canonical id that has no alias (`openrouter`, `nvidia`) is
+  an owner too, because those are published under themselves.
+- Two nodes sharing a prefix make routing non-deterministic, and which one wins
+  depends on map iteration order — so the same request can behave differently
+  across restarts.
+
+`providerNodePrefixConflict` checks all three owner tables and the create and
+update handlers answer `409 PREFIX_CONFLICT` naming the owner, so an operator
+sees which node to edit rather than a bare prefix. The node being edited is
+excluded, so keeping its own prefix across an unrelated change (a base-URL edit)
+is not reported as a conflict. Matching is case-insensitive, because a
+different case is the same prefix on the wire.
+
+A lookup failure does not block the write: the create path has already
+validated everything else, and refusing on a transient read error would strand
+an operator mid-edit. The worst case is the collision this check exists to
+prevent, which is the previous behaviour anyway.
+
+Four existing tests were using prefixes that turned out to be real registry
+owners (`bai`, `voyage`, `oc`) — the guard correctly refused them, which is
+evidence it works rather than a regression. Their fixtures now use free
+prefixes; the cases still pin what they were written to pin (id collision,
+rename, apiType validation, suffix whitespace trimming).
+
+Verified: `go build ./...` clean; `go test ./internal/handlers/dashboard/`
+passes. New tests cover refusal against a registry alias, a registry id,
+another node, case-insensitivity, the free-prefix path, the own-prefix edit
+path, and the owner table itself.
+
+### Provider catalogue correctness: Antigravity filter, Copilot CLI identity, free-model badge
+
+Three catalogue fixes ported from `arewedaks/9router-go`. Each one closes a case where the gateway advertised a model it could not serve, or served it as the wrong client.
+
+**Antigravity: one filter for the picker and the quota panel.** `providers.IsDiscoverableAntigravityModel` replaces an inline check (`IsInternal || chat_/tab_ prefix`) that let three classes of unusable surface through: image and TTS previews the backend still advertises, ids it has retired that now answer 400/404, and internal `chat_*` / `tab_*` slots. The filter is a **blocklist**, not an allow-list, deliberately — the backend adds models faster than a curated list can track, so a new id is callable by default and only known-bad surfaces are removed. Non-chat surfaces are matched on segment boundaries (`image-`, `-image`, `-image-`), so a legitimate id that merely contains the letters is never rejected.
+
+The filter is wired into the model picker. The quota panel keeps its own list, deliberately: it must show `gemini-3.1-flash-image`, which this filter rejects as a non-chat surface, so reusing one list for both would silently drop a quota row an operator reads. Unifying them is a separate change with its own decision to make — what the quota panel should show for a model the picker refuses.
+
+
+
+**GitHub Copilot presents the CLI identity, not the VS Code extension identity.** `providers.GitHubCopilotChatHeaders` sends exactly the header set the real `@github/copilot` CLI sends: `copilot-integration-id: copilot-developer-cli`, `openai-intent: conversation-agent`, `x-interaction-type: conversation-user`, `copilot-harness-id: copilot-sdk`, `x-github-api-version: 2026-08-01`, and a stable per-process `x-client-machine-id`.
+
+The old headers (`vscode-chat`, `conversation-panel`, `editor-plugin-version`, `x-vscode-user-agent-library-version`) exposed a *narrower* entitled catalogue, so importing models surfaced fewer models than the account owns and advertised ones it was not entitled to — which then fail upstream with `400 ... not supported`. The VS Code-only headers are deliberately absent: an incomplete **or** over-complete fingerprint is itself a flagging signal.
+
+Two details are load-bearing. The CLI version is pinned to `1.0.104` because the inference host answers any older CLI with HTTP 466 `client_upgrade_required` (1.0.81-6 tripped that gate on 2026-10-27); it is overridable through `GITHUB_COPILOT_CLI_VERSION` with a version-shaped pattern so a malformed value cannot inject header syntax. The machine id is minted once per process, not per request — the real CLI sends one stable UUID on every call, and a fresh random id per request would itself be the tell.
+
+**Copilot model import filters on entitlement, not on the id.** `internal/handlers/dashboard/github_catalog.go` reads the `capabilities` and `policy` blocks every Copilot `/models` entry carries. `capabilities.type == "chat"` is the primary gate, with a `supported_endpoints` fallback when the block is absent entirely so a schema change degrades to a longer list rather than an empty one. `policy.state` is authoritative: anything other than `enabled` is dropped.
+
+One filter is deliberately **not** applied: `model_picker_enabled`. It means "show this in the editor's model picker", not "you may call this" — filtering on it collapsed a real catalogue from 30 models to 0, because the account was entitled to 9 models that all reported `model_picker_enabled: false`. The credential sent is the derived Copilot bearer (`copilotToken`), not the GitHub access token: the GitHub token is retained as the refresh input, and the Copilot bearer is what `/models` actually accepts.
+
+**Free-model badge.** `providers.IsModelFreeBadge` ports OmniRoute's rule so the badge answers "is this free?" the same way the reference does. Two regimes decide it: a provider has a free tier when it appears in the shipped catalogue, and a model is free when its id is catalogued for that provider **or** — only for a provider with a documented free tier — it carries a payload signal (`isFree: true`, a `:free` suffix, or zero prompt *and* completion prices).
+
+Two traps are pinned by tests. A truthy-but-not-`true` `free` value such as the string `"false"` must **not** badge — it is truthy in JavaScript and was the original bug. And OpenCode's free ids end in `-free`, not OpenRouter's `:free`, so the payload signal never fires for them and the catalogue entry is the only thing that can badge them; seeding an id that the chat endpoint then refuses is worse than seeding fewer, because every such request burns a fallback attempt before reaching one that works. Two ids (`deepseek-v4-flash-free`, `jev-1.13-free`) are deliberately absent for exactly that reason.
+
+
+Verified: `go build ./...` clean; `go test ./internal/providers/ ./internal/proxy/oauth/ ./internal/handlers/dashboard/ ./internal/handlers/chat/` all pass. New tests pin the Antigravity blocklist (15 cases including segment-boundary matching), the Copilot CLI header set and its absent VS Code headers, machine-id stability, version-override rejection, the entitlement filter, and the free-badge rules.
+
+### Kimchi dual auth is covered on both paths
+
+Kimchi is a dual-auth provider: the dashboard renders an OAuth browser-token
+login and a manual API-key button, both driven by the registry's `authModes`
+(upstream `hasDualAuthModes`). Neither half had a test, so a provider that
+rendered two buttons with only one working path would have shipped unnoticed.
+
+The gap is now closed on the side that lives in Go:
+
+- The registry declares both modes and is **not** `noAuth` — the dashboard hides
+  the Connect card only on an explicit `noAuth` flag, so a `freeTier` category
+  must not be read as "no credential needed".
+- `POST /api/connections` with an `apiKey` stores that key and leaves the
+  connection active, which is what the manual button produces.
+- `GET /api/oauth/kimchi/authorize` points at `app.kimchi.dev/cli-auth` with
+  `flowType: browser_token`, so the UI renders the paste-token form. A redirect
+  to the wrong host sends the operator to a login page that cannot issue a token.
+- `POST /api/oauth/kimchi/exchange` refuses an empty token with 400 before any
+  network call, rather than surfacing a 502 from a failed upstream probe.
+
+The OAuth half is deliberately not asserted through the create route: the
+dashboard posts it to `/api/oauth/kimchi/exchange`, which stores the token under
+both `apiKey` and `accessToken` so the probe and the chat router each find it.
+Testing it through the create route would exercise a path nothing uses.
+
+### Cline, ClinePass and CodeBuddy model import
+
+The dashboard's "fetch models" button answered "provider does not support models
+listing" for four providers that do serve models, because none of them publishes
+a plain OpenAI `/v1/models` route.
+
+- **CodeBuddy** (cn + intl) exposes no listing route at all — probed live, every
+  candidate path answers 404. Import now serves the catalogue from the Go
+  registry, the same list the chat router resolves against, so the button offers
+  exactly what a request can reach and there is no second list to drift.
+- **Cline / ClinePass** publish live catalogues on their own host. The existing
+  branch read `/api/v1/models` for both, which is the full catalogue and carries
+  no `cline-pass/*` rows at all — so a ClinePass connection was offered the free
+  namespace, and every one of those ids answers 403 ENTITLEMENT_ERROR. The
+  subscription namespace is published only on the recommended feed, under its own
+  key, so the two are now resolved separately and kept disjoint: `cline` keeps
+  everything except `cline-pass/*`, `clinepass` keeps only `cline-pass/*`. The
+  free-tier feed merge stays, and stays additive — a dead feed never takes the
+  catalogue down with it.
+
+WorkBuddy is deliberately not handled. It is a separate service this build does
+not register: no KnownProviders entry, no ProviderModels entry, no executor. A
+branch for it could only ever return an empty list, so it joins when it is
+registered.
+
+Non-chat surfaces are rejected by name on segment boundaries only, matching
+`providers.IsDiscoverableAntigravityModel`, so an id that merely contains the
+letters is never dropped.
+
+### Antigravity project discovery sends the client's own identity
+
+The onboarding RPCs (`loadCodeAssist`, `onboardUser`) identified as the CLI
+shape under a constant named `antigravityIDEUserAgent` — the name and the value
+disagreed, and neither was the identity the connection had signed in as.
+
+The value is load-bearing, not cosmetic. Google answers the generic
+`google-api-nodejs-client` identity with a 200 that **omits**
+`cloudaicompanionProject` even for a fully provisioned account, so a caller
+sending it concludes "no project" and every chat then returns 502 for a healthy
+login. Verified live on one token: the generic UA yields no project, while the
+Antigravity identity returns the real project id.
+
+`antigravityProjectUserAgent` now resolves the profile from the connection's
+`providerSpecificData.clientProfile`, so an account signed in as the CLI is
+discovered as the CLI rather than as the IDE. The chat lane knows only the
+connection id, so `antigravityConnData` reads the row to resolve it; the media
+lanes already hold the blob and pass it directly.
+
+Two fallbacks are deliberate. A caller with no connection data (the media lanes,
+which only carry a token) gets the CLI identity — the shape the Gemini 4 Argon
+lanes answer. And an **unrecognised** setting also falls back to CLI rather than
+to the normaliser's `ide` default: an unknown value must not silently change
+which client the gateway claims to be, because the answer depends on it.
+
+This also puts `providers.AntigravityUserAgentFor` (added earlier) to use — it
+existed but nothing called it.
+
+Verified: `go build ./...` clean; `go test ./internal/handlers/chat/
+./internal/handlers/media/ ./internal/providers/` pass. New tests pin the
+identity per profile including the legacy `harness`/`sdk` spellings, the
+unrecognised-value fallback, and that the resolved identity actually reaches the
+wire rather than only the unit-level helper.
+
+### fix(commandcode): inject reasoning_content placeholder for multi-turn chats
+
+- Injected `reasoning_content: " "` into assistant messages for `commandcode` provider (porting upstream `decolua/9router` PR #5290).
+- Updated `buildCommandcodeBody` to map assistant `reasoning_content` into CommandCode reasoning content blocks.
+- Added comprehensive unit tests for commandcode reasoning injection and wire-level request building.
+
+### Added
+
+- **Bedrock Responses reasoning normalization & Claude adaptive capabilities** (upstream #5311):
+  - Add dashed pattern capabilities for Bedrock Claude Opus models (`*claude*opus-4-7*`, `*claude*opus-4-8*`) mapping to `claude-adaptive`.
+  - Update `*claude*fable*` and `*claude*mythos*` capabilities to always-on `claude-adaptive` (1M context, 128k maxOutput).
+  - Preserve client-provided nested reasoning fields (such as `summary`) when merging top-level `reasoning_effort` in Responses API transformation.
+
+### feat(keys): search, filter and a metrics ribbon on the API key list
+
+The key list answered one question — which keys exist — and left the rest to
+counting rows. Four numbers an operator actually needs were only available by
+reading the table and adding up: how many keys are live, how much traffic they
+carry, what they have spent, and whether anything is sitting idle.
+
+**A metrics ribbon of four pills.** Each is a count that is also a control.
+`Active` filters to live keys, `Requests` and `Tokens` order by spend (most
+first, then least), and `Unused` filters to keys that have never served a
+request. Every pill cycles three phases — off, forward, reverse — so one tap
+target asks a comparison in both directions. The number itself stays visible in
+every phase because it is a total over the whole list, never over the current
+filter: narrowing to "paused" must not make `Active` read 0.
+
+`Tokens` and `Unused` replace the `Expiring 7d` and `Expired` pills this work
+originally carried. On a personal deployment expiry is a fact about one or two
+rows, and the row already says so — `policyBadges` renders `expired` in danger
+tone. A pill that reports what the row already reports spends a slot for
+nothing. Spend and idleness are the questions with no answer anywhere else on
+the card: a deployment with four keys can have one idle, one at a hundred
+thousand tokens and one at two billion, and a credential that has never been
+used is either a spare or a key left behind.
+
+`Limited` and `Unrestricted` were considered and dropped: on the deployment this
+was built against both read 0 and 4 on every load, and a pill that never changes
+tells you nothing.
+
+**Search and sort.** A text field matches on name or masked key, and a sort
+select orders by newest, name or requests. All three controls run client-side
+over the list the component was already handed — a key list is tens of rows, not
+thousands, so a round trip per keystroke would cost more than the filtering does.
+The filtered list is one derived value that both layouts render, so the table and
+the phone cards can never disagree about which keys are showing.
+
+The status and scope selects that used to sit beside the search field are gone:
+the pills express both, and on a phone the selects had no room next to the field
+while needing two taps into a menu to reach a state a pill already covers. The
+search bar keeps only what a pill cannot do — match text, order the result, and
+start a new key. `Create Key` moved to the right end of that row rather than the
+card header: it is the action taken after reading the list, so it belongs where
+the reading ends, and on a phone the header is the first thing to scroll away.
+
+**Verified:** `bun run build`, `bun run ratchet:svelte` (0 unresolved
+identifiers, 75 errors against a baseline of 76), `bun test src scripts`
+(695 pass), `go test ./internal/handlers/dashboard/ ./internal/keikey/
+./internal/db/`, and the Playwright suites `e2e/apiKeys.test.ts` (6 pass) and
+`e2e/mobileApiKeys.test.ts` (7 pass) driving a real binary and a real Chromium —
+the row menu's confirmation guards, the copy-while-hidden path and the phone card
+layout all still hold against the new ribbon and search bar.
+
+### Added
+
+- **DeepSeek `json_schema` to `json_object` downgrade** (upstream #5304):
+  - Automatically downgrade `response_format: {"type": "json_schema", ...}` to `{"type": "json_object"}` when targeting `deepseek` provider to prevent HTTP 400 rejection from DeepSeek API which lacks native Structured Outputs support.
+  - Native Structured Output providers (such as `openai` and `openai-compatible-*` nodes) remain unaffected.
+
+### Added
+
+- **Configurable stream stall timeout** (upstream #1703, #5276, #5296):
+  - Support `STREAM_STALL_TIMEOUT_MS` and `NINEROUTER_STREAM_STALL_TIMEOUT_MS` environment variables to configure the global SSE stream stall watchdog.
+  - Support optional per-provider `StallTimeoutMs` override in `ProviderConfig`.
+  - Wire resolved stall timeout across all streaming executors and forwarders.
+
+### feat(api-keys): quota per API key, a context ceiling per key, and spend per client key
+A key that ran out of tokens was answered with 403, which reads like "you may
+not do this" rather than "you are over your allowance". It is 429 now, with
+the error type `insufficient_quota`, so a spent budget can be told apart from
+a rate limit — only one of the two clears by itself.
+Each key carries two ceilings, both settable on create and in the policy
+dialog:
+- `tokenQuota` — the tokens the key may spend over its whole life.
+- `contextLimit` — the context one request may carry. A conversation over the
+  ceiling is trimmed to fit (history dropped, the answer's budget capped to
+  what is left) instead of refused, because a ceiling that rejected a long
+  conversation would make the key useless exactly when it is used hard. A
+  request that already fits goes out untouched.
+Trimming can take the assistant turn that made a tool call with it and leave
+the tool result behind, which upstream answers with a 400 — so the pairing is
+repaired after every trim.
+The Usage page gained the other axis of the spend: the Overview now carries a
+"Usage per API key" table with requests, in/out tokens, cached tokens, cost
+and share, per key the callers presented. The table it replaces grouped the
+upstream credential the router spent — a connection, not the key that was
+sold. A key deleted after it spent still gets a row, under its masked form,
+and a request that carried no client key gets a bucket of its own rather than
+disappearing from the totals — that row is the media path, which presents no
+client key, and not a misconfigured one.
+In the dashboard both amounts are written as scales ("10M", "500K", "1B"), and
+model access now picks from the models the gateway publishes instead of from a
+free-text field, with the pattern syntax kept for the glob and deny forms the
+picker cannot express.
+
+### Features
+- **combos**: Add Tokenmaxxing quota-aware routing strategy (upstream decolua/9router#5277 parity). Orders combo candidates so accounts closest to reset with the most allowance per day go first, while accounts with exhausted finite quotas (0%) are tried last.
+
+### feat(minimax-code): lease auth mode via the desktop app's local broker
+
+- Added `internal/proxy/executor/mcodelease`: a client for the MiniMax Code desktop app's local auth-lease broker. A lease connection borrows the desktop app's sign-in instead of storing a refresh token, so the official CLI and the gateway share one subscription without their single-use refresh tokens fighting.
+- Wire protocol is a 4-byte big-endian length prefix plus a JSON frame (`mcode-auth-lease-v1`), over a Unix socket on Linux/macOS and a named pipe on Windows. Frames above `MaxFrameBytes` are refused before the body is read, and a non-JSON body is reported as `PROTOCOL_MISMATCH` rather than a retryable transport error.
+- Capability is discovered from `<dataDir>/run/mcode-auth-lease-v1.cap`, which pins the pipe name and a 32-byte capability token. A missing or stale capability file yields `BROKER_UNAVAILABLE` / `AUTH_REQUIRED` with a message naming the path, so an operator is told what to fix. The resolved data dir is confined to its absolute root — no traversal, and a `.` component is rejected rather than silently collapsing.
+- `Manager` caches the leased token and collapses concurrent lease requests into one broker call (single-flight), keyed by data dir so the cn and global lanes sharing one desktop install share one lease. Every waiter of a failed lease sees the same error, and the failure is not cached. A cached token inside the 60 s refresh margin is reused; one past it is refreshed.
+- `ForwardMinimaxCode` borrows the token before building the request for `authType: "mcode-lease"` connections only — an ordinary minimax-code key is never replaced. On an upstream 401 the cached lease is invalidated, so the caller's refresh-and-retry asks the broker again instead of replaying a dead bearer.
+- Added `GET /api/oauth/{provider}/lease-status` (read-only broker probe) and `POST /api/oauth/{provider}/lease-connect` (creates the connection, idempotent per provider + data dir, 409 with the broker's own code when the desktop app is unavailable). Both refuse providers other than `minimax-code` / `minimax-code-global`.
+- Added a "Use Desktop App" button to `ProviderDetailView` for the two MiniMax Code lanes, wired through new `api.minimaxLeaseStatus` / `api.minimaxLeaseConnect` client methods. The broker's message is shown verbatim.
+- The frame exchange runs its read and write on their own goroutines and closes the connection when the context is done: a synchronous transport's `Read`/`Write` is not interrupted by a cancelled context, so without this a client that disconnects mid-request kept a goroutine parked until the transport timeout. When the context carries a deadline it alone governs the exchange — arming the transport's deadline to the same instant races it, and the caller would be told the broker timed out when the client had actually gone away.
+- Verification: `go test ./internal/proxy/executor/mcodelease/ ./internal/handlers/oauth/ ./internal/proxy/executor/` passes on Windows, and the Unix-socket fixtures — one shared broker fixture rather than two, so the frame codec is exercised over a real socket on Linux/macOS — are exercised there. `go test -tags=integration ./internal/integration/ -run TestLeaseRoutes` drives the real router and asserts 200/409/400 on the live route table, `make vet-svelte` reports 0 unresolved identifiers at the 75-error baseline, and `bun run build` succeeds.
+
+Upstream `decolua/9router` #4197 parity (`open-sse/services/minimaxCodeLease.js`, `src/app/api/oauth/[provider]/[action]/route.js`, `MinimaxLeaseButton.js`).
+
 ## [v1.9.15] - 2026-10-31
 
 ### feat(zed): serve Zed's hosted models through the OpenAI-compatible API
