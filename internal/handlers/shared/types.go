@@ -33,6 +33,7 @@ type ConnectionData struct {
 	ConnectionProxyURL     string         `json:"connectionProxyUrl,omitempty"`
 	ConnectionNoProxy      string         `json:"connectionNoProxy,omitempty"`
 	StrictProxy            bool           `json:"strictProxy,omitempty"`
+	AllowPrivateNetworking bool           `json:"allowPrivateNetworking,omitempty"`
 	ProviderSpecificData   map[string]any `json:"providerSpecificData,omitempty"`
 
 	// ResolvedProxyPool is the egress label for this request's pool — the name an

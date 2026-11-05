@@ -329,7 +329,7 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 		// badges (⏱), quota/rate-limit panels, model assignment. Secret
 		// keys (apiKey/accessToken/refreshToken/authToken/...) stay dropped.
 		"backoffLevel", "rateLimitedUntil", "rateLimit", "rateLimitsByModel",
-		"freebuffModel", "assignedModel", "freebucks",
+		"freebuffModel", "assignedModel", "freebucks", "allowPrivateNetworking",
 	} {
 		if v, ok := data[f]; ok && v != nil {
 			if f == "lastError" {
@@ -419,7 +419,8 @@ type createConnectionRequest struct {
 	// Replace states that a duplicate-account collision is intended: the
 	// existing connection is refreshed in place instead of a second row being
 	// inserted for the same account.
-	Replace bool `json:"replace"`
+	Replace                bool `json:"replace"`
+	AllowPrivateNetworking bool `json:"allowPrivateNetworking"`
 }
 
 // isCompatibleNodeProviderID reports whether providerID names a custom
@@ -495,6 +496,9 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 	// alongside the key (AddApiKeyModal sends defaultModel for compatible nodes).
 	if req.DefaultModel != "" {
 		dataMap["defaultModel"] = req.DefaultModel
+	}
+	if req.AllowPrivateNetworking {
+		dataMap["allowPrivateNetworking"] = true
 	}
 
 	// Upstream POST /api/providers rebuilds providerSpecificData from the node
@@ -709,6 +713,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	_, hasPSD := rawBody["providerSpecificData"]
 	_, hasAssignedModel := rawBody["assignedModel"]
 	_, hasProxyPool := rawBody["proxyPoolId"]
+	_, hasAllowPrivate := rawBody["allowPrivateNetworking"]
 	// Issue #154: rotating the credential from the edit modal. Blank (or
 	// whitespace-only) means "keep the stored key" — the modal shows it as a
 	// mask and sends nothing when the user did not type one.
@@ -747,7 +752,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	// Fast path: if only updating active status
-	if hasIsActive && !hasName && !hasPriority && !hasData && !hasPSD && !hasAssignedModel && !hasProxyPool && !hasAPIKey {
+	if hasIsActive && !hasName && !hasPriority && !hasData && !hasPSD && !hasAssignedModel && !hasProxyPool && !hasAPIKey && !hasAllowPrivate {
 		if err := h.Repo.SetConnectionStatus(id, a); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -779,7 +784,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	dataStr := existing.Data
-	if hasData || hasPSD || hasAssignedModel || hasProxyPool || hasAPIKey {
+	if hasData || hasPSD || hasAssignedModel || hasProxyPool || hasAPIKey || hasAllowPrivate {
 		dataMap := make(map[string]any)
 		if existing.Data != "" {
 			_ = json.Unmarshal([]byte(existing.Data), &dataMap)
@@ -850,6 +855,14 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 			} else {
 				dataMap["proxyPoolId"] = proxyPoolID
 				mergeMapField(dataMap, "providerSpecificData", map[string]any{"proxyPoolId": proxyPoolID})
+			}
+		}
+
+		if hasAllowPrivate {
+			if v, ok := rawBody["allowPrivateNetworking"].(bool); ok && v {
+				dataMap["allowPrivateNetworking"] = true
+			} else {
+				delete(dataMap, "allowPrivateNetworking")
 			}
 		}
 

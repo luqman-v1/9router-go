@@ -96,6 +96,7 @@ type connectionProbeData struct {
 	ConnectionProxyEnabled bool           `json:"connectionProxyEnabled"`
 	ConnectionProxyURL     string         `json:"connectionProxyUrl"`
 	ConnectionNoProxy      string         `json:"connectionNoProxy"`
+	AllowPrivateNetworking bool           `json:"allowPrivateNetworking"`
 }
 
 // probeOutcome is one connection-test result. valid=false + message mirrors
@@ -348,6 +349,9 @@ func parseConnectionProbeData(raw map[string]any) connectionProbeData {
 func (h *DashboardHandler) testSingleConnection(ctx context.Context, conn *models.ProviderConnection, data connectionProbeData, raw map[string]any) probeOutcome {
 	if conn != nil && providers.IsLocalByDesign(conn.Provider) {
 		ctx = proxy.WithAllowLoopback(ctx)
+	}
+	if data.AllowPrivateNetworking {
+		ctx = proxy.WithAllowPrivateNetworking(ctx)
 	}
 	client, proxyURL := h.probeHTTPClient(data, raw)
 	if proxyURL != "" {

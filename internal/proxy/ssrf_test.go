@@ -115,6 +115,30 @@ func TestNewSafeDialer_PermitsLoopbackViaContext(t *testing.T) {
 	}
 }
 
+func TestNewSafeDialer_PermitsPrivateViaContextOptIn(t *testing.T) {
+	t.Setenv("ALLOW_PRIVATE_NETWORKING", "false")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	dialer := NewSafeDialer()
+
+	if _, err := dialer.DialContext(context.Background(), "tcp", srv.Listener.Addr().String()); err == nil {
+		t.Fatalf("expected loopback dial to be blocked without opt-in")
+	}
+
+	ctx := WithAllowPrivateNetworking(context.Background())
+	conn, err := dialer.DialContext(ctx, "tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("expected private dial to succeed with WithAllowPrivateNetworking, got %v", err)
+	}
+	if conn != nil {
+		conn.Close()
+	}
+}
+
 func TestNewSafeTransport_BlocksPrivateRequests(t *testing.T) {
 	t.Setenv("ALLOW_PRIVATE_NETWORKING", "false")
 

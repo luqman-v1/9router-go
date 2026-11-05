@@ -966,6 +966,12 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	if providers.IsLocalByDesign(provider) {
 		ctx = internalproxy.WithAllowLoopback(ctx)
 	}
+	// Per-connection opt-in for private-network dials (issue #840): a connection
+	// pointed at a local gateway or LAN peer carries allowPrivateNetworking.
+	// The flag rides on ctx so the dial guard honors it for this request only.
+	if connData != nil && connData.AllowPrivateNetworking {
+		ctx = internalproxy.WithAllowPrivateNetworking(ctx)
+	}
 	sessionID := handlerutil.GetSessionID(ctx)
 
 	// The outbound guardrail tap goes here, not inside a response handler:
