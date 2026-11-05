@@ -25,10 +25,13 @@ not:
   under concurrent execution and several packages run tests in parallel — which
   would otherwise make the total vary between runs for no reason.
 
-The baseline is 69.0%, measured on `main` at `d1f046ed` — the base this PR was
+The baseline is 68.8%. The number that matters is the one the CI runner
+produces, not the one a developer's workstation produces: the same suite
+measures 69.0% on Windows and 68.9% on the Linux runner, so the baseline is set
+from the Linux figure with 0.1 of margin below it, which is what the gate was
+designed to carry. Measured on `main` at `d1f046ed` — the base this PR was
 rebased onto, not this branch, which carried the #901 changes #902 was stacked
-on. The margin below the measured total is deliberate: an exact baseline would
-fail on ordinary run-to-run variation.
+on.
 
 The baseline is validated as exactly one decimal number, not merely as
 "contains digits": `tr -dc '0-9.'` also accepts a file holding two numbers
@@ -39,11 +42,14 @@ content named in the error, so a typo is diagnosable without reading the script.
 
 ### Verified
 
-- `go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...` on the
-  rebased base — suite passes, `go tool cover -func` reports `total: 69.0%`.
-- `scripts/coverage-gate.sh coverage.out` run against the real profile on the
-  rebased base: 69.0% vs baseline 69.0% passes (equality); a baseline above the
-  measured total fails.
+- `go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...` — suite
+  passes. The total is platform-dependent: `go tool cover -func` reports 69.0%
+  on Windows and the CI runner reports 68.9% on Linux. The baseline is set from
+  the Linux figure, since that is the environment the gate runs in.
+- `scripts/coverage-gate.sh coverage.out` run against the real profile: 69.0%
+  vs baseline 68.8% passes; a baseline above the measured total exits 1 with
+  the regressed message. Confirmed in CI, where the Linux total of 68.9% also
+  clears the baseline.
 - Baseline validation negative controls: `68.0\n69.0` and `8.8.1` — both
   accepted by the previous `tr -dc '0-9.'` — are now rejected; `68` and `68.5`
   are still accepted.
