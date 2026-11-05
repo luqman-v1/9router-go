@@ -2,8 +2,11 @@ package db
 
 import (
 	json "encoding/json/v2"
+	"errors"
 	"testing"
 	"time"
+
+	"9router/proxy/internal/providers"
 )
 
 // The cooldown has to start at the OmniRoute floor and grow while nobody
@@ -125,7 +128,7 @@ func TestRecordConnectionOAuthFailure_PersistsGrowsAndClears(t *testing.T) {
 	defer cleanup()
 	insertTestConn(t, repo)
 
-	until, failures, err := repo.RecordConnectionOAuthFailure("conn-1", 401, "token refresh rejected with status 401")
+	until, failures, err := repo.RecordConnectionOAuthFailure("conn-1", 401, errors.New("token refresh rejected with status 401"))
 	if err != nil {
 		t.Fatalf("RecordConnectionOAuthFailure: %v", err)
 	}
@@ -148,7 +151,7 @@ func TestRecordConnectionOAuthFailure_PersistsGrowsAndClears(t *testing.T) {
 
 	// The same strike seen twice inside one window is one failure: a request
 	// can discover a dead grant more than once.
-	if _, failures, err = repo.RecordConnectionOAuthFailure("conn-1", 401, "still invalid_grant"); err != nil {
+	if _, failures, err = repo.RecordConnectionOAuthFailure("conn-1", 401, errors.New("still invalid_grant")); err != nil {
 		t.Fatalf("RecordConnectionOAuthFailure (repeat): %v", err)
 	}
 	if failures != 1 {
@@ -161,7 +164,7 @@ func TestRecordConnectionOAuthFailure_PersistsGrowsAndClears(t *testing.T) {
 		time.Now().Add(-time.Minute).UTC().Format(time.RFC3339), "conn-1"); err != nil {
 		t.Fatalf("expire the park: %v", err)
 	}
-	second, failures, err := repo.RecordConnectionOAuthFailure("conn-1", 401, "still invalid_grant")
+	second, failures, err := repo.RecordConnectionOAuthFailure("conn-1", 401, errors.New("still invalid_grant"))
 	if err != nil {
 		t.Fatalf("RecordConnectionOAuthFailure (second): %v", err)
 	}
@@ -193,7 +196,7 @@ func TestRecordConnectionOAuthFailure_RecordsWhy(t *testing.T) {
 	defer cleanup()
 	insertTestConn(t, repo)
 
-	if _, _, err := repo.RecordConnectionOAuthFailure("conn-1", 401, "invalid_grant"); err != nil {
+	if _, _, err := repo.RecordConnectionOAuthFailure("conn-1", 401, errors.New("invalid_grant")); err != nil {
 		t.Fatalf("RecordConnectionOAuthFailure: %v", err)
 	}
 	var data map[string]any
@@ -210,6 +213,80 @@ func TestRecordConnectionOAuthFailure_RecordsWhy(t *testing.T) {
 	if status, _ := lastError["status"].(float64); status != 401 {
 		t.Errorf("lastError.status = %v, want 401", lastError["status"])
 	}
+}
+
+// A dead grant (invalid_grant / refresh_token_reused / revoked) is terminal,
+// so the row is stamped with testStatus = reauth_required and quarantined from
+// routing. Anything else (a 403, a 5xx) parks the account but leaves
+// testStatus untouched: only a re-login fixes a dead grant.
+func TestRecordConnectionOAuthFailure_SetsReauthRequiredForDeadGrant(t *testing.T) {
+	deadCases := []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{"401 invalid_grant", &providers.OAuthRefreshError{Status: 401, Body: "invalid_grant"}, 401},
+		{"400 invalid_grant", &providers.OAuthRefreshError{Status: 400, Body: "invalid_grant"}, 400},
+		{"400 refresh_token_reused", &providers.OAuthRefreshError{Status: 400, Body: "refresh_token_reused"}, 400},
+	}
+	for _, tc := range deadCases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, cleanup := setupHealthConnTestDB(t)
+			defer cleanup()
+			insertTestConn(t, repo)
+			if _, _, err := repo.RecordConnectionOAuthFailure("conn-1", tc.status, tc.err); err != nil {
+				t.Fatalf("RecordConnectionOAuthFailure: %v", err)
+			}
+			if got := testStatusOf(t, repo, "conn-1"); got != providers.StatusReauthRequired {
+				t.Errorf("dead grant testStatus = %q, want %q", got, providers.StatusReauthRequired)
+			}
+		})
+	}
+
+	// Non-dead failures park the account but leave testStatus empty.
+	t.Run("403 forbidden leaves testStatus empty", func(t *testing.T) {
+		repo, cleanup := setupHealthConnTestDB(t)
+		defer cleanup()
+		insertTestConn(t, repo)
+		if _, _, err := repo.RecordConnectionOAuthFailure("conn-1", 403, errors.New("forbidden")); err != nil {
+			t.Fatalf("RecordConnectionOAuthFailure: %v", err)
+		}
+		if got := testStatusOf(t, repo, "conn-1"); got != "" {
+			t.Errorf("non-dead failure testStatus = %q, want empty", got)
+		}
+	})
+
+	// A successful refresh sheds the quarantine marker.
+	t.Run("clear removes reauth_required", func(t *testing.T) {
+		repo, cleanup := setupHealthConnTestDB(t)
+		defer cleanup()
+		insertTestConn(t, repo)
+		if _, _, err := repo.RecordConnectionOAuthFailure("conn-1", 401, &providers.OAuthRefreshError{Status: 401, Body: "invalid_grant"}); err != nil {
+			t.Fatalf("RecordConnectionOAuthFailure: %v", err)
+		}
+		if err := repo.ClearConnectionOAuthLock("conn-1"); err != nil {
+			t.Fatalf("ClearConnectionOAuthLock: %v", err)
+		}
+		if got := testStatusOf(t, repo, "conn-1"); got != "" {
+			t.Errorf("after clear testStatus = %q, want empty", got)
+		}
+	})
+}
+
+func testStatusOf(t *testing.T, repo *Repo, connID string) string {
+	t.Helper()
+	var raw string
+	if err := repo.RawDB().QueryRow("SELECT data FROM providerConnections WHERE id = ?", connID).Scan(&raw); err != nil {
+		t.Fatalf("read connection data: %v", err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		t.Fatalf("unmarshal connection data: %v", err)
+	}
+	if v, ok := data["testStatus"].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // A counter that cannot be read must cost the account its longer backoff, not

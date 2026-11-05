@@ -9,16 +9,17 @@ import (
 )
 
 // parkRejectedOAuthAccount cools a connection down after the provider rejected
-// its OAuth grant with 401 (OmniRoute #14917), so the next request skips the
-// account instead of spending another refresh call on a grant only a re-login
-// can fix. It reports whether the account was parked; a refresh that failed
-// any other way is left to the caller, because a 5xx or a transport error is
-// no evidence the credential is gone.
+// its OAuth grant in a terminal way (401, or 400 with a dead-grant body such as
+// invalid_grant / refresh_token_reused — OmniRoute #14917), so the next request
+// skips the account instead of spending another refresh call on a grant only a
+// re-login can fix. It reports whether the account was parked; a refresh that
+// failed any other way is left to the caller, because a 5xx or a transport
+// error is no evidence the credential is gone.
 func (h *ChatHandler) parkRejectedOAuthAccount(connectionID string, refreshErr error) bool {
-	if connectionID == "" || h.Repo == nil || !providers.IsRefreshUnauthorized(refreshErr) {
+	if connectionID == "" || h.Repo == nil || !providers.IsRefreshGrantDead(refreshErr) {
 		return false
 	}
-	until, failures, err := h.Repo.RecordConnectionOAuthFailure(connectionID, http.StatusUnauthorized, refreshErr.Error())
+	until, failures, err := h.Repo.RecordConnectionOAuthFailure(connectionID, http.StatusUnauthorized, refreshErr)
 	if err != nil {
 		log.Warn("oauth", "park rejected account failed", "conn", connectionID, "error", err)
 		return false

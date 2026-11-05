@@ -149,7 +149,7 @@ func (h *DashboardHandler) markDeadGrant(conn *models.ProviderConnection, refres
 	if errors.As(refreshErr, &refreshErrType) {
 		status = refreshErrType.Status
 	}
-	until, failures, err := h.Repo.RecordConnectionOAuthFailure(conn.ID, status, refreshErr.Error())
+	until, failures, err := h.Repo.RecordConnectionOAuthFailure(conn.ID, status, refreshErr)
 	if err != nil {
 		log.Warn("usage", "record dead oauth grant failed", "provider", conn.Provider, "conn", conn.ID, "error", err)
 		return
