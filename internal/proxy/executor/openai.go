@@ -13,6 +13,7 @@ import (
 	"9router/proxy/internal/guardrails"
 	"9router/proxy/internal/jsonfence"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/translator"
@@ -108,15 +109,17 @@ func renameMaxTokensBody(body []byte) []byte {
 	return out
 }
 
-// volcengineArkGLM5OutputCeiling is the Volcengine Ark output-token ceiling
-// for GLM-5 models. Ark answers HTTP 400 for a GLM-5 request that asks for
-// more than this, so a client budget above it is folded down before dispatch.
+// volcengineArkGLM5OutputCeiling is Volcengine Ark's output-token ceiling for
+// GLM-5 models. Ark answers HTTP 400 for a GLM-5 request that asks for more
+// than this, so a client budget above it is folded down before dispatch.
 const volcengineArkGLM5OutputCeiling = 4096
 
 // clampVolcengineArkGLM5OutputTokens folds a GLM-5 output budget above the
-// Ark ceiling down to 4096. A budget at or below the ceiling, a request that
-// sets no budget, and every non-GLM-5 model are left byte-identical.
-func clampVolcengineArkGLM5OutputTokens(body []byte) []byte {
+// Ark ceiling down to the model's capability ceiling (capped at Ark's 4096).
+// A budget at or below the ceiling, a request that sets no budget, and every
+// non-GLM-5 model are left byte-identical. All three output-budget spellings
+// are clamped: max_tokens, max_completion_tokens and max_output_tokens.
+func clampVolcengineArkGLM5OutputTokens(provider string, body []byte) []byte {
 	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body
@@ -125,17 +128,23 @@ func clampVolcengineArkGLM5OutputTokens(body []byte) []byte {
 	if !isVolcengineArkGLM5Model(model) {
 		return body
 	}
+	// Ark's GLM-5 output ceiling, further bounded by the model's declared
+	// maxOutput from the capability registry when one is specified.
+	maxOutputCap := volcengineArkGLM5OutputCeiling
+	if maxOutput := providers.GetCapabilitiesForModel(provider, model).MaxOutput; maxOutput > 0 && maxOutput < maxOutputCap {
+		maxOutputCap = maxOutput
+	}
 	changed := false
-	for _, field := range []string{"max_tokens", "max_completion_tokens"} {
+	for _, field := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
 		v, ok := m[field]
 		if !ok {
 			continue
 		}
 		n, ok := outputBudgetOf(v)
-		if !ok || n <= volcengineArkGLM5OutputCeiling {
+		if !ok || n <= int64(maxOutputCap) {
 			continue
 		}
-		m[field] = volcengineArkGLM5OutputCeiling
+		m[field] = maxOutputCap
 		changed = true
 	}
 	if !changed {
@@ -148,15 +157,12 @@ func clampVolcengineArkGLM5OutputTokens(body []byte) []byte {
 	return out
 }
 
-// isVolcengineArkGLM5Model reports whether a Volcengine Ark model id is a
-// GLM-5 model, whose output is capped at 4096 tokens: either a bare glm-5 id
-// or a Doubao-family id carrying the glm-5 qualifier.
+// isVolcengineArkGLM5Model reports whether a model id is a GLM-5 model whose
+// output is capped at the Ark ceiling: any model id containing 'glm-5'
+// (case-insensitive), e.g. bare glm-5*, GLM-5.1, glm-5-turbo,
+// zai-org/GLM-5.2, or a Doubao-family id carrying the glm-5 qualifier.
 func isVolcengineArkGLM5Model(model string) bool {
-	lower := strings.ToLower(model)
-	if strings.HasPrefix(lower, "glm-5") {
-		return true
-	}
-	return strings.HasPrefix(lower, "doubao") && strings.Contains(lower, "glm-5")
+	return strings.Contains(strings.ToLower(model), "glm-5")
 }
 
 // DowngradeJsonSchemaToJSONObject downgrades response_format from "json_schema"
@@ -201,9 +207,10 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	}
 	if req.Provider == "volcengine-ark" {
 		// Volcengine Ark answers HTTP 400 when a GLM-5 model is asked for more
-		// than its 4096 output-token ceiling, so a client budget above it is
-		// folded down before the request leaves the gateway.
-		req.Body = clampVolcengineArkGLM5OutputTokens(req.Body)
+		// than its output-token ceiling, so a client budget above it is folded
+		// down before the request leaves the upstream. The ceiling is the model's
+		// declared maxOutput from the capability registry, capped at Ark's 4096.
+		req.Body = clampVolcengineArkGLM5OutputTokens(req.Provider, req.Body)
 	}
 	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
 	if err != nil {
