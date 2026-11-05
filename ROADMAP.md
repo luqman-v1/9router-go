@@ -50,7 +50,8 @@ This roadmap is for the current native Go gateway and its embedded Svelte dashbo
 **Status (2026-11-03): the first two criteria are met.** The `coverage` job runs
 `go test -covermode=atomic -coverprofile=coverage.out ./...`, uploads the profile
 as an artifact, and fails when `scripts/coverage-gate.sh` reports a total below
-`.github/coverage-baseline.txt` (68.0%; measured 68.7% on `main` at that commit).
+`.github/coverage-baseline.txt` (68.8%; the CI runner measures 68.9% on `main` at
+`d1f046ed`, the base this PR was rebased onto, with 0.1 of margin below it).
 The third criterion is unchanged and still open — it is a per-change expectation,
 not something a CI job can decide.
 
