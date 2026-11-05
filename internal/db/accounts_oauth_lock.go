@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"fmt"
 	"strings"
@@ -181,7 +182,7 @@ func (r *Repo) RecordConnectionOAuthFailure(connID string, status int, err error
 			WHERE id = ?`
 		args = []any{until.UTC().Format(time.RFC3339), failures, providers.StatusReauthRequired, string(lastError), stamp, connID}
 	}
-	_, execErr := r.db.Exec(query, args...)
+	_, execErr := r.db.ExecContext(context.Background(), query, args...)
 	if execErr != nil {
 		return time.Time{}, 0, fmt.Errorf("lock connection oauth %s: %w", connID, execErr)
 	}
@@ -200,7 +201,7 @@ func (r *Repo) ClearConnectionOAuthLock(connID string) error {
 		return nil
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := r.db.Exec(
+	_, err := r.db.ExecContext(context.Background(),
 		`UPDATE providerConnections
 		SET data = json_set(data,
 			'$.oauthLockedUntil', NULL,
