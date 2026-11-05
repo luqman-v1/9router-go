@@ -1994,10 +1994,16 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     <div class="flex items-center justify-between py-2 border-t border-border">
       <div>
         <p class="text-sm font-medium text-text-main">Autostart with 9router</p>
-        <p class="text-xs text-text-muted">Launch local Headroom proxy on 9router-go startup</p>
+        <p class="text-xs text-text-muted">
+          {!headroomStatus?.installed
+            ? 'Requires Headroom to be installed first'
+            : 'Launch local Headroom proxy on 9router-go startup'}
+        </p>
       </div>
       <Toggle
         checked={headroomAutostart}
+        disabled={!headroomStatus?.installed}
+        title={!headroomStatus?.installed ? 'Install Headroom first to enable autostart' : ''}
         onChange={() => handleToggleHeadroomAutostart(!headroomAutostart)}
       />
     </div>
