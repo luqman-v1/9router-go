@@ -88,6 +88,11 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
+	// every token saver; the flag travels on ctx to applyTokenSavers.
+	if isTokenSaverBypassValue(r.Header.Get("X-9Router-Token-Saver")) {
+		ctx = WithTokenSaverBypass(ctx)
+	}
 	// Provider-scope limit state travels with the request: what one attempt
 	// learns (this provider is full) must steer the next one, and must not
 	// outlive the request (docs/provider-limits-plan.md D7).
@@ -411,6 +416,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
+	// every token saver; the flag travels on ctx to applyTokenSavers.
+	if isTokenSaverBypassValue(r.Header.Get("X-9Router-Token-Saver")) {
+		ctx = WithTokenSaverBypass(ctx)
+	}
 	ctx = withProviderLimitState(ctx)
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
 	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
