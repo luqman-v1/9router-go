@@ -10,9 +10,13 @@ import "strings"
 
 // commandCodeContextWindow and commandCodeMaxOutput are the limits CommandCode
 // advertises for its whole catalog, independent of the underlying family.
+// Upstream caps cmc/* at 1M/384k, but the live /alpha/generate endpoint
+// validates params.max_tokens <= 200000 and rejects larger budgets with a 400
+// (upstream decolua/9router#5268). The advertised cap is the enforced one,
+// so clients that trust /v1/models stay inside it.
 const (
 	commandCodeContextWindow = 1000000
-	commandCodeMaxOutput     = 384000
+	commandCodeMaxOutput     = 200000
 )
 
 // commandCodeTextOnly mirrors the CommandCode CLI isKnownTextOnlyModel

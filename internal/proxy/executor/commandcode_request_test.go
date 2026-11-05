@@ -360,6 +360,21 @@ func TestCommandcodeMaxTokensResolution(t *testing.T) {
 			body: `{"max_tokens":null,"max_output_tokens":null,"max_completion_tokens":null}`,
 			want: 1024,
 		},
+		{
+			name: "budget above the provider cap is clamped",
+			body: `{"max_tokens":384000}`,
+			want: 200000.0,
+		},
+		{
+			name: "budget exactly at the provider cap passes through",
+			body: `{"max_tokens":200000}`,
+			want: 200000.0,
+		},
+		{
+			name: "max_completion_tokens above the cap is clamped",
+			body: `{"max_completion_tokens":500000}`,
+			want: 200000.0,
+		},
 	}
 
 	for _, tt := range tests {
