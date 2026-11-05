@@ -79,5 +79,11 @@ func TestGeminiCLIModelAndUserAgentAgree(t *testing.T) {
 		if !strings.Contains(ua, want) {
 			t.Errorf("GeminiCLIUserAgent(%q) = %q, which does not name %q", in, ua, want)
 		}
+		if !strings.HasPrefix(ua, "GeminiCLI/0.34.0/") {
+			t.Errorf("GeminiCLIUserAgent(%q) = %q, want prefix GeminiCLI/0.34.0/", in, ua)
+		}
+	}
+	if GeminiCLIApiClient != "google-genai-sdk/1.41.0 gl-node/v22.19.0" {
+		t.Errorf("GeminiCLIApiClient = %q, want google-genai-sdk/1.41.0 gl-node/v22.19.0", GeminiCLIApiClient)
 	}
 }

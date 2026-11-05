@@ -17,13 +17,13 @@ import (
 
 const (
 	// GeminiCLIApiClient is the X-Goog-Api-Client value the CLI sends.
-	GeminiCLIApiClient = "gl-node/22.17.0"
+	GeminiCLIApiClient = "google-genai-sdk/1.41.0 gl-node/v22.19.0"
 )
 
 // GeminiCLIUserAgent mirrors the CLI's own UA. Google answers 403 when the
 // model in it does not match the model in the envelope.
 func GeminiCLIUserAgent(model string) string {
-	return "GeminiCLI/0.20.1/" + GeminiCLIModel(model) + " (win32; x64; terminal)"
+	return "GeminiCLI/0.34.0/" + GeminiCLIModel(model) + " (win32; x64; terminal)"
 }
 
 // GeminiCLIModel strips the provider prefix and 9router's own effort suffixes:

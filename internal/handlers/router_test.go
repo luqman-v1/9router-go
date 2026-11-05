@@ -531,17 +531,75 @@ func TestSetupServerRouter_SSOLoginRoutesArePublic(t *testing.T) {
 
 	for _, tc := range []struct {
 		method, path string
+		wantStatus   int
+		assertMarker func(t *testing.T, rec *httptest.ResponseRecorder)
 	}{
-		{http.MethodGet, "/api/auth/oidc/start"},
-		{http.MethodGet, "/api/auth/saml/start"},
-		{http.MethodGet, "/api/auth/saml/metadata"},
+		{
+			method:     http.MethodGet,
+			path:       "/api/auth/saml/metadata",
+			wantStatus: http.StatusOK,
+			assertMarker: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				if !strings.Contains(rec.Body.String(), "<md:EntityDescriptor") {
+					t.Errorf("expected <md:EntityDescriptor in body, got: %s", rec.Body.String())
+				}
+			},
+		},
+		{
+			method:     http.MethodGet,
+			path:       "/api/auth/oidc/start",
+			wantStatus: http.StatusFound,
+			assertMarker: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				loc := rec.Header().Get("Location")
+				if !strings.Contains(loc, "login?error=oidc_not_configured") {
+					t.Errorf("expected Location with oidc_not_configured, got: %s", loc)
+				}
+			},
+		},
+		{
+			method:     http.MethodGet,
+			path:       "/api/auth/oidc/callback",
+			wantStatus: http.StatusFound,
+			assertMarker: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				loc := rec.Header().Get("Location")
+				if !strings.Contains(loc, "login?error=") {
+					t.Errorf("expected Location redirect, got: %s", loc)
+				}
+			},
+		},
+		{
+			method:     http.MethodGet,
+			path:       "/api/auth/saml/start",
+			wantStatus: http.StatusFound,
+			assertMarker: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				loc := rec.Header().Get("Location")
+				if !strings.Contains(loc, "login?error=saml_not_configured") {
+					t.Errorf("expected Location with saml_not_configured, got: %s", loc)
+				}
+			},
+		},
+		{
+			method:     http.MethodPost,
+			path:       "/api/auth/saml/acs",
+			wantStatus: http.StatusFound,
+			assertMarker: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				loc := rec.Header().Get("Location")
+				if !strings.Contains(loc, "login?error=") {
+					t.Errorf("expected Location redirect, got: %s", loc)
+				}
+			},
+		},
 	} {
-		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
-		// Must not be 401 Unauthorized (which RequireDashboardAuth returns).
-		if rec.Code == http.StatusUnauthorized {
-			t.Errorf("anonymous %s %s was blocked by auth with 401, want public access", tc.method, tc.path)
-		}
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+			if rec.Code == http.StatusUnauthorized {
+				t.Fatalf("anonymous %s %s was blocked by auth with 401, want public access", tc.method, tc.path)
+			}
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			tc.assertMarker(t, rec)
+		})
 	}
 }
 
