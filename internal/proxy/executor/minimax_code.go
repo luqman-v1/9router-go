@@ -192,6 +192,9 @@ func minimaxCodeHeaders(req *Request) map[string]string {
 		"Content-Type": "application/json",
 		// The placeholder the gateway requires beside the real bearer.
 		"x-api-key":               "sk-xxx",
+		// Every MiniMax Code / mavis request carries a default agent id,
+		// even when the connection config defines none in StaticHeaders.
+		"X-Mavis-Agent-Id":        "main",
 		"X-Mavis-Timezone-Offset": strconv.Itoa(-offsetSeconds),
 		"X-Mavis-Session-Id":      miniMaxCodeSessionID(req),
 	}
