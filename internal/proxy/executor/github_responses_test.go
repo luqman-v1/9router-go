@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -193,8 +194,8 @@ func TestForwardGithubGPT6ResponsesContextOverflow(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for context overflow")
 	}
-	ue, ok := err.(*proxy.UpstreamError)
-	if !ok {
+	var ue *proxy.UpstreamError
+	if !errors.As(err, &ue) {
 		t.Fatalf("expected *proxy.UpstreamError, got %T", err)
 	}
 	if ue.StatusCode != http.StatusBadRequest {
