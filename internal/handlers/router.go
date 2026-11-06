@@ -47,6 +47,7 @@ func SetupRoutes(r interface {
 	Put(pattern string, handlerFn http.HandlerFunc)
 	Patch(pattern string, handlerFn http.HandlerFunc)
 	Delete(pattern string, handlerFn http.HandlerFunc)
+	Options(pattern string, handlerFn http.HandlerFunc)
 	HandleFunc(pattern string, handlerFn http.HandlerFunc)
 }, repo *db.Repo, ts *TokenSaverConfig) *chat.ChatHandler {
 	chatH := chat.NewChatHandler(repo, ts)
@@ -93,6 +94,11 @@ func SetupRoutes(r interface {
 	r.Get("/models/{kind}", chatH.HandleModelsByKind)
 	r.Get("/models/*", chatH.HandleModelLookup)
 	r.Get("/v1/models", chatH.HandleModels)
+	// Gemini API surface. A Gemini SDK speaks only this protocol — it lists
+	// models, then posts contents[] to an action-suffixed path — so without
+	// these routes a Gemini client cannot use the gateway at all.
+	r.Get("/v1beta/models", chatH.HandleGeminiListModels)
+	r.Post("/v1beta/models/*", chatH.HandleGeminiGenerateContent)
 	r.Get("/v1/models/*", chatH.HandleModelLookup)
 	r.Get("/api/v1/models", chatH.HandleModels)
 	r.Get("/api/v1/models/*", chatH.HandleModelLookup)
@@ -105,6 +111,13 @@ func SetupRoutes(r interface {
 	r.Post("/messages", chatH.HandleMessages)
 	r.Post("/messages/count_tokens", chatH.HandleCountTokens)
 	r.Post("/api/chat", chatH.HandleOllamaChat)
+	// An Ollama client lists models before it chats; without this the gateway
+	// looks like an Ollama server with nothing installed. The preflight for
+	// these two paths is registered in SetupServerRouter, outside the API-key
+	// group: a browser never sends credentials on an OPTIONS request, so a
+	// preflight answered by this group 401s and the real GET never happens.
+	r.Get("/api/tags", mediaH.HandleOllamaTags)
+	r.Get("/tags", mediaH.HandleOllamaTags)
 
 	// Media, Audio, Video & Web Tools Domain
 	r.Post("/embeddings", mediaH.HandleEmbeddings)
@@ -539,10 +552,33 @@ func mountOAuthRoutes(r interface {
 // warning on SetupRoutes about the two PersistentStores.
 func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.ChatHandler {
 	// Public (unauthenticated) endpoints
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+	healthH := func(w http.ResponseWriter, r *http.Request) {
+		// The browser probes this endpoint from the dashboard's tunnel and
+		// Tailscale cards (EndpointView.svelte clientPingUrl). A cross-origin
+		// fetch needs CORS on the response or the probe fails on a healthy
+		// gateway, so the headers are part of the contract, not decoration.
+		handlerutil.WriteCORSHeaders(w)
 		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
 		w.Write([]byte(`{"status":"ok"}`))
-	})
+	}
+	r.Get("/health", healthH)
+	// Upstream serves the same answer under /api as well, and an older
+	// dashboard build polls that path.
+	r.Get("/api/health", healthH)
+	// Preflights live here, not in the API-key group: an OPTIONS request never
+	// carries credentials, so answering it behind RequireApiKey would 401 and
+	// the browser would never send the real request. Registered per path rather
+	// than as a blanket OPTIONS passthrough in the middleware, which would have
+	// opened every protected route.
+	corsPreflight := func(w http.ResponseWriter, r *http.Request) {
+		handlerutil.WriteCORSPreflight(w)
+	}
+	r.Options("/health", corsPreflight)
+	r.Options("/api/health", corsPreflight)
+	// An Ollama client lists models before it chats, and a browser-based one
+	// sends a preflight first.
+	r.Options("/api/tags", corsPreflight)
+	r.Options("/tags", corsPreflight)
 	// Version info is public (upstream PUBLIC_API_PATHS): the Sidebar polls
 	// /api/version on every dashboard page including /login, before any
 	// session or API key exists.
