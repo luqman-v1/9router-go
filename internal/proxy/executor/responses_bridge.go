@@ -287,11 +287,32 @@ func responsesWriter(o sseStreamOpts, hw *proxy.HeartbeatWriter, flusher http.Fl
 	}
 }
 
-// passthroughResponses relays an upstream Responses body untouched to a client
-// that already speaks Responses. Translating it would be a round trip through
+// stripClientMetadata removes the client_metadata an upstream echoes back in a
+// Responses API response body, so client-supplied data never rides the passthrough
+// relay back to the caller. A body that does not parse as an object, or that
+// carries no client_metadata, is returned untouched.
+func stripClientMetadata(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	if _, ok := m["client_metadata"]; !ok {
+		return body
+	}
+	delete(m, "client_metadata")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// passthroughResponses relays an upstream Responses body to a client that
+// already speaks Responses. Translating it would be a round trip through
 // Chat Completions that loses exactly the fields the native endpoint needs —
 // previous_response_id, reasoning item ids, store — so the body is copied
-// byte for byte instead.
+// byte for byte except for client_metadata, which the upstream echoes back and
+// the caller never needs to see again.
 func passthroughResponses(w http.ResponseWriter, req *Request, upstream io.Reader) error {
 	// Relaying "byte for byte" means byte for byte *except* the tool names this
 	// request had to have fitted for the upstream's 64-char limit. Forwarding
@@ -319,6 +340,7 @@ func passthroughResponses(w http.ResponseWriter, req *Request, upstream io.Reade
 	if len(req.ToolNameMap) > 0 {
 		body = translator.RestoreToolNames(body, req.ToolNameMap)
 	}
+	body = stripClientMetadata(body)
 	if req.ResponseBuf != nil {
 		req.ResponseBuf.Write(body)
 	}
