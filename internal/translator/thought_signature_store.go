@@ -76,6 +76,40 @@ func isFamilyCompatible(entryFamily, targetFamily string) bool {
 	return entryFamily == "" || targetFamily == "" || entryFamily == targetFamily
 }
 
+// NormalizeGeminiThoughtSignature checks for corrupted thought signatures (e.g. double-base64
+// encoding with Q0FR prefix from Vertex/Claude bridges, or oversized signatures > 32KB).
+// If double-base64 or oversized corrupted signatures are detected, it falls back to DefaultThinkingSignature.
+func NormalizeGeminiThoughtSignature(sig string) string {
+	sig = strings.TrimSpace(sig)
+	if sig == "" {
+		return ""
+	}
+	// Check for double-base64 wrapping (e.g. Vertex/Claude export starting with "Q0FR" = base64("CAQS..."))
+	if strings.HasPrefix(sig, "Q0FR") {
+		return DefaultThinkingSignature
+	}
+	// Signatures over 32KB are rejected by Gemini CloudCode as corrupted
+	if len(sig) > 32*1024 {
+		return DefaultThinkingSignature
+	}
+	return sig
+}
+
+// PurgeSessionThoughtSignatures removes all in-memory thought signatures associated with a session.
+func PurgeSessionThoughtSignatures(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	globalThoughtSigStore.mu.Lock()
+	defer globalThoughtSigStore.mu.Unlock()
+	prefix := sessionID + ":"
+	for k := range globalThoughtSigStore.entries {
+		if strings.HasPrefix(k, prefix) {
+			delete(globalThoughtSigStore.entries, k)
+		}
+	}
+}
+
 // l1Expiry is the in-memory deadline for a row read from disk: the memory TTL,
 // which is the tier's own contract, capped by when the row itself expires so a
 // shorter-lived row is never outlived by its copy in memory.
@@ -441,8 +475,10 @@ func GetGeminiThoughtSignature(toolCallID, sessionID string, model ...string) st
 		if !ok || !now.Before(entry.expiresAt) || !isFamilyCompatible(entry.family, targetFamily) {
 			continue
 		}
-		globalThoughtSigStore.mu.RUnlock()
-		return entry.signature
+		if norm := NormalizeGeminiThoughtSignature(entry.signature); norm != "" {
+			globalThoughtSigStore.mu.RUnlock()
+			return norm
+		}
 	}
 	persister := globalThoughtSigStore.persist
 	globalThoughtSigStore.mu.RUnlock()
@@ -463,13 +499,17 @@ func GetGeminiThoughtSignature(toolCallID, sessionID string, model ...string) st
 		if row == nil || !now.Before(row.ExpiresAt) || !isFamilyCompatible(row.Family, targetFamily) {
 			continue
 		}
+		norm := NormalizeGeminiThoughtSignature(row.Signature)
+		if norm == "" {
+			continue
+		}
 
 		globalThoughtSigStore.mu.Lock()
 		if _, exists := globalThoughtSigStore.entries[k]; !exists {
 			globalThoughtSigStore.order = append(globalThoughtSigStore.order, k)
 		}
 		globalThoughtSigStore.entries[k] = signatureEntry{
-			signature: row.Signature,
+			signature: norm,
 			family:    row.Family,
 			expiresAt: l1Expiry(time.Now(), row.ExpiresAt),
 		}
@@ -482,7 +522,7 @@ func GetGeminiThoughtSignature(toolCallID, sessionID string, model ...string) st
 			globalThoughtSigStore.pruneExpiredLocked(time.Now())
 		}
 		globalThoughtSigStore.mu.Unlock()
-		return row.Signature
+		return norm
 	}
 	return ""
 }

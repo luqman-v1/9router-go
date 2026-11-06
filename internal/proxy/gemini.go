@@ -165,6 +165,9 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 					}
 					if resp2, err := client.Do(req2); err == nil {
 						if resp2.StatusCode == http.StatusOK {
+							if sessID := handlerutil.GetSessionID(ctx); sessID != "" {
+								translator.PurgeSessionThoughtSignatures(sessID)
+							}
 							return resp2, nil
 						}
 						errBody2, _ := io.ReadAll(io.LimitReader(resp2.Body, constants.UpstreamErrLimit))
@@ -182,6 +185,9 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 									}
 									if resp3, err := client.Do(req3); err == nil {
 										if resp3.StatusCode == http.StatusOK {
+											if sessID := handlerutil.GetSessionID(ctx); sessID != "" {
+												translator.PurgeSessionThoughtSignatures(sessID)
+											}
 											return resp3, nil
 										}
 										errBody3, _ := io.ReadAll(io.LimitReader(resp3.Body, constants.UpstreamErrLimit))
