@@ -5,9 +5,11 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/proxy"
 )
 
@@ -27,10 +29,121 @@ const copilotMessagesPath = "/v1/messages"
 // instead of being converted to /chat/completions (OpenAI wire format).
 func ForwardGithub(w http.ResponseWriter, req *Request) error {
 	model, ok := githubModel(req)
+	if ok && IsCopilotResponsesModelSlug(model) {
+		return forwardGithubResponses(w, req)
+	}
 	if ok && isClaudeModel(model) {
 		return ForwardGithubClaudeMessages(w, req, model)
 	}
 	return forwardGithubOpenAI(w, req)
+}
+
+// forwardGithubRoutes Copilot GPT-6.x / GPT-5.5+ requests through the Responses
+// endpoint so they hit the Responses-native upstream instead of the Chat
+// Completions bridge.
+func forwardGithubResponses(w http.ResponseWriter, req *Request) error {
+	transformedBody, _, err := buildResponsesBody(req.Body)
+	if err != nil {
+		return fmt.Errorf("forwardGithubResponses build body: %w", err)
+	}
+
+	// Copilot Responses rejects temperature on GPT-5.5+/6.x.
+	var tb map[string]any
+	if err := json.Unmarshal(transformedBody, &tb); err == nil {
+		delete(tb, "temperature")
+		if transformedBody, err = marshalStable(tb); err != nil {
+			return fmt.Errorf("forwardGithubResponses marshal: %w", err)
+		}
+	}
+
+	cfg := *req.Config
+	base := strings.TrimRight(cfg.BaseURL, "/")
+	base = strings.TrimSuffix(base, "/chat/completions")
+	cfg.BaseURL = base + "/responses"
+
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resp, err := proxy.ForwardOpenAI(ctx, req.Client, &cfg, req.APIKey, transformedBody, true)
+	if err != nil {
+		var ue *proxy.UpstreamError
+		if errors.As(err, &ue) {
+			if ue.StatusCode == http.StatusBadRequest {
+				normalizeGithubContextError(ue)
+			}
+			return ue
+		}
+		return fmt.Errorf("forwardGithubResponses upstream: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
+		if rerr != nil {
+			errBody = nil
+		}
+		ue := &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		if resp.StatusCode == http.StatusBadRequest {
+			normalizeGithubContextError(ue)
+		}
+		return ue
+	}
+
+	return handleCodexStream(w, req, resp.Body)
+}
+
+// IsCopilotResponsesModel reports whether a GitHub Copilot model id is served by
+// the Responses-native upstream rather than the Chat Completions bridge:
+// GPT-6.x and GPT-5.5+ (bare gpt-6 / gpt-5 / gpt-5.4 excluded).
+func IsCopilotResponsesModel(provider, model string) bool {
+	if provider != "github" && provider != "ghe-copilot" {
+		return false
+	}
+	model = copilotModelSlug(model)
+	lower := strings.ToLower(strings.TrimSpace(model))
+	if strings.HasPrefix(lower, "gpt-6.") || strings.HasPrefix(lower, "gpt-6-") {
+		return true
+	}
+	if strings.HasPrefix(lower, "gpt-5.") {
+		return copilotGPT5Minor(lower) >= 5
+	}
+	return false
+}
+
+// copilotModelSlug strips an optional provider prefix and any "(level)" thinking
+// suffix from a Copilot model id, leaving the wire id.
+func copilotModelSlug(model string) string {
+	if _, after, ok := strings.Cut(model, "/"); ok {
+		model = after
+	}
+	if idx := strings.IndexByte(model, '('); idx != -1 {
+		model = model[:idx]
+	}
+	return model
+}
+
+// copilotGPT5Minor parses the minor number out of "gpt-5.<minor>..."; returns -1
+// when it cannot be parsed.
+func copilotGPT5Minor(lower string) int {
+	rest := strings.TrimPrefix(lower, "gpt-5.")
+	var n int
+	for i, ch := range rest {
+		if ch < '0' || ch > '9' {
+			if i == 0 {
+				return -1
+			}
+			break
+		}
+		n = n*10 + int(ch-'0')
+	}
+	return n
+}
+
+// IsCopilotResponsesModelSlug is the model-only form of IsCopilotResponsesModel,
+// for ForwardGithub where the provider is already GitHub Copilot.
+func IsCopilotResponsesModelSlug(model string) bool {
+	return IsCopilotResponsesModel("github", model)
 }
 
 // forwardGithubOpenAI is the original GitHub Copilot behaviour: forward through the

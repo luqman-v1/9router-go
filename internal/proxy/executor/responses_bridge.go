@@ -41,6 +41,8 @@ func UpstreamSpeaksResponses(provider, model string, cfg *providers.ProviderConf
 		return true
 	}
 	switch provider {
+	case "github", "ghe-copilot":
+		return IsCopilotResponsesModel(provider, model)
 	case "opencode", "opencode-go":
 		formats, declared := providers.GetModelFormats(provider, model)
 		if !declared {

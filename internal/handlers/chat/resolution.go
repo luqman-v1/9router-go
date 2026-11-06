@@ -564,3 +564,9 @@ func (h *ChatHandler) resolveComboRouting(comboName string, fallbackStrategy str
 
 	return strategy, stickyLimit, ""
 }
+
+// isCopilotResponsesModel reports whether a resolved GitHub Copilot model id is
+// served by the Responses-native upstream (GPT-6.x / GPT-5.5+).
+func isCopilotResponsesModel(provider, model string) bool {
+	return executor.IsCopilotResponsesModel(provider, model)
+}
