@@ -1,5 +1,201 @@
 # Changelog
 
+## [v1.9.16-exp.5] - 2026-11-06
+
+### fix(ci): bump brotli and compress to fix govulncheck (main red on Lint)
+
+- **What:** `github.com/andybalholm/brotli` v1.2.0 → v1.2.7 (GO-2026-6888) and `github.com/klauspost/compress` v1.19.1 → v1.20.2 (GO-2026-6865). Both are indirect via `fhttp`/`tls-client`.
+- **Why:** Run 42128288528 on main (935e2b2, headroom autostart #925) failed Lint on govulncheck: both vulns are reachable (`StallReader.Read` via fhttp, jailbreak preset upload). Newer main pushes are still in flight; this clears the gate for all open PRs.
+- **How verified:** `govulncheck -show verbose ./...` — "No vulnerabilities found" on symbol results (remaining 3 findings are in import-only packages, not called); `go vet ./...`, cross-compile all 5 targets, `go test ./internal/proxy/...` all ok, `golangci-lint run --new-from-rev` 0 issues.
+
+### fix(antigravity): bump agy CLI fingerprint to 1.5.1 (cl=1014269460)
+
+Bumps the standalone agy CLI identity from 1.4.0/cl=1000494485 to 1.5.1/cl=1014269460 in `internal/providers/client_identity.go`. Version and cl captured from a live agy 1.5.1 client (release day 2026-11-05, published in iamxeph/pi-provider-antigravity#108); `cl` comes from runtime config rather than a binary constant, so each future bump needs a fresh live capture (documented in code). `os_type/arch` stay pinned to windows/amd64 so every pooled account presents one identical fingerprint.
+
+Verified: `go build ./...` and `go vet ./internal/providers/` clean; `go test ./internal/providers/` passes; chat package builds.
+
+### fix(commandcode): advertise and enforce the real 200000 max_tokens cap
+
+`/v1/models` advertised `maxOutput: 384000` for every `cmc/*` model (ported from upstream `capabilities.js`), but the live `/alpha/generate` endpoint validates `params.max_tokens <= 200000` and rejects larger budgets with `400 Too big: expected number to be <=200000` (upstream decolua/9router#5268). Clients that trust the advertised cap (pi agent, etc.) sent 384000 and hard-failed; a client sending 200000 worked. The requested model `cmc/deepseek/deepseek-v4-flash` hit this on 2026-11-05.
+
+- `commandCodeMaxOutput` lowered to 200000 in `internal/providers/capabilities_commandcode.go`, so `/v1/models` and the dashboard caps advertise the enforced cap. Context window stays 1M (prompt-side validation is separate and not capped at 200000).
+- `commandcodeMaxTokens` now clamps a resolved client budget above 200000 down to 200000 instead of forwarding it verbatim (`internal/proxy/executor/commandcode_request.go`), so a stale client still cached at 384000 succeeds instead of 400ing. Budgets at or under the cap, the 1024 default, and null handling are unchanged.
+
+Verified: `TestCommandcodeMaxTokensResolution` adds clamped/exact-cap cases (fail pre-fix); `TestGetCapabilitiesDetailForModel_CommandCode` and `TestHandleGetModelCaps_CommandCode` updated to 200000; `go test ./internal/proxy/executor/ ./internal/providers/` green; dashboard caps test green in isolation (2 pre-existing unrelated failures in the package: allowPrivateNetworking persistence).
+
+### copilot: route GPT-6.x / GPT-5.5+ through the Responses endpoint (#960)
+
+GitHub Copilot's GPT-6.x and GPT-5.5+ models are served by the Responses-native
+upstream, so requests for them now hit `/responses` instead of the Chat
+Completions bridge:
+
+- `executor.IsCopilotResponsesModel(provider, model)` matches `github`/`ghe-copilot`
+  provider with `gpt-6.*`, `gpt-6-*`, or `gpt-5.<minor>=5+` (bare `gpt-6`/`gpt-5`/
+  `gpt-5.4` excluded; optional provider prefix and `(level)` suffix stripped).
+- `ForwardGithub` routes matching Copilot models to the new `forwardGithubResponses`,
+  which converts the body via `buildResponsesBody`, strips `temperature`, rewrites
+  the base URL to `/responses`, forwards with `stream: true`, normalizes a 400
+  context overflow to `context_length_exceeded`, and delegates to `handleCodexStream`.
+- `UpstreamSpeaksResponses` gains a `github`/`ghe-copilot` case so `/v1/responses`
+  clients targeting these models are recognized as Responses-native (no Chat bridge).
+- The chat handler's thinking-dialect selection adds `openai-responses` for Copilot
+  Responses models; `ctx` stays Chat-client format so `/v1/chat/completions` clients
+  get Responses→Chat translation while `/v1/responses` clients keep their native wire.
+
+Deliberate upstream divergence: this port uses a static prefix/minor list rather than
+upstream's reactive 400 fallback, and explicitly excludes bare `gpt-6` (which upstream
+treats as codex-only).
+
+### feat(copilot): route Claude models through Copilot native /v1/messages
+
+- Route Claude models on GitHub Copilot (`github`, `gh`) directly through `https://api.githubcopilot.com/v1/messages` using Claude Messages format.
+- Normalize non-Claude models through the standard OpenAI-compatible path.
+- Add unit tests in `internal/proxy/executor/github_claude_messages_test.go`.
+- Upstream parity with `decolua/9router v0.5.35`.
+
+### Token saver bypass via `X-9Router-Token-Saver`
+
+A request carrying `X-9Router-Token-Saver: off|0|false|bypass` (case-insensitive)
+opts out of every token saver — RTK compression, Caveman, Ponytail, ADHD,
+Headroom, and system prompt prefix/suffix — and the body is forwarded untouched
+with 0 tokens saved.
+
+The bypass is honored on all three chat entry points: `/v1/chat/completions`,
+`/v1/messages`, and `/v1/responses` (including `/v1/responses/compact`), each
+setting the flag on the request context before any saver runs.
+
+### fix(volcengine-ark): clamp GLM-5 output budget to model capability ceiling
+
+- `internal/proxy/executor/openai.go`: `ForwardOpenAI` now folds a GLM-5 output
+  budget down to the model's declared maxOutput capability (capped at Volcengine
+  Ark's 4096 output-token ceiling) before dispatch, matching upstream
+  decolua/9router#2428 (commit bbae990b). All three output-budget spellings are
+  clamped: `max_tokens`, `max_completion_tokens` and `max_output_tokens`. A
+  budget at or below the ceiling, a request that sets no budget, and every
+  non-GLM-5 model are left byte-identical. Ark answers HTTP 400 for a GLM-5
+  request asking for more than its ceiling, so this prevents the failure before
+  it reaches upstream.
+- Model match is case-insensitive substring `/glm-5/i`
+  (`strings.Contains(strings.ToLower(model), "glm-5")`): covers bare `glm-5*`,
+  `GLM-5.1`, `GLM-5.2`, `glm-5-turbo`, `zai-org/GLM-5.2`, and any id containing
+  `glm-5`, not just `^glm-5` or `^doubao.*glm-5`.
+- The model maxOutput ceiling is read from the model capability registry
+  (`providers.GetCapabilitiesForModel`) when available and the body clamps to
+  `min(maxOutput, maxOutputCap)` (further bounded by Ark's 4096), rather than a
+  hardcoded 4096.
+- Unit tests in `internal/proxy/executor/openai_volcengine_ark_glm5_clamp_test.go`
+  cover clamping on all three fields, preservation at/below the ceiling,
+  case-insensitive variant matching (`zai-org/GLM-5.2`, `GLM-5.1`, `glm-5-turbo`,
+  `doubao-glm-5-256k`), non-GLM-5 models untouched, and clamping to a lower
+  registered `maxOutput`.
+
+### feat(minimax-code): default X-Mavis-Agent-Id to "main"
+
+- In `internal/proxy/executor/minimax_code.go`, `minimaxCodeHeaders` now always sets `X-Mavis-Agent-Id: main` in the default outbound headers, so requests to the MiniMax Code / mavis gateway carry the agent id even when the connection config defines none in `StaticHeaders`.
+- Unit tests in `internal/proxy/executor/minimax_code_test.go` assert `X-Mavis-Agent-Id` defaults to `main`.
+
+### Fixes
+
+- **oauth**: Quarantine dead Codex/OpenAI OAuth grants instead of retrying them in a loop. A terminal refresh rejection (401 `invalid_grant`, 400 `invalid_grant`/`refresh_token_reused`) now stamps the connection `testStatus: reauth_required`, parks it behind the OAuth cooldown so routing skips it, and releases both once a re-login refreshes the token again.
+
+### feat(headroom): add autostart option to launch Headroom proxy when 9router boots
+- **Autostart Support**:
+  - Add `HeadroomAutostart` setting in `internal/db/settings.go` and `internal/db/settings_parse.go`.
+  - Automatically boot local loopback Headroom proxy in `startHeadroomOnBoot` inside `internal/app/server.go` during 9router-go startup when enabled (spawned detached, decoupled from `HeadroomEnabled`).
+  - Expose **Autostart with 9router** toggle under Headroom's **Configure** section and inside the Headroom Setup/Manage modal in `web/src/components/TokenSaverView.svelte` (gated on Headroom installation).
+  - Add test coverage in `internal/db/settings_test.go`.
+  - Add retry polling wait in `internal/integration/bootfx/boot_test.go` to stabilize async usage history flush during shutdown.
+
+### feat(media): forward Cloudflare FLUX.2 reference image as input_image_0
+
+- Detect Cloudflare Workers AI FLUX.2 models (`@cf/black-forest-labs/flux-2-dev`, `flux-2-klein-4b`, `flux-2-klein-9b`).
+- Forward reference images as binary `input_image_0` in multipart form-data to `<baseURL>/ai/v1/run/<model>`.
+- Support `data:` URI, `http(s)` URLs, and base64 payloads with SSRF protection.
+- Wire into both direct and combo media dispatch loops.
+- Upstream parity with `decolua/9router#5350`.
+
+### fix(executor): drop Claude Code identity system block on Anthropic API requests
+
+- In `ensureMessagesFor`, when provider is `anthropic`, drop leading system
+  blocks matching Claude Code identity, Agent SDK, or billing-header text,
+  so they are not forwarded to the raw Anthropic Messages API.
+- Adds `anthropic_identity_test.go` covering string and array system shapes
+  and the provider-gated behavior.
+
+### Publish the Go coverage profile, and gate against a baseline
+
+ROADMAP §4 asked for two things the suite produced neither of: a coverage
+profile CI publishes, and a non-regression rule. The `coverage` job now runs
+`go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...`, uploads
+the profile as an artifact, and fails when `scripts/coverage-gate.sh` reports a
+total below `.github/coverage-baseline.txt`.
+
+Two decisions worth stating, because both are the kind that look right and are
+not:
+
+- **The gate is a single total, not a per-package floor.** A per-package floor
+  sounds stricter but is the opposite: it pins every package's number, so any
+  refactor that legitimately moves logic between two files fails the gate, and
+  the only way to keep it green is to keep widening the baseline — which is
+  exactly the "silently lowering or ignoring the result" the roadmap warns
+  against. The total tracks the property a reviewer actually cares about (is
+  the suite still covering the code?) while leaving the distribution free to
+  move. A deliberate reduction is a one-line edit to the baseline file plus a
+  reason in the PR body.
+- **The gate runs on the un-raced suite.** `-race` instruments every allocation,
+  which is orthogonal to which statements execute, so pairing the two would
+  double the job's runtime to produce the same total. The profile uses
+  `-covermode=atomic` regardless, because the default `set` mode is undefined
+  under concurrent execution and several packages run tests in parallel — which
+  would otherwise make the total vary between runs for no reason.
+
+The baseline is 68.8%. The number that matters is the one the CI runner
+produces, not the one a developer's workstation produces: the same suite
+measures 69.0% on Windows and 68.9% on the Linux runner, so the baseline is set
+from the Linux figure with 0.1 of margin below it, which is what the gate was
+designed to carry. Measured on `main` at `d1f046ed` — the base this PR was
+rebased onto, not this branch, which carried the #901 changes #902 was stacked
+on.
+
+The baseline is validated as exactly one decimal number, not merely as
+"contains digits": `tr -dc '0-9.'` also accepts a file holding two numbers
+(`68.0\n69.0` collapses to `68.069.0`) or a malformed one (`8.8.1`), and awk's
+`+0` then reads the leading prefix, so the gate fails against a number nobody
+wrote. Anything not matching `^[0-9]+(\.[0-9]+)?$` is rejected with the file's
+content named in the error, so a typo is diagnosable without reading the script.
+
+### Verified
+
+- `go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...` — suite
+  passes. The total is platform-dependent: `go tool cover -func` reports 69.0%
+  on Windows and the CI runner reports 68.9% on Linux. The baseline is set from
+  the Linux figure, since that is the environment the gate runs in.
+- `scripts/coverage-gate.sh coverage.out` run against the real profile: 69.0%
+  vs baseline 68.8% passes; a baseline above the measured total exits 1 with
+  the regressed message. Confirmed in CI, where the Linux total of 68.9% also
+  clears the baseline.
+- Baseline validation negative controls: `68.0\n69.0` and `8.8.1` — both
+  accepted by the previous `tr -dc '0-9.'` — are now rejected; `68` and `68.5`
+  are still accepted.
+- `go vet ./...` clean; `go build ./...` clean.
+- `coverage.out` is covered by the existing `*.out` gitignore rule, so the
+  profile never enters the tree.
+- ROADMAP §4 and TECHNICAL_DEBT CI-01 updated to record what is now in place
+  rather than leaving the register overstating open work.
+
+---
+"9router-go": minor
+---
+
+feat(clitools): add visual model and client configuration editor to dashboard
+
+- Support reading and writing model, tier overrides (Sonnet, Opus, Haiku, Fable), and autoCompactWindow in clientconfig adapters
+- Add CurrentConfigReader interface and implement current configuration reader for Claude Code and OpenAI Codex
+- Support AutoCompactWindow parameter in POST /api/cli-tools/{tool}-settings
+- Return currentConfig in GET /api/cli-tools/{tool}-settings
+- Add CliToolConfigForm component with model autocomplete, API key selection, base URL, Claude tier overrides, and auto-compact threshold controls
+- Support direct Save/Apply and Reset/Disconnect from dashboard UI
+
 ## [v1.9.16-exp.4] - 2026-11-05
 
 ### fix(errorclassify): do not cool down accounts for generic 400 improperly formed requests
