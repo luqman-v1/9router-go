@@ -750,6 +750,28 @@ func TestWrapForAntigravity_CapAndRequestID(t *testing.T) {
 	}
 }
 
+func TestWrapForAntigravity_SessionScopesRequestID(t *testing.T) {
+	geminiBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+	wrapped1, err1 := translator.WrapForAntigravity(geminiBody, "aicode-consumers", "gemini-3.8-flash", "sess-1")
+	wrapped2, err2 := translator.WrapForAntigravity(geminiBody, "aicode-consumers", "gemini-3.8-flash", "sess-2")
+	if err1 != nil || err2 != nil {
+		t.Fatalf("WrapForAntigravity failed: %v / %v", err1, err2)
+	}
+
+	var req1, req2 translator.AntigravityRequest
+	_ = json.Unmarshal(wrapped1, &req1)
+	_ = json.Unmarshal(wrapped2, &req2)
+
+	parts1 := strings.Split(req1.RequestID, "/")
+	parts2 := strings.Split(req2.RequestID, "/")
+	if len(parts1) < 5 || len(parts2) < 5 {
+		t.Fatalf("invalid request ID format: %s vs %s", req1.RequestID, req2.RequestID)
+	}
+	if parts1[1] == parts2[1] {
+		t.Errorf("distinct sessions produced identical conversationID: %s", parts1[1])
+	}
+}
+
 func TestWrapForAntigravity_StripsThinkingFields(t *testing.T) {
 	geminiBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"thinking":{"type":"enabled"},"reasoning_effort":"high","output_config":{},"enable_thinking":true}`)
 	wrapped, err := translator.WrapForAntigravity(geminiBody, "proj-1", "gemini-3-flash")

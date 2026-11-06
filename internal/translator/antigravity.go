@@ -829,7 +829,8 @@ func fixAntigravityContents(req *GeminiRequest, model string) bool {
 }
 
 // WrapForAntigravity wraps a standard Gemini request in Antigravity API envelope.
-func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte, error) {
+// sessionID scopes conversation and trajectory UUIDs per connection or client session.
+func WrapForAntigravity(geminiBody []byte, projectID, modelName string, sessionID ...string) ([]byte, error) {
 	// The wire id is the registry's upstreamModelId with 9router's own effort
 	// notation stripped, not the bare synonym the lock and quota paths share.
 	// proxy.ForwardGemini normalises the model before calling this, so the
@@ -853,6 +854,11 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 	}
 	geminiBody = hardenAntigravityRequest(geminiBody)
 
+	sess := projectID
+	if len(sessionID) > 0 && sessionID[0] != "" {
+		sess = sessionID[0]
+	}
+
 	wrapper := AntigravityRequest{
 		Project:   projectID,
 		Model:     modelName,
@@ -860,7 +866,7 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 		// Omit RequestType (was "agent"): parity with decolua/9router#3986.
 		// Google rejects agent-bucketed requests with false 429s; requestId
 		// keeps its existing agent/<...>/<...>/<...>/<step> shape.
-		RequestID: antigravityBuildRequestID(projectID, modelName, "agent", contentCount),
+		RequestID: antigravityBuildRequestID(sess, modelName, "agent", contentCount),
 		Request:   geminiBody,
 	}
 	out, err := json.Marshal(wrapper, json.Deterministic(true))

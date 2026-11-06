@@ -3,6 +3,7 @@ package chat
 import (
 	json "9router/proxy/internal/fastjson"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
 	"bytes"
 	"context"
@@ -312,8 +313,9 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "antigravity/1.0.0")
+	req.Header.Set("User-Agent", providers.AntigravityCLIUserAgent)
 	req.Header.Set("X-Client-Name", "antigravity")
+	req.Header.Set("X-Client-Version", providers.AntigravityCLIVersion)
 
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
@@ -703,9 +705,9 @@ func FetchAntigravityWeeklyQuota(ctx context.Context, client *http.Client, acces
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "antigravity/1.0.0")
+	req.Header.Set("User-Agent", providers.AntigravityCLIUserAgent)
 	req.Header.Set("X-Client-Name", "antigravity")
-	req.Header.Set("X-Client-Version", "0.1.0")
+	req.Header.Set("X-Client-Version", providers.AntigravityCLIVersion)
 
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
