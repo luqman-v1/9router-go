@@ -418,6 +418,22 @@ func TestNewProvidersRegistry_v061(t *testing.T) {
 	}
 }
 
+func TestAlicodeIntl_BaseURL_CompatibleMode(t *testing.T) {
+	cfg := KnownProviders["alicode-intl"]
+	if cfg.BaseURL == "" {
+		t.Fatal("alicode-intl missing BaseURL")
+	}
+	if cfg.BaseURL != "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions" {
+		t.Errorf("alicode-intl BaseURL = %q, want compatible-mode URL", cfg.BaseURL)
+	}
+	if cfg.AuthScheme != "bearer" || cfg.AuthHeader != "Authorization" {
+		t.Errorf("alicode-intl expected bearer/Authorization, got %s/%s", cfg.AuthScheme, cfg.AuthHeader)
+	}
+	if !cfg.PreserveCacheControl {
+		t.Error("alicode-intl expected PreserveCacheControl=true")
+	}
+}
+
 func TestNewProvidersRegistry_v062(t *testing.T) {
 	// Gemini 3.8 Flash TTS and 3.8 Flash Lite TTS models must be registered under
 	// the gemini provider catalog and carry the tts service kind.

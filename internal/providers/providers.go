@@ -744,7 +744,8 @@ var KnownProviders = map[string]ProviderConfig{
 		// Coding Plan keys live on the coding-intl host; dashscope-intl is the
 		// Model Studio (alims-intl) host and rejects them
 		// (upstream registry/alicode-intl.js:17).
-		BaseURL:              "https://coding-intl.dashscope.aliyuncs.com/v1/chat/completions",
+		// Compatible mode serves the same keys on the dashscope-intl host.
+		BaseURL:              "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
 		AuthHeader:           "Authorization",
 		AuthScheme:           "bearer",
 		PreserveCacheControl: true,
