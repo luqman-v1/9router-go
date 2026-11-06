@@ -645,3 +645,29 @@ func TestResolveModel_WebComboBareProviderNames(t *testing.T) {
 		}
 	}
 }
+
+func TestIsCopilotResponsesModel(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"gpt-6.1-terra", true},
+		{"gpt-6-terra", true},
+		{"gpt-5.5", true},
+		{"gpt-5.6-sol", true},
+		{"github/gpt-6.1-terra", true},
+		{"gpt-6.1-terra(high)", true},
+		{"gpt-5", false},
+		{"gpt-6", false},
+		{"gpt-5.4", false},
+		{"gpt-4o", false},
+		{"claude-sonnet-4-5", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		got := isCopilotResponsesModel("github", tc.model)
+		if got != tc.want {
+			t.Errorf("isCopilotResponsesModel(github, %q) = %v, want %v", tc.model, got, tc.want)
+		}
+	}
+}

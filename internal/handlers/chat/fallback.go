@@ -838,6 +838,8 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		switch {
 		case executor.UpstreamSpeaksResponses(provider, wireModel, providerCfg):
 			target = "openai-responses"
+		case executor.IsCopilotResponsesModel(provider, wireModel):
+			target = "openai-responses"
 		case isAnthropic || upstreamClaude:
 			// A provider whose own endpoint speaks the Messages format
 			// (minimax-code on the mavis gateway) gets the Claude wire: its
