@@ -977,7 +977,7 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 						log.Warn("combo", "custom JSON attempt failed, not replaying", "provider", modelInfo.Provider, "conn", connID)
 						lastErr = customJSONTerminalError(fwdErr)
 						noReplay = true
-					break
+						break
 					}
 					if attempt, refused := providerLimitRefusal(fwdErr); refused {
 						// A provider at its own capacity is neither an account
@@ -1397,7 +1397,7 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 						log.Warn("combo", "custom JSON attempt failed, not replaying", "provider", modelInfo.Provider, "conn", connID)
 						lastErr = customJSONTerminalError(fwdErr)
 						noReplay = true
-					break
+						break
 					}
 					if attempt, refused := providerLimitRefusal(fwdErr); refused {
 						// Same contract as the OpenAI loop: the endpoint is busy,

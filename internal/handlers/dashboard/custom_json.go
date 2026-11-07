@@ -20,20 +20,6 @@ import (
 // test does (upstream decolua/9router#4929).
 const customJSONProbePrompt = "ping"
 
-// nodeCustomJSON validates the custom JSON configuration a create or update
-// carries. It returns nil for every node that is not a custom JSON one, which
-// is how switching a node back to Chat Completions drops its template.
-func nodeCustomJSON(nodeType, apiType string, raw jsontext.Value, endpoint string) (jsontext.Value, error) {
-	if nodeType != "openai-compatible" || apiType != customjson.APIType {
-		return nil, nil
-	}
-	cfg, err := customjson.Normalize(raw, endpoint)
-	if err != nil {
-		return nil, err
-	}
-	return cfg.Marshal(), nil
-}
-
 // storedCustomJSON is the configuration a node row reports, or nil when the
 // node is not a custom JSON one (a stale template left in the blob of a node
 // switched away from custom JSON is never surfaced).
@@ -42,22 +28,6 @@ func storedCustomJSON(apiType string, raw jsontext.Value) jsontext.Value {
 		return nil
 	}
 	return raw
-}
-
-// nodeDataBlob is the providerNodes.data JSON for a compatible node.
-func nodeDataBlob(prefix, apiType, baseURL string, customJSON jsontext.Value) map[string]any {
-	data := map[string]any{"prefix": prefix, "apiType": apiType, "baseUrl": baseURL}
-	if len(customJSON) > 0 {
-		data["customJson"] = customJSON
-	}
-	return data
-}
-
-// nodeSync is what an edited node pushes into each attached connection's
-// providerSpecificData.
-type nodeSync struct {
-	prefix, apiType, nodeType, baseURL, nodeName string
-	customJSON                                   jsontext.Value
 }
 
 // setConnCustomJSON copies a node's configuration into a connection's
@@ -163,20 +133,4 @@ func validateCustomJSONConnection(ctx context.Context, nodeData *db.ProviderNode
 	out := probeCustomJSON(ctx, nil, baseURL, nodeData.CustomJSON, apiKey, modelID)
 	out["supported"] = true
 	return out
-}
-
-// probeCustomJSONConnection is the connection test for a custom JSON node,
-// sent through the connection's own (possibly proxied) client.
-func probeCustomJSONConnection(ctx context.Context, data connectionProbeData, client *http.Client) probeOutcome {
-	psd := data.ProviderSpecificData
-	raw, err := json.Marshal(psd["customJson"])
-	if err != nil {
-		return probeOutcome{message: "Invalid custom JSON configuration"}
-	}
-	out := probeCustomJSON(ctx, client, psdStr(psd, "baseUrl"), raw, data.APIKey, data.DefaultModel)
-	if valid, _ := out["valid"].(bool); valid {
-		return probeOutcome{valid: true}
-	}
-	msg, _ := out["error"].(string)
-	return probeOutcome{message: msg}
 }

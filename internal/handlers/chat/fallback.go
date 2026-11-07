@@ -261,12 +261,12 @@ func (h *ChatHandler) handleAccountFallback(
 			excludeIDs = append(excludeIDs, connObj.ID)
 			continue
 		}
-				// A custom JSON business endpoint may already have performed its
-				// operation when it failed, so the answer is final: no other account
-				// is tried and this one is not cooled down over a business error.
-				if isCustomJSONConn(connData) {
-					return lastErr
-			}
+		// A custom JSON business endpoint may already have performed its
+		// operation when it failed, so the answer is final: no other account
+		// is tried and this one is not cooled down over a business error.
+		if isCustomJSONConn(connData) {
+			return lastErr
+		}
 
 		var ue *upstreamError
 		if errors.As(lastErr, &ue) && providers.IsModelDeprecation(ue.StatusCode, ue.Body) {

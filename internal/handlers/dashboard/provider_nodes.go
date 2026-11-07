@@ -231,9 +231,9 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 	}
 
 	dataBytes, _ := json.Marshal(map[string]any{
-		"prefix":    req.Prefix,
-		"apiType":   apiType,
-		"baseUrl":   req.BaseURL,
+		"prefix":     req.Prefix,
+		"apiType":    apiType,
+		"baseUrl":    req.BaseURL,
 		"customJson": customJSON,
 	})
 
@@ -385,9 +385,9 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 	}
 
 	dataBytes, _ := json.Marshal(map[string]any{
-		"prefix":    prefix,
-		"apiType":   apiType,
-		"baseUrl":   baseURL,
+		"prefix":     prefix,
+		"apiType":    apiType,
+		"baseUrl":    baseURL,
 		"customJson": customJSON,
 	})
 	updated, err := h.Repo.UpdateProviderNode(renamedID, name, string(dataBytes))
