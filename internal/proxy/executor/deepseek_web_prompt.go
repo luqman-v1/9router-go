@@ -266,13 +266,13 @@ type deepSeekRequestEnvelope struct {
 	// Tools are carried only so the executor can tell a tool-calling request
 	// from an ordinary one; they never reach the upstream as a parameter,
 	// because this endpoint has no field for them.
-	Tools           []deepSeekToolSpec `json:"tools"`
-	ThinkingEnabled bool               `json:"thinking_enabled"`
+	Tools           []deepSeekToolSpec   `json:"tools"`
+	ThinkingEnabled bool                 `json:"thinking_enabled"`
 	Thinking        deepSeekThinkingFlag `json:"thinking"`
-	ReasoningEffort string             `json:"reasoning_effort"`
-	SearchEnabled   bool               `json:"search_enabled"`
-	Search          bool               `json:"search"`
-	WebSearch       bool               `json:"web_search"`
+	ReasoningEffort string               `json:"reasoning_effort"`
+	SearchEnabled   bool                 `json:"search_enabled"`
+	Search          bool                 `json:"search"`
+	WebSearch       bool                 `json:"web_search"`
 }
 
 // deepSeekThinkingFlag accepts both encodings of the `thinking` request

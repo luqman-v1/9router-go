@@ -10,9 +10,9 @@ import (
 // plain bool. Both must parse; only "disabled" (or false) turns thinking off.
 func TestDeepSeekRequestEnvelopeThinkingShapes(t *testing.T) {
 	tests := []struct {
-		name    string
+		name     string
 		thinking string
-		want    bool
+		want     bool
 	}{
 		{name: "absent", thinking: "", want: false},
 		{name: "bool true", thinking: `"thinking":true,`, want: true},
