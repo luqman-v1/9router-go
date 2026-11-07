@@ -1,5 +1,0 @@
-### 🐛 Groq gpt-oss JSON mode no longer fails with `json_validate_failed`
-
-- Groq answered `400 {"code":"json_validate_failed","message":"Failed to validate JSON. Please adjust your prompt."}` for `openai/gpt-oss-20b` (and `gpt-oss-120b`) whenever a client asked for a structured output (`response_format: json_object|json_schema`) without a parsed reasoning stream. The model's Harmony analysis channel leaked into the content and broke strict JSON validation upstream (`failed_generation` empty).
-- Fix: `ForwardOpenAI` now pins `reasoning_format: "parsed"` for Groq gpt-oss requests that carry a JSON `response_format`, moving the chain-of-thought into `message.reasoning` and leaving the content clean JSON. A client-supplied `reasoning_format` is respected; non-gpt-oss Groq models and `text` response formats are untouched.
-- Verified: `go test ./internal/proxy/executor/ -run 'TestNormalizeGroqGPTOSSRequest|TestIsGroqGPTOSSModel' -v` — new `groq_gpt_oss_test.go` covers both model ids, client override, and negative cases.
