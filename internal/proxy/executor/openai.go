@@ -200,6 +200,14 @@ func DowngradeJsonSchemaToJSONObject(body []byte) []byte {
 // "parsed" moves the chain-of-thought into message.reasoning and leaves the
 // JSON payload clean. A client-supplied reasoning_format is respected.
 // Non-gpt-oss Groq models and non-JSON requests are left byte-identical.
+//
+// It also clamps reasoning_effort to Groq's enum for gpt-oss
+// (low|medium|high, probed live 2026-11-07: minimal/xhigh/auto/none/max all
+// answer 400). Out-of-range levels coming from the unified thinking pass
+// (the capability table advertises minimal..xhigh for gpt-oss) are folded to
+// the nearest valid level by rank; a valid level or an absent effort is
+// left untouched. This clamp runs on every gpt-oss request, not only JSON
+// ones, because the 400 is unrelated to response_format.
 func normalizeGroqGPTOSSRequest(body []byte) []byte {
 	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {
@@ -209,26 +217,54 @@ func normalizeGroqGPTOSSRequest(body []byte) []byte {
 	if !isGroqGPTOSSModel(model) {
 		return body
 	}
-	rf, ok := m["response_format"]
-	if !ok {
+	changed := false
+	if clamped, ok := clampGroqReasoningEffort(m["reasoning_effort"]); ok {
+		m["reasoning_effort"] = clamped
+		changed = true
+	}
+	if rf, ok := m["response_format"]; ok {
+		if rfMap, ok := rf.(map[string]any); ok {
+			if rfType, _ := rfMap["type"].(string); rfType == "json_object" || rfType == "json_schema" {
+				if _, exists := m["reasoning_format"]; !exists {
+					m["reasoning_format"] = "parsed"
+					changed = true
+				}
+			}
+		}
+	}
+	if !changed {
 		return body
 	}
-	rfMap, ok := rf.(map[string]any)
-	if !ok {
-		return body
-	}
-	rfType, _ := rfMap["type"].(string)
-	if rfType != "json_object" && rfType != "json_schema" {
-		return body
-	}
-	if _, exists := m["reasoning_format"]; exists {
-		return body
-	}
-	m["reasoning_format"] = "parsed"
 	if out, err := marshalStable(m); err == nil {
 		return out
 	}
 	return body
+}
+
+// clampGroqReasoningEffort folds a reasoning_effort outside Groq's
+// gpt-oss enum (low|medium|high) to the nearest valid level by rank.
+// Ranking follows the unified effort vocabulary (none < minimal < low <
+// medium < high < xhigh < max): anything at or below low becomes low,
+// anything at or above high becomes high, anything else (auto, unknown,
+// non-string) becomes medium. (clamped, true) when the wire value must
+// change; a valid level or an absent effort returns ("", false).
+func clampGroqReasoningEffort(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok {
+		if v == nil {
+			return "", false
+		}
+		return "medium", true
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "low", "medium", "high":
+		return "", false
+	case "", "none", "minimal", "default":
+		return "low", true
+	case "xhigh", "max", "ultra":
+		return "high", true
+	}
+	return "medium", true
 }
 
 // isGroqGPTOSSModel reports whether a Groq wire model id is a gpt-oss

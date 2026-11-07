@@ -98,3 +98,75 @@ func TestIsGroqGPTOSSModel(t *testing.T) {
 		})
 	}
 }
+
+func TestClampGroqReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"valid low kept", "low", ""},
+		{"valid medium kept", "medium", ""},
+		{"valid high kept", "high", ""},
+		{"minimal folds to low", "minimal", "low"},
+		{"none folds to low", "none", "low"},
+		{"xhigh folds to high", "xhigh", "high"},
+		{"max folds to high", "max", "high"},
+		{"unknown folds to medium", "bogus", "medium"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, changed := clampGroqReasoningEffort(tt.input)
+			if tt.want == "" {
+				if changed {
+					t.Errorf("clampGroqReasoningEffort(%q) changed, want untouched", tt.input)
+				}
+				return
+			}
+			if !changed || got != tt.want {
+				t.Errorf("clampGroqReasoningEffort(%q) = (%q, %v), want (%q, true)", tt.input, got, changed, tt.want)
+			}
+		})
+	}
+	t.Run("absent effort untouched", func(t *testing.T) {
+		if got, changed := clampGroqReasoningEffort(nil); changed || got != "" {
+			t.Errorf("clampGroqReasoningEffort(nil) = (%q, %v), want (\"\", false)", got, changed)
+		}
+	})
+}
+
+func TestNormalizeGroqGPTOSSRequest_EffortClamp(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantEff  string
+		wantRsnF bool
+	}{
+		{"minimal without response_format clamps (non-JSON 400)", `{"model":"openai/gpt-oss-120b","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"minimal"}`, "low", false},
+		{"xhigh without response_format clamps", `{"model":"openai/gpt-oss-20b","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"xhigh"}`, "high", false},
+		{"valid effort preserved", `{"model":"openai/gpt-oss-20b","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"medium"}`, "medium", false},
+		{"no effort field stays absent", `{"model":"openai/gpt-oss-20b","messages":[{"role":"user","content":"hi"}]}`, "", false},
+		{"clamp plus parsed compose", `{"model":"openai/gpt-oss-120b","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"minimal","response_format":{"type":"json_object"}}`, "low", true},
+		{"non-gpt-oss untouched", `{"model":"llama-3.3-70b-versatile","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"minimal"}`, "minimal", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := normalizeGroqGPTOSSRequest([]byte(tt.body))
+			var m map[string]any
+			if err := json.Unmarshal(out, &m); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got := ""
+			if v, ok := m["reasoning_effort"]; ok {
+				got, _ = v.(string)
+			}
+			if got != tt.wantEff {
+				t.Errorf("reasoning_effort = %q, want %q: %s", got, tt.wantEff, out)
+			}
+			_, hasRF := m["reasoning_format"]
+			if hasRF != tt.wantRsnF {
+				t.Errorf("reasoning_format present = %v, want %v: %s", hasRF, tt.wantRsnF, out)
+			}
+		})
+	}
+}
