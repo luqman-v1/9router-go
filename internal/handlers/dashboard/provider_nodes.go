@@ -693,23 +693,28 @@ func isValidHTTPURL(v string) bool {
 }
 
 // loopbackRequestHosts are hosts considered local callers (upstream LOOPBACK_HOSTS).
+//
+// The set is only consulted when r.RemoteAddr did not parse as an IP: net/http
+// always writes "host:port" there, so this is the malformed-address fallback.
+// It is not a second, header-based locality test — the Host header is
+// client-controlled and must never decide whether a caller is local.
 var loopbackRequestHosts = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
 
-// nodeRequestIsLocal mirrors dashboardGuard.isLocalRequest: loopback peers may
-// reference self-hosted provider nodes, so the SSRF guard is skipped for them.
+// nodeRequestIsLocal reports whether the peer on the TCP connection is on a
+// loopback address (127.0.0.1 or ::1). It inspects r.RemoteAddr only;
+// client-supplied Host headers must never be trusted to determine locality,
+// because "Host: localhost" from a remote socket is trivial to send and would
+// otherwise disable every guard this function backs.
 func nodeRequestIsLocal(r *http.Request) bool {
-	host := strings.ToLower(r.Host)
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = strings.Trim(h, "[]")
-	}
-	if loopbackRequestHosts[host] {
-		return true
-	}
 	remote, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return loopbackRequestHosts[strings.Trim(strings.ToLower(remote), "[]")]
+	if err != nil {
+		remote = r.RemoteAddr
 	}
-	return false
+	remote = strings.Trim(strings.ToLower(remote), "[]")
+	if ip := net.ParseIP(remote); ip != nil {
+		return ip.IsLoopback()
+	}
+	return loopbackRequestHosts[remote]
 }
 
 // validateNodeNetworkMessage maps an outbound probe error to a user-friendly
