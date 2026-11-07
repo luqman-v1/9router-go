@@ -101,9 +101,11 @@ func NewHeadroomClient(baseURL string, apiKey string, httpClient *http.Client) *
 
 // Compress performs in-flight request compression.
 //
-// The built-in engine runs when no external proxy is configured; otherwise the
-// external proxy is tried first and the built-in engine is the fallback, so an
-// install that is present but stopped still compresses.
+// The engine is exclusive, not a fallback chain: the built-in engine runs when
+// it is selected, and the external proxy runs when it is selected. Which one
+// applies is decided once from the engine setting, so an operator who picked
+// the external proxy gets exactly that proxy and an operator who picked the
+// built-in engine never posts to a URL that may not exist.
 //
 // Either way the result passes the same guards: structural integrity (message
 // count, role order, tool call IDs, function signatures, thinking blocks,

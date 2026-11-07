@@ -75,6 +75,26 @@ compression runs inside the gateway process.
   one instance where an operator would never question the claim; and the branch
   order let a single persona fall through to a stale row's mode. Nothing enabled
   now reports `none`.
+- **Stacked personas count each prompt once.** The baseline the persona
+  injection measures against was frozen at the pre-persona body length, so the
+  second and third personas measured their own prompt *plus* the prompts already
+  injected. `OriginalInputTokens` was inflated by one prompt per extra persona
+  and `SavedTokens` cut by more than the body actually grew — 1639 tokens booked
+  against 1186 tokens of real growth, on a request with three personas on. The
+  baseline now moves after every successful injection. The totals are analytics
+  only, but a stacked-persona row reported a saving the client was never spared.
+  A regression test runs the real call site with three personas switched on and
+  pins the booked total to the body's actual growth; it was confirmed to fail
+  before the fix.
+- **The headroom comment describes the engine as exclusive.** It claimed the
+  built-in engine was a fallback for an unconfigured external proxy, which is
+  the routing that was replaced: `useBuiltin` now selects one engine or the
+  other, never a chain.
+- **The dashboard's compression badge is gated by the toggle.** A built-in
+  engine with `headroomEnabled = false` still rendered an "Active" badge,
+  because the derived state answered "is this engine running" without asking
+  whether compression was switched on. The row renders in both states, so the
+  operator saw "compressing" on a request path that compresses nothing.
 
 Verified: unit tests in `internal/headroom` (including the protected-tool,
 cancellation, and no-gain paths), new table cases in

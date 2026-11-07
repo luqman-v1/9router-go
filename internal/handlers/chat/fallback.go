@@ -1448,7 +1448,10 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 		inject = tokensaver.InjectSystemPromptClaude
 	}
 	// Persona prompts only ever add to the body, so the size before them is the
-	// baseline each injection is measured against.
+	// baseline each injection is measured against. The baseline moves after
+	// every successful injection: a persona added on top of an earlier one adds
+	// only its own prompt, and measuring it against the pre-persona length would
+	// count the earlier persona's bytes a second time.
 	beforeLen := len(out)
 	if h.TokenSaver.CavemanEnabled() {
 		bypass := false
@@ -1460,6 +1463,7 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 			if next, did := inject(out, prompt); did {
 				out = next
 				recordPersonaInjection(&origTokens, &savedTokens, beforeLen, len(next))
+				beforeLen = len(out)
 			}
 		}
 	}
@@ -1468,6 +1472,7 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 		if next, did := inject(out, prompt); did {
 			out = next
 			recordPersonaInjection(&origTokens, &savedTokens, beforeLen, len(next))
+			beforeLen = len(out)
 		}
 	}
 	if h.TokenSaver.ADHDEnabled() {
@@ -1475,6 +1480,7 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 		if next, did := inject(out, prompt); did {
 			out = next
 			recordPersonaInjection(&origTokens, &savedTokens, beforeLen, len(next))
+			beforeLen = len(out)
 		}
 	}
 	// Headroom runs after the in-process savers and before the global prompt, so

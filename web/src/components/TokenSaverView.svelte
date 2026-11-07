@@ -232,7 +232,13 @@
   // "Not installed" on an instance that was compressing every request — the
   // opposite of the truth. The engine decides the wording, and the process
   // state only matters for the external engine that has one.
-  let headroomActive = $derived(headroomEngine === 'external' ? headroomRunning : true)
+  //
+  // The toggle gates the whole thing: this row renders whether or not
+  // compression is switched on, so a built-in engine with the toggle off must
+  // not read "Active" — nothing is being compressed on that request path.
+  let headroomActive = $derived(
+    headroomEnabled && (headroomEngine === 'external' ? headroomRunning : true)
+  )
   let headroomStatusLabel = $derived(
     headroomStatus.loading
       ? 'Checking…'
