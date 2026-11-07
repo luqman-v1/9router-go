@@ -122,6 +122,11 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		return h.forwardRequest(ctx, w, cfg, apiKey, body, isStream, translateResponse, metrics, httpClient, provider, false, false)
 	}
 
+	// Fallback session to connectionID when caller provides no session header
+	if handlerutil.GetSessionID(ctx) == "" && connectionID != "" {
+		ctx = handlerutil.WithSessionID(ctx, connectionID)
+	}
+
 	upstreamStarted := time.Now()
 	resp, err := proxy.ForwardGemini(ctx, httpClient, cfg, apiKey, string(body), isStream, projectID, modelName)
 	// The one number that separates "the model was thinking" from "the
