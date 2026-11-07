@@ -14,6 +14,7 @@ import (
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
+	"9router/proxy/internal/headroom"
 	"9router/proxy/internal/translator"
 )
 
@@ -284,16 +285,14 @@ func TestResolveCompressionMode(t *testing.T) {
 	tests := []struct {
 		name        string
 		setupConfig func(ts *shared.TokenSaverConfig)
-		savedTokens int
 		wantMode    string
 	}{
 		{
-			name: "RTK only with savings",
+			name: "RTK only",
 			setupConfig: func(ts *shared.TokenSaverConfig) {
 				ts.SetRTK(true)
 			},
-			savedTokens: 100,
-			wantMode:    "rtk",
+			wantMode: "rtk",
 		},
 		{
 			name: "RTK + Caveman -> stacked",
@@ -301,8 +300,7 @@ func TestResolveCompressionMode(t *testing.T) {
 				ts.SetRTK(true)
 				ts.SetCaveman(true)
 			},
-			savedTokens: 100,
-			wantMode:    "stacked",
+			wantMode: "stacked",
 		},
 		{
 			name: "RTK + ADHD -> stacked",
@@ -310,8 +308,7 @@ func TestResolveCompressionMode(t *testing.T) {
 				ts.SetRTK(true)
 				ts.SetADHD(true)
 			},
-			savedTokens: 100,
-			wantMode:    "stacked",
+			wantMode: "stacked",
 		},
 		{
 			name: "RTK + Ponytail -> stacked",
@@ -319,32 +316,28 @@ func TestResolveCompressionMode(t *testing.T) {
 				ts.SetRTK(true)
 				ts.SetPonytail(true)
 			},
-			savedTokens: 100,
-			wantMode:    "stacked",
+			wantMode: "stacked",
 		},
 		{
 			name: "Caveman only without RTK",
 			setupConfig: func(ts *shared.TokenSaverConfig) {
 				ts.SetCaveman(true)
 			},
-			savedTokens: 0,
-			wantMode:    "caveman",
+			wantMode: "caveman",
 		},
 		{
 			name: "ADHD only without RTK",
 			setupConfig: func(ts *shared.TokenSaverConfig) {
 				ts.SetADHD(true)
 			},
-			savedTokens: 0,
-			wantMode:    "adhd",
+			wantMode: "adhd",
 		},
 		{
 			name: "Ponytail only without RTK",
 			setupConfig: func(ts *shared.TokenSaverConfig) {
 				ts.SetPonytail(true)
 			},
-			savedTokens: 0,
-			wantMode:    "ponytail",
+			wantMode: "ponytail",
 		},
 		{
 			name: "Multiple personas without RTK -> stacked",
@@ -352,8 +345,46 @@ func TestResolveCompressionMode(t *testing.T) {
 				ts.SetCaveman(true)
 				ts.SetADHD(true)
 			},
-			savedTokens: 0,
-			wantMode:    "stacked",
+			wantMode: "stacked",
+		},
+		{
+			// Nothing switched on. The old fallback answered "rtk" here, which
+			// named a stage that had not run and was the one claim an operator
+			// would never think to question.
+			name:        "nothing enabled reports no compression",
+			setupConfig: func(ts *shared.TokenSaverConfig) {},
+			wantMode:    "none",
+		},
+		{
+			// Headroom alone is the case that used to be invisible: the stage
+			// replaced the body but reported no saving, so no analytics row was
+			// written at all and the usage page showed nothing.
+			name: "Headroom only without RTK",
+			setupConfig: func(ts *shared.TokenSaverConfig) {
+				ts.UpdateFromSettings(&db.SettingsData{
+					HeadroomEnabled: true,
+					HeadroomEngine:  headroom.EngineBuiltin,
+				})
+			},
+			wantMode: "headroom",
+		},
+		{
+			name: "Headroom + RTK -> stacked",
+			setupConfig: func(ts *shared.TokenSaverConfig) {
+				// UpdateFromSettings rewrites the whole config, so RTK is set
+				// after it — setting it first would be silently cleared.
+				ts.UpdateFromSettings(&db.SettingsData{HeadroomEnabled: true})
+				ts.SetRTK(true)
+			},
+			wantMode: "stacked",
+		},
+		{
+			name: "Headroom + Caveman -> stacked",
+			setupConfig: func(ts *shared.TokenSaverConfig) {
+				ts.UpdateFromSettings(&db.SettingsData{HeadroomEnabled: true})
+				ts.SetCaveman(true)
+			},
+			wantMode: "stacked",
 		},
 	}
 
@@ -361,7 +392,7 @@ func TestResolveCompressionMode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ts := shared.NewTokenSaverConfig(false, false, false)
 			tt.setupConfig(ts)
-			got := resolveCompressionMode(ts, tt.savedTokens)
+			got := resolveCompressionMode(ts)
 			if got != tt.wantMode {
 				t.Errorf("resolveCompressionMode() = %q, want %q", got, tt.wantMode)
 			}

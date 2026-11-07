@@ -374,7 +374,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 	reqID := fmt.Sprintf("%d-%s", now.UnixMilli(), info.Model)
 
 	if h.Repo != nil && (info.SavedTokens > 0 || info.OriginalInputTokens > 0) {
-		mode := resolveCompressionMode(h.TokenSaver, info.SavedTokens)
+		mode := resolveCompressionMode(h.TokenSaver)
 		skipReason := ""
 		if info.SavedTokens == 0 {
 			skipReason = "no_savings"
@@ -746,19 +746,30 @@ func maskAPIKey(key string) string {
 	return handlerutil.MaskAPIKey(key)
 }
 
-func resolveCompressionMode(ts *shared.TokenSaverConfig, savedTokens int) string {
-	hasRTK := savedTokens > 0
+// resolveCompressionMode names the saver configuration that produced a saving,
+// so the usage page's mode breakdown says which one did the work.
+//
+// The mode comes from the switches alone. It used to be seeded from
+// savedTokens > 0, which attributed a saving from any stage to "rtk" —
+// headroom-only compression was filed as RTK, and an operator could not tell
+// which engine did the work.
+//
+// Headroom is a stage of its own rather than folded into "rtk": it is a separate
+// switch, with its own engine, and an operator reading the breakdown needs to
+// see it separately from the in-process savers that ran before it.
+func resolveCompressionMode(ts *shared.TokenSaverConfig) string {
+	hasRTK := false
 	hasCaveman := false
 	hasPonytail := false
 	hasADHD := false
+	hasHeadroom := false
 
 	if ts != nil {
-		if ts.RTKEnabled() {
-			hasRTK = true
-		}
+		hasRTK = ts.RTKEnabled()
 		hasCaveman = ts.CavemanEnabled()
 		hasPonytail = ts.PonytailEnabled()
 		hasADHD = ts.ADHDEnabled()
+		hasHeadroom = ts.HeadroomEnabled()
 	}
 
 	personaCount := 0
@@ -772,8 +783,20 @@ func resolveCompressionMode(ts *shared.TokenSaverConfig, savedTokens int) string
 		personaCount++
 	}
 
-	if (hasRTK && personaCount > 0) || personaCount > 1 {
+	// "stacked" means more than one distinct stage acted on the same request:
+	// RTK, headroom and the style prompts are all separate stages.
+	stageCount := personaCount
+	if hasRTK {
+		stageCount++
+	}
+	if hasHeadroom {
+		stageCount++
+	}
+	if stageCount > 1 {
 		return "stacked"
+	}
+	if hasHeadroom {
+		return "headroom"
 	}
 	if hasRTK {
 		return "rtk"
@@ -787,7 +810,10 @@ func resolveCompressionMode(ts *shared.TokenSaverConfig, savedTokens int) string
 	if hasPonytail {
 		return "ponytail"
 	}
-	return "rtk"
+	// Nothing was switched on, so no stage ran. "none" rather than "rtk":
+	// the old fallback claimed RTK compressed a request on an instance where
+	// RTK was off, which is the one mode an operator would never question.
+	return "none"
 }
 
 func (h *ChatHandler) upsertDailyUsageError(provider, model, endpoint, connectionID, apiKey, status string) {

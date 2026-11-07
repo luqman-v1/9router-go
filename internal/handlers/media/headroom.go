@@ -138,6 +138,11 @@ func (h *HeadroomHandler) HandleHeadroomStop(w http.ResponseWriter, r *http.Requ
 }
 
 // HandleHeadroomStatus reports proxy install/running state (GET /headroom/status).
+//
+// engine reports which engine compression will actually use, read from settings
+// rather than inferred from install state: the built-in engine works whether or
+// not a Python proxy is installed, so an "installed: false" line must not read
+// as "compression is off".
 func (h *HeadroomHandler) HandleHeadroomStatus(w http.ResponseWriter, r *http.Request) {
 	hurl := h.headroomURL()
 	status := headroom.GetHeadroomStatus(hurl)
@@ -148,7 +153,21 @@ func (h *HeadroomHandler) HandleHeadroomStatus(w http.ResponseWriter, r *http.Re
 	} else {
 		status["managedPid"] = pid
 	}
+	status["engine"] = h.headroomEngine()
 	handlerutil.WriteJSON(w, http.StatusOK, status)
+}
+
+// headroomEngine reads the configured engine, defaulting to built-in when the
+// settings row is absent or the field is unset.
+func (h *HeadroomHandler) headroomEngine() string {
+	if h.Repo == nil {
+		return headroom.EngineBuiltin
+	}
+	settings, err := h.Repo.GetSettings()
+	if err != nil || settings == nil {
+		return headroom.EngineBuiltin
+	}
+	return headroom.NormalizeEngine(settings.HeadroomEngine)
 }
 
 // HandleHeadroomExtras handles GET/POST/DELETE /headroom/extras.
