@@ -79,36 +79,6 @@ func (h *MediaHandler) handleCloudflareImage(w http.ResponseWriter, r *http.Requ
 		return fmt.Errorf("parse cloudflare image body: %w", err)
 	}
 
-	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
-	if err != nil || connData == nil {
-		return fmt.Errorf("%s", mediaConnectionError(err, modelInfo.Provider))
-	}
-
-	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
-	if err != nil {
-		return err
-	}
-	apiKey := chat.ExtractAPIKey(connData)
-	if apiKey == "" && providerCfg != nil && providerCfg.DefaultAPIKey != "" {
-		apiKey = providerCfg.DefaultAPIKey
-	}
-	if apiKey == "" {
-		return errors.New("no API key found")
-	}
-
-	// The run endpoint lives at <account root>/ai/run/<model>. The registry
-	// BaseURL (accountId already resolved by getProviderConfig) is the chat
-	// completions URL, so strip back to the account root; a custom connection
-	// baseUrl (proxy prefix / test mock) is used verbatim.
-	base := strings.TrimRight(providerCfg.BaseURL, "/")
-	if connData != nil && connData.BaseURL != "" {
-		base = strings.TrimRight(connData.BaseURL, "/")
-	}
-	base = strings.TrimSuffix(base, "/chat/completions")
-	base = strings.TrimSuffix(base, "/v1")
-	base = strings.TrimSuffix(base, "/ai")
-	targetURL := base + "/ai/run/" + modelInfo.Model
-
 	// Resolve reference image (URL → base64).
 	reference := pickImage(req.Image, req.Images)
 	if reference != "" && (strings.HasPrefix(reference, "http://") || strings.HasPrefix(reference, "https://")) {
@@ -141,6 +111,7 @@ func (h *MediaHandler) handleCloudflareImage(w http.ResponseWriter, r *http.Requ
 	}
 
 	var payload []byte
+	var err error
 	contentType := constants.ContentTypeJSON
 	if cloudflareMultipartModels[modelInfo.Model] {
 		payload, contentType, err = buildCloudflareMultipart(req.Prompt, width, height, reference, maskStr, body)
@@ -154,51 +125,133 @@ func (h *MediaHandler) handleCloudflareImage(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("create cloudflare image request: %w", err)
-	}
-	upstreamReq.Header.Set(constants.HeaderContentType, contentType)
-	handlerutil.SetAuthHeader(upstreamReq, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-	for k, v := range providerCfg.StaticHeaders {
-		if upstreamReq.Header.Get(k) == "" {
-			upstreamReq.Header.Set(k, v)
+	// Pinned connections do not rotate: the caller (usually a combo member)
+	// owns the fallback walk, and forcing a different account under a pin would
+	// violate the pin. Mirrors handleAccountFallback's pinned branch.
+	pinned := modelInfo.ConnectionID != ""
+
+	var excludeIDs []string
+	tried := map[string]bool{}
+	var lastErr error
+
+	for attempt := 0; attempt < cloudflareMaxRetries; attempt++ {
+		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
+		if err != nil || connData == nil {
+			if lastErr != nil {
+				return lastErr
+			}
+			return fmt.Errorf("%s", mediaConnectionError(err, modelInfo.Provider))
 		}
-	}
+		if tried[conn.ID] {
+			break
+		}
+		tried[conn.ID] = true
 
-	client, clientErr := h.ChatH.GetClientForConnection(connData)
-	if clientErr != nil {
-		return clientErr
-	}
-	resp, err := client.Do(upstreamReq)
-	if err != nil {
-		return fmt.Errorf("upstream cloudflare image: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+		providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
+		if err != nil {
+			if pinned {
+				return err
+			}
+			continue
+		}
+		apiKey := chat.ExtractAPIKey(connData)
+		if apiKey == "" && providerCfg != nil && providerCfg.DefaultAPIKey != "" {
+			apiKey = providerCfg.DefaultAPIKey
+		}
+		if apiKey == "" {
+			if pinned {
+				return errors.New("no API key found")
+			}
+			continue
+		}
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
-	if err != nil {
-		return fmt.Errorf("read cloudflare image response: %w", err)
-	}
+		// The run endpoint lives at <account root>/ai/run/<model>, so it must
+		// rebuild per connection: each account carries its own accountId. The
+		// registry BaseURL (accountId already resolved by getProviderConfig) is
+		// the chat completions URL, so strip back to the account root; a custom
+		// connection baseUrl (proxy prefix / test mock) is used verbatim.
+		base := strings.TrimRight(providerCfg.BaseURL, "/")
+		if connData.BaseURL != "" {
+			base = strings.TrimRight(connData.BaseURL, "/")
+		}
+		base = strings.TrimSuffix(base, "/chat/completions")
+		base = strings.TrimSuffix(base, "/v1")
+		base = strings.TrimSuffix(base, "/ai")
+		targetURL := base + "/ai/run/" + modelInfo.Model
 
-	if resp.StatusCode != http.StatusOK {
+		upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(payload))
+		if err != nil {
+			return fmt.Errorf("create cloudflare image request: %w", err)
+		}
+		upstreamReq.Header.Set(constants.HeaderContentType, contentType)
+		handlerutil.SetAuthHeader(upstreamReq, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
+		for k, v := range providerCfg.StaticHeaders {
+			if upstreamReq.Header.Get(k) == "" {
+				upstreamReq.Header.Set(k, v)
+			}
+		}
+
+		client, clientErr := h.ChatH.GetClientForConnection(connData)
+		if clientErr != nil {
+			if pinned {
+				return clientErr
+			}
+			continue
+		}
+		resp, err := client.Do(upstreamReq)
+		if err != nil {
+			if pinned {
+				return fmt.Errorf("upstream cloudflare image: %w", err)
+			}
+			lastErr = fmt.Errorf("upstream cloudflare image: %w", err)
+			excludeIDs = append(excludeIDs, conn.ID)
+			continue
+		}
+
+		raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+		_ = resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK && rerr == nil {
+			normalized, nerr := normalizeCloudflareImageResponse(raw)
+			if nerr != nil {
+				return nerr
+			}
+			w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(normalized)
+			if conn != nil && h.Repo != nil {
+				_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+			}
+			return nil
+		}
+
+		if pinned {
+			w.Header().Set(constants.HeaderContentType, resp.Header.Get(constants.HeaderContentType))
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(raw)
+			return nil
+		}
+
+		// Account-scoped refusal: park the account so this request (and future
+		// ones) skip it, then walk to the next connection.
+		if isCloudflareRetryableStatus(resp.StatusCode, raw) {
+			lastErr = fmt.Errorf("upstream cloudflare image returned %d: %s", resp.StatusCode, truncateBodyMessage(raw))
+			excludeIDs = append(excludeIDs, conn.ID)
+			h.parkCloudflareAccount(conn.ID, resp.StatusCode, raw)
+			continue
+		}
+
+		// Non-retryable upstream failure: surface it to the client untouched.
 		w.Header().Set(constants.HeaderContentType, resp.Header.Get(constants.HeaderContentType))
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(raw)
 		return nil
 	}
 
-	normalized, err := normalizeCloudflareImageResponse(raw)
-	if err != nil {
-		return err
+	if lastErr != nil {
+		return lastErr
 	}
-	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(normalized)
-	if conn != nil {
-		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
-	}
-	return nil
+	return errors.New("no available connections for provider: " + modelInfo.Provider)
 }
 
 // pickImage returns the first non-empty image string from the options.
@@ -404,6 +457,105 @@ func openAIImageFromBinary(data []byte) ([]byte, error) {
 		"created": int(time.Now().Unix()),
 		"data":    []map[string]string{{"b64_json": b64}},
 	})
+}
+
+// cloudflareMaxRetries bounds the rotation walk so an operator with many
+// cloudflare connections cannot turn one image request into a long tail of
+// upstream calls; the walk terminates early once every account is excluded.
+const cloudflareMaxRetries = 6
+
+// cloudflareQuotaCooldown parks a drained daily-free-allocation account until
+// the next UTC midnight, which is when Cloudflare resets the 10k-neuron budget.
+func cloudflareQuotaCooldown(now time.Time) time.Time {
+	next := now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour)
+	return next
+}
+
+// isCloudflareRetryableStatus reports whether a Cloudflare run response is an
+// account-scoped refusal worth walking to the next connection: quota exhausted
+// (code 4006), rate limiting (429), or an auth/forbidden refusal (401/403).
+func isCloudflareRetryableStatus(status int, raw []byte) bool {
+	if status == http.StatusTooManyRequests || status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return true
+	}
+	if status != http.StatusBadRequest {
+		return false
+	}
+	var env struct {
+		Errors []struct {
+			Code int `json:"code"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return false
+	}
+	for _, e := range env.Errors {
+		if e.Code == 4006 || e.Code == 7003 {
+			return true
+		}
+	}
+	return false
+}
+
+// parkCloudflareAccount records an account-scoped refusal on the connection so
+// the selector skips it until the quota resets (or a short window for non-quota
+// refusals). Mirrors chat's divaConnectRateLimiter / LockConnectionRateLimit.
+func (h *MediaHandler) parkCloudflareAccount(connID string, status int, raw []byte) {
+	if h.Repo == nil {
+		return
+	}
+	now := time.Now().UTC()
+	until := now.Add(5 * time.Minute)
+	if status == http.StatusBadRequest && containsCloudflareQuotaCode(raw) {
+		until = cloudflareQuotaCooldown(now)
+	}
+	_ = h.Repo.LockConnectionRateLimit(connID, until, 1, status, truncateBodyMessage(raw))
+}
+
+// containsCloudflareQuotaCode reports whether the body carries Cloudflare's
+// daily-allocation-exhausted code (4006).
+func containsCloudflareQuotaCode(raw []byte) bool {
+	var env struct {
+		Errors []struct {
+			Code int `json:"code"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return false
+	}
+	for _, e := range env.Errors {
+		if e.Code == 4006 {
+			return true
+		}
+	}
+	return false
+}
+
+// truncateBodyMessage returns the first Cloudflare error message from the body,
+// or a compact status summary, for the connection error log.
+func truncateBodyMessage(raw []byte) string {
+	if len(raw) == 0 {
+		return "empty upstream response"
+	}
+	var env struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &env); err == nil {
+		if len(env.Errors) > 0 && env.Errors[0].Message != "" {
+			msg := env.Errors[0].Message
+			if len(msg) > 200 {
+				msg = msg[:200]
+			}
+			return msg
+		}
+	}
+	if len(raw) > 200 {
+		return string(raw[:200])
+	}
+	return string(raw)
 }
 
 // resolveImageInput downloads a reference image URL and returns it as a

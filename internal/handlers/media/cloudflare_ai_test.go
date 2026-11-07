@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/chat"
@@ -291,4 +292,85 @@ func multipartFields(t *testing.T, r *http.Request) map[string]string {
 		fields[p.FormName()] = string(b)
 	}
 	return fields
+}
+
+
+func seedCloudflareConnNamed(t *testing.T, rawDB *sql.DB, id, name string, priority int, baseURL string, apiKey string) {
+	t.Helper()
+	if apiKey == "" {
+		apiKey = "cf-token"
+	}
+	data, _ := json.Marshal(map[string]any{"apiKey": apiKey, "baseUrl": baseURL})
+	if _, err := rawDB.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		(?, 'cloudflare-ai', 'apikey', ?, ?, 1, ?, '2026-07-18T00:00:00Z', '2026-12-01T00:00:00Z')`, id, name, priority, string(data)); err != nil {
+		t.Fatalf("seed cloudflare connection %s: %v", name, err)
+	}
+}
+
+func TestHandleImages_CloudflareRotationOnQuota(t *testing.T) {
+	var quotaHits, okHits int32
+
+	// Account A: daily free allocation exhausted (Cloudflare 4006, surfaced as 429).
+	quotaUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		quotaHits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"you have used up your daily free allocation of 10,000 neurons","code":4006}],"success":false,"result":{}}`))
+	}))
+	defer quotaUpstream.Close()
+
+	// Account B: healthy, returns a real image.
+	okUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okHits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"result":{"image":"QUOTA_OK_IMAGE"},"success":true,"errors":[]}`))
+	}))
+	defer okUpstream.Close()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	seedCloudflareConnNamed(t, database, "conn-cf-a", "account A (exhausted)", 1, quotaUpstream.URL, "token-a")
+	seedCloudflareConnNamed(t, database, "conn-cf-b", "account B (healthy)", 2, okUpstream.URL, "token-b")
+	handler := newTestMediaHandler(repo)
+
+	body := `{"model":"cf/@cf/black-forest-labs/flux-2-klein-9b","prompt":"a fox","width":512,"height":512}`
+	req := httptest.NewRequest("POST", "/v1/images/generations", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.HandleImages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 after rotating to account B, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "QUOTA_OK_IMAGE") {
+		t.Errorf("response missing account B image: %s", rec.Body.String())
+	}
+	if quotaHits == 0 {
+		t.Errorf("account A (quota) was never tried")
+	}
+	if okHits == 0 {
+		t.Errorf("account B (healthy) was never tried")
+	}
+
+	// Account A must be parked: rateLimitedUntil set in the future.
+	var data string
+	if err := database.QueryRow(`SELECT data FROM providerConnections WHERE id = 'conn-cf-a'`).Scan(&data); err != nil {
+		t.Fatalf("read conn-cf-a data: %v", err)
+	}
+	if until, ok := db.ConnectionCooldownUntil(data); !ok || until.Before(time.Now()) {
+		t.Errorf("account A should be in quota cooldown, got ok=%v until=%v", ok, until)
+	}
+
+	// Second request: account A already parked, only account B may be hit.
+	quotaHits, okHits = 0, 0
+	rec2 := httptest.NewRecorder()
+	handler.HandleImages(rec2, httptest.NewRequest("POST", "/v1/images/generations", strings.NewReader(body)))
+	if quotaHits != 0 {
+		t.Errorf("second request re-hit the parked account (quotaHits=%d)", quotaHits)
+	}
+	if okHits == 0 {
+		t.Errorf("second request should still reach account B")
+	}
 }
