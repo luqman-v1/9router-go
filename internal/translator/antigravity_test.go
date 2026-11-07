@@ -256,6 +256,36 @@ func TestWrapAntigravityImageRequest(t *testing.T) {
 	}
 }
 
+func TestWrapAntigravityImageRequest_SessionScopesRequestID(t *testing.T) {
+	wrapped1, err1 := translator.WrapAntigravityImageRequest("A cute cat", "", "aicode-consumers", "gemini-3.1-flash-image", "16:9", "sess-1")
+	wrapped2, err2 := translator.WrapAntigravityImageRequest("A cute cat", "", "aicode-consumers", "gemini-3.1-flash-image", "16:9", "sess-2")
+	if err1 != nil || err2 != nil {
+		t.Fatalf("WrapAntigravityImageRequest failed: %v / %v", err1, err2)
+	}
+
+	var req1, req2 translator.AntigravityRequest
+	_ = json.Unmarshal(wrapped1, &req1)
+	_ = json.Unmarshal(wrapped2, &req2)
+
+	parts1 := strings.Split(req1.RequestID, "/")
+	parts2 := strings.Split(req2.RequestID, "/")
+	if len(parts1) < 5 || len(parts2) < 5 {
+		t.Fatalf("invalid request ID format: %s vs %s", req1.RequestID, req2.RequestID)
+	}
+	if parts1[1] == parts2[1] {
+		t.Errorf("distinct sessions produced identical conversationID: %s", parts1[1])
+	}
+
+	var inner1, inner2 struct {
+		SessionID string `json:"sessionId"`
+	}
+	_ = json.Unmarshal(req1.Request, &inner1)
+	_ = json.Unmarshal(req2.Request, &inner2)
+	if inner1.SessionID != "sess-1" || inner2.SessionID != "sess-2" {
+		t.Errorf("payload sessionId not scoped: %q vs %q", inner1.SessionID, inner2.SessionID)
+	}
+}
+
 func TestNormalizeAntigravityModel(t *testing.T) {
 	tests := []struct {
 		input    string

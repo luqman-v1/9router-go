@@ -930,7 +930,8 @@ func ParseImageConfig(model string) (cleanModel, aspectRatio string) {
 }
 
 // WrapAntigravityImageRequest builds an Antigravity request envelope for image generation.
-func WrapAntigravityImageRequest(prompt, base64Input, projectID, cleanModel, aspectRatio string) ([]byte, error) {
+// sessionID scopes conversation and trajectory UUIDs per connection or client session.
+func WrapAntigravityImageRequest(prompt, base64Input, projectID, cleanModel, aspectRatio string, sessionID ...string) ([]byte, error) {
 	parts := []GeminiPart{}
 	if base64Input != "" {
 		parts = append(parts, GeminiPart{
@@ -953,7 +954,11 @@ func WrapAntigravityImageRequest(prompt, base64Input, projectID, cleanModel, asp
 		},
 	}
 
-	sessionID := fmt.Sprintf("img-%d", time.Now().UnixNano())
+	sess := projectID
+	if len(sessionID) > 0 && sessionID[0] != "" {
+		sess = sessionID[0]
+	}
+
 	genConfig := map[string]any{
 		"temperature":     1.0,
 		"topP":            0.95,
@@ -967,7 +972,7 @@ func WrapAntigravityImageRequest(prompt, base64Input, projectID, cleanModel, asp
 	reqPayload := map[string]any{
 		"contents":         contents,
 		"generationConfig": genConfig,
-		"sessionId":        sessionID,
+		"sessionId":        sess,
 	}
 
 	reqJSON, err := json.Marshal(reqPayload)
@@ -980,7 +985,7 @@ func WrapAntigravityImageRequest(prompt, base64Input, projectID, cleanModel, asp
 		Model:       cleanModel,
 		UserAgent:   "antigravity",
 		RequestType: "image_gen",
-		RequestID:   antigravityBuildRequestID(projectID, cleanModel, "image_gen", 1),
+		RequestID:   antigravityBuildRequestID(sess, cleanModel, "image_gen", 1),
 		Request:     reqJSON,
 	}
 

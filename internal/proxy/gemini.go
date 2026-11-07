@@ -54,7 +54,8 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 			}
 		}
 
-		wrapped, err := translator.WrapAntigravityImageRequest(prompt, "", projectID, cleanModel, aspectRatio)
+		sessID := handlerutil.GetSessionID(ctx)
+		wrapped, err := translator.WrapAntigravityImageRequest(prompt, "", projectID, cleanModel, aspectRatio, sessID)
 		if err != nil {
 			return nil, fmt.Errorf("wrap antigravity image: %w", err)
 		}
