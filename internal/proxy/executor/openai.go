@@ -192,6 +192,53 @@ func DowngradeJsonSchemaToJSONObject(body []byte) []byte {
 	}
 	return body
 }
+// normalizeGroqGPTOSSRequest patches a Groq gpt-oss request so strict JSON
+// validation survives the model's Harmony reasoning channel. Groq answers
+// 400 json_validate_failed ("Failed to validate JSON") when a structured
+// response_format rides next to a raw/unparsed reasoning stream that leaks
+// analysis-channel text into the content. Pinning reasoning_format to
+// "parsed" moves the chain-of-thought into message.reasoning and leaves the
+// JSON payload clean. A client-supplied reasoning_format is respected.
+// Non-gpt-oss Groq models and non-JSON requests are left byte-identical.
+func normalizeGroqGPTOSSRequest(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	model, _ := m["model"].(string)
+	if !isGroqGPTOSSModel(model) {
+		return body
+	}
+	rf, ok := m["response_format"]
+	if !ok {
+		return body
+	}
+	rfMap, ok := rf.(map[string]any)
+	if !ok {
+		return body
+	}
+	rfType, _ := rfMap["type"].(string)
+	if rfType != "json_object" && rfType != "json_schema" {
+		return body
+	}
+	if _, exists := m["reasoning_format"]; exists {
+		return body
+	}
+	m["reasoning_format"] = "parsed"
+	if out, err := marshalStable(m); err == nil {
+		return out
+	}
+	return body
+}
+
+// isGroqGPTOSSModel reports whether a Groq wire model id is a gpt-oss
+// Harmony model (openai/gpt-oss-120b, openai/gpt-oss-20b) whose reasoning
+// stream must be parsed for structured outputs to validate.
+func isGroqGPTOSSModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(lower, "gpt-oss")
+}
+
 
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
@@ -204,6 +251,9 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	}
 	if req.Provider == "deepseek" {
 		req.Body = DowngradeJsonSchemaToJSONObject(req.Body)
+	}
+	if req.Provider == "groq" {
+		req.Body = normalizeGroqGPTOSSRequest(req.Body)
 	}
 	if req.Provider == "volcengine-ark" {
 		// Volcengine Ark answers HTTP 400 when a GLM-5 model is asked for more
