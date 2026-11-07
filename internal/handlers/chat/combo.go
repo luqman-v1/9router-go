@@ -997,6 +997,13 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 							lastErr = ue
 							break
 						}
+						// A model-level fault that is not a permanent
+						// deprecation (404, model-scoped 429, or gateway
+						// fault 500-504) earns a transient cooldown badge.
+						// One cooldown per business request per model —
+						// deduped by the TTL cache inside
+						// recordModelCooldown.
+						h.recordModelCooldown(ctx, modelInfo.Provider, modelInfo.Model, connID, ue)
 						// A prompt that does not fit this model fails the same
 						// way on every connection to it, so advancing to the
 						// next combo member is the only move that can succeed
@@ -1390,6 +1397,13 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 							lastErr = ue
 							break
 						}
+						// A model-level fault that is not a permanent
+						// deprecation (404, model-scoped 429, or gateway
+						// fault 500-504) earns a transient cooldown badge.
+						// One cooldown per business request per model —
+						// deduped by the TTL cache inside
+						// recordModelCooldown.
+						h.recordModelCooldown(ctx, modelInfo.Provider, modelInfo.Model, connID, ue)
 						// A prompt that does not fit this model fails the same
 						// way on every connection to it, so advancing to the
 						// next combo member is the only move that can succeed
