@@ -79,8 +79,8 @@ compression runs inside the gateway process.
   injection measures against was frozen at the pre-persona body length, so the
   second and third personas measured their own prompt *plus* the prompts already
   injected. `OriginalInputTokens` was inflated by one prompt per extra persona
-  and `SavedTokens` cut by more than the body actually grew — 1639 tokens booked
-  against 1186 tokens of real growth, on a request with three personas on. The
+  and `SavedTokens` cut by more than the body actually grew — 2483 tokens booked
+  against 1185 tokens of real growth, on a request with three personas on. The
   baseline now moves after every successful injection. The totals are analytics
   only, but a stacked-persona row reported a saving the client was never spared.
   A regression test runs the real call site with three personas switched on and
