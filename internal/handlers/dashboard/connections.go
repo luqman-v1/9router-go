@@ -539,6 +539,10 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 		if node.Name != nil {
 			psd["nodeName"] = *node.Name
 		}
+		// Switching a node back to Chat Completions or Responses removes the
+		// business template from the connection; a custom JSON node's template
+		// is copied in from the node row, not taken from what the client sent.
+		setConnCustomJSON(psd, storedCustomJSON(nodeData.APIType, nodeData.CustomJSON))
 		dataMap["providerSpecificData"] = psd
 	}
 
