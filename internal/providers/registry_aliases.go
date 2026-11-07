@@ -69,6 +69,7 @@ var RegistryAliases = map[string]string{
 	"perplexity":          "pplx",
 	"perplexity-agent":    "pa",
 	"perplexity-web":      "pw",
+	"perch":               "pc",
 	"poolside":            "ps",
 	"qoder":               "qd",
 	"qoder-cn":            "qdcn",

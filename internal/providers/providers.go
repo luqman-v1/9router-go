@@ -1079,6 +1079,21 @@ var KnownProviders = map[string]ProviderConfig{
 			"User-Agent": "ai-sdk/openai-compatible/1.0/codebuff",
 		},
 	},
+	// Perch (perchai.app) ships no public API: the official CLI and the web
+	// client sign in through Perch's own Supabase project and call the
+	// model-call proxy on app.perchai.app. The BaseURL is that proxy path;
+	// the AuthScheme bearer value is the user's Supabase access token, which
+	// the dashboard obtains through the Supabase PKCE flow (see
+	// internal/handlers/oauth/perch.go) and refreshes through
+	// internal/proxy/oauth/perch.go.
+	"perch": {
+		BaseURL:    "https://app.perchai.app/api/perch-terminal/model-call",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		StaticHeaders: map[string]string{
+			"User-Agent": "perchai-cli/2.4.125",
+		},
+	},
 
 	"aws-polly": {
 		BaseURL:    "https://polly.us-east-1.amazonaws.com/v1/speech",
@@ -1491,6 +1506,7 @@ func PreservesCacheControl(provider string) bool {
 	}
 	return false
 }
+
 // StrictReasoningRemoving reports whether a provider rejects unknown
 // assistant-message reasoning fields echoed on history (upstream
 // paramSupport dropMessageFields): groq, mistral, and cerebras answer 400

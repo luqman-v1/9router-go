@@ -103,6 +103,9 @@ func RegisterAll() {
 	// is a query_str envelope and the answer is Perplexity's own event stream,
 	// so the passthrough cannot serve it.
 	Register("perplexity-web", func() Executor { return ForwardPerplexityWeb })
+	// Perch is not OpenAI-compatible in either direction: the request is a
+	// signed-turn envelope and the answer is Perch's own event stream.
+	Register("perch", func() Executor { return ForwardPerch })
 	Register("freebuff", func() Executor { return ForwardFreebuff })
 	Register("kilo-gateway", func() Executor { return ForwardOpenAI })
 	Register("llm7", func() Executor { return ForwardOpenAI })
