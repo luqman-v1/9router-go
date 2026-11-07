@@ -42,6 +42,11 @@ func TestGetPricingForModel_Parity(t *testing.T) {
 			found: true,
 		},
 		{
+			name: "mistral medium", provider: "mistral", model: "mistral-medium-latest",
+			want:  ModelPricing{InputPer1M: 2.7, OutputPer1M: 8.1},
+			found: true,
+		},
+		{
 			name: "mistral embed", provider: "mistral", model: "mistral-embed",
 			want:  ModelPricing{InputPer1M: 0.1, OutputPer1M: 0},
 			found: true,

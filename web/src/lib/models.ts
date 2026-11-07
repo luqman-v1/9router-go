@@ -3517,7 +3517,7 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   "mistral": [
     {
       "id": "mistral-large-latest",
-      "name": "Mistral Large 2"
+      "name": "Mistral Large 3"
     },
     {
       "id": "pixtral-large-latest",
@@ -3530,6 +3530,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "codestral-latest",
       "name": "Codestral"
+    },
+    {
+      "id": "mistral-medium-latest",
+      "name": "Mistral Medium 3"
     },
     {
       "id": "ministral-8b-latest",
