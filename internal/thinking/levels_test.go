@@ -100,6 +100,32 @@ func TestLevelMaps(t *testing.T) {
 	}
 }
 
+func TestToKimiReasoningEffort(t *testing.T) {
+	cases := []struct {
+		name string
+		in   *Intent
+		want string
+	}{
+		{name: "auto", in: &Intent{Mode: ModeAuto}, want: "high"},
+		{name: "minimal", in: &Intent{Mode: ModeLevel, Level: "minimal"}, want: "low"},
+		{name: "xhigh", in: &Intent{Mode: ModeLevel, Level: "xhigh"}, want: "max"},
+		{name: "low", in: &Intent{Mode: ModeLevel, Level: "low"}, want: "low"},
+		{name: "medium", in: &Intent{Mode: ModeLevel, Level: "medium"}, want: "medium"},
+		{name: "high", in: &Intent{Mode: ModeLevel, Level: "high"}, want: "high"},
+		{name: "max", in: &Intent{Mode: ModeLevel, Level: "max"}, want: "max"},
+		{name: "none dropped", in: &Intent{Mode: ModeNone}, want: ""},
+		{name: "unknown dropped", in: &Intent{Mode: ModeLevel, Level: "ultra"}, want: ""},
+		{name: "nil", in: nil, want: ""},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ToKimiReasoningEffort(tt.in); got != tt.want {
+				t.Errorf("ToKimiReasoningEffort(%+v) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEffortToThinkingLevelUnknown(t *testing.T) {
 	cases := map[string]string{
 		"ultra":   "high",
