@@ -137,20 +137,25 @@ func ForwardMinimaxCode(w http.ResponseWriter, req *Request) error {
 	// below writes a status, exactly like every other executor.
 	forwardUpstreamResponseHeaders(w, resp.Header)
 
-	// handleClaudeMessages* are the "translate a Claude reply for a non-Claude
-	// client" helpers: their passthrough branch is taken on TranslateResp, which
-	// is only ever true for such a client. A Claude client is the opposite case,
-	// so its reply is relayed untouched.
-	if req.TranslateResp {
-		if req.IsStream {
-			return handleClaudeMessagesStream(w, req, resp.Body)
-		}
-		return handleClaudeMessagesNonStream(w, req, resp.Body)
-	}
+// The upstream always answers in Claude Messages. The request side says
+// which client is waiting: a /v1/messages client (ClaudeClient) gets
+// the bytes untouched; every other client is OpenAI-shaped and the reply
+// must be translated. Keying the branch on req.UpstreamClaude — the same
+// flag the fallback sets for FormatClaude upstreams — instead of
+// req.TranslateResp is the difference: TranslateResp is false for a
+// Chat Completions caller on a Claude-native provider (chat.go sets it
+// false for claudeNative), so the old branch forwarded the raw Claude
+// body and the OpenAI client's stream ended without finish_reason.
+if req.UpstreamClaude {
 	if req.IsStream {
-		return execSSEStream(w, resp.Body, req)
+		return handleClaudeMessagesStream(w, req, resp.Body)
 	}
-	return jsonResponse(req.Ctx, w, resp.Body, false, req.ResponseBuf)
+	return handleClaudeMessagesNonStream(w, req, resp.Body)
+}
+if req.IsStream {
+	return execSSEStream(w, resp.Body, req)
+}
+return jsonResponse(req.Ctx, w, resp.Body, false, req.ResponseBuf)
 }
 
 // normalizedQuotaError rewrites a credits refusal carried by an upstream
