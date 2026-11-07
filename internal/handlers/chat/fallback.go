@@ -1480,7 +1480,9 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 		if next, did := inject(out, prompt); did {
 			out = next
 			recordPersonaInjection(&origTokens, &savedTokens, beforeLen, len(next))
-			beforeLen = len(out)
+			// No baseline update: this is the last persona, so nothing reads
+			// beforeLen again. A persona added after this one must move the
+			// baseline here too, or it will count the prompts above it twice.
 		}
 	}
 	// Headroom runs after the in-process savers and before the global prompt, so
