@@ -1371,6 +1371,33 @@ func isClientCanceled(ctx context.Context, err error) bool {
 // /v1/messages): system prompts must go to the top-level "system" field —
 // a role:"system" message is rejected by the Anthropic API.
 // false from compress/inject means nothing changed (or unparseable) — keep original, not a failure.
+// recordPersonaInjection books a persona prompt injection into the running
+// token totals.
+//
+// A style prompt does not compress anything: it adds a system prompt the
+// provider is about to be billed for. The totals therefore track the body the
+// provider receives — OriginalInputTokens rises by the prompt's own size, and
+// SavedTokens falls by the same amount, because nothing was saved.
+//
+// Without this, a request that only had Caveman/Ponytail/ADHD switched on
+// left both totals at 0, and the usage page skipped the analytics row
+// entirely: the operator saw no compression activity on an instance where a
+// saver demonstrably ran on every request.
+func recordPersonaInjection(origTokens, savedTokens *int, beforeLen, afterLen int) {
+	if afterLen <= beforeLen {
+		return
+	}
+	added := (afterLen - beforeLen) / 4
+	if added <= 0 {
+		return
+	}
+	*origTokens += added
+	*savedTokens -= added
+	if *savedTokens < 0 {
+		*savedTokens = 0
+	}
+}
+
 func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeNative bool) ([]byte, int, int, int) {
 	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
 	// every token saver — RTK, Caveman, Ponytail, ADHD, Headroom, system prompt
@@ -1420,6 +1447,9 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 	if claudeNative {
 		inject = tokensaver.InjectSystemPromptClaude
 	}
+	// Persona prompts only ever add to the body, so the size before them is the
+	// baseline each injection is measured against.
+	beforeLen := len(out)
 	if h.TokenSaver.CavemanEnabled() {
 		bypass := false
 		if h.TokenSaver.CavemanAutoClarity() && tokensaver.ShouldBypassCaveman(out) {
@@ -1429,6 +1459,7 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 			prompt := tokensaver.GetCavemanPromptWithLang(h.TokenSaver.CavemanLevel(), h.TokenSaver.CavemanLanguage())
 			if next, did := inject(out, prompt); did {
 				out = next
+				recordPersonaInjection(&origTokens, &savedTokens, beforeLen, len(next))
 			}
 		}
 	}
@@ -1436,26 +1467,63 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 		prompt := tokensaver.GetPonytailPrompt(h.TokenSaver.PonytailLevel())
 		if next, did := inject(out, prompt); did {
 			out = next
+			recordPersonaInjection(&origTokens, &savedTokens, beforeLen, len(next))
 		}
 	}
 	if h.TokenSaver.ADHDEnabled() {
 		prompt := tokensaver.GetADHDPrompt(h.TokenSaver.ADHDLevel())
 		if next, did := inject(out, prompt); did {
 			out = next
+			recordPersonaInjection(&origTokens, &savedTokens, beforeLen, len(next))
 		}
 	}
 	// Headroom runs after the in-process savers and before the global prompt, so
 	// it never sees the prompt this process is about to add.
 	//
-	// The client is built per call rather than cached on the handler: the proxy
-	// URL is an operator setting that can change while requests are in flight,
-	// and a shared client would need a lock around every field read to stay
-	// correct. Compress itself fails open on every refusal, so the only cost of
-	// not caching is one struct allocation.
+	// The client is built per call rather than cached on the handler: the engine
+	// and the proxy URL are operator settings that can change while requests are
+	// in flight, and a shared client would need a lock around every field read
+	// to stay correct. Compress itself fails open on every refusal, so the only
+	// cost of not caching is one struct allocation.
+	//
+	// The token counts are measured here rather than taken from the engine: the
+	// same estimator RTK uses above, so a saving from either stage is comparable
+	// on one scale and the usage page shows one number instead of two. Without
+	// this, headroom-only compression left SavedTokens at 0, and the usage page
+	// reported no compression at all on a request that was demonstrably
+	// compressed — the analytics row is only written when SavedTokens > 0.
 	if h.TokenSaver.HeadroomEnabled() {
-		if url, timeoutMs := h.TokenSaver.HeadroomEndpoint(); url != "" {
-			client := headroom.NewClient(url, "", nil)
+		url, timeoutMs := h.TokenSaver.HeadroomEndpoint()
+		engine := h.TokenSaver.HeadroomEngineName()
+		// The built-in engine needs no URL, so a compression that is switched on
+		// must not silently do nothing because the URL field happens to be empty.
+		if url != "" || headroom.NormalizeEngine(engine) == headroom.EngineBuiltin {
+			client := headroom.NewClientWithEngine(url, "", nil, engine)
 			if next, did, err := client.Compress(ctx, out, "", timeoutMs); err == nil && did {
+				nextOrig := len(out) / 4
+				nextCompressed := len(next) / 4
+				nextSaved := nextOrig - nextCompressed
+				if nextSaved > 0 {
+					// Headroom runs after RTK, so its saving is on top of the one
+					// already measured: the totals are cumulative, matching what
+					// the provider is about to be billed for.
+					if nextOrig > origTokens {
+						origTokens = nextOrig
+					}
+					savedTokens += nextSaved
+					if origTokens > 0 {
+						savedPct = (savedTokens * 100) / origTokens
+					}
+					log.Info(
+						"token_saver", "headroom compressed request",
+						"engine", headroom.NormalizeEngine(engine),
+						"orig_est", nextOrig,
+						"compressed_est", nextCompressed,
+						"saved_est", nextSaved,
+						"total_saved_est", savedTokens,
+						"saved_pct", fmt.Sprintf("%d%%", savedPct),
+					)
+				}
 				out = next
 			}
 		}

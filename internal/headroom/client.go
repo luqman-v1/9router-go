@@ -20,29 +20,78 @@ import (
 // matching the default HeadroomTimeoutMs from settings.
 const DefaultTimeoutMs = 3000
 
+// The two compression engines. The built-in one is the default because it needs
+// nothing installed; the external one exists for operators who want the Python
+// proxy's semantic compression.
+const (
+	// EngineBuiltin compresses in-process.
+	EngineBuiltin = "builtin"
+	// EngineExternal posts to the configured proxy URL.
+	EngineExternal = "external"
+)
+
+// NormalizeEngine resolves the operator's engine choice.
+//
+// Anything unrecognized, including the empty string an existing settings row
+// carries, resolves to the built-in engine: a typo must not silently select a
+// proxy that is not running, and a fresh install must compress without one.
+func NormalizeEngine(engine string) string {
+	switch engine {
+	case EngineExternal:
+		return EngineExternal
+	default:
+		return EngineBuiltin
+	}
+}
+
 // HeadroomClient handles in-flight request compression via the Headroom proxy.
 type HeadroomClient struct {
 	baseURL    string
 	apiKey     string
 	httpClient *http.Client
+	// builtin is the in-process engine. It is always present; useBuiltin decides
+	// whether Compress consults it instead of the external proxy.
+	builtin *BuiltinEngine
+	// useBuiltin is decided once at construction, from settings the operator
+	// controls, not per request.
+	useBuiltin bool
 }
 
-// NewClient creates a new HeadroomClient. If baseURL is empty, DefaultURL is used.
-// If httpClient is nil, a client configured with proxy.NewSafeTransport is used.
+// NewClient creates a new HeadroomClient. If httpClient is nil, a client
+// configured with proxy.NewSafeTransport is used.
+//
+// engine selects which engine Compress consults: EngineBuiltin (the default for
+// an empty or unknown value) runs in-process, EngineExternal posts to baseURL.
 func NewClient(baseURL string, apiKey string, httpClient *http.Client) *HeadroomClient {
-	if strings.TrimSpace(baseURL) == "" {
-		baseURL = DefaultURL
-	}
+	return NewClientWithEngine(baseURL, apiKey, httpClient, EngineBuiltin)
+}
+
+// NewClientWithEngine is NewClient with the engine chosen by the caller.
+//
+// The engine is passed rather than inferred from the URL, because "a URL is
+// configured" and "the operator wants the external proxy" are different facts:
+// the default URL is present in every settings row, so inferring from it would
+// send every request to a proxy that is not installed.
+func NewClientWithEngine(baseURL string, apiKey string, httpClient *http.Client, engine string) *HeadroomClient {
 	if httpClient == nil {
 		httpClient = &http.Client{
 			Transport: proxy.NewSafeTransport(),
 		}
 	}
-	return &HeadroomClient{
+	baseURL = strings.TrimSpace(baseURL)
+	c := &HeadroomClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		apiKey:     strings.TrimSpace(apiKey),
 		httpClient: httpClient,
+		builtin:    NewBuiltinEngine(),
 	}
+	// EngineExternal with no URL to reach has no engine at all, and a client
+	// that fails every request is worse than one that compresses: the operator
+	// asked for compression and the URL is simply not filled in yet. Falling
+	// back to the built-in engine keeps the switch meaningful and the setting
+	// recoverable.
+	c.useBuiltin = NormalizeEngine(engine) != EngineExternal || baseURL == ""
+	return c
 }
 
 // NewHeadroomClient is an alias for NewClient.
@@ -50,10 +99,18 @@ func NewHeadroomClient(baseURL string, apiKey string, httpClient *http.Client) *
 	return NewClient(baseURL, apiKey, httpClient)
 }
 
-// Compress sends messages to Headroom's /v1/compress endpoint to perform in-flight compression.
-// It strictly validates structural integrity (message count, role order, tool call IDs, functions,
-// thinking blocks, images), guards against CCR and phantom savings, and safely fails open
-// on network/timeout errors while respecting downstream context cancellation (G03).
+// Compress performs in-flight request compression.
+//
+// The built-in engine runs when no external proxy is configured; otherwise the
+// external proxy is tried first and the built-in engine is the fallback, so an
+// install that is present but stopped still compresses.
+//
+// Either way the result passes the same guards: structural integrity (message
+// count, role order, tool call IDs, function signatures, thinking blocks,
+// images), no CCR markers or hashes, and a byte-gain check so a compressor that
+// reports savings it did not deliver cannot talk the gateway into committing
+// them. Every failure fails open while respecting downstream context
+// cancellation (G03).
 func (c *HeadroomClient) Compress(ctx context.Context, body []byte, model string, timeoutMs int) ([]byte, bool, error) {
 	// Downstream cancellation stops dispatch immediately (G03)
 	if ctx.Err() != nil {
@@ -87,6 +144,12 @@ func (c *HeadroomClient) Compress(ctx context.Context, body []byte, model string
 		}
 	}
 
+	if c.useBuiltin {
+		if next, did := c.compressBuiltin(ctx, rawMessages, reqMap, body); did {
+			return next, true, nil
+		}
+		return body, false, nil
+	}
 	respMsgs, savedTokens, ok := c.callCompress(ctx, rawMessages, model, timeoutMs)
 	if !ok {
 		if ctx.Err() != nil {
@@ -285,6 +348,15 @@ func (c *HeadroomClient) compressNativeToolOutputs(ctx context.Context, reqMap m
 		}
 	}
 
+	// The native path compresses its projected leaves the same way the message
+	// path does: the built-in engine when it is the selected one, the external
+	// proxy otherwise. Without this branch a body whose tool output lives
+	// outside the messages array silently skips compression entirely whenever
+	// the built-in engine is active, which is the default.
+	if c.useBuiltin {
+		next, did := c.compressNativeBuiltin(proj, reqMap, body)
+		return next, did, nil
+	}
 	respMsgs, _, ok := c.callCompress(ctx, proj.messages, model, timeoutMs)
 	if !ok {
 		if ctx.Err() != nil {
@@ -632,4 +704,67 @@ func toFloat64(v any) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// compressNativeBuiltin runs the built-in engine over the native path's
+// projected leaves.
+//
+// The projection is a temporary OpenAI-shaped message list, so the engine's
+// message walk applies to it unchanged, and the same applyToolOutputText write
+// back is reused: it validates count, role, ids and lengths before committing,
+// and refuses a leaf that comes back empty or longer. Sharing that function
+// rather than writing a second write-back keeps the two engines under one
+// validation rule.
+func (c *HeadroomClient) compressNativeBuiltin(proj *toolOutputProjection, reqMap map[string]any, body []byte) ([]byte, bool) {
+	res, ok := c.builtin.CompressMessages(proj.messages)
+	if !ok || res == nil {
+		return body, false
+	}
+	updates := applyToolOutputText(proj, res.Messages)
+	if updates <= 0 {
+		return body, false
+	}
+	newBody, err := json.Marshal(reqMap, json.Deterministic(true))
+	if err != nil {
+		return body, false
+	}
+	if len(newBody) >= len(body) {
+		return body, false
+	}
+	return newBody, true
+}
+
+// compressBuiltin runs the in-process engine and commits its result.
+//
+// The engine's output goes through the same validateMessagesPreserved gate the
+// external proxy's does. That is not redundant: the engine is a different code
+// path that decodes, rewrites and re-marshals the messages, and the gate is what
+// makes "the structure survived" a property of the response rather than a
+// property of the producer. A body the engine produced and the gate rejects is
+// dropped, and the original is forwarded.
+func (c *HeadroomClient) compressBuiltin(ctx context.Context, rawMessages []any, reqMap map[string]any, body []byte) ([]byte, bool) {
+	if ctx.Err() != nil {
+		return nil, false
+	}
+	res, ok := c.builtin.CompressMessages(rawMessages)
+	if !ok || res == nil {
+		return nil, false
+	}
+	if !validateMessagesPreserved(rawMessages, res.Messages) {
+		return nil, false
+	}
+	// The engine rewrites text leaves in place, so the whole body is re-marshaled
+	// rather than patched. The commit is guarded by a byte comparison: a result
+	// that is not smaller is discarded, because "the compressor reported savings"
+	// and "the request is smaller" are different claims and only the second one
+	// reaches the provider.
+	reqMap["messages"] = res.Messages
+	newBody, err := json.Marshal(reqMap, json.Deterministic(true))
+	if err != nil {
+		return nil, false
+	}
+	if len(newBody) >= len(body) {
+		return nil, false
+	}
+	return newBody, true
 }

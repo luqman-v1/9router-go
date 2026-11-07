@@ -265,6 +265,7 @@ export interface Settings {
   adhdLevel?: string
   headroomEnabled?: boolean
   headroomAutostart?: boolean
+  headroomEngine?: 'builtin' | 'external'
   headroomUrl?: string
   headroomTimeoutMs?: number
   headroomKompress?: boolean
@@ -520,6 +521,7 @@ export interface HeadroomStatusResponse {
   version?: string | null
   extras?: { code?: boolean; ml?: boolean }
   url?: string
+  engine?: 'builtin' | 'external'
   error?: string
 }
 

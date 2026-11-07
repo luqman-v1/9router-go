@@ -58,6 +58,10 @@
 
   let headroomEnabled = $state(false)
   let headroomAutostart = $state(false)
+  // The engine is the in-process one by default, so compression works without
+  // the Python proxy installed. The value is only "external" once an operator
+  // picks it, which is why the state default matches the backend default.
+  let headroomEngine = $state<'builtin' | 'external'>('builtin')
   let headroomUrl = $state('http://localhost:8787')
   let headroomTimeoutMs = $state(3000)
   let headroomStatus = $state<{
@@ -70,6 +74,7 @@
     managedPid?: number | null
     path?: string | null
     version?: string | null
+    engine?: 'builtin' | 'external'
   }>({
     installed: false,
     running: false,
@@ -222,11 +227,17 @@
   )
 
   let headroomRunning = $derived(!!headroomStatus.running)
+  // The status answers "is compression running", not "is a process running".
+  // The built-in engine has no process, so a proxy-derived label read
+  // "Not installed" on an instance that was compressing every request — the
+  // opposite of the truth. The engine decides the wording, and the process
+  // state only matters for the external engine that has one.
+  let headroomActive = $derived(headroomEngine === 'external' ? headroomRunning : true)
   let headroomStatusLabel = $derived(
     headroomStatus.loading
       ? 'Checking…'
-      : headroomRunning
-        ? 'Running'
+      : headroomActive
+        ? 'Active'
         : headroomStatus.localUrl !== false && !headroomStatus.installed
           ? 'Not installed'
           : headroomStatus.localUrl !== false
@@ -252,6 +263,10 @@
 
       if (typeof settings.headroomEnabled === 'boolean') headroomEnabled = settings.headroomEnabled
       if (typeof settings.headroomAutostart === 'boolean') headroomAutostart = settings.headroomAutostart
+      // An absent engine means the settings row predates the field, which is the
+      // built-in engine — the same default the backend normalizes to.
+      if (settings.headroomEngine === 'external') headroomEngine = 'external'
+      else if (settings.headroomEngine === 'builtin') headroomEngine = 'builtin'
       if (typeof settings.headroomUrl === 'string' && settings.headroomUrl) headroomUrl = settings.headroomUrl
       if (typeof settings.headroomTimeoutMs === 'number' && settings.headroomTimeoutMs > 0) {
         headroomTimeoutMs = settings.headroomTimeoutMs
@@ -498,7 +513,15 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     const nextUrl = headroomUrl.trim() || 'http://localhost:8787'
     headroomUrl = nextUrl
     headroomEnabled = value
-    await patchSetting({ headroomEnabled: value, headroomUrl: nextUrl })
+    // The engine is written with the toggle so the two never disagree: a saved
+    // row with headroomEnabled true and an unset engine resolves to the
+    // built-in engine on the backend, and the panel must show that same choice.
+    await patchSetting({ headroomEnabled: value, headroomUrl: nextUrl, headroomEngine: headroomEngine })
+  }
+  async function handleHeadroomEngineChange(value: 'builtin' | 'external') {
+    headroomEngine = value
+    await patchSetting({ headroomEngine: value })
+    refreshHeadroomStatus()
   }
 
   async function handleToggleHeadroomAutostart(value: boolean) {
@@ -534,6 +557,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
         managedPid: data.managedPid,
         path: data.path,
         version: data.version,
+        engine: data.engine === 'external' ? 'external' : 'builtin',
       }
       if (!data.installed) {
         headroomExtras = {
@@ -793,6 +817,9 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
         headroomEnabled = !!data.headroomEnabled
         headroomAutostart = data.headroomAutostart === true
         headroomUrl = data.headroomUrl || 'http://localhost:8787'
+        // Same normalization as the settings effect: anything that is not the
+        // external engine means the built-in one.
+        headroomEngine = data.headroomEngine === 'external' ? 'external' : 'builtin'
         if (typeof data.headroomTimeoutMs === 'number') headroomTimeoutMs = data.headroomTimeoutMs
         codeAware = data.headroomCodeAware === true
         kompress = data.headroomKompress !== false
@@ -1335,7 +1362,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             </a>
           </p>
           <span
-            class="text-xs px-2 py-0.5 rounded {headroomRunning ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'}"
+            class="text-xs px-2 py-0.5 rounded {headroomActive ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'}"
           >
             {headroomStatusLabel}
           </span>
@@ -1344,7 +1371,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             onclick={() => (isHeadroomModalOpen = true)}
             class="text-xs text-primary underline hover:opacity-80 cursor-pointer"
           >
-            {headroomRunning ? 'Manage' : 'Setup'}
+            {headroomActive ? 'Manage' : 'Setup'}
           </button>
         </div>
         <p class="text-sm text-text-muted mt-1">
@@ -2026,12 +2053,12 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
   <div class="flex flex-col gap-4">
     <div class="flex items-center justify-between text-sm">
       <span>Status</span>
-      <span class={headroomRunning ? 'text-success font-medium' : 'text-warning font-medium'}>
+      <span class={headroomActive ? 'text-success font-medium' : 'text-warning font-medium'}>
         {headroomStatusLabel}
       </span>
     </div>
 
-    {#if headroomRunning}
+    {#if headroomEngine === 'external' && headroomRunning}
       <a
         href="/api/headroom/proxy/dashboard"
         target="_blank"
@@ -2042,6 +2069,37 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
       </a>
     {/if}
 
+    <div class="flex flex-col gap-1">
+      <p class="text-sm font-medium">Compression engine</p>
+      <div class="flex gap-2" role="group" aria-label="Compression engine">
+        <button
+          type="button"
+          onclick={() => handleHeadroomEngineChange('builtin')}
+          aria-pressed={headroomEngine === 'builtin'}
+          class="flex-1 px-3 py-2 rounded-lg border text-sm text-left transition-colors cursor-pointer {headroomEngine === 'builtin'
+            ? 'border-primary bg-primary/10 text-text-main'
+            : 'border-border bg-surface-2 text-text-muted hover:bg-surface-3'}"
+        >
+          <span class="font-medium block">Built-in</span>
+          <span class="text-xs text-text-muted">In-process, no install</span>
+        </button>
+        <button
+          type="button"
+          onclick={() => handleHeadroomEngineChange('external')}
+          aria-pressed={headroomEngine === 'external'}
+          class="flex-1 px-3 py-2 rounded-lg border text-sm text-left transition-colors cursor-pointer {headroomEngine === 'external'
+            ? 'border-primary bg-primary/10 text-text-main'
+            : 'border-border bg-surface-2 text-text-muted hover:bg-surface-3'}"
+        >
+          <span class="font-medium block">External proxy</span>
+          <span class="text-xs text-text-muted">Needs headroom-ai + URL</span>
+        </button>
+      </div>
+      <p class="text-xs text-text-muted">
+        Built-in compresses in this process — nothing to install, no extra round trip. The
+        external proxy adds semantic compression but must be running at the URL below.
+      </p>
+    </div>
     <div class="flex flex-col gap-1">
       <p class="text-sm font-medium">Proxy URL</p>
       <input
