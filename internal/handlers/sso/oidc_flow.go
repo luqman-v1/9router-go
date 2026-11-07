@@ -78,6 +78,14 @@ func (h *Handler) HandleOIDCStart(w http.ResponseWriter, r *http.Request) {
 		redirectToLoginError(w, r, "oidc_not_configured")
 		return
 	}
+	// The redirect_uri is derived from the request origin, and a forged one
+	// hands the authorization code to whoever forged it. Refuse to start the
+	// flow when nothing pins that origin.
+	if !originIsTrustworthy(r) {
+		log.Warn("sso", "oidc start refused: BASE_URL is unset and the request did not arrive over TLS", "issuer", cfg.IssuerURL)
+		redirectToLoginError(w, r, "oidc_base_url_required")
+		return
+	}
 	discovery, err := fetchDiscovery(cfg.IssuerURL)
 	if err != nil {
 		log.Warn("sso", "oidc discovery failed", "issuer", cfg.IssuerURL, "error", err)
@@ -86,14 +94,6 @@ func (h *Handler) HandleOIDCStart(w http.ResponseWriter, r *http.Request) {
 	}
 	if discovery.AuthorizationEndpoint == "" {
 		redirectToLoginError(w, r, "oidc_no_authorization_endpoint")
-		return
-	}
-	// The redirect_uri is derived from the request origin, and a forged one
-	// hands the authorization code to whoever forged it. Refuse to start the
-	// flow when nothing pins that origin.
-	if !originIsTrustworthy(r) {
-		log.Warn("sso", "oidc start refused: BASE_URL is unset and the request did not arrive over TLS", "issuer", cfg.IssuerURL)
-		redirectToLoginError(w, r, "oidc_base_url_required")
 		return
 	}
 
