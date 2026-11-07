@@ -66,14 +66,14 @@ func isCloudflareImageModel(info *chat.ModelInfo) bool {
 // shape and returning a normalized OpenAI images response.
 func (h *MediaHandler) handleCloudflareImage(w http.ResponseWriter, r *http.Request, body []byte, modelInfo *chat.ModelInfo) error {
 	var req struct {
-		Prompt    string            `json:"prompt"`
-		Size      string            `json:"size"`
-		Width     any               `json:"width"`
-		Height    any               `json:"height"`
-		Image     string            `json:"image"`
-		Images    []string          `json:"images"`
-		MaskImage string            `json:"mask_image"`
-		Mask      string            `json:"mask"`
+		Prompt    string   `json:"prompt"`
+		Size      string   `json:"size"`
+		Width     any      `json:"width"`
+		Height    any      `json:"height"`
+		Image     string   `json:"image"`
+		Images    []string `json:"images"`
+		MaskImage string   `json:"mask_image"`
+		Mask      string   `json:"mask"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("parse cloudflare image body: %w", err)

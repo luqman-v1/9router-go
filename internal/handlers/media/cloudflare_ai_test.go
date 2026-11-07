@@ -40,9 +40,9 @@ func TestIsCloudflareImageModel(t *testing.T) {
 
 func TestCloudflareDimensions(t *testing.T) {
 	tests := []struct {
-		name       string
-		size       string
-		w, h       any
+		name         string
+		size         string
+		w, h         any
 		wantW, wantH int
 	}{
 		{"from size", "1024x768", nil, nil, 1024, 768},
@@ -67,18 +67,18 @@ func TestNormalizeCloudflareImageResponse(t *testing.T) {
 		wantData []map[string]string
 	}{
 		{
-			name: "result image b64",
-			in:   `{"result":{"image":"aGVsbG8="},"success":true,"errors":[]}`,
+			name:     "result image b64",
+			in:       `{"result":{"image":"aGVsbG8="},"success":true,"errors":[]}`,
 			wantData: []map[string]string{{"b64_json": "aGVsbG8="}},
 		},
 		{
-			name: "result url string",
-			in:   `{"result":"https://cdn.example/a.png"}`,
+			name:     "result url string",
+			in:       `{"result":"https://cdn.example/a.png"}`,
 			wantData: []map[string]string{{"url": "https://cdn.example/a.png"}},
 		},
 		{
-			name: "already openai shape",
-			in:   `{"created":1,"data":[{"url":"https://x/y.png"}]}`,
+			name:     "already openai shape",
+			in:       `{"created":1,"data":[{"url":"https://x/y.png"}]}`,
 			wantData: []map[string]string{{"url": "https://x/y.png"}},
 		},
 	}
@@ -223,7 +223,9 @@ func TestHandleImages_CloudflareFlux2KleinMultipart(t *testing.T) {
 		t.Errorf("width = %q, want 1024", parts["width"])
 	}
 	var out struct {
-		Data []struct{ B64JSON string `json:"b64_json"` } `json:"data"`
+		Data []struct {
+			B64JSON string `json:"b64_json"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("not normalized json: %v", err)
