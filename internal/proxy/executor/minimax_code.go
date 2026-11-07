@@ -137,25 +137,25 @@ func ForwardMinimaxCode(w http.ResponseWriter, req *Request) error {
 	// below writes a status, exactly like every other executor.
 	forwardUpstreamResponseHeaders(w, resp.Header)
 
-// The upstream always answers in Claude Messages. The request side says
-// which client is waiting: a /v1/messages client (ClaudeClient) gets
-// the bytes untouched; every other client is OpenAI-shaped and the reply
-// must be translated. Keying the branch on req.UpstreamClaude — the same
-// flag the fallback sets for FormatClaude upstreams — instead of
-// req.TranslateResp is the difference: TranslateResp is false for a
-// Chat Completions caller on a Claude-native provider (chat.go sets it
-// false for claudeNative), so the old branch forwarded the raw Claude
-// body and the OpenAI client's stream ended without finish_reason.
-if req.UpstreamClaude {
-	if req.IsStream {
-		return handleClaudeMessagesStream(w, req, resp.Body)
+	// The upstream always answers in Claude Messages. The request side says
+	// which client is waiting: a /v1/messages client (ClaudeClient) gets
+	// the bytes untouched; every other client is OpenAI-shaped and the reply
+	// must be translated. Keying the branch on req.UpstreamClaude — the same
+	// flag the fallback sets for FormatClaude upstreams — instead of
+	// req.TranslateResp is the difference: TranslateResp is false for a
+	// Chat Completions caller on a Claude-native provider (chat.go sets it
+	// false for claudeNative), so the old branch forwarded the raw Claude
+	// body and the OpenAI client's stream ended without finish_reason.
+	if req.UpstreamClaude {
+		if req.IsStream {
+			return handleClaudeMessagesStream(w, req, resp.Body)
+		}
+		return handleClaudeMessagesNonStream(w, req, resp.Body)
 	}
-	return handleClaudeMessagesNonStream(w, req, resp.Body)
-}
-if req.IsStream {
-	return execSSEStream(w, resp.Body, req)
-}
-return jsonResponse(req.Ctx, w, resp.Body, false, req.ResponseBuf)
+	if req.IsStream {
+		return execSSEStream(w, resp.Body, req)
+	}
+	return jsonResponse(req.Ctx, w, resp.Body, false, req.ResponseBuf)
 }
 
 // normalizedQuotaError rewrites a credits refusal carried by an upstream
@@ -196,7 +196,7 @@ func minimaxCodeHeaders(req *Request) map[string]string {
 	headers := map[string]string{
 		"Content-Type": "application/json",
 		// The placeholder the gateway requires beside the real bearer.
-		"x-api-key":               "sk-xxx",
+		"x-api-key": "sk-xxx",
 		// Every MiniMax Code / mavis request carries a default agent id,
 		// even when the connection config defines none in StaticHeaders.
 		"X-Mavis-Agent-Id":        "main",
