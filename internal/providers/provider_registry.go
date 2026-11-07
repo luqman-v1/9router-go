@@ -160,7 +160,7 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Priority:     20,
 		ServiceKinds: []string{"llm", "image", "webSearch"},
 		Website:      "https://antigravity.google",
-		Notice:       &Notice{SignupURL: "https://antigravity.google"},
+		Notice:       &Notice{Text: "Risk Notice: This provider uses a personal OAuth session not officially licensed for proxy gateways. Account may be restricted or suspended by the upstream provider. Use at your own risk.", SignupURL: "https://antigravity.google"},
 	},
 	"claude": {
 		ID:           "claude",
@@ -454,7 +454,7 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Icon:         "terminal",
 		ServiceKinds: []string{"llm"},
 		Website:      "https://github.com/google-gemini/gemini-cli",
-		Notice:       &Notice{SignupURL: "https://github.com/google-gemini/gemini-cli"},
+		Notice:       &Notice{Text: "Risk Notice: This provider uses a personal OAuth session not officially licensed for proxy gateways. Account may be restricted or suspended by the upstream provider. Use at your own risk.", SignupURL: "https://github.com/google-gemini/gemini-cli"},
 	},
 	"kiro": {
 		ID:           "kiro",

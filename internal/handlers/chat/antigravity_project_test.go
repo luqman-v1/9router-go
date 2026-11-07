@@ -164,8 +164,8 @@ func TestAntigravityProbe_HeadersAndMetadata(t *testing.T) {
 	if gotBodyMeta["ideType"] != float64(9) {
 		t.Errorf("body metadata ideType = %v, want 9", gotBodyMeta["ideType"])
 	}
-	if gotBodyMeta["platform"] != float64(2) {
-		t.Errorf("body metadata platform = %v, want 2", gotBodyMeta["platform"])
+	if gotBodyMeta["platform"] != float64(5) {
+		t.Errorf("body metadata platform = %v, want 5", gotBodyMeta["platform"])
 	}
 	if gotBodyMeta["pluginType"] != float64(2) {
 		t.Errorf("body metadata pluginType = %v, want 2", gotBodyMeta["pluginType"])

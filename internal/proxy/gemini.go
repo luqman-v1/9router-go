@@ -54,7 +54,8 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 			}
 		}
 
-		wrapped, err := translator.WrapAntigravityImageRequest(prompt, "", projectID, cleanModel, aspectRatio)
+		sessID := handlerutil.GetSessionID(ctx)
+		wrapped, err := translator.WrapAntigravityImageRequest(prompt, "", projectID, cleanModel, aspectRatio, sessID)
 		if err != nil {
 			return nil, fmt.Errorf("wrap antigravity image: %w", err)
 		}
@@ -84,7 +85,8 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 			}
 			sendBody = wrapped
 		case projectID != "":
-			wrapped, err := translator.WrapForAntigravity(geminiBody, projectID, modelName)
+			sessID := handlerutil.GetSessionID(ctx)
+			wrapped, err := translator.WrapForAntigravity(geminiBody, projectID, modelName, sessID)
 			if err != nil {
 				return nil, fmt.Errorf("wrap for antigravity: %w", err)
 			}
@@ -116,21 +118,22 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		requestURL = fmt.Sprintf("%s/v1beta/models/%s:%s", baseURL, modelName, action)
 	}
 
-	userAgent := providers.AntigravityCLIUserAgent
+	accept := "application/json"
+	if isStream {
+		accept = "text/event-stream"
+	}
+
 	headers := map[string]string{
 		"Content-Type":  "application/json",
 		"Authorization": "Bearer " + apiKey,
-		"User-Agent":    userAgent,
+		"User-Agent":    providers.AntigravityCLIUserAgent,
+		"Accept":        accept,
 	}
 	if cfg.Format == "gemini-cli" {
 		// Cloud Code Assist identifies the CLI in two more headers and answers
 		// 403 without them.
 		headers["User-Agent"] = translator.GeminiCLIUserAgent(modelName)
 		headers["X-Goog-Api-Client"] = translator.GeminiCLIApiClient
-		headers["Accept"] = "application/json"
-		if isStream {
-			headers["Accept"] = "text/event-stream"
-		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewReader(sendBody))
