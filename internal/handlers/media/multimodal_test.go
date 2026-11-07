@@ -541,12 +541,11 @@ func TestHandleImages_CloudflareFlux2DevKeepsDimensions(t *testing.T) {
 	// Negative check: flux-2-dev must NOT have width/height/size stripped,
 	// only flux-1-schnell is subject to Cloudflare's closed schema (upstream #5373).
 	var mu sync.Mutex
-	var captured map[string]any
+	var captured map[string]string
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
-		_ = json.Unmarshal(body, &captured)
+		captured = multipartFields(t, r)
 		mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
@@ -580,16 +579,13 @@ func TestHandleImages_CloudflareFlux2DevKeepsDimensions(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if _, hasWidth := captured["width"]; !hasWidth {
-		t.Errorf("expected width preserved for flux-2-dev, but it was stripped")
+	if v, ok := captured["width"]; !ok || v != "1024" {
+		t.Errorf("expected width preserved for flux-2-dev (multipart), got %v", captured["width"])
 	}
-	if _, hasHeight := captured["height"]; !hasHeight {
-		t.Errorf("expected height preserved for flux-2-dev, but it was stripped")
+	if v, ok := captured["height"]; !ok || v != "1024" {
+		t.Errorf("expected height preserved for flux-2-dev (multipart), got %v", captured["height"])
 	}
-	if _, hasSize := captured["size"]; !hasSize {
-		t.Errorf("expected size preserved for flux-2-dev, but it was stripped")
-	}
-	if prompt, _ := captured["prompt"].(string); prompt != "a red fox" {
+	if prompt := captured["prompt"]; prompt != "a red fox" {
 		t.Errorf("expected prompt preserved, got %q", prompt)
 	}
 }
