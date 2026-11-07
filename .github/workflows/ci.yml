@@ -628,6 +628,7 @@ jobs:
             esac
           }
           check 9router-go-linux-amd64        linux/amd64   "x86-64"
+          check 9router-go-linux-amd64-noavx  linux/amd64   "x86-64"
           check 9router-go-linux-arm64        linux/arm64   "aarch64"
           check 9router-go-darwin-amd64       darwin/amd64  "Mach-O 64-bit x86_64"
           check 9router-go-darwin-arm64       darwin/arm64  "Mach-O 64-bit arm64"
@@ -638,11 +639,12 @@ jobs:
       # The updater verifies a download against SHA256SUMS.txt before it renames
       # anything over the running binary, so a release whose sums are absent or
       # malformed is a release nobody can self-update from. `make cross`
-      # generates the file; this asserts it landed and covers all five names.
+      # generates the file; this asserts it landed and covers every name.
       - name: Assert SHA256SUMS covers every artifact
         run: |
           set -euo pipefail
-          for f in 9router-go-linux-amd64 9router-go-linux-arm64 \
+          for f in 9router-go-linux-amd64 9router-go-linux-amd64-noavx \
+                   9router-go-linux-arm64 \
                    9router-go-darwin-amd64 9router-go-darwin-arm64 \
                    9router-go-windows-amd64.exe 9router-go-tray-windows-amd64.exe; do
             grep -q "  $f\$" SHA256SUMS.txt || {
@@ -650,7 +652,7 @@ jobs:
               exit 1
             }
           done
-          echo "SHA256SUMS.txt covers all five artifacts:"
+          echo "SHA256SUMS.txt covers every artifact:"
           cat SHA256SUMS.txt
           # sha256sum -c reads the file it is given and exits non-zero on any
           # mismatch, which is the property the updater relies on.

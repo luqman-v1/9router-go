@@ -28,7 +28,19 @@ case "$ARCH" in
   *) fatal "unsupported architecture: $ARCH (amd64/arm64 only)" ;;
 esac
 
-ASSET="9router-go-${OS}-${ARCH}"
+# VARIANT=noavx installs the baseline x86-64 build for CPUs without AVX/AVX2
+# (Celeron/Pentium N-series, older Atom, some VMs). The default asset is built
+# the same way today, but the explicit name is what install-noavx.sh points at.
+VARIANT="${VARIANT:-}"
+case "$VARIANT" in
+  "") ;;
+  noavx)
+    [ "$ARCH" = "amd64" ] || fatal "VARIANT=noavx is only published for amd64"
+    ;;
+  *) fatal "unsupported VARIANT: $VARIANT (supported: noavx)" ;;
+esac
+
+ASSET="9router-go-${OS}-${ARCH}${VARIANT:+-${VARIANT}}"
 if [ "$VERSION" = "latest" ]; then
   URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
 else
