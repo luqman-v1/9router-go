@@ -1,5 +1,126 @@
 # Changelog
 
+## [v1.9.16-exp.6] - 2026-11-07
+
+### fix(media): rotate cloudflare-ai image requests across connections on quota
+
+An image generation to a `cloudflare-ai`/`cf` model failed the whole request when the selected account was out of its daily free Workers AI neuron allocation: the lane returned Cloudflare's quota refusal (`4006` / HTTP 429) to the client instead of trying the next connection, while chat completions already rotate accounts on retryable upstream errors (issue #988).
+
+The cloudflare image lane now mirrors that fallback:
+
+- **Retry loop**: on a retryable account-scoped refusal (`4006` quota, `429`, `401`, `403`) the lane parks the failed connection, excludes it for the remainder of the request via `GetBestConnectionWithContext`'s `excludeIDs`, and retries the next best account — up to `cloudflareMaxRetries` (6), terminating early once every account is excluded.
+- **Cooldown persistence**: a quota-drained account is parked until the next UTC midnight (when Cloudflare resets the 10k-neuron budget) via `LockConnectionRateLimit`, so the account selector skips it for the rest of the day — tomorrow it re-enters rotation automatically. Non-quota refusals park for 5 minutes.
+- **Pinned connections don't rotate**: when the caller pinned a specific connection (e.g. a combo member), the refusal is surfaced directly and the fallback walk stays with the caller, matching `handleAccountFallback`'s pinned branch.
+- **Non-retryable failures** (e.g. 400 model-not-found) still pass through to the client untouched.
+- Per-connection URL rebuilding means each account's own `accountId` is dialled during the walk.
+
+**Verified**: `go build ./cmd/9router-go/` OK, `go vet` and `go test ./internal/handlers/media/` pass, including the new `TestHandleImages_CloudflareRotationOnQuota` — account A returns `4006`, account B a real image, the request succeeds via B, A's `rateLimitedUntil` is set, and a second request never re-hits A. (Live smoke: the same behavior was observed against the reporter's accounts — priority-1 exhausted, priority-2 generating.)
+
+### fix(media): route cloudflare-ai image models to the /ai/run endpoint
+
+All Cloudflare Workers AI image requests were forwarded to the OpenAI-shaped
+`/ai/v1/images/generations` URL the vendor does not serve — even after the
+`{accountId}` fix (PR #865) landed, every `/v1/images/generations` call to a
+`cloudflare-ai`/`cf` model came back `400 code 7000 "No route for that URI"`
+(issue #864). FLUX.2 models were only special-cased when a reference image was
+present on the direct path; `flux-2-klein-9b` without one, plus every
+flux-1-schnell / stable-diffusion model, fell through to the broken generic
+forwarder.
+
+Mirrors upstream `decolua/9router` `open-sse/handlers/imageProviders/cloudflareAi.js`:
+
+- **Dedicated lane** (`internal/handlers/media/cloudflare_ai.go`): any
+  cloudflare-ai/cf image model now posts to `POST
+  /accounts/<accountId>/ai/run/<model>`, derived from the chat BaseURL after
+  `getProviderConfig` has substituted the account id (or the connection's custom
+  base URL verbatim).
+- **Body shape per model**: FLUX.2 (`flux-2-dev/-klein-4b/-klein-9b`) require
+  `multipart/form-data` even for text-only prompts; the older text-to-image
+  models take a JSON body. Dimensions come from `size` or `width`/`height`;
+  the FLUX.1 Schnell closed schema still rejects dimensions (upstream #5373).
+- **Reference images**: URL inputs are downloaded (SSRF-guarded) and sent
+  base64 as `image_b64`; the mask follows the same path.
+- **Response normalization**: Cloudflare's `{result:{image}}` / `{result:"url"}`
+  / raw-binary shapes are normalized to the OpenAI images shape `{created,
+  data:[{b64_json}|{url}]}` the client already expects.
+- The dead flux-2 reference-image forwarder, `isFluxSchnellModel` /
+  `isCloudflareFlux2Model` matching, and the generic-path dimension-stripping
+  blocks are removed.
+
+**Verified**: `go build ./cmd/9router-go/` OK; `go vet
+./internal/handlers/media/` clean; `go test ./internal/handlers/media/` passes
+including new `cloudflare_ai_test.go` coverage (flux-1-schnell JSON run,
+flux-2-klein-9b multipart run, reference-image pass-through, response
+normalization). The only `go test ./...` failures are pre-existing box-local
+ones in `internal/config` and `internal/handlers/dashboard` (a stray `.env` and
+a persisted dashboard password at `E:\project\database\9router\db\data.sqlite`),
+unchanged by this diff.
+
+### feat(kimi): normalize reasoning_effort so Kimi's backend doesn't 400
+
+A client-supplied `reasoning_effort` is normalized onto the values Kimi's
+backend accepts before the request is forwarded (upstream decolua/9router#2427):
+
+- `auto` → `high`
+- `minimal` → `low`
+- `xhigh` → `max`
+- `low`/`medium`/`high`/`max` pass through
+- `none`/`off` are dropped
+
+`thinking.ToKimiReasoningEffort` in `internal/thinking/levels.go` maps the
+intent onto Kimi's enum, and `internal/proxy/executor/kimi.go` applies it in
+`ForwardKimi` and `forwardKimiResponses` when the incoming body carries
+`reasoning_effort`. Unit tests cover the mapping table and the executor
+normalization.
+
+### strip client_metadata on Responses passthrough
+
+When a Responses request is passed through to an upstream Responses endpoint (or when relaying responses), `client_metadata` is stripped from the returned response body so downstream third-party OpenAI-compatible providers and strict schema validators do not reject the response with `additionalProperties "client_metadata" not allowed` (upstream decolua/9router v0.5.35).
+
+### feat(providers): give Vertex, Perplexity Web and gemini-cli working executors, and surface the custom system prompt
+
+Four provider lanes were registered in the catalogue but had no executor behind them, so a request to any of them POSTed an OpenAI body at a host that serves a different protocol.
+
+**Executors**
+- **Vertex / vertex-partner** (`ForwardVertex`): the registry entries carried no executor, so every request went to `aiplatform.googleapis.com` as an OpenAI body. Both ids share one implementation; the URL shape is decided inside from the provider id (`vertex` for the publisher-model path, `vertex-partner` for the partner-served one).
+- **Perplexity Web** (`ForwardPerplexityWeb`): not OpenAI-compatible in either direction — the request is a `query_str` envelope and the answer is Perplexity's own event stream — so the pass-through could not serve it.
+- **gemini-cli**: the lane shares a host family with antigravity but the envelope is different in kind. `ForwardGemini` now wraps for Cloud Code Assist (`{project, model, request}`, no `userId`/`requestType`/synthetic `requestId`), posts to `:generateContent` on the `v1internal` root, and sends the CLI's own `User-Agent`, `X-Goog-Api-Client` and `Accept`. `ProviderConfig.IsGeminiNative()` covers `gemini-cli` as well as `gemini-native`, because both speak a Gemini envelope and route through the same native handler.
+- `gemini-cli`'s `BaseURL` moves from the `daily-` bypass host to `cloudcode-pa.googleapis.com/v1internal`, which is where the CLI's project discovery actually lives.
+
+**Header parity**
+`GeminiCLIApiClient` and the CLI version in `GeminiCLIUserAgent` are pinned to what the current CLI sends (`google-genai-sdk/1.41.0 gl-node/v22.19.0`, `GeminiCLI/0.34.0`), matching the upstream registry. The comment in `gemini_cli.go` already notes that a model-id mismatch in the UA is answered with 403; a stale *version* is the same class of fingerprint mismatch, and it fails silently. A parity test pins both constants so the next upstream bump shows up as a test diff rather than a production 403.
+
+**Custom system prompt**
+`TokenSaverView` now exposes the `systemPromptEnabled` / `systemPromptPrefix` / `systemPromptSuffix` settings the engine already reads (`fallback.go:1466`). The prefix leads the system prompt and the suffix lands after it, where it survives a turn of untrusted content.
+
+**Verified**: `go build ./...`, `go test ./internal/proxy/executor/ ./internal/translator/ ./internal/providers/`, and `bunx oxlint --deny-warnings` all pass.
+
+### feat(gateway): serve the Gemini /v1beta surface, Ollama model listing, and CORS on health
+
+- **Gemini API surface**: `GET /v1beta/models` and `POST /v1beta/models/{model}:generateContent|:streamGenerateContent`. A Gemini SDK speaks only this protocol, so without these routes a Gemini client (the `@google/genai` client, the Python SDK, curl) could not use the gateway at all. The handler is a translation sandwich — the Gemini body becomes a Chat body, the existing Chat pipeline answers it — so model resolution, combos, key policy, fallback and usage accounting all apply unchanged. Streaming is pass-through: `geminiStreamWriter` parses and relays SSE frames as they arrive instead of buffering the whole response, so a long turn does not hold the body in memory and the client sees tokens immediately.
+- **Ollama model listing**: `GET /api/tags` and `GET /tags`, answered from the provider registry rather than the upstream's hardcoded two-model fixture, so `ollama list` shows the models the gateway can actually route. `ollamaFamily` strips only registry decoration (a leading provider path, a trailing `:tag`); it no longer cuts at the first digit, which rendered `kimi-k2.5` as `kimi-k`.
+- **Health probe CORS**: `GET /health` (and its `/api/health` alias) now carries `Access-Control-Allow-Origin: *`. The dashboard's tunnel and Tailscale cards probe this endpoint cross-origin, and without the header the probe failed on a healthy gateway.
+- **Preflights**: `OPTIONS` is registered per path for `/health`, `/api/health`, `/api/tags` and `/tags` — answering 204 with the CORS headers. They are mounted outside the API-key group because an `OPTIONS` request never carries credentials. The middleware is deliberately *not* changed: a blanket `OPTIONS` passthrough in `RequireApiKey` would have opened every protected route to unauthenticated callers. `TestSetupServerRouter_OptionsDoesNotBypassApiKeyElsewhere` pins that.
+- Shared CORS writes moved into `handlerutil.WriteCORSHeaders` / `WriteCORSPreflight`, replacing two hand-copied header blocks that were already starting to drift.
+
+### fix(translator): normalize corrupted thought signatures and purge on retry success
+
+- Normalize Gemini thought signatures in `internal/translator/thought_signature_store.go` and `gemini.go` to catch double-base64 wrapping (`Q0FR...`) and oversized entries (> 32KB) that trigger upstream `400 INVALID_ARGUMENT: "Corrupted thought signature."`.
+- Automatically fallback to `DefaultThinkingSignature` when corrupted signatures are detected.
+- Purge in-memory thought signatures for the session via `translator.PurgeSessionThoughtSignatures(sessionID)` upon retry success in `ForwardGemini` so corrupted entries do not poison subsequent conversation turns.
+
+### GitHub Copilot embeddings: wrap bare string input into an array
+
+When forwarding an embeddings request to GitHub Copilot (provider resolved as
+`github`/`gh` or `copilot`), Copilot requires `input` to be an array of strings.
+A bare string (`"input": "hello"`) was forwarded verbatim and rejected upstream.
+Now a bare string is wrapped into `["hello"]` before forwarding; an existing
+array is left untouched, and bodies without `input` are unchanged.
+
+Verified: `go test ./internal/handlers/media/` passes; new unit tests cover
+wrapping a bare string, leaving an array intact, and non-Copilot providers
+passing a bare string through unchanged.
+
 ## [v1.9.16-exp.5] - 2026-11-06
 
 ### fix(ci): bump brotli and compress to fix govulncheck (main red on Lint)
