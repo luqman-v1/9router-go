@@ -32,6 +32,26 @@ func TestGetPricingForModel_Parity(t *testing.T) {
 			found: true,
 		},
 		{
+			name: "mistral large", provider: "mistral", model: "mistral-large-latest",
+			want:  ModelPricing{InputPer1M: 2, OutputPer1M: 6},
+			found: true,
+		},
+		{
+			name: "mistral codestral", provider: "mistral", model: "codestral-latest",
+			want:  ModelPricing{InputPer1M: 0.3, OutputPer1M: 0.9},
+			found: true,
+		},
+		{
+			name: "mistral medium", provider: "mistral", model: "mistral-medium-latest",
+			want:  ModelPricing{InputPer1M: 2.7, OutputPer1M: 8.1},
+			found: true,
+		},
+		{
+			name: "mistral embed", provider: "mistral", model: "mistral-embed",
+			want:  ModelPricing{InputPer1M: 0.1, OutputPer1M: 0},
+			found: true,
+		},
+		{
 			// The vendor prefix is stripped before the canonical lookup.
 			name: "vendor-prefixed id", provider: "cline", model: "deepseek/deepseek-v4.1-flash",
 			want:  ModelPricing{InputPer1M: 0.14, OutputPer1M: 0.28, CachedPer1M: 0.0028, ReasoningPer1M: 0.28, CacheCreationPer1M: 0.14},

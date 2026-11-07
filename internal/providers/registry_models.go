@@ -191,7 +191,7 @@ var ProviderModels = map[string][]string{
 	"minimax-cn":          {"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "speech-2.8-hd", "speech-2.8-turbo", "speech-2.6-hd", "speech-2.6-turbo", "speech-02-hd", "speech-02-turbo", "speech-01-hd", "speech-01-turbo"},
 	"minimax-code":        {"MiniMax-M3.1-Flash-Preview", "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"},
 	"minimax-code-global": {"MiniMax-M3.1-Flash-Preview", "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"},
-	"mistral":             {"mistral-large-latest", "codestral-latest", "mistral-medium-latest", "mistral-embed"},
+	"mistral":             {"mistral-large-latest", "pixtral-large-latest", "mistral-small-latest", "codestral-latest", "mistral-medium-latest", "ministral-8b-latest", "ministral-3b-latest", "mistral-saba-latest", "pixtral-12b-2409", "codestral-mamba-latest", "mistral-moderation-latest", "mistral-embed"},
 	"muse":                {"muse-spark-1.3", "muse-spark-1.2", "muse-spark-1.1", "muse-spark-1.3-contributor", "muse-spark-1.2-contributor"},
 	"mmf":                 {"mimo-auto"},
 	"morph":               {"morph-v3-large", "morph-v3-fast", "morph-qwen35-397b", "morph-minimax27-230b", "morph-qwen36-27b", "morph-dsv4flash"},
@@ -578,7 +578,8 @@ var ProviderModelKinds = map[string]map[string]string{
 		"speech-2.8-turbo": "tts",
 	},
 	"mistral": {
-		"mistral-embed": "embedding",
+		"mistral-embed":             "embedding",
+		"mistral-moderation-latest": "moderation",
 	},
 	"nanobanana": {
 		"nanobanana-flash": "image",
