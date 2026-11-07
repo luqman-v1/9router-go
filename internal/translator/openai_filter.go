@@ -39,6 +39,12 @@ var validOpenAIContentTypes = map[string]bool{
 // on DashScope), so the filter must not strip them.
 type FilterOptions struct {
 	PreserveCacheControl bool
+	// StrictReasoningRemoving removes reasoning fields (reasoning_content,
+	// reasoning, reasoning_details) echoed on assistant history. Upstream
+	// paramSupport strips these for groq/mistral/cerebras: strict validators
+	// reject unknown assistant-message fields, which knocks those providers
+	// out of every multi-turn combo where a client replays prior reasoning.
+	StrictReasoningRemoving bool
 }
 
 // FilterToOpenAIFormat normalises a body to clean OpenAI shape — port of

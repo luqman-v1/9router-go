@@ -19,6 +19,19 @@ func filterMessages(msgs []any, opts FilterOptions) ([]any, bool) {
 			continue
 		}
 		role, _ := msg["role"].(string)
+		if opts.StrictReasoningRemoving && role == "assistant" {
+			copied := false
+			for _, key := range []string{"reasoning_content", "reasoning", "reasoning_details"} {
+				if _, has := msg[key]; has {
+					if !copied {
+						msg = shallowCopy(msg)
+						copied = true
+					}
+					delete(msg, key)
+					changed = true
+				}
+			}
+		}
 		if role == "developer" {
 			msg = shallowCopy(msg)
 			msg["role"] = "system"

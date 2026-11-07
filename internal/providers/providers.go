@@ -1491,6 +1491,18 @@ func PreservesCacheControl(provider string) bool {
 	}
 	return false
 }
+// StrictReasoningRemoving reports whether a provider rejects unknown
+// assistant-message reasoning fields echoed on history (upstream
+// paramSupport dropMessageFields): groq, mistral, and cerebras answer 400
+// or 422 on reasoning_content/reasoning/reasoning_details replayed by
+// reasoning clients (e.g. Hermes).
+func StrictReasoningRemoving(provider string) bool {
+	switch provider {
+	case "groq", "mistral", "cerebras":
+		return true
+	}
+	return false
+}
 
 // IsLocalByDesign reports whether a provider's official upstream is intended
 // to run locally on loopback (e.g. ollama-local on localhost:11434).

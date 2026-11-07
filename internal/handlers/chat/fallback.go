@@ -851,7 +851,8 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		pipedBody = thinking.ApplyJSON(pipedBody, target, provider, wireModel, thinkingIntent)
 		if target == "openai" && !providerCfg.IsGeminiNative() {
 			filtered, filterErr := translator.FilterToOpenAIFormatJSON(pipedBody, translator.FilterOptions{
-				PreserveCacheControl: providers.PreservesCacheControl(provider),
+				PreserveCacheControl:    providers.PreservesCacheControl(provider),
+				StrictReasoningRemoving: providers.StrictReasoningRemoving(provider),
 			})
 			if filterErr != nil {
 				// The request lost every message. The upstream answers an

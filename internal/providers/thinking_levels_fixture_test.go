@@ -29,6 +29,13 @@ const upstreamLevelsFixtureVersion = "v0.5.109"
 // codebuddy-cn/deepseek-v4.1-flash resolves to: the tag's answer is the
 // generic set, the PR's is codebuddy-cn's published set.
 var pendingUpstreamDivergences = map[string]map[string][]string{
+	// Groq gpt-oss accepts only low|medium|high (probed live: minimal/xhigh/auto/none/max
+	// all answer 400). Upstream still advertises the openai format default
+	// [none..xhigh] for groq/gpt-oss, so the picker would offer levels Groq
+	// rejects. Go-intentional divergence, not pending.
+	"groq": {
+		"openai/gpt-oss-120b": {"low", "medium", "high"},
+	},
 	// Upstream #4614 also dropped glm-5v-turbo / kimi-k2.7 / kimi-k2.6 from
 	// the codebuddy-cn capability table, and v0.5.99 keeps them dropped. Go
 	// keeps the rows so a saved combo naming one stays routable, which leaves
