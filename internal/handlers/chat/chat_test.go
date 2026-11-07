@@ -13,6 +13,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/dbtest"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
 	"os"
 )
@@ -1402,13 +1403,24 @@ func TestAccountFallback_NonRetryableError(t *testing.T) {
 		t.Errorf("expected 500, got %d", rec.Code)
 	}
 
-	// Verify no lock was created for 500 error
+	// Blockers #3: a gateway fault (500-504) now records a transient cooldown
+	// badge and locks the model so the account is not re-dialled immediately.
 	locked, err := repo.IsConnectionModelLocked("conn-500", "deepseek-chat")
 	if err != nil {
 		t.Fatalf("IsConnectionModelLocked failed: %v", err)
 	}
-	if locked {
-		t.Error("expected no model lock for non-retryable 500 error")
+	if !locked {
+		t.Error("expected a model lock for gateway fault 500 (cooldown)")
+	}
+	dep, err := repo.GetModelDeprecation("deepseek", "deepseek-chat")
+	if err != nil {
+		t.Fatalf("GetModelDeprecation failed: %v", err)
+	}
+	if dep.Status != providers.DeprecationCooldown {
+		t.Errorf("deprecation status = %q, want %q (gateway fault earns a cooldown)", dep.Status, providers.DeprecationCooldown)
+	}
+	if dep.CooldownUntil == "" {
+		t.Error("cooldown badge must stamp CooldownUntil")
 	}
 }
 
