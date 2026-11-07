@@ -475,8 +475,20 @@ func (h *ChatHandler) fetchCompatibleNodeModels(ctx context.Context, conn *model
 	if apiKey == "" {
 		apiKey = connData.AccessToken
 	}
-	baseURL, _ := connData.ProviderSpecificData["baseUrl"].(string)
+	baseURL := strings.TrimSpace(connData.BaseURL)
+	if baseURL == "" {
+		baseURL, _ = connData.ProviderSpecificData["baseUrl"].(string)
+	}
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		// A compatible node keeps its endpoint on the node row, not on every
+		// connection: adding a key under a node asks for the credential alone.
+		// Without this lookup the catalogue request had no URL to call, so a
+		// node that was configured and working never published a live list.
+		if _, nodeData, err := h.Repo.GetProviderNodeByID(providerID); err == nil && nodeData != nil {
+			baseURL = strings.TrimRight(strings.TrimSpace(nodeData.BaseURL), "/")
+		}
+	}
 	if apiKey == "" || baseURL == "" {
 		return nil
 	}
@@ -485,6 +497,7 @@ func (h *ChatHandler) fetchCompatibleNodeModels(ctx context.Context, conn *model
 	switch {
 	case strings.HasPrefix(providerID, "openai-compatible-"):
 		headers["Authorization"] = "Bearer " + apiKey
+		baseURL = CompatibleNodeModelsURL(baseURL)
 	case strings.HasPrefix(providerID, "anthropic-compatible-"):
 		baseURL = strings.TrimSuffix(baseURL, "/messages/models")
 		if !strings.HasSuffix(baseURL, "/messages") {
@@ -550,6 +563,28 @@ func parseOpenAIStyleModelIDs(body []byte) []LiveModel {
 		out = append(out, LiveModel{ID: id})
 	}
 	return out
+}
+
+// CompatibleNodeModelsURL derives a compatible node's catalogue endpoint from
+// the same completed chat route a request uses, so both routes sit on the
+// prefix the operator configured. Appending a fixed "/v1/models" instead
+// doubled the version in AnyRouter's documented base
+// (https://anyrouter.dev/api/v1 became /api/v1/v1/models) while a bare host
+// was asked for /models even though its chat route gains /v1 — neither is the
+// models route belonging to the chat endpoint beside it.
+//
+// Exported because the dashboard's "Import from /models" fetch asks the same
+// question for the same node, and its answer must agree with the live
+// catalogue's.
+func CompatibleNodeModelsURL(baseURL string) string {
+	completed := ChatCompletionsURL(baseURL)
+	if route := strings.TrimSuffix(completed, "/chat/completions"); route != completed {
+		return route + "/models"
+	}
+	// A URL that names its own endpoint is left untouched by
+	// ChatCompletionsURL; that endpoint keeps its own /models child, which is
+	// what this call did before the derivation existed.
+	return strings.TrimRight(completed, "/") + "/models"
 }
 
 // parseGrokCLILiveModels mirrors upstream parseGrokCliModels: the catalog may

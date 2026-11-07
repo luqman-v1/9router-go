@@ -22,6 +22,7 @@ import (
 
 	"9router/proxy/internal/customjson"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlers/media"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
@@ -360,7 +361,7 @@ func (h *DashboardHandler) validateProviderNodeConnection(
 
 	// 3. OpenAI Compatible (Default)
 	base := strings.TrimSuffix(baseURL, "/")
-	status, body, err := validateProbeDo(ctx, http.MethodGet, base+"/models", map[string]string{
+	status, body, err := validateProbeDo(ctx, http.MethodGet, chat.CompatibleNodeModelsURL(base), map[string]string{
 		"Authorization": "Bearer " + apiKey,
 	}, nil)
 	if err != nil {
@@ -403,7 +404,7 @@ func (h *DashboardHandler) validateProviderNodeConnection(
 		"max_tokens": 1,
 		"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 	})
-	chatStatus, _, chatErr := validateProbeDo(ctx, http.MethodPost, base+"/chat/completions", map[string]string{
+	chatStatus, _, chatErr := validateProbeDo(ctx, http.MethodPost, chat.ChatCompletionsURL(base), map[string]string{
 		"Authorization": "Bearer " + apiKey,
 		"Content-Type":  "application/json",
 	}, chatPayload)
