@@ -274,6 +274,14 @@ func (h *ChatHandler) handleAccountFallback(
 			lastErr = ue
 			continue
 		}
+		// A model-level fault that is not a permanent deprecation (404,
+		// model-scoped 429, or gateway fault 500-504) earns a transient
+		// cooldown badge: the model is temporarily unavailable, not gone.
+		// One cooldown per business request per model — deduped by the TTL
+		// cache inside recordModelCooldown.
+		if errors.As(lastErr, &ue) {
+			h.recordModelCooldown(ctx, provider, model, connObj.ID, ue)
+		}
 		if errors.As(lastErr, &ue) && providers.RetryableStatusCodes[ue.StatusCode] {
 			if handlerutil.IsProbeContext(ctx) {
 				excludeIDs = append(excludeIDs, connObj.ID)
