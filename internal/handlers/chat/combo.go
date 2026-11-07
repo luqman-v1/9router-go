@@ -706,6 +706,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 
 func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *committedResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, visited map[string]bool, isRoot bool, adapterModels ...string) {
 	var lastErr *upstreamError
+	// noReplay ends the turn after a custom JSON business attempt, whose
+	// operation must never be repeated against another connection or model.
+	var noReplay bool
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
 	modelTimedOut := false
@@ -893,9 +896,20 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 				fwdCtx := candidateCtx
 				targetWriter := candidateWriter
 				var streamPeeker *internalproxy.StreamContentPeeker
+				customJSON := isCustomJSONConn(connData)
+				// The response timeout advances a combo to the next member,
+				// which for a business endpoint would replay its operation.
+				// Its member runs to completion instead; a gate that already
+				// fired leaves the request unsent and falls back as usual.
+				if customJSON && timeoutGate != nil {
+					timeoutGate.disarm()
+				}
+				// A custom JSON answer is final even when empty, so it is served
+				// like the last member's rather than probed for a fallback that
+				// would replay the business request.
 				if !isStream {
-					fwdCtx = internalproxy.WithZeroContentProbe(candidateCtx, !isLastModel)
-				} else if !isLastModel {
+					fwdCtx = internalproxy.WithZeroContentProbe(candidateCtx, !isLastModel && !customJSON)
+				} else if !isLastModel && !customJSON {
 					streamPeeker = internalproxy.NewStreamContentPeeker(candidateWriter)
 					targetWriter = streamPeeker
 				}
@@ -957,6 +971,12 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 						var ue *upstreamError
 						errors.As(fwdErr, &ue)
 						lastErr = ue
+						break
+					}
+					if _, refused := providerLimitRefusal(fwdErr); customJSON && !refused {
+						log.Warn("combo", "custom JSON attempt failed, not replaying", "provider", modelInfo.Provider, "conn", connID)
+						lastErr = customJSONTerminalError(fwdErr)
+						noReplay = true
 						break
 					}
 					if attempt, refused := providerLimitRefusal(fwdErr); refused {
@@ -1050,14 +1070,14 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}
-			if isGuardrailBlock(lastErr) {
+			if noReplay || isGuardrailBlock(lastErr) {
 				// A policy refusal ends the whole turn, not just this entry: the
 				// next model would be sent the same prompt and answer with the
 				// same refused content.
 				break
 			}
 		}
-		if isGuardrailBlock(lastErr) {
+		if noReplay || isGuardrailBlock(lastErr) {
 			break
 		}
 
@@ -1158,6 +1178,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 
 func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context, cw *committedResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int, visited map[string]bool, isRoot bool, adapterModels ...string) {
 	var lastErr *upstreamError
+	// noReplay ends the turn after a custom JSON business attempt, whose
+	// operation must never be repeated against another connection or model.
+	var noReplay bool
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
 	modelTimedOut := false
@@ -1301,9 +1324,20 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 				fwdCtx := candidateCtx
 				targetWriter := candidateWriter
 				var streamPeeker *internalproxy.StreamContentPeeker
+				customJSON := isCustomJSONConn(connData)
+				// The response timeout advances a combo to the next member,
+				// which for a business endpoint would replay its operation.
+				// Its member runs to completion instead; a gate that already
+				// fired leaves the request unsent and falls back as usual.
+				if customJSON && timeoutGate != nil {
+					timeoutGate.disarm()
+				}
+				// A custom JSON answer is final even when empty, so it is served
+				// like the last member's rather than probed for a fallback that
+				// would replay the business request.
 				if !isStream {
-					fwdCtx = internalproxy.WithZeroContentProbe(candidateCtx, !isLastModel)
-				} else if !isLastModel {
+					fwdCtx = internalproxy.WithZeroContentProbe(candidateCtx, !isLastModel && !customJSON)
+				} else if !isLastModel && !customJSON {
 					streamPeeker = internalproxy.NewStreamContentPeeker(candidateWriter)
 					targetWriter = streamPeeker
 				}
@@ -1357,6 +1391,12 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 						var blocked *upstreamError
 						errors.As(fwdErr, &blocked)
 						lastErr = blocked
+						break
+					}
+					if _, refused := providerLimitRefusal(fwdErr); customJSON && !refused {
+						log.Warn("combo", "custom JSON attempt failed, not replaying", "provider", modelInfo.Provider, "conn", connID)
+						lastErr = customJSONTerminalError(fwdErr)
+						noReplay = true
 						break
 					}
 					if attempt, refused := providerLimitRefusal(fwdErr); refused {
@@ -1443,12 +1483,12 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}
-			if isGuardrailBlock(lastErr) {
+			if noReplay || isGuardrailBlock(lastErr) {
 				// See handleComboFallback: a policy refusal ends the turn.
 				break
 			}
 		}
-		if isGuardrailBlock(lastErr) {
+		if noReplay || isGuardrailBlock(lastErr) {
 			break
 		}
 

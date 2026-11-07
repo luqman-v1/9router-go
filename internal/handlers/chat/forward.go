@@ -564,7 +564,7 @@ func (h *ChatHandler) handleJSONResponse(ctx context.Context, w http.ResponseWri
 			return &internalproxy.ZeroContentError{Body: body}
 		}
 		// The last member of a combo serves its zero-content response normally (FR3).
-	} else if err := internalproxy.EmptyUpstreamError(body); err != nil {
+	} else if err := internalproxy.EmptyUpstreamError(body); err != nil && !internalproxy.EmptyCompletionAllowed(ctx) {
 		return err
 	}
 
