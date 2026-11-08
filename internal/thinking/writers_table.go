@@ -41,8 +41,48 @@ func writeOpenAI(c *writerCtx) {
 		c.body["reasoning_effort"] = "none"
 		return
 	}
-	if lvl := ToLevel(c.eff); lvl != "" {
+	lvl := ToLevel(c.eff)
+	if lvl != "" {
 		c.body["reasoning_effort"] = levelFor(lvl, c.supported)
+	}
+	applyOpenAIOutputFloor(c, lvl)
+}
+
+// applyOpenAIOutputFloor ensures the level-sized output floor for the
+// OpenAI wire. A model that cannot disable thinking spends reasoning
+// inside max_completion_tokens, and a client budget that is too small is
+// eaten whole by reasoning before any answer is produced. The raise
+// honours max_tokens first (OpenAI's legacy spelling, which cannot
+// coexist with max_completion_tokens upstream — fallback.go drops the
+// loser), then max_completion_tokens. When the client sent neither,
+// max_tokens is written: it is the canonical name on the Chat Completions
+// wire this dialect targets. Disabled requests never reach here (the
+// early return above), so an explicit none on a model that can disable
+// keeps the client's small budget untouched. The floor is level budget
+// + headroom, capped at caps.MaxOutput — the same shape as the Claude
+// floor in ensureClaudeOutputFloor.
+func applyOpenAIOutputFloor(c *writerCtx, lvl string) {
+	floor := BudgetForLevel(lvl) + claudeThinkingOutputHeadroom
+	if floor <= 0 {
+		return
+	}
+	limit := floor
+	if c.caps.MaxOutput > 0 && c.caps.MaxOutput < limit {
+		limit = c.caps.MaxOutput
+	}
+	sent := false
+	for _, field := range []string{"max_tokens", "max_completion_tokens"} {
+		cur, ok := numberField(c.body[field])
+		if !ok {
+			continue
+		}
+		sent = true
+		if cur < limit {
+			c.body[field] = limit
+		}
+	}
+	if !sent {
+		c.body["max_tokens"] = limit
 	}
 }
 
@@ -54,7 +94,8 @@ func writeOpenAIResponses(c *writerCtx) {
 		delete(c.body, "reasoning")
 		return
 	}
-	if lvl := ToLevel(c.eff); lvl != "" {
+	lvl := ToLevel(c.eff)
+	if lvl != "" {
 		cur, _ := c.body["reasoning"].(map[string]any)
 		if cur == nil {
 			cur = map[string]any{}
@@ -66,6 +107,42 @@ func writeOpenAIResponses(c *writerCtx) {
 		c.body["reasoning"] = cur
 	}
 	delete(c.body, "reasoning_effort")
+	applyOpenAIResponsesOutputFloor(c, lvl)
+}
+
+// applyOpenAIResponsesOutputFloor ensures the level-sized output floor
+// for the Responses wire. Reasoning on the Responses API is billed out of
+// max_output_tokens, and a client budget that is too small is eaten whole
+// by reasoning before any answer is produced. The raise honours
+// max_output_tokens when the client sent it, falling back to max_tokens —
+// responses_request.go maps the former onto the latter before dispatch,
+// so whichever the client used, only that spelling is raised. The floor
+// is level budget + headroom, capped at caps.MaxOutput, matching
+// applyOpenAIOutputFloor. Disabled requests never reach here (the early
+// return above).
+func applyOpenAIResponsesOutputFloor(c *writerCtx, lvl string) {
+	floor := BudgetForLevel(lvl) + claudeThinkingOutputHeadroom
+	if floor <= 0 {
+		return
+	}
+	limit := floor
+	if c.caps.MaxOutput > 0 && c.caps.MaxOutput < limit {
+		limit = c.caps.MaxOutput
+	}
+	sent := false
+	for _, field := range []string{"max_output_tokens", "max_tokens"} {
+		cur, ok := numberField(c.body[field])
+		if !ok {
+			continue
+		}
+		sent = true
+		if cur < limit {
+			c.body[field] = limit
+		}
+	}
+	if !sent {
+		c.body["max_output_tokens"] = limit
+	}
 }
 
 func writeClaudeAdaptive(c *writerCtx) {
