@@ -1097,7 +1097,11 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	fwdErr = guardrailStreamOutcome(gtap, fwdErr)
 
 	var ue *upstreamError
-	if errors.As(fwdErr, &ue) && ue.StatusCode == http.StatusUnauthorized && connectionID != "" {
+	// An account that is already parked for a dead grant never gets a forced
+	// refresh: the refresh has already been refused, and re-spending the
+	// single-use token on the same request would only log the rejection again
+	// and re-park. The 401 stands and the account loop below moves on.
+	if errors.As(fwdErr, &ue) && ue.StatusCode == http.StatusUnauthorized && connectionID != "" && !connectionParkedForReauth(h, connectionID) {
 		refreshedKey, _, rErr := h.forceRefreshOAuthToken(connectionID)
 		if rErr == nil && refreshedKey != "" && refreshedKey != apiKey {
 			log.Info("fallback", "reactive 401 token refresh success, retrying request", "conn", connectionID)

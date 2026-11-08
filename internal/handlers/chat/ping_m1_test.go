@@ -107,3 +107,35 @@ func TestPingStaysOnThePinnedActiveConnection(t *testing.T) {
 		t.Errorf("other connection hit %d times, want 0", got)
 	}
 }
+// A parked dead-grant account must stay ineligible even under a probe: the
+// upstream answer is already known (401 invalid access token), and the probe
+// bypass exists to test live reachability, not to re-spend a dead grant.
+func TestPingDoesNotBypassParkedDeadGrant(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE id IN ('conn-1', 'conn-2')`); err != nil {
+		t.Fatalf("clear seeded connections: %v", err)
+	}
+	var hits atomic.Int32
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Error(w, `{"error":"invalid access token"}`, http.StatusUnauthorized)
+	}))
+	defer dead.Close()
+
+	seedConnDB(t, database, "deepseek", "conn-dead", "sk-dead", dead.URL)
+	parkedData := `{"apiKey":"sk-dead","baseUrl":"` + dead.URL + `","oauthLockedUntil":"2099-01-01T00:00:00Z","testStatus":"reauth_required"}`
+	if _, err := database.Exec(`UPDATE providerConnections SET data = ? WHERE id = 'conn-dead'`, parkedData); err != nil {
+		t.Fatalf("park connection: %v", err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	body := []byte(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`)
+	if err := h.PingConnection(handlerutil.WithProbeContext(context.Background()), "deepseek", "deepseek-chat", "conn-dead", body); err == nil {
+		t.Fatal("PingConnection must refuse a parked dead-grant account")
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("parked connection hit %d times, want 0", got)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -209,9 +210,23 @@ type usageRefreshOutcome struct {
 // runUsageRefresh performs one guarded refresh. It returns err only for a
 // failure the caller should surface; a provider with no refresher is not an
 // error, it is simply nothing to do.
+//
+// An account that already carries a dead-grant park (testStatus
+// reauth_required) is skipped: re-spending the single-use refresh token
+// would answer invalid_grant again and bump the failure counter behind a
+// request the caller must not make. The caller keeps the stored access
+// token and reads with it, so the panel still renders while the badge
+// says to re-authorize.
 func (h *DashboardHandler) runUsageRefresh(ctx context.Context, conn *models.ProviderConnection, creds usageCredentials) usageRefreshOutcome {
 	if !canAttemptRefresh(conn, creds.raw) {
 		return usageRefreshOutcome{}
+	}
+	if h.Repo != nil {
+		if latest, err := h.Repo.GetProviderConnectionByID(conn.ID); err == nil && latest != nil {
+			if db.ConnectionRequiresReauth(latest.Data) {
+				return usageRefreshOutcome{}
+			}
+		}
 	}
 	creds = h.adoptStoredUsageCredentials(ctx, conn, creds)
 	result, err := h.refreshUsageCredentials(ctx, conn, creds, nil)

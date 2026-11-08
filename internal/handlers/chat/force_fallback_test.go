@@ -180,3 +180,32 @@ func TestGetBestConnection_ForceFallbackIgnoresModelLocks(t *testing.T) {
 		t.Fatal("a model-locked account must stay out even with force fallback on")
 	}
 }
+// An account parked for a dead OAuth grant is terminal: waiting it out
+// cannot help, so force fallback must not resurrect it even when it is the
+// only candidate. That is the minimax-code-global incident shape: the
+// account was parked (testStatus reauth_required) and the operator's
+// FORCE_FALLBACK_ON_ALL_UNAVAILABLE toggle handed it back for a guaranteed
+// 401 invalid access token on every request.
+func TestForceMinCooldownConnection_SkipsReauthRequired(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	dropSeededConn(t, database)
+	inTwoMinutes := time.Now().UTC().Add(2 * time.Minute)
+	reauthData := `{"apiKey":"sk-test-deepseek-key","rateLimitedUntil":"` + inTwoMinutes.UTC().Format(time.RFC3339) + `","oauthLockedUntil":"` + inTwoMinutes.UTC().Format(time.RFC3339) + `","testStatus":"reauth_required"}`
+	insertDeepseekConn(t, database, "conn-dead", 1, reauthData)
+	seedForceFallback(t, database)
+
+	handler := NewChatHandler(db.NewRepo(database))
+	conns, err := handler.Repo.GetProviderConnections("deepseek", true)
+	if err != nil {
+		t.Fatalf("GetProviderConnections: %v", err)
+	}
+	settings := &db.SettingsData{ForceFallback: true}
+	if _, _, ok := handler.forceMinCooldownConnection("deepseek", conns, map[string]bool{}, "deepseek-chat", settings); ok {
+		t.Fatal("force fallback must not resurrect a reauth_required account")
+	}
+	if _, _, err := handler.getBestConnection("deepseek", "", nil, "deepseek-chat"); err == nil {
+		t.Fatal("expected an error when the only candidate needs re-auth, even with force fallback on")
+	}
+}
