@@ -110,6 +110,14 @@ var ErrorRules = []ErrorRule{
 	// forever. The generic 403 rule cannot tell them apart.
 	{Provider: "deepseek-web", Text: "refused this account", CooldownMs: cooldownBannedAccount},
 	{Provider: "deepseek-web", Text: "refused this address", CooldownMs: cooldownAddressRefused},
+	// Google permanently disables Antigravity OAuth accounts for ToS
+	// violations; nothing clears until the operator wins an appeal.
+	{Provider: "antigravity", Text: "disabled in this account for violation", CooldownMs: cooldownBannedAccount},
+	// tos_violation is deliberately NOT a standalone 24h rule: a bare
+	// tos_violation (another provider's refusal, or a user prompt echoed
+	// into an error) must not park a healthy connection. The real Google
+	// ban carries the "disabled in this account" sentence above plus the
+	// cloudcode-pa domain, which is what parks the account for 24h.
 	{Text: "no credentials", CooldownMs: cooldownLong},
 	{Text: "request not allowed", CooldownMs: cooldownShort},
 	{Text: "rate limit", Backoff: true},
@@ -241,6 +249,9 @@ var permanentFailurePatterns = []string{
 	"account suspended",
 	"account disabled",
 	"not found",
+	// Antigravity ToS bans never clear by waiting.
+	"this service has been disabled in this account",
+	"tos_violation",
 }
 
 // LooksLikePermanentFailure reports whether an error means the credential is
