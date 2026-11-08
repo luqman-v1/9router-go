@@ -271,11 +271,9 @@ func StreamChatToResponses(ctx context.Context, w http.ResponseWriter, upstream 
 // step, and flush per event so the client sees them as they arrive.
 func responsesWriter(o sseStreamOpts, hw *proxy.HeartbeatWriter, flusher http.Flusher, startTime time.Time) func([]byte) error {
 	return func(frame []byte) error {
-		if o.TTFT != nil && *o.TTFT == 0 {
-			*o.TTFT = time.Since(startTime).Milliseconds()
-		}
+		markTTFT(&Request{TTFT: o.TTFT, StartTime: startTime}, startTime)
 		if o.Buf != nil {
-			o.Buf.Write(frame)
+			_, _ = o.Buf.Write(frame)
 		}
 		if _, err := hw.Write(frame); err != nil {
 			return err

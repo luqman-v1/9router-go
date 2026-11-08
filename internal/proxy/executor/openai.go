@@ -458,11 +458,9 @@ func sseStream(o sseStreamOpts) error {
 						doneSent = true
 						return
 					}
-					if ttft != nil && *ttft == 0 {
-						*ttft = time.Since(startTime).Milliseconds()
-					}
+					markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 					if buf != nil {
-						buf.Write(ev.Payload)
+						_, _ = buf.Write(ev.Payload)
 					}
 					var line []byte
 					if ev.Type != "" {
@@ -506,11 +504,9 @@ func sseStream(o sseStreamOpts) error {
 		composerDecoder := &composerThinkingDecoder{}
 		patchers = append(patchers, composerDecoder.Process)
 		return proxy.SSECopy(hw, upstream, flusher, func(chunk []byte) {
-			if ttft != nil && *ttft == 0 {
-				*ttft = time.Since(startTime).Milliseconds()
-			}
+			markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 			if buf != nil {
-				buf.Write(chunk)
+				_, _ = buf.Write(chunk)
 			}
 			captureUsageFromSSEChunk(ctx, chunk)
 		}, patchers...)
@@ -537,11 +533,9 @@ func sseStream(o sseStreamOpts) error {
 		if bytes.Contains(translated, []byte("[DONE]")) {
 			finished = true
 		}
-		if ttft != nil && *ttft == 0 {
-			*ttft = time.Since(startTime).Milliseconds()
-		}
+		markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 		if buf != nil {
-			buf.Write(translated)
+			_, _ = buf.Write(translated)
 		}
 		hw.Write(translated)
 		if flusher != nil {

@@ -1827,7 +1827,7 @@ func forwardOpencodeGoGemini(w http.ResponseWriter, req *Request, cleanModel, se
 	}
 
 	if req.IsStream {
-		return geminiStream(w, resp.Body, ctx)
+		return geminiStream(w, resp.Body, ctx, req)
 	}
 	return geminiNonStream(w, resp.Body)
 }

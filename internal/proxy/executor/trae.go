@@ -121,9 +121,7 @@ func ForwardTrae(w http.ResponseWriter, req *Request) error {
 		w.Header().Set("Connection", "keep-alive")
 		flusher, _ := w.(http.Flusher)
 		emit := func(chunk map[string]any) error {
-			if req.TTFT != nil && *req.TTFT == 0 {
-				*req.TTFT = time.Since(req.StartTime).Milliseconds()
-			}
+			markTTFT(req, req.StartTime)
 			b, jerr := json.Marshal(chunk)
 			if jerr != nil {
 				return jerr
