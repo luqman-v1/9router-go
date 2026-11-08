@@ -791,12 +791,8 @@ func zedWriteWhole(w http.ResponseWriter, req *Request, wire ZedWireModel, data 
 	// body before answering. The metric still belongs to the first upstream
 	// byte: without this the request is logged with no time-to-first-token at
 	// all, which is indistinguishable from an executor that never tracked it.
-	if req.TTFT != nil && *req.TTFT == 0 && len(data) > 0 {
-		start := req.StartTime
-		if start.IsZero() {
-			start = time.Now()
-		}
-		*req.TTFT = time.Since(start).Milliseconds()
+	if len(data) > 0 {
+		markTTFT(req, req.StartTime)
 	}
 	if zedLooksLikeJSONL(data) {
 		// JSON Lines: re-frame as SSE, then fold it into the single document

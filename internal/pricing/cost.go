@@ -38,7 +38,7 @@ var (
 	// routed on the keyed paid lane (#410). That divergence is deliberate and
 	// recorded in internal/providers/model_formats_pricing_divergence_test.go,
 	// which fails when a new id starts disagreeing silently.
-	KnownFreeModels     = []string{"big-pickle"}
+	KnownFreeModels = []string{"big-pickle"}
 )
 
 // zeroPricing is what a free-namespace model costs.

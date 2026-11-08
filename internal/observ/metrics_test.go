@@ -128,15 +128,15 @@ func TestRecordRequestLabels(t *testing.T) {
 
 func TestRecordUsage(t *testing.T) {
 	tests := []struct {
-		name          string
-		provider      string
-		model         string
-		prompt        int
-		completion    int
-		costMicros    float64
-		ttftMillis    int64
-		wantTokens    float64
-		wantCost      float64
+		name           string
+		provider       string
+		model          string
+		prompt         int
+		completion     int
+		costMicros     float64
+		ttftMillis     int64
+		wantTokens     float64
+		wantCost       float64
 		wantTTFTSample float64
 	}{
 		{

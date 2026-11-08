@@ -1,5 +1,185 @@
 # Changelog
 
+## [v1.9.16-exp.7] - 2026-11-08
+
+### fix(executor): translate Claude replies for OpenAI clients on minimax-code
+
+`ForwardMinimaxCode` dispatched on `TranslateResp`, which is false for a Chat Completions caller on a Claude-native provider (`chat.go` sets it false for `claudeNative`). The OpenAI client got raw Claude JSON/SSE (no `choices`, no `finish_reason`) and `@ai-sdk/openai-compatible` (opencode) retried with `OpenAI Chat stream ended without finish_reason`.
+
+- `minimax_code.go`: dispatch on `UpstreamClaude` (the fallback flag for `FormatClaude` upstreams), not `TranslateResp`.
+- `claude_messages.go`: `handleClaudeMessagesStream`/`NonStream` key the passthrough on `ClaudeClient`, not `TranslateResp`.
+
+Verified live against `mmg/MiniMax-M3.1-Flash` (backup credential): stream now emits `chat.completion.chunk` with `finish_reason:"stop"|"tool_calls"`, non-stream returns `choices[]`, multi-tool stream emits OpenAI `tool_calls`, `/api/models/test` passes, and `/v1/messages` passthrough unchanged. `go vet` + `go test ./internal/proxy/executor/` (1274 passed) + `go test ./internal/handlers/chat/` (1395 passed).
+
+### 🐛 Groq gpt-oss effort clamp and upstream strict-message parity
+
+- Groq answered `400 "reasoning_effort must be one of low, medium, or high"` for `openai/gpt-oss-120b` (probed live: `minimal`, `xhigh`, `auto`, `none`, `max` all rejected; only `low|medium|high` return 200). `normalizeGroqGPTOSSRequest` now clamps `reasoning_effort` on every gpt-oss request to the nearest valid level by rank.
+- Upstream parity: `FilterToOpenAIFormat` now drops echoed `reasoning_content`/`reasoning`/`reasoning_details` on assistant history for groq/mistral/cerebras (upstream paramSupport `dropMessageFields`), wired via `providers.StrictReasoningRemoving()`.
+- Thinking levels for groq/gpt-oss narrowed to `[low,medium,high]` to match Groq's enum; registered as an intentional divergence in the fixture test (upstream still advertises the openai default).
+
+### 🐛 Groq gpt-oss JSON mode no longer fails with `json_validate_failed`
+
+- Groq answered `400 {"code":"json_validate_failed","message":"Failed to validate JSON. Please adjust your prompt."}` for `openai/gpt-oss-20b` (and `gpt-oss-120b`) whenever a client asked for a structured output (`response_format: json_object|json_schema`) without a parsed reasoning stream. The model's Harmony analysis channel leaked into the content and broke strict JSON validation upstream (`failed_generation` empty).
+- Fix: `ForwardOpenAI` now pins `reasoning_format: "parsed"` for Groq gpt-oss requests that carry a JSON `response_format`, moving the chain-of-thought into `message.reasoning` and leaving the content clean JSON. A client-supplied `reasoning_format` is respected; non-gpt-oss Groq models and `text` response formats are untouched.
+- Verified: `go test ./internal/proxy/executor/ -run 'TestNormalizeGroqGPTOSSRequest|TestIsGroqGPTOSSModel' -v` — new `groq_gpt_oss_test.go` covers both model ids, client override, and negative cases.
+
+### fix(media): route cloudflare-ai image models to the /ai/run endpoint
+
+All Cloudflare Workers AI image requests were forwarded to the OpenAI-shaped
+`/ai/v1/images/generations` URL the vendor does not serve — even after the
+`{accountId}` fix (PR #865) landed, every `/v1/images/generations` call to a
+`cloudflare-ai`/`cf` model came back `400 code 7000 "No route for that URI"`
+(issue #864). FLUX.2 models were only special-cased when a reference image was
+present on the direct path; `flux-2-klein-9b` without one, plus every
+flux-1-schnell / stable-diffusion model, fell through to the broken generic
+forwarder.
+
+Mirrors upstream `decolua/9router` `open-sse/handlers/imageProviders/cloudflareAi.js`:
+
+- **Dedicated lane** (`internal/handlers/media/cloudflare_ai.go`): any
+  cloudflare-ai/cf image model now posts to `POST
+  /accounts/<accountId>/ai/run/<model>`, derived from the chat BaseURL after
+  `getProviderConfig` has substituted the account id (or the connection's custom
+  base URL verbatim).
+- **Body shape per model**: FLUX.2 (`flux-2-dev/-klein-4b/-klein-9b`) require
+  `multipart/form-data` even for text-only prompts; the older text-to-image
+  models take a JSON body. Dimensions come from `size` or `width`/`height`;
+  the FLUX.1 Schnell closed schema still rejects dimensions (upstream #5373).
+- **Reference images**: URL inputs are downloaded (SSRF-guarded) and sent
+  base64 as `image_b64`; the mask follows the same path.
+- **Response normalization**: Cloudflare's `{result:{image}}` / `{result:"url"}`
+  / raw-binary shapes are normalized to the OpenAI images shape `{created,
+  data:[{b64_json}|{url}]}` the client already expects.
+- The dead flux-2 reference-image forwarder, `isFluxSchnellModel` /
+  `isCloudflareFlux2Model` matching, and the generic-path dimension-stripping
+  blocks are removed.
+
+**Verified**: `go build ./cmd/9router-go/` OK; `go vet
+./internal/handlers/media/` clean; `go test ./internal/handlers/media/` passes
+including new `cloudflare_ai_test.go` coverage (flux-1-schnell JSON run,
+flux-2-klein-9b multipart run, reference-image pass-through, response
+normalization). The only `go test ./...` failures are pre-existing box-local
+ones in `internal/config` and `internal/handlers/dashboard` (a stray `.env` and
+a persisted dashboard password at `E:\project\database\9router\db\data.sqlite`),
+unchanged by this diff.
+
+### track live availability and cooldown (supersedes #433)
+
+The gateway now distinguishes a model that is gone for good from one that is
+temporarily unavailable:
+
+- A live upstream 410 (model retired) records a permanent `gone` badge and a
+  successor when the provider names one. A catalogue sync that re-lists the
+  model revives it; `RetainLiveModels` never erases a permanent record.
+- A live model-level fault (HTTP 404, a model-scoped 429, or a gateway fault
+  500–504) records a transient `cooldown` badge valid for 5 minutes and parks
+  the connection for that window. Cooldowns never overwrite or erase a
+  permanent `gone`/`retired` record, and `ClearModelDeprecation` / sync
+  `RetainLiveModels` do not touch an active cooldown.
+- Failures are counted per business request, not per connection attempt, so
+  one request that walks several failed accounts records a single cooldown.
+- The cooldown condition is written in positive form (no De Morgan lint):
+  record when the status is 404, a model-scoped 429, or a gateway fault 500–504.
+- The dashboard `ModelDeprecation` status union now includes `cooldown`, and
+  badges render "Cooling down" instead of a permanent "Retired" state.
+
+### feat(kimi): normalize reasoning_effort so Kimi's backend doesn't 400
+
+A client-supplied `reasoning_effort` is normalized onto the values Kimi's
+backend accepts before the request is forwarded (upstream decolua/9router#2427):
+
+- `auto` → `high`
+- `minimal` → `low`
+- `xhigh` → `max`
+- `low`/`medium`/`high`/`max` pass through
+- `none`/`off` are dropped
+
+`thinking.ToKimiReasoningEffort` in `internal/thinking/levels.go` maps the
+intent onto Kimi's enum, and `internal/proxy/executor/kimi.go` applies it in
+`ForwardKimi` and `forwardKimiResponses` when the incoming body carries
+`reasoning_effort`. Unit tests cover the mapping table and the executor
+normalization.
+
+### strip client_metadata on Responses passthrough
+
+When a Responses request is passed through to an upstream Responses endpoint (or when relaying responses), `client_metadata` is stripped from the returned response body so downstream third-party OpenAI-compatible providers and strict schema validators do not reject the response with `additionalProperties "client_metadata" not allowed` (upstream decolua/9router v0.5.35).
+
+### fix(deepseek-web): accept `thinking` as object or bool in request envelope
+
+The inbound thinking pass rewrites `thinking` into the anthropic-style object
+form (`{"type":"enabled","budget_tokens":10000}` / `{"type":"disabled"}`), but
+`deepSeekRequestEnvelope.Thinking` was a plain `bool`, so `encoding/json/v2`
+failed the whole envelope with `cannot unmarshal JSON object into Go bool
+within "/thinking"` and the turn returned a fallback-upstream 502 before any
+upstream call.
+
+`Thinking` is now a `deepSeekThinkingFlag` whose `UnmarshalJSON` accepts both
+a plain bool and the object form, treating the object as enabled unless its
+`type` is `"disabled"`. No routing logic changes: `resolveDeepSeekModelOptions`
+reads the same effective on/off value.
+
+Verified with `go test ./internal/proxy/executor/ -count=1` (green) including
+the new table-driven `TestDeepSeekRequestEnvelopeThinkingShapes` covering
+absent, bool true/false, and enabled/disabled/adaptive objects.
+
+### feat(providers): standardize Mistral models catalog, live models fetcher, and pricing
+
+- **Catalog update**: Added modern Mistral models (`pixtral-large-latest`, `mistral-small-latest`, `codestral-latest`, `ministral-8b-latest`, `ministral-3b-latest`, `mistral-saba-latest`, `pixtral-12b-2409`, `codestral-mamba-latest`, `mistral-moderation-latest`, `mistral-embed`) alongside existing `mistral-medium-latest` to `registry_models.go` and synchronized with `web/src/lib/models.ts`. Named `mistral-large-latest` as `Mistral Large 3`.
+- **Live models sync**: Configured `ModelsFetcher` for `mistral` (`https://api.mistral.ai/v1/models`) in `provider_registry.go` so the dashboard can fetch and sync live models via `catalog-sync`.
+- **Pricing rates**: Added canonical pricing entries for Mistral models in `internal/pricing/tables.go` and verified pricing calculation in `cost_test.go`.
+
+### fix(antigravity): unify client identity, scope request IDs by session, and fix metadata platform
+
+- **Session-scoped request IDs**: `WrapForAntigravity` and `WrapAntigravityImageRequest` now scope conversation and trajectory UUIDs using the client's session ID or connection ID rather than a static `aicode-consumers` project string, preventing every pooled account from presenting identical conversation identifiers to Google Cloud Code across both chat and image lanes. Image generation payloads also send the session ID rather than an ephemeral timestamp.
+- **Consistent User-Agent**: Unified User-Agent and client version headers across chat, quota, and probe paths to consistently use `providers.AntigravityCLIUserAgent` and `providers.AntigravityCLIVersion` (`1.5.1`), eliminating conflicting client fingerprints.
+- **Metadata platform enum**: Corrected `lcaMetadata["platform"]` from `2` (`DARWIN_ARM64`) to `5` (`WINDOWS_AMD64`) to align with `AntigravityCLIUserAgent`'s `os_type=windows; arch=amd64`.
+- **Stream Accept header**: Set `Accept: text/event-stream` for streaming requests (and `application/json` for non-streaming) on the Antigravity chat lane matching upstream base executor standards.
+- **Risk disclosure**: Added `Notice` risk disclosure to Antigravity and Gemini CLI provider registry entries informing users about upstream third-party OAuth session restrictions.
+
+### feat(providers): give Vertex, Perplexity Web and gemini-cli working executors, and surface the custom system prompt
+
+Four provider lanes were registered in the catalogue but had no executor behind them, so a request to any of them POSTed an OpenAI body at a host that serves a different protocol.
+
+**Executors**
+- **Vertex / vertex-partner** (`ForwardVertex`): the registry entries carried no executor, so every request went to `aiplatform.googleapis.com` as an OpenAI body. Both ids share one implementation; the URL shape is decided inside from the provider id (`vertex` for the publisher-model path, `vertex-partner` for the partner-served one).
+- **Perplexity Web** (`ForwardPerplexityWeb`): not OpenAI-compatible in either direction — the request is a `query_str` envelope and the answer is Perplexity's own event stream — so the pass-through could not serve it.
+- **gemini-cli**: the lane shares a host family with antigravity but the envelope is different in kind. `ForwardGemini` now wraps for Cloud Code Assist (`{project, model, request}`, no `userId`/`requestType`/synthetic `requestId`), posts to `:generateContent` on the `v1internal` root, and sends the CLI's own `User-Agent`, `X-Goog-Api-Client` and `Accept`. `ProviderConfig.IsGeminiNative()` covers `gemini-cli` as well as `gemini-native`, because both speak a Gemini envelope and route through the same native handler.
+- `gemini-cli`'s `BaseURL` moves from the `daily-` bypass host to `cloudcode-pa.googleapis.com/v1internal`, which is where the CLI's project discovery actually lives.
+
+**Header parity**
+`GeminiCLIApiClient` and the CLI version in `GeminiCLIUserAgent` are pinned to what the current CLI sends (`google-genai-sdk/1.41.0 gl-node/v22.19.0`, `GeminiCLI/0.34.0`), matching the upstream registry. The comment in `gemini_cli.go` already notes that a model-id mismatch in the UA is answered with 403; a stale *version* is the same class of fingerprint mismatch, and it fails silently. A parity test pins both constants so the next upstream bump shows up as a test diff rather than a production 403.
+
+**Custom system prompt**
+`TokenSaverView` now exposes the `systemPromptEnabled` / `systemPromptPrefix` / `systemPromptSuffix` settings the engine already reads (`fallback.go:1466`). The prefix leads the system prompt and the suffix lands after it, where it survives a turn of untrusted content.
+
+**Verified**: `go build ./...`, `go test ./internal/proxy/executor/ ./internal/translator/ ./internal/providers/`, and `bunx oxlint --deny-warnings` all pass.
+
+### feat(gateway): serve the Gemini /v1beta surface, Ollama model listing, and CORS on health
+
+- **Gemini API surface**: `GET /v1beta/models` and `POST /v1beta/models/{model}:generateContent|:streamGenerateContent`. A Gemini SDK speaks only this protocol, so without these routes a Gemini client (the `@google/genai` client, the Python SDK, curl) could not use the gateway at all. The handler is a translation sandwich — the Gemini body becomes a Chat body, the existing Chat pipeline answers it — so model resolution, combos, key policy, fallback and usage accounting all apply unchanged. Streaming is pass-through: `geminiStreamWriter` parses and relays SSE frames as they arrive instead of buffering the whole response, so a long turn does not hold the body in memory and the client sees tokens immediately.
+- **Ollama model listing**: `GET /api/tags` and `GET /tags`, answered from the provider registry rather than the upstream's hardcoded two-model fixture, so `ollama list` shows the models the gateway can actually route. `ollamaFamily` strips only registry decoration (a leading provider path, a trailing `:tag`); it no longer cuts at the first digit, which rendered `kimi-k2.5` as `kimi-k`.
+- **Health probe CORS**: `GET /health` (and its `/api/health` alias) now carries `Access-Control-Allow-Origin: *`. The dashboard's tunnel and Tailscale cards probe this endpoint cross-origin, and without the header the probe failed on a healthy gateway.
+- **Preflights**: `OPTIONS` is registered per path for `/health`, `/api/health`, `/api/tags` and `/tags` — answering 204 with the CORS headers. They are mounted outside the API-key group because an `OPTIONS` request never carries credentials. The middleware is deliberately *not* changed: a blanket `OPTIONS` passthrough in `RequireApiKey` would have opened every protected route to unauthenticated callers. `TestSetupServerRouter_OptionsDoesNotBypassApiKeyElsewhere` pins that.
+- Shared CORS writes moved into `handlerutil.WriteCORSHeaders` / `WriteCORSPreflight`, replacing two hand-copied header blocks that were already starting to drift.
+
+### fix(translator): normalize corrupted thought signatures and purge on retry success
+
+- Normalize Gemini thought signatures in `internal/translator/thought_signature_store.go` and `gemini.go` to catch double-base64 wrapping (`Q0FR...`) and oversized entries (> 32KB) that trigger upstream `400 INVALID_ARGUMENT: "Corrupted thought signature."`.
+- Automatically fallback to `DefaultThinkingSignature` when corrupted signatures are detected.
+- Purge in-memory thought signatures for the session via `translator.PurgeSessionThoughtSignatures(sessionID)` upon retry success in `ForwardGemini` so corrupted entries do not poison subsequent conversation turns.
+
+### GitHub Copilot embeddings: wrap bare string input into an array
+
+When forwarding an embeddings request to GitHub Copilot (provider resolved as
+`github`/`gh` or `copilot`), Copilot requires `input` to be an array of strings.
+A bare string (`"input": "hello"`) was forwarded verbatim and rejected upstream.
+Now a bare string is wrapped into `["hello"]` before forwarding; an existing
+array is left untouched, and bodies without `input` are unchanged.
+
+Verified: `go test ./internal/handlers/media/` passes; new unit tests cover
+wrapping a bare string, leaving an array intact, and non-Copilot providers
+passing a bare string through unchanged.
+
 ## [v1.9.16-exp.5] - 2026-11-06
 
 ### fix(ci): bump brotli and compress to fix govulncheck (main red on Lint)

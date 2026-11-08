@@ -151,7 +151,11 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 		base64Input = imageReq.Images[0]
 	}
 
-	wrappedReq, err := translator.WrapAntigravityImageRequest(prompt, base64Input, projectID, cleanModel, aspectRatio)
+	sessID := handlerutil.ExtractSessionID(r)
+	if sessID == "" && conn != nil {
+		sessID = conn.ID
+	}
+	wrappedReq, err := translator.WrapAntigravityImageRequest(prompt, base64Input, projectID, cleanModel, aspectRatio, sessID)
 	if err != nil {
 		return fmt.Errorf("wrap antigravity image request: %w", err)
 	}

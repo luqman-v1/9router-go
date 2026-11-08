@@ -129,3 +129,34 @@ func TestClassifyError_ImproperlyFormedRequestNoPark(t *testing.T) {
 		t.Errorf("expected zero cooldown for improperly formed request, got %d", cls.CooldownMs)
 	}
 }
+
+func TestClassifyError_AntigravityTOSBan(t *testing.T) {
+	ban := ClassifyErrorForProvider(http.StatusForbidden, "This service has been disabled in this account for violation of Terms of Service.", 0, "antigravity")
+	if !ban.ShouldFallback {
+		t.Error("expected fallback for Antigravity ToS ban")
+	}
+	if ban.CooldownMs != cooldownBannedAccount {
+		t.Errorf("ban cooldown = %dms, want %dms (24h)", ban.CooldownMs, cooldownBannedAccount)
+	}
+	// Bare tos_violation is not scoped to cloudcode-pa, so it does not earn
+	// the 24h ban cooldown; it falls through to the generic 403 rule.
+	bare := ClassifyErrorForProvider(http.StatusForbidden, "tos_violation", 0, "antigravity")
+	if bare.CooldownMs == cooldownBannedAccount {
+		t.Errorf("bare tos_violation cooldown = %dms, want %dms (generic 403)", bare.CooldownMs, cooldownLong)
+	}
+	// Other providers keep the generic 2-minute 403 rule.
+	other := ClassifyErrorForProvider(http.StatusForbidden, "tos_violation", 0, "gemini")
+	if other.CooldownMs != cooldownLong {
+		t.Errorf("other provider 403 cooldown = %dms, want %dms", other.CooldownMs, cooldownLong)
+	}
+
+	if !LooksLikePermanentFailure("this service has been disabled in this account") {
+		t.Error("expected ban message to classify as permanent failure")
+	}
+	if !LooksLikePermanentFailure("tos_violation") {
+		t.Error("expected tos_violation to classify as permanent failure")
+	}
+	if LooksLikePermanentFailure("rate limit") {
+		t.Error("expected throttle to not classify as permanent failure")
+	}
+}

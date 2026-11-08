@@ -62,6 +62,27 @@ func TestConnectionOAuthLockUntil_FailsOpen(t *testing.T) {
 		})
 	}
 }
+func TestConnectionRequiresReauth(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"reauth_required", `{"testStatus":"reauth_required"}`, true},
+		{"healthy", `{"testStatus":"healthy"}`, false},
+		{"missing", `{"apiKey":"sk-x"}`, false},
+		{"empty", "", false},
+		{"malformed", `not json`, false},
+		{"wrong type", `{"testStatus":12345}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ConnectionRequiresReauth(tt.raw); got != tt.want {
+				t.Errorf("ConnectionRequiresReauth(%s) = %v, want %v", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
 
 // The selector asks one question, so the two account-scoped parks have to be
 // answered together — earliest wins, and a half-readable blob still reads.

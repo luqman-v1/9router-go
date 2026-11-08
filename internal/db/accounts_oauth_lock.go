@@ -82,6 +82,22 @@ func ConnectionOAuthLockUntil(rawData string) (time.Time, bool) {
 	return readTimestampField(raw, "oauthLockedUntil")
 }
 
+// ConnectionRequiresReauth reports whether a connection is stamped
+// reauth_required — the marker RecordConnectionOAuthFailure writes for a
+// terminal grant rejection (invalid_grant, refresh_token_reused, revoked).
+// Such an account is not "cooling down until reset": no wait repairs it, so
+// force-fallback and other soonest-reset pickers must never resurrect it.
+// Missing or malformed values fail open (false) so a corrupt blob never
+// takes routing down.
+func ConnectionRequiresReauth(rawData string) bool {
+	raw, ok := parseConnData(rawData)
+	if !ok {
+		return false
+	}
+	status, _ := raw["testStatus"].(string)
+	return status == providers.StatusReauthRequired
+}
+
 // ConnectionBlockedUntil returns the earliest instant the account becomes
 // selectable again across the account-scoped cooldowns, so the selector can
 // ask one question instead of one per park.

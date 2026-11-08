@@ -193,6 +193,89 @@ func DowngradeJsonSchemaToJSONObject(body []byte) []byte {
 	return body
 }
 
+// normalizeGroqGPTOSSRequest patches a Groq gpt-oss request so strict JSON
+// validation survives the model's Harmony reasoning channel. Groq answers
+// 400 json_validate_failed ("Failed to validate JSON") when a structured
+// response_format rides next to a raw/unparsed reasoning stream that leaks
+// analysis-channel text into the content. Pinning reasoning_format to
+// "parsed" moves the chain-of-thought into message.reasoning and leaves the
+// JSON payload clean. A client-supplied reasoning_format is respected.
+// Non-gpt-oss Groq models and non-JSON requests are left byte-identical.
+//
+// It also clamps reasoning_effort to Groq's enum for gpt-oss
+// (low|medium|high, probed live 2026-11-07: minimal/xhigh/auto/none/max all
+// answer 400). Out-of-range levels coming from the unified thinking pass
+// (the capability table advertises minimal..xhigh for gpt-oss) are folded to
+// the nearest valid level by rank; a valid level or an absent effort is
+// left untouched. This clamp runs on every gpt-oss request, not only JSON
+// ones, because the 400 is unrelated to response_format.
+func normalizeGroqGPTOSSRequest(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	model, _ := m["model"].(string)
+	if !isGroqGPTOSSModel(model) {
+		return body
+	}
+	changed := false
+	if clamped, ok := clampGroqReasoningEffort(m["reasoning_effort"]); ok {
+		m["reasoning_effort"] = clamped
+		changed = true
+	}
+	if rf, ok := m["response_format"]; ok {
+		if rfMap, ok := rf.(map[string]any); ok {
+			if rfType, _ := rfMap["type"].(string); rfType == "json_object" || rfType == "json_schema" {
+				if _, exists := m["reasoning_format"]; !exists {
+					m["reasoning_format"] = "parsed"
+					changed = true
+				}
+			}
+		}
+	}
+	if !changed {
+		return body
+	}
+	if out, err := marshalStable(m); err == nil {
+		return out
+	}
+	return body
+}
+
+// clampGroqReasoningEffort folds a reasoning_effort outside Groq's
+// gpt-oss enum (low|medium|high) to the nearest valid level by rank.
+// Ranking follows the unified effort vocabulary (none < minimal < low <
+// medium < high < xhigh < max): anything at or below low becomes low,
+// anything at or above high becomes high, anything else (auto, unknown,
+// non-string) becomes medium. (clamped, true) when the wire value must
+// change; a valid level or an absent effort returns ("", false).
+func clampGroqReasoningEffort(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok {
+		if v == nil {
+			return "", false
+		}
+		return "medium", true
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "low", "medium", "high":
+		return "", false
+	case "", "none", "minimal", "default":
+		return "low", true
+	case "xhigh", "max", "ultra":
+		return "high", true
+	}
+	return "medium", true
+}
+
+// isGroqGPTOSSModel reports whether a Groq wire model id is a gpt-oss
+// Harmony model (openai/gpt-oss-120b, openai/gpt-oss-20b) whose reasoning
+// stream must be parsed for structured outputs to validate.
+func isGroqGPTOSSModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(lower, "gpt-oss")
+}
+
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	// Provider-scoped param rules from upstream paramSupport strip unsupported
@@ -204,6 +287,9 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	}
 	if req.Provider == "deepseek" {
 		req.Body = DowngradeJsonSchemaToJSONObject(req.Body)
+	}
+	if req.Provider == "groq" {
+		req.Body = normalizeGroqGPTOSSRequest(req.Body)
 	}
 	if req.Provider == "volcengine-ark" {
 		// Volcengine Ark answers HTTP 400 when a GLM-5 model is asked for more
@@ -372,11 +458,9 @@ func sseStream(o sseStreamOpts) error {
 						doneSent = true
 						return
 					}
-					if ttft != nil && *ttft == 0 {
-						*ttft = time.Since(startTime).Milliseconds()
-					}
+					markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 					if buf != nil {
-						buf.Write(ev.Payload)
+						_, _ = buf.Write(ev.Payload)
 					}
 					var line []byte
 					if ev.Type != "" {
@@ -420,11 +504,9 @@ func sseStream(o sseStreamOpts) error {
 		composerDecoder := &composerThinkingDecoder{}
 		patchers = append(patchers, composerDecoder.Process)
 		return proxy.SSECopy(hw, upstream, flusher, func(chunk []byte) {
-			if ttft != nil && *ttft == 0 {
-				*ttft = time.Since(startTime).Milliseconds()
-			}
+			markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 			if buf != nil {
-				buf.Write(chunk)
+				_, _ = buf.Write(chunk)
 			}
 			captureUsageFromSSEChunk(ctx, chunk)
 		}, patchers...)
@@ -451,11 +533,9 @@ func sseStream(o sseStreamOpts) error {
 		if bytes.Contains(translated, []byte("[DONE]")) {
 			finished = true
 		}
-		if ttft != nil && *ttft == 0 {
-			*ttft = time.Since(startTime).Milliseconds()
-		}
+		markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 		if buf != nil {
-			buf.Write(translated)
+			_, _ = buf.Write(translated)
 		}
 		hw.Write(translated)
 		if flusher != nil {

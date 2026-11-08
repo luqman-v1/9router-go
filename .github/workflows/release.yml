@@ -160,6 +160,13 @@ jobs:
           done
 
       - name: Build all platforms
+        # Explicit even though the Makefile now defaults both: a release artifact
+        # that links cgo inherits the runner's -march in runtime/cgo and dies
+        # with SIGILL on x86-64 CPUs without AVX. Keep CGO off and GOAMD64 at
+        # the v1 baseline for the published binaries.
+        env:
+          CGO_ENABLED: "0"
+          GOAMD64: v1
         run: make cross
 
       - name: Generate changelog
@@ -282,6 +289,7 @@ jobs:
           prerelease: ${{ needs.channel.outputs.prerelease == 'true' }}
           files: |
             9router-go-linux-amd64
+            9router-go-linux-amd64-noavx
             9router-go-linux-arm64
             9router-go-darwin-amd64
             9router-go-darwin-arm64

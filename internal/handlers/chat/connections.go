@@ -266,9 +266,20 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 		// enable/disable toggle a no-op for every pinned request.
 		ineligible, reason := h.pinnedConnectionIneligible(conn, excludeIDs, model)
 		if ineligible && isProbe && conn.IsActive == 1 && !slices.Contains(excludeIDs, conn.ID) {
-			if strings.HasPrefix(reason, "account cooldown") || strings.HasPrefix(reason, "model lock") || reason == "quota cache" {
+			// A reauth_required account whose park has run out returns as a
+			// normal probe candidate; while parked it stays ineligible.
+			parked := false
+			if db.ConnectionRequiresReauth(conn.Data) {
+				if until, ok := db.ConnectionOAuthLockUntil(conn.Data); ok && until.After(time.Now()) {
+					parked = true
+				}
+			}
+			if !parked &&
+				(strings.HasPrefix(reason, "account cooldown") || strings.HasPrefix(reason, "model lock") || reason == "quota cache") {
 				// Probes bypass cooldown / locks to test actual upstream reachability,
 				// but must still honor model enablement, disabled accounts, and strict assignment.
+				// A parked dead grant stays ineligible even under a probe: the
+				// upstream answer is already known (401 invalid access token).
 				ineligible = false
 			}
 		}
@@ -421,6 +432,21 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 				// Per-model lock and quota cache first: an account parked for
 				// this model carries no cooldown to shorten, so it must not enter
 				// the forced pool either (h.connectionModelBlocked).
+				// A parked dead grant is terminal only while its park is active:
+				// once oauthLockedUntil runs out the account returns as a
+				// normal candidate (the park is a cooldown, not a disable).
+				// While parked even a probe (which otherwise bypasses cooldowns
+				// to test live reachability) must not re-pick it — the upstream
+				// answer is already known (401 invalid token).
+				if db.ConnectionRequiresReauth(c.Data) {
+					if until, ok := db.ConnectionOAuthLockUntil(c.Data); ok && until.After(now) {
+						inCooldown = append(inCooldown, c)
+						if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
+							cooldownUntil = until
+						}
+						continue
+					}
+				}
 				if !isProbe {
 					if h.connectionModelBlocked(c, provider, model) {
 						continue

@@ -181,7 +181,7 @@ func TestHandleClaudeMessagesStream_ResponsesClient(t *testing.T) {
 func TestHandleClaudeMessages_TranslateRespRestoresToolNames(t *testing.T) {
 	const longName = "mcp__server_name__action_detail_something_very_long_indeed_action_12345"
 	const shortName = "mcp__server_name__action_detail_something_very_long_indeed_act_1"
-toolMap := map[string]string{shortName: longName}
+	toolMap := map[string]string{shortName: longName}
 
 	t.Run("stream passthrough", func(t *testing.T) {
 		upstream := strings.Join([]string{

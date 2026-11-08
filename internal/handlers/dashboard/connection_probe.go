@@ -106,6 +106,7 @@ type probeOutcome struct {
 	message   string
 	refreshed bool
 	tokens    *oauth.TokenResult
+	appealURL string // Google appeal link for a TOS-banned Antigravity account
 }
 
 // connectionProbeDo performs the outbound request of a connection test.
@@ -652,7 +653,7 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 	case "gemini-cli", "antigravity":
 		attempt := probeCloudCodeAssist(ctx, client, provider, accessToken)
 		if attempt.valid {
-			return probeOutcome{valid: true, refreshed: refreshed, tokens: tokens}
+			return probeOutcome{valid: true, refreshed: refreshed, tokens: tokens, appealURL: attempt.appealURL}
 		}
 		if attempt.status == http.StatusUnauthorized && cfg.refreshable && !refreshed && data.RefreshToken != "" {
 			retryTokens := h.refreshConnectionToken(ctx, conn.ID, provider, data, client)
@@ -661,11 +662,11 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 			}
 			retry := probeCloudCodeAssist(ctx, client, provider, retryTokens.AccessToken)
 			if retry.valid {
-				return probeOutcome{valid: true, refreshed: true, tokens: retryTokens}
+				return probeOutcome{valid: true, refreshed: true, tokens: retryTokens, appealURL: retry.appealURL}
 			}
-			return probeOutcome{message: retry.message, refreshed: true, tokens: retryTokens}
+			return probeOutcome{message: retry.message, refreshed: true, tokens: retryTokens, appealURL: retry.appealURL}
 		}
-		return probeOutcome{message: attempt.message, refreshed: refreshed, tokens: tokens}
+		return probeOutcome{message: attempt.message, refreshed: refreshed, tokens: tokens, appealURL: attempt.appealURL}
 	case "cline", "clinepass":
 		return h.probeCline(ctx, conn.ID, data, client, accessToken, refreshed, tokens)
 	case "zed":
@@ -692,7 +693,7 @@ func (h *DashboardHandler) probeOAuthEndpoint(ctx context.Context, connectionID,
 			}
 			retry := runOAuthProbe(ctx, cfg, client, retryToken, data)
 			if retry.valid {
-				return probeOutcome{valid: true, message: retry.message, refreshed: true, tokens: retryTokens}
+				return probeOutcome{valid: true, message: retry.message, refreshed: true, tokens: retryTokens, appealURL: retry.appealURL}
 			}
 		}
 		return probeOutcome{message: "Token invalid or revoked"}
@@ -811,9 +812,10 @@ func (h *DashboardHandler) probeFreebuff(ctx context.Context, conn *models.Provi
 
 // oauthProbeAttempt is one classified probe answer.
 type oauthProbeAttempt struct {
-	valid   bool
-	status  int
-	message string
+	valid     bool
+	status    int
+	message   string
+	appealURL string // Google appeal link when the 403 is a TOS ban
 }
 
 // runOAuthProbe performs the configured request and classifies the answer the
@@ -893,7 +895,7 @@ func classifyOAuthProbe(status int, cfg oauthProbeConfig) oauthProbeAttempt {
 func probeCloudCodeAssist(ctx context.Context, client *http.Client, provider, accessToken string) oauthProbeAttempt {
 	userAgent := "google-api-nodejs-client/9.15.1 gemini-cli/0.34.0"
 	if provider == "antigravity" {
-		userAgent = "google-api-nodejs-client/9.15.1 vscode-antigravity/1.107.0"
+		userAgent = providers.AntigravityCLIUserAgent
 	}
 	status, body, err := connectionProbeDo(ctx, client, http.MethodPost, cloudCodeAssistProbeURL, map[string]string{
 		"Authorization": "Bearer " + accessToken,
@@ -906,7 +908,13 @@ func probeCloudCodeAssist(ctx context.Context, client *http.Client, provider, ac
 	if status >= 200 && status < 300 {
 		return oauthProbeAttempt{valid: true, status: status}
 	}
-	return oauthProbeAttempt{status: status, message: probeProviderErrorMessage(body, fmt.Sprintf("API returned %d", status))}
+	message := providers.RedactAppealURLs(probeProviderErrorMessage(body, fmt.Sprintf("API returned %d", status)))
+	if providers.IsAntigravityTOSViolation(status, body) {
+		if appealURL, _ := providers.ExtractAppealURL(body); appealURL != "" {
+			return oauthProbeAttempt{status: status, message: message, appealURL: appealURL}
+		}
+	}
+	return oauthProbeAttempt{status: status, message: message}
 }
 
 // probeProviderErrorMessage ports parseProviderErrorMessage.
@@ -929,7 +937,7 @@ func probeProviderErrorMessage(body []byte, fallback string) string {
 		}
 	}
 	if trimmed := strings.TrimSpace(string(body)); trimmed != "" {
-		return trimmed
+		return providers.RedactAppealURLs(trimmed)
 	}
 	return fallback
 }
@@ -1008,6 +1016,15 @@ func (h *DashboardHandler) persistProbeResult(conn *models.ProviderConnection, r
 	} else {
 		raw["testStatus"] = "error"
 		raw["lastError"] = out.message
+		raw["lastErrorAt"] = time.Now().UTC().Format(time.RFC3339)
+		if out.appealURL != "" {
+			psd, ok := raw["providerSpecificData"].(map[string]any)
+			if !ok {
+				psd = make(map[string]any)
+				raw["providerSpecificData"] = psd
+			}
+			psd["verificationUrl"] = out.appealURL
+		}
 		raw["lastErrorAt"] = time.Now().UTC().Format(time.RFC3339)
 	}
 

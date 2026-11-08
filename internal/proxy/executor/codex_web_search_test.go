@@ -206,17 +206,17 @@ func TestBuildResponsesBody_CodexLiteAutoWebSearchFlag(t *testing.T) {
 // here rather than as a surprise 400 from the Codex backend.
 func TestBuildResponsesBody_CodexLiteUnchangedWithoutWebSearch(t *testing.T) {
 	inputs := map[string]string{
-		"codexLiteChatCompletions":  `{"model":"gpt-6-sol","instructions":"be brief","tools":[{"type":"function","function":{"name":"get_weather","description":"w","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],"messages":[{"role":"user","content":"hi"}]}`,
+		"codexLiteChatCompletions":   `{"model":"gpt-6-sol","instructions":"be brief","tools":[{"type":"function","function":{"name":"get_weather","description":"w","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],"messages":[{"role":"user","content":"hi"}]}`,
 		"codexLiteAlreadyPrefixed":   `{"model":"gpt-6-sol","input":[{"type":"additional_tools","role":"developer","tools":[]},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"instructions":"be brief"}`,
 		"codexLiteEffortFromClient":  `{"model":"gpt-6-luna","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`,
 		"codexLiteResponsesPassthru": `{"model":"gpt-6-sol(high)","instructions":"be brief","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`,
 		"classicCodex":               `{"model":"gpt-5.6-sol","instructions":"be brief","tools":[{"type":"function","function":{"name":"get_weather","description":"w","parameters":{"type":"object"}}}],"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`,
 	}
 	golden := map[string]string{
-		"classicCodex":              `{"input":[{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"be brief","model":"gpt-5.6-sol","reasoning":{"effort":"high","summary":"auto"},"store":false,"stream":true,"tools":[{"description":"w","name":"get_weather","parameters":{"properties":{},"type":"object"},"type":"function"}]}`,
-		"codexLiteChatCompletions":  `{"input":[{"role":"developer","tools":[{"description":"w","name":"get_weather","parameters":{"properties":{"city":{"type":"string"}},"type":"object"},"type":"function"}],"type":"additional_tools"},{"content":[{"text":"be brief","type":"input_text"}],"role":"developer","type":"message"},{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"","model":"gpt-6-sol","parallel_tool_calls":false,"reasoning":{"context":"all_turns","effort":"medium"},"store":false,"stream":true,"tool_choice":"auto","tools":null}`,
-		"codexLiteAlreadyPrefixed":  `{"input":[{"role":"developer","tools":[],"type":"additional_tools"},{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"be brief","model":"gpt-6-sol","reasoning":{"context":"all_turns","effort":"medium"},"store":false,"stream":true}`,
-		"codexLiteEffortFromClient": `{"input":[{"role":"developer","tools":[],"type":"additional_tools"},{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"","model":"gpt-6-luna","parallel_tool_calls":false,"reasoning":{"context":"all_turns","effort":"high"},"store":false,"stream":true,"tool_choice":"auto","tools":null}`,
+		"classicCodex":               `{"input":[{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"be brief","model":"gpt-5.6-sol","reasoning":{"effort":"high","summary":"auto"},"store":false,"stream":true,"tools":[{"description":"w","name":"get_weather","parameters":{"properties":{},"type":"object"},"type":"function"}]}`,
+		"codexLiteChatCompletions":   `{"input":[{"role":"developer","tools":[{"description":"w","name":"get_weather","parameters":{"properties":{"city":{"type":"string"}},"type":"object"},"type":"function"}],"type":"additional_tools"},{"content":[{"text":"be brief","type":"input_text"}],"role":"developer","type":"message"},{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"","model":"gpt-6-sol","parallel_tool_calls":false,"reasoning":{"context":"all_turns","effort":"medium"},"store":false,"stream":true,"tool_choice":"auto","tools":null}`,
+		"codexLiteAlreadyPrefixed":   `{"input":[{"role":"developer","tools":[],"type":"additional_tools"},{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"be brief","model":"gpt-6-sol","reasoning":{"context":"all_turns","effort":"medium"},"store":false,"stream":true}`,
+		"codexLiteEffortFromClient":  `{"input":[{"role":"developer","tools":[],"type":"additional_tools"},{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"","model":"gpt-6-luna","parallel_tool_calls":false,"reasoning":{"context":"all_turns","effort":"high"},"store":false,"stream":true,"tool_choice":"auto","tools":null}`,
 		"codexLiteResponsesPassthru": `{"input":[{"role":"developer","tools":[],"type":"additional_tools"},{"content":[{"text":"be brief","type":"input_text"}],"role":"developer","type":"message"},{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"","model":"gpt-6-sol","parallel_tool_calls":false,"reasoning":{"context":"all_turns","effort":"medium"},"store":false,"stream":true,"tool_choice":"auto","tools":null}`,
 	}
 
@@ -271,6 +271,7 @@ func TestCodexResponsesLiteBody(t *testing.T) {
 		})
 	}
 }
+
 // mustMarshal encodes a decoded fragment back to JSON for a helper that only
 // reads text, so a test does not hand-roll the same cast twice.
 func mustMarshal(t *testing.T, v any) []byte {

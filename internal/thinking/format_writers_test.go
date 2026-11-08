@@ -3,6 +3,8 @@ package thinking
 import (
 	"reflect"
 	"testing"
+
+	"9router/proxy/internal/providers"
 )
 
 func TestApplyClaudeAdaptive(t *testing.T) {
@@ -35,6 +37,140 @@ func TestApplyClaudeBudget(t *testing.T) {
 	th, _ := out["thinking"].(map[string]any)
 	if th["type"] != "enabled" || th["budget_tokens"] != 24576 {
 		t.Fatalf("thinking = %+v", out["thinking"])
+	}
+}
+
+// TestApplyClaudeAdaptiveOutputFloor pins the level-sized output floor:
+// on a model whose thinking can never be switched off (MiniMax-M3.1-Flash
+// on minimax-code), a small client max_tokens is eaten whole by reasoning,
+// so the answer never starts and the client reads finish_reason "length"
+// with no text (OMP's compaction snapshot retries 3x and gives up). The
+// writer raises max_tokens to the level budget + 1024 headroom, capped at
+// the model's own output limit, so the answer is no longer starved.
+func TestApplyClaudeAdaptiveOutputFloor(t *testing.T) {
+	out := apply(t, "claude", "minimax-code", "MiniMax-M3.1-Flash-Preview",
+		map[string]any{"reasoning_effort": "high", "max_tokens": 512}, nil)
+	// high → budget 24576 + 1024 headroom = 25600.
+	if n, _ := numberField(out["max_tokens"]); n != 25600 {
+		t.Errorf("max_tokens = %v, want 25600 (high budget + headroom)", n)
+	}
+
+	// A client budget already above the floor is left alone.
+	out = apply(t, "claude", "minimax-code", "MiniMax-M3.1-Flash-Preview",
+		map[string]any{"reasoning_effort": "low", "max_tokens": 8000}, nil)
+	if n, _ := numberField(out["max_tokens"]); n != 8000 {
+		t.Errorf("max_tokens = %v, want 8000 untouched (low floor is 1024+1024)", n)
+	}
+
+	// Explicit none on a model that can disable: no floor, the client's
+	// small budget is honoured as written.
+	out = apply(t, "claude", "claude", "claude-opus-4.7",
+		map[string]any{"reasoning_effort": "none", "max_tokens": 512}, nil)
+	if n, _ := numberField(out["max_tokens"]); n != 512 {
+		t.Errorf("max_tokens = %v, want 512 untouched (disabled reasoning)", n)
+	}
+
+	// The other output spellings are raised too: a client that sent
+	// max_completion_tokens or max_output_tokens gets the same floor.
+	for _, field := range []string{"max_completion_tokens", "max_output_tokens"} {
+		out = apply(t, "claude", "minimax-code", "MiniMax-M3.1-Flash-Preview",
+			map[string]any{"reasoning_effort": "high", field: 512}, nil)
+		if n, _ := numberField(out[field]); n != 25600 {
+			t.Errorf("%s = %v, want 25600", field, n)
+		}
+	}
+
+	// A client budget already above the floor is left alone (the cap
+	// branch is pinned at unit level below; the registry has no
+	// claude-format model with a MaxOutput under the high floor).
+	out = apply(t, "claude", "minimax-code", "MiniMax-M3.1-Flash-Preview",
+		map[string]any{"reasoning_effort": "high", "max_tokens": 150000}, nil)
+	if n, _ := numberField(out["max_tokens"]); n != 150000 {
+		t.Errorf("max_tokens = %v, want 150000 untouched (above the floor)", n)
+	}
+
+	// A client that sent no output budget gets one written: the
+	// reasoning would otherwise consume an unbounded share.
+	out = apply(t, "claude", "minimax-code", "MiniMax-M3.1-Flash-Preview",
+		map[string]any{"reasoning_effort": "high"}, nil)
+	if n, _ := numberField(out["max_tokens"]); n != 25600 {
+		t.Errorf("absent max_tokens = %v, want 25600 (floor written)", n)
+	}
+}
+
+// TestEnsureClaudeOutputFloorCapped pins the cap branch: the floor is
+// clipped to caps.MaxOutput and the raise only lands on the field the
+// client actually sent.
+func TestEnsureClaudeOutputFloorCapped(t *testing.T) {
+	caps := providers.Capabilities{MaxOutput: 4000}
+	body := map[string]any{"max_tokens": 512}
+	ensureClaudeOutputFloor(body, 25600, caps)
+	if n, _ := numberField(body["max_tokens"]); n != 4000 {
+		t.Errorf("max_tokens = %v, want 4000 (capped at MaxOutput)", n)
+	}
+	if _, ok := body["max_completion_tokens"]; ok {
+		t.Errorf("max_completion_tokens appeared: %+v", body)
+	}
+}
+
+// TestApplyOpenAIOutputFloor pins the level-sized output floor on the
+// Chat Completions wire: a model whose thinking can never be switched
+// off (e.g. glm-5.3-flash-free) spends reasoning inside
+// max_completion_tokens, so a small client budget is eaten whole and the
+// answer never starts. The writer raises the field the client actually
+// sent to level budget + 1024 headroom, capped at MaxOutput.
+func TestApplyOpenAIOutputFloor(t *testing.T) {
+	out := apply(t, "openai", "glm", "glm-5.3-flash-free",
+		map[string]any{"reasoning_effort": "high", "max_completion_tokens": 512}, nil)
+	// high → budget 24576 + 1024 headroom = 25600.
+	if n, _ := numberField(out["max_completion_tokens"]); n != 25600 {
+		t.Errorf("max_completion_tokens = %v, want 25600 (high budget + headroom)", n)
+	}
+	if _, ok := out["max_tokens"]; ok {
+		t.Errorf("max_tokens appeared: %+v", out)
+	}
+
+	// A client budget already above the floor is left alone.
+	out = apply(t, "openai", "glm", "glm-5.3-flash-free",
+		map[string]any{"reasoning_effort": "low", "max_completion_tokens": 8000}, nil)
+	if n, _ := numberField(out["max_completion_tokens"]); n != 8000 {
+		t.Errorf("max_completion_tokens = %v, want 8000 untouched (low floor is 1024+1024)", n)
+	}
+
+	// Explicit none on a model that can disable: no floor, the client's
+	// small budget is honoured as written.
+	out = apply(t, "openai", "openai", "gpt-5.3-codex",
+		map[string]any{"reasoning_effort": "none", "max_tokens": 512}, nil)
+	if n, _ := numberField(out["max_tokens"]); n != 512 {
+		t.Errorf("max_tokens = %v, want 512 untouched (disabled reasoning)", n)
+	}
+
+	// No budget sent: max_tokens (the Chat Completions canonical) is
+	// written with the floor.
+	out = apply(t, "openai", "glm", "glm-5.3-flash-free",
+		map[string]any{"reasoning_effort": "high"}, nil)
+	if n, _ := numberField(out["max_tokens"]); n != 25600 {
+		t.Errorf("absent max_tokens = %v, want 25600 (floor written)", n)
+	}
+}
+
+// TestApplyOpenAIResponsesOutputFloor pins the floor on the Responses
+// wire, where reasoning is billed out of max_output_tokens.
+func TestApplyOpenAIResponsesOutputFloor(t *testing.T) {
+	out := apply(t, "openai-responses", "glm", "glm-5.3-flash-free",
+		map[string]any{"reasoning_effort": "high", "max_output_tokens": 512}, nil)
+	if n, _ := numberField(out["max_output_tokens"]); n != 25600 {
+		t.Errorf("max_output_tokens = %v, want 25600 (high budget + headroom)", n)
+	}
+	if _, ok := out["max_tokens"]; ok {
+		t.Errorf("max_tokens appeared: %+v", out)
+	}
+
+	// Disabled reasoning on a model that can disable: no floor.
+	out = apply(t, "openai-responses", "openai", "gpt-5.3-codex",
+		map[string]any{"reasoning_effort": "none", "max_output_tokens": 512}, nil)
+	if n, _ := numberField(out["max_output_tokens"]); n != 512 {
+		t.Errorf("max_output_tokens = %v, want 512 untouched (disabled reasoning)", n)
 	}
 }
 

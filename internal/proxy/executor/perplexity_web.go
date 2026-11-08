@@ -327,7 +327,7 @@ func ForwardPerplexityWeb(w http.ResponseWriter, req *Request) error {
 	}
 
 	if req.IsStream {
-		return streamPplxAsOpenAI(ctx, w, resp.Body, model, parsed)
+		return streamPplxAsOpenAI(ctx, w, resp.Body, model, parsed, req)
 	}
 	return replayPplxAsOpenAI(ctx, w, resp.Body, model, parsed)
 }
@@ -656,7 +656,7 @@ func readPplxEvents(r io.Reader, emit func(pplxEvent) bool) {
 }
 
 // streamPplxAsOpenAI re-emits Perplexity's events as OpenAI chat chunks.
-func streamPplxAsOpenAI(ctx context.Context, w http.ResponseWriter, body io.Reader, model string, parsed pplxParsed) error {
+func streamPplxAsOpenAI(ctx context.Context, w http.ResponseWriter, body io.Reader, model string, parsed pplxParsed, req *Request) error {
 	flusher := proxy.WriteSSEHeaders(w)
 	id := "chatcmpl-pplx-" + randomUUID()[:12]
 	created := time.Now().Unix()
@@ -673,9 +673,18 @@ func streamPplxAsOpenAI(ctx context.Context, w http.ResponseWriter, body io.Read
 		if err != nil {
 			return
 		}
-		_, _ = w.Write([]byte("data: "))
-		_, _ = w.Write(raw)
-		_, _ = w.Write([]byte("\n\n"))
+		// TTFT is the first semantic token: skip the role-only delta above
+		// and stamp this chunk when a thinking or content delta is emitted.
+		if _, hasContent := delta["content"]; hasContent {
+			markTTFT(req, req.StartTime)
+		} else if _, hasReasoning := delta["reasoning_content"]; hasReasoning {
+			markTTFT(req, req.StartTime)
+		}
+		frame := append(append([]byte("data: "), raw...), []byte("\n\n")...)
+		if req != nil && req.ResponseBuf != nil {
+			_, _ = req.ResponseBuf.Write(frame)
+		}
+		_, _ = w.Write(frame)
 		if flusher != nil {
 			flusher.Flush()
 		}

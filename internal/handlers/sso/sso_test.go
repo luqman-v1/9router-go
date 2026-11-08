@@ -198,6 +198,27 @@ func TestFormatCertificate_AcceptsRawBase64(t *testing.T) {
 	}
 }
 
+func TestSSOUtils(t *testing.T) {
+	if got := firstNonEmpty("", "  ", "hello", "world"); got != "hello" {
+		t.Errorf("firstNonEmpty = %q, want hello", got)
+	}
+	if got := firstNonEmpty("", "   "); got != "" {
+		t.Errorf("firstNonEmpty all empty = %q, want empty", got)
+	}
+	if got := xmlEscape("<hello & 'world' \"test\">"); !strings.Contains(got, "&lt;") || !strings.Contains(got, "&amp;") {
+		t.Errorf("xmlEscape failed: %q", got)
+	}
+
+	w := httptest.NewRecorder()
+	writeMetadataError(w, "something went wrong")
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("writeMetadataError status = %d, want 500", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "<Error>something went wrong</Error>") {
+		t.Errorf("writeMetadataError body = %q", w.Body.String())
+	}
+}
+
 // toJSONString renders a string as a JSON literal for hand-built bodies.
 func toJSONString(s string) string {
 	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\r", `\r`, "\t", `\t`)

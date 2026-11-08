@@ -3520,12 +3520,45 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "Mistral Large 3"
     },
     {
+      "id": "pixtral-large-latest",
+      "name": "Pixtral Large"
+    },
+    {
+      "id": "mistral-small-latest",
+      "name": "Mistral Small 3"
+    },
+    {
       "id": "codestral-latest",
       "name": "Codestral"
     },
     {
       "id": "mistral-medium-latest",
       "name": "Mistral Medium 3"
+    },
+    {
+      "id": "ministral-8b-latest",
+      "name": "Ministral 8B"
+    },
+    {
+      "id": "ministral-3b-latest",
+      "name": "Ministral 3B"
+    },
+    {
+      "id": "mistral-saba-latest",
+      "name": "Mistral Saba"
+    },
+    {
+      "id": "pixtral-12b-2409",
+      "name": "Pixtral 12B"
+    },
+    {
+      "id": "codestral-mamba-latest",
+      "name": "Codestral Mamba"
+    },
+    {
+      "id": "mistral-moderation-latest",
+      "name": "Mistral Moderation",
+      "kind": "moderation"
     },
     {
       "id": "mistral-embed",

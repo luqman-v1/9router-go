@@ -30,6 +30,7 @@
   import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from '../../lib/models'
   import { copyToClipboard } from '../../lib/clipboard'
   import { parseModelIds } from '../../lib/bulk-models'
+  import { inferModelKind, customModelKeyFor } from '../../lib/modelKindInference'
   import {
     importCustomModelsBestEffort,
     notifyCustomModelsChanged,
@@ -259,11 +260,22 @@
   // filter change; it is cleared on provider switch with the rest of the
   // model state (see the reset block below).
   let compatibleRows = $derived.by(() => {
-    const rows: Array<{ id: string; source: 'custom' | 'legacyAlias'; alias?: string; addedAt?: number }> = []
+    const rows: Array<{
+      id: string
+      source: 'custom' | 'legacyAlias'
+      alias?: string
+      addedAt?: number
+      kind?: string
+    }> = []
     const seen = new Set<string>()
     for (const cm of customModels) {
       if (!cm.id || cm.providerAlias !== storageAlias) continue
-      if ((cm.type || 'llm') !== 'llm') continue
+      // Every custom row on this node is listed, whatever its kind. This list is
+      // the only place a compatible node's custom models can be seen, tested or
+      // deleted, so filtering out the non-LLM ones made an imported TTS or video
+      // model unreachable: correctly absent from /v1/models, and equally absent
+      // from the one screen that could remove it. The row carries its kind so
+      // delete addresses the right key.
       const full = `${storageAlias}/${cm.id}`
       if (seen.has(full)) continue
       seen.add(full)
@@ -272,7 +284,12 @@
       // insertion order, and the newest write is last. A later row with the
       // same key keeps its original position (the upsert does not move it),
       // which is what "when was this first registered" means.
-      rows.push({ id: cm.id, source: 'custom', addedAt: customModels.length - customModels.indexOf(cm) })
+      rows.push({
+        id: cm.id,
+        source: 'custom',
+        addedAt: customModels.length - customModels.indexOf(cm),
+        kind: cm.type || 'llm',
+      })
     }
     const prefix = `${storageAlias}/`
     for (const [alias, full] of Object.entries(modelAliases || {})) {
@@ -2429,10 +2446,10 @@
     limits?: { contextWindow?: number; maxOutput?: number },
   ) {
     try {
-      await api.saveCustomModel(`${storageAlias}|${modelId}|llm`, {
+      await api.saveCustomModel(customModelKeyFor(storageAlias, modelId), {
         id: modelId,
         providerAlias: storageAlias,
-        type: 'llm',
+        type: inferModelKind(modelId),
         ...(caps ? { caps } : {}),
         ...(limits?.contextWindow ? { contextWindow: limits.contextWindow } : {}),
         ...(limits?.maxOutput ? { maxOutput: limits.maxOutput } : {}),
@@ -2577,7 +2594,7 @@
       // the response says which lines landed instead of leaving it to the refresh.
       const out = await api.saveCustomModelsBulk({
         providerAlias: storageAlias,
-        models: plan.ids.map((id) => ({ id, type: 'llm' })),
+        models: plan.ids.map((id) => ({ id, type: inferModelKind(id) })),
       })
       newCompatibleModel = ''
       await refreshCompatibleModels()
@@ -2603,10 +2620,10 @@
     }
     isAddingCompatibleModel = true
     try {
-      await api.saveCustomModel(`${storageAlias}|${modelId}|llm`, {
+      await api.saveCustomModel(customModelKeyFor(storageAlias, modelId), {
         id: modelId,
         providerAlias: storageAlias,
-        type: 'llm',
+        type: inferModelKind(modelId),
       })
       newCompatibleModel = ''
       await refreshCompatibleModels()
@@ -2621,10 +2638,10 @@
     }
   }
 
-  async function handleDeleteCompatibleModel(row: { id: string; source: string; alias?: string }) {
+  async function handleDeleteCompatibleModel(row: { id: string; source: string; alias?: string; kind?: string }) {
     try {
       if (row.source === 'custom') {
-        await api.deleteCustomModel(`${storageAlias}|${row.id}|llm`)
+        await api.deleteCustomModel(customModelKeyFor(storageAlias, row.id, row.kind))
       } else if (row.source === 'legacyAlias' && row.alias) {
         await api.deleteModelAlias(row.alias)
       }
@@ -2697,7 +2714,10 @@
   async function handleTestAllCompatibleModels() {
     if (compatibleTestAllRunning) return
     const pid = providerId
-    const ids = compatibleRows.map((r) => r.id)
+    // A probe is a chat request, so only chat rows are probed: a TTS or video
+    // model answers one with an error, and reporting that as a dead model would
+    // be a false failure for a model that works on its own lane.
+    const ids = compatibleRows.filter((r) => isChatModel({ type: r.kind })).map((r) => r.id)
     if (ids.length === 0) return
     compatibleTestAllRunning = true
     compatibleTestResults = {}
@@ -2760,8 +2780,8 @@
         if (freeOnly && !isFreeTierModelId(modelId)) continue
         pending.push({
           id: modelId,
-          key: `${storageAlias}|${modelId}|llm`,
-          value: { id: modelId, providerAlias: storageAlias, type: 'llm' },
+          key: customModelKeyFor(storageAlias, modelId),
+          value: { id: modelId, providerAlias: storageAlias, type: inferModelKind(modelId) },
         })
       }
       const outcome = await importCustomModelsBestEffort(pending, api.saveCustomModel)
@@ -2837,11 +2857,11 @@
             : 0
         pending.push({
           id: modelId,
-          key: `${storageAlias}|${modelId}|llm`,
+          key: customModelKeyFor(storageAlias, modelId),
           value: {
             id: modelId,
             providerAlias: storageAlias,
-            type: 'llm',
+            type: inferModelKind(modelId),
             ...(caps ? { caps } : {}),
             ...(declaredCtxLen > 0 ? { contextWindow: declaredCtxLen } : {}),
             ...(declaredMaxOut > 0 ? { maxOutput: declaredMaxOut } : {}),
@@ -2978,10 +2998,10 @@
 
   async function handleAddLatestModel(id: string, name?: string) {
     try {
-      await api.saveCustomModel(`${storageAlias}|${id}|llm`, {
+      await api.saveCustomModel(customModelKeyFor(storageAlias, id), {
         id,
         providerAlias: storageAlias,
-        type: 'llm',
+        type: inferModelKind(id),
         ...(name ? { name } : {}),
       })
       latestModels = latestModels.filter((m) => m.id !== id)
@@ -3221,12 +3241,13 @@
           await handleDisableModel(row.id)
           disabledOnly++
         } else if (row.source === 'legacyAlias') {
-          const alias = compatibleRows.find((r) => r.id === row.id)?.alias
-          if (alias) await api.deleteModelAlias(alias)
-          else await api.deleteCustomModel(`${storageAlias}|${row.id}|llm`)
+          const match = compatibleRows.find((r) => r.id === row.id)
+          if (match?.alias) await api.deleteModelAlias(match.alias)
+          else await api.deleteCustomModel(customModelKeyFor(storageAlias, row.id, match?.kind))
           deleted++
         } else {
-          await api.deleteCustomModel(`${storageAlias}|${row.id}|llm`)
+          const stored = compatibleRows.find((r) => r.id === row.id)?.kind
+          await api.deleteCustomModel(customModelKeyFor(storageAlias, row.id, stored))
           deleted++
         }
       } catch (err) {
@@ -3252,7 +3273,7 @@
     if (custom) {
       if (!confirm(`Delete custom model "${modelId}"?`)) return
       try {
-        await api.deleteCustomModel(`${storageAlias}|${modelId}|llm`)
+        await api.deleteCustomModel(customModelKeyFor(storageAlias, modelId, custom.type))
         const modelsData = await fetchProviderModelsData(providerId, storageAlias)
         customModels = modelsData.customModels
         notifyCustomModelsChanged()

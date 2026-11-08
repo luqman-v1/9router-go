@@ -144,7 +144,12 @@ type SettingsData struct {
 	// HeadroomAutostart launches the local Headroom proxy daemon on 9router boot.
 	// It is decoupled from HeadroomEnabled so operators who run Headroom standalone or
 	// selectively toggle request compression still have the proxy ready on startup.
-	HeadroomAutostart          bool                            `json:"headroomAutostart"`
+	HeadroomAutostart bool `json:"headroomAutostart"`
+	// HeadroomEngine selects the compression engine: "builtin" runs in-process
+	// with no dependency, "external" posts to HeadroomUrl. Empty means "builtin",
+	// so an existing settings row that never set the field gets the in-process
+	// engine rather than a proxy nobody installed.
+	HeadroomEngine             string                          `json:"headroomEngine,omitempty"`
 	HeadroomCodeAware          bool                            `json:"headroomCodeAware"`
 	HeadroomKompress           bool                            `json:"headroomKompress"`
 	HeadroomTimeoutMs          int                             `json:"headroomTimeoutMs"`
@@ -226,6 +231,13 @@ func DefaultSettings() *SettingsData {
 		SystemPromptSuffix:      "",
 		HeadroomUrl:             "http://localhost:8787",
 		HeadroomAutostart:       false,
+		// The engine is written as the literal rather than imported from
+		// internal/headroom: the db package is imported by everything, and
+		// internal/headroom imports the proxy package, so importing it here
+		// would make the settings layer depend on the network stack.
+		// internal/headroom.NormalizeEngine is the single place that interprets
+		// the value, and it treats the empty string as this same engine.
+		HeadroomEngine:          "builtin",
 		HeadroomKompress:        true,
 		HeadroomTimeoutMs:       3000,
 		SemanticCacheEnabled:    false,
