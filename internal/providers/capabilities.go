@@ -784,6 +784,12 @@ var patternCapabilities = []patternCapability{
 	{pattern: "*claude*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-budget"}},
 
 	{pattern: "*gemini*image*", caps: Capabilities{Vision: true, ImageOutput: true, Tools: true}},
+	// Gemini Omni is a reasoning model on the gemini-level wire with thinking
+	// always on. Absent this row the generic *gemini* fallback (Reasoning
+	// false) won, so GetThinkingLevels returned nil and the level never got
+	// clamped. MUST stay above *gemini-4* / *gemini-3.8* for the same reason
+	// as its patternThinking twin.
+	{pattern: "*gemini*omni*", caps: Capabilities{Vision: true, PDF: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
 	// Gemini 4 (Argon): LOW/MEDIUM/HIGH only — no "minimal" tier, no
 	// thinkingBudget, and thinking cannot be disabled. Same row upstream's
 	// PATTERN_CAPABILITIES carries; without it "gemini-argon" matched nothing

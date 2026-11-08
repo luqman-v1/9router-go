@@ -71,6 +71,19 @@ type thinkingPattern struct {
 // patternThinking is ordered; the first match wins
 // (thinkingLevels.js:38).
 var patternThinking = []thinkingPattern{
+	// Gemini Omni accepts only HIGH and LOW — AI Studio answers 400 "protocol
+	// error 3: 'medium' is not a supported thinking level for this model.
+	// Allowed values are: high, low." Declaring HIGH alone (rather than
+	// {"high","low"}) pins every request to the top tier on purpose: the OpenAI
+	// lane clamps by effort rank, not by declaration order, so a set holding
+	// "low" sends every sub-high level — including the "medium" that
+	// TranslateClaudeToOpenAI injects by default for an enabled-thinking body
+	// (translator/request.go) — down to "low" instead of up to "high".
+	//
+	// ⚠️ MUST stay above *gemini-4* / *gemini-3.8*: an omni id carrying a
+	// series number (gemini-4-omni-*) would otherwise be claimed by the
+	// numbered pattern and advertise a "medium" the model rejects.
+	{Pattern: "*gemini*omni*", Levels: []string{"high"}},
 	// Gemini 4 (Argon) rejects "minimal" with 400 — LOW is the floor, and
 	// thinking cannot be disabled. Upstream carries the same override
 	// (thinkingLevels.js:44).
