@@ -3,6 +3,8 @@ package thinking
 import (
 	"reflect"
 	"testing"
+
+	"9router/proxy/internal/providers"
 )
 
 func TestApplyClaudeAdaptive(t *testing.T) {
@@ -76,6 +78,38 @@ func TestApplyClaudeAdaptiveOutputFloor(t *testing.T) {
 		if n, _ := numberField(out[field]); n != 25600 {
 			t.Errorf("%s = %v, want 25600", field, n)
 		}
+	}
+
+	// A client budget already above the floor is left alone (the cap
+	// branch is pinned at unit level below; the registry has no
+	// claude-format model with a MaxOutput under the high floor).
+	out = apply(t, "claude", "minimax-code", "MiniMax-M3.1-Flash-Preview",
+		map[string]any{"reasoning_effort": "high", "max_tokens": 150000}, nil)
+	if n, _ := numberField(out["max_tokens"]); n != 150000 {
+		t.Errorf("max_tokens = %v, want 150000 untouched (above the floor)", n)
+	}
+
+	// A client that sent no output budget gets one written: the
+	// reasoning would otherwise consume an unbounded share.
+	out = apply(t, "claude", "minimax-code", "MiniMax-M3.1-Flash-Preview",
+		map[string]any{"reasoning_effort": "high"}, nil)
+	if n, _ := numberField(out["max_tokens"]); n != 25600 {
+		t.Errorf("absent max_tokens = %v, want 25600 (floor written)", n)
+	}
+}
+
+// TestEnsureClaudeOutputFloorCapped pins the cap branch: the floor is
+// clipped to caps.MaxOutput and the raise only lands on the field the
+// client actually sent.
+func TestEnsureClaudeOutputFloorCapped(t *testing.T) {
+	caps := providers.Capabilities{MaxOutput: 4000}
+	body := map[string]any{"max_tokens": 512}
+	ensureClaudeOutputFloor(body, 25600, caps)
+	if n, _ := numberField(body["max_tokens"]); n != 4000 {
+		t.Errorf("max_tokens = %v, want 4000 (capped at MaxOutput)", n)
+	}
+	if _, ok := body["max_completion_tokens"]; ok {
+		t.Errorf("max_completion_tokens appeared: %+v", body)
 	}
 }
 func TestApplyOpenAI(t *testing.T) {

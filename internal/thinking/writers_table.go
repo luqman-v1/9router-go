@@ -101,21 +101,32 @@ func writeClaudeAdaptive(c *writerCtx) {
 	}
 }
 
-// ensureClaudeOutputFloor raises max_tokens to min(floor, caps.MaxOutput)
-// when absent or smaller. All three output spellings are honoured: max_tokens,
-// max_completion_tokens and max_output_tokens are the same budget in
-// different dialects, and the raise must win whichever one the client set.
-// A disabled request never reaches here (the early return above).
+// ensureClaudeOutputFloor raises the client's output budget to
+// min(floor, caps.MaxOutput) when it is absent or smaller. All three
+// output spellings are honoured: max_tokens, max_completion_tokens and
+// max_output_tokens are the same budget in different dialects, so the
+// raise must win whichever one the client set — and only that one. When
+// the client sent none of them, max_tokens is the one to raise: it is
+// the Claude Messages canonical. A disabled request never reaches here
+// (the early return above).
 func ensureClaudeOutputFloor(body map[string]any, floor int, caps providers.Capabilities) {
 	limit := floor
 	if caps.MaxOutput > 0 && caps.MaxOutput < limit {
 		limit = caps.MaxOutput
 	}
+	sent := false
 	for _, field := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
 		cur, ok := numberField(body[field])
-		if !ok || cur < limit {
+		if !ok {
+			continue
+		}
+		sent = true
+		if cur < limit {
 			body[field] = limit
 		}
+	}
+	if !sent {
+		body["max_tokens"] = limit
 	}
 }
 
