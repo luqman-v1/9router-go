@@ -38,6 +38,46 @@ func TestApplyClaudeBudget(t *testing.T) {
 	}
 }
 
+// TestApplyClaudeAdaptiveOutputFloor pins the level-sized output floor:
+// on a model whose thinking can never be switched off (MiniMax-M3.1-Flash
+// on minimax-code), a small client max_tokens is eaten whole by reasoning,
+// so the answer never starts and the client reads finish_reason "length"
+// with no text (OMP's compaction snapshot retries 3x and gives up). The
+// writer raises max_tokens to the level budget + 1024 headroom, capped at
+// the model's own output limit, so the answer is no longer starved.
+func TestApplyClaudeAdaptiveOutputFloor(t *testing.T) {
+	out := apply(t, "claude", "minimax-code", "MiniMax-M3.1-Flash-Preview",
+		map[string]any{"reasoning_effort": "high", "max_tokens": 512}, nil)
+	// high → budget 24576 + 1024 headroom = 25600.
+	if n, _ := numberField(out["max_tokens"]); n != 25600 {
+		t.Errorf("max_tokens = %v, want 25600 (high budget + headroom)", n)
+	}
+
+	// A client budget already above the floor is left alone.
+	out = apply(t, "claude", "minimax-code", "MiniMax-M3.1-Flash-Preview",
+		map[string]any{"reasoning_effort": "low", "max_tokens": 8000}, nil)
+	if n, _ := numberField(out["max_tokens"]); n != 8000 {
+		t.Errorf("max_tokens = %v, want 8000 untouched (low floor is 1024+1024)", n)
+	}
+
+	// Explicit none on a model that can disable: no floor, the client's
+	// small budget is honoured as written.
+	out = apply(t, "claude", "claude", "claude-opus-4.7",
+		map[string]any{"reasoning_effort": "none", "max_tokens": 512}, nil)
+	if n, _ := numberField(out["max_tokens"]); n != 512 {
+		t.Errorf("max_tokens = %v, want 512 untouched (disabled reasoning)", n)
+	}
+
+	// The other output spellings are raised too: a client that sent
+	// max_completion_tokens or max_output_tokens gets the same floor.
+	for _, field := range []string{"max_completion_tokens", "max_output_tokens"} {
+		out = apply(t, "claude", "minimax-code", "MiniMax-M3.1-Flash-Preview",
+			map[string]any{"reasoning_effort": "high", field: 512}, nil)
+		if n, _ := numberField(out[field]); n != 25600 {
+			t.Errorf("%s = %v, want 25600", field, n)
+		}
+	}
+}
 func TestApplyOpenAI(t *testing.T) {
 	out := apply(t, "openai", "openai", "gpt-5.3-codex",
 		map[string]any{"reasoning_effort": "none"}, nil)

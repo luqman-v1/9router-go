@@ -251,7 +251,7 @@ func TestOmpWritesModelLimitsEntry(t *testing.T) {
 	}
 }
 
-func TestOmpWithoutLimitsKeepsPreviousShape(t *testing.T) {
+func TestOmpWithoutLimitsFallsBackToDefaults(t *testing.T) {
 	home := t.TempDir()
 	path := ompPaths(home).Files[0].Path
 	writeFixture(t, path, "providers:\n  \"9router\":\n    baseUrl: http://old\n")
@@ -259,10 +259,12 @@ func TestOmpWithoutLimitsKeepsPreviousShape(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 	got := readFixture(t, path)
-	if strings.Contains(got, "contextWindow") || strings.Contains(got, "models") {
-		t.Errorf("no limits resolved, yet models were written:\n%s", got)
-	}
-	if !strings.Contains(got, "discovery: {type: proxy}") {
-		t.Errorf("expected the unchanged discovery shape, got:\n%s", got)
+	// omp used to skip the entry entirely when the gateway resolved
+	// nothing; that left the context percentage empty and auto-compact
+	// never fired. It now floors to the pi defaults instead.
+	for _, want := range []string{"contextWindow: 128000", "maxTokens: 16384", "discovery: {type: proxy}"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("after Apply, missing %q\ngot:\n%s", want, got)
+		}
 	}
 }
