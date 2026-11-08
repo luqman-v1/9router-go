@@ -465,10 +465,11 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/tunnel/tailscale-enable", dashH.HandleTailscaleEnable)
 	r.Post("/api/tunnel/tailscale-disable", dashH.HandleTailscaleDisable)
 
-	// Single Sign-On settings checks + SP metadata (profile page)
+	// Single Sign-On settings checks (profile page). The browser login flows and
+	// SP metadata are registered in SetupServerRouter instead: they have to be
+	// reachable before a session exists.
 	r.Post("/api/auth/oidc/test", ssoH.HandleOidcTest)
 	r.Post("/api/auth/saml/test", ssoH.HandleSamlTest)
-	r.Get("/api/auth/saml/metadata", ssoH.HandleSamlMetadata)
 
 	// Mount OAuth routes under dashboard auth so web dashboard can initiate and exchange tokens
 	oauthH := oauth.NewOAuthHandler(repo)
@@ -662,6 +663,22 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	r.Get("/api/auth/status", dashH.HandleAuthStatus)
 	r.Post("/api/auth/login", dashH.HandleAuthLogin)
 	r.Post("/api/auth/logout", dashH.HandleAuthLogout)
+	// Deliberately outside the admin group: this is the recovery path for an
+	// operator who cannot log in, so it cannot require the session it is meant
+	// to restore. The handler refuses anything but a loopback peer on the TCP
+	// connection, and rejects cross-site POSTs.
+	r.Post("/api/auth/reset-password", dashH.HandleResetPassword)
+	// SSO browser login flows and SP metadata. Anonymous by necessity: they
+	// exist precisely for the case where no session exists yet, so mounting
+	// them behind RequireDashboardAuth 401'd the browser at the one moment they
+	// are needed. The settings *tests* stay in the dashboard group, because
+	// those are admin reads that echo the IdP configuration.
+	ssoPubH := sso.NewHandler(repo)
+	r.Get("/api/auth/oidc/start", ssoPubH.HandleOIDCStart)
+	r.Get("/api/auth/oidc/callback", ssoPubH.HandleOIDCCallback)
+	r.Get("/api/auth/saml/start", ssoPubH.HandleSAMLStart)
+	r.Post("/api/auth/saml/acs", ssoPubH.HandleSAMLACS)
+	r.Get("/api/auth/saml/metadata", ssoPubH.HandleSamlMetadata)
 	r.Get("/api/settings/require-login", dashH.HandleRequireLogin)
 	r.Get("/api/tunnel/status", dashH.HandleTunnelStatus)
 
