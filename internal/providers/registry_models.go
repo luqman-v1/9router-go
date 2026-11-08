@@ -765,6 +765,10 @@ var ProviderModelKinds = map[string]map[string]string{
 // "tts", ...) or "" when the model is a plain LLM entry. Unknown providers or
 // models return "" so callers can fall back to the id heuristic upstream also
 // uses for dynamic catalogs.
+// serviceKindTTS is the ProviderModelKinds value for speech synthesis. The
+// string is the stored wire value and must not change.
+const serviceKindTTS = "tts"
+
 func GetProviderModelKind(aliasOrID, modelID string) string {
 	if byModel, ok := ProviderModelKinds[aliasOrID]; ok {
 		if kind, ok := byModel[modelID]; ok {
