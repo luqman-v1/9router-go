@@ -87,6 +87,14 @@ curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.s
 irm https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.ps1 | iex
 ```
 
+> **CPU without AVX?** Celeron/Pentium N-series, older Atom and some VMs max out at SSE4.2, and an x86-64 binary built for a newer microarchitecture dies with `Illegal instruction` before it starts. Use the no-AVX asset (linux/amd64) instead of the default one:
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install-noavx.sh | bash
+> ```
+>
+> It installs the same binary from the `9router-go-linux-amd64-noavx` release asset, which is built with `CGO_ENABLED=0` and `GOAMD64=v1`. `VARIANT=noavx` on `install.sh` does the same thing.
+
 🎉 Then start it (defaults: port `20130`, data `~/.9router` — no flags needed):
 
 ```bash
