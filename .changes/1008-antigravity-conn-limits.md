@@ -8,7 +8,7 @@
 - On repeated 403/429 from one connection, the next attempt widens an
   exponential, jittered backoff (2s, 4s, 8s … capped at 1 minute). It resets
   only on a successful upstream response — never on a token refresh. A 403
-  `TOS_VIOLATION` bypasses backoff and the breaker entirely, matching #996's
+  `TOS_VIOLATION` bypasses backoff and breaker entirely, matching #996's
   permanent handling (regression-pinned by test).
 - Per-connection circuit breaker: 3 consecutive failures open it; fail fast
   locally with zero upstream calls until the 30s cool-down, then exactly one
