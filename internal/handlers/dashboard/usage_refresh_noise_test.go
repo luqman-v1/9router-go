@@ -226,6 +226,7 @@ func TestHandleGetConnectionUsage_NoRefreshCallWithoutRefresher(t *testing.T) {
 		t.Errorf("a provider with no refresher must not park the account: %v", stored)
 	}
 }
+
 // An account already parked for a dead grant must not be refreshed on the
 // usage path either: re-spending the single-use refresh token answers
 // invalid_grant again and bumps the failure counter behind a request the

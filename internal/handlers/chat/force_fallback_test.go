@@ -180,6 +180,7 @@ func TestGetBestConnection_ForceFallbackIgnoresModelLocks(t *testing.T) {
 		t.Fatal("a model-locked account must stay out even with force fallback on")
 	}
 }
+
 // An account parked for a dead OAuth grant is terminal: waiting it out
 // cannot help, so force fallback must not resurrect it even when it is the
 // only candidate. That is the minimax-code-global incident shape: the

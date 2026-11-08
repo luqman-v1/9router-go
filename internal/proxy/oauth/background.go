@@ -2,8 +2,8 @@ package oauth
 
 import (
 	"context"
-	"errors"
 	json "encoding/json/v2"
+	"errors"
 	"log"
 	"net/http"
 	"strings"

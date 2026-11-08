@@ -107,6 +107,7 @@ func TestPingStaysOnThePinnedActiveConnection(t *testing.T) {
 		t.Errorf("other connection hit %d times, want 0", got)
 	}
 }
+
 // A parked dead-grant account must stay ineligible even under a probe: the
 // upstream answer is already known (401 invalid access token), and the probe
 // bypass exists to test live reachability, not to re-spend a dead grant.
