@@ -123,13 +123,13 @@ func IsGoogleAppealURL(raw string) bool {
 	if u.Scheme != "https" {
 		return false
 	}
-	switch u.Hostname() {
-	case "forms.gle", "accounts.google.com":
-		return true
-	case "docs.google.com":
+	if !allowedAppealHosts[u.Hostname()] {
+		return false
+	}
+	if u.Hostname() == "docs.google.com" {
 		return strings.HasPrefix(u.Path, "/forms/")
 	}
-	return false
+	return true
 }
 
 // LooksLikeAccountDeactivated reports whether an error text names a permanent
@@ -156,18 +156,11 @@ func LooksLikeAccountDeactivated(text string) bool {
 }
 
 // RedactAppealURLs masks every Google appeal link in text with
-// [verification-url] so a body can be stored or logged safely. The tail scan
-// stops at appealMaxTail chars so a hostile body cannot blow up the replacement.
+// [verification-url] so a body can be stored or logged safely. Each match is
+// replaced with a constant-size token, so untrusted text cannot blow up the
+// output; the allowlist in IsGoogleAppealURL is the security boundary.
 func RedactAppealURLs(text string) string {
-	out := appealURLRegexp.ReplaceAllStringFunc(text, func(match string) string {
-		tail := match
-		if i := strings.IndexByte(match, '/'); i >= 0 {
-			tail = match[i:]
-		}
-		if len(tail) > appealMaxTail {
-			tail = tail[:appealMaxTail]
-		}
-		return "https://" + strings.TrimSuffix(match, tail) + "[verification-url]"
+	return appealURLRegexp.ReplaceAllStringFunc(text, func(string) string {
+		return "[verification-url]"
 	})
-	return out
 }

@@ -31,7 +31,7 @@ func TestTestConnection_AntigravityTOSBanCapturesAppealURL(t *testing.T) {
 	defer cleanup()
 
 	const id = "conn-antigravity-tos"
-	if err := repo.CreateProviderConnectionFull(id, id, "oauth", "antigravity", nil,
+	if err := repo.CreateProviderConnectionFull(id, "antigravity", "oauth", "antigravity", nil,
 		`{"accessToken":"tok","expiresAt":"2099-01-01T00:00:00Z"}`); err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
