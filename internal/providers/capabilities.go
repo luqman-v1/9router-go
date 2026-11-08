@@ -1167,6 +1167,34 @@ func GetCapabilitiesForModel(provider, model string) Capabilities {
 		res.Vision = true
 	}
 
+	// A speech-synthesis model emits audio, and models_list's buildModalities
+	// derives output_modalities from this flag alone — so a TTS model without
+	// it is published as text-only and never reaches the audio lane, while its
+	// endpoint happily answers audio/wav.
+	//
+	// The name signal does the work. The registry's per-provider service kind
+	// is the more authoritative source but cannot stand alone: it needs an
+	// exact ProviderModelKinds[provider][model] hit, which a custom provider
+	// node never has (no registry entry, no alias), so the reported case —
+	// studio/gemini-3.8-flash-tts on an operator-defined node — is reachable
+	// by name only. The same gap hits a builtin that carries a TTS id without
+	// declaring its kind (vertex, ag) and the eight mimo pairs on
+	// xiaomi-tokenplan / xmtp.
+	//
+	// The kind check is kept as a fallback for a classified id whose name
+	// carries no signal at all. Removing it breaks no test today, so it is
+	// deliberate slack, not redundancy — ttsName would have nothing to match
+	// in a future id like "sonic-2".
+	//
+	// Only ever turns audio output ON, like the vision rule above. It must stay
+	// that narrow: upstream advertises thinking levels for its TTS models
+	// (13 pairs in testdata/thinking_levels.json), so clearing Reasoning or the
+	// thinking format here would break that parity.
+	if !res.AudioOutput &&
+		(GetProviderModelKind(provider, model) == serviceKindTTS || looksLikeTTSModel(baseModel)) {
+		res.AudioOutput = true
+	}
+
 	capsCacheMu.Lock()
 	capsCache[key] = res
 	capsCacheMu.Unlock()
