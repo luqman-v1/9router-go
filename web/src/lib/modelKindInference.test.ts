@@ -11,11 +11,22 @@ import { customModelKeyFor, inferModelKind } from './modelKindInference'
 // as chat models on /v1/models while their endpoints serve video, music, speech
 // and images.
 describe('inferModelKind', () => {
-  it('classifies the four models that leaked into the chat listing', () => {
+  it('classifies the models that leaked into the chat listing', () => {
     expect(inferModelKind('veo-3.1-generate-preview')).toBe('video')
-    expect(inferModelKind('lyria-3.5')).toBe('video')
     expect(inferModelKind('gemini-3.8-flash-tts')).toBe('tts')
     expect(inferModelKind('gemini-nano-banana-2.1')).toBe('image')
+  })
+
+  // Lyria is a music model: it answers /v1/audio/music, so "video" would be a
+  // lie, and the honest kind does not help either — "music" is a
+  // serviceKindLabels entry but not a nonLLMServiceKinds one, so a row filed
+  // that way stays in the LLM list regardless. Upstream agrees: its
+  // MODEL_TYPE_TO_KIND has no music entry. It therefore stays llm until the
+  // gateway gives music a lane of its own, and this pins that so a later
+  // "fix" to video has to argue with the lane instead of the name.
+  it('leaves a music model as llm rather than guessing video', () => {
+    expect(inferModelKind('lyria-3.5')).toBe('llm')
+    expect(inferModelKind('lyria-2')).toBe('llm')
   })
 
   it('leaves chat models as llm', () => {

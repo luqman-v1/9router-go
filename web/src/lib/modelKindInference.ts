@@ -32,10 +32,18 @@ const CHAT_DESPITE_MEDIA_WORD =
   /-(chat|instruct|realtime|thinking|reasoner)\b|\bchat-|native-?audio|audio-preview/i
 
 // Not upstream's: upstream has no video hint, so a video id falls through to
-// "llm" there. Veo and Lyria are reachable through this gateway's media lanes,
-// and a generation model in the chat list is a model a client will call and get
-// nothing usable back from.
-const VIDEO_HINT = /\bveo\b|veo-|lyria|\bsora\b|sora-|video/i
+// "llm" there. Veo and Sora are reachable through this gateway's media lanes,
+// and a generation model in the chat list is one a client will call and get
+// nothing usable back from. The registry agrees independently —
+// ProviderModelKinds files veo-3.1-generate-preview as "video".
+//
+// Music is deliberately absent. Lyria outputs audio on /v1/audio/music, so
+// "video" would be a lie, and the honest kind does not help: "music" is a
+// serviceKindLabels entry but not a nonLLMServiceKinds one, so a row filed that
+// way stays in the LLM list regardless — which is also what upstream does, its
+// MODEL_TYPE_TO_KIND having no music entry either. Giving music its own lane in
+// the listing is a gateway change, not something to encode in a name guess.
+const VIDEO_HINT = /\bveo\b|veo-|\bsora\b|sora-|video/i
 
 // Speech recognition is the opposite direction of TTS and must not be caught by
 // the "speech" or "audio" hints. Checked first, like notTTSName in the Go
