@@ -7,6 +7,7 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -96,6 +97,33 @@ type GeminiFunctionResp struct {
 
 type GeminiFuncResp struct {
 	Result any `json:"result,omitempty"`
+}
+
+// remoteImageMimeType maps a remote image URL extension to a concrete MIME
+// type for the fileData fallback in convertContentToGeminiParts. The result
+// comes from a fixed set, never from the URL, so a caller-supplied URL cannot
+// inject anything into the emitted MIME string; unknown extensions fall back
+// to the default. Port of decolua/9router 7ba1d1ca (remoteImageMimeType),
+// serving the same Antigravity "Unsupported mime type: image/*" 400).
+func remoteImageMimeType(rawURL string) string {
+	path := rawURL
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	if idx := strings.IndexByte(path, '#'); idx >= 0 {
+		path = path[:idx]
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
+	case ".gif":
+		return "image/gif"
+	case ".bmp":
+		return "image/bmp"
+	}
+	return "image/png"
 }
 
 type GeminiInlineData struct {
@@ -1016,8 +1044,11 @@ func convertContentToGeminiParts(content any) []GeminiPart {
 								}
 							}
 						} else if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+							// Antigravity rejects the wildcard (400 "Unsupported
+							// mime type: image/*"), so the fallback emits a
+							// concrete type inferred from a fixed extension set.
 							parts = append(parts, GeminiPart{
-								FileData: &GeminiFileData{FileUri: url, MimeType: "image/*"},
+								FileData: &GeminiFileData{FileUri: url, MimeType: remoteImageMimeType(url)},
 							})
 						}
 					}
