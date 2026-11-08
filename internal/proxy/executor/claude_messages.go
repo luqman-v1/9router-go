@@ -35,13 +35,11 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 		defer hw.Close()
 		flusher := proxy.WriteSSEHeaders(hw)
 		writeFrame := func(payload []byte) {
-			if req.TTFT != nil && *req.TTFT == 0 {
-				*req.TTFT = time.Since(startTime).Milliseconds()
-			}
+			markTTFT(req, startTime)
 			frame := append([]byte("data: "), payload...)
 			frame = append(frame, '\n', '\n')
 			if req.ResponseBuf != nil {
-				req.ResponseBuf.Write(frame)
+				_, _ = req.ResponseBuf.Write(frame)
 			}
 			_, _ = hw.Write(frame)
 			if flusher != nil {
@@ -129,15 +127,9 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 			return
 		}
 
-		if req.TTFT != nil && *req.TTFT == 0 {
-			startTime := req.StartTime
-			if startTime.IsZero() {
-				startTime = time.Now()
-			}
-			*req.TTFT = time.Since(startTime).Milliseconds()
-		}
+		markTTFT(req, req.StartTime)
 		if req.ResponseBuf != nil {
-			req.ResponseBuf.Write(out)
+			_, _ = req.ResponseBuf.Write(out)
 		}
 		if _, werr := hw.Write(out); werr != nil {
 			// Client went away mid-stream: stop feeding it and report the

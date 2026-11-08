@@ -49,6 +49,27 @@ type Request struct {
 	TTFT                 *int64    // pointer to TTFT metric (ms to first chunk)
 }
 
+// markTTFT stamps the time-to-first-token on the first emitted chunk, once.
+// The usage recorder reads metrics.TTFT into latency.ttft for the dashboard
+// detail row; a stream that never calls this records TTFT as unseen (0),
+// which renders as "— (non-stream)" and is excluded from the TTFT averages.
+// Every streaming executor must call it before flushing the first
+// client-visible frame — the semantic first token, not the first byte or an
+// empty role-only delta. startTime comes from req.StartTime so the value
+// matches what the chat handler measures.
+func markTTFT(req *Request, startTime time.Time) {
+	if req == nil || req.TTFT == nil || *req.TTFT != 0 {
+		return
+	}
+	if startTime.IsZero() {
+		startTime = req.StartTime
+	}
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	*req.TTFT = time.Since(startTime).Milliseconds()
+}
+
 // Executor forwards a request upstream and writes the response.
 type Executor func(w http.ResponseWriter, req *Request) error
 

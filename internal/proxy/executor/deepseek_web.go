@@ -388,9 +388,7 @@ func deepSeekStreamToClient(w http.ResponseWriter, req *Request, upstream io.Rea
 		if emitErr != nil {
 			return emitErr
 		}
-		if req.TTFT != nil && *req.TTFT == 0 {
-			*req.TTFT = time.Since(startTime).Milliseconds()
-		}
+		markTTFT(req, startTime)
 		chunk := map[string]any{
 			"id":      responseID,
 			"object":  "chat.completion.chunk",

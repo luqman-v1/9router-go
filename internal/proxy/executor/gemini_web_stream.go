@@ -216,14 +216,7 @@ func (e *geminiWebEmitter) writeResponsesFrame(frame []byte) error {
 
 // markTTFT records the first byte the client will see, once.
 func (e *geminiWebEmitter) markTTFT() {
-	if e.req.TTFT == nil || *e.req.TTFT != 0 {
-		return
-	}
-	start := e.req.StartTime
-	if start.IsZero() {
-		start = time.Now()
-	}
-	*e.req.TTFT = time.Since(start).Milliseconds()
+	markTTFT(e.req, e.req.StartTime)
 }
 
 // finish closes a stream that was written as it went.

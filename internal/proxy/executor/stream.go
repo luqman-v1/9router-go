@@ -549,11 +549,9 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 
 				out := ProcessCodexEvent(data, state, responseID, created)
 				for _, chunk := range out {
-					if req.TTFT != nil && *req.TTFT == 0 {
-						*req.TTFT = time.Since(req.StartTime).Milliseconds()
-					}
+					markTTFT(req, req.StartTime)
 					if req.ResponseBuf != nil {
-						req.ResponseBuf.Write([]byte(chunk))
+						_, _ = req.ResponseBuf.Write([]byte(chunk))
 					}
 					if _, werr := hw.Write([]byte(chunk)); werr != nil {
 						return
@@ -621,11 +619,9 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 				if translated == nil {
 					continue
 				}
-				if req.TTFT != nil && *req.TTFT == 0 {
-					*req.TTFT = time.Since(req.StartTime).Milliseconds()
-				}
+				markTTFT(req, req.StartTime)
 				if req.ResponseBuf != nil {
-					req.ResponseBuf.Write(translated)
+					_, _ = req.ResponseBuf.Write(translated)
 				}
 				if _, werr := hw.Write(translated); werr != nil {
 					return
@@ -920,6 +916,10 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 					"delta": map[string]any{"content": payload.Content},
 				}},
 			}
+			markTTFT(req, req.StartTime)
+			if req.ResponseBuf != nil {
+				_, _ = req.ResponseBuf.Write([]byte(fmt.Sprintf("data: %s\n\n", fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"choices":[{"index":0,"delta":{"content":%q},"finish_reason":null}]}`, responseID, created, payload.Content))))
+			}
 			if err := writeSSE(w, chunk); err != nil {
 				return err
 			}
@@ -945,6 +945,10 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 					"index": 0,
 					"delta": map[string]any{"reasoning_content": payload.Text},
 				}},
+			}
+			markTTFT(req, req.StartTime)
+			if req.ResponseBuf != nil {
+				_, _ = req.ResponseBuf.Write([]byte(fmt.Sprintf("data: %s\n\n", fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"choices":[{"index":0,"delta":{"reasoning_content":%q},"finish_reason":null}]}`, responseID, created, payload.Text))))
 			}
 			if err := writeSSE(w, chunk); err != nil {
 				return err
@@ -1023,6 +1027,7 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 		}
 		call.emitted = true
 		state.toolCallIndex++
+		markTTFT(req, req.StartTime)
 		if err := writeSSE(w, chunk); err != nil {
 			return err
 		}
@@ -1216,6 +1221,11 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
 
 	var headersWritten bool
+	// semanticToken reports whether a chunk carries a real content or
+	// reasoning delta, rather than an empty role-only or finish frame.
+	semanticToken := func(chunk string) bool {
+		return strings.Contains(chunk, `"content"`) || strings.Contains(chunk, `"reasoning_content"`)
+	}
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -1280,6 +1290,12 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 
 		flusher, _ := w.(http.Flusher)
 		for _, chunk := range chunks {
+			if semanticToken(chunk) {
+				markTTFT(req, req.StartTime)
+			}
+			if req.ResponseBuf != nil {
+				_, _ = req.ResponseBuf.Write([]byte(fmt.Sprintf("data: %s\n\n", chunk)))
+			}
 			if _, err := w.Write([]byte(fmt.Sprintf("data: %s\n\n", chunk))); err != nil {
 				return err
 			}
