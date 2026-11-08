@@ -5040,6 +5040,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   ],
   "sensenova": [
     {
+      "id": "sensenova-6.8-flash",
+      "name": "SenseNova 6.8 Flash"
+    },
+    {
       "id": "sensenova-6.8-flash-lite",
       "name": "SenseNova 6.8 Flash Lite"
     },
@@ -5076,6 +5080,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "deepseek-flash",
       "name": "DeepSeek V4.1 Flash"
+    },
+    {
+      "id": "glm-5.3",
+      "name": "GLM-5.3"
     },
     {
       "id": "glm-5.2",
