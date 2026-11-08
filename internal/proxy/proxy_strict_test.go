@@ -110,7 +110,7 @@ func TestDoRequestStrictProxyRefusesWhenProxyIsUnreachable(t *testing.T) {
 	upstream, directHits := okUpstream(t)
 	deadPort := closedProxyPort(t)
 
-	client := ForbidDirectReplay(poolClient("http://"+deadPort))
+	client := ForbidDirectReplay(poolClient("http://" + deadPort))
 	if _, err := DoRequest(context.Background(), client, http.MethodPost, upstream.URL, nil, []byte(`{}`)); err == nil {
 		t.Fatal("an unreachable strict proxy must fail the request")
 	}

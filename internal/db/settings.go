@@ -144,7 +144,7 @@ type SettingsData struct {
 	// HeadroomAutostart launches the local Headroom proxy daemon on 9router boot.
 	// It is decoupled from HeadroomEnabled so operators who run Headroom standalone or
 	// selectively toggle request compression still have the proxy ready on startup.
-	HeadroomAutostart          bool                            `json:"headroomAutostart"`
+	HeadroomAutostart bool `json:"headroomAutostart"`
 	// HeadroomEngine selects the compression engine: "builtin" runs in-process
 	// with no dependency, "external" posts to HeadroomUrl. Empty means "builtin",
 	// so an existing settings row that never set the field gets the in-process

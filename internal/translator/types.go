@@ -267,8 +267,8 @@ type ClaudeToolChoice struct {
 	// emit at most one tool call per turn. It is the counterpart of OpenAI's
 	// parallel_tool_calls:false (parity with decolua/9router#4581). Plain bool
 	// with omitempty: only an explicit true is worth putting on the wire.
-	DisableParallelToolUse bool `json:"disable_parallel_tool_use,omitempty"`
-	Name string `json:"name,omitempty"`
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
+	Name                   string `json:"name,omitempty"`
 }
 
 // ClaudeThinking represents the thinking configuration in a Claude request.
@@ -306,9 +306,9 @@ type OpenAIRequest struct {
 	ToolChoice          any             `json:"tool_choice,omitempty"`
 	// ParallelToolCalls carries OpenAI's single-tool-call policy. Pointer so an
 	// absent field stays absent while an explicit false still serialises.
-	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
-	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
-	Stream              bool            `json:"stream,omitempty"`
+	ParallelToolCalls *bool  `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort   string `json:"reasoning_effort,omitempty"`
+	Stream            bool   `json:"stream,omitempty"`
 }
 
 // OpenAIMessage is a single message in OpenAI format.

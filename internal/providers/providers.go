@@ -1491,6 +1491,7 @@ func PreservesCacheControl(provider string) bool {
 	}
 	return false
 }
+
 // StrictReasoningRemoving reports whether a provider rejects unknown
 // assistant-message reasoning fields echoed on history (upstream
 // paramSupport dropMessageFields): groq, mistral, and cerebras answer 400

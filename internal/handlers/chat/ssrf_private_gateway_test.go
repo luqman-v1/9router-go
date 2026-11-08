@@ -13,12 +13,12 @@ package chat
 // this is purely the socket-level guard.
 
 import (
+	"9router/proxy/internal/db"
 	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"9router/proxy/internal/db"
 )
 
 func TestLocalGatewayConnectionRefusedWithoutOptIn(t *testing.T) {

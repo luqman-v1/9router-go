@@ -192,6 +192,7 @@ func DowngradeJsonSchemaToJSONObject(body []byte) []byte {
 	}
 	return body
 }
+
 // normalizeGroqGPTOSSRequest patches a Groq gpt-oss request so strict JSON
 // validation survives the model's Harmony reasoning channel. Groq answers
 // 400 json_validate_failed ("Failed to validate JSON") when a structured
@@ -274,7 +275,6 @@ func isGroqGPTOSSModel(model string) bool {
 	lower := strings.ToLower(strings.TrimSpace(model))
 	return strings.Contains(lower, "gpt-oss")
 }
-
 
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
@@ -620,7 +620,7 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 			return &proxy.ZeroContentError{Body: body}
 		}
 		// The last member of a combo serves its zero-content response normally (FR3).
-	} else if err := proxy.EmptyUpstreamError(body); err != nil {
+	} else if err := proxy.EmptyUpstreamError(body); err != nil && !proxy.EmptyCompletionAllowed(ctx) {
 		return err
 	}
 

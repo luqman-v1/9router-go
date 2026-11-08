@@ -3,7 +3,6 @@ package executor
 import (
 	"strings"
 	"testing"
-
 )
 
 // Prefix stability is what DeepSeek's prompt cache keys on: the serialized
@@ -12,7 +11,6 @@ import (
 // order by default, so every unmarshal->mutate->remarshal cycle reshuffles
 // the entire body and destroys the shared prefix. Deterministic marshaling
 // (RFC 8785-style sorted keys) makes the prefix stable.
-
 
 func TestDeterministicMarshal_PrefixStableAcrossTurns(t *testing.T) {
 	turn1 := map[string]any{
