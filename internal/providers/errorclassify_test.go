@@ -138,10 +138,11 @@ func TestClassifyError_AntigravityTOSBan(t *testing.T) {
 	if ban.CooldownMs != cooldownBannedAccount {
 		t.Errorf("ban cooldown = %dms, want %dms (24h)", ban.CooldownMs, cooldownBannedAccount)
 	}
-	// Alias `ag` must resolve to the same rule.
-	alias := ClassifyErrorForProvider(http.StatusForbidden, "tos_violation", 0, "ag")
-	if alias.CooldownMs != cooldownBannedAccount {
-		t.Errorf("ag alias cooldown = %dms, want %dms", alias.CooldownMs, cooldownBannedAccount)
+	// Bare tos_violation is not scoped to cloudcode-pa, so it does not earn
+	// the 24h ban cooldown; it falls through to the generic 403 rule.
+	bare := ClassifyErrorForProvider(http.StatusForbidden, "tos_violation", 0, "antigravity")
+	if bare.CooldownMs == cooldownBannedAccount {
+		t.Errorf("bare tos_violation cooldown = %dms, want %dms (generic 403)", bare.CooldownMs, cooldownLong)
 	}
 	// Other providers keep the generic 2-minute 403 rule.
 	other := ClassifyErrorForProvider(http.StatusForbidden, "tos_violation", 0, "gemini")

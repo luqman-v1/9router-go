@@ -113,7 +113,11 @@ var ErrorRules = []ErrorRule{
 	// Google permanently disables Antigravity OAuth accounts for ToS
 	// violations; nothing clears until the operator wins an appeal.
 	{Provider: "antigravity", Text: "disabled in this account for violation", CooldownMs: cooldownBannedAccount},
-	{Provider: "antigravity", Text: "tos_violation", CooldownMs: cooldownBannedAccount},
+	// tos_violation is deliberately NOT a standalone 24h rule: a bare
+	// tos_violation (another provider's refusal, or a user prompt echoed
+	// into an error) must not park a healthy connection. The real Google
+	// ban carries the "disabled in this account" sentence above plus the
+	// cloudcode-pa domain, which is what parks the account for 24h.
 	{Text: "no credentials", CooldownMs: cooldownLong},
 	{Text: "request not allowed", CooldownMs: cooldownShort},
 	{Text: "rate limit", Backoff: true},

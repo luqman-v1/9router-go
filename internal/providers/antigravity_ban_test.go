@@ -90,6 +90,24 @@ func TestExtractAppealURL(t *testing.T) {
 	if _, ok := ExtractAppealURL([]byte(`broken`)); ok {
 		t.Error("expected no appeal URL on malformed input")
 	}
+
+	// JSON-escaped slashes are normalized to plain https:// before validation.
+	escaped := `{"error":{"details":[{"metadata":{"appeal_url":"https:\/\/forms.gle\/abc\/def"}}]}}`
+	if u, _ := ExtractAppealURL([]byte(escaped)); u != "https://forms.gle/abc/def" {
+		t.Errorf("escaped appeal URL = %q", u)
+	}
+
+	// Free-text candidate: backslash that is not an escaped slash stops extraction.
+	stop := `{"error":{"details":[{"metadata":{"appeal_url":"verify at https://accounts.google.com/c?x=1\\extra then"}}]}}`
+	if u, _ := ExtractAppealURL([]byte(stop)); u != "https://accounts.google.com/c?x=1" {
+		t.Errorf("backslash-stop appeal URL = %q", u)
+	}
+
+	// Lookalike host is rejected; only the real accounts.google.com URL is extracted.
+	lookalike := `{"error":{"details":[{"metadata":{"appeal_url":"https://accounts.google.com.evil.com/x or https://accounts.google.com/real"}}]}}`
+	if u, _ := ExtractAppealURL([]byte(lookalike)); u != "https://accounts.google.com/real" {
+		t.Errorf("lookalike appeal URL = %q", u)
+	}
 }
 
 func TestIsGoogleAppealURL(t *testing.T) {
@@ -100,6 +118,10 @@ func TestIsGoogleAppealURL(t *testing.T) {
 		{"https://forms.gle/hGzM9MEUv2azZsrb9", true},
 		{"https://docs.google.com/forms/d/e/FAKE/viewform", true},
 		{"https://accounts.google.com/o/oauth2/auth", true},
+		// Uppercase scheme and host are accepted after normalization.
+		{"HTTPS://FORMS.GLE/XYZ", true},
+		// JSON-escaped slashes are normalized before validation.
+		{`https:\/\/forms.gle\/abc`, true},
 		{"https://docs.google.com/document/d/FAKE", false},
 		{"https://docs.google.com/spreadsheets/FAKE", false},
 		{"https://evil.example/x", false},
@@ -127,6 +149,21 @@ func TestLooksLikeAccountDeactivated(t *testing.T) {
 	if LooksLikeAccountDeactivated("") {
 		t.Error("expected empty text to not match")
 	}
+
+	// A bare tos_violation from a non-Google provider must not count.
+	if LooksLikeAccountDeactivated(`{"error":{"code":"tos_violation","message":"Your request violates our Terms of Service"}}`) {
+		t.Error("expected bare tos_violation without cloudcode-pa to not count")
+	}
+	// A prompt echoed into an error must not count either.
+	if LooksLikeAccountDeactivated("Cannot summarise the tos_violation clause of the terms of service") {
+		t.Error("expected prompt-echoed tos_violation to not count")
+	}
+	// The real Cloud Code body counts even when the message is in another
+	// language, because tos_violation is scoped to cloudcode-pa.
+	cloudcodeGerman := `{"error":{"code":403,"message":"Dieser Dienst wurde gesperrt.","status":"PERMISSION_DENIED","details":[{"reason":"TOS_VIOLATION","domain":"cloudcode-pa.googleapis.com"}]}}`
+	if !LooksLikeAccountDeactivated(cloudcodeGerman) {
+		t.Error("expected cloudcode-pa-scoped tos_violation to count even in another language")
+	}
 }
 
 func TestRedactAppealURLs(t *testing.T) {
@@ -137,6 +174,8 @@ func TestRedactAppealURLs(t *testing.T) {
 		{tosBanBody, strings.Replace(tosBanBody, "https://forms.gle/hGzM9MEUv2azZsrb9", "[verification-url]", 1)},
 		{"plain text, no links here", "plain text, no links here"},
 		{"see https://evil.example/x and https://forms.gle/hGzM9MEUv2azZsrb9", "see https://evil.example/x and [verification-url]"},
+		// Redaction runs past a backslash (raw JSON can hide a token behind &).
+		{`{"url":"https://accounts.google.com/c?x=1&token=secret"}`, `{"url":"[verification-url]"}`},
 		{"", ""},
 	}
 	for _, tt := range tests {

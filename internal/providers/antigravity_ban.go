@@ -29,13 +29,19 @@ var allowedAppealHosts = map[string]bool{
 	"docs.google.com":     true,
 }
 
-// appealMaxTail bounds the untrusted tail the redact scan may walk, so a
-// hostile body cannot blow up the replacement with a megabyte-long "URL".
-// Go's regexp (RE2) has no {min,max} syntax, so the bound is enforced in
-// RedactAppealURLs itself rather than in the pattern.
-const appealMaxTail = 2048
+// appealURLRegexp finds appeal URLs in free text. It is case-insensitive
+// ((?i)) and accepts JSON-escaped slashes (\/) as well as plain slashes. The
+// tail stops at a backslash that is not an escaped slash, so surrounding text
+// such as `https://accounts.google.com/c?x=1\"` is not swallowed.
+var appealURLRegexp = regexp.MustCompile(`(?i)https:(?:\\/\\/|//)(?:accounts\.google\.com|forms\.gle|docs\.google\.com(?:/|\\/)forms)(?:/|\\/)(?:[^\s"'\\<>]|\\/)*`)
 
-var appealURLRegexp = regexp.MustCompile(`https://(forms\.gle|accounts\.google\.com|docs\.google\.com)/[^\s"'<>]*`)
+// redactURLRegexp masks appeal URLs in text meant for storage or logging. It is
+// deliberately looser than appealURLRegexp: it runs past a backslash, because a
+// raw JSON body can hide a token behind &. Over-masking a log is the safe
+// side. Each match is replaced with a constant-size token, so untrusted text
+// cannot blow up the output; the allowlist in IsGoogleAppealURL is the security
+// boundary.
+var redactURLRegexp = regexp.MustCompile(`(?i)https:(?:\\/\\/|//)(?:accounts\.google\.com|forms\.gle|docs\.google\.com(?:/|\\/)forms)(?:/|\\/)[^\s"<>]*`)
 
 // IsAntigravityTOSViolation reports whether an upstream answer is Google's
 // permanent Antigravity TOS ban: status 403 and a body that either names
@@ -77,8 +83,10 @@ func IsAntigravityTOSViolation(status int, body []byte) bool {
 // Candidates are checked in order:
 // error.details[].metadata.appeal_url, appealUrl, validation_url,
 // validationUrl, then error.appeal_url and the top-level appeal_url.
-// ok is false when the body carries none, or no candidate passes
-// IsGoogleAppealURL.
+// Each candidate is run through the free-text extractor so surrounding text
+// is trimmed, then normalized (\/ -> /) and validated with IsGoogleAppealURL.
+// ok is false when the body carries none, or no candidate passes validation.
+// The returned URL is always plain https://... .
 func ExtractAppealURL(body []byte) (url string, ok bool) {
 	var parsed struct {
 		Error struct {
@@ -105,8 +113,13 @@ func ExtractAppealURL(body []byte) (url string, ok bool) {
 	}
 	candidates = append(candidates, parsed.Error.AppealURL, parsed.AppealURL)
 	for _, raw := range candidates {
-		if IsGoogleAppealURL(raw) {
-			return raw, true
+		extracted := appealURLRegexp.FindString(raw)
+		if extracted == "" {
+			continue
+		}
+		normalized := strings.ReplaceAll(extracted, "\\/", "/")
+		if IsGoogleAppealURL(normalized) {
+			return normalized, true
 		}
 	}
 	return "", false
@@ -114,19 +127,22 @@ func ExtractAppealURL(body []byte) (url string, ok bool) {
 
 // IsGoogleAppealURL reports whether raw is an https URL on an allowed appeal
 // host. docs.google.com is further restricted to /forms/ paths so a Google
-// document link cannot pass as an appeal URL.
+// document link cannot pass as an appeal URL. JSON-escaped slashes (\/) are
+// normalized before validation.
 func IsGoogleAppealURL(raw string) bool {
-	u, err := url.Parse(raw)
+	normalized := strings.ReplaceAll(raw, "\\/", "/")
+	u, err := url.Parse(normalized)
 	if err != nil {
 		return false
 	}
-	if u.Scheme != "https" {
+	if strings.ToLower(u.Scheme) != "https" {
 		return false
 	}
-	if !allowedAppealHosts[u.Hostname()] {
+	host := strings.ToLower(u.Hostname())
+	if !allowedAppealHosts[host] {
 		return false
 	}
-	if u.Hostname() == "docs.google.com" {
+	if host == "docs.google.com" {
 		return strings.HasPrefix(u.Path, "/forms/")
 	}
 	return true
@@ -134,33 +150,34 @@ func IsGoogleAppealURL(raw string) bool {
 
 // LooksLikeAccountDeactivated reports whether an error text names a permanent
 // account deactivation (ban), not a transient auth failure.
-// Case-insensitive substring match.
+// Case-insensitive substring match. tos_violation only counts when scoped to
+// Google Cloud Code (cloudcode-pa): a bare tos_violation (another provider's
+// refusal, or a user prompt echoed into an error) must not park a healthy
+// connection.
 func LooksLikeAccountDeactivated(text string) bool {
 	lower := strings.ToLower(text)
-	patterns := []string{
+	for _, p := range []string{
 		"account_deactivated",
 		"account has been deactivated",
 		"account has been disabled",
 		"your account has been suspended",
-		"this account is deactivated",
 		"this service has been disabled in this account for violation",
 		"this service has been disabled in this account",
-		"tos_violation",
-	}
-	for _, p := range patterns {
+	} {
 		if strings.Contains(lower, p) {
 			return true
 		}
+	}
+	if strings.Contains(lower, "tos_violation") && strings.Contains(lower, "cloudcode-pa") {
+		return true
 	}
 	return false
 }
 
 // RedactAppealURLs masks every Google appeal link in text with
-// [verification-url] so a body can be stored or logged safely. Each match is
-// replaced with a constant-size token, so untrusted text cannot blow up the
-// output; the allowlist in IsGoogleAppealURL is the security boundary.
+// [verification-url] so a body can be stored or logged safely.
 func RedactAppealURLs(text string) string {
-	return appealURLRegexp.ReplaceAllStringFunc(text, func(string) string {
+	return redactURLRegexp.ReplaceAllStringFunc(text, func(string) string {
 		return "[verification-url]"
 	})
 }
