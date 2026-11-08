@@ -918,7 +918,7 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 			}
 			markTTFT(req, req.StartTime)
 			if req.ResponseBuf != nil {
-				_, _ = req.ResponseBuf.Write([]byte(fmt.Sprintf("data: %s\n\n", fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"choices":[{"index":0,"delta":{"content":%q},"finish_reason":null}]}`, responseID, created, payload.Content))))
+				_, _ = fmt.Fprintf(req.ResponseBuf, "data: %s\n\n", fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"choices":[{"index":0,"delta":{"content":%q},"finish_reason":null}]}`, responseID, created, payload.Content))
 			}
 			if err := writeSSE(w, chunk); err != nil {
 				return err
@@ -948,7 +948,7 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 			}
 			markTTFT(req, req.StartTime)
 			if req.ResponseBuf != nil {
-				_, _ = req.ResponseBuf.Write([]byte(fmt.Sprintf("data: %s\n\n", fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"choices":[{"index":0,"delta":{"reasoning_content":%q},"finish_reason":null}]}`, responseID, created, payload.Text))))
+				_, _ = fmt.Fprintf(req.ResponseBuf, "data: %s\n\n", fmt.Sprintf(`{"id":"%s","object":"chat.completion.chunk","created":%d,"choices":[{"index":0,"delta":{"reasoning_content":%q},"finish_reason":null}]}`, responseID, created, payload.Text))
 			}
 			if err := writeSSE(w, chunk); err != nil {
 				return err
@@ -1294,7 +1294,7 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 				markTTFT(req, req.StartTime)
 			}
 			if req.ResponseBuf != nil {
-				_, _ = req.ResponseBuf.Write([]byte(fmt.Sprintf("data: %s\n\n", chunk)))
+				_, _ = fmt.Fprintf(req.ResponseBuf, "data: %s\n\n", chunk)
 			}
 			if _, err := w.Write([]byte(fmt.Sprintf("data: %s\n\n", chunk))); err != nil {
 				return err
