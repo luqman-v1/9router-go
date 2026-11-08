@@ -1,0 +1,5 @@
+### fix(codex): strip Agent tool isolation property and preserve optional tool arguments for Responses
+
+- **Strip `Agent` isolation for non-Anthropic targets**: Strips the optional `isolation` property (`worktree`, `remote`) from `Agent` tool schemas in `NormalizeToolSchemasForProvider` and `buildResponsesBody` when routing requests to Codex, OpenAI, and DeepSeek. Non-Anthropic models frequently over-interpret the `worktree` enum and defensive instructions when operating inside Claude Code, causing recursive no-op/blocked probing loops.
+- **Strip isolation from history tool calls**: When forwarding previous `Agent` tool calls in conversation history to Codex (`buildResponsesBody`), automatically deletes `"isolation"` from the arguments so models do not mimic past worktree attempts in an autoregressive loop.
+- **Default non-strict Responses tools**: Explicitly defaults `tool["strict"] = false` for Chat Completions tools transformed into Responses API format, preventing the Codex backend from treating omitted optional fields (`isolation`, `effort`) as mandatory structured output schemas.
