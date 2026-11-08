@@ -1,5 +1,507 @@
 # Changelog
 
+## [v1.9.16-exp.8] - 2026-11-08
+
+### Port upstream: SenseNova models + Gemini remote-image MIME fallback
+
+- Port `decolua/9router` `b9c34543` (sensenova-6.8-flash, glm-5.3): register both models in the Go catalog (`registry_models.go`, `capabilities.go`) and in the dashboard catalogue (`web/src/lib/models.ts`, required by `TestDashboardCatalogListsEveryRoutedModel`), mirroring the upstream registry entries.
+- Port `decolua/9router` `7ba1d1ca` (remote-image MIME): OpenAI→Gemini `image_url` fallback for `http(s)` images emitted `mimeType: image/*`, which Antigravity rejects with 400. `remoteImageMimeType` now maps the URL extension (jpg/jpeg, webp, gif, bmp) to a concrete type from a fixed set, defaulting to `image/png`; the image URL itself is passed through unchanged. The value is never derived from the URL beyond the extension, so nothing caller-supplied can inject into the MIME string.
+- Verification: `go test ./internal/providers/ ./internal/translator/` pass; new `TestOpenAIToGemini_RemoteImageMimeType` (7 cases) passes and the existing `TestOpenAIToGemini_HttpImageUrl_FileData` now expects `image/jpeg`; `bun test src` 781 pass, `ratchet:svelte` 74 = baseline; `go vet` and `go build` clean.
+
+### fix(oauth): stop re-spending a parked minimax-code refresh token on chat, usage, and probe paths
+
+A dead `minimax-code-global` grant (`400 invalid_grant: this refresh token can
+no longer be used`) was parked correctly, but three paths kept paying for it
+anyway:
+
+- The usage route (`GET /api/usage/{conn}`) force-refreshed a
+  `reauth_required` account, reproducing the "oauth grant dead" warning and
+  bumping the backoff counter behind a request the caller must not make.
+- The reactive-401 retry in `tryForwardWithConnection` forced a refresh of an
+  already-parked single-use token, re-logging the rejection on the same
+  request and then falling through to the guaranteed
+  `fallback upstream failed ... 401 invalid access token`.
+- Force-fallback (`FORCE_FALLBACK_ON_ALL_UNAVAILABLE`) and the probe bypass
+  resurrected parked accounts by earliest cooldown reset, so a terminal grant
+  the operator could not repair without re-login kept being selected.
+
+Fixes:
+
+- `internal/handlers/dashboard/usage_credentials.go`: `runUsageRefresh` skips
+  a connection that already carries `testStatus=reauth_required` (via the new
+  `db.ConnectionRequiresReauth` helper); the panel still renders with the
+  stored access token while the badge says to re-authorize.
+- `internal/handlers/chat/fallback.go` + `oauth_lock.go`: the reactive-401
+  retry checks `connectionParkedForReauth` before forcing a refresh.
+- `internal/handlers/chat/force_fallback.go`: `forceMinCooldownConnection`
+  never returns a `reauth_required` account — waiting out a dead grant
+  cannot help.
+- `internal/handlers/chat/connections.go`: the probe bypass and the
+  strategy sweep both skip `reauth_required` accounts, so a `/api/models/test`
+  or auto-ping against a parked account refuses instead of spending a
+  guaranteed 401.
+- `internal/proxy/oauth/background.go`: the dead-grant check widens from
+  `IsRefreshUnauthorized` (401 only) to `IsRefreshGrantDead`, so the 400
+  `invalid_grant` shape minimax-code(-global) and xAI return actually parks
+  from the background tick too, with the real status recorded.
+
+Verified: `go vet` + `go test` on `internal/db`, `internal/handlers/chat`,
+`internal/handlers/dashboard`, and `internal/proxy/oauth`; new regression
+tests `TestConnectionRequiresReauth`, `TestForceMinCooldownConnection_SkipsReauthRequired`,
+`TestPingDoesNotBypassParkedDeadGrant`, and
+`TestHandleGetConnectionUsage_SkipsRefreshForParkedDeadGrant`.
+
+### fix(dashboard): store a custom model's real service kind instead of always "llm"
+
+Importing models onto a compatible provider node filed every one of them as an
+LLM. The gateway believes that: `modelKind()` reads a custom row's stored `type`
+before anything else, so a row saying `llm` is an LLM even when its id ends in
+`-tts`. On an AI Studio node that put four non-chat models in the default
+`/v1/models` listing —
+
+- `studio/veo-3.1-generate-preview` (video)
+- `studio/lyria-3.5` (music)
+- `studio/gemini-3.8-flash-tts` (speech)
+- `studio/gemini-nano-banana-2.1` (image)
+
+— where a client filtering for chat models would call them and get nothing
+usable back.
+
+The six import and add paths in `ProviderDetailView.svelte` hardcoded
+`type: 'llm'` and built the `alias|id|type` key with a literal `|llm`. They now
+infer the kind from the id through a new `web/src/lib/modelKindInference.ts`,
+whose regexes are ported from upstream `inferKindFromUnknownModelId`
+(`src/app/api/v1/models/route.js`) in upstream's order — embedding, then tts,
+then image — so a row written here resolves to the kind the Node gateway would
+infer for the same id. The backend already honoured a per-entry `type` and only
+defaulted to `llm` when one was absent, so no server change was needed.
+
+Two kinds of id needed care beyond the upstream port:
+
+- Upstream's `audio` branch claims `stepaudio-2.5-chat` and
+  `gpt-4o-audio-preview`, which are audio-capable *chat* models. Filing one as
+  TTS removes it from the default listing, a worse failure than leaving a media
+  model in, so chat spellings are excluded before any positive hint is tried.
+- `speech` alone is a synthesis signal (minimax `speech-2.8-hd`), so the
+  recognition direction — `stt`, `asr`, `whisper`, `transcri`, `speech-to-text`
+  — is excluded explicitly or whisper reads as TTS.
+
+Storing the real kind then exposed three places that assumed every custom row
+was an LLM, all fixed here:
+
+- the compatible-models list dropped rows whose type was not `llm`, which is
+  the only screen where a node's custom models can be seen, tested or deleted —
+  so a correctly-filed TTS row became unreachable: absent from `/v1/models`, and
+  absent from the one place that could remove it;
+- the four delete paths addressed `alias|id|llm` literally, which would not
+  match a row stored under its real kind;
+- "Test all models" probes with a chat request, so it now skips media rows
+  rather than reporting a working TTS model as dead.
+
+Existing rows are left alone. The nine studio rows already in `kv` carry
+`type: llm` and their keys embed `|llm`, so re-filing them is a data migration
+with its own blast radius, not part of this change.
+
+`web/src/lib/modelKindInference.test.ts` covers the four leaked ids, the chat
+models that must stay LLM, the audio-chat and speech-recognition exclusions, the
+architecture-named synthesis models, and the stored-kind-over-inference rule the
+delete paths depend on.
+
+Out of scope, reported alongside this: `GET /v1/models?kind=` is ignored
+(upstream hardcodes `buildModelsList([LLM_KIND])` and reads no query param, so
+honouring it is a deliberate divergence, not a fix), and `GET /v1/models/{kind}`
+returns providers where upstream returns models.
+
+### fix(providers): publish audioOutput for speech-synthesis models
+
+A TTS model was advertised as text-only. `GET /v1/models` reported
+`audioOutput: false` and `output_modalities: ["text"]` for
+`studio/gemini-3.8-flash-tts`, while the endpoint itself answered
+`Content-Type: audio/wav`. A client filtering on modality never saw it.
+
+`buildModalities` in `internal/handlers/chat/models_list.go` derives
+`output_modalities` from the `AudioOutput` capability alone, so the capability
+flag is the whole fix for the published modality — no handler change needed.
+
+The capability resolver now turns `AudioOutput` on for a speech-synthesis
+model, from two sources:
+
+- a name signal (`internal/providers/tts_patterns.go`), shaped after the
+  existing `looksLikeVisionModel` including its negative-first ordering;
+- the registry's per-provider service kind, as a fallback.
+
+The name signal does the work. The registry kind cannot stand alone: it needs
+an exact `ProviderModelKinds[provider][model]` hit, which a custom provider
+node never has — no registry entry and no alias — so the reported case, an
+operator-defined node with prefix `studio`, is reachable by name only. The same
+gap hit a builtin provider carrying a TTS id without a declared kind (`vertex`,
+`ag`) and the eight mimo TTS pairs on `xiaomi-tokenplan` / `xmtp`. Removing the
+kind check breaks no test today; it is kept as deliberate slack for a future
+classified id whose name carries no signal at all.
+
+Speech recognition is excluded explicitly rather than by omission, because
+`speech` on its own is a synthesis signal (minimax `speech-2.8-hd`): `stt`,
+`asr`, `whisper`, `transcri`, `speech-to-text` and voice recognition are
+checked first and can never match.
+
+The rule only ever turns audio output ON. It deliberately does not clear
+`Reasoning` or the thinking format: upstream advertises thinking levels for its
+TTS models, and an earlier attempt at this fix used a first-match pattern row
+that tidied those away, which broke parity on all 13 pairs pinned in
+`testdata/thinking_levels.json`.
+
+Tests name every provider/model pair literally, including the three call shapes
+`models_list.go` produces (`(providerID, modelID)`, `(alias, modelID)` and
+`(prefix, cm.ID)`). An earlier draft iterated `ProviderModels` and skipped pairs
+whose registry kind was not `tts`, which made it vacuous by construction — it
+could only check the pairs the registry rule was guaranteed to reach, and it
+passed while the reported id was still broken. A mutation run confirms the
+current tests fail when the name signal is removed.
+
+Out of scope, reported alongside this and untouched: `GET /v1/models?kind=`
+does not filter on the requested kind, and `GET /v1/audio/voices` returns 322
+edge/azure voices that Gemini TTS models reject.
+
+### fix(providers): give Gemini Omni a thinking level its upstream accepts
+
+AI Studio answers `400 protocol error 3: 'medium' is not a supported thinking
+level for this model. Allowed values are: high, low.` for the Gemini Omni
+family. Two gaps in the catalog let a rejected level through:
+
+- `internal/providers/capabilities.go` had no `*gemini*omni*` row, so the
+  generic `*gemini*` fallback won with `Reasoning: false`. `GetThinkingLevels`
+  then returned `nil`, and with no declared set the thinking pass took the
+  `caps.Reasoning` guard and **stripped** the request's thinking fields instead
+  of clamping them — an Omni request silently lost its reasoning.
+- `internal/providers/thinking_levels.go` had no `patternThinking` entry, so the
+  `gemini-level` default `{minimal, low, medium, high}` applied and `medium`
+  counted as valid.
+
+Both rows are now present and sit above `*gemini-4*` / `*gemini-3.8*`: the
+tables are first-match-wins, so an Omni id carrying a series number
+(`gemini-4-omni-*`) would otherwise be claimed by the numbered pattern and
+advertise a `medium` the model rejects.
+
+The declared set is `{"high"}` rather than `{"high", "low"}` on purpose. The
+OpenAI lane (`levelFor`) clamps by effort rank, not by declaration order, so a
+set holding `"low"` sends every sub-high level down to `"low"` regardless of
+element order — including the `medium` that `TranslateClaudeToOpenAI` injects as
+the default effort for an enabled-thinking body with no mappable budget. Pinning
+`high` keeps an Omni request on the tier the model actually serves. The
+trade-off: an explicit `low` is also raised to `high`, which this lane cannot
+distinguish.
+
+Verified on the real entry point (`thinking.ApplyJSON`, the call site in
+`internal/handlers/chat/fallback.go`) rather than on `providers.ClampGeminiLevel`,
+which has no production caller. `medium`, `minimal`, `low`, `high`, `none` and
+`xhigh` all reach the wire as `high` on the OpenAI, Responses and Gemini lanes,
+and a body that asks for nothing stays byte-identical.
+
+Also pinned as pre-existing behaviour, not fixed here: `NormalizeOpenAILevel`
+routes `max` and `ultra` to `xhigh` without consulting the declared set, so both
+escape on every `gemini-level` model — `gemini-4-argon` and `gemini-3.8-flash`
+included. The fix belongs with the shared normalizer; the test fails the day it
+learns to clamp onto the declared set, so the change is made deliberately.
+
+### fix(executor): stamp TTFT + ResponseBuf on every streaming path so the dashboard detail shows time-to-first-token
+
+Every streaming executor must record time-to-first-token on the dashboard
+usage detail, but several paths never wrote `req.TTFT` or `req.ResponseBuf` —
+so `latency.ttft` was saved as 0, which the UI renders as "— (non-stream)"
+and which is excluded from the TTFT averages. The provider `commandcode`
+was the reported case: `handleCommandcodeStream` wrote the SSE frames but
+never stamped TTFT nor captured the response body for logging.
+
+A shared `markTTFT(req, startTime)` helper (`executor.go`) now owns the
+once-per-stream stamping: it guards nil req / nil TTFT / already-stamped,
+falls back to `req.StartTime`, stamps `time.Since(start)` in milliseconds,
+and is idempotent so only the first semantic chunk counts. All duplicated
+inline patterns across the package are replaced with it:
+
+- Previously missing, now patched: `handleCommandcodeStream` and
+  `handleKiroStream` (`stream.go`), `geminiStream` (`gemini.go`, opencode-go
+  gemini lane, now takes `req *Request`), `streamPplxAsOpenAI`
+  (`perplexity_web.go`, gated on `content`/`reasoning_content` deltas so the
+  role-only frame doesn't count), and `windsurf.go` (TTFT was set but
+  `ResponseBuf` was never written).
+- Refactored to the helper: Codex stream (both OpenAI and Claude-translated
+  lanes), `handleClaudeMessagesStream` (both lanes), `sseStream` (all three
+  TTFT sites), the Responses bridge writer, `deepseek_web`, `grok_web`,
+  `trae`, `zed`, `zed_google`, `deepseek_web_toolturn`, and the gemini-web
+  emitter's own `markTTFT` method. Non-streaming paths are untouched —
+  TTFT stays 0 for them by contract.
+
+Also fixes `geminiStream`'s payload handling: `proxy.ScanStream` already
+strips the `data:` prefix, so the old `HasPrefix(cs, "data: ")` check
+rejected every real chunk; the handler now normalizes both forms.
+
+Verified: `go build ./internal/proxy/executor/`, `go vet` on
+`executor` + `handlers/chat`, full executor suite
+(`go test ./internal/proxy/executor/`) passing, and five new tests in
+`ttft_stream_test.go` — `TestMarkTTFT_StampsOnce`,
+`TestMarkTTFT_NilSafe`, and per-path tests for commandcode, kiro, and
+gemini proving TTFT > 0 and a non-empty ResponseBuf.
+
+### fix(translator): raise an output floor for openai thinking so a small budget is not eaten whole by reasoning
+
+Companion to #997, which fixed the Claude wire. On the `openai` and
+`openai-responses` formats, a model whose thinking can never be switched
+off (e.g. `glm-5.3-flash-free`, the muse-spark contributor lane) spends
+reasoning inside the output budget — `max_completion_tokens` on Chat
+Completions, `max_output_tokens` on Responses. A client that sends a small
+budget (a compaction snapshot, or a short answer cap) can have the whole
+budget consumed by reasoning, so the answer never starts and the client
+reads `finish_reason: "length"` with empty text.
+
+`writeOpenAI` and `writeOpenAIResponses` now ensure the same level-sized
+output floor as the Claude writers (level budget + 1024 headroom, capped
+at the model's own `MaxOutput`), raising only the field the client
+actually sent — `max_tokens`/`max_completion_tokens` for Chat Completions,
+`max_output_tokens`/`max_tokens` for Responses — and writing the canonical
+field when the client sent none. Explicit `none` on a model that can
+disable thinking is untouched: the client's small budget is honoured as
+written.
+
+Verified: `go test ./internal/thinking/...` passing, including new
+table-driven regression tests `TestApplyOpenAIOutputFloor` and
+`TestApplyOpenAIResponsesOutputFloor`, plus the full repo build (`go build
+./...`).
+
+### Antigravity
+
+- Detect Google's permanent Antigravity (Gemini Code Assist / Cloud Code) TOS ban: `internal/providers/antigravity_ban.go` adds `IsAntigravityTOSViolation`, `ExtractAppealURL`, `LooksLikeAccountDeactivated`, `IsGoogleAppealURL`, and `RedactAppealURLs` (pure stdlib helpers, no DB/logging/HTTP). A 403 with `error.details[].reason == "TOS_VIOLATION"`, `cloudcode-pa.googleapis.com` + `PERMISSION_DENIED`, or the ban sentence stops the retry loop.
+- Capture the appeal URL: the connection probe writes `providerSpecificData.verificationUrl` and redacts the link from `lastError` so the continuation-token-bearing appeal link is never stored or logged in the clear.
+- Classify the ban as permanent: `errorclassify.go` adds `antigravity`-scoped 24h cooldown text rules and adds both ban signals to `permanentFailurePatterns` so a lapsed cooldown never turns a banned account green.
+- Verified with `gofmt -l` (clean), `go vet` (exit 0), and scoped `go test` runs for `./internal/providers/` and `./internal/handlers/dashboard/` (both PASS).
+
+### Build
+
+- Release binaries are now always built with `CGO_ENABLED=0` and
+  `GOAMD64=v1`, so they start on x86-64 CPUs that have SSE4.2 but no AVX/AVX2
+  (Celeron/Pentium N-series, older Atom, some VMs).
+- The previous `linux-amd64` artifact died with `SIGILL` before `main()` on a
+  Celeron N4000. `CGO_ENABLED` defaulted to 1 whenever a C compiler was
+  installed, and the gcc-compiled `runtime/cgo` shim (`x_cgo_getstackbound`)
+  inherited the build host's `-march`, emitting AVX (`vmovq`/`vpinsrq`).
+- `make build`, `make cross`, `build.sh`, and the release workflow now set both
+  variables; either can still be overridden explicitly (`CGO_ENABLED=1`).
+- Added a `9router-go-linux-amd64-noavx` release asset and `install-noavx.sh`
+  (also `VARIANT=noavx` on `install.sh`) so the baseline build has a stable,
+  explicit name to install. Every amd64 target uses the same settings, so the
+  asset is byte-identical to the default one today; the separate name keeps the
+  choice discoverable and scriptable.
+- Verified on the AVX-less CPU: the binary reports `CGO_ENABLED=0 GOAMD64=v1`,
+  is statically linked, and `version`, `--help`, `service status`,
+  `start`/`status`/`stop`, and the dashboard (`GET /` → 200) all run without
+  `SIGILL`.
+
+### fix(translator): raise an output floor for claude-adaptive thinking so a small max_tokens is not eaten whole by reasoning
+
+A model whose thinking can never be switched off — MiniMax-M3.1-Flash
+on the minimax-code credits lane (`claude-adaptive`, `ThinkingCanDisable:
+false`), and the permanently-adaptive Fable lane — spends its reasoning
+inside `max_tokens`. When a client sent a small `max_tokens` (OMP's
+compaction snapshot, at a small context window), the whole budget went
+to reasoning, the answer never started, and the client read
+`finish_reason: "length"` with no text — OMP retried three times and
+gave up, so auto-compact appeared not to work even at a small context.
+
+The claude-budget path already raised `max_tokens` to `budget + 1024`
+headroom; the adaptive path set the effort and returned, leaving the
+client's `max_tokens` untouched. `writeClaudeAdaptive` now ensures the
+same level-sized output floor (level budget + headroom, capped at the
+model's own output limit) across `max_tokens` / `max_completion_tokens` /
+`max_output_tokens`, so an explicit small answer budget is no longer
+spent entirely inside reasoning.
+
+Verified: `go test ./internal/thinking/... ./internal/proxy/executor/...`
+passing, including a new table-driven regression test pinning the floor.
+
+### fix(clientconfig): OMP writes a context window for every connect so its auto-compact trigger always has a boundary
+
+The OMP adapter only emitted the per-model entry when the gateway
+resolved the model's capacity. When it resolved nothing — a discovered or
+custom model such as `omv/mmg/MiniMax-M3.1-Flash` — OMP got a provider
+entry with no `contextWindow`, its context percentage stayed empty, and
+auto-compact never fired, even as the conversation approached the real
+limit.
+
+Like crush and pi, the OMP adapter now always writes the entry, and
+`piLimitsFor` fills `contextWindow: 128000` / `maxTokens: 16384` defaults for
+whatever the gateway did not resolve. A model the gateway did resolve
+keeps its real values.
+
+The previous behavior was pinned by `TestOmpWithoutLimitsKeepsPreviousShape`;
+it now expects the default entry, renamed
+`TestOmpWithoutLimitsFallsBackToDefaults`.
+
+Verified: `go test ./internal/clientconfig/...` passing.
+
+### scope codex reset credit health reset to target connection (fixes #950)
+
+Consuming a Codex reset credit called `ResetProviderHealth("codex", "")`, which
+iterated over every codex connection and cleared each one's `modelLock_*` fields
+and `backoffLevel`. A reset on connection A mistakenly removed intentional
+locks and backoffs on connections B and C.
+
+The health reset is now scoped to the target connection via
+`ResetConnectionHealthState(connectionId)`, so consuming a credit on one
+codex connection no longer unlocks sibling connections of the same provider.
+
+- `HandleConsumeCodexResetCredit` resets only `target.ConnectionID` instead of
+  the whole "codex" provider.
+- `TestCodexResetCreditConsumeDoesNotUnlockOtherConnections` seeds two locked
+  codex connections and asserts the sibling's model lock and quota block
+  survive a consume on the other.
+
+### feat(providers): Custom JSON API endpoints (upstream decolua/9router#4929 parity)
+
+Supersedes #751 with a clean rebase on upstream/main.
+
+- A compatible node can now use API type **Custom JSON API**: a complete endpoint URL, `POST`/`PUT`/`PATCH`, Bearer / named-header / no auth, optional custom headers, a JSON request template (`{{prompt}}`, `{{messages}}`, `{{model}}`, `{{stream}}`, `{{request.field}}`) and a response field path. The node id is `openai-compatible-custom-json-<suffix>`; the configuration lives in the existing node `data` JSON and is copied into each connection's `providerSpecificData`, so no schema migration.
+- New `internal/customjson` package validates and renders the template (blocked keys, header names, depth/size limits, safe dot/index paths) and lifts the reply out of the response. `executor.ForwardCustomJSON` re-presents it as an OpenAI Chat Completion (JSON, or two SSE chunks + `[DONE]`), so Chat Completions, Claude Messages and Responses clients all work through the existing translators.
+- **No replay of business requests**: one attempt via the new `proxy.SendOnce` (no 502/503/504 transient retry, no direct replay after an apparent proxy failure such as a text/plain 403, no insecure-TLS retry; any 2xx is a reply), no rotation to the node's other connections, combos stop after a custom JSON attempt and exempt its member from the combo response timeout (#750) so it is never abandoned and replayed on the next member, the zero-content probe/stream peeker is skipped, and an empty reply is served instead of turning into a 502 (`proxy.WithEmptyCompletionAllowed`).
+- Dashboard: create/update/list carry `customJson`; editing a node syncs it to every connection and switching back to Chat/Responses removes it; connection create always takes the configuration from the node (a client cannot fake `authType: "none"`); `/api/providers/validate` gains `validateOnly` so saving a connection never calls the endpoint; node validation and the connection test send one real "ping" request, also through a single send; `/models` import and the live catalogue are skipped for these nodes. No-auth nodes accept connections without a key.
+- UI: a shared `CustomJsonFields` editor (field editor with optional typed rows, or full JSON) in the add and edit node dialogs, "Send Test Request", "Add Connection", a JSON badge, and no "Import from /models" for these nodes.
+- Divergence from upstream: Go already answered JSON when a client omits `stream`, so upstream's stream-default change needed no port; the option sits under API Type in the unified add dialog instead of a separate "Add Custom JSON API" button; upstream's zh-CN/zh-TW strings are not ported because the Svelte dashboard has no i18n layer.
+- Verified: unit tests (`internal/customjson`, executor, dashboard handlers, account-fallback no-replay), `svelte-check` at the 77-error baseline, `vite build`, and an end-to-end run of the built binary against a local mock endpoint (Chat JSON/SSE, Messages, Responses; exactly one business call with two failing connections and with a two-model combo; dashboard edit dialog round-trip).
+
+### In-process headroom compression, no external proxy required
+
+The token saver's in-flight compression stage now works without the external
+Python headroom proxy. Turning the setting on used to mean "install a second
+service and run it at a URL"; it now means "compress this request", because the
+compression runs inside the gateway process.
+
+- **New in-process engine** (`internal/headroom/builtin.go`). It reuses the
+  existing `tokensaver` pipeline, so compression behaviour is the one already
+  covered by that package's tests rather than a second implementation that can
+  drift. It implements the same response contract as the proxy, including
+  `tokens_before` / `tokens_after`, `transforms_summary`, and the structural
+  invariants the client validates before committing a result.
+- **Engine selection is explicit.** `headroomEngine` selects `builtin` (default)
+  or `external`; an empty or unrecognized value resolves to `builtin`. Inference
+  from the URL was deliberately not used: the default URL is present in every
+  settings row, so a URL-configured test would send every request to a proxy
+  nobody installed.
+- **The engine defaults to built-in**, so an existing settings row written
+  before this field existed gets the in-process engine rather than a dead
+  network path. A fresh install compresses with nothing installed.
+- **The protected-tool guard still applies.** A tool the compressor was never
+  cleared for reaches the provider byte for byte, so the switch cannot cost
+  correctness for a saving.
+- **`GET /api/headroom/status` reports the active engine**, read from settings
+  rather than inferred from install state: `installed: false` no longer reads
+  as "compression is off" when the in-process engine is doing the work.
+- **Dashboard** gains a two-button engine selector in the Headroom configure
+  panel. `headroomEngine` is written alongside `headroomEnabled` so the panel
+  and the backend can never disagree about which engine is active.
+- **The compression stage reports the tokens it saved.** The stage rewrote the
+  outbound body and dropped the token counts, so a request compressed by
+  headroom alone reached the usage ledger with `SavedTokens: 0`. The ledger only
+  writes a compression row when `SavedTokens > 0`, which made that request
+  invisible on the Usage page: compression was demonstrably working and the
+  dashboard reported none. `applyTokenSavers` now returns the original and saved
+  token counts for the headroom stage too, and the totals stack correctly when
+  RTK and headroom both act on the same request.
+- **`resolveCompressionMode` names the engine from the switches, not from the
+  saving.** It used to seed `hasRTK` from `savedTokens > 0`, which attributed a
+  saving from any stage to RTK — headroom-only compression was filed as `rtk`,
+  and the mode breakdown told an operator the wrong engine did the work. The
+  parameter is gone rather than reinterpreted; the mode now comes from the
+  saver switches alone.
+- **The dashboard status describes the engine, not a process.** The built-in
+  engine has no process, so a status derived from the proxy's process state read
+  "Not installed" or "Stopped" on an instance that was compressing every
+  request. The label is now `Active` whenever the selected engine is running
+  compression, and the external engine's process state and dashboard link only
+  apply when `external` is selected.
+- **A global flag typed after the sub-command is answered with guidance.**
+  `9router-go start --rtk=false` used to print `flag provided but not defined:
+  -rtk` about a flag the binary does define, which reads as a missing feature
+  and sends an operator to the release notes instead of to their own command
+  line. The message now names the flag, says it belongs before the sub-command,
+  and shows the corrected form. A genuine typo (`--rtkk`) and a real
+  sub-command typo (`--lins`) keep urfave's original message and its
+  suggestions, so nothing is masked. `App.OnUsageError` alone did not reach
+  this: urfave/cli copies it onto the root command only, while the failing
+  parse happens inside the sub-command, so the hook is installed on every
+  command in the tree.
+
+- **A persona-only request is now visible in the usage analytics.** Running
+  Caveman, Ponytail or ADHD without RTK or headroom left both
+  `OriginalInputTokens` and `SavedTokens` at 0, and the analytics row is only
+  written when either is non-zero — so an instance with only a style prompt
+  switched on recorded no compression activity at all, on a request where a
+  saver demonstrably ran. `recordPersonaInjection` books the prompt's own size
+  into the totals (OriginalInputTokens up, SavedTokens down, clamped at 0), so
+  the row is written and the dashboard shows the mode with
+  `skipReason=no_savings` — a style prompt compresses nothing, and saying so is
+  the accurate report.
+- **`resolveCompressionMode` no longer invents a mode.** Its fallback answered
+  `rtk` when no saver was switched on, naming a stage that had not run on the
+  one instance where an operator would never question the claim; and the branch
+  order let a single persona fall through to a stale row's mode. Nothing enabled
+  now reports `none`.
+- **Stacked personas count each prompt once.** The baseline the persona
+  injection measures against was frozen at the pre-persona body length, so the
+  second and third personas measured their own prompt *plus* the prompts already
+  injected. `OriginalInputTokens` was inflated by one prompt per extra persona
+  and `SavedTokens` cut by more than the body actually grew — 2483 tokens booked
+  against 1185 tokens of real growth, on a request with three personas on. The
+  baseline now moves after every successful injection. The totals are analytics
+  only, but a stacked-persona row reported a saving the client was never spared.
+  A regression test runs the real call site with three personas switched on and
+  pins the booked total to the body's actual growth; it was confirmed to fail
+  before the fix.
+- **The headroom comment describes the engine as exclusive.** It claimed the
+  built-in engine was a fallback for an unconfigured external proxy, which is
+  the routing that was replaced: `useBuiltin` now selects one engine or the
+  other, never a chain.
+- **The dashboard's compression badge is gated by the toggle.** A built-in
+  engine with `headroomEnabled = false` still rendered an "Active" badge,
+  because the derived state answered "is this engine running" without asking
+  whether compression was switched on. The row renders in both states, so the
+  operator saw "compressing" on a request path that compresses nothing.
+
+Verified: unit tests in `internal/headroom` (including the protected-tool,
+cancellation, and no-gain paths), new table cases in
+`internal/handlers/chat` for headroom-only and headroom-stacked accounting, and
+the integration suite in `internal/integration`, where a real gateway with the
+setting on forwarded a 10490-byte client body as a 391-byte upstream body
+(96% smaller) while preserving the tool call id, model, and arguments — and
+where that request now also leaves a compression analytics row with a named mode
+and the saving it made. The CLI guidance is covered by a table-driven test in
+`cmd/9router-go` that pins both the rewritten message and the cases that must
+stay untouched, plus a test that the hook reaches nested sub-commands. All 32
+on/off combinations of the five saver switches were run against a real gateway
+with a fake upstream: every combination that ran a saver writes a row with the
+correct mode, the one combination with no saver writes none, and the
+RTK/headroom/stacked savings are unchanged (RTK alone 2622->91, 96%); the
+dashboard endpoint reports `adhd`, `caveman` and `ponytail` as their own modes
+with `skipped: 1` instead of omitting them. Full suite:
+`ok 9router/proxy/internal/integration 107.219s`.
+
+### feat(auth): serve the OIDC and SAML login flows, and make the local password reset fail-closed
+
+The dashboard linked to `/api/auth/oidc/{start,callback}` and `/api/auth/saml/{start,acs,metadata}`, but none of them existed: pressing "Sign in with SSO" on a configured install answered 404, so an operator with `requireLogin` on had no way in. This adds the flows and the recovery path, then closes the fail-open shapes a security review found in the first cut of them.
+
+**SSO login flows**
+- OIDC: Authorization Code + PKCE (S256), with state, nonce and the code verifier carried in short-lived `HttpOnly` cookies so the callback validates what it started. RS256 only; `alg: none` is refused before any key lookup.
+- SAML: AuthnRequest generation, POST-binding ACS, and SP metadata, with the assertion signature verified through `goxmldsig` against the configured IdP certificate.
+- The browser flows and SP metadata are mounted in `SetupServerRouter`, outside `RequireDashboardAuth` — they exist precisely for the case where no session exists. The `/api/auth/{oidc,saml}/test` settings probes stay in the dashboard group, because they echo the IdP configuration.
+- `TestSetupServerRouter_SSOLoginRoutesArePublic` asserts each route by identity (an `<md:EntityDescriptor` root, a `login?error=oidc_not_configured` redirect), not by "not 401" — a no-op handler or a deleted registration passes a status-only assertion, which is exactly the regression the test is for.
+
+**Fail-closed fixes**
+- **OIDC claims**: `iss` and `exp` are now required. They were optional, so a token carrying neither was accepted; OIDC Core requires both.
+- **`redirect_uri` origin**: `publicOrigin` no longer trusts `X-Forwarded-Host` or `X-Forwarded-Proto`. Those are the headers an attacker in front of an unvalidating reverse proxy controls, and the value becomes the OIDC `redirect_uri` / SAML ACS URL — a forged one delivers the authorization code to the attacker. A proxied deployment must now set `BASE_URL`; without it the flow refuses to start with `oidc_base_url_required` / `saml_base_url_required` rather than silently building a wrong origin.
+- **SAML `AudienceRestriction`**: an assertion with no `<Audience>` is rejected (SAML Core §2.5.1.4). Previously the check returned success on an empty set, so the signature alone authorised a session at any SP sharing the IdP signing key. `InResponseTo` is fail-closed for the same reason.
+- **Signature wrapping**: `TestVerifySAMLAssertionResistsSignatureWrapping` pins that a document with an unsigned assertion added alongside the genuine, signed one cannot open a session for the attacker's identity.
+- **Password reset**: still loopback-only on `RemoteAddr` (never the `Host` header) and same-origin, and now also demands `{"confirm":true}` and is rate-limited per peer address. A same-host tunnel forwards strangers as `127.0.0.1`, and a bare POST — a cross-site form, a prefetch, a stray curl — must not clear the credential.
+- `nodeRequestIsLocal` inspects `r.RemoteAddr` only. The `Host` header is client-controlled, and "Host: localhost" from a remote socket previously disabled both this gate and the `mustChangeDefaultPassword` check on login, giving full remote dashboard takeover; `TestHandleAuthLogin_RemoteDefaultPassword_HostSpoofingFails` pins it.
+
+**Verified**: `go build ./...`, `go vet ./internal/handlers/...`, and `go test ./internal/handlers/... ` (sso, dashboard, router) all pass. Each security assertion was mutation-checked: reverting the specific guard turns the corresponding test red.
+
 ## [v1.9.16-exp.7] - 2026-11-08
 
 ### fix(executor): translate Claude replies for OpenAI clients on minimax-code
