@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/headroom"
 	"9router/proxy/internal/tokensaver"
 )
 
@@ -45,6 +46,7 @@ type TokenSaverConfig struct {
 	// a round trip on.
 	headroomEnabled   bool
 	headroomURL       string
+	headroomEngine    string
 	headroomTimeoutMs int
 }
 
@@ -86,6 +88,7 @@ func NewTokenSaverConfig(rtk, caveman, ponytail bool) *TokenSaverConfig {
 		// operator turns headroomEnabled on.
 		headroomEnabled:         false,
 		headroomURL:             "",
+		headroomEngine:          headroom.EngineBuiltin,
 		headroomTimeoutMs:       0,
 		semanticCacheEnabled:    false,
 		semanticCacheTTL:        1440,
@@ -401,6 +404,7 @@ func (c *TokenSaverConfig) UpdateFromSettings(s *db.SettingsData) {
 	if s.HeadroomUrl != "" {
 		c.headroomURL = s.HeadroomUrl
 	}
+	c.headroomEngine = headroom.NormalizeEngine(s.HeadroomEngine)
 	if s.HeadroomTimeoutMs > 0 {
 		c.headroomTimeoutMs = s.HeadroomTimeoutMs
 	}
@@ -419,6 +423,15 @@ func (c *TokenSaverConfig) HeadroomEndpoint() (string, int) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.headroomURL, c.headroomTimeoutMs
+}
+
+// HeadroomEngineName returns the selected compression engine, normalized. The
+// built-in engine is returned for an empty or unrecognized value, so a caller
+// never has to know what a settings row left the field as.
+func (c *TokenSaverConfig) HeadroomEngineName() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return headroom.NormalizeEngine(c.headroomEngine)
 }
 
 // SetAll sets all flags atomically.
