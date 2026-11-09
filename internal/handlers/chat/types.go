@@ -5,13 +5,13 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/singleflight"
-
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/models"
+	"9router/proxy/internal/promptcache"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/resilience"
 	"9router/proxy/internal/semanticcache"
 )
 
@@ -24,6 +24,12 @@ type comboStickyState struct {
 	ServingIndex int
 }
 
+// smartStickyEntry is one session's pinned model in the smart strategy.
+type smartStickyEntry struct {
+	Model    string
+	LastUsed time.Time
+}
+
 // ChatHandler handles /v1/chat/completions (OpenAI) and /v1/messages (Claude) endpoints.
 type ChatHandler struct {
 	Repo       *db.Repo
@@ -33,19 +39,45 @@ type ChatHandler struct {
 	// The handler holds it so the metering path can reconcile a TPM
 	// reservation once the real usage is known: the estimate is taken
 	// pre-dispatch, but only the response knows what the turn actually cost.
-RateLimiter   *middleware.RateLimiter
+	RateLimiter   *middleware.RateLimiter
 	SemanticCache *semanticcache.Cache
-	stickyMu      sync.Mutex
-	stickyState   map[string]*comboStickyState
-	// oauthRefreshFlight collapses concurrent OAuth token refreshes for the
-	// same connection, so an expired token triggers one upstream round-trip
-	// instead of one per in-flight request.
-	oauthRefreshFlight singleflight.Group
+	// PromptCache is the byte-bounded exact-prompt cache. Distinct from
+	// SemanticCache: this one keys on an identical request body and stores the
+	// response verbatim, which is what makes its footprint predictable enough
+	// to bound in bytes.
+	PromptCache *promptcache.Cache
+	// Resilience is the provider-level admission control: one breaker per
+	// provider plus one semaphore per provider:account:proxy. In-memory and
+	// process-local — the persisted per-connection model locks stay the
+	// per-account layer, this one is per-provider and fast.
+	Resilience  *resilience.Controller
+	stickyMu    sync.Mutex
+	stickyState map[string]*comboStickyState
+
 	// deprecationCache throttles kv writes when a provider retires a model:
 	// every request at a dead combo entry arrives as a fresh 410, and each
 	// one would otherwise upsert the same row.
 	deprecationMu    sync.Mutex
 	deprecationCache map[string]time.Time
+	// cooldownCache throttles kv writes when a model is cooled down after a
+	// live failure, so repeated failures within a single request window do not
+	// hammer the kv table with identical cooldown upserts.
+	cooldownCache map[string]time.Time
+	// smartSticky pins the model a session's smart-routed combo settles on,
+	// so later turns reuse the provider holding the warm prompt cache.
+	smartStickyMu sync.Mutex
+	smartSticky   map[string]smartStickyEntry
+	// timeoutBench holds, per combo member, when its response-timeout grace
+	// period ends. See benchTimedOutModel.
+	timeoutBenchMu sync.Mutex
+	timeoutBench   map[string]time.Time
+	// comboBudgetMu guards comboBudget, the per-combo call counter behind the
+	// BudgetCalls admission gate. See comboBudgetExhausted.
+	comboBudgetMu sync.Mutex
+	comboBudget   map[string]*comboBudgetCounter
+	// SessionAffinity pins client sessions to upstream connection accounts.
+	sessionAffinityMu sync.Mutex
+	SessionAffinity   *SessionAffinityStore
 }
 
 // Type aliases for shared types

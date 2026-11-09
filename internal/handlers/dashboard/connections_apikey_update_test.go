@@ -150,9 +150,9 @@ func TestSanitizeProviderConnection_ExposesOnlyMaskedCredentials(t *testing.T) {
 		secret string
 		want   any // nil = no hint at all
 	}{
-		{id: apiKeyConn, secret: "sk-abcdefghijklmnop", want: "sk-abc…mnop"},
+		{id: apiKeyConn, secret: "sk-abcdefghijklmnop", want: "sk-abc•••••••••mnop"},
 		// An OAuth connection sends its access token; apiKey only mirrors it.
-		{id: oauthConn, secret: "oauth-access-token-9999", want: "oauth-…9999"},
+		{id: oauthConn, secret: "oauth-access-token-9999", want: "oauth-•••••••••••••9999"},
 		{id: keyless, want: nil},
 	}
 	for _, tt := range tests {
@@ -183,7 +183,7 @@ func TestMaskConnectionSecret(t *testing.T) {
 		{name: "empty", secret: "", want: "***"},
 		{name: "too short to reveal any prefix", secret: "short-key", want: "***"},
 		{name: "exactly the reveal threshold", secret: "123456789012", want: "***"},
-		{name: "long key keeps only a hint", secret: "sk-proj-1234567890abcdef", want: "sk-pro…cdef"},
+		{name: "long key keeps only a hint", secret: "sk-proj-1234567890abcdef", want: "sk-pro••••••••••••••cdef"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -1,6 +1,8 @@
 package db
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -174,6 +176,244 @@ func TestGetSettings_DashboardParityKeys(t *testing.T) {
 	}
 }
 
+func TestGetSettings_ProviderThinkingModeVocabulary(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := NewRepo(database)
+
+	settingsJSON := `{
+		"providerThinking": {
+			"cline": {"mode": "HIGH"},
+			"openai": {"mode": "banana"},
+			"gemini": {"mode": "off"}
+		}
+	}`
+
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+
+	if _, err := database.Exec(`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, settingsJSON); err != nil {
+		t.Fatalf("failed to insert settings: %v", err)
+	}
+
+	settings, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	if settings == nil {
+		t.Fatal("expected non-nil settings")
+	}
+
+	if got := settings.ProviderThinking["cline"].Mode; got != "high" {
+		t.Errorf("cline mode = %q, want high (a mode is normalized)", got)
+	}
+	if got := settings.ProviderThinking["gemini"].Mode; got != "off" {
+		t.Errorf("gemini mode = %q, want off", got)
+	}
+	if _, ok := settings.ProviderThinking["openai"]; ok {
+		t.Errorf("a mode outside the vocabulary must be dropped, got %+v", settings.ProviderThinking["openai"])
+	}
+}
+
+// TestGetSettingsReflectsAWrite pins the cache contract: the parsed row is
+// reused only while the row content is unchanged, so a write is visible on
+// the next read whatever wrote it.
+func TestGetSettingsReflectsAWrite(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := NewRepo(database)
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+		`{"providerThinking":{"deepseek":{"mode":"off"}}}`,
+	); err != nil {
+		t.Fatalf("failed to insert settings: %v", err)
+	}
+
+	first, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	if got := first.ProviderThinking["deepseek"].Mode; got != "off" {
+		t.Fatalf("providerThinking = %+v, want the seeded value", first.ProviderThinking)
+	}
+
+	// A write through the Repo.
+	updated := map[string]any{"providerThinking": map[string]any{"deepseek": map[string]any{"mode": "high"}}}
+	if err := repo.UpdateSettingsRaw(updated); err != nil {
+		t.Fatalf("UpdateSettingsRaw: %v", err)
+	}
+	second, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings after write: %v", err)
+	}
+	if got := second.ProviderThinking["deepseek"].Mode; got != "high" {
+		t.Errorf("providerThinking = %+v, want the written value", second.ProviderThinking)
+	}
+
+	// A write that bypasses the Repo.
+	if _, err := database.Exec(`UPDATE settings SET data = ? WHERE id = 1`,
+		`{"providerThinking":{"deepseek":{"mode":"auto"}}}`); err != nil {
+		t.Fatalf("failed to update settings: %v", err)
+	}
+	third, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings after direct write: %v", err)
+	}
+	if got := third.ProviderThinking["deepseek"].Mode; got != "auto" {
+		t.Errorf("providerThinking = %+v, want the directly written value", third.ProviderThinking)
+	}
+}
+
+// TestGetSettingsCloneDoesNotShareMaps pins the cache contract: the parsed
+// row the caller receives is its own copy, so a caller that writes into a map
+// it was handed cannot change the answer the next reader sees.
+func TestGetSettingsCloneDoesNotShareMaps(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+		`{"providerThinking":{"deepseek":{"mode":"off"}}}`,
+	); err != nil {
+		t.Fatalf("failed to insert settings: %v", err)
+	}
+
+	repo := NewRepo(database)
+	first, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	first.ProviderThinking["deepseek"] = ProviderThinking{Mode: "on"}
+
+	second, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	if got := second.ProviderThinking["deepseek"].Mode; got != "off" {
+		t.Errorf("providerThinking = %q, want the stored value: the caller mutated the cached row", got)
+	}
+}
+
+func TestGetSettingsCloneDoesNotShareProviderOverrideHeaders(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+		`{"providerOverrides":{"deepseek":{"headers":{"X-Test":"one"}}}}`,
+	); err != nil {
+		t.Fatalf("failed to insert settings: %v", err)
+	}
+
+	repo := NewRepo(database)
+	first, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	first.ProviderOverrides["deepseek"].Headers["X-Test"] = "poisoned"
+
+	second, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	if got := second.ProviderOverrides["deepseek"].Headers["X-Test"]; got != "one" {
+		t.Errorf("providerOverrides headers = %q, want the stored value: the caller mutated the cached row", got)
+	}
+}
+
+// TestUpdateSettingsRawRefusesAnUnreadableRow pins the write path: a row
+// that cannot be read is not replaced. Writing back only the update would
+// drop every other setting the operator had set, the dashboard password
+// among them.
+func TestUpdateSettingsRawRefusesAnUnreadableRow(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+	broken := `{"password":"hash",`
+	if _, err := database.Exec(
+		`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+		broken,
+	); err != nil {
+		t.Fatalf("failed to insert settings: %v", err)
+	}
+
+	repo := NewRepo(database)
+	if err := repo.UpdateSettingsRaw(map[string]any{"rtkEnabled": true}); err == nil {
+		t.Fatal("a write against an unreadable row must be refused")
+	}
+	var stored string
+	if err := database.QueryRow(`SELECT data FROM settings WHERE id = 1`).Scan(&stored); err != nil {
+		t.Fatalf("read settings row: %v", err)
+	}
+	if stored != broken {
+		t.Errorf("the stored row = %q, want it untouched", stored)
+	}
+}
+
+// TestConcurrentSettingsWritesDoNotLoseKeys pins the write lock: the
+// settings row is one JSON blob, and two writers that interleave lose one
+// another's keys.
+func TestConcurrentSettingsWritesDoNotLoseKeys(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+
+	repo := NewRepo(database)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := repo.UpdateSettingsRaw(map[string]any{fmt.Sprintf("key%d", i): i}); err != nil {
+				t.Errorf("UpdateSettingsRaw: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	raw, err := repo.GetSettingsRaw()
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	for i := 0; i < 8; i++ {
+		if _, ok := raw[fmt.Sprintf("key%d", i)]; !ok {
+			t.Errorf("key%d was lost by a concurrent write", i)
+		}
+	}
+}
+
 func TestSetComboAndProviderStrategy_PreservesExistingSettings(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	defer cleanup()
@@ -300,5 +540,96 @@ func TestGetSettings_ObservabilityAndRetention(t *testing.T) {
 	}
 	if s.MaxRequestRecords != 2500 {
 		t.Errorf("MaxRequestRecords = %d, want 2500", s.MaxRequestRecords)
+	}
+}
+
+// newSettingsRepoForBudgetTest inserts one settings document and returns the
+// repo to read it back, for the parser-bound tests.
+func newSettingsRepoForBudgetTest(t *testing.T, settingsJSON string) *Repo {
+	t.Helper()
+	database, cleanup := setupTestDB(t)
+	t.Cleanup(cleanup)
+	if _, err := database.Exec(`INSERT INTO settings (id, data) VALUES (1, ?)
+		ON CONFLICT(id) DO UPDATE SET data = excluded.data`, settingsJSON); err != nil {
+		t.Fatalf("insert settings: %v", err)
+	}
+	return NewRepo(database)
+}
+
+// TestBudgetCallsCappedAtParse pins that a ceiling above the accepted maximum is
+// refused rather than stored as a wrapped negative.
+//
+// A JSON number arrives as float64, so an unvalidated value past the int range
+// converts to a negative int — and the gate reads a non-positive ceiling as
+// "unlimited" (internal/handlers/chat combo_budget.go), so a budget that asked
+// for a cap would silently disarm itself. The window already had this bound;
+// the ceiling did not.
+func TestBudgetCallsCappedAtParse(t *testing.T) {
+	settingsJSON := `{
+		"comboStrategies": {
+			"within-cap":   {"budgetCalls": 1000000},
+			"above-cap":    {"budgetCalls": 1000001},
+			"wrapped":      {"budgetCalls": 9223372036854775808},
+			"fractional":   {"budgetCalls": 10.5},
+			"zero":         {"budgetCalls": 0},
+			"negative":     {"budgetCalls": -5}
+		}
+	}`
+	repo := newSettingsRepoForBudgetTest(t, settingsJSON)
+	s, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	cases := []struct {
+		combo string
+		want  int
+	}{
+		{"within-cap", 1000000},
+		// Above the cap: dropped, which leaves the gate off rather than
+		// storing a ceiling the operator did not ask for.
+		{"above-cap", 0},
+		// Past the int64 range: dropped. Storing it would have made the gate
+		// read "unlimited" for a combo the operator capped.
+		{"wrapped", 0},
+		{"fractional", 0},
+		{"zero", 0},
+		{"negative", 0},
+	}
+	for _, tc := range cases {
+		got := s.ComboStrategies[tc.combo].BudgetCalls
+		if got != tc.want {
+			t.Errorf("combo %q BudgetCalls = %d, want %d", tc.combo, got, tc.want)
+		}
+		if got < 0 {
+			t.Errorf("combo %q stored a negative ceiling %d — the gate reads that as unlimited", tc.combo, got)
+		}
+	}
+}
+
+func TestSettings_HeadroomAutostart(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := NewRepo(database)
+
+	settingsJSON := `{
+		"headroomEnabled": true,
+		"headroomAutostart": true,
+		"headroomUrl": "http://localhost:8787"
+	}`
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		id INTEGER PRIMARY KEY,
+		data TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create settings table: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO settings (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, settingsJSON); err != nil {
+		t.Fatalf("failed to insert settings: %v", err)
+	}
+	s, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	if !s.HeadroomAutostart {
+		t.Errorf("expected HeadroomAutostart to be true, got %v", s.HeadroomAutostart)
 	}
 }

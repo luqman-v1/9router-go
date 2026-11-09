@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/detection"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
@@ -112,7 +114,18 @@ func (h *ChatHandler) LogFailure(
 		startedAt = now.Add(-time.Duration(latencyMs) * time.Millisecond)
 	}
 
-	reqData, marshalErr := json.Marshal(map[string]any{
+	status := "error"
+	if isClientCanceled(ctx, err) || statusCode == StatusClientClosedRequest {
+		status = "canceled"
+	}
+
+	var openaiReq translator.OpenAIRequest
+	_ = json.Unmarshal(requestBody, &openaiReq)
+	tools := detection.ExtractToolCallsFromOpenAIMessages(openaiReq.Messages)
+	findings := detection.DetectLoops(tools, message)
+	var loopWarning string
+
+	failurePayload := map[string]any{
 		"id":             reqID,
 		"provider":       info.Provider,
 		"model":          info.Model,
@@ -125,7 +138,7 @@ func (h *ChatHandler) LogFailure(
 		"combo":          info.ComboName,
 		"protocol":       info.Protocol,
 		"cacheSource":    info.CacheSource,
-		"status":         "error",
+		"status":         status,
 		"timestamp":      now.Format("2006-01-02T15:04:05.000Z"),
 		"startedAt":      startedAt.Format("2006-01-02T15:04:05.000Z"),
 		"endedAt":        now.Format("2006-01-02T15:04:05.000Z"),
@@ -134,24 +147,65 @@ func (h *ChatHandler) LogFailure(
 			"total": latencyMs,
 		},
 		"tokens":   tokens,
-		"request":  map[string]any{"messages": extractRequestMessages(requestBody)},
+		"request":  map[string]any{"messages": extractMessagesForLogging(openaiReq.Messages)},
 		"response": map[string]any{"error": message, "status": statusCode, "content": responseContent},
-	})
+	}
+	if len(findings) > 0 {
+		failurePayload["anomalies"] = findings
+		loopWarning = findings[0].Message
+	}
+
+	if rec := FallbackAttemptRecorderFrom(ctx); rec != nil {
+		if attempts := rec.Snapshot(); len(attempts) > 0 {
+			failurePayload["attempts"] = attempts
+		}
+	}
+	reqData, marshalErr := json.Marshal(failurePayload)
 	if marshalErr != nil {
 		return
 	}
-	if shouldLogRequestDetail(h.Repo, true) {
-		if insertErr := h.Repo.InsertRequestDetail(
-			reqID,
-			info.Provider,
-			info.Model,
-			info.ConnectionID,
-			"error",
-			string(reqData),
-		); insertErr != nil {
-			log.Error("usage", "insert failed request detail failed", "error", insertErr)
+
+	isProxyBlocked := upstreamErr != nil && strings.Contains(string(upstreamErr.Body), `"proxy_error"`)
+
+	failureRepo := h.Repo
+	failureID, failureProvider := reqID, info.Provider
+	failureModel, failureConn := info.Model, info.ConnectionID
+	failureData := string(reqData)
+	failureAPIKey, failureEndpoint := info.APIKey, info.Endpoint
+
+	logDetail := shouldLogRequestDetail(h.Repo, true)
+
+	enqueueUsageWrite(func() {
+		if logDetail {
+			if insertErr := failureRepo.InsertRequestDetail(
+				failureID,
+				failureProvider,
+				failureModel,
+				failureConn,
+				"error",
+				failureData,
+			); insertErr != nil {
+				log.Error("usage", "insert failed request detail failed", "error", insertErr)
+			}
 		}
-	}
+		if !isProxyBlocked {
+			h.upsertDailyUsageError(failureProvider, failureModel, failureEndpoint, failureConn, failureAPIKey, status)
+		}
+	})
+
+	usagetracker.GetTracker().PushRecent(usagetracker.RecentRequest{
+		Timestamp:        now.Format(time.RFC3339),
+		Model:            info.Model,
+		Provider:         info.Provider,
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		CachedTokens:     usage.GetCachedTokens(),
+		Status:           status,
+		RequestedModel:   info.RequestedModel,
+		ComboName:        info.ComboName,
+		LatencyMs:        latencyMs,
+		LoopWarning:      loopWarning,
+	}, h.Repo)
 
 	observ.RecordRequest(info.Provider, info.Model, info.Endpoint, statusCode)
 	observ.RecordDuration(info.Provider, info.Model, time.Duration(latencyMs)*time.Millisecond)
@@ -218,6 +272,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		if len(respContent) > constants.MaxResponseContentLen {
 			respContent = truncateDetailText(respContent, constants.MaxResponseContentLen, "...[truncated]")
 		}
+		metrics.OutputTokens = usage.CompletionTokens
 	}
 
 	// Fallback token estimation if upstream emitted zero tokens
@@ -256,6 +311,9 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		"prompt", usage.PromptTokens, "completion", usage.CompletionTokens, "cached", cachedTokens,
 		"cache_creation", cacheCreationTokens, "ttft_ms", ttftMs, "latency_ms", latencyMs, "cost", cost,
 	}
+	if metrics != nil {
+		usageKVs = append(usageKVs, "tok_per_sec", metrics.TokPerSec(), "max_gap_ms", metrics.MaxGapMs)
+	}
 	if info.SavedTokens > 0 {
 		usageKVs = append(usageKVs, "compressed", fmt.Sprintf("%d->%d (%d%% saved)", info.OriginalInputTokens, info.OriginalInputTokens-info.SavedTokens, info.SavedPercent))
 	}
@@ -283,9 +341,24 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 	if caller := middleware.AuthenticatedApiKeyFromContext(ctx); caller != nil {
 		clientKey = maskAPIKey(caller.Key)
 	}
-	if err := h.Repo.InsertUsageHistory(info.Provider, info.Model, info.ConnectionID, maskAPIKey(info.APIKey), info.Endpoint, usage.PromptTokens, usage.CompletionTokens, cost, "success", totalTokens, metaJSON, tokensJSON, clientKey); err != nil {
-		log.Error("usage", "insert failed", "error", err)
-	}
+	// The three persistence units below leave the response goroutine: the row,
+	// the detail payload and the daily aggregate are booked by the usage
+	// writer in the order they are enqueued here. Everything the client or the
+	// limiter can observe (metrics, TPM settlement, the recent-requests ring)
+	// stays synchronous.
+	repo := h.Repo
+	usageProvider, usageModel := info.Provider, info.Model
+	usageConnID, usageAPIKey, usageEndpoint := info.ConnectionID, info.APIKey, info.Endpoint
+	usagePrompt, usageCompletion := usage.PromptTokens, usage.CompletionTokens
+	usageTotal := totalTokens
+	enqueueUsageWrite(func() {
+		if repo == nil {
+			return
+		}
+		if err := repo.InsertUsageHistory(usageProvider, usageModel, usageConnID, maskAPIKey(usageAPIKey), usageEndpoint, usagePrompt, usageCompletion, cost, "success", usageTotal, metaJSON, tokensJSON, clientKey); err != nil {
+			log.Error("usage", "insert failed", "error", err)
+		}
+	})
 
 	// Prometheus mirrors the row that was just inserted: a request is counted
 	// once, labelled with the provider/model the usage row names, and never
@@ -301,12 +374,12 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 	reqID := fmt.Sprintf("%d-%s", now.UnixMilli(), info.Model)
 
 	if h.Repo != nil && (info.SavedTokens > 0 || info.OriginalInputTokens > 0) {
-		mode := resolveCompressionMode(h.TokenSaver, info.SavedTokens)
+		mode := resolveCompressionMode(h.TokenSaver)
 		skipReason := ""
 		if info.SavedTokens == 0 {
 			skipReason = "no_savings"
 		}
-		_ = h.Repo.InsertCompressionAnalytics(context.Background(), db.CompressionAnalyticsRecord{
+		compressionRec := db.CompressionAnalyticsRecord{
 			Timestamp:              now.Format(time.RFC3339),
 			Provider:               info.Provider,
 			Model:                  info.Model,
@@ -322,9 +395,18 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 			ActualCacheReadTokens:  cachedTokens,
 			ActualCacheWriteTokens: cacheCreationTokens,
 			SkipReason:             skipReason,
+		}
+		compressionRepo := h.Repo
+		enqueueUsageWrite(func() {
+			_ = compressionRepo.InsertCompressionAnalytics(context.Background(), compressionRec)
 		})
 	}
-	reqMsgs := extractRequestMessages(requestBody)
+	var openaiReq translator.OpenAIRequest
+	_ = json.Unmarshal(requestBody, &openaiReq)
+	tools := detection.ExtractToolCallsFromOpenAIMessages(openaiReq.Messages)
+	findings := detection.DetectLoops(tools, "")
+	var loopWarning string
+	reqMsgs := extractMessagesForLogging(openaiReq.Messages)
 
 	tokensMap := map[string]int{
 		"prompt_tokens":               usage.PromptTokens,
@@ -345,7 +427,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		startedAtUsage = now.Add(-time.Duration(latencyMs) * time.Millisecond)
 	}
 
-	reqData, err := json.Marshal(map[string]any{
+	detailPayload := map[string]any{
 		"id":             reqID,
 		"provider":       info.Provider,
 		"model":          info.Model,
@@ -367,18 +449,40 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		"cost":           cost,
 		"request":        map[string]any{"messages": reqMsgs},
 		"response":       map[string]any{"content": respContent},
-	})
+	}
+	if len(findings) > 0 {
+		detailPayload["anomalies"] = findings
+		loopWarning = findings[0].Message
+	}
+	if rec := FallbackAttemptRecorderFrom(ctx); rec != nil {
+		if attempts := rec.Snapshot(); len(attempts) > 0 {
+			detailPayload["attempts"] = attempts
+		}
+	}
+	reqData, err := json.Marshal(detailPayload)
 	if err != nil {
 		log.Error("usage", "marshal request detail failed", "error", err)
 		return
 	}
+	// The settings read decides the row's fate now; only the write leaves.
 	if shouldLogRequestDetail(h.Repo, false) {
-		if err := h.Repo.InsertRequestDetail(reqID, info.Provider, info.Model, info.ConnectionID, "success", string(reqData)); err != nil {
-			log.Error("usage", "insert request detail failed", "error", err)
-		}
+		detailRepo := h.Repo
+		detailID, detailProvider := reqID, info.Provider
+		detailModel, detailConn := info.Model, info.ConnectionID
+		detailData := string(reqData)
+		enqueueUsageWrite(func() {
+			if err := detailRepo.InsertRequestDetail(detailID, detailProvider, detailModel, detailConn, "success", detailData); err != nil {
+				log.Error("usage", "insert request detail failed", "error", err)
+			}
+		})
 	}
 
-	h.upsertDailyUsage(info.Provider, info.Model, info.Endpoint, info.ConnectionID, info.APIKey, usage.PromptTokens, usage.CompletionTokens, cachedTokens, cost)
+	dailyProvider, dailyModel, dailyEndpoint := info.Provider, info.Model, info.Endpoint
+	dailyConn, dailyAPIKey := info.ConnectionID, info.APIKey
+	dailyPrompt, dailyCompletion, dailyCached := usage.PromptTokens, usage.CompletionTokens, cachedTokens
+	enqueueUsageWrite(func() {
+		h.upsertDailyUsage(dailyProvider, dailyModel, dailyEndpoint, dailyConn, dailyAPIKey, dailyPrompt, dailyCompletion, dailyCached, cost)
+	})
 
 	usagetracker.GetTracker().PushRecent(usagetracker.RecentRequest{
 		Timestamp:        now.Format(time.RFC3339),
@@ -391,25 +495,52 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		CompletionTokens: usage.CompletionTokens,
 		CachedTokens:     cachedTokens,
 		Status:           "ok",
+		LoopWarning:      loopWarning,
 	}, h.Repo)
 }
 
 // extractRequestMessages extracts truncated messages from the request body for logging.
 func extractRequestMessages(body []byte) []map[string]string {
 	var req translator.OpenAIRequest
-	if err := json.Unmarshal(body, &req); err != nil || len(req.Messages) == 0 {
+	if err := json.Unmarshal(body, &req); err != nil {
 		return nil
 	}
-	msgs := make([]map[string]string, 0, len(req.Messages))
-	for _, m := range req.Messages {
+	return extractMessagesForLogging(req.Messages)
+}
+
+func extractMessagesForLogging(messages []translator.OpenAIMessage) []map[string]string {
+	if len(messages) == 0 {
+		return nil
+	}
+	msgs := make([]map[string]string, 0, len(messages))
+	for _, m := range messages {
 		content := extractContent(m.Content)
 		content = truncateDetailText(content, constants.MaxMessageContentLen, "...")
-		msgs = append(msgs, map[string]string{"role": m.Role, "content": content})
+		entry := map[string]string{"role": m.Role, "content": content}
+		if len(m.ToolCalls) > 0 {
+			names := make([]string, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				names = append(names, toolCallSignature(tc.Function.Name, tc.Function.Arguments))
+			}
+			entry["tool_calls"] = strings.Join(names, ",")
+		}
+		msgs = append(msgs, entry)
 	}
 	if len(msgs) > constants.MaxLoggedMessages {
 		msgs = msgs[len(msgs)-constants.MaxLoggedMessages:]
 	}
 	return msgs
+}
+
+// toolCallSignature renders one tool call as "name#hash8" for request-detail logs.
+// The full arguments can be large, secret-laden or schema-quirked, so the log
+// keeps only the name (what the loop detector actually reports) plus a short
+// hash of the arguments (enough to prove in the detail modal whether the
+// flagged calls were really identical, which is the stuck-loop definition).
+func toolCallSignature(name, args string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strings.TrimSpace(args)))
+	return fmt.Sprintf("%s#%08x", name, h.Sum32())
 }
 
 // extractContent handles content that is either a string or array of content blocks.
@@ -615,19 +746,30 @@ func maskAPIKey(key string) string {
 	return handlerutil.MaskAPIKey(key)
 }
 
-func resolveCompressionMode(ts *shared.TokenSaverConfig, savedTokens int) string {
-	hasRTK := savedTokens > 0
+// resolveCompressionMode names the saver configuration that produced a saving,
+// so the usage page's mode breakdown says which one did the work.
+//
+// The mode comes from the switches alone. It used to be seeded from
+// savedTokens > 0, which attributed a saving from any stage to "rtk" —
+// headroom-only compression was filed as RTK, and an operator could not tell
+// which engine did the work.
+//
+// Headroom is a stage of its own rather than folded into "rtk": it is a separate
+// switch, with its own engine, and an operator reading the breakdown needs to
+// see it separately from the in-process savers that ran before it.
+func resolveCompressionMode(ts *shared.TokenSaverConfig) string {
+	hasRTK := false
 	hasCaveman := false
 	hasPonytail := false
 	hasADHD := false
+	hasHeadroom := false
 
 	if ts != nil {
-		if ts.RTKEnabled() {
-			hasRTK = true
-		}
+		hasRTK = ts.RTKEnabled()
 		hasCaveman = ts.CavemanEnabled()
 		hasPonytail = ts.PonytailEnabled()
 		hasADHD = ts.ADHDEnabled()
+		hasHeadroom = ts.HeadroomEnabled()
 	}
 
 	personaCount := 0
@@ -641,8 +783,20 @@ func resolveCompressionMode(ts *shared.TokenSaverConfig, savedTokens int) string
 		personaCount++
 	}
 
-	if (hasRTK && personaCount > 0) || personaCount > 1 {
+	// "stacked" means more than one distinct stage acted on the same request:
+	// RTK, headroom and the style prompts are all separate stages.
+	stageCount := personaCount
+	if hasRTK {
+		stageCount++
+	}
+	if hasHeadroom {
+		stageCount++
+	}
+	if stageCount > 1 {
 		return "stacked"
+	}
+	if hasHeadroom {
+		return "headroom"
 	}
 	if hasRTK {
 		return "rtk"
@@ -656,5 +810,49 @@ func resolveCompressionMode(ts *shared.TokenSaverConfig, savedTokens int) string
 	if hasPonytail {
 		return "ponytail"
 	}
-	return "rtk"
+	// Nothing was switched on, so no stage ran. "none" rather than "rtk":
+	// the old fallback claimed RTK compressed a request on an instance where
+	// RTK was off, which is the one mode an operator would never question.
+	return "none"
+}
+
+func (h *ChatHandler) upsertDailyUsageError(provider, model, endpoint, connectionID, apiKey, status string) {
+	if status == "canceled" {
+		return
+	}
+	dailyUsageMu.Lock()
+	defer dailyUsageMu.Unlock()
+	dateKey := time.Now().UTC().Format("2006-01-02")
+	existing, _ := h.Repo.GetUsageDaily(dateKey)
+	data := parseDailyData(existing)
+	data["requests"] = getJSONInt(data, "requests") + 1
+	data["totalRequests"] = getJSONInt(data, "totalRequests") + 1
+	data["errors"] = getJSONInt(data, "errors") + 1
+
+	byProvider := getJSONMap(data, "byProvider")
+	pp := getJSONMap(byProvider, provider)
+	pp["requests"] = getJSONInt(pp, "requests") + 1
+	pp["errors"] = getJSONInt(pp, "errors") + 1
+	byProvider[provider] = pp
+	data["byProvider"] = byProvider
+
+	modelKey := model + "|" + provider
+	byModel := getJSONMap(data, "byModel")
+	mm := getJSONMap(byModel, modelKey)
+	mm["requests"] = getJSONInt(mm, "requests") + 1
+	mm["errors"] = getJSONInt(mm, "errors") + 1
+	if mm["rawModel"] == nil {
+		mm["rawModel"] = model
+	}
+	if mm["provider"] == nil {
+		mm["provider"] = provider
+	}
+	byModel[modelKey] = mm
+	data["byModel"] = byModel
+
+	updatedJSON, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	_ = h.Repo.UpsertUsageDaily(dateKey, string(updatedJSON))
 }

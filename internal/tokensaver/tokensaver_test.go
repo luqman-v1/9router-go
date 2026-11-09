@@ -205,7 +205,7 @@ func TestCompressMessages_ToolResultLong(t *testing.T) {
 	assertContains(t, val, "... (")
 }
 
-func TestCompressMessages_TextBlockLong(t *testing.T) {
+func TestCompressMessages_TextBlockIsNotCompressed(t *testing.T) {
 	diff := longGitDiff()
 	msg := map[string]any{
 		"messages": []any{
@@ -218,14 +218,12 @@ func TestCompressMessages_TextBlockLong(t *testing.T) {
 	}
 	in, _ := json.Marshal(msg)
 	out, ok := CompressMessages(in)
-	if !ok {
-		t.Fatal("expected true for long text block")
+	if ok {
+		t.Fatal("expected false for text block: prose/conversation text must not be compressed")
 	}
-	var res map[string]any
-	json.Unmarshal(out, &res)
-	arr := res["messages"].([]any)[0].(map[string]any)["content"].([]any)
-	val := arr[0].(map[string]any)["text"].(string)
-	assertContains(t, val, "... (")
+	if string(out) != string(in) {
+		t.Fatal("expected body to remain unchanged for text block")
+	}
 }
 
 func TestCompressMessages_InputKey(t *testing.T) {
@@ -832,6 +830,62 @@ func TestInjectSystemPrompt_SystemRoleEmptyContent(t *testing.T) {
 	content, _ := res["messages"].([]any)[0].(map[string]any)["content"].(string)
 	if content != prompt {
 		t.Errorf("system content = %q, want %q", content, prompt)
+	}
+}
+
+// A system turn whose content is already a block array must keep every block.
+// The old injector read the content as a string, missed, and replaced the whole
+// array with the prompt — silently deleting the client's own instructions.
+func TestInjectSystemPrompt_SystemRoleArrayContentIsPreserved(t *testing.T) {
+	prompt := "extra instructions"
+	in := []byte(`{"messages":[{"role":"system","content":[{"type":"text","text":"original instructions"},{"type":"text","text":"second block"}]}]}`)
+	out, ok := InjectSystemPrompt(in, prompt)
+	if !ok {
+		t.Fatal("expected true")
+	}
+	var res map[string]any
+	if err := json.Unmarshal(out, &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	blocks, isArr := res["messages"].([]any)[0].(map[string]any)["content"].([]any)
+	if !isArr {
+		t.Fatalf("content is no longer a block array: %T", res["messages"].([]any)[0].(map[string]any)["content"])
+	}
+	if len(blocks) != 3 {
+		t.Fatalf("block count = %d, want 3 (two original plus the prompt)", len(blocks))
+	}
+	first := blocks[0].(map[string]any)["text"]
+	if first != "original instructions" {
+		t.Errorf("first block text = %v, want %q", first, "original instructions")
+	}
+	second := blocks[1].(map[string]any)["text"]
+	if second != "second block" {
+		t.Errorf("second block text = %v, want %q", second, "second block")
+	}
+	last := blocks[2].(map[string]any)
+	if last["text"] != prompt || last["type"] != "text" {
+		t.Errorf("appended block = %v, want type text with %q", last, prompt)
+	}
+}
+
+// An array-shaped system turn that already carries the prompt is left alone.
+func TestInjectSystemPrompt_SystemRoleArrayContentAlreadyCarries(t *testing.T) {
+	prompt := "extra instructions"
+	in := []byte(`{"messages":[{"role":"system","content":[{"type":"text","text":"has extra instructions inside"}]}]}`)
+	out, ok := InjectSystemPrompt(in, prompt)
+	if ok {
+		t.Errorf("expected false when the prompt is already in the block array, got body %s", out)
+	}
+}
+
+// A string element inside the block array counts as carrying the prompt too:
+// some clients send content as a mixed array of strings and blocks.
+func TestInjectSystemPrompt_SystemRoleArrayContentStringElement(t *testing.T) {
+	prompt := "extra instructions"
+	in := []byte(`{"messages":[{"role":"system","content":["plain string holding extra instructions"]}]}`)
+	out, ok := InjectSystemPrompt(in, prompt)
+	if ok {
+		t.Errorf("expected false when a string element already carries the prompt, got %s", out)
 	}
 }
 

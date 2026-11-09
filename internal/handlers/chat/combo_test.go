@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/dbtest"
 )
 
 func TestApplyComboStrategy_capacity(t *testing.T) {
@@ -861,4 +863,69 @@ func TestCollectPanel_CancelAbortsStragglers(t *testing.T) {
 			t.Fatalf("straggler %d not aborted after timeout", i)
 		}
 	}
+}
+
+// comboRespectsStoredOrder reads the flag out of the combo's own strategy row.
+// The cases that matter are the ones a real install produces: a combo that
+// never had a strategy row, a settings read that fails, and an explicit false
+// — none of which may read as "respect the stored order", because that would
+// silently disable rotation for combos that never asked for it.
+func TestComboRespectsStoredOrder(t *testing.T) {
+	repo, cleanup := setupComboFlagRepo(t)
+	defer cleanup()
+
+	h := NewChatHandler(repo)
+	if h.comboRespectsStoredOrder("no-such-combo") {
+		t.Error("a combo with no strategy row must not respect the stored order")
+	}
+	if err := repo.UpdateSettingsRaw(map[string]any{
+		"comboStrategies": map[string]any{
+			"off":  map[string]any{"strategy": "round-robin"},
+			"on":   map[string]any{"strategy": "round-robin", "respectStoredOrder": true},
+			"also": map[string]any{"respectStoredOrder": true},
+		},
+	}); err != nil {
+		t.Fatalf("UpdateSettingsRaw: %v", err)
+	}
+	if h.comboRespectsStoredOrder("off") {
+		t.Error("respectStoredOrder absent must read as false")
+	}
+	if !h.comboRespectsStoredOrder("on") {
+		t.Error("respectStoredOrder true must read as true")
+	}
+	if !h.comboRespectsStoredOrder("also") {
+		t.Error("the flag alone, with no strategy, must still read as true")
+	}
+	// A handler with no repo cannot read settings, and must fail closed.
+	if NewChatHandler(nil).comboRespectsStoredOrder("on") {
+		t.Error("a nil repo must fail closed to false")
+	}
+	if h.comboRespectsStoredOrder("") {
+		t.Error("an empty combo name must read as false")
+	}
+}
+
+// setupComboFlagRepo opens a real database so the settings read exercises the
+// same code path production does.
+func setupComboFlagRepo(t *testing.T) (*db.Repo, func()) {
+	t.Helper()
+	tmpFile, err := os.CreateTemp("", "combo-flag-*.sqlite")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	tmpFile.Close()
+	database, err := db.OpenDatabase(tmpFile.Name())
+	if err != nil {
+		os.Remove(tmpFile.Name())
+		t.Fatalf("OpenDatabase: %v", err)
+	}
+	cleanup := func() {
+		_ = database.Close()
+		_ = os.Remove(tmpFile.Name())
+	}
+	if err := dbtest.CreateTables(database); err != nil {
+		cleanup()
+		t.Fatalf("CreateTables: %v", err)
+	}
+	return db.NewRepo(database), cleanup
 }

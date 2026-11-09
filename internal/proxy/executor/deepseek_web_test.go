@@ -57,6 +57,13 @@ type deepSeekFakeUpstream struct {
 	// can tell a reused session from a fresh one: a turn that continues a
 	// pinned conversation must not create a second upstream session.
 	createdSessions int
+
+	// failCompletions makes the next N completion calls answer with an HTTP
+	// error instead of the event stream — the shape of a stale upstream session
+	// that a healing turn is expected to retry on a fresh one. failStatus picks
+	// the status those failures carry; zero means 500.
+	failCompletions int
+	failStatus      int
 }
 
 // countCalls reports how many requests the upstream served on path.
@@ -172,6 +179,22 @@ func (f *deepSeekFakeUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		})
 
 	case deepSeekCompletionPath:
+		f.mu.Lock()
+		failing := f.failCompletions > 0
+		if failing {
+			f.failCompletions--
+		}
+		failStatus := f.failStatus
+		f.mu.Unlock()
+		if failing {
+			status := failStatus
+			if status == 0 {
+				status = http.StatusInternalServerError
+			}
+			w.WriteHeader(status)
+			_ = json.MarshalWrite(w, map[string]any{"code": 1, "msg": "chat session is gone"})
+			return
+		}
 		if f.muteBody != "" {
 			// The account-level enforcement: HTTP 200, a JSON document, and no
 			// event stream at all.

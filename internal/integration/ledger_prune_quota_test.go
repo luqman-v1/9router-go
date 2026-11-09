@@ -13,10 +13,10 @@ import (
 
 // TestLedgerPrunePreservesKeyQuotaEnforcement drives the whole chain:
 //  1. A key with a budget spends past it in the ledger.
-//  2. The middleware refuses with 403.
+//  2. The middleware refuses with 429.
 //  3. POST /api/settings/database/prune-usage deletes the ledger rows that pushed
 //     it over the budget.
-//  4. The very next request through the real router is STILL refused with 403,
+//  4. The very next request through the real router is STILL refused with 429,
 //     and /api/keys reports the exact same usedTokens count because the carryover
 //     kept the spend intact.
 func TestLedgerPrunePreservesKeyQuotaEnforcement(t *testing.T) {
@@ -41,8 +41,8 @@ func TestLedgerPrunePreservesKeyQuotaEnforcement(t *testing.T) {
 
 	// First request must be refused before dispatch.
 	rejectedBefore := env.Post(t, "/v1/chat/completions", ChatBody("deepseek/deepseek-chat", false), WithAPIKey(plaintext))
-	if rejectedBefore.Status != http.StatusForbidden {
-		t.Fatalf("expected 403 before prune, got %d: %s", rejectedBefore.Status, truncate(rejectedBefore.Body))
+	if rejectedBefore.Status != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 before prune, got %d: %s", rejectedBefore.Status, truncate(rejectedBefore.Body))
 	}
 	// Read spend through the dashboard listing API
 	usedBefore := keyUsageFromList(t, env, id)
@@ -72,10 +72,10 @@ func TestLedgerPrunePreservesKeyQuotaEnforcement(t *testing.T) {
 		t.Fatalf("unexpected prune result: %+v", res)
 	}
 
-	// INVARIANT 1: The very next request through the router must STILL be refused with 403.
+	// INVARIANT 1: The very next request through the router must STILL be refused with 429.
 	// If the prune refunded spend, this would slip through as 200.
 	rejectedAfter := env.Post(t, "/v1/chat/completions", ChatBody("deepseek/deepseek-chat", false), WithAPIKey(plaintext))
-	if rejectedAfter.Status != http.StatusForbidden {
+	if rejectedAfter.Status != http.StatusTooManyRequests {
 		t.Fatalf("CRITICAL REGRESSION: key was un-exhausted by ledger prune! got %d: %s", rejectedAfter.Status, truncate(rejectedAfter.Body))
 	}
 

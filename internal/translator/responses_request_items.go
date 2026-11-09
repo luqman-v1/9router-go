@@ -118,20 +118,21 @@ func (c *responsesRequestConv) consumeToolCall(item ResponsesInputItem, itemType
 		c.attachReasoning(c.assistant)
 	}
 
+	name := strings.TrimPrefix(item.Name, "functions.")
 	// Codex and OpenAI reject a nameless tool call outright, so an item that
 	// carries no usable name is skipped rather than forwarded.
-	if strings.TrimSpace(item.Name) == "" {
+	if strings.TrimSpace(name) == "" {
 		return
 	}
-	if itemType == responsesItemCustomToolCall {
-		c.markCustomTool(item.Name)
+	if itemType == responsesItemCustomToolCall || strings.HasPrefix(item.Name, "functions.") {
+		c.markCustomTool(name)
 	}
 
 	call := map[string]any{
 		"id":   item.CallID,
 		"type": openaiBlockFunction,
 		"function": map[string]any{
-			"name":      item.Name,
+			"name":      name,
 			"arguments": toolCallArguments(item, itemType),
 		},
 	}
@@ -163,7 +164,8 @@ func (c *responsesRequestConv) consumeReasoning(item ResponsesInputItem) {
 }
 
 func (c *responsesRequestConv) markCustomTool(name string) {
-	if !c.customToolNames[name] {
+	name = strings.TrimPrefix(name, "functions.")
+	if name != "" && !c.customToolNames[name] {
 		c.customToolNames[name] = true
 		c.customToolNameIn = append(c.customToolNameIn, name)
 	}

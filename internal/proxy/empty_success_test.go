@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"9router/proxy/internal/providers"
 )
 
 // A 200 that carries no answer must be reported as a retryable failure, or
@@ -226,6 +228,78 @@ func TestLooksLikeSSE(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := LooksLikeSSE([]byte(tt.body)); got != tt.want {
 				t.Errorf("LooksLikeSSE(%q) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+// An error envelope that arrived inside a 200 body names the status the
+// provider meant, so a rate limit is reported as a 429 and not flattened to
+// 502 (upstream v0.5.112, 56dbf46). The envelope is what sseToClaudeJSON
+// folds a failing SSE frame into, which is why this matters on the
+// /v1/responses bridge: that path writes the body through
+// ChatResponseToResponses, which reads the absent choices as an empty turn.
+func TestEmptyUpstreamError_ErrorEnvelopeKeepsUpstreamStatus(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantCode int
+	}{
+		{
+			name:     "numeric status is forwarded",
+			body:     `{"error":{"status":429,"message":"rate limited"}}`,
+			wantCode: http.StatusTooManyRequests,
+		},
+		{
+			name:     "status as string is forwarded",
+			body:     `{"error":{"status":"503","message":"overloaded"}}`,
+			wantCode: http.StatusServiceUnavailable,
+		},
+		{
+			// `code` is not an HTTP status in the OpenAI family: OpenAI
+			// writes an application error code there (`model_not_found`,
+			// `invalid_api_key`), so a numeric `code` is an error class, not
+			// a status. Forwarding it would answer 404 for a missing model.
+			name:     "code field is not read as a status",
+			body:     `{"error":{"code":404,"message":"model not found"}}`,
+			wantCode: http.StatusBadGateway,
+		},
+		{
+			name:     "non-error status falls back to 502",
+			body:     `{"error":{"status":200,"message":"odd"}}`,
+			wantCode: http.StatusBadGateway,
+		},
+		{
+			name:     "non-numeric status falls back to 502",
+			body:     `{"error":{"status":"upstream is sad","message":"odd"}}`,
+			wantCode: http.StatusBadGateway,
+		},
+		{
+			name:     "missing status falls back to 502",
+			body:     `{"error":{"message":"no status given"}}`,
+			wantCode: http.StatusBadGateway,
+		},
+		{
+			name:     "null status falls back to 502",
+			body:     `{"error":{"status":null,"message":"null status"}}`,
+			wantCode: http.StatusBadGateway,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := EmptyUpstreamError([]byte(tt.body))
+			if err == nil {
+				t.Fatalf("EmptyUpstreamError(%s) = nil, want failure", tt.body)
+			}
+			var upstreamErr *UpstreamError
+			if !errors.As(err, &upstreamErr) {
+				t.Fatalf("EmptyUpstreamError(%s) error = %T, want *UpstreamError", tt.body, err)
+			}
+			if upstreamErr.StatusCode != tt.wantCode {
+				t.Errorf("status = %d, want %d", upstreamErr.StatusCode, tt.wantCode)
+			}
+			if !providers.RetryableStatusCodes[upstreamErr.StatusCode] {
+				t.Errorf("status %d is not in providers.RetryableStatusCodes; the fallback layer would not move on", upstreamErr.StatusCode)
 			}
 		})
 	}

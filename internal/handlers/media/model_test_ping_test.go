@@ -160,3 +160,93 @@ func TestReadProbeResult_ReviewerFindingsAndRequirements(t *testing.T) {
 		}
 	})
 }
+
+func TestReadProbeResult_HTMLErrorBodies(t *testing.T) {
+	t.Run("429 Cloudflare challenge page is summarized", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		rec.WriteHeader(http.StatusTooManyRequests)
+		rec.Write([]byte(`<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head><body>cloudflare WAF block</body></html>`))
+
+		res := readProbeResult(rec, "")
+		if res.OK {
+			t.Error("expected OK=false for Cloudflare 429")
+		}
+		if !strings.Contains(res.Error, "Cloudflare WAF challenge (Attention Required!)") {
+			t.Errorf("expected Cloudflare summary, got %q", res.Error)
+		}
+		if !strings.Contains(res.Error, "HTTP 429") {
+			t.Errorf("expected HTTP 429 prefix, got %q", res.Error)
+		}
+	})
+
+	t.Run("502 with title uses the title text", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		rec.WriteHeader(http.StatusBadGateway)
+		rec.Write([]byte(`<html><head><title>502 Bad Gateway</title></head><body><h1>502 Bad Gateway</h1><p>The server returned an invalid response.</p></body></html>`))
+
+		res := readProbeResult(rec, "")
+		if res.OK {
+			t.Error("expected OK=false for 502")
+		}
+		if !strings.Contains(res.Error, "502 Bad Gateway") {
+			t.Errorf("expected title text '502 Bad Gateway', got %q", res.Error)
+		}
+		if strings.Contains(res.Error, "<h1>") || strings.Contains(res.Error, "</body>") {
+			t.Errorf("expected HTML tags stripped, got %q", res.Error)
+		}
+	})
+
+	t.Run("bare HTML without title is stripped to plain text", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		rec.WriteHeader(http.StatusInternalServerError)
+		rec.Write([]byte("<!DOCTYPE html><html><body><div>upstream error</div></body></html>"))
+
+		res := readProbeResult(rec, "")
+		if res.OK {
+			t.Error("expected OK=false for bare HTML 500")
+		}
+		if !strings.Contains(res.Error, "upstream error") {
+			t.Errorf("expected stripped text 'upstream error', got %q", res.Error)
+		}
+		if strings.Contains(res.Error, "<") || strings.Contains(res.Error, ">") {
+			t.Errorf("expected no angle brackets, got %q", res.Error)
+		}
+	})
+
+	t.Run("long HTML title is truncated at probeTextLimit", func(t *testing.T) {
+		longTitle := strings.Repeat("x", 300)
+		rec := httptest.NewRecorder()
+		rec.WriteHeader(http.StatusBadGateway)
+		rec.Write([]byte("<html><head><title>" + longTitle + "</title></head><body></body></html>"))
+
+		res := readProbeResult(rec, "")
+		if res.OK {
+			t.Error("expected OK=false for long-title 502")
+		}
+		if !strings.HasPrefix(res.Error, "HTTP 502:") {
+			t.Errorf("expected HTTP 502 prefix, got %q", res.Error)
+		}
+		detail := strings.TrimPrefix(res.Error, "HTTP 502: ")
+		if !strings.HasSuffix(detail, "…") {
+			t.Errorf("expected truncated detail to end with ellipsis, got %q", detail)
+		}
+		body := strings.TrimSuffix(detail, "…")
+		if len(body) > probeTextLimit {
+			t.Errorf("detail length %d exceeds limit %d", len(body), probeTextLimit)
+		}
+	})
+
+	t.Run("non-HTML error body passes through unchanged", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		rec.WriteHeader(http.StatusBadGateway)
+		rec.Write([]byte(`{"error":{"message":"upstream quota exceeded"}}`))
+
+		res := readProbeResult(rec, "")
+		if res.OK {
+			t.Error("expected OK=false")
+		}
+		if res.Error != "HTTP 502: upstream quota exceeded" {
+			t.Errorf("expected JSON error passed through, got %q", res.Error)
+		}
+	})
+}

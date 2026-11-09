@@ -38,7 +38,7 @@ func TestApplyRawAggregate_ByProviderCarriesLastUsed(t *testing.T) {
 		ByEndpoint: make(map[string]EndpointUsageItem),
 	}
 
-	applyRawAggregate(resp, agg, nil, nil, nil)
+	applyRawAggregate(resp, agg, nil, nil, nil, allUsageStatsViews)
 
 	item, ok := resp.ByProvider["openai"]
 	if !ok {

@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -70,6 +71,25 @@ func (h *MediaHandler) HandleTestModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, h.probeModel(r, req.Model, req.Kind))
+}
+
+// ProbeModelForHealth runs one probe for the model-health scheduler.
+//
+// It is the same probe the dashboard's Test button runs, reached through a
+// method rather than the HTTP handler so the scheduler does not have to build
+// a request and parse a response to ask one question. The verdict is
+// identical, which is the point: a model the scheduler judges dead is a model
+// the operator would also see fail.
+//
+// The kind is always the LLM default. The scheduler watches chat models —
+// image, audio and video rows are filtered out before they become candidates
+// — so there is no kind to dispatch on here.
+func (h *MediaHandler) ProbeModelForHealth(ctx context.Context, model string) testModelResult {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/api/models/test", nil)
+	if err != nil {
+		return testModelResult{Error: err.Error()}
+	}
+	return h.probeModel(req, model, "")
 }
 
 // probeModel runs one probe and turns whatever the kind's handler answered into
@@ -674,7 +694,9 @@ func (b probeBody) array(key string) (jsontext.Value, bool) {
 
 // probeErrorText picks the most specific message out of an error payload: the
 // gateway's {"error":{"message":…}} envelope first, then the flatter shapes a
-// provider or a proxied error page produces, and the raw body last.
+// provider or a proxied error page produces, and the raw body last. Raw HTML
+// error pages (upstream 4xx/5xx or a proxied Cloudflare/WAF page) are collapsed
+// to plain text so the dashboard never renders a '<!DOCTYPE html>' chip.
 func probeErrorText(raw []byte, parsed probeBody) string {
 	if msg, ok := parsed.errorMessage(); ok {
 		return msg
@@ -684,7 +706,54 @@ func probeErrorText(raw []byte, parsed probeBody) string {
 			return msg
 		}
 	}
-	return strings.TrimSpace(string(raw))
+	return sanitizeHTMLBody(strings.TrimSpace(string(raw)))
+}
+
+// sanitizeHTMLBody collapses an HTML error page to a short, human-readable
+// string. Non-HTML bodies pass through unchanged.
+func sanitizeHTMLBody(s string) string {
+	if !looksLikeHTML(s) {
+		return s
+	}
+	lower := strings.ToLower(s)
+	if strings.Contains(lower, "cloudflare") && strings.Contains(lower, "attention required") {
+		return "Cloudflare WAF challenge (Attention Required!)"
+	}
+	if title := extractTitle(s); title != "" {
+		return title
+	}
+	return stripTags(s)
+}
+
+// looksLikeHTML reports whether s is an HTML document (doctype or <html root).
+func looksLikeHTML(s string) bool {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	return strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html")
+}
+
+// extractTitle returns the trimmed text inside the first <title>...</title>,
+// case-insensitive, or "" when none is present.
+func extractTitle(s string) string {
+	lower := strings.ToLower(s)
+	const open = "<title>"
+	start := strings.Index(lower, open)
+	if start == -1 {
+		return ""
+	}
+	start += len(open)
+	end := strings.Index(lower[start:], "</title>")
+	if end == -1 {
+		return ""
+	}
+	return strings.TrimSpace(s[start : start+end])
+}
+
+var htmlTag = regexp.MustCompile(`<[^>]*>`)
+
+// stripTags removes every HTML tag, collapsing runs of whitespace to single
+// spaces so the result reads as plain text.
+func stripTags(s string) string {
+	return strings.Join(strings.Fields(htmlTag.ReplaceAllString(s, " ")), " ")
 }
 
 // probeDetail renders the ": <detail>" tail of an HTTP failure, truncated so a

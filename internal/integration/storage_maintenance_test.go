@@ -139,7 +139,7 @@ func TestAnonymousPruneStillCarriesKeyQuota(t *testing.T) {
 	// And the key is still refused, because its budget is still spent.
 	rejected := env.Post(t, "/v1/chat/completions",
 		ChatBody("deepseek/deepseek-chat", false), WithAPIKey(plaintext))
-	if rejected.Status != http.StatusForbidden {
-		t.Errorf("request through the exhausted key = %d, want 403", rejected.Status)
+	if rejected.Status != http.StatusTooManyRequests {
+		t.Errorf("request through the exhausted key = %d, want 429", rejected.Status)
 	}
 }

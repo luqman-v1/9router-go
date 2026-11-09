@@ -96,6 +96,108 @@ func (h *DashboardHandler) HandleComboSmartPreview(w http.ResponseWriter, r *htt
 	})
 }
 
+// HandleComboSmartLoad handles POST /api/combos/{id}/smart/load.
+//
+// It is the write half of the preview: the operator has a rule list in the
+// editor, has seen what it would do, and presses the button to make it so.
+// The merge semantics are the point — the models the rules claim are added,
+// the models that are no longer claimed by any rule are removed, and the
+// models the operator pinned by hand are left exactly where they are. A
+// replace would silently drop those pins; an append would leave stale
+// rule-owned members behind, which is the very thing the rules exist to
+// prevent.
+//
+// The response reports the delta so the client can show what changed without
+// a second round trip.
+func (h *DashboardHandler) HandleComboSmartLoad(w http.ResponseWriter, r *http.Request) {
+	id := getURLParam(r, "id")
+	if id == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing combo id")
+		return
+	}
+	combo, err := h.Repo.GetComboById(id)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if combo == nil {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, "combo not found")
+		return
+	}
+	body, err := readJSONBody(r)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	var rules []smart.Rule
+	if _, ok := body["matchRules"]; ok {
+		rules, err = smart.DecodeRules(body["matchRules"])
+	} else {
+		rules, err = smart.ParseRules(combo.MatchRules)
+	}
+	if err != nil {
+		writeSmartRuleError(w, "INVALID_RULE", err.Error())
+		return
+	}
+	if code, msg := smart.ValidateAll(rules); code != "" {
+		writeSmartRuleError(w, code, msg)
+		return
+	}
+	members, err := comboModels(combo.Models)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	candidates, err := h.smartComboCandidates(r.Context())
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	res, err := smart.Preview(members, rules, candidates)
+	if err != nil {
+		writeSmartRuleError(w, "INVALID_RULE", err.Error())
+		return
+	}
+	// Nothing to do is not an error: the operator pressed the button and the
+	// rules already describe the membership.
+	if len(res.Added) == 0 && len(res.Removed) == 0 {
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"combo": combo.Name, "added": []string{}, "removed": []string{},
+			"models": res.Models, "changed": false,
+		})
+		return
+	}
+	// The write goes through ReconcileCombo so the membership and the rule
+	// snapshots land in one transaction, the same way the automatic half does
+	// it: a read-modify-write racing an operator edit would otherwise drop the
+	// edit. The rules travel with the models because the snapshot each rule
+	// carries is what a later reconcile reads to know which members it owns.
+	changed, err := h.Repo.ReconcileCombo(r.Context(), id,
+		func(models []string, _ []smart.Rule) ([]string, []smart.Rule, bool) {
+			return res.Models, rules, true
+		})
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !changed {
+		// The row vanished between the read above and the write: nothing was
+		// written, and saying so beats reporting a delta that never landed.
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"combo": combo.Name, "added": []string{}, "removed": []string{},
+			"models": res.Models, "changed": false,
+		})
+		return
+	}
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"combo":   combo.Name,
+		"added":   res.Added,
+		"removed": res.Removed,
+		"models":  res.Models,
+		"changed": true,
+	})
+}
+
 // decodeComboRules reads the matchRules field of a combo write.
 //
 // hasRules reports whether the field was present at all: an absent field leaves

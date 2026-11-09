@@ -2,6 +2,7 @@ package tokensaver
 
 import (
 	json "encoding/json/v2"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -83,5 +84,38 @@ func TestRTK_CompressMessagesWithConfig(t *testing.T) {
 	}
 	if len(out) >= len(body) {
 		t.Fatalf("expected compressed body (%d) to be smaller than original (%d)", len(out), len(body))
+	}
+}
+
+func TestRTK_NoCharTruncationUnder10MB(t *testing.T) {
+	cfg := DefaultRTKConfig()
+	// 15,000 chars - was truncated at 8000 chars previously
+	var b strings.Builder
+	for i := 0; i < 300; i++ {
+		b.WriteString("unique_log_line_with_content_identifying_step_")
+		b.WriteString(string(rune('a' + (i % 26))))
+		b.WriteString(string(rune(10)))
+	}
+	text := b.String()
+	if len(text) <= 8000 {
+		t.Fatalf("test precondition failed: text length %d <= 8000", len(text))
+	}
+	res := CompressTextDetailed(text, cfg)
+	if strings.Contains(res.Text, "... (output truncated at") {
+		t.Errorf("output was aggressively char-truncated under 10MB cap")
+	}
+}
+
+func TestRTK_NoSmartTruncationUnder250Lines(t *testing.T) {
+	cfg := DefaultRTKConfig()
+	// 150 lines: below 250 lines SmartTruncMin, must not drop middle lines
+	lines := make([]string, 150)
+	for i := range lines {
+		lines[i] = "alpha beta gamma delta plain line " + strconv.Itoa(i)
+	}
+	text := strings.Join(lines, string(rune(10)))
+	res := CompressTextDetailed(text, cfg)
+	if strings.Contains(res.Text, "lines truncated") {
+		t.Errorf("150-line output was truncated, should require >= 250 lines: techs=%v", res.TechniquesUsed)
 	}
 }

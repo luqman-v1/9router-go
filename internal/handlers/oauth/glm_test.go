@@ -1,13 +1,19 @@
 package oauth
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
+
+// The live init endpoint parses the bearer poll token as a hex flow
+// identifier and answers anything else with 400 code 3004 "invalid_flow".
+var glmHexPollToken = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 	const (
@@ -27,9 +33,10 @@ func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 
 		switch {
 		case r.URL.Path == "/api/v1/oauth/cli/init":
-			auth := r.Header.Get("Authorization")
-			if !strings.HasPrefix(auth, "Bearer ") {
-				http.Error(w, `{"code":401,"msg":"missing bearer"}`, http.StatusUnauthorized)
+			token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if !ok || !glmHexPollToken.MatchString(token) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": 3004, "msg": "invalid_flow"})
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -156,7 +163,7 @@ func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 	}()
 
 	t.Run("StartReturnsAuthorizeURLAndSession", func(t *testing.T) {
-		res, err := glmStart()
+		res, err := glmStart(context.Background())
 		if err != nil {
 			t.Fatalf("glmStart failed: %v", err)
 		}
@@ -172,10 +179,21 @@ func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 		}
 	})
 
+	t.Run("PollTokenIsHexLikeTheCLI", func(t *testing.T) {
+		res, err := glmStart(context.Background())
+		if err != nil {
+			t.Fatalf("glmStart failed: %v", err)
+		}
+		session, _ := res["session"].(map[string]any)
+		if token := strVal(session, "zcodePollToken"); !glmHexPollToken.MatchString(token) {
+			t.Errorf("zcodePollToken = %q, want 64 lowercase hex chars", token)
+		}
+	})
+
 	t.Run("PendingPollReturnsAuthorizationPending", func(t *testing.T) {
 		pollPending = true
 		session := map[string]any{"zcodePollToken": "dummy"}
-		_, err := glmPoll(session, "flow-123")
+		_, err := glmPoll(context.Background(), session, "flow-123")
 		if err == nil || !strings.Contains(err.Error(), "authorization_pending") {
 			t.Fatalf("expected authorization_pending, got %v", err)
 		}
@@ -184,7 +202,7 @@ func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 	t.Run("ReadyDerivesCodingPlanKeyAndPsd", func(t *testing.T) {
 		pollPending = false
 		session := map[string]any{"zcodePollToken": "dummy"}
-		toks, err := glmPoll(session, "flow-123")
+		toks, err := glmPoll(context.Background(), session, "flow-123")
 		if err != nil {
 			t.Fatalf("glmPoll failed: %v", err)
 		}
@@ -215,7 +233,7 @@ func TestGLMDeviceFlow_StartAndPoll(t *testing.T) {
 	})
 
 	t.Run("MissingPollTokenFailsCleanly", func(t *testing.T) {
-		_, err := glmPoll(map[string]any{}, "flow-123")
+		_, err := glmPoll(context.Background(), map[string]any{}, "flow-123")
 		if err == nil || !strings.Contains(err.Error(), "access_denied") {
 			t.Fatalf("expected access_denied, got %v", err)
 		}

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	json "encoding/json/v2"
 	"errors"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -89,6 +90,7 @@ func usagePeriodCount(raw, unit string) (int, bool) {
 
 type ProviderUsageItem struct {
 	Requests         int     `json:"requests"`
+	Errors           int     `json:"errors,omitempty"`
 	PromptTokens     int64   `json:"promptTokens"`
 	CompletionTokens int64   `json:"completionTokens"`
 	CachedTokens     int64   `json:"cachedTokens"`
@@ -151,6 +153,8 @@ type EndpointUsageItem struct {
 
 type UsageStatsResponse struct {
 	TotalRequests         int                          `json:"totalRequests"`
+	TotalErrors           int                          `json:"totalErrors"`
+	SuccessRate           *float64                     `json:"successRate"`
 	TotalPromptTokens     int64                        `json:"totalPromptTokens"`
 	TotalCompletionTokens int64                        `json:"totalCompletionTokens"`
 	TotalCachedTokens     int64                        `json:"totalCachedTokens"`
@@ -183,9 +187,63 @@ func maskAPIKeyForStats(key string) string {
 	return handlerutil.MaskAPIKey(trimmed)
 }
 
+// usageStatsViews names the breakdowns a caller wants built. The Overview's
+// breakdown table renders exactly one at a time (model, provider, account, API
+// key or endpoint), but the handler used to build all five on every read: on a
+// ledger with 411 models the payload measured 415 KB, and the dashboard polls
+// it every five seconds — 29 MB a minute of mostly-unrendered JSON.
+//
+// A caller that omits ?views= still gets every breakdown, so nothing that
+// exists today changes shape. The dashboard asks for the one it draws plus
+// byProvider, which the totals are summed from.
+type usageStatsViews struct {
+	provider bool
+	model    bool
+	account  bool
+	apiKey   bool
+	endpoint bool
+}
+
+// allUsageStatsViews is the default: no ?views= parameter means "everything".
+var allUsageStatsViews = usageStatsViews{provider: true, model: true, account: true, apiKey: true, endpoint: true}
+
+// parseUsageStatsViews reads the comma-separated ?views= list. An empty value
+// keeps the default. Unknown names are ignored rather than rejected: the
+// endpoint is a display feed, and a typo should cost a missing table, not a
+// failed read. byProvider is always built because the totals are summed from
+// it, so asking for it is redundant but harmless.
+func parseUsageStatsViews(raw string) usageStatsViews {
+	if strings.TrimSpace(raw) == "" {
+		return allUsageStatsViews
+	}
+	var v usageStatsViews
+	v.provider = true
+	for _, name := range strings.Split(raw, ",") {
+		switch strings.TrimSpace(name) {
+		case "none":
+			// Totals only. The dashboard's five-second poll uses this: the
+			// KPI row and the live pulse read totals, activeRequests and
+			// recentRequests, and none of the four per-model maps — which are
+			// 98% of a 415 KB payload at 411 models. The breakdown table is
+			// refreshed on its own, slower schedule.
+			return usageStatsViews{provider: true}
+		case "model":
+			v.model = true
+		case "account":
+			v.account = true
+		case "apiKey":
+			v.apiKey = true
+		case "endpoint":
+			v.endpoint = true
+		}
+	}
+	return v
+}
+
 func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		window := resolveUsagePeriod(r.URL.Query().Get("period"), time.Now())
+		views := parseUsageStatsViews(r.URL.Query().Get("views"))
 
 		tracker := usagetracker.GetTracker()
 		activeState := tracker.GetActiveState(repo)
@@ -313,6 +371,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 						if pm, ok := pVal.(map[string]any); ok {
 							cur := resp.ByProvider[prov]
 							cur.Requests += getMapInt(pm, "requests")
+							cur.Errors += getMapInt(pm, "errors")
 							cur.PromptTokens += getMapInt64(pm, "promptTokens")
 							cur.CompletionTokens += getMapInt64(pm, "completionTokens")
 							cur.CachedTokens += getMapInt64(pm, "cachedTokens")
@@ -323,7 +382,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				}
 
 				// byModel
-				if bm, ok := dayData["byModel"].(map[string]any); ok {
+				if bm, ok := dayData["byModel"].(map[string]any); ok && views.model {
 					for mk, mVal := range bm {
 						if mm, ok := mVal.(map[string]any); ok {
 							rawModel, _ := mm["rawModel"].(string)
@@ -358,7 +417,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				}
 
 				// byAccount
-				if ba, ok := dayData["byAccount"].(map[string]any); ok {
+				if ba, ok := dayData["byAccount"].(map[string]any); ok && views.account {
 					for connID, aVal := range ba {
 						if am, ok := aVal.(map[string]any); ok {
 							rawModel, _ := am["rawModel"].(string)
@@ -395,7 +454,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				// byApiKey. The daily payload carries no per-request timestamp
 				// (the date is the row key), so LastUsed stays empty here — same
 				// as the other daily branches.
-				if bak, ok := dayData["byApiKey"].(map[string]any); ok {
+				if bak, ok := dayData["byApiKey"].(map[string]any); ok && views.apiKey {
 					for _, kVal := range bak {
 						km, ok := kVal.(map[string]any)
 						if !ok {
@@ -420,7 +479,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				}
 
 				// byEndpoint
-				if be, ok := dayData["byEndpoint"].(map[string]any); ok {
+				if be, ok := dayData["byEndpoint"].(map[string]any); ok && views.endpoint {
 					for epKey, eVal := range be {
 						if em, ok := eVal.(map[string]any); ok {
 							endpoint, _ := em["endpoint"].(string)
@@ -468,16 +527,28 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			applyRawAggregate(&resp, agg, nodeNameMap, connMap, keyNames)
+			applyRawAggregate(&resp, agg, nodeNameMap, connMap, keyNames, views)
+			if !window.since.IsZero() {
+				cutoff := window.since.UTC().Format("2006-01-02T15:04:05.000Z")
+				if errCount, err := repo.GetRequestDetailsErrorCountSince(r.Context(), cutoff); err == nil {
+					resp.TotalErrors = errCount
+				}
+			}
 		}
 
 		// Calculate total aggregates from byProvider
+		successfulRequests := 0
 		for _, p := range resp.ByProvider {
-			resp.TotalRequests += p.Requests
+			successfulRequests += p.Requests
 			resp.TotalPromptTokens += p.PromptTokens
 			resp.TotalCompletionTokens += p.CompletionTokens
 			resp.TotalCachedTokens += p.CachedTokens
 			resp.TotalCost += p.Cost
+		}
+		resp.TotalRequests = successfulRequests + resp.TotalErrors
+		if resp.TotalRequests > 0 {
+			rate := math.Round(float64(successfulRequests)/float64(resp.TotalRequests)*1000) / 10
+			resp.SuccessRate = &rate
 		}
 
 		// Build recent requests list (20 deduped from usageHistory)
@@ -490,24 +561,24 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 		seen := make(map[string]bool)
 		for _, rh := range recentHistory {
 			promptTok, complTok := translator.ResolveTokensCounts([]byte(rh.Tokens), rh.PromptTokens, rh.CompletionTokens)
-			if promptTok == 0 && complTok == 0 {
+			status := "ok"
+			if rh.Status != "success" && rh.Status != "ok" && rh.Status != "" {
+				status = rh.Status
+			}
+			if promptTok == 0 && complTok == 0 && status == "ok" {
 				continue
 			}
 			min := ""
 			if len(rh.Timestamp) >= 16 {
 				min = rh.Timestamp[:16]
 			}
-			k := rh.Model + "|" + rh.Provider + "|" + strconv.FormatInt(promptTok, 10) + "|" + strconv.FormatInt(complTok, 10) + "|" + min
+			k := rh.Model + "|" + rh.Provider + "|" + strconv.FormatInt(promptTok, 10) + "|" + strconv.FormatInt(complTok, 10) + "|" + status + "|" + min
 			if seen[k] {
 				continue
 			}
 			seen[k] = true
 
 			cachedTok := int(translator.CachedTokensFromJSON([]byte(rh.Tokens)))
-			status := "ok"
-			if rh.Status != "success" && rh.Status != "ok" && rh.Status != "" {
-				status = rh.Status
-			}
 
 			dedupedRecent = append(dedupedRecent, usagetracker.RecentRequest{
 				Timestamp:        rh.Timestamp,
@@ -542,6 +613,7 @@ type detailListItem struct {
 	Cost         float64          `json:"cost,omitempty"`
 	Combo        string           `json:"combo,omitempty"`
 	Protocol     string           `json:"protocol,omitempty"`
+	LoopWarning  string           `json:"loopWarning,omitempty"`
 }
 
 // HandleRequestDetails returns paged request detail objects for the Details tab.
@@ -641,6 +713,7 @@ func newDetailListItem(row db.RequestDetailListRow) detailListItem {
 		Cost:         row.Cost,
 		Combo:        row.Combo,
 		Protocol:     protocol,
+		LoopWarning:  row.LoopWarning,
 	}
 }
 

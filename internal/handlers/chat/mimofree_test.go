@@ -109,3 +109,22 @@ func TestInjectMimoMarker_StillInjectsMarker(t *testing.T) {
 		t.Errorf("first message = %v, want the anti-abuse system marker", first)
 	}
 }
+
+// TestClampMimoFreeReasoning pins the mandatory-reasoning clamp on the
+// mimo-free lane. The lane's endpoints are hardcoded (mimoBootstrapURL,
+// mimoChatURL), so it cannot be faked end to end; the clamp itself is the
+// part that decides what the upstream receives.
+func TestClampMimoFreeReasoning(t *testing.T) {
+	out := clampMimoFreeReasoning(mimoBody(t, "mimo-v2.6", "none"), "mimo-v2.6")
+	if got := mimoEffort(t, out); got != "minimal" {
+		t.Errorf("reasoning_effort = %q, want minimal (the free lane forbids disabling)", got)
+	}
+	out = clampMimoFreeReasoning(mimoBody(t, "mimo-v2.6", "high"), "mimo-v2.6")
+	if got := mimoEffort(t, out); got != "high" {
+		t.Errorf("reasoning_effort = %q, want high (another level is untouched)", got)
+	}
+	out = clampMimoFreeReasoning(mimoBody(t, "mimo-v2.6", ""), "mimo-v2.6")
+	if got := mimoEffort(t, out); got != "" {
+		t.Errorf("reasoning_effort = %q, want empty (no ask stays no ask)", got)
+	}
+}

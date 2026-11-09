@@ -125,6 +125,9 @@ func TestUpstreamSpeaksResponses(t *testing.T) {
 		{"openai is a chat endpoint", "openai", "gpt-5.1", &providers.ProviderConfig{BaseURL: "https://api.openai.com/v1/chat/completions"}, false},
 		{"muse-spark leaves the chat endpoint for opencode", "opencode", "muse-spark-1.3-contributor", &providers.ProviderConfig{BaseURL: "https://opencode.ai/zen/v1/chat/completions"}, true},
 		{"gpt-5.6-luna leaves the chat endpoint for opencode-go", "opencode-go", "gpt-5.6-luna", &providers.ProviderConfig{BaseURL: "https://opencode.ai/zen/go/v1/chat/completions"}, true},
+		{"deepseek-v4.1-flash serves responses on the go lane", "opencode-go", "deepseek-v4.1-flash", &providers.ProviderConfig{BaseURL: "https://opencode.ai/zen/go/v1/chat/completions"}, true},
+		{"deepseek-v4-pro serves responses on the go lane", "opencode-go", "deepseek-v4-pro", &providers.ProviderConfig{BaseURL: "https://opencode.ai/zen/go/v1/chat/completions"}, true},
+		{"go chat-only models are translated in, not relayed", "opencode-go", "glm-5.2", &providers.ProviderConfig{BaseURL: "https://opencode.ai/zen/go/v1/chat/completions"}, false},
 		{"gpt-5.4 answers the gpt family from responses upstream", "opencode", "gpt-5.4", &providers.ProviderConfig{BaseURL: "https://opencode.ai/zen/v1/chat/completions"}, true},
 		{"a model name alone never implies responses", "openai", "muse-spark-1.3-contributor", &providers.ProviderConfig{BaseURL: "https://api.openai.com/v1/chat/completions"}, false},
 		{"missing config cannot be native", "codex", "gpt-5.1", nil, false},
@@ -178,7 +181,7 @@ func TestHandleClaudeMessagesStream_ResponsesClient(t *testing.T) {
 func TestHandleClaudeMessages_TranslateRespRestoresToolNames(t *testing.T) {
 	const longName = "mcp__server_name__action_detail_something_very_long_indeed_action_12345"
 	const shortName = "mcp__server_name__action_detail_something_very_long_indeed_act_1"
-toolMap := map[string]string{shortName: longName}
+	toolMap := map[string]string{shortName: longName}
 
 	t.Run("stream passthrough", func(t *testing.T) {
 		upstream := strings.Join([]string{

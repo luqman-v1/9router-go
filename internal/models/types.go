@@ -70,6 +70,10 @@ type APIKey struct {
 	// before it is refused; 0 falls back to the server default.
 	TokenQuota     *int `json:"tokenQuota,omitempty"`
 	QueueTimeoutMs *int `json:"queueTimeoutMs,omitempty"`
+	// ContextLimit caps the context window a single request from this key may
+	// use, in tokens. 0 means the model's own window applies. It bounds one
+	// request, where TokenQuota bounds what the key may spend over its life.
+	ContextLimit *int `json:"contextLimit,omitempty"`
 	// F-6 Argon2id hashing
 	KeyHash    *string `json:"keyHash,omitempty"`
 	LookupHash *string `json:"lookupHash,omitempty"`
@@ -82,6 +86,17 @@ type APIKey struct {
 	// F-3 Plans: id of the reusable policy template this key inherits from.
 	// Empty means no plan; plan values are defaults the key can override.
 	PlanID *string `json:"planId,omitempty"`
+	// F-2 Budget: per-period spend ceiling. LimitMicros is USD micros and
+	// LimitTokens is prompt+completion tokens, both measured over BudgetPeriod
+	// (daily|weekly|monthly|total). AlertPct is the spend percentage at which
+	// a warning header is raised and HardCutoff refuses with 402 once the
+	// period budget is spent. 0/"" means "not set", which leaves the plan's
+	// value in charge.
+	LimitMicros  int64  `json:"limitMicros,omitempty"`
+	LimitTokens  int64  `json:"limitTokens,omitempty"`
+	BudgetPeriod string `json:"budgetPeriod,omitempty"`
+	AlertPct     int    `json:"alertPct,omitempty"`
+	HardCutoff   bool   `json:"hardCutoff,omitempty"`
 }
 
 // Combo represents a multi-model routing combinated alias.

@@ -78,6 +78,7 @@ var RegistryAliases = map[string]string{
 	"tencent":             "hunyuan",
 	"tinyfish":            "tinyfish",
 	"v1m":                 "v1m",
+	"nace":                "nace",
 	"vercel-ai-gateway":   "vercel",
 	"vertex":              "vx",
 	"vertex-partner":      "vxp",
@@ -86,4 +87,5 @@ var RegistryAliases = map[string]string{
 	"xiaomi-mimo":         "mimo",
 	"xiaomi-tokenplan":    "xmtp",
 	"zed":                 "zd",
+	"hcnsec":              "hc",
 }

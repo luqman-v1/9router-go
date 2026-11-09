@@ -119,8 +119,8 @@ FROM semanticCacheEntries`
 	for rows.Next() {
 		var (
 			key, model, contentType, storedAtStr string
-			body                                  []byte
-			hitCount, tokensSaved                 int64
+			body                                 []byte
+			hitCount, tokensSaved                int64
 		)
 		if err := rows.Scan(&key, &model, &body, &contentType, &storedAtStr, &hitCount, &tokensSaved); err == nil {
 			storedAt, ok := parseStoredAt(storedAtStr)

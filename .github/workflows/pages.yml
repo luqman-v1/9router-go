@@ -11,6 +11,7 @@ on:
       - README.md
       - docs/screenshots/**
       - site/**
+      - wiki/**
       - tools/sitegen/**
       - .github/workflows/pages.yml
   pull_request:
@@ -18,6 +19,7 @@ on:
       - README.md
       - docs/screenshots/**
       - site/**
+      - wiki/**
       - tools/sitegen/**
       - .github/workflows/pages.yml
   workflow_dispatch:
@@ -80,6 +82,153 @@ jobs:
             echo "::error::index.html does not link the stylesheet"
             exit 1
           }
+      # The wiki is published next to the project page, and its search box is
+      # useless without the index. Both are generated, so a generator change
+      # that drops either fails the deploy rather than shipping a site whose
+      # search silently returns nothing.
+      - name: Assert wiki pages and search index
+        run: |
+          set -euo pipefail
+          test -f _site/search-index.json || {
+            echo "::error::_site/search-index.json missing; the wiki search reads it"
+            exit 1
+          }
+          count=$(find _site -maxdepth 1 -name '*.html' | wc -l)
+          [ "$count" -gt 1 ] || {
+            echo "::error::only the project page was generated; the wiki produced no pages"
+            exit 1
+          }
+          # Every sidebar link must resolve, or a reader clicks a dead link.
+          # One pipeline over all pages at once, so a page with no relative
+          # links cannot look like a failure the way a per-page `while read`
+          # does: that loop exits 1 on the EOF that ends it, which is how the
+          # redirect stub's empty result read as a dead link.
+          dead=0
+          while read -r page link; do
+            [ -n "$link" ] || continue
+            [ -f "_site/$link" ] || { echo "::error::$page links to missing $link"; dead=1; }
+          done < <(
+            for page in _site/*.html; do
+              grep -o 'href="[a-z][a-z0-9-]*\.html"' "$page" |
+                sed "s|href=\"||;s|\"$||;s|^|$page |"
+            done
+          )
+          [ "$dead" -eq 0 ] || exit 1
+          # The index has to carry page bodies, not just headings: a feature
+          # documented only in prose is unreachable through search otherwise.
+          grep -q '"text":"' _site/search-index.json || {
+            echo "::error::search-index.json has no body text; search cannot reach prose"
+            exit 1
+          }
+          # An anchor in the index must be an id the page actually publishes,
+          # or a search result lands at the top of the page instead of the hit.
+          while IFS= read -r anchor; do
+            grep -q "id=\"$anchor\"" _site/*.html || {
+              echo "::error::index anchor $anchor is not published by any page"
+              exit 1
+            }
+          done < <(grep -o '"anchor":"[^"]*"' _site/search-index.json | sed 's/"anchor":"//;s/"//')
+          # No 'before' screenshot may ship: the gallery documents the result,
+          # not the intermediate state.
+          leaked=$(find _site -iname '*before*' | wc -l)
+          [ "$leaked" -eq 0 ] || {
+            echo "::error::$leaked before-screenshot(s) were published; the gallery excludes them"
+            exit 1
+          }
+          # Responsive contract. On a phone the sidebar is a hidden sheet, so the
+          # Menu button is the only way to reach the nav: a page missing it has
+          # no navigation at all below the breakpoint, and every page would
+          # still render — which is why nothing else catches this.
+          # Only wiki pages carry the disclosure; tg.html is a redirect stub.
+          nav_missing=0
+          for page in _site/*.html; do
+            case "$(basename "$page")" in tg.html) continue ;; esac
+            grep -q 'id="nav-open"' "$page" || { echo "::error::$page has no Menu button; phone readers cannot navigate"; nav_missing=1; }
+            grep -q 'aria-controls="wiki-side"' "$page" || { echo "::error::$page Menu button does not name the sheet it opens"; nav_missing=1; }
+            grep -q 'id="wiki-side"' "$page" || { echo "::error::$page has no sidebar id"; nav_missing=1; }
+          done
+          [ "$nav_missing" -eq 0 ] || exit 1
+          # Every table must be wrapped, or a wide one widens the page and the
+          # whole layout scrolls sideways — the one responsive failure a reader
+          # cannot recover from by scrolling back. Count opening wrappers only:
+          # the attribute also appears in the stylesheet's selector, which is one
+          # hit per page and not one per table.
+          tables=$(grep -o '<table>' _site/*.html | wc -l)
+          wrappers=$(grep -o '<div data-table-scroll>' _site/*.html | wc -l)
+          [ "$wrappers" -eq "$tables" ] || {
+            echo "::error::$tables tables but $wrappers scroll wrappers; a wide table will widen the page"
+            exit 1
+          }
+          # Every image must be lazy and sized. A screenshot page carries two
+          # dozen images in one document, so an eager one costs the reader the
+          # whole page's weight before anything is usable; an unsized one makes
+          # the text jump as it arrives.
+          imgs=$(grep -o '<img' _site/*.html | wc -l)
+          lazy=$(grep -o 'loading="lazy"' _site/*.html | wc -l)
+          [ "$lazy" -eq "$imgs" ] || {
+            echo "::error::$imgs images but only $lazy are lazy; a screenshot page loads them all before it is usable"
+            exit 1
+          }
+          # A reserved box needs both dimensions, not one.
+          sized=0
+          for page in _site/*.html; do
+            case "$(basename "$page")" in tg.html) continue ;; esac
+            while IFS= read -r img; do
+              case "$img" in *width=*height=*) sized=$((sized+1)) ;; esac
+            done < <(grep -o '<img[^>]*>' "$page")
+          done
+          [ "$sized" -eq "$imgs" ] || {
+            echo "::error::$imgs images but $sized carry width and height; the rest reflow the text as they load"
+            exit 1
+          }
+          # Every page must carry the same four sidebar section headings. The
+          # count excludes the stylesheet's own selector — grep the rendered
+          # markup only, so the one CSS definition does not inflate the count and
+          # hide a sidebar whose headings were lost.
+          for page in _site/*.html; do
+            case "$(basename "$page")" in tg.html) continue ;; esac
+            markup=$(sed '/<style>/,/<\/style>/d' "$page")
+            headings=$(printf '%s' "$markup" | grep -o 'class="wiki-group-title"' | wc -l)
+            [ "$headings" -eq 4 ] || {
+              echo "::error::$page has $headings sidebar section headings, want 4"
+              exit 1
+            }
+          done
+          # The contributors page is generated from the GitHub API, so its
+          # contract is data-shaped: one card per person, each with a profile
+          # photo, a GitHub link, and a contribution count. A page that renders
+          # the prose but loses the grid would still build, and would quietly
+          # stop crediting people.
+          if [ -f _site/team.html ]; then
+            cards=$(grep -o 'class="contrib-card' _site/team.html | wc -l)
+            [ "$cards" -eq 24 ] || {
+              echo "::error::team page has $cards contributor cards, want 24 (owner + 23)"
+              exit 1
+            }
+            # Exactly one owner card: a second one would make the owner ambiguous.
+            owners=$(grep -o 'contrib-card owner' _site/team.html | wc -l)
+            [ "$owners" -eq 1 ] || {
+              echo "::error::team page has $owners owner cards, want exactly 1"
+              exit 1
+            }
+            # Every card needs a link to the person's GitHub profile — the page's
+            # whole point is that the username is real and clickable.
+            links=$(grep -o 'href="https://github.com/[a-zA-Z0-9-]*"' _site/team.html | wc -l)
+            [ "$links" -eq 24 ] || {
+              echo "::error::team page has $links GitHub profile links, want 24"
+              exit 1
+            }
+            # Avatars are the first external assets the wiki loads, so they must
+            # be lazy and sized — 24 eager avatars would block the article.
+            avatars=$(grep -o 'avatars.githubusercontent.com' _site/team.html | wc -l)
+            lazy_avatars=$(grep -o 'loading="lazy"' _site/team.html | wc -l)
+            [ "$lazy_avatars" -eq "$avatars" ] || {
+              echo "::error::$avatars avatars but $lazy_avatars are lazy"
+              exit 1
+            }
+            echo "team page ok: $cards cards ($owners owner), $links profile links, $avatars lazy avatars"
+          fi
+          echo "wiki ok: $count pages, search index present, no dead links, anchors valid, no before-shots, nav disclosure on every page, $tables tables wrapped, $imgs images lazy and sized, 4 sidebar sections on every page"
 
       - uses: actions/configure-pages@v5
         id: pages

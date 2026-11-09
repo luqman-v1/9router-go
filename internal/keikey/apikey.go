@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"strings"
 
+	"9router/proxy/internal/handlerutil"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -79,13 +80,33 @@ func Verify(plaintext, encoded string) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
-// Mask renders a non-reversible display value, e.g. "sk-a…wxyz". Short or
+// Mask renders a non-reversible display value, e.g. "sk-a••••wxyz". Short or
 // empty input collapses to "***" so no useful entropy leaks.
+//
+// The mask keeps the plaintext's exact length. Collapsing the middle to a
+// single ellipsis told the reader two things it had no business knowing: that
+// the secret was longer than twelve characters, and roughly how much longer. A
+// mask whose length tracks the thing it hides is not a mask — it is a length
+// oracle.
+//
+// The cuts are taken in runes, never bytes. A byte slice can land inside a
+// multi-byte character and leave a dangling continuation byte, and
+// encoding/json/v2 rejects invalid UTF-8 while it encodes — by then the 200
+// header is already on the wire, so the client receives a half-written body.
+// That is the defect #362 fixed for maskClientKey; this mask had the same
+// shape and is now cut the same way.
+//
+// Keeping the count also means a revealed secret and its mask occupy the same
+// width, so the dashboard row does not reflow when the operator presses reveal
+// and the buttons beside the value stay where they were.
 func Mask(plaintext string) string {
-	if len(plaintext) <= maskMinLen {
+	n := handlerutil.RuneCount(plaintext)
+	if n <= maskMinLen {
 		return MaskedUnknown
 	}
-	return plaintext[:maskPrefixLen] + "…" + plaintext[len(plaintext)-maskSuffixLen:]
+	return handlerutil.RunePrefix(plaintext, maskPrefixLen) +
+		strings.Repeat("•", n-maskPrefixLen-maskSuffixLen) +
+		handlerutil.RuneSuffix(plaintext, maskSuffixLen)
 }
 
 // decodeVerifier parses a PHC argon2id string. ok is false for anything

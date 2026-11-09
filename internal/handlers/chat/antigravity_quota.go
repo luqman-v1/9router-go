@@ -1,11 +1,12 @@
 package chat
 
 import (
+	json "9router/proxy/internal/fastjson"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/translator"
 	"bytes"
 	"context"
-	json "9router/proxy/internal/fastjson"
 	"fmt"
 	"io"
 	"math"
@@ -36,9 +37,15 @@ type AntigravityWeeklyQuota struct {
 var antigravityQuotaBaseURL = "https://cloudcode-pa.googleapis.com"
 
 var (
-	agQuotaMu       sync.RWMutex
-	agQuotaCache    = make(map[string]map[string]AntigravityModelQuota) // connectionID -> model -> quota
-	agLastRefreshAt = make(map[string]time.Time)                        // connectionID -> last refresh timestamp
+	agQuotaMu    sync.RWMutex
+	agQuotaCache = make(map[string]map[string]AntigravityModelQuota) // connectionID -> model -> quota
+	// agRosterCache mirrors OMP dynamic-models-authoritative: the account's
+	// served roster from fetchAvailableModels. Bundled catalog rows that
+	// the account does not serve must be blocked before routing, or every
+	// request to them 404s at Cloud Code.
+	agRosterMu      sync.RWMutex
+	agRosterCache   = make(map[string]map[string]struct{}) // connectionID -> served model id set
+	agLastRefreshAt = make(map[string]time.Time)           // connectionID -> last refresh timestamp
 	agInflightMu    sync.Mutex
 	agInflight      = make(map[string]chan struct{}) // connectionID -> in-flight barrier channel
 
@@ -104,6 +111,10 @@ func ClearAntigravityQuotaCache() {
 	agQuotaCache = make(map[string]map[string]AntigravityModelQuota)
 	agLastRefreshAt = make(map[string]time.Time)
 
+	agRosterMu.Lock()
+	agRosterCache = make(map[string]map[string]struct{})
+	agRosterMu.Unlock()
+
 	agWeeklyMu.Lock()
 	agWeeklyCache = make(map[string]map[string]AntigravityWeeklyQuota)
 	agWeeklyAt = make(map[string]time.Time)
@@ -138,10 +149,35 @@ func BlockAntigravityModelUntil(connectionID, model string, resetAt time.Time) {
 	log.Warn("ag_quota", "model locked until reset", "connection", shortConn, "model", model, "resetAt", resetAt.Format(time.RFC3339))
 }
 
+// IsAntigravityModelServed reports whether the account's roster lists model.
+// Absence is false only when the roster is known; an unknown roster (never
+// refreshed) lets the request through so a fresh account is not blanked by
+// a missing discovery.
+func IsAntigravityModelServed(connectionID, model string) bool {
+	agRosterMu.RLock()
+	defer agRosterMu.RUnlock()
+	roster, ok := agRosterCache[connectionID]
+	if !ok || len(roster) == 0 {
+		return true
+	}
+	if _, ok := roster[model]; ok {
+		return true
+	}
+	if canonical, exists := translator.AntigravityModelSynonyms[model]; exists {
+		if _, ok := roster[canonical]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // IsAntigravityModelBlocked reports whether connectionID has an exhausted quota for model until resetAt.
 func IsAntigravityModelBlocked(connectionID, model string) bool {
 	if connectionID == "" || model == "" {
 		return false
+	}
+	if !IsAntigravityModelServed(connectionID, model) {
+		return true
 	}
 
 	agQuotaMu.RLock()
@@ -277,8 +313,9 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "antigravity/1.0.0")
+	req.Header.Set("User-Agent", providers.AntigravityCLIUserAgent)
 	req.Header.Set("X-Client-Name", "antigravity")
+	req.Header.Set("X-Client-Version", providers.AntigravityCLIVersion)
 
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
@@ -348,6 +385,19 @@ func RefreshAntigravityQuota(ctx context.Context, client *http.Client, connectio
 
 	// Re-assert active strike blocks so optimistic quota cannot resurrect blocked pair
 	quotas = applyActiveStrikeBlocks(connectionID, quotas)
+
+	// Roster-authoritative: the discovery RPC lists what this account is
+	// actually served; bundled rows absent from it are dropped from the
+	// cache so routing never sends a request Cloud Code will 404.
+	roster := make(map[string]struct{}, len(data.Models))
+	for modelKey := range data.Models {
+		roster[modelKey] = struct{}{}
+	}
+	if len(roster) > 0 {
+		agRosterMu.Lock()
+		agRosterCache[connectionID] = roster
+		agRosterMu.Unlock()
+	}
 
 	agQuotaMu.Lock()
 	agQuotaCache[connectionID] = quotas
@@ -655,9 +705,9 @@ func FetchAntigravityWeeklyQuota(ctx context.Context, client *http.Client, acces
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "antigravity/1.0.0")
+	req.Header.Set("User-Agent", providers.AntigravityCLIUserAgent)
 	req.Header.Set("X-Client-Name", "antigravity")
-	req.Header.Set("X-Client-Version", "0.1.0")
+	req.Header.Set("X-Client-Version", providers.AntigravityCLIVersion)
 
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}

@@ -105,13 +105,20 @@ func FindHeadroomBinary() string {
 	return strings.Split(out, "\n")[0]
 }
 
-// pythonCandidates lists interpreters to probe: next to the headroom binary,
-// then full paths from the extra bin dirs, then bare names via PATH.
+// pythonCandidates lists interpreters to probe: next to the headroom binary
+// (resolving symlinks for uv/pipx virtualenvs), then full paths from the extra
+// bin dirs, then bare names via PATH.
 func pythonCandidates() []string {
 	var list []string
 	if bin := FindHeadroomBinary(); bin != "" {
+		if realBin, err := filepath.EvalSymlinks(bin); err == nil && realBin != bin {
+			realDir := filepath.Dir(realBin)
+			for _, n := range []string{"python3", "python3.13", "python3.12", "python3.11", "python"} {
+				list = append(list, filepath.Join(realDir, n))
+			}
+		}
 		dir := filepath.Dir(bin)
-		for _, n := range []string{"python3", "python3.13", "python"} {
+		for _, n := range []string{"python3", "python3.13", "python3.12", "python3.11", "python"} {
 			list = append(list, filepath.Join(dir, n))
 		}
 	}
@@ -150,6 +157,12 @@ func FindPython310() string {
 		ctx2, cancel2 := context.WithTimeout(context.Background(), pipTimeout)
 		_, err = runOutput(ctx2, candidate, "-m", "pip", "show", "headroom-ai")
 		cancel2()
+		if err == nil {
+			return candidate
+		}
+		ctx3, cancel3 := context.WithTimeout(context.Background(), pipTimeout)
+		_, err = runOutput(ctx3, candidate, "-c", "import headroom")
+		cancel3()
 		if err == nil {
 			return candidate
 		}
@@ -244,7 +257,11 @@ func GetInstalledHeadroomExtras(python string) ExtrasStatus {
 	defer cancel()
 	out, err := runOutput(ctx, python, "-m", "pip", "list", "--format=json", "--disable-pip-version-check")
 	if err != nil {
-		return ExtrasStatus{}
+		script := `import json, importlib.metadata; print(json.dumps([{"name": d.metadata["Name"], "version": d.version} for d in importlib.metadata.distributions()]))`
+		out, err = runOutput(ctx, python, "-c", script)
+		if err != nil {
+			return ExtrasStatus{}
+		}
 	}
 	return ParsePipList([]byte(out))
 }

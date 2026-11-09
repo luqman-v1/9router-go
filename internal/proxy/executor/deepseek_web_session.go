@@ -3,6 +3,7 @@ package executor
 import (
 	"strings"
 	"sync"
+	"time"
 )
 
 // Session persistence: one upstream chat session per client conversation.
@@ -19,11 +20,13 @@ import (
 // the part of the prompt the previous turn did not already send. Three
 // conditions have to hold, and each failure falls back to the plain behaviour
 // rather than guessing:
-//
-//   - The client must name its conversation. Without a client session id there
-//     is no way to tell one conversation from another on the same account, and
-//     sharing a session across two of them would put one user's context in the
-//     other's turn. No session id means no persistence.
+//   - The client must name its conversation. A client session id is the
+//     strongest name; without one, the conversation's opening message stands
+//     in for it, so a client that never sends `x-session-id` still pins.
+//     Two distinct conversations can open with the same message, so the
+//     fallback key is weaker, and the entry's idle TTL plus the tail check
+//     bound the harm: a stale chain ages out, and a divergent prompt opens a
+//     fresh session.
 //   - The turn must reuse a session no other turn is holding. Two turns in one
 //     conversation are a fork of the parent chain, so the second one gets its
 //     own session and does not touch the pinned one.
@@ -47,6 +50,12 @@ type deepSeekSessionEntry struct {
 	// busy is set while a turn holds the session. A second turn in the same
 	// conversation then starts its own session instead of forking this chain.
 	busy bool
+
+	// lastUsed is when the entry was last claimed or committed. Entries idle
+	// past deepSeekSessionIdleTTL are dropped, so a fallback key that two
+	// conversations happen to share stops leaking context once one of them
+	// goes quiet.
+	lastUsed time.Time
 }
 
 // deepSeekSessionStore keeps the pinned sessions, keyed by conversation.
@@ -59,6 +68,11 @@ type deepSeekSessionStore struct {
 // conversation, so only a pathological client count reaches it.
 const maxDeepSeekSessions = 512
 
+// deepSeekSessionIdleTTL is how long a pinned conversation survives without
+// activity. A conversation that goes quiet is done; keeping its chain would
+// only let a later conversation with the same fallback key inherit it.
+const deepSeekSessionIdleTTL = 30 * time.Minute
+
 var deepSeekSessions = &deepSeekSessionStore{items: make(map[string]*deepSeekSessionEntry)}
 
 // deepSeekSessionKey identifies one conversation.
@@ -70,11 +84,21 @@ var deepSeekSessions = &deepSeekSessionStore{items: make(map[string]*deepSeekSes
 // used to carry existed only because the request's own `stream` flag once
 // followed the client's, and a session created for one flag answered the
 // other with an empty body.
-func deepSeekSessionKey(userToken, clientSessionID string) string {
-	if userToken == "" || clientSessionID == "" {
+//
+// A client that names its conversation uses its id; one that does not falls
+// back to the fingerprint of the conversation's opening message, so the
+// anti-mute pinning holds for clients that never send a session header.
+func deepSeekSessionKey(userToken, clientSessionID, firstMessageFingerprint string) string {
+	if userToken == "" {
 		return ""
 	}
-	return userToken + "|" + clientSessionID
+	if clientSessionID != "" {
+		return userToken + "|" + clientSessionID
+	}
+	if firstMessageFingerprint != "" {
+		return userToken + "|anon|" + firstMessageFingerprint
+	}
+	return ""
 }
 
 // deepSeekSessionClaim is the outcome of asking for a conversation's session.
@@ -116,8 +140,18 @@ func (s *deepSeekSessionStore) claim(key, fullPrompt string) deepSeekSessionClai
 	if ok && entry.busy {
 		// Another turn of this conversation is mid-flight. This turn gets its
 		// own session and must not touch the pinned entry: writing it would
-		// overwrite the chain the other turn is still building.
+		// overwrite the chain the other turn is still building. The busy check
+		// comes before the idle TTL for the same reason — an entry a turn is
+		// still building must survive however long that turn runs, or the
+		// committing turn would pin a chain over this one's session.
 		return deepSeekSessionClaim{tail: fullPrompt}
+	}
+	if ok && time.Since(entry.lastUsed) > deepSeekSessionIdleTTL {
+		// The conversation went quiet and the chain is stale: a fallback key
+		// may now belong to a different conversation, so it starts fresh
+		// instead of inheriting the old thread.
+		delete(s.items, key)
+		ok = false
 	}
 	if !ok {
 		return deepSeekSessionClaim{tail: fullPrompt, pin: true}
@@ -133,6 +167,7 @@ func (s *deepSeekSessionStore) claim(key, fullPrompt string) deepSeekSessionClai
 	}
 
 	entry.busy = true
+	entry.lastUsed = time.Now()
 	parent := entry.parentMessageID
 	return deepSeekSessionClaim{
 		reuse:           true,
@@ -171,6 +206,7 @@ func (s *deepSeekSessionStore) commit(claim deepSeekSessionClaim, key, sessionID
 		sessionID:       sessionID,
 		sentPrompt:      fullPrompt,
 		parentMessageID: *responseMessageID,
+		lastUsed:        time.Now(),
 	}
 }
 
@@ -203,13 +239,20 @@ func (s *deepSeekSessionStore) holds(key, sessionID string) bool {
 	return ok && entry.sessionID == sessionID
 }
 
-// evictOldestLocked drops one entry to make room. The oldest is not tracked: the
-// store only fills on a client count no real deployment reaches, and any entry
-// dropped here costs one turn a fresh session.
+// evictOldestLocked drops the entry idle longest, so the store keeps the
+// conversations that are still going. The oldest is the smallest lastUsed;
+// an entry without one predates the field and is evicted first.
 func (s *deepSeekSessionStore) evictOldestLocked() {
-	for key := range s.items {
-		delete(s.items, key)
-		return
+	var oldestKey string
+	var oldest time.Time
+	for key, entry := range s.items {
+		if oldestKey == "" || entry.lastUsed.Before(oldest) {
+			oldestKey = key
+			oldest = entry.lastUsed
+		}
+	}
+	if oldestKey != "" {
+		delete(s.items, oldestKey)
 	}
 }
 

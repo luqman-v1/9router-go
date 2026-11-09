@@ -12,12 +12,15 @@
     selectedProviderId?: string | null
     onSelectProvider?: (id: string) => void
     onBackToOverview?: () => void
+    /** Opens the provider-import surface. */
+    onImport?: () => void
   }
 
   let {
     connections = [],
     providerNodes = [],
     onRefresh,
+    onImport = () => {},
     selectedProviderId = $bindable(null),
     onSelectProvider,
     onBackToOverview
@@ -101,6 +104,7 @@
     }}
     onToggleAll={handleToggleAll}
     onAddCustom={openAddNodeModal}
+    onImport={onImport}
   />
 {/if}
 

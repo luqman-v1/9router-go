@@ -19,6 +19,8 @@ const anthropicRateLimitPrefix = "anthropic-ratelimit-"
 var exactForwardedHeaders = map[string]bool{
 	"retry-after":    true,
 	"x-should-retry": true,
+	// Claude subscription slow-mode response state headers (OMP anthropic-slow-mode.ts).
+	"anthropic-usage-limit": true,
 }
 
 // forwardUpstreamResponseHeaders copies the retry and rate-limit headers from

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -52,7 +54,8 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 			}
 		}
 
-		wrapped, err := translator.WrapAntigravityImageRequest(prompt, "", projectID, cleanModel, aspectRatio)
+		sessID := handlerutil.GetSessionID(ctx)
+		wrapped, err := translator.WrapAntigravityImageRequest(prompt, "", projectID, cleanModel, aspectRatio, sessID)
 		if err != nil {
 			return nil, fmt.Errorf("wrap antigravity image: %w", err)
 		}
@@ -63,11 +66,27 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		if err != nil {
 			return nil, fmt.Errorf("translate to Gemini: %w", err)
 		}
+		if translator.GeminiSafetyRequested(ctx) {
+			geminiBody, err = translator.ApplyGeminiSafetySettings(geminiBody)
+			if err != nil {
+				return nil, fmt.Errorf("apply safetySettings: %w", err)
+			}
+		}
 
-		// Wrap for antigravity if needed
+		// Wrap for the lane that needs an envelope.
 		sendBody = geminiBody
-		if projectID != "" {
-			wrapped, err := translator.WrapForAntigravity(geminiBody, projectID, modelName)
+		switch {
+		case cfg.Format == "gemini-cli":
+			// Cloud Code Assist: {project, model, request} with no userId,
+			// requestType or requestId — the CLI's own shape.
+			wrapped, err := translator.WrapForGeminiCLI(geminiBody, projectID, modelName)
+			if err != nil {
+				return nil, fmt.Errorf("wrap for gemini-cli: %w", err)
+			}
+			sendBody = wrapped
+		case projectID != "":
+			sessID := handlerutil.GetSessionID(ctx)
+			wrapped, err := translator.WrapForAntigravity(geminiBody, projectID, modelName, sessID)
 			if err != nil {
 				return nil, fmt.Errorf("wrap for antigravity: %w", err)
 			}
@@ -88,16 +107,33 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		action = "streamGenerateContent?alt=sse"
 	}
 	var requestURL string
-	if projectID != "" {
+	switch {
+	case cfg.Format == "gemini-cli":
+		// The v1internal root takes the action directly; the model rides in
+		// the envelope, not the path.
+		requestURL = fmt.Sprintf("%s:%s", baseURL, action)
+	case projectID != "":
 		requestURL = fmt.Sprintf("%s/v1internal:%s", baseURL, action)
-	} else {
+	default:
 		requestURL = fmt.Sprintf("%s/v1beta/models/%s:%s", baseURL, modelName, action)
+	}
+
+	accept := "application/json"
+	if isStream {
+		accept = "text/event-stream"
 	}
 
 	headers := map[string]string{
 		"Content-Type":  "application/json",
 		"Authorization": "Bearer " + apiKey,
 		"User-Agent":    providers.AntigravityCLIUserAgent,
+		"Accept":        accept,
+	}
+	if cfg.Format == "gemini-cli" {
+		// Cloud Code Assist identifies the CLI in two more headers and answers
+		// 403 without them.
+		headers["User-Agent"] = translator.GeminiCLIUserAgent(modelName)
+		headers["X-Goog-Api-Client"] = translator.GeminiCLIApiClient
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewReader(sendBody))
@@ -110,6 +146,12 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		if isTransientGeminiTransportError(err) {
+			return nil, UpstreamFailure(http.StatusBadGateway, fmt.Sprintf("ForwardGemini antigravity transport: %v", err))
+		}
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -151,6 +193,9 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 					}
 					if resp2, err := client.Do(req2); err == nil {
 						if resp2.StatusCode == http.StatusOK {
+							if sessID := handlerutil.GetSessionID(ctx); sessID != "" {
+								translator.PurgeSessionThoughtSignatures(sessID)
+							}
 							return resp2, nil
 						}
 						errBody2, _ := io.ReadAll(io.LimitReader(resp2.Body, constants.UpstreamErrLimit))
@@ -168,6 +213,9 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 									}
 									if resp3, err := client.Do(req3); err == nil {
 										if resp3.StatusCode == http.StatusOK {
+											if sessID := handlerutil.GetSessionID(ctx); sessID != "" {
+												translator.PurgeSessionThoughtSignatures(sessID)
+											}
 											return resp3, nil
 										}
 										errBody3, _ := io.ReadAll(io.LimitReader(resp3.Body, constants.UpstreamErrLimit))
@@ -186,4 +234,39 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 	}
 	return resp, nil
+}
+
+// isTransientGeminiTransportError reports whether a client.Do failure is a
+// transient upstream fault (header timeout, HTTP/2 stream timeout, EOF)
+// that the combo layer should fail over on — mirroring upstream's
+// ANTIGRAVITY_TRANSIENT_ERROR_PATTERNS (/timeout/i) and DEFAULT_RETRY_CONFIG
+// 502 handling. A plain error here is not UpstreamError, so the combo loop
+// treats it as a terminal 502 without the RetryableStatusCodes lock/
+// exclusion path and without retrying.
+func isTransientGeminiTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"http2: timeo",
+		"timeout awaiting response headers",
+		"awaiting response headers",
+		"server closed idle connection",
+		"eof",
+		"connection reset by peer",
+		"connection refused",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }

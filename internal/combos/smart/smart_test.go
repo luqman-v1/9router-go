@@ -384,3 +384,143 @@ func TestPreview(t *testing.T) {
 		t.Errorf("models = %v, want the pin preserved", res.Models)
 	}
 }
+
+// Gap 1: a manual removal recorded under one spelling must hold under every
+// other spelling of the same model. The operator pulled the member out by hand
+// while the dashboard was showing it under the node id; the rule used to offer
+// it straight back under the display prefix, because Excluded was compared
+// against the candidate's own id only.
+func TestReconcileManualRemovalHoldsUnderEverySpelling(t *testing.T) {
+	// Production shape: the address is the prefix, the node id is AltID.
+	registry := Candidate{ID: "cutad/deepseek-v4-flash", Bare: "deepseek-v4-flash", AltID: "node-cutad/deepseek-v4-flash", Kind: KindLLM, Addable: true, Live: true}
+	other := Candidate{ID: "cutad/glm-5", Bare: "glm-5", AltID: "node-cutad/glm-5", Kind: KindLLM, Addable: true, Live: true}
+	rules := []Rule{{
+		ID: "r1", Pattern: "cutad/*", Mode: ModeGlob, Effect: EffectInclude,
+		Enabled: true, MaxMembers: 20,
+		Resolved: []string{"cutad/deepseek-v4-flash", "cutad/glm-5"},
+		Excluded: []string{"node-cutad/deepseek-v4-flash"},
+	}}
+	models, got, _, err := Reconcile([]string{"cutad/glm-5"}, rules, []Candidate{registry, other})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !slices.Equal(models, []string{"cutad/glm-5"}) {
+		t.Fatalf("models = %v, want the node-id-spelled removal to hold", models)
+	}
+	if !slices.Contains(got[0].Excluded, "node-cutad/deepseek-v4-flash") {
+		t.Errorf("excluded = %v, want the node-id spelling preserved", got[0].Excluded)
+	}
+	// A removal recorded under the addressable spelling must hold too, and the
+	// sibling model on the same node must be untouched.
+	rules2 := []Rule{{
+		ID: "r1", Pattern: "cutad/*", Mode: ModeGlob, Effect: EffectInclude,
+		Enabled: true, MaxMembers: 20,
+		Resolved: []string{"cutad/deepseek-v4-flash", "cutad/glm-5"},
+		Excluded: []string{"cutad/glm-5"},
+	}}
+	models2, _, _, err := Reconcile([]string{"cutad/deepseek-v4-flash"}, rules2, []Candidate{registry, other})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !slices.Equal(models2, []string{"cutad/deepseek-v4-flash"}) {
+		t.Fatalf("models = %v, want only glm-5 excluded", models2)
+	}
+}
+
+// Gap 2: the cap must keep the models already in the combo, then fill the rest
+// in the order the gateway would try them. Sorting the whole set and slicing
+// dropped whichever member happened to sort last, which for a fallback chain
+// meant the operator's ordering was silently discarded.
+func TestReconcileCapKeepsExistingMembersFirst(t *testing.T) {
+	candidates := []Candidate{
+		cand("ds/aaa", KindLLM, true, true),
+		cand("ds/mmm", KindLLM, true, true),
+		cand("ds/zzz", KindLLM, true, true),
+	}
+	rules := []Rule{{ID: "r1", Pattern: "ds/*", Mode: ModeGlob, Effect: EffectInclude, Enabled: true, MaxMembers: 2}}
+	// mmm is already in the combo and must survive the cut even though aaa and
+	// zzz sort around it.
+	models, _, changed, err := Reconcile([]string{"ds/mmm"}, rules, candidates)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !changed {
+		t.Fatal("a capped pass must report a change")
+	}
+	if !slices.Equal(models, []string{"ds/mmm", "ds/aaa"}) {
+		t.Fatalf("models = %v, want the existing member kept plus the first filler", models)
+	}
+	p, err := Preview([]string{"ds/mmm"}, rules, candidates)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if len(p.Rules) != 1 || !p.Rules[0].Capped {
+		t.Fatalf("rules = %+v, want Capped reported", p.Rules)
+	}
+	// With nothing in the combo yet the fill is alphabetical, and a second
+	// pass is a no-op.
+	models2, got2, _, err := Reconcile(nil, rules, candidates)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !slices.Equal(models2, []string{"ds/aaa", "ds/mmm"}) {
+		t.Fatalf("models = %v, want the first two alphabetically", models2)
+	}
+	again, _, changed2, err := Reconcile(models2, got2, candidates)
+	if err != nil {
+		t.Fatalf("Reconcile again: %v", err)
+	}
+	if changed2 {
+		t.Error("a capped pass must be idempotent")
+	}
+	if !slices.Equal(again, models2) {
+		t.Errorf("second pass changed the list: %v", again)
+	}
+}
+
+// Gap 3: a `!` in front of a `*`-separated segment negates that segment, which
+// is how "every provider except this one" is written in a single rule. Before
+// this the only way was one include rule per provider.
+func TestMatchGlobSegmentNegation(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		target  string
+		want    bool
+	}{
+		{"everything but deepseek", "*!deepseek*", "ds/glm-5", true},
+		{"everything but deepseek hits deepseek", "*!deepseek*", "ds/deepseek-chat", false},
+		{"everything but deepseek hits bare deepseek", "*!deepseek*", "deepseek-chat", false},
+		{"provider scoped except one model", "ds/*!preview*", "ds/chat", true},
+		{"provider scoped except one model hits preview", "ds/*!preview*", "ds/chat-preview", false},
+		{"negation only matches nothing", "!deepseek*", "ds/glm-5", false},
+		{"negation only matches nothing either", "!deepseek*", "ds/deepseek-chat", false},
+		{"plain glob unaffected", "ds/*", "ds/chat", true},
+		{"plain glob unaffected no match", "ds/*", "oc/chat", false},
+		{"bang inside a literal is not a negation", "ds/deep!seek*", "ds/deep!seek-chat", true},
+		{"bang inside a literal does not match without it", "ds/deep!seek*", "ds/deepseek-chat", false},
+	}
+	for _, tt := range tests {
+		if got := matchGlob(tt.pattern, tt.target); got != tt.want {
+			t.Errorf("%s: matchGlob(%q, %q) = %v, want %v", tt.name, tt.pattern, tt.target, got, tt.want)
+		}
+	}
+}
+
+// A `!` that is not at the head of a segment is a typo, not a negation, and
+// must be refused rather than silently read as one.
+func TestValidateRejectsMisplacedNegation(t *testing.T) {
+	if code, _ := Validate(Rule{Pattern: "ds/*!", Mode: ModeGlob, Effect: EffectInclude, MaxMembers: 20}); code != "INVALID_RULE_PATTERN" {
+		t.Errorf("code = %q, want INVALID_RULE_PATTERN", code)
+	}
+	if code, _ := Validate(Rule{Pattern: "*!deepseek*", Mode: ModeGlob, Effect: EffectInclude, MaxMembers: 20}); code != "" {
+		t.Errorf("a segment-head negation must be accepted, got code %q", code)
+	}
+	if code, _ := Validate(Rule{Pattern: "!deepseek*", Mode: ModeGlob, Effect: EffectInclude, MaxMembers: 20}); code != "INVALID_RULE_PATTERN" {
+		t.Errorf("a leading negation must still be refused, got code %q", code)
+	}
+	// A bang buried inside a literal is part of the model id, not a negation.
+	if code, _ := Validate(Rule{Pattern: "ds/deep!seek*", Mode: ModeGlob, Effect: EffectInclude, MaxMembers: 20}); code != "" {
+		t.Errorf("a literal bang must be accepted, got code %q", code)
+	}
+}

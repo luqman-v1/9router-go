@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/models"
 )
 
 // Resetting a key's token budget (#365).
@@ -127,6 +129,141 @@ func (r *Repo) quotaResetIDForKey(ctx context.Context, rawKey string) (int, erro
 		return int(mark.Int64), nil
 	}
 	return 0, nil
+}
+
+// apiKeyTokenUsageBatchQuery renders the one-statement page read for n keys.
+// Extracted so the query plan can be asserted on the exact text the reader
+// runs: the OR must stay answerable through idx_uh_clientkey and
+// idx_uh_apikey, or the statement degrades to a ledger scan per key again.
+func apiKeyTokenUsageBatchQuery(n int) string {
+	rows := make([]string, n)
+	for i := range rows {
+		rows[i] = "(?,?,?,?)"
+	}
+	return `WITH k(keyId, rawKey, maskedKey, mark) AS (VALUES ` + strings.Join(rows, ",") + `)
+SELECT k.keyId,
+  (SELECT COALESCE(SUM(COALESCE(u.promptTokens,0) + COALESCE(u.completionTokens,0)), 0)
+     FROM usageHistory u
+     WHERE (u.clientKey = k.maskedKey OR u.apiKey = k.rawKey OR u.apiKey = k.maskedKey)
+       AND u.id > k.mark)
+  + COALESCE((SELECT tokens FROM usageLedgerCarryover WHERE keyId = k.keyId), 0)
+  AS used
+FROM k`
+}
+
+// GetApiKeyTokenUsageForKeys returns every key's quota spend in one statement,
+// keyed by apiKey id. The listing handler pays this once per page; the per-key
+// read it replaces paid three queries and one ledger index scan per row.
+//
+// Each row's spend is computed by the same terms GetApiKeyTokenUsageByID uses
+// for a single key: the history sum over the key's three recorded spellings
+// (masked in clientKey, raw and masked in apiKey), bounded below by the key's
+// reset mark, plus its carryover. The marks are read once per page and travel
+// through the ledger statement as a CTE column, so a key reset between two
+// listings starts at zero here exactly as it does for the limiter.
+//
+// A key with no recorded spend is present in the map with 0, keeping the
+// caller's "absent == unspent" rule uniform. A schema without quotaResetId —
+// a pre-#365 database — is not an error here: the batched statement is
+// skipped and the per-key reader, which already degrades that column to a
+// lifetime sum, answers instead. So the batched read is a fast path, not a
+// contract; its failure never changes the numbers the dashboard shows.
+func (r *Repo) GetApiKeyTokenUsageForKeys(ctx context.Context, keys []*models.APIKey) (map[string]int, error) {
+	out := make(map[string]int, len(keys))
+	if r == nil || r.db == nil || len(keys) == 0 {
+		return out, nil
+	}
+
+	placeholders := make([]string, 0, len(keys))
+	ids := make([]any, 0, len(keys))
+	seen := make(map[string]bool, len(keys))
+	pending := make([]*models.APIKey, 0, len(keys))
+	for _, k := range keys {
+		if k == nil || k.ID == "" || k.Key == "" || seen[k.ID] {
+			continue
+		}
+		seen[k.ID] = true
+		out[k.ID] = 0
+		pending = append(pending, k)
+		placeholders = append(placeholders, "?")
+		ids = append(ids, k.ID)
+	}
+	if len(placeholders) == 0 {
+		return out, nil
+	}
+
+	// The reset marks are read into the page before the ledger statement, and
+	// travel through it as a CTE column: inside the history sum's WHERE a
+	// mark fetched per candidate row cost 2.5x the per-key readers on a
+	// 108k-row page, while a mark read once per page is five primary-key hits.
+	// This read is also where a pre-#365 schema — no quotaResetId column —
+	// declares itself: that failure falls back to the per-key reader, which
+	// already degrades the missing column to a lifetime sum.
+	marks := make(map[string]int64, len(ids))
+	markRows, err := r.db.QueryContext(ctx,
+		`SELECT id, `+quotaResetColumn+` FROM apiKeys WHERE id IN (`+strings.Join(placeholders, ",")+`)`,
+		ids...)
+	if err != nil {
+		return r.apiKeyTokenUsageByRow(ctx, pending, out)
+	}
+	defer func() { _ = markRows.Close() }()
+
+	for markRows.Next() {
+		var keyID string
+		var mark sql.NullInt64
+		if err := markRows.Scan(&keyID, &mark); err != nil {
+			return nil, fmt.Errorf("get api key token usage for keys: read mark: %w", err)
+		}
+		if mark.Valid {
+			marks[keyID] = mark.Int64
+		}
+	}
+	if err := markRows.Err(); err != nil {
+		return nil, fmt.Errorf("get api key token usage for keys: read mark: %w", err)
+	}
+
+	args := make([]any, 0, 4*len(pending))
+	cteRows := make([]string, 0, len(pending))
+	for _, k := range pending {
+		cteRows = append(cteRows, "(?,?,?,?)")
+		args = append(args, k.ID, k.Key, handlerutil.MaskAPIKey(k.Key), marks[k.ID])
+	}
+
+	rows, err := r.db.QueryContext(ctx, apiKeyTokenUsageBatchQuery(len(cteRows)), args...)
+	if err != nil {
+		return r.apiKeyTokenUsageByRow(ctx, pending, out)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var keyID string
+		var used sql.NullInt64
+		if err := rows.Scan(&keyID, &used); err != nil {
+			return nil, fmt.Errorf("get api key token usage for keys: scan: %w", err)
+		}
+		out[keyID] = int(used.Int64)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("get api key token usage for keys: %w", err)
+	}
+	return out, nil
+}
+
+// apiKeyTokenUsageByRow resolves a page's spend through the per-key reader,
+// preserving that reader's own degradation rules for callers on a schema the
+// batched statement cannot compile against.
+func (r *Repo) apiKeyTokenUsageByRow(ctx context.Context, keys []*models.APIKey, out map[string]int) (map[string]int, error) {
+	for _, k := range keys {
+		used, err := r.GetApiKeyTokenUsageByID(ctx, k.ID)
+		if err != nil {
+			// The per-key read already answers 0 on the errors a listing
+			// tolerates; anything else fails the page the same way a single
+			// read would have.
+			return nil, err
+		}
+		out[k.ID] = used
+	}
+	return out, nil
 }
 
 // GetApiKeyTokenUsageByID is the dashboard's reader: it resolves the key's

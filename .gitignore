@@ -46,6 +46,7 @@ stitch-screenshots/
 # with `git rm --cached` before it reaches the remote.
 .worktrees/
 .smoke-data/
+.superpowers/
 
 # A pasted browser-login credential for scripts/deepseek-web-live.sh. Never
 # belongs in a commit, and `git add -A` would otherwise stage it silently.
@@ -71,3 +72,15 @@ stitch-screenshots/
 /GEMINI.md
 /QWEN.md
 /COPILOT.md
+
+# Local agent-tooling config (not part of the product). The .claude/ and
+# .agents/ trees are already covered by the harness block above.
+.omo/run-continuation/
+.omo/omo.jsonc
+.omp/settings.json
+
+# Screenshots captured for a pull-request body. They are untracked on purpose:
+# the body's raw URLs point at the commit they were pushed in, so they keep
+# resolving without a second copy entering history. Add one here if you want it
+# kept; docs/screenshots/ is for the ones the site and README reference.
+/pr-*.png

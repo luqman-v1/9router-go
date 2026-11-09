@@ -14,9 +14,9 @@
     "dropPatterns": ["^\\s*$"],
     "collapsePatterns": [],
     "deduplicate": false,
-    "maxLines": 120,
-    "headLines": 35,
-    "tailLines": 45
+    "maxLines": 250,
+    "headLines": 120,
+    "tailLines": 60
   },
   "preserve": {
     "errorPatterns": ["error", "failed", "exception", "traceback"],

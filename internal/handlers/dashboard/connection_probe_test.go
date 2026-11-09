@@ -628,3 +628,29 @@ func TestTestConnection_NousOAuthUsesMintedAPIKey(t *testing.T) {
 		t.Errorf("body missing probe model: %s", gotBody)
 	}
 }
+
+func TestTestConnection_OpencodeQuotaLimit(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	connID := "conn-opencode-test"
+	if err := repo.CreateProviderConnectionFull(connID, "opencode", "apikey", "OpenCode Free", nil, `{"defaultModel":"deepseek-v4.1-flash-free"}`); err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+
+	errMsg := "Free usage limit reached. Free models work in OpenCode"
+	withProbeStub(t, func(call int, p capturedProbe) (int, []byte, error) {
+		return http.StatusTooManyRequests, []byte(`{"error":{"message":"` + errMsg + `","type":"FreeUsageLimitError"}}`), nil
+	})
+
+	status, body := postTestConnection(t, repo, connID)
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+	if body["valid"] != false {
+		t.Errorf("expected valid=false, got %v", body["valid"])
+	}
+	if body["error"] != errMsg {
+		t.Errorf("expected error %q, got %q", errMsg, body["error"])
+	}
+}

@@ -22,6 +22,7 @@
   import SectionMenu from './SectionMenu.svelte'
   import SummaryKpiCards from './SummaryKpiCards.svelte'
   import UsageBreakdownTable from './UsageBreakdownTable.svelte'
+  import UsageByAPIKeyTable from './UsageByAPIKeyTable.svelte'
   import RequestDetailsTab from './RequestDetailsTab.svelte'
   import UsageChart from './UsageChart.svelte'
   import ProviderTopologyCard from './ProviderTopologyCard.svelte'
@@ -136,13 +137,45 @@
   let detailsTotal = $state(0)
   let detailsPage = $state(1)
   let detailsLoading = $state(false)
-  async function loadStats(targetPeriod: Period) {
+  /**
+   * Reads the usage aggregates for a window.
+   *
+   * `views` names the breakdowns the server should build. The five-second poll
+   * passes 'none' (totals, activeRequests and recentRequests only) because that
+   * is all the KPI row and the live pulse draw, while the four per-model maps
+   * are 98% of the payload — 415 KB at 411 models, every five seconds. The
+   * breakdown table is refreshed on its own, slower schedule and keeps its
+   * previous maps in between, so a poll that omits them must merge rather than
+   * replace: replacing would blank the table for four seconds out of every
+   * five.
+   */
+  async function loadStats(targetPeriod: Period, views?: string) {
     isFetching = true
     try {
-      const res = await api.getUsageStats(targetPeriod)
+      const res = await api.getUsageStats(targetPeriod, views)
       if (res) {
         statsError = ''
-        stats = res
+        // A totals-only poll carries empty breakdown maps, so only the fields
+        // it actually fills are merged. A plain spread would blank the
+        // breakdown table for four seconds out of every five.
+        stats =
+          views === 'none'
+            ? {
+                ...stats,
+                totalRequests: res.totalRequests,
+                totalPromptTokens: res.totalPromptTokens,
+                totalCompletionTokens: res.totalCompletionTokens,
+                totalCachedTokens: res.totalCachedTokens,
+                totalCost: res.totalCost,
+                totalErrors: res.totalErrors,
+                successRate: res.successRate,
+                byProvider: res.byProvider,
+                activeRequests: res.activeRequests,
+                recentRequests: res.recentRequests,
+                errorProvider: res.errorProvider,
+                pending: res.pending,
+              }
+            : res
         if (Array.isArray(res.activeRequests)) {
           activeRequests = res.activeRequests
         }
@@ -332,12 +365,27 @@
 
     connectStream()
 
-    // Auto-poll stats every 5s so KPI counters smoothly increment in real time
+    // Auto-poll stats every 5s so KPI counters smoothly increment in real time.
+    //
+    // The poll asks for totals only. The four per-model breakdown maps are 98%
+    // of the payload (415 KB at 411 models) and the breakdown table draws one
+    // of them at a time, so rebuilding all four every five seconds was 29 MB a
+    // minute of JSON nobody was looking at. They are refreshed below on a
+    // slower tick, and on a period change (which reads everything).
     const pollTimer = setInterval(() => {
+      if (section === 'overview' && (typeof document === 'undefined' || !document.hidden)) {
+        loadStats(period, 'none')
+      }
+    }, 5000)
+
+    // The breakdown maps change slowly enough that a table four seconds stale
+    // reads the same as a fresh one, and this keeps them current without
+    // paying the per-poll cost.
+    const breakdownTimer = setInterval(() => {
       if (section === 'overview' && (typeof document === 'undefined' || !document.hidden)) {
         loadStats(period)
       }
-    }, 5000)
+    }, 30000)
 
     return () => {
       isCancelled = true
@@ -345,12 +393,17 @@
       if (reconnectTimeout) clearTimeout(reconnectTimeout)
       if (pulseTimer) clearTimeout(pulseTimer)
       clearInterval(pollTimer)
+      clearInterval(breakdownTimer)
     }
   })
   let nodeNameById = $derived.by(() => {
     const m = new Map<string, string>()
     for (const n of providerNodes || []) {
-      if (n?.id && n?.name) m.set(n.id, n.name)
+      if (n?.id && n?.name) {
+        m.set(n.id, n.name)
+        // Also index by lowercased id so lookups from lowercased keys still match
+        m.set(n.id.toLowerCase().trim(), n.name)
+      }
     }
     return m
   })
@@ -358,9 +411,13 @@
   function topologyName(providerId: string, fallbackName?: string): string {
     // The fallback is a connection name, and for OAuth connections that is
     // the account email — mask it the same way the connection lists do.
-    const nodeName = formatEmailLabel(nodeNameById.get(providerId) ?? '', $emailPrivacy)
+    const raw = (providerId || '').trim()
+    const resolvedName = nodeNameById.get(raw) ?? nodeNameById.get(raw.toLowerCase())
+    const nodeName = formatEmailLabel(resolvedName ?? '', $emailPrivacy)
     if (nodeName) return nodeName
-    const cat = PROVIDER_CATALOG.find((p) => p.id === providerId || p.alias === providerId)
+    const cat = PROVIDER_CATALOG.find(
+      (p) => p.id === raw || p.alias === raw || p.id.toLowerCase() === raw.toLowerCase() || p.alias?.toLowerCase() === raw.toLowerCase()
+    )
     if (cat?.name) return cat.name
     // Only fall back to the connection label if it isn't a numeric ID (a
     // connection label like "12") and isn't an OAuth account email: an email
@@ -383,24 +440,32 @@
     // canonical provider id, while a connection row can hold either that or
     // the published alias, so both are tried before a provider counts as idle.
     const usedInPeriod = (provId: string) => {
-      const canonical = provId.toLowerCase().trim()
+      const raw = provId.trim()
+      const canonical = raw.toLowerCase()
       const cat = PROVIDER_CATALOG.find((p) => p.id.toLowerCase() === canonical || p.alias?.toLowerCase() === canonical)
-      const keys = [canonical, cat?.id, cat?.alias].filter(Boolean) as string[]
+      // A custom node id is stored verbatim by the backend ("openai-compatible-chat-Wildy"),
+      // so `stats.byProvider` is keyed by that raw case. Check both raw and lowercased
+      // variants alongside catalog ids so mixed-case nodes aren't judged idle.
+      const keys = [raw, canonical, cat?.id, cat?.alias].filter(Boolean) as string[]
       return keys.some((k) => (stats.byProvider?.[k]?.requests || 0) > 0)
     }
     const addProvider = (provId: string, type: string, customName?: string) => {
       if (!provId) return
-      const canonical = provId.toLowerCase().trim()
+      const raw = provId.trim()
+      const canonical = raw.toLowerCase()
       const cat = PROVIDER_CATALOG.find((p) => p.id.toLowerCase() === canonical || (p.alias && p.alias.toLowerCase() === canonical))
       // A provider the registry hides stays routable, but it has no place in a
       // map that reads as "who is on the bus" — the same reason it is kept out
       // of the provider list.
       if (cat?.hidden) return
-      const targetId = cat?.id || canonical
-      if (seen.has(targetId)) return
+      // Custom compatible nodes keep the operator's casing ("...-Wildy") so
+      // node-name lookups, icon paths, and usage history agree with what the
+      // database actually stored.
+      const targetId = cat?.id || raw
+      if (seen.has(canonical) || seen.has(targetId)) return
       seen.add(targetId)
-      if (cat?.alias) seen.add(cat.alias.toLowerCase())
       seen.add(canonical)
+      if (cat?.alias) seen.add(cat.alias.toLowerCase())
 
       list.push({
         id: targetId,
@@ -636,7 +701,9 @@
           {/if}
         </Card>
       {:else if block.key === 'overview.breakdown'}
-        <UsageBreakdownTable {stats} />
+        <UsageBreakdownTable {stats} {providerNodes} />
+      {:else if block.key === 'overview.byApiKey'}
+        <UsageByAPIKeyTable {period} />
       {/if}
     {/each}
   {:else if section === 'cache'}
@@ -713,11 +780,18 @@
                   <span
                     class="mx-auto block w-1.5 h-1.5 rounded-full {req.status === 'ok' || req.status === 'success'
                       ? 'bg-success'
-                      : 'bg-red-500'}"
+                      : req.status === 'canceled'
+                        ? 'bg-text-muted'
+                        : 'bg-red-500'}"
                   ></span>
                 </td>
                 <td class="py-1.5 pr-2 min-w-0">
-                  <span class="block truncate font-mono text-[11px]" title={req.model}>{req.model}</span>
+                  <span class="inline-flex items-center gap-1 max-w-full truncate font-mono text-[11px]" title={req.loopWarning ? `⚠️ ${req.loopWarning} · ${req.model}` : req.model}>
+                    {#if req.loopWarning}
+                      <span class="text-amber-500 text-[11px] shrink-0">⚠️</span>
+                    {/if}
+                    <span class="truncate">{req.model}</span>
+                  </span>
                 </td>
                 <td class="py-1.5 pr-3 text-right whitespace-nowrap">
                   <span class="text-primary">{fmt(req.promptTokens)}↑</span>

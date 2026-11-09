@@ -142,12 +142,11 @@ func TestProcessCommandcodeEvent_Error(t *testing.T) {
 		"error": "rate limit exceeded",
 	}
 	chunks := executor.ProcessCommandcodeEvent(event, "error", state)
-	if len(chunks) == 0 {
-		t.Fatal("expected error output chunks")
+	if len(chunks) != 0 {
+		t.Errorf("error must not stream fake content, got %s", strings.Join(chunks, ""))
 	}
-	combined := strings.Join(chunks, "")
-	if !strings.Contains(combined, "rate limit exceeded") {
-		t.Errorf("expected error message, got %s", combined)
+	if state.ErrorEvent == nil {
+		t.Fatal("expected ErrorEvent recorded")
 	}
 	if !state.Finished {
 		t.Error("expected state.Finished=true after error")
@@ -167,17 +166,17 @@ func TestBuildCommandcodeChunk(t *testing.T) {
 
 func TestForwardCommandcodeRequest_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("x-command-code-version") != "0.25.7" {
+		if r.Header.Get("x-command-code-version") != "1.88.0" {
 			t.Errorf("expected x-command-code-version header, got %q", r.Header.Get("x-command-code-version"))
 		}
-		if r.Header.Get("x-cli-environment") != "cli" {
+		if r.Header.Get("x-cli-environment") != "production" {
 			t.Errorf("expected x-cli-environment header")
 		}
 		if r.Header.Get("x-session-id") == "" {
 			t.Errorf("expected x-session-id header")
 		}
-		if r.Header.Get("User-Agent") != "commandcode/0.25.7 (cli)" {
-			t.Errorf("expected User-Agent header 'commandcode/0.25.7 (cli)', got %q", r.Header.Get("User-Agent"))
+		if r.Header.Get("User-Agent") != "cli" {
+			t.Errorf("expected User-Agent header 'cli', got %q", r.Header.Get("User-Agent"))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -338,6 +337,85 @@ func TestForwardCommandcodeRequest_ImageAndReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestForwardCommandcodeRequest_NonStreamFoldsToJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"type":"text-delta","text":"commandcode response"}` + "\n" +
+			`{"type":"finish","finishReason":"stop"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
+	rec := httptest.NewRecorder()
+	// The dashboard's Test button probes with stream:false (probeFor "", Chat
+	// Completions). CommandCode always streams, so the executor must fold the
+	// frames into one chat.completion instead of answering SSE the JSON parser
+	// cannot read.
+	err := executor.ForwardCommandcode(rec, &executor.Request{
+		Client:        srv.Client(),
+		Config:        cfg,
+		APIKey:        "sk-test",
+		Body:          []byte(`{"model":"cmc/deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":false}`),
+		IsStream:      false,
+		TranslateResp: false,
+		Endpoint:      "/v1/chat/completions",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var out struct {
+		Object  string `json:"object"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("non-stream response is not JSON: %v\nbody: %s", err, rec.Body.String())
+	}
+	if out.Object != "chat.completion" {
+		t.Errorf("object = %q, want chat.completion", out.Object)
+	}
+	if len(out.Choices) == 0 {
+		t.Fatalf("expected one choice, got none")
+	}
+	if out.Choices[0].Message.Content != "commandcode response" {
+		t.Errorf("content = %q, want %q", out.Choices[0].Message.Content, "commandcode response")
+	}
+}
+
+func TestForwardCommandcodeRequest_NonStreamEmptyFoldFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"type":"start"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
+	rec := httptest.NewRecorder()
+	err := executor.ForwardCommandcode(rec, &executor.Request{
+		Client:        srv.Client(),
+		Config:        cfg,
+		APIKey:        "sk-test",
+		Body:          []byte(`{"model":"cmc/deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":false}`),
+		IsStream:      false,
+		TranslateResp: false,
+		Endpoint:      "/v1/chat/completions",
+	})
+	var ue *upstreamError
+	if !errors.As(err, &ue) || ue.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502 from a stream with no completion, got %v (err=%v)", rec.Code, err)
+	}
+}
+
 func TestBuildCommandcodeBody_DefaultsMaxTokens(t *testing.T) {
 	var capturedBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -345,7 +423,8 @@ func TestBuildCommandcodeBody_DefaultsMaxTokens(t *testing.T) {
 		_ = json.Unmarshal(data, &capturedBody)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"type":"finish","finishReason":"stop"}` + "\n"))
+		w.Write([]byte(`{"type":"text-delta","text":"ok"}` + "\n" +
+			`{"type":"finish","finishReason":"stop"}` + "\n"))
 	}))
 	defer srv.Close()
 

@@ -228,6 +228,7 @@ func TestInboundRestoresReadableBody(t *testing.T) {
 		t.Fatalf("downstream handler ran %d times, want 1", reads)
 	}
 }
+
 // TestInboundKillSwitchStopsEnforcement is the property an operator needs when
 // a false positive starts blocking real traffic: turning the switch off must
 // take effect without deleting the policy, which would take the audit trail

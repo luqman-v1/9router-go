@@ -296,9 +296,28 @@ func ForbidsDirectReplay(client *http.Client) bool {
 // disabled, for the corporate proxies and antivirus middleboxes that re-sign
 // TLS, unless STRICT_SSL forbids it.
 func DoRequest(ctx context.Context, client *http.Client, method, url string, headers map[string]string, body []byte) (*http.Response, error) {
-	return retryTransientUpstream(ctx, func() (*http.Response, error) {
-		return doRequestOnce(ctx, client, method, url, headers, body)
+	return retryTransientUpstream(ctx, func(c context.Context) (*http.Response, error) {
+		return doRequestOnce(c, client, method, url, headers, body)
 	})
+}
+
+// SendOnce sends one JSON request through client and returns whatever answer
+// arrives, whatever its status. Unlike DoRequest it never replays: no
+// transient-status retry, no direct replay after an apparent proxy failure (a
+// text/plain 403 from the endpoint itself looks like one), and no insecure-TLS
+// retry. It is for requests the router must not repeat on its own initiative,
+// such as a custom JSON business endpoint whose operation may already have
+// run. The caller owns resp.Body and decides which statuses are errors.
+func SendOnce(ctx context.Context, client *http.Client, method, url string, headers map[string]string, body []byte) (*http.Response, error) {
+	req, err := newJSONRequest(ctx, method, url, headers, body)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	resp, err := send(client, req)
+	if err != nil {
+		return nil, fmt.Errorf("upstream request: %w", err)
+	}
+	return resp, nil
 }
 
 // doRequestOnce performs a single attempt.

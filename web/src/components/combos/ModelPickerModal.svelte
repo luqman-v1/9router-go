@@ -16,10 +16,11 @@
   import { EMPTY_PICKER_EXTRAS, loadPickerExtras, type ResolvedPickerExtras } from './pickerExtras'
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   import { parseSearchQuery } from '../../lib/modelSearchFilter'
+  import { pushEscapeHandler } from '../../lib/ui/escapeStack'
 
   interface Props {
     isOpen: boolean
-    target: 'combo' | 'vision' | 'audio' | 'judge'
+    target: 'combo' | 'vision' | 'audio' | 'judge' | 'router' | 'key'
     connections?: ProviderConnection[]
     combos?: Combo[]
     providerNodes?: ProviderNode[]
@@ -68,6 +69,14 @@
         fetchedExtras = extras
       })
     }
+  })
+
+  // The picker opens over Create/Edit Combo. Registering on the shared stack
+  // makes Escape close the picker alone; without it the dialog underneath
+  // took the key and closed, leaving the picker floating over nothing.
+  $effect(() => {
+    if (!isOpen) return
+    return pushEscapeHandler(() => onClose())
   })
 
   let groups = $derived(
@@ -133,7 +142,11 @@
                 ? 'Add Audio Model'
                 : target === 'judge'
                   ? 'Select Judge Model'
-                  : 'Add Model to Combo'}
+                  : target === 'router'
+                    ? 'Select System One Router'
+                    : target === 'key'
+                      ? 'Models this key may call'
+                      : 'Add Model to Combo'}
           </h2>
         </div>
         <button
@@ -149,7 +162,11 @@
       <!-- Info bar -->
       <div class="flex items-center gap-2 mb-3 px-2.5 py-2 bg-brand-500/10 border border-brand-500/20 rounded-lg text-xs text-text-muted">
         <Info class="w-3.5 h-3.5 text-brand-500 shrink-0" />
-        <span>Click to add, click again to remove. Changes are saved automatically.</span>
+        <span>
+          {target === 'key'
+            ? 'Click to add or remove a model. The change is applied when the policy is saved.'
+            : 'Click to add, click again to remove. Changes are saved automatically.'}
+        </span>
       </div>
 
       <!-- Search -->

@@ -121,6 +121,102 @@ func TestSanitizeToolArgs(t *testing.T) {
 			t.Errorf("expected query extracted from input wrapper, got %v", m["query"])
 		}
 	})
+
+	t.Run("Read tool normalizes path aliases to file_path", func(t *testing.T) {
+		args := `{"path":"/tmp/code.go","thought":"reading file"}`
+		got := sanitizeToolArgs("Read", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["file_path"] != "/tmp/code.go" {
+			t.Errorf("expected file_path '/tmp/code.go', got %v", m["file_path"])
+		}
+		if _, ok := m["path"]; ok {
+			t.Errorf("expected path to be removed, got %v", m["path"])
+		}
+		if _, ok := m["thought"]; ok {
+			t.Errorf("expected thought to be stripped, got %v", m["thought"])
+		}
+	})
+
+	t.Run("Write tool normalizes path and contents aliases", func(t *testing.T) {
+		args := `{"filePath":"/tmp/main.go","contents":"package main","description":"saving file"}`
+		got := sanitizeToolArgs("Write", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["file_path"] != "/tmp/main.go" {
+			t.Errorf("expected file_path '/tmp/main.go', got %v", m["file_path"])
+		}
+		if m["content"] != "package main" {
+			t.Errorf("expected content 'package main', got %v", m["content"])
+		}
+		if _, ok := m["description"]; ok {
+			t.Errorf("expected description to be stripped, got %v", m["description"])
+		}
+	})
+
+	t.Run("Edit tool normalizes old/new string aliases and replaceAll", func(t *testing.T) {
+		args := `{"path":"/tmp/test.go","old_text":"foo","new_text":"bar","replaceAll":true,"explanation":"replace"}`
+		got := sanitizeToolArgs("Edit", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["file_path"] != "/tmp/test.go" {
+			t.Errorf("expected file_path '/tmp/test.go', got %v", m["file_path"])
+		}
+		if m["old_string"] != "foo" {
+			t.Errorf("expected old_string 'foo', got %v", m["old_string"])
+		}
+		if m["new_string"] != "bar" {
+			t.Errorf("expected new_string 'bar', got %v", m["new_string"])
+		}
+		if m["replace_all"] != true {
+			t.Errorf("expected replace_all true, got %v", m["replace_all"])
+		}
+		if _, ok := m["explanation"]; ok {
+			t.Errorf("expected explanation to be stripped, got %v", m["explanation"])
+		}
+	})
+
+	t.Run("Grep/Glob tool normalizes query and dir aliases and strips n", func(t *testing.T) {
+		args := `{"query":"func Test","dir":"/workspace","n":true}`
+		got := sanitizeToolArgs("Grep", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["pattern"] != "func Test" {
+			t.Errorf("expected pattern 'func Test', got %v", m["pattern"])
+		}
+		if m["path"] != "/workspace" {
+			t.Errorf("expected path '/workspace', got %v", m["path"])
+		}
+		if _, ok := m["n"]; ok {
+			t.Errorf("expected n to be stripped, got %v", m["n"])
+		}
+	})
+
+	t.Run("Monitor tool strips dummy ws when command is present", func(t *testing.T) {
+		args := `{"command":"python3 script.py","ws":{"protocols":[],"url":"wss://localhost"}}`
+		got := sanitizeToolArgs("Monitor", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["command"] != "python3 script.py" {
+			t.Errorf("expected command preserved, got %v", m["command"])
+		}
+		if _, ok := m["ws"]; ok {
+			t.Errorf("expected ws stripped to prevent 'exactly one of command or ws' validation error, got %v", m["ws"])
+		}
+	})
+
+	t.Run("Skill tool normalizes name alias to skill", func(t *testing.T) {
+		args := `{"name":"impeccable","args":"init"}`
+		got := sanitizeToolArgs("Skill", args)
+		var m map[string]any
+		json.Unmarshal([]byte(got), &m)
+		if m["skill"] != "impeccable" {
+			t.Errorf("expected skill 'impeccable', got %v", m["skill"])
+		}
+		if _, ok := m["name"]; ok {
+			t.Errorf("expected name alias removed, got %v", m["name"])
+		}
+	})
 }
 
 // --- isValidPdfPagesArg ---

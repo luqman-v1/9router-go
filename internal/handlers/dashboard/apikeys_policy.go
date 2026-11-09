@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/keikey"
 )
@@ -45,13 +46,26 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 	defer r.Body.Close()
 
 	var req struct {
-		RateLimitRPM         *int    `json:"rateLimitRpm"`
-		RateLimitTPM         *int    `json:"rateLimitTpm"`
-		RateLimitConcurrency *int    `json:"rateLimitConcurrency"`
-		TokenQuota           *int    `json:"tokenQuota"`
-		QueueTimeoutMs       *int    `json:"queueTimeoutMs"`
-		ExpiresAt            *string `json:"expiresAt"`
-		Metadata             *string `json:"metadata"`
+		RateLimitRPM         *int `json:"rateLimitRpm"`
+		RateLimitTPM         *int `json:"rateLimitTpm"`
+		RateLimitConcurrency *int `json:"rateLimitConcurrency"`
+		TokenQuota           *int `json:"tokenQuota"`
+		QueueTimeoutMs       *int `json:"queueTimeoutMs"`
+		// F-2 per-period budget. Pointers so an omitted field leaves the
+		// stored value alone; an explicit 0 / "" is a deliberate "disable this
+		// axis", which is what the dashboard sends when the operator blanks
+		// the field.
+		LimitMicros  *int64  `json:"limitMicros"`
+		LimitTokens  *int64  `json:"limitTokens"`
+		BudgetPeriod *string `json:"budgetPeriod"`
+		AlertPct     *int    `json:"alertPct"`
+		HardCutoff   *bool   `json:"hardCutoff"`
+		// ContextLimit caps the context window one request from this key may
+		// use, in tokens. It is a separate axis from the token quota, which
+		// bounds what the key may spend over its whole life.
+		ContextLimit *int    `json:"contextLimit"`
+		ExpiresAt    *string `json:"expiresAt"`
+		Metadata     *string `json:"metadata"`
 		// F-3: the reusable policy template this key inherits from. Pointer so
 		// an omitted field leaves the assignment alone; an empty string is a
 		// deliberate "detach from the plan".
@@ -109,6 +123,55 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 	queueMs, err := mergeLimit(req.QueueTimeoutMs, existing.QueueTimeoutMs)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "queueTimeoutMs: "+err.Error())
+		return
+	}
+	// Per-period budget. The same merge rule as the rate limits: an omitted
+	// field keeps what is stored, an explicit zero clears that axis. The
+	// period is validated against the four windows the engine resolves, so a
+	// typo cannot silently fall back to monthly — the engine's own fallback
+	// would otherwise make a misconfigured key look correctly configured.
+	budgetMicros := existing.LimitMicros
+	if req.LimitMicros != nil {
+		if *req.LimitMicros < 0 {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "limitMicros: must be zero or a positive amount")
+			return
+		}
+		budgetMicros = *req.LimitMicros
+	}
+	budgetTokens := existing.LimitTokens
+	if req.LimitTokens != nil {
+		if *req.LimitTokens < 0 {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "limitTokens: must be zero or a positive count")
+			return
+		}
+		budgetTokens = *req.LimitTokens
+	}
+	budgetPeriod := existing.BudgetPeriod
+	if req.BudgetPeriod != nil {
+		budgetPeriod = strings.TrimSpace(*req.BudgetPeriod)
+		if budgetPeriod != "" && !db.IsValidPlanPeriod(budgetPeriod) {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest,
+				"budgetPeriod: must be daily, weekly, monthly or total")
+			return
+		}
+	}
+	alertPct := existing.AlertPct
+	if req.AlertPct != nil {
+		if *req.AlertPct < 0 || *req.AlertPct > 100 {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "alertPct: must be between 0 and 100")
+			return
+		}
+		alertPct = *req.AlertPct
+	}
+	hardCutoff := existing.HardCutoff
+	if req.HardCutoff != nil {
+		hardCutoff = *req.HardCutoff
+	}
+	// The context ceiling. The same merge rule as the rate limits: an omitted
+	// field keeps what is stored, an explicit zero clears that axis.
+	contextLimit, err := mergeLimit(req.ContextLimit, existing.ContextLimit)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "contextLimit: "+err.Error())
 		return
 	}
 
@@ -175,6 +238,24 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// The per-period budget is written unconditionally, like the rate limits
+	// above: the handler already holds the merged value, and a conditional
+	// write would leave a cleared axis stale.
+	if err := h.Repo.SetApiKeyPeriodBudget(id, budgetMicros, budgetTokens, budgetPeriod, alertPct, hardCutoff); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// The context ceiling is written for the same reason: an explicit zero
+	// clears the axis, so a conditional write would leave it stale.
+	//
+	// On a legacy database opened without migrations, existing.ContextLimit
+	// is nil and this write fails rather than silently dropping the ceiling.
+	// In production, EnsureAdditiveColumns on boot guarantees the column
+	// exists before any policy write arrives.
+	if err := h.Repo.SetApiKeyContextLimit(r.Context(), id, contextLimit); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if req.ExpiresAt != nil {
 		if err := h.Repo.SetApiKeyExpiry(id, expiresAt); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
@@ -219,7 +300,7 @@ func (h *DashboardHandler) HandleUpdateApiKey(w http.ResponseWriter, r *http.Req
 		"planId": planID,
 		"limits": map[string]int{
 			"rpm": rpm, "tpm": tpm, "concurrency": conc,
-			"tokenQuota": quota, "queueTimeoutMs": queueMs,
+			"tokenQuota": quota, "queueTimeoutMs": queueMs, "contextLimit": contextLimit,
 		},
 	})
 }

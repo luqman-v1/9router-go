@@ -17,7 +17,7 @@ func TestApplyCodexFastMode_ByteImmutability(t *testing.T) {
 	bodyCopy := make([]byte, len(body))
 	copy(bodyCopy, body)
 
-	out, modified := ApplyCodexFastMode(body, "codex", nil)
+	out, modified := ApplyCodexFastMode(context.Background(), body, "codex", nil)
 	if !modified {
 		t.Fatal("expected modified=true")
 	}
@@ -39,7 +39,7 @@ func TestApplyCodexFastMode_ByteImmutability(t *testing.T) {
 func TestApplyCodexFastMode_PrecedenceLevel1_Fast(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o","service_tier":"fast"}`)
 	accFalse := false
-	out, modified := ApplyCodexFastMode(body, "codex", &accFalse)
+	out, modified := ApplyCodexFastMode(context.Background(), body, "codex", &accFalse)
 	if !modified {
 		t.Fatal("expected modified=true")
 	}
@@ -55,7 +55,7 @@ func TestApplyCodexFastMode_PrecedenceLevel1_Fast(t *testing.T) {
 func TestApplyCodexFastMode_PrecedenceLevel1_Standard(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o","service_tier":"standard"}`)
 	accTrue := true
-	out, modified := ApplyCodexFastMode(body, "codex", &accTrue)
+	out, modified := ApplyCodexFastMode(context.Background(), body, "codex", &accTrue)
 	if modified {
 		t.Fatal("expected modified=false, explicit standard should block account override")
 	}
@@ -79,7 +79,7 @@ func TestApplyCodexFastMode_PrecedenceLevel1_OtherValuesBlockAccount(t *testing.
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			b := []byte(tc.json)
-			out, modified := ApplyCodexFastMode(b, "codex", &accTrue)
+			out, modified := ApplyCodexFastMode(context.Background(), b, "codex", &accTrue)
 			if modified {
 				t.Fatalf("expected modified=false for service_tier %s, should block account default", tc.name)
 			}
@@ -98,7 +98,7 @@ func TestApplyCodexFastMode_PrecedenceLevel1_OtherValuesBlockAccount(t *testing.
 func TestApplyCodexFastMode_PrecedenceLevel2_SpeedFastDoesNotPromote(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o","speed":"fast"}`)
 	accFalse := false
-	out, modified := ApplyCodexFastMode(body, "codex", &accFalse)
+	out, modified := ApplyCodexFastMode(context.Background(), body, "codex", &accFalse)
 	if modified {
 		t.Fatalf("expected modified=false, speed alone must not create a service_tier: got %s", string(out))
 	}
@@ -110,7 +110,7 @@ func TestApplyCodexFastMode_PrecedenceLevel2_SpeedFastDoesNotPromote(t *testing.
 func TestApplyCodexFastMode_PrecedenceLevel3_SpeedStandard(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o","speed":"standard"}`)
 	accTrue := true
-	out, modified := ApplyCodexFastMode(body, "codex", &accTrue)
+	out, modified := ApplyCodexFastMode(context.Background(), body, "codex", &accTrue)
 	if modified {
 		t.Fatal("expected modified=false, speed standard should block account override")
 	}
@@ -122,7 +122,7 @@ func TestApplyCodexFastMode_PrecedenceLevel3_SpeedStandard(t *testing.T) {
 func TestApplyCodexFastMode_PrecedenceLevel4_SpeedCustom(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o","speed":"custom"}`)
 	accTrue := true
-	out, modified := ApplyCodexFastMode(body, "codex", &accTrue)
+	out, modified := ApplyCodexFastMode(context.Background(), body, "codex", &accTrue)
 	if modified {
 		t.Fatal("expected modified=false, speed custom should block account override")
 	}
@@ -145,7 +145,7 @@ func TestApplyCodexFastMode_PrecedenceLevel4_OtherSpeedValuesBlockAccount(t *tes
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			b := []byte(tc.json)
-			out, modified := ApplyCodexFastMode(b, "codex", &accTrue)
+			out, modified := ApplyCodexFastMode(context.Background(), b, "codex", &accTrue)
 			if modified {
 				t.Fatalf("expected modified=false for speed %s, should block account default", tc.name)
 			}
@@ -159,7 +159,7 @@ func TestApplyCodexFastMode_PrecedenceLevel4_OtherSpeedValuesBlockAccount(t *tes
 func TestApplyCodexFastMode_PrecedenceLevel5_AccountDefaultTrue(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o"}`)
 	accTrue := true
-	out, modified := ApplyCodexFastMode(body, "codex", &accTrue)
+	out, modified := ApplyCodexFastMode(context.Background(), body, "codex", &accTrue)
 	if !modified {
 		t.Fatal("expected modified=true when no client intent and account fast mode is enabled")
 	}
@@ -175,7 +175,7 @@ func TestApplyCodexFastMode_PrecedenceLevel5_AccountDefaultTrue(t *testing.T) {
 func TestApplyCodexFastMode_PrecedenceLevel5_AccountDefaultFalse(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o"}`)
 	accFalse := false
-	out, modified := ApplyCodexFastMode(body, "codex", &accFalse)
+	out, modified := ApplyCodexFastMode(context.Background(), body, "codex", &accFalse)
 	if modified {
 		t.Fatal("expected modified=false when account fast mode is false")
 	}
@@ -183,7 +183,7 @@ func TestApplyCodexFastMode_PrecedenceLevel5_AccountDefaultFalse(t *testing.T) {
 		t.Fatalf("got %s, want %s", string(out), string(body))
 	}
 
-	outNil, modifiedNil := ApplyCodexFastMode(body, "codex", nil)
+	outNil, modifiedNil := ApplyCodexFastMode(context.Background(), body, "codex", nil)
 	if modifiedNil {
 		t.Fatal("expected modified=false when account fast mode is nil")
 	}
@@ -209,7 +209,7 @@ func TestApplyCodexFastMode_NonCodexProvider(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			b := []byte(tc.body)
-			out, modified := ApplyCodexFastMode(b, tc.provider, &accTrue)
+			out, modified := ApplyCodexFastMode(context.Background(), b, tc.provider, &accTrue)
 			if modified {
 				t.Fatalf("provider %s must not be modified by ApplyCodexFastMode", tc.provider)
 			}
@@ -227,7 +227,7 @@ func TestApplyCodexFastMode_AccountRetryIsolation(t *testing.T) {
 
 	// Attempt 1: Account 1 with fast = false
 	acc1False := false
-	out1, mod1 := ApplyCodexFastMode(origReq, "codex", &acc1False)
+	out1, mod1 := ApplyCodexFastMode(context.Background(), origReq, "codex", &acc1False)
 	if mod1 {
 		t.Fatal("attempt 1: expected mod1=false")
 	}
@@ -240,7 +240,7 @@ func TestApplyCodexFastMode_AccountRetryIsolation(t *testing.T) {
 
 	// Attempt 2: Account 2 with fast = true
 	acc2True := true
-	out2, mod2 := ApplyCodexFastMode(origReq, "codex", &acc2True)
+	out2, mod2 := ApplyCodexFastMode(context.Background(), origReq, "codex", &acc2True)
 	if !mod2 {
 		t.Fatal("attempt 2: expected mod2=true")
 	}
@@ -261,7 +261,7 @@ func TestApplyCodexFastMode_AccountRetryIsolation(t *testing.T) {
 	}
 
 	// Attempt 3: Fallback to non-Codex (e.g. "openai")
-	out3, mod3 := ApplyCodexFastMode(origReq, "openai", &acc2True)
+	out3, mod3 := ApplyCodexFastMode(context.Background(), origReq, "openai", &acc2True)
 	if mod3 {
 		t.Fatal("attempt 3: non-codex fallback must not be modified")
 	}
@@ -326,5 +326,83 @@ func TestApplyCodexFastMode_TryForwardWithConnectionIntegration(t *testing.T) {
 	}
 	if reqMap["service_tier"] != "priority" {
 		t.Fatalf("expected service_tier 'priority' forwarded to upstream, got %v", reqMap["service_tier"])
+	}
+}
+
+func TestApplyCodexFastMode_ModelSuffixTier(t *testing.T) {
+	testCases := []struct {
+		name         string
+		inModel      string
+		inBodyTier   any
+		wantTier     string
+		wantModel    string
+		wantModified bool
+	}{
+		{
+			name:         "fast suffix maps to priority",
+			inModel:      "cx/gpt-6.1-sol(fast)",
+			wantTier:     "priority",
+			wantModel:    "cx/gpt-6.1-sol",
+			wantModified: true,
+		},
+		{
+			name:         "standard suffix maps to default",
+			inModel:      "openai/gpt-6.1-sol(standard)",
+			wantTier:     "default",
+			wantModel:    "openai/gpt-6.1-sol",
+			wantModified: true,
+		},
+		{
+			name:         "dual modifier xhigh,fast combines effort and tier",
+			inModel:      "cx/gpt-6.1-sol(xhigh,fast)",
+			wantTier:     "priority",
+			wantModel:    "cx/gpt-6.1-sol",
+			wantModified: true,
+		},
+		{
+			name:         "dual modifier high,standard combines effort and tier",
+			inModel:      "openai/gpt-6.1-sol(high,standard)",
+			wantTier:     "default",
+			wantModel:    "openai/gpt-6.1-sol",
+			wantModified: true,
+		},
+		{
+			name:         "model suffix takes precedence over request body tier",
+			inModel:      "cx/gpt-6.1-sol(fast)",
+			inBodyTier:   "standard",
+			wantTier:     "priority",
+			wantModel:    "cx/gpt-6.1-sol",
+			wantModified: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			reqMap := map[string]any{"model": tc.inModel}
+			if tc.inBodyTier != nil {
+				reqMap["service_tier"] = tc.inBodyTier
+			}
+			body, err := json.Marshal(reqMap)
+			if err != nil {
+				t.Fatalf("marshal error: %v", err)
+			}
+
+			out, modified := ApplyCodexFastMode(context.Background(), body, "openai", nil)
+			if modified != tc.wantModified {
+				t.Fatalf("modified = %v, want %v", modified, tc.wantModified)
+			}
+
+			var res map[string]any
+			if err := json.Unmarshal(out, &res); err != nil {
+				t.Fatalf("unmarshal output: %v", err)
+			}
+
+			if res["model"] != tc.wantModel {
+				t.Fatalf("model = %v, want %v", res["model"], tc.wantModel)
+			}
+			if res["service_tier"] != tc.wantTier {
+				t.Fatalf("service_tier = %v, want %v", res["service_tier"], tc.wantTier)
+			}
+		})
 	}
 }

@@ -127,6 +127,21 @@ func applyKeyOverrides(out *EffectivePolicy, key *models.APIKey) {
 	if v := derefInt(key.TokenQuota); v > 0 {
 		out.TokenQuota = v
 	}
+	if key.LimitMicros > 0 {
+		out.LimitMicros = key.LimitMicros
+	}
+	if key.LimitTokens > 0 {
+		out.LimitTokens = key.LimitTokens
+	}
+	if key.BudgetPeriod != "" {
+		out.Period = key.BudgetPeriod
+	}
+	if key.AlertPct > 0 {
+		out.AlertPct = key.AlertPct
+	}
+	if key.HardCutoff {
+		out.HardCutoff = true
+	}
 }
 
 // derefInt reads a nullable int column, treating nil as 0 ("not set").

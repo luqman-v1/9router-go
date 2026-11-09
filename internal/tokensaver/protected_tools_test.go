@@ -20,6 +20,9 @@ func TestProtectedToolNamesAreCaseInsensitive(t *testing.T) {
 		"Write", "write",
 		"patch", "PATCH", "Patch",
 		"anchor", "ANCHOR",
+		"glob", "GLOB", "Glob",
+		"view", "VIEW",
+		"list_dir", "LIST_DIR",
 	} {
 		if !isProtectedTool(name) {
 			t.Errorf("isProtectedTool(%q) = false, want true", name)

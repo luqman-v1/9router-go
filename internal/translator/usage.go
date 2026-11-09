@@ -21,7 +21,44 @@ var (
 	// sessionKey, until the continuation chunk arrives. Some upstreams (opencode
 	// free-tier) split a single JSON object across multiple SSE events.
 	pendingJSON = make(map[string]pendingFragment)
+	// promptEstimates holds a body-size token estimate per sessionKey, seeded
+	// before the stream starts. It stands in for the client-facing input
+	// token count when the upstream never reports usage at all (a chat
+	// upstream that ignores stream_options.include_usage), so the client's
+	// context meter still moves and auto-compact can fire. Estimates are not
+	// usage: they never enter state.Usage or the analytics path.
+	promptEstimates = make(map[string]promptEstimate)
 )
+
+type promptEstimate struct {
+	tokens    int
+	createdAt time.Time
+}
+
+// SeedStreamPromptEstimate records the request-body token estimate for a
+// session before its first chunk is translated. A non-positive estimate is
+// "unknown" and is ignored.
+func SeedStreamPromptEstimate(sessionKey string, tokens int) {
+	if sessionKey == "" || tokens <= 0 {
+		return
+	}
+	statesMu.Lock()
+	defer statesMu.Unlock()
+	promptEstimates[sessionKey] = promptEstimate{tokens: tokens, createdAt: time.Now()}
+}
+
+// promptEstimateFor returns and forgets the seeded estimate for a session.
+func promptEstimateFor(sessionKey string) int {
+	if sessionKey == "" {
+		return 0
+	}
+	est, ok := promptEstimates[sessionKey]
+	if !ok {
+		return 0
+	}
+	delete(promptEstimates, sessionKey)
+	return est.tokens
+}
 
 // maxPendingJSON bounds a single buffered fragment so a hostile/endless
 // stream cannot grow the map without limit.
@@ -61,7 +98,7 @@ func isTruncatedJSON(err error) bool {
 }
 
 func pruneStaleStatesLocked() {
-	if len(states) < 50 && len(pendingJSON) < 50 {
+	if len(states) < 50 && len(pendingJSON) < 50 && len(promptEstimates) < 50 {
 		return
 	}
 	now := time.Now()
@@ -76,6 +113,11 @@ func pruneStaleStatesLocked() {
 			delete(pendingJSON, k)
 		}
 	}
+	for k, e := range promptEstimates {
+		if e.createdAt.IsZero() || now.Sub(e.createdAt) > 10*time.Minute {
+			delete(promptEstimates, k)
+		}
+	}
 }
 
 // GetStreamUsage returns the accumulated usage for a stream session and removes it.
@@ -84,6 +126,7 @@ func GetStreamUsage(sessionKey string) *OpenAIUsage {
 	defer statesMu.Unlock()
 	pruneStaleStatesLocked()
 	delete(pendingJSON, sessionKey)
+	delete(promptEstimates, sessionKey)
 	if state, ok := states[sessionKey]; ok {
 		delete(states, sessionKey)
 		if state.Usage != nil {
@@ -101,6 +144,7 @@ func ClearStreamState(sessionKey string) {
 	pruneStaleStatesLocked()
 	delete(states, sessionKey)
 	delete(pendingJSON, sessionKey)
+	delete(promptEstimates, sessionKey)
 }
 
 // Global last-usage capture for the non-streaming path.
@@ -207,4 +251,26 @@ func GetAndClearUsage(ctx context.Context) *OpenAIUsage {
 		}
 	}
 	return GetAndClearLastUsage()
+}
+
+// promptEstimateCtxKey carries the request-body token estimate from the
+// handler that owns the request bytes to whichever relay seeds the stream
+// session (handlers/chat/forward.go and the executor relays).
+type promptEstimateCtxKey struct{}
+
+// WithPromptEstimate stores a pre-computed input-token estimate on the request
+// context. Zero means "no estimate" and is the natural zero value.
+func WithPromptEstimate(ctx context.Context, tokens int) context.Context {
+	return context.WithValue(ctx, promptEstimateCtxKey{}, tokens)
+}
+
+// PromptEstimateFromContext returns the seeded estimate, or 0 when none.
+func PromptEstimateFromContext(ctx context.Context) int {
+	if ctx == nil {
+		return 0
+	}
+	if v, ok := ctx.Value(promptEstimateCtxKey{}).(int); ok {
+		return v
+	}
+	return 0
 }

@@ -270,137 +270,49 @@ func PrefetchInlineImages(ctx context.Context, body []byte, opts PrefetchOptions
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
-	client := opts.Client
-	if client == nil {
-		client = newPrefetchClient(opts.AllowLoopback)
-	}
+	client := prefetchClientFor(opts)
 
-	budget := opts.MaxImages
-	rewritten := false
+	// Collect the remote URLs in document order, fetch them concurrently, then
+	// apply the rewrites in the same order. Charging the budget at apply time
+	// keeps a refusal from spending it, exactly as the sequential walk did.
+	var works []imageWork
 	for _, item := range items {
-		changed := false
-		walkImageBlocks(ctx, client, opts, item, &budget, &changed)
-		if changed {
-			rewritten = true
+		collectImageWork(item, &works)
+	}
+	if len(works) == 0 {
+		return body
+	}
+	results := fetchImagesParallel(ctx, client, opts, workURLs(works))
+
+	rewritten := false
+	budget := opts.MaxImages
+	for i, res := range results {
+		if !res.ok || budget <= 0 {
+			continue
 		}
+		works[i].apply(res.dataURL)
+		budget--
+		rewritten = true
 	}
 	if !rewritten {
 		return body
 	}
 
-	encoded, err := json.Marshal(items)
+	encoded, err := json.Marshal(items, json.Deterministic(true))
 	if err != nil {
 		return body
 	}
 	raw[key] = jsontext.Value(encoded)
-	out, err := json.Marshal(raw)
+	out, err := json.Marshal(raw, json.Deterministic(true))
 	if err != nil {
 		return body
 	}
 	return out
 }
 
-// walkImageBlocks rewrites image blocks inside node["content"] (and nested
-// tool_result content arrays) in both wire shapes.
-func walkImageBlocks(ctx context.Context, client *http.Client, opts PrefetchOptions, node map[string]any, budget *int, changed *bool) {
-	content, ok := node["content"]
-	if !ok {
-		return
-	}
-	blocks, ok := content.([]any)
-	if !ok {
-		return
-	}
-	for _, bRaw := range blocks {
-		block, ok := bRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-		switch block["type"] {
-		case "image_url":
-			rewriteOpenAIImage(ctx, client, opts, block, budget, changed)
-		case "input_image":
-			// Responses wire: the URL sits directly on the block, not nested
-			// under image_url, and file_id references are not URLs to fetch.
-			rewriteResponsesImage(ctx, client, opts, block, budget, changed)
-		case "image":
-			rewriteClaudeImage(ctx, client, opts, block, budget, changed)
-		case "tool_result":
-			// Claude tool results can carry their own content array.
-			walkImageBlocks(ctx, client, opts, block, budget, changed)
-		}
-	}
-}
-
-// rewriteOpenAIImage handles both shapes OpenAI accepts for `image_url`: the
-// object form ({"url": "…"}) and the bare string. The string form is short
-// enough to look like a typo and is the shape most clients emit, so skipping it
-// left the remote URL in place for exactly the requests that would have used
-// it.
-func rewriteOpenAIImage(ctx context.Context, client *http.Client, opts PrefetchOptions, block map[string]any, budget *int, changed *bool) {
-	switch iu := block["image_url"].(type) {
-	case string:
-		if !isRemoteImageURL(iu) {
-			return
-		}
-		if dataURL, ok := prefetchOne(ctx, client, opts, iu, budget); ok {
-			block["image_url"] = dataURL
-			*changed = true
-		}
-	case map[string]any:
-		raw, ok := iu["url"].(string)
-		if !ok || !isRemoteImageURL(raw) {
-			return
-		}
-		if dataURL, ok := prefetchOne(ctx, client, opts, raw, budget); ok {
-			iu["url"] = dataURL
-			*changed = true
-		}
-	}
-}
-
-func rewriteResponsesImage(ctx context.Context, client *http.Client, opts PrefetchOptions, block map[string]any, budget *int, changed *bool) {
-	raw, ok := block["image_url"].(string)
-	if !ok || !isRemoteImageURL(raw) {
-		return
-	}
-	dataURL, ok := prefetchOne(ctx, client, opts, raw, budget)
-	if !ok {
-		return
-	}
-	block["image_url"] = dataURL
-	*changed = true
-}
-
-func rewriteClaudeImage(ctx context.Context, client *http.Client, opts PrefetchOptions, block map[string]any, budget *int, changed *bool) {
-	src, ok := block["source"].(map[string]any)
-	if !ok {
-		return
-	}
-	srcType, _ := src["type"].(string)
-	if srcType != "url" {
-		return
-	}
-	raw, ok := src["url"].(string)
-	if !ok || !isRemoteImageURL(raw) {
-		return
-	}
-	dataURL, ok := prefetchOne(ctx, client, opts, raw, budget)
-	if !ok {
-		return
-	}
-	media, b64, found := strings.Cut(strings.TrimPrefix(dataURL, "data:"), ";base64,")
-	if !found {
-		return
-	}
-	block["source"] = map[string]any{
-		"type":       "base64",
-		"media_type": media,
-		"data":       b64,
-	}
-	*changed = true
-}
-
+// isRemoteImageURL reports whether raw points at a remote http(s) host — the
+// only form the prefetch rewrites. Inline data: URLs and provider file ids are
+// already usable as-is.
 func isRemoteImageURL(raw string) bool {
 	lower := strings.ToLower(raw)
 	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")

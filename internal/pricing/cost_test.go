@@ -32,6 +32,26 @@ func TestGetPricingForModel_Parity(t *testing.T) {
 			found: true,
 		},
 		{
+			name: "mistral large", provider: "mistral", model: "mistral-large-latest",
+			want:  ModelPricing{InputPer1M: 2, OutputPer1M: 6},
+			found: true,
+		},
+		{
+			name: "mistral codestral", provider: "mistral", model: "codestral-latest",
+			want:  ModelPricing{InputPer1M: 0.3, OutputPer1M: 0.9},
+			found: true,
+		},
+		{
+			name: "mistral medium", provider: "mistral", model: "mistral-medium-latest",
+			want:  ModelPricing{InputPer1M: 2.7, OutputPer1M: 8.1},
+			found: true,
+		},
+		{
+			name: "mistral embed", provider: "mistral", model: "mistral-embed",
+			want:  ModelPricing{InputPer1M: 0.1, OutputPer1M: 0},
+			found: true,
+		},
+		{
 			// The vendor prefix is stripped before the canonical lookup.
 			name: "vendor-prefixed id", provider: "cline", model: "deepseek/deepseek-v4.1-flash",
 			want:  ModelPricing{InputPer1M: 0.14, OutputPer1M: 0.28, CachedPer1M: 0.0028, ReasoningPer1M: 0.28, CacheCreationPer1M: 0.14},
@@ -203,5 +223,36 @@ func TestPricingTablesPopulated(t *testing.T) {
 	}
 	if providerEntries < 100 {
 		t.Errorf("providerPricing has %d entries, expected the full upstream table", providerEntries)
+	}
+}
+
+func TestCommandCodePricing_OMPParity(t *testing.T) {
+	cases := []struct {
+		model string
+		in    float64
+		out   float64
+		cache float64
+	}{
+		{"claude-sonnet-5", 2.0, 10.0, 0.2},
+		{"deepseek/deepseek-v4-pro", 0.66, 1.98, 0.022},
+		{"Qwen/Qwen3.8-Flash", 0.16, 0.47, 0.016},
+		{"typesafe/jev", 0.042, 0.0, 0.0},
+	}
+
+	for _, c := range cases {
+		p, ok := GetPricingForModel("commandcode", c.model)
+		if !ok {
+			t.Fatalf("model %s missing from commandcode pricing", c.model)
+		}
+		if p.InputPer1M != c.in || p.OutputPer1M != c.out || p.CachedPer1M != c.cache {
+			t.Errorf("%s rates = (in:%v, out:%v, cache:%v), want (%v, %v, %v)",
+				c.model, p.InputPer1M, p.OutputPer1M, p.CachedPer1M, c.in, c.out, c.cache)
+		}
+	}
+
+	// Alias cmc resolves same rates
+	p, ok := GetPricingForModel("cmc", "claude-sonnet-5")
+	if !ok || p.InputPer1M != 2.0 {
+		t.Errorf("cmc alias failed to resolve pricing")
 	}
 }

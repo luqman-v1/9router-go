@@ -23,6 +23,17 @@ type StreamState struct {
 	ToolArgBuffers       map[int]string
 	FinishReason         string
 	Usage                *OpenAIUsage
+	// TerminalSent records that the terminal message_delta + message_stop
+	// pair actually went out. FinishReason alone does not imply it: with
+	// stream_options.include_usage the usage chunk arrives AFTER the finish
+	// chunk, so the terminal is deferred until the usage is known (or the
+	// stream ends) — see TranslateOpenAIToClaudeStreamSession.
+	TerminalSent bool
+	// PromptEstimate is the request-body token estimate popped from
+	// SeedStreamPromptEstimate when message_start went out. It is consulted
+	// by the terminal usage block only when the upstream never reported
+	// prompt tokens; it never enters Usage or the analytics path.
+	PromptEstimate int
 }
 
 // ToolCallState holds partial tool call info during streaming.
@@ -256,8 +267,8 @@ type ClaudeToolChoice struct {
 	// emit at most one tool call per turn. It is the counterpart of OpenAI's
 	// parallel_tool_calls:false (parity with decolua/9router#4581). Plain bool
 	// with omitempty: only an explicit true is worth putting on the wire.
-	DisableParallelToolUse bool `json:"disable_parallel_tool_use,omitempty"`
-	Name string `json:"name,omitempty"`
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
+	Name                   string `json:"name,omitempty"`
 }
 
 // ClaudeThinking represents the thinking configuration in a Claude request.
@@ -295,9 +306,9 @@ type OpenAIRequest struct {
 	ToolChoice          any             `json:"tool_choice,omitempty"`
 	// ParallelToolCalls carries OpenAI's single-tool-call policy. Pointer so an
 	// absent field stays absent while an explicit false still serialises.
-	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
-	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
-	Stream              bool            `json:"stream,omitempty"`
+	ParallelToolCalls *bool  `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort   string `json:"reasoning_effort,omitempty"`
+	Stream            bool   `json:"stream,omitempty"`
 }
 
 // OpenAIMessage is a single message in OpenAI format.

@@ -1,9 +1,10 @@
 package chat
 
 import (
-	"context"
-	"time"
 	"9router/proxy/internal/handlerutil"
+	"context"
+	"net/http"
+	"time"
 
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
@@ -16,6 +17,11 @@ import (
 // The dashboard reads the database, never this cache, so the TTL only governs
 // write volume: a value dropped early is re-derived from the next 410.
 const deprecationRecordTTL = time.Minute
+
+// cooldownRecordTTL bounds how long a cooldown is cached in memory after a
+// write, so a burst of failures at one model does not hammer the kv table with
+// identical cooldown upserts within a single request window.
+const cooldownRecordTTL = time.Minute
 
 // recordModelDeprecation files what a 410 told us about a model, so the
 // dashboard can badge it and an operator can see which combo entries point at
@@ -68,6 +74,61 @@ func (h *ChatHandler) recordModelDeprecation(ctx context.Context, provider, mode
 	log.Info("deprecation", "model retired upstream", "provider", provider, "model", model, "successor", dep.Successor)
 }
 
+// recordModelCooldown files a transient cooldown for a model after a live
+// failure, so the dashboard can badge it as temporarily unavailable instead of
+// permanently retired.
+//
+// Failures are counted per business request (via the per-context
+// FallbackAttemptRecorder), not per connection attempt: one request that walks
+// three failed accounts records one cooldown, not three. The condition is
+// written in positive form (staticcheck QF1001): record a cooldown when the
+// error is a gateway fault (500–504), a 404, or a model-scoped 429.
+func (h *ChatHandler) recordModelCooldown(ctx context.Context, provider, model, connID string, ue *upstreamError) {
+	if handlerutil.IsProbeContext(ctx) {
+		return
+	}
+	if h.Repo == nil || provider == "" || model == "" || ue == nil {
+		return
+	}
+
+	isGatewayFault := ue.StatusCode >= 500 && ue.StatusCode <= 504
+	errorText := extractErrorText(ue.Body)
+	shouldRecord := ue.StatusCode == http.StatusNotFound ||
+		(ue.StatusCode == http.StatusTooManyRequests && isModelScopedError(ue.StatusCode, errorText, model, ue.Body)) ||
+		isGatewayFault
+	if !shouldRecord {
+		return
+	}
+
+	// Always park the failed connection for the cooldown window so this request
+	// fails over to the next account/model. One request that walks three failed
+	// accounts parks all three — that is the failover working as intended.
+	if connID != "" {
+		lockKey := canonicalLockModel(provider, model)
+		cooldownSec := providers.ModelCooldownSec
+		if err := h.Repo.LockConnectionModel(connID, lockKey, cooldownSec, 0); err != nil {
+			log.Warn("cooldown", "model lock failed", "conn", connID, "provider", provider, "model", model, "error", err)
+		}
+		if lockKey != model {
+			_ = h.Repo.LockConnectionModel(connID, model, cooldownSec, 0)
+		}
+	}
+
+	// Count model failures per business request, not per connection attempt:
+	// the TTL cache dedups repeated failures at the same model within one
+	// request window, so one request that walks three failed accounts writes a
+	// single cooldown badge, not three.
+	if !h.cooldownDue(provider, model) {
+		return
+	}
+	if err := h.Repo.RecordModelCooldown(provider, model); err != nil {
+		log.Warn("cooldown", "record failed", "provider", provider, "model", model, "error", err)
+		return
+	}
+	h.markCooldownWritten(provider, model)
+	log.Info("cooldown", "model cooling down", "provider", provider, "model", model, "for", providers.ModelCooldownSec, "seconds")
+}
+
 // modelDeprecationCooldownSec is how long a connection stays out of rotation
 // for one provider/model pair after upstream declared the model gone. It is
 // long enough that a client retrying the same dead model does not keep paying
@@ -94,6 +155,27 @@ func (h *ChatHandler) markDeprecationWritten(provider, model string) {
 		h.deprecationCache = make(map[string]time.Time)
 	}
 	h.deprecationCache[providers.DeprecationKey(provider, model)] = time.Now()
+}
+
+// cooldownDue reports whether enough time has passed since this
+// provider/model pair was last cooled down.
+func (h *ChatHandler) cooldownDue(provider, model string) bool {
+	h.deprecationMu.Lock()
+	defer h.deprecationMu.Unlock()
+	key := providers.DeprecationKey(provider, model)
+	writtenAt, seen := h.cooldownCache[key]
+	return !seen || time.Since(writtenAt) >= cooldownRecordTTL
+}
+
+// markCooldownWritten stamps the write so the next failure inside the TTL skips
+// the database.
+func (h *ChatHandler) markCooldownWritten(provider, model string) {
+	h.deprecationMu.Lock()
+	defer h.deprecationMu.Unlock()
+	if h.cooldownCache == nil {
+		h.cooldownCache = make(map[string]time.Time)
+	}
+	h.cooldownCache[providers.DeprecationKey(provider, model)] = time.Now()
 }
 
 // clearModelDeprecation forgets a recorded deprecation after the model served a

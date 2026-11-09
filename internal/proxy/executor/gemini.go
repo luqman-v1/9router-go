@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bytes"
 	"context"
 	json "encoding/json/v2"
 	"fmt"
@@ -16,64 +15,38 @@ import (
 	"9router/proxy/internal/translator"
 )
 
-// ForwardGemini forwards to gemini-native endpoints (antigravity).
-func ForwardGemini(w http.ResponseWriter, req *Request) error {
-	ctx := req.Ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	resp, err := proxy.ForwardGemini(ctx, req.Client, req.Config, req.APIKey, string(req.Body), req.IsStream, req.ProjectID, req.ModelName)
-	if err != nil {
-		return fmt.Errorf("ForwardGemini: %w", err)
-	}
-
-	var bodyCloser io.Closer = resp.Body
-	defer func() {
-		if bodyCloser != nil {
-			bodyCloser.Close()
-		}
-	}()
-
-	if req.ProjectID != "" {
-		raw, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("read response body: %w", err)
-		}
-		unwrapped := translator.UnwrapAntigravityResponse(raw)
-		if req.IsStream {
-			return geminiStream(w, io.NopCloser(bytes.NewReader(unwrapped)), req.Ctx)
-		}
-		return geminiNonStream(w, bytes.NewReader(unwrapped))
-	}
-	if req.IsStream {
-		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, 0, "gemini")
-		bodyCloser = stallReader
-		return geminiStream(w, stallReader, req.Ctx)
-	}
-	return geminiNonStream(w, resp.Body)
-}
-
-func geminiStream(w http.ResponseWriter, upstream io.Reader, ctx context.Context) error {
+// geminiStream replays a live Gemini-native SSE body as OpenAI chunks.
+// Served from here by ForwardOpencodeGo's gemini route; the antigravity path
+// streams through the chat handler instead (forwardGeminiNativeRequest),
+// which unwraps the {"response": ...} envelope per frame.
+func geminiStream(w http.ResponseWriter, upstream io.Reader, ctx context.Context, req *Request) error {
 	hw := proxy.NewHeartbeatWriter(ctx, w, 0)
 	defer hw.Close()
 	flusher := proxy.WriteSSEHeaders(hw)
-	firstLine := true
+	startTime := time.Time{}
+	if req != nil && !req.StartTime.IsZero() {
+		startTime = req.StartTime
+	}
 	state := &translator.GeminiStreamState{SessionID: handlerutil.GetSessionID(ctx)}
 	return proxy.ScanStream(upstream, func(chunk []byte) {
-		if firstLine {
-			firstLine = false
-			return
-		}
 		cs := strings.TrimSpace(string(chunk))
-		if cs == "" || cs == "data: [DONE]" {
+		if cs == "" || cs == "[DONE]" || cs == "data: [DONE]" {
 			return
 		}
-		if !strings.HasPrefix(cs, "data: ") {
-			return
+		body := chunk
+		if strings.HasPrefix(cs, "data:") {
+			body = []byte(strings.TrimSpace(strings.TrimPrefix(cs, "data:")))
 		}
-		oc, err := translator.TranslateGeminiChunkToOpenAI([]byte(strings.TrimPrefix(cs, "data: ")), state)
+		oc, err := translator.TranslateGeminiChunkToOpenAI(body, state)
 		if err != nil || oc == nil {
 			return
+		}
+		if startTime.IsZero() {
+			startTime = time.Now()
+		}
+		markTTFT(req, startTime)
+		if req != nil && req.ResponseBuf != nil {
+			_, _ = req.ResponseBuf.Write(oc)
 		}
 		hw.Write(oc)
 		hw.Write([]byte("\n\n"))

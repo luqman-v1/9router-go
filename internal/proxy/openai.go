@@ -37,6 +37,10 @@ func ForwardOpenAI(ctx context.Context, client *http.Client, cfg *providers.Prov
 	if !hasHeaderFold(headers, "Accept") {
 		headers["Accept"] = "*/*"
 	}
+	// The operator's Custom Headers are applied last so they also win over the
+	// defaults set just above, which is the order upstream uses
+	// (open-sse/executors/base.js:132).
+	headers = providers.ApplyHeaderOverrides(headers, cfg.HeaderOverrides)
 	resp, err := DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
 	if err != nil {
 		return nil, fmt.Errorf("forward to %s: %w", cfg.BaseURL, err)

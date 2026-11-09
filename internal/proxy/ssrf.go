@@ -25,6 +25,8 @@ var (
 
 type allowLoopbackKey struct{}
 
+type allowPrivateNetworkingKey struct{}
+
 // WithAllowLoopback returns a child context that permits connections to loopback
 // addresses (127.0.0.1, ::1, localhost). Used for local-by-design providers
 // like ollama-local.
@@ -38,6 +40,27 @@ func IsLoopbackAllowed(ctx context.Context) bool {
 		return false
 	}
 	v, _ := ctx.Value(allowLoopbackKey{}).(bool)
+	return v
+}
+
+// WithAllowPrivateNetworking returns a child context that permits connections
+// to private/reserved addresses for that request only. It is the per-connection
+// opt-in for a connection pointed at a local gateway, behind a Tailscale
+// overlay, or on a LAN peer: the flag rides on the request context, so both
+// the plain forwarder and every executor apply it at dial time. It leaves the
+// process-wide ALLOW_PRIVATE_NETWORKING default untouched for anything that
+// is not a connection.
+func WithAllowPrivateNetworking(ctx context.Context) context.Context {
+	return context.WithValue(ctx, allowPrivateNetworkingKey{}, true)
+}
+
+// IsPrivateNetworkingAllowedFor reports whether the request carries the
+// per-connection private-networking opt-in.
+func IsPrivateNetworkingAllowedFor(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(allowPrivateNetworkingKey{}).(bool)
 	return v
 }
 
@@ -195,6 +218,9 @@ func newSafeDialerForProxy(allow *proxyAllowlist) *net.Dialer {
 		KeepAlive: 30 * time.Second,
 		ControlContext: func(ctx context.Context, network, address string, c syscall.RawConn) error {
 			if IsPrivateNetworkingAllowed() {
+				return nil
+			}
+			if IsPrivateNetworkingAllowedFor(ctx) {
 				return nil
 			}
 			host, _, err := net.SplitHostPort(address)

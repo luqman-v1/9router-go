@@ -109,7 +109,7 @@ func RenewDeepSeekCredential(ctx context.Context, repo *db.Repo, connectionID st
 		return nil, errors.New("renew the DeepSeek credential: the browser produced no userToken")
 	}
 
-	if err := deepSeekStoreCredential(repo, conn, result); err != nil {
+	if err := deepSeekStoreCredential(ctx, repo, conn, result); err != nil {
 		return nil, err
 	}
 	log.Info("deepseek-web", "renewed the credential", "conn", connectionID)
@@ -126,7 +126,7 @@ func RenewDeepSeekCredential(ctx context.Context, repo *db.Repo, connectionID st
 // whole thing is written back. Only the data column is written: a full-row
 // update would write back the name, priority and active flag the row had
 // when it was read, which reverts a change the operator just made.
-func deepSeekStoreCredential(repo *db.Repo, conn *models.ProviderConnection, result *browserlogin.DeepSeekResult) error {
+func deepSeekStoreCredential(ctx context.Context, repo *db.Repo, conn *models.ProviderConnection, result *browserlogin.DeepSeekResult) error {
 	raw := map[string]any{}
 	if conn.Data != "" {
 		if err := json.Unmarshal([]byte(conn.Data), &raw); err != nil {
@@ -153,6 +153,15 @@ func deepSeekStoreCredential(repo *db.Repo, conn *models.ProviderConnection, res
 	}
 	if err := repo.UpdateConnectionData(conn.ID, string(encoded)); err != nil {
 		return fmt.Errorf("renew the DeepSeek credential: store the new credential: %w", err)
+	}
+	// The old credential was what got the account parked; a renewal that left
+	// the park in place would keep the freshly authenticated row out of
+	// rotation for the rest of the old cooldown.
+	if err := repo.ClearConnectionRateLimit(conn.ID); err != nil {
+		return fmt.Errorf("renew the DeepSeek credential: clear the old cooldown: %w", err)
+	}
+	if err := repo.ClearConnectionModelLocks(ctx, conn.ID); err != nil {
+		return fmt.Errorf("renew the DeepSeek credential: clear the old model locks: %w", err)
 	}
 	return nil
 }

@@ -308,6 +308,20 @@ func TestExtractSessionID(t *testing.T) {
 			t.Errorf("expected empty string, got %s", got)
 		}
 	})
+
+	t.Run("extracts x-opencode-session and affinity headers", func(t *testing.T) {
+		req1 := httptest.NewRequest(http.MethodPost, "/", nil)
+		req1.Header.Set("x-opencode-session", "ses_opencode_12345")
+		if got := ExtractSessionID(req1); got != "ses_opencode_12345" {
+			t.Errorf("ExtractSessionID(x-opencode-session) = %q, want ses_opencode_12345", got)
+		}
+
+		req2 := httptest.NewRequest(http.MethodPost, "/", nil)
+		req2.Header.Set("x-session-affinity", "aff_9988")
+		if got := ExtractSessionID(req2); got != "aff_9988" {
+			t.Errorf("ExtractSessionID(x-session-affinity) = %q, want aff_9988", got)
+		}
+	})
 }
 
 func TestMaskAPIKey(t *testing.T) {

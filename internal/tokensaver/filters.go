@@ -131,8 +131,15 @@ func compileRegexSafe(pat string) *regexp.Regexp {
 	if pat == "" {
 		return nil
 	}
-	// Case-insensitive compilation matching upstream TypeScript behavior
-	re, err := regexp.Compile("(?i)" + pat)
+	// Case-insensitive compilation matching upstream TypeScript behavior.
+	//
+	// The multiline flag mirrors upstream's /m on every autodetect regex
+	// (open-sse/rtk/autodetect.js:18-26). Without it Go's ^ only matches at the
+	// start of the whole string, so a single banner line ahead of the real
+	// output — "Here is the diff:", a shell prompt, a leading blank — defeated
+	// every anchored detection pattern and the body fell through to the
+	// generic filter. Upstream anchors with /m precisely so it does not.
+	re, err := regexp.Compile("(?im)" + pat)
 	if err != nil {
 		// Fallback without prefix
 		re, err = regexp.Compile(pat)
@@ -303,9 +310,40 @@ func isStructuredOutput(text string) bool {
 // includePattern matches and leaves unparseable JSON behind. The guard
 // therefore runs before every selection path: a command that names a filter
 // does not make the body prose.
+// normalizeCommand folds the global options git accepts before its subcommand
+// out of the command line, so "git -C /repo diff" names the same output as
+// "git diff". Filter command patterns are written against the bare form, and
+// the global flags say where to run and how to page — not what the output is.
+// Upstream never needed this: open-sse/rtk/autodetect.js selects on content
+// alone, so a wrapped invocation still met the git-diff patterns.
+func normalizeCommand(cmd string) string {
+	if !strings.HasPrefix(cmd, "git ") {
+		return cmd
+	}
+	fields := strings.Fields(cmd)
+	i := 1
+	for i < len(fields) {
+		f := fields[i]
+		if !strings.HasPrefix(f, "-") {
+			break
+		}
+		// These carry their value as the next token rather than after "=".
+		switch f {
+		case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--super-prefix":
+			i += 2
+			continue
+		}
+		i++
+	}
+	if i >= len(fields) {
+		return cmd
+	}
+	return "git " + strings.Join(fields[i:], " ")
+}
+
 func MatchFilter(text string, command string, cfg RTKConfig) *RTKFilter {
 	filters := LoadFilters()
-	trimmedCmd := strings.TrimSpace(command)
+	trimmedCmd := normalizeCommand(strings.TrimSpace(command))
 
 	// The guard runs before every selection path, so a command that names a
 	// filter does not make the body prose. json-output is the case that

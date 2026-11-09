@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -59,6 +60,11 @@ const (
 	// the provider's chat base URL).
 	v1mProbeURL   = "https://v1m.ir/v1/systemone"
 	v1mProbeModel = "rev-latest"
+	// Nace Drex answers the same System One shape on its own host. The
+	// cheapest call that proves a key is a single-token noul evaluation,
+	// exactly as v1m (upstream v0.5.112, f7f6f5e).
+	naceProbeURL   = "https://console.nace.ai/v1/systemone"
+	naceProbeModel = "drex-max"
 	// MiniMax Code publishes its model catalogue on the agent gateway (the
 	// same endpoint the dashboard imports from), so a connection probe is a
 	// plain bearer call there: a 401/403 is the only invalid answer.
@@ -90,6 +96,7 @@ type connectionProbeData struct {
 	ConnectionProxyEnabled bool           `json:"connectionProxyEnabled"`
 	ConnectionProxyURL     string         `json:"connectionProxyUrl"`
 	ConnectionNoProxy      string         `json:"connectionNoProxy"`
+	AllowPrivateNetworking bool           `json:"allowPrivateNetworking"`
 }
 
 // probeOutcome is one connection-test result. valid=false + message mirrors
@@ -99,6 +106,7 @@ type probeOutcome struct {
 	message   string
 	refreshed bool
 	tokens    *oauth.TokenResult
+	appealURL string // Google appeal link for a TOS-banned Antigravity account
 }
 
 // connectionProbeDo performs the outbound request of a connection test.
@@ -225,7 +233,7 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 		authHeader:   "Authorization",
 		authPrefix:   "Bearer ",
 		extraHeaders: map[string]string{"Content-Type": "application/json"},
-		body:         `{"model":"` + providers.NousValidationModel + `","messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}`,
+		body:         `{"model":"` + providers.NousValidationModel + `","messages":[{"role":"user","content":"` + probeMessageContent + `"}],"max_tokens":1,"stream":false}`,
 		refreshable:  true,
 	},
 	"cursor":         {tokenExists: true},
@@ -238,10 +246,10 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 	"codebuddy-intl": {tokenExists: true},
 	// The stored credential only authorizes the account API; model access
 	// needs a minted LLM token, so the test walks both layers (probeZed).
-	"windsurf":       {tokenExists: true},
-	"trae":           {tokenExists: true},
-	"devin":          {tokenExists: true},
-	"devin-cli":      {tokenExists: true},
+	"windsurf":  {tokenExists: true},
+	"trae":      {tokenExists: true},
+	"devin":     {tokenExists: true},
+	"devin-cli": {tokenExists: true},
 	"kimchi": {
 		url: kimchiProbeURL, method: http.MethodGet,
 		authHeader: "Authorization", authPrefix: "Bearer ",
@@ -343,6 +351,9 @@ func (h *DashboardHandler) testSingleConnection(ctx context.Context, conn *model
 	if conn != nil && providers.IsLocalByDesign(conn.Provider) {
 		ctx = proxy.WithAllowLoopback(ctx)
 	}
+	if data.AllowPrivateNetworking {
+		ctx = proxy.WithAllowPrivateNetworking(ctx)
+	}
 	client, proxyURL := h.probeHTTPClient(data, raw)
 	if proxyURL != "" {
 		if err := probeProxyURL(ctx, proxyURL); err != nil {
@@ -350,7 +361,7 @@ func (h *DashboardHandler) testSingleConnection(ctx context.Context, conn *model
 		}
 	}
 
-	if conn.AuthType == "apikey" || conn.AuthType == "cookie" || conn.AuthType == "compatible" {
+	if conn.AuthType == "apikey" || conn.AuthType == "cookie" || conn.AuthType == "compatible" || conn.AuthType == "none" || (conn != nil && providers.KnownProviders[providers.ResolveAlias(conn.Provider)].NoAuth) {
 		return h.probeAPIKeyConnection(ctx, conn, data, raw, client)
 	}
 	return h.probeOAuthConnection(ctx, conn, data, client)
@@ -489,7 +500,14 @@ func (h *DashboardHandler) probeAPIKeyConnection(ctx context.Context, conn *mode
 	}
 
 	ctx = withProbeClient(ctx, client)
-	out := validateProviderKey(ctx, provider, cfg, data.APIKey, data.ProviderSpecificData)
+	psd := data.ProviderSpecificData
+	if psd == nil {
+		psd = make(map[string]any)
+	}
+	if data.DefaultModel != "" && psd["defaultModel"] == nil {
+		psd["defaultModel"] = data.DefaultModel
+	}
+	out := validateProviderKey(ctx, provider, cfg, data.APIKey, psd)
 	if !out.supported {
 		return probeOutcome{message: "Provider test not supported"}
 	}
@@ -534,7 +552,7 @@ func (h *DashboardHandler) probeCompatibleConnection(ctx context.Context, conn *
 		body, _ := json.Marshal(map[string]any{
 			"model":      model,
 			"max_tokens": 1,
-			"messages":   []map[string]string{{"role": "user", "content": "test"}},
+			"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 		})
 		status, _, err := connectionProbeDo(ctx, client, http.MethodPost, anthropicProbeMessagesURL(base), map[string]string{
 			"x-api-key":         data.APIKey,
@@ -610,7 +628,7 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 
 	tokenExpired := connectionTokenExpired(provider, data)
 	if cfg.refreshable && tokenExpired && data.RefreshToken != "" {
-		tokens = h.refreshConnectionToken(ctx, provider, data, client)
+		tokens = h.refreshConnectionToken(ctx, conn.ID, provider, data, client)
 		if tokens == nil {
 			return probeOutcome{message: "Token expired and refresh failed"}
 		}
@@ -635,39 +653,39 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 	case "gemini-cli", "antigravity":
 		attempt := probeCloudCodeAssist(ctx, client, provider, accessToken)
 		if attempt.valid {
-			return probeOutcome{valid: true, refreshed: refreshed, tokens: tokens}
+			return probeOutcome{valid: true, refreshed: refreshed, tokens: tokens, appealURL: attempt.appealURL}
 		}
 		if attempt.status == http.StatusUnauthorized && cfg.refreshable && !refreshed && data.RefreshToken != "" {
-			retryTokens := h.refreshConnectionToken(ctx, provider, data, client)
+			retryTokens := h.refreshConnectionToken(ctx, conn.ID, provider, data, client)
 			if retryTokens == nil || retryTokens.AccessToken == "" {
 				return probeOutcome{message: "Token invalid or revoked"}
 			}
 			retry := probeCloudCodeAssist(ctx, client, provider, retryTokens.AccessToken)
 			if retry.valid {
-				return probeOutcome{valid: true, refreshed: true, tokens: retryTokens}
+				return probeOutcome{valid: true, refreshed: true, tokens: retryTokens, appealURL: retry.appealURL}
 			}
-			return probeOutcome{message: retry.message, refreshed: true, tokens: retryTokens}
+			return probeOutcome{message: retry.message, refreshed: true, tokens: retryTokens, appealURL: retry.appealURL}
 		}
-		return probeOutcome{message: attempt.message, refreshed: refreshed, tokens: tokens}
+		return probeOutcome{message: attempt.message, refreshed: refreshed, tokens: tokens, appealURL: attempt.appealURL}
 	case "cline", "clinepass":
-		return h.probeCline(ctx, data, client, accessToken, refreshed, tokens)
+		return h.probeCline(ctx, conn.ID, data, client, accessToken, refreshed, tokens)
 	case "zed":
 		return h.probeZed(ctx, data, client)
 	case "freebuff":
 		return h.probeFreebuff(ctx, conn, data, client)
 	}
 
-	return h.probeOAuthEndpoint(ctx, provider, cfg, client, accessToken, refreshed, tokens, data)
+	return h.probeOAuthEndpoint(ctx, conn.ID, provider, cfg, client, accessToken, refreshed, tokens, data)
 }
 
 // probeOAuthEndpoint runs the generic configured probe plus the 401 retry path.
-func (h *DashboardHandler) probeOAuthEndpoint(ctx context.Context, provider string, cfg oauthProbeConfig, client *http.Client, accessToken string, refreshed bool, tokens *oauth.TokenResult, data connectionProbeData) probeOutcome {
+func (h *DashboardHandler) probeOAuthEndpoint(ctx context.Context, connectionID, provider string, cfg oauthProbeConfig, client *http.Client, accessToken string, refreshed bool, tokens *oauth.TokenResult, data connectionProbeData) probeOutcome {
 	attempt := runOAuthProbe(ctx, cfg, client, accessToken, data)
 	if attempt.valid {
 		return probeOutcome{valid: true, message: attempt.message, refreshed: refreshed, tokens: tokens}
 	}
 	if attempt.status == http.StatusUnauthorized && cfg.refreshable && !refreshed && data.RefreshToken != "" {
-		retryTokens := h.refreshConnectionToken(ctx, provider, data, client)
+		retryTokens := h.refreshConnectionToken(ctx, connectionID, provider, data, client)
 		if retryTokens != nil {
 			retryToken := retryTokens.AccessToken
 			if provider == "nous" && retryTokens.APIKey != "" {
@@ -675,7 +693,7 @@ func (h *DashboardHandler) probeOAuthEndpoint(ctx context.Context, provider stri
 			}
 			retry := runOAuthProbe(ctx, cfg, client, retryToken, data)
 			if retry.valid {
-				return probeOutcome{valid: true, message: retry.message, refreshed: true, tokens: retryTokens}
+				return probeOutcome{valid: true, message: retry.message, refreshed: true, tokens: retryTokens, appealURL: retry.appealURL}
 			}
 		}
 		return probeOutcome{message: "Token invalid or revoked"}
@@ -684,7 +702,7 @@ func (h *DashboardHandler) probeOAuthEndpoint(ctx context.Context, provider stri
 }
 
 // probeCline ports the cline branch: probe users/me, refresh on 401, retry.
-func (h *DashboardHandler) probeCline(ctx context.Context, data connectionProbeData, client *http.Client, accessToken string, refreshed bool, tokens *oauth.TokenResult) probeOutcome {
+func (h *DashboardHandler) probeCline(ctx context.Context, connectionID string, data connectionProbeData, client *http.Client, accessToken string, refreshed bool, tokens *oauth.TokenResult) probeOutcome {
 	try := func(token string) probeOutcome {
 		// JWT-only workos: prefix (parity with upstream
 		// open-sse/shared/clineAuth.js): ClinePass API keys ride plain.
@@ -715,7 +733,7 @@ func (h *DashboardHandler) probeCline(ctx context.Context, data connectionProbeD
 	if initial.valid || initial.message != "Token invalid or revoked" || data.RefreshToken == "" {
 		return initial
 	}
-	retryTokens := h.refreshConnectionToken(ctx, "cline", data, client)
+	retryTokens := h.refreshConnectionToken(ctx, connectionID, "cline", data, client)
 	if retryTokens == nil || retryTokens.AccessToken == "" {
 		return probeOutcome{message: "Token invalid or revoked"}
 	}
@@ -794,9 +812,10 @@ func (h *DashboardHandler) probeFreebuff(ctx context.Context, conn *models.Provi
 
 // oauthProbeAttempt is one classified probe answer.
 type oauthProbeAttempt struct {
-	valid   bool
-	status  int
-	message string
+	valid     bool
+	status    int
+	message   string
+	appealURL string // Google appeal link when the 403 is a TOS ban
 }
 
 // runOAuthProbe performs the configured request and classifies the answer the
@@ -876,7 +895,7 @@ func classifyOAuthProbe(status int, cfg oauthProbeConfig) oauthProbeAttempt {
 func probeCloudCodeAssist(ctx context.Context, client *http.Client, provider, accessToken string) oauthProbeAttempt {
 	userAgent := "google-api-nodejs-client/9.15.1 gemini-cli/0.34.0"
 	if provider == "antigravity" {
-		userAgent = "google-api-nodejs-client/9.15.1 vscode-antigravity/1.107.0"
+		userAgent = providers.AntigravityCLIUserAgent
 	}
 	status, body, err := connectionProbeDo(ctx, client, http.MethodPost, cloudCodeAssistProbeURL, map[string]string{
 		"Authorization": "Bearer " + accessToken,
@@ -889,7 +908,13 @@ func probeCloudCodeAssist(ctx context.Context, client *http.Client, provider, ac
 	if status >= 200 && status < 300 {
 		return oauthProbeAttempt{valid: true, status: status}
 	}
-	return oauthProbeAttempt{status: status, message: probeProviderErrorMessage(body, fmt.Sprintf("API returned %d", status))}
+	message := providers.RedactAppealURLs(probeProviderErrorMessage(body, fmt.Sprintf("API returned %d", status)))
+	if providers.IsAntigravityTOSViolation(status, body) {
+		if appealURL, _ := providers.ExtractAppealURL(body); appealURL != "" {
+			return oauthProbeAttempt{status: status, message: message, appealURL: appealURL}
+		}
+	}
+	return oauthProbeAttempt{status: status, message: message}
 }
 
 // probeProviderErrorMessage ports parseProviderErrorMessage.
@@ -912,29 +937,38 @@ func probeProviderErrorMessage(body []byte, fallback string) string {
 		}
 	}
 	if trimmed := strings.TrimSpace(string(body)); trimmed != "" {
-		return trimmed
+		return providers.RedactAppealURLs(trimmed)
 	}
 	return fallback
 }
 
 // refreshConnectionToken refreshes a connection's OAuth token through the
-// shared refresher registry. A nil result means "cannot refresh", which the
-// callers surface exactly like upstream's failed refresh.
-func (h *DashboardHandler) refreshConnectionToken(ctx context.Context, provider string, data connectionProbeData, client *http.Client) *oauth.TokenResult {
+// shared refresher registry, holding a per-connection lock so two callers
+// can never race the same refresh token. A nil result means "cannot refresh",
+// which the callers surface exactly like upstream's failed refresh.
+func (h *DashboardHandler) refreshConnectionToken(ctx context.Context, connectionID, provider string, data connectionProbeData, client *http.Client) *oauth.TokenResult {
 	if data.RefreshToken == "" {
 		return nil
 	}
 	if client == nil {
 		client = &http.Client{Timeout: connectionProbeTimeout}
 	}
-	result, err := oauth.Refresh(ctx, &oauth.Params{
-		Client:               client,
-		Provider:             providers.ResolveAlias(provider),
-		RefreshToken:         data.RefreshToken,
-		AccessToken:          data.AccessToken,
-		ProviderSpecificData: oauth.StringMap(data.ProviderSpecificData),
+	var result *oauth.TokenResult
+	err := oauth.WithRefreshLock(connectionID, func() error {
+		res, err := oauth.Refresh(ctx, &oauth.Params{
+			Client:               client,
+			Provider:             providers.ResolveAlias(provider),
+			RefreshToken:         data.RefreshToken,
+			AccessToken:          data.AccessToken,
+			ProviderSpecificData: oauth.StringMap(data.ProviderSpecificData),
+		})
+		if err != nil || res == nil || res.AccessToken == "" {
+			return err
+		}
+		result = res
+		return nil
 	})
-	if err != nil || result == nil || result.AccessToken == "" {
+	if err != nil || result == nil {
 		return nil
 	}
 	return result
@@ -967,6 +1001,9 @@ func (h *DashboardHandler) persistProbeResult(conn *models.ProviderConnection, r
 			raw["lastError"] = nil
 			raw["lastErrorAt"] = nil
 		}
+		if conn != nil && conn.Provider == "codex" {
+			chat.ClearCodexQuotaBlock(conn.ID)
+		}
 	} else if out.message == "Provider test not supported" {
 		// Do not mark connection as broken in DB when probe is unsupported
 		if curStatus, _ := raw["testStatus"].(string); curStatus == "" || curStatus == "error" {
@@ -979,6 +1016,15 @@ func (h *DashboardHandler) persistProbeResult(conn *models.ProviderConnection, r
 	} else {
 		raw["testStatus"] = "error"
 		raw["lastError"] = out.message
+		raw["lastErrorAt"] = time.Now().UTC().Format(time.RFC3339)
+		if out.appealURL != "" {
+			psd, ok := raw["providerSpecificData"].(map[string]any)
+			if !ok {
+				psd = make(map[string]any)
+				raw["providerSpecificData"] = psd
+			}
+			psd["verificationUrl"] = out.appealURL
+		}
 		raw["lastErrorAt"] = time.Now().UTC().Format(time.RFC3339)
 	}
 

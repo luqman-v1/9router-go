@@ -27,7 +27,7 @@ func TestLiveCompressAgainstRealProxy(t *testing.T) {
 		"messages": []any{map[string]any{"role": "user", "content": "Here is a long build log:\n" + strings.Join(lines, "\n") + "\nWhat failed?"}},
 	})
 
-	c := NewClient(url, "", nil)
+	c := NewClientWithEngine(url, "", nil, EngineExternal)
 	out, compressed, err := c.Compress(context.Background(), body, "gpt-4o", 8000)
 	t.Logf("in=%d out=%d compressed=%v err=%v", len(body), len(out), compressed, err)
 	if err != nil {
@@ -69,7 +69,7 @@ func TestLiveGuardStopsRealProxy(t *testing.T) {
 		},
 	})
 
-	c := NewClient(url, "", nil)
+	c := NewClientWithEngine(url, "", nil, EngineExternal)
 	out, compressed, err := c.Compress(context.Background(), body, "gpt-4o", 8000)
 	if err != nil {
 		t.Fatalf("guard must fail open: %v", err)

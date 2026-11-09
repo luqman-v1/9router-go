@@ -44,6 +44,45 @@
   }
 }
 
+/* The wiki pages carry no :root of their own — every colour comes from this
+   stylesheet, so this is the only place a theme can be decided.
+   The automatic media query is the default, and it stays. What is added is the
+   same pair of values behind a class on <html>, which is the mechanism the
+   dashboard already uses (`document.documentElement.classList.toggle('dark')`,
+   key `9router-theme` in web/src/components/TopBar.svelte). The wiki is a
+   hand-written static site with no framework, so it cannot reuse the component;
+   it reuses the contract instead — one toggle, one storage key, one set of
+   values. A reader who picks a theme in the dashboard and then opens the docs
+   should not have to pick it again. */
+.light {
+  color-scheme: light;
+  --bg: #fdfaf6;
+  --bg-alt: #f7f3ee;
+  --surface: #ffffff;
+  --border: #e5e7eb;
+  --border-subtle: #f1f1f3;
+  --text: #0a0a0a;
+  --text-muted: #6b7280;
+  --link: #a64027;
+  --link-hover: #7a2f1d;
+}
+.dark {
+  color-scheme: dark;
+  --bg: #1a1a1a;
+  --bg-alt: #1f1f1e;
+  --surface: #262626;
+  --border: #333333;
+  --border-subtle: #2a2a2a;
+  --text: #ededed;
+  --text-muted: #9ca3af;
+  --link: #ee8d6a;
+  --link-hover: #f4b59c;
+}
+/* The class rules come after the media query on purpose. When the reader has
+   chosen a theme, that choice must beat what the operating system prefers —
+   otherwise someone who set dark in the dashboard would still be shown light on
+   a machine whose OS prefers light. Source order is what settles it here, since
+   both blocks have the same specificity. */
 * {
   box-sizing: border-box;
 }
@@ -112,8 +151,11 @@ a:hover {
   border-bottom: 1px solid var(--border);
 }
 
+/* 76rem, not the project page's 52rem: the wiki shell is 76rem wide and the
+   nav trigger lives in this bar, so a narrower header would leave the trigger
+   floating away from the sidebar it opens. */
 .masthead-inner {
-  max-width: 52rem;
+  max-width: 76rem;
   margin: 0 auto;
   padding: 0.85rem 1.25rem;
   display: flex;
@@ -134,15 +176,21 @@ a:hover {
 }
 
 .wordmark-mark {
-  display: grid;
+  /* A container for the product's own icon, not a coloured plate: the glyph
+     inside carries its own dark plate and its own colours, so painting a
+     background here would put a second plate behind the real one. The square
+     stays 1.75rem and the radius is dropped — the SVG's own 12-unit corner
+     radius is the mark's, and two radii on one 28px square disagree visibly. */
+  display: inline-grid;
   place-items: center;
   width: 1.75rem;
   height: 1.75rem;
-  border-radius: 7px;
-  background: var(--brand);
-  color: #ffffff;
-  font-weight: 700;
-  font-size: 1rem;
+  flex-shrink: 0;
+}
+.wordmark-mark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .masthead nav {
@@ -237,12 +285,22 @@ h4 {
   margin: 2rem 0;
 }
 
+/* The reading measure lives in the wiki template's own stylesheet, scoped to
+   the two-column shell it was designed for. Setting it here would apply the cap
+   to the project page too, which has no sidebar and wants the full width. */
 .prose img {
   max-width: 100%;
   height: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
+  display: block;
+  margin-inline: auto;
+}
+/* An image is reserved before it arrives, so the text does not jump when one
+   loads. Without the aspect box a lazy gallery reflows on every scroll. */
+.prose img[width][height] {
+  aspect-ratio: attr(width) / attr(height);
 }
 
 .prose blockquote {

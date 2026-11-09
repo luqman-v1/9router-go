@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+
+	internalproxy "9router/proxy/internal/proxy"
+	"9router/proxy/internal/translator"
 )
 
 func TestParityRepeatedArgumentDelta(t *testing.T) {
@@ -211,5 +214,53 @@ func TestParityInterleavedToolIndices(t *testing.T) {
 	}
 	if args1.Expr != "100100" {
 		t.Fatalf("tc1 expr got %q, want %q", args1.Expr, "100100")
+	}
+}
+
+// A provider that forces SSE and then fails sends its error as an event, not
+// as an HTTP status. sseToClaudeJSON folds that frame into a 200-shaped
+// error envelope, and the /v1/responses bridge used to hand that envelope to
+// ChatResponseToResponses — which reads the absent choices as an empty turn
+// and answers status:"completed" with an empty output. A 429 reached the
+// client as a successful empty answer (upstream v0.5.112, 56dbf46).
+//
+// The fix is one call to EmptyUpstreamError in the bridge; this test pins the
+// two halves that had to meet: the fold must keep the envelope, and the
+// envelope must be rejected as a failure rather than translated.
+func TestParityForcedSSEErrorIsNotAnEmptyAnswer(t *testing.T) {
+	for _, frame := range []string{
+		`{"error":{"status":429,"message":"rate limited"}}`,
+		`{"error":{"status":502,"message":"bad gateway"}}`,
+		`{"error":{"message":"no status given"}}`,
+	} {
+		t.Run(frame, func(t *testing.T) {
+			var raw bytes.Buffer
+			raw.WriteString("data: ")
+			raw.WriteString(frame)
+			raw.WriteString("\n\n")
+			raw.WriteString("data: [DONE]\n\n")
+
+			folded, ok := sseToClaudeJSON(raw.Bytes())
+			if !ok {
+				t.Fatal("fold failed; the error frame must still produce a body")
+			}
+
+			// What the bridge does now: reject the envelope before translating.
+			if err := internalproxy.EmptyUpstreamError(folded); err == nil {
+				t.Fatalf("EmptyUpstreamError(%s) = nil; the bridge would answer 200", folded)
+			}
+
+			// What the bridge used to do: translate it and answer 200.
+			converted, terr := translator.ChatResponseToResponses(folded)
+			if terr == nil {
+				var probe struct {
+					Status string `json:"status"`
+					Output []any  `json:"output"`
+				}
+				if err := json.Unmarshal(converted, &probe); err == nil && probe.Status == "completed" && len(probe.Output) == 0 {
+					t.Logf("confirmed the regression shape: %s", converted)
+				}
+			}
+		})
 	}
 }

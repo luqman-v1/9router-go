@@ -260,14 +260,19 @@ func TestHandleEmbeddings_ForwardStaticHeaders(t *testing.T) {
 		if auth := r.Header.Get("Authorization"); auth != "Bearer gh-token" {
 			t.Errorf("expected Authorization Bearer gh-token, got %q", auth)
 		}
-		if integID := r.Header.Get("copilot-integration-id"); integID != "vscode-chat" {
-			t.Errorf("expected copilot-integration-id vscode-chat, got %q", integID)
+		// The registry ships the CLI identity, not the VS Code extension
+		// identity: Copilot exposes a wider entitled catalogue to
+		// copilot-developer-cli, so the narrow vscode-chat headers made the
+		// gateway advertise models the account does not own. See
+		// providers.GitHubCopilotChatHeaders.
+		if integID := r.Header.Get("copilot-integration-id"); integID != "copilot-developer-cli" {
+			t.Errorf("expected copilot-integration-id copilot-developer-cli, got %q", integID)
 		}
-		if apiVer := r.Header.Get("x-github-api-version"); apiVer != "2025-04-01" {
-			t.Errorf("expected x-github-api-version 2025-04-01, got %q", apiVer)
+		if apiVer := r.Header.Get("x-github-api-version"); apiVer != providers.GitHubCopilotAPIVersion {
+			t.Errorf("expected x-github-api-version %s, got %q", providers.GitHubCopilotAPIVersion, apiVer)
 		}
-		if editorVer := r.Header.Get("editor-version"); editorVer != "vscode/1.110.0" {
-			t.Errorf("expected editor-version vscode/1.110.0, got %q", editorVer)
+		if editorVer := r.Header.Get("editor-version"); editorVer != "copilot/"+providers.GitHubCopilotCLIVersionString() {
+			t.Errorf("expected editor-version copilot/%s, got %q", providers.GitHubCopilotCLIVersionString(), editorVer)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -281,11 +286,6 @@ func TestHandleEmbeddings_ForwardStaticHeaders(t *testing.T) {
 		"baseUrl":    upstream.URL,
 		"authHeader": "Authorization",
 		"authScheme": "Bearer",
-		"staticHeaders": map[string]string{
-			"copilot-integration-id": "vscode-chat",
-			"x-github-api-version":   "2025-04-01",
-			"editor-version":         "vscode/1.110.0",
-		},
 	})
 	_, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-gh', 'github', 'apikey', 'GitHub Copilot', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(data))
@@ -459,5 +459,263 @@ func TestHandleEmbeddings_CopilotTokenOverrideViaAlias(t *testing.T) {
 	defer mu.Unlock()
 	if auth := capturedHeaders.Get("Authorization"); auth != "Bearer tid=copilot-token-alias" {
 		t.Fatalf("expected Authorization Bearer tid=copilot-token-alias, got %q", auth)
+	}
+}
+
+func TestEmbeddings_ForwardGeminiOutputDimensions(t *testing.T) {
+	database, cleanup := setupEmbeddingsTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+
+	var mu sync.Mutex
+	var capturedBody map[string]any
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		_ = json.Unmarshal(body, &capturedBody)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"model":"text-embedding-004","usage":{"prompt_tokens":5,"total_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	providers.KnownProviders["gemini"] = providers.ProviderConfig{
+		BaseURL:    upstream.URL + "/v1beta/openai/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		Format:     "gemini-openai",
+	}
+
+	connDataJSON, _ := json.Marshal(map[string]any{
+		"apiKey": "gemini-test-key",
+	})
+	if err := repo.CreateProviderConnectionFull("conn-gemini-emb", "gemini", "apikey", "Gemini Emb Test", nil, string(connDataJSON)); err != nil {
+		t.Fatalf("failed to seed provider connection: %v", err)
+	}
+
+	handler := newTestMediaHandler(repo)
+
+	// Case 1: with dimensions: 1536
+	req := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(`{"model":"gemini/text-embedding-004","input":"hello world","dimensions":1536}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.HandleEmbeddings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	dimVal, ok := capturedBody["outputDimensionality"].(float64)
+	mu.Unlock()
+	if !ok || int(dimVal) != 1536 {
+		t.Errorf("expected outputDimensionality=1536 forwarded to Gemini, got %v", capturedBody["outputDimensionality"])
+	}
+
+	// Case 2: without dimensions (omitted)
+	mu.Lock()
+	capturedBody = nil
+	mu.Unlock()
+	req2 := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(`{"model":"gemini/text-embedding-004","input":"hello world"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	handler.HandleEmbeddings(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	mu.Lock()
+	_, exists := capturedBody["outputDimensionality"]
+	mu.Unlock()
+	if exists {
+		t.Errorf("expected no outputDimensionality when dimensions omitted, got %v", capturedBody["outputDimensionality"])
+	}
+}
+
+// seedCopilotConn inserts a github (Copilot) connection whose BaseURL points at
+// the fake upstream.
+func seedCopilotConn(t *testing.T, database *sql.DB, baseURL string) {
+	t.Helper()
+	data, _ := json.Marshal(map[string]any{
+		"apiKey":  "sk-token",
+		"baseUrl": baseURL,
+	})
+	if err := repoCreateConnection(t, database, "conn-copilot", "github", data); err != nil {
+		t.Fatalf("failed to seed copilot connection: %v", err)
+	}
+}
+
+// repoCreateConnection inserts a provider connection row.
+func repoCreateConnection(t *testing.T, database *sql.DB, id, provider string, data []byte) error {
+	_, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		(?, ?, 'apikey', ?, 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, id, provider, provider+" test", string(data))
+	return err
+}
+
+func TestHandleEmbeddings_CopilotWrapsBareStringInput(t *testing.T) {
+	var mu sync.Mutex
+	var capturedInput any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			mu.Lock()
+			capturedInput = err
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mu.Lock()
+		capturedInput = req["input"]
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":8,"total_tokens":8}}`))
+	}))
+	defer upstream.Close()
+
+	origCfg := providers.KnownProviders["github"]
+	testCfg := origCfg
+	testCfg.BaseURL = upstream.URL + "/embeddings"
+	providers.KnownProviders["github"] = testCfg
+	defer func() { providers.KnownProviders["github"] = origCfg }()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+	seedCopilotConn(t, database, upstream.URL)
+
+	repo := db.NewRepo(database)
+	handler := newTestMediaHandler(repo)
+
+	body := `{"model":"github/text-embedding-3-small","input":"hello"}`
+	req := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleEmbeddings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if err, ok := capturedInput.(error); ok {
+		t.Fatalf("upstream received invalid JSON: %v", err)
+	}
+	arr, ok := capturedInput.([]any)
+	if !ok || len(arr) != 1 || arr[0] != "hello" {
+		t.Errorf("expected input wrapped as [\"hello\"], got %v", capturedInput)
+	}
+}
+
+func TestHandleEmbeddings_CopilotLeavesArrayInput(t *testing.T) {
+	var mu sync.Mutex
+	var capturedInput any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			mu.Lock()
+			capturedInput = err
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mu.Lock()
+		capturedInput = req["input"]
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":8,"total_tokens":8}}`))
+	}))
+	defer upstream.Close()
+
+	origCfg := providers.KnownProviders["github"]
+	testCfg := origCfg
+	testCfg.BaseURL = upstream.URL + "/embeddings"
+	providers.KnownProviders["github"] = testCfg
+	defer func() { providers.KnownProviders["github"] = origCfg }()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+	seedCopilotConn(t, database, upstream.URL)
+
+	repo := db.NewRepo(database)
+	handler := newTestMediaHandler(repo)
+
+	body := `{"model":"github/text-embedding-3-small","input":["hello","world"]}`
+	req := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleEmbeddings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if err, ok := capturedInput.(error); ok {
+		t.Fatalf("upstream received invalid JSON: %v", err)
+	}
+	arr, ok := capturedInput.([]any)
+	if !ok || len(arr) != 2 || arr[0] != "hello" || arr[1] != "world" {
+		t.Errorf("expected array input untouched [%v %v], got %v", arr[0], arr[1], capturedInput)
+	}
+}
+
+func TestHandleEmbeddings_NonCopilotLeavesBareStringInput(t *testing.T) {
+	var mu sync.Mutex
+	var capturedInput any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			mu.Lock()
+			capturedInput = err
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mu.Lock()
+		capturedInput = req["input"]
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":8,"total_tokens":8}}`))
+	}))
+	defer upstream.Close()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+	seedOpenAIConn(t, database, upstream.URL)
+
+	repo := db.NewRepo(database)
+	handler := newTestMediaHandler(repo)
+
+	body := `{"model":"openai/text-embedding-3-small","input":"hello"}`
+	req := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleEmbeddings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if err, ok := capturedInput.(error); ok {
+		t.Fatalf("upstream received invalid JSON: %v", err)
+	}
+	if capturedInput != "hello" {
+		t.Errorf("expected bare string input untouched, got %v", capturedInput)
 	}
 }

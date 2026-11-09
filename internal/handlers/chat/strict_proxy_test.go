@@ -227,6 +227,7 @@ func TestStrictAndLaxPoolsDoNotShareACachedClient(t *testing.T) {
 func isStrictRefusal(err error) bool {
 	return errors.Is(err, internalproxy.ErrStrictProxyRequired)
 }
+
 // TestStrictProxy_ZeroDirectToUpstreamDialOnDeadProxy asserts strict proxy client
 // ensures zero direct socket dials to upstream when proxy is dead (G18).
 func TestStrictProxy_ZeroDirectToUpstreamDialOnDeadProxy(t *testing.T) {

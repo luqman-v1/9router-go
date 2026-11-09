@@ -528,3 +528,158 @@ func TestForwardCodebuddyCN_RateLimitMapping(t *testing.T) {
 		t.Errorf("expected mapped StatusCode = 429, got %d", ue.StatusCode)
 	}
 }
+
+// The operator's Custom Headers must reach the wire. This executor assembles
+// its own header map, so a value the dashboard accepted was previously
+// replaced here and never sent — the dashboard showed the header, the upstream
+// never saw it.
+func TestForwardCodebuddyCN_OperatorOverridesWin(t *testing.T) {
+	var got http.Header
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	cfg := &providers.ProviderConfig{
+		BaseURL: ts.URL,
+		StaticHeaders: map[string]string{
+			"User-Agent": "CLI/2.108.1 CodeBuddy/2.108.1",
+			"X-IDE-Type": "CLI",
+		},
+		HeaderOverrides: map[string]string{
+			"User-Agent":                "IDE/2.108.1 CodeBuddy/2.108.1",
+			"X-IDE-Type":                "IDE",
+			"X-IDE-Name":                "IDE",
+			"X-Conversation-ID":         "6ba7b810-9dad-11d3-a456-426614174000",
+			"X-Conversation-Request-ID": "6ba7b811-9dad-11d3-a456-426614174000",
+			"X-Conversation-Message-ID": "6ba7b812-9dad-11d3-a456-426614174000",
+		},
+	}
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Ctx:      context.Background(),
+		Client:   ts.Client(),
+		Config:   cfg,
+		APIKey:   "tok",
+		IsStream: true,
+		Body:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+	}
+	if err := ForwardCodebuddyCN(rec, req); err != nil {
+		t.Fatalf("ForwardCodebuddyCN: %v", err)
+	}
+	if got == nil {
+		t.Fatal("upstream request not captured")
+	}
+
+	for header, want := range cfg.HeaderOverrides {
+		if v := got.Get(header); v != want {
+			t.Errorf("%s = %q, want the operator's %q", header, v, want)
+		}
+	}
+	// A generated value must not survive next to the operator's: two entries
+	// for one name leave the winner to map iteration order.
+	if n := len(got.Values("X-Conversation-ID")); n != 1 {
+		t.Errorf("X-Conversation-ID sent %d times, want exactly 1", n)
+	}
+}
+
+// A lowercase override must replace the executor's own spelling rather than
+// land beside it.
+func TestForwardCodebuddyCN_OverrideCaseInsensitive(t *testing.T) {
+	var got http.Header
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	cfg := &providers.ProviderConfig{
+		BaseURL:         ts.URL,
+		HeaderOverrides: map[string]string{"x-ide-type": "IDE"},
+	}
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Ctx:      context.Background(),
+		Client:   ts.Client(),
+		Config:   cfg,
+		APIKey:   "tok",
+		IsStream: true,
+		Body:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+	}
+	if err := ForwardCodebuddyCN(rec, req); err != nil {
+		t.Fatalf("ForwardCodebuddyCN: %v", err)
+	}
+	if v := got.Get("X-IDE-Type"); v != "IDE" {
+		t.Errorf("X-IDE-Type = %q, want IDE", v)
+	}
+	if n := len(got.Values("X-IDE-Type")); n != 1 {
+		t.Errorf("X-IDE-Type sent %d times, want exactly 1", n)
+	}
+}
+
+func TestCodebuddyHeaders_CKAPIKey(t *testing.T) {
+	key := "ck_testkey12345678"
+	req := &Request{
+		APIKey: key,
+		Body:   []byte(`{}`),
+	}
+	cfg := &providers.ProviderConfig{
+		BaseURL: "https://www.codebuddy.ai/v2/chat/completions",
+	}
+	h := codebuddyHeaders(req, cfg, req.Body)
+	if h["Authorization"] != "Bearer "+key {
+		t.Errorf("Authorization = %q, want Bearer %s", h["Authorization"], key)
+	}
+	if h["X-API-Key"] != key {
+		t.Errorf("X-API-Key = %q, want %s", h["X-API-Key"], key)
+	}
+	if _, ok := h["X-Domain"]; ok {
+		t.Error("X-Domain should be omitted for ck_ keys")
+	}
+	if h["X-User-Id"] != "anonymous_12345678" {
+		t.Errorf("X-User-Id = %q, want anonymous_12345678", h["X-User-Id"])
+	}
+	if h["X-IDE-Type"] != "WorkBuddy" {
+		t.Errorf("X-IDE-Type = %q, want WorkBuddy", h["X-IDE-Type"])
+	}
+	if h["X-Agent-Runtime"] != "local-agent" {
+		t.Errorf("X-Agent-Runtime = %q, want local-agent", h["X-Agent-Runtime"])
+	}
+}
+
+func TestTransformCodebuddyBody_ReasoningMapping(t *testing.T) {
+	input := `{"model":"glm-5.2","messages":[{"role":"assistant","content":"hello","reasoning_content":"my reasoning"}]}`
+	out, err := transformCodebuddyBody([]byte(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var m struct {
+		Messages []struct {
+			Role             string `json:"role"`
+			Content          any    `json:"content"`
+			Reasoning        string `json:"reasoning"`
+			ReasoningContent string `json:"reasoning_content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(m.Messages) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(m.Messages))
+	}
+	asst := m.Messages[1]
+	if asst.Role != "assistant" {
+		t.Fatalf("expected assistant role, got %q", asst.Role)
+	}
+	if asst.Reasoning != "my reasoning" {
+		t.Errorf("expected reasoning = 'my reasoning', got %q", asst.Reasoning)
+	}
+	if asst.ReasoningContent != "" {
+		t.Errorf("reasoning_content should be deleted/mapped, got %q", asst.ReasoningContent)
+	}
+}

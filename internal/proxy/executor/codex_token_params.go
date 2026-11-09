@@ -2,54 +2,140 @@ package executor
 
 import (
 	json "encoding/json/v2"
+	"regexp"
+	"strings"
 )
 
+var codexServerIDPattern = regexp.MustCompile(`^(rs|fc|resp|msg)_`)
+
+// codexResponsesAllowlist defines the parameters accepted by the ChatGPT Codex
+// Responses API. Port of RESPONSES_API_ALLOWLIST from open-sse/executors/codex.js.
+var codexResponsesAllowlist = map[string]bool{
+	"model":               true,
+	"input":               true,
+	"instructions":        true,
+	"tools":               true,
+	"tool_choice":         true,
+	"stream":              true,
+	"store":               true,
+	"reasoning":           true,
+	"service_tier":        true,
+	"include":             true,
+	"prompt_cache_key":    true,
+	"client_metadata":     true,
+	"text":                true,
+	"parallel_tool_calls": true,
+}
+
+// stripCodexStoredItemReferences strips server-generated item references and IDs
+// from input. When store=false, the backend cannot look up stored server item IDs
+// (rs_, fc_, resp_, msg_) and fails or invalidates session state.
+// Port of stripStoredItemReferences from open-sse/executors/codex.js.
+func stripCodexStoredItemReferences(envelope map[string]any, preserveLitePrefix bool) bool {
+	rawInput, ok := envelope["input"]
+	if !ok {
+		return false
+	}
+	slice, ok := responseInputItems(rawInput)
+	if !ok || len(slice) == 0 {
+		return false
+	}
+	filtered := make([]any, 0, len(slice))
+	changed := false
+	for _, item := range slice {
+		if s, isStr := item.(string); isStr {
+			if codexServerIDPattern.MatchString(s) {
+				changed = true
+				continue
+			}
+		}
+		if m, isMap := item.(map[string]any); isMap {
+			if m["type"] == "item_reference" {
+				changed = true
+				continue
+			}
+			if id, ok := m["id"].(string); ok && codexServerIDPattern.MatchString(id) {
+				isDevMsg := preserveLitePrefix && m["role"] == "developer" && strings.HasPrefix(id, "msg_")
+				if !isDevMsg {
+					delete(m, "id")
+					changed = true
+				}
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	if changed {
+		envelope["input"] = filtered
+	}
+	return changed
+}
+
+// injectCodexReasoningInclude ensures reasoning encrypted content is included
+// for multi-turn reasoning continuity when store=false.
+// Port of open-sse/executors/codex.js:
+//
+//	if (body.reasoning && body.reasoning.effort && body.reasoning.effort !== 'none') {
+//	  body.include = ["reasoning.encrypted_content"];
+//	}
+//
+// We deliberately guard on envelope["include"] != nil so a client-supplied
+// include list (e.g. logprobs) is preserved rather than overwritten unconditionally.
+func injectCodexReasoningInclude(envelope map[string]any) bool {
+	if envelope["include"] != nil {
+		return false
+	}
+	rMap, ok := envelope["reasoning"].(map[string]any)
+	if !ok {
+		return false
+	}
+	eff, _ := rMap["effort"].(string)
+	if eff != "" && eff != "none" {
+		envelope["include"] = []any{"reasoning.encrypted_content"}
+		return true
+	}
+	return false
+}
+
 // stripCodexUnsupportedTokenParams removes the parameters the ChatGPT Codex
-// OAuth backend rejects with 400 "Unsupported parameter: ...": the
-// generation-limit fields (max_output_tokens and friends) and the sampling
-// knobs (temperature, top_p). Editors such as Zed send temperature on every
-// chat-completions turn, and the reasoning models behind Codex answer it with
-// 400 "Unsupported parameter: temperature" — a request-scoped error that does
-// not lock the connection, so each turn burned a failed upstream call before
-// the combo moved on.
-//
-// The strip is deliberately NOT done in buildResponsesBody. That function is
-// shared with the other Responses-API providers (grok-cli and friends), whose
-// backends do accept the field, and the command-code body builder reads
-// max_output_tokens off the incoming map to pick its own default. So the
-// removal lives in the Codex forward path only, where the rejecting backend is
-// a known destination.
-//
-// Port of open-sse/executors/codex.js transformRequest:
-//
-//	delete body.max_tokens;
-//	delete body.max_completion_tokens;
-//	delete body.max_output_tokens;
-//
-// plus temperature/top_p, which the Codex backend rejects the same way.
-//
-// A body that does not parse is returned untouched: rewriting a payload we
-// could not read risks turning an upstream-parseable error into a silently
-// different request.
-func stripCodexUnsupportedTokenParams(body []byte) []byte {
+// OAuth backend rejects with 400 "Unsupported parameter: ...", strips stored
+// item references, injects reasoning include, and enforces the Responses API allowlist.
+func stripCodexUnsupportedTokenParams(body []byte, responsesLite ...bool) []byte {
 	var envelope map[string]any
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return body
 	}
 
+	preserveLitePrefix := len(responsesLite) > 0 && responsesLite[0]
 	var changed bool
-	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens", "temperature", "top_p"} {
+	for _, key := range []string{
+		"temperature", "top_p", "frequency_penalty", "presence_penalty",
+		"logprobs", "top_logprobs", "n", "seed", "max_tokens",
+		"max_completion_tokens", "max_output_tokens", "user",
+		"prompt_cache_retention", "metadata", "stream_options",
+		"safety_identifier", "previous_response_id",
+	} {
 		if _, ok := envelope[key]; ok {
 			delete(envelope, key)
 			changed = true
 		}
 	}
 	changed = normalizeCodexServiceTier(envelope) || changed
+	changed = stripCodexStoredItemReferences(envelope, preserveLitePrefix) || changed
+	changed = injectCodexReasoningInclude(envelope) || changed
+
+	// Final allowlist filter (preserves internal _ flags like _compact)
+	for k := range envelope {
+		if !codexResponsesAllowlist[k] && !strings.HasPrefix(k, "_") {
+			delete(envelope, k)
+			changed = true
+		}
+	}
+
 	if !changed {
 		return body
 	}
 
-	out, err := json.Marshal(envelope)
+	out, err := marshalStable(envelope)
 	if err != nil {
 		return body
 	}

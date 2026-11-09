@@ -5,8 +5,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	json "encoding/json/v2"
 	"encoding/hex"
+	json "encoding/json/v2"
 	"errors"
 	"io"
 	"net/http"
@@ -619,8 +619,8 @@ func TestHandleNetlifyDeployCreatesPool(t *testing.T) {
 	_, indexSHA := buildIndexFile()
 	f.routes["POST /api/v1/sites/site_1/deploys"] = func(w http.ResponseWriter, _ []byte) {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"id": "deploy_1",
-			"required": []string{indexSHA},
+			"id":                 "deploy_1",
+			"required":           []string{indexSHA},
 			"required_functions": []string{relaySHA},
 		})
 	}

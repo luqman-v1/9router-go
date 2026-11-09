@@ -678,7 +678,7 @@ func TestCheckUpdate_ManifestWithoutDigestFallsThroughToReleaseDigest(t *testing
 			// Exactly the shape this repo publishes: no sha256 key at all.
 			w.Header().Set("Content-Type", "application/json")
 			json.MarshalWrite(w, map[string]any{
-				"downloadUrl":  "https://example.invalid/releases/latest",
+				"downloadUrl":   "https://example.invalid/releases/latest",
 				"latestVersion": "1.9.7",
 				"releaseNotes":  "notes",
 			})

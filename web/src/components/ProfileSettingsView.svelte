@@ -21,13 +21,22 @@
   import Button from '../lib/ui/Button.svelte'
   import Input from '../lib/ui/Input.svelte'
   import { api, getAuthHeaders, responseErrorMessage, type DatabaseStats, type Settings } from '../api/client'
-  import { isCompactUnitsEnabled, setCompactUnits } from '../lib/compactNumber'
+  import { isCompactUnitsEnabled, isProviderTogglePersistent, setCompactUnits, setProviderTogglePersistent } from '../lib/compactNumber'
   import {
     isAdvancedSettingsVisible,
     isDetailsExpandedByDefault,
     setAdvancedSettingsVisible,
     setDetailsExpandedByDefault,
+    ANIMATION_LEVELS,
+    getAnimationLevel,
+    setAnimationLevel,
   } from '../lib/displayPrefs'
+  import {
+    isFavoritesEnabled,
+    isIconRailEnabled,
+    setFavoritesEnabled,
+    setIconRailEnabled,
+  } from '../lib/sidebarPrefs.svelte'
   import {
     USAGE_PANEL_FIXED_POSITION,
     USAGE_PANEL_GROUPS,
@@ -99,6 +108,11 @@
   let enableSystemPrompt = $state(false)
   let systemPromptPrefix = $state('')
   let systemPromptSuffix = $state('')
+  let appName = $state('')
+  let appLogoUrl = $state('')
+  let isUploadingLogo = $state(false)
+  let logoUploadError = $state('')
+  let logoFileInput = $state<HTMLInputElement | null>(null)
 
   const ANTI_POISONING_PRESET =
     '[CRITICAL CODE INTEGRITY & ANTI-POISONING RULE]\n' +
@@ -108,10 +122,23 @@
   let fallbackStrategy = $state('failover')
   // Unit abbreviation is a localStorage-only preference (compactUnits key);
   // there is no server-side setting for it.
+  // Provider card on/off switch visibility (providerTogglePersistent,
+  // localStorage). On = always visible; off = hover reveal on desktop.
+  let providerTogglePersistent = $state(isProviderTogglePersistent())
+  // Animation level (displayAnimationLevel, localStorage). Applied to <html> so
+  // the global rules in index.css can read it without per-component classes.
+  let animationLevel = $state(getAnimationLevel())
   let compactUnits = $state(isCompactUnitsEnabled())
   // Usage detail panels (Activity Heatmap, Node Health) start collapsed; the
   // switch below flips that default (detailsExpandedByDefault, localStorage).
   let detailsExpanded = $state(isDetailsExpandedByDefault())
+  // Pinned sidebar entries (navFavoritesEnabled, localStorage). On by default:
+  // the section is empty until something is pinned, so an untouched install
+  // gains nothing and loses nothing.
+  let favoritesEnabled = $state(isFavoritesEnabled())
+  // Collapse to icons (navIconRail, localStorage). Off by default because it
+  // hides every label at once, which is a layout to opt into.
+  let iconRail = $state(isIconRailEnabled())
 
   // The heavy blocks below — the currency rate grid, the per-panel Usage list
   // with its arrangement controls, and the sidebar feature-visibility row — stay
@@ -332,6 +359,8 @@
         enableSystemPrompt = !!s.systemPromptEnabled
         if (typeof s.systemPromptPrefix === 'string') systemPromptPrefix = s.systemPromptPrefix
         if (typeof s.systemPromptSuffix === 'string') systemPromptSuffix = s.systemPromptSuffix
+        if (typeof s.appName === 'string') appName = s.appName
+        if (typeof s.appLogoUrl === 'string') appLogoUrl = s.appLogoUrl
 
         if (s.authMode === 'oidc' || s.authMode === 'saml') authMode = s.authMode
         if (s.oidcIssuerUrl) oidcIssuerUrl = String(s.oidcIssuerUrl)
@@ -459,6 +488,31 @@
     }
   }
 
+  /** Uploads the white-label logo and adopts the URL the gateway stored it
+      under. The upload writes appLogoUrl on the server, so the field is
+      refreshed from the response rather than guessed here. */
+  async function uploadLogoFile(file: File) {
+    isUploadingLogo = true
+    logoUploadError = ''
+    try {
+      const res = await api.uploadLogo(file)
+      appLogoUrl = res.appLogoUrl
+      onRefresh?.()
+    } catch (err) {
+      logoUploadError = err instanceof Error ? err.message : String(err)
+    } finally {
+      isUploadingLogo = false
+    }
+  }
+  /** Reads the picked file off the input and clears it afterwards, so choosing
+      the same file twice in a row fires change again. The File is captured
+      before the reset: clearing the input drops its files list. */
+  function handleLogoFileSelected(e: Event) {
+    const input = e.target as HTMLInputElement
+    const file = input.files?.[0]
+    input.value = ''
+    if (file) uploadLogoFile(file)
+  }
   async function handleSaveAll() {
     isSavingSettings = true
     saveSuccess = false
@@ -478,6 +532,8 @@
         systemPromptEnabled: enableSystemPrompt,
         systemPromptPrefix,
         systemPromptSuffix,
+        appName: appName.trim(),
+        appLogoUrl: appLogoUrl.trim(),
         authMode,
         oidcIssuerUrl,
         oidcClientId,
@@ -1306,6 +1362,59 @@
         </div>
       </div>
     </Card>
+    <!-- SECTION: White-label branding. The sidebar renders these two values, so
+         the card is the only place the product name and logo are set. An empty
+         value falls back to the project defaults, which is what an operator who
+         never opens this card keeps. -->
+    <Card padding="md" class="space-y-4">
+      <div class="flex items-center gap-2 pb-2 border-b border-border">
+        <Sliders class="w-4 h-4 text-brand-500" />
+        <h2 class="text-sm font-bold text-text-main">White-label branding</h2>
+      </div>
+      <p class="text-xs text-text-muted">
+        Customize the name and logo shown in the dashboard sidebar. Leave blank to use the 9router-go defaults.
+      </p>
+      <label class="block space-y-1">
+        <span class="text-xs font-medium text-text-main">Application name</span>
+        <Input bind:value={appName} placeholder="9router-go" />
+      </label>
+      <label class="block space-y-1">
+        <span class="text-xs font-medium text-text-main">Logo URL</span>
+        <Input bind:value={appLogoUrl} placeholder="https://example.com/logo.png" />
+        <span class="text-[11px] text-text-subtle">An HTTPS URL, or a local absolute path such as /logo.png</span>
+      </label>
+      <!-- Upload writes the file into the gateway's own data directory and
+           rewrites the URL above, so an operator with no public host still
+           gets a branded sidebar: the <img> points at this gateway. -->
+      <div class="flex items-center gap-2">
+        <input
+          type="file"
+          accept=".png,.svg,.webp,.jpg,.jpeg,image/png,image/svg+xml,image/webp,image/jpeg"
+          bind:this={logoFileInput}
+          onchange={handleLogoFileSelected}
+          class="hidden"
+        />
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-xs font-medium text-text-main transition-colors hover:border-brand-500/40 disabled:opacity-50"
+          disabled={isUploadingLogo}
+          onclick={() => logoFileInput?.click()}
+        >
+          <Upload class="h-3.5 w-3.5" />
+          {isUploadingLogo ? 'Uploading…' : 'Upload image'}
+        </button>
+        <span class="text-[11px] text-text-subtle">PNG, SVG, WebP or JPEG · max 2 MB</span>
+      </div>
+      {#if logoUploadError}
+        <p class="text-[11px] font-medium text-error">{logoUploadError}</p>
+      {/if}
+      {#if appLogoUrl}
+        <div class="flex items-center gap-3 rounded-lg bg-surface-2 p-3">
+          <img src={appLogoUrl} alt="Logo preview" class="h-10 w-10 rounded object-contain" />
+          <span class="text-xs text-text-muted">Preview</span>
+        </div>
+      {/if}
+    </Card>
     <!-- SECTION: Display. Unit abbreviation, the usage-detail default, an
          advanced-settings disclosure that unfolds the currency rates, the
          per-panel Usage list and the sidebar features, and the display currency
@@ -1354,10 +1463,78 @@
           }}
         />
       </div>
-
-      <!-- Currency: the display currency every cost surface reads, kept here
-           because it is one of these preferences rather than a section of its
-           own. The catalog and the formatting rules live in lib/currency.ts. -->
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="text-xs font-semibold text-text-main">Provider card toggle</p>
+          <p class="text-[11px] text-text-subtle">
+            Show the on/off switch on each provider card permanently on desktop
+            instead of revealing it on hover.
+          </p>
+        </div>
+        <Toggle
+          checked={providerTogglePersistent}
+          size="sm"
+          label="Provider card toggle persistence"
+          onChange={(val) => {
+            setProviderTogglePersistent(val)
+            providerTogglePersistent = val
+          }}
+        />
+      </div>
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="text-xs font-semibold text-text-main">Pinned entries</p>
+          <p class="text-[11px] text-text-subtle">
+            A Pinned section at the top of the sidebar for the 2–3 entries you use most. Pin one from
+            the search palette, or from the star beside a search result.
+          </p>
+        </div>
+        <Toggle
+          checked={favoritesEnabled}
+          size="sm"
+          label="Pinned entries"
+          onChange={(val) => {
+            setFavoritesEnabled(val)
+            favoritesEnabled = val
+          }}
+        />
+      </div>
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="text-xs font-semibold text-text-main">Collapse to icons</p>
+          <p class="text-[11px] text-text-subtle">
+            Shrink the sidebar to a 56px icon rail. Every label is replaced by its icon with a
+            tooltip, which frees the width for the page beside it.
+          </p>
+        </div>
+        <Toggle
+          checked={iconRail}
+          size="sm"
+          label="Collapse to icons"
+          onChange={(val) => {
+            setIconRailEnabled(val)
+            iconRail = val
+          }}
+        />
+      </div>
+      <div class="flex items-center justify-between gap-3 border-t border-border pt-3">
+        <div class="min-w-0">
+          <p class="text-xs font-semibold text-text-main">Animation level</p>
+          <p class="text-[11px] text-text-subtle">
+            How much the dashboard animates. Minimal drops blur and transitions but
+            keeps loading spinners; Off stops those too.
+          </p>
+        </div>
+        <select
+          bind:value={animationLevel}
+          onchange={() => setAnimationLevel(animationLevel)}
+          class="shrink-0 rounded-lg border border-border bg-bg px-2 py-1 text-xs text-text-main focus:outline-none focus:border-brand-500 cursor-pointer"
+        >
+          {#each ANIMATION_LEVELS as option (option.id)}
+            <option value={option.id}>{option.label}</option>
+          {/each}
+        </select>
+      </div>
       <div class="space-y-3 border-t border-border pt-3">
         <p class="text-xs font-semibold text-text-main">Currency</p>
 
@@ -1535,11 +1712,11 @@
                 disabled={ALWAYS_VISIBLE_NAV_IDS.includes(entry.id)}
                 title={ALWAYS_VISIBLE_NAV_IDS.includes(entry.id)
                   ? 'Always visible: this is the page the panel lives on'
-                  : ''}
+                  : 'Show or hide this entry in the sidebar'}
                 size="sm"
                 label="{entry.label} in the sidebar"
                 onChange={(val: boolean) => {
-                  hiddenNav = setNavVisible(hiddenNav, entry.id, val)
+                  markLayoutEdit(() => (hiddenNav = setNavVisible(hiddenNav, entry.id, val)))
                 }}
               />
             </div>

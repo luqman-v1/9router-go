@@ -296,11 +296,11 @@ func TestModelScoped401_UnsupportedModelDoesNotBlockAccount(t *testing.T) {
 
 func TestModelScopedError_NegativeAuthTestsPinAccountCooldown(t *testing.T) {
 	tests := []struct {
-		name        string
-		statusCode  int
-		errorText   string
-		model       string
-		wantScoped  bool
+		name       string
+		statusCode int
+		errorText  string
+		model      string
+		wantScoped bool
 	}{
 		{
 			name:       "401 incorrect api key",
@@ -356,6 +356,27 @@ func TestModelScopedError_NegativeAuthTestsPinAccountCooldown(t *testing.T) {
 			statusCode: 402,
 			errorText:  "Insufficient account funds",
 			model:      "claude-3-7-sonnet",
+			wantScoped: true,
+		},
+		{
+			// Qoder's billing envelope (code 112 + pricingUrl). The refusal
+			// names one model's credits, so it must lock that model only:
+			// parking the connection also removed the account's free models,
+			// and the next dfmodel request answered "all in cooldown".
+			name:       "403 qoder pricingUrl is model scoped",
+			statusCode: 403,
+			errorText:  `{"code":"112","message":"{\"pricingUrl\":\"https://qoder.com/pricing?client=qoder\"}"}`,
+			model:      "dmodel",
+			wantScoped: true,
+		},
+		{
+			// Qoder's queue window (qoderQueuedTimeout): the model is briefly
+			// out of capacity, which throttles that model alone. The account
+			// lock here parked every other model on it behind one busy queue.
+			name:       "503 qoder queue timeout is model scoped",
+			statusCode: 503,
+			errorText:  `qoder model "dfmodel" is still queued after 30s (queueType=p3); retry shortly`,
+			model:      "dfmodel",
 			wantScoped: true,
 		},
 	}

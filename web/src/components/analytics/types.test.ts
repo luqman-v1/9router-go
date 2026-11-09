@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'bun:test'
-import { cachedTokensFor, calculateTPS, fmt, formatDuration, providerDisplayName, type RequestDetailItem } from './types'
+import {
+  cachedTokensFor,
+  calculateTPS,
+  extractDetailError,
+  fmt,
+  formatDetailStatus,
+  formatDuration,
+  providerDisplayName,
+  type RequestDetailItem,
+} from './types'
 
 describe('request detail token formatting', () => {
   it('prefers canonical cached_tokens', () => {
@@ -50,6 +59,18 @@ describe('providerDisplayName', () => {
     expect(providerDisplayName('openai-compatible-chat-abc', nodes)).toBe('My vLLM')
   })
 
+  it('matches mixed-case custom node ids even when caller lowercases the id', () => {
+    const nodes = [{ id: 'openai-compatible-chat-Wildy', name: 'wildy.ai.id' }]
+
+    // Both exact case (stored key) and lowercased (topology/stream key) resolve
+    expect(providerDisplayName('openai-compatible-chat-Wildy', nodes)).toBe('wildy.ai.id')
+    expect(providerDisplayName('openai-compatible-chat-wildy', nodes)).toBe('wildy.ai.id')
+  })
+
+  it('resolves catalog providers case-insensitively', () => {
+    expect(providerDisplayName('DeepSeek')).toBe('DeepSeek')
+  })
+
   it('resolves catalog providers by id', () => {
     expect(providerDisplayName('deepseek')).toBe('DeepSeek')
   })
@@ -76,5 +97,72 @@ describe('formatDuration and calculateTPS', () => {
     expect(calculateTPS(null, null, null)).toBeNull()
     expect(calculateTPS(1241, 13300, 1100)).toBe('101.7 tps')
     expect(calculateTPS(1241, 13300, 0)).toBe('93.3 tps')
+  })
+})
+
+describe('formatDetailStatus and extractDetailError', () => {
+  it('formats status for success and ok rows', () => {
+    expect(formatDetailStatus(null)).toBe('—')
+    expect(formatDetailStatus({ status: 'success' })).toBe('200 OK')
+    expect(formatDetailStatus({ status: 'ok' })).toBe('200 OK')
+  })
+
+  it('formats HTTP status code when present in response or attempts', () => {
+    expect(formatDetailStatus({ status: 'error', response: { status: 404 } })).toBe('404 Not Found')
+    expect(formatDetailStatus({ status: 'error', response: { status: 429 } })).toBe('429 Too Many Requests')
+    expect(formatDetailStatus({ status: 'error', response: { status: 500 } })).toBe('500 Internal Error')
+    expect(formatDetailStatus({ status: 'error', response: { status: 502 } })).toBe('502 Bad Gateway')
+    expect(formatDetailStatus({ status: 'error', response: { status: 504 } })).toBe('504 Gateway Timeout')
+    expect(formatDetailStatus({ status: 'error', response: { status: 418 } })).toBe('418 Error')
+    expect(
+      formatDetailStatus({
+        status: 'error',
+        attempts: [{ statusCode: 200 }, { statusCode: 503 }],
+      })
+    ).toBe('503 Service Unavailable')
+  })
+
+  it('falls back to capitalized status when no numeric code is available', () => {
+    expect(formatDetailStatus({ status: 'error' })).toBe('Error')
+    expect(formatDetailStatus({ status: 'failed' })).toBe('Failed')
+    expect(formatDetailStatus({})).toBe('Error')
+  })
+
+  it('extractDetailError returns null for successful requests', () => {
+    expect(extractDetailError(null)).toBeNull()
+    expect(extractDetailError({ status: 'success' })).toBeNull()
+    expect(extractDetailError({ status: 'ok' })).toBeNull()
+    expect(extractDetailError({ status: 'error' })).toBeNull()
+  })
+
+  it('extractDetailError pulls error message and status from response or attempts', () => {
+    expect(
+      extractDetailError({
+        status: 'error',
+        response: { status: 404, error: 'model not found' },
+      })
+    ).toEqual({ status: 404, message: 'model not found' })
+
+    expect(
+      extractDetailError({
+        status: 'error',
+        error: 'gateway timeout reached',
+        response: { status: 504 },
+      })
+    ).toEqual({ status: 504, message: 'gateway timeout reached' })
+
+    expect(
+      extractDetailError({
+        status: 'error',
+        attempts: [{ statusCode: 429, error: 'rate limited' }],
+      })
+    ).toEqual({ status: 429, message: 'rate limited' })
+
+    expect(
+      extractDetailError({
+        status: 'error',
+        response: { status: 500, content: 'upstream raw failure' },
+      })
+    ).toEqual({ status: 500, message: 'upstream raw failure' })
   })
 })

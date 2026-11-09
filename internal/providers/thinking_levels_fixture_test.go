@@ -29,6 +29,13 @@ const upstreamLevelsFixtureVersion = "v0.5.109"
 // codebuddy-cn/deepseek-v4.1-flash resolves to: the tag's answer is the
 // generic set, the PR's is codebuddy-cn's published set.
 var pendingUpstreamDivergences = map[string]map[string][]string{
+	// Groq gpt-oss accepts only low|medium|high (probed live: minimal/xhigh/auto/none/max
+	// all answer 400). Upstream still advertises the openai format default
+	// [none..xhigh] for groq/gpt-oss, so the picker would offer levels Groq
+	// rejects. Go-intentional divergence, not pending.
+	"groq": {
+		"openai/gpt-oss-120b": {"low", "medium", "high"},
+	},
 	// Upstream #4614 also dropped glm-5v-turbo / kimi-k2.7 / kimi-k2.6 from
 	// the codebuddy-cn capability table, and v0.5.99 keeps them dropped. Go
 	// keeps the rows so a saved combo naming one stays routable, which leaves
@@ -51,6 +58,78 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"agnes-3.0-pro":   {"none", "minimal", "low", "medium", "high", "xhigh"},
 		"agnes-3.0-flash": {"none", "minimal", "low", "medium", "high", "xhigh"},
 	},
+	// Gemini 3.6/3.7/3.8 answers 400 "Thinking level MINIMAL is not supported for this
+	// model" to a thinkingLevel minimal — probed live through the antigravity
+	// lane (the tiered ids carry the tier in the model id and LOW is the
+	// floor), the same rejection Gemini 4 Argon gave before its pattern row.
+	// v0.5.109 still advertises minimal for the family, so every lane serving
+	// the model diverges. These are Go-intentional, not pending.
+	"antigravity": {
+		"gemini-3.8-flash":        {"low", "medium", "high"},
+		"gemini-3.8-flash-low":    {"low", "medium", "high"},
+		"gemini-3.8-flash-medium": {"low", "medium", "high"},
+		"gemini-3.8-flash-high":   {"low", "medium", "high"},
+		"gemini-3.7-flash":        {"low", "medium", "high"},
+		"gemini-3.7-flash-low":    {"low", "medium", "high"},
+		"gemini-3.7-flash-medium": {"low", "medium", "high"},
+		"gemini-3.7-flash-high":   {"low", "medium", "high"},
+		"gemini-3.6-flash":        {"low", "medium", "high"},
+		"gemini-3.6-flash-low":    {"low", "medium", "high"},
+		"gemini-3.6-flash-medium": {"low", "medium", "high"},
+		"gemini-3.6-flash-high":   {"low", "medium", "high"},
+	},
+	"ag": {
+		"gemini-3.8-flash":        {"low", "medium", "high"},
+		"gemini-3.8-flash-low":    {"low", "medium", "high"},
+		"gemini-3.8-flash-medium": {"low", "medium", "high"},
+		"gemini-3.8-flash-high":   {"low", "medium", "high"},
+		"gemini-3.7-flash":        {"low", "medium", "high"},
+		"gemini-3.7-flash-low":    {"low", "medium", "high"},
+		"gemini-3.7-flash-medium": {"low", "medium", "high"},
+		"gemini-3.7-flash-high":   {"low", "medium", "high"},
+		"gemini-3.6-flash":        {"low", "medium", "high"},
+		"gemini-3.6-flash-low":    {"low", "medium", "high"},
+		"gemini-3.6-flash-medium": {"low", "medium", "high"},
+		"gemini-3.6-flash-high":   {"low", "medium", "high"},
+	},
+	"gemini": {
+		"gemini-3.8-flash": {"low", "medium", "high"},
+		"gemini-3.7-flash": {"low", "medium", "high"},
+		"gemini-3.6-flash": {"low", "medium", "high"},
+	},
+	"github": {
+		"gemini-3.8-flash": {"low", "medium", "high"},
+		"gemini-3.7-flash": {"low", "medium", "high"},
+		"gemini-3.6-flash": {"low", "medium", "high"},
+		"claude-fable-5.1": {"low", "medium", "high", "xhigh", "max"},
+	},
+	"gh": {
+		"gemini-3.8-flash": {"low", "medium", "high"},
+		"gemini-3.7-flash": {"low", "medium", "high"},
+		"gemini-3.6-flash": {"low", "medium", "high"},
+		"claude-fable-5.1": {"low", "medium", "high", "xhigh", "max"},
+	},
+	"bedrock": {
+		"us.anthropic.claude-fable-5": {"low", "medium", "high", "xhigh", "max"},
+	},
+	"br": {
+		"us.anthropic.claude-fable-5": {"low", "medium", "high", "xhigh", "max"},
+	},
+	"ocz": {
+		"gemini-3.8-flash":                {"low", "medium", "high"},
+		"gemini-3.7-flash":                {"low", "medium", "high"},
+		"gemini-3.6-flash":                {"low", "medium", "high"},
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"ocg": {
+		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"muse": {
+		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	},
 	// gemini-web: the Go override (providerCapabilities["gemini-web"]) narrows
 	// the site surface deliberately — the composer has no thinking toggle the
 	// executor can set, and its Lite models publish no reasoning level. The
@@ -60,7 +139,42 @@ var pendingUpstreamDivergences = map[string]map[string][]string{
 		"gemini-pro":            {"minimal", "low", "medium", "high"},
 		"gemini-flash":          {"minimal", "low", "medium", "high"},
 		"gemini-argon":          {"low", "medium", "high"},
+		"gemini-3.7-flash":      {"low", "medium", "high"},
+		"gemini-3.6-flash":      {"low", "medium", "high"},
 		"gemini-3.1-flash-lite": nil,
+	},
+	// Muse-spark contributor models reject reasoning disablement upstream
+	// ("Reasoning is mandatory for this endpoint"), so Go declares
+	// ThinkingCanDisable=false and the level list drops "none". Upstream
+	// capabilities.js omits the flag; converge if upstream adds it.
+	"opencode": {
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"opencode-go": {
+		"muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"opencode-zen": {
+		"gemini-3.8-flash":                {"low", "medium", "high"},
+		"gemini-3.7-flash":                {"low", "medium", "high"},
+		"gemini-3.6-flash":                {"low", "medium", "high"},
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"oc": {
+		"muse-spark-1.2-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+		"muse-spark-1.3-contributor-free": {"minimal", "low", "medium", "high", "xhigh"},
+	},
+	"sumopod": {
+		"gemini/gemini-3.8-flash": {"low", "medium", "high"},
+		"gemini/gemini-3.7-flash": {"low", "medium", "high"},
+		"gemini/gemini-3.6-flash": {"low", "medium", "high"},
+	},
+	"tokenrouter": {
+		"google/gemini-3.8-flash": {"low", "medium", "high"},
+		"google/gemini-3.7-flash": {"low", "medium", "high"},
+		"google/gemini-3.6-flash": {"low", "medium", "high"},
 	},
 }
 

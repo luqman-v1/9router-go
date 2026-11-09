@@ -12,6 +12,7 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/thinking"
 )
 
 // Kimi Code is the second provider whose transport is chosen per request rather
@@ -38,15 +39,20 @@ const (
 )
 
 // ForwardKimi handles requests for the kimi and kimi-coding providers.
+//
+// A client-supplied reasoning_effort is normalized onto the values Kimi's
+// backend accepts before forwarding, so "auto", "none", "off", "xhigh" and
+// "max" are not answered with HTTP 400 (upstream decolua/9router#2427).
 func ForwardKimi(w http.ResponseWriter, req *Request) error {
-	cleanModel := kimiModel(req.Body)
+	body := normalizeKimiReasoningEffort(req.Body)
+	cleanModel := kimiModel(body)
 	if cleanModel == "" {
 		return fmt.Errorf("ForwardKimi: missing model")
 	}
 	if kimiTargetFormat(reqCtx(req), cleanModel) == providers.FormatOpenAIResponses {
-		return forwardKimiResponses(w, req, cleanModel)
+		return forwardKimiResponses(w, req, cleanModel, body)
 	}
-	return forwardKimiChat(w, req)
+	return forwardKimiChat(w, req, body)
 }
 
 // kimiTargetFormat reports which lane a request must travel on. Both lanes
@@ -99,13 +105,12 @@ func kimiConfig(req *Request, lanePath string) providers.ProviderConfig {
 }
 
 // forwardKimiChat serves the /coding/v1/chat/completions lane.
-func forwardKimiChat(w http.ResponseWriter, req *Request) error {
-	body := req.Body
+func forwardKimiChat(w http.ResponseWriter, req *Request, body []byte) error {
 	if clientFormatFor(reqCtx(req)) == providers.FormatOpenAIResponses {
 		// A /v1/responses client that landed here because its model does not
 		// declare the Responses lane: the Chat endpoint rejects the Responses
 		// "input" key.
-		converted, err := zenChatLaneBody(req.Body)
+		converted, err := zenChatLaneBody(body)
 		if err != nil {
 			return fmt.Errorf("ForwardKimi chat lane conversion: %w", err)
 		}
@@ -133,10 +138,9 @@ func forwardKimiChat(w http.ResponseWriter, req *Request) error {
 // forwardKimiResponses serves the /coding/v1/responses lane Kimi Code serves
 // natively. A Responses client is forwarded untouched; a Chat Completions caller
 // is converted, because the Responses endpoint has no other entry point.
-func forwardKimiResponses(w http.ResponseWriter, req *Request, cleanModel string) error {
-	body := req.Body
+func forwardKimiResponses(w http.ResponseWriter, req *Request, cleanModel string, body []byte) error {
 	if clientFormatFor(reqCtx(req)) != providers.FormatOpenAIResponses {
-		transformed, _, err := buildResponsesBody(req.Body)
+		transformed, _, err := buildResponsesBody(body)
 		if err != nil {
 			return fmt.Errorf("ForwardKimi transform body: %w", err)
 		}
@@ -162,9 +166,53 @@ func forwardKimiResponses(w http.ResponseWriter, req *Request, cleanModel string
 		return err
 	}
 	if req.IsStream {
-		stallReader := proxy.NewStallReaderWithContext(reqCtx(req), resp.Body, 0, "kimi-responses")
+		stallReader := proxy.NewStallReaderWithContext(reqCtx(req), resp.Body, req.Config.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "kimi-responses")
 		defer stallReader.Close()
 		return handleCodexStream(w, req, stallReader)
 	}
 	return handleCodexStream(w, req, resp.Body)
+}
+
+// normalizeKimiReasoningEffort folds a client-supplied reasoning_effort onto
+// the values Kimi's backend accepts, so "auto", "none", "off", "xhigh" and
+// "max" are not forwarded verbatim and answered with HTTP 400 (upstream
+// decolua/9router#2427). "none"/"off" are dropped; the rest go through
+// thinking.ToKimiReasoningEffort (auto→high, minimal→low, xhigh→max,
+// low/medium/high/max pass through).
+func normalizeKimiReasoningEffort(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil || m == nil {
+		return body
+	}
+	raw, ok := m["reasoning_effort"].(string)
+	if !ok || raw == "" {
+		return body
+	}
+	eff := thinking.ToKimiReasoningEffort(kimiReasoningIntent(raw))
+	if eff == "" {
+		delete(m, "reasoning_effort")
+	} else {
+		m["reasoning_effort"] = eff
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// kimiReasoningIntent converts a raw reasoning_effort string into the intent
+// thinking.ToKimiReasoningEffort maps onto Kimi's accepted enum. It mirrors
+// effortString: none/off disable reasoning, auto leaves it to the upstream,
+// anything else is a discrete level.
+func kimiReasoningIntent(raw string) *thinking.Intent {
+	e := strings.ToLower(strings.TrimSpace(raw))
+	switch e {
+	case "none", "off":
+		return &thinking.Intent{Mode: thinking.ModeNone}
+	case "auto":
+		return &thinking.Intent{Mode: thinking.ModeAuto}
+	default:
+		return &thinking.Intent{Mode: thinking.ModeLevel, Level: e}
+	}
 }

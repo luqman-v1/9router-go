@@ -189,3 +189,82 @@ func TestOAuthKey_AppliesToolCloakingAndDecoys(t *testing.T) {
 		t.Fatalf("decoy tools should be injected for OAuth: %s", s)
 	}
 }
+
+func TestCloakClaudeTools_DoesNotDoubleSuffix(t *testing.T) {
+	body := []byte(`{
+		"model": "claude-3-opus-20240229",
+		"messages": [
+			{
+				"role": "assistant",
+				"content": [
+					{
+						"type": "tool_use",
+						"id": "tu_1",
+						"name": "todo_write_ide",
+						"input": {}
+					}
+				]
+			}
+		],
+		"tools": [{"name": "todo_write_ide", "description": "todo write"}]
+	}`)
+	apiKey := "sk-ant-oat-token"
+	isOAuth := true
+
+	pipedBody := body
+	var claudeToolMap map[string]string
+	if isOAuth || strings.Contains(apiKey, "sk-ant-oat") {
+		pipedBody = applyClaudeCloaking(pipedBody, apiKey, "sess-1")
+		var reqMap map[string]any
+		if err := json.Unmarshal(pipedBody, &reqMap); err == nil {
+			claudeToolMap = cloakClaudeTools(reqMap)
+			if out, err := json.Marshal(reqMap); err == nil {
+				pipedBody = out
+			}
+		}
+	}
+
+	if claudeToolMap == nil || claudeToolMap["todo_write_ide"] != "todo_write" {
+		t.Fatalf("expected todo_write_ide mapped to todo_write, got %v", claudeToolMap)
+	}
+	s := string(pipedBody)
+	if strings.Contains(s, "todo_write_ide_ide") {
+		t.Fatalf("found double-suffixed tool name in request: %s", s)
+	}
+	if !strings.Contains(s, `"name":"todo_write_ide"`) {
+		t.Fatalf("expected tool_use name to remain todo_write_ide, got %s", s)
+	}
+}
+
+func TestAdoptRequiredClaudeCodeVersion(t *testing.T) {
+	oldVer := ClaudeCLIVersion()
+	defer func() {
+		claudeVersionMu.Lock()
+		adoptedClaudeVersion = ""
+		claudeVersionMu.Unlock()
+	}()
+
+	// Non-matching error body does nothing
+	if AdoptRequiredClaudeCodeVersion([]byte("rate_limit_error")) {
+		t.Errorf("unexpected adopt on rate_limit_error")
+	}
+
+	// 400 rejection with claude_code_version_too_old adopts the newer version
+	rejection := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"claude_code_version_too_old: version 2.1.300 or newer is required to access this model"}}`)
+	if !AdoptRequiredClaudeCodeVersion(rejection) {
+		t.Fatalf("expected version adopt")
+	}
+
+	if got := ClaudeCLIVersion(); got != "2.1.300" {
+		t.Errorf("ClaudeCLIVersion = %q, want 2.1.300 (bumped from %s)", got, oldVer)
+	}
+
+	// Older version in rejection does not downgrade
+	rejectionOlder := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"claude_code_version_too_old: version 2.0.0 or newer is required"}}`)
+	if AdoptRequiredClaudeCodeVersion(rejectionOlder) {
+		t.Errorf("unexpected downgrade from older rejection")
+	}
+	if got := ClaudeCLIVersion(); got != "2.1.300" {
+		t.Errorf("version downgraded: %q", got)
+	}
+}

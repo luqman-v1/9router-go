@@ -1,8 +1,14 @@
 package dashboard
 
 import (
+	"9router/proxy/internal/handlers/chat"
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/models"
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/updater"
 	"context"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,10 +19,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/samber/lo"
-
-	"9router/proxy/internal/handlerutil"
-	"9router/proxy/internal/models"
-	"9router/proxy/internal/providers"
 )
 
 // HandleGetConnections handles GET /api/connections.
@@ -84,7 +86,11 @@ func (h *DashboardHandler) HandleGetProvidersClient(w http.ResponseWriter, r *ht
 	}
 	accountFiltered := make([]*models.ProviderConnection, 0, len(providerFiltered))
 	for _, c := range providerFiltered {
-		active := c.IsActive != 0
+		// "active" means the account can serve a request, not that the toggle
+		// is on. A credit-exhausted connection with isActive=1 is not active,
+		// so filtering on the toggle alone hides the accounts the operator
+		// most needs to see.
+		active := providers.IsEffectivelyActive(c.IsActive, "", providers.HasActiveCooldown(c.Data))
 		if accountStatus == "active" && !active {
 			continue
 		}
@@ -143,6 +149,7 @@ var usageSupportedProviders = []string{
 	"minimax-code-global", "ollama",
 	"opencode-go", "opencode-zen", "qoder", "qoder-cn", "trae",
 	"vercel-ai-gateway", "xiaomi-mimo", "zed",
+	"zcode",
 }
 
 // usageApikeyProviders mirrors upstream USAGE_APIKEY_PROVIDERS
@@ -252,11 +259,22 @@ func maskConnectionName(name string) string {
 // the edit-connection form (issue #154): enough to confirm *which* key is on
 // file, never enough to replay it. Same shape as maskClientKey, which the
 // dashboard already uses for client API keys.
+//
+// The mask keeps the credential's exact length. Collapsing the middle to a
+// single ellipsis told the reader two things it had no business knowing: that
+// the secret was longer than twelve characters, and roughly how much longer. A
+// mask whose length tracks the thing it hides is not a mask — it is a length
+// oracle.
 func maskConnectionSecret(secret string) string {
-	if handlerutil.RuneCount(secret) <= 12 {
+	n := handlerutil.RuneCount(secret)
+	if n <= 12 {
 		return "***"
 	}
-	return handlerutil.RunePrefix(secret, 6) + "…" + handlerutil.RuneSuffix(secret, 4)
+	const prefix = 6
+	const suffix = 4
+	return handlerutil.RunePrefix(secret, prefix) +
+		strings.Repeat("•", n-prefix-suffix) +
+		handlerutil.RuneSuffix(secret, suffix)
 }
 
 // connectionSecretHint returns the credential a connection actually
@@ -274,7 +292,6 @@ func connectionSecretHint(data map[string]any) string {
 // sanitizeProviderConnection mirrors upstream sanitize(): only safe fields,
 // secrets in data JSON never leave the server.
 func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
-
 	safe := map[string]any{
 		"id": c.ID, "provider": c.Provider, "authType": c.AuthType,
 		"isActive": c.IsActive, "createdAt": c.CreatedAt, "updatedAt": c.UpdatedAt,
@@ -312,7 +329,7 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 		// badges (⏱), quota/rate-limit panels, model assignment. Secret
 		// keys (apiKey/accessToken/refreshToken/authToken/...) stay dropped.
 		"backoffLevel", "rateLimitedUntil", "rateLimit", "rateLimitsByModel",
-		"freebuffModel", "assignedModel", "freebucks",
+		"freebuffModel", "assignedModel", "freebucks", "allowPrivateNetworking",
 	} {
 		if v, ok := data[f]; ok && v != nil {
 			if f == "lastError" {
@@ -365,6 +382,15 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 			safe["providerSpecificData"] = out
 		}
 	}
+	// Effective status: the toggle being on is not evidence the account
+	// works. Derived from testStatus + live cooldown + stored lastError with
+	// the same vocabulary the request path uses, so the dashboard stops
+	// counting a credit-exhausted account as connected.
+	lastError, _ := safe["lastError"].(string)
+	effective := providers.EffectiveStatusWithError(c.IsActive, fmt.Sprintf("%v", safe["testStatus"]), providers.HasActiveCooldown(c.Data), lastError)
+	safe["effectiveStatus"] = effective
+	safe["isEffectivelyActive"] = providers.IsEffectivelyActiveWithError(c.IsActive, fmt.Sprintf("%v", safe["testStatus"]), providers.HasActiveCooldown(c.Data), lastError)
+	safe["statusVariant"] = providers.StatusVariant(c.IsActive, effective)
 	return safe
 }
 
@@ -390,6 +416,19 @@ type createConnectionRequest struct {
 	// explicit edit and never needs the flag.
 	AllowOverwrite bool `json:"allowOverwrite"`
 	Overwrite      bool `json:"overwrite"`
+	// Replace states that a duplicate-account collision is intended: the
+	// existing connection is refreshed in place instead of a second row being
+	// inserted for the same account.
+	Replace                bool `json:"replace"`
+	AllowPrivateNetworking bool `json:"allowPrivateNetworking"`
+}
+
+// isCompatibleNodeProviderID reports whether providerID names a custom
+// provider node rather than a registry provider.
+func isCompatibleNodeProviderID(providerID string) bool {
+	return strings.HasPrefix(providerID, "openai-compatible-") ||
+		strings.HasPrefix(providerID, "anthropic-compatible-") ||
+		strings.HasPrefix(providerID, "custom-embedding-")
 }
 
 // HandleCreateConnection handles POST /api/connections.
@@ -458,6 +497,54 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 	if req.DefaultModel != "" {
 		dataMap["defaultModel"] = req.DefaultModel
 	}
+	if req.AllowPrivateNetworking {
+		dataMap["allowPrivateNetworking"] = true
+	}
+
+	// Upstream POST /api/providers rebuilds providerSpecificData from the node
+	// row for compatible providers: the node owns the public prefix, endpoint
+	// and name. If a connection is stored without them, /v1/models falls back
+	// to the internal "openai-compatible-chat-<uuid>" id, which is not a model
+	// alias any client can use. Keep unrelated keys the modal sent (for example
+	// assignedModel) while replacing the node-owned ones.
+	if isCompatibleNodeProviderID(req.Provider) {
+		node, nodeData, err := h.Repo.GetProviderNodeByID(req.Provider)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if node == nil {
+			handlerutil.WriteJSONError(w, http.StatusNotFound, "Provider node not found")
+			return
+		}
+		if nodeData == nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, "Provider node data is invalid")
+			return
+		}
+		psd, _ := dataMap["providerSpecificData"].(map[string]any)
+		if psd == nil {
+			psd = make(map[string]any)
+		}
+		psd["prefix"] = nodeData.Prefix
+		nodeType := ""
+		if node.Type != nil {
+			nodeType = *node.Type
+		}
+		if nodeType == "openai-compatible" {
+			psd["apiType"] = nodeData.APIType
+		} else {
+			delete(psd, "apiType")
+		}
+		psd["baseUrl"] = nodeData.BaseURL
+		if node.Name != nil {
+			psd["nodeName"] = *node.Name
+		}
+		// Switching a node back to Chat Completions or Responses removes the
+		// business template from the connection; a custom JSON node's template
+		// is copied in from the node row, not taken from what the client sent.
+		setConnCustomJSON(psd, storedCustomJSON(nodeData.APIType, nodeData.CustomJSON))
+		dataMap["providerSpecificData"] = psd
+	}
 
 	dataStr := rawData
 	if len(dataMap) > 0 {
@@ -503,6 +590,51 @@ func (h *DashboardHandler) HandleCreateConnection(w http.ResponseWriter, r *http
 				"status":   "ok",
 				"id":       existing.ID,
 				"replaced": existing.ID,
+			})
+			return
+		}
+	}
+
+	// Re-running an OAuth flow for an account that is already connected used to
+	// insert a second row. That is not cosmetic: the account fallback logic
+	// walks connections in order and locks the failing one per model, so a
+	// duplicate makes the router "fall back" to the same account's quota and
+	// lock it twice.
+	//
+	// The default is to refuse with a 409 naming the row that already holds
+	// this account, so the UI can offer "update that account instead" rather
+	// than dead-ending. `replace: true` refreshes the existing connection in
+	// place, keeping its id and priority and clearing the model locks that
+	// described the old token.
+	if !explicitID {
+		if dup, dupData := h.findDuplicateConnection(req.Provider, dataMap); dup != nil {
+			if !req.Replace {
+				handlerutil.WriteJSON(w, http.StatusConflict, map[string]any{
+					"error": "This account is already connected.",
+					"code":  "duplicate",
+					"duplicate": map[string]any{
+						"existingId":   dup.ID,
+						"existingName": connectionDisplayName(dup),
+						"identityKind": IdentityOf(req.Provider, dupData).Kind,
+					},
+				})
+				return
+			}
+			// Replace in place: the old failure state described the old token,
+			// so keeping it would leave a healthy account cooling down.
+			if err := h.Repo.ClearConnectionModelLocks(r.Context(), dup.ID); err != nil {
+				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if err := h.Repo.ReplaceProviderConnectionPayload(dup.ID, connectionDisplayName(dup), dataStr); err != nil {
+				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+				"status":     "ok",
+				"id":         dup.ID,
+				"replaced":   true,
+				"connection": sanitizeProviderConnection(dup),
 			})
 			return
 		}
@@ -585,6 +717,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	_, hasPSD := rawBody["providerSpecificData"]
 	_, hasAssignedModel := rawBody["assignedModel"]
 	_, hasProxyPool := rawBody["proxyPoolId"]
+	_, hasAllowPrivate := rawBody["allowPrivateNetworking"]
 	// Issue #154: rotating the credential from the edit modal. Blank (or
 	// whitespace-only) means "keep the stored key" — the modal shows it as a
 	// mask and sends nothing when the user did not type one.
@@ -623,10 +756,13 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	// Fast path: if only updating active status
-	if hasIsActive && !hasName && !hasPriority && !hasData && !hasPSD && !hasAssignedModel && !hasProxyPool && !hasAPIKey {
+	if hasIsActive && !hasName && !hasPriority && !hasData && !hasPSD && !hasAssignedModel && !hasProxyPool && !hasAPIKey && !hasAllowPrivate {
 		if err := h.Repo.SetConnectionStatus(id, a); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		if a {
+			chat.ClearCodexQuotaBlock(id)
 		}
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id, "isActive": a})
 		return
@@ -652,7 +788,7 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	}
 
 	dataStr := existing.Data
-	if hasData || hasPSD || hasAssignedModel || hasProxyPool || hasAPIKey {
+	if hasData || hasPSD || hasAssignedModel || hasProxyPool || hasAPIKey || hasAllowPrivate {
 		dataMap := make(map[string]any)
 		if existing.Data != "" {
 			_ = json.Unmarshal([]byte(existing.Data), &dataMap)
@@ -726,6 +862,14 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 			}
 		}
 
+		if hasAllowPrivate {
+			if v, ok := rawBody["allowPrivateNetworking"].(bool); ok && v {
+				dataMap["allowPrivateNetworking"] = true
+			} else {
+				delete(dataMap, "allowPrivateNetworking")
+			}
+		}
+
 		if b, err := json.Marshal(dataMap); err == nil {
 			dataStr = string(b)
 		}
@@ -734,6 +878,9 @@ func (h *DashboardHandler) HandleUpdateConnection(w http.ResponseWriter, r *http
 	if err := h.Repo.UpdateProviderConnection(id, name, priority, isActive, dataStr); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if hasIsActive && a {
+		chat.ClearCodexQuotaBlock(id)
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": id})
@@ -809,6 +956,69 @@ func mergeMapField(target map[string]any, key string, source map[string]any) {
 		existing[k] = v
 	}
 	target[key] = existing
+}
+
+// HandleExportProviderKeys handles GET /api/providers/{id}/export-keys.
+// Returns all stored connections for a given provider with unmasked raw credentials.
+// Matches upstream decolua/9router#4889 exportProviderKeys contract.
+func (h *DashboardHandler) HandleExportProviderKeys(w http.ResponseWriter, r *http.Request) {
+	providerID := getURLParam(r, "id")
+	if providerID == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Provider ID required")
+		return
+	}
+
+	conns, err := h.Repo.GetProviderConnections(providerID, false)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	type exportedKey struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		AuthType string `json:"authType"`
+		Key      string `json:"key"`
+	}
+
+	exported := make([]exportedKey, 0, len(conns))
+	for _, c := range conns {
+		if c == nil {
+			continue
+		}
+		var data map[string]any
+		if c.Data != "" {
+			_ = json.Unmarshal([]byte(c.Data), &data)
+		}
+		key := ""
+		if data != nil {
+			if k, ok := data["apiKey"].(string); ok && k != "" {
+				key = k
+			} else if tok, ok := data["accessToken"].(string); ok && tok != "" {
+				key = tok
+			}
+		}
+
+		name := ""
+		if c.Name != nil && *c.Name != "" {
+			name = *c.Name
+		} else if c.Email != nil && *c.Email != "" {
+			name = *c.Email
+		} else {
+			name = c.ID
+		}
+
+		exported = append(exported, exportedKey{
+			ID:       c.ID,
+			Name:     name,
+			AuthType: c.AuthType,
+			Key:      key,
+		})
+	}
+
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"connections": exported,
+	})
 }
 
 // HandleDeleteConnection handles DELETE /api/connections/{id}.
@@ -922,7 +1132,11 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		}
 		var modelsList []modelItem
 		for k, m := range agResp.Models {
-			if m.IsInternal || strings.HasPrefix(k, "chat_") || strings.HasPrefix(k, "tab_") {
+			// One filter for the picker and the quota panel: the old inline
+			// check (IsInternal || chat_/tab_ prefix) let through image, TTS
+			// and retired surfaces the backend still advertises, so the
+			// picker offered models that answer 400/404.
+			if !providers.IsDiscoverableAntigravityModel(k) {
 				continue
 			}
 			displayName := m.DisplayName
@@ -1020,7 +1234,12 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if conn.Provider == "cline" || conn.Provider == "clinepass" {
+	// Cline / ClinePass. The full catalogue is published at /api/v1/models; the
+	// subscription namespace lives only on the recommended feed, so the two are
+	// resolved separately and kept disjoint — advertising a cline-pass/* id on the
+	// free connection gets a 403 ENTITLEMENT_ERROR. Both take the 9Router identity
+	// headers plus the WorkOS bearer for OAuth connections.
+	if isClineFamily(conn.Provider) {
 		token := connData.AccessToken
 		if token == "" {
 			token = connData.APIKey
@@ -1029,15 +1248,22 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no valid token found")
 			return
 		}
-		authHeaderVal := token
-		if strings.HasPrefix(token, "eyJ") {
-			authHeaderVal = "workos:" + token
+		// OAuth connections present the 9Router identity plus the WorkOS bearer
+		// (upstream buildModelListHeaders); API-key connections send only
+		// Accept + Authorization.
+		var headers map[string]string
+		if connData.AccessToken != "" {
+			headers = providers.ClineIdentityHeaders(updater.CurrentVersion, map[string]string{"Accept": "application/json"})
+		} else {
+			headers = map[string]string{"Accept": "application/json"}
 		}
-		headers := map[string]string{
-			"Authorization": "Bearer " + authHeaderVal,
-			"User-Agent":    "Cline/3.0.0",
+		headers["Authorization"] = "Bearer " + clineAuthHeader(token)
+		isPass := isClinePassProvider(conn.Provider)
+		url := clineModelsURL
+		if isPass {
+			url = clineRecommendedModelsURL
 		}
-		status, body, err := validateProbeDo(r.Context(), http.MethodGet, "https://api.cline.bot/api/v1/models", headers, nil)
+		status, body, err := validateProbeDo(r.Context(), http.MethodGet, url, headers, nil)
 		if err != nil {
 			statusCode, _, errMsg := ClassifyUpstreamNetworkError(err)
 			handlerutil.WriteJSONError(w, statusCode, "failed to fetch cline models: "+errMsg)
@@ -1047,26 +1273,106 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			handlerutil.WriteJSONError(w, status, fmt.Sprintf("failed to fetch models: %d", status))
 			return
 		}
-		var clineResp struct {
-			Data   []any `json:"data"`
-			Models []any `json:"models"`
+		var models []any
+		if isPass {
+			// The subscription namespace is only published on the recommended feed,
+			// under its own key. Reading Data/Models here would find nothing.
+			var rec struct {
+				ClinePass []any `json:"clinePass"`
+			}
+			_ = json.Unmarshal(body, &rec)
+			models = rec.ClinePass
+		} else {
+			var cat struct {
+				Data   []any `json:"data"`
+				Models []any `json:"models"`
+			}
+			_ = json.Unmarshal(body, &cat)
+			models = cat.Data
+			if len(models) == 0 {
+				models = cat.Models
+			}
+			models = filterClineNamespace(models, false)
 		}
-		_ = json.Unmarshal(body, &clineResp)
-		models := clineResp.Data
-		if len(models) == 0 {
-			models = clineResp.Models
+		if !isPass {
+			// The free tier is published on a separate feed: the catalogue carries no
+			// cline-free/* ids at all. The feed is additive and a dead feed must never
+			// take the catalogue down with it, so ids already present win.
+			models = mergeClineFreeTier(models, clineFreeTierModels(r.Context()))
 		}
-
-		// The free tier is published on a separate feed: /api/v1/models carries
-		// no `cline-free/*` ids at all. The feed is additive and a dead feed must
-		// never take the catalogue down with it, so ids already present win —
-		// the same "first writer wins" rule upstream uses.
-		models = mergeClineFreeTier(models, clineFreeTierModels(r.Context()))
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
 			"models":       models,
 		})
+		return
+	}
+
+	// GitHub Copilot's catalogue is entitlement-shaped: each entry carries a
+	// capabilities block and a policy block, and the account's rights are
+	// expressed through them rather than through the id. Filtering on the id
+	// alone advertises models the account is not entitled to, which then fail
+	// upstream with 400.
+	if isGitHubProvider(conn.Provider) {
+		copilotModels, err := fetchCopilotCatalogModels(r.Context(), conn.Data)
+		if err != nil {
+			status := http.StatusBadGateway
+			var usErr *upstreamStatusError
+			if errors.As(err, &usErr) && usErr.Status != 0 {
+				status = usErr.Status
+			}
+			handlerutil.WriteJSONError(w, status, "failed to fetch Copilot models: "+err.Error())
+			return
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       copilotModels,
+		})
+		return
+	}
+	// CodeBuddy (both variants) and WorkBuddy expose no /models route at all —
+	// probed live, every candidate path answers 404 — so the generic branch
+	// reported "does not support models listing" and the dashboard's fetch
+	// button was dead. The catalogue lives in the Go registry
+	// (providers.ProviderModels), which is the same list the chat router serves,
+	// so Import offers exactly what a request can reach.
+	//
+	// WorkBuddy is a separate service with its own smaller catalogue and must not
+	// inherit the CodeBuddy list: ids CodeBuddy still serves are rejected by
+	// WorkBuddy, and importing them seeds models that fail on first use.
+	if isCodebuddyFamily(conn.Provider) {
+		ids := codebuddyCatalogModels(conn.Provider)
+		items := make([]map[string]any, 0, len(ids))
+		for _, id := range ids {
+			items = append(items, map[string]any{"id": id, "name": id})
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       items,
+			"warning":      "CodeBuddy exposes no /models endpoint — using the built-in catalogue.",
+		})
+		return
+	}
+	// Cline / ClinePass publish live catalogues on their own host rather than a
+	// plain /models URL, and the two namespaces are disjoint, so the branch
+	// resolves which connection it is before fetching.
+	if isClineFamily(conn.Provider) {
+		items, warning, ferr := fetchClineModels(r.Context(), conn.Provider, conn.Data, clineCatalogTimeout)
+		if ferr != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to fetch Cline models: "+ferr.Error())
+			return
+		}
+		payload := map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       items,
+		}
+		if warning != "" {
+			payload["warning"] = warning
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, payload)
 		return
 	}
 	// Qoder's catalogue lives behind a COSY-signed gateway endpoint rather than

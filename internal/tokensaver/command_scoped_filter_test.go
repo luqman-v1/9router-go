@@ -202,6 +202,77 @@ func TestCommandlessToolCallResolvesNoCommand(t *testing.T) {
 	}
 }
 
+// A banner line ahead of the output does not hide what the output is. Upstream
+// anchors every autodetect regex with /m (open-sse/rtk/autodetect.js:18-26)
+// precisely so a leading "Here is the diff:" or a blank line does not defeat
+// detection; Go compiled the same patterns without it, so `^diff --git ` only
+// ever matched at offset zero.
+func TestAnchoredPatternsMatchAfterALeadingBanner(t *testing.T) {
+	cfg := DefaultRTKConfig()
+
+	var diff strings.Builder
+	diff.WriteString("diff --git a/big.go b/big.go\n--- a/big.go\n+++ b/big.go\n@@ -1,60 +1,60 @@\n")
+	for i := 0; i < 60; i++ {
+		diff.WriteString("-old line content here number 1234567890\n+new line content here number 1234567890\n")
+	}
+
+	body := diff.String()
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"no banner", body},
+		{"prose banner", "Here is the diff:\n" + body},
+		{"leading blank line", "\n" + body},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := MatchFilter(tc.text, "", cfg)
+			if f == nil {
+				t.Fatal("no filter matched")
+			}
+			if f.ID != "git-diff" {
+				t.Errorf("filter = %q, want git-diff", f.ID)
+			}
+		})
+	}
+}
+
+// Git accepts global options before the subcommand, and an agent that runs
+// `git -C /repo diff` produces exactly the output `git diff` produces. The
+// command patterns are written against the bare form, so the wrapper has to be
+// folded away before matching — otherwise the result falls through to the
+// generic filter and loses the diff-specific rules.
+func TestGitGlobalOptionsDoNotHideTheSubcommand(t *testing.T) {
+	cases := map[string]string{
+		"git -C /repo diff":        "git diff",
+		"git -C /repo -c a=b diff": "git diff",
+		"git --no-pager log":       "git log",
+		"git --git-dir=/x status":  "git status",
+		"git diff":                 "git diff",
+		"ls -la":                   "ls -la",
+	}
+	for in, want := range cases {
+		if got := normalizeCommand(in); got != want {
+			t.Errorf("normalizeCommand(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	cfg := DefaultRTKConfig()
+	var diff strings.Builder
+	diff.WriteString("diff --git a/big.go b/big.go\n--- a/big.go\n+++ b/big.go\n@@ -1,60 +1,60 @@\n")
+	for i := 0; i < 60; i++ {
+		diff.WriteString("-old line content here number 1234567890\n+new line content here number 1234567890\n")
+	}
+	f := MatchFilter(diff.String(), "git -C /repo diff", cfg)
+	if f == nil {
+		t.Fatal("a wrapped git diff matched no filter")
+	}
+	if f.ID != "git-diff" {
+		t.Errorf("filter = %q, want git-diff", f.ID)
+	}
+}
+
 func truncateForMessage(s string) string {
 	if len(s) > 400 {
 		return s[:400] + "..."

@@ -96,68 +96,31 @@ func toolContent(t *testing.T, body []byte) string {
 	return ""
 }
 
-// The read-numbered shape of a protected tool's result is truncated the way
-// upstream truncates it: head and tail kept, the cut marked.
-func TestProtectedReadResultThatIsALineNumberedDumpIsTruncated(t *testing.T) {
+// A protected tool's result (read, grep, edit, write, etc.) is never truncated,
+// even if it is a line-numbered file dump. Truncating file reads drops critical
+// code lines from the agent's context.
+func TestProtectedReadResultThatIsALineNumberedDumpIsUntouched(t *testing.T) {
 	content := numberedDump(300)
 	out, changed := CompressMessagesWithConfig(toolBody(t, "read", content), DefaultRTKConfig())
-	if !changed {
-		t.Fatal("a line-numbered dump under a protected tool was not compressed")
+	if changed {
+		t.Fatal("a line-numbered dump under a protected tool must not be compressed")
 	}
-
 	got := toolContent(t, out)
-	t.Logf("bytes before=%d after=%d (%.2fx)", len(content), len(got), float64(len(content))/float64(len(got)))
-
-	if !strings.Contains(got, "... +120 lines truncated (file continues)") {
-		t.Errorf("the upstream marker is missing from the truncated result")
-	}
-
-	lines := strings.Split(got, "\n")
-	if want := SmartTruncHead + 1 + SmartTruncTail; len(lines) != want {
-		t.Errorf("truncated result has %d lines, want %d", len(lines), want)
-	}
-
-	// The head and the tail are kept, byte for byte.
-	original := strings.Split(content, "\n")
-	for _, i := range []int{0, 1, 59, 119} {
-		if lines[i] != original[i] {
-			t.Errorf("head line %d = %q, want %q", i, lines[i], original[i])
-		}
-	}
-	tailStart := len(lines) - SmartTruncTail
-	for _, i := range []int{tailStart, tailStart + 1, len(lines) - 1} {
-		want := original[len(original)-SmartTruncTail+(i-tailStart)]
-		if lines[i] != want {
-			t.Errorf("tail line %d = %q, want %q", i, lines[i], want)
-		}
-	}
-
-	// The middle is gone, and the marker says so.
-	if strings.Contains(got, original[150]) {
-		t.Error("the middle of the dump was not truncated")
+	if got != content {
+		t.Errorf("the read result was rewritten: got %q, want %q", got, content)
 	}
 }
 
-// The same shape under a grep is truncated the same way: the shape decides,
-// not the tool.
-func TestProtectedGrepResultThatIsALineNumberedDumpIsTruncated(t *testing.T) {
+// The same applies to grep: protected tool output is preserved byte-for-byte.
+func TestProtectedGrepResultThatIsALineNumberedDumpIsUntouched(t *testing.T) {
 	content := numberedDump(300)
-
-	readOut, _ := CompressMessagesWithConfig(toolBody(t, "read", content), DefaultRTKConfig())
-	grepOut, changed := CompressMessagesWithConfig(toolBody(t, "grep", content), DefaultRTKConfig())
-	if !changed {
-		t.Fatal("a line-numbered dump under a protected tool was not compressed")
+	out, changed := CompressMessagesWithConfig(toolBody(t, "grep", content), DefaultRTKConfig())
+	if changed {
+		t.Fatal("a grep result under a protected tool must not be compressed")
 	}
-
-	readContent := toolContent(t, readOut)
-	grepContent := toolContent(t, grepOut)
-	if readContent != grepContent {
-		t.Errorf("the read and the grep result were truncated differently:\nread:\n%s\ngrep:\n%s",
-			readContent, grepContent)
-	}
-	t.Logf("bytes before=%d after=%d (read and grep)", len(content), len(grepContent))
-	if !strings.Contains(grepContent, "... +120 lines truncated (file continues)") {
-		t.Error("the upstream marker is missing from the truncated grep result")
+	got := toolContent(t, out)
+	if got != content {
+		t.Errorf("the grep result was rewritten: got %q, want %q", got, content)
 	}
 }
 

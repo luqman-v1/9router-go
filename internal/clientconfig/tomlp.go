@@ -1,7 +1,9 @@
 package clientconfig
 
 import (
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -213,6 +215,20 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 		if !samePath(kv.fullPath, e.KeyPath) {
 			continue
 		}
+		if e.Delete {
+			return verifyTOMLRemoved(removeTOMLLine(src, kv, kv.tablePath), e)
+		}
+		if e.ValueJSON != "" {
+			// A scalar ValueJSON (an integer, for codex's model_context_window
+			// and friends) is written raw. TOML has no container form this
+			// package will write: inline tables are refused as unstable above,
+			// so a caller that set ValueJSON to a collection for TOML asked
+			// for something the format path cannot honour.
+			if tomlScalarLiteral(e.ValueJSON) != nil {
+				return nil, fmt.Errorf("%w: TOML writes no container value", ErrUnsupportedStructure)
+			}
+			return verifyTOML(splice(src, kv.valStart, kv.valEnd, []byte(strings.TrimSpace(e.ValueJSON))), e)
+		}
 		switch {
 		case kv.valKind == unstable.Array || kv.valKind == unstable.InlineTable:
 			return nil, fmt.Errorf("%w: value of %q is a %s", ErrUnsupportedStructure, key, kv.valKind)
@@ -220,6 +236,9 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 			return nil, fmt.Errorf("%w: value of %q is a multi-line string", ErrUnsupportedStructure, key)
 		}
 		return verifyTOML(splice(src, kv.valStart, kv.valEnd, []byte(tomlQuote(e.Value))), e)
+	}
+	if e.Delete {
+		return nil, fmt.Errorf("%w: %q", ErrKeyNotFound, strings.Join(e.KeyPath, "."))
 	}
 
 	for _, s := range doc.sections {
@@ -233,6 +252,11 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 	if !e.CreateIfMissing {
 		return nil, fmt.Errorf("%w: %q", ErrKeyNotFound, strings.Join(e.KeyPath, "."))
 	}
+	// A container ValueJSON spliced raw reads back as a valid TOML inline
+	// table, so unlike the replace path the read-back cannot catch it here.
+	if e.ValueJSON != "" && tomlScalarLiteral(e.ValueJSON) != nil {
+		return nil, fmt.Errorf("%w: TOML writes no container value", ErrUnsupportedStructure)
+	}
 	// Every remaining path inserts a key. A key whose name an existing dotted
 	// key already uses as a table — "a.b = 1" and then "a = ..." — parses as
 	// the document it is, not as the one the caller asked for, and appending
@@ -242,10 +266,10 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 		return nil, err
 	}
 	if len(sectionPath) == 0 {
-		return verifyTOML(insertTOMLRootKey(src, doc, key, e.Value), e)
+		return verifyTOML(insertTOMLRootKey(src, doc, key, tomlEditLiteral(e)), e)
 	}
 	if idx := tomlFindSection(doc, sectionPath); idx >= 0 {
-		return verifyTOML(insertTOMLKey(src, doc, idx, sectionPath, key, e.Value), e)
+		return verifyTOML(insertTOMLKey(src, doc, idx, sectionPath, key, tomlEditLiteral(e)), e)
 	}
 	for _, kv := range doc.kvs {
 		if len(kv.fullPath) > len(sectionPath) && samePath(kv.fullPath[:len(sectionPath)], sectionPath) {
@@ -253,7 +277,38 @@ func patchTOML(src []byte, e Edit) ([]byte, error) {
 				ErrUnsupportedStructure, strings.Join(sectionPath, "."))
 		}
 	}
-	return verifyTOML(appendTOMLSection(src, sectionPath, key, e.Value), e)
+	return verifyTOML(appendTOMLSection(src, sectionPath, key, tomlEditLiteral(e)), e)
+}
+
+// tomlEditLiteral renders an Edit's value for the wire. ValueJSON carries a
+// raw TOML scalar — an integer, for codex's model_context_window and friends
+// — and reaches the file unquoted; a plain Value is a string and is quoted.
+func tomlEditLiteral(e Edit) string {
+	if e.ValueJSON != "" {
+		return strings.TrimSpace(e.ValueJSON)
+	}
+	return tomlQuote(e.Value)
+}
+
+// tomlScalarLiteral accepts exactly the raw literals this package may write
+// for a TOML ValueJSON edit: signed integers and booleans. Everything else —
+// floats, dates, arrays, inline tables — stays refused; no adapter needs
+// them, and a tight list keeps a stray JSON blob from becoming invalid TOML.
+func tomlScalarLiteral(s string) error {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return errors.New("empty literal")
+	}
+	if strings.ContainsAny(t, "[]{}\"'\n") {
+		return errors.New("not a bare scalar")
+	}
+	if _, err := strconv.ParseInt(t, 10, 64); err == nil {
+		return nil
+	}
+	if t == "true" || t == "false" {
+		return nil
+	}
+	return errors.New("unsupported literal")
 }
 
 // tomlCreateConflict refuses a create whose key path runs through a key that
@@ -280,6 +335,96 @@ func tomlCreateConflict(doc *tomlDoc, fullPath []string) error {
 	return nil
 }
 
+// removeTOMLLine deletes the whole line a key/value occupies.
+//
+// TOML has no separator to leave behind, so unlike JSON there is nothing to
+// splice around: the value is the rest of its line, and removing that line
+// removes the entry.
+//
+// Two headers can be left empty by this and are cleaned up with it: the table
+// whose last key just went, and — because a nested table's header is written
+// under its parent's — the parent if that removal empties it in turn. A config
+// holding a bare "[model_providers.9router]" line is not what "reset" means,
+// and TOML itself reads the empty table as a value the user did not ask for
+// (matrix §5.2 "xoá container rỗng").
+func removeTOMLLine(src []byte, kv tomlKeyValue, tablePath []string) []byte {
+	start := lineStartOf(src, kv.valStart)
+	end := lineEnd(src, kv.valEnd)
+	if end < len(src) && src[end] == '\r' {
+		end++
+	}
+	if end < len(src) && src[end] == '\n' {
+		end++
+	}
+	out := splice(src, start, end, nil)
+	return dropEmptyTOMLTables(out, tablePath)
+}
+
+// dropEmptyTOMLTables removes the header of tablePath when nothing is left
+// under it, then repeats for its parent. It stops at the first table that still
+// holds a key, so a reset that leaves the user's siblings behind keeps their
+// header.
+func dropEmptyTOMLTables(src []byte, tablePath []string) []byte {
+	for len(tablePath) > 0 {
+		doc, err := scanTOML(parseableTOML(src), src)
+		if err != nil {
+			return src
+		}
+		// Anything still inside this table — a key or a child table — means the
+		// header has to stay.
+		occupied := false
+		for _, kv := range doc.kvs {
+			if len(kv.fullPath) > len(tablePath) && samePath(kv.fullPath[:len(tablePath)], tablePath) {
+				occupied = true
+				break
+			}
+		}
+		for _, s := range doc.sections {
+			if len(s.path) > len(tablePath) && samePath(s.path[:len(tablePath)], tablePath) {
+				occupied = true
+				break
+			}
+		}
+		if occupied {
+			return src
+		}
+		idx := tomlFindSection(doc, tablePath)
+		if idx < 0 {
+			return src
+		}
+		start := doc.sections[idx].headerStart
+		end := doc.sections[idx].headerEnd
+		if end < len(src) && src[end] == '\r' {
+			end++
+		}
+		if end < len(src) && src[end] == '\n' {
+			end++
+		}
+		src = splice(src, start, end, nil)
+		tablePath = tablePath[:len(tablePath)-1]
+	}
+	return src
+}
+
+// verifyTOMLRemoved confirms a delete did what was asked: the file still
+// parses, and the key is gone.
+//
+// It cannot reuse verifyTOML, which asserts the key is present and reads back
+// as the requested value — the opposite of what a delete promises.
+func verifyTOMLRemoved(out []byte, e Edit) ([]byte, error) {
+	doc, err := scanTOML(parseableTOML(out), out)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInternalInconsistency, err)
+	}
+	for _, kv := range doc.kvs {
+		if samePath(kv.fullPath, e.KeyPath) {
+			return nil, fmt.Errorf("%w: %q is still present after delete",
+				ErrInternalInconsistency, strings.Join(e.KeyPath, "."))
+		}
+	}
+	return out, nil
+}
+
 func tomlFindSection(doc *tomlDoc, path []string) int {
 	for i, s := range doc.sections {
 		if !s.arrayTable && samePath(s.path, path) {
@@ -289,8 +434,9 @@ func tomlFindSection(doc *tomlDoc, path []string) int {
 	return -1
 }
 
-// insertTOMLKey adds one key line to an existing section, after the last line
-// that belongs to it — after its line comment, never inside it.
+// insertTOMLKey inserts a rendered key/value line at the end of a section,
+// after the last line that belongs to it. val is already rendered by
+// tomlEditLiteral; the function never quotes.
 func insertTOMLKey(src []byte, doc *tomlDoc, idx int, sectionPath []string, key, val string) []byte {
 	at := lineEnd(src, doc.sections[idx].headerEnd)
 	for _, kv := range doc.kvs {
@@ -301,18 +447,18 @@ func insertTOMLKey(src []byte, doc *tomlDoc, idx int, sectionPath []string, key,
 			at = le
 		}
 	}
-	line := tomlKey(key) + " = " + tomlQuote(val) + newlineFor(src)
+	line := tomlKey(key) + " = " + val + newlineFor(src)
 	return splice(src, at, at, []byte(line))
 }
 
-// insertTOMLRootKey adds a key to the root table, which by TOML's own rule must
-// stay above the first [table] header.
+// insertTOMLRootKey inserts a rendered key/value line into the root table,
+// which by TOML's own rule must sit ahead of the first section header.
 func insertTOMLRootKey(src []byte, doc *tomlDoc, key, val string) []byte {
 	at := 0
 	if len(doc.sections) > 0 {
 		at = lineStartOf(src, doc.sections[0].headerStart)
 	}
-	line := tomlKey(key) + " = " + tomlQuote(val) + newlineFor(src)
+	line := tomlKey(key) + " = " + val + newlineFor(src)
 	return splice(src, at, at, []byte(line))
 }
 
@@ -328,7 +474,7 @@ func appendTOMLSection(src []byte, sectionPath []string, key, val string) []byte
 		}
 	}
 	out = append(out, "["+tomlJoinKey(sectionPath)+"]"+nl...)
-	out = append(out, tomlKey(key)+" = "+tomlQuote(val)+nl...)
+	out = append(out, tomlKey(key)+" = "+val+nl...)
 	return out
 }
 
@@ -357,7 +503,11 @@ func verifyTOML(out []byte, e Edit) ([]byte, error) {
 		if kv.valStart < 0 || kv.valEnd > len(out) || kv.valStart >= kv.valEnd {
 			return nil, fmt.Errorf("%w: %q has no byte range", ErrInternalInconsistency, strings.Join(e.KeyPath, "."))
 		}
-		if got := string(out[kv.valStart:kv.valEnd]); got != tomlQuote(e.Value) {
+		want := tomlQuote(e.Value)
+		if e.ValueJSON != "" {
+			want = strings.TrimSpace(e.ValueJSON)
+		}
+		if got := string(out[kv.valStart:kv.valEnd]); got != want {
 			return nil, fmt.Errorf("%w: %q reads back as %s", ErrInternalInconsistency, strings.Join(e.KeyPath, "."), got)
 		}
 		return out, nil

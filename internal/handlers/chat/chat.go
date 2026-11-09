@@ -4,10 +4,13 @@ import (
 	"9router/proxy/internal/changelogfrag"
 	json "9router/proxy/internal/fastjson"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/jsonfence"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/promptcache"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/semanticcache"
+	"9router/proxy/internal/thinking"
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/updater"
 	"bytes"
@@ -17,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -60,6 +64,11 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// A "(level)" suffix is a request override, not part of the model id: it
+	// comes off the name before the name is resolved against the aliases and
+	// the combos, and the intent it carries travels on the context.
+	modelName, suffixIntent := thinking.ParseSuffix(reqBody.Model)
+
 	if reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
@@ -74,20 +83,35 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// keepalive traffic never reaches a provider, so it is not an access
 	// request — and before resolveModel, so a denied model never reaches
 	// connection selection.
-	if !h.enforceModelAccess(w, r, reqBody.Model) {
+	if !h.enforceModelAccess(w, r, modelName) {
 		return
 	}
 
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
+	// every token saver; the flag travels on ctx to applyTokenSavers.
+	if isTokenSaverBypassValue(r.Header.Get("X-9Router-Token-Saver")) {
+		ctx = WithTokenSaverBypass(ctx)
+	}
 	// Provider-scope limit state travels with the request: what one attempt
 	// learns (this provider is full) must steer the next one, and must not
 	// outlive the request (docs/provider-limits-plan.md D7).
 	ctx = withProviderLimitState(ctx)
 	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
-	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
+	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
+	// The operator's providerThinking overrides are read once here, not once
+	// per connection attempt.
+	ctx = h.withProviderThinkingModes(ctx)
 	// Record the dispatching key so the outbound guardrail tap can resolve the
 	// right policy. A keyless caller leaves it unset and the tap stays inert.
 	ctx = withGuardrailKey(ctx, requestKeyID(r))
+	// Record that this client wants machine-readable JSON before the request
+	// fans out: the answer that has to be unwrapped is written several layers
+	// down, behind the combo fallback loop, so the intent has to travel.
+	if jsonfence.Wants(body) {
+		ctx = jsonfence.With(ctx)
+	}
 
 	// Check prompt/response cache for non-streaming requests before model
 	// resolution: a hit answers the turn without touching a provider, so it
@@ -116,12 +140,63 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 			ctx = semanticcache.WithCachedRequest(ctx, &openAIReq)
 		}
 	}
+	// Exact-prompt cache: a second, cheaper layer for a byte-identical request.
+	// The semantic layer above answers "close enough"; this one answers
+	// "identical", which is what makes its footprint predictable enough to
+	// bound in bytes. Both are gated on the same setting because they are two
+	// halves of one feature.
+	//
+	// Only non-streaming requests: a streamed answer cannot be replayed as a
+	// whole, and hashing it would mean buffering the response this layer exists
+	// to avoid.
+	if !reqBody.Stream && h.PromptCache != nil && h.SemanticCache != nil && h.SemanticCache.Enabled() {
+		if key, ok := promptcache.HashRequest(reqBody.Model, body); ok {
+			if entry, hit := h.PromptCache.Get(key); hit {
+				w.Header().Set("Content-Type", entry.ContentType)
+				w.Header().Set("X-Cache", "HIT")
+				w.Header().Set("X-Prompt-Cache", "exact")
+				w.WriteHeader(entry.StatusCode)
+				_, _ = w.Write(entry.Body)
+				log.Info("chat", "prompt cache hit", "model", reqBody.Model, "bytes", len(entry.Body))
+				return
+			}
+			// Store on the way out. The writer is only armed when the request is
+			// hashable, so a miss on an unhashable body never allocates a
+			// capture for nothing.
+			capture := &cacheCaptureWriter{ResponseWriter: w}
+			w = capture
+			defer func() {
+				if capture.statusCode == http.StatusOK && capture.body.Len() > 0 {
+					// The per-entry cap is read from the cache rather than
+					// assumed here, so the two cannot disagree about what is
+					// storable.
+					if int64(capture.body.Len()) <= h.PromptCache.MaxEntryBytes() {
+						h.PromptCache.Set(key, reqBody.Model, "application/json", http.StatusOK, capture.body.Bytes(), false)
+					}
+				}
+			}()
+		}
+	}
 
-	modelInfo, err := h.resolveModel(reqBody.Model)
+	modelInfo, err := h.resolveModel(modelName)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	// The caller's key may carry a context ceiling below the model's own
+	// window. It is applied here, once, so every attempt — single model, combo
+	// member, fusion leg — is trimmed by the same rule.
+	if limit := keyContextLimit(ctx); limit > 0 {
+		modelWindow, modelMaxOutput := modelContextLimits(modelInfo.Provider, modelInfo.Model)
+		trimmed, limitErr := applyKeyContextLimit(body, limit, modelWindow, modelMaxOutput)
+		if limitErr != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, limitErr.Error())
+			return
+		}
+		body = trimmed
+	}
+
 	requiredCaps := DetectRequiredCapabilities(body)
 
 	if len(modelInfo.ComboModels) > 0 {
@@ -133,6 +208,23 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 			h.handleFusion(ctx, w, body, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, modelInfo.JudgeModel)
 			return
 		}
+		// Media from old turns rides in the history even when the current turn
+		// is text-only. When no candidate can serve it, strip it rather than
+		// let a text-only upstream reject the whole conversation on a block
+		// this turn does not need.
+		body = maybeStripLegacyMediaBytes(body, augmented)
+		if h.comboBudgetExhausted(reqBody.Model) {
+			// The combo spent its call ceiling inside this window, so it is
+			// withheld rather than reordered: a budget exists to stop the spend
+			// behind the combo, not to try a different model next. The first
+			// member is served as a plain single-model request, which is the
+			// same shape the request would have had without the combo.
+			log.Info("combo", "budget ceiling reached, combo withheld", "combo", reqBody.Model)
+			h.recordComboBudgetCall(reqBody.Model)
+			h.handleSingleModel(ctx, w, body, h.singleModelFromCombo(modelInfo, augmented), reqBody.Stream, false)
+			return
+		}
+		h.recordComboBudgetCall(reqBody.Model)
 		h.handleComboFallback(ctx, w, body, augmented, comboStrategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, injected...)
 		return
 	}
@@ -143,6 +235,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		targetEntry = modelInfo.Provider + "/" + modelInfo.Model
 	}
 	augmented, strat := h.AugmentModelsWithCapacityAdapter([]string{targetEntry}, requiredCaps, requestKeyID(r))
+	body = maybeStripLegacyMediaBytes(body, augmented)
 	if len(augmented) > 1 {
 		injected := augmented[:len(augmented)-1]
 		log.Info("chat", "capacity adapter auto-switch", "target", reqBody.Model, "switched_to", augmented[0], "caps", keysString(requiredCaps))
@@ -188,8 +281,12 @@ func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWrit
 		handlerutil.WriteJSONError(cw, http.StatusBadRequest, "failed to parse request body")
 		return
 	}
-	upstreamBody["model"] = modelInfo.Model
+	// The client's model id is the jailbreak key; rewrite the body to the
+	// resolved upstream model first, then inject against the original id.
+	requestedModel, _ := upstreamBody["model"].(string)
+	upstreamBody["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
 	repairToolCallIDsInMap(upstreamBody)
+	ctx = h.applyJailbreak(ctx, upstreamBody, requestedModel, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
 	upstreamJSON, err := json.Marshal(upstreamBody)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to marshal upstream request")
@@ -243,6 +340,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A "(level)" suffix is a request override, not part of the model id: it
+	// comes off the name before the name is resolved against the aliases and
+	// the combos, and the intent it carries travels on the context.
+	modelName, suffixIntent := thinking.ParseSuffix(reqBody.Model)
+
 	if reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
@@ -250,11 +352,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Per-key model policy: 403 before any translation work or connection
 	// selection.
-	if !h.enforceModelAccess(w, r, reqBody.Model) {
+	if !h.enforceModelAccess(w, r, modelName) {
 		return
 	}
 
-	modelInfo, err := h.resolveModel(reqBody.Model)
+	modelInfo, err := h.resolveModel(modelName)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
@@ -269,15 +371,17 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	// historical case; minimax-code serves the same wire on MiniMax's mavis
 	// gateway (open-sse/config/providers.js transport.format).
 	claudeNative := modelInfo.Provider == "claude" || modelInfo.Provider == "anthropic"
-	if !claudeNative {
-		if cfg, err := h.GetProviderConfig(modelInfo.Provider, nil); err == nil {
+	var providerCfg *providers.ProviderConfig
+	if cfg, err := h.GetProviderConfig(modelInfo.Provider, nil); err == nil {
+		providerCfg = cfg
+		if !claudeNative {
 			claudeNative = cfg != nil && cfg.Format == providers.FormatClaude
 		}
 	}
 	if claudeNative {
 		translateResponse = false
 		body = translator.SanitizeClaudePassthrough(body, translator.ClaudeIntentionalPrefill(body))
-		if modelInfo.Provider == "minimax" || modelInfo.Provider == "minimax-cn" {
+		if providerCfg != nil && providerCfg.RequireClaudeToolType {
 			body = translator.DefaultClaudeToolType(body)
 		}
 		body = translator.AnchorClaudeCache(body)
@@ -299,13 +403,57 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	workingBody["stream"] = reqBody.Stream
+	// Translated upstreams only report streaming usage when the request asks
+	// for it (stream_options.include_usage), and a Claude client cannot ask —
+	// the field does not exist in the Anthropic dialect. Without it the
+	// terminal message_delta reports zeros, the client's context meter never
+	// moves, and auto-compact never fires. Claude-format upstreams strip the
+	// key again (ensureMessagesFor), so combos with mixed member formats stay
+	// clean.
+	if reqBody.Stream && !claudeNative {
+		if _, ok := workingBody["stream_options"]; !ok {
+			workingBody["stream_options"] = map[string]any{"include_usage": true}
+		}
+	}
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
+	// every token saver; the flag travels on ctx to applyTokenSavers.
+	if isTokenSaverBypassValue(r.Header.Get("X-9Router-Token-Saver")) {
+		ctx = WithTokenSaverBypass(ctx)
+	}
 	ctx = withProviderLimitState(ctx)
-	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
+	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
+	// The operator's providerThinking overrides are read once here, not once
+	// per connection attempt.
+	ctx = h.withProviderThinkingModes(ctx)
 	// Record the dispatching key so the outbound guardrail tap can resolve the
 	// policy scoped to it. A keyless caller leaves it unset and the tap stays
 	// inert.
 	ctx = withGuardrailKey(ctx, requestKeyID(r))
+	// Body-size input estimate for streams whose upstream ignores
+	// include_usage: the translator falls back to it in the terminal usage
+	// block so the client's meter still moves. Inline base64 media makes the
+	// raw byte count meaningless, so those requests go unestimated rather
+	// than wildly over.
+	if reqBody.Stream && !claudeNative && !bytes.Contains(body, []byte(";base64,")) {
+		ctx = translator.WithPromptEstimate(ctx, (len(body)+3)/4)
+	}
+
+	// The caller's key may carry a context ceiling below the model's own
+	// window. It is applied here, once, so every attempt — single model, combo
+	// member, fusion leg — is trimmed by the same rule.
+	if limit := keyContextLimit(ctx); limit > 0 {
+		modelWindow, modelMaxOutput := modelContextLimits(modelInfo.Provider, modelInfo.Model)
+		trimmed, limitErr := applyKeyContextLimitMap(workingBody, limit, modelWindow, modelMaxOutput)
+		if limitErr != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, limitErr.Error())
+			return
+		}
+		if trimmed != nil {
+			workingBody = trimmed
+		}
+	}
 
 	requiredCaps := DetectRequiredCapabilities(body)
 
@@ -320,6 +468,23 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 			h.handleFusion(ctx, w, bodyJSON, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, translateResponse, reqBody.Model, modelInfo.StickyLimit, modelInfo.JudgeModel)
 			return
 		}
+		// Media from old turns rides in the history even when the current turn
+		// is text-only. When no candidate can serve it, strip it rather than
+		// let a text-only upstream reject the whole conversation on a block
+		// this turn does not need.
+		if cleaned, changed := maybeStripLegacyMedia(workingBody, augmented); changed {
+			workingBody = cleaned
+		}
+		if h.comboBudgetExhausted(reqBody.Model) {
+			// Same admission gate as the Chat Completions path: the combo spent
+			// its ceiling, so it is withheld rather than reordered, and the
+			// first member serves the turn as a plain single-model request.
+			log.Info("combo", "budget ceiling reached, combo withheld", "combo", reqBody.Model)
+			h.recordComboBudgetCall(reqBody.Model)
+			h.handleMessagesSingleModel(ctx, w, workingBody, h.singleModelFromCombo(modelInfo, augmented), reqBody.Stream, translateResponse)
+			return
+		}
+		h.recordComboBudgetCall(reqBody.Model)
 		h.handleMessagesComboFallback(ctx, w, workingBody, augmented, comboStrategy, reqBody.Stream, reqBody.Model, modelInfo.StickyLimit, injected...)
 		return
 	}
@@ -330,6 +495,9 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		targetEntry = modelInfo.Provider + "/" + modelInfo.Model
 	}
 	augmented, strat := h.AugmentModelsWithCapacityAdapter([]string{targetEntry}, requiredCaps, requestKeyID(r))
+	if cleaned, changed := maybeStripLegacyMedia(workingBody, augmented); changed {
+		workingBody = cleaned
+	}
 	if len(augmented) > 1 {
 		injected := augmented[:len(augmented)-1]
 		log.Info("chat", "capacity adapter auto-switch messages", "target", reqBody.Model, "switched_to", augmented[0], "caps", keysString(requiredCaps))
@@ -343,7 +511,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 // handleMessagesSingleModel forwards a translated Claude request for a single model.
 func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
 	cw := newCommittedResponseWriter(w)
-	translatedReq["model"] = modelInfo.Model
+	// The client's model id is the jailbreak key; rewrite the body to the
+	// resolved upstream model first, then inject against the original id.
+	requestedModel, _ := translatedReq["model"].(string)
+	translatedReq["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
+	ctx = h.applyJailbreak(ctx, translatedReq, requestedModel, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
 	finalBody, err := json.Marshal(translatedReq)
 	if err != nil {
 		handlerutil.WriteJSONError(cw, http.StatusInternalServerError, "failed to marshal translated request")
@@ -641,35 +813,74 @@ func (h *ChatHandler) HandleModelsByKind(w http.ResponseWriter, r *http.Request)
 	var data []map[string]any
 	now := time.Now().Unix()
 
-	for id, cfg := range providers.KnownProviders {
-		var match bool
-		switch kind {
-		case "image":
-			match = cfg.ImageURL != ""
-		case "tts":
-			match = cfg.TTSURL != ""
-		case "stt":
-			match = cfg.STTURL != ""
-		case "systemone":
-			match = cfg.SystemoneURL != ""
-		case "embedding":
-			match = strings.Contains(cfg.BaseURL, "/embeddings")
-		case "web":
-			match = false
-		case "image-to-text":
-			match = true
+	// A web provider is the search/fetch lane itself, so upstream publishes one
+	// entry per lane — `<alias>/search` when the provider has a searchConfig and
+	// `<alias>/fetch` when it has a fetchConfig (src/app/api/v1/models/route.js
+	// :612-631). Answering `match = false` for the whole kind left the listing
+	// empty and every web client without a model to call.
+	if kind == "web" {
+		for id, cfg := range providers.KnownProviders {
+			alias := providers.GetProviderAlias(id)
+			if cfg.SearchURL != "" {
+				data = append(data, map[string]any{
+					"id":       alias + "/search",
+					"object":   "model",
+					"kind":     "webSearch",
+					"owned_by": alias,
+					"endpoint": "/v1/search",
+					"created":  now,
+				})
+			}
+			if cfg.FetchURL != "" {
+				data = append(data, map[string]any{
+					"id":       alias + "/fetch",
+					"object":   "model",
+					"kind":     "webFetch",
+					"owned_by": alias,
+					"endpoint": "/v1/web/fetch",
+					"created":  now,
+				})
+			}
 		}
-		if !match {
-			continue
-		}
-		data = append(data, map[string]any{
-			"id":       id,
-			"object":   "model",
-			"kind":     kind,
-			"owned_by": id,
-			"endpoint": kindEndpoint(kind),
-			"created":  now,
+		sort.Slice(data, func(i, j int) bool {
+			return data[i]["id"].(string) < data[j]["id"].(string)
 		})
+	} else {
+		for id, cfg := range providers.KnownProviders {
+			var match bool
+			switch kind {
+			case "image":
+				match = cfg.ImageURL != ""
+			case "tts":
+				match = cfg.TTSURL != ""
+			case "stt":
+				match = cfg.STTURL != ""
+			case "systemone":
+				match = cfg.SystemoneURL != ""
+			case "embedding":
+				match = strings.Contains(cfg.BaseURL, "/embeddings")
+			case "rerank":
+				// Rerank shares the provider's OpenAI-compatible base, so the
+				// lane is derived rather than declared: a provider that serves
+				// embeddings serves rerank on the same host. Matching on the
+				// embeddings marker keeps the listing honest without a second
+				// registry column nothing else reads.
+				match = strings.Contains(cfg.BaseURL, "/embeddings")
+			case "image-to-text":
+				match = true
+			}
+			if !match {
+				continue
+			}
+			data = append(data, map[string]any{
+				"id":       id,
+				"object":   "model",
+				"kind":     kind,
+				"owned_by": id,
+				"endpoint": kindEndpoint(kind),
+				"created":  now,
+			})
+		}
 	}
 
 	// Per-key policy applies to the kind listing too — it is the same

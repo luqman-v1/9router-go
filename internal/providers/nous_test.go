@@ -71,18 +71,41 @@ func TestNousCapabilities(t *testing.T) {
 		t.Fatal("no models registered for provider nous")
 	}
 
-	wantVision := []string{
-		"meituan/longcat-2.5-preview:free",
-		"stepfun/step-5-preview:free",
-		"stepfun/step-3.7-flash:free",
+	// Exact values from the verified table in
+	// docs/superpowers/specs/2026-10-19-nous-provider-spec.md §3.1, not
+	// thresholds. The earlier form asserted `ContextWindow >= 262144`, which
+	// passes for any larger value — so a later edit could move longcat-2.0 from
+	// its documented 1048756 to 262144, quietly shrinking the biggest window in
+	// the catalogue, and this test would stay green. §7.1 calls the acceptance
+	// "khai báo chính xác ... context window, max output tokens", and a bound is
+	// not an exact declaration.
+	want := map[string]struct {
+		contextWindow int
+		maxOutput     int
+		vision, video bool
+	}{
+		"meituan/longcat-2.0:free":         {1048756, 262144, false, false},
+		"meituan/longcat-2.5-preview:free": {1048576, 131072, true, false},
+		"stepfun/step-5-preview:free":      {1000000, 64000, true, true},
+		"upstage/solar-mini4:free":         {524288, 131072, false, false},
+		"stepfun/step-3.7-flash:free":      {262144, 256000, true, true},
+		"poolside/laguna-s-2.1:free":       {262144, 131072, false, false},
+		"poolside/laguna-xs-2.1:free":      {262144, 32768, false, false},
+		"stealth/missingno":                {262144, 131072, false, false},
 	}
-	wantVideo := []string{
-		"stepfun/step-5-preview:free",
-		"stepfun/step-3.7-flash:free",
+
+	// A model added to the registry without a row here would pass no assertion
+	// at all, which is the same vacuous-pass failure §5.D.6 names.
+	if len(nousModels) != len(want) {
+		t.Fatalf("registry has %d nous models, spec §3.1 declares %d", len(nousModels), len(want))
 	}
 
 	for _, id := range nousModels {
 		t.Run(id, func(t *testing.T) {
+			w, ok := want[id]
+			if !ok {
+				t.Fatalf("%s is registered but not in the spec's §3.1 table", id)
+			}
 			caps := GetCapabilitiesForModel("nous", id)
 			if !caps.Tools {
 				t.Errorf("%s: expected tools=true", id)
@@ -93,18 +116,17 @@ func TestNousCapabilities(t *testing.T) {
 			if caps.ThinkingFormat != "nous" {
 				t.Errorf("%s: expected thinkingFormat=nous, got %q", id, caps.ThinkingFormat)
 			}
-			if caps.ContextWindow < 262144 {
-				t.Errorf("%s: expected contextWindow >= 262144, got %d", id, caps.ContextWindow)
+			if caps.ContextWindow != w.contextWindow {
+				t.Errorf("%s: expected contextWindow=%d (spec §3.1), got %d", id, w.contextWindow, caps.ContextWindow)
 			}
-
-			shouldHaveVision := slices.Contains(wantVision, id)
-			if caps.Vision != shouldHaveVision {
-				t.Errorf("%s: expected vision=%v, got %v", id, shouldHaveVision, caps.Vision)
+			if caps.MaxOutput != w.maxOutput {
+				t.Errorf("%s: expected maxOutput=%d (spec §3.1), got %d", id, w.maxOutput, caps.MaxOutput)
 			}
-
-			shouldHaveVideo := slices.Contains(wantVideo, id)
-			if caps.VideoInput != shouldHaveVideo {
-				t.Errorf("%s: expected videoInput=%v, got %v", id, shouldHaveVideo, caps.VideoInput)
+			if caps.Vision != w.vision {
+				t.Errorf("%s: expected vision=%v, got %v", id, w.vision, caps.Vision)
+			}
+			if caps.VideoInput != w.video {
+				t.Errorf("%s: expected videoInput=%v, got %v", id, w.video, caps.VideoInput)
 			}
 		})
 	}

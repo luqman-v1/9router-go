@@ -188,3 +188,53 @@ func TestForwardKimi_NonStreamingResponsesClientIsAggregated(t *testing.T) {
 		t.Errorf("aggregated body must carry upstream text, got %q", rec.Body.String())
 	}
 }
+
+// forwardKimi normalizes a client-supplied reasoning_effort onto the values
+// Kimi's backend accepts, so "auto", "none", "off" and "xhigh" are not
+// forwarded verbatim and answered with HTTP 400 (upstream decolua/9router#2427).
+func TestForwardKimi_NormalizesReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantEffort any // nil means the field must be dropped
+	}{
+		{name: "auto is normalized to high", body: `{"model":"kimi-k3","reasoning_effort":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`, wantEffort: "high"},
+		{name: "none is dropped", body: `{"model":"kimi-k3","reasoning_effort":"none","messages":[{"role":"user","content":"hi"}],"stream":true}`, wantEffort: nil},
+		{name: "off is dropped", body: `{"model":"kimi-k3","reasoning_effort":"off","messages":[{"role":"user","content":"hi"}],"stream":true}`, wantEffort: nil},
+		{name: "xhigh is normalized to max", body: `{"model":"kimi-k3","reasoning_effort":"xhigh","messages":[{"role":"user","content":"hi"}],"stream":true}`, wantEffort: "max"},
+		{name: "low passes through", body: `{"model":"kimi-k3","reasoning_effort":"low","messages":[{"role":"user","content":"hi"}],"stream":true}`, wantEffort: "low"},
+		{name: "medium passes through", body: `{"model":"kimi-k3","reasoning_effort":"medium","messages":[{"role":"user","content":"hi"}],"stream":true}`, wantEffort: "medium"},
+		{name: "high passes through", body: `{"model":"kimi-k3","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}],"stream":true}`, wantEffort: "high"},
+		{name: "max passes through", body: `{"model":"kimi-k3","reasoning_effort":"max","messages":[{"role":"user","content":"hi"}],"stream":true}`, wantEffort: "max"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			probe := newKimiProbe(t, kimiChatReply)
+			rec := httptest.NewRecorder()
+			req := &Request{
+				Ctx:      context.Background(),
+				Client:   probe.server.Client(),
+				Config:   kimiTestConfig(probe),
+				APIKey:   "sk-kimi",
+				Body:     []byte(tt.body),
+				IsStream: true,
+			}
+			if err := ForwardKimi(rec, req); err != nil {
+				t.Fatalf("ForwardKimi: %v", err)
+			}
+			got, has := probe.body["reasoning_effort"]
+			if tt.wantEffort == nil {
+				if has {
+					t.Errorf("reasoning_effort should be dropped, got %v", got)
+				}
+				return
+			}
+			if !has {
+				t.Fatalf("reasoning_effort missing, body=%v", probe.body)
+			}
+			if got != tt.wantEffort {
+				t.Errorf("reasoning_effort = %v, want %v", got, tt.wantEffort)
+			}
+		})
+	}
+}

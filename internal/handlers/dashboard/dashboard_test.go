@@ -115,8 +115,14 @@ func setupTestDB(t *testing.T) (*db.Repo, func()) {
 }
 
 func setupTestRouter(repo *db.Repo) chi.Router {
+	return setupTestRouterWith(repo, NewDashboardHandler(repo))
+}
+
+// setupTestRouterWith mounts the real route table over a caller-built handler,
+// so a test can inject an optional dependency (the model-health loop, say) and
+// still exercise the route param population the handler depends on.
+func setupTestRouterWith(repo *db.Repo, h *DashboardHandler) chi.Router {
 	r := chi.NewRouter()
-	h := NewDashboardHandler(repo)
 	RegisterRoutes(r, h)
 	return r
 }

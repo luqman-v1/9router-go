@@ -14,7 +14,13 @@
   } from './types'
   import { costIn } from '../../lib/currency.svelte'
 
-  let { stats = {} }: { stats?: StatsData } = $props()
+  interface Props {
+    stats?: StatsData
+    /** Custom provider nodes, so a synthetic id renders as its configured name. */
+    providerNodes?: { id: string; name?: string }[]
+  }
+
+  let { stats = {}, providerNodes = [] }: Props = $props()
 
   let tableView = $state<TableView>('model')
   let viewMode = $state<ViewMode>('costs')
@@ -65,7 +71,7 @@
       case 'provider':
         // byProvider is keyed by the provider id; the dashboard shows its
         // display name, so the column and the sort agree with what is drawn.
-        return providerDisplayName(key)
+        return providerDisplayName(key, providerNodes)
       default:
         return item.rawModel || key
     }

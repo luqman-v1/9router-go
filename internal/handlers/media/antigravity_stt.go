@@ -138,6 +138,11 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 		return fmt.Errorf("no API key found for antigravity connection %s", conn.ID)
 	}
 
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		return clientErr
+	}
+
 	refreshedKey, pid, err := h.ChatH.RefreshOAuthTokenIfExpired(conn.ID, apiKey)
 	if err == nil && refreshedKey != "" {
 		apiKey = refreshedKey
@@ -160,7 +165,7 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	if projectID == "" {
-		if p, _, _ := chat.FetchAntigravityProjectID(r.Context(), h.Client, apiKey); p != "" {
+		if p, _, _ := chat.FetchAntigravityProjectID(r.Context(), client, apiKey, connData); p != "" {
 			projectID = p
 			h.ChatH.StoreAntigravityProjectID(conn.ID, p)
 		}
@@ -232,10 +237,6 @@ func (h *MediaHandler) tryAntigravitySTTConn(w http.ResponseWriter, r *http.Requ
 	httpReq.Header.Set("X-Client-Name", "antigravity")
 	httpReq.Header.Set("X-Client-Version", providers.AntigravityIDEVersion)
 
-	client, clientErr := h.ChatH.GetClientForConnection(connData)
-	if clientErr != nil {
-		return clientErr
-	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("antigravity stt request failed: %w", err)

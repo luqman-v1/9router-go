@@ -182,7 +182,6 @@ func TestOllamaConnectionProxiesToConfiguredUpstream(t *testing.T) {
 		t.Fatalf("getProviderConfig: %v", err)
 	}
 
-
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
 	executeExecutor(t, rec, req, cfg, connData, []byte(`{"model":"gpt-oss:120b","messages":[{"role":"user","content":"hi"}]}`))

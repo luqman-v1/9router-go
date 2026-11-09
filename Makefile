@@ -19,6 +19,16 @@ endif
 ifeq ($(VERSION),)
 VERSION := 1.0.0
 endif
+# STABLE_VERSION is the release the documentation describes, which is not the
+# same thing as the build being developed. VERSION carries the experimental line
+# (1.9.15-exp.16); version.json carries the release `9router-go update`
+# advertises, which for that build is still the last stable one. The wiki is
+# built from this, so its footer and its "new" badges answer "which release do
+# these docs describe?" rather than "which binary was compiled?".
+STABLE_VERSION ?= $(strip $(shell cat version.json 2>/dev/null | grep -o '"latestVersion": *"[^"]*"' | cut -d'"' -f4))
+ifeq ($(STABLE_VERSION),)
+STABLE_VERSION := $(VERSION)
+endif
 # On Windows (cmd.exe), invoking `./$(BINARY_NAME)` fails with "'.' is not recognized".
 # On macOS/Linux, `.` is not on PATH, so a bare command fails with "command not found".
 ifeq ($(findstring Windows_NT,$(OS)),Windows_NT)
@@ -41,6 +51,20 @@ AUTO_UPDATE ?= false
 # Double quotes, not single: cmd.exe treats ' as a literal character, so the
 # single-quoted form passed a quoted symbol name straight to the linker.
 LDFLAGS := -s -w -X "9router/proxy/internal/updater.CurrentVersion=$(VERSION)"
+
+# Portability contract (§4.F): every target builds with cgo disabled, so the
+# release stays one pure-Go binary per platform. Leaving CGO_ENABLED at its
+# implicit "1 when a C compiler is installed" is not harmless: the gcc-compiled
+# runtime/cgo shims inherit the build host's -march, and a build made on a
+# modern runner emitted AVX in x_cgo_getstackbound. That binary dies with
+# SIGILL before main() on Celeron/Pentium-class x86-64 CPUs (e.g. N4000), which
+# have SSE4.2 but no AVX. GOAMD64=v1 pins the Go half to the same baseline;
+# CGO_ENABLED=0 removes the C half entirely. Both stay overridable for anyone
+# who explicitly asks for cgo.
+CGO_ENABLED ?= 0
+GOAMD64 ?= v1
+export CGO_ENABLED
+export GOAMD64
 
 .PHONY: build run dev version update test test-short test-live test-integration vet vet-integration bench bench-go cross mitm-enable mitm-disable mitm-status docker docker-build clean help web-build web-dev changelog-merge
 
@@ -128,6 +152,16 @@ changelog-merge:
 	@test -n "$(TAG)" || { echo "TAG is required: make changelog-merge TAG=v1.9.11"; exit 1; }
 	go run ./cmd/changelog-merge --tag $(TAG)
 
+# release is the whole manual flow in one command: bump-version.sh folds the
+# version into VERSION/updater.go (+ version.json for stable), changelog-merge
+# files the pending fragments, then it commits "chore: bump to <ver>", tags and
+# pushes. release.yml validates tag ↔ VERSION on the pushed tag, so pushing the
+# tag last (which release.sh does) is what keeps the gate green.
+## release — one-command release: bump + changelog + commit + tag + push (VER=required)
+release:
+	@test -n "$(VER)" || { echo "VER is required: make release VER=1.9.16-exp.3"; exit 1; }
+	./scripts/release.sh $(VER)
+
 ## test — run all unit tests
 test:
 	go test ./... -v
@@ -197,7 +231,7 @@ bench-go:
 # so an empty GOARCH can never leak into the normal build target.
 CROSS_TARGETS := linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64
 
-ifneq ($(filter cross-one,$(MAKECMDGOALS)),)
+ifneq ($(filter cross-one cross-tray-one,$(MAKECMDGOALS)),)
 export GOOS := $(CROSS_OS)
 export GOARCH := $(CROSS_ARCH)
 endif
@@ -206,6 +240,16 @@ CROSS_BIN := 9router-go
 
 cross-linux-amd64:
 	@$(MAKE) --no-print-directory cross-one CROSS_OS=linux CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-linux-amd64
+
+# Explicit no-AVX asset for x86-64 CPUs that stop at SSE4.2 (Celeron/Pentium
+# N-series, older Atom, some VMs). It is built by the same cross-one recipe and
+# therefore carries the same CGO_ENABLED=0/GOAMD64=v1 settings as every other
+# target, which makes it byte-identical to 9router-go-linux-amd64 today. The
+# separate name is the point: install.sh picks an asset by name, so an operator
+# on an affected CPU has a stable thing to ask for, and a future build change
+# cannot silently drop the baseline guarantee for them.
+cross-linux-amd64-noavx:
+	@$(MAKE) --no-print-directory cross-one CROSS_OS=linux CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-linux-amd64-noavx
 
 cross-linux-arm64:
 	@$(MAKE) --no-print-directory cross-one CROSS_OS=linux CROSS_ARCH=arm64 OUT=$(CROSS_BIN)-linux-arm64
@@ -218,17 +262,21 @@ cross-darwin-arm64:
 
 cross-windows-amd64:
 	@$(MAKE) --no-print-directory cross-one CROSS_OS=windows CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-windows-amd64.exe
+	@$(MAKE) --no-print-directory cross-tray-one CROSS_OS=windows CROSS_ARCH=amd64 OUT=$(CROSS_BIN)-tray-windows-amd64.exe
 
-CROSS_BUILD_TARGETS := cross-linux-amd64 cross-linux-arm64 cross-darwin-amd64 cross-darwin-arm64 cross-windows-amd64
+CROSS_BUILD_TARGETS := cross-linux-amd64 cross-linux-amd64-noavx cross-linux-arm64 cross-darwin-amd64 cross-darwin-arm64 cross-windows-amd64
 
 cross: web-build
 	@$(MAKE) -j $(CROSS_BUILD_TARGETS)
 	@ls -lh $(CROSS_BIN)-*
 	@(sha256sum $(CROSS_BIN)-* || shasum -a 256 $(CROSS_BIN)-*) > SHA256SUMS.txt
 	@cat SHA256SUMS.txt
-.PHONY: cross-one $(CROSS_BUILD_TARGETS)
+.PHONY: cross-one cross-tray-one $(CROSS_BUILD_TARGETS)
 cross-one:
 	go build -ldflags="$(LDFLAGS)" -o $(OUT) ./cmd/9router-go/
+
+cross-tray-one:
+	go build -ldflags="$(LDFLAGS)" -o $(OUT) ./cmd/9router-tray/
 ## mitm-enable — start MITM proxy
 mitm-enable: build
 	$(BINARY) mitm enable
@@ -249,10 +297,26 @@ docker:
 docker-build:
 	docker build -t $(BINARY_NAME) .
 
+## wiki-build — generate the project page + wiki into _site/
+## Two versions are passed on purpose. -version is the build being developed
+## (VERSION, an experimental line such as 1.9.15-exp.16); -stable-version is the
+## release the docs describe, read from version.json — the manifest `9router-go
+## update` advertises, which for an experimental build is still the last stable
+## one. Rendering the build instead told readers the docs described a release
+## nobody had. The release workflow requires the two to differ.
+wiki-build:
+	go run ./tools/sitegen -out _site -version "$(VERSION)" -stable-version "$(STABLE_VERSION)"
+	@echo "Site written to _site/ — serve with: cd _site && python -m http.server 8000"
+
+## wiki-serve — generate and serve the site locally on :8000
+wiki-serve: wiki-build
+	cd _site && python -m http.server 8000
+
 ## clean — remove build artifacts
 clean:
 	rm -f $(BINARY_NAME) $(BINARY_NAME)-*
 	rm -rf web/dist
+	rm -rf _site
 
 ## help — show targets
 help:

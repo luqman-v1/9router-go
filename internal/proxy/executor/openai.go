@@ -11,13 +11,80 @@ import (
 
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/guardrails"
+	"9router/proxy/internal/jsonfence"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/translator"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 )
+
+// sseSniffBytes bounds the head read that decides a mislabelled stream: SSE
+// always opens with a `data:`/`event:` field line, so the first kilobyte is
+// verdict enough and the rest of the stream stays live.
+const sseSniffBytes = 1024
+
+// sniffStreamHead reads the head of a live body: it stops as soon as one
+// field line has arrived (an SSE body announces itself in its first field
+// line) or the cap is reached, without waiting for more bytes than the peer
+// has sent. A plain io.ReadAll(LimitReader(...)) would block here until the
+// cap fills or the stream ends — exactly the buffering this sniff exists to
+// avoid.
+//
+// Leading blank lines are skipped rather than ending the sniff. A provider
+// that flushes an empty keepalive line before its first frame is still a
+// stream, and a verdict taken on that blank line folds the whole turn into a
+// single document — a client that asked for a stream then reads one.
+func sniffStreamHead(r io.Reader) []byte {
+	buf := make([]byte, sseSniffBytes)
+	head := make([]byte, 0, sseSniffBytes)
+	for len(head) < sseSniffBytes {
+		n, rerr := r.Read(buf[len(head):])
+		head = append(head, buf[len(head):len(head)+n]...)
+		if rerr != nil || n == 0 {
+			break
+		}
+		if bytes.IndexByte(head[firstLineStart(head):], '\n') >= 0 {
+			break
+		}
+	}
+	return head
+}
+
+// firstLineStart returns the offset of the first line in head that carries
+// something, so the sniff reads past leading blank lines instead of deciding
+// on one. SSE frame separators are blank lines, and a chunked provider may
+// flush one before its first field.
+func firstLineStart(head []byte) int {
+	for i := range head {
+		switch head[i] {
+		case '\n':
+			continue
+		case '\r':
+			// A trailing CR is undecided until the next byte arrives: the
+			// sniff reads on rather than judging the line.
+			if i+1 == len(head) || head[i+1] == '\n' {
+				continue
+			}
+			return i
+		default:
+			return i
+		}
+	}
+	return len(head)
+}
+
+// replayBody replays an already-read head ahead of a live upstream body while
+// keeping that body's Close. A NopCloser here would leave the socket
+// unclosable: the stall watchdog ends a stuck stream by closing the reader,
+// and the deferred close releases the connection, so both have to reach the
+// upstream body rather than a wrapper that swallows the close.
+type replayBody struct {
+	io.Reader
+	io.Closer
+}
 
 // renameMaxTokensBody moves max_tokens onto max_completion_tokens and drops
 // the old key, keeping an explicit client-sent target value. A body without
@@ -35,11 +102,178 @@ func renameMaxTokensBody(body []byte) []byte {
 		m["max_completion_tokens"] = raw
 	}
 	delete(m, "max_tokens")
-	out, err := json.Marshal(m)
+	out, err := marshalStable(m)
 	if err != nil {
 		return body
 	}
 	return out
+}
+
+// volcengineArkGLM5OutputCeiling is Volcengine Ark's output-token ceiling for
+// GLM-5 models. Ark answers HTTP 400 for a GLM-5 request that asks for more
+// than this, so a client budget above it is folded down before dispatch.
+const volcengineArkGLM5OutputCeiling = 4096
+
+// clampVolcengineArkGLM5OutputTokens folds a GLM-5 output budget above the
+// Ark ceiling down to the model's capability ceiling (capped at Ark's 4096).
+// A budget at or below the ceiling, a request that sets no budget, and every
+// non-GLM-5 model are left byte-identical. All three output-budget spellings
+// are clamped: max_tokens, max_completion_tokens and max_output_tokens.
+func clampVolcengineArkGLM5OutputTokens(provider string, body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	model, _ := m["model"].(string)
+	if !isVolcengineArkGLM5Model(model) {
+		return body
+	}
+	// Ark's GLM-5 output ceiling, further bounded by the model's declared
+	// maxOutput from the capability registry when one is specified.
+	maxOutputCap := volcengineArkGLM5OutputCeiling
+	if maxOutput := providers.GetCapabilitiesForModel(provider, model).MaxOutput; maxOutput > 0 && maxOutput < maxOutputCap {
+		maxOutputCap = maxOutput
+	}
+	changed := false
+	for _, field := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+		v, ok := m[field]
+		if !ok {
+			continue
+		}
+		n, ok := outputBudgetOf(v)
+		if !ok || n <= int64(maxOutputCap) {
+			continue
+		}
+		m[field] = maxOutputCap
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	out, err := marshalStable(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// isVolcengineArkGLM5Model reports whether a model id is a GLM-5 model whose
+// output is capped at the Ark ceiling: any model id containing 'glm-5'
+// (case-insensitive), e.g. bare glm-5*, GLM-5.1, glm-5-turbo,
+// zai-org/GLM-5.2, or a Doubao-family id carrying the glm-5 qualifier.
+func isVolcengineArkGLM5Model(model string) bool {
+	return strings.Contains(strings.ToLower(model), "glm-5")
+}
+
+// DowngradeJsonSchemaToJSONObject downgrades response_format from "json_schema"
+// to {"type":"json_object"} for providers like DeepSeek or openai-compatible nodes
+// that do not support OpenAI Structured Outputs (upstream decolua/9router PR #5304).
+func DowngradeJsonSchemaToJSONObject(body []byte) []byte {
+	var m map[string]jsontext.Value
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	rawRF, ok := m["response_format"]
+	if !ok || len(rawRF) == 0 {
+		return body
+	}
+	var rf struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(rawRF, &rf); err != nil {
+		return body
+	}
+	if rf.Type != "json_schema" {
+		return body
+	}
+	m["response_format"] = jsontext.Value(`{"type":"json_object"}`)
+	if out, err := json.Marshal(m); err == nil {
+		return out
+	}
+	return body
+}
+
+// normalizeGroqGPTOSSRequest patches a Groq gpt-oss request so strict JSON
+// validation survives the model's Harmony reasoning channel. Groq answers
+// 400 json_validate_failed ("Failed to validate JSON") when a structured
+// response_format rides next to a raw/unparsed reasoning stream that leaks
+// analysis-channel text into the content. Pinning reasoning_format to
+// "parsed" moves the chain-of-thought into message.reasoning and leaves the
+// JSON payload clean. A client-supplied reasoning_format is respected.
+// Non-gpt-oss Groq models and non-JSON requests are left byte-identical.
+//
+// It also clamps reasoning_effort to Groq's enum for gpt-oss
+// (low|medium|high, probed live 2026-11-07: minimal/xhigh/auto/none/max all
+// answer 400). Out-of-range levels coming from the unified thinking pass
+// (the capability table advertises minimal..xhigh for gpt-oss) are folded to
+// the nearest valid level by rank; a valid level or an absent effort is
+// left untouched. This clamp runs on every gpt-oss request, not only JSON
+// ones, because the 400 is unrelated to response_format.
+func normalizeGroqGPTOSSRequest(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	model, _ := m["model"].(string)
+	if !isGroqGPTOSSModel(model) {
+		return body
+	}
+	changed := false
+	if clamped, ok := clampGroqReasoningEffort(m["reasoning_effort"]); ok {
+		m["reasoning_effort"] = clamped
+		changed = true
+	}
+	if rf, ok := m["response_format"]; ok {
+		if rfMap, ok := rf.(map[string]any); ok {
+			if rfType, _ := rfMap["type"].(string); rfType == "json_object" || rfType == "json_schema" {
+				if _, exists := m["reasoning_format"]; !exists {
+					m["reasoning_format"] = "parsed"
+					changed = true
+				}
+			}
+		}
+	}
+	if !changed {
+		return body
+	}
+	if out, err := marshalStable(m); err == nil {
+		return out
+	}
+	return body
+}
+
+// clampGroqReasoningEffort folds a reasoning_effort outside Groq's
+// gpt-oss enum (low|medium|high) to the nearest valid level by rank.
+// Ranking follows the unified effort vocabulary (none < minimal < low <
+// medium < high < xhigh < max): anything at or below low becomes low,
+// anything at or above high becomes high, anything else (auto, unknown,
+// non-string) becomes medium. (clamped, true) when the wire value must
+// change; a valid level or an absent effort returns ("", false).
+func clampGroqReasoningEffort(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok {
+		if v == nil {
+			return "", false
+		}
+		return "medium", true
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "low", "medium", "high":
+		return "", false
+	case "", "none", "minimal", "default":
+		return "low", true
+	case "xhigh", "max", "ultra":
+		return "high", true
+	}
+	return "medium", true
+}
+
+// isGroqGPTOSSModel reports whether a Groq wire model id is a gpt-oss
+// Harmony model (openai/gpt-oss-120b, openai/gpt-oss-20b) whose reasoning
+// stream must be parsed for structured outputs to validate.
+func isGroqGPTOSSModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(lower, "gpt-oss")
 }
 
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
@@ -50,6 +284,19 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	// 'max_completion_tokens' instead".
 	if req.Provider == "openai" {
 		req.Body = renameMaxTokensBody(req.Body)
+	}
+	if req.Provider == "deepseek" {
+		req.Body = DowngradeJsonSchemaToJSONObject(req.Body)
+	}
+	if req.Provider == "groq" {
+		req.Body = normalizeGroqGPTOSSRequest(req.Body)
+	}
+	if req.Provider == "volcengine-ark" {
+		// Volcengine Ark answers HTTP 400 when a GLM-5 model is asked for more
+		// than its output-token ceiling, so a client budget above it is folded
+		// down before the request leaves the upstream. The ceiling is the model's
+		// declared maxOutput from the capability registry, capped at Ark's 4096.
+		req.Body = clampVolcengineArkGLM5OutputTokens(req.Provider, req.Body)
 	}
 	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
 	if err != nil {
@@ -72,25 +319,32 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	if req.IsStream {
 		streamBody := io.ReadCloser(resp.Body)
 		if !isEventStreamResponse(resp.Header) {
-			// A 200 that is not an event stream is one document, not a
-			// stream. Piping it through the SSE scanner yields zero frames,
+			// A 200 that is not an event stream is usually one document, not
+			// a stream. Piping it through the SSE scanner yields zero frames,
 			// SSECopy closes it with [DONE], and the client reads a
 			// successful empty completion while the router never gets a
-			// chance to fail over. Decide here, before any header is
-			// written: an SSE body mislabelled as JSON still streams, an
-			// HTML error page or a blank 200 is validated as JSON.
-			data, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
-			if rerr != nil {
-				return fmt.Errorf("read upstream body: %w", rerr)
+			// chance to fail over. A bounded head sniff decides instead of a
+			// whole-body read: SSE always announces itself in the first
+			// field lines, so a provider that mislabels its stream as JSON
+			// still streams frame by frame, and only a genuine document (an
+			// HTML error page, a blank 200) is read whole and validated as
+			// JSON.
+			head := sniffStreamHead(resp.Body)
+			if proxy.LooksLikeSSE(head) {
+				// An event stream the provider mislabelled: hand the sniffed
+				// head back and let the rest stream live. The upstream body
+				// stays the Closer so the stall watchdog and the deferred
+				// close can still reach the socket.
+				streamBody = replayBody{Reader: io.MultiReader(bytes.NewReader(head), resp.Body), Closer: resp.Body}
+			} else {
+				rest, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes-int64(len(head))))
+				if rerr != nil {
+					return fmt.Errorf("read upstream body: %w", rerr)
+				}
+				return jsonResponse(req.Ctx, w, bytes.NewReader(append(head, rest...)), req.TranslateResp, req.ResponseBuf)
 			}
-			if !proxy.LooksLikeSSE(data) {
-				return jsonResponse(req.Ctx, w, bytes.NewReader(data), req.TranslateResp, req.ResponseBuf)
-			}
-			// An event stream the provider mislabelled: replay it from the
-			// buffer so a streaming client still gets its stream.
-			streamBody = io.NopCloser(bytes.NewReader(data))
 		}
-		stallReader := proxy.NewStallReaderWithContext(req.Ctx, streamBody, 0, "openai")
+		stallReader := proxy.NewStallReaderWithContext(req.Ctx, streamBody, req.Config.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "openai")
 		bodyCloser = stallReader
 		if req.UpstreamClaude {
 			// Upstream is Claude Messages, client is OpenAI (/v1/chat/completions):
@@ -204,11 +458,9 @@ func sseStream(o sseStreamOpts) error {
 						doneSent = true
 						return
 					}
-					if ttft != nil && *ttft == 0 {
-						*ttft = time.Since(startTime).Milliseconds()
-					}
+					markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 					if buf != nil {
-						buf.Write(ev.Payload)
+						_, _ = buf.Write(ev.Payload)
 					}
 					var line []byte
 					if ev.Type != "" {
@@ -247,12 +499,14 @@ func sseStream(o sseStreamOpts) error {
 		if liftAliases {
 			patchers = append(patchers, liftReasoningAliasesPayload)
 		}
+		// One stateful decoder per stream: visible Composer text can span chunks and
+		// the  closing tag can be split across chunk boundaries.
+		composerDecoder := &composerThinkingDecoder{}
+		patchers = append(patchers, composerDecoder.Process)
 		return proxy.SSECopy(hw, upstream, flusher, func(chunk []byte) {
-			if ttft != nil && *ttft == 0 {
-				*ttft = time.Since(startTime).Milliseconds()
-			}
+			markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 			if buf != nil {
-				buf.Write(chunk)
+				_, _ = buf.Write(chunk)
 			}
 			captureUsageFromSSEChunk(ctx, chunk)
 		}, patchers...)
@@ -260,6 +514,12 @@ func sseStream(o sseStreamOpts) error {
 
 	sessionKey := translator.NewSessionKey("stream")
 	defer translator.ClearStreamState(sessionKey)
+	// Body-size input estimate seeded before the first chunk: the terminal
+	// usage block falls back to it when the upstream never reports usage, so
+	// the client's context meter still moves and auto-compact can fire.
+	if est := translator.PromptEstimateFromContext(ctx); est > 0 {
+		translator.SeedStreamPromptEstimate(sessionKey, est)
+	}
 	finished := false
 	err := proxy.ScanStream(upstream, func(chunk []byte) {
 		translated, err := translator.TranslateOpenAIToClaudeStreamSession(sessionKey, chunk)
@@ -273,17 +533,25 @@ func sseStream(o sseStreamOpts) error {
 		if bytes.Contains(translated, []byte("[DONE]")) {
 			finished = true
 		}
-		if ttft != nil && *ttft == 0 {
-			*ttft = time.Since(startTime).Milliseconds()
-		}
+		markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 		if buf != nil {
-			buf.Write(translated)
+			_, _ = buf.Write(translated)
 		}
 		hw.Write(translated)
 		if flusher != nil {
 			flusher.Flush()
 		}
 	})
+	// A stream that ends without [DONE] still owes the client its terminal:
+	// the finish chunk may have deferred it waiting for a usage chunk that
+	// never came, or the upstream died mid-turn. Both close here, before the
+	// shutdown [DONE] so the client sees delta+stop then [DONE].
+	if endChunk := translator.EnsureStreamClosed(sessionKey); len(endChunk) > 0 {
+		_, _ = hw.Write(endChunk)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 	// Same shutdown terminator as the chat path: end with [DONE] on abort.
 	if shutdown.Fired() && !finished {
 		hw.Write([]byte("data: [DONE]\n\n"))
@@ -312,7 +580,11 @@ func captureUsageFromSSEChunk(ctx context.Context, chunk []byte) {
 		if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
 			return
 		}
-		if usage := translator.ParseResponseUsage(payload); usage != nil {
+		usage := translator.ParseResponseUsage(payload)
+		if usage == nil {
+			usage = translator.ParseResponsesUsage(payload)
+		}
+		if usage != nil {
 			translator.SetUsage(ctx, usage)
 		}
 	})
@@ -348,7 +620,7 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 			return &proxy.ZeroContentError{Body: body}
 		}
 		// The last member of a combo serves its zero-content response normally (FR3).
-	} else if err := proxy.EmptyUpstreamError(body); err != nil {
+	} else if err := proxy.EmptyUpstreamError(body); err != nil && !proxy.EmptyCompletionAllowed(ctx) {
 		return err
 	}
 
@@ -363,6 +635,13 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 		return guardrailBlockFailure(gerr)
 	}
 	body = filtered
+	// A model asked for machine-readable JSON may still answer with a ```json
+	// fence. Unwrap it here — after the guardrail has seen the model's own
+	// words, before either write path hands bytes to the client — so the
+	// unwrapped body is what the log buffer and both the OpenAI and Claude
+	// write paths send. Only a body whose contents parse as JSON is unwrapped,
+	// and only for a request that asked for JSON.
+	body = jsonfence.ApplyContents(ctx, body)
 
 	if buf != nil {
 		buf.Write(body)

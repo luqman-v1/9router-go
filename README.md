@@ -87,6 +87,14 @@ curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.s
 irm https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.ps1 | iex
 ```
 
+> **CPU without AVX?** Celeron/Pentium N-series, older Atom and some VMs max out at SSE4.2, and an x86-64 binary built for a newer microarchitecture dies with `Illegal instruction` before it starts. Use the no-AVX asset (linux/amd64) instead of the default one:
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install-noavx.sh | bash
+> ```
+>
+> It installs the same binary from the `9router-go-linux-amd64-noavx` release asset, which is built with `CGO_ENABLED=0` and `GOAMD64=v1`. `VARIANT=noavx` on `install.sh` does the same thing.
+
 🎉 Then start it (defaults: port `20130`, data `~/.9router` — no flags needed):
 
 ```bash
@@ -176,6 +184,24 @@ docker run -d --name 9router-go --restart unless-stopped \
 - 👥 Per-provider executors, OAuth refresh, reactive 401 retry
 - 📡 Live usage + console-log SSE streams, stall detection
 - 💾 SQLite WAL persistence, outbound proxy support, self-update, MITM commands, Docker, cross-compilation
+
+For sequential combo routing, set **Model response timeout** in seconds (decimals
+such as `5.3` are fine) in the combo's Edit dialog, or from the compact field on the
+combo card. Empty or `0` disables it. The timer covers each model
+candidate except the last, including connection selection and waiting for a
+usable response. If it expires before output is committed, the router cancels
+that candidate and tries the next. The last candidate keeps the gateway's
+normal deadline, so the setting never makes a combo fail sooner than it would
+without it (#744). An active stream is not cut off by this setting. For
+non-streaming requests, the timer covers the wait for the complete response.
+Fusion panel timing is separate. A model that times out is left out of that
+combo for a
+grace period (default 5 minutes, set per combo under the timeout in the Edit
+dialog; `0` re-includes it on the next request) and then rejoins the chain. If
+every model in the chain is inside its grace period, the full chain is used. The
+pause is held in memory and resets on restart. Stored as
+`firstTokenGraceMs` next to the timeout. The dashboard shows seconds; the setting is stored in
+milliseconds as `comboStrategies[comboName].firstTokenTimeoutMs`.
 
 ---
 
@@ -422,13 +448,18 @@ Issues and pull requests use templates, so pick the right one rather than openin
 
 PRs follow the checks CI runs: `go vet ./...`, `go test -count=1 ./...`, `make test-integration`, plus `cd web && bun test` and `make vet-svelte` for anything touching the dashboard. Before writing code, skim [`AGENTS.md`](AGENTS.md) — provider isolation and the Go/Svelte conventions there are enforced by review.
 
+Everyone whose commit landed in the repository is credited on the wiki's [**Owner & Contributors**](https://luqman-v1.github.io/9router-go/team.html) page — photo, username, and contribution count, generated from the GitHub API.
 
 ## 📚 Docs
+
+**Full documentation, searchable:** [**9router-go Wiki**](https://luqman-v1.github.io/9router-go/) — installation, usage, API reference, dashboard, providers, architecture, database, CLI, and a screenshot gallery. Every page supports `?q=` search and `#section` deep links.
+
+Repository references:
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — routing, providers, runtime layout
 - [`DATABASE.md`](DATABASE.md) — SQLite schema & operator contract
 - [`ROADMAP.md`](ROADMAP.md) — proposals only, not current behavior
-- [`CHANGELOG.md`](CHANGELOG.md) — release history (Go **v1.9.9**, upstream baseline `decolua/9router` v0.5.85). Work merged since the last tag lives in [`.changes/`](.changes/) and is folded in at the next release; the dashboard's changelog modal shows both.
+- [`CHANGELOG.md`](CHANGELOG.md) — release history (Go **v1.9.15**, upstream baseline `decolua/9router`). Work merged since the last tag lives in [`.changes/`](.changes/) and is folded in at the next release; the dashboard's changelog modal shows both. Check what you are running with `9router-go version`.
 - [`docs/TELEGRAM_RELEASE_NOTIFICATIONS.md`](docs/TELEGRAM_RELEASE_NOTIFICATIONS.md) — one-time setup for the release notice posted to Telegram
 
 ## Credits

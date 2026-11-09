@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'bun:test'
 import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS, PROVIDER_MODELS } from './models'
-import { PROVIDER_CATALOG } from './providers'
+import { PROVIDER_CATALOG, __setProviderCatalogForTest } from './providers'
+import { parseProviderRegistry } from './providers.registry-test'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+// The catalog is served by the Go registry, so the assertions run against that
+// file rather than a TypeScript copy.
+__setProviderCatalogForTest(
+  parseProviderRegistry(readFileSync(resolve(import.meta.dirname, '../../../internal/providers/provider_registry.go'), 'utf8')),
+)
 
 // PROVIDER_MODELS is keyed by provider id, while PROVIDER_ID_TO_ALIAS holds the
 // short display prefix (uiAlias) used to render `cmc/<model>`. The two only
@@ -12,7 +20,7 @@ describe('getModelsByProviderId', () => {
 
     const models = getModelsByProviderId('commandcode')
 
-    expect(models.length).toBe(22)
+    expect(models.length).toBe(23)
     expect(models.map((m) => m.id)).toContain('deepseek/deepseek-v4-pro')
     expect(models.map((m) => m.id)).toContain('nvidia/nemotron-3-ultra-550b-a55b')
   })
@@ -48,6 +56,7 @@ describe('commandcode catalog', () => {
   const UPSTREAM_REGISTRY_ORDER = [
     'deepseek/deepseek-v4-pro',
     'deepseek/deepseek-v4-flash',
+    'moonshotai/Kimi-K3.1-Pro',
     'moonshotai/Kimi-K2.7-Code',
     'moonshotai/Kimi-K2.7-Code-Highspeed',
     'moonshotai/Kimi-K2.6',

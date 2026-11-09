@@ -13,19 +13,25 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 
+	"9router/proxy/internal/customjson"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/media"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
 )
+
+// probeMessageContent is the short natural test message sent during probe calls (~22 chars).
+const probeMessageContent = "Hi there, how are you?"
 
 // ClassifyUpstreamNetworkError classifies network errors during probe/models fetch.
 // Parity with decolua/9router#4843.
@@ -160,6 +166,10 @@ func (h *DashboardHandler) HandleValidateProvider(w http.ResponseWriter, r *http
 		Provider             string         `json:"provider"`
 		APIKey               string         `json:"apiKey"`
 		ProviderSpecificData map[string]any `json:"providerSpecificData"`
+		// ValidateOnly and ModelID only apply to custom JSON nodes: saving a
+		// connection checks configuration, a test request names its model.
+		ValidateOnly bool   `json:"validateOnly"`
+		ModelID      string `json:"modelId"`
 	}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -177,6 +187,10 @@ func (h *DashboardHandler) HandleValidateProvider(w http.ResponseWriter, r *http
 	// Custom provider nodes (OpenAI-compatible, Anthropic-compatible, Custom Embedding)
 	if h.Repo != nil {
 		if node, nodeData, err := h.Repo.GetProviderNodeByID(provider); err == nil && node != nil {
+			if nodeData != nil && nodeData.APIType == customjson.APIType {
+				handlerutil.WriteJSON(w, http.StatusOK, validateCustomJSONConnection(r.Context(), nodeData, req.APIKey, strings.TrimSpace(req.ModelID), req.ValidateOnly))
+				return
+			}
 			h.validateProviderNodeConnection(w, r, node, nodeData, req.APIKey, req.ProviderSpecificData)
 			return
 		}
@@ -296,7 +310,7 @@ func (h *DashboardHandler) validateProviderNodeConnection(
 		payload, _ := json.Marshal(map[string]any{
 			"model":      model,
 			"max_tokens": 1,
-			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+			"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 		})
 		status, _, err := validateProbeDo(ctx, http.MethodPost, base+"/v1/messages", map[string]string{
 			"x-api-key":         apiKey,
@@ -387,7 +401,7 @@ func (h *DashboardHandler) validateProviderNodeConnection(
 	chatPayload, _ := json.Marshal(map[string]any{
 		"model":      model,
 		"max_tokens": 1,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 	})
 	chatStatus, _, chatErr := validateProbeDo(ctx, http.MethodPost, base+"/chat/completions", map[string]string{
 		"Authorization": "Bearer " + apiKey,
@@ -430,6 +444,9 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		if provider == "gemini-web" && strings.TrimSpace(apiKey) != "" {
 			return validateGeminiWeb(ctx, apiKey)
 		}
+		if provider == "opencode" {
+			return validateOpencode(ctx, cfg, psd)
+		}
 		return validateOutcome{valid: true, supported: true}
 	}
 
@@ -451,6 +468,9 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validateXiaomiTokenplan(ctx, apiKey, psd)
 	case "grok-web":
 		return validateGrokWeb(ctx, apiKey)
+	case "uc-web":
+		valid, message := media.ValidateUcWebCookie(ctx, apiKey)
+		return validateOutcome{valid: valid, supported: true, message: message}
 	case "perplexity-web":
 		return validatePerplexityWeb(ctx, apiKey)
 	case "deepseek-web":
@@ -459,8 +479,26 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validateGeminiWeb(ctx, apiKey)
 	case "qoder", "qoder-cn":
 		return validateQoder(ctx, provider, apiKey, psd)
+	case "runcrate":
+		// Probe the billing/balance endpoint to validate the API key.
+		headers := validateAuthHeaders(cfg, apiKey)
+		headers["Accept"] = "application/json"
+		status, _, err := validateProbeDo(ctx, http.MethodGet,
+			"https://www.runcrate.ai/api/v1/billing/balance", headers, nil)
+		if err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return validateOutcome{supported: true, message: "Invalid API key"}
+		}
+		if status < 200 || status >= 300 {
+			return validateOutcome{supported: true, message: fmt.Sprintf("Runcrate API error (%d)", status)}
+		}
+		return validateOutcome{valid: true, supported: true}
 	case "v1m":
 		return validateV1M(ctx, apiKey)
+	case "nace":
+		return validateSystemOneLane(ctx, apiKey, naceProbeURL, naceProbeModel)
 	case "commandcode":
 		// The registry's /alpha/generate consumes credits and needs a
 		// conversation id, so only whoami can validate a key against this
@@ -510,7 +548,7 @@ func validateAnthropicStyle(ctx context.Context, provider string, cfg providers.
 	payload, _ := json.Marshal(map[string]any{
 		"model":      validateDefaultModel(provider),
 		"max_tokens": 1,
-		"messages":   []map[string]string{{"role": "user", "content": "test"}},
+		"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 	})
 	headers := validateAuthHeaders(cfg, apiKey)
 	headers["anthropic-version"] = "2023-06-01"
@@ -547,7 +585,7 @@ func validateGeneric(ctx context.Context, provider string, cfg providers.Provide
 	// Ambiguous /models answer (404, 405, 429…) — fall back to a chat probe.
 	payload, _ := json.Marshal(map[string]any{
 		"model":      validateDefaultModel(provider),
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 		"max_tokens": 1,
 	})
 	status, _, err = validateProbeDo(ctx, http.MethodPost, cfg.BaseURL, headers, payload)
@@ -563,7 +601,7 @@ func validateGeneric(ctx context.Context, provider string, cfg providers.Provide
 func validateNous(ctx context.Context, apiKey string) validateOutcome {
 	payload, _ := json.Marshal(map[string]any{
 		"model":      providers.NousValidationModel,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 		"max_tokens": 1,
 		"stream":     false,
 	})
@@ -586,14 +624,14 @@ func validateNous(ctx context.Context, apiKey string) validateOutcome {
 func validateCloudflareAI(ctx context.Context, cfg providers.ProviderConfig, apiKey string, psd map[string]any) validateOutcome {
 	accountID := psdStr(psd, "accountId")
 	if accountID == "" {
-		accountID = cloudflareAccountFromBaseURL(cfg.BaseURL)
+		accountID = os.Getenv("CLOUDFLARE_ACCOUNT_ID")
 	}
 	if accountID == "" {
 		return validateOutcome{supported: true, message: "Missing Account ID"}
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"model":      validateDefaultModel("cloudflare-ai"),
-		"messages":   []map[string]string{{"role": "user", "content": "test"}},
+		"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 		"max_tokens": 1,
 	})
 	url := "https://api.cloudflare.com/client/v4/accounts/" + accountID + "/ai/v1/chat/completions"
@@ -612,17 +650,17 @@ func validateCloudflareAI(ctx context.Context, cfg providers.ProviderConfig, api
 	return out
 }
 
-// validateV1M probes v1m's only endpoint. The registry ships no /models for
-// it, so the cheapest call that proves the key works is a one-token System One
-// evaluation; a rejected body still proves the credential, so only 401/403
-// count as invalid.
-func validateV1M(ctx context.Context, apiKey string) validateOutcome {
+// validateSystemOneLane proves a key against a System One lane with the
+// cheapest call the protocol offers: one single-token noul evaluation. Both
+// v1m and Nace Drex answer exactly this shape, so the body, the auth header
+// and the rule that only a 401/403 means an invalid key are shared.
+func validateSystemOneLane(ctx context.Context, apiKey, probeURL, probeModel string) validateOutcome {
 	payload, _ := json.Marshal(map[string]any{
-		"model":     v1mProbeModel,
+		"model":     probeModel,
 		"state":     "probe",
 		"questions": map[string]any{"probe": map[string]string{"type": "noul"}},
 	})
-	status, _, err := validateProbeDo(ctx, http.MethodPost, v1mProbeURL, map[string]string{
+	status, _, err := validateProbeDo(ctx, http.MethodPost, probeURL, map[string]string{
 		"Authorization": "Bearer " + apiKey,
 		"Content-Type":  "application/json",
 	}, payload)
@@ -635,19 +673,8 @@ func validateV1M(ctx context.Context, apiKey string) validateOutcome {
 	}
 }
 
-// cloudflareAccountFromBaseURL extracts the account id baked into the registry
-// BaseURL from a CLOUDFLARE_ACCOUNT_ID env var, if any.
-func cloudflareAccountFromBaseURL(baseURL string) string {
-	const marker = "/accounts/"
-	idx := strings.Index(baseURL, marker)
-	if idx < 0 {
-		return ""
-	}
-	rest := baseURL[idx+len(marker):]
-	if end := strings.Index(rest, "/"); end >= 0 {
-		return rest[:end]
-	}
-	return rest
+func validateV1M(ctx context.Context, apiKey string) validateOutcome {
+	return validateSystemOneLane(ctx, apiKey, v1mProbeURL, v1mProbeModel)
 }
 
 func validateAzure(ctx context.Context, apiKey string, psd map[string]any) validateOutcome {
@@ -671,7 +698,7 @@ func validateAzure(ctx context.Context, apiKey string, psd map[string]any) valid
 		headers["OpenAI-Organization"] = org
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"messages":   []map[string]string{{"role": "user", "content": "test"}},
+		"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
 		"max_tokens": 1,
 	})
 	url := endpoint + "/openai/deployments/" + deployment + "/chat/completions?api-version=" + apiVersion
@@ -685,6 +712,46 @@ func validateAzure(ctx context.Context, apiKey string, psd map[string]any) valid
 		out.message = "Invalid API key or Azure configuration"
 	}
 	return out
+}
+
+func validateOpencode(ctx context.Context, cfg providers.ProviderConfig, psd map[string]any) validateOutcome {
+	model := "deepseek-v4.1-flash-free"
+	if psd != nil {
+		if m, ok := psd["defaultModel"].(string); ok && strings.TrimSpace(m) != "" {
+			model = strings.TrimSpace(m)
+		} else if m, ok := psd["assignedModel"].(string); ok && strings.TrimSpace(m) != "" {
+			model = strings.TrimSpace(m)
+		}
+	}
+	model = strings.TrimPrefix(model, "oc/")
+	model = strings.TrimPrefix(model, "opencode/")
+
+	payload, _ := json.Marshal(map[string]any{
+		"model":      model,
+		"messages":   []map[string]string{{"role": "user", "content": probeMessageContent}},
+		"stream":     true,
+		"max_tokens": 1,
+	})
+	headers := map[string]string{
+		"Authorization":     "Bearer public",
+		"x-opencode-client": "cli",
+		"User-Agent":        "opencode/latest/2.1.4/cli",
+		"Content-Type":      "application/json",
+	}
+	url := strings.TrimSpace(cfg.BaseURL)
+	if url == "" {
+		url = "https://opencode.ai/inference/openai/v1/chat/completions"
+	}
+	status, body, err := validateProbeDo(ctx, http.MethodPost, url, headers, payload)
+	if err != nil {
+		return validateOutcome{supported: true, message: err.Error()}
+	}
+	if status == http.StatusOK {
+		return validateOutcome{valid: true, supported: true}
+	}
+
+	errMsg := probeProviderErrorMessage(body, fmt.Sprintf("OpenCode API error (%d)", status))
+	return validateOutcome{valid: false, supported: true, message: errMsg}
 }
 
 func validateOllamaLocal(ctx context.Context, psd map[string]any) validateOutcome {

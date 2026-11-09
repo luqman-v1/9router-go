@@ -54,6 +54,36 @@ func TestDropNonContentfulClaudeMessages(t *testing.T) {
 			wantRoles:   []string{},
 			wantChanged: true,
 		},
+		{
+			name: "blank thinking block with valid signature is kept",
+			messages: []any{
+				claudeTurn("user", textBlock("hi")),
+				claudeTurn("assistant", map[string]any{"type": "thinking", "thinking": "", "signature": "EpwGCukGAXLI2nxw"}),
+				claudeTurn("user", textBlock("again")),
+			},
+			wantRoles:   []string{"user", "assistant", "user"},
+			wantChanged: false,
+		},
+		{
+			name: "blank thinking block with invalid signature is dropped",
+			messages: []any{
+				claudeTurn("user", textBlock("hi")),
+				claudeTurn("assistant", map[string]any{"type": "thinking", "thinking": "", "signature": "invalid_sig"}),
+				claudeTurn("user", textBlock("again")),
+			},
+			wantRoles:   []string{"user", "user"},
+			wantChanged: true,
+		},
+		{
+			name: "redacted_thinking block is kept without signature",
+			messages: []any{
+				claudeTurn("user", textBlock("hi")),
+				claudeTurn("assistant", map[string]any{"type": "redacted_thinking", "data": "data123"}),
+				claudeTurn("user", textBlock("again")),
+			},
+			wantRoles:   []string{"user", "assistant", "user"},
+			wantChanged: false,
+		},
 	}
 
 	for _, tt := range tests {

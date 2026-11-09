@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	json "encoding/json/v2"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -171,8 +172,18 @@ func refreshBackgroundConnection(ctx context.Context, repo *db.Repo, c Connectio
 		log.Printf("[BG_TOKEN_REFRESH] refresh failed conn=%s provider=%s: %v", c.ID, c.Provider, err)
 		// Record the rejection so the tick, and the request path, stop
 		// hammering the token endpoint for a grant only a re-login fixes.
-		if providers.IsRefreshUnauthorized(err) {
-			if until, failures, lockErr := repo.RecordConnectionOAuthFailure(c.ID, http.StatusUnauthorized, err.Error()); lockErr != nil {
+		// IsRefreshGrantDead covers 401 plus the 400 invalid_grant shape
+		// minimax-code(-global) and xAI return for a revoked token; checking
+		// only the 401 let a dead minimax grant refresh every 5-minute tick
+		// forever (and each retry re-parked for 5 minutes, never surfacing
+		// reauth_required with the growing backoff).
+		if providers.IsRefreshGrantDead(err) {
+			status := http.StatusUnauthorized
+			var refreshErr *providers.OAuthRefreshError
+			if errors.As(err, &refreshErr) && refreshErr.Status != 0 {
+				status = refreshErr.Status
+			}
+			if until, failures, lockErr := repo.RecordConnectionOAuthFailure(c.ID, status, err); lockErr != nil {
 				log.Printf("[BG_TOKEN_REFRESH] park failed conn=%s: %v", c.ID, lockErr)
 			} else {
 				log.Printf("[BG_TOKEN_REFRESH] parked conn=%s until=%s failures=%d", c.ID, until.Format(time.RFC3339), failures)
@@ -222,6 +233,12 @@ func refreshBackgroundConnection(ctx context.Context, repo *db.Repo, c Connectio
 	if err := repo.UpdateConnectionData(c.ID, string(merged)); err != nil {
 		log.Printf("[BG_TOKEN_REFRESH] persist failed conn=%s: %v", c.ID, err)
 		return
+	}
+	// A successful refresh sheds the quarantine marker so the account is
+	// selectable again on the next tick instead of staying parked out of
+	// rotation for the rest of the cooldown window.
+	if err := repo.ClearConnectionOAuthLock(c.ID); err != nil {
+		log.Printf("[BG_TOKEN_REFRESH] clear lock failed conn=%s: %v", c.ID, err)
 	}
 	log.Printf("[BG_TOKEN_REFRESH] refreshed conn=%s provider=%s", c.ID, c.Provider)
 }

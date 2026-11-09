@@ -2,13 +2,36 @@ package chat
 
 import (
 	json "encoding/json/v2"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/translator"
 )
+
+const (
+	minRetryJitterMs = 100
+	maxRetryJitterMs = 400
+)
+
+// addRetryJitter adds a random jitter between minRetryJitterMs and maxRetryJitterMs
+// to a positive duration to prevent thundering-herd collisions on retry.
+func addRetryJitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	delta := maxRetryJitterMs - minRetryJitterMs
+	var jitter int64
+	if delta > 0 {
+		jitter = minRetryJitterMs + rand.Int64N(int64(delta))
+	} else {
+		jitter = minRetryJitterMs
+	}
+	return d + time.Duration(jitter)*time.Millisecond
+}
 
 // brief429RetryTolerance is the longest wait a rate-limited upstream may ask
 // for and still be worth repeating on the same client turn. It is the router's
@@ -25,6 +48,23 @@ const brief429RetryTolerance = 2 * time.Second
 // stricter brief429RetryTolerance: unlike a transient 5xx, a long Retry-After
 // on a 429 names a quota window that waiting out here cannot shorten.
 const comboRetryWaitCap = 8 * time.Second
+
+// deepSeekWebMaxMuteCooldown is the ceiling for a DeepSeek web mute the site
+// announced. Its mute envelope names a real release time, and the generic 2h
+// cap would re-pick the muted account long before the mute ends — which is how
+// a brief mute becomes a longer one.
+const deepSeekWebMaxMuteCooldown = 7 * 24 * time.Hour
+
+// maxCooldownFor returns the ceiling for an announced wait on one provider.
+// Every provider shares maxResetCooldown; deepseek-web is the exception because
+// its enforcement payload carries the actual release time and clamping it
+// defeats the purpose of reporting it.
+func maxCooldownFor(provider string) time.Duration {
+	if provider == "deepseek-web" {
+		return deepSeekWebMaxMuteCooldown
+	}
+	return maxResetCooldown
+}
 
 // comboPassRetryWait returns how long to hold a fully-failed combo pass before
 // repeating it, or 0 when the pass must not be repeated.
@@ -56,7 +96,7 @@ func comboPassRetryWait(earliest time.Duration, rateLimited bool) time.Duration 
 // account again instead of waiting out a lock it set itself. Every other
 // status keeps the quota-reset reading it has always had. maxResetCooldown
 // stops a hostile or nonsensical duration from parking an account forever.
-func retryableCooldownSec(statusCode int, base time.Duration, ue *upstreamError) int {
+func retryableCooldownSec(statusCode int, base time.Duration, ue *upstreamError, provider string) int {
 	cooldown := base
 	if statusCode == http.StatusTooManyRequests {
 		if wait, ok := retryAfterWait(ue); ok {
@@ -65,7 +105,7 @@ func retryableCooldownSec(statusCode int, base time.Duration, ue *upstreamError)
 	} else if dur, ok := extractResetDuration(ue.Body); ok {
 		cooldown = dur
 	}
-	return ceilSeconds(min(cooldown, maxResetCooldown))
+	return ceilSeconds(min(cooldown, maxCooldownFor(provider)))
 }
 
 // passRetry is the rate-limit bookkeeping for one combo pass. The OpenAI and
@@ -92,9 +132,15 @@ func (p *passRetry) note(ue *upstreamError) {
 // carry over.
 func (p *passRetry) reset() { *p = passRetry{} }
 
-// wait returns how long to hold before repeating the pass, or 0 when the pass
-// must not be repeated.
-func (p *passRetry) wait() time.Duration { return comboPassRetryWait(p.earliest, p.rateLimited) }
+// wait returns how long to hold before repeating the pass (with bounded random jitter),
+// or 0 when the pass must not be repeated.
+func (p *passRetry) wait() time.Duration {
+	w := comboPassRetryWait(p.earliest, p.rateLimited)
+	if w <= 0 {
+		return 0
+	}
+	return addRetryJitter(w)
+}
 
 // writeError answers the client with lastErr, publishing the earliest
 // Retry-After the pass collected three ways: the Retry-After header, the
@@ -107,6 +153,39 @@ func (p *passRetry) wait() time.Duration { return comboPassRetryWait(p.earliest,
 // reset instant would send clients into a retry loop against a quota with no
 // known end.
 func (p *passRetry) writeError(cw *committedResponseWriter, lastErr *upstreamError) {
+	// A client that asked for a stream must be answered with one. The body is
+	// the same JSON either way; what changes is the envelope. Writing the bare
+	// document under a text/event-stream Content-Type leaves the client with no
+	// frame separator it can split on, and a strict SSE reader reports the
+	// first backslash it meets as `Unrecognized token '\'` — the status, type
+	// and code never reach it.
+	if cw.stream {
+		cw.Header().Set(constants.HeaderContentType, constants.ContentTypeEventStream)
+		if cw.responsesClient {
+			var errBody struct {
+				Error map[string]any `json:"error"`
+			}
+			if err := json.Unmarshal(lastErr.Body, &errBody); err == nil && errBody.Error != nil {
+				if code, _ := errBody.Error["code"].(string); code == "context_length_exceeded" {
+					cw.WriteHeader(http.StatusOK)
+					_, _ = cw.Write([]byte(translator.FormatResponsesFailedSSE(errBody.Error)))
+					if f, ok := cw.ResponseWriter.(http.Flusher); ok {
+						f.Flush()
+					}
+					return
+				}
+			}
+		}
+		cw.WriteHeader(lastErr.StatusCode)
+		frame := append([]byte("data: "), lastErr.Body...)
+		frame = append(frame, '\n', '\n')
+		_, _ = cw.Write(frame)
+		_, _ = cw.Write([]byte("data: [DONE]\n\n"))
+		if f, ok := cw.ResponseWriter.(http.Flusher); ok {
+			f.Flush()
+		}
+		return
+	}
 	// Set before any branch so the pass-through path below is a JSON body
 	// too. The upstream content type is not trusted here: a 429 served as
 	// text/html is what makes an SDK report a parse crash instead of a quota.

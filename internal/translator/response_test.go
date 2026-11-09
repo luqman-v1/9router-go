@@ -136,22 +136,28 @@ func TestTranslateOpenAIToClaudeStream_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("stop reason — length", func(t *testing.T) {
-		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"stop-length","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`))
-		out, err := TranslateOpenAIToClaudeStream([]byte(`{"id":"stop-length","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`))
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		const key = "stop-length"
+		defer ClearStreamState(key)
+		out := streamClaude(t, key,
+			`{"id":"`+key+`","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
+			`{"id":"`+key+`","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+			// No usage chunk followed the finish, so the terminal is deferred
+			// to the [DONE] flush.
+			"[DONE]",
+		)
 		if !strings.Contains(string(out), `"stop_reason":"max_tokens"`) {
 			t.Errorf("expected max_tokens, got: %s", out)
 		}
 	})
 
 	t.Run("stop reason — stop", func(t *testing.T) {
-		_, _ = TranslateOpenAIToClaudeStream([]byte(`{"id":"stop-stop","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`))
-		out, err := TranslateOpenAIToClaudeStream([]byte(`{"id":"stop-stop","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`))
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		const key = "stop-stop"
+		defer ClearStreamState(key)
+		out := streamClaude(t, key,
+			`{"id":"`+key+`","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
+			`{"id":"`+key+`","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			"[DONE]",
+		)
 		if !strings.Contains(string(out), `"stop_reason":"end_turn"`) {
 			t.Errorf("expected end_turn, got: %s", out)
 		}
@@ -261,6 +267,27 @@ func TestTranslateOpenAIToClaude(t *testing.T) {
 		_, _, err := TranslateOpenAIToClaude([]byte(`{"id":"chatcmpl-empty","model":"gpt-4o","choices":[]}`))
 		if err == nil {
 			t.Error("expected error for zero choices")
+		}
+	})
+
+	t.Run("claude message body passes through", func(t *testing.T) {
+		input := []byte(`{"id":"msg_01","type":"message","role":"assistant","model":"minimax-m3.1-flash","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":12,"output_tokens":5}}`)
+		out, u, err := TranslateOpenAIToClaude(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(out) != string(input) {
+			t.Errorf("claude body must be relayed unchanged, got: %s", out)
+		}
+		if u == nil || u.PromptTokens != 12 || u.CompletionTokens != 5 {
+			t.Errorf("expected claude usage extracted, got: %+v", u)
+		}
+	})
+
+	t.Run("claude error envelope still fails translation", func(t *testing.T) {
+		_, _, err := TranslateOpenAIToClaude([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}`))
+		if err == nil {
+			t.Error("expected error for a claude error envelope")
 		}
 	})
 
