@@ -471,10 +471,10 @@ type RequestDetailPerfRow struct {
 // observation" rather than take the whole read down.
 const requestDetailPerfSelect = `
 	SELECT COALESCE(provider, ''), COALESCE(model, ''),
-	       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.latency.ttft'), 0) ELSE 0 END,
-	       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.latency.total'), 0) ELSE 0 END,
-	       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.tokens.completion_tokens'), 0) ELSE 0 END,
-	       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.tokens.output_tokens'), 0) ELSE 0 END
+	       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.latency.ttft'), 0) AS INTEGER) ELSE 0 END,
+	       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.latency.total'), 0) AS INTEGER) ELSE 0 END,
+	       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.tokens.completion_tokens'), 0) AS INTEGER) ELSE 0 END,
+	       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.tokens.output_tokens'), 0) AS INTEGER) ELSE 0 END
 	FROM requestDetails`
 
 // GetRequestDetailPerf returns the latency observation of every request
@@ -580,10 +580,10 @@ func (r *Repo) GetModelTPSSince(ctx context.Context, since string) (map[string]f
 	}
 	query := `
 		SELECT COALESCE(provider, ''), COALESCE(model, ''),
-		       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.latency.ttft'), 0) ELSE 0 END,
-		       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.latency.total'), 0) ELSE 0 END,
-		       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.tokens.completion_tokens'), 0) ELSE 0 END,
-		       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.tokens.output_tokens'), 0) ELSE 0 END
+		       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.latency.ttft'), 0) AS INTEGER) ELSE 0 END,
+		       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.latency.total'), 0) AS INTEGER) ELSE 0 END,
+		       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.tokens.completion_tokens'), 0) AS INTEGER) ELSE 0 END,
+		       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.tokens.output_tokens'), 0) AS INTEGER) ELSE 0 END
 		FROM requestDetails
 		WHERE (status = 'success' OR status = 'ok')`
 	args := []any{}
@@ -830,8 +830,8 @@ type RequestDetailListRow struct {
 const requestDetailListSelect = `
 	SELECT id, timestamp, COALESCE(provider, ''), COALESCE(model, ''), COALESCE(connectionId, ''),
 	       COALESCE(status, ''),
-	       COALESCE(json_extract(data, '$.latency.ttft'), 0),
-	       COALESCE(json_extract(data, '$.latency.total'), 0),
+	       CAST(COALESCE(json_extract(data, '$.latency.ttft'), 0) AS INTEGER),
+	       CAST(COALESCE(json_extract(data, '$.latency.total'), 0) AS INTEGER),
 	       COALESCE(json_extract(data, '$.tokens'), '{}'),
 	       COALESCE(json_extract(data, '$.account'), ''),
 	       COALESCE(json_extract(data, '$.cost'), 0.0),

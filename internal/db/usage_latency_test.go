@@ -134,6 +134,9 @@ func TestGetModelTPSSince(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	// Fractional float latency & token numbers must not cause scan errors (guarded by CAST ... AS INTEGER)
+	seedPerfRow(t, database, "r3", "anthropic", "claude-3-7-sonnet",
+		`{"latency":{"ttft":199.8,"total":1000.4},"tokens":{"completion_tokens":100.2}}`)
 
 	repo := NewRepo(database)
 	tpsMap, err := repo.GetModelTPSSince(context.Background(), "")
@@ -146,5 +149,8 @@ func TestGetModelTPSSince(t *testing.T) {
 	}
 	if tps, ok := tpsMap["gpt-4o (openai)"]; !ok || tps != 125.0 {
 		t.Errorf("gpt-4o (openai) tps = %v (found %v), want 125.0", tps, ok)
+	}
+	if tps, ok := tpsMap["claude-3-7-sonnet"]; !ok || tps != 124.8 {
+		t.Errorf("claude-3-7-sonnet tps = %v (found %v), want 124.8", tps, ok)
 	}
 }
