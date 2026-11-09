@@ -256,3 +256,75 @@ func TestBenchedModelsReturnAfterGrace(t *testing.T) {
 		t.Fatalf("expired grace must re-include: %v", got)
 	}
 }
+
+func TestComboResponseTimeout_ClaudeThinkingSatisfiesGate(t *testing.T) {
+	tests := []struct {
+		name          string
+		initialChunks []string
+		satisfiesGate bool
+	}{
+		{
+			name: "redacted_thinking content block start satisfies gate",
+			initialChunks: []string{
+				"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"redacted_data\"}}\n\n",
+			},
+			satisfiesGate: true,
+		},
+		{
+			name: "signature_delta satisfies activity gate",
+			initialChunks: []string{
+				"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_xyz\"}}\n\n",
+			},
+			satisfiesGate: true,
+		},
+		{
+			name: "thinking content block start satisfies gate",
+			initialChunks: []string{
+				"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+			},
+			satisfiesGate: true,
+		},
+		{
+			name: "silent stream with only message_start does not satisfy gate and times out",
+			initialChunks: []string{
+				"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\"}}\n\n",
+			},
+			satisfiesGate: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			gate := newComboResponseTimeout(context.Background(), rec, time.Hour)
+			defer gate.finish()
+			peeker := internalproxy.NewStreamContentPeeker(gate)
+
+			for _, c := range tc.initialChunks {
+				_, _ = peeker.Write([]byte(c))
+			}
+
+			gate.expire()
+
+			if tc.satisfiesGate {
+				if gate.ctx.Err() != nil || gate.timedOut() {
+					t.Fatalf("chunk should have satisfied first-output gate, but gate timed out / context canceled: %v", gate.ctx.Err())
+				}
+				// Verify subsequent chunks can still be written without being dropped
+				_, _ = peeker.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n"))
+				if !strings.Contains(rec.Body.String(), "done") {
+					t.Fatalf("expected committed response to contain subsequent chunk, got: %s", rec.Body.String())
+				}
+			} else {
+				if gate.ctx.Err() != context.Canceled || !gate.timedOut() {
+					t.Fatalf("silent stream should have timed out on expire")
+				}
+				// Write after expiry should not leak into recorder
+				_, _ = peeker.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"leaked\"}}\n\n"))
+				if strings.Contains(rec.Body.String(), "leaked") {
+					t.Fatalf("expired silent candidate leaked output: %s", rec.Body.String())
+				}
+			}
+		})
+	}
+}
