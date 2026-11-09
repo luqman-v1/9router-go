@@ -242,6 +242,15 @@ func zedNormalizeClaudeContent(msg map[string]any) {
 				blocks = append(blocks, map[string]any{"type": "text", "text": text})
 				continue
 			}
+			if bm, isMap := block.(map[string]any); isMap {
+				if bm["type"] == "tool_result" {
+					if _, hasErr := bm["is_error"]; !hasErr {
+						bm["is_error"] = translator.ToolResultIsError(bm)
+					}
+				}
+				blocks = append(blocks, bm)
+				continue
+			}
 			blocks = append(blocks, block)
 		}
 		msg["content"] = blocks
