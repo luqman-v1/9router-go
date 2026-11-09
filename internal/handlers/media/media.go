@@ -1423,6 +1423,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			method = http.MethodPost
 		}
 	}
+	var fetchFmt string
 	if endpoint == "/v1/web/fetch" && providerCfg.FetchURL != "" {
 		targetURL = providerCfg.FetchURL
 		if providerCfg.FetchMethod != "" {
@@ -1430,14 +1431,49 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		} else {
 			method = "POST"
 		}
-		if modelInfo.Provider == "ollama" {
-			var tmp struct {
-				URL string `json:"url"`
-			}
-			if err := json.Unmarshal(body, &tmp); err == nil && tmp.URL != "" {
-				if b, err := json.Marshal(map[string]string{"url": tmp.URL}); err == nil {
+		var fReq struct {
+			URL    string `json:"url"`
+			Format string `json:"format"`
+		}
+		_ = json.Unmarshal(body, &fReq)
+		fetchFmt = strings.ToLower(strings.TrimSpace(fReq.Format))
+		if fetchFmt == "" {
+			fetchFmt = "markdown"
+		}
+
+		switch modelInfo.Provider {
+		case "ollama":
+			if fReq.URL != "" {
+				if b, err := json.Marshal(map[string]string{"url": fReq.URL}); err == nil {
 					finalBody = b
 				}
+			}
+		case "jina-reader", "jina":
+			if fetchFmt != "markdown" && fetchFmt != "text" && fetchFmt != "html" {
+				handlerutil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+					"error": fmt.Sprintf("Unsupported format for %s. Supported: markdown, text, html", modelInfo.Provider),
+				})
+				return
+			}
+			if fReq.URL != "" {
+				if b, err := json.Marshal(map[string]string{"url": fReq.URL}); err == nil {
+					finalBody = b
+				}
+			}
+		case "tavily":
+			if fetchFmt != "markdown" && fetchFmt != "text" {
+				handlerutil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+					"error": "Unsupported format for tavily. Supported: markdown, text",
+				})
+				return
+			}
+			tBody := map[string]any{
+				"urls":          []string{fReq.URL},
+				"extract_depth": "basic",
+				"format":        fetchFmt,
+			}
+			if b, err := json.Marshal(tBody); err == nil {
+				finalBody = b
 			}
 		}
 	}
@@ -1455,6 +1491,9 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	req.Header.Del("Content-Length")
 	for k, v := range providerCfg.StaticHeaders {
 		req.Header.Set(k, v)
+	}
+	if fetchFmt != "" && (modelInfo.Provider == "jina-reader" || modelInfo.Provider == "jina") {
+		req.Header.Set("x-respond-with", fetchFmt)
 	}
 	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 	connIDStr := ""

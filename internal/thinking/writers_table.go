@@ -1,6 +1,10 @@
 package thinking
 
-import "9router/proxy/internal/providers"
+import (
+	"strings"
+
+	"9router/proxy/internal/providers"
+)
 
 // writerCtx carries what a per-format writer needs: the body to write into,
 // the intent (already clamped to minimal when the model cannot disable), and
@@ -13,6 +17,7 @@ type writerCtx struct {
 	supported  []string
 	display    string
 	caps       providers.Capabilities
+	provider   string
 }
 
 // formatWriters maps a thinking format to the writer that emits its dialect.
@@ -301,7 +306,11 @@ func writeDeepseek(c *writerCtx) {
 		c.body["thinking"] = map[string]any{"type": "disabled"}
 		return
 	}
-	c.body["thinking"] = map[string]any{"type": "enabled"}
+	th := map[string]any{"type": "enabled"}
+	if strings.HasPrefix(c.provider, "openai-compatible-") && c.eff != nil && c.eff.Mode == ModeBudget && c.eff.Budget > 0 {
+		th["budget_tokens"] = c.eff.Budget
+	}
+	c.body["thinking"] = th
 	lvl := ToLevel(c.eff)
 	want := "high"
 	if lvl == "xhigh" || lvl == "max" {

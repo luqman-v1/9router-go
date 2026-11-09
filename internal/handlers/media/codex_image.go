@@ -43,6 +43,8 @@ var codexToolImageModels = map[string]bool{
 	"gpt-image-2.5":          true,
 	"gpt-image-2.5-flare":    true,
 	"gpt-image-2.5-sunburst": true,
+	"gpt-image-2.6-flare":    true,
+	"gpt-image-2.6-sunburst": true,
 }
 
 // codexImageRequest is the OpenAI image shape a caller posts, plus the

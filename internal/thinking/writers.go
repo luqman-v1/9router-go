@@ -7,7 +7,7 @@ import (
 
 // applyFormat ports applyFormat: one dialect out. none on a model that
 // cannot disable clamps to level minimal before the writer runs.
-func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Capabilities, supported []string, display string) {
+func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Capabilities, supported []string, display string, provider string) {
 	none := cfg.Mode == ModeNone
 	cd := caps.CanDisableThinking()
 	eff := cfg
@@ -26,6 +26,7 @@ func applyFormat(fmt string, body map[string]any, cfg *Intent, caps providers.Ca
 		supported:  supported,
 		display:    display,
 		caps:       caps,
+		provider:   provider,
 	})
 }
 

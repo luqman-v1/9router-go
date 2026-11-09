@@ -26,13 +26,32 @@ func TestKiroEndpointsOrdering(t *testing.T) {
 		}
 	})
 
-	t.Run("aws hosts follow the account region", func(t *testing.T) {
-		got := kiroEndpoints(&providers.ProviderConfig{}, map[string]any{"region": "eu-west-1"})
-		if !strings.Contains(got[0], "q.eu-west-1.amazonaws.com") {
-			t.Errorf("expected the q host in eu-west-1, got %q", got[0])
+	t.Run("aws hosts follow the account region only when covered", func(t *testing.T) {
+		got := kiroEndpoints(&providers.ProviderConfig{}, map[string]any{"region": "eu-central-1"})
+		if !strings.Contains(got[0], "q.eu-central-1.amazonaws.com") {
+			t.Errorf("expected the q host in eu-central-1, got %q", got[0])
 		}
-		if !strings.Contains(got[1], "codewhisperer.eu-west-1.amazonaws.com") {
-			t.Errorf("expected the codewhisperer host in eu-west-1, got %q", got[1])
+		if !strings.Contains(got[1], "codewhisperer.us-east-1.amazonaws.com") {
+			t.Errorf("expected codewhisperer to stay us-east-1 (only region served), got %q", got[1])
+		}
+	})
+
+	t.Run("never builds a host in a region that service does not serve", func(t *testing.T) {
+		got := kiroEndpoints(&providers.ProviderConfig{}, map[string]any{"region": "ap-southeast-1"})
+		if !strings.Contains(got[0], "q.us-east-1.amazonaws.com") {
+			t.Errorf("expected q to stay us-east-1 for uncovered ap-southeast-1, got %q", got[0])
+		}
+		if !strings.Contains(got[1], "codewhisperer.us-east-1.amazonaws.com") {
+			t.Errorf("expected codewhisperer to stay us-east-1, got %q", got[1])
+		}
+	})
+
+	t.Run("refuses to splice an attacker-controlled region into hostname", func(t *testing.T) {
+		got := kiroEndpoints(&providers.ProviderConfig{}, map[string]any{"region": "x.attacker.tld#"})
+		for _, u := range got {
+			if strings.Contains(u, "attacker") {
+				t.Errorf("hostile region leaked into endpoint %q", u)
+			}
 		}
 	})
 
