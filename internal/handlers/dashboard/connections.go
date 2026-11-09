@@ -141,7 +141,7 @@ var usageSupportedProviders = []string{
 	"commandcode", "deepseek", "gemini-cli", "github", "glm", "glm-cn",
 	"grok-cli", "groq", "kimi", "kiro", "minimax", "minimax-cn", "minimax-code",
 	"minimax-code-global", "ollama",
-	"opencode-go", "opencode-zen", "qoder", "qoder-cn", "trae",
+	"free-pi", "opencode-go", "opencode-zen", "qoder", "qoder-cn", "trae",
 	"vercel-ai-gateway", "xiaomi-mimo", "zed",
 }
 
@@ -150,8 +150,8 @@ var usageSupportedProviders = []string{
 var usageApikeyProviders = []string{
 	"codebuddy-cn", "codebuddy-intl", "commandcode", "deepseek", "glm",
 	"glm-cn", "groq", "kimi", "kiro", "minimax", "minimax-cn", "ollama",
-	"opencode-go", "opencode-zen", "qoder", "qoder-cn", "vercel-ai-gateway",
-	"xiaomi-mimo",
+	"free-pi", "opencode-go", "opencode-zen", "qoder", "qoder-cn",
+	"vercel-ai-gateway", "xiaomi-mimo",
 }
 
 func strSliceContains(list []string, v string) bool {
@@ -1121,6 +1121,23 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
 			"models":       items,
+		})
+		return
+	}
+
+	// Free-pi's catalogue lives at GET /client-version (unauthenticated,
+	// account-independent) rather than the standard /v1/models shape. The models
+	// array's `id` is the value a request must send as `model`.
+	if conn.Provider == providers.FreePiProviderID {
+		cv, err := freePiFetchModelsFromClientVersion(r.Context(), connData.APIKey, connData.ProviderSpecificData)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       cv,
 		})
 		return
 	}

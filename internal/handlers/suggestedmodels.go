@@ -228,6 +228,11 @@ func HandleSuggestedModels(w http.ResponseWriter, r *http.Request) {
 		filter = filterAirforceFree
 	case "minimax-code":
 		filter = filterMinimaxCode
+	case "free-pi":
+		// free-pi's catalog lives at /client-version; the response already
+		// carries a `models` array the generic parser extracts, so only the
+		// filter is needed — it maps {id, name} to suggestedModel verbatim.
+		filter = filterFreePi
 	default:
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Unknown filter type")
 		return
@@ -276,4 +281,23 @@ func HandleSuggestedModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"data": filter(models)})
+}
+
+// filterFreePi maps free-pi's /client-version models to suggested-model rows.
+// The catalog is unauthenticated and all models are free, so no pricing filter
+// is needed — every entry is a valid suggestion.
+func filterFreePi(models []map[string]any) []suggestedModel {
+	out := make([]suggestedModel, 0, len(models))
+	for _, m := range models {
+		id := getString(m, "id")
+		if id == "" {
+			continue
+		}
+		name := getString(m, "name")
+		if name == "" {
+			name = id
+		}
+		out = append(out, suggestedModel{ID: id, Name: name})
+	}
+	return out
 }

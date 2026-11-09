@@ -131,6 +131,10 @@ func WithoutStaticHeader(cfg *ProviderConfig, name string) *ProviderConfig {
 // It is the same set upstream wires into PROVIDER_MODELS_CONFIG
 // (src/app/api/providers/[id]/models/route.js, v0.5.91).
 var modelsListURL = map[string]string{
+	// free-pi publishes its catalog at /client-version rather than the standard
+	// /v1/models shape. The suggested-models handler has a "free-pi" filter that
+	// reads the `models` array from this response.
+	"free-pi":     "https://api.freepi.ai/client-version",
 	"tokenharbor": "https://tokenharbor.ai/v1/models",
 	"dahl":        "https://inference.dahl.global/v1/models",
 	"atria":       "https://api.atria-asi.ai/v1/models",
@@ -1174,6 +1178,24 @@ var KnownProviders = map[string]ProviderConfig{
 		StaticHeaders: map[string]string{
 			"content-type": "application/json",
 		},
+	},
+	// Free-pi — the free, ad-funded distribution of the `pi` coding agent
+	// (dennisonbertram/free-pi-cli). Its upstream is plain [OI] Chat
+	// Completions behind a Bearer JWT, so the transport looks ordinary; what
+	// is not ordinary is session identity. Every request must carry a stable
+	// `x-session-id`, and the account tolerates only a handful of concurrent
+	// sessions (hungkevin/free-pi-cli-proxy server.mjs:958 pins the cap at 4;
+	// we deliberately occupy one — see internal/proxy/executor/free_pi.go).
+	//
+	// Neither header can live in StaticHeaders: x-session-id is derived per
+	// account and x-client-version is refreshed from GET /client-version, so
+	// both are applied by the executor rather than the shared passthrough.
+	// The auth pair is the ordinary bearer one, which is what makes the JWT a
+	// drop-in credential for the existing connection store.
+	"free-pi": {
+		BaseURL:    "https://api.freepi.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
 	},
 }
 

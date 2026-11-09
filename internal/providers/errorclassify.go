@@ -33,12 +33,40 @@ const TransientCooldownMs = 30 * 1000 // 30 seconds
 const (
 	cooldownLong  = 2 * 60 * 1000 // 2 minutes
 	cooldownShort = 5 * 1000      // 5 seconds
+	// cooldownAuthDead parks a connection whose credential can never recover on
+	// its own, so retries do not hammer a login that must happen out of band.
+	cooldownAuthDead = 60 * 60 * 1000 // 1 hour
 )
 
 // ErrorRules is the ordered list of error classification rules, matching Next.js ERROR_RULES.
 // Checked top-to-bottom: text rules first (by order), then status rules.
 var ErrorRules = []ErrorRule{
 	// --- Text-based rules (checked first, order = priority) ---
+	//
+	// Free-pi splits its 429s into an hourly throttle and an exhausted daily
+	// allowance, and the two need different handling: an hourly cap clears
+	// within the hour, so a short fixed lock plus rotation is right, while a
+	// spent daily allowance does not clear until 00:00 and a growing backoff
+	// only delays an error the client should already have. These sit above the
+	// generic rate-limit rules because those match on prose ("rate limit") that
+	// the snake_case codes below deliberately do not contain.
+	// Source: hungkevin/free-pi-cli-proxy server.mjs:1055-1120;
+	// see testdata/freepi/error-429-taxonomy.json.
+	{Text: "rate_limit_exceeded", CooldownMs: cooldownShort},
+	{Text: "creditlimitexceeded", CooldownMs: cooldownLong},
+	{Text: "insufficient_quota", CooldownMs: cooldownLong},
+	{Text: "billing_error", CooldownMs: cooldownLong},
+	{Text: "budgetlimiterror", CooldownMs: cooldownLong},
+	{Text: "gousagelimiterror", CooldownMs: cooldownLong},
+
+	// A free-pi credential is a long-lived JWT with no refresh path, so an
+	// expiry is terminal: the account cannot recover by itself and the remedy is
+	// a fresh device login. Without this rule the generic 401 branch cools it for
+	// two minutes and retries a permanently dead credential forever, while the
+	// dashboard still shows a healthy connection. The code is emitted locally by
+	// the executor (FreePiTokenExpiredCode), so it is unambiguous here.
+	{Text: "free_pi_token_expired", CooldownMs: cooldownAuthDead},
+
 	{Text: "no credentials", CooldownMs: cooldownLong},
 	{Text: "request not allowed", CooldownMs: cooldownShort},
 	{Text: "improperly formed request", CooldownMs: cooldownLong},

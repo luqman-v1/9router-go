@@ -62,6 +62,7 @@ export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
   "featherless": "fl",
   "fireworks": "fireworks",
   "fish-audio": "fish-audio",
+  "free-pi": "fp",
   "freebuff": "fb",
   "gemini": "gemini",
   "gemini-cli": "gc",
@@ -236,6 +237,15 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     }
   ],
   "freebuff": FREEBUFF_MODELS,
+  // Seed only the model free-pi-cli itself defaults to. The real, server-chosen
+  // catalogue arrives from GET /client-version at sign-in and is stored per
+  // connection, so listing more here would advertise ids upstream may not serve.
+  "free-pi": [
+    {
+      "id": "deepseek/deepseek-v4-flash",
+      "name": "DeepSeek V4 Flash"
+    }
+  ],
   "alicode-intl": [
     {
       "id": "qwen3.5-plus",

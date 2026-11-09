@@ -74,6 +74,17 @@ func (u *Upstream) Count() int {
 	return len(u.requests)
 }
 
+// Requests returns a copy of everything this upstream has observed, for
+// assertions about paths the caller does not know in advance (or that must NOT
+// have been called at all).
+func (u *Upstream) Requests() []RecordedRequest {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	out := make([]RecordedRequest, len(u.requests))
+	copy(out, u.requests)
+	return out
+}
+
 // Last returns the most recent request, failing the test when there was none.
 func (u *Upstream) Last(t *testing.T) RecordedRequest {
 	t.Helper()

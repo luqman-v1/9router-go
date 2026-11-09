@@ -45,7 +45,12 @@ var ProviderAliasMap = map[string]string{
 	"fb":                "freebuff",
 	"fish":              "fish-audio",
 	"fl":                "featherless",
-	"fw":                "fireworks",
+	// Free-pi. Strictly distinct from freebuff (`fb`): different upstream,
+	// different credential, different session semantics — never aliased onto
+	// one another (AGENTS.md section 3.A).
+	"fp":     "free-pi",
+	"freepi": "free-pi",
+	"fw":     "fireworks",
 	"gb":                "grok-cli",
 	"gc":                "gemini-cli",
 	"gweb":              "gemini-web",

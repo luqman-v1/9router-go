@@ -77,6 +77,18 @@ func TestAggregatorProviders(t *testing.T) {
 			id: "tinyfish", baseURL: "https://api.tinyfish.ai",
 			authHeader: "x-api-key", authScheme: "raw",
 		},
+		{
+			// Free-pi — the ad-funded `pi` distribution. Its transport is plain
+			// [OI] bearer, so it is a registry entry like any other; the session
+			// identity its upstream demands is the executor's job, not the
+			// registry's. Only the CLI's own default model is seeded: the real
+			// catalogue arrives from GET /client-version at login, and inventing
+			// ids here would publish models upstream does not serve.
+			id: "free-pi", baseURL: "https://api.freepi.ai/v1/chat/completions",
+			models:     []string{"deepseek/deepseek-v4-flash"},
+			aliases:    []string{"fp", "freepi"},
+			modelsList: "https://api.freepi.ai/client-version", wantFetcher: true,
+		},
 	}
 
 	for _, tt := range tests {

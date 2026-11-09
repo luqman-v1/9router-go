@@ -483,6 +483,26 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    // Free-pi — the ad-funded `pi` coding agent. Sign-in is a GitHub device
+    // flow (POST /api/oauth/free-pi/initiate, then .../poll), which is why this
+    // sits in the oauth category rather than apikey even though the credential
+    // it produces is a plain bearer token. Its upstream permits a handful of
+    // concurrent sessions per account; the gateway deliberately occupies one,
+    // so a second connection for the same account is harmless but pointless.
+    "id": "free-pi",
+    "name": "Free Pi",
+    "category": "oauth",
+    "alias": "fp",
+    "color": "#7c3aed",
+    "icon": "terminal",
+    "website": "https://freepi.ai",
+    "noAuth": false,
+    "modelsFetcher": {"url": "https://api.freepi.ai/client-version", "type": "free-pi"},
+    "serviceKinds": [
+      "llm"
+    ]
+  },
+  {
     "id": "gemini-cli",
     "name": "Gemini CLI",
     "category": "free",
