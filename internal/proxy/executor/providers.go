@@ -1878,9 +1878,7 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		// The lane URL is what a relay forwards to, so it is built without a relay
 		// branch.
 		cfg := *req.Config
-		if strings.Contains(cfg.BaseURL, "opencode.ai/zen/go/v1") {
-			cfg.BaseURL = strings.Replace(cfg.BaseURL, "opencode.ai/zen/go/v1", "opencode.ai/inference/go/openai/v1", 1)
-		}
+		cfg.BaseURL = strings.Replace(cfg.BaseURL, "opencode.ai/zen/go/v1", "opencode.ai/inference/go/openai/v1", 1)
 		if !strings.HasSuffix(cfg.BaseURL, "/responses") {
 			baseURL := strings.TrimRight(cfg.BaseURL, "/")
 			if strings.HasSuffix(baseURL, "/chat/completions") {
