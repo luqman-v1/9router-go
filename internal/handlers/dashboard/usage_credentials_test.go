@@ -402,3 +402,211 @@ func TestRunUsageRefresh_FallsBackToSnapshotWhenRowIsUnreadable(t *testing.T) {
 		t.Errorf("refresh spent %q, want the snapshot token when the row is unreadable", spent)
 	}
 }
+
+func TestClaudeAutoPingCatchup_MissedTickCatchupTable(t *testing.T) {
+	// Table-driven unit test verifying that due deadline that fell between scheduler ticks
+	// is caught up on next tick, and newly observed reset is retained for the next cycle.
+	tests := []struct {
+		name                 string
+		secondsLate          int
+		cachedReset          string
+		lastPingedKey        string
+		newlyObservedResetAt string
+		tickTime             time.Time
+		wantPing             bool
+		wantResetAt          string
+		wantResetKey         string
+		wantCatchingUp       bool
+	}{
+		{
+			name:                 "catches Claude reset when tick is 10 seconds late",
+			secondsLate:          10,
+			cachedReset:          "2026-01-01T12:00:00.000Z",
+			lastPingedKey:        "",
+			newlyObservedResetAt: "2026-01-01T17:00:00.000Z",
+			tickTime:             time.Date(2026, 1, 1, 12, 0, 10, 0, time.UTC),
+			wantPing:             true,
+			wantResetAt:          "2026-01-01T12:00:00.000Z",
+			wantResetKey:         "2026-01-01T12:00:00Z",
+			wantCatchingUp:       true,
+		},
+		{
+			name:                 "catches Claude reset when tick is 30 seconds late",
+			secondsLate:          30,
+			cachedReset:          "2026-01-01T12:00:00.000Z",
+			lastPingedKey:        "",
+			newlyObservedResetAt: "2026-01-01T17:00:00.000Z",
+			tickTime:             time.Date(2026, 1, 1, 12, 0, 30, 0, time.UTC),
+			wantPing:             true,
+			wantResetAt:          "2026-01-01T12:00:00.000Z",
+			wantResetKey:         "2026-01-01T12:00:00Z",
+			wantCatchingUp:       true,
+		},
+		{
+			name:                 "catches Claude reset when tick is 54 seconds late",
+			secondsLate:          54,
+			cachedReset:          "2026-01-01T12:00:00.000Z",
+			lastPingedKey:        "",
+			newlyObservedResetAt: "2026-01-01T17:00:00.000Z",
+			tickTime:             time.Date(2026, 1, 1, 12, 0, 54, 0, time.UTC),
+			wantPing:             true,
+			wantResetAt:          "2026-01-01T12:00:00.000Z",
+			wantResetKey:         "2026-01-01T12:00:00Z",
+			wantCatchingUp:       true,
+		},
+		{
+			name:                 "does not catch up if already pinged for that deadline",
+			secondsLate:          30,
+			cachedReset:          "2026-01-01T12:00:00.000Z",
+			lastPingedKey:        "2026-01-01T12:00:00Z",
+			newlyObservedResetAt: "2026-01-01T17:00:00.000Z",
+			tickTime:             time.Date(2026, 1, 1, 12, 0, 30, 0, time.UTC),
+			wantPing:             false,
+		},
+		{
+			name:                 "does not ping if deadline not yet due",
+			secondsLate:          -10,
+			cachedReset:          "2026-01-01T12:00:00.000Z",
+			lastPingedKey:        "",
+			newlyObservedResetAt: "2026-01-01T12:00:00.000Z",
+			tickTime:             time.Date(2026, 1, 1, 11, 59, 50, 0, time.UTC),
+			wantPing:             false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewClaudeAutoPingCatchupState()
+			connID := "claude-test-conn"
+			key := "claude:" + connID
+			if tt.cachedReset != "" {
+				state.ResetCache[key] = tt.cachedReset
+			}
+
+			plan := state.PlanClaudeAutoPing(connID, tt.lastPingedKey, tt.newlyObservedResetAt, tt.tickTime)
+			if plan.ShouldPing != tt.wantPing {
+				t.Fatalf("ShouldPing = %v, want %v", plan.ShouldPing, tt.wantPing)
+			}
+			if !tt.wantPing {
+				return
+			}
+
+			if plan.EffectiveResetAt != tt.wantResetAt {
+				t.Errorf("EffectiveResetAt = %q, want %q", plan.EffectiveResetAt, tt.wantResetAt)
+			}
+			if plan.EffectiveResetKey != tt.wantResetKey {
+				t.Errorf("EffectiveResetKey = %q, want %q", plan.EffectiveResetKey, tt.wantResetKey)
+			}
+			if plan.CatchingUpReset != tt.wantCatchingUp {
+				t.Errorf("CatchingUpReset = %v, want %v", plan.CatchingUpReset, tt.wantCatchingUp)
+			}
+
+			// Simulate successful ping and verify resetCache retains newly observed reset for next cycle
+			state.RecordPingSuccess(plan)
+			if tt.wantCatchingUp {
+				if got := state.ResetCache[key]; got != tt.newlyObservedResetAt {
+					t.Errorf("after success, resetCache = %q, want newly observed %q", got, tt.newlyObservedResetAt)
+				}
+			}
+		})
+	}
+}
+
+func TestClaudeAutoPingCatchup_RetainsNewlyObservedResetForNextCycle(t *testing.T) {
+	state := NewClaudeAutoPingCatchupState()
+	connID := "claude-cycle-conn"
+	key := "claude:" + connID
+
+	// Tick 1: observed 12:00 reset deadline before lead window
+	t1 := time.Date(2026, 1, 1, 11, 59, 10, 0, time.UTC)
+	plan1 := state.PlanClaudeAutoPing(connID, "", "2026-01-01T12:00:00.000Z", t1)
+	if plan1.ShouldPing {
+		t.Fatal("tick 1 should not ping before 5s lead window")
+	}
+
+	// Tick 2 (60s later): 12:00:10. Next usage poll reports 17:00:00.
+	t2 := time.Date(2026, 1, 1, 12, 0, 10, 0, time.UTC)
+	plan2 := state.PlanClaudeAutoPing(connID, "", "2026-01-01T17:00:00.000Z", t2)
+	if !plan2.ShouldPing {
+		t.Fatal("tick 2 must catch up missed 12:00 deadline")
+	}
+	if plan2.EffectiveResetAt != "2026-01-01T12:00:00.000Z" {
+		t.Errorf("EffectiveResetAt = %q, want 12:00", plan2.EffectiveResetAt)
+	}
+	if !plan2.CatchingUpReset {
+		t.Error("CatchingUpReset must be true")
+	}
+
+	// Ping succeeds. Marked 12:00 as pinged.
+	lastPingedKey := plan2.EffectiveResetKey
+	state.RecordPingSuccess(plan2)
+
+	// Verify resetCache retained 17:00 for the next cycle
+	if state.ResetCache[key] != "2026-01-01T17:00:00.000Z" {
+		t.Fatalf("resetCache = %q, want 17:00 retained for next cycle", state.ResetCache[key])
+	}
+
+	// Tick 3: 12:01:10 (inside same cycle). Should NOT ping again.
+	t3 := time.Date(2026, 1, 1, 12, 1, 10, 0, time.UTC)
+	plan3 := state.PlanClaudeAutoPing(connID, lastPingedKey, "2026-01-01T17:00:00.000Z", t3)
+	if plan3.ShouldPing {
+		t.Fatal("tick 3 must not ping duplicate in same cycle")
+	}
+
+	// Tick 4: 17:00:30 (next cycle arrived, tick is 30s late). Must catch up 17:00!
+	t4 := time.Date(2026, 1, 1, 17, 0, 30, 0, time.UTC)
+	plan4 := state.PlanClaudeAutoPing(connID, lastPingedKey, "2026-01-01T22:00:00.000Z", t4)
+	if !plan4.ShouldPing {
+		t.Fatal("tick 4 must ping next cycle (17:00)")
+	}
+	if plan4.EffectiveResetAt != "2026-01-01T17:00:00.000Z" {
+		t.Errorf("tick 4 EffectiveResetAt = %q, want 17:00", plan4.EffectiveResetAt)
+	}
+}
+
+func TestClaudeAutoPingCatchup_FailureRetainsDeadlineAndRespectsCooldown(t *testing.T) {
+	state := NewClaudeAutoPingCatchupState()
+	connID := "claude-fail-conn"
+	key := "claude:" + connID
+
+	state.ResetCache[key] = "2026-01-01T12:00:00.000Z"
+	t1 := time.Date(2026, 1, 1, 12, 0, 30, 0, time.UTC)
+	plan1 := state.PlanClaudeAutoPing(connID, "", "2026-01-01T17:00:00.000Z", t1)
+	if !plan1.ShouldPing || !plan1.CatchingUpReset {
+		t.Fatal("plan1 should ping catching up")
+	}
+
+	// Ping fails (HTTP error or transport error)
+	state.RecordPingFailure(plan1, t1)
+
+	// Deadline must remain in resetCache
+	if state.ResetCache[key] != "2026-01-01T12:00:00.000Z" {
+		t.Errorf("after failure, resetCache = %q, want 12:00 retained", state.ResetCache[key])
+	}
+
+	// Tick 1 min later (during cooldown) -> must NOT ping
+	t2 := time.Date(2026, 1, 1, 12, 1, 30, 0, time.UTC)
+	plan2 := state.PlanClaudeAutoPing(connID, "", "2026-01-01T17:00:00.000Z", t2)
+	if plan2.ShouldPing {
+		t.Fatal("must skip during failure cooldown")
+	}
+
+	// Tick 16 min later (after 15 min cooldown) -> retries missed deadline
+	t3 := time.Date(2026, 1, 1, 12, 16, 0, 0, time.UTC)
+	plan3 := state.PlanClaudeAutoPing(connID, "", "2026-01-01T17:00:00.000Z", t3)
+	if !plan3.ShouldPing {
+		t.Fatal("after cooldown expired, must retry missed deadline")
+	}
+	if plan3.EffectiveResetAt != "2026-01-01T12:00:00.000Z" {
+		t.Errorf("EffectiveResetAt = %q, want 12:00", plan3.EffectiveResetAt)
+	}
+
+	// Successful retry clears cooldown and updates resetCache to newly observed reset
+	state.RecordPingSuccess(plan3)
+	if state.ResetCache[key] != "2026-01-01T17:00:00.000Z" {
+		t.Errorf("after successful retry, resetCache = %q, want 17:00", state.ResetCache[key])
+	}
+	if state.ShouldSkipAfterFailure(key, t3) {
+		t.Error("failureCache must be cleared after success")
+	}
+}
