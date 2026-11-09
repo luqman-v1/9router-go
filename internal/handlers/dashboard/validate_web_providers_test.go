@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	json "encoding/json/v2"
+
+	"9router/proxy/internal/proxy/executor"
 )
 
 // deepSeekProbeBody builds the users/current envelope the probe reads. The web
@@ -152,6 +154,11 @@ func TestValidateDeepSeekWeb(t *testing.T) {
 // sends. The credential is judged against those headers, so a probe that sent a
 // generic Authorization header would be testing something the real site never
 // sees.
+//
+// The set is the one a CHAT call carries — the token exchange is a chat call,
+// and the site issues the chat calls below the interceptor that adds the
+// `x-client-*` block. A probe that carried the block would be judging the
+// credential under headers the real turn never sends.
 func TestValidateDeepSeekWebSendsBrowserFingerprint(t *testing.T) {
 	calls := withProbeStub(t, func(_ int, _ capturedProbe) (int, []byte, error) {
 		return http.StatusOK, deepSeekProbeBody("access-token"), nil
@@ -169,20 +176,45 @@ func TestValidateDeepSeekWebSendsBrowserFingerprint(t *testing.T) {
 	if got := probe.headers.Get("Authorization"); got != "Bearer user-token-1" {
 		t.Errorf("Authorization = %q, want the Bearer userToken", got)
 	}
-	// The probe must send the executor's own fingerprint, including the
-	// client-attestation header family: a probe judged against a different
-	// header set says nothing about whether the real turn will be accepted.
 	for header, want := range map[string]string{
-		"X-Client-Bundle-Id": "com.deepseek.chat",
-		"X-Client-Version":   "2.3.0",
-		"X-Client-Platform":  "web",
-		"Origin":             "https://chat.deepseek.com",
-		"Sec-Fetch-Mode":     "cors",
-		"Sec-Ch-Ua-Platform": `"Windows"`,
+		"Sec-Fetch-Mode": "cors",
+		"Sec-Fetch-Site": "same-origin",
+		"Referer":        "https://chat.deepseek.com/",
+		"User-Agent":     executor.DeepSeekWebUserAgent(),
 	} {
 		if got := probe.headers.Get(header); got != want {
 			t.Errorf("probe %s = %q, want %q", header, got, want)
 		}
+	}
+	// The client block and the client hints belong to the settings and
+	// telemetry calls, not to the chat ones.
+	for _, header := range []string{"X-Client-Bundle-Id", "X-Client-Version", "X-Client-Platform", "Sec-Ch-Ua-Platform"} {
+		if got := probe.headers.Get(header); got != "" {
+			t.Errorf("probe %s = %q, want it absent — no browser sends it on a chat call", header, got)
+		}
+	}
+	// The token exchange is a GET, and the site leaves the origin off its GETs.
+	if got := probe.headers.Get("Origin"); got != "" {
+		t.Errorf("probe Origin = %q, want it absent — the token exchange is a GET", got)
+	}
+}
+
+// The site's own cookie travels with the probe when there is one: the WAF
+// reads it, and a probe that omits it judges the credential under different
+// conditions than the turn will meet.
+func TestValidateDeepSeekWebSendsTheConfiguredCookie(t *testing.T) {
+	calls := withProbeStub(t, func(_ int, _ capturedProbe) (int, []byte, error) {
+		return http.StatusOK, deepSeekProbeBody("access-token"), nil
+	})
+
+	postValidate(t, `{"provider":"deepseek-web","apiKey":"user-token-1",`+
+		`"providerSpecificData":{"deepSeekCookie":"ds_session_id=abc; aws-waf-token=def"}}`)
+
+	if len(*calls) != 1 {
+		t.Fatalf("expected one probe, got %d", len(*calls))
+	}
+	if got := (*calls)[0].headers.Get("Cookie"); !strings.Contains(got, "aws-waf-token=def") {
+		t.Errorf("probe Cookie = %q, want the site's own cookie", got)
 	}
 }
 
@@ -234,7 +266,7 @@ func TestValidateGeminiWebDoesNotMistakeTheRegistryConstantForARejection(t *test
 		return http.StatusOK, []byte(`[["wrb.fr","otAQ7b","[6,[false,null,false],false,null,null,null,false,null,null,null,null,null,false,false,1016,[[\"cf41b0e0dd7d53e5\",\"Flash-Lite\"]]]"]]`), nil
 	})
 
-	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":"__Secure-1PSID=cookie-value"}`)
+	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":"__Secure-1PSID=cookie-value; __Secure-1PSIDTS=sidts-value"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
 	}
@@ -251,7 +283,7 @@ func TestValidateGeminiWebAcceptsAWorkingCookie(t *testing.T) {
 		return http.StatusOK, []byte(`[["wrb.fr","otAQ7b","[6,[],[],[[\"cf41b0e0dd7d53e5\",\"Flash-Lite\"]]]"]]`), nil
 	})
 
-	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":"__Secure-1PSID=cookie-value"}`)
+	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":"__Secure-1PSID=cookie-value; __Secure-1PSIDTS=sidts-value"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
 	}
@@ -284,6 +316,56 @@ func TestValidateGeminiWebWithoutACookieSaysItStillWorks(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Errorf("expected no outbound probe, got %d", len(*calls))
+	}
+}
+
+// TestValidateGeminiWebSignsItsRegistryProbe proves the probe asks the
+// registry the way a signed-in page asks it.
+//
+// The registry RPC is the call that decides which models a session may use,
+// and the site answers it as an anonymous visitor when the call is unsigned.
+// An unsigned probe therefore reports a working Pro account as reaching one
+// model — and a user who pastes a correct cookie is told to paste it again.
+func TestValidateGeminiWebSignsItsRegistryProbe(t *testing.T) {
+	withProbeStub(t, func(_ int, p capturedProbe) (int, []byte, error) {
+		auth := p.headers.Get("Authorization")
+		if !strings.HasPrefix(auth, "SAPISIDHASH ") {
+			t.Errorf("probe authorization = %q, want a SAPISIDHASH signature", auth)
+		}
+		return http.StatusOK, []byte(`[["wrb.fr","otAQ7b","[6,[],[],[[\"cf41b0e0dd7d53e5\",\"Flash-Lite\"]]]"]]`), nil
+	})
+
+	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":"__Secure-1PSID=psid; __Secure-1PSIDTS=sidts-value; SAPISID=sapisid-value"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != true {
+		t.Errorf("valid = %v, want true for a session the site answers (error: %v)", out["valid"], out["error"])
+	}
+}
+
+// TestValidateGeminiWebReportsACookieWithoutTheSessionTimestamp proves the
+// probe says what is actually wrong with a credential that carries no
+// __Secure-1PSIDTS.
+//
+// That cookie is what carries the session into the model registry, and a
+// header without it is answered as a visitor's however fresh the rest of it
+// is. Telling the user to re-copy the whole cookie sends them round a loop
+// that ends where it started.
+func TestValidateGeminiWebReportsACookieWithoutTheSessionTimestamp(t *testing.T) {
+	withProbeStub(t, func(_ int, p capturedProbe) (int, []byte, error) {
+		return http.StatusOK, []byte(`[["wrb.fr","otAQ7b","[6,[],[],[[\"cf41b0e0dd7d53e5\",\"Flash-Lite\"]]]"]]`), nil
+	})
+
+	rec, out := postValidate(t, `{"provider":"gemini-web","apiKey":"__Secure-1PSID=psid-only"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != false {
+		t.Errorf("valid = %v, want false: the credential cannot reach the signed-in models", out["valid"])
+	}
+	if msg := errorMessage(t, out); !strings.Contains(msg, "__Secure-1PSIDTS") {
+		t.Errorf("message = %q, want it to name the cookie that is missing", msg)
 	}
 }
 

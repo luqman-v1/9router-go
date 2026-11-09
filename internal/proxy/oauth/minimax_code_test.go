@@ -14,11 +14,18 @@ import (
 // pinMCodeSite points a provider's token endpoint at a fixture for the life of
 // the test and restores it afterwards. Without it a refresh would reach the real
 // account host — a live request against a provider, with a made-up grant.
+//
+// The refresh result cache is process-wide and keyed by provider plus the spent
+// token value, so it is emptied for this test: an entry left behind by another
+// test — or by the previous repetition of this one under -count — would hand
+// this test an answer its own fixture never sent.
 func pinMCodeSite(t *testing.T, provider, tokenURL string) {
 	t.Helper()
 	prev, existed := miniMaxCodeSites[provider]
 	miniMaxCodeSites[provider] = tokenURL
+	resetMiniMaxCodeRefreshCache()
 	t.Cleanup(func() {
+		resetMiniMaxCodeRefreshCache()
 		if existed {
 			miniMaxCodeSites[provider] = prev
 			return
@@ -69,7 +76,7 @@ func TestRefreshMiniMaxCode_RotatesRefreshToken(t *testing.T) {
 	server := newMCodeServer(t, "minimax-code", &hits, http.StatusOK,
 		`{"access_token":"a2","refresh_token":"r2","expires_in":3600}`)
 
-	result, err := refreshMiniMaxCode(context.Background(), mcodeParams(server, "minimax-code", "r1"))
+	result, err := refreshMiniMaxCode(context.Background(), mcodeParams(server, "minimax-code", "rotate-token"))
 	if err != nil {
 		t.Fatalf("refreshMiniMaxCode: %v", err)
 	}
@@ -92,12 +99,12 @@ func TestRefreshMiniMaxCode_RotatesRefreshToken(t *testing.T) {
 func TestRefreshMiniMaxCode_KeepsRefreshTokenWhenOmitted(t *testing.T) {
 	server := newMCodeServer(t, "minimax-code", nil, http.StatusOK, `{"access_token":"a2","expires_in":60}`)
 
-	result, err := refreshMiniMaxCode(context.Background(), mcodeParams(server, "minimax-code", "r1"))
+	result, err := refreshMiniMaxCode(context.Background(), mcodeParams(server, "minimax-code", "keeps-token"))
 	if err != nil {
 		t.Fatalf("refreshMiniMaxCode: %v", err)
 	}
-	if result.RefreshToken != "r1" {
-		t.Errorf("RefreshToken = %q, want the unchanged r1", result.RefreshToken)
+	if result.RefreshToken != "keeps-token" {
+		t.Errorf("RefreshToken = %q, want the unchanged keeps-token", result.RefreshToken)
 	}
 	if result.ExpiresIn != 60 {
 		t.Errorf("ExpiresIn = %d, want 60", result.ExpiresIn)
@@ -109,7 +116,7 @@ func TestRefreshMiniMaxCode_KeepsRefreshTokenWhenOmitted(t *testing.T) {
 func TestRefreshMiniMaxCode_DefaultsExpiry(t *testing.T) {
 	server := newMCodeServer(t, "minimax-code", nil, http.StatusOK, `{"access_token":"a2","refresh_token":"r2"}`)
 
-	result, err := refreshMiniMaxCode(context.Background(), mcodeParams(server, "minimax-code", "r1"))
+	result, err := refreshMiniMaxCode(context.Background(), mcodeParams(server, "minimax-code", "expiry-token"))
 	if err != nil {
 		t.Fatalf("refreshMiniMaxCode: %v", err)
 	}
@@ -135,7 +142,7 @@ func TestRefreshMiniMaxCode_SitesAreDistinct(t *testing.T) {
 func TestRefreshMiniMaxCode_SpentTokenIsGrantDead(t *testing.T) {
 	server := newMCodeServer(t, "minimax-code", nil, http.StatusBadRequest, `{"error":"invalid_grant"}`)
 
-	_, err := refreshMiniMaxCode(context.Background(), mcodeParams(server, "minimax-code", "spent"))
+	_, err := refreshMiniMaxCode(context.Background(), mcodeParams(server, "minimax-code", "spent-token"))
 	if err == nil {
 		t.Fatal("a spent refresh token returned no error")
 	}
@@ -162,7 +169,7 @@ func TestRefreshMiniMaxCode_TransientFailureIsNotGrantDead(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			server := newMCodeServer(t, "minimax-code", nil, tt.status, tt.body)
 
-			_, err := refreshMiniMaxCode(context.Background(), mcodeParams(server, "minimax-code", "r1"))
+			_, err := refreshMiniMaxCode(context.Background(), mcodeParams(server, "minimax-code", "transient-token"))
 			if err == nil {
 				t.Fatalf("a %d answer returned no error", tt.status)
 			}
@@ -185,7 +192,7 @@ func TestRefreshMiniMaxCode_DedupesConcurrentRefreshes(t *testing.T) {
 	defer srv.Close()
 	pinMCodeSite(t, "minimax-code", srv.URL)
 
-	params := &Params{Client: srv.Client(), Provider: "minimax-code", RefreshToken: "shared-token"}
+	params := &Params{Client: srv.Client(), Provider: "minimax-code", RefreshToken: "concurrent-token"}
 	var wg sync.WaitGroup
 	results := make([]*TokenResult, 2)
 	errs := make([]error, 2)
@@ -208,6 +215,126 @@ func TestRefreshMiniMaxCode_DedupesConcurrentRefreshes(t *testing.T) {
 	}
 	if n := hits.Load(); n != 1 {
 		t.Errorf("token endpoint called %d times, want 1 (a single-use token cannot be spent twice)", n)
+	}
+}
+
+// A refresh that lands a few milliseconds after the previous one finished is
+// the case singleflight alone does not cover: the flight is gone by then, so
+// the next caller would post the same single-use token again and get
+// invalid_grant, which signs the account out. Upstream's dedupRefresh keeps
+// the RESULT for REFRESH_RESULT_TTL_MS (10s) and answers the second caller
+// from it. This is the test that fails on the pre-fix tree.
+func TestRefreshMiniMaxCode_SequentialRefreshesShareOneResult(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"a2","refresh_token":"r2","expires_in":3600}`))
+	}))
+	defer srv.Close()
+	pinMCodeSite(t, "minimax-code", srv.URL)
+
+	params := &Params{Client: srv.Client(), Provider: "minimax-code", RefreshToken: "sequential-token"}
+	first, err := refreshMiniMaxCode(context.Background(), params)
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	// The second call is sequential, not concurrent: the first flight has
+	// already completed and been discarded.
+	second, err := refreshMiniMaxCode(context.Background(), params)
+	if err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+
+	if n := hits.Load(); n != 1 {
+		t.Errorf("token endpoint called %d times, want 1 (a single-use token cannot be spent twice)", n)
+	}
+	if second.AccessToken != first.AccessToken || second.RefreshToken != first.RefreshToken {
+		t.Errorf("second refresh got %+v, want the same answer as the first %+v", second, first)
+	}
+	// The cached answer must carry the ROTATED refresh token, so the caller
+	// stores r2 rather than resending the spent r1.
+	if second.RefreshToken != "r2" {
+		t.Errorf("RefreshToken = %q, want the rotated r2", second.RefreshToken)
+	}
+}
+
+// A failed refresh must not be cached: upstream deletes the entry in its catch
+// path, so the next attempt reaches the endpoint again instead of replaying a
+// failure for the whole TTL.
+func TestRefreshMiniMaxCode_FailedRefreshIsNotCached(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if hits.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`boom`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"a2","refresh_token":"r2","expires_in":3600}`))
+	}))
+	defer srv.Close()
+	pinMCodeSite(t, "minimax-code", srv.URL)
+
+	params := &Params{Client: srv.Client(), Provider: "minimax-code", RefreshToken: "failed-token"}
+	if _, err := refreshMiniMaxCode(context.Background(), params); err == nil {
+		t.Fatal("the failing refresh returned no error")
+	}
+	second, err := refreshMiniMaxCode(context.Background(), params)
+	if err != nil {
+		t.Fatalf("retry after a failed refresh: %v", err)
+	}
+	if n := hits.Load(); n != 2 {
+		t.Errorf("token endpoint called %d times, want 2 (a failed refresh must not be cached)", n)
+	}
+	if second.AccessToken != "a2" {
+		t.Errorf("AccessToken = %q, want a2 from the retry", second.AccessToken)
+	}
+}
+
+// The cache key is provider plus the spent token, so the same token value
+// under a different provider must NOT share an answer: minimax-code and
+// minimax-code-global are separate sites (AGENTS.md 3.A) and a grant for one
+// says nothing about the other.
+func TestRefreshMiniMaxCode_CacheDoesNotCrossProviders(t *testing.T) {
+	var codeHits, globalHits atomic.Int64
+	codeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		codeHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"a2","refresh_token":"r2","expires_in":3600}`))
+	}))
+	defer codeSrv.Close()
+	globalSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		globalHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"g2","refresh_token":"gr2","expires_in":3600}`))
+	}))
+	defer globalSrv.Close()
+	pinMCodeSite(t, "minimax-code", codeSrv.URL)
+	pinMCodeSite(t, "minimax-code-global", globalSrv.URL)
+
+	shared := "cross-provider-token"
+	codeResult, err := refreshMiniMaxCode(context.Background(),
+		&Params{Client: codeSrv.Client(), Provider: "minimax-code", RefreshToken: shared})
+	if err != nil {
+		t.Fatalf("minimax-code refresh: %v", err)
+	}
+	globalResult, err := refreshMiniMaxCode(context.Background(),
+		&Params{Client: globalSrv.Client(), Provider: "minimax-code-global", RefreshToken: shared})
+	if err != nil {
+		t.Fatalf("minimax-code-global refresh: %v", err)
+	}
+
+	if codeHits.Load() != 1 || globalHits.Load() != 1 {
+		t.Errorf("hits: minimax-code=%d, minimax-code-global=%d, want 1 each (the cache must not cross providers)",
+			codeHits.Load(), globalHits.Load())
+	}
+	if codeResult.AccessToken == globalResult.AccessToken {
+		t.Errorf("both providers answered %q; the cache leaked across providers", codeResult.AccessToken)
+	}
+	if globalResult.AccessToken != "g2" {
+		t.Errorf("minimax-code-global AccessToken = %q, want g2", globalResult.AccessToken)
 	}
 }
 

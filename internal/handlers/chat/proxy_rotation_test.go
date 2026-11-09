@@ -1,6 +1,9 @@
 package chat
 
 import (
+	"context"
+	"errors"
+	"net/http"
 	"testing"
 
 	"9router/proxy/internal/db"
@@ -175,5 +178,117 @@ func TestResolveEgress_HTTPPoolIsNotDirect(t *testing.T) {
 	}
 	if e.LogValue() != "warp" {
 		t.Fatalf("LogValue() = %q, want warp", e.LogValue())
+	}
+}
+
+// A pool that already refused the turn is never a rotation candidate: the next
+// attempt must land on the egress that has not been tried yet.
+func TestResolveProviderProxyPoolID_NeverSelectsExcludedPool(t *testing.T) {
+	repo := poolRotationDB(t, `{"providerStrategies":{"opencode":{"rotateStrategy":"round-robin"}}}`)
+	ids := insertPools(t, repo, 2)
+	excluded := map[string]bool{ids[0]: true}
+	h := NewChatHandler(repo)
+
+	for i := 0; i < 8; i++ {
+		if got := h.ResolveProviderProxyPoolID("opencode", excluded); got != ids[1] {
+			t.Fatalf("call %d: pool = %q, want %q (an excluded pool must never be selected)", i, got, ids[1])
+		}
+	}
+}
+
+// With every pool excluded the pool binding is dropped so the attempt can go
+// out direct — errNoUsablePool is the sentinel, not a client-visible failure.
+func TestResolveProviderProxyPoolID_AllPoolsExcludedFallsThrough(t *testing.T) {
+	repo := poolRotationDB(t, `{"providerStrategies":{"opencode":{"rotateStrategy":"round-robin"}}}`)
+	ids := insertPools(t, repo, 2)
+	excluded := map[string]bool{ids[0]: true, ids[1]: true}
+	h := NewChatHandler(repo)
+
+	if got := h.ResolveProviderProxyPoolID("opencode", excluded); got != "" {
+		t.Fatalf("pool = %q, want empty (direct attempt instead of a hard failure)", got)
+	}
+	if _, err := h.resolveProviderProxyPoolID("opencode", excluded); !errors.Is(err, errNoUsablePool) {
+		t.Fatalf("err = %v, want errNoUsablePool", err)
+	}
+	connData := &ConnectionData{}
+	h.applyProviderProxyPool(connData, "opencode", excluded)
+	if connData.ProxyPoolID != "" {
+		t.Fatalf("bound pool = %q, want empty once every pool is excluded", connData.ProxyPoolID)
+	}
+}
+
+// A keyed provider's rotateStrategy means ACCOUNT rotation, so it must not
+// rotate pools on its own. The exclusion set is the free-tier-refusal signal
+// (the failover loop fills it), and only then does the next pool get picked.
+func TestResolveProviderProxyPoolID_KeyedProviderRotatesAfterFreeTierExclusion(t *testing.T) {
+	repo := poolRotationDB(t, `{"providerStrategies":{"opencode-zen":{"rotateStrategy":"round-robin"}}}`)
+	ids := insertPools(t, repo, 2)
+	h := NewChatHandler(repo)
+
+	if got := h.ResolveProviderProxyPoolID("opencode-zen"); got != "" {
+		t.Fatalf("pool = %q, want empty before any refusal: a keyed provider's rotation is account rotation", got)
+	}
+	if got := h.ResolveProviderProxyPoolID("opencode-zen", map[string]bool{ids[0]: true}); got != ids[1] {
+		t.Fatalf("pool = %q, want %q (a free-tier exclusion must rotate the egress)", got, ids[1])
+	}
+}
+
+// A free-tier 403 is an egress verdict: it must not be recorded as a
+// model-scoped lock. Any other 403 keeps the pre-existing handling.
+func TestModelScopedError_FreeTierForbiddenIsNotModelScoped(t *testing.T) {
+	body := []byte(`{"error":{"type":"FreeTierError","message":"free tier can only be used from within OpenCode"}}`)
+	if isModelScopedError(http.StatusForbidden, extractErrorText(body), "jev-1.13-free", body) {
+		t.Fatal("a FreeTierError 403 must not be model-scoped; the failover loop rotates the pool instead")
+	}
+}
+
+// A free-tier 429 (FreeUsageLimitError) is an egress verdict, not an account or
+// model fault: comboLockRetryable must not cool the connection down on it, and
+// only excludes it for the rest of the pass. A genuine 429 rate limit from the
+// same provider still locks normally - the refusal guard is deliberately narrow.
+func TestComboLockRetryable_OpencodeFreeUsageLimitDoesNotLock(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	dropSeededConn(t, database)
+
+	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES ('conn-open', 'opencode', 'apikey', 'OpenCode Conn', 1, 1, '{"apiKey":"sk-open"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed opencode connection: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// 1. 429 FreeUsageLimitError must NOT lock the connection or the account.
+	var excludeIDs []string
+	h.comboLockRetryable(context.Background(), &excludeIDs, "conn-open", "opencode", "deepseek-v4.1-flash-free", &upstreamError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       []byte(`{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached. Subscribe to OpenCode Go to keep going: https://opencode.ai/go"}}`),
+	})
+
+	if locked, _ := repo.IsConnectionModelLocked("conn-open", "deepseek-v4.1-flash-free"); locked {
+		t.Error("expected the free-tier 429 to NOT lock the model")
+	}
+	var rawData string
+	_ = database.QueryRow(`SELECT data FROM providerConnections WHERE id = 'conn-open'`).Scan(&rawData)
+	if _, ok := db.ConnectionCooldownUntil(rawData); ok {
+		t.Error("expected the free-tier 429 to NOT set an account cooldown")
+	}
+	if len(excludeIDs) != 1 || excludeIDs[0] != "conn-open" {
+		t.Errorf("expected conn-open to be excluded for the rest of the pass, got %v", excludeIDs)
+	}
+
+	// 2. A genuine rate-limit 429 from the same provider still locks
+	// (regression guard: the refusal token set must not silently widen).
+	var excludeIDs2 []string
+	h.comboLockRetryable(context.Background(), &excludeIDs2, "conn-open", "opencode", "deepseek-v4.1-flash-free", &upstreamError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       []byte(`{"error":{"type":"RateLimitError","message":"too many requests"}}`),
+	})
+	_ = database.QueryRow(`SELECT data FROM providerConnections WHERE id = 'conn-open'`).Scan(&rawData)
+	if _, ok := db.ConnectionCooldownUntil(rawData); !ok {
+		t.Error("expected a genuine 429 to still set an account cooldown")
+	}
+	if len(excludeIDs2) != 1 || excludeIDs2[0] != "conn-open" {
+		t.Errorf("expected conn-open to be excluded after a genuine 429, got %v", excludeIDs2)
 	}
 }

@@ -51,3 +51,28 @@ func TestForwardUpstreamResponseHeaders_NilSafe(t *testing.T) {
 		t.Errorf("a nil upstream should forward nothing, got %q", rec.Header().Get("Retry-After"))
 	}
 }
+func TestForwardUpstreamResponseHeaders_SlowMode(t *testing.T) {
+	rec := httptest.NewRecorder()
+	upstream := http.Header{
+		"Anthropic-Usage-Limit":                   []string{"slow"},
+		"Anthropic-Ratelimit-Unified-Slow-Status": []string{"active"},
+		"Anthropic-Ratelimit-Unified-Reset":       []string{"1700000000"},
+		"Retry-After":                             []string{"30"},
+		"X-Unrelated":                             []string{"ignore"},
+	}
+
+	forwardUpstreamResponseHeaders(rec, upstream)
+
+	if got := rec.Header().Get("anthropic-usage-limit"); got != "slow" {
+		t.Errorf("anthropic-usage-limit = %q, want slow", got)
+	}
+	if got := rec.Header().Get("anthropic-ratelimit-unified-slow-status"); got != "active" {
+		t.Errorf("slow status = %q, want active", got)
+	}
+	if got := rec.Header().Get("retry-after"); got != "30" {
+		t.Errorf("retry-after = %q, want 30", got)
+	}
+	if got := rec.Header().Get("x-unrelated"); got != "" {
+		t.Errorf("unexpected header forwarded: %q", got)
+	}
+}

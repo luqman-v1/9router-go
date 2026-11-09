@@ -36,6 +36,10 @@ func TestGetThinkingLevels_Parity(t *testing.T) {
 			want: []string{"none", "low", "medium", "high", "xhigh", "max"}},
 		{name: "commandcode via uiAlias", provider: "cmc", model: "moonshotai/Kimi-K2.7-Code",
 			want: []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{name: "zen free deepseek-v4.1-flash publishes low|high|max", provider: "opencode", model: "deepseek-v4.1-flash-free",
+			want: []string{"low", "high", "max"}},
+		{name: "zen free id on opencode-zen resolves the same", provider: "opencode-zen", model: "deepseek-v4.1-flash-free",
+			want: []string{"low", "high", "max"}},
 	}
 
 	for _, tt := range tests {

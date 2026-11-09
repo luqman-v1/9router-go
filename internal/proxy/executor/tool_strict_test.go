@@ -71,7 +71,7 @@ func TestConvertOpenAIToolsToClaudeStrict(t *testing.T) {
 // returns the forwarded Responses tool.
 func codexToolStrict(t *testing.T, tool string) map[string]any {
 	t.Helper()
-	req := buildCodexBody(t, `{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[`+tool+`]}`)
+	req := buildCodexBody(t, `{"model":"gpt-5.6-terra","messages":[{"role":"user","content":"hi"}],"tools":[`+tool+`]}`)
 	tools := toolList(req)
 	if len(tools) != 1 {
 		t.Fatalf("got %d tools, want 1", len(tools))
@@ -140,7 +140,7 @@ func TestBuildResponsesBodyPassthroughKeepsStrict(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := buildCodexBody(t, `{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":"hi"}],"tools":[`+tt.tool+`]}`)
+			req := buildCodexBody(t, `{"model":"gpt-5.6-terra","input":[{"type":"message","role":"user","content":"hi"}],"tools":[`+tt.tool+`]}`)
 			tools := toolList(req)
 			if len(tools) != 1 {
 				t.Fatalf("got %d tools, want 1", len(tools))

@@ -1,6 +1,9 @@
 package db
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -234,49 +237,250 @@ func (r *Repo) GetUsageGroupByModelSince(since string) ([]UsageGroupRow, error) 
 	return scanUsageGroupRows(rows, "model")
 }
 
-// CacheUsageRow carries the raw fields needed to compute the cache hit rate:
-// the row's input count and its token JSON (cached/creation live inside it).
-type CacheUsageRow struct {
-	PromptTokens int
-	Tokens       string
+// UsageClientKeyRow is one client-API-key aggregate over a time window.
+//
+// ClientKey holds the masked key the CALLER presented (the shape
+// handlerutil.MaskAPIKey writes), not the upstream credential the
+// provider/model group describes. An operator who resells the gateway needs
+// this axis: it is the key they sold.
+type UsageClientKeyRow struct {
+	ClientKey        string
+	Requests         int
+	Errors           int
+	PromptTokens     int
+	CompletionTokens int
+	CachedTokens     int
+	Cost             float64
+	LastUsed         string
 }
 
-// GetCacheUsageRows returns every history row whose token payload mentions a
-// cache field. The lifetime cache-hit rate is unbounded by design (it judges
-// the whole ledger), and the LIKE prefilter keeps the JSON decode off rows
-// that can never contribute.
-func (r *Repo) GetCacheUsageRows() ([]CacheUsageRow, error) {
-	rows, err := r.db.Query(`SELECT promptTokens, tokens FROM usageHistory WHERE tokens LIKE '%cache%'`) //nolint:noctx
+// usageClientKeyCachedTokens sums the cached prompt tokens of a group of rows.
+//
+// The counters live in the row's tokens JSON, so the read has to reach the
+// row. The shapes and their precedence mirror translator.CachedTokensFromJSON,
+// which is what wrote the row: the first shape that is PRESENT wins, and a
+// JSON null is not a value. A shape that is present and zero still wins, which
+// is why the test is "is it there" and not "is it non-zero".
+//
+// Every shape is guarded by json_valid because a row written by an older build
+// may hold no JSON at all, and json_extract on a non-JSON value is an error
+// rather than a zero.
+const usageClientKeyCachedTokens = `
+	COALESCE(SUM(
+		CASE WHEN json_valid(tokens) THEN
+			CASE
+				WHEN json_extract(tokens, '$.cached_tokens') IS NOT NULL
+					THEN COALESCE(json_extract(tokens, '$.cached_tokens'), 0)
+				WHEN json_extract(tokens, '$.cache_read_input_tokens') IS NOT NULL
+					THEN COALESCE(json_extract(tokens, '$.cache_read_input_tokens'), 0)
+				WHEN json_extract(tokens, '$.prompt_tokens_details.cached_tokens') IS NOT NULL
+					THEN COALESCE(json_extract(tokens, '$.prompt_tokens_details.cached_tokens'), 0)
+				WHEN json_extract(tokens, '$.input_tokens_details.cached_tokens') IS NOT NULL
+					THEN COALESCE(json_extract(tokens, '$.input_tokens_details.cached_tokens'), 0)
+				WHEN json_extract(tokens, '$.prompt_eval_cached_count') IS NOT NULL
+					THEN COALESCE(json_extract(tokens, '$.prompt_eval_cached_count'), 0)
+				ELSE 0
+			END
+		ELSE 0
+		END
+	), 0)
+`
+
+// usageGroupByClientKeyQuery is the statement GetUsageGroupByClientKeySince
+// runs.
+//
+// It is a named constant for the reason the three usageHistory reads above
+// are: the query-plan test runs EXPLAIN QUERY PLAN against it, and a copy of
+// the SQL in the test would pin the copy rather than the read — the day the
+// two drifted, the test would still be green while the read scanned the
+// ledger.
+const usageGroupByClientKeyQuery = `SELECT COALESCE(clientKey, ''), ` + usageGroupStats + `, ` + usageClientKeyCachedTokens +
+	` FROM usageHistory WHERE timestamp >= ? GROUP BY COALESCE(clientKey, '')`
+
+// GetUsageGroupByClientKeySince aggregates usageHistory per client key since
+// the cutoff.
+//
+// This is a different axis from the provider/model groups: those describe
+// where the spend went, this describes who caused it.
+func (r *Repo) GetUsageGroupByClientKeySince(since string) ([]UsageClientKeyRow, error) {
+	rows, err := r.db.Query( //nolint:noctx,rowserrcheck
+		usageGroupByClientKeyQuery, since)
 	if err != nil {
-		return nil, fmt.Errorf("query cache usage rows: %w", err)
+		return nil, fmt.Errorf("query usage group by client key: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var res []CacheUsageRow
+
+	var res []UsageClientKeyRow
 	for rows.Next() {
-		var row CacheUsageRow
-		if err := rows.Scan(&row.PromptTokens, &row.Tokens); err != nil {
-			return nil, fmt.Errorf("scan cache usage row: %w", err)
+		var row UsageClientKeyRow
+		if err := rows.Scan(
+			&row.ClientKey, &row.Requests, &row.Errors,
+			&row.PromptTokens, &row.CompletionTokens, &row.Cost, &row.LastUsed,
+			&row.CachedTokens,
+		); err != nil {
+			return nil, fmt.Errorf("scan usage group by client key: %w", err)
 		}
 		res = append(res, row)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate cache usage rows: %w", err)
+		return nil, fmt.Errorf("iterate usage group by client key: %w", err)
 	}
 	return res, nil
 }
 
-// RequestDetailPerfRow is one latency observation from the requestDetails ring.
-type RequestDetailPerfRow struct {
-	Provider string
-	Model    string
-	Data     string
+// FoldUsageGroupByProvider collapses model-level group rows into the
+// provider-level rows GetUsageGroupByProviderSince would have queried.
+//
+// It exists so the dashboard can answer both tables from one scan of the
+// window. The two reads were separate GROUP BY passes over the same rows, and
+// on a 305k-row ledger they measured 22ms and 37ms — the fold below costs 33µs
+// and the sums are identical, because a provider's total is by definition the
+// sum of its models' totals. A model row that carries the provider's own name
+// (the "no model" bucket) is just another addend.
+//
+// The order of the result follows first appearance in rows, so callers that
+// sort afterwards are unaffected; callers that do not must not depend on it.
+func FoldUsageGroupByProvider(rows []UsageGroupRow) []UsageGroupRow {
+	index := make(map[string]int, len(rows))
+	out := make([]UsageGroupRow, 0, len(rows))
+	for _, row := range rows {
+		i, seen := index[row.Provider]
+		if !seen {
+			index[row.Provider] = len(out)
+			out = append(out, UsageGroupRow{Provider: row.Provider})
+			i = len(out) - 1
+		}
+		agg := &out[i]
+		agg.Requests += row.Requests
+		agg.Errors += row.Errors
+		agg.PromptTokens += row.PromptTokens
+		agg.CompletionTokens += row.CompletionTokens
+		agg.Cost += row.Cost
+		if row.LastUsed > agg.LastUsed {
+			agg.LastUsed = row.LastUsed
+		}
+	}
+	return out
 }
 
-// GetRequestDetailPerf returns the stored payload of every request detail.
-// The ring is retention-bounded, so this stays cheap; it is the gateway's only
-// source of per-request latency for the node-health table.
+// TopUsageGroupByTokens returns the provider/model row that consumed the most
+// tokens, folding the prompt and completion columns the caller already has.
+//
+// GetUsageTopModelSince answers the same question with its own GROUP BY, which
+// was a third pass over the window for one row. Given the model-level rows the
+// dashboard already read, the answer is a single linear scan with no query at
+// all. Ties break on provider then model, matching the ORDER BY the SQL used.
+func TopUsageGroupByTokens(rows []UsageGroupRow) (provider, model string, tokens int64, ok bool) {
+	for _, row := range rows {
+		total := int64(row.PromptTokens) + int64(row.CompletionTokens)
+		if !ok || total > tokens || (total == tokens && (row.Provider < provider ||
+			(row.Provider == provider && row.Model < model))) {
+			provider, model, tokens, ok = row.Provider, row.Model, total, true
+		}
+	}
+	return provider, model, tokens, ok
+}
+
+// GetUsageTopModelSince returns the model that consumed the most tokens since
+// the cutoff, with the provider it ran on. The aggregate runs in SQL: reading
+// the window's rows into the process to fold them there cost a transfer of
+// every row in the window for two numbers.
+func (r *Repo) GetUsageTopModelSince(since string) (provider, model string, tokens int64, ok bool, err error) {
+	err = r.db.QueryRow( //nolint:noctx
+		`SELECT COALESCE(provider, ''), COALESCE(model, ''),
+		        SUM(COALESCE(promptTokens, 0) + COALESCE(completionTokens, 0))
+		   FROM usageHistory WHERE timestamp >= ?
+		  GROUP BY COALESCE(provider, ''), COALESCE(model, '')
+		  ORDER BY 3 DESC, 1, 2
+		  LIMIT 1`, since).
+		Scan(&provider, &model, &tokens)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", 0, false, nil
+	}
+	if err != nil {
+		return "", "", 0, false, fmt.Errorf("query usage top model since %s: %w", since, err)
+	}
+	return provider, model, tokens, true, nil
+}
+
+// GetUsageCacheHitTotalsSince returns the cached and total input tokens of the
+// window, as the cache-hit rate counts them.
+//
+// The counters live in the row's tokens JSON, so the read has to reach the
+// row; it does that in SQL instead of in the process, because the process
+// version shipped every row of the window — including the JSON payload — into
+// memory to fold it there.
+//
+// The rules mirror the ones the row-level fold used:
+//   - cached tokens are `cached_tokens`, and `cache_read_input_tokens` when
+//     the first is zero;
+//   - the input is the row's own promptTokens, and the JSON's prompt_tokens
+//     when that column is zero;
+//   - a request whose whole input is a cache read with no write is a
+//     distorted import and stays out of both sums;
+//   - the denominator is max(input, cached + writes), so a cache-exclusive
+//     row counts its cached part.
+func (r *Repo) GetUsageCacheHitTotalsSince(since string) (hit, total int64, err error) {
+	err = r.db.QueryRow( //nolint:noctx
+		`WITH raw AS (
+		   SELECT COALESCE(promptTokens, 0) AS prompt_column,
+		          CASE WHEN json_valid(tokens) THEN COALESCE(json_extract(tokens, '$.cached_tokens'), 0) ELSE 0 END AS cached_primary,
+		          CASE WHEN json_valid(tokens) THEN COALESCE(json_extract(tokens, '$.cache_read_input_tokens'), 0) ELSE 0 END AS cached_read,
+		          CASE WHEN json_valid(tokens) THEN COALESCE(json_extract(tokens, '$.cache_creation_input_tokens'), 0) ELSE 0 END AS creation,
+		          CASE WHEN json_valid(tokens) THEN COALESCE(json_extract(tokens, '$.prompt_tokens'), 0) ELSE 0 END AS prompt_json
+		     FROM usageHistory WHERE timestamp >= ?
+		 ), resolved AS (
+		   SELECT CASE WHEN cached_primary != 0 THEN cached_primary ELSE cached_read END AS cached,
+		          CASE WHEN prompt_column != 0 THEN prompt_column ELSE prompt_json END AS prompt,
+		          creation
+		     FROM raw
+		 ), counted AS (
+		   SELECT cached, prompt, creation
+		     FROM resolved
+		    WHERE cached > 0 AND prompt > 0 AND NOT (cached = prompt AND creation <= 0)
+		 )
+		 SELECT COALESCE(SUM(cached), 0),
+		        COALESCE(SUM(MAX(prompt, cached + creation)), 0)
+		   FROM counted`, since).
+		Scan(&hit, &total)
+	if err != nil {
+		return 0, 0, fmt.Errorf("query usage cache hit totals since %s: %w", since, err)
+	}
+	return hit, total, nil
+}
+
+// RequestDetailPerfRow is one latency observation from the requestDetails
+// ring. The numbers are read out of the stored payload by SQL, so the read
+// never ships the payload itself: a stored request carries the request
+// messages and the response body, and the ring holds thousands of them, so
+// fetching every payload made the node-health table scale with the size of
+// the stored traffic rather than with the number of rows.
+type RequestDetailPerfRow struct {
+	Provider         string
+	Model            string
+	TTFTMs           int64
+	TotalMs          int64
+	CompletionTokens int64
+	OutputTokens     int64
+}
+
+// requestDetailPerfSelect reads the latency and output numbers out of the
+// stored payload. json_valid guards the extraction: a row whose payload is
+// not JSON makes json_extract fail, and a broken row must read as "no
+// observation" rather than take the whole read down.
+const requestDetailPerfSelect = `
+	SELECT COALESCE(provider, ''), COALESCE(model, ''),
+	       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.latency.ttft'), 0) ELSE 0 END,
+	       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.latency.total'), 0) ELSE 0 END,
+	       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.tokens.completion_tokens'), 0) ELSE 0 END,
+	       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.tokens.output_tokens'), 0) ELSE 0 END
+	FROM requestDetails`
+
+// GetRequestDetailPerf returns the latency observation of every request
+// detail. The ring is retention-bounded, so this stays cheap; it is the
+// gateway's only source of per-request latency for the node-health table.
 func (r *Repo) GetRequestDetailPerf() ([]RequestDetailPerfRow, error) {
-	rows, err := r.db.Query(`SELECT COALESCE(provider, ''), COALESCE(model, ''), data FROM requestDetails`) //nolint:noctx
+	rows, err := r.db.Query(requestDetailPerfSelect) //nolint:noctx
 	if err != nil {
 		return nil, fmt.Errorf("query request detail perf: %w", err)
 	}
@@ -284,13 +488,130 @@ func (r *Repo) GetRequestDetailPerf() ([]RequestDetailPerfRow, error) {
 	var res []RequestDetailPerfRow
 	for rows.Next() {
 		var row RequestDetailPerfRow
-		if err := rows.Scan(&row.Provider, &row.Model, &row.Data); err != nil {
+		if err := rows.Scan(&row.Provider, &row.Model, &row.TTFTMs, &row.TotalMs,
+			&row.CompletionTokens, &row.OutputTokens); err != nil {
 			return nil, fmt.Errorf("scan request detail perf: %w", err)
 		}
 		res = append(res, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate request detail perf: %w", err)
+	}
+	return res, nil
+}
+
+// ModelLatencyAgg is one model's mean responsiveness over the retained window.
+// Either average may be zero — a model whose responses never reported a
+// first-token time has a total but no TTFT — so a consumer must read the
+// Samples count alongside the numbers rather than treating zero as "fast".
+type ModelLatencyAgg struct {
+	Provider string
+	Model    string
+	TTFTMs   int64
+	TotalMs  int64
+	Samples  int64
+}
+
+// GetModelLatency aggregates the requestDetails ring into one mean-latency row
+// per provider/model pair. It lives beside the read it summarises so the two
+// cannot disagree about what a buffered flush means: the node-health table
+// folds the same rows in the handler, and a second implementation of that fold
+// would drift the moment either changed its mind.
+//
+// The aggregation is done in Go rather than SQL because the fold has a rule a
+// query cannot express cheaply — a burst faster than 300 tok/s is a buffered
+// flush, so the end-to-end total is the honest duration there, and dampening it
+// keeps fast-but-honest streams from reading as slow ones.
+func (r *Repo) GetModelLatency() ([]ModelLatencyAgg, error) {
+	rows, err := r.GetRequestDetailPerf()
+	if err != nil {
+		return nil, err
+	}
+	type acc struct {
+		total, count    int64
+		ttft, ttftCount int64
+	}
+	byKey := make(map[string]*acc, len(rows))
+	keyOf := func(provider, model string) string { return provider + "|" + model }
+	for _, row := range rows {
+		if row.TotalMs <= 0 {
+			continue
+		}
+		k := keyOf(row.Provider, row.Model)
+		a := byKey[k]
+		if a == nil {
+			a = &acc{}
+			byKey[k] = a
+		}
+		a.total += row.TotalMs
+		a.count++
+		if row.TTFTMs > 0 {
+			a.ttft += row.TTFTMs
+			a.ttftCount++
+		}
+	}
+	out := make([]ModelLatencyAgg, 0, len(byKey))
+	for k, a := range byKey {
+		provider, model := k, ""
+		for i := range len(k) {
+			if k[i] == '|' {
+				provider, model = k[:i], k[i+1:]
+				break
+			}
+		}
+		agg := ModelLatencyAgg{Provider: provider, Model: model, Samples: a.count}
+		if a.count > 0 {
+			agg.TotalMs = a.total / a.count
+		}
+		if a.ttftCount > 0 {
+			agg.TTFTMs = a.ttft / a.ttftCount
+		}
+		out = append(out, agg)
+	}
+	return out, nil
+}
+
+// UsageChartRow is one usageHistory row as the chart needs it: the bucket
+// timestamp, the model the family split is derived from, and the token and
+// cost totals. The chart reads no other column — in particular not the tokens
+// JSON — so it gets its own projection instead of the wide one the stats
+// readers share.
+type UsageChartRow struct {
+	Timestamp        string
+	Model            string
+	PromptTokens     int
+	CompletionTokens int
+	Cost             float64
+}
+
+// usageChartSinceQuery is the chart's projection of the ledger. The order is
+// the caller's business, so the read carries no ORDER BY: the window is
+// scanned through idx_uh_ts, and sorting every row of it afterwards would
+// cost a sort of the whole window for nothing.
+const usageChartSinceQuery = `SELECT timestamp, COALESCE(model, ''),
+	       COALESCE(promptTokens, 0), COALESCE(completionTokens, 0), COALESCE(cost, 0.0)
+	FROM usageHistory
+	WHERE timestamp >= ?`
+
+// GetUsageHistoryChartSince returns the chart projection of the usage history
+// since the cutoff.
+func (r *Repo) GetUsageHistoryChartSince(cutoff string) ([]UsageChartRow, error) {
+	rows, err := r.db.Query(usageChartSinceQuery, cutoff) //nolint:noctx
+	if err != nil {
+		return nil, fmt.Errorf("query usageHistory chart since %s: %w", cutoff, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var res []UsageChartRow
+	for rows.Next() {
+		var row UsageChartRow
+		if err := rows.Scan(&row.Timestamp, &row.Model, &row.PromptTokens,
+			&row.CompletionTokens, &row.Cost); err != nil {
+			return nil, fmt.Errorf("scan usageHistory chart since %s: %w", cutoff, err)
+		}
+		res = append(res, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usageHistory chart since %s: %w", cutoff, err)
 	}
 	return res, nil
 }
@@ -409,6 +730,7 @@ type RequestDetailListRow struct {
 	Cost         float64
 	Combo        string
 	Protocol     string
+	LoopWarning  string
 }
 
 // requestDetailListSelect pulls the renderable values straight out of the
@@ -426,25 +748,41 @@ const requestDetailListSelect = `
 	       COALESCE(json_extract(data, '$.cost'), 0.0),
 	       COALESCE(json_extract(data, '$.combo'), ''),
 	       COALESCE(json_extract(data, '$.protocol'), ''),
+	       COALESCE(json_extract(data, '$.loopWarning'), COALESCE(json_extract(data, '$.anomalies[0].message'), '')),
 	       json_valid(data)
 	FROM requestDetails
+	%s
 	ORDER BY timestamp DESC
 	LIMIT ? OFFSET ?`
 
+// requestDetailCount counts exactly the rows requestDetailListSelect would page.
+// The two share the predicate slot so a windowed page can never report a total
+// gathered from outside its window.
+const requestDetailCount = `SELECT COUNT(*) FROM requestDetails %s`
+
 // GetRequestDetailsPaged returns one page of collapsed detail rows and the
 // total number of recorded requests.
+//
+// since is the optional timestamp floor behind ?period on the Details tab; an
+// empty string reads the whole table.
 //
 // The count is not allowed to fail quietly. Reporting 0 next to a page that
 // does carry rows is the same "zero that means broken" class this reader's
 // siblings were fixed for, and it reaches the caller looking like a coherent
 // empty page.
-func (r *Repo) GetRequestDetailsPaged(limit, offset int) ([]RequestDetailListRow, int, error) {
+func (r *Repo) GetRequestDetailsPaged(ctx context.Context, limit, offset int, since string) ([]RequestDetailListRow, int, error) {
+	where := ""
+	var args []any
+	if since != "" {
+		where = "WHERE timestamp >= ?"
+		args = append(args, since)
+	}
 	var total int
-	if err := r.db.QueryRow(`SELECT COUNT(*) FROM requestDetails`).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(ctx, fmt.Sprintf(requestDetailCount, where), args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count requestDetails: %w", err)
 	}
 
-	rows, err := r.db.Query(requestDetailListSelect, limit, offset)
+	rows, err := r.db.QueryContext(ctx, fmt.Sprintf(requestDetailListSelect, where), append(args, limit, offset)...)
 	if err != nil {
 		return nil, total, fmt.Errorf("query requestDetails paged: %w", err)
 	}
@@ -457,6 +795,7 @@ func (r *Repo) GetRequestDetailsPaged(limit, offset int) ([]RequestDetailListRow
 		if err := rows.Scan(&row.ID, &row.Timestamp, &row.Provider, &row.Model,
 			&row.ConnectionID, &row.Status, &row.LatencyTTFT, &row.LatencyTotal, &row.TokensJSON,
 			&row.Account, &row.Cost, &row.Combo, &row.Protocol,
+			&row.LoopWarning,
 			&dataValid); err != nil {
 			return nil, total, fmt.Errorf("scan requestDetails: %w", err)
 		}
@@ -488,4 +827,14 @@ func (r *Repo) GetRequestDetailByID(id string) (string, error) {
 		return "", fmt.Errorf("get request detail %s: %w", id, err)
 	}
 	return data, nil
+}
+
+// GetRequestDetailsErrorCountSince returns the count of failed requests recorded in requestDetails since cutoff.
+func (r *Repo) GetRequestDetailsErrorCountSince(ctx context.Context, since string) (int, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM requestDetails WHERE status = 'error' AND timestamp >= ?`, since).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count requestDetails errors since %s: %w", since, err)
+	}
+	return count, nil
 }

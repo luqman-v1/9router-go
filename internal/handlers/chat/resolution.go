@@ -3,12 +3,14 @@ package chat
 import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
-	"9router/proxy/internal/log"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/promptcache"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
+	"9router/proxy/internal/resilience"
+	"9router/proxy/internal/thinking"
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -49,15 +51,35 @@ func NewChatHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *ChatHandler 
 			SimilarityThreshold: 0.95,
 		}, store, cfg.SemanticCacheEnabled)
 	}
+	// Exact-prompt cache: keyed on an identical request body, bounded in BYTES
+	// rather than entries so its footprint stays predictable on the small host
+	// this gateway runs on. Only armed when the semantic cache is on — they are
+	// two halves of one feature and a caller that turned caching off does not
+	// want either half running.
+	var pc *promptcache.Cache
+	if cfg != nil && cfg.SemanticCacheEnabled() {
+		pc = promptcache.NewWithConfig(promptcache.Config{
+			Capacity:      cfg.SemanticCacheMaxEntries(),
+			TTL:           time.Duration(cfg.SemanticCacheTTL()) * time.Minute,
+			MaxBytes:      promptcache.DefaultMaxBytes,
+			MaxEntryBytes: promptcache.DefaultMaxEntryBytes,
+		})
+	}
+	// Provider-level admission control. Defaults only: the breaker is
+	// per-provider and the semaphore per provider:account:proxy, so neither
+	// needs per-connection configuration to be useful.
 	return &ChatHandler{
 		Repo: repo,
 		Client: &http.Client{
 			Transport: transport,
 			Timeout:   0, // no timeout for streaming support
 		},
-		TokenSaver:  cfg,
-		SemanticCache: sc,
-		stickyState: make(map[string]*comboStickyState),
+		TokenSaver:      cfg,
+		SemanticCache:   sc,
+		PromptCache:     pc,
+		Resilience:      resilience.DefaultController(),
+		stickyState:     make(map[string]*comboStickyState),
+		SessionAffinity: NewSessionAffinityStore(10000, 2*time.Hour),
 	}
 }
 
@@ -92,7 +114,7 @@ func resolveProviderAlias(alias string) string {
 // If the entry has no "/" (i.e. it's a combo name), it resolves the combo
 // and returns its first concrete model with the combined model list.
 func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
-	return h.resolveModelEntryGuarded(entry, nil)
+	return h.resolveModelEntryGuarded(entry, nil, nil)
 }
 
 // resolveModelEntryGuarded is resolveModelEntry with the set of combo names
@@ -100,7 +122,7 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 // through another combo) otherwise re-enters the branch below forever and
 // takes the whole process down with a stack overflow — every single-name hop
 // re-queries the database, so nothing else bounds it.
-func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string]bool) *ModelInfo {
+func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string]bool, connMap map[string]*ModelInfo) *ModelInfo {
 	if !strings.Contains(entry, "/") {
 		if h.Repo == nil || visiting[entry] {
 			return nil
@@ -112,7 +134,13 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 					visiting = make(map[string]bool, 4)
 				}
 				visiting[entry] = true
-				first := h.resolveModelEntryGuarded(subModels[0], visiting)
+				var first *ModelInfo
+				for _, sub := range subModels {
+					if info := h.resolveModelEntryGuarded(sub, visiting, connMap); info != nil {
+						first = info
+						break
+					}
+				}
 				delete(visiting, entry)
 				if first != nil {
 					first.ComboModels = subModels
@@ -134,6 +162,12 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 		return info
 	}
 
+	if connMap != nil {
+		if connInfo, ok := connMap[prefix]; ok && connInfo != nil {
+			return &ModelInfo{Provider: connInfo.Provider, Model: model, ConnectionID: connInfo.ConnectionID}
+		}
+	}
+
 	provider := resolveProviderAlias(prefix)
 	if provider != prefix {
 		if info := h.resolvePrefixProvider(provider, model); info != nil {
@@ -152,6 +186,66 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 	return &ModelInfo{Provider: provider, Model: model}
 }
 
+// normalizeWebComboSeats auto-appends /search or /fetch for bare provider names
+// in webSearch and webFetch combos, preserving compatibility with legacy combo definitions.
+func normalizeWebComboSeats(kind *string, seats []string) {
+	if kind == nil {
+		return
+	}
+	suffix := ""
+	switch *kind {
+	case "webSearch":
+		suffix = "/search"
+	case "webFetch":
+		suffix = "/fetch"
+	default:
+		return
+	}
+	for i, seat := range seats {
+		if !strings.Contains(seat, "/") {
+			seats[i] = seat + suffix
+		}
+	}
+}
+
+// expandComboModels recursively expands combo names into concrete model leaves
+// with cycle detection (visiting map) and max depth guard (max 5).
+func (h *ChatHandler) expandComboModels(models []string, visiting map[string]bool, depth int) []string {
+	if depth > 5 {
+		return nil
+	}
+	var out []string
+	for _, m := range models {
+		if !strings.Contains(m, "/") {
+			if h.Repo == nil || visiting[m] {
+				continue
+			}
+			if combo, err := h.Repo.GetComboByName(m); err == nil && combo != nil && combo.Models != "" {
+				var subModels []string
+				if err := json.Unmarshal([]byte(combo.Models), &subModels); err == nil && len(subModels) > 0 {
+					normalizeWebComboSeats(combo.Kind, subModels)
+					if visiting == nil {
+						visiting = make(map[string]bool, 4)
+					}
+					visiting[m] = true
+					expanded := h.expandComboModels(subModels, visiting, depth+1)
+					delete(visiting, m)
+					out = append(out, expanded...)
+					continue
+				}
+			}
+			if aliasTarget, err := h.Repo.GetModelAlias(m); err == nil && aliasTarget != "" && strings.Contains(aliasTarget, "/") {
+				m = aliasTarget
+			} else {
+				continue
+			}
+		}
+		if len(out) == 0 || out[len(out)-1] != m {
+			out = append(out, m)
+		}
+	}
+	return out
+}
 
 // flattenComboModels recursively expands combo-name entries into concrete
 // "provider/model" leaves, keeping order and deduping consecutive identical
@@ -160,44 +254,12 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 // strategies are not applied here; the top-level combo's strategy governs
 // the flattened list.
 func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
-	out := make([]string, 0, len(models))
 	seen := make(map[string]bool)
-	var walk func([]string) error
-	walk = func(ms []string) error {
-		for _, m := range ms {
-			if !strings.Contains(m, "/") {
-				if seen[m] {
-					log.Warn("combo", "cyclic combo reference detected, skipping", "combo", m)
-					continue
-				}
-				if combo, err := h.Repo.GetComboByName(m); err == nil && combo != nil && combo.Models != "" {
-					var sub []string
-					if err := json.Unmarshal([]byte(combo.Models), &sub); err == nil {
-						seen[m] = true
-						if err := walk(sub); err != nil {
-							return err
-						}
-						delete(seen, m)
-						continue
-					}
-				}
-				if aliasTarget, err := h.Repo.GetModelAlias(m); err == nil && aliasTarget != "" && strings.Contains(aliasTarget, "/") {
-					m = aliasTarget
-				}
-			}
-			if len(out) == 0 || out[len(out)-1] != m {
-				out = append(out, m)
-			}
-		}
-		return nil
-	}
-	if err := walk(models); err != nil {
-		return nil, err
-	}
-	if len(out) == 0 {
+	expanded := h.expandComboModels(models, seen, 0)
+	if len(expanded) == 0 {
 		return nil, fmt.Errorf("combo has no valid leaf models")
 	}
-	return out, nil
+	return expanded, nil
 }
 
 // stripModelContextMarker strips trailing [1m] marker that Claude Code appends for 1M context beta.
@@ -226,6 +288,10 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	}
 	// Strip [1m] context marker before resolution (PR #3691)
 	modelStr = stripModelContextMarker(modelStr)
+	// A "(level)" thinking suffix is a request override, not part of the model
+	// id, so it comes off before the name is resolved against the aliases and
+	// the combos — otherwise "mycombo(high)" resolves to neither.
+	modelStr, _ = thinking.ParseSuffix(modelStr)
 
 	// 1. Standard format: "provider/model"
 	if strings.Contains(modelStr, "/") {
@@ -292,24 +358,13 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		}
 	}
 
-	// Codex-only GPT model slugs (open-sse/services/model.js MODEL_PREFIX_
-	// PROVIDERS): these exist on backend-api/codex/models but not on the OpenAI
-	// API, so a bare id from the Codex CLI's own picker used to fall through to
-	// openai and 404 for anyone holding only a Codex OAuth account (#4405).
-	// The rules sit ahead of the generic gpt-* fallback; plain gpt-4* / gpt-3.5*
-	// / gpt-4o* stay on openai.
-	//
-	// Outside the Repo guard so it resolves with nil Repo / an empty DB.
-	if codexOnlyModelSlug(modelStr) {
-		return &ModelInfo{Provider: "codex", Model: modelStr}, nil
-	}
-
 	// 3. Check if it's a combo name
 	if h.Repo != nil {
 		combo, err := h.Repo.GetComboByName(modelStr)
 		if err == nil && combo != nil && combo.Models != "" {
 			var modelStrings []string
 			if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err == nil && len(modelStrings) > 0 {
+				normalizeWebComboSeats(combo.Kind, modelStrings)
 				// Flatten nested combos into concrete leaves so rotation covers
 				// every reachable model (a nested combo entry used to collapse to
 				// its first leaf, so combo-wombo -> free-tier never rotated).
@@ -333,6 +388,24 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 				}
 			}
 		}
+	}
+
+	// Codex-only GPT model slugs (open-sse/services/model.js MODEL_PREFIX_
+	// PROVIDERS): these exist on backend-api/codex/models but not on the OpenAI
+	// API, so a bare id from the Codex CLI's own picker used to fall through to
+	// openai and 404 for anyone holding only a Codex OAuth account (#4405).
+	// The rules sit ahead of the generic gpt-* fallback; plain gpt-4* / gpt-3.5*
+	// / gpt-4o* stay on openai.
+	//
+	// After step 3 deliberately: a stored combo owns the bare id it is named
+	// after, exactly as upstream orders it (src/sse/services/model.js resolves
+	// the combo before the prefix inference). The cursor presets seed combos
+	// named `gpt-5.2-codex` / `gpt-5.3-codex`, and running this rule first made
+	// them served-yet-unrouteable.
+	//
+	// Outside the Repo guard so it resolves with nil Repo / an empty DB.
+	if codexOnlyModelSlug(modelStr) {
+		return &ModelInfo{Provider: "codex", Model: modelStr}, nil
 	}
 
 	// 3.5 Check if it's a bare provider alias (e.g., "ag" -> "antigravity")
@@ -407,6 +480,20 @@ func (h *ChatHandler) resolvePrefixProvider(prefix string, model string) *ModelI
 
 	conn, _, err := h.getBestConnection(node.ID, "", nil, model)
 	if err != nil || conn == nil {
+		// A provider refusal is the one failure this must not swallow into a
+		// bare-prefix lookup: the prefix is not a provider any connection is
+		// registered under, so the client would read "no active connections for
+		// provider: <prefix>" and never see the reason the node gave — an expired
+		// contract, a spent lifetime quota, or a node at its own capacity.
+		// Pinning the node lets the dispatch path answer with its own typed
+		// refusal, which is what it does for every other caller.
+		//
+		// Every other failure keeps the previous behaviour: resolution falls
+		// through to the bare prefix and the connection error surfaces from the
+		// path that owns it.
+		if _, refused := providerLimitRefusal(err); refused {
+			return &ModelInfo{Provider: node.ID, Model: model}
+		}
 		return nil
 	}
 
@@ -415,6 +502,28 @@ func (h *ChatHandler) resolvePrefixProvider(prefix string, model string) *ModelI
 		Model:        model,
 		ConnectionID: conn.ID,
 	}
+}
+
+// wireModelForNode rewrites a client-facing model id onto the id the node's
+// upstream gateway serves. A provider node publishes its models as
+// "<prefix>/<id>", and the prefix only routes the request to the node — the
+// gateway beyond it has never heard of it, so forwarding the prefixed id
+// verbatim answers 400 "no model endpoints" (kiro and zed strip their own
+// prefixes for the same reason). Only an exact "<prefix>/" match is removed;
+// a node with no prefix, a model requested unprefixed, and a registry
+// provider all pass through unchanged.
+func (h *ChatHandler) wireModelForNode(provider, model string) string {
+	if !isCompatibleProviderID(provider) {
+		return model
+	}
+	prefix := h.providerNodePrefixMap()[provider]
+	if prefix == "" {
+		return model
+	}
+	if rest, ok := strings.CutPrefix(model, prefix+"/"); ok {
+		return rest
+	}
+	return model
 }
 
 // resolveComboRouting retrieves the routing strategy, sticky limit, and judge model
@@ -454,4 +563,10 @@ func (h *ChatHandler) resolveComboRouting(comboName string, fallbackStrategy str
 	}
 
 	return strategy, stickyLimit, ""
+}
+
+// isCopilotResponsesModel reports whether a resolved GitHub Copilot model id is
+// served by the Responses-native upstream (GPT-6.x / GPT-5.5+).
+func isCopilotResponsesModel(provider, model string) bool {
+	return executor.IsCopilotResponsesModel(provider, model)
 }

@@ -17,17 +17,18 @@ import (
 
 // Config holds the proxy gateway configuration.
 type Config struct {
-	Host            string
-	Port            int
-	DatabasePath    string
-	JWTSecret       string
-	InitialPassword string
-	APIKeySecret    string
-	MachineIDSalt   string
-	RTKEnabled      bool
-	CavemanEnabled  bool
-	PonytailEnabled bool
-	ADHDEnabled     bool
+	Host                string
+	Port                int
+	DatabasePath        string
+	JWTSecret           string
+	InitialPassword     string
+	APIKeySecret        string
+	MachineIDSalt       string
+	RTKEnabled          bool
+	CavemanEnabled      bool
+	PonytailEnabled     bool
+	ADHDEnabled         bool
+	SeatAttemptBudgetMs int
 }
 
 // NewViper creates and configures a new Viper instance reading from .env with standard defaults.
@@ -52,6 +53,7 @@ func NewViperWithFile(configFile string) *viper.Viper {
 	v.SetDefault("CAVEMAN_ENABLED", false)
 	v.SetDefault("PONYTAIL_ENABLED", false)
 	v.SetDefault("ADHD_ENABLED", false)
+	v.SetDefault("SEAT_ATTEMPT_BUDGET_MS", 0)
 
 	if configFile != "" {
 		if err := v.ReadInConfig(); err != nil {
@@ -203,19 +205,21 @@ func LoadConfigFromViper(v *viper.Viper) *Config {
 	cavemanEnabled := v.GetBool("CAVEMAN_ENABLED")
 	ponytailEnabled := v.GetBool("PONYTAIL_ENABLED")
 	adhdEnabled := v.GetBool("ADHD_ENABLED")
+	seatAttemptBudgetMs := v.GetInt("SEAT_ATTEMPT_BUDGET_MS")
 
 	return &Config{
-		Host:            host,
-		Port:            port,
-		DatabasePath:    dbPath,
-		JWTSecret:       loadJWTSecret(v, dataDir),
-		InitialPassword: initialPassword,
-		APIKeySecret:    apiKeySecret,
-		MachineIDSalt:   machineIDSalt,
-		RTKEnabled:      rtkEnabled,
-		CavemanEnabled:  cavemanEnabled,
-		PonytailEnabled: ponytailEnabled,
-		ADHDEnabled:     adhdEnabled,
+		Host:                host,
+		Port:                port,
+		DatabasePath:        dbPath,
+		JWTSecret:           loadJWTSecret(v, dataDir),
+		InitialPassword:     initialPassword,
+		APIKeySecret:        apiKeySecret,
+		MachineIDSalt:       machineIDSalt,
+		RTKEnabled:          rtkEnabled,
+		CavemanEnabled:      cavemanEnabled,
+		PonytailEnabled:     ponytailEnabled,
+		ADHDEnabled:         adhdEnabled,
+		SeatAttemptBudgetMs: seatAttemptBudgetMs,
 	}
 }
 

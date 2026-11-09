@@ -242,14 +242,6 @@
   >
     <!-- SVG Layer for Bezier Edges -->
     <svg class="absolute inset-0 overflow-visible pointer-events-none" style="transform: translate(0, 0);">
-      <defs>
-        <filter id="topo-electric" filterUnits="userSpaceOnUse" x="-5000" y="-5000" width="10000" height="10000">
-          <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="1" seed="2" result="noise">
-            <animate attributeName="baseFrequency" values="0.8;1.3;0.8" dur="0.25s" repeatCount="indefinite" />
-          </feTurbulence>
-          <feDisplacementMap in="SourceGraphic" in2="noise" scale="3" xChannelSelector="R" yChannelSelector="G" />
-        </filter>
-      </defs>
 
       <!-- Edges connecting router to provider nodes -->
       {#each geometry.nodes as node (node.id)}
@@ -263,24 +255,10 @@
               fill="none"
               stroke={node.color || '#22d3ee'}
               opacity="0"
-              style="filter: drop-shadow(0 0 10px {node.color || '#22d3ee'});"
             >
               <animate attributeName="r" values="32;105" dur="1.1s" repeatCount="indefinite" />
               <animate attributeName="opacity" values="0.85;0" dur="1.1s" repeatCount="indefinite" />
               <animate attributeName="stroke-width" values="3.5;0.5" dur="1.1s" repeatCount="indefinite" />
-            </circle>
-            <circle
-              cx={node.x}
-              cy={node.y}
-              r="35"
-              fill="none"
-              stroke="#38bdf8"
-              opacity="0"
-              style="filter: drop-shadow(0 0 8px #38bdf8);"
-            >
-              <animate attributeName="r" values="32;105" dur="1.1s" begin="0.55s" repeatCount="indefinite" />
-              <animate attributeName="opacity" values="0.85;0" dur="1.1s" begin="0.55s" repeatCount="indefinite" />
-              <animate attributeName="stroke-width" values="3;0.5" dur="1.1s" begin="0.55s" repeatCount="indefinite" />
             </circle>
           </g>
 
@@ -294,7 +272,6 @@
               stroke-width="10"
               stroke-opacity="0.32"
               stroke-linecap="round"
-              filter="url(#topo-electric)"
               class="topology-edge-halo"
             />
             <!-- 2. Mid plasma forward stream -->
@@ -305,7 +282,6 @@
               stroke-width="4.5"
               stroke-opacity="0.8"
               stroke-linecap="round"
-              filter="url(#topo-electric)"
               class="topology-edge-plasma"
             />
             <!-- 3. Hot core laser forward beam -->
@@ -325,7 +301,6 @@
               stroke-width="3"
               stroke-opacity="0.9"
               class="topology-edge-return"
-              style="filter: drop-shadow(0 0 6px #34d399);"
             />
             <path
               d={node.returnPath}
@@ -335,62 +310,17 @@
               class="topology-edge-return"
             />
 
-            <!-- Forward Prompt Tokens: Router -> Provider -->
-            {#each [0, 1, 2] as i}
-              <circle
-                r={i === 0 ? 4.5 : 3.2}
-                fill={i === 0 ? '#38bdf8' : i === 1 ? '#e0f2fe' : '#67e8f9'}
-                opacity="0.95"
-                style="filter: drop-shadow(0 0 6px #0ea5e9);"
-              >
-                <animateMotion
-                  dur="{0.42 + i * 0.09}s"
-                  repeatCount="indefinite"
-                  path={node.path}
-                  begin="{i * 0.12}s"
-                />
-              </circle>
-            {/each}
-
-            <!-- Reverse Output Tokens: Provider -> Router (Streamed Responses) -->
-            {#each [0, 1, 2, 3] as i}
-              <circle
-                r={i % 2 === 0 ? 4.2 : 2.8}
-                fill={i === 0 ? '#34d399' : i === 1 ? '#facc15' : i === 2 ? '#6ee7b7' : '#fde047'}
-                opacity="0.95"
-                style="filter: drop-shadow(0 0 6px #10b981);"
-              >
-                <animateMotion
-                  dur="{0.48 + i * 0.1}s"
-                  repeatCount="indefinite"
-                  path={node.returnPath}
-                  begin="{i * 0.11}s"
-                />
-              </circle>
-            {/each}
-
-            <!-- Electric Sparks -->
-            {#each [0, 1, 2, 3] as i}
-              <circle
-                r="1.8"
-                fill="#e0f2fe"
-                opacity="0"
-              >
-                <animate
-                  attributeName="opacity"
-                  values="0;1;0;0;1;0"
-                  dur="{0.35 + (i % 3) * 0.1}s"
-                  begin="{i * 0.07}s"
-                  repeatCount="indefinite"
-                />
-                <animateMotion
-                  dur="{0.28 + i * 0.05}s"
-                  repeatCount="indefinite"
-                  path={node.path}
-                  begin="{i * 0.11}s"
-                />
-              </circle>
-            {/each}
+            <!-- One forwarding token and one returning token per hop. The
+                 previous version ran three forward dots, four reverse dots and
+                 four sparks, and every one of them carried a drop-shadow
+                 filter, so each frame re-rasterised the filter region of every
+                 active edge (issue #381 follow-up). -->
+            <circle r="4.5" fill="#38bdf8" opacity="0.95">
+              <animateMotion dur="0.42s" repeatCount="indefinite" path={node.path} />
+            </circle>
+            <circle r="4.2" fill="#34d399" opacity="0.95">
+              <animateMotion dur="0.48s" repeatCount="indefinite" path={node.returnPath} />
+            </circle>
           </g>
         {:else if node.isLast}
           <!-- Last Provider Active Edge (Amber) -->
@@ -432,7 +362,6 @@
             stroke="#22d3ee"
             stroke-dasharray="5 5"
             opacity="0"
-            style="filter: drop-shadow(0 0 6px #22d3ee);"
           >
             <animate attributeName="r" values="55;20" dur="0.9s" repeatCount="indefinite" />
             <animate attributeName="opacity" values="0;0.8;0" dur="0.9s" repeatCount="indefinite" />
@@ -446,7 +375,6 @@
             stroke="#facc15"
             stroke-dasharray="4 6"
             opacity="0"
-            style="filter: drop-shadow(0 0 6px #facc15);"
           >
             <animate attributeName="r" values="65;24" dur="1.1s" begin="0.45s" repeatCount="indefinite" />
             <animate attributeName="opacity" values="0;0.7;0" dur="1.1s" begin="0.45s" repeatCount="indefinite" />
@@ -481,7 +409,7 @@
     {#each geometry.nodes as node (node.id)}
       <div
         class="absolute flex items-center gap-2.5 px-4 py-2.5 rounded-lg border-2 transition-all duration-300 bg-bg shadow-sm pointer-events-auto {node.isActive ? 'topology-node-active-bounce' : ''}"
-        style="left: {node.x}px; top: {node.y}px; transform: translate(-50%, -50%); border-color: {node.isActive ? node.color : node.isLast ? '#f59e0b' : 'var(--color-border)'}; box-shadow: {node.isActive ? `0 0 22px ${node.color}60, 0 0 10px rgba(34, 211, 238, 0.4)` : node.isLast ? '0 0 8px rgba(245, 158, 11, 0.25)' : 'none'}; min-width: 150px;"
+        style="left: {node.x}px; top: {node.y}px; transform: translate(-50%, -50%); border-color: {node.isActive ? node.color : node.isLast ? '#f59e0b' : 'var(--color-border)'}; box-shadow: {node.isActive ? `0 0 0 2px ${node.color}33` : node.isLast ? '0 0 8px rgba(245, 158, 11, 0.25)' : 'none'}; min-width: 150px;"
       >
         <div
           class="w-8 h-8 rounded-md flex items-center justify-center shrink-0"

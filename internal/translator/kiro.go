@@ -123,7 +123,7 @@ func OpenAIToKiro(body []byte, opts KiroTranslateOptions) ([]byte, error) {
 	}
 	payload["inferenceConfig"] = inference
 
-	out, err := json.Marshal(payload)
+	out, err := json.Marshal(payload, json.Deterministic(true))
 	if err != nil {
 		return nil, fmt.Errorf("kiro: marshal envelope: %w", err)
 	}

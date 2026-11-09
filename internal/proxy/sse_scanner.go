@@ -22,6 +22,19 @@ import (
 // through it.
 var PendingCompletionFlushTimeout = 3 * time.Second
 
+// SSEEvent is one complete event from an event stream, with the labels the
+// chunk-level API used to drop.
+//
+// The labels are not decoration: a provider that reports a failure as
+// `event: error` puts the failure in the label, and a payload-only reader sees
+// a JSON object it has no reason to reject. ID is carried for the same reason
+// on the other side — a caller replaying a stream keeps the ids it was given.
+type SSEEvent struct {
+	Event string // value of the `event:` field, empty when the stream omits it
+	ID    string // value of the `id:` field, empty when absent
+	Data  []byte // `data:` fields of the event, joined with \n
+}
+
 // ScanStream reads an SSE stream from r, accumulates complete events
 // (per the SSE spec: fields separated by \n, an event ends at a blank
 // line), joins all `data:` fields of each event into one payload, and
@@ -31,7 +44,23 @@ var PendingCompletionFlushTimeout = 3 * time.Second
 // `data:` keep-alives (empty payload → no callback). A single optional
 // leading space after the colon is stripped per the spec.
 func ScanStream(r io.Reader, onChunk func([]byte)) error {
-	return scanEvents(r, nil, onChunk)
+	return ScanStreamEvents(r, func(ev SSEEvent) bool {
+		if len(ev.Data) > 0 {
+			onChunk(ev.Data)
+		}
+		return true
+	})
+}
+
+// ScanStreamEvents is ScanStream with the event's own labels attached and with
+// the option to stop reading early.
+//
+// Returning false from onEvent ends the scan without reading further and
+// without reporting an error: the caller has what it came for, and draining a
+// stream it will not use would cost the turn its latency budget. That is what
+// lets a peek read one event instead of buffering the response.
+func ScanStreamEvents(r io.Reader, onEvent func(ev SSEEvent) bool) error {
+	return scanEvents(r, nil, onEvent)
 }
 
 // ScanStreamWithDeadline is ScanStream with an upper bound on the gap between
@@ -45,7 +74,12 @@ func ScanStream(r io.Reader, onChunk func([]byte)) error {
 // its first token is slow, not broken. Each event gets its own window, so a
 // stream that keeps flowing is never cut off however long the turn runs.
 func ScanStreamWithDeadline(ctx context.Context, r io.Reader, timeout time.Duration, pending func() bool, onChunk func([]byte)) error {
-	return scanEvents(r, newIdleWatch(ctx, timeout, pending), onChunk)
+	return scanEvents(r, newIdleWatch(ctx, timeout, pending), func(ev SSEEvent) bool {
+		if len(ev.Data) > 0 {
+			onChunk(ev.Data)
+		}
+		return true
+	})
 }
 
 // idleWatch bounds how long the scanner may wait for the next line of a stream.
@@ -101,7 +135,7 @@ func (w *idleWatch) scan(scanner *bufio.Scanner, r io.Reader) bool {
 }
 
 // scanEvents is the shared ScanStream body.
-func scanEvents(r io.Reader, w *idleWatch, onChunk func([]byte)) error {
+func scanEvents(r io.Reader, w *idleWatch, onEvent func(SSEEvent) bool) error {
 	scanner := bufio.NewScanner(r)
 	buf := make([]byte, 64*1024)
 	scanner.Buffer(buf, 10*1024*1024) // Allow lines up to 10MB (tool calls, multimodal data)
@@ -119,16 +153,18 @@ func scanEvents(r io.Reader, w *idleWatch, onChunk func([]byte)) error {
 	}
 
 	var dataLines [][]byte
-	emit := func() {
+	var event, id string
+	emit := func() bool {
+		defer func() { event, id = "", "" }()
 		if len(dataLines) == 0 {
-			return
+			return true
 		}
 		payload := bytes.Join(dataLines, []byte("\n"))
 		dataLines = dataLines[:0]
 		if len(payload) == 0 {
-			return // keep-alive: `data:` with empty payload
+			return true // keep-alive: `data:` with empty payload
 		}
-		onChunk(payload)
+		return onEvent(SSEEvent{Event: event, ID: id, Data: payload})
 	}
 
 	for {
@@ -147,22 +183,39 @@ func scanEvents(r io.Reader, w *idleWatch, onChunk func([]byte)) error {
 
 		// Blank line terminates the current event.
 		if len(line) == 0 {
-			emit()
+			if !emit() {
+				return nil
+			}
 			continue
 		}
 		// Comment lines (": keep-alive") are ignored.
 		if line[0] == ':' {
 			continue
 		}
-		if bytes.HasPrefix(line, []byte("data:")) {
+		switch {
+		case bytes.HasPrefix(line, []byte("data:")):
 			chunk := bytes.TrimPrefix(line, []byte("data:"))
 			// Per SSE spec, strip a single optional leading space.
 			if len(chunk) > 0 && chunk[0] == ' ' {
 				chunk = chunk[1:]
 			}
 			dataLines = append(dataLines, chunk)
+		case bytes.HasPrefix(line, []byte("event:")):
+			event = sseFieldValue(line, "event:")
+		case bytes.HasPrefix(line, []byte("id:")):
+			id = sseFieldValue(line, "id:")
 		}
 	}
+}
+
+// sseFieldValue reads the value of a named SSE field line, stripping the
+// single optional leading space the spec allows after the colon.
+func sseFieldValue(line []byte, prefix string) string {
+	value := bytes.TrimPrefix(line, []byte(prefix))
+	if len(value) > 0 && value[0] == ' ' {
+		value = value[1:]
+	}
+	return string(value)
 }
 
 // scanErr reports the scanner's own error unless the watch ended the read: a

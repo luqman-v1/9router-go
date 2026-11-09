@@ -6,6 +6,7 @@
   import ProviderArtwork from '../providers/ProviderArtwork.svelte'
   import { api, normalizeLastError, type ProviderConnection } from '../../api/client'
   import UsageDashboard from './UsageDashboard.svelte'
+  import { isPanelVisible } from '../../lib/usagePanel.svelte'
   import { copyToClipboard } from '../../lib/clipboard'
   import {
     cachedTokensFor,
@@ -15,6 +16,8 @@
     providerDisplayName,
     timeAgo,
     formatLocalTimestamp,
+    formatDetailStatus,
+    extractDetailError,
     type RequestDetailItem,
   } from './types'
   import { costIn } from '../../lib/currency.svelte'
@@ -56,6 +59,10 @@
   // opens the modal on the summary fields and fills in the rest once the
   // by-id read lands.
   async function openDetail(item: RequestDetailItem) {
+    // The payload modal is one of the panels Settings can hide; the row keeps
+    // its cursor and click handler, so the guard is what stops an invisible
+    // dialog from opening behind a hidden section.
+    if (!isPanelVisible('details.payload')) return
     selectedDetail = item
     detailError = ''
     const id = item.id
@@ -118,6 +125,7 @@
 
 <UsageDashboard />
 
+{#if isPanelVisible('details.requests')}
 <Card padding="none" class="overflow-hidden border border-border">
   <div class="px-5 py-3 border-b border-border flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between bg-surface-2">
     <div>
@@ -228,7 +236,12 @@
                 </div>
               </td>
               <td class="py-3 px-4 font-mono text-[11px] text-text-muted">
-                <span class="truncate block max-w-[120px]" title={item.model}>{item.model}</span>
+                <div class="flex items-center gap-1 max-w-[140px] truncate" title={item.loopWarning ? `⚠️ ${item.loopWarning} · ${item.model}` : item.model}>
+                  {#if item.loopWarning || (item.anomalies && item.anomalies.length > 0)}
+                    <span class="text-amber-500 text-[12px] shrink-0" title={item.loopWarning || 'Possible loop detected'}>⚠️</span>
+                  {/if}
+                  <span class="truncate block">{item.model}</span>
+                </div>
               </td>
               <td class="py-3 px-4 text-right">
                 {item.latency?.ttft && item.latency.ttft > 0 ? formatDuration(item.latency.ttft) : '—'}
@@ -257,6 +270,7 @@
               <td class="py-3 px-4 text-right font-mono text-emerald-500 text-[11px]">
                 {item.cost ? costIn(item.cost, 4) : '—'}
               </td>
+              {#if isPanelVisible('details.payload')}
               <td class="py-3 px-4 text-right">
                 <button
                   type="button"
@@ -269,6 +283,7 @@
                   View
                 </button>
               </td>
+              {/if}
             </tr>
           {/each}
         </tbody>
@@ -303,9 +318,10 @@
     {/if}
   {/if}
 </Card>
+{/if}
 
 <!-- Detail Modal (OmniRoute style) -->
-{#if selectedDetail}
+{#if selectedDetail && isPanelVisible('details.payload')}
   {@const acc = resolveAccount(selectedDetail)}
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
     <div class="w-full max-w-4xl lg:max-w-5xl max-h-[90vh] rounded-2xl bg-surface border border-border shadow-2xl flex flex-col overflow-hidden">
@@ -367,10 +383,72 @@
           <div class="p-3 rounded-lg bg-surface-2 border border-border">
             <div class="text-text-muted text-[10px] uppercase font-bold tracking-wider">Status</div>
             <div class="font-code text-sm font-bold {selectedDetail.status === 'success' || selectedDetail.status === 'ok' ? 'text-success' : 'text-danger'} mt-1">
-              {selectedDetail.status === 'success' || selectedDetail.status === 'ok' ? '200 OK' : (selectedDetail.status || 'Error')}
+              {formatDetailStatus(selectedDetail)}
             </div>
           </div>
         </div>
+
+        <!-- Loop & Anomaly Detection (when loop or anomalies detected) -->
+        {#if selectedDetail.anomalies && selectedDetail.anomalies.length > 0}
+          <div class="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-2">
+            <div class="text-[10px] text-amber-600 dark:text-amber-400 uppercase font-bold tracking-wider flex items-center justify-between">
+              <span class="flex items-center gap-1.5">
+                <span class="material-symbols-outlined text-[16px]">warning</span>
+                Anomaly Detected: Possible Loop ({selectedDetail.anomalies.length})
+              </span>
+            </div>
+            <div class="space-y-1.5 font-code text-xs">
+              {#each selectedDetail.anomalies as anomaly}
+                <div class="flex items-start gap-2 bg-surface/50 p-2 rounded-lg border border-amber-500/20">
+                  <Badge variant={anomaly.severity === 'critical' ? 'danger' : 'warning'} size="sm">
+                    {anomaly.rule}
+                  </Badge>
+                  <span class="text-text-main flex-1">{anomaly.message}</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {:else if selectedDetail.loopWarning}
+          <div class="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-1.5">
+            <div class="text-[10px] text-amber-600 dark:text-amber-400 uppercase font-bold tracking-wider flex items-center gap-1.5">
+              <span class="material-symbols-outlined text-[16px]">warning</span>
+              Anomaly Detected: Possible Loop
+            </div>
+            <div class="font-code text-xs text-amber-600 dark:text-amber-300">
+              {selectedDetail.loopWarning}
+            </div>
+          </div>
+        {/if}
+
+        <!-- Error Details (when request failed) -->
+        {#if selectedDetail.status !== 'success' && selectedDetail.status !== 'ok'}
+          {@const errInfo = extractDetailError(selectedDetail)}
+          {#if errInfo}
+            <div class="p-3.5 rounded-xl bg-red-500/10 border border-red-500/25 space-y-1.5">
+              <div class="text-[10px] text-red-600 dark:text-red-400 uppercase font-bold tracking-wider flex items-center justify-between">
+                <span class="flex items-center gap-1.5">
+                  <span class="material-symbols-outlined text-[15px]">error</span>
+                  Error Details {#if errInfo.status}({errInfo.status}){/if}
+                </span>
+                {#if errInfo.message}
+                  <button
+                    type="button"
+                    onclick={() => copyToClipboard(errInfo.message || '')}
+                    class="text-red-500 hover:text-red-700 dark:hover:text-red-300 p-0.5 rounded hover:bg-red-500/20 transition-colors shrink-0 cursor-pointer"
+                    title="Copy Error Message"
+                  >
+                    <span class="material-symbols-outlined text-[13px]">content_copy</span>
+                  </button>
+                {/if}
+              </div>
+              {#if errInfo.message}
+                <div class="font-code text-xs text-red-600 dark:text-red-300 break-words whitespace-pre-wrap select-all">
+                  {errInfo.message}
+                </div>
+              {/if}
+            </div>
+          {/if}
+        {/if}
 
         <!-- Token Group: Input (OmniRoute style) -->
         {#if selectedDetail.tokens}
@@ -423,6 +501,33 @@
                   Reasoning: {fmt(reasoningTokens)}
                 </span>
               {/if}
+            </div>
+          </div>
+        {/if}
+
+        {#if selectedDetail.attempts && selectedDetail.attempts.length > 1}
+          <div class="p-3.5 rounded-xl bg-surface-2/60 border border-border space-y-2">
+            <div class="text-[10px] text-text-muted uppercase font-bold tracking-wider">
+              Account Failover Trail ({selectedDetail.attempts.length} attempts)
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              {#each selectedDetail.attempts as att, i}
+                {#if i > 0}
+                  <span class="material-symbols-outlined text-[16px] text-text-subtle">arrow_forward</span>
+                {/if}
+                <div class="flex items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-1.5">
+                  <span class="px-1.5 py-0.5 rounded border text-[10px] font-bold {att.statusCode === 200 || att.statusCode === '200' ? 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20' : 'text-red-500 bg-red-500/10 border-red-500/20'}">
+                    {att.statusCode ?? '—'}
+                  </span>
+                  <span class="font-medium text-text-main text-xs">{att.account || att.connectionId}</span>
+                  {#if att.latencyMs != null}
+                    <span class="text-text-muted text-[11px]">({att.latencyMs}ms)</span>
+                  {/if}
+                  {#if att.error}
+                    <span class="text-[11px] text-text-muted truncate max-w-[200px]">{att.error}</span>
+                  {/if}
+                </div>
+              {/each}
             </div>
           </div>
         {/if}

@@ -533,3 +533,141 @@ func TestResolveModel_StrictProviderIsolation(t *testing.T) {
 		t.Fatalf("resolveModelEntry: expected antigravity, got %+v", entry)
 	}
 }
+
+// A cursor preset seeds a combo named after the bare model id (`gpt-5.3-codex`
+// -> ["cu/gpt-5.3-codex"]), and the catalog serves that preset by name. The
+// Codex-only slug rule used to run before the combo lookup, so a request for
+// that bare id resolved to provider `codex` and the combo was never consulted —
+// the preset was offered and unrouteable at the same time.
+//
+// Upstream puts the combo lookup ahead of the prefix inference
+// (src/sse/services/model.js getModelInfo -> getComboByName first), so a stored
+// combo of that name owns the bare id.
+func TestResolveModel_ComboWinsOverCodexSlugInference(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// Exactly what POST /api/combos/presets writes for the two cursor presets
+	// that carry a codex-only slug.
+	for _, id := range []string{"gpt-5.2-codex", "gpt-5.3-codex"} {
+		models, _ := json.Marshal([]string{"cu/" + id})
+		if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+			"cu-"+id, id, "fallback", string(models), "2026-10-23T00:00:00Z", "2026-10-23T00:00:00Z"); err != nil {
+			t.Fatalf("seed combo %q: %v", id, err)
+		}
+	}
+
+	for _, id := range []string{"gpt-5.2-codex", "gpt-5.3-codex"} {
+		t.Run(id, func(t *testing.T) {
+			info, err := h.resolveModel(id)
+			if err != nil {
+				t.Fatalf("resolveModel(%q) error = %v", id, err)
+			}
+			if len(info.ComboModels) != 1 || info.ComboModels[0] != "cu/"+id {
+				t.Fatalf("resolveModel(%q) = %+v, want the combo [cu/%s] to be consulted", id, info, id)
+			}
+			if info.Provider != "cursor" {
+				t.Errorf("resolveModel(%q).Provider = %q, want cursor (the combo's first leaf), not the codex inference", id, info.Provider)
+			}
+		})
+	}
+}
+
+// The slug rule still owns a bare id when no combo claims it: the fix moves the
+// combo lookup ahead of the rule, it does not remove the rule.
+func TestResolveModel_CodexSlugStillResolvesWithoutCombo(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	h := NewChatHandler(db.NewRepo(database))
+
+	info, err := h.resolveModel("gpt-5.3-codex")
+	if err != nil {
+		t.Fatalf("resolveModel error = %v", err)
+	}
+	if info.Provider != "codex" || info.Model != "gpt-5.3-codex" {
+		t.Errorf("got %s/%s, want codex/gpt-5.3-codex", info.Provider, info.Model)
+	}
+	if len(info.ComboModels) != 0 {
+		t.Errorf("ComboModels = %v, want none", info.ComboModels)
+	}
+}
+
+func TestResolveModel_WebComboBareProviderNames(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	h := NewChatHandler(db.NewRepo(database))
+
+	// WebSearch combo with legacy bare provider names
+	searchModels, _ := json.Marshal([]string{"exa", "serper", "tavily"})
+	kindSearch := "webSearch"
+	_, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"c-search", "my-search-combo", kindSearch, string(searchModels), "2026-11-04T00:00:00Z", "2026-11-04T00:00:00Z")
+	if err != nil {
+		t.Fatalf("insert search combo: %v", err)
+	}
+
+	info, err := h.resolveModel("my-search-combo")
+	if err != nil {
+		t.Fatalf("resolveModel(my-search-combo) error = %v", err)
+	}
+	wantSearch := []string{"exa/search", "serper/search", "tavily/search"}
+	if len(info.ComboModels) != len(wantSearch) {
+		t.Fatalf("got %d ComboModels, want %d: %v", len(info.ComboModels), len(wantSearch), info.ComboModels)
+	}
+	for i := range wantSearch {
+		if info.ComboModels[i] != wantSearch[i] {
+			t.Errorf("at index %d: expected %q, got %q", i, wantSearch[i], info.ComboModels[i])
+		}
+	}
+
+	// WebFetch combo with legacy bare provider names
+	fetchModels, _ := json.Marshal([]string{"exa", "firecrawl"})
+	kindFetch := "webFetch"
+	_, err = database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+		"c-fetch", "my-fetch-combo", kindFetch, string(fetchModels), "2026-11-04T00:00:00Z", "2026-11-04T00:00:00Z")
+	if err != nil {
+		t.Fatalf("insert fetch combo: %v", err)
+	}
+
+	fetchInfo, err := h.resolveModel("my-fetch-combo")
+	if err != nil {
+		t.Fatalf("resolveModel(my-fetch-combo) error = %v", err)
+	}
+	wantFetch := []string{"exa/fetch", "firecrawl/fetch"}
+	if len(fetchInfo.ComboModels) != len(wantFetch) {
+		t.Fatalf("got %d ComboModels, want %d: %v", len(fetchInfo.ComboModels), len(wantFetch), fetchInfo.ComboModels)
+	}
+	for i := range wantFetch {
+		if fetchInfo.ComboModels[i] != wantFetch[i] {
+			t.Errorf("at index %d: expected %q, got %q", i, wantFetch[i], fetchInfo.ComboModels[i])
+		}
+	}
+}
+
+func TestIsCopilotResponsesModel(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"gpt-6.1-terra", true},
+		{"gpt-6-terra", true},
+		{"gpt-5.5", true},
+		{"gpt-5.6-sol", true},
+		{"github/gpt-6.1-terra", true},
+		{"gpt-6.1-terra(high)", true},
+		{"gpt-5", false},
+		{"gpt-6", false},
+		{"gpt-5.4", false},
+		{"gpt-4o", false},
+		{"claude-sonnet-4-5", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		got := isCopilotResponsesModel("github", tc.model)
+		if got != tc.want {
+			t.Errorf("isCopilotResponsesModel(github, %q) = %v, want %v", tc.model, got, tc.want)
+		}
+	}
+}

@@ -8,7 +8,7 @@ import (
 	"9router/proxy/internal/handlerutil"
 )
 
-func setupTestDB(t *testing.T) (*sql.DB, func()) {
+func setupTestDB(t testing.TB) (*sql.DB, func()) {
 	tmpFile, err := os.CreateTemp("", "test_repos_*.sqlite")
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)

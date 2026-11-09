@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/proxy"
 )
@@ -193,6 +194,108 @@ func sanitizeDisplayCurrency(settings map[string]any) {
 	delete(settings, displayCurrencySettingKey)
 }
 
+// storedDisplayCurrency reads the stored row through the same normalizer the
+// dashboard uses, so a legacy or hand-edited value is read as its usable part.
+// Nothing stored — no row, no usable code and no usable rate — is reported as
+// nil, which callers read as "empty", not as an error.
+func storedDisplayCurrency(repo *db.Repo) (map[string]any, error) {
+	raw, err := repo.GetSettingsRaw()
+	if err != nil {
+		return nil, fmt.Errorf("read stored display currency: %w", err)
+	}
+	return normalizeDisplayCurrency(raw[displayCurrencySettingKey]), nil
+}
+
+// mergeRefreshedRates overlays the fetched rates on the stored table and reports
+// the requested codes the provider did not publish.
+//
+// A refresh must never delete a manual rate: the answering provider publishes
+// only the codes it carries (the primary publishes VND, the fallback does not),
+// so storing the fetched subset would drop an operator's own rate for a code
+// that provider does not know about. A missing or legacy stored table is an
+// empty one, not an error. A nil result means the stored row could not be read
+// at all, which the caller reports instead of writing a partial table.
+func mergeRefreshedRates(repo *db.Repo, fetched map[string]any, codes []string) (map[string]any, []string) {
+	stored, err := storedDisplayCurrency(repo)
+	if err != nil {
+		return nil, nil
+	}
+	// Stored rates win priority in the cap: a table already at maxCurrencyRates
+	// keeps every stored code rather than letting a fetched overflow evict the
+	// alphabetically-last one (VND, a manual rate). Fetched rates still
+	// overwrite codes both tables carry, but a brand-new code from the provider
+	// is admitted only while the union is below the cap.
+	storedRates := normalizeCurrencyRates(stored["rates"])
+	merged := make(map[string]any, len(storedRates)+len(fetched))
+	for code, rate := range storedRates {
+		merged[code] = rate
+	}
+
+	overlaid := make([]string, 0, len(fetched))
+	for code := range fetched {
+		overlaid = append(overlaid, code)
+	}
+	sort.Strings(overlaid)
+	for _, code := range overlaid {
+		normalized, ok := normalizeCurrencyCode(code)
+		if !ok {
+			continue
+		}
+		rate, ok := currencyRate(fetched[code])
+		if !ok {
+			continue
+		}
+		if _, stored := merged[normalized]; !stored && len(merged) >= maxCurrencyRates {
+			continue
+		}
+		merged[normalized] = rate
+	}
+	return normalizeCurrencyRates(merged), missingRequestedRates(fetched, codes)
+}
+
+// missingRequestedRates lists the requested codes, in request order, that the
+// answering provider did not publish.
+func missingRequestedRates(fetched map[string]any, codes []string) []string {
+	missing := make([]string, 0, len(codes))
+	for _, code := range codes {
+		if _, covered := fetched[code]; !covered {
+			missing = append(missing, code)
+		}
+	}
+	return missing
+}
+
+// refreshShowBoth resolves the flag a refresh stores. An explicit payload value
+// wins; otherwise the stored flag is inherited and an empty row means false,
+// which is the same default normalizeDisplayCurrency applies to a missing field
+// (a row predating dual display kept a single amount). The two paths therefore
+// agree, and a POST that omits the field can no longer turn dual display on as a
+// side effect.
+func refreshShowBoth(repo *db.Repo, payload *bool) (bool, error) {
+	if payload != nil {
+		return *payload, nil
+	}
+	stored, err := storedDisplayCurrency(repo)
+	if err != nil {
+		return false, err
+	}
+	showBoth, _ := stored["showBoth"].(bool)
+	return showBoth, nil
+}
+
+// countStoredRates counts the fetched rates that survived normalization into the
+// stored table, so a response cannot claim to have stored a rate the normalizer
+// dropped.
+func countStoredRates(fetched, merged map[string]any) int {
+	stored := 0
+	for code := range fetched {
+		if _, ok := merged[code]; ok {
+			stored++
+		}
+	}
+	return stored
+}
+
 // currencyRefreshRequest is the body of POST /api/settings/currency/refresh: the
 // currency to show, whether to show USD alongside it, and the codes the caller
 // wants rates for (web/src/lib/currency.ts owns that catalog).
@@ -203,9 +306,11 @@ type currencyRefreshRequest struct {
 }
 
 // HandleRefreshCurrencyRates handles POST /api/settings/currency/refresh: read
-// the live USD rates from a public provider and store the requested subset.
-// Manual rates keep working when every provider is unreachable — this only
-// refreshes them, and a failure leaves the stored table untouched (502).
+// the live USD rates from a public provider and overlay them on the stored
+// table. A code the provider does not publish keeps the rate the operator stored
+// by hand, so a refresh is never a clear. Manual rates keep working when every
+// provider is unreachable — this only refreshes them, and a failure leaves the
+// stored table untouched (502).
 func (h *DashboardHandler) HandleRefreshCurrencyRates(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -236,13 +341,24 @@ func (h *DashboardHandler) HandleRefreshCurrencyRates(w http.ResponseWriter, r *
 		return
 	}
 
-	showBoth := true
-	if payload.ShowBoth != nil {
-		showBoth = *payload.ShowBoth
+	showBoth, err := refreshShowBoth(h.Repo, payload.ShowBoth)
+	if err != nil {
+		writePlainError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// The overlay keeps every rate the operator already stored and lets the
+	// provider's answer overwrite the ones it published, so a refresh never
+	// deletes a manual rate for a code this provider does not carry. A nil table
+	// means the stored row could not be read: fail rather than write a table
+	// that is missing whatever was there.
+	merged, missing := mergeRefreshedRates(h.Repo, rates, codes)
+	if merged == nil {
+		writePlainError(w, http.StatusInternalServerError, "failed to read the stored rates")
+		return
 	}
 	stored := map[string]any{
 		"code":      code,
-		"rates":     rates,
+		"rates":     merged,
 		"showBoth":  showBoth,
 		"updatedAt": time.Now().UTC().Format(time.RFC3339),
 	}
@@ -250,20 +366,23 @@ func (h *DashboardHandler) HandleRefreshCurrencyRates(w http.ResponseWriter, r *
 		writePlainError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// ratesStored counts the rates from the provider this refresh actually
+	// stored; the table is larger, because it also keeps every manual rate the
+	// provider did not publish. ratesMissing names the requested codes the
+	// provider did not publish, whose manual rates survived.
+	response := map[string]any{
+		"source":       source,
+		"ratesStored":  countStoredRates(rates, merged),
+		"ratesMissing": missing,
+	}
 	if raw, err := h.Repo.GetSettingsRaw(); err == nil {
 		sanitizeDisplayCurrency(raw)
-		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-			"displayCurrency": raw[displayCurrencySettingKey],
-			"source":          source,
-			"ratesStored":     len(rates),
-		})
+		response["displayCurrency"] = raw[displayCurrencySettingKey]
+		handlerutil.WriteJSON(w, http.StatusOK, response)
 		return
 	}
-	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"displayCurrency": stored,
-		"source":          source,
-		"ratesStored":     len(rates),
-	})
+	response["displayCurrency"] = stored
+	handlerutil.WriteJSON(w, http.StatusOK, response)
 }
 
 // normalizeRequestedCodes de-duplicates the codes a refresh asked for and keeps

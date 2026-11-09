@@ -28,6 +28,10 @@ const qoderJobTokenPrefix = "jt-"
 // QoderChatSigPath is the COSY-signed inference path, relative to /algo.
 const QoderChatSigPath = "/api/v2/service/pro/sse/agent_chat_generation"
 
+// QoderImageUploadSigPath is the COSY-signed image upload path, relative to
+// /algo. Port of upstream QODER_IMAGE_UPLOAD_SIG_PATH.
+const QoderImageUploadSigPath = "/api/v2/image/upload"
+
 // QoderEndpoints holds the hosts one Qoder deployment serves.
 type QoderEndpoints struct {
 	JobTokenExchangeURL string

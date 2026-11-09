@@ -3,6 +3,7 @@ package dashboard
 import (
 	"bytes"
 	json "encoding/json/v2"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -134,5 +135,137 @@ func TestHandleCreateConnection_RequiresProvider(t *testing.T) {
 	rec := postConnection(t, router, `{"name":"No provider","apiKey":"k"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleCreateConnection_HydratesCompatibleNodeData(t *testing.T) {
+	tests := []struct {
+		name        string
+		nodeID      string
+		nodeType    string
+		nodeData    string
+		wantPrefix  string
+		wantBaseURL string
+		wantAPIType string
+	}{
+		{
+			name:        "openai compatible",
+			nodeID:      "openai-compatible-chat-wus",
+			nodeType:    "openai-compatible",
+			nodeData:    `{"prefix":"wus","apiType":"responses","baseUrl":"https://wus.example.com/v1"}`,
+			wantPrefix:  "wus",
+			wantBaseURL: "https://wus.example.com/v1",
+			wantAPIType: "responses",
+		},
+		{
+			name:        "anthropic compatible",
+			nodeID:      "anthropic-compatible-acme",
+			nodeType:    "anthropic-compatible",
+			nodeData:    `{"prefix":"acme","baseUrl":"https://acme.example.com/v1"}`,
+			wantPrefix:  "acme",
+			wantBaseURL: "https://acme.example.com/v1",
+		},
+		{
+			name:        "custom embedding",
+			nodeID:      "custom-embedding-voyage",
+			nodeType:    "custom-embedding",
+			nodeData:    `{"prefix":"voyage","baseUrl":"https://voyage.example.com/v1"}`,
+			wantPrefix:  "voyage",
+			wantBaseURL: "https://voyage.example.com/v1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, cleanup := setupNodeTestDB(t)
+			defer cleanup()
+			router := setupTestRouter(repo)
+
+			if _, err := repo.CreateProviderNode(tt.nodeID, tt.nodeType, "Node Name", tt.nodeData); err != nil {
+				t.Fatalf("seed node: %v", err)
+			}
+
+			body := fmt.Sprintf(`{
+				"provider": %q,
+				"authType": "apikey",
+				"name": "Node key",
+				"apiKey": "sk-node-secret",
+				"providerSpecificData": {
+					"prefix": "stale",
+					"apiType": "stale",
+					"baseUrl": "https://stale.example.com/v1",
+					"nodeName": "Stale",
+					"assignedModel": "pinned-model"
+				}
+			}`, tt.nodeID)
+			rec := postConnection(t, router, body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+			}
+
+			var created map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+				t.Fatalf("decode create response: %v", err)
+			}
+			id, _ := created["id"].(string)
+			conn, err := repo.GetProviderConnectionByID(id)
+			if err != nil || conn == nil {
+				t.Fatalf("reload connection: %v", err)
+			}
+
+			var data map[string]any
+			if err := json.Unmarshal([]byte(conn.Data), &data); err != nil {
+				t.Fatalf("decode connection data: %v", err)
+			}
+			psd, ok := data["providerSpecificData"].(map[string]any)
+			if !ok {
+				t.Fatalf("providerSpecificData missing: %v", data)
+			}
+			if psd["prefix"] != tt.wantPrefix {
+				t.Errorf("expected node prefix %q, got %v", tt.wantPrefix, psd["prefix"])
+			}
+			if psd["baseUrl"] != tt.wantBaseURL {
+				t.Errorf("expected node base URL %q, got %v", tt.wantBaseURL, psd["baseUrl"])
+			}
+			if psd["nodeName"] != "Node Name" {
+				t.Errorf("expected node name, got %v", psd["nodeName"])
+			}
+			if psd["assignedModel"] != "pinned-model" {
+				t.Errorf("expected unrelated providerSpecificData preserved, got %v", psd["assignedModel"])
+			}
+			if tt.wantAPIType == "" {
+				if _, exists := psd["apiType"]; exists {
+					t.Errorf("apiType must be absent for %s, got %v", tt.nodeType, psd["apiType"])
+				}
+			} else if psd["apiType"] != tt.wantAPIType {
+				t.Errorf("expected apiType %q, got %v", tt.wantAPIType, psd["apiType"])
+			}
+			if data["apiKey"] != "sk-node-secret" {
+				t.Errorf("expected apiKey stored, got %v", data["apiKey"])
+			}
+		})
+	}
+}
+
+func TestHandleCreateConnection_CompatibleNodeMissing(t *testing.T) {
+	repo, cleanup := setupNodeTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	rec := postConnection(t, router, `{
+		"provider": "openai-compatible-chat-missing",
+		"authType": "apikey",
+		"name": "Missing node",
+		"apiKey": "sk-missing"
+	}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	conns, err := repo.GetProviderConnections("", false)
+	if err != nil {
+		t.Fatalf("list connections: %v", err)
+	}
+	if len(conns) != 0 {
+		t.Fatalf("missing node must not create a connection, got %d", len(conns))
 	}
 }

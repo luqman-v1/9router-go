@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,11 @@ import (
 )
 
 var proxyBase = "http://localhost:20130"
+
+// routerClient is shared across intercepted requests: a fresh client per call
+// means a fresh transport, no idle-connection pool, and a new dial to the
+// local router for every request the MITM proxy forwards.
+var routerClient = &http.Client{Timeout: 5 * time.Minute}
 
 // FetchRouter sends a request body to the 9router proxy endpoint and returns the response.
 func FetchRouter(ctx context.Context, body []byte, endpoint string, headers http.Header, apiKey string) (*http.Response, error) {
@@ -33,8 +39,7 @@ func FetchRouter(ctx context.Context, body []byte, endpoint string, headers http
 		req.Header.Set("User-Agent", ua)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Minute}
-	return client.Do(req)
+	return routerClient.Do(req)
 }
 
 // PipeSSE copies streaming SSE chunks from upstream to the mitm client response.
@@ -75,8 +80,24 @@ func PipeJSON(upstream *http.Response, w http.ResponseWriter) error {
 }
 
 // SendError writes a JSON error response to the mitm client.
+//
+// The message is encoded by json.Marshal, never interpolated into a template: a
+// message carrying a quote or a backslash (a URL that failed to parse, a Windows
+// path) would otherwise close the JSON string early and leave a bare token
+// behind, which a JavaScript client reports as
+// `JSON Parse error: Unrecognized token '\'`.
 func SendError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	w.Write([]byte(fmt.Sprintf(`{"error":{"message":"%s","type":"mitm_error","code":%d}}`, msg, status)))
+	body, err := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": msg,
+			"type":    "mitm_error",
+			"code":    status,
+		},
+	})
+	if err != nil {
+		body = []byte(`{"error":{"message":"mitm error","type":"mitm_error","code":500}}`)
+	}
+	_, _ = w.Write(body)
 }

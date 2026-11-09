@@ -10,6 +10,7 @@
     padding = 'md',
     hover = false,
     elev = false,
+    id,
     class: klass = '',
     children
   }: {
@@ -20,6 +21,7 @@
     padding?: 'none' | 'xs' | 'sm' | 'md' | 'lg'
     hover?: boolean
     elev?: boolean
+    id?: string
     class?: string
     children?: Snippet
   } = $props()
@@ -34,6 +36,7 @@
 </script>
 
 <div
+  {id}
   class="bg-surface border border-border-subtle rounded-[14px] {elev
     ? 'shadow-[var(--shadow-elev)]'
     : 'shadow-[var(--shadow-soft)]'} {hover

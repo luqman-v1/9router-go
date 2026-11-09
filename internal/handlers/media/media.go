@@ -12,13 +12,17 @@ import (
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/usagetracker"
 	"bytes"
+	"context"
 	"encoding/base64"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -119,6 +123,14 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 	embeddingsURL := buildEmbeddingsURL(providerCfg.BaseURL)
 	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
 
+	// Google Gemini embeddings forward dimensions as outputDimensionality (upstream #1366).
+	if providers.ResolveAlias(modelInfo.Provider) == "gemini" {
+		finalBody = forwardGeminiEmbeddingDimensions(finalBody)
+	}
+
+	if isGitHubCopilotProvider(modelInfo.Provider) {
+		finalBody = wrapCopilotEmbeddingInput(finalBody)
+	}
 	req, err := http.NewRequestWithContext(r.Context(), "POST", embeddingsURL, strings.NewReader(string(finalBody)))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
@@ -132,9 +144,34 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 			req.Header.Set(k, v)
 		}
 	}
+	// GitHub Copilot hands out a short-lived token alongside the OAuth
+	// credential, and the embeddings endpoint is authenticated by that token
+	// rather than by the stored one. It is set after the static-header loop
+	// because it replaces the Authorization header on purpose.
+	//
+	// The override is scoped to the GitHub provider: the token is a GitHub
+	// credential, and upstream sends it only from the GitHub embeddings
+	// adapter (open-sse/handlers/embeddingProviders/github.js). Without the
+	// scope check the token was applied to whichever upstream the connection
+	// pointed at, so a connection for any other provider that happened to
+	// carry the key had its own key replaced and leaked the GitHub credential.
+	if connData != nil && providers.ResolveAlias(modelInfo.Provider) == "github" {
+		if copilotToken, ok := connData.ProviderSpecificData["copilotToken"].(string); ok && copilotToken != "" {
+			req.Header.Set("Authorization", "Bearer "+copilotToken)
+		}
+	}
+
+	// The connection's own client, not h.Client: an assigned proxy pool — a
+	// CONNECT proxy or an edge relay — is the operator's egress choice, and this
+	// lane used to skip it entirely and answer from the host's real IP.
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
+		return
+	}
 
 	start := time.Now()
-	resp, err := h.Client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
 		return
@@ -159,6 +196,112 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// HandleRerank forwards /v1/rerank requests to upstream providers.
+//
+// Rerank is the same shape as embeddings — a model in, a JSON body out, no
+// streaming — so it follows the embeddings handler's structure exactly: resolve
+// the model, pick a connection, forward with the provider's auth and static
+// headers, and log the usage. The URL is derived from the provider's base the
+// same way buildEmbeddingsURL does, because a rerank lane lives on the same
+// OpenAI-compatible host as the embeddings one.
+func (h *MediaHandler) HandleRerank(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	defer func() { _ = r.Body.Close() }()
+	var reqBody struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if reqBody.Model == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
+		return
+	}
+	if !h.ChatH.EnforceModelAccess(w, r, reqBody.Model) {
+		return
+	}
+	modelInfo, err := h.ChatH.ResolveModel(reqBody.Model)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), modelInfo.Provider, modelInfo.ConnectionID, nil, modelInfo.Model)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	providerCfg, err := h.ChatH.GetProviderConfig(modelInfo.Provider, connData)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	apiKey := chat.ExtractAPIKey(connData)
+	if apiKey == "" {
+		handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no API key found")
+		return
+	}
+	rerankURL := buildRerankURL(providerCfg.BaseURL)
+	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
+	req, err := http.NewRequestWithContext(r.Context(), "POST", rerankURL, strings.NewReader(string(finalBody)))
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
+		return
+	}
+	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
+	for k, v := range providerCfg.StaticHeaders {
+		if req.Header.Get(k) == "" {
+			req.Header.Set(k, v)
+		}
+	}
+	// The connection's own client, not h.Client: an assigned proxy pool is the
+	// operator's egress choice, and this lane must not bypass it.
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, clientErr.Error())
+		return
+	}
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+	if resp.StatusCode == http.StatusOK {
+		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
+		latencyMs := time.Since(start).Milliseconds()
+		logInfo := &shared.UsageLogInfo{
+			Provider:     modelInfo.Provider,
+			Model:        modelInfo.Model,
+			ConnectionID: conn.ID,
+			APIKey:       apiKey,
+			Endpoint:     "/v1/rerank",
+		}
+		h.ChatH.LogUsage(r.Context(), logInfo, nil, latencyMs, body, nil)
+	}
+}
+
+// buildRerankURL derives the rerank lane from a provider's base URL. A base
+// that already names a chat or embeddings lane is rewritten to the rerank
+// sibling, so a connection saved with either spelling still resolves.
+func buildRerankURL(baseURL string) string {
+	for _, lane := range []string{"/chat/completions", "/embeddings"} {
+		if strings.Contains(baseURL, lane) {
+			return strings.Replace(baseURL, lane, "/rerank", 1)
+		}
+	}
+	return strings.TrimRight(baseURL, "/") + "/rerank"
+}
+
 // HandleImages handles /v1/images/generations.
 func (h *MediaHandler) HandleImages(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -180,7 +323,11 @@ func (h *MediaHandler) HandleAudioSpeech(w http.ResponseWriter, r *http.Request)
 	defer r.Body.Close()
 	// Xiaomi MiMo TTS uses a chat-completions contract, not the OpenAI
 	// /audio/speech shape (port of open-sse/handlers/ttsProviders/xiaomi-mimo.js).
+	// It leaves forwardTTSRequest behind, so it needs the guard here.
 	if h.isMiMoSpeech(body) {
+		if _, refused := guardMediaInput(w, r.Header.Get("Content-Type"), body); refused {
+			return
+		}
 		h.forwardMiMoSpeech(w, r, body)
 		return
 	}
@@ -205,6 +352,14 @@ func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.ChatH.EnforceModelAccess(w, r, reqBody.Model) {
+		return
+	}
+	// SystemOne forwards on its own path rather than through
+	// forwardMediaRequest, so the cap and the usage accounting have to be
+	// applied here. Its body is JSON with a `state` payload, which is why it
+	// never trips the media walk in practice — but "in practice" is exactly
+	// the assumption an unbounded lane depends on.
+	if _, refused := guardMediaInput(w, r.Header.Get("Content-Type"), body); refused {
 		return
 	}
 	h.forwardSystemoneRequest(w, r, body, reqBody.Model)
@@ -253,15 +408,19 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	targetURL := providerCfg.SystemoneURL
-	if connData != nil && connData.BaseURL != "" {
-		baseURL := strings.TrimRight(connData.BaseURL, "/")
-		if strings.Contains(baseURL, "/chat/completions") {
-			targetURL = strings.Replace(baseURL, "/chat/completions", "/systemone", 1)
-		} else {
-			targetURL = baseURL + "/systemone"
-		}
-	} else if targetURL == "" {
+	override := ""
+	if connData != nil {
+		override = strings.TrimSpace(connData.BaseURL)
+	}
+	var targetURL string
+	switch {
+	case override != "" && strings.Contains(override, "/chat/completions"):
+		targetURL = strings.Replace(strings.TrimRight(override, "/"), "/chat/completions", "/systemone", 1)
+	case override != "":
+		targetURL = buildSystemoneURL(override, providerCfg.SystemoneURL, providerCfg.SystemonePath)
+	case providerCfg.SystemoneURL != "":
+		targetURL = providerCfg.SystemoneURL
+	default:
 		baseURL := strings.TrimRight(providerCfg.BaseURL, "/")
 		if strings.Contains(baseURL, "/chat/completions") {
 			targetURL = strings.Replace(baseURL, "/chat/completions", "/systemone", 1)
@@ -283,7 +442,16 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 		}
 	}
 	if modelInfo.Provider == "opencode" || modelInfo.Provider == "opencode-zen" {
-		req.Header.Set("x-opencode-session", proxy.GenerateOpenCodeSessionID())
+		// One stable session per provider+connection, like the chat lanes:
+		// minting a fresh session per request drains the egress budget at
+		// mint time and surfaces as 429 FreeUsageLimitError. A separate
+		// namespace from the chat lanes keeps media traffic from drawing on
+		// a conversation's session budget.
+		mediaSessionKey := "media:" + modelInfo.Provider
+		if modelInfo.ConnectionID != "" {
+			mediaSessionKey += ":conn:" + modelInfo.ConnectionID
+		}
+		req.Header.Set("x-opencode-session", proxy.StableOpenCodeSessionID(mediaSessionKey))
 	}
 	client, clientErr := h.ChatH.GetClientForConnection(connData)
 	if clientErr != nil {
@@ -291,11 +459,12 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 		return
 	}
 	resp, err := client.Do(req)
-	if err != nil {
+	if err != nil && r.Context().Err() == nil {
 		// Transport-level failure only (proxy block, DNS, reset): retry once
 		// direct before failing. A real upstream status (e.g. 403 account
 		// verification) must surface — retrying direct against the same
-		// target would mask it.
+		// target would mask it. A canceled request is neither: the caller is
+		// gone, so the retry would make a fresh connection for nobody.
 		directReq, err2 := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(finalBody))
 		if err2 == nil {
 			directReq.Header = req.Header.Clone()
@@ -314,9 +483,7 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 		return
 	}
 	defer resp.Body.Close()
-	for k, v := range resp.Header {
-		w.Header()[k] = v
-	}
+	copyUpstreamHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 	if resp.StatusCode == http.StatusOK && conn != nil {
@@ -565,6 +732,40 @@ func (h *MediaHandler) HandleVideoGet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// defaultWebSearchModel returns "search-combo" if available, then any webSearch combo, then falls back to tavily/search.
+func (h *MediaHandler) defaultWebSearchModel() string {
+	if h.Repo != nil {
+		if combo, err := h.Repo.GetComboByName("search-combo"); err == nil && combo != nil && combo.Models != "" {
+			return "search-combo"
+		}
+		if combos, err := h.Repo.GetCombos(); err == nil {
+			for _, c := range combos {
+				if c != nil && c.Kind != nil && *c.Kind == "webSearch" && c.Models != "" {
+					return c.Name
+				}
+			}
+		}
+	}
+	return "gpt-4o"
+}
+
+// defaultWebFetchModel returns "fetch-combo" if available, then any webFetch combo, then falls back to jina-reader.
+func (h *MediaHandler) defaultWebFetchModel() string {
+	if h.Repo != nil {
+		if combo, err := h.Repo.GetComboByName("fetch-combo"); err == nil && combo != nil && combo.Models != "" {
+			return "fetch-combo"
+		}
+		if combos, err := h.Repo.GetCombos(); err == nil {
+			for _, c := range combos {
+				if c != nil && c.Kind != nil && *c.Kind == "webFetch" && c.Models != "" {
+					return c.Name
+				}
+			}
+		}
+	}
+	return "jina-reader"
+}
+
 // HandleSearch handles /v1/search.
 func (h *MediaHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -573,7 +774,7 @@ func (h *MediaHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	h.forwardMediaRequest(w, r, body, "gpt-4o", "/v1/search")
+	h.forwardMediaRequest(w, r, body, h.defaultWebSearchModel(), "/v1/search")
 }
 
 // HandleScrape handles /v1/scrape.
@@ -584,18 +785,89 @@ func (h *MediaHandler) HandleScrape(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	h.forwardMediaRequest(w, r, body, "gpt-4o", "/v1/scrape")
+	h.forwardMediaRequest(w, r, body, h.defaultWebFetchModel(), "/v1/scrape")
 }
 
 // HandleWebFetch handles /v1/web/fetch.
 func (h *MediaHandler) HandleWebFetch(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
 	defer r.Body.Close()
-	h.forwardMediaRequest(w, r, body, "gpt-4o", "/v1/web/fetch")
+
+	var req struct {
+		URL      string `json:"url"`
+		Model    string `json:"model"`
+		Provider string `json:"provider"`
+		Format   string `json:"format"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || strings.TrimSpace(req.URL) == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing or invalid url")
+		return
+	}
+
+	parsedURL, err := url.Parse(req.URL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid url format")
+		return
+	}
+	if targetPrivate(r.Context(), parsedURL.Hostname()) {
+		handlerutil.WriteJSON(w, http.StatusForbidden, map[string]any{
+			"error": map[string]string{"message": "private IP blocked by SSRF protection", "type": "permission_denied", "code": "address_forbidden"},
+		})
+		return
+	}
+
+	// A provider named without a model is the model: /v1/web/fetch carries the
+	// extractor in `model`, and a caller that sent only `provider` was being
+	// dispatched to the default instead of the one it named.
+	if req.Model == "" && req.Provider != "" {
+		var rawMap map[string]any
+		if err := json.Unmarshal(body, &rawMap); err == nil && rawMap != nil {
+			rawMap["model"] = req.Provider
+			if rebuilt, mErr := json.Marshal(rawMap); mErr == nil {
+				body = rebuilt
+			}
+		}
+	}
+	h.forwardMediaRequest(w, r, body, h.defaultWebFetchModel(), "/v1/web/fetch")
+}
+
+// targetPrivate reports whether host names an address the gateway must not
+// fetch on a caller's behalf. A literal IP is judged directly; a name is
+// resolved once, before dispatch. ALLOW_PRIVATE_NETWORKING is the operator's
+// own switch and is answered first, so both branches agree: a literal IP and a
+// name that resolves to the same address get the same verdict.
+//
+// This check is a refusal the caller can see, not the boundary itself: the
+// dialer's socket-level guard is what actually stops the connection, and it
+// also covers the rebind between this lookup and the dial. Checking here means
+// the common case answers 403 with a reason instead of surfacing as a transport
+// error from a provider several layers down.
+func targetPrivate(ctx context.Context, host string) bool {
+	if host == "" {
+		return true
+	}
+	if proxy.IsPrivateNetworkingAllowed() {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return proxy.IsPrivateIP(ip)
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		// Unresolvable is not this check's call to make: let the dispatch
+		// produce the transport error, which names the real problem.
+		return false
+	}
+	for _, ip := range ips {
+		if proxy.IsPrivateIP(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Request, body []byte, defaultModel, endpoint string) {
@@ -605,7 +877,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	}
 	if err := json.Unmarshal(body, &reqBody); err == nil && reqBody.Model != "" {
 		model = reqBody.Model
-	} else if strings.Contains(r.Header.Get("Content-Type"), "multipart/form-data") {
+	} else if isMultipartRequest(r) {
 		_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		if err == nil && params["boundary"] != "" {
 			mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
@@ -624,11 +896,29 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 		}
 	}
+	if (endpoint == "/v1/search" || endpoint == "/v1/scrape") && (model == "search" || model == "default" || model == "web" || model == "webSearch") {
+		model = h.defaultWebSearchModel()
+	}
+	if endpoint == "/v1/web/fetch" && (model == "fetch" || model == "default" || model == "web" || model == "webFetch") {
+		model = h.defaultWebFetchModel()
+	}
 	// Per-API-key access control. This is the single funnel for images, TTS,
 	// STT, video, search, scrape and fetch, so gating here covers all of them
 	// with the same decision the chat lane uses. It runs before any connection
 	// selection so a denied model never reaches a provider.
+	//
+	// It also runs before the media caps. A cap answers 413 with the limit and
+	// the measured figure; sent to a key that may not call the model at all,
+	// that is a policy detail the key has no business learning — the answer it
+	// is owed is 403.
 	if !h.ChatH.EnforceModelAccess(w, r, model) {
+		return
+	}
+	// Media input caps and request-level usage, at the one funnel every media
+	// lane passes through. This still sits before model resolution and before
+	// connection selection, which is what matters: an oversized request never
+	// reaches an upstream call, because the call is what gets billed.
+	if _, refused := guardMediaInput(w, r.Header.Get("Content-Type"), body); refused {
 		return
 	}
 	modelInfo, err := h.ChatH.ResolveModel(model)
@@ -664,7 +954,8 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					continue
 				}
 			}
-			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (subInfo.Provider == "antigravity" || subInfo.Provider == "ag") {
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+				endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (subInfo.Provider == "antigravity" || subInfo.Provider == "ag") {
 				if err := h.handleAntigravityImage(w, r, body, subInfo); err == nil {
 					return
 				} else {
@@ -672,8 +963,20 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					continue
 				}
 			}
+			// Gemini image models answer the native generateContent shape, not
+			// the OpenAI images endpoint the generic forward would dial.
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+				endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (subInfo.Provider == "gemini" || subInfo.Provider == "gm") {
+				if err := h.handleGeminiImage(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					lastErr = err.Error()
+					continue
+				}
+			}
 			// Codex image models are Responses-API models, not an image endpoint.
-			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (subInfo.Provider == "codex" || subInfo.Provider == "cx") {
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+				endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (subInfo.Provider == "codex" || subInfo.Provider == "cx") {
 				if err := h.handleCodexImage(w, r, body, subInfo); err == nil {
 					return
 				} else {
@@ -681,6 +984,18 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					continue
 				}
 			}
+			// Cloudflare AI image models answer /ai/run/<model>, which the
+			// generic forwarder cannot reach — dedicated lane for all of them.
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+				endpoint == "/v1/images/edits" || endpoint == "/images/edits") && isCloudflareImageModel(subInfo) {
+				if err := h.handleCloudflareImage(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					lastErr = err.Error()
+					continue
+				}
+			}
+
 			if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (subInfo.Provider == "antigravity" || subInfo.Provider == "ag") {
 				if err := h.handleAntigravitySTT(w, r, body, subInfo); err == nil {
 					return
@@ -729,24 +1044,42 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 
 			finalBody := handlerutil.UpdateModelInBody(body, subInfo.Model)
+			// Cloudflare AI's flux-1-schnell schema rejects width/height — handled
+			// by the cloudflare image lane, not here.
+
+			// The endpoint the caller used is a route on this gateway, not a
+			// path on the vendor's host: appending it to BaseURL built URLs the
+			// vendor never serves (tavily got api.tavily.com/search/v1/search,
+			// serper got google.serper.dev/v1/search). Each vendor publishes its
+			// own search/fetch URL and verb in the registry.
 			targetURL := strings.TrimRight(providerCfg.BaseURL, "/") + endpoint
 			method := r.Method
-			// Use provider FetchURL for web/fetch when configured (e.g., ollama cloud)
-			if endpoint == "/v1/web/fetch" && providerCfg.FetchURL != "" {
-				targetURL = providerCfg.FetchURL
-				if providerCfg.FetchMethod != "" {
-					method = providerCfg.FetchMethod
-				} else {
-					method = "POST"
-				}
-				// Ollama cloud expects {"url": "https://..."} only
-				if subInfo.Provider == "ollama" {
-					var tmp struct {
-						URL string `json:"url"`
+			switch endpoint {
+			case "/v1/search":
+				if providerCfg.SearchURL != "" {
+					targetURL = providerCfg.SearchURL
+					method = strings.ToUpper(providerCfg.SearchMethod)
+					if method == "" {
+						method = http.MethodPost
 					}
-					if err := json.Unmarshal(body, &tmp); err == nil && tmp.URL != "" {
-						if b, err := json.Marshal(map[string]string{"url": tmp.URL}); err == nil {
-							finalBody = b
+				}
+			case "/v1/web/fetch":
+				if providerCfg.FetchURL != "" {
+					targetURL = providerCfg.FetchURL
+					if providerCfg.FetchMethod != "" {
+						method = providerCfg.FetchMethod
+					} else {
+						method = "POST"
+					}
+					// Ollama cloud expects {"url": "https://..."} only
+					if subInfo.Provider == "ollama" {
+						var tmp struct {
+							URL string `json:"url"`
+						}
+						if err := json.Unmarshal(body, &tmp); err == nil && tmp.URL != "" {
+							if b, err := json.Marshal(map[string]string{"url": tmp.URL}); err == nil {
+								finalBody = b
+							}
 						}
 					}
 				}
@@ -768,6 +1101,13 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Warn("media", "upstream combo request failed", "endpoint", endpoint, "provider", subInfo.Provider, "model", subInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "error", err)
+				// A cancelled caller is not a failed model. Trying the next
+				// member of the combo would make a fresh upstream connection
+				// for a client that has already gone.
+				if r.Context().Err() != nil {
+					handlerutil.WriteJSONError(w, 499, "client closed request")
+					return
+				}
 				lastErr = err.Error()
 				continue
 			}
@@ -791,10 +1131,8 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				lastStatus = resp.StatusCode
 				continue
 			}
-			defer resp.Body.Close()
-			for k, v := range resp.Header {
-				w.Header()[k] = v
-			}
+			defer func() { _ = resp.Body.Close() }()
+			copyUpstreamHeaders(w.Header(), resp.Header)
 			w.WriteHeader(resp.StatusCode)
 			io.Copy(w, resp.Body)
 			h.Repo.UpdateConnectionLastUsed(conn.ID)
@@ -817,15 +1155,87 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (modelInfo.Provider == "antigravity" || modelInfo.Provider == "ag") {
 		if err := h.handleAntigravityImage(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
 		return
 	}
+	// Gemini image models answer the native generateContent shape, not the
+	// OpenAI images endpoint the generic forward would dial.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (modelInfo.Provider == "gemini" || modelInfo.Provider == "gm") {
+		if err := h.handleGeminiImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
 	// Codex image models are Responses-API models, not an image endpoint.
-	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations") && (modelInfo.Provider == "codex" || modelInfo.Provider == "cx") {
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (modelInfo.Provider == "codex" || modelInfo.Provider == "cx") {
 		if err := h.handleCodexImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+
+	// Cloudflare AI image models answer /ai/run/<model>, which the generic
+	// forwarder cannot reach — dedicated lane for all of them.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && isCloudflareImageModel(modelInfo) {
+		if err := h.handleCloudflareImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+	// UC web: the persona image API needs a minted Clerk session, not a bearer
+	// key, so the generic forward cannot reach it.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (modelInfo.Provider == "uc-web" || modelInfo.Provider == "uc") {
+		if err := h.handleUcWebImage(w, r, body, modelInfo); err != nil {
+			writeUcMediaError(w, err)
+		}
+		return
+	}
+
+	// UC web video: generation posts to the persona video API and polls the
+	// result URL, so it shares the image lane's session plumbing.
+	if (endpoint == "/v1/videos/generations" || endpoint == "/videos/generations") && (modelInfo.Provider == "uc-web" || modelInfo.Provider == "uc") {
+		if err := h.handleUcWebVideo(w, r, body, modelInfo); err != nil {
+			writeUcMediaError(w, err)
+		}
+		return
+	}
+
+	// veoaifree.com free tier: WordPress AJAX with a scraped CSRF nonce, not
+	// an OpenAI-compatible endpoint.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (modelInfo.Provider == "veoaifree-web" || modelInfo.Provider == "veo-free") {
+		if err := h.handleVeoFreeWebImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+	if (endpoint == "/v1/videos/generations" || endpoint == "/videos/generations") && (modelInfo.Provider == "veoaifree-web" || modelInfo.Provider == "veo-free") {
+		if err := h.handleVeoFreeWebVideo(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+
+	// grok.com Imagine: the Cloudflare-gated conversations/new endpoint and
+	// the assets.grok.com download live in the chat executor's transport, so
+	// the lane delegates there (upstream imageProvider useExecutor: true).
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && (modelInfo.Provider == "grok-web" || modelInfo.Provider == "gw") {
+		if err := h.handleGrokWebImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+	if (endpoint == "/v1/videos/generations" || endpoint == "/videos/generations") && (modelInfo.Provider == "grok-web" || modelInfo.Provider == "gw") {
+		if err := h.handleGrokWebVideo(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
 		}
 		return
@@ -842,6 +1252,25 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (modelInfo.Provider == "elevenlabs" || modelInfo.Provider == "el") {
 		if err := h.handleElevenLabsSTT(w, r, body, modelInfo); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+
+	// Codex OAuth transcription: a fixed ChatGPT endpoint addressed with the
+	// Codex account's own identity, so no connection URL override applies and
+	// only the model "transcribe" is valid here.
+	if isTranscriptionEndpoint(endpoint) && (modelInfo.Provider == "codex" || modelInfo.Provider == "cx") {
+		if modelInfo.Model != codexSTTModel {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, codexSTTModelHintMsg)
+			return
+		}
+		if err := h.handleCodexSTT(w, r, body, modelInfo); err != nil {
+			var stErr *codexSTTError
+			if errors.As(err, &stErr) {
+				handlerutil.WriteJSONError(w, stErr.status, stErr.message)
+			} else {
+				handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+			}
 		}
 		return
 	}
@@ -904,7 +1333,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	}
 
 	finalBody := body
-	if !strings.Contains(r.Header.Get("Content-Type"), "multipart/form-data") {
+	if !isMultipartRequest(r) {
 		finalBody = handlerutil.UpdateModelInBody(body, modelInfo.Model)
 	} else if model != "" && model != modelInfo.Model {
 		// Upstream parity (videoGeneration byte-exact multipart): never
@@ -944,11 +1373,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	var targetURL string
 	switch endpoint {
-	case "/v1/images/generations", "/images/generations":
+	case "/v1/images/generations", "/images/generations", "/v1/images/edits", "/images/edits":
 		if !hasCustomBaseURL && providerCfg.ImageURL != "" {
 			targetURL = providerCfg.ImageURL
 		} else {
-			targetURL = strings.TrimSuffix(baseURL, "/v1") + "/v1/images/generations"
+			targetURL = strings.TrimSuffix(baseURL, "/v1") + endpoint
 		}
 	case "/v1/audio/speech", "/audio/speech":
 		if !hasCustomBaseURL && providerCfg.TTSURL != "" {
@@ -986,6 +1415,14 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	method := r.Method
+	if endpoint == "/v1/search" && providerCfg.SearchURL != "" && !hasCustomBaseURL {
+		targetURL = providerCfg.SearchURL
+		if providerCfg.SearchMethod != "" {
+			method = strings.ToUpper(providerCfg.SearchMethod)
+		} else {
+			method = http.MethodPost
+		}
+	}
 	if endpoint == "/v1/web/fetch" && providerCfg.FetchURL != "" {
 		targetURL = providerCfg.FetchURL
 		if providerCfg.FetchMethod != "" {
@@ -1055,14 +1492,12 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		resp.Body = io.NopCloser(bytes.NewReader(errBody))
 	}
 
-	for k, v := range resp.Header {
-		w.Header()[k] = v
-	}
+	copyUpstreamHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 
 	if resp.StatusCode == http.StatusOK && conn != nil {
-		h.Repo.UpdateConnectionLastUsed(conn.ID)
+		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 		latencyMs := time.Since(start).Milliseconds()
 		logInfo := &shared.UsageLogInfo{
 			Provider:     modelInfo.Provider,
@@ -1143,4 +1578,89 @@ func buildEmbeddingsURL(baseURL string) string {
 		return strings.Replace(baseURL, "/chat/completions", "/embeddings", 1)
 	}
 	return strings.TrimRight(baseURL, "/") + "/embeddings"
+}
+
+// buildSystemoneURL joins a saved host override with the registry path
+// without doubling a "/v1" or "/v1/systemone" the host already includes
+// (upstream buildSystemoneUrl). An override with no registry path keeps the
+// lane's "/systemone" suffix; one that already names the endpoint is used
+// as-is.
+func buildSystemoneURL(override, cfgURL, cfgPath string) string {
+	base := strings.TrimRight(strings.TrimSpace(override), "/")
+	if base == "" {
+		return cfgURL
+	}
+	if strings.HasSuffix(base, "/systemone") {
+		return base
+	}
+	if cfgPath == "" {
+		return base + "/systemone"
+	}
+	path := strings.TrimRight(cfgPath, "/")
+	if strings.HasSuffix(base, path) {
+		return base
+	}
+	prefix := path[:strings.LastIndex(path, "/")]
+	if prefix != "" && strings.HasSuffix(base, prefix) {
+		return base + path[len(prefix):]
+	}
+	return base + path
+}
+
+// forwardGeminiEmbeddingDimensions maps incoming OpenAI "dimensions" to
+// Google Gemini's "outputDimensionality" property (upstream decolua/9router#1366 parity).
+func forwardGeminiEmbeddingDimensions(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	dimsRaw, exists := payload["dimensions"]
+	if !exists || dimsRaw == nil {
+		return body
+	}
+	dims := 0
+	switch v := dimsRaw.(type) {
+	case float64:
+		dims = int(v)
+	case int:
+		dims = v
+	case int64:
+		dims = int(v)
+	}
+	if dims <= 0 {
+		return body
+	}
+	payload["outputDimensionality"] = dims
+	if updated, err := json.Marshal(payload); err == nil {
+		return updated
+	}
+	return body
+}
+
+// isGitHubCopilotProvider reports whether the resolved provider is GitHub Copilot.
+func isGitHubCopilotProvider(provider string) bool {
+	return providers.ResolveAlias(provider) == "github"
+}
+
+// wrapCopilotEmbeddingInput wraps a bare "input" string into an array of
+// strings ([input]), which Copilot requires. It leaves an existing array
+// untouched and leaves bodies without "input" alone.
+func wrapCopilotEmbeddingInput(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
+		return body
+	}
+	input, ok := payload["input"]
+	if !ok {
+		return body
+	}
+	if _, isArray := input.([]any); isArray {
+		return body
+	}
+	payload["input"] = []any{input}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
 }

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"strings"
 	"testing"
@@ -53,7 +54,7 @@ func TestApplyTokenSavers_SystemPromptPrefixSuffix(t *testing.T) {
 			defer cleanup()
 			h.TokenSaver.SetSystemPrompt(true, tt.prefix, tt.suffix)
 
-			got, _, _, _ := h.applyTokenSavers([]byte(tt.body), tt.claudeNative)
+			got, _, _, _ := h.applyTokenSavers(context.Background(), []byte(tt.body), tt.claudeNative)
 			sys := firstSystemText(t, got, tt.claudeNative)
 			if sys == "" {
 				t.Fatalf("no system prompt written into %s", got)
@@ -74,7 +75,7 @@ func TestApplyTokenSavers_SystemPromptDisabled(t *testing.T) {
 	h.TokenSaver.SetSystemPrompt(false, "HEAD", "TAIL")
 
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	got, _, _, _ := h.applyTokenSavers(body, false)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
 	if string(got) != string(body) {
 		t.Errorf("disabled system prompt changed the body:\ngot: %s\nwant: %s", got, body)
 	}
@@ -86,7 +87,7 @@ func TestApplyTokenSavers_SystemPromptEmptySlots(t *testing.T) {
 	h.TokenSaver.SetSystemPrompt(true, "", "")
 
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	got, _, _, _ := h.applyTokenSavers(body, false)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
 	if string(got) != string(body) {
 		t.Errorf("empty prefix and suffix must leave the body alone:\ngot: %s", got)
 	}

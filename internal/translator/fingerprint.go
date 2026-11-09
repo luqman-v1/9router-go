@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	json "encoding/json/v2"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -62,6 +63,23 @@ var OpenCodeFingerprintTools = []string{"bash", "glob", "grep", "read"}
 // those names come from the client rather than the gateway and renaming them is
 // what makes a harness-shaped body acceptable at all.
 var openCodeRequiredTools = []string{"read"}
+
+// A second, purely textual gate on the same route: a declared tool name
+// containing "terminal" (case-insensitive substring) is answered 429
+// FreeUsageLimitError regardless of quota, IP, session or payload size, while
+// the same body with only that name changed answers normally
+// (decolua/9router#5319, #5328). Only `tools[]` is inspected — history and
+// system prompt are not — so the declaration travels under an alias and the
+// caller's name is restored on the way back, like a fingerprint-name collision.
+const (
+	openCodeGatedToolSubstring = "terminal"
+	openCodeGatedToolAlias     = "run_command"
+)
+
+// isOpenCodeGatedTool reports whether name contains the gated "terminal" substring (case-insensitive).
+func isOpenCodeGatedTool(name string) bool {
+	return strings.Contains(strings.ToLower(name), openCodeGatedToolSubstring)
+}
 
 // FingerprintToolKey returns the canonical lowercase name when name is a quartet
 // member, or "" when it is not.
@@ -140,6 +158,12 @@ func ConcealFingerprintTools(body []byte) ([]byte, map[string]string) {
 	hadClientTools := len(tools) > 0
 	toolNameMap := map[string]string{}
 	seen := map[string]bool{}
+	taken := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		if n := toolNameOf(tool); n != "" {
+			taken[strings.ToLower(n)] = true
+		}
+	}
 	kept := make([]any, 0, len(tools)+len(OpenCodeFingerprintTools))
 
 	for _, tool := range tools {
@@ -148,6 +172,24 @@ func ConcealFingerprintTools(body []byte) ([]byte, map[string]string) {
 			kept = append(kept, tool)
 			continue
 		}
+
+		// A declared tool name containing "terminal" (case-insensitive substring) is
+		// answered 429 FreeUsageLimitError by the upstream free gate (decolua/9router#5319, #5328).
+		// Move the declaration to a gate-free alias (run_command, numbered on collision)
+		// and record in toolNameMap for response restoration and history retargeting.
+		if isOpenCodeGatedTool(current) {
+			alias := openCodeGatedToolAlias
+			for i := 2; taken[strings.ToLower(alias)] || seen[strings.ToLower(alias)]; i++ {
+				alias = fmt.Sprintf("%s%d", openCodeGatedToolAlias, i)
+			}
+			taken[strings.ToLower(alias)] = true
+			seen[strings.ToLower(alias)] = true
+			toolNameMap[alias] = current
+			setToolName(tool, alias)
+			kept = append(kept, tool)
+			continue
+		}
+
 		key := FingerprintToolKey(current)
 		finalName := current
 		if key != "" {

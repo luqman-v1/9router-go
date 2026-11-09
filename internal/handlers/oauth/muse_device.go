@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -86,9 +87,9 @@ func museHeaders(extra map[string]string) map[string]string {
 }
 
 // museStart asks Meta for a device code.
-func museStart() (map[string]any, error) {
+func museStart(ctx context.Context) (map[string]any, error) {
 	form := url.Values{"client_id": {museClientID}}
-	data, status, err := postForm(museDeviceCodeURL, form, museHeaders(map[string]string{
+	data, status, err := postForm(ctx, museDeviceCodeURL, form, museHeaders(map[string]string{
 		"Content-Type": "application/x-www-form-urlencoded",
 	}))
 	if err != nil {
@@ -113,7 +114,7 @@ func museStart() (map[string]any, error) {
 // musePoll trades the approved device code for a Model API key. Meta answers
 // authorization_pending while the user is still in the browser, which the
 // shared poll loop turns back into a "pending" state for the modal.
-func musePoll(code string) (deviceTokens, error) {
+func musePoll(ctx context.Context, code string) (deviceTokens, error) {
 	var t deviceTokens
 
 	// If an earlier poll already consumed this (one-shot) device code but the
@@ -129,7 +130,7 @@ func musePoll(code string) (deviceTokens, error) {
 			"device_code": {code},
 			"client_id":   {museClientID},
 		}
-		data, status, err := postForm(museTokenURL, form, museHeaders(map[string]string{
+		data, status, err := postForm(ctx, museTokenURL, form, museHeaders(map[string]string{
 			"Content-Type": "application/x-www-form-urlencoded",
 		}))
 		if err != nil {
@@ -159,7 +160,7 @@ func musePoll(code string) (deviceTokens, error) {
 		}
 	}
 
-	key, err := museMintKey(access)
+	key, err := museMintKey(ctx, access)
 	if err != nil {
 		if errors.Is(err, errMuseMintTransient) {
 			pm, _ := musePendingMintGet(code)
@@ -190,7 +191,7 @@ func musePoll(code string) (deviceTokens, error) {
 	// The stored credential is the minted Model API key, not the Meta account
 	// token; the account token is kept so a future re-mint needs no new login.
 	t.access = apiKey
-	t.email = museAccountEmail(key, access)
+	t.email = museAccountEmail(ctx, key, access)
 	t.extra = map[string]any{
 		"authMethod":       "device_code",
 		"oauthAccessToken": access,
@@ -204,7 +205,7 @@ func musePoll(code string) (deviceTokens, error) {
 // museAccountEmail resolves the connection email: prefer the mint response,
 // fall back to the Meta account token's JWT claims. The minted API key
 // itself is not a JWT, so extractEmailFromJWT on it would never work.
-func museAccountEmail(key map[string]any, accountToken string) string {
+func museAccountEmail(ctx context.Context, key map[string]any, accountToken string) string {
 	if email := strings.ToLower(strings.TrimSpace(strVal(key, "user_email"))); email != "" {
 		return email
 	}
@@ -214,7 +215,7 @@ func museAccountEmail(key map[string]any, accountToken string) string {
 // museMintKey exchanges a Meta account token for the Model API key the chat
 // transport uses. The endpoint answers 429 often enough that upstream retries
 // transient failures here rather than failing the whole login.
-func museMintKey(accessToken string) (map[string]any, error) {
+func museMintKey(ctx context.Context, accessToken string) (map[string]any, error) {
 	headers := museHeaders(map[string]string{
 		"Authorization": "Bearer " + accessToken,
 		"Content-Type":  "application/json",
@@ -223,7 +224,7 @@ func museMintKey(accessToken string) (map[string]any, error) {
 	var status int
 	for attempt := 0; ; attempt++ {
 		var err error
-		data, status, err = postJSON(museKeyURL, map[string]any{"onboard": true}, headers)
+		data, status, err = postJSON(ctx, museKeyURL, map[string]any{"onboard": true}, headers)
 		if err != nil {
 			return nil, fmt.Errorf("Muse Code key mint failed (%w): %v", errMuseMintTransient, err)
 		}

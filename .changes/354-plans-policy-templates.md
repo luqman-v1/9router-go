@@ -1,9 +1,0 @@
-### Features
-- **plans**: add reusable policy templates (F-3). A plan carries rate limits (RPM/TPM/concurrency), a budget (USD micros, token ceiling, period, alert percentage, hard-cutoff flag) and a model allowlist; a key assigned to a plan inherits those as defaults and its own columns still win where they are set. One resolver (`internal/policy.Resolve`) applies the precedence — operator global default, then plan, then key — so the limiter and the model gate cannot disagree about the same key.
-- **plans**: `GET/POST /api/plans`, `GET/PUT/DELETE /api/plans/{id}` and `GET /api/plans/{id}/keys`. Deleting a plan that keys still reference is refused with 409 and the count instead of cascading, because re-pointing those keys would change their limits without the operator asking.
-- **dashboard**: a Plans page (sidebar → Plans) for creating and editing templates, and a plan selector in the API-key policy dialog. `PUT /api/keys/{id}` accepts `planId`; an id that does not exist is refused with 400 rather than stored, since a dangling id would silently resolve to no plan while the dashboard showed the key on a template.
-- **model access**: the per-key allowlist is now unioned with the plan's, so a plan can grant models to every key on it and a key can still widen that for itself. Neither side can take a model away from the other.
-- **plans**: the model gate resolves the plan in one joined read when only a key id is on hand, and skips that read entirely for a key whose `planId` is empty — every key minted before this feature pays nothing.
-
-### Added
-- `plans` table and `apiKeys.planId`, both Go-only and additive. The `default` plan is seeded by `EnsureKeiRouterTables`, so every bootstrap path (production and test fixtures alike) has it and a key assigned to `default` never reads as unplanned. The seeded plan ships `hardCutoff` off and every limit at 0, so an existing install behaves exactly as it did.

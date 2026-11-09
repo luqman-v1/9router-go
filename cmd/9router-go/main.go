@@ -6,7 +6,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,10 +21,97 @@ import (
 	"9router/proxy/internal/updater"
 )
 
+// binaryName lets the same executable answer to `opencode-go`, so a renamed
+// copy (or symlink) shows the matching name in help and errors.
+func binaryName() string {
+	if base := filepath.Base(os.Args[0]); strings.HasPrefix(base, "opencode-go") {
+		return "opencode-go"
+	}
+	return "9router-go"
+}
+
+// guideMisplacedRootFlag rewrites the "flag provided but not defined" message
+// for the flags that do exist, one level up.
+//
+// urfave/cli reports an unknown flag by name only, so `9router-go start
+// --rtk=false` prints "flag provided but not defined: -rtk" about a flag the
+// binary does define — which sends the reader looking for a missing feature
+// rather than at the order of their own arguments. The hook moves the flag
+// ahead of the sub-command instead.
+func guideMisplacedRootFlag(_ *cli.Context, err error, isSubcommand bool) error {
+	if !isSubcommand {
+		return err
+	}
+	msg := err.Error()
+	const prefix = "flag provided but not defined: -"
+	if !strings.HasPrefix(msg, prefix) {
+		return err
+	}
+	name := strings.TrimPrefix(msg, prefix)
+	// Only flags that genuinely exist at the root are worth rewriting; a real
+	// typo keeps urfave's message and its suggestions.
+	if !rootFlagNames[name] {
+		return err
+	}
+	return fmt.Errorf("%s is a global flag — put it before the sub-command: %s --%s=... %s",
+		name, binaryName(), name, "<command>")
+}
+
+// rootFlagNames is the set the hook may rewrite, kept beside the app
+// definition so a flag added there cannot silently lose its guidance.
+var rootFlagNames = map[string]bool{
+	"rtk":                 true,
+	"caveman":             true,
+	"ponytail":            true,
+	"adhd":                true,
+	"auto-update":         true,
+	"no-injection-guard":  true,
+	daemon.BackgroundName: true,
+}
+
 func main() {
-	app := &cli.App{
-		Name:  "9router-go",
+	self := binaryName()
+	app := newApp(self)
+	if err := app.Run(os.Args); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// newApp builds the CLI app with the misplaced-root-flag guidance installed on
+// every sub-command.
+//
+// App.OnUsageError alone does not cover this: urfave/cli copies it onto the
+// root command only, and a flag that fails to parse does so inside the
+// sub-command, whose own (nil) hook is the one consulted. Each command
+// therefore gets the hook explicitly.
+
+// installUsageGuidance walks the command tree, giving every command the
+// guidance hook unless it already carries its own.
+func installUsageGuidance(commands []*cli.Command) {
+	for _, c := range commands {
+		if c.OnUsageError == nil {
+			c.OnUsageError = guideMisplacedRootFlag
+		}
+		installUsageGuidance(c.Subcommands)
+	}
+}
+
+// newApp builds the CLI app with the misplaced-root-flag guidance installed
+// on every sub-command.
+func newApp(self string) *cli.App {
+	app := buildApp(self)
+	installUsageGuidance(app.Commands)
+	return app
+}
+func buildApp(self string) *cli.App {
+	return &cli.App{
+		Name:  self,
 		Usage: "AI API proxy gateway with token saver features",
+		// A root flag placed after the sub-command is the single most common
+		// mistake here: `9router-go start --rtk=false` is a typo for
+		// `9router-go --rtk=false start`, and the stock message names a flag
+		// that exists, which reads as though the binary lost it.
+		OnUsageError: guideMisplacedRootFlag,
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:  "rtk",
@@ -192,10 +281,15 @@ func main() {
 		},
 		Action: foregroundOrBackground,
 	}
-	if err := app.Run(os.Args); err != nil {
-		log.Fatal(err)
-	}
 }
+
+// newApp builds the CLI app with the misplaced-root-flag guidance installed on
+// every sub-command.
+//
+// App.OnUsageError alone does not cover this: urfave/cli copies it onto the
+// root command only, and a flag that fails to parse does so inside the
+// sub-command, whose own (nil) hook is the one consulted. Each command
+// therefore gets the hook explicitly.
 
 // foregroundOrBackground is the flag-free entry point: with --background (or
 // -d, or the `start` sub-command) it detaches and returns, otherwise it runs
@@ -213,13 +307,18 @@ func foregroundOrBackground(cCtx *cli.Context) error {
 	if cCtx.Bool(daemon.BackgroundName) {
 		return startDetached(cCtx)
 	}
+	// On a terminal, bare `9router-go` offers the interface picker; without one
+	// (service unit, container, pipe) it boots the server as before.
+	if stdinIsTerminal() {
+		return runMenu(cCtx)
+	}
 	return runServer(cCtx)
 }
 
 // unknownCommandError turns a missed command dispatch into guidance instead
 // of a boot.
 func unknownCommandError(args []string) error {
-	return fmt.Errorf("unknown command %q — see '9router-go help'", args[0])
+	return fmt.Errorf("unknown command %q — see '%s help'", args[0], binaryName())
 }
 
 func runServer(cCtx *cli.Context) error {

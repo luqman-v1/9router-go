@@ -138,12 +138,12 @@ func TestUsageHistoryApiKeyIndexExists(t *testing.T) {
 
 	var count int
 	if err := r.db.QueryRow(
-		`SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = 'idx_uh_apikey'`,
+		`SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = 'idx_uh_apikey_tok'`,
 	).Scan(&count); err != nil {
 		t.Fatalf("query index: %v", err)
 	}
 	if count != 1 {
-		t.Fatal("idx_uh_apikey is missing; the quota sum would full-scan usageHistory")
+		t.Fatal("idx_uh_apikey_tok is missing; the quota sum would full-scan usageHistory")
 	}
 
 	// And the planner must actually use it for the quota query.
@@ -163,8 +163,8 @@ func TestUsageHistoryApiKeyIndexExists(t *testing.T) {
 		}
 		plan += detail + "\n"
 	}
-	if !strings.Contains(plan, "idx_uh_apikey") {
-		t.Errorf("query plan does not use idx_uh_apikey:\n%s", plan)
+	if !strings.Contains(plan, "idx_uh_apikey_tok") {
+		t.Errorf("query plan does not use idx_uh_apikey_tok:\n%s", plan)
 	}
 }
 
@@ -199,7 +199,7 @@ func TestUsageHistoryApiKeyIndexAddedOnUpgrade(t *testing.T) {
 	}
 	// Precondition: no index yet.
 	var before int
-	if err := conn.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='idx_uh_apikey'`).Scan(&before); err != nil {
+	if err := conn.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='idx_uh_apikey_tok'`).Scan(&before); err != nil {
 		t.Fatalf("pre-check: %v", err)
 	}
 	if before != 0 {
@@ -212,11 +212,11 @@ func TestUsageHistoryApiKeyIndexAddedOnUpgrade(t *testing.T) {
 	}
 
 	var after int
-	if err := conn.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='idx_uh_apikey'`).Scan(&after); err != nil {
+	if err := conn.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='idx_uh_apikey_tok'`).Scan(&after); err != nil {
 		t.Fatalf("post-check: %v", err)
 	}
 	if after != 1 {
-		t.Fatal("idx_uh_apikey was not created on upgrade")
+		t.Fatal("idx_uh_apikey_tok was not created on upgrade")
 	}
 
 	// The pre-existing rows survive the upgrade.
@@ -236,7 +236,7 @@ func TestUsageHistoryApiKeyIndexAddedOnUpgrade(t *testing.T) {
 // answers a disjunction with a multi-index OR only when every arm is
 // indexable; one unindexed arm degrades the whole statement to a full scan of
 // usageHistory. TestUsageHistoryApiKeyIndexExists above spelled out only the
-// `apiKey = ?` arms, so idx_uh_apikey alone satisfied it while the production
+// `apiKey = ?` arms, so the bare apiKey index alone satisfied it while the production
 // query still scanned the ledger — measured at ~127 ms per key on a 512k-row
 // table, against a boot request (GET /api/keys) that runs it once per key row.
 func TestUsageHistoryClientKeyIndexExists(t *testing.T) {
@@ -244,12 +244,12 @@ func TestUsageHistoryClientKeyIndexExists(t *testing.T) {
 
 	var count int
 	if err := r.db.QueryRow(
-		`SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = 'idx_uh_clientkey'`,
+		`SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = 'idx_uh_clientkey_tok'`,
 	).Scan(&count); err != nil {
 		t.Fatalf("query index: %v", err)
 	}
 	if count != 1 {
-		t.Fatal("idx_uh_clientkey is missing; the quota sum would full-scan usageHistory")
+		t.Fatal("idx_uh_clientkey_tok is missing; the quota sum would full-scan usageHistory")
 	}
 
 	// The planner must avoid a scan for the full production predicate — the
@@ -278,8 +278,8 @@ func TestUsageHistoryClientKeyIndexExists(t *testing.T) {
 	if strings.Contains(plan, "SCAN usageHistory") {
 		t.Errorf("the quota sum still full-scans usageHistory:\n%s", plan)
 	}
-	if !strings.Contains(plan, "idx_uh_clientkey") {
-		t.Errorf("query plan does not use idx_uh_clientkey:\n%s", plan)
+	if !strings.Contains(plan, "idx_uh_clientkey_tok") {
+		t.Errorf("query plan does not use idx_uh_clientkey_tok:\n%s", plan)
 	}
 }
 
@@ -313,7 +313,7 @@ func TestUsageHistoryClientKeyIndexAddedOnUpgrade(t *testing.T) {
 		}
 	}
 	var before int
-	if err := conn.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='idx_uh_clientkey'`).Scan(&before); err != nil {
+	if err := conn.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='idx_uh_clientkey_tok'`).Scan(&before); err != nil {
 		t.Fatalf("pre-check: %v", err)
 	}
 	if before != 0 {
@@ -325,11 +325,11 @@ func TestUsageHistoryClientKeyIndexAddedOnUpgrade(t *testing.T) {
 	}
 
 	var after int
-	if err := conn.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='idx_uh_clientkey'`).Scan(&after); err != nil {
+	if err := conn.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='idx_uh_clientkey_tok'`).Scan(&after); err != nil {
 		t.Fatalf("post-check: %v", err)
 	}
 	if after != 1 {
-		t.Fatal("idx_uh_clientkey was not created on upgrade")
+		t.Fatal("idx_uh_clientkey_tok was not created on upgrade")
 	}
 
 	// Pre-existing rows survive, so the upgrade builds an index rather than

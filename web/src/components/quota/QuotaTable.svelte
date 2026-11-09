@@ -29,28 +29,35 @@
 
   let page = $state(1)
 
+  // `remainingPct` is the *rendered* share (0-100, or null when the row says
+  // nothing). It is a separate field from the raw `remaining` the provider
+  // reported, because those two are not the same number — upstream overwrites
+  // one with the other, and here the raw value must survive for the hide
+  // action while the percentage drives the bar, the colour and the sort.
   interface RowQuota extends NormalizedQuota {
     index: number
-    remaining: number
+    remainingPct: number | null
   }
 
   let normalizedQuotas = $derived<RowQuota[]>(
     quotas.map((quota, index) => ({
       ...quota,
       index,
-      remaining: getRemainingPercentage(quota),
+      remainingPct: getRemainingPercentage(quota),
     })),
   )
 
+  // An unknown row sorts as -1, below every real reading (upstream parity), so
+  // it never displaces a row whose percentage is actually known.
   let sortedQuotas = $derived.by<RowQuota[]>(() => {
     if (sortMode === 'remaining-asc') {
       return [...normalizedQuotas].sort(
-        (a, b) => a.remaining - b.remaining || a.name.localeCompare(b.name),
+        (a, b) => (a.remainingPct ?? -1) - (b.remainingPct ?? -1) || a.name.localeCompare(b.name),
       )
     }
     if (sortMode === 'remaining-desc') {
       return [...normalizedQuotas].sort(
-        (a, b) => b.remaining - a.remaining || a.name.localeCompare(b.name),
+        (a, b) => (b.remainingPct ?? -1) - (a.remainingPct ?? -1) || a.name.localeCompare(b.name),
       )
     }
     return normalizedQuotas
@@ -69,7 +76,17 @@
     if (page > totalPages) page = totalPages
   })
 
-  function colorClassesFor(remaining: number) {
+  function colorClassesFor(remaining: number | null) {
+    // Unknown reads gray, not red: a quota with no reading is not a drained
+    // quota, and red would report an alarm that does not exist.
+    if (remaining === null || !Number.isFinite(remaining)) {
+      return {
+        text: 'text-text-muted',
+        bg: 'bg-gray-400 dark:bg-gray-600',
+        bgLight: 'bg-gray-400/10 dark:bg-gray-600/10',
+        emoji: '⚪',
+      }
+    }
     if (remaining > 70) {
       return {
         text: 'text-green-600 dark:text-green-400',
@@ -125,6 +142,7 @@
       )}
         {@const isUnlimited = quota.unlimited === true}
         {@const isCreditBalance = quota.isCreditBalance === true}
+        {@const isUnknown = quota.remainingPct === null}
         {@const colors = isCreditBalance
           ? {
               text: 'text-blue-600 dark:text-blue-400',
@@ -132,17 +150,17 @@
               bgLight: 'bg-blue-500/10',
               emoji: '💰',
             }
-          : colorClassesFor(quota.remaining)}
+          : colorClassesFor((quota.colorPercentage as number | undefined) ?? quota.remainingPct)}
         {@const countdown = formatResetTime(quota.resetAt)}
-        {@const resetDisplay = formatResetTimeDisplay(quota.resetAt)}
+        {@const resetDisplay = (quota.emptyMessage as string | undefined) || formatResetTimeDisplay(quota.resetAt)}
         {@const recurring = quota.recurring !== false}
         {@const countdownLabel = recurring ? `in ${countdown}` : `expires in ${countdown}`}
 
         <div
-          class="flex items-center gap-2 border-b border-border-subtle/60 hover:bg-surface-2/60 transition-colors {cellPad}"
+          class="flex flex-col sm:flex-row items-start sm:items-center gap-2 border-b border-border-subtle/60 hover:bg-surface-2/60 transition-colors {cellPad}"
         >
           <!-- Name -->
-          <div class="flex w-36 min-w-0 items-center gap-1.5">
+          <div class="flex w-full sm:w-36 min-w-0 items-center gap-1.5">
             <span class="text-[10px] shrink-0">{colors.emoji}</span>
             <span class="{nameText} font-medium text-text-main truncate">
               {quota.name}
@@ -150,17 +168,17 @@
           </div>
 
           <!-- Progress + used/total -->
-          <div class="min-w-0 flex-1 {compact ? 'space-y-1' : 'space-y-1.5'}">
-            {#if !isUnlimited && !isCreditBalance}
+          <div class="min-w-0 w-full sm:flex-1 {compact ? 'space-y-1' : 'space-y-1.5'}">
+            {#if !isUnlimited && !isCreditBalance && !isUnknown}
               <div
-                class="{compact ? 'h-1' : 'h-1.5'} rounded-full overflow-hidden border {colors.bgLight} {quota.remaining ===
+                class="{compact ? 'h-1' : 'h-1.5'} rounded-full overflow-hidden border {colors.bgLight} {quota.remainingPct ===
                 0
                   ? 'border-border-subtle'
                   : 'border-transparent'}"
               >
                 <div
                   class="h-full transition-all duration-300 {colors.bg}"
-                  style:width="{Math.min(quota.remaining, 100)}%"
+                  style:width="{Math.min(quota.remainingPct ?? 0, 100)}%"
                 ></div>
               </div>
             {/if}
@@ -191,13 +209,13 @@
                     ? 'text-blue-600 dark:text-blue-400'
                     : colors.text}"
               >
-                {isUnlimited ? 'Unlimited' : isCreditBalance ? '' : `${quota.remaining}%`}
+                {isUnlimited ? 'Unlimited' : isCreditBalance ? '' : isUnknown ? '—' : `${quota.remainingPct}%`}
               </span>
             </div>
           </div>
 
           <!-- Reset time -->
-          <div class="min-w-0 shrink">
+          <div class="min-w-0 w-full sm:w-auto shrink">
             {#if countdown !== '-' || resetDisplay}
               {#if compact}
                 <div

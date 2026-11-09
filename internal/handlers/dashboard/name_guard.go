@@ -46,29 +46,46 @@ const (
 //
 // Returns true when it has already written the 409 and the caller must return.
 func (h *DashboardHandler) guardNameCollision(w http.ResponseWriter, namespace, name string) bool {
+	code, detail, conflict := h.nameConflict(namespace, name)
+	if !conflict {
+		return false
+	}
+	writeNameConflict(w, code, strings.TrimSpace(name), detail)
+	return true
+}
+
+// nameConflict answers what writing name into namespace would collide with,
+// without writing anything.
+//
+// It is the one definition of the rules, split out of guardNameCollision because
+// the bulk save (POST /api/models/custom with a `models` array) reports one
+// refused line per entry instead of answering one 409: sharing this decision is
+// what keeps a batch from being refused by a rule the single save would not
+// apply, or the other way round.
+func (h *DashboardHandler) nameConflict(namespace, name string) (code, detail string, conflict bool) {
 	name = strings.TrimSpace(name)
 	if name == "" || namespace == nsCustomModel {
-		return false
+		return "", "", false
 	}
 
 	if namespace != nsCombo {
 		if combo, err := h.Repo.GetComboByName(name); err == nil && combo != nil {
-			writeNameConflict(w, "COMBO_NAME_CONFLICT", name,
-				"a combo named \""+name+"\" already answers to this name, and a bare request for \""+name+
-					"\" is the combo, so the "+namespaceLabel(namespace)+" would never be reached; rename one of them")
-			return true
+			return "COMBO_NAME_CONFLICT",
+				"a combo named \"" + name + "\" already answers to this name, and a bare request for \"" + name +
+					"\" is the combo, so the " + namespaceLabel(namespace) + " would never be reached; rename one of them",
+				true
 		}
 	}
 
 	if namespace != nsModelAlias {
 		if target, err := h.Repo.GetModelAlias(name); err == nil && target != "" {
-			writeNameConflict(w, "MODEL_ALIAS_CONFLICT", name,
-				"a model alias \""+name+"\" already resolves this name, and an alias is consulted before a combo, so the combo would be unreachable; rename one of them")
-			return true
+			return "MODEL_ALIAS_CONFLICT",
+				"a model alias \"" + name + "\" already resolves this name, and an alias is consulted before a combo, so the combo would be unreachable; rename one of them",
+				true
 		}
 	}
 
-	return false
+	return "", "", false
 }
 
 // namespaceLabel names the bare-name space the caller is writing into, so a

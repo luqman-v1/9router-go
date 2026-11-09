@@ -6,6 +6,7 @@ import {
   convertFromUsd,
   currencyOption,
   describeRates,
+  describeRefreshRates,
   formatAmount,
   formatCost,
   formatUsd,
@@ -121,5 +122,25 @@ describe('conversion and formatting', () => {
         updatedAt: '2026-10-18T09:00:00Z',
       })
     ).toContain('2 rates refreshed')
+  })
+})
+
+describe('describeRefreshRates', () => {
+  it('reports the provider count when every requested code was published', () => {
+    expect(describeRefreshRates(3, [], 'open.er-api.com')).toBe(
+      'Refreshed 3 rates from open.er-api.com.'
+    )
+  })
+
+  it('names the codes that kept their manual rate', () => {
+    expect(describeRefreshRates(1, ['VND'], 'api.frankfurter.app')).toBe(
+      'Refreshed 1 rates from api.frankfurter.app. VND kept at your manual rate.'
+    )
+  })
+
+  it('joins several kept codes', () => {
+    expect(describeRefreshRates(2, ['VND', 'THB'], 'open.er-api.com')).toContain(
+      'VND, THB kept at your manual rate.'
+    )
   })
 })

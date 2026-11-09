@@ -1,5 +1,9 @@
 package guardrails
 
+import (
+	"regexp"
+)
+
 // Engine applies a resolved policy to text. It holds no state, so it is safe
 // for concurrent use without a lock.
 type Engine struct {
@@ -8,6 +12,10 @@ type Engine struct {
 	detectors []string
 	// action is what fires when any detector matches.
 	action Action
+	// customDetectors holds compiled custom regex patterns.
+	customDetectors []detector
+	// customReplacements maps detector name to a custom replacement string.
+	customReplacements map[string]string
 }
 
 // NewEngine builds an engine from a policy's detector names and action.
@@ -18,10 +26,42 @@ func NewEngine(detectors []string, action Action) *Engine {
 	return &Engine{detectors: detectors, action: action}
 }
 
+// NewEngineWithCustom builds an engine with detector names, action, and custom patterns.
+func NewEngineWithCustom(detectors []string, action Action, customPatterns []CustomPattern) *Engine {
+	e := NewEngine(detectors, action)
+	if len(customPatterns) > 0 {
+		e.customDetectors = make([]detector, 0, len(customPatterns))
+		e.customReplacements = make(map[string]string)
+		for _, cp := range customPatterns {
+			if cp.Regex == "" {
+				continue
+			}
+			re, err := regexp.Compile(cp.Regex)
+			if err != nil {
+				continue
+			}
+			name := cp.Name
+			if name == "" {
+				name = "custom"
+			}
+			e.customDetectors = append(e.customDetectors, detector{
+				name:     name,
+				re:       re,
+				entity:   "CUSTOM_PATTERN",
+				severity: SeverityMedium,
+			})
+			if cp.Replacement != "" {
+				e.customReplacements[name] = cp.Replacement
+			}
+		}
+	}
+	return e
+}
+
 // Enabled reports whether the engine runs anything at all. A disabled engine
 // must not rewrite content, so callers check this before touching a body.
 func (e *Engine) Enabled() bool {
-	return e != nil && len(e.detectors) > 0 && e.action != ActionAllow
+	return e != nil && (len(e.detectors) > 0 || len(e.customDetectors) > 0) && e.action != ActionAllow
 }
 
 func (e *Engine) runs(name string) bool {
@@ -49,6 +89,14 @@ func (e *Engine) Scan(text string) *Decision {
 	}
 	if e.runs("injection") {
 		findings = append(findings, run(injectionDetectors, text)...)
+	}
+	if len(e.customDetectors) > 0 {
+		for _, f := range run(e.customDetectors, text) {
+			if repl, ok := e.customReplacements[f.Detector]; ok && repl != "" {
+				f.Redacted = repl
+			}
+			findings = append(findings, f)
+		}
 	}
 	if len(findings) == 0 {
 		return &Decision{Action: ActionAllow}

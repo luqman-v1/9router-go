@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/netguard"
 )
 
 var (
@@ -23,6 +24,8 @@ var (
 )
 
 type allowLoopbackKey struct{}
+
+type allowPrivateNetworkingKey struct{}
 
 // WithAllowLoopback returns a child context that permits connections to loopback
 // addresses (127.0.0.1, ::1, localhost). Used for local-by-design providers
@@ -40,19 +43,43 @@ func IsLoopbackAllowed(ctx context.Context) bool {
 	return v
 }
 
-// IsPrivateIP reports whether an IP address is private, loopback, link-local,
-// cloud metadata (169.254.x.x), or reserved.
-func IsPrivateIP(ip net.IP) bool {
-	if ip == nil {
+// WithAllowPrivateNetworking returns a child context that permits connections
+// to private/reserved addresses for that request only. It is the per-connection
+// opt-in for a connection pointed at a local gateway, behind a Tailscale
+// overlay, or on a LAN peer: the flag rides on the request context, so both
+// the plain forwarder and every executor apply it at dial time. It leaves the
+// process-wide ALLOW_PRIVATE_NETWORKING default untouched for anything that
+// is not a connection.
+func WithAllowPrivateNetworking(ctx context.Context) context.Context {
+	return context.WithValue(ctx, allowPrivateNetworkingKey{}, true)
+}
+
+// IsPrivateNetworkingAllowedFor reports whether the request carries the
+// per-connection private-networking opt-in.
+func IsPrivateNetworkingAllowedFor(ctx context.Context) bool {
+	if ctx == nil {
 		return false
 	}
-	if ip4 := ip.To4(); ip4 != nil {
-		return ip4.IsLoopback() || ip4.IsPrivate() || ip4.IsLinkLocalUnicast() ||
-			ip4.IsLinkLocalMulticast() || ip4.IsUnspecified() || ip4.IsMulticast() ||
-			(ip4[0] == 169 && ip4[1] == 254) || ip4[0] == 0
-	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
+	v, _ := ctx.Value(allowPrivateNetworkingKey{}).(bool)
+	return v
+}
+
+// IsPrivateIP reports whether an IP address is private, loopback, link-local,
+// cloud metadata, carrier-grade-NAT, or reserved.
+//
+// The predicate lives in internal/netguard so that every layer which has to
+// answer this question can answer it the same way without an import cycle —
+// internal/proxy already imports internal/translator. The copy that lived here
+// checked only net.IP's stdlib predicates and so missed 100.64.0.0/10, which
+// puts Alibaba Cloud's metadata endpoint (100.100.100.200) inside a range the
+// guard called public.
+//
+// A caller that legitimately targets a private address — an ollama on loopback,
+// a provider behind a Tailscale overlay — is served by WithAllowLoopback and
+// ALLOW_PRIVATE_NETWORKING, which short-circuit the guard rather than needing
+// it to be lenient.
+func IsPrivateIP(ip net.IP) bool {
+	return netguard.IsPrivateOrReserved(ip)
 }
 
 // IsPrivateNetworkingAllowed reports whether connections to private/local IPs
@@ -193,6 +220,9 @@ func newSafeDialerForProxy(allow *proxyAllowlist) *net.Dialer {
 			if IsPrivateNetworkingAllowed() {
 				return nil
 			}
+			if IsPrivateNetworkingAllowedFor(ctx) {
+				return nil
+			}
 			host, _, err := net.SplitHostPort(address)
 			if err != nil {
 				host = address
@@ -203,7 +233,11 @@ func newSafeDialerForProxy(allow *proxyAllowlist) *net.Dialer {
 			if allow.allows(address, host) {
 				return nil
 			}
-			ip := net.ParseIP(host)
+			// netguard.ParseIP strips an IPv6 zone. net.ParseIP answers nil
+			// for "::1%lo", and the nil branch below is "not an address, let
+			// it through" — so a zoned literal dialled a loopback or metadata
+			// target this hook exists to refuse.
+			ip := netguard.ParseIP(host)
 			if ip != nil {
 				if ip.IsLoopback() && IsLoopbackAllowed(ctx) {
 					return nil

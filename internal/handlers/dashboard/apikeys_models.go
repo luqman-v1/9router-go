@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 )
@@ -33,9 +34,30 @@ func (h *DashboardHandler) HandleGetApiKeyModels(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// `access` reports the EFFECTIVE policy: the key's own rows unioned with
+	// the rows its plan grants. The chat gate unions the two (see
+	// withPlanPatterns in internal/handlers/chat/access.go) and can only widen,
+	// so the key's rows alone would understate what a plan-bound key may call.
+	// `models` above stays the key's own rows — that is the field this endpoint
+	// has always written, and silently rewriting it to include a plan would make
+	// a subsequent read-modify-write through it promote the plan's rows onto the
+	// key.
+	effective, err := h.effectiveAccessPatterns(id, allowed)
+	if err != nil {
+		// The plan half is unknown, so the union is unknown. Reporting the own
+		// rows as `access` would describe a policy the gate is not enforcing;
+		// reporting the key as restricted keeps the two consistent in the safe
+		// direction, the same way the gate fails closed.
+		log.Error("apikeys", "read plan for key access failed; reporting the key as restricted", "error", err, "id", id)
+		effective = []string{db.SentinelDenyAll}
+	}
+
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"id":     id,
 		"models": allowed,
+		// The same policy in the shape the Node dashboard reads, so a client
+		// that speaks only `access` still sees this key's restriction.
+		"access": accessFromPatterns(effective),
 	})
 }
 

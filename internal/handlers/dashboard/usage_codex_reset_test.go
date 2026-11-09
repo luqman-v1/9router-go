@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"io"
+	"time"
 
 	"9router/proxy/internal/db"
 	"bytes"
@@ -12,6 +13,7 @@ import (
 
 	"9router/proxy/internal/auth"
 	"9router/proxy/internal/codexquota"
+	"9router/proxy/internal/handlers/chat"
 )
 
 // insertResetCreditConn seeds a provider connection the reset-credit handlers
@@ -113,6 +115,11 @@ func TestCodexResetCreditConsumeRoute(t *testing.T) {
 	defer srv.Close()
 	pointCodexResetURLs(t, srv.URL)
 	insertResetCreditConn(t, repo, "codex-1", "codex", "oauth", codexOAuthData("tok-1", "acct-1"))
+	chat.BlockCodexConnectionUntil("codex-1", time.Now().UTC().Add(time.Hour))
+	repo.LockConnectionModel("codex-1", "gpt-6.1-sol", 3600, 1)
+	if !chat.IsCodexConnectionExhausted("codex-1") {
+		t.Fatal("precondition: expected codex-1 to be blocked in quota cache")
+	}
 
 	body, _ := json.Marshal(map[string]string{"selectionToken": "c1", "idempotencyKey": "idem-1"})
 	req := httptest.NewRequest(http.MethodPost, "/api/usage/codex-1/reset-credits/consume", bytes.NewReader(body))
@@ -122,6 +129,13 @@ func TestCodexResetCreditConsumeRoute(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("consume: %d %s", rec.Code, rec.Body.String())
+	}
+
+	if chat.IsCodexConnectionExhausted("codex-1") {
+		t.Error("expected reset-credit consume to unblock quota cache")
+	}
+	if locked, _ := repo.IsConnectionModelLocked("codex-1", "gpt-6.1-sol"); locked {
+		t.Error("expected reset-credit consume to clear model lock")
 	}
 
 	var out struct {
@@ -135,6 +149,62 @@ func TestCodexResetCreditConsumeRoute(t *testing.T) {
 	}
 	if consumeBody["credit_id"] != "c1" || consumeBody["redeem_request_id"] != "idem-1" {
 		t.Errorf("consume payload = %+v, want credit_id c1 and redeem_request_id idem-1", consumeBody)
+	}
+}
+
+// Consuming a reset credit on one connection must not clear model locks or
+// quota backoffs on a sibling connection of the same provider — the health
+// reset is scoped to the target connection, not broadcast to the whole provider.
+func TestCodexResetCreditConsumeDoesNotUnlockOtherConnections(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	var consumeBody map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/credits/consume" {
+			raw, _ := io.ReadAll(r.Body)
+			json.Unmarshal(raw, &consumeBody)
+			w.Write([]byte(`{"outcome":"reset"}`))
+			return
+		}
+		w.Write([]byte(`{"credits":[{"credit_id":"c1"}]}`))
+	}))
+	defer srv.Close()
+	pointCodexResetURLs(t, srv.URL)
+	insertResetCreditConn(t, repo, "codex-1", "codex", "oauth", codexOAuthData("tok-1", "acct-1"))
+	insertResetCreditConn(t, repo, "codex-2", "codex", "oauth", codexOAuthData("tok-2", "acct-2"))
+
+	// Both connections carry a model lock and a quota backoff.
+	repo.LockConnectionModel("codex-1", "gpt-6.1-sol", 3600, 1)
+	repo.LockConnectionModel("codex-2", "gpt-6.1-sol", 3600, 1)
+	chat.BlockCodexConnectionUntil("codex-1", time.Now().UTC().Add(time.Hour))
+	chat.BlockCodexConnectionUntil("codex-2", time.Now().UTC().Add(time.Hour))
+
+	body, _ := json.Marshal(map[string]string{"selectionToken": "c1", "idempotencyKey": "idem-1"})
+	req := httptest.NewRequest(http.MethodPost, "/api/usage/codex-1/reset-credits/consume", bytes.NewReader(body))
+	req.Header.Set(cliTokenHeader, auth.CLIToken())
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("consume: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// codex-1: lock cleared, quota unblocked.
+	if locked, _ := repo.IsConnectionModelLocked("codex-1", "gpt-6.1-sol"); locked {
+		t.Error("expected codex-1 model lock to be cleared")
+	}
+	if chat.IsCodexConnectionExhausted("codex-1") {
+		t.Error("expected codex-1 quota block to be cleared")
+	}
+
+	// codex-2: lock and backoff must remain untouched.
+	if locked, _ := repo.IsConnectionModelLocked("codex-2", "gpt-6.1-sol"); !locked {
+		t.Error("expected codex-2 model lock to remain locked")
+	}
+	if !chat.IsCodexConnectionExhausted("codex-2") {
+		t.Error("expected codex-2 quota block to remain in place")
 	}
 }
 

@@ -6,14 +6,20 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 )
 
-// relayFake stands in for an edge relay worker (internal/handlers/media/
-// deploy.go, netlify_relay.go): it ignores the URL it was dialed at and
-// forwards to x-relay-target + x-relay-path. It records the destination so a
-// test can assert where a control-plane call actually landed.
+// Freebuff behind an edge relay.
+//
+// Freebuff makes control-plane calls beside the chat POST: requesting a session,
+// starting a run, finishing a run, releasing a session. Each call targets its own
+// path on https://www.codebuff.com (/api/v1/freebuff/session, /api/v1/agent-runs).
+//
+// The relay is a RoundTripper on the client the handler supplies, so each of
+// those calls lands on the path it actually built — without any freebuff-specific
+// relay code, and without sending the control plane to the chat-completions
+// endpoint.
+
 type relayFake struct {
 	*httptest.Server
 	gotTarget string
@@ -39,22 +45,11 @@ func newRelayFake(t *testing.T, body string) *relayFake {
 	return f
 }
 
-// freebuffRelayHeaders is the header set the chat pipeline stamps on a relayed
-// freebuff connection. It is built by the production helper rather than
-// hand-written: the bug this test guards is that x-relay-path is derived from
-// the provider base URL — the chat route — and copying it onto a control-plane
-// call sent every session/run/release request to the chat endpoint.
-func freebuffRelayHeaders(t *testing.T) map[string]string {
+func newFreebuffRelayedClient(t *testing.T, relayURL string) *http.Client {
 	t.Helper()
-	cfg, ok := providers.KnownProviders["freebuff"]
-	if !ok {
-		t.Fatal("freebuff missing from the provider registry")
+	return &http.Client{
+		Transport: proxy.RelayTransport(relayURL, http.DefaultTransport),
 	}
-	headers := proxy.BuildEdgeRelayHeaders(cfg.BaseURL, cfg.StaticHeaders)
-	if headers["x-relay-target"] == "" {
-		t.Fatal("relay headers carry no x-relay-target")
-	}
-	return headers
 }
 
 func assertLanded(t *testing.T, relay *relayFake, wantPath string) {
@@ -70,13 +65,11 @@ func assertLanded(t *testing.T, relay *relayFake, wantPath string) {
 	}
 }
 
-// A relayed connection must reach the session endpoint, not the chat route the
-// connection stamped into x-relay-path.
 func TestFreebuffRelay_SessionRequestLandsOnSessionEndpoint(t *testing.T) {
 	relay := newRelayFake(t, `{"status":"active","instanceId":"inst-1","expiresAt":"2099-01-01T00:00:00Z"}`)
-	headers := freebuffRelayHeaders(t)
+	client := newFreebuffRelayedClient(t, relay.URL)
 
-	if _, err := postFreebuffSession(context.Background(), relay.Client(), relay.URL, "tok", "m-1", headers); err != nil {
+	if _, err := postFreebuffSession(context.Background(), client, "https://www.codebuff.com", "tok", "m-1", nil); err != nil {
 		t.Fatalf("postFreebuffSession through a relay: %v", err)
 	}
 	assertLanded(t, relay, "/api/v1/freebuff/session")
@@ -84,9 +77,9 @@ func TestFreebuffRelay_SessionRequestLandsOnSessionEndpoint(t *testing.T) {
 
 func TestFreebuffRelay_RunStartLandsOnRunEndpoint(t *testing.T) {
 	relay := newRelayFake(t, `{"runId":"run-1"}`)
-	headers := freebuffRelayHeaders(t)
+	client := newFreebuffRelayedClient(t, relay.URL)
 
-	runID, err := startFreebuffRun(context.Background(), relay.Client(), relay.URL, "tok", "m-1", headers)
+	runID, err := startFreebuffRun(context.Background(), client, "https://www.codebuff.com", "tok", "m-1", nil)
 	if err != nil {
 		t.Fatalf("startFreebuffRun through a relay: %v", err)
 	}
@@ -98,17 +91,17 @@ func TestFreebuffRelay_RunStartLandsOnRunEndpoint(t *testing.T) {
 
 func TestFreebuffRelay_RunFinishLandsOnRunEndpoint(t *testing.T) {
 	relay := newRelayFake(t, `{}`)
-	headers := freebuffRelayHeaders(t)
+	client := newFreebuffRelayedClient(t, relay.URL)
 
-	finishFreebuffRun(context.Background(), relay.Client(), relay.URL, "tok", "run-1", "completed", headers)
+	finishFreebuffRun(context.Background(), client, "https://www.codebuff.com", "tok", "run-1", "completed", nil)
 	assertLanded(t, relay, "/api/v1/agent-runs")
 }
 
 func TestFreebuffRelay_SessionReleaseLandsOnSessionEndpoint(t *testing.T) {
 	relay := newRelayFake(t, `{"status":"released","freebucksRefund":3}`)
-	headers := freebuffRelayHeaders(t)
+	client := newFreebuffRelayedClient(t, relay.URL)
 
-	refund, err := releaseFreebuffSession(context.Background(), relay.Client(), relay.URL, "tok", "inst-1", headers)
+	refund, err := releaseFreebuffSession(context.Background(), client, "https://www.codebuff.com", "tok", "inst-1", nil)
 	if err != nil {
 		t.Fatalf("releaseFreebuffSession through a relay: %v", err)
 	}
@@ -118,8 +111,7 @@ func TestFreebuffRelay_SessionReleaseLandsOnSessionEndpoint(t *testing.T) {
 	assertLanded(t, relay, "/api/v1/freebuff/session")
 }
 
-// A connection that is not relayed must not gain relay headers: those calls go
-// straight to the origin freebuffOrigin already built.
+// A connection that is not relayed sends no relay headers.
 func TestFreebuffRelay_UnrelayedConnectionSendsNoRelayHeaders(t *testing.T) {
 	var gotTarget, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,17 +128,4 @@ func TestFreebuffRelay_UnrelayedConnectionSendsNoRelayHeaders(t *testing.T) {
 	if gotTarget != "" || gotPath != "" {
 		t.Errorf("unrelayed call carried relay headers: target=%q path=%q", gotTarget, gotPath)
 	}
-}
-
-// A connection-supplied x-relay-path must not survive: the destination belongs
-// to the call, not to the connection.
-func TestFreebuffRelay_ConnectionSuppliedPathIsOverridden(t *testing.T) {
-	relay := newRelayFake(t, `{"status":"active","instanceId":"inst-1"}`)
-	headers := freebuffRelayHeaders(t)
-	headers["x-relay-path"] = "/api/v1/chat/completions"
-
-	if _, err := postFreebuffSession(context.Background(), relay.Client(), relay.URL, "tok", "m-1", headers); err != nil {
-		t.Fatalf("postFreebuffSession through a relay: %v", err)
-	}
-	assertLanded(t, relay, "/api/v1/freebuff/session")
 }

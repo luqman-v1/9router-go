@@ -27,7 +27,7 @@ func TestGetCapabilitiesDetailForModel_CommandCode(t *testing.T) {
 			provider: "commandcode", model: "deepseek/deepseek-v4-pro",
 			wantVision: false, wantReasoning: true, wantThinkFmt: "commandcode",
 			wantEffortOK: true, wantCanDisable: true,
-			wantContext: 1000000, wantMaxOutput: 384000,
+			wantContext: 1000000, wantMaxOutput: 200000,
 		},
 		{
 			name: "text-only glm matches case-insensitively",
@@ -35,28 +35,28 @@ func TestGetCapabilitiesDetailForModel_CommandCode(t *testing.T) {
 			provider: "commandcode", model: "zai-org/GLM-5.2",
 			wantVision: false, wantReasoning: true, wantThinkFmt: "commandcode",
 			wantEffortOK: true, wantCanDisable: true,
-			wantContext: 1000000, wantMaxOutput: 384000,
+			wantContext: 1000000, wantMaxOutput: 200000,
 		},
 		{
 			name:     "nemotron is text-only",
 			provider: "commandcode", model: "nvidia/nemotron-3-ultra-550b-a55b",
 			wantVision: false, wantReasoning: true, wantThinkFmt: "commandcode",
 			wantEffortOK: true, wantCanDisable: true,
-			wantContext: 1000000, wantMaxOutput: 384000,
+			wantContext: 1000000, wantMaxOutput: 200000,
 		},
 		{
 			name:     "kimi keeps vision",
 			provider: "commandcode", model: "moonshotai/Kimi-K2.7-Code",
 			wantVision: true, wantReasoning: true, wantThinkFmt: "commandcode",
 			wantEffortOK: true, wantCanDisable: true,
-			wantContext: 1000000, wantMaxOutput: 384000,
+			wantContext: 1000000, wantMaxOutput: 200000,
 		},
 		{
 			name:     "minimax m3 is not on the denylist",
 			provider: "commandcode", model: "MiniMaxAI/MiniMax-M3",
 			wantVision: true, wantReasoning: true, wantThinkFmt: "commandcode",
 			wantEffortOK: true, wantCanDisable: true,
-			wantContext: 1000000, wantMaxOutput: 384000,
+			wantContext: 1000000, wantMaxOutput: 200000,
 		},
 		{
 			name: "uiAlias cmc resolves the same block",
@@ -64,7 +64,7 @@ func TestGetCapabilitiesDetailForModel_CommandCode(t *testing.T) {
 			provider: "cmc", model: "stepfun/Step-3.7-Flash",
 			wantVision: true, wantReasoning: true, wantThinkFmt: "commandcode",
 			wantEffortOK: true, wantCanDisable: true,
-			wantContext: 1000000, wantMaxOutput: 384000,
+			wantContext: 1000000, wantMaxOutput: 200000,
 		},
 	}
 
@@ -136,8 +136,8 @@ func TestMergeCapabilities_ThinkingIsDeclarative(t *testing.T) {
 	t.Run("overlay without a thinking format keeps the default", func(t *testing.T) {
 		got := mergeCapabilities(DefaultCapabilities, Capabilities{Vision: true, Tools: true})
 
-		if !canDisableThinking(got) {
-			t.Error("canDisableThinking = false, want true")
+		if !got.CanDisableThinking() {
+			t.Error("CanDisableThinking = false, want true")
 		}
 		if got.ThinkingFormat != "" {
 			t.Errorf("ThinkingFormat = %q, want empty", got.ThinkingFormat)
@@ -153,8 +153,8 @@ func TestMergeCapabilities_ThinkingIsDeclarative(t *testing.T) {
 		if got.ThinkingFormat != "zai" {
 			t.Errorf("ThinkingFormat = %q, want %q", got.ThinkingFormat, "zai")
 		}
-		if !canDisableThinking(got) {
-			t.Error("canDisableThinking = false, want true (unset means upstream default)")
+		if !got.CanDisableThinking() {
+			t.Error("CanDisableThinking = false, want true (unset means upstream default)")
 		}
 	})
 
@@ -169,8 +169,8 @@ func TestMergeCapabilities_ThinkingIsDeclarative(t *testing.T) {
 		if got.ThinkingFormat != "zai" {
 			t.Errorf("ThinkingFormat = %q, want %q", got.ThinkingFormat, "zai")
 		}
-		if canDisableThinking(got) {
-			t.Error("canDisableThinking = true, want false")
+		if got.CanDisableThinking() {
+			t.Error("CanDisableThinking = true, want false")
 		}
 		if got.ThinkingRange == nil || got.ThinkingRange.Max != 65536 {
 			t.Errorf("ThinkingRange = %+v, want {1024 65536}", got.ThinkingRange)

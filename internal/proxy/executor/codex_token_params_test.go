@@ -192,3 +192,176 @@ func TestStripCodexUnsupportedTokenParams_DropsSamplingParams(t *testing.T) {
 		t.Error("reasoning must survive the strip")
 	}
 }
+
+func TestBuildResponsesBody_PreservesPromptCacheKey(t *testing.T) {
+	raw := []byte(`{
+		"model": "gpt-5.6-terra",
+		"prompt_cache_key": "explicit-session-key",
+		"messages": [{"role": "user", "content": "hi"}]
+	}`)
+
+	transformed, _, err := buildResponsesBody(raw)
+	if err != nil {
+		t.Fatalf("buildResponsesBody failed: %v", err)
+	}
+
+	parsed := decodeBody(t, transformed)
+	if parsed["prompt_cache_key"] != "explicit-session-key" {
+		t.Errorf("expected prompt_cache_key = %q, got %v", "explicit-session-key", parsed["prompt_cache_key"])
+	}
+}
+
+func TestForwardCodex_PromptCachingContinuity(t *testing.T) {
+	var gotBody map[string]any
+	var gotSessionHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSessionHeader = r.Header.Get("session_id")
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL, AuthHeader: "Authorization", AuthScheme: "bearer"}
+	rec := httptest.NewRecorder()
+	body := []byte(`{
+		"model": "cx/gpt-5.6-terra",
+		"messages": [
+			{"role": "user", "content": "hello"}
+		],
+		"reasoning_effort": "high",
+		"previous_response_id": "resp_old_123",
+		"stream_options": {"include_usage": true},
+		"metadata": {"some": "value"}
+	}`)
+
+	err := ForwardCodex(rec, &Request{
+		Client:       srv.Client(),
+		Config:       cfg,
+		APIKey:       "sk-test",
+		Body:         body,
+		IsStream:     true,
+		SessionID:    "claude-session-uuid-42",
+		ConnectionID: "conn-cx-1",
+	})
+	if err != nil {
+		t.Fatalf("ForwardCodex failed: %v", err)
+	}
+
+	// 1. session_id header must match req.SessionID
+	if gotSessionHeader != "claude-session-uuid-42" {
+		t.Errorf("session_id header = %q, want %q", gotSessionHeader, "claude-session-uuid-42")
+	}
+
+	// 2. prompt_cache_key must be injected matching SessionID
+	if gotBody["prompt_cache_key"] != "claude-session-uuid-42" {
+		t.Errorf("body prompt_cache_key = %v, want %q", gotBody["prompt_cache_key"], "claude-session-uuid-42")
+	}
+
+	// 3. include = ["reasoning.encrypted_content"] must be injected when reasoning is active
+	includeList, ok := gotBody["include"].([]any)
+	if !ok || len(includeList) == 0 || includeList[0] != "reasoning.encrypted_content" {
+		t.Errorf("body include = %v, want [\"reasoning.encrypted_content\"]", gotBody["include"])
+	}
+
+	// 4. unsupported parameters outside RESPONSES_API_ALLOWLIST must be stripped
+	for _, badKey := range []string{"previous_response_id", "stream_options", "metadata"} {
+		if _, exists := gotBody[badKey]; exists {
+			t.Errorf("unsupported parameter %q should be stripped, but was present in body", badKey)
+		}
+	}
+}
+
+func TestForwardCodex_StripsStoredItemReferences(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL, AuthHeader: "Authorization", AuthScheme: "bearer"}
+	rec := httptest.NewRecorder()
+	// Responses API format input with stored server IDs
+	body := []byte(`{
+		"model": "gpt-5.6-terra",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "turn 1"}]},
+			{"type": "message", "role": "assistant", "id": "msg_12345", "content": [{"type": "output_text", "text": "resp 1"}]},
+			{"type": "item_reference", "id": "rs_abc123"},
+			"rs_raw_string_id",
+			{"type": "function_call", "id": "fc_789", "name": "read", "arguments": "{}"}
+		],
+		"stream": true,
+		"store": false
+	}`)
+
+	err := ForwardCodex(rec, &Request{
+		Client:       srv.Client(),
+		Config:       cfg,
+		APIKey:       "sk-test",
+		Body:         body,
+		IsStream:     true,
+		ConnectionID: "conn-cx-2",
+	})
+	if err != nil {
+		t.Fatalf("ForwardCodex failed: %v", err)
+	}
+
+	inputs, ok := gotBody["input"].([]any)
+	if !ok {
+		t.Fatalf("expected input to be an array, got %T", gotBody["input"])
+	}
+	// "rs_raw_string_id" and "item_reference" must be filtered out entirely
+	for _, item := range inputs {
+		if s, isStr := item.(string); isStr && s == "rs_raw_string_id" {
+			t.Error("raw server ID string rs_raw_string_id must be stripped")
+		}
+		if m, isMap := item.(map[string]any); isMap {
+			if m["type"] == "item_reference" {
+				t.Error("item_reference must be stripped from input")
+			}
+			// Server generated IDs must be deleted from items
+			if id, hasID := m["id"].(string); hasID {
+				if id == "msg_12345" || id == "fc_789" {
+					t.Errorf("server generated id %q must be deleted from input item", id)
+				}
+			}
+		}
+	}
+}
+
+func TestStripCodexStoredItemReferences_PreserveLitePrefix(t *testing.T) {
+	raw := []byte(`{
+		"model": "gpt-6-sol",
+		"input": [
+			{"type": "message", "role": "developer", "id": "msg_dev1", "content": [{"type": "input_text", "text": "sys"}]},
+			{"type": "message", "role": "assistant", "id": "msg_ast1", "content": [{"type": "output_text", "text": "hi"}]}
+		]
+	}`)
+
+	// When responsesLite = true (lite model): msg_dev1 is preserved, msg_ast1 is stripped
+	liteBody := stripCodexUnsupportedTokenParams(raw, true)
+	liteParsed := decodeBody(t, liteBody)
+	liteInput := liteParsed["input"].([]any)
+	devItemLite := liteInput[0].(map[string]any)
+	if devItemLite["id"] != "msg_dev1" {
+		t.Errorf("expected msg_dev1 to be preserved on lite model, got %v", devItemLite["id"])
+	}
+	astItemLite := liteInput[1].(map[string]any)
+	if _, ok := astItemLite["id"]; ok {
+		t.Errorf("expected msg_ast1 to be stripped on lite model, got %v", astItemLite["id"])
+	}
+
+	// When responsesLite = false (classic model): msg_dev1 MUST be stripped
+	classicBody := stripCodexUnsupportedTokenParams(raw, false)
+	classicParsed := decodeBody(t, classicBody)
+	classicInput := classicParsed["input"].([]any)
+	devItemClassic := classicInput[0].(map[string]any)
+	if _, ok := devItemClassic["id"]; ok {
+		t.Errorf("expected msg_dev1 to be stripped on classic model, got %v", devItemClassic["id"])
+	}
+}

@@ -16,12 +16,21 @@ func sanitizeToolArgs(toolName, argsJSON string) string {
 	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		// If args is a JSON string (e.g. "\"query\""), try to unwrap
-		var s string
-		if err2 := json.Unmarshal([]byte(argsJSON), &s); err2 == nil && s != "" {
-			args = map[string]any{"query": s}
-		} else {
-			return argsJSON
+		if repaired := RepairTruncatedJSON(argsJSON); repaired != argsJSON {
+			if errRep := json.Unmarshal([]byte(repaired), &args); errRep == nil {
+				argsJSON = repaired
+			}
+		}
+	}
+	if args == nil {
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			// If args is a JSON string (e.g. "\"query\""), try to unwrap
+			var s string
+			if err2 := json.Unmarshal([]byte(argsJSON), &s); err2 == nil && s != "" {
+				args = map[string]any{"query": s}
+			} else {
+				return argsJSON
+			}
 		}
 	}
 	if args == nil {
@@ -38,6 +47,12 @@ func sanitizeToolArgs(toolName, argsJSON string) string {
 	switch {
 	case name == "Read" || nameLower == "view_file" || nameLower == "read_file":
 		sanitizeReadArgs(args)
+	case name == "Write" || nameLower == "write_to_file" || nameLower == "write_file":
+		sanitizeWriteArgs(args)
+	case name == "Edit" || nameLower == "replace_file_content" || nameLower == "edit_file":
+		sanitizeEditArgs(args)
+	case nameLower == "grep" || nameLower == "glob":
+		sanitizePatternArgs(args)
 	case strings.Contains(nameLower, "search") || nameLower == "websearch":
 		sanitizeSearchArgs(args)
 		// Fallback for web_search when query is still missing/null after normal sanitization
@@ -94,6 +109,10 @@ func sanitizeToolArgs(toolName, argsJSON string) string {
 		sanitizeFetchArgs(args, origArgsJSON)
 	case nameLower == "bash" || nameLower == "run_command" || nameLower == "terminal":
 		sanitizeBashArgs(args)
+	case nameLower == "monitor":
+		sanitizeMonitorArgs(args)
+	case nameLower == "skill":
+		sanitizeSkillArgs(args)
 	}
 
 	// Final ensure web_search has a string query if it has any query key that is not a string (e.g. null)
@@ -111,7 +130,7 @@ func sanitizeToolArgs(toolName, argsJSON string) string {
 		}
 	}
 
-	sanitized, err := json.Marshal(args)
+	sanitized, err := json.Marshal(args, json.Deterministic(true))
 	if err != nil {
 		return argsJSON
 	}
@@ -236,21 +255,130 @@ func sanitizeSearchArgs(args map[string]any) {
 	}
 }
 
+func sanitizeFilePath(args map[string]any) {
+	if _, ok := args["file_path"]; !ok {
+		for _, alt := range []string{"path", "filePath", "filename", "file"} {
+			if v, ok := args[alt].(string); ok && strings.TrimSpace(v) != "" {
+				args["file_path"] = strings.TrimSpace(v)
+				delete(args, alt)
+				break
+			}
+		}
+	}
+}
+
+func sanitizeWriteArgs(args map[string]any) {
+	sanitizeFilePath(args)
+	if _, ok := args["content"]; !ok {
+		for _, alt := range []string{"contents", "text", "body", "data", "code"} {
+			if v, ok := args[alt].(string); ok {
+				args["content"] = v
+				delete(args, alt)
+				break
+			}
+		}
+	}
+	for _, extra := range []string{"description", "title", "comment", "explanation", "thought"} {
+		delete(args, extra)
+	}
+}
+
+func sanitizeEditArgs(args map[string]any) {
+	sanitizeFilePath(args)
+	if _, ok := args["old_string"]; !ok {
+		for _, alt := range []string{"old_str", "oldStr", "old_text", "oldText", "old", "old_content", "oldString"} {
+			if v, ok := args[alt].(string); ok {
+				args["old_string"] = v
+				delete(args, alt)
+				break
+			}
+		}
+	}
+	if _, ok := args["new_string"]; !ok {
+		for _, alt := range []string{"new_str", "newStr", "new_text", "newText", "new", "new_content", "newString"} {
+			if v, ok := args[alt].(string); ok {
+				args["new_string"] = v
+				delete(args, alt)
+				break
+			}
+		}
+	}
+	if _, ok := args["replace_all"]; !ok {
+		if v, ok := args["replaceAll"].(bool); ok {
+			args["replace_all"] = v
+			delete(args, "replaceAll")
+		}
+	}
+	for _, extra := range []string{"description", "title", "comment", "explanation", "thought"} {
+		delete(args, extra)
+	}
+}
+
+func sanitizePatternArgs(args map[string]any) {
+	if _, ok := args["pattern"]; !ok {
+		for _, alt := range []string{"query", "regex", "search", "search_pattern"} {
+			if v, ok := args[alt].(string); ok && strings.TrimSpace(v) != "" {
+				args["pattern"] = strings.TrimSpace(v)
+				delete(args, alt)
+				break
+			}
+		}
+	}
+	if _, ok := args["path"]; !ok {
+		for _, alt := range []string{"dir", "directory", "folder"} {
+			if v, ok := args[alt].(string); ok && strings.TrimSpace(v) != "" {
+				args["path"] = strings.TrimSpace(v)
+				delete(args, alt)
+				break
+			}
+		}
+	}
+	delete(args, "thought")
+	delete(args, "explanation")
+	delete(args, "n") // models often hallucinate grep -n flag as argument "n"
+}
+
+func sanitizeMonitorArgs(args map[string]any) {
+	// Claude Code's Monitor tool requires "exactly one of command or ws".
+	// Models (especially Codex/GPT) frequently hallucinate a dummy ws object alongside command.
+	if cmd, hasCmd := args["command"].(string); hasCmd && strings.TrimSpace(cmd) != "" {
+		delete(args, "ws")
+	} else if ws, hasWs := args["ws"]; hasWs && ws != nil {
+		delete(args, "command")
+	}
+	delete(args, "thought")
+	delete(args, "explanation")
+}
+
+func sanitizeSkillArgs(args map[string]any) {
+	if _, ok := args["skill"]; !ok {
+		for _, alt := range []string{"name", "skill_name", "skillName"} {
+			if v, ok := args[alt].(string); ok && strings.TrimSpace(v) != "" {
+				args["skill"] = strings.TrimSpace(v)
+				delete(args, alt)
+				break
+			}
+		}
+	}
+	delete(args, "thought")
+	delete(args, "explanation")
+}
+
 func sanitizeBashArgs(args map[string]any) {
 	if _, ok := args["command"]; !ok {
 		if cmd, ok := args["cmd"].(string); ok && cmd != "" {
 			args["command"] = cmd
 		} else if cl, ok := args["CommandLine"].(string); ok && cl != "" {
 			args["command"] = cl
+		} else if sc, ok := args["script"].(string); ok && sc != "" {
+			args["command"] = sc
 		}
 	}
-	// Strip extra fields that Muse Spark sometimes hallucinates (e.g. description inside input)
-	// Bash tool only allows 'command' (and maybe 'description' at tool level, not inside input)
-	for k := range args {
-		if k != "command" {
-			delete(args, k)
-		}
-	}
+	delete(args, "cmd")
+	delete(args, "CommandLine")
+	delete(args, "script")
+	delete(args, "thought")
+	delete(args, "explanation")
 }
 
 // maxReadLimit caps the read tool "limit" arg; larger values are clamped,
@@ -258,6 +386,10 @@ func sanitizeBashArgs(args map[string]any) {
 const maxReadLimit = 2000
 
 func sanitizeReadArgs(args map[string]any) {
+	sanitizeFilePath(args)
+	for _, extra := range []string{"thought", "explanation", "comment"} {
+		delete(args, extra)
+	}
 	if limitVal, ok := args["limit"]; ok {
 		switch v := limitVal.(type) {
 		case string:

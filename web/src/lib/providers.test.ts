@@ -1,5 +1,5 @@
 import assert from 'node:assert'
-import { readdirSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import {
@@ -7,9 +7,18 @@ import {
   isChatProvider,
   MEDIA_PROVIDER_KINDS,
   PROVIDER_CATALOG,
+  __setProviderCatalogForTest,
 } from './providers'
+import { parseProviderRegistry } from './providers.registry-test'
+import { resolve } from 'node:path'
 import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from './models'
 import { pathToTab, TAB_ROUTES } from './router'
+
+// The catalog is served by the Go registry (internal/providers), so the suite
+// reads it from that file rather than a TypeScript literal. Parsing the Go map
+// keeps this honest about what the server actually sends.
+const goRegistry = resolve(import.meta.dirname, '../../../internal/providers/provider_registry.go')
+__setProviderCatalogForTest(parseProviderRegistry(readFileSync(goRegistry, 'utf8')))
 
 describe('providers & media separation', () => {
   it('correctly classifies chat vs pure media providers', () => {
@@ -92,6 +101,7 @@ describe('providers & media separation', () => {
       'codebuddy-intl',
       'kimchi',
       'kimi',
+      'nous',
       'qoder',
       'windsurf',
       'xai',
@@ -194,7 +204,7 @@ describe('providers & media separation', () => {
     // without an asset under web/public/providers is a 404 on every surface
     // that draws it. Only the alias table may point at another provider's file.
     const assets = new Set(readdirSync(join(import.meta.dir, '../../public/providers')))
-    const shared = new Set(['zai-search'])
+    const shared = new Set(['zai-search', 'zcode'])
     const missing = PROVIDER_CATALOG.filter(
       (p) => !shared.has(p.id) && !assets.has(`${p.id}.png`) && !assets.has(`${p.id}.svg`)
     ).map((p) => p.id)

@@ -146,23 +146,68 @@ func coreSchema() []tableDef {
 			},
 			indexes: []string{
 				"CREATE INDEX IF NOT EXISTS idx_uh_ts ON usageHistory(timestamp DESC)",
-				"CREATE INDEX IF NOT EXISTS idx_uh_provider ON usageHistory(provider)",
 				"CREATE INDEX IF NOT EXISTS idx_uh_model ON usageHistory(model)",
 				"CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
 				"CREATE INDEX IF NOT EXISTS idx_uh_ts_prov ON usageHistory(timestamp DESC, provider)",
 				"CREATE INDEX IF NOT EXISTS idx_uh_ts_model ON usageHistory(timestamp DESC, model)",
 				// The per-key lifetime token quota sums prompt+completion tokens
 				// over `clientKey = ? OR apiKey = ? OR apiKey = ?` (tokenUsageSince,
-				// quota_reset.go). SQLite answers a disjunction with a multi-index
-				// OR only when EVERY arm is indexable, so idx_uh_apikey alone was
-				// not enough: the unindexed clientKey arm degraded the whole
-				// statement to `SCAN usageHistory`. That scan ran once per key row
-				// in GET /api/keys (apiKeyUsedTokens), which is on the dashboard's
-				// boot path — measured on a 512k-row ledger at ~127 ms per key, so
-				// a 50-key install spent ~10 s in that one request. Both columns
-				// need their own index for the OR to use indexes at all.
-				"CREATE INDEX IF NOT EXISTS idx_uh_apikey ON usageHistory(apiKey)",
-				"CREATE INDEX IF NOT EXISTS idx_uh_clientkey ON usageHistory(clientKey)",
+				// quota_reset.go, and the batched page read). SQLite answers a
+				// disjunction with a multi-index OR only when EVERY arm is
+				// indexable, so an apiKey index alone was not enough: the
+				// unindexed clientKey arm degraded the whole statement to
+				// `SCAN usageHistory`. That scan ran once per key row in
+				// GET /api/keys, which is on the dashboard's boot path — measured
+				// on a 512k-row ledger at ~127 ms per key, so a 50-key install
+				// spent ~10 s in that one request. Both columns need an index
+				// for the OR to use indexes at all.
+				//
+				// These two replace the single-column pair (supersededIndexes)
+				// with covering composites in the same shape as idx_uh_prov_tok:
+				// leading equality column, then id so a reset mark is a range
+				// inside the index, then the summed token columns. Without the
+				// token columns the sum fetched one table row per ledger entry —
+				// measured on a 108k-row page of 5 keys, 53.7 ms fell to 33.9 ms
+				// and the read's allocations fell 5x, because the whole sum is
+				// answered from the index alone.
+				"CREATE INDEX IF NOT EXISTS idx_uh_apikey_tok ON usageHistory(apiKey, id, promptTokens, completionTokens)",
+				"CREATE INDEX IF NOT EXISTS idx_uh_clientkey_tok ON usageHistory(clientKey, id, promptTokens, completionTokens)",
+				// A custom provider node's lifetime token quota is the sum of
+				// prompt+completion over the rows whose provider is that node,
+				// counted from the node's own reset mark. The upstream index on
+				// (provider) alone served the equality but not the mark: the
+				// sum still had to read the token columns off the table, one
+				// row at a time, and the dashboard's node list pays that once
+				// per node on every poll.
+				//
+				// Leading with the mark (id) after the provider lets SQLite
+				// answer the same sum from the index alone: the rows a node
+				// has spent are contiguous in the index, so the sum is a
+				// covering-index range scan. Measured on a 400k-row ledger
+				// with 200 custom nodes, the node list went from 1,505 ms to
+				// 9 ms, and the per-node read the request path does went from
+				// 0.5 ms to 0.1 ms.
+				//
+				// It replaces the single-column (provider) index rather than
+				// sitting beside it: the composite answers the equality
+				// search on its own, and SQLite would otherwise keep the
+				// narrow index as a second candidate it has to maintain on
+				// every insert. Measured over 50,000 inserts, keeping both
+				// cost 71 us/row against 56 us/row for the composite alone.
+				"CREATE INDEX IF NOT EXISTS idx_uh_prov_tok ON usageHistory(provider, id, promptTokens, completionTokens)",
+				// The Usage page's two heaviest reads scan the trailing week of
+				// the ledger: the Overview trend chart reads every row to split
+				// it per model family, and the Details node-health table groups
+				// it per provider and per model. Both read the row's wide
+				// columns, and a usageHistory row carries the token payload in
+				// JSON, so the scan had to fetch every row of the window:
+				// measured at 6.1 s for the chart and 5.8 s + 6.4 s for the two
+				// group reads on a 1.2M-row ledger, against 97 ms for the same
+				// range counted through the index. This index carries every
+				// column those three reads need, so SQLite answers them from
+				// the index alone: 1.0 s, 1.1 s and 1.8 s on that ledger, with
+				// no row of the window read.
+				"CREATE INDEX IF NOT EXISTS idx_uh_analytics ON usageHistory(timestamp, provider, model, status, promptTokens, completionTokens, cost)",
 			},
 		},
 		{
@@ -266,6 +311,42 @@ func coreSchema() []tableDef {
 				"CREATE INDEX IF NOT EXISTS idx_sce_stored ON semanticCacheEntries(storedAt)",
 			},
 		},
+		{
+			name: "files",
+			columns: [][2]string{
+				{"id", "TEXT PRIMARY KEY"},
+				{"filename", "TEXT NOT NULL"},
+				{"bytes", "INTEGER NOT NULL"},
+				{"purpose", "TEXT NOT NULL"},
+				{"created_at", "INTEGER NOT NULL"},
+				{"content", "BLOB NOT NULL"},
+			},
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS idx_files_purpose ON files(purpose)",
+				"CREATE INDEX IF NOT EXISTS idx_files_created ON files(created_at DESC)",
+			},
+		},
+		{
+			name: "batches",
+			columns: [][2]string{
+				{"id", "TEXT PRIMARY KEY"},
+				{"input_file_id", "TEXT NOT NULL"},
+				{"endpoint", "TEXT NOT NULL"},
+				{"completion_window", "TEXT NOT NULL"},
+				{"status", "TEXT NOT NULL"},
+				{"output_file_id", "TEXT"},
+				{"error_file_id", "TEXT"},
+				{"created_at", "INTEGER NOT NULL"},
+				{"completed_at", "INTEGER"},
+				{"cancelled_at", "INTEGER"},
+				{"metadata", "TEXT"},
+			},
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS idx_batches_status ON batches(status)",
+				"CREATE INDEX IF NOT EXISTS idx_batches_created ON batches(created_at DESC)",
+				"CREATE INDEX IF NOT EXISTS idx_batches_input_file ON batches(input_file_id)",
+			},
+		},
 	}
 }
 
@@ -289,6 +370,11 @@ var goOnlyColumns = [][3]string{
 	// wait for a concurrency slot before it is refused.
 	{"apiKeys", "tokenQuota", "INTEGER DEFAULT 0"},
 	{"apiKeys", "queueTimeoutMs", "INTEGER DEFAULT 0"},
+	// Per-key context ceiling: the largest context window one request from this
+	// key may use, in tokens. 0 means the model's own declared window applies.
+	// A different axis from tokenQuota, which bounds what the key may spend
+	// over its whole life.
+	{"apiKeys", "contextLimit", "INTEGER DEFAULT 0"},
 	// F-6 Argon2id key hashing
 	{"apiKeys", "keyHash", "TEXT DEFAULT ''"},
 	{"apiKeys", "lookupHash", "TEXT DEFAULT ''"},
@@ -313,6 +399,40 @@ var goOnlyColumns = [][3]string{
 	{"usageHistory", "clientKey", "TEXT DEFAULT ''"},
 	// F-3 Plans: reusable policy template
 	{"apiKeys", "planId", "TEXT DEFAULT ''"},
+	// F-2 Budget enforcement: per-period spend ceiling. The plans table
+	// carries the same fields for a plan template; these columns let one key
+	// override its plan, the same precedence rateLimitRPM already uses.
+	// limitMicros is USD micros (integer) so no float rounding can let a key
+	// overdraw; limitTokens is prompt+completion tokens in the period.
+	// budgetPeriod is daily|weekly|monthly|total, alertPct is the spend
+	// percentage at which X-Budget-Status is raised, and hardCutoff refuses
+	// with 402 once the period budget is spent. 0/"" means "not set", which
+	// is what leaves the plan's value (or no budget) in charge.
+	{"apiKeys", "limitMicros", "INTEGER DEFAULT 0"},
+	{"apiKeys", "limitTokens", "INTEGER DEFAULT 0"},
+	{"apiKeys", "budgetPeriod", "TEXT DEFAULT ''"},
+	{"apiKeys", "alertPct", "INTEGER DEFAULT 0"},
+	{"apiKeys", "hardCutoff", "INTEGER DEFAULT 0"},
+	// Per-custom-provider capacity limits (docs/provider-limits-plan.md). These
+	// bound what one upstream endpoint tolerates, which is a different axis from
+	// the apiKeys limits above (what one caller may spend): a custom provider is
+	// one providerNodes row whatever it calls, so the policy hangs off the node
+	// every one of its connections shares. 0 means unlimited and "" means no
+	// expiry, the same convention rateLimitRPM and expiresAt already use.
+	{"providerNodes", "rpmLimit", "INTEGER DEFAULT 0"},
+	{"providerNodes", "tpmLimit", "INTEGER DEFAULT 0"},
+	{"providerNodes", "concurrencyLimit", "INTEGER DEFAULT 0"},
+	{"providerNodes", "tokenQuota", "INTEGER DEFAULT 0"},
+	{"providerNodes", "queueTimeoutMs", "INTEGER DEFAULT 0"},
+	{"providerNodes", "quotaResetId", "INTEGER DEFAULT 0"},
+	{"providerNodes", "contractExpiresAt", "TEXT DEFAULT ''"},
+	// Smart select combo: the pattern rules that keep a combo's membership in
+	// step with the models the gateway knows about. A JSON array of rule
+	// objects; "[]" means no rules, which is what every combo written before
+	// the feature holds. It is bookkeeping the resolver never reads — the
+	// models column stays the wire contract — so upstream, which declares
+	// neither the column nor the concept, ignores it.
+	{"combos", "matchRules", "TEXT DEFAULT '[]'"},
 }
 
 // keiRouterTables are Go-only tables for KeiRouter port features.
@@ -405,11 +525,26 @@ var keiRouterTables = []tableDef{
 // per-family split, the analytics scans, the topology map — each of which would
 // then need its own filter, and any one of them forgetting it reports spend that
 // never happened.
+//
+// providerLedgerCarryover is the same mechanism for a custom provider's token
+// quota: usageHistory.provider holds the node id for every request routed
+// through it (resolution.go returns node.ID), so a node's spend is one indexed
+// equality — and therefore one more budget a prune could silently refund if the
+// tokens it deletes were not carried somewhere. One row per node, read by
+// ProviderTokenUsage.
 var usageLedgerTables = []tableDef{
 	{
 		name: "usageLedgerCarryover",
 		columns: [][2]string{
 			{"keyId", "TEXT PRIMARY KEY"},
+			{"tokens", "INTEGER NOT NULL DEFAULT 0"},
+			{"updatedAt", "TEXT NOT NULL"},
+		},
+	},
+	{
+		name: "providerLedgerCarryover",
+		columns: [][2]string{
+			{"providerId", "TEXT PRIMARY KEY"},
 			{"tokens", "INTEGER NOT NULL DEFAULT 0"},
 			{"updatedAt", "TEXT NOT NULL"},
 		},
@@ -440,9 +575,24 @@ func EnsureLedgerTables(db *sql.DB) error {
 // Against a 300k-run ledger neither appeared in a single plan — SQLite reached
 // for the single-column index instead — while the breakdown they were named
 // for was still reading the table once per matching row.
+//
+// idx_uh_provider is the single-column (provider) index, replaced by
+// idx_uh_prov_tok. The composite answers the same equality search and
+// carries the token columns with it, so the narrow one is a candidate SQLite
+// no longer picks and a second index every ledger insert has to maintain.
+//
+// idx_uh_apikey and idx_uh_clientkey are the same story one step further:
+// each was created as the bare equality index the per-key token quota's
+// multi-index OR needed, then replaced by the (column, id, tokens) composite
+// that also answers the sum from the index alone. An install upgraded in
+// place would otherwise keep both shapes under CREATE IF NOT EXISTS and pay
+// a second index maintenance per ledger insert for nothing.
 var supersededIndexes = []string{
 	"DROP INDEX IF EXISTS idx_ca_ts_prov",
 	"DROP INDEX IF EXISTS idx_ca_ts_model",
+	"DROP INDEX IF EXISTS idx_uh_provider",
+	"DROP INDEX IF EXISTS idx_uh_apikey",
+	"DROP INDEX IF EXISTS idx_uh_clientkey",
 }
 
 // EnsureCoreSchema creates the upstream core tables/indexes when absent,
@@ -478,6 +628,9 @@ func EnsureCoreSchema(db *sql.DB) error {
 		return err
 	}
 	if err := EnsureLedgerTables(db); err != nil {
+		return err
+	}
+	if err := EnsureThoughtSignatureTables(db); err != nil {
 		return err
 	}
 	if err := EnsureAdditiveColumns(db); err != nil {

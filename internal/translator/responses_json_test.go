@@ -66,6 +66,41 @@ func TestChatResponseToResponses_RejectsUnusableBody(t *testing.T) {
 	}
 }
 
+// A non-streaming Chat body whose tool arguments do not parse must still be
+// converted, and the object must say the turn is incomplete. Returning an error
+// here would make the caller relay a raw Chat Completions body to a client that
+// can only read Responses.
+func TestChatResponseToResponses_TruncatedToolArgumentsStayConvertible(t *testing.T) {
+	body := []byte(`{
+		"id": "chatcmpl-9",
+		"model": "gpt-x",
+		"choices": [{"index": 0, "message": {"role": "assistant", "content": null,
+			"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+				"function": {"name": "exec_command", "arguments": "{\"cmd\":\"python3 - <<'PY'"}}]},
+			"finish_reason": "tool_calls"}]
+	}`)
+
+	out, err := ChatResponseToResponses(body)
+	if err != nil {
+		t.Fatalf("ChatResponseToResponses: %v", err)
+	}
+
+	var response struct {
+		Status            string         `json:"status"`
+		IncompleteDetails map[string]any `json:"incomplete_details"`
+	}
+	if err := json.Unmarshal(out, &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if response.Status != responsesStatusIncomplete {
+		t.Errorf("status = %q, want %q", response.Status, responsesStatusIncomplete)
+	}
+	if response.IncompleteDetails["reason"] != responsesIncompleteToolArguments {
+		t.Errorf("incomplete_details.reason = %v, want %q",
+			response.IncompleteDetails["reason"], responsesIncompleteToolArguments)
+	}
+}
+
 // TestChatResponseToResponses_ToolCallBecomesFunctionCallItem checks a tool turn
 // is not silently dropped: the client's next request depends on the function
 // call item being present in the response.

@@ -3,8 +3,10 @@ package chat
 import (
 	"context"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"math/rand/v2"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -20,6 +22,7 @@ import (
 	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/oauth"
 	"9router/proxy/internal/translator"
+	"9router/proxy/internal/updater"
 )
 
 // CredentialFallbacks maps search/tool providers to the primary chat provider whose API key can be reused.
@@ -30,13 +33,38 @@ var CredentialFallbacks = map[string]string{
 	"clinepass":     "cline",
 }
 
-func (h *ChatHandler) ResolveProviderProxyPoolID(provider string) string {
+// errNoUsablePool is the routing verdict for "rotation is configured but every
+// active pool is excluded". It is not a client error: the attempt drops its
+// pool binding and goes direct, which is what lets the failover loop keep
+// going instead of turning the exhausted rotation into a hard failure.
+var errNoUsablePool = errors.New("no usable proxy pool")
+
+// excludedFrom reads the exclusion set callers pass as an optional variadic.
+func excludedFrom(excludePools []map[string]bool) map[string]bool {
+	if len(excludePools) == 0 {
+		return nil
+	}
+	return excludePools[0]
+}
+
+// ResolveProviderProxyPoolID returns the provider-level pool one attempt should
+// use. excludePools carries the pools already refused during this turn, so a
+// rotated attempt never lands back on an egress that just failed.
+func (h *ChatHandler) ResolveProviderProxyPoolID(provider string, excludePools ...map[string]bool) string {
+	id, _ := h.resolveProviderProxyPoolID(provider, excludedFrom(excludePools))
+	return id
+}
+
+// resolveProviderProxyPoolID is ResolveProviderProxyPoolID with the sentinel:
+// errNoUsablePool means the pool binding was dropped on purpose (direct
+// attempt), not that the provider is unusable.
+func (h *ChatHandler) resolveProviderProxyPoolID(provider string, excluded map[string]bool) (string, error) {
 	if h.Repo == nil {
-		return ""
+		return "", nil
 	}
 	settings, err := h.Repo.GetSettings()
 	if err != nil || settings == nil || settings.ProviderStrategies == nil {
-		return ""
+		return "", nil
 	}
 	var singleID, rotate string
 	for _, p := range providerStrategyKeys(provider) {
@@ -52,14 +80,23 @@ func (h *ChatHandler) ResolveProviderProxyPoolID(provider string) string {
 	// Pool rotation is a NoAuth-provider feature: the provider card offers it
 	// only inside its `isNoAuth` block, and there `rotateStrategy` holds a POOL
 	// rotation. On a keyed provider the same key holds ACCOUNT rotation, so
-	// honouring it here would send that provider's egress through pools its
-	// operator never configured.
-	if rotate != "" && providers.IsNoAuthProvider(provider) {
-		if id := h.rotatedActiveProxyPool(provider, rotate); id != "" {
-			return id
+	// honouring it by default would send that provider's egress through pools
+	// its operator never configured. The exception is a live exclusion set: the
+	// loop only fills it after an OpenCode free-tier refusal, and rotating to
+	// the next egress is exactly the fix for that refusal.
+	if rotate != "" && (providers.IsNoAuthProvider(provider) || len(excluded) > 0) {
+		id, rotErr := h.rotatedActiveProxyPoolWithin(provider, rotate, excluded)
+		if rotErr != nil {
+			return "", rotErr
+		}
+		if id != "" {
+			return id, nil
 		}
 	}
-	return singleID
+	if excluded[singleID] {
+		return "", errNoUsablePool
+	}
+	return singleID, nil
 }
 
 // poolRotationCursors holds one round-robin cursor per provider. A single
@@ -74,22 +111,42 @@ var poolRotationCursors sync.Map // map[string]*atomic.Uint64
 // A pool with no URL is excluded upstream: it cannot serve a request, and
 // selecting it would hand a share of the traffic to a pool the resolver then
 // refuses.
-func (h *ChatHandler) rotatedActiveProxyPool(provider, strategy string) string {
+func (h *ChatHandler) rotatedActiveProxyPool(provider, strategy string, excludePools ...map[string]bool) string {
+	id, _ := h.rotatedActiveProxyPoolWithin(provider, strategy, excludedFrom(excludePools))
+	return id
+}
+
+// rotatedActiveProxyPoolWithin is rotatedActiveProxyPool with the exclusion set
+// applied before the cursor moves: an excluded pool is never a candidate, so
+// the rotation walks only egresses this turn has not tried yet.
+func (h *ChatHandler) rotatedActiveProxyPoolWithin(provider, strategy string, excluded map[string]bool) (string, error) {
 	if h.Repo == nil {
-		return ""
+		return "", nil
 	}
 	ids := h.Repo.ActivePoolIDs()
 	if len(ids) == 0 {
-		return ""
+		return "", nil
+	}
+	if len(excluded) > 0 {
+		usable := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if !excluded[id] {
+				usable = append(usable, id)
+			}
+		}
+		if len(usable) == 0 {
+			return "", errNoUsablePool
+		}
+		ids = usable
 	}
 	if strings.ToLower(strings.TrimSpace(strategy)) == "random" {
-		return ids[rand.IntN(len(ids))]
+		return ids[rand.IntN(len(ids))], nil
 	}
 	// Keyed on the resolved alias so `oc` and `opencode` share one cursor: they
 	// are the same provider and must advance together.
 	cursor, _ := poolRotationCursors.LoadOrStore(providers.ResolveAlias(provider), new(atomic.Uint64))
 	idx := cursor.(*atomic.Uint64).Add(1) - 1
-	return ids[idx%uint64(len(ids))]
+	return ids[idx%uint64(len(ids))], nil
 }
 
 // providerStrategyKeys lists the settings keys a provider's pool may be stored
@@ -164,20 +221,20 @@ func proxyPoolCounterpart(provider string) string {
 
 // GetBestConnection retrieves the highest-priority active connection for a provider.
 // When connectionID is non-empty, it fetches that specific connection directly.
-func (h *ChatHandler) GetBestConnection(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
-	return h.getBestConnection(provider, connectionID, excludeIDs, model)
+func (h *ChatHandler) GetBestConnection(provider string, connectionID string, excludeIDs []string, model string, excludePools ...map[string]bool) (*models.ProviderConnection, *ConnectionData, error) {
+	return h.getBestConnection(provider, connectionID, excludeIDs, model, excludePools...)
 }
 
 // GetBestConnectionWithContext is the context-aware variant of GetBestConnection.
-func (h *ChatHandler) GetBestConnectionWithContext(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
-	return h.getBestConnectionWithContext(ctx, provider, connectionID, excludeIDs, model)
+func (h *ChatHandler) GetBestConnectionWithContext(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string, excludePools ...map[string]bool) (*models.ProviderConnection, *ConnectionData, error) {
+	return h.getBestConnectionWithContext(ctx, provider, connectionID, excludeIDs, model, excludePools...)
 }
 
-func (h *ChatHandler) getBestConnection(provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
-	return h.getBestConnectionWithContext(context.Background(), provider, connectionID, excludeIDs, model)
+func (h *ChatHandler) getBestConnection(provider string, connectionID string, excludeIDs []string, model string, excludePools ...map[string]bool) (*models.ProviderConnection, *ConnectionData, error) {
+	return h.getBestConnectionWithContext(context.Background(), provider, connectionID, excludeIDs, model, excludePools...)
 }
 
-func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string) (*models.ProviderConnection, *ConnectionData, error) {
+func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string, excludePools ...map[string]bool) (*models.ProviderConnection, *ConnectionData, error) {
 	if model != "" && !h.Repo.IsProviderAvailable(provider, model) {
 		log.Warn("health", "unhealthy provider", "provider", provider, "model", model)
 	}
@@ -209,11 +266,32 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 		// enable/disable toggle a no-op for every pinned request.
 		ineligible, reason := h.pinnedConnectionIneligible(conn, excludeIDs, model)
 		if ineligible && isProbe && conn.IsActive == 1 && !slices.Contains(excludeIDs, conn.ID) {
-			if strings.HasPrefix(reason, "account cooldown") || strings.HasPrefix(reason, "model lock") || reason == "quota cache" {
+			// A reauth_required account whose park has run out returns as a
+			// normal probe candidate; while parked it stays ineligible.
+			parked := false
+			if db.ConnectionRequiresReauth(conn.Data) {
+				if until, ok := db.ConnectionOAuthLockUntil(conn.Data); ok && until.After(time.Now()) {
+					parked = true
+				}
+			}
+			if !parked &&
+				(strings.HasPrefix(reason, "account cooldown") || strings.HasPrefix(reason, "model lock") || reason == "quota cache") {
 				// Probes bypass cooldown / locks to test actual upstream reachability,
 				// but must still honor model enablement, disabled accounts, and strict assignment.
+				// A parked dead grant stays ineligible even under a probe: the
+				// upstream answer is already known (401 invalid access token).
 				ineligible = false
 			}
+		}
+		if ineligible && isProbe && reason == "disabled" {
+			// A probe is pinned to ONE account on purpose: a scheduled ping exists
+			// to start that account's quota window. Dropping the pin let the
+			// strategy answer with a different, active connection, so the ping
+			// spent a healthy account's window and left the disabled one exactly
+			// as closed as it was. Upstream never pings an inactive account at
+			// all (quotaAutoPing.js filters isActive: true), so this refuses
+			// rather than redirects.
+			return nil, nil, fmt.Errorf("connection %s is disabled; a probe is not redirected to another account", connectionID)
 		}
 		if ineligible {
 			log.Warn("connections", "pinned connection ineligible, falling back to strategy",
@@ -242,7 +320,7 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 				connData := &ConnectionData{
 					AccessToken: "public",
 				}
-				connData.ProxyPoolID = h.ResolveProviderProxyPoolID(provider)
+				connData.ProxyPoolID = h.ResolveProviderProxyPoolID(provider, excludePools...)
 				publicName := "Public"
 				conn := &models.ProviderConnection{
 					ID:       "noauth",
@@ -272,12 +350,17 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 			return nil, nil, fmt.Errorf("no connection for provider %s has model %s enabled", provider, model)
 		}
 
-		// Rotate only connections eligible for the requested model.
-		if len(connections) > 1 && settingsErr == nil && settings != nil {
-			strat := connRotationStrategy(settings, provider)
-			if strat.RotateStrategy != "" && strat.RotateStrategy != "none" {
-				connections = h.applyConnectionStrategy(connections, strat)
-			}
+		// Node state before rotation: a node whose contract has ended, or whose
+		// lifetime token quota is spent, must not receive the request at all — and
+		// the verdict comes from the same helper the dispatch path asks, so a node
+		// skipped here cannot be admitted there (docs/provider-limits-plan.md D7).
+		// Only custom providers carry those two fields, so a registry provider
+		// passes through untouched.
+		nodeState := providerLimitStateFrom(ctx)
+		if refusal, blocked := h.providerNodeBlocked(ctx, nodeState, provider, h.providerLimitsFor(ctx, nodeState, provider)); blocked {
+			log.Warn("connections", "provider node unusable",
+				"provider", provider, "model", model, "axis", refusal.Axis)
+			return nil, nil, h.providerLimitError(ctx, provider, refusal)
 		}
 
 		excludeSet := make(map[string]bool, len(excludeIDs))
@@ -285,43 +368,108 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 			excludeSet[id] = true
 		}
 
+		sessionID := handlerutil.GetSessionID(ctx)
 		conn = nil
 		var cooldownUntil time.Time
 		var inCooldown []*models.ProviderConnection
 		now := time.Now()
-		for _, c := range connections {
-			if excludeSet[c.ID] {
-				continue
-			}
-			// The strategy sweep reorders the whole candidate list, so the
-			// account filter runs again on the row actually reached.
-			if !codexAccountServesModel(c, model) {
-				continue
-			}
-			// Per-model lock and quota cache first: an account parked for
-			// this model carries no cooldown to shorten, so it must not enter
-			// the forced pool either (h.connectionModelBlocked).
-			if !isProbe {
-				if h.connectionModelBlocked(c, provider, model) {
-					continue
-				}
-				// Account-scoped cooldown. An account whose quota is spent, or
-				// whose OAuth grant the provider already rejected, is skipped
-				// before it is selected — round-robin otherwise kept handing out
-				// dead accounts until a live 429/401 locked them, and a rejected
-				// grant cost a token-endpoint call on every request until the IP
-				// was rate limited. Upstream parity: filterAvailableAccounts.
-				if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
-					inCooldown = append(inCooldown, c)
-					if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
-						cooldownUntil = until
-					}
-					continue
-				}
-			}
-			conn = c
-			break
+
+		var strat db.ProviderStrategy
+		hasStrat := false
+		affinityEligible := false
+		if settingsErr == nil && settings != nil {
+			strat = connRotationStrategy(settings, provider)
+			hasStrat = strat.RotateStrategy != "" && strat.RotateStrategy != "none"
+			affinityEligible = isAffinityEligibleStrategy(strat.RotateStrategy)
 		}
+
+		// Check session affinity if rotation is configured and a session is identified
+		if !isProbe && sessionID != "" && affinityEligible {
+			if boundID, ok := h.getSessionAffinity().Get(provider, model, sessionID); ok && boundID != "" {
+				var boundConn *models.ProviderConnection
+				for _, c := range connections {
+					if c.ID == boundID {
+						boundConn = c
+						break
+					}
+				}
+				if boundConn != nil && !excludeSet[boundConn.ID] && codexAccountServesModel(boundConn, model) {
+					if !h.connectionModelBlocked(boundConn, provider, model) {
+						if until, ok := db.ConnectionBlockedUntil(boundConn.Data); !ok || !until.After(now) {
+							conn = boundConn
+						}
+					}
+				}
+				// If bound connection is no longer eligible (in cooldown, blocked, or not in candidate list),
+				// evict the dead binding so rotation can advance to an eligible account.
+				if conn == nil {
+					h.getSessionAffinity().Evict(provider, model, sessionID)
+				}
+			}
+		}
+
+		if conn == nil {
+			// Rotate only connections eligible for the requested model.
+			// New session distribution uses round-robin with effective stickyLimit = 1 across
+			// candidate accounts so distinct sessions alternate evenly.
+			if len(connections) > 1 && hasStrat {
+				effectiveStrat := strat
+				if sessionID != "" && affinityEligible {
+					effectiveStrat.StickyLimit = 1
+				}
+				connections = h.applyConnectionStrategy(connections, effectiveStrat)
+			}
+
+			for _, c := range connections {
+				if excludeSet[c.ID] {
+					continue
+				}
+				// The strategy sweep reorders the whole candidate list, so the
+				// account filter runs again on the row actually reached.
+				if !codexAccountServesModel(c, model) {
+					continue
+				}
+				// Per-model lock and quota cache first: an account parked for
+				// this model carries no cooldown to shorten, so it must not enter
+				// the forced pool either (h.connectionModelBlocked).
+				// A parked dead grant is terminal only while its park is active:
+				// once oauthLockedUntil runs out the account returns as a
+				// normal candidate (the park is a cooldown, not a disable).
+				// While parked even a probe (which otherwise bypasses cooldowns
+				// to test live reachability) must not re-pick it — the upstream
+				// answer is already known (401 invalid token).
+				if db.ConnectionRequiresReauth(c.Data) {
+					if until, ok := db.ConnectionOAuthLockUntil(c.Data); ok && until.After(now) {
+						inCooldown = append(inCooldown, c)
+						if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
+							cooldownUntil = until
+						}
+						continue
+					}
+				}
+				if !isProbe {
+					if h.connectionModelBlocked(c, provider, model) {
+						continue
+					}
+					// Account-scoped cooldown. An account whose quota is spent, or
+					// whose OAuth grant the provider already rejected, is skipped
+					// before it is selected — round-robin otherwise kept handing out
+					// dead accounts until a live 429/401 locked them, and a rejected
+					// grant cost a token-endpoint call on every request until the IP
+					// was rate limited. Upstream parity: filterAvailableAccounts.
+					if until, ok := db.ConnectionBlockedUntil(c.Data); ok && until.After(now) {
+						inCooldown = append(inCooldown, c)
+						if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
+							cooldownUntil = until
+						}
+						continue
+					}
+				}
+				conn = c
+				break
+			}
+		}
+
 		if conn == nil && forceFallbackEnabled(settings) {
 			// The operator asked for traffic to keep flowing while every
 			// account is cooling down, so take the account that frees up
@@ -333,6 +481,11 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 				log.Warn("connections", "all accounts in cooldown, forcing the soonest to reset",
 					"provider", provider, "conn", forced.ID, "reset", until.UTC().Format(time.RFC3339))
 			}
+		}
+
+		// Optimistically bind session to the selected connection
+		if conn != nil && !isProbe && sessionID != "" && affinityEligible {
+			h.getSessionAffinity().Bind(provider, model, sessionID, conn.ID)
 		}
 		if conn == nil {
 			// Every candidate was in cooldown, so say when the first one comes
@@ -380,7 +533,7 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 	// provider itself. It used to be read only for the synthesized no-auth
 	// connection, so a stored connection carrying its own key went out
 	// directly — the assignment the dashboard shows was never dialled.
-	h.applyProviderProxyPool(&connData, provider)
+	h.applyProviderProxyPool(&connData, provider, excludePools...)
 
 	return conn, &connData, nil
 }
@@ -406,12 +559,22 @@ func (h *ChatHandler) connectionModelBlocked(c *models.ProviderConnection, provi
 }
 
 // applyProviderProxyPool binds a provider-level pool to a connection that has
-// none of its own. An explicit per-connection binding always wins.
-func (h *ChatHandler) applyProviderProxyPool(connData *ConnectionData, provider string) {
-	if connData == nil || connData.ProxyPoolID != "" {
+// none of its own. An explicit per-connection binding wins unless that pool is
+// in the turn's exclusion set: the bound egress just refused, so retrying it
+// would loop. With every pool excluded the binding is dropped and the attempt
+// goes direct (errNoUsablePool), which keeps the failover loop moving.
+func (h *ChatHandler) applyProviderProxyPool(connData *ConnectionData, provider string, excludePools ...map[string]bool) {
+	if connData == nil {
 		return
 	}
-	if poolID := h.ResolveProviderProxyPoolID(provider); poolID != "" {
+	excluded := excludedFrom(excludePools)
+	if connData.ProxyPoolID != "" {
+		if !excluded[connData.ProxyPoolID] {
+			return
+		}
+		connData.ProxyPoolID = ""
+	}
+	if poolID := h.ResolveProviderProxyPoolID(provider, excludePools...); poolID != "" {
 		connData.ProxyPoolID = poolID
 	}
 }
@@ -524,6 +687,18 @@ func quotaCacheBlocked(provider, connectionID, model string) bool {
 	return false
 }
 
+func (h *ChatHandler) getSessionAffinity() *SessionAffinityStore {
+	if h == nil {
+		return nil
+	}
+	h.sessionAffinityMu.Lock()
+	defer h.sessionAffinityMu.Unlock()
+	if h.SessionAffinity == nil {
+		h.SessionAffinity = NewSessionAffinityStore(10000, 2*time.Hour)
+	}
+	return h.SessionAffinity
+}
+
 // GetProviderConfig returns the upstream configuration for a provider.
 func (h *ChatHandler) GetProviderConfig(provider string, connData *ConnectionData) (*providers.ProviderConfig, error) {
 	return h.getProviderConfig(provider, connData)
@@ -538,7 +713,10 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		// field is typed as "http://192.168.1.10:11434"), and a host alone names
 		// no route, so the POST used to land on the server root. A URL that
 		// already names a route is passed through untouched.
-		baseURL := chatCompletionsURL(connData.BaseURL)
+		//
+		// A custom node's baseUrl is a PREFIX rather than an endpoint the
+		// operator named, so it is completed by a different rule (#768).
+		baseURL := compatibleNodeLaneURL(provider, connectionAPIType(connData), connData.BaseURL)
 		if cfg, ok := providers.KnownProviders[provider]; ok {
 			cloned := cfg
 			cloned.BaseURL = baseURL
@@ -561,49 +739,275 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		}
 		if node != nil && nodeData != nil && nodeData.BaseURL != "" {
 			baseCfg = &providers.ProviderConfig{
-				BaseURL:    chatCompletionsURL(nodeData.BaseURL),
+				BaseURL:    compatibleNodeLaneURL(provider, nodeData.APIType, nodeData.BaseURL),
 				AuthHeader: constants.HeaderAuthorization,
 				AuthScheme: constants.AuthSchemeBearer,
 			}
 		}
 	}
 
+	// Upstream parity: resolve {accountId} in the transport baseUrl from the
+	// connection's providerSpecificData.accountId, with CLOUDFLARE_ACCOUNT_ID
+	// as a legacy fallback (open-sse/executors/default.js:181).
+	if baseCfg != nil && strings.Contains(baseCfg.BaseURL, "{accountId}") {
+		accountID := ""
+		if connData != nil {
+			if aid, ok := connData.ProviderSpecificData["accountId"].(string); ok && aid != "" {
+				accountID = aid
+			}
+		}
+		if accountID == "" {
+			accountID = os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+		}
+		if accountID == "" {
+			// Return nil config with a specific error, matching upstream's
+			// `${provider} requires accountId in providerSpecificData`.
+			// The caller in chat.go reads cfg == nil and produces the user-visible message.
+			return nil, fmt.Errorf("cloudflare-ai requires accountId in providerSpecificData (the Account ID field in the dashboard or CLOUDFLARE_ACCOUNT_ID env var)")
+		}
+		baseCfg.BaseURL = strings.Replace(baseCfg.BaseURL, "{accountId}", accountID, 1)
+	}
+
 	if baseCfg == nil {
 		return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
 	}
 
-	// Check if this connection uses an Edge Relay Proxy Pool (Vercel, Cloudflare, Deno)
+	// A compatible node's wire format comes from the same table its lane comes
+	// from (providers.CompatibleNodeWires), so the two cannot drift apart —
+	// that drift was the "no choices in OpenAI response" bug: the lane sent
+	// the request to /messages while the format machinery still treated the
+	// upstream as Chat Completions.
+	if format := compatibleNodeFormat(provider); format != "" && baseCfg.Format == "" {
+		cloned := *baseCfg
+		cloned.Format = format
+		baseCfg = &cloned
+	}
+
+	// An edge relay pool (vercel/cloudflare/deno/netlify) is not a CONNECT proxy:
+	// it forwards on x-relay-target / x-relay-path. It used to be applied here by
+	// rewriting BaseURL to the relay host and stamping those headers into
+	// StaticHeaders, which made relay support a per-provider convention — every
+	// executor that built its own request had to re-apply it by hand, and the
+	// ones that did not (trae, zed, windsurf, the embeddings lane) leaked the
+	// operator's real IP or sent a provider path to the relay's root.
+	//
+	// The relay now travels with the connection's client (proxy.RelayTransport),
+	// which moves the dial and names the URL the caller actually built. BaseURL
+	// therefore stays the real provider endpoint, and this function only records
+	// which relay fronts the connection so an executor can opt out of a transport
+	// the relay cannot carry.
 	if connData != nil {
-		var relayURL string
-		var noProxy string
-
-		if connData.ProxyPoolID != "" {
-			if pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID); err == nil && pool != nil && pool.IsActive {
-				if pool.IsEdgeRelay() {
-					relayURL = pool.NextURL()
-					noProxy = pool.NoProxy
-					logProxyOnce(connData.ProxyPoolID, relayURL, pool.Type)
-				}
-			}
-		}
-		if relayURL == "" && connData.ProviderSpecificData != nil {
-			if u, ok := connData.ProviderSpecificData["vercelRelayUrl"].(string); ok && u != "" {
-				relayURL = u
-				if np, ok := connData.ProviderSpecificData["connectionNoProxy"].(string); ok {
-					noProxy = np
-				}
-			}
-		}
-
+		relayURL, noProxy := h.resolveEdgeRelay(connData)
 		if relayURL != "" && !internalproxy.ShouldBypassNoProxy(baseCfg.BaseURL, noProxy) {
 			cloned := *baseCfg
-			cloned.StaticHeaders = internalproxy.BuildEdgeRelayHeaders(baseCfg.BaseURL, cloned.StaticHeaders)
-			cloned.BaseURL = relayURL
-			return h.applyProviderOverrides(provider, &cloned), nil
+			cloned.RelayURL = relayURL
+			baseCfg = &cloned
 		}
 	}
 
-	return h.applyProviderOverrides(provider, baseCfg), nil
+	// Stamp the pool this connection routed through onto the config, so
+	// resilienceProxyKey reads it back and the breaker and semaphore key on
+	// provider+pool rather than on the provider alone.
+	//
+	// Without this the egress component was always "direct": nothing in the
+	// production path recorded the pool, only tests fabricated it, so one dead
+	// pool still opened the provider's single breaker and took every other
+	// egress with it.
+	//
+	// This is a field on ProviderConfig rather than a HeaderOverrides entry,
+	// which is where it used to be expected to live: that map is applied to the
+	// outbound request (internal/proxy/openai.go), so an internal key written
+	// there is sent to every upstream provider. It follows RelayURL — a
+	// gateway-internal value the executors read, never one they forward.
+	if connData != nil && connData.ProxyPoolID != "" {
+		cloned := *baseCfg
+		cloned.ProxyPoolID = connData.ProxyPoolID
+		baseCfg = &cloned
+	}
+	return h.applyProviderOverrides(provider, h.withClineIdentity(provider, baseCfg)), nil
+}
+
+// resolveEdgeRelay returns the edge relay an assigned pool puts in front of a
+// connection, plus the pool's noProxy list. An inactive or non-relay pool
+// answers "", which leaves the request direct.
+func (h *ChatHandler) resolveEdgeRelay(connData *ConnectionData) (relayURL, noProxy string) {
+	if connData.ProxyPoolID != "" && h.Repo != nil {
+		if pool, err := h.Repo.GetProxyPool(connData.ProxyPoolID); err == nil && pool != nil && pool.IsActive {
+			if pool.IsEdgeRelay() {
+				relayURL = pool.NextURL()
+				noProxy = pool.NoProxy
+				logProxyOnce(connData.ProxyPoolID, relayURL, pool.Type)
+			}
+		}
+	}
+	if relayURL == "" && connData.ProviderSpecificData != nil {
+		if u, ok := connData.ProviderSpecificData["vercelRelayUrl"].(string); ok && u != "" {
+			relayURL = u
+			if np, ok := connData.ProviderSpecificData["connectionNoProxy"].(string); ok {
+				noProxy = np
+			}
+		}
+	}
+	return relayURL, noProxy
+}
+
+// withClineIdentity stamps the 9Router client identity onto cline/clinepass
+// configs (upstream buildClineHeaders). The version comes from the linked
+// binary; the registry literal cannot carry it (import cycle), so it is
+// applied here per request on the already-cloned config.
+func (h *ChatHandler) withClineIdentity(provider string, cfg *providers.ProviderConfig) *providers.ProviderConfig {
+	if cfg == nil || (provider != "cline" && provider != "clinepass") {
+		return cfg
+	}
+	cloned := *cfg
+	cloned.StaticHeaders = providers.ClineIdentityHeaders(updater.CurrentVersion, cfg.StaticHeaders)
+	return &cloned
+}
+
+// compatibleNodeLaneURL completes a custom provider node's baseUrl into the
+// lane its node type and apiType name, and leaves a URL that already names a
+// lane untouched.
+//
+// Upstream treats a node's baseUrl as a PREFIX and appends the lane
+// unconditionally (open-sse/executors/base.js buildUrl: `${normalized}${path}`,
+// with the path chosen by resolveOpenAICompatibleApiType). A node pointed at
+// https://developer.amd.com.cn/radeon/api/v1 therefore reaches
+// /radeon/api/v1/chat/completions there, while this port dialled the base URL
+// itself and the upstream answered 404 (#768).
+//
+// chatCompletionsURL cannot serve this case: it leaves a multi-segment path
+// alone, which is correct for the Ollama Local host field — an endpoint the
+// operator typed — and wrong for a node, whose baseUrl is a prefix by contract.
+// The two rules stay separate for that reason. The bare-host and /v1 shapes
+// resolve exactly as they did through chatCompletionsURL, so a node that
+// already worked keeps the URL it had.
+func compatibleNodeLaneURL(provider, apiType, baseURL string) string {
+	if !isCompatibleNodeProvider(provider) {
+		return chatCompletionsURL(baseURL)
+	}
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		return baseURL
+	}
+	// A base URL that already names a lane is used as-is: appending a second
+	// one would produce the same 404 this function exists to remove, and a node
+	// created before this rule may store the full route.
+	for _, lane := range compatibleNodeLanes {
+		if strings.HasSuffix(base, lane) {
+			return base
+		}
+	}
+	lane := compatibleNodeLane(provider, apiType)
+	// A URL naming no path, or only a version prefix, still needs the /v1 that
+	// makes the prefix an API root — the same completion chatCompletionsURL
+	// applies to the Ollama Local host field.
+	if compatibleNodeNeedsVersionPrefix(base) {
+		return base + "/v1" + lane
+	}
+	return base + lane
+}
+
+// compatibleNodeNeedsVersionPrefix reports whether a base URL carries no path
+// beyond its authority, so the /v1 prefix is still missing.
+func compatibleNodeNeedsVersionPrefix(base string) bool {
+	_, rest, found := strings.Cut(base, "://")
+	if !found {
+		return true
+	}
+	_, path, _ := strings.Cut(rest, "/")
+	return strings.Trim(path, "/") == ""
+}
+
+// compatibleNodeLanes are the routes a custom node baseUrl may already name.
+// A base ending in one of them is an endpoint, not a prefix. The list is the
+// parent's chatCompletionsURL route table rather than only the three lanes this
+// function appends: a node that already stored /v1/chat, /v1/completions or an
+// Ollama-shaped /api/chat was dialled as configured before this rule existed,
+// and appending a lane behind one of those would turn a working node into a
+// doubled path.
+var compatibleNodeLanes = []string{
+	"/chat/completions", "/messages", "/responses", "/completions",
+	"/chat", "/embeddings", "/api/chat", "/api/generate",
+}
+
+// compatibleNodeLane is the route a node of this type and apiType serves,
+// read from providers.CompatibleNodeWires — the same table getProviderConfig
+// stamps the wire format from, so the lane a request dials and the format the
+// translators speak can never disagree again. An openai-compatible node picks
+// between Chat Completions and Responses from its apiType — the same mapping
+// upstream's buildUrl applies, including its fallback: when no apiType is
+// stored, upstream reads the node id (resolveOpenAICompatibleApiType returns
+// "responses" for a provider id containing "responses"). A connection row
+// written before the apiType sync landed carries no apiType, and a responses
+// node created then has only its id to say so.
+//
+// A custom-embedding node's declared lane is the chat route: the embeddings
+// handler derives its own URL from this one (buildEmbeddingsURL swaps
+// /chat/completions for /embeddings), so producing /embeddings here would
+// append it twice.
+func compatibleNodeLane(provider, apiType string) string {
+	wire, ok := nodeWireOf(provider)
+	if !ok {
+		// Not a node id: the caller (compatibleNodeLaneURL) guards this, and
+		// chatCompletionsURL's shape rule is the historical default.
+		return "/chat/completions"
+	}
+	if compatibleNodeFormat(provider) == "" {
+		switch {
+		case apiType == compatibleAPITypeResponses:
+			return "/responses"
+		case apiType == "" && strings.Contains(provider, compatibleAPITypeResponses):
+			return "/responses"
+		}
+	}
+	return wire.Lane
+}
+
+// compatibleAPITypeResponses is the stored apiType of an openai-compatible node
+// whose upstream speaks the Responses API (upstream resolveOpenAICompatibleApiType).
+const compatibleAPITypeResponses = "responses"
+
+// nodeWireOf returns the wire contract of the custom node type behind a
+// provider id ("anthropic-compatible-<id>" → the "anthropic-compatible"
+// entry) and whether the id is a compatible node at all. The map's keys are
+// mutually exclusive prefixes, so the match is deterministic.
+func nodeWireOf(provider string) (providers.NodeWire, bool) {
+	for nodeType, wire := range providers.CompatibleNodeWires {
+		if strings.HasPrefix(provider, nodeType+"-") {
+			return wire, true
+		}
+	}
+	return providers.NodeWire{}, false
+}
+
+// isCompatibleNodeProvider reports whether a provider id belongs to a custom
+// endpoint the operator registered, matching the node shapes the create
+// handler composes (provider_node_id.go) — derived from
+// providers.CompatibleNodeWires so detection cannot outgrow the wire table.
+func isCompatibleNodeProvider(provider string) bool {
+	_, ok := nodeWireOf(provider)
+	return ok
+}
+
+// compatibleNodeFormat reports the format a custom node's upstream speaks
+// ("" = OpenAI Chat Completions).
+func compatibleNodeFormat(provider string) string {
+	wire, ok := nodeWireOf(provider)
+	if !ok {
+		return ""
+	}
+	return wire.Format
+}
+
+// connectionAPIType reads the apiType the dashboard stores on a compatible
+// node's connection, which is kept in sync with the node on create and update.
+// An absent value means Chat Completions, the same default upstream applies.
+func connectionAPIType(connData *ConnectionData) string {
+	if connData == nil || connData.ProviderSpecificData == nil {
+		return ""
+	}
+	apiType, _ := connData.ProviderSpecificData["apiType"].(string)
+	return apiType
 }
 
 // chatCompletionsURL completes a configured endpoint into the chat-completions
@@ -681,11 +1085,20 @@ func isDigits(s string) bool {
 // applyProviderOverrides merges the operator's stored header overrides for a
 // provider into a per-request config.
 //
-// This is the single injection point on purpose: every executor builds its
-// outbound headers from cfg.StaticHeaders, so merging here reaches all of
-// them without each one learning the feature. It is also after the relay
-// rewrite, so a relay's own headers are on the table the override wins over —
-// which is what upstream's executor-level merge does too.
+// This is the single injection point: every executor builds its outbound
+// headers from cfg, so merging here reaches all of them without each one
+// learning the feature. It is also after the relay rewrite, so a relay's own
+// headers are on the table the override wins over — which is what upstream's
+// executor-level merge does too.
+//
+// The overrides are recorded twice, on purpose. Folding them into
+// StaticHeaders is what every forwarder already reads, so nothing that builds
+// its own header map from that field changes behaviour. Carrying them in
+// HeaderOverrides as well lets a forwarder that assembles the map itself
+// (CodeBuddy rebuilds the full channel-verification set) re-apply them after
+// its own values, which is the order upstream uses
+// (open-sse/executors/base.js:132). Without the second copy such an executor
+// silently replaces an override the dashboard accepted.
 func (h *ChatHandler) applyProviderOverrides(provider string, cfg *providers.ProviderConfig) *providers.ProviderConfig {
 	if cfg == nil || h.Repo == nil {
 		return cfg
@@ -696,6 +1109,7 @@ func (h *ChatHandler) applyProviderOverrides(provider string, cfg *providers.Pro
 	}
 	merged := *cfg
 	merged.StaticHeaders = providers.MergeHeaderOverrides(cfg.StaticHeaders, stored.Headers)
+	merged.HeaderOverrides = stored.Headers
 	return &merged
 }
 

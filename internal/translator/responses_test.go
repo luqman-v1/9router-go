@@ -611,6 +611,27 @@ func TestFormatResponsesSSE(t *testing.T) {
 	}
 }
 
+func TestFormatResponsesFailedSSE(t *testing.T) {
+	frame := FormatResponsesFailedSSE(map[string]any{
+		"code":    "context_length_exceeded",
+		"message": "Too long",
+		"type":    "invalid_request_error",
+	})
+
+	if !strings.HasPrefix(frame, "event: response.failed\ndata: ") {
+		t.Fatalf("frame = %q, want response.failed event", frame)
+	}
+	if !strings.HasSuffix(frame, "\n\n") {
+		t.Errorf("frame = %q, want trailing blank line", frame)
+	}
+	if !strings.Contains(frame, `"code":"context_length_exceeded"`) {
+		t.Errorf("frame = %q, missing error code", frame)
+	}
+	if !strings.Contains(frame, `"status":"failed"`) {
+		t.Errorf("frame = %q, missing status failed", frame)
+	}
+}
+
 // --- helpers ---
 
 func equalStrings(a, b []string) bool {

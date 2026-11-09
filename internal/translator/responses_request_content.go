@@ -49,7 +49,7 @@ func convertResponsesContent(raw jsontext.Value) (jsontext.Value, error) {
 		}
 	}
 
-	out, err := json.Marshal(converted)
+	out, err := json.Marshal(converted, json.Deterministic(true))
 	if err != nil {
 		return nil, fmt.Errorf("translator.convertResponsesContent: %w", err)
 	}

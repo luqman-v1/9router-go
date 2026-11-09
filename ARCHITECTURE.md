@@ -146,6 +146,19 @@ The CLI token is deterministically derived from the persisted machine ID, CLI se
 
 Shutdown, update, health reset, and database export/import are “always protected”: they require a valid dashboard session or local CLI token and reject ordinary client API keys. Profiling is not mounted unless `PPROF_ENABLED=true`.
 
+The three storage-maintenance routes are the one exception: `POST
+/api/settings/database/prune`, `.../prune-usage` and `.../vacuum` are also
+always protected, but with login disabled the dashboard operator is admitted to
+them. They are the buttons of the profile page's storage card, and an install
+that does not require a login has no session for the SPA to present — the gate
+refused every press of them, so the only way to prune was a `curl` carrying the
+CLI token. The trust this extends is the trust an open install already grants
+the rest of the dashboard API, where anyone reaching it can delete every API
+key and every connection; the storage card is not the sensitive surface. With
+login enabled the full gate applies again, and the backup export keeps
+requiring a session or the CLI token in both modes because it carries every
+key.
+
 ## Embedded dashboard
 
 `web/embed.go` embeds `web/dist` into the Go executable. `web.Handler()`:

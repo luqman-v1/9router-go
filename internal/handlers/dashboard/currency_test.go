@@ -261,3 +261,272 @@ func TestHandleRefreshCurrencyRates(t *testing.T) {
 		t.Fatalf("refresh without codes = %d, want 400", rec.Code)
 	}
 }
+
+// rateValue reads a stored rate back as the float64 a JSON body decodes to.
+func rateValue(t *testing.T, rates map[string]any, code string) float64 {
+	t.Helper()
+	value, ok := rates[code]
+	if !ok {
+		t.Fatalf("rate %s missing, got %v", code, rateKeys(rates))
+	}
+	rate, ok := value.(float64)
+	if !ok {
+		t.Fatalf("rate %s = %#v, want a number", code, value)
+	}
+	return rate
+}
+
+// TestMergeRefreshedRates pins the overlay contract: the stored table survives,
+// the provider's answer overwrites it, and the requested codes the provider did
+// not publish come back in request order.
+func TestMergeRefreshedRates(t *testing.T) {
+	tests := []struct {
+		name        string
+		stored      string
+		fetched     map[string]any
+		codes       []string
+		wantKeys    []string
+		wantMissing []string
+	}{
+		{
+			name:        "no stored table keeps exactly the fetched rates",
+			fetched:     map[string]any{"IDR": 16400.5, "EUR": 0.92},
+			codes:       []string{"IDR", "EUR"},
+			wantKeys:    []string{"EUR", "IDR"},
+			wantMissing: []string{},
+		},
+		{
+			name:        "a stored rate the provider does not publish is kept",
+			stored:      `{"displayCurrency":{"code":"IDR","showBoth":true,"rates":{"IDR":16400,"VND":26000}}}`,
+			fetched:     map[string]any{"IDR": 16400.5},
+			codes:       []string{"IDR", "VND"},
+			wantKeys:    []string{"IDR", "VND"},
+			wantMissing: []string{"VND"},
+		},
+		{
+			name:        "a stored rate the provider does publish is overwritten",
+			stored:      `{"displayCurrency":{"code":"IDR","rates":{"IDR":16400,"VND":26000}}}`,
+			fetched:     map[string]any{"IDR": 16400.5, "VND": 25860.5},
+			codes:       []string{"VND", "IDR"},
+			wantKeys:    []string{"IDR", "VND"},
+			wantMissing: []string{},
+		},
+		{
+			name:        "uncovered codes are reported in request order",
+			stored:      `{"displayCurrency":{"code":"USD","rates":{"IDR":16400}}}`,
+			fetched:     map[string]any{"EUR": 0.92},
+			codes:       []string{"AUD", "EUR", "IDR", "VND"},
+			wantKeys:    []string{"EUR", "IDR"},
+			wantMissing: []string{"AUD", "IDR", "VND"},
+		},
+		{
+			name:   "a stored table the normalizer cannot read is treated as empty",
+			stored: `{"displayCurrency":"IDR"}`,
+			// A legacy row may also carry codes the overlay must not resurrect.
+			fetched:     map[string]any{"IDR": 16400.5},
+			codes:       []string{"IDR"},
+			wantKeys:    []string{"IDR"},
+			wantMissing: []string{},
+		},
+		{
+			name:        "the union is capped at maxCurrencyRates, in sorted order",
+			stored:      cappedRateTable(t, maxCurrencyRates, 1),
+			fetched:     map[string]any{"ZZZ": 1.5},
+			codes:       []string{"ZZZ"},
+			wantKeys:    cappedRateKeys(maxCurrencyRates),
+			wantMissing: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, cleanup := setupSettingsTestDB(t)
+			defer cleanup()
+			if tt.stored != "" {
+				req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(tt.stored))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				setupTestRouter(repo).ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("PUT /api/settings = %d: %s", rec.Code, rec.Body.String())
+				}
+			}
+
+			merged, missing := mergeRefreshedRates(repo, tt.fetched, tt.codes)
+			if merged == nil {
+				t.Fatal("mergeRefreshedRates() = nil, want the overlaid table")
+			}
+			if got := strings.Join(rateKeys(merged), ","); got != strings.Join(tt.wantKeys, ",") {
+				t.Errorf("merged rates = %s, want %s", got, strings.Join(tt.wantKeys, ","))
+			}
+			if got := strings.Join(missing, ","); got != strings.Join(tt.wantMissing, ",") {
+				t.Errorf("missing = %s, want %s", got, strings.Join(tt.wantMissing, ","))
+			}
+		})
+	}
+}
+
+// cappedRateTable serializes a full table of n synthetic codes, so a case can
+// tell the stored rates from the one an overlay would write.
+func cappedRateTable(t *testing.T, n int, value float64) string {
+	t.Helper()
+	rates := make(map[string]any, n)
+	for _, code := range cappedRateKeys(n) {
+		rates[code] = value
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"displayCurrency": map[string]any{"code": "USD", "rates": rates},
+	})
+	if err != nil {
+		t.Fatalf("encode stored table: %v", err)
+	}
+	return string(encoded)
+}
+
+// TestHandleRefreshCurrencyRatesKeepsManualRates is the regression that a
+// refresh used to delete an operator's rate for a code the answering provider
+// does not publish (VND on the frankfurter fallback).
+func TestHandleRefreshCurrencyRatesKeepsManualRates(t *testing.T) {
+	repo, cleanup := setupSettingsTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	narrow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"result":"success","rates":{"IDR":16400.5}}`))
+	}))
+	defer narrow.Close()
+	restore := currencyRateSources
+	t.Cleanup(func() { currencyRateSources = restore })
+	currencyRateSources = []string{narrow.URL}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/settings",
+		strings.NewReader(`{"displayCurrency":{"code":"IDR","showBoth":true,"rates":{"IDR":16400,"VND":26000}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT /api/settings = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/settings/currency/refresh",
+		strings.NewReader(`{"code":"IDR","codes":["IDR","VND"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh = %d: %s", rec.Code, rec.Body.String())
+	}
+	var refresh map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &refresh); err != nil {
+		t.Fatalf("decode refresh: %v", err)
+	}
+	if got := fmt.Sprint(refresh["ratesMissing"]); got != "[VND]" {
+		t.Errorf("ratesMissing = %s, want [VND]", got)
+	}
+	if refresh["ratesStored"] != float64(1) {
+		t.Errorf("ratesStored = %v, want 1 (the provider published IDR only)", refresh["ratesStored"])
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	var settings map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &settings); err != nil {
+		t.Fatalf("decode settings: %v", err)
+	}
+	persisted, _ := settings["displayCurrency"].(map[string]any)
+	rates, _ := persisted["rates"].(map[string]any)
+	if got := strings.Join(rateKeys(rates), ","); got != "IDR,VND" {
+		t.Fatalf("persisted rates = %s, want IDR,VND", got)
+	}
+	if got := rateValue(t, rates, "IDR"); got != 16400.5 {
+		t.Errorf("IDR = %v, want the refreshed 16400.5", got)
+	}
+	if got := rateValue(t, rates, "VND"); got != 26000 {
+		t.Errorf("VND = %v, want the manual 26000", got)
+	}
+}
+
+// TestHandleRefreshCurrencyRatesShowBoth checks that a refresh cannot flip the
+// operator's dual-display setting by omitting the field: it inherits the stored
+// flag, the same default normalizeDisplayCurrency applies.
+func TestHandleRefreshCurrencyRatesShowBoth(t *testing.T) {
+	tests := []struct {
+		name       string
+		stored     string
+		payload    string
+		wantStored bool
+	}{
+		{
+			name:       "an omitted flag keeps the stored true",
+			stored:     `{"displayCurrency":{"code":"IDR","showBoth":true,"rates":{"IDR":16400}}}`,
+			payload:    `{"code":"IDR","codes":["IDR"]}`,
+			wantStored: true,
+		},
+		{
+			name:       "an omitted flag keeps the stored false",
+			stored:     `{"displayCurrency":{"code":"IDR","showBoth":false,"rates":{"IDR":16400}}}`,
+			payload:    `{"code":"IDR","codes":["IDR"]}`,
+			wantStored: false,
+		},
+		{
+			name:       "an omitted flag with nothing stored stores false",
+			payload:    `{"code":"IDR","codes":["IDR"]}`,
+			wantStored: false,
+		},
+		{
+			name:       "an explicit flag still wins over the stored one",
+			stored:     `{"displayCurrency":{"code":"IDR","showBoth":true,"rates":{"IDR":16400}}}`,
+			payload:    `{"code":"IDR","showBoth":false,"codes":["IDR"]}`,
+			wantStored: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, cleanup := setupSettingsTestDB(t)
+			defer cleanup()
+			router := setupTestRouter(repo)
+
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"result":"success","rates":{"IDR":16400.5}}`))
+			}))
+			defer provider.Close()
+			restore := currencyRateSources
+			t.Cleanup(func() { currencyRateSources = restore })
+			currencyRateSources = []string{provider.URL}
+
+			put := func(t *testing.T) {
+				t.Helper()
+				req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(tt.stored))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("PUT /api/settings = %d: %s", rec.Code, rec.Body.String())
+				}
+			}
+			if tt.stored != "" {
+				put(t)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/api/settings/currency/refresh", strings.NewReader(tt.payload))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("refresh = %d: %s", rec.Code, rec.Body.String())
+			}
+
+			rec = httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+			var settings map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &settings); err != nil {
+				t.Fatalf("decode settings: %v", err)
+			}
+			persisted, _ := settings["displayCurrency"].(map[string]any)
+			if persisted["showBoth"] != tt.wantStored {
+				t.Fatalf("showBoth = %v, want %v", persisted["showBoth"], tt.wantStored)
+			}
+		})
+	}
+}

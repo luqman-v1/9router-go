@@ -22,10 +22,13 @@
   import SectionMenu from './SectionMenu.svelte'
   import SummaryKpiCards from './SummaryKpiCards.svelte'
   import UsageBreakdownTable from './UsageBreakdownTable.svelte'
+  import UsageByAPIKeyTable from './UsageByAPIKeyTable.svelte'
   import RequestDetailsTab from './RequestDetailsTab.svelte'
   import UsageChart from './UsageChart.svelte'
   import ProviderTopologyCard from './ProviderTopologyCard.svelte'
   import ComboFlowCard from './ComboFlowCard.svelte'
+  import { usageBlocks, isPanelVisible } from '../../lib/usagePanel.svelte'
+  import Card from '../../lib/ui/Card.svelte'
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   interface Props {
     connections?: ProviderConnection[]
@@ -47,6 +50,36 @@
   let section = $state<UsageSection>(USAGE_SECTION_BY_TAB[tab] ?? 'overview')
   let period = $state<Period>('today')
   let isFetching = $state(false)
+
+  // The two optional Overview panels start collapsed and say so with a chevron,
+  // the same affordance the Details panels use. Collapsed is a view state, not a
+  // preference: the switch that hides a panel outright is the arrangement's own
+  // visibility toggle, and that one also skips the combo query below.
+  let comboFlowOpen = $state(false)
+  let usageTrendOpen = $state(false)
+  // The trend's metric switch lives in the panel header, and the header label
+  // describes the active metric — so both the mode and the hourly fact the
+  // label repeats are owned here (UsageChart reports the bucket shape back).
+  let trendMode = $state<'tokens' | 'costs'>('tokens')
+  let trendHourly = $state(false)
+  const trendLabel = $derived(
+    trendMode === 'costs'
+      ? `Estimated cost per ${trendHourly ? 'hour' : 'day'}, stacked by model family.`
+      : `Tokens per ${trendHourly ? 'hour' : 'day'}, stacked by model family.`
+  )
+  // The stats read and the live stream fill the Overview's data panels: KPI
+  // cards, topology map, Recent Requests, the breakdown table, and Combo flow.
+  // The Usage trend is not one of them — it reads its own chart endpoint, and
+  // only while it is expanded — so a section that shows nothing but the trend
+  // must not poll what none of its cards draw (issue #506).
+  const OVERVIEW_LIVE_PANELS = [
+    'overview.kpi',
+    'overview.topology',
+    'overview.recent',
+    'overview.breakdown',
+    'overview.comboFlow',
+  ] as const
+  const overviewLive = $derived(OVERVIEW_LIVE_PANELS.some((id) => isPanelVisible(id)))
 
   // Choosing a section has to move the URL when that section owns one, or the
   // next reload silently drops back to Overview.
@@ -104,13 +137,45 @@
   let detailsTotal = $state(0)
   let detailsPage = $state(1)
   let detailsLoading = $state(false)
-  async function loadStats(targetPeriod: Period) {
+  /**
+   * Reads the usage aggregates for a window.
+   *
+   * `views` names the breakdowns the server should build. The five-second poll
+   * passes 'none' (totals, activeRequests and recentRequests only) because that
+   * is all the KPI row and the live pulse draw, while the four per-model maps
+   * are 98% of the payload — 415 KB at 411 models, every five seconds. The
+   * breakdown table is refreshed on its own, slower schedule and keeps its
+   * previous maps in between, so a poll that omits them must merge rather than
+   * replace: replacing would blank the table for four seconds out of every
+   * five.
+   */
+  async function loadStats(targetPeriod: Period, views?: string) {
     isFetching = true
     try {
-      const res = await api.getUsageStats(targetPeriod)
+      const res = await api.getUsageStats(targetPeriod, views)
       if (res) {
         statsError = ''
-        stats = res
+        // A totals-only poll carries empty breakdown maps, so only the fields
+        // it actually fills are merged. A plain spread would blank the
+        // breakdown table for four seconds out of every five.
+        stats =
+          views === 'none'
+            ? {
+                ...stats,
+                totalRequests: res.totalRequests,
+                totalPromptTokens: res.totalPromptTokens,
+                totalCompletionTokens: res.totalCompletionTokens,
+                totalCachedTokens: res.totalCachedTokens,
+                totalCost: res.totalCost,
+                totalErrors: res.totalErrors,
+                successRate: res.successRate,
+                byProvider: res.byProvider,
+                activeRequests: res.activeRequests,
+                recentRequests: res.recentRequests,
+                errorProvider: res.errorProvider,
+                pending: res.pending,
+              }
+            : res
         if (Array.isArray(res.activeRequests)) {
           activeRequests = res.activeRequests
         }
@@ -137,13 +202,13 @@
     }
   }
 
-  async function loadDetails(page = 1) {
+  async function loadDetails(page = 1, window: Period = period) {
     detailsLoading = true
     detailsError = ''
     try {
       const limit = 20
       const offset = (page - 1) * limit
-      const res = await api.getRequestDetails(limit, offset)
+      const res = await api.getRequestDetails(limit, offset, window)
       if (res && Array.isArray(res.details)) {
         details = res.details
         detailsTotal = res.total || 0
@@ -161,15 +226,28 @@
   // The moved Cache and Compression sections load their own data, so the
   // Overview's read must not run behind them.
   $effect(() => {
-    if (section === 'overview') loadStats(period)
+    if (section === 'overview' && overviewLive) loadStats(period)
   })
 
   $effect(() => {
-    if (section === 'details') loadDetails(detailsPage)
+    // The paged request table is one of the panels the arrangement can hide.
+    // With it hidden the section draws no rows, so the read would only cost a
+    // request and the page weight of a table nobody sees (issue #506).
+    if (section === 'details' && isPanelVisible('details.requests')) {
+      loadDetails(detailsPage, period)
+    }
   })
 
-  // Loaded once: editing a combo is rare, and a reload picks up the change.
+  // Loaded once: editing a combo is rare, and a reload picks up the change. The
+  // query is skipped outright while the Combo flow panel is hidden — the panel
+  // draws nothing then, so the definitions would only cost a request and memory
+  // (upstream #429). `isPanelVisible` reads the arrangement, so turning the panel
+  // back on in Settings refetches without a reload.
   $effect(() => {
+    if (!isPanelVisible('overview.comboFlow')) {
+      comboDefs = []
+      return
+    }
     let cancelled = false
     api
       .getCombos()
@@ -198,6 +276,10 @@
 
   // SSE real-time updates for activeRequests, recentRequests and error notifications
   $effect(() => {
+    // The live stream fills the Overview's data panels and nothing else. With
+    // every one of them hidden, the connection would stream numbers into a
+    // page that draws none of them (issue #506).
+    if (!overviewLive) return
     let isCancelled = false
     let controller: AbortController | null = null
     let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
@@ -283,12 +365,27 @@
 
     connectStream()
 
-    // Auto-poll stats every 5s so KPI counters smoothly increment in real time
+    // Auto-poll stats every 5s so KPI counters smoothly increment in real time.
+    //
+    // The poll asks for totals only. The four per-model breakdown maps are 98%
+    // of the payload (415 KB at 411 models) and the breakdown table draws one
+    // of them at a time, so rebuilding all four every five seconds was 29 MB a
+    // minute of JSON nobody was looking at. They are refreshed below on a
+    // slower tick, and on a period change (which reads everything).
     const pollTimer = setInterval(() => {
+      if (section === 'overview' && (typeof document === 'undefined' || !document.hidden)) {
+        loadStats(period, 'none')
+      }
+    }, 5000)
+
+    // The breakdown maps change slowly enough that a table four seconds stale
+    // reads the same as a fresh one, and this keeps them current without
+    // paying the per-poll cost.
+    const breakdownTimer = setInterval(() => {
       if (section === 'overview' && (typeof document === 'undefined' || !document.hidden)) {
         loadStats(period)
       }
-    }, 5000)
+    }, 30000)
 
     return () => {
       isCancelled = true
@@ -296,12 +393,17 @@
       if (reconnectTimeout) clearTimeout(reconnectTimeout)
       if (pulseTimer) clearTimeout(pulseTimer)
       clearInterval(pollTimer)
+      clearInterval(breakdownTimer)
     }
   })
   let nodeNameById = $derived.by(() => {
     const m = new Map<string, string>()
     for (const n of providerNodes || []) {
-      if (n?.id && n?.name) m.set(n.id, n.name)
+      if (n?.id && n?.name) {
+        m.set(n.id, n.name)
+        // Also index by lowercased id so lookups from lowercased keys still match
+        m.set(n.id.toLowerCase().trim(), n.name)
+      }
     }
     return m
   })
@@ -309,9 +411,13 @@
   function topologyName(providerId: string, fallbackName?: string): string {
     // The fallback is a connection name, and for OAuth connections that is
     // the account email — mask it the same way the connection lists do.
-    const nodeName = formatEmailLabel(nodeNameById.get(providerId) ?? '', $emailPrivacy)
+    const raw = (providerId || '').trim()
+    const resolvedName = nodeNameById.get(raw) ?? nodeNameById.get(raw.toLowerCase())
+    const nodeName = formatEmailLabel(resolvedName ?? '', $emailPrivacy)
     if (nodeName) return nodeName
-    const cat = PROVIDER_CATALOG.find((p) => p.id === providerId || p.alias === providerId)
+    const cat = PROVIDER_CATALOG.find(
+      (p) => p.id === raw || p.alias === raw || p.id.toLowerCase() === raw.toLowerCase() || p.alias?.toLowerCase() === raw.toLowerCase()
+    )
     if (cat?.name) return cat.name
     // Only fall back to the connection label if it isn't a numeric ID (a
     // connection label like "12") and isn't an OAuth account email: an email
@@ -334,24 +440,32 @@
     // canonical provider id, while a connection row can hold either that or
     // the published alias, so both are tried before a provider counts as idle.
     const usedInPeriod = (provId: string) => {
-      const canonical = provId.toLowerCase().trim()
+      const raw = provId.trim()
+      const canonical = raw.toLowerCase()
       const cat = PROVIDER_CATALOG.find((p) => p.id.toLowerCase() === canonical || p.alias?.toLowerCase() === canonical)
-      const keys = [canonical, cat?.id, cat?.alias].filter(Boolean) as string[]
+      // A custom node id is stored verbatim by the backend ("openai-compatible-chat-Wildy"),
+      // so `stats.byProvider` is keyed by that raw case. Check both raw and lowercased
+      // variants alongside catalog ids so mixed-case nodes aren't judged idle.
+      const keys = [raw, canonical, cat?.id, cat?.alias].filter(Boolean) as string[]
       return keys.some((k) => (stats.byProvider?.[k]?.requests || 0) > 0)
     }
     const addProvider = (provId: string, type: string, customName?: string) => {
       if (!provId) return
-      const canonical = provId.toLowerCase().trim()
+      const raw = provId.trim()
+      const canonical = raw.toLowerCase()
       const cat = PROVIDER_CATALOG.find((p) => p.id.toLowerCase() === canonical || (p.alias && p.alias.toLowerCase() === canonical))
       // A provider the registry hides stays routable, but it has no place in a
       // map that reads as "who is on the bus" — the same reason it is kept out
       // of the provider list.
       if (cat?.hidden) return
-      const targetId = cat?.id || canonical
-      if (seen.has(targetId)) return
+      // Custom compatible nodes keep the operator's casing ("...-Wildy") so
+      // node-name lookups, icon paths, and usage history agree with what the
+      // database actually stored.
+      const targetId = cat?.id || raw
+      if (seen.has(canonical) || seen.has(targetId)) return
       seen.add(targetId)
-      if (cat?.alias) seen.add(cat.alias.toLowerCase())
       seen.add(canonical)
+      if (cat?.alias) seen.add(cat.alias.toLowerCase())
 
       list.push({
         id: targetId,
@@ -416,19 +530,39 @@
   <SectionMenu {section} onSectionChange={(next) => (section = next)} />
 {/snippet}
 
+<!-- Both optional Overview panels are collapsed by default and say so with the
+     same chevron the Details panels use, so a reader recognizes the affordance
+     without learning a second one. -->
+{#snippet panelToggle(open: boolean, label: string, onToggle: () => void)}
+  <button
+    type="button"
+    aria-expanded={open}
+    aria-label="Toggle {label}"
+    onclick={onToggle}
+    class="shrink-0 cursor-pointer self-start rounded-lg p-1 text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 sm:self-auto"
+  >
+    <span
+      class="material-symbols-outlined text-[18px] transition-transform duration-200"
+      style:transform={open ? 'rotate(180deg)' : 'rotate(0deg)'}
+    >
+      expand_more
+    </span>
+  </button>
+{/snippet}
+
 
 <div class="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
-  <!-- The section picker and the window selector the Overview needs. Cache
-       Analytics and Compression Analytics each put the picker in their own
-       header, beside the controls they own (issue #209); Details reads its
-       window from the shared Usage page. -->
+  <!-- The section picker and the window selector. Cache Analytics and
+       Compression Analytics each put the picker in their own header, beside the
+       controls they own (issue #209). Details shares this row's control, which
+       windows the request table through ?period; the panels above it keep the
+       window they label in place (lifetime is all time, Node Health is 7 days),
+       so no number here changes meaning silently. -->
   {#if section === 'overview' || section === 'details'}
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       {@render sectionMenu()}
 
-      {#if section === 'overview'}
-        <PeriodSelect value={period} busy={isFetching} onChange={(next) => (period = next)} />
-      {/if}
+      <PeriodSelect value={period} busy={isFetching} onChange={(next) => (period = next)} />
     </div>
   {/if}
 
@@ -459,85 +593,119 @@
   {/if}
 
   {#if section === 'overview'}
-    <!-- 5 Overview KPI Cards -->
-    <SummaryKpiCards {stats} />
-
-    <!-- Combo flow: router -> combo -> members, only while a combo is in use
-         (or just finished). The provider map below keeps its own animation. -->
-    <ComboFlowCard
-      combos={comboDefs}
-      {activeRequests}
-      recentRequests={stats.recentRequests || []}
-      {errorProvider}
-    />
-
-    <!-- Topology + Recent Requests -->
-    <div class="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
-      <ProviderTopologyCard
-        providers={topologyProviders}
-        {activeRequests}
-        {pulseProvider}
-        {lastProvider}
-        {errorProvider}
-        onRefresh={() => loadStats(period)}
-      />
-      <!-- Recent Requests Card -->
-      <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-4 flex min-w-0 flex-col overflow-hidden" style="height: 480px">
-        <div class="px-1 py-2 border-b border-border shrink-0">
-          <span class="text-xs font-semibold text-text-muted uppercase tracking-wide">Recent Requests</span>
+    <!-- The panels of this section, in the arrangement Settings holds. A block
+         is one panel, except for the map + Recent Requests row: those two share
+         one grid row while both are visible and adjacent, and fall apart into
+         full-width blocks once the arrangement separates them. -->
+    {#each usageBlocks('overview') as block (block.key)}
+      {#if block.key === 'overview.kpi'}
+        <SummaryKpiCards {stats} />
+      {:else if block.key === 'overview.comboFlow'}
+        <!-- Combo flow: router -> combo -> members, only while a combo is in use
+             (or just finished). The provider map keeps its own animation. The
+             panel starts collapsed: the flow is only interesting while a request
+             is moving, and an expanded empty tree reads as a broken panel. The
+             header is the Details panels' own — same fonts, same chevron, with
+             the panel's icon in front of the title. -->
+        <Card padding="none" class="overflow-hidden border border-border">
+          <div
+            class="flex flex-col gap-3 bg-surface-2 px-5 py-3 sm:flex-row sm:items-center sm:justify-between {comboFlowOpen
+              ? 'border-b border-border'
+              : ''}"
+          >
+            <div class="flex min-w-0 items-center gap-2">
+              <span class="material-symbols-outlined text-[18px] text-text-muted" aria-hidden="true"
+                >account_tree</span
+              >
+              <div class="min-w-0">
+                <h2 class="font-headline text-sm font-bold text-text-main">Combo flow</h2>
+                <p class="font-body text-xs text-text-muted">Router → combo → members, live</p>
+              </div>
+            </div>
+            {@render panelToggle(comboFlowOpen, 'Combo flow', () => (comboFlowOpen = !comboFlowOpen))}
+          </div>
+          {#if comboFlowOpen}
+            <div class="p-5">
+              <ComboFlowCard
+                combos={comboDefs}
+                {activeRequests}
+                recentRequests={stats.recentRequests || []}
+                {errorProvider}
+              />
+            </div>
+          {/if}
+        </Card>
+      {:else if block.key === 'overview.topology+overview.recent'}
+        <div class="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
+          {@render topologyMap()}
+          {@render recentRequestsCard()}
         </div>
-
-        {#if !stats.recentRequests || stats.recentRequests.length === 0}
-          <div class="flex-1 flex items-center justify-center text-text-muted text-xs">
-            No requests recorded yet.
+      {:else if block.key === 'overview.topology'}
+        {@render topologyMap()}
+      {:else if block.key === 'overview.recent'}
+        {@render recentRequestsCard()}
+      {:else if block.key === 'overview.trend'}
+        <!-- Usage trend: the same collapsed-by-default shape as Combo flow, so the
+             two optional panels read alike. The metric switch lives here, in the
+             header, beside the chevron — the label below it names what is drawn,
+             so the two cannot disagree. -->
+        <Card padding="none" class="overflow-hidden border border-border">
+          <div
+            class="flex flex-col gap-3 bg-surface-2 px-5 py-3 sm:flex-row sm:items-center sm:justify-between {usageTrendOpen
+              ? 'border-b border-border'
+              : ''}"
+          >
+            <div class="flex min-w-0 items-center gap-2">
+              <span class="material-symbols-outlined text-[18px] text-text-muted" aria-hidden="true"
+                >monitoring</span
+              >
+              <div class="min-w-0">
+                <h2 class="font-headline text-sm font-bold text-text-main">Usage trend</h2>
+                <p class="font-body text-xs text-text-muted">{trendLabel}</p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 self-start sm:self-auto">
+              <div
+                class="inline-flex rounded-xl bg-surface border border-border p-1 shadow-sm"
+                role="group"
+                aria-label="Chart metric"
+              >
+                <button
+                  type="button"
+                  onclick={() => (trendMode = 'costs')}
+                  class="rounded-lg px-3 py-1 text-xs font-semibold transition-colors cursor-pointer {trendMode ===
+                  'costs'
+                    ? 'bg-brand-500 text-white shadow-sm'
+                    : 'text-text-muted hover:text-text-main'}"
+                >
+                  Costs
+                </button>
+                <button
+                  type="button"
+                  onclick={() => (trendMode = 'tokens')}
+                  class="rounded-lg px-3 py-1 text-xs font-semibold transition-colors cursor-pointer {trendMode ===
+                  'tokens'
+                    ? 'bg-brand-500 text-white shadow-sm'
+                    : 'text-text-muted hover:text-text-main'}"
+                >
+                  Tokens
+                </button>
+              </div>
+              {@render panelToggle(usageTrendOpen, 'Usage trend', () => (usageTrendOpen = !usageTrendOpen))}
+            </div>
           </div>
-        {:else}
-          <div class="flex-1 overflow-y-auto">
-            <table class="w-full table-fixed min-w-[280px] border-collapse text-xs">
-              <colgroup>
-                <col class="w-[20px]" />
-                <col />
-                <col class="w-[96px]" />
-                <col class="w-[56px]" />
-              </colgroup>
-              <thead class="sticky top-0 bg-bg z-10">
-                <tr class="border-b border-border">
-                  <th class="py-1.5 pl-3 text-left font-semibold text-text-muted"></th>
-                  <th class="py-1.5 text-left font-semibold text-text-muted">Model</th>
-                  <th class="py-1.5 text-right font-semibold text-text-muted whitespace-nowrap">In / Out</th>
-                  <th class="py-1.5 pr-3 text-right font-semibold text-text-muted whitespace-nowrap">When</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-border/50 font-mono text-[11px]">
-                {#each stats.recentRequests as req}
-                  <tr class="hover:bg-bg-subtle transition-colors">
-                    <td class="py-1.5 pl-3 align-middle">
-                      <span class="mx-auto block w-1.5 h-1.5 rounded-full {req.status === 'ok' || req.status === 'success' ? 'bg-success' : 'bg-red-500'}"></span>
-                    </td>
-                    <td class="py-1.5 pr-2 min-w-0">
-                      <span class="block truncate font-mono text-[11px]" title={req.model}>{req.model}</span>
-                    </td>
-                    <td class="py-1.5 pr-3 text-right whitespace-nowrap">
-                      <span class="text-primary">{fmt(req.promptTokens)}↑</span>
-                      <span class="text-success">{fmt(req.completionTokens)}↓</span>
-                    </td>
-                    <td class="py-1.5 pr-3 text-right text-text-muted whitespace-nowrap text-[10px]">
-                      {timeAgo(req.timestamp)}
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        {/if}
-      </div>
-    </div>
-
-    <!-- Usage trend visualization, under Recent Requests and above the usage filter -->
-    <UsageChart {period} />
-
-    <!-- Breakdown Table -->
-    <UsageBreakdownTable {stats} />
+          {#if usageTrendOpen}
+            <div class="p-5">
+              <UsageChart {period} bind:viewMode={trendMode} bind:hourly={trendHourly} />
+            </div>
+          {/if}
+        </Card>
+      {:else if block.key === 'overview.breakdown'}
+        <UsageBreakdownTable {stats} {providerNodes} />
+      {:else if block.key === 'overview.byApiKey'}
+        <UsageByAPIKeyTable {period} />
+      {/if}
+    {/each}
   {:else if section === 'cache'}
     <CacheAnalyticsView>
       {#snippet headerLeft()}
@@ -564,3 +732,79 @@
     />
   {/if}
 </div>
+{#snippet topologyMap()}
+  <ProviderTopologyCard
+    providers={topologyProviders}
+    {activeRequests}
+    {pulseProvider}
+    {lastProvider}
+    {errorProvider}
+    onRefresh={() => loadStats(period)}
+  />
+{/snippet}
+
+{#snippet recentRequestsCard()}
+  <div
+    class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-4 flex min-w-0 flex-col overflow-hidden"
+    style="height: 480px"
+  >
+    <div class="px-1 py-2 border-b border-border shrink-0">
+      <span class="text-xs font-semibold text-text-muted uppercase tracking-wide">Recent Requests</span>
+    </div>
+
+    {#if !stats.recentRequests || stats.recentRequests.length === 0}
+      <div class="flex-1 flex items-center justify-center text-text-muted text-xs">
+        No requests recorded yet.
+      </div>
+    {:else}
+      <div class="flex-1 overflow-y-auto">
+        <table class="w-full table-fixed min-w-[280px] border-collapse text-xs">
+          <colgroup>
+            <col class="w-[20px]" />
+            <col />
+            <col class="w-[96px]" />
+            <col class="w-[56px]" />
+          </colgroup>
+          <thead class="sticky top-0 bg-bg z-10">
+            <tr class="border-b border-border">
+              <th class="py-1.5 pl-3 text-left font-semibold text-text-muted"></th>
+              <th class="py-1.5 text-left font-semibold text-text-muted">Model</th>
+              <th class="py-1.5 text-right font-semibold text-text-muted whitespace-nowrap">In / Out</th>
+              <th class="py-1.5 pr-3 text-right font-semibold text-text-muted whitespace-nowrap">When</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-border/50 font-mono text-[11px]">
+            {#each stats.recentRequests as req}
+              <tr class="hover:bg-bg-subtle transition-colors">
+                <td class="py-1.5 pl-3 align-middle">
+                  <span
+                    class="mx-auto block w-1.5 h-1.5 rounded-full {req.status === 'ok' || req.status === 'success'
+                      ? 'bg-success'
+                      : req.status === 'canceled'
+                        ? 'bg-text-muted'
+                        : 'bg-red-500'}"
+                  ></span>
+                </td>
+                <td class="py-1.5 pr-2 min-w-0">
+                  <span class="inline-flex items-center gap-1 max-w-full truncate font-mono text-[11px]" title={req.loopWarning ? `⚠️ ${req.loopWarning} · ${req.model}` : req.model}>
+                    {#if req.loopWarning}
+                      <span class="text-amber-500 text-[11px] shrink-0">⚠️</span>
+                    {/if}
+                    <span class="truncate">{req.model}</span>
+                  </span>
+                </td>
+                <td class="py-1.5 pr-3 text-right whitespace-nowrap">
+                  <span class="text-primary">{fmt(req.promptTokens)}↑</span>
+                  <span class="text-success">{fmt(req.completionTokens)}↓</span>
+                </td>
+                <td class="py-1.5 pr-3 text-right text-text-muted whitespace-nowrap text-[10px]">
+                  {timeAgo(req.timestamp)}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </div>
+{/snippet}

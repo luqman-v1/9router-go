@@ -15,10 +15,12 @@
   } from './pickerData'
   import { EMPTY_PICKER_EXTRAS, loadPickerExtras, type ResolvedPickerExtras } from './pickerExtras'
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
+  import { parseSearchQuery } from '../../lib/modelSearchFilter'
+  import { pushEscapeHandler } from '../../lib/ui/escapeStack'
 
   interface Props {
     isOpen: boolean
-    target: 'combo' | 'vision' | 'audio' | 'judge'
+    target: 'combo' | 'vision' | 'audio' | 'judge' | 'router' | 'key'
     connections?: ProviderConnection[]
     combos?: Combo[]
     providerNodes?: ProviderNode[]
@@ -52,6 +54,7 @@
   }: Props = $props()
 
   let searchQuery = $state('')
+  let parsedQuery = $derived(parseSearchQuery(searchQuery))
   let fetchedExtras = $state<ResolvedPickerExtras>(cachedPickerExtras ?? EMPTY_PICKER_EXTRAS)
 
   $effect(() => {
@@ -66,6 +69,14 @@
         fetchedExtras = extras
       })
     }
+  })
+
+  // The picker opens over Create/Edit Combo. Registering on the shared stack
+  // makes Escape close the picker alone; without it the dialog underneath
+  // took the key and closed, leaving the picker floating over nothing.
+  $effect(() => {
+    if (!isOpen) return
+    return pushEscapeHandler(() => onClose())
   })
 
   let groups = $derived(
@@ -91,6 +102,10 @@
     } else {
       onSelect(val)
     }
+  }
+
+  function clearSearch() {
+    searchQuery = ''
   }
 </script>
 
@@ -127,7 +142,11 @@
                 ? 'Add Audio Model'
                 : target === 'judge'
                   ? 'Select Judge Model'
-                  : 'Add Model to Combo'}
+                  : target === 'router'
+                    ? 'Select System One Router'
+                    : target === 'key'
+                      ? 'Models this key may call'
+                      : 'Add Model to Combo'}
           </h2>
         </div>
         <button
@@ -143,7 +162,11 @@
       <!-- Info bar -->
       <div class="flex items-center gap-2 mb-3 px-2.5 py-2 bg-brand-500/10 border border-brand-500/20 rounded-lg text-xs text-text-muted">
         <Info class="w-3.5 h-3.5 text-brand-500 shrink-0" />
-        <span>Click to add, click again to remove. Changes are saved automatically.</span>
+        <span>
+          {target === 'key'
+            ? 'Click to add or remove a model. The change is applied when the policy is saved.'
+            : 'Click to add, click again to remove. Changes are saved automatically.'}
+        </span>
       </div>
 
       <!-- Search -->
@@ -152,10 +175,27 @@
           <Search class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
           <input
             type="text"
-            placeholder="Search..."
+            placeholder="Search models (e.g. claude -haiku, !embed, /regex/)..."
             bind:value={searchQuery}
-            class="w-full bg-surface border border-border rounded pl-8 pr-3 py-1.5 text-xs text-text-main placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+            class="w-full bg-surface border border-border rounded pl-8 pr-24 py-1.5 text-xs text-text-main placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-brand-500/50"
           />
+          <div class="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+            {#if parsedQuery.isRegex}
+              <span class="text-[10px] px-1 py-0.2 rounded bg-brand-500/10 text-brand-500 font-mono font-medium">regex</span>
+            {:else if parsedQuery.negativeTerms.length > 0}
+              <span class="text-[10px] px-1 py-0.2 rounded bg-amber-500/10 text-amber-500 font-mono font-medium">!exclude</span>
+            {/if}
+            {#if searchQuery}
+              <button
+                type="button"
+                onclick={clearSearch}
+                aria-label="Clear search"
+                class="p-1 rounded text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors"
+              >
+                <X class="w-3.5 h-3.5" />
+              </button>
+            {/if}
+          </div>
         </div>
       </div>
 

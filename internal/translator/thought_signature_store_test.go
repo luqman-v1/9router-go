@@ -2,6 +2,7 @@ package translator
 
 import (
 	json "encoding/json/v2"
+	"strings"
 	"testing"
 )
 
@@ -131,5 +132,44 @@ func TestThoughtSignatureStore_FamilyScoping(t *testing.T) {
 	StoreGeminiThoughtSignature(untaggedCall, "LEGACY_SIG", storeSession)
 	if got := GetGeminiThoughtSignature(untaggedCall, storeSession, "gemini-3.8-flash"); got != "LEGACY_SIG" {
 		t.Errorf("expected LEGACY_SIG for untagged entry, got %q", got)
+	}
+}
+
+func TestNormalizeGeminiThoughtSignature(t *testing.T) {
+	// Standard valid signature
+	if got := NormalizeGeminiThoughtSignature(DefaultThinkingSignature); got != DefaultThinkingSignature {
+		t.Errorf("NormalizeGeminiThoughtSignature(DefaultThinkingSignature) = %q, want %q", got, DefaultThinkingSignature)
+	}
+
+	// Double-base64 signature (starts with Q0FR...) falls back to DefaultThinkingSignature
+	doubleB64 := "Q0FRUzI3TUJDaElJRXhBQ0dBSTRBVUlJZEdocGJt"
+	if got := NormalizeGeminiThoughtSignature(doubleB64); got != DefaultThinkingSignature {
+		t.Errorf("expected fallback to DefaultThinkingSignature for Q0FR signature, got %q", got)
+	}
+
+	// Oversized signature (> 32KB) falls back to DefaultThinkingSignature
+	oversized := strings.Repeat("A", 33*1024)
+	if got := NormalizeGeminiThoughtSignature(oversized); got != DefaultThinkingSignature {
+		t.Errorf("expected fallback to DefaultThinkingSignature for oversized signature, got %q", got)
+	}
+
+	if got := NormalizeGeminiThoughtSignature(""); got != "" {
+		t.Errorf("expected empty string for empty input, got %q", got)
+	}
+}
+
+func TestPurgeSessionThoughtSignatures(t *testing.T) {
+	sess := "test-session-purge"
+	callID := "call_purge_1"
+	StoreGeminiThoughtSignature(callID, DefaultThinkingSignature, sess, "gemini-4-argon")
+
+	if got := GetGeminiThoughtSignature(callID, sess, "gemini-4-argon"); got == "" {
+		t.Fatal("expected signature to be stored")
+	}
+
+	PurgeSessionThoughtSignatures(sess)
+
+	if got := GetGeminiThoughtSignature(callID, sess, "gemini-4-argon"); got != "" {
+		t.Errorf("expected signature to be purged, got %q", got)
 	}
 }

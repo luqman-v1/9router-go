@@ -15,10 +15,15 @@ import (
 
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/chat"
+	"9router/proxy/internal/headroom"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/proxy/oauth"
+	"9router/proxy/internal/schedule"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/updater"
+	"9router/proxy/internal/uptime"
 )
 
 // ServerModule provides *http.Server and manages its lifecycle and background tasks.
@@ -40,6 +45,17 @@ type ServerParams struct {
 	Repo      *db.Repo
 	Handler   http.Handler
 	CLIParams CLIParams
+	// ChatHandler is the engine's chat handler. The auto-ping scheduler sends
+	// its pings through it, so a ping uses the same credential resolution and
+	// the same provider executors as real traffic. It is optional: a server
+	// built without one (the tests) simply runs no ping loop.
+	//
+	// It is the SAME instance the routes are mounted on — the one
+	// handlers.SetupServerRouter returns — not a second one built here. A second
+	// chat handler is a second PersistentStore over the same SQLite file with
+	// its own in-memory LRU, so the dashboard would report zero entries while
+	// the engine served hits.
+	ChatHandler *chat.ChatHandler `optional:"true"`
 }
 
 // Server timeouts are fixed rather than configurable on purpose: the values
@@ -96,6 +112,15 @@ func ProvideServer(p ServerParams) *http.Server {
 			providers.StartBackgroundCatalogSync(shutdown.Context(), nil, catalogPath)
 			oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
 			db.StartRetentionLoop(shutdown.Context(), p.Repo, db.DefaultRequestDetailRetention)
+			// The Gemini Web session cookie is renewed by the site every few
+			// minutes, and the renewed value is what keeps a signed-in
+			// account reaching the models it pays for. Without this loop the
+			// credential has to be pasted again every few minutes.
+			executor.StartGeminiWebRotation(shutdown.Context(), p.Repo)
+			startAutoPingScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
+			startModelHealthScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
+			startUptimeHeartbeat(shutdown.Context(), p.Repo)
+			startHeadroomOnBoot(p.Repo, config.ResolveDataDir())
 
 			log.Printf("9router-go Proxy (%s) starting on port %d", updater.CurrentVersion, p.Config.Port)
 
@@ -130,9 +155,131 @@ func ProvideServer(p ServerParams) *http.Server {
 			} else {
 				log.Println("Server stopped gracefully")
 			}
+			// Responses are all done by now, so every usage write they enqueued
+			// is in the queue: drain it so the last turns are not billed into
+			// nothing by the exit.
+			if !chat.FlushUsageWrites(3 * time.Second) {
+				log.Printf("Usage write queue did not fully drain before exit")
+			}
 			return nil
 		},
 	})
 
 	return server
+}
+
+// startAutoPingScheduler starts the quota auto-ping loop.
+//
+// The loop ticks once a minute and pings the connections whose anchored slot
+// has come due, so a provider's 5h window starts on time instead of at the
+// first real request. Upstream runs the same loop
+// (src/shared/services/quotaAutoPing.js:318-322, started from
+// initializeApp.js:112).
+//
+// The configuration is read from the settings row on EVERY tick, never
+// cached, so a schedule saved in the dashboard takes effect on the next tick
+// without a restart.
+//
+// The loop is a no-op without a chat handler or a repository: there is
+// nothing to ping without a connection to ping. It is bound to the shutdown
+// context, so it stops with the other background loops.
+func startAutoPingScheduler(ctx context.Context, repo *db.Repo, chatH *chat.ChatHandler) {
+	if repo == nil || chatH == nil {
+		return
+	}
+
+	sched := schedule.NewScheduler(
+		schedule.ConfigSourceFromSettings(func() (map[string]any, error) {
+			return repo.GetSettingsRaw()
+		}),
+		schedule.PingFuncFromChat(chatH),
+	)
+
+	go sched.Run(ctx)
+	log.Println("[autoping] scheduler started")
+}
+
+// startUptimeHeartbeat starts the Uptime Kuma push loop.
+//
+// The loop ticks on the operator's configured interval and pushes a heartbeat
+// to the push URL saved in settings, so a monitor learns the gateway is down
+// from the missing heartbeat rather than an operator learning it from a CLI
+// tool that stopped answering.
+//
+// The configuration is read from the settings row on EVERY tick, never cached,
+// so a URL saved in the dashboard takes effect on the next heartbeat without a
+// restart. A tick with no configuration is a no-op rather than an error: an
+// operator who never set a push URL must not produce a failure log a minute.
+//
+// The loop is bound to the shutdown context, so it stops with the other
+// background loops. A failed push is logged and dropped — the monitor marks
+// the gateway down when the next push does not arrive either, and retrying
+// inside the tick would stall the loop on a monitor that is already gone.
+func startUptimeHeartbeat(ctx context.Context, repo *db.Repo) {
+	if repo == nil {
+		return
+	}
+	loop := uptime.NewLoop(
+		func() uptime.Config {
+			s, err := repo.GetSettings()
+			if err != nil || s == nil {
+				return uptime.Config{}
+			}
+			return uptime.Config{
+				Enabled:         s.UptimeKumaEnabled,
+				PushURL:         s.UptimeKumaPushURL,
+				IntervalSeconds: s.UptimeKumaInterval,
+			}
+		},
+		func() uptime.Pusher {
+			s, err := repo.GetSettings()
+			if err != nil || s == nil {
+				return nil
+			}
+			return &uptime.HTTPPusher{URL: s.UptimeKumaPushURL}
+		},
+	)
+	go loop.Run(ctx)
+	log.Println("[uptime] heartbeat loop started")
+}
+
+// startHeadroomOnBoot launches the local Headroom proxy sidecar if enabled in settings.
+// The proxy is spawned detached (proc.Detached, tracked via PID file) so it persists
+// across server restarts independently and is deliberately not cancelled by server shutdown.
+func startHeadroomOnBoot(repo *db.Repo, dataDir string) {
+	if repo == nil {
+		return
+	}
+	settings, err := repo.GetSettings()
+	if err != nil || settings == nil {
+		return
+	}
+	if !settings.HeadroomAutostart {
+		return
+	}
+	hurl := settings.HeadroomUrl
+	if hurl == "" {
+		hurl = "http://localhost:8787"
+	}
+	if !headroom.IsLoopbackHeadroomUrl(hurl) {
+		return
+	}
+	port := headroom.ParsePortFromURL(hurl)
+	if port == 0 {
+		port = headroom.DefaultPort
+	}
+	codeAware := settings.HeadroomCodeAware
+	kompress := settings.HeadroomKompress
+	go func() {
+		res, err := headroom.StartHeadroomProxy(dataDir, port, codeAware, kompress)
+		if err != nil {
+			log.Printf("[headroom] autostart failed: %v", err)
+			return
+		}
+		if res.AlreadyRunning {
+			log.Printf("[headroom] autostart: proxy already running on port %d (pid %d)", port, res.PID)
+		} else {
+			log.Printf("[headroom] autostart: started proxy on port %d (pid %d)", port, res.PID)
+		}
+	}()
 }

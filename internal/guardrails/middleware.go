@@ -11,11 +11,21 @@ import (
 	"9router/proxy/internal/middleware"
 )
 
-// maxScanBody caps how much of a request body is read for scanning. A prompt
-// larger than this is not scanned rather than buffered without bound, so a
-// hostile client cannot make the gateway hold an arbitrarily large body in
-// memory on the guardrails path.
+// maxScanBody caps how much of a request body is read for scanning. A larger
+// body is forwarded unscanned rather than buffered without bound, so a hostile
+// client cannot make the gateway hold an arbitrarily large body in memory on
+// the guardrails path — and a request that is not inspected is still delivered
+// intact.
 const maxScanBody = 8 << 20 // 8 MiB
+
+// joinReadCloser reattaches the unread remainder of a request body to the
+// prefix already consumed for a size check, while keeping the original Close.
+// The server closes the body after the handler returns, so the wrapper must
+// forward that call rather than swallow it.
+type joinReadCloser struct {
+	io.Reader
+	io.Closer
+}
 
 // Audit records a decision that was taken. Implementations must be
 // non-blocking: an audit sink that stalls cannot stall the gateway.
@@ -47,14 +57,31 @@ func Inbound(store PolicyStore, audit Audit, sw Switch) func(http.Handler) http.
 				return
 			}
 
-			body, err := io.ReadAll(io.LimitReader(r.Body, maxScanBody))
-			_ = r.Body.Close()
+			// A body whose declared size exceeds the cap is forwarded
+			// unscanned. The cap bounds memory; truncating instead would hand
+			// the handler a corrupt request while claiming to have inspected
+			// it.
+			if r.ContentLength > maxScanBody {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			body, err := io.ReadAll(io.LimitReader(r.Body, maxScanBody+1))
 			if err != nil {
 				// An unreadable body is not this middleware's error to define;
 				// let the real handler reject it.
 				next.ServeHTTP(w, r)
 				return
 			}
+			if int64(len(body)) > maxScanBody {
+				// The length was unknown (chunked upload) and the body is over
+				// the cap: put the consumed prefix back in front of the live
+				// stream so the handler receives it byte for byte, unscanned.
+				r.Body = joinReadCloser{io.MultiReader(bytes.NewReader(body), r.Body), r.Body}
+				next.ServeHTTP(w, r)
+				return
+			}
+			_ = r.Body.Close()
 
 			var payload map[string]any
 			if err := json.Unmarshal(body, &payload); err != nil {

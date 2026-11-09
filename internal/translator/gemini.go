@@ -1,10 +1,13 @@
 package translator
 
 import (
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/thinking"
 	"bytes"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -13,8 +16,15 @@ import (
 
 // GeminiStreamState holds translation state for Gemini stream chunks.
 type GeminiStreamState struct {
-	MessageStartSent     bool
-	MessageId            string
+	MessageStartSent bool
+	MessageId        string
+	// SessionID is the conversation this stream belongs to, taken from the
+	// client's session header. A thought signature is only valid for the call
+	// it was issued for, so the store is namespaced by the conversation that
+	// produced it rather than by the per-response MessageId — two parallel
+	// conversations on one account mint the same tool_call ids often enough
+	// that a global key replays the other one's signature.
+	SessionID            string
 	Model                string
 	Usage                *OpenAIUsage
 	FinishReason         string
@@ -89,6 +99,33 @@ type GeminiFuncResp struct {
 	Result any `json:"result,omitempty"`
 }
 
+// remoteImageMimeType maps a remote image URL extension to a concrete MIME
+// type for the fileData fallback in convertContentToGeminiParts. The result
+// comes from a fixed set, never from the URL, so a caller-supplied URL cannot
+// inject anything into the emitted MIME string; unknown extensions fall back
+// to the default. Port of decolua/9router 7ba1d1ca (remoteImageMimeType),
+// serving the same Antigravity "Unsupported mime type: image/*" 400).
+func remoteImageMimeType(rawURL string) string {
+	path := rawURL
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	if idx := strings.IndexByte(path, '#'); idx >= 0 {
+		path = path[:idx]
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
+	case ".gif":
+		return "image/gif"
+	case ".bmp":
+		return "image/bmp"
+	}
+	return "image/png"
+}
+
 type GeminiInlineData struct {
 	MimeType string `json:"mimeType"`
 	Data     string `json:"data"`
@@ -154,6 +191,14 @@ type GeminiStreamChunk struct {
 
 // TranslateOpenAIToGemini converts an OpenAI-compatible request body to Gemini native format.
 func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
+	return TranslateOpenAIToGeminiWithSession(openaiBody, "")
+}
+
+// TranslateOpenAIToGeminiWithSession is TranslateOpenAIToGemini for a request
+// that carries a conversation id. sessionID scopes the thought-signature
+// lookup, so a signature stored by another conversation on the same account is
+// never replayed here.
+func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]byte, error) {
 	var oreq struct {
 		Model               string         `json:"model"`
 		Messages            jsontext.Value `json:"messages"`
@@ -164,6 +209,7 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		TopK                *int           `json:"top_k,omitempty"`
 		Stream              bool           `json:"stream,omitempty"`
 		Tools               jsontext.Value `json:"tools,omitempty"`
+		ToolChoice          jsontext.Value `json:"tool_choice,omitempty"`
 		ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
 		Thinking            *struct {
 			Type         string `json:"type"`
@@ -286,8 +332,9 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 				}
 				ts := extractThoughtSig(tc.ID)
 				if ts == "" {
-					ts = GetGeminiThoughtSignature(tc.ID, "", oreq.Model)
+					ts = GetGeminiThoughtSignature(tc.ID, sessionID, oreq.Model)
 				}
+				ts = NormalizeGeminiThoughtSignature(ts)
 				if ts == "" && !firstFunctionCallSeen {
 					ts = DefaultThinkingSignature
 				}
@@ -380,7 +427,27 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 	req.Contents = NormalizeGeminiContentsForModel(req.Contents, oreq.Model)
 
 	// Tools
-	if len(oreq.Tools) > 0 {
+	// tool_choice maps to Gemini toolConfig mode:
+	//   "none"   -> NONE  (don't call any tool; don't send tool declarations)
+	//   "required" -> ANY (force at least one tool call)
+	//   "auto"/unset -> VALIDATED (default)
+	toolConfigMode := "VALIDATED"
+	toolChoiceStr := ""
+	if len(oreq.ToolChoice) > 0 {
+		var s string
+		if json.Unmarshal(oreq.ToolChoice, &s) == nil {
+			toolChoiceStr = s
+		}
+	}
+	if toolChoiceStr != "" {
+		switch toolChoiceStr {
+		case "none":
+			toolConfigMode = "NONE"
+		case "required":
+			toolConfigMode = "ANY"
+		}
+	}
+	if toolChoiceStr != "none" && len(oreq.Tools) > 0 {
 		var openaiTools []OpenAITool
 		if err := json.Unmarshal(oreq.Tools, &openaiTools); err != nil {
 			return nil, fmt.Errorf("parse tools: %w", err)
@@ -399,9 +466,18 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 			req.Tools = []GeminiTool{{FunctionDeclarations: decls}}
 			req.ToolConfig = map[string]any{
 				"functionCallingConfig": map[string]any{
-					"mode": "VALIDATED",
+					"mode": toolConfigMode,
 				},
 			}
+		}
+	}
+	if toolChoiceStr == "none" && req.ToolConfig == nil {
+		// No tool declarations but tool_choice: none — still tell Gemini not to
+		// invoke any built-in capability.
+		req.ToolConfig = map[string]any{
+			"functionCallingConfig": map[string]any{
+				"mode": "NONE",
+			},
 		}
 	}
 
@@ -424,38 +500,51 @@ func TranslateOpenAIToGemini(openaiBody []byte) ([]byte, error) {
 		maxTokens = oreq.MaxCompletionTokens
 	}
 
-	thinkingBudget := 0
+	// Unified thinking intent, same precedence the old chain used
+	// (reasoning_effort, then thinking object, then thinking_budget).
+	probe := map[string]any{}
 	if oreq.ReasoningEffort != "" {
-		thinkingBudget = effortToBudget(oreq.ReasoningEffort)
-	} else if oreq.Thinking != nil && oreq.Thinking.BudgetTokens > 0 {
-		thinkingBudget = oreq.Thinking.BudgetTokens
-	} else if oreq.ThinkingBudget != nil && *oreq.ThinkingBudget > 0 {
-		thinkingBudget = *oreq.ThinkingBudget
+		probe["reasoning_effort"] = oreq.ReasoningEffort
 	}
-
-	if thinkingBudget > 0 {
-		genConfig["thinkingConfig"] = map[string]any{
-			"thinkingBudget":  thinkingBudget,
-			"includeThoughts": true,
-		}
-		// Ensure maxOutputTokens strictly exceeds thinkingBudget to prevent 400 INVALID_ARGUMENT
-		if maxTokens == nil || *maxTokens <= thinkingBudget {
-			adjustedMax := thinkingBudget + thinkingHeadroomTokens
-			maxTokens = &adjustedMax
+	if oreq.Thinking != nil {
+		probe["thinking"] = map[string]any{"type": oreq.Thinking.Type, "budget_tokens": oreq.Thinking.BudgetTokens}
+	}
+	if oreq.ThinkingBudget != nil {
+		probe["thinking_budget"] = *oreq.ThinkingBudget
+		probe["enable_thinking"] = true
+	}
+	intent := thinking.Extract(probe)
+	// The capability rows are model patterns, and the pattern table carries no
+	// provider scope, so the lookup is provider-agnostic by design: a vendor
+	// prefix on the model id is stripped and the global row for the bare id
+	// decides the wire format.
+	caps := providers.GetCapabilitiesForModel("", oreq.Model)
+	supported := providers.GetThinkingLevels("", oreq.Model)
+	if tc, floor := thinking.GeminiConfig(intent, caps.ThinkingFormat, caps, supported); tc != nil {
+		genConfig["thinkingConfig"] = tc
+		if floor > 0 {
+			// Raise maxOutputTokens to the floor, never above caps.MaxOutput.
+			target := floor
+			if caps.MaxOutput > 0 && caps.MaxOutput < target {
+				target = caps.MaxOutput
+			}
+			if maxTokens == nil || *maxTokens < target {
+				maxTokens = &target
+			}
 		}
 	}
 	if maxTokens != nil {
 		genConfig["maxOutputTokens"] = *maxTokens
 	}
 	if len(genConfig) > 0 {
-		configJSON, err := json.Marshal(genConfig)
+		configJSON, err := json.Marshal(genConfig, json.Deterministic(true))
 		if err != nil {
 			return nil, fmt.Errorf("marshal generation config: %w", err)
 		}
 		req.GenerationConfig = configJSON
 	}
 
-	out, err := json.Marshal(req)
+	out, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		return nil, fmt.Errorf("marshal gemini request: %w", err)
 	}
@@ -487,7 +576,7 @@ func moveFunctionResponsesLast(parts []GeminiPart) []GeminiPart {
 func extractThoughtSig(id string) string {
 	const sep = "__ts__"
 	if _, after, ok := strings.CutLast(id, sep); ok && after != "" {
-		return after
+		return NormalizeGeminiThoughtSignature(after)
 	}
 	return ""
 }
@@ -546,25 +635,13 @@ func (u *toolCallIDUniquifier) next(id string) string {
 // readability and the call's index for uniqueness — two parts in one chunk are
 // emitted inside a single clock tick, so UnixNano alone collides and the client
 // cannot match a result to its call.
-// Parity with `functionCall.id || \`${name}-${Date.now()}-${index}\`` in
+// Parity with `functionCall.id || \`${name}-${Date.now()}-${index}\“ in
 // open-sse/translator/response/gemini-to-openai.js.
 func geminiToolCallID(geminiID, name string, index int) string {
 	if geminiID != "" {
 		return geminiID
 	}
 	return fmt.Sprintf("call_%s_%d_%d", name, time.Now().UnixNano(), index)
-}
-
-// effortToBudget converts reasoning_effort string to thinking budget tokens.
-func effortToBudget(effort string) int {
-	switch effort {
-	case "high":
-		return 32000
-	case "medium":
-		return 16000
-	default:
-		return 8000
-	}
 }
 
 // ─── Gemini Response → OpenAI ───
@@ -604,7 +681,7 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 				reasoningContent += part.Text
 			}
 			if part.FunctionCall != nil {
-				args, err := json.Marshal(part.FunctionCall.Args)
+				args, err := json.Marshal(part.FunctionCall.Args, json.Deterministic(true))
 				if err != nil {
 					args = []byte("{}")
 				}
@@ -692,7 +769,7 @@ func TranslateGeminiResponseToOpenAI(geminiBody []byte) ([]byte, *OpenAIUsage, e
 		delete(resp["choices"].([]map[string]any)[0]["message"].(map[string]any), "tool_calls")
 	}
 
-	out, err := json.Marshal(resp)
+	out, err := json.Marshal(resp, json.Deterministic(true))
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal OpenAI response: %w", err)
 	}
@@ -760,7 +837,7 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 					delta["reasoning_content"] = part.Text
 				}
 				if part.FunctionCall != nil {
-					args, err := json.Marshal(part.FunctionCall.Args)
+					args, err := json.Marshal(part.FunctionCall.Args, json.Deterministic(true))
 					if err != nil {
 						args = []byte("{}")
 					}
@@ -778,7 +855,15 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 						sig = state.LastThoughtSignature
 					}
 					if sig != "" {
-						StoreGeminiThoughtSignature(id, sig, state.MessageId, state.Model)
+						// Keyed by the conversation, not by this response's id:
+						// the response id changes on every turn, so it could
+						// never be looked up on the next one, and the lookup
+						// fell back to a global key another conversation shares.
+						storeSession := state.SessionID
+						if storeSession == "" {
+							storeSession = state.MessageId
+						}
+						StoreGeminiThoughtSignature(id, sig, storeSession, state.Model)
 						id += "__ts__" + sig
 					}
 					delta["tool_calls"] = []map[string]any{
@@ -894,7 +979,7 @@ func TranslateGeminiChunkToOpenAI(chunk []byte, state *GeminiStreamState) ([]byt
 	// Format as multiple SSE lines
 	var buf bytes.Buffer
 	for _, res := range results {
-		payload, err := json.Marshal(res)
+		payload, err := json.Marshal(res, json.Deterministic(true))
 		if err != nil {
 			continue
 		}
@@ -948,14 +1033,22 @@ func convertContentToGeminiParts(content any) []GeminiPart {
 								mimeType := url[5:semi]
 								if comma := strings.Index(url, ","); comma > 0 {
 									data := url[comma+1:]
-									parts = append(parts, GeminiPart{
-										InlineData: &GeminiInlineData{MimeType: mimeType, Data: data},
-									})
+									// Claude under Antigravity rejects images >5MB base64
+									// (OMP max-image-payload-bytes 5242880 in google-antigravity.kdl).
+									// Dropping over-budget frames keeps the turn alive.
+									if len(data) <= 5242880 {
+										parts = append(parts, GeminiPart{
+											InlineData: &GeminiInlineData{MimeType: mimeType, Data: data},
+										})
+									}
 								}
 							}
 						} else if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+							// Antigravity rejects the wildcard (400 "Unsupported
+							// mime type: image/*"), so the fallback emits a
+							// concrete type inferred from a fixed extension set.
 							parts = append(parts, GeminiPart{
-								FileData: &GeminiFileData{FileUri: url, MimeType: "image/*"},
+								FileData: &GeminiFileData{FileUri: url, MimeType: remoteImageMimeType(url)},
 							})
 						}
 					}

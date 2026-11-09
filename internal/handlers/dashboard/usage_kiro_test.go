@@ -15,10 +15,10 @@ func TestKiroUsageToken(t *testing.T) {
 		want        string
 	}{
 		{
-			name:        "api_key auth sends the api key",
-			apiKey:      "ak-123",
-			psd:         map[string]any{"authMethod": "api_key"},
-			want:        "ak-123",
+			name:   "api_key auth sends the api key",
+			apiKey: "ak-123",
+			psd:    map[string]any{"authMethod": "api_key"},
+			want:   "ak-123",
 		},
 		{
 			name:        "api_key auth with both fields still sends the api key",

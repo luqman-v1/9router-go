@@ -1,6 +1,23 @@
 package chat
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
+
+// TestAccessCandidatesDropTheThinkingSuffix pins the candidate derivation: a
+// "(level)" suffix is a request override, not part of the model id, so an
+// allowlist written as "gpt-5" covers a request for "gpt-5(high)". Without
+// the strip the suffixed spelling matched neither the bare entry nor the
+// provider-qualified one, and the same key was allowed on one endpoint and
+// denied on another.
+func TestAccessCandidatesDropTheThinkingSuffix(t *testing.T) {
+	h := &ChatHandler{}
+	candidates := h.accessCandidates("gpt-5(high)")
+	if !slices.Contains(candidates, "gpt-5") {
+		t.Fatalf("candidates = %v, want the suffix-free model among them", candidates)
+	}
+}
 
 // TestModelAllowedPatterns pins issue #365's pattern contract for the per-key
 // model allowlist: cross-segment wildcards, deny entries (!term / -term), and a

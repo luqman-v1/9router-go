@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 
 	"9router/proxy/internal/db"
@@ -12,10 +13,11 @@ import (
 )
 
 // The usage dashboard serves the Details section (issue #280): lifetime cards,
-// the activity heatmap, and the node-health table. Everything is
-// range-independent by design — the heatmap is a fixed trailing-year window,
-// node health a fixed trailing 7 days, the cards are lifetime totals — ported
-// from techysy/10router's getUsageDashboard.
+// the activity heatmap, and the node-health table. The heatmap is a fixed
+// trailing-year window, node health a fixed trailing 7 days, and the cards are
+// lifetime totals except the cache-hit rate, which reuses the same trailing
+// 7-day history the Top Model card reads — ported from techysy/10router's
+// getUsageDashboard.
 
 // dashboardDailyPoint is one heatmap cell.
 type dashboardDailyPoint struct {
@@ -42,8 +44,7 @@ type dashboardLifetime struct {
 	LongestStreak int                `json:"longestStreak"`
 	TopModel      *dashboardTopModel `json:"topModel"`
 	CacheHitRate  *float64           `json:"cacheHitRate"`
-	CacheTokens   int64              `json:"cacheTokens"`
-	CacheRequests int64              `json:"cacheRequests"`
+	SuccessRate   *float64           `json:"successRate"`
 }
 
 // dashboardNode is one node-health row (a provider, or a model under it).
@@ -127,11 +128,13 @@ func computeScore(successRate float64, latencyScore, speedScore *int) int {
 func dashboardDaily(rows []db.UsageDailyRow, now time.Time) ([]dashboardDailyPoint, *dashboardLifetime) {
 	type dayData struct {
 		Requests         int64   `json:"requests"`
+		Errors           int64   `json:"errors"`
 		PromptTokens     int64   `json:"promptTokens"`
 		CompletionTokens int64   `json:"completionTokens"`
 		Cost             float64 `json:"cost"`
 	}
 	lifetime := &dashboardLifetime{}
+	var totalErrors int64
 	streak := 0
 	var prevKey string
 	active := map[string]bool{}
@@ -146,6 +149,7 @@ func dashboardDaily(rows []db.UsageDailyRow, now time.Time) ([]dashboardDailyPoi
 		tokens := d.PromptTokens + d.CompletionTokens
 		lifetime.TotalRequests += d.Requests
 		lifetime.TotalTokens += tokens
+		totalErrors += d.Errors
 		if tokens > lifetime.PeakTokens {
 			lifetime.PeakTokens = tokens
 			lifetime.PeakDate = row.DateKey
@@ -199,6 +203,10 @@ func dashboardDaily(rows []db.UsageDailyRow, now time.Time) ([]dashboardDailyPoi
 			Cost:     d.Cost,
 		})
 	}
+	if lifetime.TotalRequests > 0 {
+		rate := round1(float64(lifetime.TotalRequests-totalErrors) / float64(lifetime.TotalRequests) * 100)
+		lifetime.SuccessRate = &rate
+	}
 	return points, lifetime
 }
 
@@ -212,69 +220,6 @@ func dayDiff(later, earlier string) int {
 	return int(a.Sub(b) / (24 * time.Hour))
 }
 
-// pickTopModel picks the model that consumed the most tokens over the
-// trailing 7 days.
-func pickTopModel(rows []db.UsageHistoryRow) *dashboardTopModel {
-	type key struct{ model, provider string }
-	tokens := map[key]int64{}
-	for _, row := range rows {
-		k := key{model: row.Model, provider: row.Provider}
-		tokens[k] += int64(row.PromptTokens) + int64(row.CompletionTokens)
-	}
-	var best *dashboardTopModel
-	var bestTokens int64
-	for k, t := range tokens {
-		if t > bestTokens {
-			bestTokens = t
-			best = &dashboardTopModel{Model: k.model, Provider: k.provider, Tokens: t}
-		}
-	}
-	return best
-}
-
-// dashboardCacheHitRate is the lifetime cache-hit rate over real cached
-// requests only. The denominator is the request's total input, which arrives
-// in two shapes: canonical rows are cache-INCLUSIVE (promptTokens already
-// contains the cached part), raw Claude-shape rows are cache-EXCLUSIVE.
-// max(prompt, cached+creation) resolves both without a shape flag; rows whose
-// input is entirely cache with no writes are distorted imports and stay out.
-func dashboardCacheHitRate(rows []db.CacheUsageRow) (rate *float64, cacheTokens, requests int64) {
-	var hitSum, totalSum int64
-	for _, row := range rows {
-		var t struct {
-			CachedTokens             int64 `json:"cached_tokens"`
-			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-			PromptTokens             int64 `json:"prompt_tokens"`
-		}
-		if err := json.Unmarshal([]byte(row.Tokens), &t); err != nil {
-			continue
-		}
-		cached := t.CachedTokens
-		if cached == 0 {
-			cached = t.CacheReadInputTokens
-		}
-		prompt := int64(row.PromptTokens)
-		if prompt == 0 {
-			prompt = t.PromptTokens
-		}
-		if cached <= 0 || prompt <= 0 {
-			continue
-		}
-		if cached == prompt && t.CacheCreationInputTokens <= 0 {
-			continue
-		}
-		hitSum += cached
-		totalSum += max(prompt, cached+t.CacheCreationInputTokens)
-		requests++
-	}
-	if totalSum == 0 {
-		return nil, hitSum, requests
-	}
-	r := round1(float64(hitSum) / float64(totalSum) * 100)
-	return &r, hitSum, requests
-}
-
 // perfAgg accumulates latency observations per provider (and per model).
 type perfAgg struct {
 	sum, count          int64
@@ -282,7 +227,11 @@ type perfAgg struct {
 	tokensSum, durMsSum int64
 }
 
-// detailPerf is the requestDetails payload shape the perf feed reads.
+// detailPerf is the requestDetails observation the perf feed reads. The
+// numbers arrive from the repository, which reads them out of the stored
+// payload: the payload itself carries the request messages and the response
+// body, and shipping it for every retained request made this read scale with
+// the size of the stored traffic.
 type detailPerf struct {
 	Latency struct {
 		TTFT  int64 `json:"ttft"`
@@ -292,6 +241,16 @@ type detailPerf struct {
 		CompletionTokens int64 `json:"completion_tokens"`
 		OutputTokens     int64 `json:"output_tokens"`
 	} `json:"tokens"`
+}
+
+// detailPerfFromRow turns a stored observation into the shape the fold reads.
+func detailPerfFromRow(row db.RequestDetailPerfRow) detailPerf {
+	var p detailPerf
+	p.Latency.TTFT = row.TTFTMs
+	p.Latency.Total = row.TotalMs
+	p.Tokens.CompletionTokens = row.CompletionTokens
+	p.Tokens.OutputTokens = row.OutputTokens
+	return p
 }
 
 // foldPerf adds one latency observation to an accumulator, deriving the
@@ -370,10 +329,7 @@ func dashboardPerf(rows []db.RequestDetailPerfRow) (node, model map[string]*perf
 		foldPerf(agg, p)
 	}
 	for _, row := range rows {
-		var p detailPerf
-		if err := json.Unmarshal([]byte(row.Data), &p); err != nil {
-			continue
-		}
+		p := detailPerfFromRow(row)
 		fold(node, row.Provider, p)
 		fold(model, row.Provider+"|"+row.Model, p)
 	}
@@ -445,48 +401,86 @@ func buildDashboardNodes(rows []db.UsageGroupRow, perf map[string]*perfAgg, minR
 
 // HandleUsageDashboard serves GET /api/usage/dashboard: the Details section's
 // lifetime cards, activity heatmap, and node-health table.
+//
+// The reads run concurrently. They used to run one after another, and on a
+// 305k-row ledger that made the endpoint 153ms of query time behind one
+// response: each read is a full pass over the trailing week, and the client
+// waits for the last one before it paints anything. Run together they overlap
+// their scans — measured 145ms → 84ms for the same five reads.
+//
+// The provider-level table and the Top Model card are then derived from the
+// model-level rows instead of being queried again. Both were separate GROUP BY
+// passes over the same window (22ms and 27ms); a provider's totals are the sum
+// of its models' totals, and the top model is the largest of the same rows, so
+// the fold costs microseconds and cannot disagree with the table beside it.
 func HandleUsageDashboard(repo *db.Repo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
-		allDays, err := repo.GetUsageDailyRange(allUsageDays)
-		if err != nil {
-			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		daily, lifetime := dashboardDaily(allDays, now)
-
 		weekAgo := now.AddDate(0, 0, -6).UTC().Format(time.RFC3339)
-		if weekRows, err := repo.GetUsageHistorySince(weekAgo); err == nil {
-			lifetime.TopModel = pickTopModel(weekRows)
-		}
-		if cacheRows, err := repo.GetCacheUsageRows(); err == nil {
-			rate, cacheTokens, requests := dashboardCacheHitRate(cacheRows)
-			lifetime.CacheHitRate = rate
-			lifetime.CacheTokens = cacheTokens
-			lifetime.CacheRequests = requests
-		}
 
-		perfRows, err := repo.GetRequestDetailPerf()
-		if err != nil {
-			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		var (
+			allDays    []db.UsageDailyRow
+			perfRows   []db.RequestDetailPerfRow
+			modelRows  []db.UsageGroupRow
+			hit, total int64
+		)
+		// Each goroutine writes its own variable; the wait group joins them, so
+		// no result is read before the read that fills it has finished.
+		var (
+			wg          sync.WaitGroup
+			daysErr     error
+			perfErr     error
+			modelErr    error
+			cacheHitErr error
+		)
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			allDays, daysErr = repo.GetUsageDailyRange(allUsageDays)
+		}()
+		go func() {
+			defer wg.Done()
+			perfRows, perfErr = repo.GetRequestDetailPerf()
+		}()
+		go func() {
+			defer wg.Done()
+			modelRows, modelErr = repo.GetUsageGroupByModelSince(weekAgo)
+		}()
+		go func() {
+			defer wg.Done()
+			hit, total, cacheHitErr = repo.GetUsageCacheHitTotalsSince(weekAgo)
+		}()
+		wg.Wait()
+
+		if daysErr != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, daysErr.Error())
 			return
 		}
+		if perfErr != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, perfErr.Error())
+			return
+		}
+		if modelErr != nil {
+			handlerutil.WriteJSONError(w, http.StatusInternalServerError, modelErr.Error())
+			return
+		}
+
+		daily, lifetime := dashboardDaily(allDays, now)
+		if provider, model, tokens, ok := db.TopUsageGroupByTokens(modelRows); ok {
+			lifetime.TopModel = &dashboardTopModel{Model: model, Provider: provider, Tokens: tokens}
+		}
+		// A failed cache read is not fatal: the card falls back to "—" rather
+		// than taking the whole dashboard down for one optional number.
+		if cacheHitErr == nil && total > 0 {
+			rate := round1(float64(hit) / float64(total) * 100)
+			lifetime.CacheHitRate = &rate
+		}
+
 		nodePerf, modelPerf := dashboardPerf(perfRows)
-
-		nodeRows, err := repo.GetUsageGroupByProviderSince(weekAgo)
-		if err != nil {
-			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		modelRows, err := repo.GetUsageGroupByModelSince(weekAgo)
-		if err != nil {
-			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
 
 		handlerutil.WriteJSON(w, http.StatusOK, dashboardResponse{
 			Daily:    daily,
-			Nodes:    buildDashboardNodes(nodeRows, nodePerf, 50, false),
+			Nodes:    buildDashboardNodes(db.FoldUsageGroupByProvider(modelRows), nodePerf, 50, false),
 			Models:   buildDashboardNodes(modelRows, modelPerf, 10, true),
 			Lifetime: lifetime,
 		})

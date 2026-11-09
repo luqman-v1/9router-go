@@ -1,5 +1,7 @@
 package handlerutil
 
+import "strings"
+
 // MaskAPIKey returns the form of an API key that is safe to persist and display.
 //
 // The tail is kept because every key an instance mints shares the same
@@ -11,8 +13,9 @@ package handlerutil
 // are never real keys, and the previous "***" sentinel is kept so existing
 // no-key usage rows stay in the same bucket instead of splitting.
 func MaskAPIKey(key string) string {
-	if RuneCount(key) <= 8 {
+	trimmed := strings.TrimSpace(key)
+	if RuneCount(trimmed) <= 8 {
 		return "***"
 	}
-	return RunePrefix(key, 8) + "***" + RuneSuffix(key, 4)
+	return RunePrefix(trimmed, 8) + "***" + RuneSuffix(trimmed, 4)
 }

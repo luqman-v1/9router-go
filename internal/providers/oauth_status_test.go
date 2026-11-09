@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestIsRefreshUnauthorized(t *testing.T) {
@@ -97,5 +98,49 @@ func TestRefreshErrorTruncatesEchoedGrant(t *testing.T) {
 	}
 	if len(refreshErr.Body) > 200 {
 		t.Errorf("body length = %d, want it truncated to 200", len(refreshErr.Body))
+	}
+}
+
+func TestOAuthConnectionData_IsExpired(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name      string
+		expiresAt string
+		want      bool
+	}{
+		{
+			name:      "empty expiresAt is not expired (unknown/non-expiring)",
+			expiresAt: "",
+			want:      false,
+		},
+		{
+			name:      "far future expiresAt is not expired",
+			expiresAt: now.Add(24 * time.Hour).Format(time.RFC3339),
+			want:      false,
+		},
+		{
+			name:      "past expiresAt is expired",
+			expiresAt: now.Add(-5 * time.Minute).Format(time.RFC3339),
+			want:      true,
+		},
+		{
+			name:      "expires within buffer (30s from now) is expired",
+			expiresAt: now.Add(30 * time.Second).Format(time.RFC3339),
+			want:      true,
+		},
+		{
+			name:      "invalid format is considered expired",
+			expiresAt: "not-a-timestamp",
+			want:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := &OAuthConnectionData{ExpiresAt: tt.expiresAt}
+			if got := data.IsExpired(); got != tt.want {
+				t.Errorf("IsExpired() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

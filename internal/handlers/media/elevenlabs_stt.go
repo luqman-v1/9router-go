@@ -3,6 +3,7 @@ package media
 import (
 	"bytes"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -34,7 +35,6 @@ import (
 //   - response_format maps to an `additional_formats` render that is served
 //     verbatim, never synthesized from the JSON body.
 
-
 // elevenLabsResponseFormats maps the OpenAI response_format onto the Scribe
 // `additional_formats[].format` names. Mirrors upstream sttConfig.responseFormats.
 type elevenLabsResponseFormats struct {
@@ -65,7 +65,7 @@ func (f *elevenLabsSTTForm) get(key string) string {
 // parseElevenLabsSTTRequest reads the caller's multipart body. Non-multipart
 // callers are rejected outright — there is no JSON form of this endpoint.
 func parseElevenLabsSTTRequest(body []byte, contentType string, modelInfo *chat.ModelInfo) (*elevenLabsSTTForm, error) {
-	if !strings.Contains(contentType, "multipart/form-data") {
+	if mediaType, _, err := mime.ParseMediaType(contentType); err != nil || mediaType != "multipart/form-data" {
 		return nil, fmt.Errorf("expected multipart/form-data for audio transcription")
 	}
 	_, params, err := mime.ParseMediaType(contentType)
@@ -78,7 +78,13 @@ func parseElevenLabsSTTRequest(body []byte, contentType string, modelInfo *chat.
 	for {
 		p, err := mr.NextPart()
 		if err != nil {
-			break
+			// Fail closed, for the same reason antigravity_stt does: a body
+			// that stops parsing after the file part still carries that file,
+			// and forwarding it skipped every cap.
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("malformed multipart body: %w", err)
 		}
 		name := p.FormName()
 		if name == "file" {

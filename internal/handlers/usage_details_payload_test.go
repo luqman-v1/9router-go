@@ -3,8 +3,10 @@ package handlers
 import (
 	json "encoding/json/v2"
 	"fmt"
+	"github.com/go-chi/chi/v5"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -235,5 +237,44 @@ func TestRequestDetails_PagesDoNotRepeatRows(t *testing.T) {
 	}
 	if len(seen) != total {
 		t.Errorf("paged through %d distinct rows, want %d", len(seen), total)
+	}
+}
+
+// TestHandleRequestDetail_SlashedModelID pins the fix for #588. The dashboard
+// issues getRequestDetail with encodeURIComponent(id) (web/src/api/client.ts),
+// so a model id containing "/" arrives on the wire as "%2F"; through a real chi
+// route, r.PathValue("id") still returns that encoded segment, and the repo
+// lookup has to see the unescaped primary key or the payload modal 404s despite
+// the row existing.
+func TestHandleRequestDetail_SlashedModelID(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+
+	const id = "1792778774449-deepseek/deepseek-v4-1-flash"
+	seedDetailRow(t, repo, id,
+		`{"model":"deepseek/deepseek-v4-1-flash","status":"success","tokens":{"prompt_tokens":5,"completion_tokens":7}}`)
+
+	r := chi.NewRouter()
+	r.Get("/api/usage/request-details/{id}", HandleRequestDetail(repo))
+
+	target := "/api/usage/request-details/" + url.PathEscape(id)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for slashed request id (body: %s)", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v (raw %s)", err, rec.Body)
+	}
+	detail, _ := payload["detail"].(map[string]any)
+	if detail == nil {
+		t.Fatalf("slashed request id %q not found (raw %s)", id, rec.Body.String())
+	}
+	if got, _ := detail["model"].(string); got != "deepseek/deepseek-v4-1-flash" {
+		t.Errorf("detail model = %q, want the slashed model id", got)
 	}
 }

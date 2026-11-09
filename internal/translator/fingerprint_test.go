@@ -2,6 +2,7 @@ package translator
 
 import (
 	json "encoding/json/v2"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -252,7 +253,7 @@ func TestConcealFingerprintToolsPreservesExactReadDefinition(t *testing.T) {
 func TestConcealFingerprintToolsAlreadyCanonical(t *testing.T) {
 	// A body that already carries the lowercase quartet needs no rename and no
 	// extra declarations.
-	body := []byte(`{"tools":[{"name":"terminal"},{"name":"bash"},{"name":"glob"},{"name":"grep"},{"name":"read"}]}`)
+	body := []byte(`{"tools":[{"name":"custom_tool"},{"name":"bash"},{"name":"glob"},{"name":"grep"},{"name":"read"}]}`)
 	out, nameMap := ConcealFingerprintTools(body)
 	if len(nameMap) != 0 {
 		t.Errorf("map should be empty, got %v", nameMap)
@@ -277,14 +278,14 @@ func TestConcealFingerprintToolsInjectsWhenQuartetAbsent(t *testing.T) {
 	// injected (upstream returns 403 without it), and caller tools must survive
 	// untouched. The rest of the quartet is NOT injected: the gate does not ask
 	// for it, so adding it would only offer the model tools that do nothing.
-	body := []byte(`{"tools":[{"name":"terminal"},{"name":"read_file"}]}`)
+	body := []byte(`{"tools":[{"name":"custom_tool"},{"name":"read_file"}]}`)
 	out, nameMap := ConcealFingerprintTools(body)
 	if len(nameMap) != 0 {
 		t.Errorf("nothing was capitalised, map should be empty: %v", nameMap)
 	}
 	names := toolNames(t, out)
 	if len(names) != 3 {
-		t.Errorf(`want terminal, read_file and one injected "read", got %d: %v`, len(names), names)
+		t.Errorf(`want custom_tool, read_file and one injected "read", got %d: %v`, len(names), names)
 	}
 	injected := 0
 	for _, n := range names {
@@ -303,7 +304,7 @@ func TestConcealFingerprintToolsInjectsWhenQuartetAbsent(t *testing.T) {
 		}
 	}
 	joined := strings.Join(names, ",")
-	if !strings.Contains(joined, "terminal") || !strings.Contains(joined, "read_file") {
+	if !strings.Contains(joined, "custom_tool") || !strings.Contains(joined, "read_file") {
 		t.Errorf("caller tools disappeared: %v", names)
 	}
 }
@@ -480,5 +481,111 @@ func TestConcealFingerprintToolsChatShapeWhenNoTools(t *testing.T) {
 	}
 	if m["tool_choice"] != "none" {
 		t.Errorf("expected tool_choice 'none' for tool-less chat request, got %v", m["tool_choice"])
+	}
+}
+
+func TestConcealFingerprintTools_AliasesDeclaredTerminalTools(t *testing.T) {
+	// Upstream decolua/9router#5319, #5328: free tier rejects tool names containing "terminal"
+	body := []byte(`{"model":"oc/deepseek-v4.1-free","tools":[
+		{"type":"function","name":"read_file"},
+		{"type":"function","name":"terminal"},
+		{"type":"function","name":"write_file"}
+	]}`)
+
+	out, nameMap := ConcealFingerprintTools(body)
+	names := toolNames(t, out)
+
+	for _, n := range names {
+		if strings.Contains(strings.ToLower(n), "terminal") {
+			t.Errorf("tool name %q contains 'terminal'; free tier will 429", n)
+		}
+	}
+	if !slices.Contains(names, "run_command") {
+		t.Errorf("expected 'run_command' alias in %v", names)
+	}
+	if nameMap["run_command"] != "terminal" {
+		t.Errorf("nameMap['run_command'] = %q, want 'terminal'", nameMap["run_command"])
+	}
+	if !slices.Contains(names, "read_file") || !slices.Contains(names, "write_file") {
+		t.Errorf("caller's other tools must be preserved: %v", names)
+	}
+}
+
+func TestConcealFingerprintTools_GatesOnSubstringTerminalAndCollisions(t *testing.T) {
+	body := []byte(`{"model":"oc/deepseek-v4.1-free","tools":[
+		{"type":"function","name":"Terminal"},
+		{"type":"function","name":"my_terminal_thing"},
+		{"type":"function","name":"terminals"},
+		{"type":"function","name":"shell"}
+	]}`)
+
+	out, nameMap := ConcealFingerprintTools(body)
+	names := toolNames(t, out)
+
+	for _, n := range names {
+		if strings.Contains(strings.ToLower(n), "terminal") {
+			t.Errorf("gated substring survived: %q", n)
+		}
+	}
+	if !slices.Contains(names, "shell") {
+		t.Errorf("shell tool must be untouched: %v", names)
+	}
+	if !slices.Contains(names, "run_command") || !slices.Contains(names, "run_command2") || !slices.Contains(names, "run_command3") {
+		t.Errorf("expected collision numbering [run_command, run_command2, run_command3] in %v", names)
+	}
+	if nameMap["run_command"] != "Terminal" {
+		t.Errorf("nameMap['run_command'] = %q, want 'Terminal'", nameMap["run_command"])
+	}
+}
+
+func TestConcealFingerprintTools_RestoresGatedToolNameAndAliasesHistory(t *testing.T) {
+	body := []byte(`{
+		"model":"oc/deepseek-v4.1-free",
+		"tools":[{"type":"function","function":{"name":"terminal"}}],
+		"tool_choice":{"type":"function","function":{"name":"terminal"}},
+		"messages":[
+			{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"terminal","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"c1","content":"ok"}
+		]
+	}`)
+
+	out, nameMap := ConcealFingerprintTools(body)
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Verify tool_choice was retargeted to run_command
+	choice, _ := m["tool_choice"].(map[string]any)
+	fn, _ := choice["function"].(map[string]any)
+	if fn["name"] != "run_command" {
+		t.Errorf("tool_choice function name = %v, want 'run_command'", fn["name"])
+	}
+
+	// Verify message tool_calls was retargeted to run_command
+	messages, _ := m["messages"].([]any)
+	asst, _ := messages[0].(map[string]any)
+	toolCalls, _ := asst["tool_calls"].([]any)
+	tc, _ := toolCalls[0].(map[string]any)
+	tcFn, _ := tc["function"].(map[string]any)
+	if tcFn["name"] != "run_command" {
+		t.Errorf("history tool_calls function name = %v, want 'run_command'", tcFn["name"])
+	}
+
+	// Verify response restoration
+	resp := []byte(`{"choices":[{"message":{"tool_calls":[{"id":"c2","type":"function","function":{"name":"run_command","arguments":"{}"}}]}}]}`)
+	restored := RestoreToolNames(resp, nameMap)
+	var respMap map[string]any
+	if err := json.Unmarshal(restored, &respMap); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	rChoices, _ := respMap["choices"].([]any)
+	rChoice, _ := rChoices[0].(map[string]any)
+	rMsg, _ := rChoice["message"].(map[string]any)
+	rCalls, _ := rMsg["tool_calls"].([]any)
+	rCall, _ := rCalls[0].(map[string]any)
+	rFn, _ := rCall["function"].(map[string]any)
+	if rFn["name"] != "terminal" {
+		t.Errorf("restored response tool name = %v, want 'terminal'", rFn["name"])
 	}
 }

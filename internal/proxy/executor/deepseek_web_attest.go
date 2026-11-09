@@ -63,30 +63,47 @@ var deepSeekHif = &deepSeekHifCache{values: make(map[string]deepSeekHifEntry)}
 // headers returns the attestation headers, or an empty map when nothing could
 // be fetched and nothing is cached. It never returns an error: the caller must
 // be able to make its request regardless.
-func (c *deepSeekHifCache) headers(ctx context.Context, client *http.Client, origin string) map[string]string {
+//
+// The values are fetched through the turn when it has a browser-fidelity
+// transport: the attestation hosts are part of the site's anti-bot pipeline,
+// and the value they hand out is presented by the very next completion call.
+// A value collected over Go's own TLS handshake contradicts the Chrome
+// handshake that presents it, so the fetch rides the same stack the answer
+// will.
+func (c *deepSeekHifCache) headers(ctx context.Context, turn deepSeekTurn) map[string]string {
 	out := map[string]string{}
 	for _, host := range []struct {
 		key   string
 		url   string
 		field string
 	}{
-		{key: "leim", url: deepSeekHifLeimURL, field: "X-Hif-Leim"},
-		{key: "dliq", url: deepSeekHifDliqURL, field: "X-Hif-Dliq"},
+		{key: "leim", url: deepSeekHifLeimURL, field: "x-hif-leim"},
+		{key: "dliq", url: deepSeekHifDliqURL, field: "x-hif-dliq"},
 	} {
-		if value := c.value(ctx, client, host.key, host.url, origin); value != "" {
+		if turn.transport != nil {
+			if value := c.resolve(ctx, host.key, func() (string, time.Duration) {
+				return c.fetchViaTransport(ctx, turn, host.url)
+			}); value != "" {
+				out[host.field] = value
+			}
+			continue
+		}
+		if value := c.value(ctx, turn.client, host.key, host.url, turn.origin); value != "" {
 			out[host.field] = value
 		}
 	}
 	return out
 }
 
-// value returns one attestation value, refreshing it when its TTL has passed.
-func (c *deepSeekHifCache) value(ctx context.Context, client *http.Client, key, url, origin string) string {
+// resolve is the cache discipline around one fetch strategy: a fresh value is
+// returned as-is, a failed refresh falls back to the stale one, and a
+// successful one is stored for the TTL it announced.
+func (c *deepSeekHifCache) resolve(ctx context.Context, key string, fetch func() (string, time.Duration)) string {
 	if cached, ok := c.fresh(key); ok {
 		return cached
 	}
 
-	value, ttl := c.fetch(ctx, client, url, origin)
+	value, ttl := fetch()
 	if value == "" {
 		// A failed refresh keeps whatever is cached: a value the site issued is
 		// closer to a browser than no header at all.
@@ -95,6 +112,14 @@ func (c *deepSeekHifCache) value(ctx context.Context, client *http.Client, key, 
 
 	c.store(key, value, ttl)
 	return value
+}
+
+// value returns one attestation value over the plain client, refreshing it
+// when its TTL has passed.
+func (c *deepSeekHifCache) value(ctx context.Context, client *http.Client, key, url, origin string) string {
+	return c.resolve(ctx, key, func() (string, time.Duration) {
+		return c.fetch(ctx, client, url, origin)
+	})
 }
 
 func (c *deepSeekHifCache) fresh(key string) (string, bool) {
@@ -119,8 +144,9 @@ func (c *deepSeekHifCache) store(key, value string, ttl time.Duration) {
 	c.values[key] = deepSeekHifEntry{value: value, expiresAt: time.Now().Add(ttl)}
 }
 
-// fetch performs one attestation request. Any failure — network, status,
-// payload — degrades to an empty value, which the caller reads as "no header".
+// fetch performs one attestation request over the plain client. Any failure —
+// network, status, payload — degrades to an empty value, which the caller
+// reads as "no header".
 func (c *deepSeekHifCache) fetch(ctx context.Context, client *http.Client, url, origin string) (string, time.Duration) {
 	if client == nil {
 		client = http.DefaultClient
@@ -140,6 +166,46 @@ func (c *deepSeekHifCache) fetch(ctx context.Context, client *http.Client, url, 
 		"X-Client-Platform":  "web",
 		"X-Client-Bundle-Id": "com.deepseek.chat",
 	}, nil)
+	return c.readAttestation(resp, err, url)
+}
+
+// fetchViaTransport performs the same fetch over the turn's browser-fidelity
+// transport, so the attestation host sees the handshake the completion call
+// will present the collected value with.
+//
+// The header set is the browser's CORS GET: the fetch hints, the chat origin
+// and referer, and the client block the site's own instrumentation carries.
+// The transport writes them in its ordered, browser-shaped way; the cookie is
+// the jar's business, and the jar holds none for these hosts.
+func (c *deepSeekHifCache) fetchViaTransport(ctx context.Context, turn deepSeekTurn, url string) (string, time.Duration) {
+	fetchCtx, cancel := context.WithTimeout(ctx, deepSeekHifTimeout)
+	defer cancel()
+
+	response, err := turn.transport.send(fetchCtx, http.MethodGet, url, nil, map[string]string{
+		"accept":             "*/*",
+		"accept-encoding":    "gzip, deflate, br, zstd",
+		"accept-language":    "en-US,en;q=0.9",
+		"origin":             turn.origin,
+		"priority":           "u=1, i",
+		"referer":            turn.origin + "/",
+		"sec-fetch-dest":     "empty",
+		"sec-fetch-mode":     "cors",
+		"sec-fetch-site":     "same-site",
+		"user-agent":         deepSeekWebUserAgent,
+		"x-client-bundle-id": "com.deepseek.chat",
+		"x-client-platform":  "web",
+		"x-client-version":   deepSeekWebClientVersion,
+	})
+	if err != nil {
+		log.Debug("deepseek-web", "attestation fetch failed", "url", url, "error", err)
+		return "", 0
+	}
+	return c.readAttestation(response, nil, url)
+}
+
+// readAttestation reads one attestation answer: the value out of the payload,
+// the cache lifetime out of x-hif-ttl. Any failure degrades to an empty value.
+func (c *deepSeekHifCache) readAttestation(resp *http.Response, err error, url string) (string, time.Duration) {
 	if err != nil {
 		log.Debug("deepseek-web", "attestation fetch failed", "url", url, "error", err)
 		return "", 0
@@ -155,7 +221,15 @@ func (c *deepSeekHifCache) fetch(ctx context.Context, client *http.Client, url, 
 		log.Debug("deepseek-web", "attestation body unreadable", "url", url, "error", err)
 		return "", 0
 	}
+	if value := deepSeekAttestationValue(body); value != "" {
+		return value, deepSeekHifTTL(resp.Header.Get("x-hif-ttl"))
+	}
+	return "", 0
+}
 
+// deepSeekAttestationValue reads the issued value out of an attestation
+// answer, or "" when the payload carries none.
+func deepSeekAttestationValue(body []byte) string {
 	var answer struct {
 		Data struct {
 			BizData struct {
@@ -164,14 +238,9 @@ func (c *deepSeekHifCache) fetch(ctx context.Context, client *http.Client, url, 
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &answer); err != nil {
-		return "", 0
+		return ""
 	}
-	value := strings.TrimSpace(answer.Data.BizData.Value)
-	if value == "" {
-		return "", 0
-	}
-
-	return value, deepSeekHifTTL(resp.Header.Get("x-hif-ttl"))
+	return strings.TrimSpace(answer.Data.BizData.Value)
 }
 
 // deepSeekHifTTL reads the announced cache lifetime, falling back to the

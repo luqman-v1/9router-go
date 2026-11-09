@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -29,26 +30,121 @@ func (r *Repo) ValidateApiKey(key string) (bool, error) {
 
 const apiKeyColumns = `SELECT id, key, name, machineId, isActive, createdAt,
 	rateLimitRPM, rateLimitTPM, rateLimitConcurrency,
+	tokenQuota, queueTimeoutMs, contextLimit,
+	keyHash, lookupHash, keyDisplay,
+	expiresAt, lastUsedAt, usedCount, metadata, planId,
+	limitMicros, limitTokens, budgetPeriod, alertPct, hardCutoff`
+
+// apiKeyColumnsLegacy is the pre-F-2 read: everything above except the five
+// budget columns.
+const apiKeyColumnsLegacy = `SELECT id, key, name, machineId, isActive, createdAt,
+	rateLimitRPM, rateLimitTPM, rateLimitConcurrency,
 	tokenQuota, queueTimeoutMs,
 	keyHash, lookupHash, keyDisplay,
 	expiresAt, lastUsedAt, usedCount, metadata, planId`
 
-// apiKeyScan returns the Scan destinations for apiKeyColumns plus an applier
+// additiveColumnsPresent reports whether the apiKeys table carries the
+// additive columns this read selects: the F-2 budget columns and the per-key
+// context ceiling. The answer is cached because it is a property of the schema,
+// which does not change while the process runs, and the probe sits on the
+// dashboard's boot path.
+//
+// Every one of them is added by the same EnsureAdditiveColumns pass, so a
+// database that has one has the rest. All of them are probed anyway: a column
+// the table does not carry makes the full read fail with a SQL error, and a
+// degraded read is the contract here.
+func (r *Repo) additiveColumnsPresent() bool {
+	if r == nil || r.db == nil {
+		return false
+	}
+	r.budgetColsOnce.Do(func() {
+		rows, err := r.db.QueryContext(context.Background(), `PRAGMA table_info(apiKeys)`)
+		if err != nil {
+			return
+		}
+		defer func() { _ = rows.Close() }()
+		hasBudget, hasContextLimit := false, false
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notNull, pk int
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+				return
+			}
+			switch name {
+			case "limitMicros":
+				hasBudget = true
+			case "contextLimit":
+				hasContextLimit = true
+			}
+		}
+		// A mid-iteration failure would otherwise leave the probe answering
+		// "no additive columns" for a database that has them, which silently
+		// degrades every key read to the legacy query.
+		if rows.Err() == nil {
+			r.budgetCols = hasBudget && hasContextLimit
+		}
+	})
+	return r.budgetCols
+}
+
+// apiKeyColumnsFor returns the key read for the schema in hand: the full read
+// when the additive columns exist, the pre-F-2 read when they do not. A legacy
+// database reads every key with its budget axes at zero rather than failing the
+// whole listing — the same degradation quotaResetId already gets.
+func (r *Repo) apiKeyColumnsFor() string {
+	if r.additiveColumnsPresent() {
+		return apiKeyColumns
+	}
+	return apiKeyColumnsLegacy
+}
+
+// apiKeyScan returns the Scan destinations for the key read plus an applier
 // that must run after Scan has filled the nullable columns.
-func apiKeyScan(k *models.APIKey) (dest []any, apply func()) {
+//
+// withAdditive selects between the full read and the pre-F-2 one, so the
+// destination count always matches the column count of the query that produced
+// the row. Passing the full 25 destinations against a 19-column row is a scan
+// error, not a zero — which is how the legacy-schema test caught this.
+func apiKeyScan(k *models.APIKey, withAdditive bool) (dest []any, apply func()) {
 	var nameVal, machineVal sql.NullString
 	var rateRPM, rateTPM, rateConc sql.NullInt64
-	var tokenQuota, queueTimeout sql.NullInt64
+	var tokenQuota, queueTimeout, contextLimit sql.NullInt64
 	var keyHash, lookupHash, keyDisplay sql.NullString
 	var expiresAt, lastUsedAt, metadata sql.NullString
 	var usedCount sql.NullInt64
 	var planID sql.NullString
+	// F-2 per-period budget. limitMicros and limitTokens are plain int64 on
+	// the model rather than pointers: 0 is the meaningful "not set" value, so
+	// there is no NULL to preserve.
+	var limitMicros, limitTokens int64
+	var budgetPeriod string
+	var alertPct, hardCutoff int
 	dest = []any{&k.ID, &k.Key, &nameVal, &machineVal, &k.IsActive, &k.CreatedAt,
-		&rateRPM, &rateTPM, &rateConc, &tokenQuota, &queueTimeout, &keyHash, &lookupHash, &keyDisplay,
-		&expiresAt, &lastUsedAt, &usedCount, &metadata, &planID}
+		&rateRPM, &rateTPM, &rateConc, &tokenQuota, &queueTimeout}
+	if withAdditive {
+		dest = append(dest, &contextLimit)
+	}
+	dest = append(dest, &keyHash, &lookupHash, &keyDisplay,
+		&expiresAt, &lastUsedAt, &usedCount, &metadata, &planID)
+	if withAdditive {
+		dest = append(dest, &limitMicros, &limitTokens, &budgetPeriod, &alertPct, &hardCutoff)
+	}
 	apply = func() {
 		applyApiKeyNulls(k, nameVal, machineVal, rateRPM, rateTPM, rateConc, tokenQuota, queueTimeout, usedCount,
 			keyHash, lookupHash, keyDisplay, expiresAt, lastUsedAt, metadata, planID)
+		if withAdditive {
+			if contextLimit.Valid {
+				v := int(contextLimit.Int64)
+				k.ContextLimit = &v
+			}
+			k.LimitMicros = limitMicros
+			k.LimitTokens = limitTokens
+			k.BudgetPeriod = budgetPeriod
+			k.AlertPct = alertPct
+			k.HardCutoff = hardCutoff != 0
+		}
 	}
 	return dest, apply
 }
@@ -131,8 +227,9 @@ func (r *Repo) FindApiKeyByLookup(lookupHash string) (*models.APIKey, error) {
 // queryApiKey runs a single-row apiKeys read and maps the scanned columns.
 func (r *Repo) queryApiKey(whereClause string, arg string) (*models.APIKey, error) {
 	var apiKey models.APIKey
-	dest, apply := apiKeyScan(&apiKey)
-	err := r.db.QueryRow(apiKeyColumns+" "+whereClause, arg).Scan(dest...)
+	withAdditive := r.additiveColumnsPresent()
+	dest, apply := apiKeyScan(&apiKey, withAdditive)
+	err := r.db.QueryRowContext(context.Background(), r.apiKeyColumnsFor()+" "+whereClause, arg).Scan(dest...)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

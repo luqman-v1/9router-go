@@ -176,3 +176,14 @@ export function describeRates(currency: DisplayCurrency): string {
   if (Number.isNaN(when.getTime())) return `${codes} ${noun}`
   return `${codes} ${noun} refreshed ${when.toLocaleString()}`
 }
+
+/**
+ * The line the panel shows after a refresh. The server overlays the provider's
+ * rates on the stored table, so a code the provider did not publish keeps its
+ * manual value; the count alone would read as if those rates were lost.
+ */
+export function describeRefreshRates(stored: number, missing: string[], host: string): string {
+  const base = `Refreshed ${stored} rates from ${host}.`
+  if (missing.length === 0) return base
+  return `${base} ${missing.join(', ')} kept at your manual rate.`
+}

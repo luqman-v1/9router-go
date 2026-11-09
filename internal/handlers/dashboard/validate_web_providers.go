@@ -36,7 +36,11 @@ func deepSeekWebHeaders() map[string]string {
 // validateDeepSeekWeb checks a pasted userToken against /api/v0/users/current,
 // the one call that answers whether the credential can be exchanged for a
 // working session.
-func validateDeepSeekWeb(ctx context.Context, apiKey string) validateOutcome {
+//
+// The site's own session cookie is sent along when there is one: the WAF
+// reads it, and a probe that omits it judges the credential under different
+// conditions than the turn will meet.
+func validateDeepSeekWeb(ctx context.Context, apiKey string, providerData map[string]any) validateOutcome {
 	token := executor.DeepSeekUserToken(apiKey)
 	if token == "" {
 		return validateOutcome{supported: true,
@@ -44,7 +48,10 @@ func validateDeepSeekWeb(ctx context.Context, apiKey string) validateOutcome {
 	}
 
 	headers := deepSeekWebHeaders()
-	headers["Authorization"] = "Bearer " + token
+	headers["authorization"] = "Bearer " + token
+	if cookie, ok := providerData["deepSeekCookie"].(string); ok && strings.TrimSpace(cookie) != "" {
+		headers["cookie"] = strings.TrimSpace(cookie)
+	}
 
 	status, body, err := validateProbeDo(ctx, http.MethodGet, deepSeekUsersCurrentURL, headers, nil)
 	if err != nil {
@@ -144,14 +151,21 @@ func deepSeekEnvelopeHasToken(body []byte) bool {
 // unauthenticated code. That keeps "Check" read-only rather than a billable
 // completion — the same constraint the deepseek-web probe is built to.
 //
+// The probe is signed the way the executor signs its own registry call, so a
+// probe that passes is evidence about the credential rather than about the
+// header set. The signature is not what decides the served set — measured
+// live on 2026-10-21, the site accepted the unsigned call too — but a signed
+// call is the request a signed-in page makes, so it is the one sent.
+//
 // With no cookie there is nothing to check and nothing to complain about: the
 // site answers an anonymous visitor, which is why the executor does not
 // require a credential at all.
 func validateGeminiWeb(ctx context.Context, apiKey string) validateOutcome {
-	if strings.TrimSpace(apiKey) == "" {
+	cookie := executor.GeminiWebCookieHeader(apiKey)
+	if strings.TrimSpace(cookie) == "" {
 		return validateOutcome{valid: true, supported: true,
 			message: "No cookie configured — gemini-web still works, an anonymous session reaches one model. " +
-				"Paste __Secure-1PSID from a signed-in gemini.google.com tab to reach the others."}
+				"Paste the cookie header of a signed-in gemini.google.com tab to reach the others."}
 	}
 
 	body, err := json.Marshal([]any{[]any{[]any{"otAQ7b", "[]", nil, "generic"}}})
@@ -160,7 +174,7 @@ func validateGeminiWeb(ctx context.Context, apiKey string) validateOutcome {
 	}
 	status, response, err := validateProbeDo(ctx, http.MethodPost,
 		"https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=otAQ7b&source-path=%2Fapp&hl=en&rt=c",
-		geminiWebProbeHeaders(apiKey), []byte("f.req="+url.QueryEscape(string(body))))
+		geminiWebProbeHeaders(cookie), []byte("f.req="+url.QueryEscape(string(body))))
 	if err != nil {
 		return validateOutcome{supported: true, message: err.Error()}
 	}
@@ -179,22 +193,47 @@ func validateGeminiWeb(ctx context.Context, apiKey string) validateOutcome {
 	if !bytes.Contains(response, []byte("wrb.fr")) {
 		return validateOutcome{supported: true, message: geminiWebStaleCookieAdvice}
 	}
+	// A registry came back, but a credential with no `__Secure-1PSIDTS` is
+	// answered as a visitor's: that cookie is what carries the session to the
+	// registry, and without it the session reaches one model however valid
+	// the rest of the header is. Reporting that as a working credential sends
+	// the user off to paste a cookie they already pasted.
+	if !executor.GeminiWebHasSessionTimestamp(cookie) {
+		return validateOutcome{supported: true, message: geminiWebUnsignedCookieAdvice}
+	}
 	return validateOutcome{valid: true, supported: true}
 }
 
+// geminiWebUnsignedCookieAdvice names the credential that cannot reach the
+// signed-in models.
+//
+// The cookie that decides it is `__Secure-1PSIDTS`: it is the one the site
+// rotates every few minutes, and the one that carries a session into the
+// model registry. A header without it answers as an anonymous visitor.
+const geminiWebUnsignedCookieAdvice = "this cookie carries no __Secure-1PSIDTS, so gemini.google.com answers it " +
+	"as an anonymous visitor and the session reaches one model only — copy the whole cookie header of the " +
+	"signed-in tab, including __Secure-1PSIDTS"
+
 // geminiWebStaleCookieAdvice is the one wording for a cookie the site refuses.
-const geminiWebStaleCookieAdvice = "gemini.google.com refused this cookie — re-copy __Secure-1PSID " +
-	"(and __Secure-1PSIDTS when present) from a signed-in gemini.google.com tab"
+const geminiWebStaleCookieAdvice = "gemini.google.com refused this cookie — re-copy the whole cookie header " +
+	"(__Secure-1PSID, SAPISID and __Secure-1PSIDTS when present) from a signed-in gemini.google.com tab"
 
 // geminiWebProbeHeaders mirrors what the executor sends, so a probe that passes
 // is evidence about the credential rather than about the header set.
-func geminiWebProbeHeaders(apiKey string) map[string]string {
-	return map[string]string{
+//
+// The cookie argument is the rendered header, not the raw credential, so the
+// probe and the executor read the same value.
+func geminiWebProbeHeaders(cookie string) map[string]string {
+	headers := map[string]string{
 		"Content-Type":  "application/x-www-form-urlencoded;charset=UTF-8",
-		"Cookie":        executor.GeminiWebCookieHeader(apiKey),
+		"Cookie":        cookie,
 		"Origin":        "https://gemini.google.com",
 		"Referer":       "https://gemini.google.com/app",
 		"X-Same-Domain": "1",
 		"User-Agent":    executor.GeminiWebUserAgent(),
 	}
+	if auth := executor.GeminiWebAuthorization(cookie); auth != "" {
+		headers["Authorization"] = auth
+	}
+	return headers
 }

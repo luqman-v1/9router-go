@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"testing"
 )
 
@@ -137,7 +138,7 @@ func TestGetRequestDetailsPaged_ScanFailureIsNotSilent(t *testing.T) {
 		t.Fatalf("seed requestDetails: %v", err)
 	}
 
-	rows, total, err := NewRepo(database).GetRequestDetailsPaged(50, 0)
+	rows, total, err := NewRepo(database).GetRequestDetailsPaged(context.Background(), 50, 0, "")
 	if err == nil {
 		t.Fatalf("GetRequestDetailsPaged returned %d rows (total %d) and no error; a NULL data column must surface as an error", len(rows), total)
 	}

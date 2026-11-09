@@ -117,7 +117,7 @@ func rewriteCodexUpstreamModel(body []byte) []byte {
 		return body
 	}
 	m["model"] = upstream
-	out, err := json.Marshal(m)
+	out, err := marshalStable(m)
 	if err != nil {
 		return body
 	}
@@ -144,6 +144,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		MaxTokens           *int   `json:"max_tokens,omitempty"`
 		MaxCompletionTokens *int   `json:"max_completion_tokens,omitempty"`
 		MaxOutputTokens     *int   `json:"max_output_tokens,omitempty"`
+		PromptCacheKey      any    `json:"prompt_cache_key,omitempty"`
 	}
 	if err := json.Unmarshal(body, &quickCheck); err == nil && quickCheck.Input != nil {
 		var m map[string]any
@@ -152,6 +153,9 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			m["model"] = cleanModel
 			m["stream"] = true
 			m["store"] = false
+			if quickCheck.PromptCacheKey != nil {
+				m["prompt_cache_key"] = quickCheck.PromptCacheKey
+			}
 			if m["max_output_tokens"] == nil {
 				if quickCheck.MaxCompletionTokens != nil {
 					m["max_output_tokens"] = *quickCheck.MaxCompletionTokens
@@ -261,7 +265,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			}
 
 			applyCodexModelShape(m, cleanModel)
-			out, err := json.Marshal(m)
+			out, err := marshalStable(m)
 			return out, cleanModel, err
 		}
 	}
@@ -279,6 +283,19 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		Reasoning           any            `json:"reasoning,omitempty"`
 		Tools               jsontext.Value `json:"tools,omitempty"`
 		ResponseFormat      jsontext.Value `json:"response_format,omitempty"`
+		// ServiceTier is carried through unchanged. Upstream does the same in
+		// open-sse/translator/request/openai-responses.js, and the Chat
+		// Completions body is rebuilt field by field here, so a field this
+		// struct does not name is a field the Responses upstream never sees.
+		//
+		// jsontext.Value rather than string: a client may send null, a number
+		// or an empty string, and only raw bytes keep both the presence and
+		// the exact value. Which of those the destination accepts is the
+		// executor's rule, not the translator's — the Codex backend rewrites
+		// the field in normalizeCodexServiceTier, while the other Responses
+		// providers take it as sent.
+		ServiceTier    jsontext.Value `json:"service_tier,omitempty"`
+		PromptCacheKey jsontext.Value `json:"prompt_cache_key,omitempty"`
 	}
 	if err := json.Unmarshal(body, &oreq); err != nil {
 		return nil, "", fmt.Errorf("parse request: %w", err)
@@ -431,10 +448,19 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		if rEffort == "max" {
 			rEffort = "xhigh"
 		}
-		respReq["reasoning"] = map[string]any{
-			"effort":  rEffort,
+		reasoningMap := map[string]any{
 			"summary": "auto",
+			"effort":  rEffort,
 		}
+		if oreq.Reasoning != nil {
+			if existing, ok := oreq.Reasoning.(map[string]any); ok {
+				for k, v := range existing {
+					reasoningMap[k] = v
+				}
+				reasoningMap["effort"] = rEffort
+			}
+		}
+		respReq["reasoning"] = reasoningMap
 	} else if oreq.Reasoning != nil {
 		respReq["reasoning"] = oreq.Reasoning
 	}
@@ -509,8 +535,23 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		}
 	}
 
+	// Presence matters more than the value here: a client that sent null, "", a
+	// number or "fast" gets that byte for byte, because the destination decides
+	// what it means. Only a field the client never sent is dropped —
+	// KindInvalid, not KindNull — since upstream's Codex normalize guards on
+	// truthiness and therefore leaves null in the body.
+	if oreq.ServiceTier.Kind() != jsontext.KindInvalid {
+		respReq["service_tier"] = oreq.ServiceTier
+	}
+	if oreq.PromptCacheKey.Kind() != jsontext.KindInvalid {
+		var pck any
+		if json.Unmarshal(oreq.PromptCacheKey, &pck) == nil && pck != nil {
+			respReq["prompt_cache_key"] = pck
+		}
+	}
+
 	applyCodexModelShape(respReq, cleanModel)
-	reqBody, err := json.Marshal(respReq)
+	reqBody, err := marshalStable(respReq)
 	return reqBody, cleanModel, err
 }
 
@@ -778,8 +819,91 @@ func stripKimchiReasoningContent(body map[string]any) {
 	}
 }
 
+// openAIMessageKeys are standard message object fields accepted by OpenAI Chat Completions
+// and compatible upstreams like OpenCode and DeepSeek. Any foreign key (such as "reasoning",
+// "reasoning_details", "thinking", "thought", "annotations", etc.) is rejected by upstream
+// validators with HTTP 400 (e.g. "Unrecognized request argument supplied: messages[2].reasoning.").
+var openAIMessageKeys = map[string]struct{}{
+	"role":              {},
+	"content":           {},
+	"name":              {},
+	"tool_calls":        {},
+	"tool_call_id":      {},
+	"function_call":     {},
+	"refusal":           {},
+	"audio":             {},
+	"reasoning_content": {},
+}
+
+func extractMessageReasoning(m map[string]any) string {
+	for _, key := range []string{"reasoning", "thinking", "thought"} {
+		if s, ok := m[key].(string); ok && len(s) > 0 {
+			return s
+		}
+	}
+	return ""
+}
+
+func sanitizeOpenAIMessageKeys(m map[string]any) bool {
+	changed := false
+	for k := range m {
+		if _, ok := openAIMessageKeys[k]; !ok {
+			delete(m, k)
+			changed = true
+		}
+	}
+	return changed
+}
+
+func normalizeTopLevelReasoning(reqMap map[string]any) bool {
+	rMap, ok := reqMap["reasoning"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if eff, ok := rMap["effort"].(string); ok && eff != "" && reqMap["reasoning_effort"] == nil {
+		reqMap["reasoning_effort"] = eff
+	}
+	delete(reqMap, "reasoning")
+	return true
+}
+
+// deepSeekV4Pro is the wire id the deepseek -max/-none catalog aliases map to.
+const deepSeekV4Pro = "deepseek-v4-pro"
+
+var deepSeekV4ProAlias = map[string][2]string{
+	"deepseek-v4-pro-max":  {"enabled", "max"},
+	"deepseek-v4-pro-none": {"disabled", ""},
+}
+
+func applyDeepSeekV4ProAlias(reqMap map[string]any, modelLower string) bool {
+	alias, ok := deepSeekV4ProAlias[modelLower]
+	if !ok {
+		return false
+	}
+	reqMap["model"] = deepSeekV4Pro
+	reqMap["thinking"] = map[string]any{"type": alias[0]}
+
+	if alias[1] != "" {
+		reqMap["reasoning_effort"] = alias[1]
+	} else {
+		delete(reqMap, "reasoning_effort")
+	}
+	return true
+}
+
+// Closed value set gets a named type (repo AGENTS.md §4.C).
+type reasoningInjectScope int
+
+const (
+	reasoningInjectNone reasoningInjectScope = iota
+	reasoningInjectAll
+	reasoningInjectToolCalls
+)
+
 // InjectReasoningContent ensures assistant messages in request body have reasoning_content
-// injected (e.g. " " placeholder) for providers like opencode, deepseek, or kimi models.
+// injected (e.g. " " placeholder) for providers like opencode, deepseek, commandcode, or kimi models,
+// and strips foreign/unsupported keys (such as "reasoning", "thinking", "thought") that cause
+// upstream schema validation errors (e.g. "Unrecognized request argument supplied: messages[2].reasoning.").
 func InjectReasoningContent(body []byte, provider string) []byte {
 	var reqMap map[string]any
 	if err := json.Unmarshal(body, &reqMap); err != nil {
@@ -794,39 +918,69 @@ func InjectReasoningContent(body []byte, provider string) []byte {
 	modelStr, _ := reqMap["model"].(string)
 	modelLower := strings.ToLower(modelStr)
 
-	isDeepSeek := strings.Contains(modelLower, "deepseek") || provider == "opencode" || provider == "opencode-go"
-	isKimi := strings.HasPrefix(modelLower, "kimi-")
+	scope := reasoningInjectNone
+	// Provider rule wins over model rules (upstream reasoningContentInjector.js: providerRule || modelRule, PR #5290)
+	isOpenCode := provider == "opencode" || provider == "opencode-go" || provider == "opencode-zen"
+	if provider == "commandcode" {
+		scope = reasoningInjectAll
+	} else if strings.Contains(modelLower, "deepseek") || isOpenCode {
+		scope = reasoningInjectAll
+	} else if strings.HasPrefix(modelLower, "kimi-") {
+		scope = reasoningInjectToolCalls
+	}
 
-	if !isDeepSeek && !isKimi {
+	if scope == reasoningInjectNone {
 		return body
 	}
 
 	changed := false
+	if provider == "deepseek" {
+		// The -max/-none catalog ids are 9router's own aliases, not wire ids;
+		// resolve them to the base model with their thinking toggle/effort
+		// attached so the injection below runs against the id the API serves.
+		changed = applyDeepSeekV4ProAlias(reqMap, modelLower)
+	}
+	changed = normalizeTopLevelReasoning(reqMap) || changed
+
 	for i, m := range msgs {
 		msgMap, ok := m.(map[string]any)
 		if !ok {
 			continue
 		}
+
 		role, _ := msgMap["role"].(string)
-		if role != "assistant" {
-			continue
-		}
+		if role == "assistant" {
+			rc, _ := msgMap["reasoning_content"].(string)
+			if rc == "" {
+				rc = extractMessageReasoning(msgMap)
+			}
 
-		rc, hasRC := msgMap["reasoning_content"].(string)
-		if hasRC && len(rc) > 0 {
-			continue
-		}
+			if sanitizeOpenAIMessageKeys(msgMap) {
+				changed = true
+			}
 
-		if isKimi {
-			toolCalls, hasTC := msgMap["tool_calls"].([]any)
-			if !hasTC || len(toolCalls) == 0 {
-				continue
+			if scope == reasoningInjectToolCalls {
+				toolCalls, hasTC := msgMap["tool_calls"].([]any)
+				if !hasTC || len(toolCalls) == 0 {
+					msgs[i] = msgMap
+					continue
+				}
+			}
+
+			if rc == "" {
+				rc = " "
+			}
+			if currRC, _ := msgMap["reasoning_content"].(string); currRC != rc {
+				msgMap["reasoning_content"] = rc
+				changed = true
+			}
+			msgs[i] = msgMap
+		} else {
+			if sanitizeOpenAIMessageKeys(msgMap) {
+				changed = true
+				msgs[i] = msgMap
 			}
 		}
-
-		msgMap["reasoning_content"] = " "
-		msgs[i] = msgMap
-		changed = true
 	}
 
 	if !changed {

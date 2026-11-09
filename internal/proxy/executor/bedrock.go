@@ -234,7 +234,7 @@ func handleBedrockOpenAIStream(w http.ResponseWriter, req *Request, upstream io.
 		defer pw.Close()
 		bedrockStreamToSSE(pw, nil, req, upstream, false)
 	}()
-	stallReader := proxy.NewStallReaderWithContext(req.Ctx, pr, 0, "bedrock")
+	stallReader := proxy.NewStallReaderWithContext(req.Ctx, pr, req.Config.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "bedrock")
 	return execSSEStream(w, stallReader, req)
 }
 

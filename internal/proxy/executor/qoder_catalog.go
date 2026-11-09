@@ -84,6 +84,47 @@ func qoderDefensiveCopy(config map[string]any, modelKey string) map[string]any {
 	return copied
 }
 
+// qoderStaticModelConfigs are static model_config blocks for models the
+// per-account catalog does not reliably publish.
+//
+// /algo/api/v2/model/list is per-account, and the frontier pair Sonus
+// (smodel) / Cantus (cmodel) is frequently absent from it even for accounts
+// that can use them. Without a model_config the executor refuses the request
+// before it is ever sent, so the model looks unavailable when upstream would
+// have served it. The chat endpoint does not validate model_config.key
+// against the catalog, so supplying the block makes these routable.
+//
+// This is a FALLBACK only — a live catalog entry always wins, so a future
+// catalog that publishes its own block for these keys takes precedence.
+var qoderStaticModelConfigs = map[string]map[string]any{
+	"smodel": {
+		"model": "", "format": "openai", "source": "system", "url": "",
+		"key": "smodel", "display_name": "Sonus",
+		"is_vl": true, "is_reasoning": true, "max_input_tokens": 180000,
+	},
+	"cmodel": {
+		"model": "", "format": "openai", "source": "system", "url": "",
+		"key": "cmodel", "display_name": "Cantus",
+		"is_vl": true, "is_reasoning": true, "max_input_tokens": 180000,
+	},
+}
+
+// qoderStaticModelConfig returns a fresh copy of the static block for a
+// canonical Qoder key, or nil when there is none (so genuinely unknown keys
+// still fail loudly).
+func qoderStaticModelConfig(key string) map[string]any {
+	base, ok := qoderStaticModelConfigs[key]
+	if !ok {
+		return nil
+	}
+	copied := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		copied[k] = v
+	}
+	copied["key"] = key
+	return copied
+}
+
 // qoderModelConfig resolves model_config for a model key, fetching the live
 // catalogue when the cache cannot answer.
 //
@@ -91,7 +132,9 @@ func qoderDefensiveCopy(config map[string]any, modelKey string) map[string]any {
 // credential has an empty cache by definition, and a stale entry for a newly
 // published model is the other way this fails. Failing here — rather than
 // sending a request Qoder will reject — is what turns "400 flow nodes found"
-// into a message naming the actual problem.
+// into a message naming the actual problem. The static blocks are the last
+// resort: Sonus/Cantus are accepted by chat even when /model/list never
+// mentions them, so refusing here would make an available model look broken.
 func qoderModelConfig(ctx context.Context, do QoderDoer, creds QoderCosyCreds, region QoderRegion, modelKey string) (map[string]any, error) {
 	if config := qoderCachedModelConfig(creds, region, modelKey); config != nil {
 		return config, nil
@@ -112,6 +155,9 @@ func qoderModelConfig(ctx context.Context, do QoderDoer, creds QoderCosyCreds, r
 		return nil, fmt.Errorf("qoder: model catalogue unavailable for %s", region)
 	}
 	if config := qoderDefensiveCopy(refreshed.rawConfigs[modelKey], modelKey); config != nil {
+		return config, nil
+	}
+	if config := qoderStaticModelConfig(modelKey); config != nil {
 		return config, nil
 	}
 	return nil, fmt.Errorf("qoder: model_config for %q not yet known (run a model list fetch or check upstream connectivity)", modelKey)

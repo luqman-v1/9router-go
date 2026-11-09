@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 )
 
@@ -114,6 +115,30 @@ func TestNewSafeDialer_PermitsLoopbackViaContext(t *testing.T) {
 	}
 }
 
+func TestNewSafeDialer_PermitsPrivateViaContextOptIn(t *testing.T) {
+	t.Setenv("ALLOW_PRIVATE_NETWORKING", "false")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	dialer := NewSafeDialer()
+
+	if _, err := dialer.DialContext(context.Background(), "tcp", srv.Listener.Addr().String()); err == nil {
+		t.Fatalf("expected loopback dial to be blocked without opt-in")
+	}
+
+	ctx := WithAllowPrivateNetworking(context.Background())
+	conn, err := dialer.DialContext(ctx, "tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("expected private dial to succeed with WithAllowPrivateNetworking, got %v", err)
+	}
+	if conn != nil {
+		conn.Close()
+	}
+}
+
 func TestNewSafeTransport_BlocksPrivateRequests(t *testing.T) {
 	t.Setenv("ALLOW_PRIVATE_NETWORKING", "false")
 
@@ -132,5 +157,40 @@ func TestNewSafeTransport_BlocksPrivateRequests(t *testing.T) {
 	}
 	if !errors.Is(err, ErrSSRFBlocked) {
 		t.Fatalf("expected ErrSSRFBlocked in error chain, got %v", err)
+	}
+}
+
+// TestNewSafeDialer_BlocksZonedLoopbackLiteral pins the zone gap in this guard.
+// net.ParseIP answers nil for "::1%lo", and the hook's nil branch is "not an
+// address, allow it" — so the zoned spelling of the same destination dialled
+// straight through. A zone selects the outbound interface; it does not make the
+// address public.
+func TestNewSafeDialer_BlocksZonedLoopbackLiteral(t *testing.T) {
+	t.Setenv("ALLOW_PRIVATE_NETWORKING", "false")
+
+	ln, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback on this host: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	dialer := NewSafeDialer()
+	conn, err := dialer.DialContext(context.Background(), "tcp",
+		net.JoinHostPort("::1%lo", strconv.Itoa(port)))
+	if conn != nil {
+		conn.Close()
+	}
+	if !errors.Is(err, ErrSSRFBlocked) {
+		t.Fatalf("zoned loopback literal dialled: err = %v, want ErrSSRFBlocked", err)
 	}
 }

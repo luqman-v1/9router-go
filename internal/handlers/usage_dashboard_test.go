@@ -54,44 +54,6 @@ func TestComputeScore(t *testing.T) {
 	}
 }
 
-func TestDashboardCacheHitRate(t *testing.T) {
-	rows := []db.CacheUsageRow{
-		// Cache-inclusive canonical row: 1000 input of which 400 cached.
-		{PromptTokens: 1000, Tokens: `{"prompt_tokens":1000,"cached_tokens":400,"cache_creation_input_tokens":100}`},
-		// Cache-exclusive raw row: prompt 8 next to a huge cache read.
-		{PromptTokens: 8, Tokens: `{"prompt_tokens":8,"cache_read_input_tokens":263296,"cache_creation_input_tokens":0}`},
-		// Uncached row stays out of the denominator entirely.
-		{PromptTokens: 500, Tokens: `{"prompt_tokens":500}`},
-	}
-	rate, cacheTokens, requests := dashboardCacheHitRate(rows)
-	if rate == nil {
-		t.Fatal("expected a rate for rows with cache data")
-	}
-	if requests != 2 {
-		t.Errorf("requests = %d, want 2 (uncached rows excluded)", requests)
-	}
-	if cacheTokens != 400+263296 {
-		t.Errorf("cacheTokens = %d, want %d", cacheTokens, 400+263296)
-	}
-	// hit = 400 + 263296; total = max(1000, 500) + max(8, 263296) = 1000 + 263296.
-	want := round1(float64(400+263296) / float64(1000+263296) * 100)
-	if *rate != want {
-		t.Errorf("rate = %v, want %v", *rate, want)
-	}
-}
-
-func TestDashboardCacheHitRateAllUncached(t *testing.T) {
-	rate, _, requests := dashboardCacheHitRate([]db.CacheUsageRow{
-		{PromptTokens: 10, Tokens: `{"prompt_tokens":10}`},
-	})
-	if rate != nil {
-		t.Errorf("rate = %v, want nil when no request has a cache", *rate)
-	}
-	if requests != 0 {
-		t.Errorf("requests = %d, want 0", requests)
-	}
-}
-
 func TestDashboardDailyLifetimeAndStreaks(t *testing.T) {
 	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
 	mk := func(requests, prompt, completion int64) string {
@@ -195,8 +157,10 @@ func TestHandleUsageDashboard(t *testing.T) {
 	if payload.Lifetime.TopModel == nil || payload.Lifetime.TopModel.Model != "deepseek-chat" {
 		t.Errorf("topModel = %+v, want deepseek-chat", payload.Lifetime.TopModel)
 	}
-	if payload.Lifetime.CacheHitRate == nil {
-		t.Errorf("cacheHitRate must be computed from cached rows")
+	// Every seeded row is 1000 prompt tokens of which 300 are cached, so the
+	// window-derived rate is 300/1000 = 30%.
+	if payload.Lifetime.CacheHitRate == nil || *payload.Lifetime.CacheHitRate != 30 {
+		t.Errorf("cacheHitRate = %v, want 30 from the trailing-7-day rows", payload.Lifetime.CacheHitRate)
 	}
 	if len(payload.Nodes) != 1 {
 		t.Fatalf("len(nodes) = %d, want the one provider above 50 requests", len(payload.Nodes))

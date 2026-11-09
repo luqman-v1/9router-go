@@ -219,3 +219,30 @@ func TestResponsesBridgeWatchdogCancelsWhenTheProducerCloses(t *testing.T) {
 		t.Errorf("response.completed count = %d after the stream ended, want exactly 1:\n%s", got, frames.text())
 	}
 }
+
+func TestParityWatchdogWaitsForPending(t *testing.T) {
+	withFlushTimeout(t, 40*time.Millisecond)
+	frames := newFrameCollector()
+	bridge := NewResponsesBridge("fixture-model", nil, frames.write)
+	defer bridge.StopCompletionWatchdog()
+	bridge.Feed([]byte(`{"choices":[{"index":0,"delta":{"content":"hi"}}]}`))
+	time.Sleep(120 * time.Millisecond)
+	if frames.countCompleted() != 0 {
+		t.Fatal("active stream completed early")
+	}
+	bridge.Feed([]byte(`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`))
+	deadline := time.After(time.Second)
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for frames.countCompleted() == 0 {
+		select {
+		case <-tick.C:
+		case <-deadline:
+			t.Fatal("pending completion was not flushed")
+		}
+	}
+	bridge.Close()
+	if frames.countCompleted() != 1 {
+		t.Fatal("duplicate completion")
+	}
+}

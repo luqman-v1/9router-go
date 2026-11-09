@@ -34,8 +34,10 @@ const (
 // SSECopy reads from upstream in a raw loop and writes each chunk to the client.
 // A simplified passthrough that does NOT parse SSE framing — use when translation is not needed.
 // onChunk is called for each chunk before writing (for metrics/TTFT tracking).
-// Returns the first upstream or write error so a truncated stream is not
-// reported as a successful completion.
+// Optional patchers rewrite a `data:` payload needing repair before it reaches
+// the client (e.g. the reasoning-alias lift); a patched payload is re-serialized
+// in place of the original line. Returns the first upstream or write error so a
+// truncated stream is not reported as a successful completion.
 //
 // The stream is kept OpenAI-compliant for strict clients (Oh My Pi):
 //   - a bare `data: [DONE]` arriving without a prior terminal frame gains a
@@ -49,13 +51,13 @@ const (
 // success, usage is logged as success, and the sick connection is never
 // locked out of rotation. Detection is inline per line — no holdback, so the
 // first content byte still reaches the client as fast as before.
-func SSECopy(w http.ResponseWriter, upstream io.Reader, flusher http.Flusher, onChunk func([]byte)) error {
+func SSECopy(w http.ResponseWriter, upstream io.Reader, flusher http.Flusher, onChunk func([]byte), patchers ...func([]byte) []byte) error {
 	// Allocate a local buffer instead of using the shared pool. The buffer is
 	// alive for the entire read loop, so there is no safe point to return it
 	// to the pool, and the pool would add a race window between ReleaseByteSlice
 	// and the next iteration's write/flush completing.
 	buf := make([]byte, 4096)
-	c := &sseCopier{w: w, flusher: flusher, trailingNL: 2}
+	c := &sseCopier{w: w, flusher: flusher, trailingNL: 2, toolFill: NewStreamToolCallIDFill(), patchers: patchers}
 	for {
 		n, err := upstream.Read(buf)
 		if n > 0 {
@@ -107,6 +109,12 @@ type sseCopier struct {
 	hasTerminal bool
 	hasDone     bool
 	seenSSE     bool
+	// toolFill mints ids for tool-call fragments that open a new index
+	// without one; nil when the relay carries no chat chunks worth patching.
+	toolFill *StreamToolCallIDFill
+	// patchers rewrite a complete data line's payload before it is relayed
+	// (e.g. the reasoning-alias lift); nil slices relay verbatim.
+	patchers []func([]byte) []byte
 	// seenInbandError tracks a provider-injected error event swallowed from
 	// the relay. inbandCode/Msg hold the first one seen; the turn fails only
 	// when no completion preceded it (inbandFailure).
@@ -181,10 +189,61 @@ func (c *sseCopier) writeEvents(complete []byte) error {
 				return err
 			}
 			segStart = eol + 1
+			start = eol + 1
+			continue
+		}
+		if patched, ok := c.patchLine(line); ok {
+			if err := c.writeRaw(complete[segStart:start]); err != nil {
+				return err
+			}
+			if err := c.writeRaw(patched); err != nil {
+				return err
+			}
+			segStart = eol + 1
 		}
 		start = eol + 1
 	}
 	return c.writeRaw(complete[segStart:])
+}
+
+// patchLine repairs one complete data line (including its terminator): the
+// configured patchers rewrite the payload first (e.g. the reasoning-alias
+// lift), then the tool-call id fill runs on the result. Returns the rebuilt
+// line when anything changed.
+func (c *sseCopier) patchLine(line []byte) ([]byte, bool) {
+	trimmed := bytes.TrimLeft(line, " \t")
+	if !bytes.HasPrefix(trimmed, []byte("data:")) {
+		return nil, false
+	}
+	payload := bytes.TrimSpace(trimmed[len("data:"):])
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return nil, false
+	}
+	changed := false
+	for _, patch := range c.patchers {
+		if next := patch(payload); !bytes.Equal(next, payload) {
+			payload = next
+			changed = true
+		}
+	}
+	if c.toolFill != nil {
+		if filled, ok := c.toolFill.Fill(payload); ok {
+			payload = filled
+			changed = true
+		}
+	}
+	if !changed {
+		return nil, false
+	}
+	term := []byte("\n")
+	if bytes.HasSuffix(line, []byte("\r\n")) {
+		term = []byte("\r\n")
+	}
+	out := make([]byte, 0, len("data: ")+len(payload)+len(term))
+	out = append(out, []byte("data: ")...)
+	out = append(out, payload...)
+	out = append(out, term...)
+	return out, true
 }
 
 // writeDoneLine closes the stream on the [DONE] sentinel. An error-only

@@ -7,6 +7,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"9router/proxy/internal/constants"
 )
@@ -92,6 +93,38 @@ func WriteJSONErrorCode(w http.ResponseWriter, status int, code, message string)
 	}
 	if err := json.MarshalWrite(w, errResp, deterministicJSON); err != nil {
 		w.Write([]byte(`{"error":{"message":"internal error","type":"server_error","code":"internal_server_error"}}`))
+	}
+}
+
+// WriteJSONErrorType writes a standardized JSON error with an explicit type and
+// code.
+//
+// WriteJSONErrorCode covers the case where only the code needs to differ from
+// the status default. A few errors are also a distinct type: an exhausted
+// budget answers 429 like a rate limit, but a client has to be able to tell
+// "you are sending too fast" from "your budget is spent" — only the second one
+// is fixed by an operator, so the type is what a client branches on.
+func WriteJSONErrorType(w http.ResponseWriter, status int, errType, code, message string) {
+	if errType == "" || code == "" {
+		WriteJSONError(w, status, message)
+		return
+	}
+
+	w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+	w.WriteHeader(status)
+
+	errResp := map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    errType,
+			"code":    code,
+		},
+	}
+	if err := json.MarshalWrite(w, errResp, deterministicJSON); err != nil {
+		// The header is already written, so this is the only way left to tell
+		// the client something. A failed write leaves the client with a broken
+		// body either way; there is nothing to retry and nowhere to report it.
+		_, _ = w.Write([]byte(`{"error":{"message":"internal error","type":"server_error","code":"internal_server_error"}}`))
 	}
 }
 
@@ -187,6 +220,9 @@ var SessionHeaderKeys = []string{
 	"session-id",
 	"session_id",
 	"x-amp-thread-id",
+	"x-opencode-session",
+	"x-opencode-session-id",
+	"x-session-affinity",
 }
 
 // ExtractSessionID extracts the session identifier from incoming HTTP request headers.
@@ -195,7 +231,7 @@ func ExtractSessionID(r *http.Request) string {
 		return ""
 	}
 	for _, key := range SessionHeaderKeys {
-		if val := r.Header.Get(key); val != "" {
+		if val := strings.TrimSpace(r.Header.Get(key)); val != "" {
 			return val
 		}
 	}

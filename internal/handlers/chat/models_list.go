@@ -11,6 +11,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/models"
+	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/providers"
 )
 
@@ -31,8 +32,9 @@ type ModelInfoObject struct {
 	// the client would read as a real limit. Upstream emits them on combo
 	// entries too (comboSeatLimits in src/app/api/v1/models/route.js), taking
 	// the smallest window in the combo's seat tree.
-	ContextLength       *int `json:"context_length,omitempty"`
-	MaxCompletionTokens *int `json:"max_completion_tokens,omitempty"`
+	ContextLength       *int                       `json:"context_length,omitempty"`
+	MaxCompletionTokens *int                       `json:"max_completion_tokens,omitempty"`
+	Pricing             *pricing.OpenRouterPricing `json:"pricing,omitempty"`
 }
 
 // ConnectionHasCredential reports whether a provider connection carries auth
@@ -295,11 +297,32 @@ func (h *ChatHandler) connectedProviderIDs(conns []*models.ProviderConnection) m
 		}
 	}
 	for id, cfg := range providers.KnownProviders {
+		// No Hidden check here. This map only answers "is this provider
+		// reachable", and a hidden provider is reachable — it routes traffic
+		// from an existing connection. Being offered is a different question,
+		// decided at each publishing loop, because this map is not consulted on
+		// the paths where hiding matters most: ?all=1 and a fresh install both
+		// dump the catalog with no `usable` filter at all.
 		if cfg.NoAuth {
 			ids[id] = true
 		}
 	}
 	return ids
+}
+
+// hiddenProvider reports whether a provider id — or the canonical id it
+// resolves to — is marked Hidden. Hidden providers still serve traffic; they
+// are simply not offered, so every path that publishes a catalog skips them.
+//
+// The alias is resolved before the lookup because the publishing loops visit
+// each spelling that resolves to itself: `mimo-free` and its `mmf` alias are
+// two separate ProviderModels keys, so an alias-only check would let one
+// spelling through while blocking the other.
+func hiddenProvider(providerID string) bool {
+	if providerID == "" {
+		return false
+	}
+	return providers.KnownProviders[providers.ResolveAlias(providerID)].Hidden
 }
 
 // isUsableProvider reports whether a provider id (or its canonical form) is
@@ -426,6 +449,12 @@ func (h *ChatHandler) buildModelsListForMode(
 			if filterConnected && !isUsableProvider(alias, usable) {
 				continue
 			}
+			// The static dump is the path that publishes the most — it answers
+			// both a fresh install and every ?all=1 request — so it needs the
+			// hidden check as much as the connected path does.
+			if hiddenProvider(alias) {
+				continue
+			}
 			for _, mID := range models {
 				if isDisabled(alias, mID) || !isLLMModelEntry(alias, alias, alias, mID, false) {
 					continue
@@ -445,6 +474,14 @@ func (h *ChatHandler) buildModelsListForMode(
 		if conn.Provider == "" || conn.IsActive == 0 {
 			continue
 		}
+		// An active connection to a hidden provider publishes that provider's
+		// whole catalog on the unfiltered paths (default mode, ?all=1), where
+		// `usable` is not consulted at all. Hidden is about being offered, not
+		// about being routable, so the connection still serves traffic — it just
+		// does not seed the listing.
+		if hiddenProvider(conn.Provider) {
+			continue
+		}
 		if filterConnected && !isUsableProvider(conn.Provider, usable) {
 			continue
 		}
@@ -456,10 +493,11 @@ func (h *ChatHandler) buildModelsListForMode(
 
 	customs := h.customModelsByProvider()
 	aliases := h.modelAliasTargets()
+	nodePrefixes := h.providerNodePrefixMap()
 
 	for _, provID := range order {
 		conn := firstPerProvider[provID]
-		data = h.appendConnectionModels(ctx, data, seen, conn, provID, customs, aliases, isDisabled)
+		data = h.appendConnectionModels(ctx, data, seen, conn, provID, customs, aliases, nodePrefixes, isDisabled)
 	}
 	// 4. Connected mode additionally publishes the noAuth registry providers
 	// that have no connection row, mirroring the dashboard picker, which keeps
@@ -485,6 +523,7 @@ func (h *ChatHandler) appendConnectionModels(
 	providerID string,
 	customs map[string][]*db.CustomModel,
 	aliases map[string]string,
+	nodePrefixes map[string]string,
 	isDisabled func(provider, modelID string) bool,
 ) []ModelInfoObject {
 	connData := parseConnectionModelData(conn)
@@ -499,6 +538,15 @@ func (h *ChatHandler) appendConnectionModels(
 		outputAlias = connData.ProviderSpecificData.Prefix
 	case connData.Prefix != "":
 		outputAlias = connData.Prefix
+	case isCompatibleProviderID(providerID):
+		// Older dashboard builds created the connection without copying the
+		// node's prefix into providerSpecificData. The node row still owns the
+		// public alias, so publish that instead of the internal node id. The
+		// disabled-model gate below checks staticAlias as well, which keeps
+		// lists written under the old node-id spelling effective.
+		if prefix := nodePrefixes[providerID]; prefix != "" {
+			outputAlias = prefix
+		}
 	}
 
 	ids := connData.EnabledModels()
@@ -587,7 +635,22 @@ func (h *ChatHandler) appendConnectionModels(
 
 		declaredCtxLen, declaredMaxOut := typedCustomLimits[modelID][0], typedCustomLimits[modelID][1]
 
+		live, hasLive := liveByID[modelID]
+
 		ctxLen, maxOut := declaredCtxLen, declaredMaxOut
+		// A live catalogue that states its own limits outranks every static
+		// table: it describes the exact model this account may run, down to
+		// the window the provider will actually accept. Kiro's resolver only
+		// publishes a capability block, so it keeps upstream's behaviour of
+		// reporting the table default (see the branch below).
+		if hasLive && live.LimitsAuthoritative {
+			if ctxLen == 0 {
+				ctxLen = live.ContextLength
+			}
+			if maxOut == 0 {
+				maxOut = live.MaxOutput
+			}
+		}
 		// Anything the operator did not declare comes from the same chain that
 		// fills `capabilities` (per-model caps → catalog → substring table), so
 		// context_length / max_completion_tokens can never disagree with it.
@@ -603,7 +666,7 @@ func (h *ChatHandler) appendConnectionModels(
 		// {thinking, agentic}). Upstream then uses that block verbatim and
 		// fills the window from the static fallback, so a kiro model reports
 		// context_length from the table default rather than the live payload.
-		if live, ok := liveByID[modelID]; ok && live.Capabilities != nil {
+		if hasLive && live.Capabilities != nil {
 			data = append(data, ModelInfoObject{
 				ID:                  fullID,
 				Object:              "model",
@@ -611,12 +674,13 @@ func (h *ChatHandler) appendConnectionModels(
 				Capabilities:        live.Capabilities,
 				ContextLength:       optionalTokenLimit(ctxLen),
 				MaxCompletionTokens: optionalTokenLimit(maxOut),
+				Pricing:             pricing.BuildOpenRouterPricing(outputAlias, modelID),
 			})
 			continue
 		}
 		// Live catalogs (grok-cli) publish limits the static table may not
 		// know; use them when it has nothing to say.
-		if live, ok := liveByID[modelID]; ok {
+		if hasLive {
 			if ctxLen == 0 {
 				ctxLen = live.ContextLength
 			}
@@ -631,6 +695,7 @@ func (h *ChatHandler) appendConnectionModels(
 			Capabilities:        &caps,
 			ContextLength:       optionalTokenLimit(ctxLen),
 			MaxCompletionTokens: optionalTokenLimit(maxOut),
+			Pricing:             pricing.BuildOpenRouterPricing(outputAlias, modelID),
 		})
 	}
 	return data
@@ -670,6 +735,18 @@ func appendNoAuthCatalogModels(
 		if !providers.IsNoAuthProvider(alias) {
 			continue
 		}
+		// Hidden providers serve traffic without being offered. Checked on the
+		// canonical id so every spelling of the same provider (mimo-free and its
+		// mmf alias) leaves the catalog together — this loop publishes each
+		// alias that resolves to itself, so an alias-only check would let one
+		// spelling through while blocking the other.
+		canonical := providers.ResolveAlias(alias)
+		if canonical == "" {
+			canonical = alias
+		}
+		if providers.KnownProviders[canonical].Hidden {
+			continue
+		}
 		for _, modelID := range modelIDs {
 			if isDisabled(alias, modelID) || !isLLMModelEntry(alias, alias, alias, modelID, false) {
 				continue
@@ -704,6 +781,7 @@ func appendStaticModel(data []ModelInfoObject, seen map[string]bool, alias, mode
 		Capabilities:        &caps,
 		ContextLength:       optionalTokenLimit(ctxLen),
 		MaxCompletionTokens: optionalTokenLimit(maxOut),
+		Pricing:             pricing.BuildOpenRouterPricing(alias, modelID),
 	})
 }
 
@@ -718,8 +796,27 @@ func (h *ChatHandler) appendLooseCustomModels(
 ) []ModelInfoObject {
 	prefixMap := h.providerNodePrefixMap()
 	customs := h.customModelsByProvider()
+	alive := h.aliveAliases()
 	for providerID, list := range customs {
+		if !alive[providerID] {
+			continue
+		}
+		// A custom row whose alias names no live provider is an orphan: the
+		// node it pointed at was deleted, or a backup restored rows for a
+		// gateway that no longer exists. Upstream never advertises them —
+		// buildConnectedProviderIds only emits models for aliases backed by
+		// an active connection — and a request for one fails with "no active
+		// connections for provider" anyway, so listing it only pollutes the
+		// picker. Measured on a real database: 1504 uuid-prefixed rows, all
+		// orphaned, went from advertised to hidden.
 		if filterConnected && !isUsableProvider(providerID, usable) {
+			continue
+		}
+		// Custom rows are keyed by provider, so this loop is the second way a
+		// hidden provider can reach the listing: the static dump above skips it,
+		// but an operator-pinned custom model on mimo-free would still publish
+		// `mimo-free/<id>` under ?all=1 and on a fresh install.
+		if hiddenProvider(providerID) {
 			continue
 		}
 		prefix := providerID
@@ -757,6 +854,7 @@ func (h *ChatHandler) appendLooseCustomModels(
 				Capabilities:        &caps,
 				ContextLength:       optionalTokenLimit(ctxLen),
 				MaxCompletionTokens: optionalTokenLimit(maxOut),
+				Pricing:             pricing.BuildOpenRouterPricing(prefix, cm.ID),
 			})
 		}
 	}
@@ -884,6 +982,7 @@ func loadComboIndex(combos []*models.Combo) comboIndex {
 		if json.Unmarshal([]byte(combo.Models), &seats) != nil {
 			continue
 		}
+		normalizeWebComboSeats(combo.Kind, seats)
 		index[combo.Name] = seats
 	}
 	return index
@@ -918,9 +1017,15 @@ func isNonLLMComboSeat(seat string) bool {
 // capability block, mirroring upstream comboSeatCapabilities: the seat's
 // prefix is a UI alias, and the tables are keyed by provider id, so the alias
 // is mapped first.
-func comboSeatCapabilities(seat string) providers.CapabilitiesDetail {
+func (h *ChatHandler) comboSeatCapabilities(seat string, connMap ...map[string]*ModelInfo) providers.CapabilitiesDetail {
+	var cm map[string]*ModelInfo
+	if len(connMap) > 0 {
+		cm = connMap[0]
+	}
 	providerID, modelID := "", seat
-	if slash := strings.IndexByte(seat, '/'); slash > 0 {
+	if info := h.resolveModelEntryGuarded(seat, nil, cm); info != nil {
+		providerID, modelID = info.Provider, info.Model
+	} else if slash := strings.IndexByte(seat, '/'); slash > 0 {
 		prefix := seat[:slash]
 		modelID = seat[slash+1:]
 		providerID = providers.ResolveAlias(prefix)
@@ -938,13 +1043,17 @@ func comboSeatCapabilities(seat string) providers.CapabilitiesDetail {
 // A seat that is itself a combo name contributes its own leaves' minimum, and
 // cycles are cut: a name already on the walk contributes nothing, which is
 // what bounds a self-referencing combo (upstream's `visiting` set).
-func comboSeatLimits(index comboIndex, comboName string) (contextWindow, maxOutput int) {
+func (h *ChatHandler) comboSeatLimits(index comboIndex, comboName string, connMap ...map[string]*ModelInfo) (contextWindow, maxOutput int) {
 	visiting := make(map[string]bool, 4)
 	visiting[comboName] = true
-	return minComboSeatLimits(index, index[comboName], visiting)
+	return h.minComboSeatLimits(index, index[comboName], visiting, connMap...)
 }
 
-func minComboSeatLimits(index comboIndex, seats []string, visiting map[string]bool) (contextWindow, maxOutput int) {
+func (h *ChatHandler) minComboSeatLimits(index comboIndex, seats []string, visiting map[string]bool, connMap ...map[string]*ModelInfo) (contextWindow, maxOutput int) {
+	var cm map[string]*ModelInfo
+	if len(connMap) > 0 {
+		cm = connMap[0]
+	}
 	for _, seat := range seats {
 		if !strings.Contains(seat, "/") {
 			nested, ok := index[seat]
@@ -952,7 +1061,7 @@ func minComboSeatLimits(index comboIndex, seats []string, visiting map[string]bo
 				continue
 			}
 			visiting[seat] = true
-			nestedWindow, nestedMax := minComboSeatLimits(index, nested, visiting)
+			nestedWindow, nestedMax := h.minComboSeatLimits(index, nested, visiting, cm)
 			delete(visiting, seat)
 			contextWindow, maxOutput = foldTokenMinimum(contextWindow, maxOutput, nestedWindow, nestedMax)
 			continue
@@ -960,7 +1069,7 @@ func minComboSeatLimits(index comboIndex, seats []string, visiting map[string]bo
 		if isNonLLMComboSeat(seat) {
 			continue
 		}
-		caps := comboSeatCapabilities(seat)
+		caps := h.comboSeatCapabilities(seat, cm)
 		contextWindow, maxOutput = foldTokenMinimum(contextWindow, maxOutput, caps.ContextWindow, caps.MaxOutput)
 	}
 	return contextWindow, maxOutput
@@ -985,6 +1094,20 @@ func foldTokenMinimum(currentWindow, currentMax, candidateWindow, candidateMax i
 func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool) []ModelInfoObject {
 	if h.Repo == nil {
 		return data
+	}
+	var connMap map[string]*ModelInfo
+	if conns, err := h.Repo.GetProviderConnections("", false); err == nil {
+		connMap = make(map[string]*ModelInfo, len(conns)*2)
+		for _, conn := range conns {
+			if conn == nil || conn.Provider == "" {
+				continue
+			}
+			info := &ModelInfo{Provider: conn.Provider, ConnectionID: conn.ID}
+			connMap[conn.ID] = info
+			if conn.Name != nil && *conn.Name != "" {
+				connMap[*conn.Name] = info
+			}
+		}
 	}
 	combos, err := h.Repo.GetCombos()
 	if err != nil {
@@ -1011,16 +1134,33 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 			Object:  "model",
 			OwnedBy: "combo",
 		}
-		if caps, ok := h.aggregateComboCapabilities(combo); ok {
+		if caps, ok := h.aggregateComboCapabilities(combo, connMap); ok {
 			entry.Capabilities = caps
 		}
 		// Upstream publishes the combo-wide limits at the top level too (any
 		// seat can serve the request, so the window is the smallest one in the
 		// tree). A combo with no LLM seat at all publishes neither key rather
 		// than a guess.
-		contextWindow, maxOutput := comboSeatLimits(index, combo.Name)
+		contextWindow, maxOutput := h.comboSeatLimits(index, combo.Name, connMap)
 		entry.ContextLength = optionalTokenLimit(contextWindow)
 		entry.MaxCompletionTokens = optionalTokenLimit(maxOutput)
+
+		// Pricing: inherit from first leaf model
+		if combo.Models != "" {
+			var leaves []string
+			if err := json.Unmarshal([]byte(combo.Models), &leaves); err == nil && len(leaves) > 0 {
+				normalizeWebComboSeats(combo.Kind, leaves)
+				if flattened, err := h.flattenComboModels(leaves); err == nil && len(flattened) > 0 {
+					first := flattened[0]
+					if info := h.resolveModelEntryGuarded(first, nil, connMap); info != nil && info.Provider != "" && info.Model != "" {
+						entry.Pricing = pricing.BuildOpenRouterPricing(info.Provider, info.Model)
+					} else if slash := strings.Index(first, "/"); slash > 0 {
+						entry.Pricing = pricing.BuildOpenRouterPricing(first[:slash], first[slash+1:])
+					}
+				}
+			}
+		}
+
 		data = append(data, entry)
 	}
 	return data
@@ -1029,14 +1169,19 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 // aggregateComboCapabilities folds the leaf capabilities with upstream's
 // aggregateComboCapabilities rules (`some` for most booleans, `every` for
 // tools, first-leaf thinking fields, narrowest contextWindow, widest
-func (h *ChatHandler) aggregateComboCapabilities(combo *models.Combo) (*providers.ComboCapabilities, bool) {
+func (h *ChatHandler) aggregateComboCapabilities(combo *models.Combo, connMap ...map[string]*ModelInfo) (*providers.ComboCapabilities, bool) {
 	if combo == nil || combo.Models == "" {
 		return nil, false
+	}
+	var cm map[string]*ModelInfo
+	if len(connMap) > 0 {
+		cm = connMap[0]
 	}
 	var leaves []string
 	if err := json.Unmarshal([]byte(combo.Models), &leaves); err != nil || len(leaves) == 0 {
 		return nil, false
 	}
+	normalizeWebComboSeats(combo.Kind, leaves)
 	flattened, flatErr := h.flattenComboModels(leaves)
 	if flatErr != nil {
 		flattened = leaves
@@ -1049,7 +1194,7 @@ func (h *ChatHandler) aggregateComboCapabilities(combo *models.Combo) (*provider
 		// whole block instead (kiro does: {thinking, agentic}), and then the
 		// static table is no longer what describes this model, so its limits
 		// must not be folded in as if they were known.
-		if live, ok := h.liveCapabilityLeaf(leaf); ok {
+		if live, ok := h.liveCapabilityLeaf(leaf, cm); ok {
 			caps = append(caps, providers.CapabilitiesDetail{
 				ThinkingCanDisable: true,
 				Reasoning:          live.Capabilities.Thinking,
@@ -1059,7 +1204,7 @@ func (h *ChatHandler) aggregateComboCapabilities(combo *models.Combo) (*provider
 			continue
 		}
 		providerID, modelID := "", leaf
-		if info := h.resolveModelEntry(leaf); info != nil {
+		if info := h.resolveModelEntryGuarded(leaf, nil, cm); info != nil {
 			providerID, modelID = info.Provider, info.Model
 		}
 		caps = append(caps, providers.GetCapabilitiesDetailForModel(providerID, modelID))
@@ -1075,11 +1220,15 @@ func (h *ChatHandler) aggregateComboCapabilities(combo *models.Combo) (*provider
 // seat, when a live catalog resolver publishes one for it. The connection for
 // the seat's provider is resolved first because the live catalogs are
 // per-connection (kiro: whoami + model list, grok-cli: /models).
-func (h *ChatHandler) liveCapabilityLeaf(seat string) (LiveModel, bool) {
+func (h *ChatHandler) liveCapabilityLeaf(seat string, connMap ...map[string]*ModelInfo) (LiveModel, bool) {
 	if h.Repo == nil {
 		return LiveModel{}, false
 	}
-	info := h.resolveModelEntry(seat)
+	var cm map[string]*ModelInfo
+	if len(connMap) > 0 {
+		cm = connMap[0]
+	}
+	info := h.resolveModelEntryGuarded(seat, nil, cm)
 	if info == nil {
 		return LiveModel{}, false
 	}
@@ -1139,6 +1288,55 @@ func (h *ChatHandler) customModelsByProvider() map[string][]*db.CustomModel {
 	return out
 }
 
+// aliveAliases is the set of provider aliases that name something that can
+// actually serve a request: a built-in registry provider, a known static
+// alias, a configured compatible node (by id or by its prefix), or any
+// provider that has at least one connection row.
+//
+// A custom model whose providerAlias is not in this set is an orphan — the
+// node it belonged to was deleted, or a backup restored rows for a gateway
+// that no longer exists. Upstream never advertises those
+// (buildConnectedProviderIds only emits models for aliases backed by an
+// active connection), and a request for one fails with "no active
+// connections for provider" anyway, so listing it only pollutes the picker.
+//
+// ProviderAliasMap is load-bearing: `gh`, `oc`, `cl` and `cbai` are aliases
+// (github, opencode, cline, codebuddy-intl), not connections, and must keep
+// being listed. Dropping them would hide working routes.
+func (h *ChatHandler) aliveAliases() map[string]bool {
+	alive := make(map[string]bool)
+	for id := range providers.KnownProviders {
+		alive[id] = true
+	}
+	for alias := range providers.ProviderAliasMap {
+		alive[alias] = true
+	}
+	if h.Repo == nil {
+		return alive
+	}
+	if nodes, err := h.Repo.GetProviderNodes(); err == nil {
+		prefixes := h.providerNodePrefixMap()
+		for _, n := range nodes {
+			if n == nil || n.ID == "" {
+				continue
+			}
+			alive[n.ID] = true
+			if p := prefixes[n.ID]; p != "" {
+				alive[p] = true
+			}
+		}
+	}
+	if conns, err := h.Repo.GetProviderConnections("", false); err == nil {
+		for _, c := range conns {
+			if c == nil || c.Provider == "" {
+				continue
+			}
+			alive[c.Provider] = true
+		}
+	}
+	return alive
+}
+
 // modelAliasTargets returns the alias name → target model mapping. Upstream
 // merges those targets into the owning provider's list instead of publishing
 // the alias key as its own model.
@@ -1159,3 +1357,16 @@ func (h *ChatHandler) modelAliasTargets() map[string]string {
 	}
 	return out
 }
+
+// BuildModelsListResult exposes the model-list builder to the dashboard, which
+// needs the same catalog the engine route serves but without the per-key
+// access filter: a dashboard session is not an engine API key, so the engine
+// route answers 401 to the SPA. mode is the caller's choice; the dashboard
+// uses ListModeCatalog to see every model the gateway can route.
+func (h *ChatHandler) BuildModelsListResult(ctx context.Context, mode ModelsListMode) ModelsListResult {
+	return h.buildModelsListResult(ctx, mode)
+}
+
+// ListModeCatalog is the mode that forces the full static catalog dump plus
+// custom models, regardless of how many connections are configured.
+const ListModeCatalog = modeListCatalog

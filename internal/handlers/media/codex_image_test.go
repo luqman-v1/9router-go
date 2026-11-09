@@ -123,7 +123,7 @@ func TestHandleImages_Codex_RecordsExactUsage(t *testing.T) {
 	})
 	handler, repo := newCodexImageHandler(t)
 
-	req := httptest.NewRequest("POST", "/v1/images/generations", strings.NewReader(`{"model":"codex/gpt-5.5-image","prompt":"a red fox"}`))
+	req := httptest.NewRequest("POST", "/v1/images/generations", strings.NewReader(`{"model":"codex/gpt-5.6-sol-image","prompt":"a red fox"}`))
 	rec := httptest.NewRecorder()
 
 	handler.HandleImages(rec, req)
@@ -134,7 +134,7 @@ func TestHandleImages_Codex_RecordsExactUsage(t *testing.T) {
 	if up.path != "/backend-api/codex/responses" {
 		t.Errorf("expected the Responses endpoint, got %q", up.path)
 	}
-	if up.body["model"] != "gpt-5.5" {
+	if up.body["model"] != "gpt-5.6-sol" {
 		t.Errorf("the -image suffix must be stripped for the wire, got %v", up.body["model"])
 	}
 	var served map[string]any
@@ -149,7 +149,7 @@ func TestHandleImages_Codex_RecordsExactUsage(t *testing.T) {
 		t.Errorf("b64_json = %v, want the generated image", got)
 	}
 
-	row := codexUsageRow(t, repo, "gpt-5.5")
+	row := codexUsageRow(t, repo, "gpt-5.6-sol")
 	if row.PromptTokens != 120 || row.CompletionTokens != 45 {
 		t.Errorf("usage row = %+v, want prompt=120 completion=45", row)
 	}
@@ -173,15 +173,15 @@ func TestHandleImages_Codex_NoImageIsAnErrorAndRecordsNothing(t *testing.T) {
 	})
 	handler, repo := newCodexImageHandler(t)
 
-	req := httptest.NewRequest("POST", "/v1/images/generations", strings.NewReader(`{"model":"codex/gpt-5.5-image","prompt":"a red fox"}`))
+	req := httptest.NewRequest("POST", "/v1/images/generations", strings.NewReader(`{"model":"codex/gpt-5.6-sol-image","prompt":"a red fox"}`))
 	rec := httptest.NewRecorder()
 
 	handler.HandleImages(rec, req)
 
-	if rec.Code == http.StatusOK {
-		t.Fatalf("a stream with no image must not answer 200: %s", rec.Body.String())
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := codexUsageRowOrNil(repo, "gpt-5.5"); got != nil {
+	if got := codexUsageRowOrNil(repo, "gpt-5.6-sol"); got != nil {
 		t.Errorf("no usage row may be written when no image came back, got %+v", got)
 	}
 }
@@ -225,15 +225,15 @@ func TestCodexImageModels(t *testing.T) {
 		},
 		{
 			name:          "suffixed model strips the suffix and carries no tool",
-			model:         "gpt-5.5-image",
-			wantClean:     "gpt-5.5",
-			wantResponses: "gpt-5.5",
+			model:         "gpt-5.6-sol-image",
+			wantClean:     "gpt-5.6-sol",
+			wantResponses: "gpt-5.6-sol",
 		},
 		{
 			name:          "a bare id is used as-is",
-			model:         "gpt-5.5",
-			wantClean:     "gpt-5.5",
-			wantResponses: "gpt-5.5",
+			model:         "gpt-5.6-sol",
+			wantClean:     "gpt-5.6-sol",
+			wantResponses: "gpt-5.6-sol",
 		},
 	}
 	for _, tt := range tests {
@@ -485,7 +485,7 @@ func TestCodexImageBody_ReferencesBecomeEditWithMarkers(t *testing.T) {
 // reasoning object the tool path needs.
 func TestCodexImageBody_SuffixedModelCarriesNoTool(t *testing.T) {
 	req := &codexImageRequest{Prompt: "a red fox"}
-	_, responsesModel, toolModel := codexImageModels("gpt-5.5-image")
+	_, responsesModel, toolModel := codexImageModels("gpt-5.6-sol-image")
 	body, err := codexImageBody(req, responsesModel, toolModel)
 	if err != nil {
 		t.Fatalf("build body: %v", err)

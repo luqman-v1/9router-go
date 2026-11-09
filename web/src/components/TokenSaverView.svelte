@@ -4,7 +4,6 @@
   import Toggle from '../lib/ui/Toggle.svelte'
   import Modal from '../lib/ui/Modal.svelte'
   import Button from '../lib/ui/Button.svelte'
-  import Input from '../lib/ui/Input.svelte'
   import { copyToClipboard } from '../lib/clipboard'
   import { api, type Settings } from '../api/client'
 
@@ -58,6 +57,11 @@
   } | null>(null)
 
   let headroomEnabled = $state(false)
+  let headroomAutostart = $state(false)
+  // The engine is the in-process one by default, so compression works without
+  // the Python proxy installed. The value is only "external" once an operator
+  // picks it, which is why the state default matches the backend default.
+  let headroomEngine = $state<'builtin' | 'external'>('builtin')
   let headroomUrl = $state('http://localhost:8787')
   let headroomTimeoutMs = $state(3000)
   let headroomStatus = $state<{
@@ -70,6 +74,7 @@
     managedPid?: number | null
     path?: string | null
     version?: string | null
+    engine?: 'builtin' | 'external'
   }>({
     installed: false,
     running: false,
@@ -135,6 +140,13 @@
   let ponytailLevel = $state('full')
   let adhdEnabled = $state(false)
   let adhdLevel = $state('full')
+  // A user-authored system prompt, separate from the built-in style savers:
+  // house style, language, a coding convention. Prefix is the first thing the
+  // model reads; suffix is its last word, which is what survives a turn of
+  // untrusted content.
+  let systemPromptEnabled = $state(false)
+  let systemPromptPrefix = $state('')
+  let systemPromptSuffix = $state('')
   let semanticCacheEnabled = $state(false)
   let semanticCacheTTL = $state('1440')
   let semanticCacheMaxEntries = $state('1000')
@@ -153,19 +165,21 @@
     rtkEnabled = true
     cavemanEnabled = true
     cavemanLevel = 'full'
-    adhdEnabled = true
+    adhdEnabled = false
     adhdLevel = 'full'
     ponytailEnabled = false
     headroomEnabled = false
+    headroomAutostart = false
 
     await patchSetting({
       rtkEnabled: true,
       cavemanEnabled: true,
       cavemanLevel: 'full',
-      adhdEnabled: true,
+      adhdEnabled: false,
       adhdLevel: 'full',
       ponytailEnabled: false,
       headroomEnabled: false,
+      headroomAutostart: false,
     })
 
     recommendedApplied = true
@@ -213,11 +227,23 @@
   )
 
   let headroomRunning = $derived(!!headroomStatus.running)
+  // The status answers "is compression running", not "is a process running".
+  // The built-in engine has no process, so a proxy-derived label read
+  // "Not installed" on an instance that was compressing every request — the
+  // opposite of the truth. The engine decides the wording, and the process
+  // state only matters for the external engine that has one.
+  //
+  // The toggle gates the whole thing: this row renders whether or not
+  // compression is switched on, so a built-in engine with the toggle off must
+  // not read "Active" — nothing is being compressed on that request path.
+  let headroomActive = $derived(
+    headroomEnabled && (headroomEngine === 'external' ? headroomRunning : true)
+  )
   let headroomStatusLabel = $derived(
     headroomStatus.loading
       ? 'Checking…'
-      : headroomRunning
-        ? 'Running'
+      : headroomActive
+        ? 'Active'
         : headroomStatus.localUrl !== false && !headroomStatus.installed
           ? 'Not installed'
           : headroomStatus.localUrl !== false
@@ -242,6 +268,11 @@
       if (settings.rtkRawRetention === 'never' || settings.rtkRawRetention === 'failures' || settings.rtkRawRetention === 'always') rtkRawRetention = settings.rtkRawRetention
 
       if (typeof settings.headroomEnabled === 'boolean') headroomEnabled = settings.headroomEnabled
+      if (typeof settings.headroomAutostart === 'boolean') headroomAutostart = settings.headroomAutostart
+      // An absent engine means the settings row predates the field, which is the
+      // built-in engine — the same default the backend normalizes to.
+      if (settings.headroomEngine === 'external') headroomEngine = 'external'
+      else if (settings.headroomEngine === 'builtin') headroomEngine = 'builtin'
       if (typeof settings.headroomUrl === 'string' && settings.headroomUrl) headroomUrl = settings.headroomUrl
       if (typeof settings.headroomTimeoutMs === 'number' && settings.headroomTimeoutMs > 0) {
         headroomTimeoutMs = settings.headroomTimeoutMs
@@ -261,6 +292,9 @@
       if (typeof settings.ponytailLevel === 'string' && settings.ponytailLevel) ponytailLevel = settings.ponytailLevel
       if (typeof settings.adhdEnabled === 'boolean') adhdEnabled = settings.adhdEnabled
       if (typeof settings.adhdLevel === 'string' && settings.adhdLevel) adhdLevel = settings.adhdLevel
+      if (typeof settings.systemPromptEnabled === 'boolean') systemPromptEnabled = settings.systemPromptEnabled
+      if (typeof settings.systemPromptPrefix === 'string') systemPromptPrefix = settings.systemPromptPrefix
+      if (typeof settings.systemPromptSuffix === 'string') systemPromptSuffix = settings.systemPromptSuffix
       if (typeof settings.semanticCacheEnabled === 'boolean') semanticCacheEnabled = settings.semanticCacheEnabled
       if (typeof settings.semanticCacheTTL === 'number' && settings.semanticCacheTTL > 0) semanticCacheTTL = String(settings.semanticCacheTTL)
       if (typeof settings.semanticCacheMaxEntries === 'number' && settings.semanticCacheMaxEntries > 0) semanticCacheMaxEntries = String(settings.semanticCacheMaxEntries)
@@ -485,7 +519,20 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     const nextUrl = headroomUrl.trim() || 'http://localhost:8787'
     headroomUrl = nextUrl
     headroomEnabled = value
-    await patchSetting({ headroomEnabled: value, headroomUrl: nextUrl })
+    // The engine is written with the toggle so the two never disagree: a saved
+    // row with headroomEnabled true and an unset engine resolves to the
+    // built-in engine on the backend, and the panel must show that same choice.
+    await patchSetting({ headroomEnabled: value, headroomUrl: nextUrl, headroomEngine: headroomEngine })
+  }
+  async function handleHeadroomEngineChange(value: 'builtin' | 'external') {
+    headroomEngine = value
+    await patchSetting({ headroomEngine: value })
+    refreshHeadroomStatus()
+  }
+
+  async function handleToggleHeadroomAutostart(value: boolean) {
+    headroomAutostart = value
+    await patchSetting({ headroomAutostart: value })
   }
 
   async function handleHeadroomUrlBlur() {
@@ -516,6 +563,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
         managedPid: data.managedPid,
         path: data.path,
         version: data.version,
+        engine: data.engine === 'external' ? 'external' : 'builtin',
       }
       if (!data.installed) {
         headroomExtras = {
@@ -735,6 +783,18 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     patchSetting({ adhdLevel: levelId })
   }
 
+  function handleToggleSystemPrompt(value: boolean) {
+    systemPromptEnabled = value
+    patchSetting({ systemPromptEnabled: value })
+  }
+
+  function saveSystemPrompt() {
+    patchSetting({
+      systemPromptPrefix,
+      systemPromptSuffix,
+    })
+  }
+
   function copyInstallCommand() {
     copyToClipboard('pip install "headroom-ai[proxy]"')
     copiedInstallCmd = true
@@ -761,7 +821,11 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
         if (data.rtkRawRetention === 'never' || data.rtkRawRetention === 'failures' || data.rtkRawRetention === 'always') rtkRawRetention = data.rtkRawRetention
 
         headroomEnabled = !!data.headroomEnabled
+        headroomAutostart = data.headroomAutostart === true
         headroomUrl = data.headroomUrl || 'http://localhost:8787'
+        // Same normalization as the settings effect: anything that is not the
+        // external engine means the built-in one.
+        headroomEngine = data.headroomEngine === 'external' ? 'external' : 'builtin'
         if (typeof data.headroomTimeoutMs === 'number') headroomTimeoutMs = data.headroomTimeoutMs
         codeAware = data.headroomCodeAware === true
         kompress = data.headroomKompress !== false
@@ -1304,7 +1368,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             </a>
           </p>
           <span
-            class="text-xs px-2 py-0.5 rounded {headroomRunning ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'}"
+            class="text-xs px-2 py-0.5 rounded {headroomActive ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'}"
           >
             {headroomStatusLabel}
           </span>
@@ -1313,7 +1377,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             onclick={() => (isHeadroomModalOpen = true)}
             class="text-xs text-primary underline hover:opacity-80 cursor-pointer"
           >
-            {headroomRunning ? 'Manage' : 'Setup'}
+            {headroomActive ? 'Manage' : 'Setup'}
           </button>
         </div>
         <p class="text-sm text-text-muted mt-1">
@@ -1342,6 +1406,18 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
 
     {#if headroomStatus.installed && headroomExpanded}
       <div class="mb-3 ml-1 pl-3 pb-4 border-l-2 border-border">
+        <!-- Autostart with 9router -->
+        <div class="flex items-center justify-between gap-4 py-2 border-b border-border/50 mb-3 max-w-lg">
+          <div>
+            <p class="text-xs font-medium text-text-main">Autostart with 9router</p>
+            <p class="text-[11px] text-text-muted">Automatically launch local Headroom proxy when 9router-go boots</p>
+          </div>
+          <Toggle
+            size="sm"
+            checked={headroomAutostart}
+            onChange={() => handleToggleHeadroomAutostart(!headroomAutostart)}
+          />
+        </div>
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-xs text-text-muted">
             Compression extras{headroomExtras.version ? ` · v${headroomExtras.version}` : ''}:
@@ -1859,7 +1935,64 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
       </div>
     {/if}
 
-    <!-- 6. Prompt & Response Cache -->
+    <!-- 6. Custom system prompt -->
+    <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2 flex-wrap">
+          <p class="font-medium">Custom system prompt</p>
+          <span class="text-xs px-2 py-0.5 rounded font-medium {systemPromptEnabled ? 'bg-success/15 text-success' : 'bg-surface-3 text-text-muted'}">
+            {systemPromptEnabled ? 'Active' : 'Disabled'}
+          </span>
+        </div>
+        <p class="text-sm text-text-muted">
+          Inject your own instruction into every request. The prefix leads the system prompt; the suffix lands after it, where
+          it survives a turn of untrusted content.
+        </p>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <Toggle
+          checked={systemPromptEnabled}
+          onChange={() => handleToggleSystemPrompt(!systemPromptEnabled)}
+        />
+      </div>
+    </div>
+
+    {#if systemPromptEnabled}
+      <div class="py-3 px-4 rounded-lg bg-surface-2/40 border border-border mt-3 space-y-3">
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-text-muted" for="system-prompt-prefix">Prefix</label>
+          <textarea
+            id="system-prompt-prefix"
+            bind:value={systemPromptPrefix}
+            rows="2"
+            placeholder="House style, language, conventions — read before anything else"
+            class="w-full px-3 py-2 rounded-lg bg-surface-1 border border-border text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-primary/40"
+          ></textarea>
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-text-muted" for="system-prompt-suffix">Suffix</label>
+          <textarea
+            id="system-prompt-suffix"
+            bind:value={systemPromptSuffix}
+            rows="2"
+            placeholder="Last word the model reads — e.g. always answer in Vietnamese"
+            class="w-full px-3 py-2 rounded-lg bg-surface-1 border border-border text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-primary/40"
+          ></textarea>
+        </div>
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+          <p class="text-xs text-text-muted">Applied to chat, Responses and Claude requests alike.</p>
+          <button
+            type="button"
+            onclick={saveSystemPrompt}
+            class="px-3 py-1.5 rounded text-xs font-medium bg-primary text-white hover:opacity-90 transition-opacity cursor-pointer"
+          >
+            Save prompt
+          </button>
+        </div>
+      </div>
+    {/if}
+
+    <!-- 7. Prompt & Response Cache -->
     <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2 flex-wrap">
@@ -1926,12 +2059,12 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
   <div class="flex flex-col gap-4">
     <div class="flex items-center justify-between text-sm">
       <span>Status</span>
-      <span class={headroomRunning ? 'text-success font-medium' : 'text-warning font-medium'}>
+      <span class={headroomActive ? 'text-success font-medium' : 'text-warning font-medium'}>
         {headroomStatusLabel}
       </span>
     </div>
 
-    {#if headroomRunning}
+    {#if headroomEngine === 'external' && headroomRunning}
       <a
         href="/api/headroom/proxy/dashboard"
         target="_blank"
@@ -1942,6 +2075,37 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
       </a>
     {/if}
 
+    <div class="flex flex-col gap-1">
+      <p class="text-sm font-medium">Compression engine</p>
+      <div class="flex gap-2" role="group" aria-label="Compression engine">
+        <button
+          type="button"
+          onclick={() => handleHeadroomEngineChange('builtin')}
+          aria-pressed={headroomEngine === 'builtin'}
+          class="flex-1 px-3 py-2 rounded-lg border text-sm text-left transition-colors cursor-pointer {headroomEngine === 'builtin'
+            ? 'border-primary bg-primary/10 text-text-main'
+            : 'border-border bg-surface-2 text-text-muted hover:bg-surface-3'}"
+        >
+          <span class="font-medium block">Built-in</span>
+          <span class="text-xs text-text-muted">In-process, no install</span>
+        </button>
+        <button
+          type="button"
+          onclick={() => handleHeadroomEngineChange('external')}
+          aria-pressed={headroomEngine === 'external'}
+          class="flex-1 px-3 py-2 rounded-lg border text-sm text-left transition-colors cursor-pointer {headroomEngine === 'external'
+            ? 'border-primary bg-primary/10 text-text-main'
+            : 'border-border bg-surface-2 text-text-muted hover:bg-surface-3'}"
+        >
+          <span class="font-medium block">External proxy</span>
+          <span class="text-xs text-text-muted">Needs headroom-ai + URL</span>
+        </button>
+      </div>
+      <p class="text-xs text-text-muted">
+        Built-in compresses in this process — nothing to install, no extra round trip. The
+        external proxy adds semantic compression but must be running at the URL below.
+      </p>
+    </div>
     <div class="flex flex-col gap-1">
       <p class="text-sm font-medium">Proxy URL</p>
       <input
@@ -1968,6 +2132,23 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
       <p class="text-xs text-text-muted">
         Request timeout in milliseconds. Defaults to 3000 ms.
       </p>
+    </div>
+
+    <div class="flex items-center justify-between py-2 border-t border-border">
+      <div>
+        <p class="text-sm font-medium text-text-main">Autostart with 9router</p>
+        <p class="text-xs text-text-muted">
+          {!headroomStatus?.installed
+            ? 'Requires Headroom to be installed first'
+            : 'Launch local Headroom proxy on 9router-go startup'}
+        </p>
+      </div>
+      <Toggle
+        checked={headroomAutostart}
+        disabled={!headroomStatus?.installed}
+        title={!headroomStatus?.installed ? 'Install Headroom first to enable autostart' : ''}
+        onChange={() => handleToggleHeadroomAutostart(!headroomAutostart)}
+      />
     </div>
 
     {#if headroomManaged}

@@ -13,7 +13,12 @@ import (
 
 func modelsIDs(t *testing.T, h *ChatHandler) []string {
 	t.Helper()
-	req := httptest.NewRequest("GET", "/v1/models", nil)
+	return modelsIDsQuery(t, h, "")
+}
+
+func modelsIDsQuery(t *testing.T, h *ChatHandler, rawQuery string) []string {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/v1/models"+rawQuery, nil)
 	w := httptest.NewRecorder()
 	h.HandleModels(w, req)
 	if w.Code != http.StatusOK {

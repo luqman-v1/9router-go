@@ -1,11 +1,13 @@
 <script lang="ts">
   // Port of decolua/9router src/shared/components/Modal.js
   import type { Snippet } from 'svelte'
+  import { pushEscapeHandler } from './escapeStack'
 
   let {
     isOpen = false,
     onClose,
     title = '',
+    icon = '',
     size = 'md',
     closeOnOverlay = true,
     showTrafficLights = true,
@@ -16,6 +18,7 @@
     isOpen?: boolean
     onClose?: () => void
     title?: string
+    icon?: string
     size?: 'sm' | 'md' | 'lg' | 'xl' | 'full'
     closeOnOverlay?: boolean
     showTrafficLights?: boolean
@@ -42,13 +45,11 @@
     }
   })
 
+  // Escape closes only the topmost dialog, so a dialog opened over this one
+  // (a picker, a confirm) is dismissed without taking this one with it.
   $effect(() => {
     if (!isOpen) return
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose?.()
-    }
-    document.addEventListener('keydown', handleEscape)
-    return () => document.removeEventListener('keydown', handleEscape)
+    return pushEscapeHandler(() => onClose?.())
   })
 </script>
 
@@ -84,7 +85,12 @@
               </div>
             {/if}
             {#if title}
-              <h2 class="text-lg font-semibold text-text-main">{title}</h2>
+              <h2 class="flex items-center gap-2 text-lg font-semibold text-text-main">
+                {#if icon}
+                  <span class="material-symbols-outlined text-[20px] text-brand-500">{icon}</span>
+                {/if}
+                {title}
+              </h2>
             {/if}
           </div>
           <button

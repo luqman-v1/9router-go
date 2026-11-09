@@ -91,16 +91,9 @@ func setupChartTestDB(t *testing.T) *db.Repo {
 	}
 	repo := db.NewRepo(conn)
 	t.Cleanup(func() { conn.Close() })
-	// Dates are relative, not literal. They used to be a fixed "2026-10-16",
-	// which sits outside every rolling window once real time moves past it, so
-	// the 7d chart reported zero tokens and the suite failed on the calendar
-	// rather than on the code. Two days are seeded because the all-period chart
-	// is asserted to cover more than one.
-	today := time.Now().UTC()
-	for _, day := range []time.Time{today, today.AddDate(0, 0, -1)} {
-		if err := repo.UpsertUsageDaily(day.Format("2006-01-02"), `{"promptTokens":1000,"completionTokens":500,"cost":1.5}`); err != nil {
-			t.Fatalf("seed usageDaily: %v", err)
-		}
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	if err := repo.UpsertUsageDaily(yesterday, `{"promptTokens":1000,"completionTokens":500,"cost":1.5}`); err != nil {
+		t.Fatalf("seed usageDaily: %v", err)
 	}
 	if err := repo.InsertUsageHistory("openai", "gpt-5", "conn-1", "sk-1", "/v1/chat/completions",
 		100, 50, 1.5, "ok", 150, "{}", "{}"); err != nil {
@@ -176,9 +169,6 @@ func TestHandleUsageChart(t *testing.T) {
 
 func TestDailyChartBucketsAll(t *testing.T) {
 	repo := setupChartTestDB(t)
-	// The window runs from the earliest seeded day to `now`, so the clock has to
-	// be the same "now" the seed used — a literal date here would drift out of
-	// the seeded range exactly as the seed did.
 	now := time.Now().UTC()
 	buckets := dailyChartBuckets(repo, now, 0)
 	if len(buckets) < 2 {

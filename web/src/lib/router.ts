@@ -26,6 +26,7 @@ export type ActiveTab =
   | 'settings'
   | 'security'
   | 'plans'
+  | 'jailbreak'
   | 'keys' // legacy alias for the endpoint tab; see ROUTE_TO_TAB below
 
 export const TAB_ROUTES: Record<ActiveTab, string> = {
@@ -53,6 +54,7 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   settings: '/dashboard/profile',
   security: '/dashboard/security',
   plans: '/dashboard/plans',
+  jailbreak: '/dashboard/jailbreak',
   // Legacy alias: keys are managed on the endpoint tab (issue #199), so both
   // tabs resolve to the same route rather than leaving one unreachable.
   keys: '/dashboard/endpoint',
@@ -170,6 +172,8 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   // plans: reusable policy templates the API keys inherit from (F-3)
   '/dashboard/plans': 'plans',
   '/plans': 'plans',
+  '/dashboard/jailbreak': 'jailbreak',
+  '/jailbreak': 'jailbreak',
 }
 
 // The Usage page's sections. Cache Analytics and Compression Analytics joined

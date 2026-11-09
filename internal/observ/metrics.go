@@ -222,14 +222,32 @@ func (m *Metrics) IncRateLimitReject(scope, keyID string) {
 	m.RateLimitRejects.WithLabelValues(Label(scope), KeyRef(keyID)).Inc()
 }
 
-// ObserveRateLimitQueueWait records how long a request waited for a free
-// per-key concurrency slot. scope names the limiter ("api_key").
+// ObserveRateLimitQueueWait records how long a request waited for a free slot in
+// the per-key limiter. It is the package-level convenience over the default
+// registry; the per-registry form is below.
 func ObserveRateLimitQueueWait(seconds float64) {
 	Default().ObserveRateLimitQueueWait(seconds)
 }
 
+// ObserveRateLimitQueueWait records how long a request waited for a free slot in
+// the per-key limiter, on this registry.
 func (m *Metrics) ObserveRateLimitQueueWait(seconds float64) {
-	m.RateLimitQueue.WithLabelValues(Label("api_key")).Observe(seconds)
+	m.ObserveRateLimitQueueWaitFor("api_key", seconds)
+}
+
+// ObserveRateLimitQueueWaitFor records a wait in the named limiter scope
+// ("api_key" for a caller's own limit, "provider" for a custom provider's
+// capacity). The scope is a parameter rather than a constant because the two
+// waits mean different things to whoever is reading the graph: a key waiting on
+// its own budget is the caller's problem, a provider waiting on its endpoint is
+// the operator's.
+func ObserveRateLimitQueueWaitFor(scope string, seconds float64) {
+	Default().ObserveRateLimitQueueWaitFor(scope, seconds)
+}
+
+// ObserveRateLimitQueueWaitFor is the per-registry implementation.
+func (m *Metrics) ObserveRateLimitQueueWaitFor(scope string, seconds float64) {
+	m.RateLimitQueue.WithLabelValues(Label(scope)).Observe(seconds)
 }
 
 // RecordGuardrailDecision counts one guardrail decision and observes how long

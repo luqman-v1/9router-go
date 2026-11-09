@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"9router/proxy/internal/budget"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
@@ -47,6 +48,11 @@ type RateLimiter struct {
 	// late wiring call cannot race a request in flight; nil means the install
 	// has no plan tier, which is every setup that has not configured one.
 	plans atomic.Pointer[policy.PlanSource]
+	// budgetSpend reads a key's per-period spend (F-2). Atomic for the same
+	// reason as plans; nil means no budget is wired, and the engine's Armed()
+	// short-circuit means a nil reader is never dereferenced for a key that
+	// has no budget configured.
+	budgetSpend atomic.Pointer[budget.Reader]
 }
 
 // waitQueue is the FIFO of parked requests for one key.
@@ -112,6 +118,28 @@ func (rl *RateLimiter) planSource() policy.PlanSource {
 		return nil
 	}
 	p := rl.plans.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// SetBudgetReader wires the per-period spend reader (F-2). Call it before the
+// first request; the atomic pointer keeps a later rewiring safe for readers
+// already measuring a key.
+func (rl *RateLimiter) SetBudgetReader(src budget.Reader) {
+	if rl == nil {
+		return
+	}
+	rl.budgetSpend.Store(&src)
+}
+
+// budgetReader returns the wired spend reader, or nil when none was set.
+func (rl *RateLimiter) budgetReader() budget.Reader {
+	if rl == nil {
+		return nil
+	}
+	p := rl.budgetSpend.Load()
 	if p == nil {
 		return nil
 	}
@@ -698,12 +726,30 @@ func RequireRateLimit(rl *RateLimiter, defaults Defaults, usage TokenUsageReader
 			}
 
 			limits := limitsFor(apiKey, defaults, rl.planSource())
+			// The budget reader lives on the limiter, and budgetCheck is a
+			// sibling function rather than a closure over it, so the limiter
+			// travels on the request context. It is recorded only when a
+			// budget is actually armed: a key with no budget configured —
+			// which is every key on an install that has not set one — must not
+			// pay a context allocation on the hot path.
+			if limits.Budget.Armed() {
+				r = withRateLimiter(r, rl)
+			}
 
-			// Lifetime token quota: a hard budget, refused with 403 the same way
-			// a not-yet-ported plan-tier cap would be. It is checked before
-			// RPM/TPM because an exhausted key must not consume a slot or a
-			// request stamp on its way to being told no.
+			// Lifetime token quota: a hard budget, refused with 429 before
+			// anything else is consulted. It is checked before RPM/TPM because
+			// an exhausted key must not consume a slot or a request stamp on
+			// its way to being told no.
 			if quotaCheck(w, r, apiKey, limits, usage) {
+				return
+			}
+			// Per-period budget (F-2): a spend ceiling over daily/weekly/
+			// monthly/total. It runs after the lifetime quota for the same
+			// reason — an exhausted key must not spend a queue slot on its way
+			// to a refusal — and before TPM so an over-budget request is
+			// answered with 402 rather than a token-bucket 429 that would send
+			// the client looking at the wrong limit.
+			if budgetCheck(w, r, apiKey, limits) {
 				return
 			}
 
@@ -757,6 +803,175 @@ func RequireRateLimit(rl *RateLimiter, defaults Defaults, usage TokenUsageReader
 	}
 }
 
+// Provider-scope admission.
+//
+// The same limiter serves a second scope. A custom provider is one providerNodes
+// row — a single upstream endpoint shared by every connection under it — so what
+// it tolerates is a property of that endpoint, not of the key calling it. Rather
+// than a second limiter (two copies of the sliding window and the FIFO queue,
+// free to drift apart), a provider's slot lives in these same maps under a
+// namespaced key.
+//
+// Precedence is deliberately key-first: the middleware refuses a caller that has
+// spent its own allowance before a provider slot is ever considered, so one
+// misbehaving caller cannot consume the capacity every other caller depends on.
+
+// ProviderScopeKey namespaces one provider's slot inside the shared limiter maps.
+func ProviderScopeKey(providerID string) string { return "prov:" + providerID }
+
+// EstimatePromptTokens exposes the limiter's own estimator, so a provider's TPM
+// bucket is charged from the same number a key's is.
+func EstimatePromptTokens(body []byte) int { return estimatePromptTokens(body) }
+
+// ProviderRefusal says why one provider attempt was refused.
+type ProviderRefusal struct {
+	// Axis is the limit that refused: "tpm", "rpm" or "concurrency".
+	Axis string
+	// RetryAfter is how long to wait before trying this provider again. For a
+	// queue timeout it is the wait that just elapsed; for TPM it is how long the
+	// bucket needs to refill enough for this request.
+	RetryAfter time.Duration
+	// Limit is the configured value that refused, for the response body.
+	Limit int
+}
+
+// ProviderSlot is one admitted provider attempt. Release ends it and must run
+// when the attempt ends — success, failure, or failover to another candidate.
+type ProviderSlot struct {
+	rl       *RateLimiter
+	key      string
+	tpm      int
+	reserved int
+	held     bool
+}
+
+// Settle reconciles the TPM charge with what the turn actually cost. Only an
+// under-estimate is corrected, exactly as for a key: refunding a surplus would
+// let a caller bank headroom by over-stating its prompt.
+func (s *ProviderSlot) Settle(actual int) {
+	if s == nil || s.rl == nil {
+		return
+	}
+	if s.tpm > 0 && s.reserved > 0 {
+		s.rl.SettleTokenUsage(s.key, s.tpm, s.reserved, actual)
+	}
+	s.reserved = 0
+}
+
+// Release gives back whatever the attempt still holds: the concurrency slot, and
+// any TPM charge the meter never settled. An unsettled charge belongs to an
+// attempt that ended before it produced a usage reading — an upstream error, or a
+// client that hung up — and keeping it would spend a provider's budget on a turn
+// nobody was served.
+func (s *ProviderSlot) Release() {
+	if s == nil || s.rl == nil {
+		return
+	}
+	if s.held {
+		s.rl.ReleaseConcurrency(s.key)
+		s.held = false
+	}
+	if s.reserved > 0 {
+		s.rl.RefundTPM(s.key, s.tpm, s.reserved)
+		s.reserved = 0
+	}
+}
+
+// AcquireProvider admits one attempt against a provider's limits.
+//
+// A nil slot with a nil refusal means the provider declares no limits: the
+// attempt proceeds and there is nothing to release, which is why every caller can
+// hand the slot to a deferred Release unconditionally.
+//
+// A refusal is not an error to report to the client yet. It names this candidate
+// as full; the caller moves to the next candidate and only answers 429 when none
+// is left (docs/provider-limits-plan.md D7).
+func (rl *RateLimiter) AcquireProvider(ctx context.Context, providerID string, limits Limits, promptTokens int) (*ProviderSlot, *ProviderRefusal) {
+	if rl == nil || providerID == "" {
+		return nil, nil
+	}
+	if limits.RPM <= 0 && limits.TPM <= 0 && limits.Concurrency <= 0 {
+		return nil, nil
+	}
+	key := ProviderScopeKey(providerID)
+	slot := &ProviderSlot{rl: rl, key: key, tpm: limits.TPM}
+
+	// TPM first, and not queueable: a token bucket refills continuously, so a
+	// request parked for one could be admitted and immediately re-refused.
+	if limits.TPM > 0 && promptTokens > 0 {
+		if allowed, retryAfterSeconds, axis := rl.checkTPMOnly(key, limits.TPM, promptTokens); !allowed {
+			return nil, &ProviderRefusal{
+				Axis:       axis,
+				Limit:      limits.TPM,
+				RetryAfter: time.Duration(retryAfterSeconds) * time.Second,
+			}
+		}
+		slot.reserved = promptTokens
+	}
+
+	// RPM and concurrency are both queueable here for the same reason as for a
+	// key: the request waits in this provider's FIFO, up to this provider's own
+	// timeout, rather than being refused the moment a burst arrives.
+	waited, ok := rl.Acquire(ctx, key, limits.RPM, limits.Concurrency, limits.QueueTimeout)
+	if !ok {
+		// The TPM charge was taken before the queue and the attempt never left,
+		// so it is not a spend: hand the whole amount back.
+		slot.Release()
+		return nil, &ProviderRefusal{
+			Axis:       queueScope(limits),
+			Limit:      queueLimit(limits),
+			RetryAfter: time.Duration(queueRetryAfter(limits)) * time.Second,
+		}
+	}
+	if waited > 0 {
+		observ.ObserveRateLimitQueueWaitFor("provider", waited.Seconds())
+	}
+	slot.held = limits.Concurrency > 0
+	return slot, nil
+}
+
+// queueLimit names the configured value a queue timeout was waiting on, so the
+// refusal can report the number the operator actually set.
+func queueLimit(limits Limits) int {
+	if limits.Concurrency > 0 {
+		return limits.Concurrency
+	}
+	return limits.RPM
+}
+
+// Snapshot reports the live admission state of a scope key: how many requests sit
+// in its RPM window and how many hold a concurrency slot right now.
+//
+// It exists for the debug trail a refused provider attempt writes. From the
+// refusal alone, "this endpoint is busy" and "this limit is set absurdly low"
+// look identical; these two numbers are what tell them apart, and a queue wait
+// (which leaves no trace in the window) is why the concurrency count is reported
+// even when RPM is the axis that refused.
+//
+// Stale stamps are excluded rather than counted: the window's own pruning happens
+// on the write path, so a count that trusted the slice would report the peak of
+// every window that ever rolled, which is exactly the number that would make an
+// operator raise a limit that is already generous.
+func (rl *RateLimiter) Snapshot(keyID string) (windowCount, active int) {
+	if rl == nil || keyID == "" {
+		return 0, 0
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	cutoff := time.Now().Add(-rl.window)
+	if w, ok := rl.windows[keyID]; ok {
+		for _, stamp := range w.stamps {
+			if stamp.After(cutoff) {
+				windowCount++
+			}
+		}
+	}
+	if counter, ok := rl.active[keyID]; ok && counter != nil {
+		active = int(atomic.LoadInt32(counter))
+	}
+	return windowCount, active
+}
+
 // checkTPMOnly charges the token bucket and names the refusal when it is full.
 // It is separate from Check so the middleware can run TPM before the queue: a
 // TPM refusal must not park the request first.
@@ -779,7 +994,7 @@ func queueScope(limits Limits) string {
 }
 
 // quotaCheck refuses a key whose lifetime token budget is spent. It returns
-// true when the request was written a 403 and the handler must stop.
+// true when the request was written a 429 and the handler must stop.
 //
 // A failed quota read allows the request: a storage blip must not lock a key
 // out of a service it has always been able to call, which mirrors how a failed
@@ -813,15 +1028,104 @@ func queueRetryAfter(limits Limits) int {
 	return int(limits.QueueTimeout.Seconds()) + 1
 }
 
+// budgetCheck refuses a key that has spent its per-period budget (F-2).
+// It returns true when the request was written a 402 and the handler must
+// stop.
+//
+// The spend read is skipped entirely for a key with no budget armed, so an
+// install that has not configured one pays nothing per request. A failed read
+// fails open for the same reason quotaCheck does: a storage blip must not
+// lock a key out of a service it has always been able to call.
+//
+// A key that is over its alert threshold but under a soft ceiling is served
+// with a warning header rather than refused, so a client can see the budget
+// closing without being cut off mid-session.
+func budgetCheck(w http.ResponseWriter, r *http.Request, apiKey *models.APIKey, limits Limits) bool {
+	if !limits.Budget.Armed() || apiKey == nil || apiKey.Key == "" {
+		return false
+	}
+	reader := rlFromRequest(r)
+	if reader == nil {
+		return false
+	}
+	d := budget.Check(r.Context(), reader.budgetReader(), apiKey.Key, limits.Budget, time.Now())
+	if d.Alerting && !d.Refuse {
+		w.Header().Set("X-Budget-Status", "approaching")
+	}
+	if !d.Refuse {
+		return false
+	}
+	log.Warn("rate limit", "budget exhausted", "key", apiKey.ID, "axis", d.Axis,
+		"spendMicros", d.Spend.Micros, "spendTokens", d.Spend.Tokens)
+	observ.IncRateLimitReject("budget_"+d.Axis, apiKey.ID)
+	rejectBudgetExhausted(w, d)
+	return true
+}
+
+// rlFromRequest recovers the limiter that is running this middleware. The
+// closure in RequireRateLimit holds it, but the helper is called from a
+// sibling function rather than from inside that closure, so it travels on the
+// request context instead.
+type rlCtxKey struct{}
+
+// withRateLimiter records the limiter on the request context.
+func withRateLimiter(r *http.Request, rl *RateLimiter) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), rlCtxKey{}, rl))
+}
+
+// rlFromRequest returns the limiter recorded by withRateLimiter, or nil.
+func rlFromRequest(r *http.Request) *RateLimiter {
+	if r == nil {
+		return nil
+	}
+	rl, _ := r.Context().Value(rlCtxKey{}).(*RateLimiter)
+	return rl
+}
+
+// rejectBudgetExhausted answers a key that has spent its period budget.
+//
+// 402 rather than 403: the lifetime token quota is an access decision, while
+// this one is a payment-adjacent one — the request is well-formed and the key
+// is valid, it simply has no budget left to spend. Retry-After names the
+// period reset, which for a total budget is absent because waiting never
+// helps there.
+func rejectBudgetExhausted(w http.ResponseWriter, d budget.Decision) {
+	if !d.ResetAt.IsZero() {
+		secs := int(time.Until(d.ResetAt).Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+	}
+	if d.Axis == "cost" {
+		w.Header().Set("X-Budget-Limit", budget.FormatMicros(d.Limits.LimitMicros))
+		w.Header().Set("X-Budget-Spent", budget.FormatMicros(d.Spend.Micros))
+		handlerutil.WriteJSONError(w, http.StatusPaymentRequired,
+			fmt.Sprintf("Budget exhausted for this API key ($%s of $%s this %s period).",
+				budget.FormatMicros(d.Spend.Micros), budget.FormatMicros(d.Limits.LimitMicros), d.Limits.Period))
+		return
+	}
+	w.Header().Set("X-Budget-Limit", strconv.FormatInt(d.Limits.LimitTokens, 10))
+	w.Header().Set("X-Budget-Spent", strconv.FormatInt(d.Spend.Tokens, 10))
+	handlerutil.WriteJSONError(w, http.StatusPaymentRequired,
+		fmt.Sprintf("Token budget exhausted for this API key (%d of %d this %s period).",
+			d.Spend.Tokens, d.Limits.LimitTokens, d.Limits.Period))
+}
+
 // rejectQuotaExhausted answers a key that has spent its lifetime token budget.
 //
-// A quota is not a per-window rate, so the answer is a plain 403 with the spend
-// it reached: Retry-After and X-RateLimit-Reset would both promise that waiting
-// helps, and for a lifetime budget only an operator raising the quota does.
+// The status is 429: the request is refused because the caller is over its
+// allowance, which is what that code means. The error TYPE is what tells a
+// client the difference — a rate limit clears by itself, a spent budget does
+// not — so the type is insufficient_quota rather than rate_limit_error.
+//
+// No Retry-After: waiting does not refill a lifetime budget, only an operator
+// raising it or resetting the spent mark does. The spend headers carry what
+// the client needs to explain the refusal.
 func rejectQuotaExhausted(w http.ResponseWriter, used, quota int) {
 	w.Header().Set("X-Token-Quota-Limit", strconv.Itoa(quota))
 	w.Header().Set("X-Token-Quota-Used", strconv.Itoa(used))
-	handlerutil.WriteJSONError(w, http.StatusForbidden,
+	handlerutil.WriteJSONErrorType(w, http.StatusTooManyRequests, "insufficient_quota", "insufficient_quota",
 		fmt.Sprintf("Token quota exhausted for this API key (%d/%d).", used, quota))
 }
 
@@ -896,6 +1200,9 @@ type Limits struct {
 	// QueueTimeout is how long a request may wait for a free concurrency slot
 	// before it is refused instead of served.
 	QueueTimeout time.Duration
+	// Budget is the per-period spend ceiling. Zero-valued means no budget,
+	// which is what every key without one resolves to.
+	Budget budget.Limits
 }
 
 // limitsFor resolves the effective limits for a key.
@@ -935,6 +1242,17 @@ func limitsFor(apiKey *models.APIKey, d Defaults, plans policy.PlanSource) Limit
 	// budget the budget engine enforces — a different guarantee.
 	if pol.TokenQuota > 0 {
 		out.TokenQuota = pol.TokenQuota
+	}
+	// Per-period budget. It comes from the same resolution as everything
+	// else here — global default has no budget axis, so it is plan-then-key
+	// only — and a key with no plan and no columns resolves to the zero
+	// Limits, which the engine short-circuits without a database read.
+	out.Budget = budget.Limits{
+		LimitMicros: pol.LimitMicros,
+		LimitTokens: pol.LimitTokens,
+		Period:      pol.Period,
+		AlertPct:    pol.AlertPct,
+		HardCutoff:  pol.HardCutoff,
 	}
 
 	// Queue timeout. The default only applies when the CONCURRENCY cap is the

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"strings"
@@ -176,5 +177,75 @@ func TestDeepSeekStreamedTurnEndsProperly(t *testing.T) {
 	}
 	if recorder.Header().Get("Content-Type") != "text/event-stream" {
 		t.Errorf("Content-Type = %q", recorder.Header().Get("Content-Type"))
+	}
+}
+
+// TestDeepSeekStreamedNoToolsScrubsDSML feeds an upstream answer whose DSML
+// block crosses several fragments into the streaming executor. The client must
+// receive the prose on both sides and never the markup — this is the path taken
+// when the request declared no tools, where previously nothing scrubbed the
+// answer at all.
+func TestDeepSeekStreamedNoToolsScrubsDSML(t *testing.T) {
+	answer := "Baik, saya cek dulu.\n" + leakedCronjobBlock + "\nIni hasilnya."
+	parts := []string{answer[:20], answer[20:40], answer[40:80], answer[80:]}
+	fragments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		fragments = append(fragments, fmt.Sprintf(`{"type":"RESPONSE","content":%s}`, mustJSONString(part)))
+	}
+	events := []string{
+		fmt.Sprintf(`{"v":{"response":{"fragments":[%s]}}}`, strings.Join(fragments, ",")),
+		`{"p":"response/status","v":"FINISHED"}`,
+	}
+	body := "data: " + strings.Join(events, "\n\ndata: ") + "\n\n"
+
+	recorder := httptest.NewRecorder()
+	req := &Request{Ctx: t.Context(), IsStream: true}
+	accumulator := newDeepSeekStreamAccumulator("m")
+	if err := deepSeekStreamToClient(recorder, req, strings.NewReader(body), "m", accumulator); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	out := recorder.Body.String()
+	if strings.Contains(out, "DSML") {
+		t.Fatalf("markup survived into the streamed content:\n%s", out)
+	}
+	if !strings.Contains(out, "Baik, saya cek dulu.") || !strings.Contains(out, "Ini hasilnya.") {
+		t.Fatalf("prose around the block was lost:\n%s", out)
+	}
+}
+
+// TestDeepSeekCollectToClientScrubsDSML pins the non-streaming, no-tools path:
+// the buffered answer is scrubbed before the completion document is written, so
+// a client that does not stream sees the prose and never the DSML tags.
+func TestDeepSeekCollectToClientScrubsDSML(t *testing.T) {
+	answer := "Awal\n" + leakedCronjobBlock + "\nAkhir"
+	body := "data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":" +
+		mustJSONString(answer) + "}]}}}\n\n" +
+		"data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n"
+
+	recorder := httptest.NewRecorder()
+	req := &Request{Ctx: t.Context()}
+	accumulator := newDeepSeekStreamAccumulator("m")
+	if err := deepSeekCollectToClient(recorder, req, strings.NewReader(body), "m", accumulator); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+
+	var out struct {
+		Choices []struct {
+			Message map[string]any `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1", len(out.Choices))
+	}
+	content, _ := out.Choices[0].Message["content"].(string)
+	if strings.Contains(content, "DSML") {
+		t.Fatalf("markup survived:\n%s", content)
+	}
+	if !strings.Contains(content, "Awal") || !strings.Contains(content, "Akhir") {
+		t.Fatalf("prose around the block was lost: %q", content)
 	}
 }

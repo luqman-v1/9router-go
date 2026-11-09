@@ -47,13 +47,50 @@ export interface Combo {
   strategy: string
   createdAt: string
   updatedAt: string
+  /** Raw JSON of the combo's smart rules. Absent means the combo has none. */
+  matchRules?: string
+  /** Derived server-side: the members the rules currently own. */
+  autoMembers?: string[]
 }
 
+/** One smart-select rule: a pattern plus the membership it currently owns. */
+export interface SmartRule {
+  id: string
+  pattern: string
+  mode: 'glob' | 'keyword' | 'regex'
+  effect: 'include' | 'exclude'
+  enabled: boolean
+  /** 0 means unlimited. */
+  maxMembers: number
+  allKinds: boolean
+  resolved?: string[]
+  excluded?: string[]
+}
+
+/** What one rule would contribute, as the preview endpoint reports it. */
+export interface SmartRulePreview {
+  id: string
+  matched: number
+  applied: number
+  capped: boolean
+}
+
+/** The dry run of a rule list against the live model set. */
+export interface ComboRulesPreview {
+  combo: string
+  candidates: number
+  models: string[]
+  added: string[]
+  removed: string[]
+  rules: SmartRulePreview[]
+}
 /** Resolved server-side capabilities for one catalog model. */
 export interface ModelCaps {
   vision: boolean
   search: boolean
   reasoning: boolean
+  /** Uncensored / unrestricted — accepts prompts a filtered model refuses. */
+  jailbreak: boolean
   contextWindow: number
   maxOutput: number
   /** Selectable thinking levels, or empty for a model without reasoning. */
@@ -65,16 +102,21 @@ export interface ModelCaps {
  * A model the gateway has confirmed is gone upstream.
  *
  * `status` is "gone" when a live request drew an HTTP 410 naming the model,
- * and "retired" when a catalogue sync found it absent from a complete list.
+ * "retired" when a catalogue sync found it absent from a complete list, and
+ * "cooldown" when a live failure marked it temporarily unavailable for a
+ * fixed window (5 minutes). A cooldown is transient: it never overwrites a
+ * permanent "gone" or "retired" record, and it lapses on its own.
  */
 export interface ModelDeprecation {
   provider: string
   model: string
-  status: 'gone' | 'retired' | ''
+  status: 'gone' | 'retired' | 'cooldown' | ''
   message?: string
   /** The upstream's own replacement, when it named one. */
   successor?: string
   detectedAt?: string
+  /** RFC3339 UTC. Only set for status "cooldown"; the badge lapses after it. */
+  cooldownUntil?: string
 }
 
 /** Deprecations keyed "<provider>/<model>" — the same key a combo entry uses. */
@@ -92,7 +134,7 @@ export interface APIKey {
   machineId: string | null
   isActive: number
   createdAt: string
-  /** Masked secret, e.g. `sk-6…008f`. Always present. */
+  /** Masked secret, same length as the key itself, e.g. `sk-6••008f`. Always present. */
   keyDisplay?: string
   /** Rate limits. 0 means unlimited. */
   rateLimitRpm?: number
@@ -100,6 +142,8 @@ export interface APIKey {
   rateLimitConcurrency?: number
   /** Lifetime prompt+completion token budget. 0 means unlimited. */
   tokenQuota?: number
+  /** Context window one request from this key may use, in tokens. 0 means the model's own window. */
+  contextLimit?: number
   /** Spend recorded against tokenQuota since the budget was last reset (#365). */
   usedTokens?: number
   /** How long a request waits for a free concurrency slot, in ms. 0 uses the server default. */
@@ -120,6 +164,8 @@ export interface APIKeyPolicy {
   rateLimitConcurrency?: number
   /** Lifetime token budget. 0 means unlimited. */
   tokenQuota?: number
+  /** Context window one request from this key may use, in tokens. 0 means the model's own window. */
+  contextLimit?: number
   /** Concurrency queue timeout in ms. 0 uses the server default. */
   queueTimeoutMs?: number
   expiresAt?: string
@@ -194,8 +240,14 @@ export interface ProviderStrategyConfig {
 }
 
 export interface Settings {
+  appName?: string
+  appLogoUrl?: string
   requireApiKey?: boolean
   tunnelDashboardAccess?: boolean
+  tunnelWatchdogEnabled?: boolean
+  tailscaleWatchdogEnabled?: boolean
+  hideUnusedTunnel?: boolean
+  tunnelWorkerUrl?: string
   rtkEnabled?: boolean
   rtkMode?: 'simple' | 'advance' | string
   rtkIntensity?: 'minimal' | 'standard' | 'aggressive' | string
@@ -217,6 +269,8 @@ export interface Settings {
   adhdEnabled?: boolean
   adhdLevel?: string
   headroomEnabled?: boolean
+  headroomAutostart?: boolean
+  headroomEngine?: 'builtin' | 'external'
   headroomUrl?: string
   headroomTimeoutMs?: number
   headroomKompress?: boolean
@@ -256,11 +310,12 @@ export interface Settings {
   outboundNoProxy?: string
   providerStrategies?: Record<string, ProviderStrategyConfig>
   /**
-   * Feature Visibility: sidebar entry ids the operator hid. The canonical id
-   * list lives in web/src/lib/nav.ts; the server only checks the shape
+   * Sidebar layout: the entry ids the operator hid, and the arrangement they
+   * moved the entries into. The canonical id list lives in web/src/lib/nav.ts;
+   * the server only checks the shape
    * (internal/handlers/dashboard/navvisibility.go).
    */
-  navVisibility?: { hidden?: string[] }
+  navVisibility?: { hidden?: string[]; order?: string[] }
   /**
    * Display currency for every cost surface. Costs themselves are stored in USD;
    * see web/src/lib/currency.ts for the catalog and the formatting rules.
@@ -294,6 +349,18 @@ export interface TunnelStatusResponse {
     tunnelUrl?: string
     publicUrl?: string
     running?: boolean
+    state?: string
+    mode?: string
+    shortId?: string
+    customDomain?: string
+    token?: string
+    cfApiToken?: string
+    previousUrl?: string
+    rotatedAt?: string
+    workerUrl?: string
+    reachable?: boolean
+    everReachable?: boolean
+    connectingLabel?: string
   }
   tailscale?: {
     enabled?: boolean
@@ -301,6 +368,14 @@ export interface TunnelStatusResponse {
     tunnelUrl?: string
     running?: boolean
     loggedIn?: boolean
+    installed?: boolean
+    reachable?: boolean
+    everReachable?: boolean
+    authUrl?: string
+    authMode?: string
+    authKey?: string
+    statusText?: string
+    repairTunnelOrigin?: boolean
   }
   download?: {
     downloading?: boolean
@@ -406,6 +481,40 @@ export interface HermesResetResponse {
   error?: string
 }
 
+// --- CLI Tools Configuration (Claude Code, Codex, OpenCode, Droid, Crush, Kilo, Cline, Pi, OMP) ---
+export interface CliToolSettingsResponse {
+  tool: string
+  installed: boolean
+  has9Router?: boolean
+  files?: Array<{ path: string; format: string; purpose: string }>
+  plan?: Array<{ path: string; purpose: string; removeFile?: boolean; edits?: Array<{ keyPath: string[] }> }>
+  currentConfig?: {
+    baseUrl?: string
+    apiKey?: string
+    hasApiKey?: boolean
+    model?: string
+    tiers?: Record<string, string>
+    autoCompactWindow?: string | number
+  }
+  message?: string
+}
+
+export interface CliToolSettingsApplyPayload {
+  baseUrl: string
+  apiKey?: string
+  model?: string
+  tiers?: Record<string, string>
+  autoCompactWindow?: string
+}
+
+export interface CliToolSettingsApplyResponse {
+  success: boolean
+  tool: string
+  changed: boolean
+  backups?: string[]
+  message?: string
+}
+
 export interface HeadroomStatusResponse {
   installed?: boolean
   running?: boolean
@@ -417,6 +526,7 @@ export interface HeadroomStatusResponse {
   version?: string | null
   extras?: { code?: boolean; ml?: boolean }
   url?: string
+  engine?: 'builtin' | 'external'
   error?: string
 }
 
@@ -486,8 +596,63 @@ export interface ProviderNode {
   urlSuffixGenerated?: boolean
   createdAt?: string
   updatedAt?: string
+  /**
+   * The node's capacity policy plus what it has spent against it. Filled by the
+   * list endpoint, so the dashboard never has to make a second call to discover
+   * what a node is currently allowed.
+   */
+  limits?: ProviderNodeLimits
 }
 
+/**
+ * ProviderNodeLimits mirrors the Go side (ProviderNodeLimitsResponse). Live
+ * figures (`rpmUsedWindow`, `activeConcurrency`) come from the gateway's own
+ * limiter and read 0 when nothing has been metered yet.
+ */
+export interface ProviderNodeLimits {
+  rpm: number
+  tpm: number
+  concurrency: number
+  tokenQuota: number
+  queueTimeoutMs: number
+  quotaResetId: number
+  contractExpiresAt?: string
+  usedTokens: number
+  expired: boolean
+  rpmUsedWindow: number
+  activeConcurrency: number
+}
+
+/**
+ * ProviderNodeLimitsPatch is the write side. Every field is optional and an
+ * omitted field keeps its stored value — sending `0` is what clears one, and the
+ * distinction is the whole reason this is a separate call from updateProviderNode.
+ */
+export interface ProviderNodeLimitsPatch {
+  rpm?: number
+  tpm?: number
+  concurrency?: number
+  tokenQuota?: number
+  queueTimeoutMs?: number
+  /** RFC3339 or a date (YYYY-MM-DD); "" clears the expiry. */
+  contractExpiresAt?: string
+}
+
+/**
+ * CustomModelBatchEntry is one line of a bulk save. Capabilities travel per entry
+ * even though the dashboard sends them uniformly for the whole paste (D10): the
+ * endpoint stays general, and a caller that already holds per-entry values is not
+ * forced to collapse them into one set.
+ */
+export interface CustomModelBatchEntry {
+  id: string
+  name?: string
+  type?: string
+  vision?: boolean
+  reasoning?: boolean
+  contextWindow?: number
+  maxOutput?: number
+}
 
 export interface SystemVersionInfo {
   currentVersion: string
@@ -557,8 +722,7 @@ export interface UsageLifetime {
   longestStreak: number
   topModel: UsageTopModel | null
   cacheHitRate: number | null
-  cacheTokens: number
-  cacheRequests: number
+  successRate: number | null
 }
 export interface UsageNodeHealth {
   name?: string
@@ -582,6 +746,42 @@ export interface UsageDashboardResponse {
   nodes: UsageNodeHealth[]
   models: UsageNodeHealth[]
   lifetime: UsageLifetime | null
+}
+
+/** One client API key's spend inside the window. */
+export interface UsageByAPIKeyItem {
+  /** The apiKeys row the spend belongs to; empty when the key was deleted. */
+  id: string
+  name: string
+  /** The masked key, in the form the usage ledger stores. */
+  key: string
+  /** The masked key in the API keys page's own form. */
+  keyDisplay: string
+  /** Whether the key is still enabled. */
+  active: boolean
+  requests: number
+  errors: number
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
+  cost: number
+  /** When the key last made a request inside the window. */
+  lastUsed: string
+}
+
+export interface UsageByAPIKeyTotals {
+  requests: number
+  errors: number
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
+  cost: number
+}
+
+export interface UsageByAPIKeyResponse {
+  period: string
+  keys: UsageByAPIKeyItem[]
+  totals: UsageByAPIKeyTotals
 }
 
 // Codex reset credits. `selectionToken` is the field the dashboard selects
@@ -610,6 +810,32 @@ export interface CodexResetCreditConsumeResponse {
   idempotencyKey?: string
   error?: string
   code?: string
+}
+
+// GLM Reset Cards (Z.ai international). Mirrors the Go GLMResetCard and
+// GLMResetCardsResponse types.
+export interface GLMResetCard {
+  recordId: string
+  type: 'FIVE_HOUR' | 'WEEK'
+  expiresAt: string // RFC3339 UTC
+}
+
+export interface GLMResetCardsResponse {
+  availableCount: number
+  cards: GLMResetCard[]
+  error?: string
+}
+
+export interface GLMResetCardRedeemResponse {
+  reset: boolean
+  alreadyUsed?: boolean
+  uncertain?: boolean
+  code: string
+  message: string
+  recordId: string
+  type: string
+  requestId: string
+  error?: string
 }
 
 export interface FreebuffSessionSwitchResponse {
@@ -830,6 +1056,82 @@ export interface CompressionAnalyticsSummary {
   roiTokensPerMs?: number
   topSavers?: CompressionTopSaver[]
 }
+/** Jailbreak: the default injected document (upstream decolua/9router parity). */
+export interface JailbreakDoc {
+  prompt: string
+  geminiSafety: boolean
+  source?: string
+  /** Instruction-file convention: AGENTS, SOUL, PERSONA, LOAD, … */
+  kind?: string
+  id?: string
+  name?: string
+  /** Models matching one of these rules resolve to this preset. */
+  keywords?: JailbreakKeyword[]
+  /** Models matching one of these rules never get this preset. */
+  excludes?: JailbreakKeyword[]
+  /** Operator arrangement position in the preset list. */
+  order?: number
+  /** RFC3339 UTC stamp the store filled on first write. */
+  createdAt?: string
+  /** RFC3339 UTC stamp of the last write. */
+  updatedAt?: string
+}
+
+/**
+ * One model filter rule, shared by the include and exclude lists.
+ * `mode` is `word` (default, whole token), `partial` (substring) or `regex`.
+ */
+export interface JailbreakKeyword {
+  text: string
+  mode?: string
+}
+
+/** One model's binding: whether injection is armed and which preset it uses. */
+export interface JailbreakModelConfig {
+  enabled: boolean
+  presetId: string
+}
+
+/** The global exclude list: models matching these rules are never injected. */
+export interface JailbreakExcludes {
+  excludes: JailbreakKeyword[]
+}
+
+/** One preset a GitHub import wrote. */
+export interface JailbreakImportEntry {
+  id: string
+  name: string
+  path: string
+  /** Instruction-file convention: AGENTS, SOUL, PERSONA, LOAD, … */
+  kind?: string
+  keywords: string[]
+}
+
+/** One file a GitHub import skipped, with the reason. */
+export interface JailbreakImportRefusal {
+  path: string
+  reason: string
+}
+
+/** The result of importing a prompt collection from GitHub. */
+export interface JailbreakImportResult {
+  ok: boolean
+  source: string
+  imported: JailbreakImportEntry[]
+  refused: JailbreakImportRefusal[]
+}
+
+/** Why one model id resolved (or did not resolve) to a preset. */
+export interface JailbreakMatch {
+  injected: boolean
+  /** global-exclude | exact-binding | keyword | preset-exclude | no-match */
+  reason: string
+  presetId?: string
+  presetName?: string
+  keyword?: string
+  matchedId?: string
+  detail?: string
+}
 
 export function isAuthenticated(): boolean {
   if (typeof window === 'undefined') return false
@@ -919,12 +1221,19 @@ export function onUnauthorized(listener: UnauthorizedListener): () => void {
 let unauthorizedTimer: number | null = null
 
 export function handleUnauthorized(path?: string) {
-  // Do not redirect for public auth endpoints or if already on login page
+  // Do not redirect for public auth endpoints, for the storage stats probe, or
+  // if already on the login page. The stats probe is read-only and always
+  // admin-gated on the server, so on an install whose dashboard is open without
+  // a session it answers 401 while every other call succeeds — bouncing the
+  // operator to the login screen and clearing the stored key there was wrong;
+  // the storage card reports the 401 and offers a retry instead. A genuinely
+  // expired session still logs out through any other request.
   if (
     path === '/api/auth/login' ||
     path === '/api/auth/status' ||
     path === '/api/settings/require-login' ||
-    path === '/api/changelog'
+    path === '/api/changelog' ||
+    path === '/api/settings/database/stats'
   ) {
     return
   }
@@ -976,10 +1285,12 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const headers = {
-    ...getAuthHeaders(),
-    ...(options.headers as Record<string, string> || {}),
-  }
+  const headers: Record<string, string> = { ...getAuthHeaders() }
+  // A FormData body must carry its own boundary. Forcing application/json here
+  // makes the server fail to parse the upload, so the header is dropped for
+  // exactly that case.
+  if (options.body instanceof FormData) delete headers['Content-Type']
+  Object.assign(headers, (options.headers as Record<string, string>) || {})
   const res = await fetch(path, { ...options, headers })
   if (res.status === 401) {
     handleUnauthorized(path)
@@ -1086,6 +1397,56 @@ export const api = {
       return { supported: false, valid: false }
     }
   },
+  /**
+   * Open a throwaway browser and sign in to Gemini Web, so the session is
+   * captured without a browser that keeps running and rotating the same
+   * cookies. Answers with the cookie header to paste.
+   */
+  geminiWebBrowserLogin: async (): Promise<{ cookie: string }> =>
+    request<{ cookie: string }>('/api/providers/gemini-web/browser-login', { method: 'POST' }),
+  /**
+   * Open a throwaway browser and sign in to DeepSeek Web, so the credential is
+   * captured without a browser that keeps running and rotating the same
+   * session.
+   *
+   * Answers with both halves of the credential: the userToken the API
+   * authenticates with, and the site's own cookies the WAF reads.
+   */
+  deepSeekWebBrowserLogin: async (): Promise<{ userToken: string; cookie: string }> =>
+    request<{ userToken: string; cookie: string }>('/api/providers/deepseek-web/browser-login', {
+      method: 'POST',
+    }),
+  /**
+   * Read the DeepSeek credential out of a browser that is already signed in,
+   * and answer with both halves of it: the userToken the API authenticates
+   * with, and the site's own cookies the WAF reads.
+   *
+   * The warning says what to do about a browser that is still running.
+   */
+  deepSeekWebImportChrome: async (profile?: string): Promise<{ userToken: string; cookie: string; warning: string }> =>
+    request<{ userToken: string; cookie: string; warning: string }>('/api/providers/deepseek-web/import-chrome', {
+      method: 'POST',
+      body: JSON.stringify({ profile: profile ?? '' }),
+    }),
+  /**
+   * Renew one DeepSeek Web connection's credential.
+   *
+   * A browser opens and waits for the sign-in, so this call takes as long as
+   * the operator takes to sign in. The credential that comes back is written
+   * to the row, so there is nothing to paste.
+   */
+  renewDeepSeekCredential: async (id: string): Promise<{ renewed: boolean }> =>
+    request<{ renewed: boolean }>(`/api/connections/${id}/renew-deepseek`, { method: 'POST' }),
+  /**
+   * Read a session out of a browser that is already signed in, and answer with
+   * the cookie header to paste. The warning says what to do about a browser
+   * that is still running.
+   */
+  geminiWebImportChrome: async (profile?: string): Promise<{ cookie: string; warning: string }> =>
+    request<{ cookie: string; warning: string }>('/api/providers/gemini-web/import-chrome', {
+      method: 'POST',
+      body: JSON.stringify({ profile: profile ?? '' }),
+    }),
   updateConnection: (
     id: string,
     payload:
@@ -1173,6 +1534,26 @@ export const api = {
     request<{ success: boolean }>(`/api/provider-nodes/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
+  /**
+   * Save one node's capacity limits. Separate from updateProviderNode because
+   * that call requires name and prefix on every request: routing a limits edit
+   * through it would mean an empty field in the UI becomes a 400 for the whole
+   * save, and a limits save should never be able to rename a node.
+   */
+  setProviderNodeLimits: (id: string, patch: ProviderNodeLimitsPatch) =>
+    request<{ status: string; id: string; limits: ProviderNodeLimits }>(
+      `/api/provider-nodes/${encodeURIComponent(id)}/limits`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(patch),
+      }
+    ),
+  /** Move a node's quota mark to the end of its history. History is kept. */
+  resetProviderNodeQuota: (id: string) =>
+    request<{ status: string; id: string; quotaResetId: number; limits: ProviderNodeLimits }>(
+      `/api/provider-nodes/${encodeURIComponent(id)}/quota/reset`,
+      { method: 'POST' }
+    ),
   /** List models from a connection's upstream (compatible nodes; upstream GET /api/providers/[id]/models). */
   getConnectionModels: (connectionId: string) =>
     request<{ provider: string; connectionId: string; models: Array<{ id?: string; name?: string; model?: string } | string> }>(
@@ -1184,7 +1565,7 @@ export const api = {
     const res = await request<any>('/api/combos')
     return Array.isArray(res) ? res : (res.combos || [])
   },
-  createCombo: (payload: { id?: string; name: string; kind?: string; models: string | string[]; strategy?: string }) =>
+  createCombo: (payload: { id?: string; name: string; kind?: string; models: string | string[]; strategy?: string; matchRules?: SmartRule[] }) =>
     request<{ success: boolean; id: string }>('/api/combos', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -1198,10 +1579,61 @@ export const api = {
     request<{ success: boolean }>(`/api/combos/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
+  /** Dry-run a rule list: what it would add, remove and own. Writes nothing. */
+  previewComboRules: (id: string, matchRules: SmartRule[]) =>
+    request<ComboRulesPreview>(`/api/combos/${encodeURIComponent(id)}/smart/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ matchRules }),
+    }),
+  /** Materialise the previewed rules into the combo's membership (merge). */
+  loadComboRules: (id: string, matchRules: SmartRule[]) =>
+    request<{
+      combo: string
+      added: string[]
+      removed: string[]
+      models: string[]
+      changed: boolean
+    }>(`/api/combos/${encodeURIComponent(id)}/smart/load`, {
+      method: 'POST',
+      body: JSON.stringify({ matchRules }),
+    }),
+  /** Apply every combo's rules now, or just the named one. */
+  reconcileCombos: (id?: string) =>
+    request<{ status: string; reconciled: number; added: string[]; removed: string[] }>(
+      id ? `/api/combos/reconcile?id=${encodeURIComponent(id)}` : '/api/combos/reconcile',
+      { method: 'POST' },
+    ),
+  /** Everything the combo editor's sort dropdown knows about each model. */
+  getModelMeta: () =>
+    request<{
+      meta: Record<
+        string,
+        {
+          provider: string
+          model: string
+          ttftMs: number
+          totalMs: number
+          samples: number
+          contextWindow: number
+          kind: string
+          vision: boolean
+          reasoning: boolean
+          audioInput: boolean
+        }
+      >
+    }>('/api/models/meta'),
 
   // API Keys
   getApiKeys: () => request<APIKey[]>('/api/keys'),
-  createApiKey: (payload: { name?: string; machineId?: string; key?: string }) =>
+  createApiKey: (payload: {
+    name?: string
+    machineId?: string
+    key?: string
+    /** Lifetime token budget. 0 means unlimited. */
+    tokenQuota?: number
+    /** Context window one request from this key may use, in tokens. 0 means the model's own window. */
+    contextLimit?: number
+  }) =>
     request<{ success: boolean; id: string; key: string }>('/api/keys', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -1277,9 +1709,12 @@ export const api = {
     }),
 
   // F-4 guardrails
-  getGuardrailPolicies: (scope: string, scopeId = '') =>
+  // No scopeId lists the whole scope (including subject-scoped policies); an
+  // explicit value — even an empty one — resolves one exact scope tuple.
+  getGuardrailPolicies: (scope: string, scopeId?: string) =>
     request<GuardrailPolicy[]>(
-      `/api/guardrails/policies?scope=${encodeURIComponent(scope)}&scopeId=${encodeURIComponent(scopeId)}`
+      `/api/guardrails/policies?scope=${encodeURIComponent(scope)}` +
+        (scopeId === undefined ? '' : `&scopeId=${encodeURIComponent(scopeId)}`)
     ),
   createGuardrailPolicy: (payload: {
     name: string
@@ -1334,14 +1769,115 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ key, value }),
     }),
+  /**
+   * Save a whole pasted list of model ids in one request (D9). The response names
+   * every id it stored and every id it did not, so a partial save is visible
+   * instead of implied by a count that never came back.
+   */
+  saveCustomModelsBulk: (payload: {
+    providerAlias: string
+    type?: string
+    models: CustomModelBatchEntry[]
+  }) =>
+    request<{ status: string; added: string[]; skipped: Array<{ id: string; reason: string; code: string }> }>(
+      '/api/models/custom',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
   deleteCustomModel: (key: string) =>
     request<{ success: boolean }>(`/api/models/custom/${encodeURIComponent(key)}`, {
       method: 'DELETE',
     }),
+  /**
+   * Removes every model one provider node carries (imported custom models plus
+   * the aliases pointing at them) in a single request — the undo for
+   * "Import from /models", which writes hundreds of rows. Catalog models that
+   * ship with the build are not stored per node and are left alone.
+   */
+  deleteProviderModels: (provider: string) =>
+    request<{ status: string; provider: string; removedModels: string[]; removedAliases: string[]; count: number }>(
+      `/api/providers/${encodeURIComponent(provider)}/models`,
+      { method: 'DELETE' }
+    ),
   saveDisabledModels: (provider: string, modelIds: string[]) =>
     request<{ success: boolean }>(`/api/models/disabled/${encodeURIComponent(provider)}`, {
       method: 'PUT',
       body: JSON.stringify(modelIds),
+    }),
+  /**
+   * Folds a list of dead model ids into the provider's disabled list.
+   *
+   * The merge happens server-side on purpose: the dashboard already holds the
+   * verdicts from its own probes, and sending only the failures avoids a
+   * read-modify-write from the browser — which is how two open tabs disable
+   * each other's models.
+   */
+  autoDisableModels: (provider: string, models: string[], dryRun = false) =>
+    request<{
+      provider: string
+      disabled: string[]
+      alreadyDisabled: string[]
+      total: number
+      dryRun: boolean
+    }>('/api/models/auto-disable', {
+      method: 'POST',
+      body: JSON.stringify({ provider, models, dryRun }),
+    }),
+  /** Reads the model-health configuration, the failure counters and the audit log. */
+  getModelHealth: () =>
+    request<{
+      config: {
+        enabled: boolean
+        intervalMin: number
+        threshold: number
+        scope: 'history' | 'failed'
+        autoEnable: boolean
+      }
+      audit: Array<{
+        provider: string
+        model: string
+        action: 'disabled' | 'enabled'
+        reason?: string
+        actor: 'scheduler' | 'operator'
+        at: string
+      }>
+      failures: Record<
+        string,
+        {
+          count: number
+          lastError?: string
+          lastFailedAt?: string
+          disabledByScheduler?: boolean
+          resetAt?: string
+        }
+      >
+    }>('/api/models/health'),
+  /**
+   * Writes the model-health configuration. The server merges the payload into
+   * the stored value, so a field this client does not send is carried over
+   * rather than reset.
+   */
+  saveModelHealth: (config: {
+    enabled?: boolean
+    intervalMin?: number
+    threshold?: number
+    scope?: 'history' | 'failed'
+    autoEnable?: boolean
+  }) =>
+    request<{
+      status: string
+      config: {
+        enabled: boolean
+        intervalMin: number
+        threshold: number
+        scope: 'history' | 'failed'
+        autoEnable: boolean
+      }
+    }>('/api/models/health', {
+      method: 'PUT',
+      body: JSON.stringify(config),
     }),
   /** Upstream GET /api/models/alias — full alias map (compatible pages merge custom + legacy rows). */
   getModelAliases: () => request<{ aliases: Record<string, string> }>('/api/models/alias'),
@@ -1400,11 +1936,14 @@ export const api = {
       body: JSON.stringify(settings),
     }),
   /**
-   * Reads live USD rates for the requested codes and stores the subset.
-   * `codes` is the catalog the dashboard offers (web/src/lib/currency.ts).
+   * Reads live USD rates for the requested codes and overlays them on the
+   * stored table. `codes` is the catalog the dashboard offers
+   * (web/src/lib/currency.ts), `ratesStored` counts the rates the provider
+   * answered with, and `ratesMissing` names the requested codes it did not
+   * publish, whose manual rates were kept.
    */
   refreshCurrencyRates: (payload: { code: string; showBoth: boolean; codes: string[] }) =>
-    request<{ displayCurrency: unknown; source: string; ratesStored: number }>(
+    request<{ displayCurrency: unknown; source: string; ratesStored: number; ratesMissing: string[] }>(
       '/api/settings/currency/refresh',
       {
         method: 'POST',
@@ -1513,6 +2052,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ provider, code, codeVerifier, redirectUri, name }),
     }),
+  // MiniMax Code lease auth: borrow the desktop app's sign-in over its local
+  // broker instead of a browser login. No refresh token is stored.
+  minimaxLeaseStatus: (providerId: string, dataDir?: string) =>
+    request<{
+      found: boolean;
+      dataDir?: string;
+      status?: string;
+      generation?: number;
+      expiresAtMs?: number;
+      error?: string;
+      message?: string;
+    }>(
+      `/api/oauth/${encodeURIComponent(providerId)}/lease-status${dataDir ? `?data_dir=${encodeURIComponent(dataDir)}` : ''}`
+    ),
+  minimaxLeaseConnect: (providerId: string, dataDir?: string) =>
+    request<{ success: boolean; connection?: { id: string; provider: string }; reused?: boolean }>(
+      `/api/oauth/${encodeURIComponent(providerId)}/lease-connect`,
+      { method: 'POST', body: JSON.stringify({ dataDir }) },
+    ),
   importOAuthToken: (provider: string, accessToken: string, refreshToken?: string, name?: string) =>
     request<{ id: string; connection: string; error?: string }>(`/api/oauth/${encodeURIComponent(provider)}/import`, {
       method: 'POST',
@@ -1580,7 +2138,7 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ provider, ...opts }) }
     ),
   devicePoll: (provider: string, deviceCode: string, session?: Record<string, unknown>) =>
-    request<{ status: string; connectionId?: string; error?: string }>('/api/oauth/device/poll', {
+    request<{ status: string; connectionId?: string; error?: string; interval?: number }>('/api/oauth/device/poll', {
       method: 'POST',
       body: JSON.stringify({ provider, device_code: deviceCode, session }),
     }),
@@ -1687,6 +2245,29 @@ export const api = {
       body: JSON.stringify({ code, codeVerifier }),
     }),
   getSystemVersion: () => request<SystemVersionInfo>('/api/version'),
+  /**
+   * Uploads the white-label logo as multipart/form-data. The body is a
+   * FormData rather than JSON, so it is posted directly instead of through
+   * `request`, which always serializes its options as JSON.
+   *
+   * The auth header is sent without `Content-Type`: fetch sets that itself
+   * for a FormData body, together with the multipart boundary. A manually
+   * set `application/json` here would override it and leave the server
+   * parsing a multipart body as JSON.
+   */
+  uploadLogo: async (file: File): Promise<{ status: string; appLogoUrl: string }> => {
+    const token = getStoredAPIKey()
+    const body = new FormData()
+    body.append('file', file)
+    const res = await fetch('/api/settings/logo', {
+      method: 'POST',
+      ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+      body,
+    })
+    if (res.status === 401) handleUnauthorized('/api/settings/logo')
+    if (!res.ok) throw new ApiError(await responseErrorMessage(res), res.status)
+    return res.json()
+  },
   checkUpdate: () => request<SystemVersionInfo>('/api/version/check'),
   triggerUpdate: () =>
     request<{ status: string; message?: string; version?: string }>('/api/version/update', {
@@ -1719,7 +2300,15 @@ export const api = {
   },
 
   // Usage & Telemetry
-  getUsageStats: (period = 'today') => request<any>(`/api/usage/stats?period=${encodeURIComponent(period)}`),
+  /**
+   * Usage aggregates for a window. `views` names the breakdowns to build:
+   * `none` is totals only (plus byProvider, which the totals are summed from),
+   * and omitting it returns every breakdown — the shape this call always had.
+   */
+  getUsageStats: (period = 'today', views?: string) =>
+    request<any>(
+      `/api/usage/stats?period=${encodeURIComponent(period)}${views ? `&views=${encodeURIComponent(views)}` : ''}`
+    ),
   /** One chart point: bucket label (HH:MM or MMM D), totals, and the per-model-family token split. */
   getUsageChart: (period = '7d') =>
     request<{ label: string; tokens: number; cost: number; byModel: Record<string, number> }[]>(
@@ -1727,8 +2316,20 @@ export const api = {
     ),
   /** Details-section dashboard payload: heatmap days, lifetime cards, node health. */
   getUsageDashboard: () => request<UsageDashboardResponse>('/api/usage/dashboard'),
-  getRequestDetails: (limit = 50, offset = 0) =>
-    request<any>(`/api/usage/request-details?limit=${limit}&offset=${offset}`),
+  /**
+   * Spend per client API key — the keys created inside the gateway.
+   *
+   * This is not the Overview's "Usage by API Key" table: that one groups the
+   * upstream credential the router spent, this one groups the key the caller
+   * presented. An operator who resells the gateway needs this one.
+   */
+  getUsageByAPIKey: (period = '7d') =>
+    request<UsageByAPIKeyResponse>(`/api/usage/api-keys?period=${encodeURIComponent(period)}`),
+  /** Paged request rows; period windows the server query (?period=<preset|n>d|n>h). */
+  getRequestDetails: (limit = 50, offset = 0, period = '') =>
+    request<any>(
+      `/api/usage/request-details?limit=${limit}&offset=${offset}${period ? `&period=${encodeURIComponent(period)}` : ''}`
+    ),
   /** Full stored payload for one request; the list omits request/response bodies. */
   getRequestDetail: (id: string) => request<any>(`/api/usage/request-details/${encodeURIComponent(id)}`),
   resetHealth: (provider: string, model?: string) =>
@@ -1796,18 +2397,56 @@ export const api = {
         body: JSON.stringify({ selectionToken, idempotencyKey }),
       }
     ),
+  // GLM Reset Cards (Z.ai international). Only for provider == "glm".
+  getGlmResetCards: (connectionId: string) =>
+    request<GLMResetCardsResponse>(
+      `/api/usage/${encodeURIComponent(connectionId)}/glm-reset-cards`
+    ),
+  redeemGlmResetCard: (connectionId: string, payload: { recordId: string; type: 'FIVE_HOUR' | 'WEEK' }) =>
+    request<GLMResetCardRedeemResponse>(
+      `/api/usage/${encodeURIComponent(connectionId)}/glm-reset-cards`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    ),
   // Tunnel & Tailscale
   getTunnelStatus: () =>
     request<TunnelStatusResponse>('/api/tunnel/status').catch(() => ({
       tunnel: { enabled: false, running: false, tunnelUrl: '', publicUrl: '' },
       tailscale: { enabled: false, running: false, tunnelUrl: '', loggedIn: false },
     })),
-  enableTunnel: () =>
-    request<{ success?: boolean; tunnelUrl?: string; publicUrl?: string; error?: string }>('/api/tunnel/enable', {
+  enableTunnel: (payload?: {
+    mode?: string
+    shortId?: string
+    customDomain?: string
+    token?: string
+    cfApiToken?: string
+    cfAccountId?: string
+    cfZone?: string
+    workerUrl?: string
+  }) =>
+    request<{
+      success?: boolean
+      tunnelUrl?: string
+      publicUrl?: string
+      error?: string
+      mode?: string
+      shortId?: string
+      customDomain?: string
+      token?: string
+      cfApiToken?: string
+    }>('/api/tunnel/enable', {
       method: 'POST',
+      body: JSON.stringify(payload ?? {}),
     }),
   disableTunnel: () =>
     request<{ success?: boolean; error?: string }>('/api/tunnel/disable', {
+      method: 'POST',
+    }),
+  repairTunnelOrigin: () =>
+    request<{ success?: boolean; hostname?: string; port?: number; error?: string }>('/api/tunnel/repair-origin', {
       method: 'POST',
     }),
   checkTailscale: () =>
@@ -1815,9 +2454,18 @@ export const api = {
       installed: false,
       loggedIn: false,
     })),
-  enableTailscale: () =>
-    request<{ success?: boolean; tunnelUrl?: string; needsLogin?: boolean; authUrl?: string; funnelNotEnabled?: boolean; error?: string }>('/api/tunnel/tailscale-enable', {
+  enableTailscale: (payload?: { authKey?: string; authMode?: string }) =>
+    request<{
+      success?: boolean
+      tunnelUrl?: string
+      needsLogin?: boolean
+      authUrl?: string
+      funnelNotEnabled?: boolean
+      error?: string
+      repairTunnelOrigin?: boolean
+    }>('/api/tunnel/tailscale-enable', {
       method: 'POST',
+      body: JSON.stringify(payload ?? {}),
     }),
   disableTailscale: () =>
     request<{ success?: boolean; error?: string }>('/api/tunnel/tailscale-disable', {
@@ -1931,6 +2579,24 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(profile ? { profile } : {}),
     }),
+  // CLI Tools (Claude, Codex, OpenCode, Droid, Crush, Kilo, Cline, Pi, OMP)
+  getCliToolSettings: (tool: string) =>
+    request<CliToolSettingsResponse>(`/api/cli-tools/${encodeURIComponent(tool)}-settings`),
+  applyCliToolSettings: (tool: string, payload: CliToolSettingsApplyPayload) =>
+    request<CliToolSettingsApplyResponse>(`/api/cli-tools/${encodeURIComponent(tool)}-settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  resetCliToolSettings: (tool: string, baseUrl?: string) => {
+    const q = baseUrl ? `?baseUrl=${encodeURIComponent(baseUrl)}` : ''
+    return request<CliToolSettingsApplyResponse>(
+      `/api/cli-tools/${encodeURIComponent(tool)}-settings${q}`,
+      {
+        method: 'DELETE',
+      }
+    )
+  },
   // Auth
   checkRequireLogin: async (): Promise<RequireLoginResponse> => {
     try {
@@ -2048,4 +2714,111 @@ export const api = {
     sessionStorage.removeItem('9router_auth')
     localStorage.removeItem('9router_auth')
   },
+  // Jailbreak
+  getJailbreak: () => request<JailbreakDoc>('/api/jailbreak'),
+  saveJailbreak: (doc: {
+    prompt: string
+    geminiSafety: boolean
+    source?: string
+    keywords?: JailbreakKeyword[]
+    excludes?: JailbreakKeyword[]
+  }) =>
+    request<{ success: boolean }>('/api/jailbreak', {
+      method: 'PUT',
+      body: JSON.stringify(doc),
+    }),
+  listJailbreakPresets: () => request<JailbreakDoc[]>('/api/jailbreak/presets'),
+  saveJailbreakPreset: (preset: {
+    id?: string
+    name: string
+    prompt: string
+    geminiSafety: boolean
+    source?: string
+    kind?: string
+    keywords?: JailbreakKeyword[]
+    excludes?: JailbreakKeyword[]
+    order?: number
+  }) =>
+    request<{ success: boolean }>('/api/jailbreak/presets', {
+      method: 'PUT',
+      body: JSON.stringify(preset),
+    }),
+  deleteJailbreakPreset: (id: string) =>
+    request<{ success: boolean }>(`/api/jailbreak/presets/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  listJailbreakModels: () => request<Record<string, JailbreakModelConfig>>('/api/jailbreak/models'),
+  setJailbreakModel: (id: string, presetId: string, enabled: boolean) =>
+    request<{ success: boolean }>('/api/jailbreak/models', {
+      method: 'PUT',
+      body: JSON.stringify({ id, presetId, enabled }),
+    }),
+  deleteJailbreakModel: (id: string) =>
+    request<{ ok: boolean; id: string }>('/api/jailbreak/models', {
+      method: 'DELETE',
+      body: JSON.stringify({ id }),
+    }),
+  getJailbreakExcludes: () => request<JailbreakExcludes>('/api/jailbreak/excludes'),
+  saveJailbreakExcludes: (excludes: JailbreakKeyword[]) =>
+    request<JailbreakExcludes>('/api/jailbreak/excludes', {
+      method: 'PUT',
+      body: JSON.stringify({ excludes }),
+    }),
+  importJailbreak: (target: string, name?: string) =>
+    request<JailbreakImportResult>('/api/jailbreak/import', {
+      method: 'POST',
+      body: JSON.stringify({ target, name: name || undefined }),
+    }),
+  uploadJailbreakPreset: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request<{ ok: boolean; preset: JailbreakImportEntry }>(
+      '/api/jailbreak/presets/upload',
+      { method: 'POST', body: form },
+    )
+  },
+  previewJailbreak: (id: string, messages: { role: string; content: string }[]) =>
+    request<{
+      injected: boolean
+      reason: string
+      presetId?: string
+      presetName?: string
+      prompt?: string
+      messages: { role: string; content: string }[]
+    }>('/api/jailbreak/preview', {
+      method: 'POST',
+      body: JSON.stringify({ id, messages }),
+    }),
+  reorderJailbreakPresets: (order: string[]) =>
+    request<{ ok: boolean }>('/api/jailbreak/presets/order', {
+      method: 'PUT',
+      body: JSON.stringify({ order }),
+    }),
+  getJailbreakModelCatalog: () =>
+    request<{ models: string[] }>('/api/jailbreak/models/catalog'),
+  getJailbreakUsage: () =>
+    request<{ usage: Record<string, number> }>('/api/jailbreak/usage'),
+  explainJailbreak: (id: string) =>
+    request<JailbreakMatch>('/api/jailbreak/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    }),
+  duplicateJailbreakPreset: (id: string, newId?: string) =>
+    request<{ ok: boolean; preset: JailbreakDoc }>(`/api/jailbreak/presets/${encodeURIComponent(id)}/duplicate`, {
+      method: 'POST',
+      body: JSON.stringify({ id: newId || '' }),
+    }),
+  exportProviderKeys: (providerId: string) =>
+    request<{ connections: Array<{ id: string; name: string; authType: string; key: string }> }>(
+      `/api/providers/${encodeURIComponent(providerId)}/export-keys`,
+    ),
+  testComboModels: (id: string, opts?: { models?: string[]; kind?: string }) =>
+    request<{
+      comboId: string
+      summary: { total: number; alive: number; dead: number }
+      results: Array<{ model: string; ok: boolean; latencyMs: number; error?: string; status?: number }>
+    }>(`/api/combos/${encodeURIComponent(id)}/test-models`, {
+      method: 'POST',
+      body: JSON.stringify(opts || {}),
+    }),
 }

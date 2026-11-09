@@ -3,8 +3,64 @@ package executor
 import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"strconv"
 	"strings"
 )
+
+// deepSeekDefaultMaxPromptChars bounds the rendered prompt, matching the
+// sibling client's maxPromptChars default.
+//
+// This is an account-protection bound, not a model one: the sibling client's
+// maintainer accounts were rate-limited on the days their conversations grew
+// past ~290k tokens, because a transcript no human types at that density is
+// read as volume, and volume is what the account-level enforcement measures.
+// A browser user hits it by starting a new chat; a gateway hits the same
+// reset through the session store, whose tail logic cannot treat a clamped
+// prompt as an extension of the previous one and therefore opens a fresh
+// session — the same outcome, arrived at honestly.
+const deepSeekDefaultMaxPromptChars = 400_000
+
+// deepSeekMaxPromptChars reads the per-connection bound. Zero disables it;
+// the default is the account-protection value above.
+func deepSeekMaxPromptChars(connData map[string]any) int {
+	if connData == nil {
+		return deepSeekDefaultMaxPromptChars
+	}
+	switch value := connData["maxPromptChars"].(type) {
+	case int:
+		if value >= 0 {
+			return value
+		}
+	case float64:
+		if value >= 0 {
+			return int(value)
+		}
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && parsed >= 0 {
+			return parsed
+		}
+	}
+	return deepSeekDefaultMaxPromptChars
+}
+
+// deepSeekClampPrompt keeps the last limit characters of the prompt, cut at a
+// paragraph boundary when one falls early in the dropped head, so the recent
+// turns survive whole rather than as a severed half-sentence.
+//
+// The cut is deterministic for a given prompt, which is all the session
+// store's tail logic needs: a clamped prompt either still extends what was
+// sent or it does not, and a prompt that no longer extends it starts a fresh
+// session, exactly as a diverged one does.
+func deepSeekClampPrompt(prompt string, limit int) string {
+	if limit <= 0 || len(prompt) <= limit {
+		return prompt
+	}
+	head := prompt[len(prompt)-limit:]
+	if cut := strings.Index(head, "\n\n"); cut >= 0 && cut < limit/2 {
+		head = head[cut+len("\n\n"):]
+	}
+	return head
+}
 
 // deepSeekMessage is the inbound OpenAI message shape. Content and tool_calls
 // stay raw JSON so a field this prompt builder does not read costs no
@@ -210,13 +266,39 @@ type deepSeekRequestEnvelope struct {
 	// Tools are carried only so the executor can tell a tool-calling request
 	// from an ordinary one; they never reach the upstream as a parameter,
 	// because this endpoint has no field for them.
-	Tools           []deepSeekToolSpec `json:"tools"`
-	ThinkingEnabled bool               `json:"thinking_enabled"`
-	Thinking        bool               `json:"thinking"`
-	ReasoningEffort string             `json:"reasoning_effort"`
-	SearchEnabled   bool               `json:"search_enabled"`
-	Search          bool               `json:"search"`
-	WebSearch       bool               `json:"web_search"`
+	Tools           []deepSeekToolSpec   `json:"tools"`
+	ThinkingEnabled bool                 `json:"thinking_enabled"`
+	Thinking        deepSeekThinkingFlag `json:"thinking"`
+	ReasoningEffort string               `json:"reasoning_effort"`
+	SearchEnabled   bool                 `json:"search_enabled"`
+	Search          bool                 `json:"search"`
+	WebSearch       bool                 `json:"web_search"`
+}
+
+// deepSeekThinkingFlag accepts both encodings of the `thinking` request
+// field: a plain bool (`"thinking": true`) and the anthropic-style object
+// the thinking pass injects (`{"type":"enabled","budget_tokens":10000}` /
+// `{"type":"disabled"}`). An object enables thinking unless its type is
+// "disabled".
+type deepSeekThinkingFlag bool
+
+func (f *deepSeekThinkingFlag) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '{' {
+		var obj struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return err
+		}
+		*f = deepSeekThinkingFlag(!strings.EqualFold(obj.Type, "disabled"))
+		return nil
+	}
+	var b bool
+	if err := json.Unmarshal(data, &b); err != nil {
+		return err
+	}
+	*f = deepSeekThinkingFlag(b)
+	return nil
 }
 
 // deepSeekModelOptions is how a requested model maps onto this upstream's two
@@ -241,7 +323,7 @@ func resolveDeepSeekModelOptions(model string, body deepSeekRequestEnvelope) dee
 		thinking: strings.Contains(name, "r1") ||
 			strings.Contains(name, "think") ||
 			strings.Contains(name, "reason") ||
-			body.ThinkingEnabled || body.Thinking || body.ReasoningEffort != "",
+			body.ThinkingEnabled || bool(body.Thinking) || body.ReasoningEffort != "",
 		search: strings.Contains(name, "search") ||
 			body.SearchEnabled || body.Search || body.WebSearch,
 	}

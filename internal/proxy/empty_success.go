@@ -2,10 +2,13 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"9router/proxy/internal/handlerutil"
@@ -78,7 +81,12 @@ func EmptyUpstreamError(body []byte) error {
 		return UpstreamFailure(http.StatusBadGateway, "upstream returned an unparseable body with status 200")
 	}
 	if msg := errorEnvelopeMessage(probe.Error); msg != "" {
-		return UpstreamFailure(http.StatusBadGateway, "upstream answered 200 with an error: "+msg)
+		// The envelope's own status is kept when it names a 4xx/5xx the
+		// fallback layer already treats as retryable, so a 429 reaches the
+		// client as a 429 rather than being flattened to 502 (upstream
+		// v0.5.112, 56dbf46). Every other value stays 502: an unrecognised
+		// status is the gateway's problem, not the provider's.
+		return UpstreamFailure(errorEnvelopeStatus(probe.Error), "upstream answered 200 with an error: "+msg)
 	}
 	if reason := missingCompletion(probe); reason != "" {
 		return UpstreamFailure(http.StatusBadGateway, "upstream answered 200 without a completion: "+reason)
@@ -96,12 +104,16 @@ type completionProbe struct {
 	Content jsontext.Value `json:"content"`
 	Output  jsontext.Value `json:"output"`
 	Status  string         `json:"status"`
+	// StopReason is the Claude Messages spelling of why the turn ended.
+	StopReason string `json:"stop_reason"`
 }
 
 type choiceProbe struct {
 	Message messageProbe `json:"message"`
 	Delta   messageProbe `json:"delta"`
 	Text    string       `json:"text"`
+	// FinishReason is the Chat Completions spelling of why the turn ended.
+	FinishReason string `json:"finish_reason"`
 }
 
 type messageProbe struct {
@@ -140,10 +152,16 @@ func missingCompletion(p completionProbe) string {
 		if choices[0].Message.carriesAnswer() || choices[0].Delta.carriesAnswer() {
 			return ""
 		}
+		if choices[0].FinishReason == "length" {
+			return "" // cut off by max_tokens: a short turn, not a missing one
+		}
 		return "the first choice carries no content, tool call or reasoning"
 	case p.Content != nil:
 		if carriesValue(p.Content) {
 			return ""
+		}
+		if p.StopReason == "max_tokens" {
+			return "" // cut off by max_tokens: a short turn, not a missing one
 		}
 		return "content is empty"
 	case p.Output != nil:
@@ -200,8 +218,57 @@ func carriesValue(raw jsontext.Value) bool {
 }
 
 // errorEnvelopeMessage returns a human-readable message from an `error`
-// field, or "" when there is no error to report. A JSON null is not an
-// error, so it reads as absent.
+// envelope, or "" when there is none.
+//
+// errorEnvelopeStatus reads the status a `{"error":{...}}` envelope carries,
+// so an error that arrived inside a 200 body is reported with the status the
+// provider meant. Only the `status` field is read: `code` is not an HTTP
+// status in the OpenAI family (OpenAI writes application error codes there —
+// `model_not_found`, `invalid_api_key` — and some providers write a number),
+// so treating it as one would turn `"code":404` into a 404 for what is an
+// application-level "not found". Anything outside 400..599, or a value that is
+// not an integer, falls back to 502: the gateway cannot invent a status, and a
+// 200-shaped failure has to be reported as a failure.
+func errorEnvelopeStatus(raw jsontext.Value) int {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return http.StatusBadGateway
+	}
+	var envelope struct {
+		Status jsontext.Value `json:"status"`
+	}
+	if err := json.Unmarshal(trimmed, &envelope, handlerutil.UpstreamBody); err != nil {
+		return http.StatusBadGateway
+	}
+	if status, ok := statusFromValue(envelope.Status); ok {
+		return status
+	}
+	return http.StatusBadGateway
+}
+
+// statusFromValue accepts both the numeric form (`"status":429`) and the
+// string form (`"status":"429"`), which providers use interchangeably.
+func statusFromValue(v jsontext.Value) (int, bool) {
+	trimmed := bytes.TrimSpace(v)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return 0, false
+	}
+	var numeric float64
+	if err := json.Unmarshal(trimmed, &numeric, handlerutil.UpstreamBody); err == nil {
+		if status := int(numeric); status >= 400 && status <= 599 {
+			return status, true
+		}
+		return 0, false
+	}
+	var text string
+	if err := json.Unmarshal(trimmed, &text, handlerutil.UpstreamBody); err == nil {
+		if status, err := strconv.Atoi(strings.TrimSpace(text)); err == nil && status >= 400 && status <= 599 {
+			return status, true
+		}
+	}
+	return 0, false
+}
+
 func errorEnvelopeMessage(raw jsontext.Value) string {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -236,4 +303,259 @@ func describeBodyKind(trimmed []byte) string {
 		return "an HTML error page"
 	}
 	return "a non-JSON body"
+}
+
+// ZeroContentError is returned by the response path when a 2xx JSON body
+// carries zero usable content while the zero-content probe is armed.
+type ZeroContentError struct {
+	Body []byte
+}
+
+func (e *ZeroContentError) Error() string {
+	return "upstream returned HTTP 200 with zero usable content"
+}
+
+type emptyCompletionAllowedKey struct{}
+
+// WithEmptyCompletionAllowed marks a reply the router built itself from an
+// upstream answer that is final as given, such as a custom JSON business
+// endpoint whose reply field was an empty string. Its emptiness is the answer,
+// not a broken upstream, so it is served rather than turned into a 502.
+func WithEmptyCompletionAllowed(ctx context.Context) context.Context {
+	return context.WithValue(ctx, emptyCompletionAllowedKey{}, true)
+}
+
+// EmptyCompletionAllowed reports whether WithEmptyCompletionAllowed marked ctx.
+func EmptyCompletionAllowed(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	allowed, _ := ctx.Value(emptyCompletionAllowedKey{}).(bool)
+	return allowed
+}
+
+type zeroContentProbeKey struct{}
+
+// WithZeroContentProbe marks ctx with whether the zero-content detector should
+// fall back to the next combo member. When canFallback is false (e.g. the last
+// member of a combo), a zero-content response is served normally rather than
+// intercepted as an error.
+func WithZeroContentProbe(ctx context.Context, canFallback bool) context.Context {
+	return context.WithValue(ctx, zeroContentProbeKey{}, canFallback)
+}
+
+// ZeroContentProbe reports whether the probe is armed, and whether fallback is
+// requested.
+func ZeroContentProbe(ctx context.Context) (armed bool, canFallback bool) {
+	if ctx == nil {
+		return false, false
+	}
+	v, ok := ctx.Value(zeroContentProbeKey{}).(bool)
+	if !ok {
+		return false, false
+	}
+	return true, v
+}
+
+// HasZeroContentProbe reports whether ctx has the zero-content probe armed and
+// can fall back.
+func HasZeroContentProbe(ctx context.Context) bool {
+	armed, canFallback := ZeroContentProbe(ctx)
+	return armed && canFallback
+}
+
+// IsZeroContentResponse reports whether a 2xx JSON body carries no usable
+// content: no text, no tool call, no reasoning, and a finish that is not a
+// normal completion.
+func IsZeroContentResponse(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] != '{' || LooksLikeSSE(trimmed) {
+		return false
+	}
+
+	var probe struct {
+		Choices    jsontext.Value `json:"choices"`
+		Content    jsontext.Value `json:"content"`
+		StopReason string         `json:"stop_reason"`
+	}
+	if err := json.Unmarshal(trimmed, &probe, handlerutil.UpstreamBody); err != nil {
+		return false
+	}
+
+	// OpenAI chat format
+	if probe.Choices != nil {
+		t := bytes.TrimSpace(probe.Choices)
+		if len(t) > 0 && t[0] == '[' {
+			var choices []struct {
+				Message      jsontext.Value `json:"message"`
+				Delta        jsontext.Value `json:"delta"`
+				FinishReason jsontext.Value `json:"finish_reason"`
+			}
+			if err := json.Unmarshal(t, &choices, handlerutil.UpstreamBody); err == nil {
+				if len(choices) == 0 {
+					return true
+				}
+				c := choices[0]
+				// upstream: const msg = choice.message || choice.delta;
+				// `||` tests truthiness, not presence, so a present-but-falsy
+				// message ("", false, 0) reads delta too.
+				msgRaw := c.Message
+				if probeMessageFallsThroughToDelta(msgRaw) {
+					msgRaw = c.Delta
+				}
+
+				var msg struct {
+					Content          jsontext.Value `json:"content"`
+					ToolCalls        jsontext.Value `json:"tool_calls"`
+					FunctionCall     jsontext.Value `json:"function_call"`
+					ReasoningContent jsontext.Value `json:"reasoning_content"`
+				}
+				if len(bytes.TrimSpace(msgRaw)) > 0 {
+					_ = json.Unmarshal(msgRaw, &msg, handlerutil.UpstreamBody)
+				}
+
+				hasContent := probeHasContent(msg.Content)
+				hasToolCalls := probeHasToolCalls(msg.ToolCalls, msg.FunctionCall)
+				hasReasoning := probeHasReasoning(msg.ReasoningContent)
+
+				var finish string
+				trimmedFR := bytes.TrimSpace(c.FinishReason)
+				if len(trimmedFR) > 0 && trimmedFR[0] == '"' {
+					_ = json.Unmarshal(trimmedFR, &finish, handlerutil.UpstreamBody)
+				}
+				isNormalFinish := finish == "stop" || finish == "length" || finish == "tool_calls" || finish == "function_call"
+
+				if !hasContent && !hasToolCalls && !hasReasoning && (!isNormalFinish || finish == "in_progress" || finish == "incomplete") {
+					return true
+				}
+			}
+		}
+	}
+
+	// Anthropic messages format
+	if probe.Content != nil {
+		t := bytes.TrimSpace(probe.Content)
+		if len(t) > 0 && t[0] == '[' {
+			var blocks []struct {
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				Thinking string `json:"thinking"`
+			}
+			if err := json.Unmarshal(t, &blocks, handlerutil.UpstreamBody); err == nil {
+				hasContent := false
+				for _, b := range blocks {
+					if (b.Type == "text" && strings.TrimSpace(b.Text) != "") ||
+						b.Type == "tool_use" ||
+						(b.Type == "thinking" && strings.TrimSpace(b.Thinking) != "") {
+						hasContent = true
+						break
+					}
+				}
+				stopReason := probe.StopReason
+				if !hasContent && (stopReason == "" || stopReason == "in_progress" || stopReason == "incomplete") {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// probeMessageFallsThroughToDelta reports whether upstream's
+// `choice.message || choice.delta` reads delta for this message value.
+// JavaScript's `||` tests truthiness rather than presence: absent, null,
+// false, 0 and "" are falsy and let delta through. An object (including
+// `{}`), an array (including `[]`), a non-empty string and a non-zero
+// number are truthy, so upstream reads them as the message and never the
+// delta — that is why `[]` is not treated as absent here: in JS every
+// object and every array is truthy, even an empty one.
+//
+// The classification is done on the raw text, not on a decoded value.
+// Decoding the whole message into `any` costs an allocation of the entire
+// value on every probe, for a question its first byte already answers.
+// It is also wrong: a number outside float64 range (`1e400`) is a value Go
+// refuses to decode, and treating the failed decode as "absent" would drop
+// to delta where upstream reads `Infinity` — a truthy value — as the
+// message. Reading the text keeps both halves of upstream's behaviour.
+func probeMessageFallsThroughToDelta(raw jsontext.Value) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return true
+	}
+	switch trimmed[0] {
+	case 'n': // null
+		return true
+	case 'f': // false
+		return true
+	case 't': // true
+		return false
+	case '"':
+		// Only the empty string literal is falsy; "0" and "false" are
+		// truthy strings upstream.
+		return bytes.Equal(trimmed, []byte(`""`))
+	case '{', '[':
+		// Objects and arrays are truthy in JS, empty ones included.
+		return false
+	default:
+		// A number. Zero is falsy, -0 and 0.0 included, and so is a value
+		// that underflows to zero (upstream's JSON.parse("1e-400") is 0).
+		// A value that overflows to Infinity stays truthy, which is why an
+		// out-of-range parse must not be read as an absent value.
+		num, err := strconv.ParseFloat(string(trimmed), 64)
+		if err != nil && !errors.Is(err, strconv.ErrRange) {
+			// Not a number JSON allows; upstream's JSON.parse would have
+			// rejected the body as well, so keep the value rather than
+			// dropping to delta.
+			return false
+		}
+		return num == 0
+	}
+}
+
+func probeHasReasoning(raw jsontext.Value) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '"' {
+		return false
+	}
+	var s string
+	if err := json.Unmarshal(trimmed, &s, handlerutil.UpstreamBody); err == nil {
+		return strings.TrimSpace(s) != ""
+	}
+	return false
+}
+
+func probeHasContent(raw jsontext.Value) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return false
+	}
+	switch trimmed[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(trimmed, &s, handlerutil.UpstreamBody); err == nil {
+			return strings.TrimSpace(s) != ""
+		}
+	case '[':
+		var items []jsontext.Value
+		if err := json.Unmarshal(trimmed, &items, handlerutil.UpstreamBody); err == nil {
+			return len(items) > 0
+		}
+	}
+	return false
+}
+
+func probeHasToolCalls(toolCalls, functionCall jsontext.Value) bool {
+	trimmedTC := bytes.TrimSpace(toolCalls)
+	if len(trimmedTC) > 0 && trimmedTC[0] == '[' {
+		var items []jsontext.Value
+		if err := json.Unmarshal(trimmedTC, &items, handlerutil.UpstreamBody); err == nil && len(items) > 0 {
+			return true
+		}
+	}
+	trimmedFC := bytes.TrimSpace(functionCall)
+	if len(trimmedFC) > 0 && !bytes.Equal(trimmedFC, []byte("null")) {
+		return true
+	}
+	return false
 }

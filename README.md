@@ -87,6 +87,14 @@ curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.s
 irm https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.ps1 | iex
 ```
 
+> **CPU without AVX?** Celeron/Pentium N-series, older Atom and some VMs max out at SSE4.2, and an x86-64 binary built for a newer microarchitecture dies with `Illegal instruction` before it starts. Use the no-AVX asset (linux/amd64) instead of the default one:
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install-noavx.sh | bash
+> ```
+>
+> It installs the same binary from the `9router-go-linux-amd64-noavx` release asset, which is built with `CGO_ENABLED=0` and `GOAMD64=v1`. `VARIANT=noavx` on `install.sh` does the same thing.
+
 🎉 Then start it (defaults: port `20130`, data `~/.9router` — no flags needed):
 
 ```bash
@@ -176,6 +184,24 @@ docker run -d --name 9router-go --restart unless-stopped \
 - 👥 Per-provider executors, OAuth refresh, reactive 401 retry
 - 📡 Live usage + console-log SSE streams, stall detection
 - 💾 SQLite WAL persistence, outbound proxy support, self-update, MITM commands, Docker, cross-compilation
+
+For sequential combo routing, set **Model response timeout** in seconds (decimals
+such as `5.3` are fine) in the combo's Edit dialog, or from the compact field on the
+combo card. Empty or `0` disables it. The timer covers each model
+candidate except the last, including connection selection and waiting for a
+usable response. If it expires before output is committed, the router cancels
+that candidate and tries the next. The last candidate keeps the gateway's
+normal deadline, so the setting never makes a combo fail sooner than it would
+without it (#744). An active stream is not cut off by this setting. For
+non-streaming requests, the timer covers the wait for the complete response.
+Fusion panel timing is separate. A model that times out is left out of that
+combo for a
+grace period (default 5 minutes, set per combo under the timeout in the Edit
+dialog; `0` re-includes it on the next request) and then rejoins the chain. If
+every model in the chain is inside its grace period, the full chain is used. The
+pause is held in memory and resets on restart. Stored as
+`firstTokenGraceMs` next to the timeout. The dashboard shows seconds; the setting is stored in
+milliseconds as `comboStrategies[comboName].firstTokenTimeoutMs`.
 
 ---
 
@@ -327,8 +353,55 @@ For Claude Messages clients: `ANTHROPIC_BASE_URL=http://localhost:20130/v1`.
 | `HTTP_PROXY` / `HTTPS_PROXY` | Go defaults | Upstream egress proxy |
 | `PPROF_ENABLED` | `false` | Expose `/debug/pprof/*` (keep off on untrusted networks) |
 | `TRUST_PROXY` / `TRUST_CLOUDFLARE` | unset | Trust forwarded client-IP headers |
+| `TRUSTED_PROXIES` | unset | CIDR list of the reverse proxies whose forwarded client-IP headers are trusted |
+| `GEMINI_WEB_ROTATION` | `on` | Renew the Gemini Web session cookie in the background (see below) |
+
+#### Gemini Web session renewal
+
+The `gemini-web` provider reaches `gemini.google.com` with a session cookie,
+and Google rotates the session's timestamp cookie (`__Secure-1PSIDTS`) every
+few minutes. The router renews it in the background, so a signed-in account
+keeps reaching the models it pays for instead of falling back to one model
+after a few minutes.
+
+**There are three ways to get a session, and the dashboard offers two of
+them as a button.**
+
+1. *A throwaway browser* — the safest. The button opens a browser with a
+   profile of its own, waits for the Google sign-in, reads the session out of
+   it, then closes the browser and deletes the profile. Nothing is left
+   running that could rotate the session, so the router's renewal is the
+   only one.
+2. *A browser that is already signed in* — the convenient one. The button
+   opens the browser's own cookie database, takes the key that seals it from
+   the platform's secret store (the login keyring on Linux, the Keychain on
+   macOS, the profile's "Local State" file on Windows), and unseals the
+   cookies. **A browser that is still open keeps rotating the same session**
+   and the router renews it from the other side, and the two cancel each
+   out — which signs the account out. Close the browser first, or use the
+   throwaway browser above. The dashboard says so when it finds a browser
+   that is running.
+3. *A cookie you paste* — the fallback. Copy the cookie header from an
+   Incognito window that you close right after, not from a normal tab, and
+   paste it into the connection form.
+
+Set `GEMINI_WEB_ROTATION=off` to run the router without renewing anything at
+all. That is the right choice when the credential belongs to a browser you
+want to keep using.
 
 `.env.example` documents the security-sensitive subset and OAuth overrides.
+
+A forwarded client-IP header is only read when the TCP peer is inside the
+trusted set — otherwise a client could rotate `X-Forwarded-For` and give every
+login attempt its own rate-limit bucket. `TRUST_PROXY=true` trusts loopback and
+the RFC1918/link-local ranges; `TRUSTED_PROXIES` takes a comma-separated list
+of CIDRs or single IPs and **replaces** those defaults, so set it when the
+proxy connects from an address outside them.
+
+Behind a proxy that is *not* in the trusted set, every request is bucketed by
+the proxy's own socket address, so all users of that proxy share one login
+bucket: five failed attempts lock them all out. `TRUSTED_PROXIES` is the knob
+that separates them again.
 
 ### API surface
 
@@ -375,13 +448,18 @@ Issues and pull requests use templates, so pick the right one rather than openin
 
 PRs follow the checks CI runs: `go vet ./...`, `go test -count=1 ./...`, `make test-integration`, plus `cd web && bun test` and `make vet-svelte` for anything touching the dashboard. Before writing code, skim [`AGENTS.md`](AGENTS.md) — provider isolation and the Go/Svelte conventions there are enforced by review.
 
+Everyone whose commit landed in the repository is credited on the wiki's [**Owner & Contributors**](https://luqman-v1.github.io/9router-go/team.html) page — photo, username, and contribution count, generated from the GitHub API.
 
 ## 📚 Docs
+
+**Full documentation, searchable:** [**9router-go Wiki**](https://luqman-v1.github.io/9router-go/) — installation, usage, API reference, dashboard, providers, architecture, database, CLI, and a screenshot gallery. Every page supports `?q=` search and `#section` deep links.
+
+Repository references:
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — routing, providers, runtime layout
 - [`DATABASE.md`](DATABASE.md) — SQLite schema & operator contract
 - [`ROADMAP.md`](ROADMAP.md) — proposals only, not current behavior
-- [`CHANGELOG.md`](CHANGELOG.md) — release history (Go **v1.9.9**, upstream baseline `decolua/9router` v0.5.85). Work merged since the last tag lives in [`.changes/`](.changes/) and is folded in at the next release; the dashboard's changelog modal shows both.
+- [`CHANGELOG.md`](CHANGELOG.md) — release history (Go **v1.9.15**, upstream baseline `decolua/9router`). Work merged since the last tag lives in [`.changes/`](.changes/) and is folded in at the next release; the dashboard's changelog modal shows both. Check what you are running with `9router-go version`.
 - [`docs/TELEGRAM_RELEASE_NOTIFICATIONS.md`](docs/TELEGRAM_RELEASE_NOTIFICATIONS.md) — one-time setup for the release notice posted to Telegram
 
 ## Credits

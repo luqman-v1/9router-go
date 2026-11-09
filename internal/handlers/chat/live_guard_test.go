@@ -66,8 +66,8 @@ func requireLiveUpstream(t *testing.T) {
 func upstreamUnavailable(code int) bool {
 	switch code {
 	case http.StatusTooManyRequests, // free-tier rate limit, shared per IP
-		http.StatusForbidden,        // free-tier refusal
-		http.StatusPaymentRequired,  // trial exhausted
+		http.StatusForbidden,       // free-tier refusal
+		http.StatusPaymentRequired, // trial exhausted
 		http.StatusServiceUnavailable,
 		http.StatusBadGateway,
 		http.StatusGatewayTimeout:

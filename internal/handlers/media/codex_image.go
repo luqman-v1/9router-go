@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"encoding/base64"
 	json "encoding/json/v2"
 	"fmt"
 	"io"
@@ -33,7 +34,7 @@ const (
 	codexImageRefDetail   = "high"
 	// The gpt-image-* ids name the tool's own model, so the Responses call is
 	// answered by the main model and the id travels in the tool definition.
-	codexImagesMainModel = "gpt-5.5"
+	codexImagesMainModel = providers.CodexImagesMainModel
 )
 
 var codexToolImageModels = map[string]bool{
@@ -103,13 +104,29 @@ func (h *MediaHandler) handleCodexImage(w http.ResponseWriter, r *http.Request, 
 	usePinned := pinned != ""
 	var excludeIDs []string
 	var lastErr error
+	planSkipped := false
 	for {
 		conn, connData, err := h.ChatH.GetBestConnectionWithContext(r.Context(), "codex", pinned, excludeIDs, cleanModel)
 		if err != nil || conn == nil {
 			if lastErr != nil {
 				return lastErr
 			}
+			if planSkipped {
+				return fmt.Errorf("no ChatGPT account entitled to image generation (paid ChatGPT plan required)")
+			}
 			return fmt.Errorf("no active connection for codex: %w", err)
+		}
+		// ChatGPT Free accounts have the image_generation tool stripped
+		// server-side (upstream answers 400 "Tool choice 'image_generation'
+		// must be specified with 'tools' parameter"), and a 400 is not
+		// fallback-eligible, so the request would die on the first Free
+		// account even with a paid one available. Skip them without locking:
+		// they stay usable for chat. Unknown plan is allowed so accounts
+		// without plan claims keep working (upstream b08f12d5).
+		if !usePinned && codexPlanType(connData) == "free" {
+			planSkipped = true
+			excludeIDs = append(excludeIDs, conn.ID)
+			continue
 		}
 		attemptErr := h.tryCodexImageConn(w, r, &req, cleanModel, responsesModel, toolModel, conn, connData)
 		if attemptErr == nil {
@@ -121,6 +138,49 @@ func (h *MediaHandler) handleCodexImage(w http.ResponseWriter, r *http.Request, 
 		}
 		excludeIDs = append(excludeIDs, conn.ID)
 	}
+}
+
+// codexPlanType resolves the ChatGPT plan for a connection at request time:
+// token claims first (the stored chatgptPlanType is only written at OAuth or
+// import time and goes stale on plan changes), then the stored value. Mirrors
+// upstream resolveChatgptPlanType minus the id_token leg, which no Go
+// connection record carries.
+func codexPlanType(connData *chat.ConnectionData) string {
+	auth := decodeOpenAIAuthClaims(chat.ExtractAPIKey(connData))
+	if plan, ok := auth["chatgpt_plan_type"].(string); ok && plan != "" {
+		return plan
+	}
+	if connData != nil {
+		if plan, ok := connData.ProviderSpecificData["chatgptPlanType"].(string); ok && plan != "" {
+			return plan
+		}
+	}
+	return ""
+}
+
+// decodeOpenAIAuthClaims base64url-decodes a Codex token's JWT payload and
+// returns the namespaced ChatGPT auth claim block (empty map when the token
+// carries none). Signature verification is the token endpoint's job; these
+// claims are routing metadata read off TLS-delivered tokens, never an
+// authorization check.
+func decodeOpenAIAuthClaims(token string) map[string]any {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) < 2 || parts[1] == "" {
+		return nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return nil
+	}
+	claims := map[string]any{}
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return nil
+	}
+	auth, _ := claims["https://api.openai.com/auth"].(map[string]any)
+	if auth == nil {
+		return map[string]any{}
+	}
+	return auth
 }
 
 // codexImageModels splits the catalog id into the model that answers the
@@ -294,7 +354,7 @@ func (h *MediaHandler) tryCodexImageConn(w http.ResponseWriter, r *http.Request,
 
 	image, usage := parseCodexImageStream(resp.Body)
 	if image == "" {
-		return fmt.Errorf("Codex did not return an image. Account may not be entitled (Plus/Pro required).")
+		return fmt.Errorf("codex did not return an image: the account may not be entitled (paid ChatGPT plan required)")
 	}
 
 	h.recordCodexImageUsage(usage, cleanModel, conn, connData)

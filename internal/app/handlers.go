@@ -10,6 +10,7 @@ import (
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers"
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/middleware"
 )
 
@@ -58,7 +59,14 @@ func ProvideTokenSaverConfig(repo *db.Repo, params CLIParams) *handlers.TokenSav
 }
 
 // ProvideRouter sets up the Chi router with middleware and routes.
-func ProvideRouter(repo *db.Repo, ts *handlers.TokenSaverConfig) *chi.Mux {
+//
+// It returns the router and the engine's chat handler — the same instance the
+// routes are mounted on, not a second one. The auto-ping scheduler needs a chat
+// handler, and a second one would be a second PersistentStore over the same
+// SQLite file with its own in-memory LRU: the dashboard would report zero
+// entries while the engine served hits, and clearing entries from the dashboard
+// would leave the engine still serving them (see handlers.SetupRoutes).
+func ProvideRouter(repo *db.Repo, ts *handlers.TokenSaverConfig) (*chi.Mux, *chat.ChatHandler) {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	// Body limits are path-aware: JSON APIs keep the 10MB ceiling, the media
@@ -70,8 +78,8 @@ func ProvideRouter(repo *db.Repo, ts *handlers.TokenSaverConfig) *chi.Mux {
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(middleware.RequestLogger)
 
-	handlers.SetupServerRouter(r, repo, ts)
-	return r
+	engineChatH := handlers.SetupServerRouter(r, repo, ts)
+	return r, engineChatH
 }
 
 // ProvideHTTPHandler provides http.Handler from *chi.Mux.

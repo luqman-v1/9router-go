@@ -7,9 +7,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
-	"sync"
 	"time"
 )
 
@@ -187,7 +187,6 @@ func (m *mockResponseWriter) wasFlushed() bool {
 	defer m.mu.Unlock()
 	return m.flushed
 }
-
 
 func TestHeartbeatWriter_EmitsKeepAliveWhenIdle(t *testing.T) {
 	rec := &mockResponseWriter{}

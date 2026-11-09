@@ -2,6 +2,8 @@
   import { onMount } from 'svelte'
   import { api, type APIKey, type Combo, type ProviderConnection, type ProviderNode, type Settings } from '../../api/client'
   import { getProvidersByKind, type ProviderCatalogItem } from '../../lib/providers'
+  import { hasAnyNodeLimitPatch } from '../../lib/node-limits'
+  import type { ProviderNodeLimitsPatch } from '../../api/client'
   import Badge from '../../lib/ui/Badge.svelte'
   import Card from '../../lib/ui/Card.svelte'
   import AddCompatibleNodeModal from '../connections/AddCompatibleNodeModal.svelte'
@@ -105,8 +107,26 @@
     baseUrl: string
     type: string
     urlSuffix?: string
+    limits: ProviderNodeLimitsPatch
   }) {
-    const node = await api.createProviderNode({ ...data, urlSuffix: data.urlSuffix || undefined })
+    const node = await api.createProviderNode({
+      name: data.name,
+      prefix: data.prefix,
+      baseUrl: data.baseUrl,
+      type: data.type,
+      urlSuffix: data.urlSuffix || undefined,
+    })
+    // Second request by necessity: the limits endpoint needs the id this create just
+    // answered with. A failure here is reported, and the node stays usable.
+    if (hasAnyNodeLimitPatch(data.limits)) {
+      try {
+        await api.setProviderNodeLimits(node.id, data.limits)
+      } catch (err) {
+        alert(
+          `Provider node created, but its capacity limits did not save: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
     customNodes = [...customNodes, node]
     showCustomModal = false
     onRefresh()

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	json "encoding/json/v2"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/headroom"
 	"9router/proxy/internal/tokensaver"
 )
 
@@ -32,7 +34,7 @@ func TestApplyTokenSavers_AllOff(t *testing.T) {
 	defer cleanup()
 
 	body := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
-	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(body, false)
+	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(context.Background(), body, false)
 	if string(got) != string(body) {
 		t.Errorf("expected unchanged body when all token savers off")
 	}
@@ -62,7 +64,7 @@ func TestApplyTokenSavers_RTKOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal body: %v", err)
 	}
-	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(body, false)
+	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(context.Background(), body, false)
 	if string(got) == string(body) {
 		t.Errorf("expected RTK to modify body")
 	}
@@ -83,7 +85,7 @@ func TestApplyTokenSavers_CavemanInjects(t *testing.T) {
 	h.TokenSaver.SetCaveman(true)
 
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	got, _, _, _ := h.applyTokenSavers(body, false)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
 	// Caveman prompt text should now appear in the system message.
 	if !strings.Contains(string(got), "terse") && !strings.Contains(string(got), "caveman") {
 		t.Errorf("expected caveman prompt injected, got %s", got)
@@ -96,7 +98,7 @@ func TestApplyTokenSavers_PonytailInjects(t *testing.T) {
 	h.TokenSaver.SetPonytail(true)
 
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	got, _, _, _ := h.applyTokenSavers(body, false)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
 	if !strings.Contains(string(got), tokensaver.PonytailPrompt[:20]) {
 		t.Errorf("expected ponytail prompt injected, got %s", got)
 	}
@@ -108,7 +110,7 @@ func TestApplyTokenSavers_ADHDInjects(t *testing.T) {
 	h.TokenSaver.SetADHD(true)
 
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	got, _, _, _ := h.applyTokenSavers(body, false)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
 	if !strings.Contains(string(got), "I have ADHD — action-first output") {
 		t.Errorf("expected ADHD full prompt injected, got %s", got)
 	}
@@ -116,7 +118,7 @@ func TestApplyTokenSavers_ADHDInjects(t *testing.T) {
 	// Test lite mode
 	h.TokenSaver.SetADHD(true, "lite")
 	bodyLite := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	gotLite, _, _, _ := h.applyTokenSavers(bodyLite, false)
+	gotLite, _, _, _ := h.applyTokenSavers(context.Background(), bodyLite, false)
 	if !strings.Contains(string(gotLite), "I have ADHD (lite)") {
 		t.Errorf("expected ADHD lite prompt injected, got %s", gotLite)
 	}
@@ -262,13 +264,17 @@ func TestHandleMessagesComboFallback_RetriesOnceOnBoundedRetryAfter(t *testing.T
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := hits.Add(1)
 		if n == 1 {
-			// Upstream says "wait ~1s" (RFC3339). A 429 is only worth retrying
+			// Upstream says "wait ~1s". A 429 is only worth retrying
 			// inside brief429RetryTolerance — past that the account is out of
 			// quota and re-hitting it deepens the upstream's backoff — so the
 			// bound, not the old 8s cap, is what this covers.
-			ra := time.Now().Add(time.Second).Format(time.RFC3339)
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`{"error":{"retryAfter":"` + ra + `"}}`))
+			// The wait travels as a duration, not as an instant: an instant
+			// decays while the router processes the failure, and on a loaded
+			// machine the wait can be gone before the router reads it. Then
+			// the second pass never runs and this test fails on the
+			// machine's speed instead of on the behaviour.
+			w.Write([]byte(deltaRetryAfterBody(time.Second)))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -413,5 +419,231 @@ func TestHandleAccountFallback_AllInCooldownReportsEarliestReset(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), inTenMinutes.UTC().Format(time.RFC3339)) {
 		t.Errorf("expected error to contain earliest reset %s, got: %v", inTenMinutes.UTC().Format(time.RFC3339), err)
+	}
+}
+func TestApplyTokenSavers_HeadroomOffByDefault(t *testing.T) {
+	// The default must be "off", because the alternative is every request
+	// paying for a round trip to a proxy the operator never configured.
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+
+	body := []byte(`{"messages":[{"role":"user","content":"a long paragraph worth compressing if it were enabled"}]}`)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
+	if string(got) != string(body) {
+		t.Fatalf("headroom must be off by default; body changed")
+	}
+}
+
+func TestApplyTokenSavers_HeadroomCompressesWhenEnabled(t *testing.T) {
+	// The wiring test: with the flag on and a proxy that answers, the body the
+	// handler returns is the proxy's, not the original. Without this, the call
+	// site could be deleted and every other test would still pass.
+	var hits int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"short"}],
+			"tokens_before":900,"tokens_after":3,"tokens_saved":897}`))
+	}))
+	defer ts.Close()
+
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	// The engine is pinned to external: the default is built-in, which would
+	// serve this request in-process and never reach the fake proxy.
+	h.TokenSaver.UpdateFromSettings(&db.SettingsData{
+		HeadroomEnabled:   true,
+		HeadroomUrl:       ts.URL,
+		HeadroomEngine:    headroom.EngineExternal,
+		HeadroomTimeoutMs: 2000,
+	})
+
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"a long paragraph worth compressing if it were enabled at all today"}]}`)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
+	if atomic.LoadInt32(&hits) == 0 {
+		t.Fatalf("enabled headroom never reached the proxy")
+	}
+	if string(got) == string(body) {
+		t.Fatalf("body was not replaced by the compressed one")
+	}
+	if !bytes.Contains(got, []byte(`"short"`)) {
+		t.Fatalf("expected the proxy's message in the result, got: %s", got)
+	}
+}
+
+// TestApplyTokenSavers_HeadroomRecordsTokenSavings pins the accounting the usage
+// page depends on.
+//
+// The compression stage used to replace the body and drop the token counts on
+// the floor, so a request compressed by headroom alone reported SavedTokens 0.
+// The usage page only writes a compression row when SavedTokens > 0, so that
+// request was invisible there — the operator turned compression on, watched it
+// work, and the dashboard reported no compression at all.
+func TestApplyTokenSavers_HeadroomRecordsTokenSavings(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"short"}],
+			"tokens_before":900,"tokens_after":3,"tokens_saved":897}`))
+	}))
+	defer ts.Close()
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	// Headroom only: RTK and every style prompt off, which is the configuration
+	// that used to report nothing.
+	h.TokenSaver.UpdateFromSettings(&db.SettingsData{
+		HeadroomEnabled:   true,
+		HeadroomUrl:       ts.URL,
+		HeadroomEngine:    headroom.EngineExternal,
+		HeadroomTimeoutMs: 2000,
+	})
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"a long paragraph worth compressing if it were enabled at all today"}]}`)
+	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(context.Background(), body, false)
+	if string(got) == string(body) {
+		t.Fatalf("body was not replaced by the compressed one")
+	}
+	if savedTokens <= 0 {
+		t.Fatalf("headroom compressed the body but reported 0 tokens saved")
+	}
+	if origTokens <= savedTokens {
+		t.Fatalf("original tokens %d must exceed saved %d", origTokens, savedTokens)
+	}
+	if savedPct <= 0 || savedPct > 100 {
+		t.Fatalf("saved pct = %d, want a percentage in (0, 100]", savedPct)
+	}
+}
+
+// TestApplyTokenSavers_HeadroomSavingsStackOnRTK covers the combined case: both
+// stages act on the same request, and the totals must describe what the
+// provider is about to be billed for rather than the last stage alone.
+func TestApplyTokenSavers_HeadroomSavingsStackOnRTK(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"short"}]}`))
+	}))
+	defer ts.Close()
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	h.TokenSaver.UpdateFromSettings(&db.SettingsData{
+		RTKEnabled:        true,
+		HeadroomEnabled:   true,
+		HeadroomUrl:       ts.URL,
+		HeadroomEngine:    headroom.EngineExternal,
+		HeadroomTimeoutMs: 2000,
+	})
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"a long paragraph worth compressing if it were enabled at all today"}]}`)
+	got, origTokens, savedTokens, savedPct := h.applyTokenSavers(context.Background(), body, false)
+	if string(got) == string(body) {
+		t.Fatalf("body was not replaced by the compressed one")
+	}
+	if savedTokens <= 0 || origTokens <= 0 {
+		t.Fatalf("expected stacked savings, got orig=%d saved=%d", origTokens, savedTokens)
+	}
+	if savedTokens >= origTokens {
+		t.Fatalf("saved %d must be less than original %d", savedTokens, origTokens)
+	}
+	if savedPct <= 0 || savedPct > 100 {
+		t.Fatalf("saved pct = %d, want a percentage in (0, 100]", savedPct)
+	}
+}
+func TestApplyTokenSavers_HeadroomFailsOpen(t *testing.T) {
+	// A proxy that is configured but not running must not fail the request.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	url := ts.URL
+	ts.Close()
+
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	h.TokenSaver.UpdateFromSettings(&db.SettingsData{
+		HeadroomEnabled:   true,
+		HeadroomUrl:       url,
+		HeadroomEngine:    headroom.EngineExternal,
+		HeadroomTimeoutMs: 300,
+	})
+
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"still has to go through"}]}`)
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
+	if string(got) != string(body) {
+		t.Fatalf("a dead proxy must leave the body untouched")
+	}
+}
+
+func TestApplyTokenSavers_BypassHeader(t *testing.T) {
+	// Every documented opt-out value (and case variants) skips every token saver
+	// — RTK, Caveman, Ponytail, ADHD, Headroom, system prompt — and returns the
+	// body untouched with 0 tokens saved.
+	values := []string{"false", "0", "off", "bypass", "FALSE", "Off", "BYPASS", " 0 ", " Off "}
+	for _, val := range values {
+		t.Run(val, func(t *testing.T) {
+			h, cleanup := setupHandlerForForward(t)
+			defer cleanup()
+			h.TokenSaver.SetRTK(true)
+			h.TokenSaver.SetCaveman(true)
+
+			// Long repetitive tool output that RTK would otherwise compress.
+			var sb strings.Builder
+			for i := 0; i < 200; i++ {
+				sb.WriteString("repeated log line ")
+				sb.WriteString(strconv.Itoa(i))
+				sb.WriteString("\n")
+			}
+			body, err := json.Marshal(map[string]any{
+				"messages": []any{
+					map[string]any{"role": "tool", "content": sb.String()},
+				},
+			})
+			if err != nil {
+				t.Fatalf("marshal body: %v", err)
+			}
+
+			ctx := WithTokenSaverBypass(context.Background())
+			got, orig, saved, pct := h.applyTokenSavers(ctx, body, false)
+			if string(got) != string(body) {
+				t.Errorf("expected body untouched under bypass (%q), got %s", val, got)
+			}
+			if orig != 0 || saved != 0 || pct != 0 {
+				t.Errorf("expected zero token metrics under bypass (%q), got orig=%d saved=%d pct=%d", val, orig, saved, pct)
+			}
+		})
+	}
+}
+
+func TestApplyTokenSavers_NonBypassValueStillProcessed(t *testing.T) {
+	// Anything that is not a documented opt-out value runs the savers normally.
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	h.TokenSaver.SetRTK(true)
+
+	var sb strings.Builder
+	for i := 0; i < 300; i++ {
+		sb.WriteString("unique log line number ")
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString("\n")
+	}
+	body, err := json.Marshal(map[string]any{
+		"messages": []any{
+			map[string]any{"role": "tool", "content": sb.String()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	got, _, _, _ := h.applyTokenSavers(context.Background(), body, false)
+	if string(got) == string(body) {
+		t.Error("expected RTK to process body when header is not a bypass value")
+	}
+}
+
+func TestIsTokenSaverBypassValue(t *testing.T) {
+	for _, v := range []string{"false", "0", "off", "bypass", "FALSE", "Off", "BYPASS", " 0 ", " Off "} {
+		if !isTokenSaverBypassValue(v) {
+			t.Errorf("expected %q to be a bypass value", v)
+		}
+	}
+	for _, v := range []string{"", "true", "1", "on", "yes", "maybe"} {
+		if isTokenSaverBypassValue(v) {
+			t.Errorf("expected %q to NOT be a bypass value", v)
+		}
 	}
 }

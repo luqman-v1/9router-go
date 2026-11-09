@@ -17,8 +17,8 @@ func TestAggregatorProviders(t *testing.T) {
 		aliases     []string
 		modelsList  string
 		wantFetcher bool
-		authHeader   string
-		authScheme   string
+		authHeader  string
+		authScheme  string
 	}{
 		{
 			id: "tokenharbor", baseURL: "https://tokenharbor.ai/v1/chat/completions",
@@ -66,11 +66,20 @@ func TestAggregatorProviders(t *testing.T) {
 			aliases: []string{"systemone"},
 		},
 		{
+			// Nace Drex — the second System One lane (upstream v0.5.112,
+			// f7f6f5e). Same shape as v1m: decision models only, one
+			// /v1/systemone endpoint, no chat base URL. drex-v2.0 is text-only
+			// and answers 422 when a request carries an `images` array.
+			id: "nace", baseURL: "",
+			models:  []string{"drex-max", "drex-v2.0"},
+			aliases: []string{"drex"},
+		},
+		{
 			// SumoPod — Indonesian OpenAI-compatible gateway. Catalogue from
 			// the live /v1/models response (61 chat models; embeddings excluded).
 			id: "sumopod", baseURL: "https://ai.sumopod.com/v1/chat/completions",
-			models:  []string{"MiniMax-M2.7-highspeed", "MiniMax-M3", "MiniMax-M3.1-Flash-Preview", "claude-fable-5-1", "claude-haiku-4-5", "claude-opus-4-8", "claude-opus-5", "claude-opus-5-5", "claude-sonnet-5", "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-0731:netra", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro", "deepseek-v4.1-flash:netra", "gemini/gemini-3-flash-preview", "gemini/gemini-3.1-flash-lite", "gemini/gemini-3.1-pro-preview", "gemini/gemini-3.5-flash", "gemini/gemini-3.5-flash-lite", "gemini/gemini-3.7-flash", "gemini/gemini-3.8-flash", "glm-5", "glm-5-turbo", "glm-5.1", "glm-5.2", "glm-5.3-flash", "glm-5v-turbo", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-luna", "grok-4.7", "hy3", "kimi-k3", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed", "qwen3.6-flash", "qwen3.7-flash-2026-07-15", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-flash", "qwen3.8-max", "seed-2-0-code", "seed-2-0-lite", "seed-2-0-mini", "seed-2-0-pro"},
-			aliases: []string{"sp"},
+			models:     []string{"MiniMax-M2.7-highspeed", "MiniMax-M3", "MiniMax-M3.1-Flash-Preview", "claude-fable-5-1", "claude-haiku-4-5", "claude-opus-4-8", "claude-opus-5", "claude-opus-5-5", "claude-sonnet-5", "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-0731:netra", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro", "deepseek-v4.1-flash:netra", "gemini/gemini-3-flash-preview", "gemini/gemini-3.1-flash-lite", "gemini/gemini-3.1-pro-preview", "gemini/gemini-3.5-flash", "gemini/gemini-3.5-flash-lite", "gemini/gemini-3.7-flash", "gemini/gemini-3.8-flash", "glm-5", "glm-5-turbo", "glm-5.1", "glm-5.2", "glm-5.3-flash", "glm-5v-turbo", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-luna", "grok-4.7", "hy3", "kimi-k3", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed", "qwen3.6-flash", "qwen3.7-flash-2026-07-15", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-flash", "qwen3.8-max", "seed-2-0-code", "seed-2-0-lite", "seed-2-0-mini", "seed-2-0-pro"},
+			aliases:    []string{"sp"},
 			modelsList: "https://ai.sumopod.com/v1/models", wantFetcher: true,
 		},
 		{
@@ -78,12 +87,21 @@ func TestAggregatorProviders(t *testing.T) {
 			authHeader: "x-api-key", authScheme: "raw",
 		},
 		{
-			// Free-pi — the ad-funded `pi` distribution. Its transport is plain
-			// [OI] bearer, so it is a registry entry like any other; the session
-			// identity its upstream demands is the executor's job, not the
-			// registry's. Only the CLI's own default model is seeded: the real
-			// catalogue arrives from GET /client-version at login, and inventing
-			// ids here would publish models upstream does not serve.
+			id: "nous", baseURL: "https://inference-api.nousresearch.com/v1/chat/completions",
+			models: []string{
+				"meituan/longcat-2.0:free",
+				"meituan/longcat-2.5-preview:free",
+				"stepfun/step-5-preview:free",
+				"upstage/solar-mini4:free",
+				"stepfun/step-3.7-flash:free",
+				"poolside/laguna-s-2.1:free",
+				"poolside/laguna-xs-2.1:free",
+				"stealth/missingno",
+			},
+			aliases:    []string{"nous-portal", "nous-research", "ns"},
+			modelsList: "https://inference-api.nousresearch.com/v1/models", wantFetcher: true,
+		},
+		{
 			id: "free-pi", baseURL: "https://api.freepi.ai/v1/chat/completions",
 			models:     []string{"deepseek/deepseek-v4-flash"},
 			aliases:    []string{"fp", "freepi"},

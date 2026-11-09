@@ -9,6 +9,13 @@
 
   interface Props {
     period?: string
+    /**
+     * Which stack the chart draws. Owned by the parent because the switch that
+     * picks it sits in the panel header, and the header label describes it.
+     */
+    viewMode?: 'tokens' | 'costs'
+    /** Whether the buckets are hourly — the same fact the header label needs. */
+    hourly?: boolean
   }
 
   interface ChartBucket {
@@ -24,12 +31,15 @@
     total: number
   }
 
-  let { period = '7d' }: Props = $props()
+  let {
+    period = '7d',
+    viewMode = $bindable('tokens'),
+    hourly = $bindable(false),
+  }: Props = $props()
 
   let buckets = $state<ChartBucket[]>([])
   let loading = $state(true)
   let failed = $state(false)
-  let viewMode = $state<'tokens' | 'costs'>('tokens')
   let hovered = $state<number | null>(null)
 
   const WIDTH = 640
@@ -40,26 +50,46 @@
   const FAMILY_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4', '#f43f5e', '#84cc16']
   const OTHER_COLOR = '#64748b'
 
+  // A read that never answers leaves the panel spinning with no way out, so
+  // the wait is bounded: the chart says it could not be loaded, and the
+  // reader collapses and expands the panel to try again.
+  const CHART_TIMEOUT_MS = 20000
+
   $effect(() => {
     const wanted = period
     let cancelled = false
+    let settled = false
     loading = true
     failed = false
+    const timer = setTimeout(() => {
+      if (settled || cancelled) return
+      settled = true
+      failed = true
+      loading = false
+    }, CHART_TIMEOUT_MS)
     api
       .getUsageChart(wanted)
       .then((data) => {
-        if (cancelled) return
+        if (cancelled || settled) return
+        settled = true
+        clearTimeout(timer)
         buckets = Array.isArray(data) ? data : []
+        // The server buckets hourly for short windows; the header label repeats
+        // that fact, so it is reported rather than re-derived up there.
+        hourly = /^\d\d:\d\d$/.test(buckets[0]?.label || '')
         loading = false
       })
       .catch(() => {
-        if (cancelled) return
+        if (cancelled || settled) return
+        settled = true
+        clearTimeout(timer)
         buckets = []
         failed = true
         loading = false
       })
     return () => {
       cancelled = true
+      clearTimeout(timer)
     }
   })
 
@@ -115,7 +145,6 @@
   const maxTotal = $derived(Math.max(1, ...stack.map((s) => s.total)))
   const hasData = $derived(stack.some((s) => s.total > 0))
   const step = $derived(buckets.length > 1 ? WIDTH / (buckets.length - 1) : WIDTH)
-  const hourly = $derived(/^\d\d:\d\d$/.test(buckets[0]?.label || ''))
 
   function xAt(index: number): number {
     return buckets.length > 1 ? index * step : WIDTH / 2
@@ -127,6 +156,46 @@
 
   // One area path per series, bounded by its own cumulative band, so the areas
   // stack without overlapping.
+  // Arrow keys walk the same points the mouse reveals. A tooltip reachable only
+  // by hovering is unreadable to anyone driving the page from the keyboard, and
+  // the table below is the non-visual equivalent of the drawn series.
+  //
+  // One tab stop, not one per point: the keydown fires on the focused element,
+  // so a per-point binding always reads its own index and ArrowRight moves the
+  // tooltip without moving focus — the second press computes the same index
+  // again. Focus follows the arrow instead, and the point that is focused is
+  // the only one with tabindex 0.
+  let focusedPoint = $state(0)
+
+  function handlePointKey(event: KeyboardEvent) {
+    const index = focusedPoint
+    let next = index
+    if (event.key === 'ArrowRight') next = index + 1
+    else if (event.key === 'ArrowLeft') next = index - 1
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = stack.length - 1
+    else if (event.key === 'Escape') {
+      event.preventDefault()
+      hovered = null
+      return
+    } else return
+
+    event.preventDefault()
+    next = Math.max(0, Math.min(stack.length - 1, next))
+    focusedPoint = next
+    hovered = next
+    // Focus moves with the tooltip. The tabindex re-render lands on the next
+    // microtask, so the lookup is deferred rather than done inline.
+    const el = event.currentTarget as SVGElement
+    const svg = el.ownerSVGElement
+    svg?.querySelectorAll<SVGRectElement>('rect')?.[next]?.focus()
+  }
+
+  // The table lives inside <details>, which hides its rows visually but still
+  // builds them. An all-time window is thousands of buckets, so one <tr> and
+  // three cells per bucket is a cost a 1-vCPU box pays while the table is shut.
+  let tableOpen = $state(false)
+
   function areaPath(band: number): string {
     if (stack.length === 0) return ''
     const top = stack.map((s, i) => `${xAt(i)},${yAt(s.cumulative[band] || 0)}`).join(' L ')
@@ -141,39 +210,7 @@
   }
 </script>
 
-<div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] flex min-w-0 flex-col gap-3 p-4">
-  <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-    <div>
-      <h3 class="text-sm font-semibold text-text-main flex items-center gap-1.5">
-        <span class="material-symbols-outlined text-[18px] text-brand-500" aria-hidden="true">show_chart</span>
-        Usage Trend
-      </h3>
-      <p class="text-xs text-text-subtle">
-        {viewMode === 'costs' ? 'Estimated cost' : 'Tokens'} per {hourly ? 'hour' : 'day'}, stacked by model family.
-      </p>
-    </div>
-    <div class="inline-flex rounded-xl bg-surface border border-border p-1 shadow-sm self-start sm:self-auto" role="group" aria-label="Chart metric">
-      <button
-        type="button"
-        onclick={() => (viewMode = 'costs')}
-        class="rounded-lg px-3 py-1 text-xs font-semibold transition-colors cursor-pointer {viewMode === 'costs'
-          ? 'bg-brand-500 text-white shadow-sm'
-          : 'text-text-muted hover:text-text-main'}"
-      >
-        Costs
-      </button>
-      <button
-        type="button"
-        onclick={() => (viewMode = 'tokens')}
-        class="rounded-lg px-3 py-1 text-xs font-semibold transition-colors cursor-pointer {viewMode === 'tokens'
-          ? 'bg-brand-500 text-white shadow-sm'
-          : 'text-text-muted hover:text-text-main'}"
-      >
-        Tokens
-      </button>
-    </div>
-  </div>
-
+<div class="flex min-w-0 flex-col gap-3">
   {#if loading}
     <div class="flex items-center justify-center py-12 text-text-muted text-xs">
       <span class="material-symbols-outlined animate-spin text-[20px] mr-2" aria-hidden="true">progress_activity</span>
@@ -191,7 +228,8 @@
         {/each}
         {#each stack as _point, i}
           <rect
-            role="presentation"
+            tabindex={i === focusedPoint ? 0 : -1}
+            aria-label="{stack[i].bucket.label}: {fmtTokens(stack[i].bucket.tokens)} tokens"
             x={xAt(i) - step / 2}
             y="0"
             width={step}
@@ -199,6 +237,12 @@
             fill="transparent"
             onmouseenter={() => (hovered = i)}
             onmouseleave={() => (hovered = null)}
+            onfocus={() => {
+              focusedPoint = i
+              hovered = i
+            }}
+            onblur={() => (hovered = null)}
+            onkeydown={handlePointKey}
           />
         {/each}
         {#if hovered !== null && stack[hovered]}
@@ -215,7 +259,13 @@
         {/if}
       </svg>
       {#if hovered !== null && stack[hovered]}
-        <div class="mt-2 rounded-[10px] border border-border bg-surface-2 px-3 py-2 text-[11px] text-text-main">
+        <!-- role=status so a screen reader hears the point the keyboard just
+             moved to; the same node is the pointer tooltip. -->
+        <div
+          role="status"
+          aria-live="polite"
+          class="mt-2 rounded-[10px] border border-border bg-surface-2 px-3 py-2 text-[11px] text-text-main"
+        >
           <div class="font-semibold text-text-muted">{stack[hovered].bucket.label}</div>
           <div class="mt-1 flex items-center justify-between gap-3">
             <span>Tokens</span>
@@ -255,5 +305,36 @@
       <span>{buckets[0]?.label}</span>
       <span>{buckets[buckets.length - 1]?.label}</span>
     </div>
+
+    <!-- The drawn areas carry no text a screen reader can read and the tooltip
+         only opens under a pointer, so the same numbers are here as a table. -->
+    <details class="text-[11px] text-text-muted" bind:open={tableOpen}>
+      <summary class="cursor-pointer select-none">View table</summary>
+      {#if tableOpen}
+        <table class="mt-2 w-full border-collapse text-left" aria-label="Usage trend table">
+          <thead>
+            <tr class="border-b border-border-subtle">
+              <th scope="col" class="py-1 pr-2 font-medium">{hourly ? 'Hour' : 'Day'}</th>
+              <th scope="col" class="py-1 pr-2 text-right font-medium">Tokens</th>
+              <th scope="col" class="py-1 text-right font-medium">Est. cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- The label is not a unique key: a daily bucket is labelled "Jan 2",
+                 so a period long enough to cross a year boundary repeats it and
+                 Svelte throws each_key_duplicate, which takes the usage page
+                 down with it. The index is the key here — the same choice the
+                 plotted points above make — and it is unique by construction. -->
+            {#each stack as point, i (i)}
+              <tr class="border-b border-border-subtle/60">
+                <th scope="row" class="py-1 pr-2 font-normal text-text-main">{point.bucket.label}</th>
+                <td class="py-1 pr-2 text-right font-mono">{fmtTokens(point.bucket.tokens)}</td>
+                <td class="py-1 text-right font-mono">~{costIn(point.bucket.cost ?? 0)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </details>
   {/if}
 </div>

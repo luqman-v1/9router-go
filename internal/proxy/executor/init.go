@@ -13,14 +13,14 @@ func RegisterAll() {
 	Register("deepseek", func() Executor { return ForwardOpenAI })
 	Register("sumopod", func() Executor { return ForwardOpenAI })
 	Register("groq", func() Executor { return ForwardOpenAI })
-	Register("nvidia", func() Executor { return ForwardOpenAI })
+	Register("nvidia", func() Executor { return ForwardNvidia })
 	Register("openrouter", func() Executor { return ForwardOpenAI })
 	Register("cerebras", func() Executor { return ForwardOpenAI })
 	Register("together", func() Executor { return ForwardOpenAI })
 	Register("fireworks", func() Executor { return ForwardOpenAI })
 	Register("opencode", func() Executor { return ForwardOpencode })
 	Register("gemini", func() Executor { return ForwardOpenAI })
-	Register("github", func() Executor { return ForwardOpenAI })
+	Register("github", func() Executor { return ForwardGithub })
 	Register("mistral", func() Executor { return ForwardOpenAI })
 	Register("perplexity", func() Executor { return ForwardOpenAI })
 	Register("xai", func() Executor { return ForwardOpenAI })
@@ -44,11 +44,12 @@ func RegisterAll() {
 	Register("alicode", func() Executor { return ForwardOpenAI })
 	Register("alicode-intl", func() Executor { return ForwardOpenAI })
 	Register("byteplus", func() Executor { return ForwardOpenAI })
-	Register("codebuddy-cn", func() Executor { return ForwardCodebuddyCN })
+	Register("codebuddy-cn", func() Executor { return ForwardCodebuddyCNWithTelemetry })
 	Register("codebuddy-intl", func() Executor { return ForwardCodebuddyCN })
 	Register("gitlab", func() Executor { return ForwardOpenAI })
 	Register("glm-cn", func() Executor { return ForwardZai })
 	Register("glm", func() Executor { return ForwardZai })
+	Register("zcode", func() Executor { return ForwardZcode })
 	Register("nebius", func() Executor { return ForwardOpenAI })
 	Register("minimax", func() Executor { return ForwardOpenAI })
 	Register("kimi", func() Executor { return ForwardKimi })
@@ -73,6 +74,10 @@ func RegisterAll() {
 	// the session tokens, the nested request array and the line stream are not
 	// anything the shared passthrough can express.
 	Register("gemini-web", func() Executor { return ForwardGeminiWeb })
+	// grok-web posts to grok.com's conversations/new behind Cloudflare with a
+	// browser Cookie header and answers NDJSON, not an OpenAI stream — the
+	// shared passthrough cannot express the handshake or the wire shape.
+	Register("grok-web", func() Executor { return ForwardGrokWeb })
 	// One executor serves both Bedrock entries: the registry entry's Format picks the
 	// wire shape (Anthropic Messages vs OpenAI Chat Completions), the way one Vertex
 	// executor serves vertex and vertex-partner.
@@ -88,6 +93,16 @@ func RegisterAll() {
 	Register("bazaarlink", func() Executor { return ForwardOpenAI })
 	Register("bluesminds", func() Executor { return ForwardOpenAI })
 	Register("devin-cli", func() Executor { return ForwardOpenAI })
+	// Vertex AI: the registry entries carried no executor, so every request
+	// POSTed an OpenAI body at aiplatform.googleapis.com, which serves neither
+	// lane. Both provider ids share one implementation — the difference is the
+	// URL shape, decided inside from the provider id.
+	Register("vertex", func() Executor { return ForwardVertex })
+	Register("vertex-partner", func() Executor { return ForwardVertex })
+	// Perplexity Web is not OpenAI-compatible in either direction: the request
+	// is a query_str envelope and the answer is Perplexity's own event stream,
+	// so the passthrough cannot serve it.
+	Register("perplexity-web", func() Executor { return ForwardPerplexityWeb })
 	Register("freebuff", func() Executor { return ForwardFreebuff })
 	// free-pi cannot ride the shared passthrough: it must set two per-account
 	// headers (x-session-id, x-client-version) that the registry's static map
@@ -104,7 +119,10 @@ func RegisterAll() {
 	Register("tokenrouter", func() Executor { return ForwardOpenAI })
 	Register("trae", func() Executor { return ForwardTrae })
 	Register("windsurf", func() Executor { return ForwardWindsurf })
-	Register("zed", func() Executor { return ForwardOpenAI })
+	Register("zed", func() Executor { return ForwardZed })
 	Register("minimax-code", func() Executor { return ForwardMinimaxCode })
 	Register("minimax-code-global", func() Executor { return ForwardMinimaxCode })
+	Register("daoxe", func() Executor { return ForwardOpenAI })
+	Register("nan", func() Executor { return ForwardOpenAI })
+	Register("openadapter", func() Executor { return ForwardOpenAI })
 }

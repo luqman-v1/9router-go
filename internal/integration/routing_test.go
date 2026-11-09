@@ -19,9 +19,13 @@ func TestRetryableUpstreamErrorRotatesAccount(t *testing.T) {
 		`{"error":{"message":"rate limit reached for requests","type":"rate_limit_error"}}`))
 	healthy := env.NewUpstream(t, chatCompletionResponder())
 
-	// Priority orders the picker, so the throttled account is picked first.
-	env.AddConnection(t, "conn-1", "deepseek", "Throttled Account", throttled, "sk-throttled")
-	env.AddConnection(t, "conn-2", "deepseek", "Healthy Account", healthy, "sk-healthy")
+	// Distinct priorities order the picker, so the throttled account is picked
+	// first. Leaving both at the harness default (priority 1) would tie them,
+	// and the tie-break is the most recently updated row, decided by a
+	// second-resolution timestamp: the first request then goes to whichever
+	// account was inserted on the later second.
+	env.AddConnectionWithPriority(t, "conn-1", "deepseek", "Throttled Account", throttled, "sk-throttled", 1)
+	env.AddConnectionWithPriority(t, "conn-2", "deepseek", "Healthy Account", healthy, "sk-healthy", 2)
 
 	res := env.Post(t, "/v1/chat/completions", ChatBody("deepseek/deepseek-chat", false))
 	if res.Status != http.StatusOK {

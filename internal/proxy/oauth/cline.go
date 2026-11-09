@@ -1,6 +1,8 @@
 package oauth
 
 import (
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/updater"
 	"bytes"
 	"context"
 	json "encoding/json/v2"
@@ -9,8 +11,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"9router/proxy/internal/providers"
 )
 
 func init() {
@@ -57,12 +57,11 @@ func RefreshCline(ctx context.Context, p *Params) (*TokenResult, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Cline/3.0.61")
-	req.Header.Set("X-CLIENT-TYPE", "cline-cli")
-	req.Header.Set("X-CLIENT-VERSION", "3.0.61")
-	req.Header.Set("X-CORE-VERSION", "3.0.61")
-	req.Header.Set("X-PLATFORM", "cli")
-	req.Header.Set("X-PLATFORM-VERSION", "3.0.61")
+	// 9Router client identity (upstream buildClineHeaders); the body keeps
+	// clientType "extension" like upstream.
+	for k, v := range providers.ClineIdentityHeaders(updater.CurrentVersion, nil) {
+		req.Header.Set(k, v)
+	}
 
 	client := p.Client
 	if client == nil {

@@ -40,6 +40,14 @@ const (
 	// or automated client gets, and the answer carries how long it lasts.
 	deepSeekMuted deepSeekEnforcementKind = "muted"
 
+	// deepSeekBanned is an account-level ban: the upstream refuses the
+	// account itself, and no credential and no address reaches it.
+	deepSeekBanned deepSeekEnforcementKind = "banned"
+
+	// deepSeekIPRestricted is an address-level refusal: the account is fine
+	// and this egress is not. Another address reaches it.
+	deepSeekIPRestricted deepSeekEnforcementKind = "ip_restricted"
+
 	// deepSeekRateLimited is a burst limit: the same account may be usable
 	// again shortly, but not on this turn.
 	deepSeekRateLimited deepSeekEnforcementKind = "rate_limited"
@@ -65,13 +73,21 @@ type deepSeekEnforcement struct {
 }
 
 // deepSeekEnforcementStatus maps a refusal onto the HTTP status the router acts
-// on. A mute and a burst limit are both 429 — the account must be cooled down
-// and another connection tried — while a client refusal is the gateway's own
-// problem to report and not a reason to punish an account.
+// on.
+//
+// A mute and a burst limit are both 429 — the account must be cooled down and
+// another connection tried. A ban is 403: the account is refused, and cooling
+// it down for a minute would only send the next turn to the same refusal. An
+// address-level refusal is 403 as well, and the difference is which one the
+// operator is told about: a ban is the account, an address refusal is the
+// egress. A client refusal is the gateway's own problem to report and not a
+// reason to punish an account.
 func (e *deepSeekEnforcement) status() int {
 	switch e.Kind {
 	case deepSeekMuted, deepSeekRateLimited:
 		return http.StatusTooManyRequests
+	case deepSeekBanned, deepSeekIPRestricted:
+		return http.StatusForbidden
 	default:
 		return http.StatusBadGateway
 	}
@@ -137,22 +153,59 @@ func deepSeekEnforcementFromBody(body []byte) *deepSeekEnforcement {
 		envelope.Data.BizData.IsMuted, envelope.Data.BizData.MuteUntil); ok {
 		return muted
 	}
-
-	// The general error envelope: an auth failure (40003) and a rate limit
-	// (40002) both arrive this way, and so does any other application refusal.
+	// The general error envelope. The site's own bundle names the codes, and
+	// they do not mean what they used to be read as: 40002 is MISSING_TOKEN,
+	// not a rate limit, so a request that carried no credential is reported
+	// as a credential problem instead of being cooled down and retried
+	// against the same account.
 	if envelope.Code != 0 {
-		kind := deepSeekEnforced
-		switch envelope.Code {
-		case deepSeekCodeRateLimited:
-			kind = deepSeekRateLimited
-		case deepSeekCodeAuthFailed:
-			// Not an enforcement: a dead credential is an auth failure the
-			// caller already maps to a 401.
-			return nil
-		}
-		return &deepSeekEnforcement{Kind: kind, Message: fmt.Sprintf("upstream refused the turn (code %d): %s", envelope.Code, envelope.Msg)}
+		return deepSeekEnforcementForCode(envelope.Code, envelope.Msg)
 	}
 	return nil
+}
+
+// deepSeekEnforcementForCode maps one application error code onto the
+// refusal the router acts on.
+//
+// The codes come from the site's own bundle (the enum it ships to the
+// browser), not from inference: 40002 MISSING_TOKEN, 40003 INVALID_TOKEN,
+// 40006 REQUEST_DECRYPT_FAILED, 40012 USER_IS_BANNED, 40029
+// IP_ACCESS_RESTRICTED and 50006 MUTED.
+func deepSeekEnforcementForCode(code int, message string) *deepSeekEnforcement {
+	switch code {
+	case deepSeekCodeAuthFailed, deepSeekCodeMissingToken:
+		// Not an enforcement: a dead or absent credential is an auth failure
+		// the caller already maps to a 401.
+		return nil
+	case deepSeekCodeRequestEncrypted:
+		// The request body was not in the shape the site expects. That is
+		// the gateway's own problem, not the account's, and it is not a
+		// credential failure: the token was fine.
+		return &deepSeekEnforcement{
+			Kind:    deepSeekEnforced,
+			Message: "the upstream refused the request body: " + message,
+		}
+	case deepSeekCodeUserBanned:
+		return &deepSeekEnforcement{
+			Kind:    deepSeekBanned,
+			Message: "the upstream refused this account: " + message,
+		}
+	case deepSeekCodeIPRestricted:
+		return &deepSeekEnforcement{
+			Kind:    deepSeekIPRestricted,
+			Message: "the upstream refused this address: " + message,
+		}
+	case deepSeekCodeMuted:
+		return &deepSeekEnforcement{
+			Kind:    deepSeekMuted,
+			Message: "the upstream muted this account: " + message,
+		}
+	default:
+		return &deepSeekEnforcement{
+			Kind:    deepSeekEnforced,
+			Message: fmt.Sprintf("upstream refused the turn (code %d): %s", code, message),
+		}
+	}
 }
 
 // DeepSeekEnforcementFromBody is the exported reader, for the dashboard probe.

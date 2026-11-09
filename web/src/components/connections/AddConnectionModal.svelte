@@ -70,21 +70,35 @@
   let usesAwsCredentialForm = $derived(catalogItem?.credentialForm === 'aws')
   let providerRegions = $derived(catalogItem?.regions || null)
 
+  // DeepSeek's credential is a userToken, not a cookie, so it gets its own
+  // label — the field holds a token and calling it a cookie would send the
+  // operator to the wrong place in DevTools.
+  let isDeepSeekWeb = $derived(providerId === 'deepseek-web')
   let credentialLabel = $derived(
-    isCookie ? 'Cookie Value' : providerId === 'qoder' ? 'Personal Access Token (PAT)' : 'API Key'
+    isDeepSeekWeb
+      ? 'User Token'
+      : isCookie
+        ? 'Cookie Value'
+        : providerId === 'qoder'
+          ? 'Personal Access Token (PAT)'
+          : 'API Key'
   )
   let credentialPlaceholder = $derived(
-    isCookie
-      ? providerId === 'grok-web'
-        ? 'sso=xxxxx... or just the raw value'
-        : 'eyJhbGciOi...'
-      : isXaiApiKey
-        ? 'xai-...'
-        : providerId === 'qoder'
-          ? 'pt-...'
-          : usesAwsCredentialForm
-            ? 'AWS secret access key'
-            : ''
+    isDeepSeekWeb
+      ? 'the userToken from chat.deepseek.com localStorage'
+      : isCookie
+        ? providerId === 'grok-web'
+          ? 'sso=xxxxx... or just the raw value'
+          : providerId === 'gemini-web'
+            ? '__Secure-1PSID=...; __Secure-1PSIDTS=...'
+            : 'eyJhbGciOi...'
+        : isXaiApiKey
+          ? 'xai-...'
+          : providerId === 'qoder'
+            ? 'pt-...'
+            : usesAwsCredentialForm
+              ? 'AWS secret access key'
+              : ''
   )
   let modalTitle = $derived(`Add ${providerName || providerId} ${credentialLabel}`)
 
@@ -119,6 +133,14 @@
   /** Set when the backend has no probe for this provider — no Valid/Invalid claim. */
   let validationNote = $state('')
   let saving = $state(false)
+  /** The throwaway-browser sign-in is running, or its outcome. */
+  let browserLogin = $state<'running' | 'done' | 'failed' | null>(null)
+  let browserLoginNote = $state('')
+  /** The session read out of a browser that was already signed in. */
+  let chromeImport = $state<'running' | 'done' | 'failed' | null>(null)
+  let chromeImportNote = $state('')
+  /** The site's own session cookie, for the providers whose WAF reads one. */
+  let formDeepSeekCookie = $state('')
 
   // Bulk state
   let bulkText = $state('')
@@ -196,6 +218,11 @@
     if (providerRegions && region) {
       return { region }
     }
+    if (providerId === 'deepseek-web' && formDeepSeekCookie.trim()) {
+      // The site's own session cookie. It is a credential: the WAF reads it,
+      // and the server seals it with the rest.
+      return { deepSeekCookie: formDeepSeekCookie.trim() }
+    }
     return undefined
   }
 
@@ -235,6 +262,116 @@
 
   async function handleValidate() {
     await runValidation()
+  }
+
+  /**
+   * Open a throwaway browser, sign in to Gemini Web there, and take the
+   * session it captured.
+   *
+   * The browser closes and its profile is deleted as soon as the session is
+   * read, so nothing is left running that could rotate the same cookies the
+   * router is about to use. That is the whole reason this exists: a session
+   * taken from a browser that keeps running is a session that expires, and
+   * a sign-out that looks unexplained.
+   */
+  async function handleBrowserLogin() {
+    browserLogin = 'running'
+    browserLoginNote = 'A browser window is opening — sign in to Google there. It closes by itself.'
+    try {
+      const res = await api.geminiWebBrowserLogin()
+      formApiKey = res.cookie
+      browserLogin = 'done'
+      browserLoginNote = 'Signed in. The cookie is filled in below — save the connection.'
+      validation = null
+      validationNote = ''
+    } catch (err) {
+      browserLogin = 'failed'
+      browserLoginNote = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  /**
+   * Open a throwaway browser, sign in to DeepSeek Web there, and take the
+   * credential it captured.
+   *
+   * DeepSeek's credential is two things: the userToken the API authenticates
+   * with, and the site's own cookies the WAF reads. Only a real sign-in
+   * issues the first, and only a browser running the WAF's JavaScript
+   * challenge renews the second — so the browser sign-in is what makes
+   * refreshing the credential a button instead of a DevTools ritual.
+   *
+   * The browser closes and its profile is deleted as soon as the credential
+   * is read, so nothing is left running that could rotate the same session
+   * the router is about to use.
+   */
+  async function handleDeepSeekBrowserLogin() {
+    browserLogin = 'running'
+    browserLoginNote = 'A browser window is opening — sign in to DeepSeek there. It closes by itself.'
+    try {
+      const res = await api.deepSeekWebBrowserLogin()
+      formApiKey = res.userToken
+      formDeepSeekCookie = res.cookie
+      browserLogin = 'done'
+      browserLoginNote = 'Signed in. The credential is filled in below — save the connection.'
+      validation = null
+      validationNote = ''
+    } catch (err) {
+      browserLogin = 'failed'
+      browserLoginNote = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+
+  /**
+   * Read the credential out of a browser that is already signed in to
+   * DeepSeek.
+   *
+   * This is the convenient way in, and it is the one that matches how the
+   * credential is actually held: the site keeps the API's userToken in
+   * localStorage and the WAF's cookie in the cookie jar, and a browser the
+   * operator is already signed in to has both.
+   *
+   * The trade is the one the server states: a browser that is running keeps
+   * the same session the router renews, and the two cancel each other out.
+   */
+  async function handleDeepSeekChromeImport() {
+    chromeImport = 'running'
+    chromeImportNote = 'Reading the browser…'
+    try {
+      const res = await api.deepSeekWebImportChrome()
+      formApiKey = res.userToken
+      formDeepSeekCookie = res.cookie
+      chromeImport = 'done'
+      chromeImportNote = res.warning || 'The credential is filled in below — save the connection.'
+      validation = null
+      validationNote = ''
+    } catch (err) {
+      chromeImport = 'failed'
+      chromeImportNote = err instanceof Error ? err.message : String(err)
+    }
+  }
+  /**
+   * Read the session out of a browser that is already signed in.
+   *
+   * This is the convenient way in, and it carries a trade the throwaway
+   * browser does not: a browser that is running keeps rotating the same
+   * session this router renews, and the two cancel each other out. The
+   * server says so when it finds one, and the note is shown here.
+   */
+  async function handleChromeImport() {
+    chromeImport = 'running'
+    chromeImportNote = 'Reading the browser…'
+    try {
+      const res = await api.geminiWebImportChrome()
+      formApiKey = res.cookie
+      chromeImport = 'done'
+      chromeImportNote = res.warning || 'The session is filled in below — save the connection.'
+      validation = null
+      validationNote = ''
+    } catch (err) {
+      chromeImport = 'failed'
+      chromeImportNote = err instanceof Error ? err.message : String(err)
+    }
   }
 
   /**
@@ -547,6 +684,162 @@
                   </a>
                 {/if}
               </p>
+            {/if}
+
+            {#if providerId === 'gemini-web'}
+              <!--
+                The warning is here rather than only in the catalog hint because
+                this is where the credential is pasted, and the mistake it warns
+                about is the one that signs the account out.
+              -->
+              <div class="rounded-[10px] border border-warning/40 bg-warning/10 p-3">
+                <p class="text-xs font-semibold text-text-main">
+                  Sign in through a throwaway browser
+                </p>
+                <p class="text-xs text-text-muted mt-1">
+                  Google rotates <span class="font-mono">__Secure-1PSIDTS</span> every few minutes, and the
+                  session is bound to it. A browser that is still open keeps rotating the same session this
+                  router is about to use, and the two cancel each other out — which signs the account out. The
+                  button below opens a browser with a profile of its own, reads the session out of it, then
+                  closes it and deletes the profile, so nothing is left running that could rotate it.
+                </p>
+                <div class="mt-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onclick={handleBrowserLogin}
+                    disabled={browserLogin === 'running'}
+                  >
+                    {browserLogin === 'running' ? 'Waiting for the sign-in...' : 'Open a throwaway browser'}
+                  </Button>
+                </div>
+                {#if browserLoginNote}
+                  <p
+                    class="text-xs mt-2 {browserLogin === 'failed' ? 'text-red-500' : 'text-text-muted'}"
+                  >
+                    {browserLoginNote}
+                  </p>
+                {/if}
+                <p class="text-xs text-text-muted mt-2">
+                  No browser to open? Open an Incognito window instead, sign in, copy the whole cookie header
+                  (DevTools → Application → Cookies, including
+                  <span class="font-mono">__Secure-1PSIDTS</span>), then close the Incognito window
+                  <span class="font-semibold">without signing out</span>.
+                </p>
+                <p class="text-xs text-text-muted mt-2">
+                  Already signed in a browser? Read the session out of it instead — that browser is running,
+                  so it keeps rotating the same session and the two will cancel each other out. Close it
+                  first, or use the throwaway browser above.
+                </p>
+                <div class="mt-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onclick={handleChromeImport}
+                    disabled={chromeImport === 'running'}
+                  >
+                    {chromeImport === 'running' ? 'Reading the browser...' : 'Read it from an open browser'}
+                  </Button>
+                </div>
+                {#if chromeImportNote}
+                  <p
+                    class="text-xs mt-2 {chromeImport === 'failed' ? 'text-red-500' : 'text-text-muted'}"
+                  >
+                    {chromeImportNote}
+                  </p>
+                {/if}
+                <p class="text-xs text-text-muted mt-2">
+                  To run the router without renewing anything at all, set
+                  <span class="font-mono">GEMINI_WEB_ROTATION=off</span> in the environment.
+                </p>
+              </div>
+            {/if}
+
+            {#if providerId === 'deepseek-web'}
+              <!--
+                DeepSeek's credential is two halves, and only a browser can
+                produce them: the userToken the API authenticates with, and
+                the site's own cookies the WAF reads. The warning is here
+                rather than only in the catalog hint because this is where the
+                credential is pasted.
+              -->
+              <div class="rounded-[10px] border border-warning/40 bg-warning/10 p-3">
+                <p class="text-xs font-semibold text-text-main">
+                  Sign in through a throwaway browser
+                </p>
+                <p class="text-xs text-text-muted mt-1">
+                  The API authenticates with a <span class="font-mono">userToken</span> that only a real
+                  sign-in issues — there is no refresh token to exchange — and the site's WAF reads a cookie
+                  that only a browser running its JavaScript challenge renews. The button below opens a
+                  browser with a profile of its own, reads both out of it, then closes it and deletes the
+                  profile, so nothing is left running that could rotate them.
+                </p>
+                <div class="mt-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onclick={handleDeepSeekBrowserLogin}
+                    disabled={browserLogin === 'running'}
+                  >
+                    {browserLogin === 'running' ? 'Waiting for the sign-in...' : 'Open a throwaway browser'}
+                  </Button>
+                </div>
+                {#if browserLoginNote}
+                  <p
+                    class="text-xs mt-2 {browserLogin === 'failed' ? 'text-red-500' : 'text-text-muted'}"
+                  >
+                    {browserLoginNote}
+                  </p>
+                {/if}
+                <p class="text-xs text-text-muted mt-2">
+                  No browser to open? Open an Incognito window instead, sign in to
+                  chat.deepseek.com, copy the <span class="font-mono">userToken</span> from DevTools →
+                  Application → Local Storage, and copy the cookie header from DevTools → Application →
+                  Cookies, then close the Incognito window
+                  <span class="font-semibold">without signing out</span>.
+                </p>
+                <p class="text-xs text-text-muted mt-2">
+                  Already signed in a browser? Read the credential out of it instead — that browser is
+                  running, so it keeps the same session and the two will cancel each other out. Close it
+                  first, or use the throwaway browser above.
+                </p>
+                <div class="mt-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onclick={handleDeepSeekChromeImport}
+                    disabled={chromeImport === 'running'}
+                  >
+                    {chromeImport === 'running' ? 'Reading the browser...' : 'Read it from an open browser'}
+                  </Button>
+                </div>
+                {#if chromeImportNote}
+                  <p
+                    class="text-xs mt-2 {chromeImport === 'failed' ? 'text-red-500' : 'text-text-muted'}"
+                  >
+                    {chromeImportNote}
+                  </p>
+                {/if}
+              </div>
+            {/if}
+
+            {#if providerId === 'deepseek-web'}
+              <div>
+                <label for="connDeepSeekCookie" class={labelCls}>
+                  Session cookie <span class="text-text-muted text-xs font-normal">(the site's own)</span>
+                </label>
+                <input
+                  id="connDeepSeekCookie"
+                  type="text"
+                  bind:value={formDeepSeekCookie}
+                  placeholder="ds_session_id=…; aws-waf-token=…"
+                  class="{inputCls} font-mono"
+                />
+                <p class="text-xs text-text-muted mt-1">
+                  The WAF reads this cookie, so a request without it is a request the site does not
+                  recognise. It is sealed with the rest of the credential.
+                </p>
+              </div>
             {/if}
 
             {#if providerRegions}

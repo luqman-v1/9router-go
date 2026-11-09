@@ -88,19 +88,27 @@ describe('api key row menu', () => {
 describe('copying a key', () => {
   // Issue #310. The copy button used to copy whatever the cell displayed, and a
   // hidden cell displays the mask — so copying straight off a loaded dashboard
-  // put `sk-c07…c93e` on the clipboard and the pasted credential 401'd.
+  // put a masked value on the clipboard and the pasted credential 401'd.
   //
   // The assertion is the clipboard text itself rather than a flag or a call:
   // the user's whole complaint is the bytes that land on the clipboard, and the
   // second check turns those bytes into the thing the user actually does with
   // them — authenticate.
+  //
+  // The mask is matched by its bullets rather than by a specific character. It
+  // used to collapse the middle to a single ellipsis, which told the reader the
+  // key's length for free; it now keeps the exact length with bullets, so a test
+  // pinned to "…" would fail on the fix rather than on a regression.
   test('copies the usable secret while the row is still hidden', async () => {
     const key = await createKey(page, 'E2E Copy Hidden')
 
     // The key must not be revealed: revealing first is the workaround the
     // reporter found, and it would hide the bug from this test.
     const displayed = await keyRow(page, key).locator('code').innerText()
-    expect(displayed).toContain('…')
+    expect(displayed).toContain('•')
+    // The mask is the same length as the secret, so the only way to tell them
+    // apart is that one carries bullets and the other does not.
+    expect(displayed).not.toBe(key)
 
     await app.page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
     await keyRow(page, key).getByRole('button', { name: `Copy key ${key}` }).click()
@@ -109,7 +117,7 @@ describe('copying a key', () => {
     const copied = await app.page.evaluate(() => navigator.clipboard.readText())
 
     // A mask is unusable as a credential; the secret starts with `sk-`.
-    expect(copied).not.toContain('…')
+    expect(copied).not.toContain('•')
     expect(copied).not.toBe(displayed)
     expect(copied.startsWith('sk-')).toBe(true)
 

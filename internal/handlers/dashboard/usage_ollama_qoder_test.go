@@ -243,3 +243,60 @@ func withOllamaEndpoints(t *testing.T, usageBody, meBody string) {
 	ollamaUsageURL, ollamaMeURL = srv.URL+"/api/usage", srv.URL+"/api/me"
 	t.Cleanup(func() { ollamaUsageURL, ollamaMeURL = prevUsage, prevMe })
 }
+
+func TestFetchQoderUsage_ParsesAddOnQuota(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"userQuota": {"total": 1000, "used": 200, "remaining": 800, "unit": "credits"},
+			"orgResourcePackage": {"total": 5000, "used": 1000, "remaining": 4000, "unit": "credits"},
+			"addOnQuota": {"total": 2200, "used": 150, "remaining": 2050, "unit": "credits", "detailUrl": "https://qoder.sh/user/wallet"},
+			"totalUsagePercentage": 25,
+			"isQuotaExceeded": false
+		}`))
+	}))
+	defer srv.Close()
+
+	res := fetchQoderUsageAt(t.Context(), "valid-token", srv.URL)
+	if res.message != "" {
+		t.Fatalf("unexpected message: %s", res.message)
+	}
+
+	addOn, ok := res.quotas["addOn"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected addOn quota in %v", res.quotas)
+	}
+
+	if addOn["total"] != float64(2200) {
+		t.Errorf("addOn total = %v, want 2200", addOn["total"])
+	}
+	if addOn["used"] != float64(150) {
+		t.Errorf("addOn used = %v, want 150", addOn["used"])
+	}
+	if addOn["remaining"] != float64(2050) {
+		t.Errorf("addOn remaining = %v, want 2050", addOn["remaining"])
+	}
+	if addOn["unit"] != "credits" {
+		t.Errorf("addOn unit = %v, want credits", addOn["unit"])
+	}
+	if addOn["detailUrl"] != "https://qoder.sh/user/wallet" {
+		t.Errorf("addOn detailUrl = %v, want https://qoder.sh/user/wallet", addOn["detailUrl"])
+	}
+}
+
+func TestFetchQoderUsage_OmittedAddOnQuotaWhenZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"userQuota": {"total": 1000, "used": 200, "remaining": 800, "unit": "credits"},
+			"orgResourcePackage": {"total": 5000, "used": 1000, "remaining": 4000, "unit": "credits"},
+			"addOnQuota": {"total": 0, "used": 0, "remaining": 0}
+		}`))
+	}))
+	defer srv.Close()
+
+	res := fetchQoderUsageAt(t.Context(), "valid-token", srv.URL)
+	if _, ok := res.quotas["addOn"]; ok {
+		t.Errorf("addOn quota should be omitted when total is 0: %v", res.quotas)
+	}
+}

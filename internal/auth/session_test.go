@@ -107,17 +107,24 @@ func TestLoginLimiterLocksAfterFiveFails(t *testing.T) {
 func TestLoginClientIPIgnoresSpoofedHeaders(t *testing.T) {
 	ResetLoginLimiter()
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	req.RemoteAddr = "203.0.113.50:12345"
 	req.Header.Set("X-Forwarded-For", "203.0.113.9")
 	req.Header.Set("x-9r-real-ip", "203.0.113.9")
-	if got := LoginClientIP(req); got != "unknown" {
-		t.Errorf("untrusted headers must share one bucket, got %q", got)
+	if got := LoginClientIP(req); got != "203.0.113.50" {
+		t.Errorf("untrusted peer must use socket IP, got %q", got)
 	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	req.RemoteAddr = "10.0.0.1:45678"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
 	t.Setenv("TRUST_PROXY", "true")
 	if got := LoginClientIP(req); got != "203.0.113.9" {
 		t.Errorf("trusted proxy must read XFF, got %q", got)
 	}
 
-	// CF-Connecting-IP takes precedence when present under TRUST_PROXY or TRUST_CLOUDFLARE
+	// CF-Connecting-IP takes precedence when present from Cloudflare CIDR under TRUST_PROXY or TRUST_CLOUDFLARE
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	req.RemoteAddr = "173.245.48.1:45678"
 	req.Header.Set("CF-Connecting-IP", "198.51.100.42")
 	if got := LoginClientIP(req); got != "198.51.100.42" {
 		t.Errorf("expected CF-Connecting-IP 198.51.100.42, got %q", got)
@@ -127,6 +134,12 @@ func TestLoginClientIPIgnoresSpoofedHeaders(t *testing.T) {
 	t.Setenv("TRUST_CLOUDFLARE", "true")
 	if got := LoginClientIP(req); got != "198.51.100.42" {
 		t.Errorf("expected CF-Connecting-IP under TRUST_CLOUDFLARE, got %q", got)
+	}
+
+	// Non-Cloudflare peer must not be trusted for CF-Connecting-IP
+	req.RemoteAddr = "10.0.0.1:45678"
+	if got := LoginClientIP(req); got != "10.0.0.1" {
+		t.Errorf("expected non-CF peer to reject CF-Connecting-IP, got %q", got)
 	}
 }
 

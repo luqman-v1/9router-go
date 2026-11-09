@@ -178,6 +178,9 @@ func TestForwardFreebuff_FullCycle(t *testing.T) {
 
 		case strings.HasSuffix(r.URL.Path, "/chat/completions"):
 			atomic.AddInt64(&chatCalls, 1)
+			if got := r.Header.Get("x-freebuff-sse-gzip-recovery"); got != "1" {
+				t.Errorf("expected x-freebuff-sse-gzip-recovery=1, got %q", got)
+			}
 			bodyBytes, _ := io.ReadAll(r.Body)
 			var body map[string]any
 			_ = json.Unmarshal(bodyBytes, &body)

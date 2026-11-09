@@ -23,7 +23,7 @@ func TestCodexUpstreamModelID(t *testing.T) {
 		// Synthesized review ids map back to the base model.
 		{name: "sol review", model: "gpt-5.6-sol-review", want: "gpt-5.6-sol"},
 		{name: "terra review", model: "gpt-5.6-terra-review", want: "gpt-5.6-terra"},
-		{name: "gpt-5.5 review", model: "gpt-5.5-review", want: "gpt-5.5"},
+		{name: "luna review", model: "gpt-5.6-luna-review", want: "gpt-5.6-luna"},
 
 		// The auto-review virtual model is NOT derived from a base model, so its
 		// suffix stays (#1398). Stripping it would forward "codex-auto".
@@ -33,7 +33,7 @@ func TestCodexUpstreamModelID(t *testing.T) {
 		// It is preserved because downstream code re-applies thinking from it.
 		{name: "extended context with thinking override", model: "gpt-6-sol[1m](high)", want: "gpt-6-sol(high)"},
 		{name: "review with thinking override", model: "gpt-5.6-sol-review(max)", want: "gpt-5.6-sol(max)"},
-		{name: "plain id with thinking override", model: "gpt-5.5(high)", want: "gpt-5.5(high)"},
+		{name: "plain id with thinking override", model: "gpt-5.6-terra(high)", want: "gpt-5.6-terra(high)"},
 
 		// A vendor prefix names a different provider, so the suffix belongs to it.
 		{name: "vendor prefixed id is not rewritten", model: "cx/gpt-5.6-sol-review", want: "cx/gpt-5.6-sol-review"},

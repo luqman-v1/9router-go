@@ -47,6 +47,15 @@
      * target with several different verbs behind it.
      */
     fullWidth?: boolean
+    /**
+     * Renders the trigger as a bare icon button sized to match the row's other
+     * icon buttons — padding, glyph, radius, border, and the absence of a
+     * background or shadow. The endpoint rows put the overflow menu beside a
+     * copy button, and a trigger that differs in any of those reads as a
+     * different kind of control: the menu looks like the row's primary action
+     * rather than one verb among several.
+     */
+    iconOnly?: boolean
     children?: Snippet
   }
 
@@ -58,6 +67,7 @@
     triggerIcon = 'menu',
     hideLabel = false,
     fullWidth = false,
+    iconOnly = false,
     children,
   }: Props = $props()
 
@@ -146,7 +156,9 @@
     onkeydown={onKeydown}
     class="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-text-main shadow-sm transition-colors hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 disabled:opacity-50 sm:px-3 sm:text-sm {fullWidth
       ? 'w-full justify-center py-2.5 text-sm'
-      : ''}"
+      : iconOnly
+        ? 'w-9 justify-center bg-transparent px-0 py-0 shadow-none'
+        : ''}"
   >
     <span class="material-symbols-outlined text-[18px] text-text-muted" aria-hidden="true">
       {triggerIcon}

@@ -144,7 +144,7 @@ func sanitizeGeminiRawJSON(raw jsontext.Value) any {
 	if sameJSONValue(sanitized, decoded) {
 		return raw
 	}
-	out, err := json.Marshal(sanitized)
+	out, err := json.Marshal(sanitized, json.Deterministic(true))
 	if err != nil {
 		return raw
 	}

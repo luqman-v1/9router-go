@@ -24,6 +24,11 @@
   function handleClick() {
     onToggle(value)
   }
+
+  // The pill carries a boolean flag, so a cooled-down model reads as
+  // temporarily unavailable rather than permanently retired.
+  const deprecatedStatusTitle = $derived(deprecated ? 'Temporarily unavailable — cooling down' : '')
+  const deprecatedStatusLabel = $derived(deprecated ? 'Cooling down' : '')
 </script>
 
 <button
@@ -49,8 +54,8 @@
   {#if deprecated}
     <span
       class="material-symbols-outlined text-[13px] leading-none shrink-0 {isAdded ? 'text-white/90' : 'text-warning'}"
-      title="Deprecated — this model was retired by the provider and cannot serve a request"
-      aria-label="Deprecated"
+      title={deprecatedStatusTitle}
+      aria-label={deprecatedStatusLabel}
     >error</span>
   {/if}
 </button>

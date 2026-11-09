@@ -53,6 +53,47 @@ func TestHandleSearch_Success(t *testing.T) {
 	}
 }
 
+func TestHandleSearch_HonorsSearchURL(t *testing.T) {
+	var requestedPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"results":[{"title":"Result 1","url":"https://example.com/1"}]}`))
+	}))
+	defer upstream.Close()
+
+	origTavily := providers.KnownProviders["tavily"]
+	custom := origTavily
+	custom.BaseURL = upstream.URL + "/search"
+	custom.SearchURL = upstream.URL + "/search"
+	providers.KnownProviders["tavily"] = custom
+	defer func() {
+		providers.KnownProviders["tavily"] = origTavily
+	}()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+	seedFetchConn(t, database, "tavily", "conn-tavily", "tvly-test")
+
+	repo := db.NewRepo(database)
+	handler := newTestMediaHandler(repo)
+
+	body := `{"model":"tavily/search","query":"golang"}`
+	req := httptest.NewRequest("POST", "/v1/search", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleSearch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if requestedPath != "/search" {
+		t.Errorf("expected request to /search, got %s", requestedPath)
+	}
+}
+
 func TestHandleSearch_MissingModel(t *testing.T) {
 	database, cleanup := setupMultimodalTestDB(t)
 	defer cleanup()

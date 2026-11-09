@@ -32,24 +32,26 @@ import (
 //   - a base URL that is the /responses endpoint itself (codex, grok-cli,
 //     perplexity-agent) — the same test the opencode executors use before
 //     appending /responses to their chat base URL;
-//   - an opencode model whose declared target format is the Responses lane
-//     (muse-spark, grok-4.6, gpt-5.6-luna) — a chat-completions or Claude
-//     client asking for the same model is translated in, not relayed.
+//   - an opencode model whose declared formats include the Responses lane —
+//     the grok/gpt/muse-spark families pin it as their only lane, and
+//     deepseek-v4* serves it alongside chat (upstream models[] supportedFormats) —
+//     so a /v1/responses client is relayed while other clients are translated in.
 func UpstreamSpeaksResponses(provider, model string, cfg *providers.ProviderConfig) bool {
 	if cfg != nil && strings.HasSuffix(strings.TrimRight(cfg.BaseURL, "/"), "/responses") {
 		return true
 	}
 	switch provider {
+	case "github", "ghe-copilot":
+		return IsCopilotResponsesModel(provider, model)
 	case "opencode", "opencode-go":
 		formats, declared := providers.GetModelFormats(provider, model)
 		if !declared {
 			return isOpencodeResponsesModel(cleanResponsesModel(model))
 		}
-		// Only a Responses-native lane stays on /responses. A model that has
-		// to be translated into Responses (a Chat client asking for
-		// deepseek-v4-pro) must not be relayed as if the upstream already
-		// spoke the client's format.
-		return formats.TargetFormat == providers.FormatOpenAIResponses
+		// The question is whether the model serves the client's Responses wire
+		// directly, not which lane is its target: deepseek-v4-pro targets chat
+		// but answers a Responses client on /responses without translation.
+		return formats.SupportsFormat(providers.FormatOpenAIResponses)
 	case "opencode-zen":
 		// Muse Spark is the only lane that speaks Responses natively, and
 		// only for an id the catalog knows — an undeclared id keeps the
@@ -156,6 +158,20 @@ func (b *ResponsesBridge) FeedFrames(frames []byte) {
 	}
 }
 
+// OpenAIUsage returns the usage block accumulated from upstream Chat Completions chunks,
+// preserving cached tokens and reasoning tokens for usage accounting.
+func (b *ResponsesBridge) OpenAIUsage() *translator.OpenAIUsage {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.state == nil {
+		return nil
+	}
+	return b.state.RawUsage
+}
+
 // Close flushes whatever the upstream left open. A truncated stream must not
 // swallow response.completed: without a terminal event the client waits forever
 // for a turn that already ended.
@@ -244,6 +260,9 @@ func StreamChatToResponses(ctx context.Context, w http.ResponseWriter, upstream 
 	if bridge.Err() != nil {
 		return fmt.Errorf("write to client: %w", bridge.Err())
 	}
+	if u := bridge.OpenAIUsage(); u != nil {
+		translator.SetUsage(ctx, u)
+	}
 	return err
 }
 
@@ -252,11 +271,9 @@ func StreamChatToResponses(ctx context.Context, w http.ResponseWriter, upstream 
 // step, and flush per event so the client sees them as they arrive.
 func responsesWriter(o sseStreamOpts, hw *proxy.HeartbeatWriter, flusher http.Flusher, startTime time.Time) func([]byte) error {
 	return func(frame []byte) error {
-		if o.TTFT != nil && *o.TTFT == 0 {
-			*o.TTFT = time.Since(startTime).Milliseconds()
-		}
+		markTTFT(&Request{TTFT: o.TTFT, StartTime: startTime}, startTime)
 		if o.Buf != nil {
-			o.Buf.Write(frame)
+			_, _ = o.Buf.Write(frame)
 		}
 		if _, err := hw.Write(frame); err != nil {
 			return err
@@ -268,11 +285,32 @@ func responsesWriter(o sseStreamOpts, hw *proxy.HeartbeatWriter, flusher http.Fl
 	}
 }
 
-// passthroughResponses relays an upstream Responses body untouched to a client
-// that already speaks Responses. Translating it would be a round trip through
+// stripClientMetadata removes the client_metadata an upstream echoes back in a
+// Responses API response body, so client-supplied data never rides the passthrough
+// relay back to the caller. A body that does not parse as an object, or that
+// carries no client_metadata, is returned untouched.
+func stripClientMetadata(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	if _, ok := m["client_metadata"]; !ok {
+		return body
+	}
+	delete(m, "client_metadata")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// passthroughResponses relays an upstream Responses body to a client that
+// already speaks Responses. Translating it would be a round trip through
 // Chat Completions that loses exactly the fields the native endpoint needs —
 // previous_response_id, reasoning item ids, store — so the body is copied
-// byte for byte instead.
+// byte for byte except for client_metadata, which the upstream echoes back and
+// the caller never needs to see again.
 func passthroughResponses(w http.ResponseWriter, req *Request, upstream io.Reader) error {
 	// Relaying "byte for byte" means byte for byte *except* the tool names this
 	// request had to have fitted for the upstream's 64-char limit. Forwarding
@@ -289,15 +327,18 @@ func passthroughResponses(w http.ResponseWriter, req *Request, upstream io.Reade
 	if err != nil {
 		return fmt.Errorf("read responses body: %w", err)
 	}
-	// The native endpoint relays the body byte for byte, so this is the only
-	// place a blank 200 or an error envelope on a /v1/responses upstream can
-	// still be caught before the client reads it as a completed turn.
-	if err := proxy.EmptyUpstreamError(body); err != nil {
+	if armed, canFallback := proxy.ZeroContentProbe(req.Ctx); armed && proxy.IsZeroContentResponse(body) {
+		if canFallback {
+			return &proxy.ZeroContentError{Body: body}
+		}
+		// The last member of a combo serves its zero-content response normally (FR3).
+	} else if err := proxy.EmptyUpstreamError(body); err != nil {
 		return err
 	}
 	if len(req.ToolNameMap) > 0 {
 		body = translator.RestoreToolNames(body, req.ToolNameMap)
 	}
+	body = stripClientMetadata(body)
 	if req.ResponseBuf != nil {
 		req.ResponseBuf.Write(body)
 	}

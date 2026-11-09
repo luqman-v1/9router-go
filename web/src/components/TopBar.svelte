@@ -15,6 +15,7 @@
     onBackToProviders,
     onMenuClick,
     onLogout,
+    onOpenSearch,
   }: {
     activeTab?: ActiveTab
     pageTitle?: string
@@ -23,6 +24,7 @@
     onBackToProviders?: () => void
     onMenuClick?: () => void
     onLogout?: () => void
+    onOpenSearch?: () => void
   } = $props()
 
   // The group invite rotates. Everything user-facing points at the redirect
@@ -176,10 +178,25 @@
       description: 'Live server console output',
       icon: 'terminal',
     },
+    jailbreak: {
+      title: 'Persona',
+      description: 'Per-model system-prompt injection and Gemini safety bypass',
+      icon: 'masks',
+    },
     settings: {
       title: 'Settings',
       description: 'Manage your preferences',
       icon: 'settings',
+    },
+    security: {
+      title: 'Security',
+      description: 'Encrypt provider credentials at rest and scan prompts before dispatch',
+      icon: 'shield_lock',
+    },
+    plans: {
+      title: 'Plans',
+      description: 'Per-key quota plans and policy resolution',
+      icon: 'contract',
     },
     login: {
       title: 'Login',
@@ -266,6 +283,20 @@
        English only, and the item's handler was an empty function, so clicking
        it did nothing (issue #240). -->
   <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
+    <button
+      type="button"
+      onclick={() => onOpenSearch?.()}
+      title="Search models, providers, pages and settings (Ctrl+K)"
+      aria-label="Open search"
+      class="flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:border-brand-500/40 hover:text-text-main cursor-pointer"
+    >
+      <span class="material-symbols-outlined text-[16px]">search</span>
+      <span class="hidden sm:inline">Search</span>
+      <kbd
+        class="hidden lg:inline rounded border border-border bg-bg px-1 font-code text-[10px] text-text-subtle"
+        >Ctrl K</kbd
+      >
+    </button>
     <Menu label="Account and display options" triggerIcon="account_circle" minWidth="15rem">
       <MenuItem label="Donate" icon="volunteer_activism" onSelect={() => (isDonateOpen = true)} />
 

@@ -10,6 +10,7 @@ import (
 	json "encoding/json/v2"
 
 	"9router/proxy/internal/proxy"
+	"9router/proxy/internal/translator"
 )
 
 // ForwardGeminiWeb routes a chat completion to gemini.google.com.
@@ -43,9 +44,12 @@ func ForwardGeminiWeb(w http.ResponseWriter, req *Request) error {
 	if prompt == "" {
 		return geminiWebFailure(http.StatusBadRequest, "gemini-web received a request with no text content")
 	}
-	hasTools := len(envelope.Tools) > 0
-	if hasTools {
-		prompt = deepSeekRenderTools(envelope.Tools) + "\n\n" + prompt
+	// A client that declared tools with tool_choice "none" wants no tools
+	// called, so the declarations are not rendered and no call is recovered
+	// from the answer.
+	toolsEnabled := len(envelope.Tools) > 0 && geminiWebToolChoice(envelope.ToolChoice) != geminiWebToolChoiceNone
+	if toolsEnabled {
+		prompt = geminiWebRenderTools(envelope.Tools, envelope.ToolChoice) + "\n\n" + prompt
 	}
 
 	session := geminiWebSessionFor(req)
@@ -55,8 +59,18 @@ func ForwardGeminiWeb(w http.ResponseWriter, req *Request) error {
 		return err
 	}
 
-	turn := newGeminiWebTurn(w, requested, model, req, envelope.Tools)
-	if err := session.streamTurn(ctx, prompt, geminiWebThinkingLevel(envelope), model, turn.apply); err != nil {
+	// An image is uploaded before the turn is sent: the upload is a separate
+	// request with its own failure, and a turn that names an image the site
+	// cannot resolve answers without it — silently, and as if the client had
+	// never sent one.
+	attachments, err := geminiWebUploadAttachments(ctx, session, envelope.Messages)
+	if err != nil {
+		return err
+	}
+
+	thinking := geminiWebClampThinkingLevel(model, geminiWebThinkingLevel(envelope, model))
+	turn := newGeminiWebTurn(w, requested, model, req, envelope.Tools, toolsEnabled, prompt)
+	if err := session.streamTurn(ctx, prompt, thinking, model, attachments, turn.apply); err != nil {
 		return turn.failure(err)
 	}
 	if !turn.answered() {
@@ -73,10 +87,10 @@ func ForwardGeminiWeb(w http.ResponseWriter, req *Request) error {
 	// and only needs closing.
 	calls := turn.toolCalls()
 	if len(calls) > 0 {
-		return geminiWebWriteToolCalls(w, req, requested, calls, turn.preamble(calls))
+		return geminiWebWriteToolCalls(w, req, requested, calls, turn.preamble(calls), turn.usage())
 	}
 	if turn.streamed {
-		return turn.emitter.finish()
+		return turn.emitter.finish(turn.usage())
 	}
 	return geminiWebWriteCompletion(w, req, requested, turn)
 }
@@ -111,13 +125,23 @@ func geminiWebRequestedModel(envelope geminiWebRequestEnvelope) string {
 // and the fix is different: that one has to be replaced, while an anonymous
 // session has to be given one. Naming the wrong cause costs a support round
 // trip, so the advice follows the credential rather than assuming its absence.
+//
+// The cause of a one-model session is a missing `__Secure-1PSIDTS`: that
+// cookie is what carries the session into the model registry, and a header
+// without it is answered as a visitor's however fresh the rest of it is.
 func geminiWebOnlyModelAdvice(cookie string) string {
-	if cookie != "" {
-		return "The configured __Secure-1PSID reaches this one model only — a signed-in tab that can use " +
-			"the others needs the cookie pasted again."
+	switch {
+	case cookie == "":
+		return "An anonymous session reaches one model — configure the cookie header of a signed-in " +
+			"gemini.google.com tab to reach the others."
+	case !GeminiWebHasSessionTimestamp(cookie):
+		return "The configured cookie carries no __Secure-1PSIDTS, so gemini.google.com answers it as an " +
+			"anonymous visitor and the session reaches one model. Copy the whole cookie header, including " +
+			"__Secure-1PSIDTS."
+	default:
+		return "The configured session reaches this one model only — a signed-in tab that can use the others " +
+			"needs the cookie pasted again."
 	}
-	return "An anonymous session reaches one model — configure a __Secure-1PSID cookie from a signed-in tab " +
-		"to reach the others."
 }
 
 // geminiWebSelectModel resolves the registry entry the turn is addressed to.
@@ -179,7 +203,13 @@ type geminiWebTurn struct {
 	resolved  *geminiWebModel
 	req       *Request
 	tools     []deepSeekToolSpec
-
+	// toolsEnabled reports whether the client wanted calls at all. A client
+	// that declared tools with tool_choice "none" did not, so no call is
+	// recovered from its answer.
+	toolsEnabled bool
+	// prompt is what was sent, kept for the token accounting: the site
+	// reports no token counts, so the prompt's worth is estimated from it.
+	prompt   string
 	emitter  *geminiWebEmitter
 	streamed bool
 	text     string
@@ -190,11 +220,12 @@ type geminiWebTurn struct {
 	done     bool
 }
 
-func newGeminiWebTurn(w http.ResponseWriter, requested string, resolved *geminiWebModel, req *Request, tools []deepSeekToolSpec) *geminiWebTurn {
-	turn := &geminiWebTurn{requested: requested, resolved: resolved, req: req, tools: tools}
+func newGeminiWebTurn(w http.ResponseWriter, requested string, resolved *geminiWebModel, req *Request, tools []deepSeekToolSpec, toolsEnabled bool, prompt string) *geminiWebTurn {
+	turn := &geminiWebTurn{requested: requested, resolved: resolved, req: req, tools: tools, toolsEnabled: toolsEnabled, prompt: prompt}
 	// A tool turn buffers and is written at the end, so only a plain streaming
-	// turn gets an emitter.
-	if req.IsStream && len(tools) == 0 {
+	// turn gets an emitter. A client that declared tools with tool_choice
+	// "none" asked for no call, so its turn streams like an ordinary one.
+	if req.IsStream && (!toolsEnabled || len(tools) == 0) {
 		turn.streamed = true
 		turn.emitter = newGeminiWebEmitter(w, req, requested)
 	}
@@ -239,16 +270,46 @@ func (t *geminiWebTurn) apply(line *geminiWebLine) error {
 	return nil
 }
 
+// usage reports the token accounting for the turn.
+//
+// The site reports no token counts, so the prompt and the answer are
+// estimated from their text. The reasoning channel is counted as part of the
+// completion, which is where OpenAI's own accounting puts it.
+//
+// The counts are also published on the request context, because that is where
+// the router's own usage recorder reads them from.
+func (t *geminiWebTurn) usage() map[string]any {
+	usage := geminiWebBuildUsage(t.prompt, t.text, t.thinking)
+	if t.req != nil && t.req.Ctx != nil {
+		translator.SetUsage(t.req.Ctx, &translator.OpenAIUsage{
+			PromptTokens:     geminiWebUsageInt(usage, "prompt_tokens"),
+			CompletionTokens: geminiWebUsageInt(usage, "completion_tokens"),
+		})
+	}
+	return usage
+}
+
 func (t *geminiWebTurn) answered() bool {
 	return t.started && (strings.TrimSpace(t.text) != "" || strings.TrimSpace(t.thinking) != "" || t.done)
 }
 
 // toolCalls recovers the calls a tool-calling turn asked for.
+//
+// A call whose arguments violate the schema the client declared is dropped:
+// the client would fail on it, and the model's prose is the better answer.
 func (t *geminiWebTurn) toolCalls() []deepSeekToolRequest {
-	if len(t.tools) == 0 || strings.TrimSpace(t.text) == "" {
+	if !t.toolsEnabled || len(t.tools) == 0 || strings.TrimSpace(t.text) == "" {
 		return nil
 	}
-	return deepSeekExtractToolCalls(t.text, t.tools)
+	calls := deepSeekExtractToolCalls(t.text, t.tools)
+	valid := make([]deepSeekToolRequest, 0, len(calls))
+	for _, call := range calls {
+		if !geminiWebValidToolArguments(t.tools, call.Name, call.Arguments) {
+			continue
+		}
+		valid = append(valid, call)
+	}
+	return valid
 }
 
 // preamble is the prose the model wrote alongside its tool calls. A client that

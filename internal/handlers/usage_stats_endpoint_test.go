@@ -91,7 +91,7 @@ func TestApplyRawAggregate_ByEndpoint(t *testing.T) {
 		ByEndpoint: make(map[string]EndpointUsageItem),
 	}
 
-	applyRawAggregate(resp, agg, nil, nil, nil)
+	applyRawAggregate(resp, agg, nil, nil, nil, allUsageStatsViews)
 
 	if len(resp.ByEndpoint) != 1 {
 		t.Fatalf("expected 1 endpoint in resp.ByEndpoint, got %d", len(resp.ByEndpoint))

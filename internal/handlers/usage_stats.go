@@ -8,7 +8,9 @@ import (
 	"database/sql"
 	json "encoding/json/v2"
 	"errors"
+	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -88,10 +90,15 @@ func usagePeriodCount(raw, unit string) (int, bool) {
 
 type ProviderUsageItem struct {
 	Requests         int     `json:"requests"`
+	Errors           int     `json:"errors,omitempty"`
 	PromptTokens     int64   `json:"promptTokens"`
 	CompletionTokens int64   `json:"completionTokens"`
 	CachedTokens     int64   `json:"cachedTokens"`
 	Cost             float64 `json:"cost"`
+	// LastUsed is the newest request timestamp in the bucket. A daily window
+	// cannot fill it (a usageDaily row is keyed by date and carries no time),
+	// so the dashboard renders it blank there rather than inventing midnight.
+	LastUsed string `json:"lastUsed,omitempty"`
 }
 
 type ModelUsageItem struct {
@@ -146,6 +153,8 @@ type EndpointUsageItem struct {
 
 type UsageStatsResponse struct {
 	TotalRequests         int                          `json:"totalRequests"`
+	TotalErrors           int                          `json:"totalErrors"`
+	SuccessRate           *float64                     `json:"successRate"`
 	TotalPromptTokens     int64                        `json:"totalPromptTokens"`
 	TotalCompletionTokens int64                        `json:"totalCompletionTokens"`
 	TotalCachedTokens     int64                        `json:"totalCachedTokens"`
@@ -164,9 +173,77 @@ type UsageStatsResponse struct {
 // HandleUsageStats aggregates usage over the window named by ?period. Besides the
 // dashboard presets ("today", "24h", "7d", "30d", "60d", "all") it accepts any
 // <n>d or <n>h window, so the selector is not limited to a fixed set.
+// maskAPIKeyForStats masks an API key for usage stats display and grouping.
+// Keys <= 12 characters mask to firstChar + "***" to prevent leaking the raw
+// key in apiKeyMasked, keyName, and apiKeyKey (upstream usageRepo.js parity).
+func maskAPIKeyForStats(key string) string {
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" || trimmed == "local-no-key" || trimmed == "***" {
+		return ""
+	}
+	if handlerutil.RuneCount(trimmed) <= 12 {
+		return handlerutil.RunePrefix(trimmed, 1) + "***"
+	}
+	return handlerutil.MaskAPIKey(trimmed)
+}
+
+// usageStatsViews names the breakdowns a caller wants built. The Overview's
+// breakdown table renders exactly one at a time (model, provider, account, API
+// key or endpoint), but the handler used to build all five on every read: on a
+// ledger with 411 models the payload measured 415 KB, and the dashboard polls
+// it every five seconds — 29 MB a minute of mostly-unrendered JSON.
+//
+// A caller that omits ?views= still gets every breakdown, so nothing that
+// exists today changes shape. The dashboard asks for the one it draws plus
+// byProvider, which the totals are summed from.
+type usageStatsViews struct {
+	provider bool
+	model    bool
+	account  bool
+	apiKey   bool
+	endpoint bool
+}
+
+// allUsageStatsViews is the default: no ?views= parameter means "everything".
+var allUsageStatsViews = usageStatsViews{provider: true, model: true, account: true, apiKey: true, endpoint: true}
+
+// parseUsageStatsViews reads the comma-separated ?views= list. An empty value
+// keeps the default. Unknown names are ignored rather than rejected: the
+// endpoint is a display feed, and a typo should cost a missing table, not a
+// failed read. byProvider is always built because the totals are summed from
+// it, so asking for it is redundant but harmless.
+func parseUsageStatsViews(raw string) usageStatsViews {
+	if strings.TrimSpace(raw) == "" {
+		return allUsageStatsViews
+	}
+	var v usageStatsViews
+	v.provider = true
+	for _, name := range strings.Split(raw, ",") {
+		switch strings.TrimSpace(name) {
+		case "none":
+			// Totals only. The dashboard's five-second poll uses this: the
+			// KPI row and the live pulse read totals, activeRequests and
+			// recentRequests, and none of the four per-model maps — which are
+			// 98% of a 415 KB payload at 411 models. The breakdown table is
+			// refreshed on its own, slower schedule.
+			return usageStatsViews{provider: true}
+		case "model":
+			v.model = true
+		case "account":
+			v.account = true
+		case "apiKey":
+			v.apiKey = true
+		case "endpoint":
+			v.endpoint = true
+		}
+	}
+	return v
+}
+
 func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		window := resolveUsagePeriod(r.URL.Query().Get("period"), time.Now())
+		views := parseUsageStatsViews(r.URL.Query().Get("views"))
 
 		tracker := usagetracker.GetTracker()
 		activeState := tracker.GetActiveState(repo)
@@ -216,8 +293,17 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				if k.Name == nil || *k.Name == "" {
 					continue
 				}
+				trimmed := strings.TrimSpace(k.Key)
+				if trimmed != "" {
+					keyNames[trimmed] = *k.Name
+					if m := maskAPIKeyForStats(trimmed); m != "" {
+						keyNames[m] = *k.Name
+					}
+				}
 				keyNames[k.Key] = *k.Name
-				keyNames[handlerutil.MaskAPIKey(k.Key)] = *k.Name
+				if m := maskAPIKeyForStats(k.Key); m != "" {
+					keyNames[m] = *k.Name
+				}
 			}
 		}
 
@@ -227,22 +313,34 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 		// mask collapsed a whole team key set into a single row and attributed
 		// one key's usage to another (upstream v0.5.91, same class of fix).
 		addAPIKeyUsage := func(apiKey, rawModel, provider, providerDisplay, timestamp string, requests int, promptTok, complTok, cachedTok int64, cost float64) {
-			if apiKey == "" || apiKey == "***" {
+			trimmed := strings.TrimSpace(apiKey)
+			if trimmed == "" || trimmed == "***" {
 				apiKey = "local-no-key"
+				trimmed = "local-no-key"
 			}
 			bucketKey := apiKey + "|" + rawModel + "|" + provider
 			cur := resp.ByApiKey[bucketKey]
 			cur.RawModel = rawModel
 			cur.Provider = providerDisplay
-			cur.ApiKeyMasked = apiKey
-			cur.ApiKeyKey = apiKey
+			masked := maskAPIKeyForStats(apiKey)
+			if masked == "" {
+				masked = "local-no-key"
+			}
+			cur.ApiKeyMasked = masked
+			cur.ApiKeyKey = masked
 			switch {
+			case keyNames[trimmed] != "":
+				cur.KeyName = keyNames[trimmed]
 			case keyNames[apiKey] != "":
 				cur.KeyName = keyNames[apiKey]
-			case apiKey == "local-no-key":
+			case trimmed == "local-no-key":
 				cur.KeyName = "Local (No Key)"
 			default:
-				cur.KeyName = apiKey[:min(8, len(apiKey))] + "..."
+				if masked != "local-no-key" {
+					cur.KeyName = masked
+				} else {
+					cur.KeyName = "Local (No Key)"
+				}
 			}
 			cur.Requests += requests
 			cur.PromptTokens += promptTok
@@ -273,6 +371,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 						if pm, ok := pVal.(map[string]any); ok {
 							cur := resp.ByProvider[prov]
 							cur.Requests += getMapInt(pm, "requests")
+							cur.Errors += getMapInt(pm, "errors")
 							cur.PromptTokens += getMapInt64(pm, "promptTokens")
 							cur.CompletionTokens += getMapInt64(pm, "completionTokens")
 							cur.CachedTokens += getMapInt64(pm, "cachedTokens")
@@ -283,7 +382,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				}
 
 				// byModel
-				if bm, ok := dayData["byModel"].(map[string]any); ok {
+				if bm, ok := dayData["byModel"].(map[string]any); ok && views.model {
 					for mk, mVal := range bm {
 						if mm, ok := mVal.(map[string]any); ok {
 							rawModel, _ := mm["rawModel"].(string)
@@ -318,7 +417,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				}
 
 				// byAccount
-				if ba, ok := dayData["byAccount"].(map[string]any); ok {
+				if ba, ok := dayData["byAccount"].(map[string]any); ok && views.account {
 					for connID, aVal := range ba {
 						if am, ok := aVal.(map[string]any); ok {
 							rawModel, _ := am["rawModel"].(string)
@@ -355,7 +454,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				// byApiKey. The daily payload carries no per-request timestamp
 				// (the date is the row key), so LastUsed stays empty here — same
 				// as the other daily branches.
-				if bak, ok := dayData["byApiKey"].(map[string]any); ok {
+				if bak, ok := dayData["byApiKey"].(map[string]any); ok && views.apiKey {
 					for _, kVal := range bak {
 						km, ok := kVal.(map[string]any)
 						if !ok {
@@ -380,7 +479,7 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				}
 
 				// byEndpoint
-				if be, ok := dayData["byEndpoint"].(map[string]any); ok {
+				if be, ok := dayData["byEndpoint"].(map[string]any); ok && views.endpoint {
 					for epKey, eVal := range be {
 						if em, ok := eVal.(map[string]any); ok {
 							endpoint, _ := em["endpoint"].(string)
@@ -428,16 +527,28 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 				handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			applyRawAggregate(&resp, agg, nodeNameMap, connMap, keyNames)
+			applyRawAggregate(&resp, agg, nodeNameMap, connMap, keyNames, views)
+			if !window.since.IsZero() {
+				cutoff := window.since.UTC().Format("2006-01-02T15:04:05.000Z")
+				if errCount, err := repo.GetRequestDetailsErrorCountSince(r.Context(), cutoff); err == nil {
+					resp.TotalErrors = errCount
+				}
+			}
 		}
 
 		// Calculate total aggregates from byProvider
+		successfulRequests := 0
 		for _, p := range resp.ByProvider {
-			resp.TotalRequests += p.Requests
+			successfulRequests += p.Requests
 			resp.TotalPromptTokens += p.PromptTokens
 			resp.TotalCompletionTokens += p.CompletionTokens
 			resp.TotalCachedTokens += p.CachedTokens
 			resp.TotalCost += p.Cost
+		}
+		resp.TotalRequests = successfulRequests + resp.TotalErrors
+		if resp.TotalRequests > 0 {
+			rate := math.Round(float64(successfulRequests)/float64(resp.TotalRequests)*1000) / 10
+			resp.SuccessRate = &rate
 		}
 
 		// Build recent requests list (20 deduped from usageHistory)
@@ -449,31 +560,32 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 		var dedupedRecent []usagetracker.RecentRequest
 		seen := make(map[string]bool)
 		for _, rh := range recentHistory {
-			if rh.PromptTokens == 0 && rh.CompletionTokens == 0 {
+			promptTok, complTok := translator.ResolveTokensCounts([]byte(rh.Tokens), rh.PromptTokens, rh.CompletionTokens)
+			status := "ok"
+			if rh.Status != "success" && rh.Status != "ok" && rh.Status != "" {
+				status = rh.Status
+			}
+			if promptTok == 0 && complTok == 0 && status == "ok" {
 				continue
 			}
 			min := ""
 			if len(rh.Timestamp) >= 16 {
 				min = rh.Timestamp[:16]
 			}
-			k := rh.Model + "|" + rh.Provider + "|" + strconv.Itoa(rh.PromptTokens) + "|" + strconv.Itoa(rh.CompletionTokens) + "|" + min
+			k := rh.Model + "|" + rh.Provider + "|" + strconv.FormatInt(promptTok, 10) + "|" + strconv.FormatInt(complTok, 10) + "|" + status + "|" + min
 			if seen[k] {
 				continue
 			}
 			seen[k] = true
 
 			cachedTok := int(translator.CachedTokensFromJSON([]byte(rh.Tokens)))
-			status := "ok"
-			if rh.Status != "success" && rh.Status != "ok" && rh.Status != "" {
-				status = rh.Status
-			}
 
 			dedupedRecent = append(dedupedRecent, usagetracker.RecentRequest{
 				Timestamp:        rh.Timestamp,
 				Model:            rh.Model,
 				Provider:         rh.Provider,
-				PromptTokens:     rh.PromptTokens,
-				CompletionTokens: rh.CompletionTokens,
+				PromptTokens:     int(promptTok),
+				CompletionTokens: int(complTok),
 				CachedTokens:     cachedTok,
 				Status:           status,
 			})
@@ -501,6 +613,7 @@ type detailListItem struct {
 	Cost         float64          `json:"cost,omitempty"`
 	Combo        string           `json:"combo,omitempty"`
 	Protocol     string           `json:"protocol,omitempty"`
+	LoopWarning  string           `json:"loopWarning,omitempty"`
 }
 
 // HandleRequestDetails returns paged request detail objects for the Details tab.
@@ -523,7 +636,7 @@ func HandleRequestDetails(repo *db.Repo) http.HandlerFunc {
 			}
 		}
 
-		rows, total, err := repo.GetRequestDetailsPaged(limit, offset)
+		rows, total, err := repo.GetRequestDetailsPaged(r.Context(), limit, offset, detailsSince(r.URL.Query().Get("period"), time.Now()))
 		if err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -541,6 +654,25 @@ func HandleRequestDetails(repo *db.Repo) http.HandlerFunc {
 			"offset":  offset,
 		})
 	}
+}
+
+// detailsSince turns ?period into the timestamp floor for the request-details
+// table. An empty result means unbounded: an absent parameter and `all` read the
+// whole table, while `today`, `24h`, `<n>h` and `<n>d` each start where
+// resolveUsagePeriod says — the same resolver /api/usage/stats uses, so the two
+// sections cannot disagree about what "last 7 days" means.
+func detailsSince(raw string, now time.Time) string {
+	if raw == "" || raw == "all" {
+		return ""
+	}
+	window := resolveUsagePeriod(raw, now)
+	if !window.since.IsZero() {
+		return window.since.UTC().Format(time.RFC3339)
+	}
+	if window.days > 0 {
+		return now.AddDate(0, 0, -window.days).UTC().Format(time.RFC3339)
+	}
+	return ""
 }
 
 // newDetailListItem maps a collapsed row onto the wire shape, running the same
@@ -581,6 +713,7 @@ func newDetailListItem(row db.RequestDetailListRow) detailListItem {
 		Cost:         row.Cost,
 		Combo:        row.Combo,
 		Protocol:     protocol,
+		LoopWarning:  row.LoopWarning,
 	}
 }
 
@@ -588,7 +721,17 @@ func newDetailListItem(row db.RequestDetailListRow) detailListItem {
 // request messages and the response body the list deliberately omits.
 func HandleRequestDetail(repo *db.Repo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
+		// chi keys a request id by the raw path segment, so a model id that
+		// contains a "/" arrives still percent-encoded ("<millis>-<model>" is
+		// the requestDetails primary key, and slashed custom model ids are
+		// valid since #584). Unescape before the repository read, or the
+		// lookup misses a row that exists and the payload modal breaks for
+		// every such request.
+		id, err := url.PathUnescape(r.PathValue("id"))
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid request id")
+			return
+		}
 		raw, err := repo.GetRequestDetailByID(id)
 		if err != nil {
 			// A detail that was never recorded, or has since been pruned by

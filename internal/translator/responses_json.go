@@ -60,12 +60,17 @@ func syntheticChunk(chat *OpenAIResponse) *OpenAIChunk {
 	return chunk
 }
 
-// completedResponse picks the finished Response object out of the replayed
+// completedResponse picks the terminal Response object out of the replayed
 // events. A Chat body the translator rejected yields no such event, and the
 // caller is told rather than handed an empty success.
+//
+// response.incomplete is a terminal event too: a non-streaming Chat body whose
+// tool arguments do not parse is still an answer the client has to receive, and
+// the object carries the status and reason that say why. Returning nil here
+// would make the caller relay the raw Chat body to a Responses client.
 func completedResponse(events []ResponsesEvent) map[string]any {
 	for _, ev := range events {
-		if ev.Event != "response.completed" {
+		if ev.Event != "response.completed" && ev.Event != "response.incomplete" {
 			continue
 		}
 		if response, ok := ev.Data["response"].(map[string]any); ok {

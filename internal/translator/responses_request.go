@@ -107,7 +107,7 @@ func ResponsesToChatRequest(body []byte) (*ResponsesRequestResult, error) {
 	// _customToolNames is translator-only upstream (chatCore reads it off the
 	// translated body and deletes it before sending), so it travels in the
 	// result instead of leaking into the body the provider receives.
-	out, err := json.Marshal(envelope)
+	out, err := json.Marshal(envelope, json.Deterministic(true))
 	if err != nil {
 		return nil, fmt.Errorf("translator.ResponsesToChatRequest: %w", err)
 	}
@@ -135,7 +135,7 @@ func normalizeResponsesInput(raw any) ([]ResponsesInputItem, error) {
 		if len(input) == 0 {
 			return []ResponsesInputItem{userTextItem(responsesEmptyInputText)}, nil
 		}
-		encoded, err := json.Marshal(input)
+		encoded, err := json.Marshal(input, json.Deterministic(true))
 		if err != nil {
 			return nil, fmt.Errorf("translator.normalizeResponsesInput: %w", err)
 		}

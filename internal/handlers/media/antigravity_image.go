@@ -89,6 +89,11 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 		return fmt.Errorf("no API key found for antigravity connection %s", conn.ID)
 	}
 
+	client, clientErr := h.ChatH.GetClientForConnection(connData)
+	if clientErr != nil {
+		return clientErr
+	}
+
 	// Refresh token if expired
 	refreshedKey, pid, err := h.ChatH.RefreshOAuthTokenIfExpired(conn.ID, apiKey)
 	if err == nil && refreshedKey != "" {
@@ -120,7 +125,7 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 	}
 
 	if projectID == "" {
-		if p, _, _ := chat.FetchAntigravityProjectID(r.Context(), h.Client, apiKey); p != "" {
+		if p, _, _ := chat.FetchAntigravityProjectID(r.Context(), client, apiKey, connData); p != "" {
 			projectID = p
 			h.ChatH.StoreAntigravityProjectID(conn.ID, p)
 		}
@@ -146,7 +151,11 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 		base64Input = imageReq.Images[0]
 	}
 
-	wrappedReq, err := translator.WrapAntigravityImageRequest(prompt, base64Input, projectID, cleanModel, aspectRatio)
+	sessID := handlerutil.ExtractSessionID(r)
+	if sessID == "" && conn != nil {
+		sessID = conn.ID
+	}
+	wrappedReq, err := translator.WrapAntigravityImageRequest(prompt, base64Input, projectID, cleanModel, aspectRatio, sessID)
 	if err != nil {
 		return fmt.Errorf("wrap antigravity image request: %w", err)
 	}
@@ -168,10 +177,6 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 	httpReq.Header.Set("X-Client-Name", "antigravity")
 	httpReq.Header.Set("X-Client-Version", providers.AntigravityIDEVersion)
 
-	client, clientErr := h.ChatH.GetClientForConnection(connData)
-	if clientErr != nil {
-		return clientErr
-	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("antigravity request failed: %w", err)
@@ -188,22 +193,28 @@ func (h *MediaHandler) tryAntigravityImageConn(w http.ResponseWriter, r *http.Re
 		log.Warn("media", "antigravity image error", "status", resp.StatusCode, "body", errText)
 		if h.Repo != nil {
 			backoff := h.Repo.GetConnectionBackoffLevel(conn.ID)
-		if !handlerutil.IsProbeContext(r.Context()) {
-			if classification := providers.ClassifyError(resp.StatusCode, errText, backoff); classification.ShouldFallback {
-				cooldownSec := max(classification.CooldownMs/1000, 1)
-				_ = h.Repo.LockConnectionModel(conn.ID, cleanModel, cooldownSec, classification.NewBackoffLevel)
-				var rawModel string
-				var rawBody struct {
-					Model string `json:"model"`
-				}
-				if err := json.Unmarshal(body, &rawBody); err == nil {
-					rawModel = rawBody.Model
-				}
-				if rawModel != "" && rawModel != cleanModel {
-					_ = h.Repo.LockConnectionModel(conn.ID, rawModel, cooldownSec, classification.NewBackoffLevel)
+			if !handlerutil.IsProbeContext(r.Context()) {
+				if classification := providers.ClassifyError(resp.StatusCode, errText, backoff); classification.ShouldFallback {
+					cooldownSec := max(classification.CooldownMs/1000, 1)
+					// Google reports the real quota window on the error
+					// (error.details[].metadata.quotaResetTimeStamp); it pins
+					// the lock far more accurately than the backoff curve.
+					if resetSec, ok := geminiQuotaResetSeconds(respBody); ok {
+						cooldownSec = int(resetSec)
+					}
+					_ = h.Repo.LockConnectionModel(conn.ID, cleanModel, cooldownSec, classification.NewBackoffLevel)
+					var rawModel string
+					var rawBody struct {
+						Model string `json:"model"`
+					}
+					if err := json.Unmarshal(body, &rawBody); err == nil {
+						rawModel = rawBody.Model
+					}
+					if rawModel != "" && rawModel != cleanModel {
+						_ = h.Repo.LockConnectionModel(conn.ID, rawModel, cooldownSec, classification.NewBackoffLevel)
+					}
 				}
 			}
-		}
 		}
 		return fmt.Errorf("antigravity image failed with status %d: %s", resp.StatusCode, string(respBody[:min(300, len(respBody))]))
 	}

@@ -16,8 +16,9 @@ import (
 	"time"
 
 	"9router/proxy/internal/constants"
-	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
+	"9router/proxy/internal/thinking"
 	"9router/proxy/internal/translator"
 )
 
@@ -66,11 +67,19 @@ func generateMimoFingerprint() string {
 	return fmt.Sprintf("%x", h)
 }
 
+// clampMimoFreeReasoning applies the mandatory-reasoning clamp to a mimo-free
+// body. The combo path calls MimoFreeChat directly, so neither the thinking
+// pass nor the clamp ran there: an explicit disable reached the provider
+// unchanged, and a provider that mandates reasoning answered 400.
+func clampMimoFreeReasoning(body []byte, model string) []byte {
+	return thinking.ClampDisableToMinimalJSON(body, providers.GetCapabilitiesForModel(mimoProviderID, model))
+}
+
 // MimoFreeChat is an HTTP handler that forwards a request via the MiMo free tier.
 // It bootstraps a JWT if needed, injects the anti-abuse system message marker,
 // and forwards the request to the MiMo free endpoint.
 func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, body []byte, isStream bool, metrics *streamMetrics) error {
-	jwt, err := getMimoJWT()
+	jwt, err := getMimoJWT(ctx)
 	if err != nil {
 		return fmt.Errorf("mimo bootstrap: %w", err)
 	}
@@ -109,7 +118,7 @@ func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, b
 		mimoJWTExp = time.Time{}
 		mimoJWTMu.Unlock()
 
-		jwt, err = getMimoJWT()
+		jwt, err = getMimoJWT(ctx)
 		if err != nil {
 			return fmt.Errorf("mimo re-bootstrap: %w", err)
 		}
@@ -147,7 +156,7 @@ func (h *ChatHandler) MimoFreeChat(ctx context.Context, w http.ResponseWriter, b
 }
 
 // getMimoJWT returns a valid JWT, bootstrapping one if necessary.
-func getMimoJWT() (string, error) {
+func getMimoJWT(ctx context.Context) (string, error) {
 	mimoJWTMu.Lock()
 	defer mimoJWTMu.Unlock()
 
@@ -161,7 +170,12 @@ func getMimoJWT() (string, error) {
 		return "", fmt.Errorf("bootstrap marshal: %w", err)
 	}
 
-	resp, err := http.Post(mimoBootstrapURL, "application/json", bytes.NewReader(bootstrapBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mimoBootstrapURL, bytes.NewReader(bootstrapBody))
+	if err != nil {
+		return "", fmt.Errorf("bootstrap request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("bootstrap request: %w", err)
 	}
@@ -251,7 +265,7 @@ func clampMimoEffort(req map[string]any) {
 }
 
 func marshalMimoBody(req map[string]any, original []byte) []byte {
-	patched, err := json.Marshal(req)
+	patched, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		log.Error("mimo", "marshal patched request failed", "error", err)
 		return original

@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -76,6 +77,55 @@ func IsValidPlanPeriod(p string) bool {
 	return false
 }
 
+// ErrNoPlansTable reports that this database has no plans table. A database
+// created before the plans feature answers this, and a key in such a database
+// cannot be on a plan.
+//
+// It is a distinct error on purpose. A failed plan read is a policy failure
+// and fails closed; a database without the table is a database where no key
+// is restricted by a plan, which is not an outage. A query that merely fails
+// (a closed database, a locked file) is neither, and must not be reported as
+// a missing table.
+var ErrNoPlansTable = errors.New("plans: table does not exist")
+
+// plansTableMissing reports whether the plans table is absent. A failure to
+// answer is an error, not an absence: a broken database must not read as a
+// database without plans.
+func (r *Repo) plansTableMissing() (bool, error) {
+	if r == nil || r.db == nil {
+		return true, nil
+	}
+	var name string
+	err := r.db.QueryRow( //nolint:noctx
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1`,
+		planTable,
+	).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return name != planTable, nil
+}
+
+// classifyPlanReadError turns a failed plan read into either ErrNoPlansTable
+// (the table is absent, so no key here can be on a plan) or the original
+// error (a real storage failure).
+//
+// The table check runs only after a query has already failed, so the happy
+// path pays nothing for it.
+func (r *Repo) classifyPlanReadError(err error) error {
+	if err == nil || errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	missing, checkErr := r.plansTableMissing()
+	if checkErr == nil && missing {
+		return ErrNoPlansTable
+	}
+	return err
+}
+
 // GetPlan returns a single plan by id.
 func (r *Repo) GetPlan(id string) (Plan, error) {
 	if r == nil || r.db == nil || id == "" {
@@ -84,7 +134,11 @@ func (r *Repo) GetPlan(id string) (Plan, error) {
 	row := r.db.QueryRow( //nolint:noctx
 		`SELECT `+planSelectCols+` FROM `+planTable+` WHERE id = ?`, id,
 	)
-	return scanPlanRow(row)
+	plan, err := scanPlanRow(row)
+	if err != nil {
+		return Plan{}, r.classifyPlanReadError(err)
+	}
+	return plan, nil
 }
 
 // ListPlans returns all plans for a tenant, newest first.
@@ -202,7 +256,7 @@ func (r *Repo) GetPlansForKeys(ids []string) (map[string]Plan, error) {
 		strings.Join(placeholders, ",") + `)`
 	rows, err := r.db.Query(query, args...) //nolint:noctx
 	if err != nil {
-		return nil, fmt.Errorf("plans: get for keys: %w", err)
+		return nil, r.classifyPlanReadError(fmt.Errorf("plans: get for keys: %w", err))
 	}
 	defer func() { _ = rows.Close() }()
 

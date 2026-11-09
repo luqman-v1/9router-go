@@ -78,6 +78,10 @@ func TestRequireDashboardAuth(t *testing.T) {
 	if rec := serve(httptest.NewRequest(http.MethodGet, "/api/connections", nil)); rec.Code != http.StatusOK {
 		t.Errorf("expected open dashboard when requireLogin=false, got %d", rec.Code)
 	}
+	// Database stats is a read-only stats endpoint and must be accessible when requireLogin=false.
+	if rec := serve(httptest.NewRequest(http.MethodGet, "/api/settings/database/stats", nil)); rec.Code != http.StatusOK {
+		t.Errorf("expected 200 for database stats when requireLogin=false, got %d", rec.Code)
+	}
 	// Always-protected routes reject client API key even if key is valid.
 	apiDbReq := httptest.NewRequest(http.MethodGet, "/api/settings/database", nil)
 	apiDbReq.Header.Set("Authorization", "Bearer valid-token")
@@ -103,6 +107,87 @@ func TestRequireDashboardAuth(t *testing.T) {
 	cliDbReq.Header.Set(auth.CLITokenHeader, auth.CLIToken())
 	if rec := serve(cliDbReq); rec.Code != http.StatusOK {
 		t.Errorf("expected 200 for always-protected route with CLI token, got %d", rec.Code)
+	}
+}
+
+// The three storage-maintenance actions sit on the always-protected list
+// because they delete rows. On an install that does not require a login the
+// dashboard has no session to present, so the gate refused every press of the
+// storage card's buttons with "Unauthorized: admin session or CLI token
+// required" — the operator could only prune through a curl carrying the CLI
+// token. With login off they are reachable like the rest of the dashboard.
+//
+// With login ON the gate is unchanged: a session cookie or the CLI token, and
+// never a client API key.
+func TestStorageMaintenanceAdmittedWhenLoginDisabled(t *testing.T) {
+	t.Setenv("JWT_SECRET", "middleware-test-secret")
+	t.Setenv("DATA_DIR", t.TempDir())
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	gate := RequireDashboardAuth(repo)(okHandler())
+
+	serve := func(req *http.Request) int {
+		rec := httptest.NewRecorder()
+		gate.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	paths := []string{
+		"/api/settings/database/prune",
+		"/api/settings/database/prune-usage",
+		"/api/settings/database/vacuum",
+	}
+
+	// Login off: the operator reaches the buttons.
+	if err := repo.UpdateSettingsRaw(map[string]any{"requireLogin": false}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+	for _, path := range paths {
+		if code := serve(httptest.NewRequest(http.MethodPost, path, nil)); code != http.StatusOK {
+			t.Errorf("%s with requireLogin=false = %d, want 200: the storage card's button must work", path, code)
+		}
+	}
+
+	// Login back on: the full gate applies again, and an anonymous caller is
+	// refused — the exemption is scoped to the open install, not to the path.
+	if err := repo.UpdateSettingsRaw(map[string]any{"requireLogin": true}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+	for _, path := range paths {
+		if code := serve(httptest.NewRequest(http.MethodPost, path, nil)); code != http.StatusUnauthorized {
+			t.Errorf("%s with requireLogin=true = %d, want 401", path, code)
+		}
+	}
+
+	// A client API key is not an operator credential on those routes either.
+	keyReq := httptest.NewRequest(http.MethodPost, "/api/settings/database/prune-usage", nil)
+	keyReq.Header.Set("Authorization", "Bearer valid-token")
+	if code := serve(keyReq); code != http.StatusUnauthorized {
+		t.Errorf("client API key on prune-usage = %d, want 401", code)
+	}
+}
+
+// The backup download hands out the whole database, keys included, so it is
+// NOT part of the storage-maintenance exemption: an open install must still
+// need a session or the CLI token to export.
+func TestBackupExportStaysGatedWhenLoginDisabled(t *testing.T) {
+	t.Setenv("JWT_SECRET", "middleware-test-secret")
+	t.Setenv("DATA_DIR", t.TempDir())
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	gate := RequireDashboardAuth(repo)(okHandler())
+
+	if err := repo.UpdateSettingsRaw(map[string]any{"requireLogin": false}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/database", nil)
+	rec := httptest.NewRecorder()
+	gate.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous backup export with requireLogin=false = %d, want 401", rec.Code)
 	}
 }
 

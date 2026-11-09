@@ -10,6 +10,7 @@
     api,
     type CodexResetCredit,
     type ConnectionUsageResponse,
+    type GLMResetCard,
     type ProviderConnection,
   } from '../api/client'
   import {
@@ -29,6 +30,10 @@
   import { getIconPath } from './connections/types'
   import EditConnectionModal, { type ConnectionUpdate } from './connections/EditConnectionModal.svelte'
   import QuotaTable from './quota/QuotaTable.svelte'
+  import AutoPingScheduleModal, {
+    type AutoPingSaveResult,
+    type AutoPingSchedule,
+  } from './quota/AutoPingScheduleModal.svelte'
   import {
     ACCOUNT_FILTER_OPTIONS,
     ACCOUNT_PAGE_SIZE_MAX,
@@ -67,6 +72,20 @@
   } from './quota/fetch'
 
   const CONNECTIONS_PAGE_SIZE = 20
+
+  /**
+   * The shape one provider's auto-ping settings key holds on the server.
+   *
+   * Two independent halves, exactly as upstream stores them
+   * (src/shared/services/quotaAutoPing.js:289-290): `connections` says which
+   * accounts opt into the reactive ping, `schedules` says when each account is
+   * pinged on its own wall-clock slots. The dashboard only edits the first
+   * half today, so the second is carried along verbatim on every write.
+   */
+  interface AutoPingSettings {
+    connections?: Record<string, boolean>
+    schedules?: Record<string, unknown>
+  }
 
   interface Props {
     connections?: ProviderConnection[]
@@ -143,6 +162,37 @@
     claude: {},
     codex: {},
   })
+  // The schedule half of the same settings key. It is kept apart from
+  // autoPingMaps because the two are independent: the switch says "ping this
+  // account when its window resets", the schedule says "ping it at 09:30 /
+  // 14:30 / 19:30". Writing one must not delete the other.
+  let autoPingSchedules = $state<{
+    claude: Record<string, AutoPingSchedule | { enabled: false } | unknown>
+    codex: Record<string, AutoPingSchedule | { enabled: false } | unknown>
+  }>({
+    claude: {},
+    codex: {},
+  })
+
+  // The connection whose auto-ping settings are being edited. Null closes the
+  // modal; the modal seeds its own fields from the same two maps the row reads,
+  // so opening it twice in a row cannot show a stale schedule.
+  let autoPingEditing = $state<ProviderConnection | null>(null)
+
+  // The operator's own zone for the schedule preview. The browser is the only
+  // place that knows it, and it must not be the process default: the dashboard
+  // and the scheduler can run in different zones (a container in UTC, a browser
+  // in Asia/Ho_Chi_Minh), and a preview labelled with the wrong zone is worse
+  // than no preview.
+  const localTimezone = $derived(
+    (() => {
+      try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+      } catch {
+        return 'UTC'
+      }
+    })()
+  )
 
   // Edit modal state. The modal itself owns its fields and payload (issue #158).
   let editingConnection = $state<ProviderConnection | null>(null)
@@ -231,7 +281,7 @@
 
   const AUTO_PING_TOOLTIPS: Record<string, string> = {
     claude: 'When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.',
-    codex: 'Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota.',
+    codex: 'Auto-starts the next 5h Codex window after reset by sending a tiny request. Consumes a small amount of quota.',
   }
 
   function kiroMethodLabel(conn: ProviderConnectionLike): string {
@@ -282,6 +332,17 @@
   let resetCreditCount = $state(0)
   let resetCreditConfirming = $state(false)
   let resetCreditPending = $state<CodexResetCredit | null>(null)
+
+  // GLM Reset Cards (Z.ai international). Mirrors the Codex reset credits flow.
+  let glmResetCardConn = $state<ProviderConnection | null>(null)
+  let glmResetCardList = $state<GLMResetCard[]>([])
+  let glmResetCardSelected = $state('')
+  let glmResetCardLoading = $state(false)
+  let glmResetCardConsuming = $state(false)
+  let glmResetCardError = $state('')
+  let glmResetCardCount = $state(0)
+  let glmResetCardConfirming = $state(false)
+  let glmResetCardPending = $state<GLMResetCard | null>(null)
 
   // Redeeming spends the credit for good, so the chooser is two-step: pick a
   // credit, then confirm the irreversible action. Ported from OmniRoute's
@@ -376,21 +437,146 @@
     }
   }
 
+  // GLM Reset Cards handlers
+  function requestGlmResetCard(credit: GLMResetCard) {
+    if (glmResetCardConsuming) return
+    glmResetCardPending = credit
+    glmResetCardConfirming = true
+    glmResetCardError = ''
+  }
+
+  function backToGlmResetCardList() {
+    if (glmResetCardConsuming) return
+    glmResetCardConfirming = false
+    glmResetCardPending = null
+    glmResetCardError = ''
+  }
+
+  function closeGlmResetCards() {
+    if (glmResetCardConsuming) return
+    glmResetCardConn = null
+    glmResetCardList = []
+    glmResetCardSelected = ''
+    glmResetCardError = ''
+    glmResetCardCount = 0
+    glmResetCardConfirming = false
+    glmResetCardPending = null
+  }
+
+  async function openGlmResetCards(conn: ProviderConnection) {
+    glmResetCardConn = conn
+    glmResetCardList = []
+    glmResetCardSelected = ''
+    glmResetCardError = ''
+    glmResetCardCount = 0
+    glmResetCardConfirming = false
+    glmResetCardPending = null
+    glmResetCardLoading = true
+    try {
+      const res = await api.getGlmResetCards(conn.id)
+      if (res?.error) {
+        glmResetCardError = res.error
+        glmResetCardList = []
+        return
+      }
+      glmResetCardList = res?.cards ?? []
+      glmResetCardCount = res?.availableCount ?? 0
+      // The server returns them soonest-expiry first, so the default choice is
+      // the one that frees the quota soonest.
+      glmResetCardSelected = glmResetCardList[0]?.recordId ?? ''
+    } catch (err) {
+      glmResetCardError = err instanceof Error ? err.message : 'Failed to load GLM reset cards.'
+    } finally {
+      glmResetCardLoading = false
+    }
+  }
+
+  async function confirmGlmResetCard() {
+    const conn = glmResetCardConn
+    const credit = glmResetCardPending
+    if (!conn || !credit || glmResetCardConsuming) return
+    glmResetCardConsuming = true
+    glmResetCardError = ''
+    try {
+      const res = await api.redeemGlmResetCard(conn.id, { recordId: credit.recordId, type: credit.type })
+      if (res?.error) {
+        glmResetCardError = res.error
+        return
+      }
+      if (!res?.reset) {
+        glmResetCardError = res?.message || 'Failed to redeem the reset card.'
+        return
+      }
+      glmResetCardConn = null
+      glmResetCardList = []
+      glmResetCardSelected = ''
+      // The quota windows are what the user reset, so re-read them rather than
+      // leaving a stale reading on screen.
+      await refreshProvider(conn.id, conn.provider)
+    } catch (err) {
+      glmResetCardError = err instanceof Error ? err.message : 'Failed to redeem the GLM reset card.'
+    } finally {
+      glmResetCardConsuming = false
+    }
+  }
+
   async function toggleAutoPing(connId: string, provider: string, enabled: boolean) {
     const key = AUTO_PING_SETTINGS_KEYS[provider]
     if (!key) return
-    const currentMap = autoPingMaps[provider as 'claude' | 'codex'] || {}
-    const nextMap = { ...currentMap, [connId]: enabled }
+
+    const currentConnections = autoPingMaps[provider as 'claude' | 'codex'] || {}
+    const nextConnections = { ...currentConnections, [connId]: enabled }
+    const nextSchedules = autoPingSchedules[provider as 'claude' | 'codex'] || {}
+
     autoPingMaps = {
       ...autoPingMaps,
-      [provider]: nextMap,
+      [provider]: nextConnections,
     }
+
+    // Nested shape, Node parity (upstream quotaAutoPing.js:289-290): the
+    // connections switch and the schedule map are two independent halves of
+    // one settings key. The schedule half is carried along verbatim so
+    // flipping a switch never deletes the schedule configured for that
+    // account — and the server merges the two halves the same way.
+    const payload = {
+      [key]: {
+        connections: nextConnections,
+        schedules: nextSchedules,
+      },
+    }
+
     try {
-      await api.updateSettingsRaw({
-        [key]: nextMap,
-      })
+      await api.updateSettings(payload)
     } catch (err) {
       console.error('Failed to update autoPing:', err)
+    }
+  }
+
+  // Saving the schedule modal writes BOTH halves in one payload: the mode radio
+  // decides the reactive switch and the schedule entry together, so a save that
+  // only sent `schedules` would leave the switch on and let the reactive ping
+  // keep firing alongside the schedule the operator just chose.
+  async function saveAutoPingSchedule(result: AutoPingSaveResult) {
+    const conn = autoPingEditing
+    autoPingEditing = null
+    if (!conn) return
+
+    const provider = conn.provider as 'claude' | 'codex'
+    const key = AUTO_PING_SETTINGS_KEYS[provider]
+    if (!key) return
+
+    const nextConnections = { ...(autoPingMaps[provider] || {}), [conn.id]: result.reactive }
+    const nextSchedules = { ...(autoPingSchedules[provider] || {}), [conn.id]: result.schedule }
+
+    autoPingMaps = { ...autoPingMaps, [provider]: nextConnections }
+    autoPingSchedules = { ...autoPingSchedules, [provider]: nextSchedules }
+
+    try {
+      await api.updateSettings({
+        [key]: { connections: nextConnections, schedules: nextSchedules },
+      })
+    } catch (err) {
+      console.error('Failed to update autoPing schedule:', err)
     }
   }
 
@@ -782,9 +968,18 @@
       .then((s) => {
         const raw = s as unknown as Record<string, unknown>
         quotaVisibility = (raw?.quotaVisibility as QuotaVisibility) || {}
+        // Nested shape from the server (Node parity): the settings key holds
+        // two independent halves — the connections switch and the schedule map.
+        const claudeConfig = raw?.claudeAutoPing as AutoPingSettings | undefined
+        const codexConfig = raw?.codexAutoPing as AutoPingSettings | undefined
+
         autoPingMaps = {
-          claude: (raw?.claudeAutoPing as Record<string, boolean>) || {},
-          codex: (raw?.codexAutoPing as Record<string, boolean>) || {},
+          claude: claudeConfig?.connections || {},
+          codex: codexConfig?.connections || {},
+        }
+        autoPingSchedules = {
+          claude: claudeConfig?.schedules || {},
+          codex: codexConfig?.schedules || {},
         }
       })
       .catch(() => {})
@@ -1172,8 +1367,29 @@
                   </button>
                 {/if}
 
+                {#if conn.provider === 'glm'}
+                  {@const resetCardsObj = (quota?.raw as { resetCards?: { availableCount?: number } } | undefined)?.resetCards}
+                  {@const resetCardCount = resetCardsObj?.availableCount ?? 0}
+                  <button
+                    type="button"
+                    disabled={isLoading || rowBusy || glmResetCardConsuming}
+                    onclick={() => openGlmResetCards(conn)}
+                    aria-label="Redeem a GLM reset card"
+                    title={resetCardCount > 0
+                      ? `Redeem a GLM reset card (${resetCardCount} available)`
+                      : 'Check GLM reset cards'}
+                    class="flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {resetCardCount > 0 ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10' : 'border-border-subtle bg-surface-2 text-text-muted'}"
+                  >
+                    <span class="material-symbols-outlined text-[15px]">restart_alt</span>
+                    <span>{resetCardCount}</span>
+                  </button>
+                {/if}
+
                 {#if (conn.provider === 'claude' || conn.provider === 'codex') && conn.authType === 'oauth'}
                   {@const isAutoPingActive = autoPingMaps[conn.provider]?.[conn.id] === true}
+                  {@const hasSchedule =
+                    (autoPingSchedules[conn.provider]?.[conn.id] as { enabled?: boolean } | undefined)
+                      ?.enabled === true}
                   <button
                     type="button"
                     onclick={() => toggleAutoPing(conn.id, conn.provider, !isAutoPingActive)}
@@ -1182,6 +1398,17 @@
                     class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {isAutoPingActive ? 'text-primary' : 'text-text-muted'}"
                   >
                     <span class="material-symbols-outlined text-[18px]">bolt</span>
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => (autoPingEditing = conn)}
+                    title="Auto-ping schedule"
+                    aria-label="Configure auto-ping schedule"
+                    class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {hasSchedule
+                      ? 'text-primary'
+                      : 'text-text-muted'}"
+                  >
+                    <span class="material-symbols-outlined text-[18px]">schedule</span>
                   </button>
                 {/if}
 
@@ -1391,6 +1618,21 @@
   />
 {/if}
 
+{#if autoPingEditing}
+  <AutoPingScheduleModal
+    open
+    connectionName={autoPingEditing.name}
+    reactive={autoPingMaps[autoPingEditing.provider as 'claude' | 'codex']?.[autoPingEditing.id] ===
+      true}
+    schedule={(autoPingSchedules[autoPingEditing.provider as 'claude' | 'codex']?.[
+      autoPingEditing.id
+    ] as AutoPingSchedule | null) ?? null}
+    timezone={localTimezone}
+    onClose={() => (autoPingEditing = null)}
+    onSave={saveAutoPingSchedule}
+  />
+{/if}
+
 {#if resetCreditConn}
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
     <div
@@ -1517,6 +1759,137 @@
             type="button"
             onclick={closeResetCredits}
             disabled={resetCreditConsuming}
+            class="px-3 py-2 rounded-lg border border-border text-xs font-semibold text-text-main hover:bg-surface-2 transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            Close
+          </button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if glmResetCardConn}
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div
+      class="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
+      onclick={closeGlmResetCards}
+      role="presentation"
+    ></div>
+    <div class="relative w-full max-w-md bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-elev)] p-6">
+      <div class="flex items-center justify-between pb-3 border-b border-border-subtle mb-4">
+        <h2 class="text-lg font-semibold text-text-main">Redeem a GLM reset card</h2>
+        <button
+          type="button"
+          onclick={closeGlmResetCards}
+          disabled={glmResetCardConsuming}
+          class="text-text-muted hover:text-text-main transition-colors disabled:opacity-50 cursor-pointer"
+          aria-label="Close"
+        >
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+
+      {#if glmResetCardConfirming && glmResetCardPending}
+        <div class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+          <div class="flex items-start gap-3">
+            <span class="material-symbols-outlined text-amber-500">warning</span>
+            <div class="min-w-0">
+              <p class="font-semibold text-text-main">Redeem this reset card?</p>
+              <p class="mt-1 text-sm text-text-muted">
+                This will immediately reset your GLM quota window. The card will be consumed permanently.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="mt-3 rounded-lg border border-border-subtle px-3 py-2.5">
+          <p class="text-sm font-medium text-text-main">
+            {glmResetCardPending.type === 'FIVE_HOUR' ? '5-Hour Reset' : 'Weekly Reset'}
+          </p>
+          <p class="mt-0.5 text-[11px] text-text-muted">
+            Expires {new Date(glmResetCardPending.expiresAt).toLocaleString()}
+          </p>
+        </div>
+        {#if glmResetCardError}
+          <p class="mt-3 text-xs text-red-500">{glmResetCardError}</p>
+        {/if}
+      {:else}
+      <p class="text-xs text-text-muted mb-4">
+        Redeeming a card resets the GLM usage window immediately instead of waiting for the
+        countdown to run out. FIVE_HOUR cards reset the 5-hour window; WEEK cards reset the weekly quota.
+      </p>
+
+      {#if glmResetCardLoading}
+        <p class="text-sm text-text-muted py-4 text-center">Loading reset cards…</p>
+      {:else if glmResetCardError && glmResetCardList.length === 0}
+        <p class="text-sm text-red-500 py-4 text-center">{glmResetCardError}</p>
+      {:else if glmResetCardList.length === 0 && glmResetCardCount > 0}
+        <p class="text-sm text-text-muted py-4 text-center">
+          Card details are currently unavailable. Refresh and try again.
+        </p>
+      {:else if glmResetCardList.length === 0}
+        <p class="text-sm text-text-muted py-4 text-center">No reset cards are available on this account.</p>
+      {:else}
+        <div class="space-y-2 max-h-64 overflow-y-auto">
+          {#each glmResetCardList as credit, index (credit.recordId)}
+            <div
+              class="flex flex-col gap-3 rounded-lg border px-3 py-2.5 sm:flex-row sm:items-center {glmResetCardSelected ===
+              credit.recordId
+                ? 'border-primary/40 bg-primary/5'
+                : 'border-border-subtle'}"
+            >
+              <span class="min-w-0 flex-1">
+                <span class="block text-sm font-medium text-text-main">
+                  {credit.type === 'FIVE_HOUR' ? '5-Hour Reset' : 'Weekly Reset'}
+                  {#if index === 0}
+                    <span class="ml-1 text-[10px] font-semibold text-primary">recommended</span>
+                  {/if}
+                </span>
+                <span class="block text-[11px] text-text-muted">
+                  Expires {new Date(credit.expiresAt).toLocaleString()}
+                </span>
+              </span>
+              <button
+                type="button"
+                onclick={() => requestGlmResetCard(credit)}
+                disabled={glmResetCardConsuming}
+                class="shrink-0 px-2.5 py-1.5 rounded-lg bg-primary text-[11px] font-semibold text-white hover:bg-primary-hover transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                Redeem
+              </button>
+            </div>
+          {/each}
+        </div>
+
+        {#if glmResetCardError}
+          <p class="mt-3 text-xs text-red-500">{glmResetCardError}</p>
+        {/if}
+      {/if}
+      {/if}
+
+      <div class="flex justify-end gap-2 mt-5">
+        {#if glmResetCardConfirming && glmResetCardPending}
+          <button
+            type="button"
+            onclick={backToGlmResetCardList}
+            disabled={glmResetCardConsuming}
+            class="px-3 py-2 rounded-lg border border-border text-xs font-semibold text-text-main hover:bg-surface-2 transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            Back
+          </button>
+          <button
+            type="button"
+            onclick={confirmGlmResetCard}
+            disabled={glmResetCardConsuming}
+            class="px-3 py-2 rounded-lg bg-primary text-xs font-semibold text-white hover:bg-primary-hover transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            {glmResetCardConsuming ? 'Redeeming…' : 'Redeem card'}
+          </button>
+        {:else}
+          <button
+            type="button"
+            onclick={closeGlmResetCards}
+            disabled={glmResetCardConsuming}
             class="px-3 py-2 rounded-lg border border-border text-xs font-semibold text-text-main hover:bg-surface-2 transition-colors disabled:opacity-50 cursor-pointer"
           >
             Close

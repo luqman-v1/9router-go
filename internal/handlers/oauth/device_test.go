@@ -86,3 +86,37 @@ func TestHandleDevicePoll_PendingDoesNotInsert(t *testing.T) {
 		t.Errorf("expected 0 connections inserted while pending, got %d", count)
 	}
 }
+
+type deviceRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f deviceRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestHandleDevicePoll_SlowDownInterval(t *testing.T) {
+	origTransport := deviceClient.Transport
+	deviceClient.Transport = deviceRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		rec := httptest.NewRecorder()
+		rec.Header().Set("Content-Type", "application/json")
+		rec.WriteHeader(http.StatusOK)
+		_, _ = rec.WriteString(`{"error":"slow_down","interval":15}`)
+		return rec.Result(), nil
+	})
+	t.Cleanup(func() { deviceClient.Transport = origTransport })
+
+	handler := NewOAuthHandler(nil)
+	req := httptest.NewRequest("POST", "/api/oauth/device/poll", strings.NewReader(`{"provider":"github","device_code":"test-code"}`))
+	rec := httptest.NewRecorder()
+	handler.HandleDevicePoll(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"status":"pending"`) {
+		t.Errorf("expected status:pending in %s", body)
+	}
+	if !strings.Contains(body, `"interval":15`) {
+		t.Errorf("expected interval:15 in %s", body)
+	}
+}

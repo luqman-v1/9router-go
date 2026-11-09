@@ -33,6 +33,10 @@ export interface NormalizedQuota {
   total: number
   remaining?: number
   remainingPercentage?: number
+  percentage?: number
+  colorPercentage?: number
+  percentageIsUsed?: boolean
+  emptyMessage?: string | null
   resetAt?: string | null
   unlimited?: boolean
   recurring?: boolean
@@ -355,10 +359,28 @@ export function calculatePercentage(used?: number, total?: number): number {
   return Math.round(((total - used) / total) * 100)
 }
 
-export function getRemainingPercentage(quota: Partial<NormalizedQuota>): number {
-  if (quota?.remaining !== undefined) return Math.max(0, Math.round(quota.remaining))
-  if (quota?.remainingPercentage !== undefined) return Math.round(quota.remainingPercentage)
-  return calculatePercentage(quota?.used, quota?.total)
+/**
+ * Remaining share of a quota row, or null when the row does not say.
+ *
+ * A quota that reports none of `remaining`, `remainingPercentage` or a finite
+ * `used`/`total` pair is *unknown*, not exhausted. Folding it into `0` painted
+ * it red — the same picture as a drained account — so the caller gets null and
+ * renders "—" instead of inventing a number.
+ */
+export function getRemainingPercentage(quota: Partial<NormalizedQuota>): number | null {
+  if (Number.isFinite(quota?.percentage)) {
+    // Providers may report the used share; the UI renders the remaining one.
+    const value = quota.percentageIsUsed === true ? 100 - (quota.percentage as number) : (quota.percentage as number)
+    return Math.max(0, Math.round(value))
+  }
+  if (Number.isFinite(quota?.remaining)) return Math.max(0, Math.round(quota.remaining as number))
+  if (Number.isFinite(quota?.remainingPercentage)) {
+    return Math.round(quota.remainingPercentage as number)
+  }
+  if (Number.isFinite(quota?.used) && Number.isFinite(quota?.total)) {
+    return calculatePercentage(quota.used, quota.total)
+  }
+  return null
 }
 
 // ─── Quota visibility (hide/show rows, persisted via /api/settings) ─────────
@@ -690,7 +712,15 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
               return
             }
             normalizedQuotas.push({
-              name: quotaType === 'user' ? 'Personal' : quotaType === 'organization' ? 'Organization' : quotaType,
+              name:
+                quotaType === 'user'
+                  ? 'Personal'
+                  : quotaType === 'organization'
+                    ? 'Organization'
+                    : quotaType === 'addOn'
+                      ? 'Add-On Promo'
+                      : quotaType,
+              detailUrl: quota.detailUrl as string | undefined,
               used: Number(quota.used) || 0,
               total: Number(quota.total) || 0,
               resetAt: (quota.resetAt as string) || null,
@@ -824,6 +854,10 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
               total: Number(quota.total) || 0,
               resetAt: (quota.resetAt as string) || null,
               remainingPercentage: quota.remainingPercentage !== undefined ? Number(quota.remainingPercentage) : undefined,
+              isCreditBalance: Boolean(quota.isCreditBalance),
+              currency: quota.currency as string | undefined,
+              unit: quota.unit as string | undefined,
+              unlimited: Boolean(quota.unlimited),
             })
           })
         }
@@ -872,6 +906,36 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
         }
         break
 
+      case 'gemini-web':
+        // The site publishes two windows: a rolling five-hour one and a
+        // weekly pool. The order is fixed here because the gateway's map has
+        // no order of its own, and a table whose rows move between refreshes
+        // reads as a bug.
+        if (d.quotas) {
+          const GEMINI_WEB_QUOTA_ORDER = ['5h', 'weekly']
+          const entries = Object.entries(d.quotas).sort(([a], [b]) => {
+            const ia = GEMINI_WEB_QUOTA_ORDER.indexOf(a)
+            const ib = GEMINI_WEB_QUOTA_ORDER.indexOf(b)
+            return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib)
+          })
+          entries.forEach(([name, quota]) => {
+            const row: NormalizedQuota = {
+              name: (quota.displayName as string) || name,
+              modelKey: name,
+              used: Number(quota.used) || 0,
+              total: Number(quota.total) || 0,
+              resetAt: (quota.resetAt as string) || null,
+            }
+            if (quota.remaining !== undefined) row.remaining = Number(quota.remaining)
+            if (quota.remainingPercentage !== undefined) {
+              row.remainingPercentage = Number(quota.remainingPercentage)
+            }
+            if (quota.unlimited !== undefined) row.unlimited = Boolean(quota.unlimited)
+            normalizedQuotas.push(row)
+          })
+        }
+        break
+
       default:
         if (d.message && !d.quotas) {
           normalizedQuotas.push({
@@ -886,7 +950,7 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
             const used = Number(quota.used) || 0
             const total = Number(quota.total) || 0
             const row: NormalizedQuota = {
-              name,
+              name: (quota.name as string) || name,
               used,
               total,
               resetAt: (quota.resetAt as string) || null,
@@ -895,6 +959,10 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
             if (quota.remainingPercentage !== undefined) {
               row.remainingPercentage = Number(quota.remainingPercentage)
             }
+            if (quota.percentage !== undefined) row.percentage = Number(quota.percentage)
+            if (quota.colorPercentage !== undefined) row.colorPercentage = Number(quota.colorPercentage)
+            if (quota.percentageIsUsed !== undefined) row.percentageIsUsed = quota.percentageIsUsed === true
+            if (quota.emptyMessage !== undefined) row.emptyMessage = (quota.emptyMessage as string) || null
             if (quota.unlimited !== undefined) row.unlimited = Boolean(quota.unlimited)
             if (quota.recurring !== undefined) row.recurring = quota.recurring !== false
             if (quota.isCreditBalance !== undefined) row.isCreditBalance = Boolean(quota.isCreditBalance)

@@ -2,13 +2,14 @@ package dashboard
 
 import (
 	"context"
-	"errors"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -67,8 +68,8 @@ type usageCredentials struct {
 	// adoptedRefreshToken, when set, is token material read back from the row
 	// immediately before the refresh; it wins over the snapshot's own value.
 	adoptedRefreshToken string
-	raw                map[string]any
-	provider           string
+	raw                 map[string]any
+	provider            string
 }
 
 // accessToken reports the token a quota read must present. Kiro and other
@@ -149,7 +150,7 @@ func (h *DashboardHandler) markDeadGrant(conn *models.ProviderConnection, refres
 	if errors.As(refreshErr, &refreshErrType) {
 		status = refreshErrType.Status
 	}
-	until, failures, err := h.Repo.RecordConnectionOAuthFailure(conn.ID, status, refreshErr.Error())
+	until, failures, err := h.Repo.RecordConnectionOAuthFailure(conn.ID, status, refreshErr)
 	if err != nil {
 		log.Warn("usage", "record dead oauth grant failed", "provider", conn.Provider, "conn", conn.ID, "error", err)
 		return
@@ -209,9 +210,23 @@ type usageRefreshOutcome struct {
 // runUsageRefresh performs one guarded refresh. It returns err only for a
 // failure the caller should surface; a provider with no refresher is not an
 // error, it is simply nothing to do.
+//
+// An account that already carries a dead-grant park (testStatus
+// reauth_required) is skipped: re-spending the single-use refresh token
+// would answer invalid_grant again and bump the failure counter behind a
+// request the caller must not make. The caller keeps the stored access
+// token and reads with it, so the panel still renders while the badge
+// says to re-authorize.
 func (h *DashboardHandler) runUsageRefresh(ctx context.Context, conn *models.ProviderConnection, creds usageCredentials) usageRefreshOutcome {
 	if !canAttemptRefresh(conn, creds.raw) {
 		return usageRefreshOutcome{}
+	}
+	if h.Repo != nil {
+		if latest, err := h.Repo.GetProviderConnectionByID(conn.ID); err == nil && latest != nil {
+			if db.ConnectionRequiresReauth(latest.Data) {
+				return usageRefreshOutcome{}
+			}
+		}
 	}
 	creds = h.adoptStoredUsageCredentials(ctx, conn, creds)
 	result, err := h.refreshUsageCredentials(ctx, conn, creds, nil)
@@ -238,6 +253,7 @@ func (h *DashboardHandler) refreshUsageCredentials(ctx context.Context, conn *mo
 		RefreshToken:         creds.refreshTokenFor(),
 		AccessToken:          creds.accessToken(),
 		ProviderSpecificData: oauth.StringMap(psd),
+		Force:                true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("refresh %s credentials: %w", conn.Provider, err)

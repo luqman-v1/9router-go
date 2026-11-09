@@ -243,7 +243,7 @@ func CompressInputMessages(body []byte, preserveKeywords string) ([]byte, bool) 
 		return body, false
 	}
 
-	out, err := json.Marshal(req)
+	out, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		return body, false
 	}

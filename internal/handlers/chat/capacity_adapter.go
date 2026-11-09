@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 )
@@ -89,7 +90,11 @@ func normalizeCapEntry(raw any) adapterEntry {
 }
 
 // capacityAdapterPools returns the raw capacityAdapter map as stored, so the
-// legacy array form survives the typed SettingsData parse.
+// legacy array form survives the typed SettingsData parse. A settings row that
+// omits the key (never saved) falls back to the type's declared defaults —
+// vision and audioInput enabled-and-empty, which resolve to the default pool
+// model below — so an image request is not silently forwarded to a text-only
+// model because the row predates the toggle.
 func (h *ChatHandler) capacityAdapterPools() map[string]any {
 	if h.Repo == nil {
 		return nil
@@ -99,7 +104,30 @@ func (h *ChatHandler) capacityAdapterPools() map[string]any {
 		return nil
 	}
 	pools, _ := settings["capacityAdapter"].(map[string]any)
-	return pools
+	return mergeAdapterDefaults(pools)
+}
+
+// mergeAdapterDefaults substitutes the type's declared default pools only when
+// the stored settings row carries no capacityAdapter map at all (the common
+// case for a row saved before the toggle existed). A present-but-partial map is
+// returned unchanged: an absent capability key inside it means that pool is
+// unconfigured, which the raw path treats as disabled — the behaviour the
+// existing suite pins. This keeps a legacy image request from being forwarded
+// to a text-only model without resurrecting a pool the operator left off.
+func mergeAdapterDefaults(pools map[string]any) map[string]any {
+	if len(pools) != 0 {
+		return pools
+	}
+	out := make(map[string]any, len(adapterCapabilityKeys))
+	for _, cap := range adapterCapabilityKeys {
+		entry := db.DefaultSettings().CapacityAdapter[cap]
+		out[cap] = map[string]any{
+			"enabled":    entry.Enabled,
+			"roundRobin": entry.RoundRobin,
+			"models":     entry.Models,
+		}
+	}
+	return out
 }
 
 // adapterConfig resolves one capability's full config. An enabled pool with no

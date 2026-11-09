@@ -53,3 +53,8 @@ describe('usage detail collapse preference', () => {
     expect(isDetailsExpandedByDefault()).toBe(false)
   })
 })
+
+// The Overview's two optional panels are hidden through the Usage arrangement
+// (lib/usagePanel.svelte.ts) rather than a separate localStorage switch, so the
+// coverage for that lives in usagePanelPlan.test.ts and nav.test.ts. Upstream's
+// showComboFlow / showUsageTrend keys would be a second, competing control.

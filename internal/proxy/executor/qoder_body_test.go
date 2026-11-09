@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"encoding/base64"
 	json "encoding/json/v2"
 	"io"
@@ -182,6 +183,45 @@ func TestForwardQoder_SendsQoderPayloadNotOpenAIBody(t *testing.T) {
 	}
 }
 
+// Qoder routes the chat by model_config.source: the catalog's "system" puts
+// the request in the managed lane, which answers 10605 (queued, p3) for a
+// free model whenever that lane is busy — measured live, the identical
+// payload with the field absent (or "user") is served immediately. The echoed
+// entry must therefore carry everything EXCEPT source, while X-Model-Source
+// keeps reporting the catalog value.
+func TestForwardQoder_StripsSourceFromChatModelConfig(t *testing.T) {
+	creds := QoderCosyCreds{UserID: "user-1", AuthToken: "auth-token", MachineID: "machine-1"}
+	qoderSeedCatalog(t, creds, QoderRegionIntl, map[string]map[string]any{
+		"dfmodel": {"key": "dfmodel", "source": "system", "display_name": "DeepSeek-Flash", "is_free": true, "max_input_tokens": 1000000.0, "is_reasoning": true},
+	})
+	srv, got := qoderCaptureServer(t, qoderSSE(qoderChunk(`{"content":"ok"}`, `"stop"`), "[DONE]"))
+
+	rec := httptest.NewRecorder()
+	req := &Request{
+		Ctx:      t.Context(),
+		Client:   srv.Client(),
+		Config:   &providers.ProviderConfig{BaseURL: srv.URL},
+		APIKey:   creds.AuthToken,
+		ConnData: map[string]any{"userId": creds.UserID, "machineId": creds.MachineID},
+		Body:     []byte(`{"model":"qd/dfmodel","messages":[{"role":"user","content":"say ok"}]}`),
+	}
+	if err := ForwardQoder(rec, req); err != nil {
+		t.Fatalf("ForwardQoder: %v", err)
+	}
+
+	payload := qoderDecodeCaptured(t, got.Body)
+	modelConfig, _ := payload["model_config"].(map[string]any)
+	if _, present := modelConfig["source"]; present {
+		t.Errorf(`model_config still carries "source" — Qoder routes source:"system" into the managed queue lane`)
+	}
+	if modelConfig["key"] != "dfmodel" || modelConfig["is_free"] != true || modelConfig["max_input_tokens"] != 1000000.0 {
+		t.Errorf("model_config lost catalog fields: %v", modelConfig)
+	}
+	if h := got.Headers.Get("X-Model-Source"); h != "system" {
+		t.Errorf("X-Model-Source = %q, want the catalog's source (system)", h)
+	}
+}
+
 // The identities must be derived, not random: session_id and chat_record_id
 // are what let Qoder recognise the same conversation across requests.
 func TestForwardQoder_DerivesStableIdentities(t *testing.T) {
@@ -229,7 +269,7 @@ func buildQoderPayload(t *testing.T, creds QoderCosyCreds, body []byte) qoderIde
 	if config == nil {
 		t.Fatal("test fixture did not seed model_config for qfmodel")
 	}
-	built, err := buildQoderChatRequest(body, config, creds, 1700000000000)
+	built, err := buildQoderChatRequestWithAttachments(context.Background(), body, config, creds, 1700000000000, QoderRegionIntl, nil, nil)
 	if err != nil {
 		t.Fatalf("buildQoderChatRequest: %v", err)
 	}

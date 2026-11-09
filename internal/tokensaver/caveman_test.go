@@ -18,6 +18,41 @@ func TestCaveman_PromptLanguages(t *testing.T) {
 	}
 }
 
+// The dashboard offers three 文言文 levels next to the English ones. Each has
+// to answer with its own doctrine: falling through to CavemanFull handed a
+// user who picked "文 Full" an English caveman prompt, and nothing in the
+// response said the setting had not applied.
+func TestCaveman_WenyanLevelsAreTheirOwnPrompt(t *testing.T) {
+	cases := map[string]string{
+		"wenyan-lite":  "semi-classical",
+		"wenyan":       "文言文",
+		"wenyan-ultra": "文言文 ultra",
+	}
+	for level, want := range cases {
+		got := GetCavemanPrompt(level)
+		if !strings.Contains(got, want) {
+			t.Errorf("GetCavemanPrompt(%q) does not contain %q: %.120s", level, want, got)
+		}
+		if got == CavemanFull {
+			t.Errorf("GetCavemanPrompt(%q) returned the English full prompt", level)
+		}
+	}
+}
+
+// Every level keeps the shared doctrine, so the format rules and the clarity
+// override do not silently disappear from a level that was added later.
+func TestCaveman_EveryLevelCarriesTheSharedTail(t *testing.T) {
+	for _, level := range []string{"lite", "full", "ultra", "wenyan-lite", "wenyan", "wenyan-ultra"} {
+		got := GetCavemanPrompt(level)
+		if !strings.Contains(got, "Auto-Clarity") {
+			t.Errorf("level %q lost the Auto-Clarity clause", level)
+		}
+		if !strings.Contains(got, "keep exact") {
+			t.Errorf("level %q lost the verbatim-payload clause", level)
+		}
+	}
+}
+
 func TestCaveman_ShouldBypassCaveman(t *testing.T) {
 	destructive := "Please run rm -rf /var/log/* and restart the server"
 	if !ShouldBypassCaveman(destructive) {

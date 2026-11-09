@@ -17,14 +17,14 @@ import (
 // migration state without reading the database.
 func (h *DashboardHandler) HandleGetVaultStatus(w http.ResponseWriter, r *http.Request) {
 	v := h.Repo.Vault()
-	sealed, plaintext, err := h.Repo.VaultCounts()
+	sealed, plaintext, err := h.Repo.VaultCounts(r.Context())
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"enabled":       v != nil && v.Enabled(),
-		"sealedCount":   sealed,
+		"enabled":        v != nil && v.Enabled(),
+		"sealedCount":    sealed,
 		"plaintextCount": plaintext,
 	})
 }
@@ -85,8 +85,8 @@ func (h *DashboardHandler) HandleRotateVault(w http.ResponseWriter, r *http.Requ
 	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"status":     "ok",
-		"rewrapped":  rewrapped,
-		"failures":   failures,
+		"status":    "ok",
+		"rewrapped": rewrapped,
+		"failures":  failures,
 	})
 }

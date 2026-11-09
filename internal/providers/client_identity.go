@@ -39,8 +39,13 @@ const (
 
 	// Antigravity client identifiers. Google Cloud Code upstream requires the 'cli'
 	// flavor for Gemini 4 Argon tiered models (the 'ide' flavor receives HTTP 404).
-	AntigravityCLIVersion   = "1.4.0"
+	// Version and cl observed on the real agy 1.5.1 release (2026-11-05,
+	// capture published same-day in iamxeph/pi-provider-antigravity#108); cl
+	// is not a binary constant, it comes from runtime config, so each bump
+	// needs a fresh live capture. os_type/arch stay pinned to windows/amd64
+	// on purpose so every pooled account presents one identical fingerprint.
+	AntigravityCLIVersion   = "1.5.1"
 	AntigravityIDEVersion   = "2.23.0"
-	AntigravityCLIUserAgent = "antigravity/cli/" + AntigravityCLIVersion + " (aidev_client; os_type=windows; arch=amd64; cl=1000494485; auth_method=consumer)"
+	AntigravityCLIUserAgent = "antigravity/cli/" + AntigravityCLIVersion + " (aidev_client; os_type=windows; arch=amd64; cl=1014269460; auth_method=consumer)"
 	AntigravityIDEUserAgent = AntigravityCLIUserAgent
 )

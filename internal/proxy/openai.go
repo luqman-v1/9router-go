@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"9router/proxy/internal/providers"
 )
@@ -28,6 +29,18 @@ func ForwardOpenAI(ctx context.Context, client *http.Client, cfg *providers.Prov
 	if isStream {
 		headers["Accept"] = "text/event-stream"
 	}
+	// Match Node's undici global fetch (user-agent "node", accept "*/*").
+	// An operator StaticHeaders value always wins, whatever its casing.
+	if !hasHeaderFold(headers, "User-Agent") {
+		headers["User-Agent"] = "node"
+	}
+	if !hasHeaderFold(headers, "Accept") {
+		headers["Accept"] = "*/*"
+	}
+	// The operator's Custom Headers are applied last so they also win over the
+	// defaults set just above, which is the order upstream uses
+	// (open-sse/executors/base.js:132).
+	headers = providers.ApplyHeaderOverrides(headers, cfg.HeaderOverrides)
 	resp, err := DoRequest(ctx, client, "POST", cfg.BaseURL, headers, body)
 	if err != nil {
 		return nil, fmt.Errorf("forward to %s: %w", cfg.BaseURL, err)
@@ -63,4 +76,14 @@ func BuildURL(base, path string) string {
 		return base
 	}
 	return fmt.Sprintf("%s/%s", base, path)
+}
+
+// hasHeaderFold reports whether headers already carries key under any casing.
+func hasHeaderFold(headers map[string]string, key string) bool {
+	for k := range headers {
+		if strings.EqualFold(k, key) {
+			return true
+		}
+	}
+	return false
 }

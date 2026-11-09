@@ -80,7 +80,9 @@ echo ""
 if [ "$IS_PRERELEASE" = true ]; then
   echo "Done. $NEW_VER is an EXPERIMENTAL build."
   echo "  channel:   experimental (GitHub prerelease, docker :exp)"
-  echo "  next:      git add VERSION internal/updater/updater.go"
+  echo "  next:      one command instead of the manual steps below:"
+  echo "             ./scripts/release.sh $NEW_VER"
+  echo "  manual:    git add VERSION internal/updater/updater.go"
   echo "             git commit -m \"chore: bump to $NEW_VER\""
   echo "             git tag v$NEW_VER"
   echo ""
@@ -89,5 +91,7 @@ if [ "$IS_PRERELEASE" = true ]; then
   echo "  ./scripts/bump-version.sh ${NEW_VER%%-*}"
 else
   echo "Done. Version is now $NEW_VER (single source: VERSION file)"
-  echo "Next: git add VERSION version.json internal/updater/updater.go && git commit -m \"chore: bump version to $NEW_VER\" && git tag v$NEW_VER"
+  echo "Next: one command instead of the manual steps below:"
+  echo "      ./scripts/release.sh $NEW_VER"
+  echo "Manual: git add VERSION version.json internal/updater/updater.go && git commit -m \"chore: bump version to $NEW_VER\" && git tag v$NEW_VER"
 fi

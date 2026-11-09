@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"maps"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,6 +104,7 @@ func (s windowShape) key() string {
 // that change independently of the ledger.
 type rawTotals struct {
 	requests         int
+	errors           int
 	promptTokens     int64
 	completionTokens int64
 	cachedTokens     int64
@@ -111,7 +113,13 @@ type rawTotals struct {
 }
 
 func (t *rawTotals) add(row db.UsageHistoryRow, promptTok, complTok, cachedTok int64) {
+	if row.Status == "canceled" {
+		return
+	}
 	t.requests++
+	if row.Status != "ok" && row.Status != "success" && row.Status != "" {
+		t.errors++
+	}
 	t.promptTokens += promptTok
 	t.completionTokens += complTok
 	t.cachedTokens += cachedTok
@@ -199,8 +207,7 @@ func apiKeyBucketKey(apiKey string) string {
 // would drift the cost total in its last digits — a parity break users would
 // read as a billing error.
 func (a *rawAggregate) foldRow(row db.UsageHistoryRow) {
-	promptTok := int64(row.PromptTokens)
-	complTok := int64(row.CompletionTokens)
+	promptTok, complTok := translator.ResolveTokensCounts([]byte(row.Tokens), row.PromptTokens, row.CompletionTokens)
 	cachedTok := int64(translator.CachedTokensFromJSON([]byte(row.Tokens)))
 
 	if row.Provider != "" {
@@ -252,8 +259,7 @@ func (a *rawAggregate) foldRow(row db.UsageHistoryRow) {
 // the order they were added, which keeps the float sum from drifting further
 // than the fold did.
 func (a *rawAggregate) unfoldRow(row db.UsageHistoryRow) {
-	promptTok := int64(row.PromptTokens)
-	complTok := int64(row.CompletionTokens)
+	promptTok, complTok := translator.ResolveTokensCounts([]byte(row.Tokens), row.PromptTokens, row.CompletionTokens)
 	cachedTok := int64(translator.CachedTokensFromJSON([]byte(row.Tokens)))
 
 	if row.Provider != "" {
@@ -318,7 +324,13 @@ func (a *rawAggregate) unfoldRow(row db.UsageHistoryRow) {
 }
 
 func subtractFrom(t *rawTotals, row db.UsageHistoryRow, promptTok, complTok, cachedTok int64) {
+	if row.Status == "canceled" {
+		return
+	}
 	t.requests--
+	if row.Status != "ok" && row.Status != "success" && row.Status != "" {
+		t.errors--
+	}
 	t.promptTokens -= promptTok
 	t.completionTokens -= complTok
 	t.cachedTokens -= cachedTok
@@ -559,90 +571,120 @@ func friendlyAccountName(connectionID string, connMap map[string]string) string 
 // indexes both the stored key and its mask, because the shared database holds
 // rows written by both this build and the Next.js dashboard.
 func apiKeyDisplayName(storedKey string, keyNames map[string]string) string {
+	trimmed := strings.TrimSpace(storedKey)
 	switch {
+	case keyNames[trimmed] != "":
+		return keyNames[trimmed]
 	case keyNames[storedKey] != "":
 		return keyNames[storedKey]
-	case storedKey == "local-no-key":
+	case trimmed == "local-no-key" || trimmed == "" || trimmed == "***":
 		return "Local (No Key)"
 	default:
-		return storedKey[:min(8, len(storedKey))] + "..."
+		if masked := maskAPIKeyForStats(trimmed); masked != "" {
+			return masked
+		}
+		return "Local (No Key)"
 	}
 }
 
 // applyRawAggregate copies a cached fold onto the response, applying the
 // display names that depend on connections and nodes rather than on the ledger.
-func applyRawAggregate(resp *UsageStatsResponse, agg *rawAggregate, nodeNameMap, connMap, keyNames map[string]string) {
+// applyRawAggregate folds a cached window aggregate into the response.
+//
+// Only the breakdowns the caller asked for are materialised (see
+// usageStatsViews). byProvider is always folded because the handler sums its
+// totals from it; the other four are skipped when ?views= left them out, which
+// is what keeps the five-second poll from serialising 411-model maps nobody is
+// looking at.
+func applyRawAggregate(resp *UsageStatsResponse, agg *rawAggregate, nodeNameMap, connMap, keyNames map[string]string, views usageStatsViews) {
 	for key, t := range agg.byProvider {
 		p := resp.ByProvider[key]
 		p.Requests = t.requests
+		p.Errors = t.errors
 		p.PromptTokens = t.promptTokens
 		p.CompletionTokens = t.completionTokens
 		p.CachedTokens = t.cachedTokens
 		p.Cost = t.cost
+		p.LastUsed = t.lastUsed
 		resp.ByProvider[key] = p
 	}
 
-	for key, t := range agg.byModel {
-		meta := agg.modelMeta[key]
-		m := resp.ByModel[key]
-		m.RawModel = meta.rawModel
-		m.Provider = displayProviderName(meta.provider, nodeNameMap)
-		m.Requests = t.requests
-		m.PromptTokens = t.promptTokens
-		m.CompletionTokens = t.completionTokens
-		m.CachedTokens = t.cachedTokens
-		m.Cost = t.cost
-		m.LastUsed = t.lastUsed
-		resp.ByModel[key] = m
+	if views.model {
+		for key, t := range agg.byModel {
+			meta := agg.modelMeta[key]
+			m := resp.ByModel[key]
+			m.RawModel = meta.rawModel
+			m.Provider = displayProviderName(meta.provider, nodeNameMap)
+			m.Requests = t.requests
+			m.PromptTokens = t.promptTokens
+			m.CompletionTokens = t.completionTokens
+			m.CachedTokens = t.cachedTokens
+			m.Cost = t.cost
+			m.LastUsed = t.lastUsed
+			resp.ByModel[key] = m
+		}
+
 	}
 
-	for key, t := range agg.byAccount {
-		meta := agg.accountMeta[key]
-		accName := friendlyAccountName(meta.connectionID, connMap)
-		accKey := meta.rawModel + " (" + meta.provider + " - " + accName + ")"
-		a := resp.ByAccount[accKey]
-		a.RawModel = meta.rawModel
-		a.Provider = displayProviderName(meta.provider, nodeNameMap)
-		a.ConnectionID = meta.connectionID
-		a.AccountName = accName
-		a.Requests = t.requests
-		a.PromptTokens = t.promptTokens
-		a.CompletionTokens = t.completionTokens
-		a.CachedTokens = t.cachedTokens
-		a.Cost = t.cost
-		a.LastUsed = t.lastUsed
-		resp.ByAccount[accKey] = a
+	if views.account {
+		for key, t := range agg.byAccount {
+			meta := agg.accountMeta[key]
+			accName := friendlyAccountName(meta.connectionID, connMap)
+			accKey := meta.rawModel + " (" + meta.provider + " - " + accName + ")"
+			a := resp.ByAccount[accKey]
+			a.RawModel = meta.rawModel
+			a.Provider = displayProviderName(meta.provider, nodeNameMap)
+			a.ConnectionID = meta.connectionID
+			a.AccountName = accName
+			a.Requests = t.requests
+			a.PromptTokens = t.promptTokens
+			a.CompletionTokens = t.completionTokens
+			a.CachedTokens = t.cachedTokens
+			a.Cost = t.cost
+			a.LastUsed = t.lastUsed
+			resp.ByAccount[accKey] = a
+		}
+
 	}
 
-	for key, t := range agg.byAPIKey {
-		meta := agg.apiKeyMeta[key]
-		k := resp.ByApiKey[key]
-		k.RawModel = meta.rawModel
-		k.Provider = displayProviderName(meta.provider, nodeNameMap)
-		k.ApiKeyMasked = meta.apiKey
-		k.ApiKeyKey = meta.apiKey
-		k.KeyName = apiKeyDisplayName(meta.apiKey, keyNames)
-		k.Requests = t.requests
-		k.PromptTokens = t.promptTokens
-		k.CompletionTokens = t.completionTokens
-		k.CachedTokens = t.cachedTokens
-		k.Cost = t.cost
-		k.LastUsed = t.lastUsed
-		resp.ByApiKey[key] = k
+	if views.apiKey {
+		for key, t := range agg.byAPIKey {
+			meta := agg.apiKeyMeta[key]
+			k := resp.ByApiKey[key]
+			k.RawModel = meta.rawModel
+			k.Provider = displayProviderName(meta.provider, nodeNameMap)
+			masked := maskAPIKeyForStats(meta.apiKey)
+			if masked == "" {
+				masked = "local-no-key"
+			}
+			k.ApiKeyMasked = masked
+			k.ApiKeyKey = masked
+			k.KeyName = apiKeyDisplayName(meta.apiKey, keyNames)
+			k.Requests = t.requests
+			k.PromptTokens = t.promptTokens
+			k.CompletionTokens = t.completionTokens
+			k.CachedTokens = t.cachedTokens
+			k.Cost = t.cost
+			k.LastUsed = t.lastUsed
+			resp.ByApiKey[key] = k
+		}
+
 	}
 
-	for key, t := range agg.byEndpoint {
-		meta := agg.endpointMeta[key]
-		e := resp.ByEndpoint[key]
-		e.Endpoint = meta.endpoint
-		e.RawModel = meta.rawModel
-		e.Provider = displayProviderName(meta.provider, nodeNameMap)
-		e.Requests = t.requests
-		e.PromptTokens = t.promptTokens
-		e.CompletionTokens = t.completionTokens
-		e.CachedTokens = t.cachedTokens
-		e.Cost = t.cost
-		e.LastUsed = t.lastUsed
-		resp.ByEndpoint[key] = e
+	if views.endpoint {
+		for key, t := range agg.byEndpoint {
+			meta := agg.endpointMeta[key]
+			e := resp.ByEndpoint[key]
+			e.Endpoint = meta.endpoint
+			e.RawModel = meta.rawModel
+			e.Provider = displayProviderName(meta.provider, nodeNameMap)
+			e.Requests = t.requests
+			e.PromptTokens = t.promptTokens
+			e.CompletionTokens = t.completionTokens
+			e.CachedTokens = t.cachedTokens
+			e.Cost = t.cost
+			e.LastUsed = t.lastUsed
+			resp.ByEndpoint[key] = e
+		}
 	}
 }

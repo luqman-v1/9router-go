@@ -46,7 +46,6 @@ func IsAlwaysProtectedPath(path string) bool {
 	switch path {
 	case "/api/shutdown",
 		"/api/settings/database",
-		"/api/settings/database/stats",
 		"/api/settings/database/prune",
 		"/api/settings/database/prune-usage",
 		"/api/settings/database/vacuum",
@@ -59,6 +58,35 @@ func IsAlwaysProtectedPath(path string) bool {
 	default:
 		return false
 	}
+}
+
+// storageMaintenancePaths are the destructive storage actions the dashboard
+// offers beside its storage numbers: prune the diagnostics, prune the billing
+// ledger, and compact the file.
+//
+// They sit on the always-protected list because they delete rows. But the
+// dashboard has to be able to run them, and an install that does not require a
+// login has no session to run them with — the SPA authenticates with nothing
+// at all in that mode, because there is nothing to authenticate against. A
+// gate that refuses every credential there leaves the operator with buttons
+// that cannot work: the storage card in the profile page reported "Unauthorized:
+// admin session or CLI token required" on every press, and the only way to
+// prune was a curl carrying the CLI token.
+//
+// So these three are the deliberate exception to the always-protected rule:
+// with login off, the dashboard operator is admitted. That is the same trust
+// the rest of the dashboard API already extends to an open install, where
+// anyone reaching it can delete every API key and every connection — the
+// storage card is not the sensitive surface. An install that does require a
+// login keeps the full gate: a session cookie or the CLI token, never a client
+// API key.
+//
+// The backup download is deliberately NOT in this set. It hands out the whole
+// database, keys included, so it stays behind the session or the CLI token.
+var storageMaintenancePaths = map[string]bool{
+	"/api/settings/database/prune":       true,
+	"/api/settings/database/prune-usage": true,
+	"/api/settings/database/vacuum":      true,
 }
 
 // RequireConsoleLogAuth gates console-log APIs to dashboard sessions or the
@@ -139,6 +167,15 @@ func RequireDashboardAuth(repo *db.Repo) func(http.Handler) http.Handler {
 				if auth.SessionValid(r) ||
 					auth.ValidCLIToken(r.Header.Get(auth.CLITokenHeader)) ||
 					allowsPasswordHeader(r.URL.Path) && r.Header.Get(DashboardPasswordHeader) != "" {
+					next.ServeHTTP(w, r)
+					return
+				}
+				// The three storage-maintenance actions are the one exception:
+				// with login off the dashboard operator has no session to
+				// present, and refusing them there leaves the profile page
+				// with buttons that can only ever answer 401. An install that
+				// requires a login keeps the full gate above.
+				if storageMaintenancePaths[r.URL.Path] && !auth.RequireLogin(repo) {
 					next.ServeHTTP(w, r)
 					return
 				}

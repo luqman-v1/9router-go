@@ -57,20 +57,17 @@ func logLabel(s string) string {
 // resolveEgress reports how a request will leave the host, from data already
 // resolved for it — no extra pool lookup on the hot path.
 //
-// The relay shape is read off the provider config because that is where an edge
-// pool leaves its mark: the upstream in x-relay-target, the relay host in
-// BaseURL. A plain HTTP proxy is invisible there, so it is resolved from the
-// connection's own proxy fields instead.
+// A relay is read off ProviderConfig.RelayURL, where the config records the
+// pool that fronts the connection. A plain HTTP proxy is invisible there, so it
+// comes from the connection's own proxy fields instead.
 //
 // The pool name comes from ConnectionData.ResolvedProxyPool, filled in by the
 // client resolver while it was already reading the pool for the transport.
 func resolveEgress(connData *ConnectionData, cfg *providers.ProviderConfig) Egress {
 	poolID, poolName := assignedPool(connData)
 
-	if cfg != nil {
-		if target := cfg.StaticHeaders["x-relay-target"]; target != "" {
-			return Egress{Kind: "relay", PoolID: poolID, PoolName: poolName, Target: cfg.BaseURL}
-		}
+	if cfg != nil && cfg.RelayURL != "" {
+		return Egress{Kind: "relay", PoolID: poolID, PoolName: poolName, Target: cfg.RelayURL}
 	}
 	if connData == nil {
 		return Egress{Kind: "direct"}
