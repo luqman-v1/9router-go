@@ -264,6 +264,8 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 				}
 			}
 
+			translateCodexClaudeWebSearch(m)
+			translateCodexClaudeWebSearchChoice(m)
 			applyCodexModelShape(m, cleanModel)
 			out, err := marshalStable(m)
 			return out, cleanModel, err
@@ -282,6 +284,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
 		Reasoning           any            `json:"reasoning,omitempty"`
 		Tools               jsontext.Value `json:"tools,omitempty"`
+		ToolChoice          jsontext.Value `json:"tool_choice,omitempty"`
 		ResponseFormat      jsontext.Value `json:"response_format,omitempty"`
 		// ServiceTier is carried through unchanged. Upstream does the same in
 		// open-sse/translator/request/openai-responses.js, and the Chat
@@ -534,7 +537,16 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			}
 		}
 	}
-
+	// tool_choice must reach translateCodexClaudeWebSearchChoice before the
+	// model-shape rewrite, so it is decoded and carried over here rather than
+	// after. A jsontext.Value is preserved raw so an unknown or non-map value
+	// still passes through unchanged.
+	if oreq.ToolChoice.Kind() != jsontext.KindInvalid {
+		var tc any
+		if json.Unmarshal(oreq.ToolChoice, &tc) == nil {
+			respReq["tool_choice"] = tc
+		}
+	}
 	// Presence matters more than the value here: a client that sent null, "", a
 	// number or "fast" gets that byte for byte, because the destination decides
 	// what it means. Only a field the client never sent is dropped —
@@ -550,6 +562,8 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		}
 	}
 
+	translateCodexClaudeWebSearch(respReq)
+	translateCodexClaudeWebSearchChoice(respReq)
 	applyCodexModelShape(respReq, cleanModel)
 	reqBody, err := marshalStable(respReq)
 	return reqBody, cleanModel, err
