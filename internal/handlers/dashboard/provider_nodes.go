@@ -16,6 +16,7 @@ import (
 	json "encoding/json/v2"
 
 	"9router/proxy/internal/customjson"
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -569,7 +570,7 @@ func validateOpenAICompatibleNode(w http.ResponseWriter, ctx context.Context, ba
 	base := strings.TrimSuffix(baseURL, "/")
 	headers := map[string]string{"Authorization": "Bearer " + apiKey}
 
-	status, body, err := validateProbeDo(ctx, http.MethodGet, base+"/models", headers, nil)
+	status, body, err := validateProbeDo(ctx, http.MethodGet, chat.CompatibleNodeModelsURL(base), headers, nil)
 	if err != nil {
 		writeNodeValidation(w, map[string]any{"valid": false, "error": validateNodeNetworkMessage(err)})
 		return
@@ -602,7 +603,7 @@ func validateOpenAICompatibleNode(w http.ResponseWriter, ctx context.Context, ba
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		}
-		chatStatus, _, cErr := validateProbeDo(ctx, http.MethodPost, base+"/chat/completions", chatHeaders, payload)
+		chatStatus, _, cErr := validateProbeDo(ctx, http.MethodPost, chat.ChatCompletionsURL(base), chatHeaders, payload)
 		if cErr == nil && (chatStatus == http.StatusUnauthorized || chatStatus == http.StatusForbidden) {
 			writeNodeValidation(w, map[string]any{"valid": false, "error": "API key unauthorized"})
 			return
