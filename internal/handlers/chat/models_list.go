@@ -1036,9 +1036,9 @@ func (h *ChatHandler) comboSeatCapabilities(seat string, connMap ...map[string]*
 // comboSeatLimits walks a combo's whole seat tree and returns the smallest
 // context window and the smallest max output any seat in it can serve. A combo
 // can hand the request to any seat, so the only limit it can promise is its
-// narrowest one; upstream takes the same minimum (Math.min over seats), while
-// aggregateComboCapabilities keeps the widest maxOutput for its capabilities
-// block.
+// narrowest one; upstream takes the same minimum (Math.min over seats), and
+// aggregateComboCapabilities aggregates the capabilities block with the same
+// minimum for maxOutput.
 //
 // A seat that is itself a combo name contributes its own leaves' minimum, and
 // cycles are cut: a name already on the walk contributes nothing, which is
