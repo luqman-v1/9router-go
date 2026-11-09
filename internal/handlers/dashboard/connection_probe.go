@@ -190,6 +190,10 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 		url: googleUserinfoURL, method: http.MethodGet,
 		authHeader: "Authorization", authPrefix: "Bearer ", refreshable: true,
 	},
+	"agy": {
+		url: googleUserinfoURL, method: http.MethodGet,
+		authHeader: "Authorization", authPrefix: "Bearer ", refreshable: true,
+	},
 	"antigravity": {
 		url: googleUserinfoURL, method: http.MethodGet,
 		authHeader: "Authorization", authPrefix: "Bearer ", refreshable: true,
@@ -650,7 +654,7 @@ func (h *DashboardHandler) probeOAuthConnection(ctx context.Context, conn *model
 	}
 
 	switch provider {
-	case "gemini-cli", "antigravity":
+	case "gemini-cli", "antigravity", "agy":
 		attempt := probeCloudCodeAssist(ctx, client, provider, accessToken)
 		if attempt.valid {
 			return probeOutcome{valid: true, refreshed: refreshed, tokens: tokens, appealURL: attempt.appealURL}
@@ -894,7 +898,7 @@ func classifyOAuthProbe(status int, cfg oauthProbeConfig) oauthProbeAttempt {
 // probeCloudCodeAssist ports probeCloudCodeAssistAccess.
 func probeCloudCodeAssist(ctx context.Context, client *http.Client, provider, accessToken string) oauthProbeAttempt {
 	userAgent := "google-api-nodejs-client/9.15.1 gemini-cli/0.34.0"
-	if provider == "antigravity" {
+	if provider == "antigravity" || provider == "agy" {
 		userAgent = providers.AntigravityCLIUserAgent
 	}
 	status, body, err := connectionProbeDo(ctx, client, http.MethodPost, cloudCodeAssistProbeURL, map[string]string{
