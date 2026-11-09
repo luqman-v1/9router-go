@@ -1,5 +1,182 @@
 # Changelog
 
+## [v1.9.16-exp.9] - 2026-11-10
+
+- **fix(media):** format xAI video start frame as `{ url }` object and forward `reference_images` ([#1037](https://github.com/luqman-v1/9router-go/pull/1037), closes [#1035](https://github.com/luqman-v1/9router-go/issues/1035)) — ports OmniRoute #19286
+
+### fix(codex): sanitize null usage token fields on response.completed event (#1033)
+
+Sanitize token count fields in Responses usage objects from JSON `null` to
+integer `0` on `response.completed` events and non-streaming responses,
+preventing deserialization failures (`invalid type: null, expected i64`) in typed
+clients such as Codex CLI and Rust SDKs.
+
+- `SanitizeResponsesNullUsage` sanitizes `null` values in token counter fields
+  (`total_tokens`, `input_tokens`, `output_tokens`, `prompt_tokens`,
+  `completion_tokens`, `cached_tokens`, etc.) to `0` when a usage object is
+  present, while preserving non-null usage numbers untouched.
+- `responsesSanitizingWriter` wraps client-facing Responses writers to ensure
+  both SSE stream frames and JSON responses never emit `null` token counters.
+- Table-driven unit tests and end-to-end handler tests in `internal/handlers/chat`.
+
+### fix(translator): always emit tool_result is_error for Zed Anthropic wire (#1032)
+
+Ensure every `tool_result` block emitted for Claude-compatible wires (such as Zed Editor's Anthropic completions wire) explicitly carries `is_error: bool`.
+
+- Port upstream `decolua/9router` PR #5544 / Issue #5543.
+- Introduce `ToolResultIsError` in `internal/translator` to detect error signals across `is_error`, `isError`, `status: "error"`, JSON error objects, and error message prefixes.
+- Always populate `is_error: bool` in `convertOpenAIMessagesToClaude` and `zedNormalizeClaudeContent`.
+- Add table-driven unit tests and Zed completions replay tests.
+
+### fix(quota): catch Claude resets missed between auto-ping ticks
+
+Catch up an already observed, due, unpinged Claude reset deadline while retaining the newly observed reset for the next cycle. Keep the missed deadline pending if its HTTP request fails or transport errors, then retry after the failure cooldown. Mark the caught-up cycle only after a successful ping.
+
+### fix(claude): rename tool_reference blocks when cloaking tools (#1025)
+
+Rename `tool_reference` blocks (`tool_name` and `name`) in message content and
+nested `tool_result.content[]` during Claude OAuth tool cloaking so deferred
+tool loading in Claude Code v2.1+ matches the suffixed tool declarations
+without 400 "Tool reference '<name>' not found in available tools".
+Port of upstream decolua/9router PR #5537 / Issue #5536.
+
+### feat(parity): port upstream v0.5.116 features and fixes
+
+- **OpenCode Go endpoint update**: Migrated `opencode-go` default and transport endpoints from retired `/zen/go/v1` to `https://opencode.ai/inference/go/openai/v1` and `https://opencode.ai/inference/go/anthropic/v1/messages`.
+- **Codex Image (GPT Image 2.6)**: Added `gpt-image-2.6-flare` and `gpt-image-2.6-sunburst` to Codex provider registry, image tools list, and frontend model catalogue.
+- **Claude Code Tool Deduplication**: Added `CleanStrippedToolReferences` to remove dangling `tool_reference` blocks in `tool_result` history for tools that were stripped or deduplicated, preventing upstream 400 errors (z.ai code 1210).
+- **DeepSeek Thinking Budget for Compatible Nodes**: Preserved explicit `thinking.budget_tokens` for dynamic `openai-compatible-*` providers (vLLM, SGLang) while retaining legacy bare markers for registered DeepSeek hosts.
+- **Kiro Hostname Regionalization**: Restricted AWS hostname regionalization to covered regions (`q`: `us-east-1`, `eu-central-1`; `codewhisperer`: `us-east-1`), preventing unresolvable hostnames and token redirection.
+- **Web Fetch Output Format**: Honored requested format by forwarding `x-respond-with` to Jina Reader and `format` in payload to Tavily, while validating supported format sets.
+
+### feat(usage): display average generation speed (TPS) per model in Usage breakdown table
+
+- **Per-model TPS aggregation**: Added `Repo.GetModelTPSSince` to compute aggregate generation speed (tokens per second) for each model from successful `requestDetails` observations within the active time window (e.g. today).
+- **Usage stats API**: `HandleUsageStats` now populates `avgSpeed` and `avgTps` on `ByModel` entries when the model view is requested.
+- **Breakdown table UI**: `UsageBreakdownTable` displays a dedicated, sortable **Avg Speed** column (`tok/s`) when viewing models in both Costs and Tokens modes.
+
+### Gemini thought summaries streamed by default
+
+Gemini 3.8 Flash and Gemini 4 Argon now stream thought summaries during
+thinking by default (`includeThoughts: true` on the gemini-level wire
+format), keeping the gateway stream watchdog from terminating idle
+thinking connections as stalled. Clients can opt out via
+`include_thoughts: false` / `includeThoughts: false` in the OpenAI
+request body. Explicit opt-out is respected; when the effective thinking
+level is minimal (no thinking on the wire), `includeThoughts` stays
+false.
+
+### Codex: translate Claude Code web_search_20250305 to native web_search
+
+Translate Claude Code's `web_search_20250305` function tool declaration and
+forced tool choice into Codex-native `web_search`, using the existing Codex
+account without an MCP replacement or separate search provider.
+
+- Recognize `web_search_20250305` as Codex native `web_search` in the Responses
+  request transform, for both Responses-shaped and Chat Completions-shaped bodies.
+- Convert a forced tool_choice naming `web_search_20250305` into the
+  Codex-native `web_search` choice.
+- Render search results into citation text for Claude Code-readable search blocks.
+- Report unsupported controls and failed/incomplete search responses instead of
+  returning an unanswered function call or an empty success.
+
+Adds comprehensive table-driven tests for tool declaration translation, streaming
+output chunking, and error cases.
+
+Port of upstream decolua/9router PR #5496 / Issue #5485. Fixes #1018.
+
+### fix(combos): aggregate combo maxOutput as min, not max
+
+- Combo capabilities now fold `maxOutput` with the same minimum-positive rule as
+  `contextWindow`, so a combo never advertises an output ceiling its most
+  constrained member cannot serve. Zero/unbounded never wins unless every leaf
+  is unbounded.
+
+### fix(antigravity): store verification and appeal links for agy provider connections
+
+- Scope `agy` (Antigravity CLI) directly into `oauthProbeConfigs` and the cloudcode
+  probe switch in `connection_probe.go` so TOS ban detection, appeal URL capture
+  (`providerSpecificData.verificationUrl`), and `lastError` redaction work
+  identically for `agy` connections without modifying `ProviderAliasMap`.
+
+### fix(translator): normalize colliding assistant reasoning aliases
+
+Some clients (or replayed tool histories from other models) replay assistant messages that contain both string `reasoning` and `reasoning_content` (or both names are present). When sent to strict OpenAI-compatible providers, these providers deserialize these names as colliding aliases of one field, resulting in HTTP 400 validation error: "duplicate field" or schema collision.
+
+In `internal/translator/openai_filter_messages.go`, `filterMessages` now drops only the colliding string `reasoning` when an assistant message also carries `reasoning_content`:
+
+- Structured reasoning (map/array like `{"effort": "high"}`) is preserved and NOT stripped — only string `reasoning` that collides with `reasoning_content` is removed.
+- Explicitly supplied canonical values (`reasoning_content: ""` or `nil`) are retained.
+- If only `reasoning` exists (without `reasoning_content`), it is preserved as-is.
+- The message is shallow-copied before mutation so original slice elements are not mutated in-place.
+
+Fixes #1012
+
+### fix(codex): strip Agent tool isolation property and preserve optional tool arguments for Responses
+
+- **Strip `Agent` isolation for non-Anthropic targets**: Strips the optional `isolation` property (`worktree`, `remote`) from `Agent` tool schemas in `NormalizeToolSchemasForProvider` and `buildResponsesBody` when routing requests to Codex, OpenAI, and DeepSeek. Non-Anthropic models frequently over-interpret the `worktree` enum and defensive instructions when operating inside Claude Code, causing recursive no-op/blocked probing loops.
+- **Strip isolation from history tool calls**: When forwarding previous `Agent` tool calls in conversation history to Codex (`buildResponsesBody`), automatically deletes `"isolation"` from the arguments so models do not mimic past worktree attempts in an autoregressive loop.
+- **Default non-strict Responses tools**: Explicitly defaults `tool["strict"] = false` for Chat Completions tools transformed into Responses API format, preventing the Codex backend from treating omitted optional fields (`isolation`, `effort`) as mandatory structured output schemas.
+
+### feat(web): banned tab, appeal URL, provider risk notice (#1004)
+
+List banned accounts in their own tab (Active / Error / Banned), surface
+the appeal URL, and show the provider risk notice. Dashboard side of
+#1004; depends on backend half #996.
+
+- Banned tab classification is driven from the persisted ban signal in
+  conn.lastError (the deactivation sentence, or tos_violation together
+  with cloudcode-pa), never a date heuristic or a hardcoded provider id.
+  A banned connection is excluded from Error.
+- Submit Appeal renders when providerSpecificData.verificationUrl passes
+  host allowlisting (forms.gle, accounts.google.com,
+  docs.google.com/forms/) and opens it in a new tab with rel="noopener
+  noreferrer". Invalid URLs render nothing.
+- Risk notice is driven from connection auth type (oauth) and registry
+  notice text instead of a hardcoded antigravity check.
+
+Tests: web/src/lib/ban.test.ts. Verified with bun run build, svelte-check
+ratchet, oxlint --deny-warnings, bun test, go test ./web/...
+
+### feat(antigravity): bound per-connection concurrency, backoff, circuit breaker
+
+- Adds `internal/connlimit`: a per-connection admission controller keyed by
+  connection ID (not per provider, not global). It caps in-flight upstream
+  requests at a default of 3 per Antigravity connection (`DefaultConcurrency`).
+  Over the limit the request fails fast with a labelled error naming the limit
+  (`ErrConnLimit`) — never unbounded queueing, no goroutine per request.
+- On repeated 403/429 from one connection, the next attempt widens an
+  exponential, jittered backoff (2s, 4s, 8s … capped at 1 minute). It resets
+  only on a successful upstream response — never on a token refresh. A 403
+  `TOS_VIOLATION` bypasses backoff and breaker entirely, matching #996's
+  permanent handling (regression-pinned by test).
+- Per-connection circuit breaker: 3 consecutive failures open it; fail fast
+  locally with zero upstream calls until the 30s cool-down, then exactly one
+  half-open probe. Released on connection delete and on re-authentication.
+- Bounded state: the registry is capped at 10,000 connections and evicts the
+  least-recently-active entry, so it cannot grow without bound on
+  client-supplied IDs. Deleting a connection drops its breaker/backoff entry
+  (dashboard `DELETE /api/connections/{id}` now calls `connlimit.Close`), and
+  re-authentication clears it too.
+- Wired into the Antigravity dispatch path (`forwardGeminiNativeRequest`):
+  `connlimit.Allow` then `connlimit.Acquire` before every upstream call, with
+  `RecordSuccess`/`RecordFailure` charged on completion.
+- Tests: concurrency bound (at most N upstream calls for N+1 concurrent
+  requests), progressive backoff delay computed without sleeping, TOS_VIOLATION
+  bypass, open-breaker → zero calls → exactly one probe after cool-down,
+  delete evicts state (map shrinks), goroutine-leak assertion.
+
+### fix(compatible-node): align chat path and probe route completion for OpenAI-compatible nodes
+
+- Export `ChatCompletionsURL` with last-segment routing logic so vendor-prefixed bases (e.g. `https://anyrouter.dev/api/v1`) resolve to the chat-completions lane instead of being treated as a named endpoint.
+- Add `CompatibleNodeModelsURL` that derives the `/models` endpoint from the completed chat route, so the live catalog fetch, dashboard "Import from /models", the connection probe, and both validate handlers all agree on the same URL.
+- `fetchCompatibleNodeModels` falls back to the provider node row's `baseUrl` when a connection carries only the key, so configured nodes publish a live model list.
+- Dashboard node/key probes now complete the base URL the same way the chat path does, so a bare host gains `/v1` and a versioned base keeps its prefix.
+- `listURL` in the dashboard's connection models handler no longer appends a raw `/models`, avoiding the doubled-version bug (e.g. `/api/v1/v1/models`).
+- `lint`: no ineffassign in `connections.go` listURL handling.
+
+Verified: `go test ./internal/handlers/chat/...` and `go test ./internal/handlers/dashboard/...` pass, including new tests covering bare-host, vendor-segment-before-version, versioned, and named-route cases.
+
 ## [v1.9.16-exp.8] - 2026-11-08
 
 ### Port upstream: SenseNova models + Gemini remote-image MIME fallback
