@@ -1319,7 +1319,7 @@ func convertOpenAIMessagesToClaude(messages []any) (systemText string, claudeMes
 			// that re-serialize the block through a strict Rust struct — Zed
 			// answers "missing field `is_error`" to a request Anthropic itself
 			// accepts. Emitting it always keeps one body valid on both.
-			isError, _ := msgMap["is_error"].(bool)
+			isError := translator.ToolResultIsError(msgMap)
 			intermediate = append(intermediate, map[string]any{
 				"role": "user",
 				"content": []any{
