@@ -29,6 +29,8 @@ export interface UsageItem {
   endpoint?: string
   provider?: string
   key?: string
+  avgTps?: number | null
+  avgSpeed?: number | null
 }
 
 export interface RecentRequestItem {
