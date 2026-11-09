@@ -19,6 +19,20 @@ func filterMessages(msgs []any, opts FilterOptions) ([]any, bool) {
 			continue
 		}
 		role, _ := msg["role"].(string)
+		// Some OpenAI-compatible providers deserialize `reasoning` and
+		// `reasoning_content` as aliases of one field. When an assistant
+		// message carries both, keep the explicit canonical `reasoning_content`
+		// and drop only the colliding string `reasoning`. Structured reasoning
+		// (map/array) is preserved, and a standalone `reasoning` is untouched.
+		if role == "assistant" {
+			if _, isStr := msg["reasoning"].(string); isStr {
+				if _, hasRC := msg["reasoning_content"]; hasRC {
+					msg = shallowCopy(msg)
+					delete(msg, "reasoning")
+					changed = true
+				}
+			}
+		}
 		if opts.StrictReasoningRemoving && role == "assistant" {
 			copied := false
 			for _, key := range []string{"reasoning_content", "reasoning", "reasoning_details"} {
