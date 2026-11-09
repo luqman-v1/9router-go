@@ -126,3 +126,116 @@ func TestTranslateOpenAIToGemini_ThinkingParity(t *testing.T) {
 		}
 	})
 }
+
+func TestTranslateOpenAIToGemini_IncludeThoughtsDefault(t *testing.T) {
+	translate := func(body string) []byte {
+		out, err := TranslateOpenAIToGemini([]byte(body))
+		if err != nil {
+			t.Fatalf("TranslateOpenAIToGemini: %v", err)
+		}
+		return out
+	}
+
+	t.Run("gemini-3.8-flash high effort streams thoughts by default", func(t *testing.T) {
+		out := translate(`{"model":"gemini-3.8-flash","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`)
+		tc := geminiThinkingConfig(t, out)
+		if tc["thinkingLevel"] != "high" {
+			t.Fatalf("thinkingLevel = %v, want high", tc["thinkingLevel"])
+		}
+		if tc["includeThoughts"] != true {
+			t.Fatalf("includeThoughts = %v, want true", tc["includeThoughts"])
+		}
+	})
+
+	t.Run("gemini-4-argon high effort streams thoughts by default", func(t *testing.T) {
+		out := translate(`{"model":"gemini-4-argon","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`)
+		tc := geminiThinkingConfig(t, out)
+		if tc["thinkingLevel"] != "high" {
+			t.Fatalf("thinkingLevel = %v, want high", tc["thinkingLevel"])
+		}
+		if tc["includeThoughts"] != true {
+			t.Fatalf("includeThoughts = %v, want true", tc["includeThoughts"])
+		}
+	})
+
+	t.Run("gemini-3-pro none has includeThoughts false", func(t *testing.T) {
+		out := translate(`{"model":"gemini-3-pro","reasoning_effort":"none","messages":[{"role":"user","content":"hi"}]}`)
+		tc := geminiThinkingConfig(t, out)
+		if tc["thinkingLevel"] != "minimal" {
+			t.Fatalf("thinkingLevel = %v, want minimal", tc["thinkingLevel"])
+		}
+		if tc["includeThoughts"] != false {
+			t.Fatalf("includeThoughts = %v, want false", tc["includeThoughts"])
+		}
+	})
+
+	t.Run("gemini-3.8-flash none clamps to low but streams thoughts", func(t *testing.T) {
+		out := translate(`{"model":"gemini-3.8-flash","reasoning_effort":"none","messages":[{"role":"user","content":"hi"}]}`)
+		tc := geminiThinkingConfig(t, out)
+		if tc["thinkingLevel"] != "low" {
+			t.Fatalf("thinkingLevel = %v, want low (minimal clamped)", tc["thinkingLevel"])
+		}
+		if tc["includeThoughts"] != true {
+			t.Fatalf("includeThoughts = %v, want true (thinking active on wire)", tc["includeThoughts"])
+		}
+	})
+}
+
+func TestTranslateOpenAIToGemini_IncludeThoughtsOptOut(t *testing.T) {
+	translate := func(body string) []byte {
+		out, err := TranslateOpenAIToGemini([]byte(body))
+		if err != nil {
+			t.Fatalf("TranslateOpenAIToGemini: %v", err)
+		}
+		return out
+	}
+
+	t.Run("include_thoughts false opts out on gemini-3.8-flash", func(t *testing.T) {
+		out := translate(`{"model":"gemini-3.8-flash","reasoning_effort":"high","include_thoughts":false,"messages":[{"role":"user","content":"hi"}]}`)
+		tc := geminiThinkingConfig(t, out)
+		if tc["includeThoughts"] != false {
+			t.Fatalf("includeThoughts = %v, want false", tc["includeThoughts"])
+		}
+		if tc["thinkingLevel"] != "high" {
+			t.Fatalf("thinkingLevel = %v, want high", tc["thinkingLevel"])
+		}
+	})
+
+	t.Run("includeThoughts false opts out on gemini-3.8-flash", func(t *testing.T) {
+		out := translate(`{"model":"gemini-3.8-flash","reasoning_effort":"high","includeThoughts":false,"messages":[{"role":"user","content":"hi"}]}`)
+		tc := geminiThinkingConfig(t, out)
+		if tc["includeThoughts"] != false {
+			t.Fatalf("includeThoughts = %v, want false", tc["includeThoughts"])
+		}
+		if tc["thinkingLevel"] != "high" {
+			t.Fatalf("thinkingLevel = %v, want high", tc["thinkingLevel"])
+		}
+	})
+
+	t.Run("include_thoughts false after clamp on gemini-3.8-flash", func(t *testing.T) {
+		out := translate(`{"model":"gemini-3.8-flash","reasoning_effort":"none","include_thoughts":false,"messages":[{"role":"user","content":"hi"}]}`)
+		tc := geminiThinkingConfig(t, out)
+		if tc["thinkingLevel"] != "low" {
+			t.Fatalf("thinkingLevel = %v, want low (minimal clamped)", tc["thinkingLevel"])
+		}
+		if tc["includeThoughts"] != false {
+			t.Fatalf("includeThoughts = %v, want false (client opted out)", tc["includeThoughts"])
+		}
+	})
+
+	t.Run("includeThoughts true keeps thoughts on gemini-3-pro", func(t *testing.T) {
+		out := translate(`{"model":"gemini-3-pro","reasoning_effort":"high","includeThoughts":true,"messages":[{"role":"user","content":"hi"}]}`)
+		tc := geminiThinkingConfig(t, out)
+		if tc["includeThoughts"] != true {
+			t.Fatalf("includeThoughts = %v, want true", tc["includeThoughts"])
+		}
+	})
+
+	t.Run("no include_thoughts field defaults to true when thinking active", func(t *testing.T) {
+		out := translate(`{"model":"gemini-3-pro","reasoning_effort":"medium","messages":[{"role":"user","content":"hi"}]}`)
+		tc := geminiThinkingConfig(t, out)
+		if tc["includeThoughts"] != true {
+			t.Fatalf("includeThoughts = %v, want true", tc["includeThoughts"])
+		}
+	})
+}
