@@ -246,6 +246,18 @@ func TestApplyQwenDeepseekKimiMinimaxHunyuan(t *testing.T) {
 	if !reflect.DeepEqual(out["thinking"], map[string]any{"type": "enabled"}) || out["reasoning_effort"] != "high" {
 		t.Fatalf("deepseek → %+v", out)
 	}
+	// Strict DeepSeek-compatible nodes preserve explicit budget_tokens (decolua/9router #5108)
+	out = apply(t, "openai", "openai-compatible-sglang", "deepseek-v4-pro",
+		map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": 4096.0}}, nil)
+	if !reflect.DeepEqual(out["thinking"], map[string]any{"type": "enabled", "budget_tokens": 4096}) {
+		t.Fatalf("openai-compatible deepseek budget → %+v", out["thinking"])
+	}
+	// Registered deepseek provider keeps legacy bare marker
+	out = apply(t, "openai", "deepseek", "deepseek-v4-pro",
+		map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": 4096.0}}, nil)
+	if !reflect.DeepEqual(out["thinking"], map[string]any{"type": "enabled"}) {
+		t.Fatalf("registered deepseek budget → %+v", out["thinking"])
+	}
 	out = apply(t, "openai", "kimi", "kimi-k2.6",
 		map[string]any{"reasoning_effort": "high"}, nil)
 	if out["reasoning_effort"] != "high" {

@@ -444,6 +444,37 @@ func TestCodexImageBody_ToolModelPinsTheImageTool(t *testing.T) {
 	}
 }
 
+func TestCodexImageBody_GPTImage26Models(t *testing.T) {
+	for _, model := range []string{"gpt-image-2.6-flare", "gpt-image-2.6-sunburst"} {
+		t.Run(model, func(t *testing.T) {
+			cleanModel, respModel, toolModel := codexImageModels(model)
+			if cleanModel != model {
+				t.Fatalf("cleanModel = %s, want %s", cleanModel, model)
+			}
+			if respModel != codexImagesMainModel {
+				t.Errorf("respModel = %s, want %s", respModel, codexImagesMainModel)
+			}
+			if toolModel != model {
+				t.Errorf("toolModel = %s, want %s", toolModel, model)
+			}
+			req := &codexImageRequest{Prompt: "sunset", Size: "1024x1024"}
+			body, err := codexImageBody(req, respModel, toolModel)
+			if err != nil {
+				t.Fatalf("build body: %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			tools, _ := payload["tools"].([]any)
+			tool := tools[0].(map[string]any)
+			if tool["model"] != model {
+				t.Errorf("tool[model] = %v, want %s", tool["model"], model)
+			}
+		})
+	}
+}
+
 // A reference image turns a generate into an edit, and each reference is
 // bracketed by a marker so the model can tell them apart.
 func TestCodexImageBody_ReferencesBecomeEditWithMarkers(t *testing.T) {

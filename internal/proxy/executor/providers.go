@@ -1699,6 +1699,8 @@ func opencodeGoInferenceBase(base string) string {
 	switch {
 	case strings.HasSuffix(base, "/zen/go/v1"):
 		return strings.TrimSuffix(base, "/zen/go/v1") + "/inference/openai/v1"
+	case strings.HasSuffix(base, "/inference/go/openai/v1"):
+		return strings.TrimSuffix(base, "/inference/go/openai/v1") + "/inference/openai/v1"
 	case strings.HasSuffix(base, "/inference/openai/v1"):
 		return base
 	case strings.HasSuffix(base, "/inference/v1"):
@@ -1876,6 +1878,7 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		// The lane URL is what a relay forwards to, so it is built without a relay
 		// branch.
 		cfg := *req.Config
+		cfg.BaseURL = strings.Replace(cfg.BaseURL, "opencode.ai/zen/go/v1", "opencode.ai/inference/go/openai/v1", 1)
 		if !strings.HasSuffix(cfg.BaseURL, "/responses") {
 			baseURL := strings.TrimRight(cfg.BaseURL, "/")
 			if strings.HasSuffix(baseURL, "/chat/completions") {
@@ -1927,8 +1930,8 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	}
 
 	if opencodeGoMessagesModels[reqObj.Model] || opencodeGoMessagesModels[cleanModel] {
-		// Route to /zen/go/v1/messages (Anthropic/Claude format)
-		messagesURL := "https://opencode.ai/zen/go/v1/messages"
+		// Route to /inference/go/anthropic/v1/messages (Anthropic/Claude format)
+		messagesURL := "https://opencode.ai/inference/go/anthropic/v1/messages"
 		if req.Config != nil && req.Config.BaseURL != "" && !strings.Contains(req.Config.BaseURL, "opencode.ai") {
 			base := strings.TrimRight(req.Config.BaseURL, "/")
 			if strings.HasSuffix(base, "/chat/completions") {

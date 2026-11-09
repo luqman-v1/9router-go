@@ -89,7 +89,7 @@ func Apply(body map[string]any, target, provider, model string, override *Intent
 		display = override.Display
 	}
 	stripped := Strip(body)
-	applyFormat(wireFormat, body, cfg, caps, providers.GetThinkingLevels(provider, clean), display)
+	applyFormat(wireFormat, body, cfg, caps, providers.GetThinkingLevels(provider, clean), display, provider)
 	return body, changed || stripped || dialectKeyPresent(body)
 }
 
