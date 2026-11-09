@@ -403,7 +403,7 @@ func TestTranslateCodexClaudeWebSearchChoice(t *testing.T) {
 				t.Fatalf("unmarshal %s: %v", tt.body, err)
 			}
 			translateCodexClaudeWebSearchChoice(req)
-			tc, ok := req["tool_choice"]
+			tc := req["tool_choice"]
 			if tt.want == "" {
 				// translation left it untouched: must equal what the body sent
 				var before any
