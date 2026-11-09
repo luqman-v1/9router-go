@@ -42,6 +42,11 @@
   // version ignored them, so a 410 (this sign-in attempt expired) or a 502 showed
   // up as an indefinite "Waiting for authorisation…" with no way out.
   let pollFailures = $state(0)
+  let codeCopied = $state(false)
+  // Seconds since the code was issued. Shown after 45s so a stalled approval is
+  // visible as elapsed time rather than an indefinite spinner.
+  let waitedSeconds = $state(0)
+  let waitedTimer = $state<ReturnType<typeof setInterval> | null>(null)
 
   $effect(() => {
     if (!isOpen) {
@@ -78,6 +83,23 @@
       clearInterval(pollTimer)
       pollTimer = null
     }
+    if (waitedTimer) {
+      clearInterval(waitedTimer)
+      waitedTimer = null
+    }
+  }
+
+  // copyCode puts the code on the clipboard so it can be pasted on GitHub
+  // without transcription mistakes — the code is the one thing that must match
+  // exactly, and a mistyped one fails silently as a permanent "pending".
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(userCode)
+      codeCopied = true
+      setTimeout(() => (codeCopied = false), 2000)
+    } catch {
+      // Clipboard denied (insecure context): the code is on screen to type.
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent) {
@@ -106,6 +128,10 @@
       stopPolling()
       const interval = res.interval > 0 ? res.interval : 5
       pollTimer = setInterval(() => void pollOnce(), interval * 1000)
+      waitedSeconds = 0
+      waitedTimer = setInterval(() => {
+        waitedSeconds += 1
+      }, 1000)
     } catch (err) {
       error = err instanceof Error ? err.message : String(err)
     } finally {
@@ -155,6 +181,22 @@
         stopPolling()
       }
     }
+  }
+
+  // restart discards this attempt and mints a fresh code. Useful when a code has
+  // already been consumed or approved on a stale page: polling an abandoned
+  // session can only ever answer "pending".
+  function restart() {
+    stopPolling()
+    sessionId = ''
+    userCode = ''
+    verificationUri = ''
+    verificationUriComplete = ''
+    accepted = false
+    error = ''
+    pollFailures = 0
+    waitedSeconds = 0
+    phase = 'consent'
   }
 
   function cancel() {
@@ -245,25 +287,45 @@
       {:else if phase === 'code'}
         <div class="space-y-3">
           <p class="text-xs text-text-muted">
-            Enter this code on GitHub. This window updates by itself once you approve.
+            Open GitHub and approve the request. This window updates by itself once you do.
           </p>
           <div class="flex flex-wrap items-center gap-3 rounded-lg border border-border-subtle bg-surface-2 px-3 py-3">
+            <span class="text-[10px] font-medium uppercase tracking-wide text-text-subtle">Code</span>
             <code class="font-mono text-lg tracking-widest text-text-main">{userCode}</code>
-            {#if verificationUri}
-              <a
-                href={verificationUri}
-                target="_blank"
-                rel="noreferrer"
-                class="text-xs font-medium text-primary hover:underline"
-              >
-                {verificationUri}
-              </a>
-            {/if}
+            <button
+              type="button"
+              onclick={copyCode}
+              class="rounded-md border border-border px-2 py-0.5 text-[10px] font-medium text-text-muted hover:bg-surface-3"
+            >
+              {codeCopied ? 'Copied' : 'Copy'}
+            </button>
           </div>
+          <!-- The href carries verification_uri_complete (code pre-filled): a
+               bare github.com/login/device link loses the code, and since every
+               attempt mints a NEW code, landing on the bare page is how a user
+               ends up authorising a stale one and waiting forever. -->
+          <a
+            href={verificationUriComplete || verificationUri}
+            target="_blank"
+            rel="noreferrer"
+            class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-white hover:bg-primary-hover"
+          >
+            <span class="material-symbols-outlined text-[16px]" aria-hidden="true">open_in_new</span>
+            Open GitHub and approve
+          </a>
           <p class="flex items-center gap-2 text-xs text-text-muted">
             <span class="material-symbols-outlined animate-spin text-[16px]" aria-hidden="true">progress_activity</span>
-            Waiting for authorisation…
+            Waiting for authorisation… {#if waitedSeconds > 45}<span class="text-amber-500">({waitedSeconds}s — make sure you approved code {userCode}, not an earlier one)</span>{/if}
           </p>
+          <div class="flex justify-end">
+            <button
+              type="button"
+              onclick={restart}
+              class="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-text-muted hover:bg-surface-2"
+            >
+              Start over
+            </button>
+          </div>
         </div>
       {:else}
         <div class="space-y-3">
