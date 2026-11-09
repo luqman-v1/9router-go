@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -470,10 +471,10 @@ type RequestDetailPerfRow struct {
 // observation" rather than take the whole read down.
 const requestDetailPerfSelect = `
 	SELECT COALESCE(provider, ''), COALESCE(model, ''),
-	       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.latency.ttft'), 0) ELSE 0 END,
-	       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.latency.total'), 0) ELSE 0 END,
-	       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.tokens.completion_tokens'), 0) ELSE 0 END,
-	       CASE WHEN json_valid(data) THEN COALESCE(json_extract(data, '$.tokens.output_tokens'), 0) ELSE 0 END
+	       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.latency.ttft'), 0) AS INTEGER) ELSE 0 END,
+	       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.latency.total'), 0) AS INTEGER) ELSE 0 END,
+	       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.tokens.completion_tokens'), 0) AS INTEGER) ELSE 0 END,
+	       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.tokens.output_tokens'), 0) AS INTEGER) ELSE 0 END
 	FROM requestDetails`
 
 // GetRequestDetailPerf returns the latency observation of every request
@@ -569,6 +570,94 @@ func (r *Repo) GetModelLatency() ([]ModelLatencyAgg, error) {
 		out = append(out, agg)
 	}
 	return out, nil
+}
+
+// GetModelTPSSince computes the aggregate generation throughput (tokens per second)
+// for each model from successful requestDetails rows recorded since cutoff.
+func (r *Repo) GetModelTPSSince(ctx context.Context, since string) (map[string]float64, error) {
+	if r == nil || r.db == nil {
+		return nil, nil
+	}
+	query := `
+		SELECT COALESCE(provider, ''), COALESCE(model, ''),
+		       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.latency.ttft'), 0) AS INTEGER) ELSE 0 END,
+		       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.latency.total'), 0) AS INTEGER) ELSE 0 END,
+		       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.tokens.completion_tokens'), 0) AS INTEGER) ELSE 0 END,
+		       CASE WHEN json_valid(data) THEN CAST(COALESCE(json_extract(data, '$.tokens.output_tokens'), 0) AS INTEGER) ELSE 0 END
+		FROM requestDetails
+		WHERE (status = 'success' OR status = 'ok')`
+	args := []any{}
+	if since != "" {
+		query += " AND timestamp >= ?"
+		args = append(args, since)
+	}
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query request details tps: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type acc struct {
+		tokensSum int64
+		durMsSum  int64
+	}
+	byKey := make(map[string]*acc)
+
+	for rows.Next() {
+		var provider, model string
+		var ttftMs, totalMs, compTokens, outTokens int64
+		if err := rows.Scan(&provider, &model, &ttftMs, &totalMs, &compTokens, &outTokens); err != nil {
+			return nil, fmt.Errorf("scan request details tps: %w", err)
+		}
+		if totalMs <= 0 {
+			continue
+		}
+		tokens := compTokens
+		if tokens <= 0 {
+			tokens = outTokens
+		}
+		if tokens <= 0 {
+			continue
+		}
+
+		duration := totalMs
+		if ttftMs > 0 && totalMs > ttftMs && totalMs-ttftMs >= 50 {
+			duration = totalMs - ttftMs
+		}
+		if duration > 0 && float64(tokens)/float64(duration)*1000 > 300 && totalMs >= 50 {
+			duration = totalMs
+		}
+		if duration <= 0 {
+			continue
+		}
+
+		keys := []string{model}
+		if provider != "" {
+			keys = append(keys, model+" ("+provider+")")
+		}
+		for _, k := range keys {
+			a := byKey[k]
+			if a == nil {
+				a = &acc{}
+				byKey[k] = a
+			}
+			a.tokensSum += tokens
+			a.durMsSum += duration
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate request details tps: %w", err)
+	}
+
+	res := make(map[string]float64, len(byKey))
+	for k, a := range byKey {
+		if a.durMsSum > 0 && a.tokensSum > 0 {
+			tps := math.Round(float64(a.tokensSum)/(float64(a.durMsSum)/1000.0)*10) / 10
+			res[k] = tps
+		}
+	}
+	return res, nil
 }
 
 // UsageChartRow is one usageHistory row as the chart needs it: the bucket
@@ -741,8 +830,8 @@ type RequestDetailListRow struct {
 const requestDetailListSelect = `
 	SELECT id, timestamp, COALESCE(provider, ''), COALESCE(model, ''), COALESCE(connectionId, ''),
 	       COALESCE(status, ''),
-	       COALESCE(json_extract(data, '$.latency.ttft'), 0),
-	       COALESCE(json_extract(data, '$.latency.total'), 0),
+	       CAST(COALESCE(json_extract(data, '$.latency.ttft'), 0) AS INTEGER),
+	       CAST(COALESCE(json_extract(data, '$.latency.total'), 0) AS INTEGER),
 	       COALESCE(json_extract(data, '$.tokens'), '{}'),
 	       COALESCE(json_extract(data, '$.account'), ''),
 	       COALESCE(json_extract(data, '$.cost'), 0.0),

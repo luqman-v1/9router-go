@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
@@ -110,5 +111,46 @@ func TestGetModelLatencyEmptyRing(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Errorf("rows = %v, want none", rows)
+	}
+}
+
+func TestGetModelTPSSince(t *testing.T) {
+	database, err := OpenDatabase(filepath.Join(t.TempDir(), "tps.sqlite"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	if err := EnsureCoreSchema(database); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+
+	// 100 completion tokens in 1000ms (ttft 200ms -> gen 800ms): 100 / 0.8 = 125 tok/s
+	seedPerfRow(t, database, "r1", "openai", "gpt-4o",
+		`{"latency":{"ttft":200,"total":1000},"tokens":{"completion_tokens":100}}`)
+	// Error status row must not count toward TPS
+	if _, err := database.Exec(
+		`INSERT INTO requestDetails (id, timestamp, provider, model, connectionId, status, data)
+		 VALUES ('r2', '2026-10-06T01:00:00Z', 'openai', 'gpt-4o', 'conn-1', 'error', '{"latency":{"total":5000},"tokens":{"completion_tokens":0}}')`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	// Fractional float latency & token numbers must not cause scan errors (guarded by CAST ... AS INTEGER)
+	seedPerfRow(t, database, "r3", "anthropic", "claude-3-7-sonnet",
+		`{"latency":{"ttft":199.8,"total":1000.4},"tokens":{"completion_tokens":100.2}}`)
+
+	repo := NewRepo(database)
+	tpsMap, err := repo.GetModelTPSSince(context.Background(), "")
+	if err != nil {
+		t.Fatalf("GetModelTPSSince: %v", err)
+	}
+
+	if tps, ok := tpsMap["gpt-4o"]; !ok || tps != 125.0 {
+		t.Errorf("gpt-4o tps = %v (found %v), want 125.0", tps, ok)
+	}
+	if tps, ok := tpsMap["gpt-4o (openai)"]; !ok || tps != 125.0 {
+		t.Errorf("gpt-4o (openai) tps = %v (found %v), want 125.0", tps, ok)
+	}
+	if tps, ok := tpsMap["claude-3-7-sonnet"]; !ok || tps != 124.8 {
+		t.Errorf("claude-3-7-sonnet tps = %v (found %v), want 124.8", tps, ok)
 	}
 }
