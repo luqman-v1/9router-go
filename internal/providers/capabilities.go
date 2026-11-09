@@ -1309,7 +1309,8 @@ type CapabilitiesDetail struct {
 // (aggregateComboCapabilities). It is deliberately a different type: the union
 // drops thinkingEffortSupported, booleans fold with `some` — except tools, which
 // requires *every* leaf to support it — the thinking fields come from the first
-// leaf, the context window is the narrowest leaf and maxOutput the widest.
+// leaf, the context window is the narrowest leaf and maxOutput the narrowest
+// positive leaf (zero/unbounded never wins unless every leaf is unbounded).
 type ComboCapabilities struct {
 	Vision             bool    `json:"vision"`
 	PDF                bool    `json:"pdf"`
@@ -1352,10 +1353,10 @@ func AggregateComboCapabilities(leaves []CapabilitiesDetail) (ComboCapabilities,
 		merged.AudioOutput = merged.AudioOutput || leaf.AudioOutput
 		merged.Search = merged.Search || leaf.Search
 		merged.Tools = merged.Tools && leaf.Tools
-		if leaf.ContextWindow < merged.ContextWindow {
+		if leaf.ContextWindow > 0 && (merged.ContextWindow == 0 || leaf.ContextWindow < merged.ContextWindow) {
 			merged.ContextWindow = leaf.ContextWindow
 		}
-		if leaf.MaxOutput > merged.MaxOutput {
+		if leaf.MaxOutput > 0 && (merged.MaxOutput == 0 || leaf.MaxOutput < merged.MaxOutput) {
 			merged.MaxOutput = leaf.MaxOutput
 		}
 	}
