@@ -514,6 +514,28 @@ func TranslateOpenAIToGeminiWithSession(openaiBody []byte, sessionID string) ([]
 		probe["enable_thinking"] = true
 	}
 	intent := thinking.Extract(probe)
+	// Parse include_thoughts / includeThoughts from the raw OpenAI body for the
+	// gemini-level wire format. includeThoughts defaults to true when thinking
+	// is active on the wire (level != "minimal" after clamping); the client can
+	// opt out with include_thoughts: false / includeThoughts: false. When the
+	// effective level is "minimal" (no thinking), GeminiConfig ignores it.
+	if intent != nil {
+		var raw map[string]any
+		if err := json.Unmarshal(openaiBody, &raw); err == nil {
+			if v, ok := raw["include_thoughts"]; ok {
+				if b, ok := v.(bool); ok {
+					intent.IncludeThoughts = &b
+				}
+			}
+			if intent.IncludeThoughts == nil {
+				if v, ok := raw["includeThoughts"]; ok {
+					if b, ok := v.(bool); ok {
+						intent.IncludeThoughts = &b
+					}
+				}
+			}
+		}
+	}
 	// The capability rows are model patterns, and the pattern table carries no
 	// provider scope, so the lookup is provider-agnostic by design: a vendor
 	// prefix on the model id is stripped and the global row for the bare id
