@@ -412,3 +412,267 @@ func TestHandleGeminiStream_ResponsesClient(t *testing.T) {
 		t.Errorf("answer text did not survive the two hops:\n%s", out)
 	}
 }
+
+// TestResponses_SanitizeNullUsage_TableDriven tests that SanitizeResponsesNullUsage
+// converts null usage token count fields into integer 0 while preserving non-null usage numbers.
+func TestResponses_SanitizeNullUsage_TableDriven(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantTotal   *int
+		wantInput   *int
+		wantOutput  *int
+		wantPrompt  *int
+		wantComp    *int
+		wantCached  *int
+		wantNoNulls bool
+		wantSame    bool
+	}{
+		{
+			name:        "all token counts null on response.completed event",
+			input:       `{"type":"response.completed","response":{"usage":{"total_tokens":null,"input_tokens":null,"output_tokens":null}}}`,
+			wantTotal:   intPtr(0),
+			wantInput:   intPtr(0),
+			wantOutput:  intPtr(0),
+			wantNoNulls: true,
+		},
+		{
+			name:        "only total_tokens null",
+			input:       `{"type":"response.completed","response":{"usage":{"total_tokens":null}}}`,
+			wantTotal:   intPtr(0),
+			wantNoNulls: true,
+		},
+		{
+			name:        "normal non-null usage numbers preserved untouched",
+			input:       `{"type":"response.completed","response":{"usage":{"total_tokens":154,"input_tokens":120,"output_tokens":34}}}`,
+			wantTotal:   intPtr(154),
+			wantInput:   intPtr(120),
+			wantOutput:  intPtr(34),
+			wantNoNulls: true,
+			wantSame:    true,
+		},
+		{
+			name:        "partial null usage numbers",
+			input:       `{"type":"response.completed","response":{"usage":{"total_tokens":null,"input_tokens":100,"output_tokens":50}}}`,
+			wantTotal:   intPtr(0),
+			wantInput:   intPtr(100),
+			wantOutput:  intPtr(50),
+			wantNoNulls: true,
+		},
+		{
+			name:        "prompt and completion tokens null",
+			input:       `{"type":"response.completed","response":{"usage":{"prompt_tokens":null,"completion_tokens":null,"total_tokens":null}}}`,
+			wantPrompt:  intPtr(0),
+			wantComp:    intPtr(0),
+			wantTotal:   intPtr(0),
+			wantNoNulls: true,
+		},
+		{
+			name:        "nested token details with null",
+			input:       `{"type":"response.completed","response":{"usage":{"total_tokens":100,"input_tokens":100,"output_tokens":0,"input_tokens_details":{"cached_tokens":null}}}}`,
+			wantTotal:   intPtr(100),
+			wantInput:   intPtr(100),
+			wantOutput:  intPtr(0),
+			wantCached:  intPtr(0),
+			wantNoNulls: true,
+		},
+		{
+			name:        "top-level usage in non-streaming body",
+			input:       `{"id":"resp_1","object":"response","status":"completed","usage":{"total_tokens":null,"input_tokens":null,"output_tokens":null}}`,
+			wantTotal:   intPtr(0),
+			wantInput:   intPtr(0),
+			wantOutput:  intPtr(0),
+			wantNoNulls: true,
+		},
+		{
+			name:     "no usage field in event",
+			input:    `{"type":"response.output_text.delta","delta":"hi"}`,
+			wantSame: true,
+		},
+		{
+			name:     "explicit null usage object",
+			input:    `{"type":"response.completed","response":{"usage":null}}`,
+			wantSame: true,
+		},
+		{
+			name:        "SSE frame format with null usage",
+			input:       "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"total_tokens\":null,\"input_tokens\":null,\"output_tokens\":null}}}\n\n",
+			wantTotal:   intPtr(0),
+			wantInput:   intPtr(0),
+			wantOutput:  intPtr(0),
+			wantNoNulls: true,
+		},
+		{
+			name:        "SSE frame format with normal non-null usage",
+			input:       "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"total_tokens\":42,\"input_tokens\":30,\"output_tokens\":12}}}\n\n",
+			wantTotal:   intPtr(42),
+			wantInput:   intPtr(30),
+			wantOutput:  intPtr(12),
+			wantNoNulls: true,
+			wantSame:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeResponsesNullUsage([]byte(tt.input))
+
+			if tt.wantSame {
+				if string(got) != tt.input {
+					t.Errorf("expected untouched output %q, got %q", tt.input, string(got))
+				}
+				return
+			}
+
+			if tt.wantNoNulls && strings.Contains(string(got), "null") {
+				t.Errorf("sanitized output must not contain null token counts, got: %s", string(got))
+			}
+
+			// Extract usage map either directly or from SSE data line
+			dataJSON := extractJSONPayload(got)
+			var parsed map[string]any
+			if err := json.Unmarshal(dataJSON, &parsed); err != nil {
+				t.Fatalf("failed to unmarshal sanitized JSON %q: %v", string(dataJSON), err)
+			}
+
+			var usage map[string]any
+			if u, ok := parsed["usage"].(map[string]any); ok {
+				usage = u
+			} else if resp, ok := parsed["response"].(map[string]any); ok {
+				if u, ok := resp["usage"].(map[string]any); ok {
+					usage = u
+				}
+			}
+
+			if usage == nil {
+				t.Fatalf("expected usage map in parsed output: %v", parsed)
+			}
+
+			assertTokenField := func(field string, expected *int) {
+				if expected == nil {
+					return
+				}
+				v, exists := usage[field]
+				if !exists {
+					t.Errorf("expected field %q in usage map %v", field, usage)
+					return
+				}
+				fVal, ok := v.(float64)
+				if !ok {
+					t.Errorf("field %q is %T (%v), expected integer/number", field, v, v)
+					return
+				}
+				if int(fVal) != *expected {
+					t.Errorf("field %q = %d, want %d", field, int(fVal), *expected)
+				}
+			}
+
+			assertTokenField("total_tokens", tt.wantTotal)
+			assertTokenField("input_tokens", tt.wantInput)
+			assertTokenField("output_tokens", tt.wantOutput)
+			assertTokenField("prompt_tokens", tt.wantPrompt)
+			assertTokenField("completion_tokens", tt.wantComp)
+
+			if tt.wantCached != nil {
+				inDetails, _ := usage["input_tokens_details"].(map[string]any)
+				if inDetails == nil {
+					t.Errorf("expected input_tokens_details in usage: %v", usage)
+				} else {
+					fVal, ok := inDetails["cached_tokens"].(float64)
+					if !ok || int(fVal) != *tt.wantCached {
+						t.Errorf("cached_tokens = %v, want %d", inDetails["cached_tokens"], *tt.wantCached)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestHandleResponses_SanitizesNullUsageOnResponseCompleted verifies end-to-end
+// that when upstream Codex emits response.completed with null usage token counts,
+// the /v1/responses client receives valid integer 0 fields instead of nulls.
+func TestHandleResponses_SanitizesNullUsageOnResponseCompleted(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"total_tokens\":null,\"input_tokens\":null,\"output_tokens\":null}}}\n\n"))
+	}))
+	defer upstream.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedConnDB(t, database, "codex", "conn-responses-null-usage", "sk-codex", upstream.URL+"/responses")
+	handler := NewChatHandler(db.NewRepo(database))
+
+	req := httptest.NewRequest("POST", "/v1/responses", bytes.NewReader([]byte(fmt.Sprintf(responsesRequestBody, "codex/gpt-5.1"))))
+	rec := httptest.NewRecorder()
+	handler.HandleResponses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, "event: response.completed") {
+		t.Fatalf("response.completed event missing:\n%s", out)
+	}
+	if strings.Contains(out, `"total_tokens":null`) || strings.Contains(out, `"total_tokens": null`) {
+		t.Errorf("total_tokens was emitted as null in response.completed:\n%s", out)
+	}
+	if !strings.Contains(out, `"total_tokens":0`) && !strings.Contains(out, `"total_tokens": 0`) {
+		t.Errorf("total_tokens was not sanitized to 0:\n%s", out)
+	}
+	if !strings.Contains(out, `"input_tokens":0`) && !strings.Contains(out, `"input_tokens": 0`) {
+		t.Errorf("input_tokens was not sanitized to 0:\n%s", out)
+	}
+	if !strings.Contains(out, `"output_tokens":0`) && !strings.Contains(out, `"output_tokens": 0`) {
+		t.Errorf("output_tokens was not sanitized to 0:\n%s", out)
+	}
+}
+
+// TestHandleResponses_PreservesNonNullUsage verifies that normal non-null usage
+// numbers from a native Responses upstream are passed through untouched.
+func TestHandleResponses_PreservesNonNullUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"total_tokens\":154,\"input_tokens\":120,\"output_tokens\":34}}}\n\n"))
+	}))
+	defer upstream.Close()
+
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	seedConnDB(t, database, "codex", "conn-responses-non-null-usage", "sk-codex", upstream.URL+"/responses")
+	handler := NewChatHandler(db.NewRepo(database))
+
+	req := httptest.NewRequest("POST", "/v1/responses", bytes.NewReader([]byte(fmt.Sprintf(responsesRequestBody, "codex/gpt-5.1"))))
+	rec := httptest.NewRecorder()
+	handler.HandleResponses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, "event: response.completed") {
+		t.Fatalf("response.completed event missing:\n%s", out)
+	}
+	for _, want := range []string{`"total_tokens":154`, `"input_tokens":120`, `"output_tokens":34`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %s in output:\n%s", want, out)
+		}
+	}
+}
+
+func intPtr(i int) *int {
+	return &i
+}
+
+func extractJSONPayload(b []byte) []byte {
+	lines := bytes.Split(b, []byte("\n"))
+	for _, l := range lines {
+		trimmed := bytes.TrimLeft(l, " \t")
+		if bytes.HasPrefix(trimmed, []byte("data:")) {
+			return bytes.TrimSpace(trimmed[len("data:"):])
+		}
+	}
+	return bytes.TrimSpace(b)
+}
