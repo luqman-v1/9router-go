@@ -2,7 +2,10 @@ package executor
 
 import (
 	json "encoding/json/v2"
+	"strings"
 	"testing"
+
+	"9router/proxy/internal/translator"
 )
 
 // --- OpenAI -> Claude (convertOpenAIToolsToClaude) ---
@@ -91,10 +94,10 @@ func TestBuildResponsesBodyToolStrict(t *testing.T) {
 	}{
 		{"nested strict true", `{"type":"function","function":{"name":"probe","strict":true,"parameters":{"type":"object","properties":{}}}}`, true},
 		{"nested strict false", `{"type":"function","function":{"name":"probe","strict":false,"parameters":{"type":"object","properties":{}}}}`, false},
-		{"nested strict absent", `{"type":"function","function":{"name":"probe","parameters":{"type":"object","properties":{}}}}`, nil},
+		{"nested strict absent", `{"type":"function","function":{"name":"probe","parameters":{"type":"object","properties":{}}}}`, false},
 		{"flat strict true", `{"type":"function","name":"probe","strict":true,"parameters":{"type":"object","properties":{}}}`, true},
 		{"flat strict false", `{"type":"function","name":"probe","strict":false,"parameters":{"type":"object","properties":{}}}`, false},
-		{"flat strict absent", `{"type":"function","name":"probe","parameters":{"type":"object","properties":{}}}`, nil},
+		{"flat strict absent", `{"type":"function","name":"probe","parameters":{"type":"object","properties":{}}}`, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -160,5 +163,159 @@ func TestBuildResponsesBodyPassthroughKeepsStrict(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Responses normalizes omitted strict into a stricter schema. Chat tools must
+// retain their optional fields rather than forcing invented enum values.
+func TestBuildResponsesBodyPreservesOptionalToolArguments(t *testing.T) {
+	const parameters = `{"type":"object","properties":{"prompt":{"type":"string"},"isolation":{"type":"string","enum":["worktree"]},"effort":{"type":"string","enum":["low","medium","high"]}},"required":["prompt"]}`
+	tests := []struct {
+		name, tool string
+		wantStrict bool
+	}{
+		{"nested omitted", `{"type":"function","function":{"name":"probe","parameters":` + parameters + `}}`, false},
+		{"flat omitted", `{"type":"function","name":"probe","parameters":` + parameters + `}`, false},
+		{"explicit false", `{"type":"function","function":{"name":"probe","strict":false,"parameters":` + parameters + `}}`, false},
+		{"explicit true", `{"type":"function","function":{"name":"probe","strict":true,"parameters":` + parameters + `}}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := codexToolStrict(t, tt.tool)
+			strict, present := tool["strict"].(bool)
+			if !present || strict != tt.wantStrict {
+				t.Errorf("forwarded strict = %v, present = %v; want %v", tool["strict"], present, tt.wantStrict)
+			}
+			encoded, err := json.Marshal(tool["parameters"])
+			if err != nil {
+				t.Fatalf("marshal parameters: %v", err)
+			}
+			var schema struct {
+				Required []string `json:"required"`
+			}
+			if err := json.Unmarshal(encoded, &schema); err != nil {
+				t.Fatalf("decode schema: %v", err)
+			}
+			if len(schema.Required) != 1 || schema.Required[0] != "prompt" {
+				t.Errorf("required = %v; optional isolation and effort must remain optional", schema.Required)
+			}
+		})
+	}
+}
+
+func TestClaudeOptionalToolArgumentsRemainOptionalInResponses(t *testing.T) {
+	body := []byte(`{"model":"gpt-6.1-sol","max_tokens":128,"messages":[{"role":"user","content":"Use workspace chung; omit isolation."}],"tools":[{"name":"probe","description":"Do not invent optional arguments","input_schema":{"type":"object","properties":{"prompt":{"type":"string"},"isolation":{"type":"string","enum":["worktree"]}},"required":["prompt"]}}]}`)
+	chat, err := translator.TranslateClaudeToOpenAI(body)
+	if err != nil {
+		t.Fatalf("translate Claude request: %v", err)
+	}
+	responses, _, err := buildResponsesBody(chat)
+	if err != nil {
+		t.Fatalf("build Responses request: %v", err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(responses, &request); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	tools := toolList(request)
+	// Sol uses Responses Lite, whose declarations live in an input prefix.
+	if len(tools) == 0 {
+		items, _ := request["input"].([]any)
+		for _, raw := range items {
+			item, _ := raw.(map[string]any)
+			if item["type"] == "additional_tools" {
+				tools, _ = item["tools"].([]any)
+				break
+			}
+		}
+	}
+	if len(tools) != 1 {
+		t.Fatalf("tools = %d, want 1", len(tools))
+	}
+	tool := tools[0].(map[string]any)
+	strict, exists := tool["strict"].(bool)
+	if !exists || strict {
+		t.Fatalf("strict = %v, exists = %v; want explicit false", tool["strict"], exists)
+	}
+	schema := tool["parameters"].(map[string]any)
+	required := schema["required"].([]any)
+	if len(required) != 1 || required[0] != "prompt" {
+		t.Errorf("required = %v; isolation must remain optional", required)
+	}
+}
+
+func TestBuildResponsesBody_StripsAgentIsolationFromSchemaAndHistory(t *testing.T) {
+	chatBody := []byte(`{
+		"model": "gpt-6.1-sol",
+		"messages": [
+			{"role": "user", "content": "run task"},
+			{"role": "assistant", "content": null, "tool_calls": [
+				{"id": "call_1", "type": "function", "function": {"name": "Agent", "arguments": "{\"description\":\"task\",\"isolation\":\"worktree\",\"prompt\":\"do it\"}"}}
+			]},
+			{"role": "tool", "tool_call_id": "call_1", "content": "done"}
+		],
+		"tools": [
+			{"type": "function", "function": {
+				"name": "Agent",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"description": {"type": "string"},
+						"prompt": {"type": "string"},
+						"isolation": {"type": "string", "enum": ["worktree", "remote"]}
+					},
+					"required": ["description", "prompt"]
+				}
+			}}
+		]
+	}`)
+
+	respBody, _, err := buildResponsesBody(chatBody)
+	if err != nil {
+		t.Fatalf("buildResponsesBody failed: %v", err)
+	}
+
+	var respReq map[string]any
+	if err := json.Unmarshal(respBody, &respReq); err != nil {
+		t.Fatalf("unmarshal responses failed: %v", err)
+	}
+
+	// 1. Tool declaration must have isolation stripped
+	tools := toolList(respReq)
+	if len(tools) == 0 {
+		items, _ := respReq["input"].([]any)
+		for _, raw := range items {
+			item, _ := raw.(map[string]any)
+			if item["type"] == "additional_tools" {
+				tools, _ = item["tools"].([]any)
+				break
+			}
+		}
+	}
+	if len(tools) != 1 {
+		t.Fatalf("tools count = %d, want 1", len(tools))
+	}
+	toolMap := tools[0].(map[string]any)
+	paramsMap := toolMap["parameters"].(map[string]any)
+	props := paramsMap["properties"].(map[string]any)
+	if _, has := props["isolation"]; has {
+		t.Errorf("Agent tool schema still has isolation property: %v", props)
+	}
+
+	// 2. History tool call arguments must have isolation stripped
+	inputItems, _ := respReq["input"].([]any)
+	foundCall := false
+	for _, raw := range inputItems {
+		item, _ := raw.(map[string]any)
+		if item["type"] == "function_call" && item["name"] == "Agent" {
+			foundCall = true
+			args := item["arguments"].(string)
+			if strings.Contains(args, "worktree") || strings.Contains(args, "isolation") {
+				t.Errorf("history Agent tool call arguments still contain isolation: %s", args)
+			}
+		}
+	}
+	if !foundCall {
+		t.Error("expected function_call for Agent in input items")
 	}
 }

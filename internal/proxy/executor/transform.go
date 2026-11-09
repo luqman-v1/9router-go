@@ -382,11 +382,15 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 					cid = fmt.Sprintf("call_%d_%d", toolSeq, tcIdx)
 				}
 				pendingToolCallIDs = append(pendingToolCallIDs, cid)
+				args := tc.Function.Arguments
+				if name == "Agent" {
+					args = stripAgentIsolationFromArgs(args)
+				}
 				inputItems = append(inputItems, map[string]any{
 					"type":      "function_call",
 					"call_id":   clampCallID(cid),
 					"name":      name,
-					"arguments": tc.Function.Arguments,
+					"arguments": args,
 				})
 			}
 			toolSeq++
@@ -524,6 +528,16 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 						}
 					}
 				}
+				if toolName, _ := tool["name"].(string); toolName == "Agent" {
+					if pMap, ok := tool["parameters"].(map[string]any); ok {
+						if props, ok := pMap["properties"].(map[string]any); ok {
+							delete(props, "isolation")
+						}
+					}
+				}
+				// Chat tools are non-strict by default; Responses may normalize
+				// omitted strict and make optional parameters mandatory.
+				tool["strict"] = false
 				if strict != nil {
 					tool["strict"] = *strict
 				}
@@ -995,4 +1009,26 @@ func InjectReasoningContent(body []byte, provider string) []byte {
 		return body
 	}
 	return newBody
+}
+
+// stripAgentIsolationFromArgs removes "isolation" from the JSON arguments of an Agent tool call
+// in conversation history, breaking in-context repetition loops where a model mimics prior
+// worktree probe calls.
+func stripAgentIsolationFromArgs(raw string) string {
+	if !strings.Contains(raw, "isolation") {
+		return raw
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return raw
+	}
+	if _, has := m["isolation"]; !has {
+		return raw
+	}
+	delete(m, "isolation")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return string(out)
 }
