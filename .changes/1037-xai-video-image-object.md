@@ -1,0 +1,1 @@
+- **fix(media):** format xAI video start frame as `{ url }` object and forward `reference_images` ([#1037](https://github.com/luqman-v1/9router-go/pull/1037), closes [#1035](https://github.com/luqman-v1/9router-go/issues/1035)) — ports OmniRoute #19286

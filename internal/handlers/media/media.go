@@ -1044,6 +1044,9 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 
 			finalBody := handlerutil.UpdateModelInBody(body, subInfo.Model)
+			if isVideoCreateEndpoint(endpoint) && isXAIVideoProvider(subInfo.Provider) {
+				finalBody = formatXAIVideoPayload(finalBody)
+			}
 			// Cloudflare AI's flux-1-schnell schema rejects width/height — handled
 			// by the cloudflare image lane, not here.
 
@@ -1344,6 +1347,9 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		} else {
 			log.Warn("media", "multipart model rewrite skipped", "endpoint", endpoint, "error", err)
 		}
+	}
+	if isVideoCreateEndpoint(endpoint) && isXAIVideoProvider(modelInfo.Provider) && !isMultipartRequest(r) {
+		finalBody = formatXAIVideoPayload(finalBody)
 	}
 	client, clientErr := h.ChatH.GetClientForConnection(connData)
 	if clientErr != nil {
@@ -1697,6 +1703,53 @@ func wrapCopilotEmbeddingInput(body []byte) []byte {
 		return body
 	}
 	payload["input"] = []any{input}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// isXAIVideoProvider reports whether the resolved provider is xAI or grok-cli.
+func isXAIVideoProvider(provider string) bool {
+	canon := providers.ResolveAlias(provider)
+	return canon == "xai" || canon == "grok-cli"
+}
+
+// formatXAIVideoPayload ensures the start frame is formatted as { "url": ... }
+// for xAI video generation and edits, and forwards reference_images when present.
+// xAI API fails with HTTP 422 if image is a bare string.
+func formatXAIVideoPayload(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
+		return body
+	}
+
+	modified := false
+	if img, ok := payload["image"]; ok {
+		switch v := img.(type) {
+		case string:
+			payload["image"] = map[string]any{"url": v}
+			modified = true
+		case map[string]any:
+			// Already an object (e.g. {"url": ...} or {"file_id": ...}), keep untouched
+		default:
+			// If invalid type like number/boolean, delete it so xAI doesn't error on type
+			delete(payload, "image")
+			modified = true
+		}
+	}
+
+	if refImgs, ok := payload["reference_images"]; ok {
+		if _, isSlice := refImgs.([]any); !isSlice {
+			delete(payload, "reference_images")
+			modified = true
+		}
+	}
+
+	if !modified {
+		return body
+	}
 	out, err := json.Marshal(payload)
 	if err != nil {
 		return body

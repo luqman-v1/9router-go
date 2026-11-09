@@ -107,6 +107,9 @@ func statusForModelErr(err error) int {
 func (h *ChatHandler) forwardMultimodal(w http.ResponseWriter, r *http.Request, ctx *modelsProviderCtx, path string, body []byte) {
 	url := multimodalPath(ctx.providerCfg, path)
 	finalBody := handlerutil.UpdateModelInBody(body, ctx.modelInfo.Model)
+	if strings.HasPrefix(path, "/videos") && (ctx.modelInfo.Provider == "xai" || ctx.modelInfo.Provider == "grok-cli" || resolveProviderAlias(ctx.modelInfo.Provider) == "xai" || resolveProviderAlias(ctx.modelInfo.Provider) == "grok-cli") {
+		finalBody = formatXAIVideoPayload(finalBody)
+	}
 
 	req, err := http.NewRequestWithContext(r.Context(), "POST", url, strings.NewReader(string(finalBody)))
 	if err != nil {
@@ -341,4 +344,45 @@ func (h *ChatHandler) HandleVideoGet(w http.ResponseWriter, r *http.Request) {
 	if resp.StatusCode == http.StatusOK {
 		h.Repo.UpdateConnectionLastUsed(conn.ID)
 	}
+}
+
+// formatXAIVideoPayload ensures the start frame is formatted as { "url": ... }
+// for xAI video generation and edits, and forwards reference_images when present.
+// xAI API fails with HTTP 422 if image is a bare string.
+func formatXAIVideoPayload(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
+		return body
+	}
+
+	modified := false
+	if img, ok := payload["image"]; ok {
+		switch v := img.(type) {
+		case string:
+			payload["image"] = map[string]any{"url": v}
+			modified = true
+		case map[string]any:
+			// Already an object (e.g. {"url": ...} or {"file_id": ...}), keep untouched
+		default:
+			// If invalid type like number/boolean, delete it so xAI doesn't error on type
+			delete(payload, "image")
+			modified = true
+		}
+	}
+
+	if refImgs, ok := payload["reference_images"]; ok {
+		if _, isSlice := refImgs.([]any); !isSlice {
+			delete(payload, "reference_images")
+			modified = true
+		}
+	}
+
+	if !modified {
+		return body
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
 }
