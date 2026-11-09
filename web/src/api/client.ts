@@ -2197,6 +2197,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ code, codeVerifier }),
     }),
+  perchAuthorize: (provider: 'google' | 'github') =>
+    request<{ url: string; authUrl: string; state: string; codeVerifier: string; redirectUri: string }>(
+      `/api/oauth/perch/authorize?provider=${provider}`,
+    ),
+  perchExchange: (code: string, codeVerifier: string, provider?: 'google' | 'github') =>
+    request<{ success: boolean; id?: string; error?: string }>('/api/oauth/perch/exchange', {
+      method: 'POST',
+      body: JSON.stringify({ code, codeVerifier, provider }),
+    }),
   getSystemVersion: () => request<SystemVersionInfo>('/api/version'),
   /**
    * Uploads the white-label logo as multipart/form-data. The body is a

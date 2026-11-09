@@ -540,6 +540,8 @@ func mountOAuthRoutes(r interface {
 	r.Post("/api/oauth/iflow/cookie", oauthH.HandleIflowCookie)
 	r.Get("/api/oauth/xiaomi-mimo/authorize", oauthH.HandleMimoAuthorize)
 	r.Post("/api/oauth/xiaomi-mimo/exchange", oauthH.HandleMimoExchange)
+	r.Get("/api/oauth/perch/authorize", oauthH.HandlePerchAuthorize)
+	r.Post("/api/oauth/perch/exchange", oauthH.HandlePerchExchange)
 }
 
 // SetupServerRouter mounts public endpoints (/health, /api/hello) and

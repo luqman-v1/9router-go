@@ -1,0 +1,7 @@
+### Added Perch (perchai.app) provider
+
+- New `perch` provider (`pc/` prefix) speaking Perch's CLI model-call proxy on `app.perchai.app` — the only hosted path Perch exposes. No official or upstream reference exists (nothing in decolua/9router or OmniRoute), so the wire protocol was recovered from the official CLI behavior and cross-checked against the open-source adapters (PerchAI2API, perchai2api, pi-perchai).
+- Sign-in is the official Supabase PKCE flow (Google/GitHub) plus `refresh_token` renewal through `internal/proxy/oauth`, so the saved connection stays fresh like the CLI's own session. The Supabase project URL is pinned before any credential is sent.
+- Turn tickets are minted per user turn with the CLI's 40-call budget and 5xx `enforced:false` advisory fallback; Perch's `reasoning_delta`/`answer_delta`/`done` stream is re-framed as OpenAI chat chunks with usage normalized (cached input inside `prompt_tokens`, reasoning a subset of output).
+- Starter pool (DeepSeek V4.1 Flash, GLM 5.3 Flash, Laguna S, Qwen 3.8 Max promo) and Pro named models both listed; a Starter account asking for Pro answers `starter_model_blocked` (403), exactly as Perch returns it.
+- ⚠️ Perch documents direct API access as not included in any plan and returns `perch_surface_required` to direct callers. This provider exists because the operator asked for it, but repeated direct use may put the account at risk of suspension. Usage is meant for local, personal use; for official API access, contact Perch.

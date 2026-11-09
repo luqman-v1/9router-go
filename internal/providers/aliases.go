@@ -103,6 +103,7 @@ var ProviderAliasMap = map[string]string{
 	"pplx-agent":     "perplexity-agent",
 	"pplx-responses": "perplexity-agent",
 	"pw":             "perplexity-web",
+	"pc":             "perch",
 	"qd":             "qoder",
 	"qdcn":           "qoder-cn",
 	"runway":         "runwayml",

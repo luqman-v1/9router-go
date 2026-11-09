@@ -445,6 +445,17 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Icon:         "bolt",
 		ServiceKinds: []string{"llm"},
 	},
+	"perch": {
+		ID:           "perch",
+		Name:         "Perch",
+		Alias:        "pc",
+		Category:     CategoryOAuth,
+		Color:        "#6d5ef0",
+		Icon:         "auto_awesome",
+		AuthHint:     "Sign in with Google or GitHub — Perch has no public API, the dashboard runs the Supabase PKCE flow and stores the session like the official CLI does.",
+		ServiceKinds: []string{"llm"},
+		Website:      "https://www.perchai.app",
+	},
 	"gemini-cli": {
 		ID:           "gemini-cli",
 		Name:         "Gemini CLI",
