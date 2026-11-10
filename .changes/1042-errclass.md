@@ -1,0 +1,6 @@
+### feat(errclass): provider-agnostic upstream error classification
+
+- New `internal/errclass` package classifies an upstream LLM error deterministically into a `Kind` (auth, rate limit, quota exhausted, context window, content filter, model unavailable, timeout, bad request, upstream) and a `Scope` (request, model, account, provider): `ClassifyDetail` applies strict precedence (provider error type, then body phrase, then numeric status), so the same status code and body always land in the same bucket.
+- Helpers for the shapes providers actually emit: `BodyErrorCode` (JSON-enveloped 429 — numeric code, numeric string, or Google status strings like `RESOURCE_EXHAUSTED`), `LooksLikeRateLimitWrapped`, `CapRetryAfter` (Retry-After capped at one hour), and `StreamErrorFrame` for in-band SSE error envelopes in the OpenAI, Anthropic, Gemini and generic shapes.
+- Deliberately standalone: nothing in the request path calls into it yet. The existing classifier answers "how long to back off", not "which routing verb"; the package doc names the intended consumers (chain/failover policy, observability) and the call sites to wire first.
+- Ported from KeiRouter (S-7 errclass); all upstream table cases carry over, plus precedence-pinning and scope-default cases.
