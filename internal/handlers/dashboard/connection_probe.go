@@ -115,6 +115,11 @@ var connectionProbeDo = func(ctx context.Context, client *http.Client, method, r
 	ctx, cancel := context.WithTimeout(ctx, connectionProbeTimeout)
 	defer cancel()
 
+	// Same identity rule as validateProbeDo: an unset User-Agent would go out
+	// as the Go default and be refused by an edge WAF (Nous Research's
+	// Cloudflare answers the probe's own /v1/chat/completions with 403).
+	headers = handlerutil.WithDefaultUserAgent(headers)
+
 	var reader io.Reader
 	if len(body) > 0 {
 		reader = bytes.NewReader(body)

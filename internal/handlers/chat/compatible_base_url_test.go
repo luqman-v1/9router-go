@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/models"
@@ -59,8 +60,10 @@ func TestFetchCompatibleNodeModelsRequestsVersionedModelsRoute(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var gotPath string
+			var gotUA string
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				gotPath = r.URL.Path
+				gotUA = r.Header.Get("User-Agent")
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"data":[{"id":"anyrouter/auto"},{"id":"deepseek/deepseek-v4.1-flash"}]}`))
 			}))
@@ -93,6 +96,12 @@ func TestFetchCompatibleNodeModelsRequestsVersionedModelsRoute(t *testing.T) {
 			}
 			if len(discovered) != 2 || discovered[0].ID != "anyrouter/auto" {
 				t.Fatalf("discovered = %+v, want the two upstream ids", discovered)
+			}
+			// A node's own host may sit behind an edge that refuses the Go
+			// default identity, which would leave the connection with no live
+			// catalogue at all.
+			if gotUA != constants.DefaultClientUserAgent {
+				t.Errorf("catalogue User-Agent = %q, want %q", gotUA, constants.DefaultClientUserAgent)
 			}
 		})
 	}
