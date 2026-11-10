@@ -57,15 +57,23 @@ func TestProcessCodexEvent_StableToolCallID(t *testing.T) {
 	}
 }
 
-// response.function_call_arguments.done must carry the same id/index as the
-// incremental deltas so the tool name attaches to the right tool call.
-func TestProcessCodexEvent_DoneCarriesToolCallID(t *testing.T) {
+// A conflicting snapshot cannot replace bytes already sent to a client.
+func TestProcessCodexEvent_DoneDoesNotAppendConflictingSnapshot(t *testing.T) {
 	state := &CodexStreamState{}
 	// First fragment assigns index 0 to call_abc.
 	ProcessCodexEvent(`{"type":"response.function_call_arguments.delta","call_id":"call_abc","delta":"{}","name":"Read"}`, state, "chatcmpl-x", 1)
 	out := ProcessCodexEvent(`{"type":"response.function_call_arguments.done","call_id":"call_abc","name":"Read","arguments":"{\"path\":\"/tmp\"}"}`, state, "chatcmpl-x", 1)
-	if len(out) == 0 {
-		t.Fatal("expected done chunk")
+	if len(out) != 0 {
+		t.Errorf("conflicting snapshot was appended to streamed arguments: %v", out)
+	}
+}
+
+func TestProcessCodexEvent_DoneSuffixKeepsDeltaOnlyToolCallID(t *testing.T) {
+	state := &CodexStreamState{}
+	ProcessCodexEvent(`{"type":"response.function_call_arguments.delta","call_id":"call_abc","delta":"{\"path\":"}`, state, "chatcmpl-x", 1)
+	out := ProcessCodexEvent(`{"type":"response.function_call_arguments.done","call_id":"call_abc","arguments":"{\"path\":\"/tmp\"}"}`, state, "chatcmpl-x", 1)
+	if len(out) != 1 {
+		t.Fatalf("expected one suffix chunk, got %v", out)
 	}
 	id, idx := parseToolCalls(t, out[0])
 	if id != "call_abc" || idx != 0 {

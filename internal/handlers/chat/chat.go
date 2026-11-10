@@ -9,6 +9,7 @@ import (
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/promptcache"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/semanticcache"
 	"9router/proxy/internal/thinking"
 	"9router/proxy/internal/translator"
@@ -88,6 +89,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	ctx = executor.WithCodexLiteHeader(ctx, r.Header.Get(executor.CodexResponsesLiteHeader))
 	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
 	// every token saver; the flag travels on ctx to applyTokenSavers.
 	if isTokenSaverBypassValue(r.Header.Get("X-9Router-Token-Saver")) {

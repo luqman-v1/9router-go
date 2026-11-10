@@ -264,9 +264,6 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 				}
 			}
 
-			translateCodexClaudeWebSearch(m)
-			translateCodexClaudeWebSearchChoice(m)
-			applyCodexModelShape(m, cleanModel)
 			out, err := marshalStable(m)
 			return out, cleanModel, err
 		}
@@ -285,6 +282,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		Reasoning           any            `json:"reasoning,omitempty"`
 		Tools               jsontext.Value `json:"tools,omitempty"`
 		ToolChoice          jsontext.Value `json:"tool_choice,omitempty"`
+		ParallelToolCalls   *bool          `json:"parallel_tool_calls,omitempty"`
 		ResponseFormat      jsontext.Value `json:"response_format,omitempty"`
 		// ServiceTier is carried through unchanged. Upstream does the same in
 		// open-sse/translator/request/openai-responses.js, and the Chat
@@ -576,9 +574,9 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		}
 	}
 
-	translateCodexClaudeWebSearch(respReq)
-	translateCodexClaudeWebSearchChoice(respReq)
-	applyCodexModelShape(respReq, cleanModel)
+	if oreq.ParallelToolCalls != nil {
+		respReq["parallel_tool_calls"] = *oreq.ParallelToolCalls
+	}
 	reqBody, err := marshalStable(respReq)
 	return reqBody, cleanModel, err
 }
