@@ -1,0 +1,5 @@
+### feat(dashboard): operator read for per-period budget
+- New `GET /api/keys/{id}/budget`: the key's effective per-period budget (plan first, then the key's own columns — the same precedence the request path enforces), spend in the open window, remaining headroom, status (`ok`/`approaching`/`exhausted`) and when the window rolls. The spend read is the same statement the middleware runs per request, so what the dashboard shows and what triggers a 402 are the same number. A key whose secret was hashed away (#199) gets a note instead of an invented zero.
+- The API-key policy modal can now set the key's own budget columns — cost ceiling (USD), token ceiling, period, alert %, hard cutoff — and shows the open-window spend with a status chip. The server accepted these fields on PUT but the UI had no way to set or see them.
+- Pinned the query plan of the per-request budget spend read: it must stay on the two ledger indexes (multi-index OR), never a SCAN of usageHistory.
+- Note: the budget engine itself (402 hard cutoff, alert headers, window resolution) is pre-existing; this PR adds the operator surface and the plan pin, and changes no request-path behavior.
