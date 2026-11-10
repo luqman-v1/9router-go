@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type APIKey, type APIKeyPolicy, type Combo, type Plan, type ProviderConnection, type ProviderNode } from '../../api/client'
+  import { api, type APIKey, type ApiKeyBudget, type APIKeyPolicy, type Combo, type Plan, type ProviderConnection, type ProviderNode } from '../../api/client'
   import { Loader2, Save, X } from 'lucide-svelte'
   import { isNavEntryHidden } from '../../lib/navVisibility.svelte'
   import { formatTokenAmount, parseTokenAmount } from '../../lib/tokenUnits'
@@ -28,6 +28,29 @@
   let tokenQuota = $state(formatTokenAmount(apiKey.tokenQuota ?? 0))
   let contextLimit = $state(formatTokenAmount(apiKey.contextLimit ?? 0))
   let queueTimeoutMs = $state(apiKey.queueTimeoutMs ?? 0)
+  // The per-period budget (F-2). Cost is a text dollar amount read into
+  // integer micros on save; tokens reuse the lifetime shorthand parser. A
+  // blank cost means "no cost limit", so 0 is the explicit clear and never a
+  // typo that silently removes the ceiling. hardCutoff starts armed (true)
+  // only when the key already spends against a budget, else it keeps whatever
+  // is stored.
+  let budgetLimitUsd = $state(
+    apiKey.limitMicros ? String(Number((apiKey.limitMicros / 1e6).toFixed(6))) : '',
+  )
+  let budgetLimitTokens = $state(formatTokenAmount(apiKey.limitTokens ?? 0))
+  let budgetPeriod = $state<string>(apiKey.budgetPeriod || 'monthly')
+  let alertPct = $state(apiKey.alertPct ?? 0)
+  let hardCutoff = $state(
+    (apiKey.limitMicros ?? 0) > 0 || (apiKey.limitTokens ?? 0) > 0
+      ? true
+      : (apiKey.hardCutoff ?? true),
+  )
+  // A key is "armed" when it already spends against a per-period budget. Only
+  // then does the modal fetch and show the open-window spend, which is
+  // read-only context and never part of what a save writes.
+  let isArmed = $derived((apiKey.limitMicros ?? 0) > 0 || (apiKey.limitTokens ?? 0) > 0)
+  let budget = $state<ApiKeyBudget | null>(null)
+  let budgetLoadError = $state(false)
 
   // expiresAt is stored as RFC3339. The input is a plain datetime-local because
   // the browser needs a local time and the server needs UTC; convert at the edge
@@ -167,6 +190,12 @@
   $effect(() => {
     if (!hasLoadedModels) loadModels()
     if (!plansHidden) void loadPlans()
+    // Open-window spend is read-only context, so a failed read must not block
+    // the save or clobber the shared error banner the save path owns. Both
+    // guards keep it to a single fetch: `budget === null` skips a refetch once
+    // it loaded, and `!budgetLoadError` skips a retry when it failed (leaving
+    // `budget` null would otherwise loop forever).
+    if (isArmed && budget === null && !budgetLoadError) void loadKeyBudget()
   })
 
   async function loadPlans() {
@@ -179,6 +208,38 @@
     } finally {
       isLoadingPlans = false
     }
+  }
+
+  async function loadKeyBudget() {
+    try {
+      budget = await api.getKeyBudget(apiKey.id)
+      budgetLoadError = false
+    } catch {
+      budgetLoadError = true
+    }
+  }
+
+  // Micros to dollars, two decimals, the same shape PlansView uses.
+  function fmtMicros(micros: number): string {
+    return `$${(micros / 1_000_000).toFixed(2)}`
+  }
+
+  // formatTokenAmount writes 0 as "", which would render "Spent  of ..."; the
+  // fallback keeps a zero axis legible.
+  function fmtTokens(tokens: number): string {
+    return formatTokenAmount(tokens) || '0'
+  }
+
+  // Status chip colours reuse the Badge palette: success / warning / danger.
+  const statusLabel: Record<ApiKeyBudget['status'], string> = {
+    ok: 'OK',
+    approaching: 'Approaching',
+    exhausted: 'Exhausted',
+  }
+  const statusClasses: Record<ApiKeyBudget['status'], string> = {
+    ok: 'bg-success/10 text-success border border-success/25',
+    approaching: 'bg-warning/10 text-warning border border-warning/25',
+    exhausted: 'bg-danger/10 text-danger border border-danger/25',
   }
 
   async function save(e: SubmitEvent) {
@@ -223,6 +284,30 @@
         isSaving = false
         return
       }
+      // Per-period cost budget. A blank is an explicit "no cost limit" (0),
+      // matching how the other unset columns read as unlimited; a value the
+      // parser cannot read is refused rather than stored as 0.
+      const rawUsd = budgetLimitUsd.trim()
+      let budgetMicros = 0
+      if (rawUsd) {
+        const parsed = Number.parseFloat(rawUsd)
+        if (Number.isNaN(parsed) || parsed < 0 || !Number.isFinite(parsed)) {
+          error = 'Period budget is not a dollar amount. Use a number like 25 or 25.50.'
+          isSaving = false
+          return
+        }
+        budgetMicros = Math.round(parsed * 1e6)
+      }
+      const periodTokens = tokenAmount(budgetLimitTokens, 'Period token budget')
+      if (periodTokens === null) {
+        isSaving = false
+        return
+      }
+      if (!Number.isFinite(alertPct) || alertPct < 0 || alertPct > 100) {
+        error = 'Alert percentage must be between 0 and 100.'
+        isSaving = false
+        return
+      }
       const policy: APIKeyPolicy = {
         rateLimitRpm: nonNegative(rpm),
         rateLimitTpm: nonNegative(tpm),
@@ -237,6 +322,14 @@
         // deliberate detach, and the server refuses an id that does not exist
         // rather than storing a dangling one.
         planId,
+        // Per-period budget. Always sending the cost as an explicit number
+        // matters: the server treats an omitted limitMicros as "keep stored
+        // value", so 0 is the only way to clear a cost limit.
+        limitMicros: budgetMicros,
+        limitTokens: periodTokens,
+        budgetPeriod,
+        alertPct,
+        hardCutoff,
       }
       await api.updateApiKeyPolicy(apiKey.id, policy)
       // The allowlist is part of the same policy the operator pressed Save for.
@@ -428,6 +521,122 @@
               Leave 0 for the server default.
             </p>
           </div>
+        </div>
+
+        <!-- Per-period budget (F-2). Cost and token ceilings reset on the
+             period below; open-window spend is read-only context loaded once
+             on open. -->
+        <div class="space-y-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label for="pol-bud-usd" class="block font-semibold text-text-muted mb-1">
+                Cost budget ($)
+              </label>
+              <input
+                id="pol-bud-usd"
+                type="text"
+                inputmode="decimal"
+                placeholder="25.00"
+                bind:value={budgetLimitUsd}
+                class="w-full bg-surface border border-border rounded-lg px-3 py-2 font-code text-xs text-text-main focus:outline-none focus:border-brand-500"
+              />
+              <p class="text-text-subtle mt-1">
+                USD the key may spend each {budgetPeriod}. Blank = no cost limit.
+              </p>
+            </div>
+            <div>
+              <label for="pol-bud-tok" class="block font-semibold text-text-muted mb-1">
+                Token budget
+              </label>
+              <input
+                id="pol-bud-tok"
+                type="text"
+                placeholder="1M"
+                bind:value={budgetLimitTokens}
+                class="w-full bg-surface border border-border rounded-lg px-3 py-2 font-code text-xs text-text-main focus:outline-none focus:border-brand-500"
+              />
+              <p class="text-text-subtle mt-1">
+                Prompt + completion tokens per period. Blank = no token limit.
+              </p>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label for="pol-bud-period" class="block font-semibold text-text-muted mb-1">
+                Period
+              </label>
+              <select
+                id="pol-bud-period"
+                bind:value={budgetPeriod}
+                class="w-full bg-surface border border-border rounded-lg px-3 py-2 text-xs text-text-main focus:outline-none focus:border-brand-500"
+              >
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+                <option value="total">Total — never resets</option>
+              </select>
+            </div>
+            <div>
+              <label for="pol-bud-alert" class="block font-semibold text-text-muted mb-1">
+                Alert at (%)
+              </label>
+              <input
+                id="pol-bud-alert"
+                type="number"
+                min="0"
+                max="100"
+                bind:value={alertPct}
+                class="w-full bg-surface border border-border rounded-lg px-3 py-2 font-code text-xs text-text-main focus:outline-none focus:border-brand-500"
+              />
+              <p class="text-text-subtle mt-1">
+                Warn at this share of the budget. 0 = no warning.
+              </p>
+            </div>
+          </div>
+
+          <label class="flex items-start gap-2 cursor-pointer">
+            <input type="checkbox" bind:checked={hardCutoff} class="mt-0.5" />
+            <span>
+              <span class="block font-semibold text-text-muted">Refuse when exhausted (402)</span>
+              <span class="text-text-subtle block">
+                Off = keep serving past the limit with a warning header only.
+              </span>
+            </span>
+          </label>
+
+          {#if isArmed}
+            {#if budgetLoadError}
+              <p class="text-text-subtle text-[11px]">Could not load period spend.</p>
+            {:else if budget}
+              <div class="mt-2 space-y-1 rounded-lg border border-border bg-surface-2 px-3 py-2 font-code text-[11px] text-text-main">
+                <p>
+                  {#if budget.limitMicros === 0}
+                    Spent {fmtMicros(budget.spentMicros)} (no cost limit)
+                  {:else}
+                    Spent {fmtMicros(budget.spentMicros)} of {fmtMicros(budget.limitMicros)}
+                  {/if}
+                </p>
+                <p>
+                  {#if budget.limitTokens === 0}
+                    Spent {fmtTokens(budget.spentTokens)} (no token limit)
+                  {:else}
+                    Spent {fmtTokens(budget.spentTokens)} of {fmtTokens(budget.limitTokens)}
+                  {/if}
+                </p>
+                <p class="flex items-center gap-1.5">
+                  <span
+                    class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium {statusClasses[budget.status]}"
+                  >
+                    {statusLabel[budget.status]}
+                  </span>
+                </p>
+                {#if budget.note}
+                  <p class="text-text-subtle">{budget.note}</p>
+                {/if}
+              </div>
+            {/if}
+          {/if}
         </div>
 
         <div>

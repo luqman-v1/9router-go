@@ -2,12 +2,82 @@ package db
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"9router/proxy/internal/budget"
 	"9router/proxy/internal/handlerutil"
 )
+
+// TestSpendForKeySinceQueryPlan pins the plan the per-request budget read
+// relies on. The engine measures spend on every request for a budgeted key,
+// so the statement must be answered from the ledger indexes, not a scan of
+// usageHistory — on the 108k-row ledger a scan is a full pass per request.
+// The token-quota pin (TestGetApiKeyTokenUsageForKeysQueryPlan) guards the
+// other statement that shares the two indexes; this one guards the windowed
+// spend read the budget middleware issues.
+func TestSpendForKeySinceQueryPlan(t *testing.T) {
+	r := openEphemeralSchemaDB(t)
+	for _, floor := range []struct {
+		name  string
+		since string
+	}{
+		{"anchored window", "2026-11-01T00:00:00Z"},
+		{"total (no floor)", ""},
+	} {
+		t.Run(floor.name, func(t *testing.T) {
+			// The statement's ? placeholders must be bound for EXPLAIN: an
+			// unbound parameter is an error, not a plan. Values are dummy
+			// (the planner only cares about the shape), mirroring the
+			// token-quota pin which binds its three arguments.
+			const rawKey = "sk-plan-budget-0000000000000001"
+			args := []any{handlerutil.MaskAPIKey(rawKey), rawKey, handlerutil.MaskAPIKey(rawKey)}
+			if floor.since != "" {
+				args = append(args, floor.since)
+			}
+			rows, err := r.db.Query(`EXPLAIN QUERY PLAN `+windowedSpendQuery(floor.since != ""), args...)
+			if err != nil {
+				t.Fatalf("explain query plan: %v", err)
+			}
+			defer rows.Close()
+			var plans []string
+			for rows.Next() {
+				var id, parent, notused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+					t.Fatalf("scan plan: %v", err)
+				}
+				plans = append(plans, detail)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("iterate plan: %v", err)
+			}
+			joined := strings.Join(plans, "\n")
+			if strings.Contains(joined, "SCAN usageHistory") {
+				t.Errorf("budget spend read scans usageHistory instead of using the indexes:\n%s", joined)
+			}
+			// Both attribution arms must be index-served: a disjunction where
+			// one arm cannot use an index degrades the whole statement to a
+			// scan (the failure TestUsageHistoryClientKeyIndexExists documents
+			// for the quota read).
+			if !strings.Contains(joined, "idx_uh_clientkey_tok") || !strings.Contains(joined, "idx_uh_apikey_tok") {
+				t.Errorf("budget spend read does not use both ledger indexes:\n%s", joined)
+			}
+		})
+	}
+}
+
+// windowedSpendQuery renders budgetSpendQuery the way SpendForKeySince builds
+// it, so the pin tests the exact statement the middleware runs rather than a
+// copy that could drift.
+func windowedSpendQuery(withFloor bool) string {
+	q := budgetSpendQuery
+	if withFloor {
+		q += ` AND timestamp >= ?`
+	}
+	return q
+}
 
 // TestSpendForKeySinceSumsCostAndTokens proves the budget reader folds cost
 // into integer micros and sums prompt+completion tokens over the window, and

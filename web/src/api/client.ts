@@ -156,6 +156,16 @@ export interface APIKey {
   metadata?: string
   /** Plan template this key inherits from. Empty means no plan. */
   planId?: string
+  /** Per-period cost budget, in integer USD micros (1e-6 of a dollar). 0 means no cost limit. */
+  limitMicros?: number
+  /** Per-period token budget. 0 means no token limit. */
+  limitTokens?: number
+  /** Window the budget resets on. Empty means monthly — the engine's default. */
+  budgetPeriod?: PlanPeriod
+  /** Warn at this percentage of the period budget, 0-100. 0 means no warning. */
+  alertPct?: number
+  /** True when exhausted requests are refused with 402; false when they only carry a warning header. */
+  hardCutoff?: boolean
 }
 
 export interface APIKeyPolicy {
@@ -174,8 +184,55 @@ export interface APIKeyPolicy {
   name?: string
   /** Plan template to inherit. An empty string detaches the key. */
   planId?: string
+  /**
+   * Per-period cost budget, in integer USD micros (1e-6 of a dollar). Always send
+   * a number: the server treats an omitted field as "keep stored value" and an
+   * explicit 0 as "disable", so 0 is how the operator clears a cost limit.
+   */
+  limitMicros?: number
+  /** Per-period token budget. 0 means no token limit. */
+  limitTokens?: number
+  /** Window the budget resets on: "daily" | "weekly" | "monthly" | "total". Always sent; empty means monthly. */
+  budgetPeriod?: string
+  /** Warn at this percentage of the period budget, 0-100. 0 means no warning. */
+  alertPct?: number
+  /** True when exhausted requests are refused with 402; false when they only carry a warning header. */
+  hardCutoff?: boolean
 }
 
+/**
+ * A key's period budget as the budget engine sees it: the ceiling, what has
+ * already been spent against it in the open window, and where the two stand
+ * relative to each other.
+ */
+export interface ApiKeyBudget {
+  id: string
+  /** Cost ceiling for the open window, integer USD micros. 0 means no cost limit. */
+  limitMicros: number
+  /** Token ceiling for the open window. 0 means no token limit. */
+  limitTokens: number
+  /** Window the numbers reset on. */
+  period: PlanPeriod
+  /** Warning threshold, 0-100. 0 means no warning. */
+  alertPct: number
+  /** True when exhausted requests are refused with 402; false when they only carry a warning header. */
+  hardCutoff: boolean
+  /** A budget is armed when at least one axis has a nonzero ceiling. */
+  armed: boolean
+  /** Spend recorded in the open window, integer USD micros. */
+  spentMicros: number
+  /** Spend recorded in the open window, tokens. */
+  spentTokens: number
+  /** What is left on each axis before the window resets. */
+  remainingMicros: number
+  remainingTokens: number
+  /** RFC3339 UTC. Empty for the "total" period, which never resets. */
+  resetAt: string
+  /** "ok", "approaching" (past alertPct) or "exhausted". */
+  status: 'ok' | 'approaching' | 'exhausted'
+  /** Present when spend cannot be measured — e.g. a key whose secret was hashed away. */
+  note?: string
+}
 /** A reusable policy template (F-3). Keys inherit its limits as defaults. */
 export interface Plan {
   id: string
@@ -1677,6 +1734,12 @@ export const api = {
     }),
   getApiKeyModels: (id: string) =>
     request<{ id: string; models: string[] }>(`/api/keys/${encodeURIComponent(id)}/models`),
+  /**
+   * The key's period budget as the engine sees it — ceiling, open-window spend
+   * and status. The spend is read-only context for the policy modal; it is not
+   * part of what a save writes.
+   */
+  getKeyBudget: (id: string) => request<ApiKeyBudget>(`/api/keys/${encodeURIComponent(id)}/budget`),
   setApiKeyModels: (id: string, models: string[]) =>
     request<{ id: string; models: string[] }>(`/api/keys/${encodeURIComponent(id)}/models`, {
       method: 'PUT',
