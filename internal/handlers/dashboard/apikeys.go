@@ -111,6 +111,11 @@ func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Reque
 			"budgetPeriod": k.BudgetPeriod,
 			"alertPct":     k.AlertPct,
 			"hardCutoff":   k.HardCutoff,
+			// F-3 plan assignment. It travels with the row because a plan can
+			// arm the budget while every column on the key reads zero: the
+			// policy modal uses it to decide the spend read is worth paying,
+			// and the read endpoint then reports the plan-resolved ceiling.
+			"planId": stringOrEmpty(k.PlanID),
 			// The context ceiling of one request. 0 means the model's own
 			// window applies.
 			"contextLimit": intOrZero(k.ContextLimit),
