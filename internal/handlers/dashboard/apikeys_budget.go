@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/budget"
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/policy"
@@ -49,12 +50,14 @@ func (h *DashboardHandler) HandleGetApiKeyBudget(w http.ResponseWriter, r *http.
 		AlertPct:    pol.AlertPct,
 		HardCutoff:  pol.HardCutoff,
 	}
-	// A key whose secret was hashed away (#199) cannot be attributed in the
+	// A row whose secret was hashed away (#199) cannot be attributed in the
 	// ledger: the spend read matches on the raw key and its masked form, and
-	// neither is known to this process. Reporting a zero spend would read as
-	// "fresh key" for a key that has spent its budget, so the endpoint says
-	// what it cannot measure instead of inventing a number.
-	if key.Key == "" {
+	// a hashed row's key column is the sentinel, not a secret the client ever
+	// sends. Reporting a zero spend would read as "fresh key" for a key that
+	// has spent its budget, so the endpoint says what it cannot measure
+	// instead of inventing a number. IsHashedKeyRow is the same predicate the
+	// rest of the dashboard uses for this shape.
+	if db.IsHashedKeyRow(key) {
 		handlerutil.WriteJSON(w, http.StatusOK, budgetReadPayload(id, limits, budget.Assessment{Limits: limits},
 			"the key's secret is hashed and cannot be attributed in the usage ledger; period spend is not measured for this key"))
 		return

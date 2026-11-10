@@ -40,15 +40,19 @@
   let budgetLimitTokens = $state(formatTokenAmount(apiKey.limitTokens ?? 0))
   let budgetPeriod = $state<string>(apiKey.budgetPeriod || 'monthly')
   let alertPct = $state(apiKey.alertPct ?? 0)
-  let hardCutoff = $state(
-    (apiKey.limitMicros ?? 0) > 0 || (apiKey.limitTokens ?? 0) > 0
-      ? true
-      : (apiKey.hardCutoff ?? true),
+  // hardCutoff initialises from the stored value, full stop: the list returns
+  // the key's own hardCutoff, so forcing true here would silently flip a
+  // warn-only key to refuse-at-ceiling the moment the operator pressed Save on
+  // this dialog for any other reason. The `?? true` default only covers rows
+  // minted before the column existed, which the server reads the same way.
+  let hardCutoff = $state(apiKey.hardCutoff ?? true)
+  // The spend read is paid when the key could be budgeted: a column on the
+  // key, or a plan assigned to it (a plan can arm the budget while every
+  // column reads zero). The endpoint then resolves plan-then-key like the
+  // limiter and its `armed` field is the truth for what the panel shows.
+  let couldBeArmed = $derived(
+    (apiKey.limitMicros ?? 0) > 0 || (apiKey.limitTokens ?? 0) > 0 || !!apiKey.planId,
   )
-  // A key is "armed" when it already spends against a per-period budget. Only
-  // then does the modal fetch and show the open-window spend, which is
-  // read-only context and never part of what a save writes.
-  let isArmed = $derived((apiKey.limitMicros ?? 0) > 0 || (apiKey.limitTokens ?? 0) > 0)
   let budget = $state<ApiKeyBudget | null>(null)
   let budgetLoadError = $state(false)
 
@@ -194,8 +198,11 @@
     // the save or clobber the shared error banner the save path owns. Both
     // guards keep it to a single fetch: `budget === null` skips a refetch once
     // it loaded, and `!budgetLoadError` skips a retry when it failed (leaving
-    // `budget` null would otherwise loop forever).
-    if (isArmed && budget === null && !budgetLoadError) void loadKeyBudget()
+    // `budget` null would otherwise loop forever). The gate is couldBeArmed,
+    // not the endpoint's armed flag: a plan can arm the budget while the key's
+    // columns read zero, and only the read itself knows for sure — it reports
+    // `armed` and the panel renders on that.
+    if (couldBeArmed && budget === null && !budgetLoadError) void loadKeyBudget()
   })
 
   async function loadPlans() {
@@ -605,34 +612,34 @@
             </span>
           </label>
 
-          {#if isArmed}
+          {#if couldBeArmed}
             {#if budgetLoadError}
               <p class="text-text-subtle text-[11px]">Could not load period spend.</p>
-            {:else if budget}
+            {:else if budget?.armed}
               <div class="mt-2 space-y-1 rounded-lg border border-border bg-surface-2 px-3 py-2 font-code text-[11px] text-text-main">
                 <p>
-                  {#if budget.limitMicros === 0}
-                    Spent {fmtMicros(budget.spentMicros)} (no cost limit)
+                  {#if budget!.limitMicros === 0}
+                    Spent {fmtMicros(budget!.spentMicros)} (no cost limit)
                   {:else}
-                    Spent {fmtMicros(budget.spentMicros)} of {fmtMicros(budget.limitMicros)}
+                    Spent {fmtMicros(budget!.spentMicros)} of {fmtMicros(budget!.limitMicros)}
                   {/if}
                 </p>
                 <p>
-                  {#if budget.limitTokens === 0}
-                    Spent {fmtTokens(budget.spentTokens)} (no token limit)
+                  {#if budget!.limitTokens === 0}
+                    Spent {fmtTokens(budget!.spentTokens)} (no token limit)
                   {:else}
-                    Spent {fmtTokens(budget.spentTokens)} of {fmtTokens(budget.limitTokens)}
+                    Spent {fmtTokens(budget!.spentTokens)} of {fmtTokens(budget!.limitTokens)}
                   {/if}
                 </p>
                 <p class="flex items-center gap-1.5">
                   <span
-                    class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium {statusClasses[budget.status]}"
+                    class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium {statusClasses[budget!.status]}"
                   >
-                    {statusLabel[budget.status]}
+                    {statusLabel[budget!.status]}
                   </span>
                 </p>
-                {#if budget.note}
-                  <p class="text-text-subtle">{budget.note}</p>
+                {#if budget!.note}
+                  <p class="text-text-subtle">{budget!.note}</p>
                 {/if}
               </div>
             {/if}
