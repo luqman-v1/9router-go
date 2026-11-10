@@ -471,15 +471,6 @@ func sseToOpenAIJSON(raw []byte) ([]byte, bool) {
 		if first == nil {
 			first = chunk
 		}
-		// usage is read before the choices guard on purpose. An upstream told
-		// stream_options.include_usage sends a FINAL chunk carrying usage and an
-		// empty choices array; reading usage after the guard skipped exactly
-		// that chunk and threw the counts away, so a caller that asked for them
-		// still got none. Reading it first also keeps the last write winning,
-		// which is the trailing summary chunk when there is one.
-		if u, ok := chunk["usage"]; ok {
-			usage = u
-		}
 		choices, _ := chunk["choices"].([]any)
 		if len(choices) == 0 {
 			continue
@@ -497,6 +488,9 @@ func sseToOpenAIJSON(raw []byte) ([]byte, bool) {
 		}
 		if fr, ok := choice["finish_reason"].(string); ok {
 			finishReason = fr
+		}
+		if u, ok := chunk["usage"]; ok {
+			usage = u
 		}
 		if tcs, ok := delta["tool_calls"].([]any); ok {
 			for _, tcAny := range tcs {

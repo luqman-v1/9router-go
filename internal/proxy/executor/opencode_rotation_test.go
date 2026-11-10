@@ -190,7 +190,6 @@ func TestForwardOpenCodeRotating_ResponsePositionUsageLimit(t *testing.T) {
 }
 
 func TestForwardOpenCode_ResponsePositionRefusalReplaysDirect(t *testing.T) {
-	resetOpenCodeCooldown(t)
 	attempts := 0
 	resp, err := forwardOpenCode(context.Background(),
 		func() (*http.Response, error) {

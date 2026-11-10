@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"9router/proxy/internal/proxy/executor"
 )
 
 // End-to-end coverage for the closed-free-tier path: the 503 mapping, the
@@ -81,16 +79,7 @@ func TestFreeTierRefusal_ReportsUnavailableNotForbidden(t *testing.T) {
 
 // The refusal is one request's bad luck, not an account fault: a second request
 // must still reach the upstream rather than being short-circuited by a cooldown.
-//
-// The replay is a different matter. Once a replay has itself been refused, the
-// gate has said this egress is out, so the following request skips the replay
-// (it would only deepen an IP-level penalty) while still dialling its own first
-// attempt. That is the distinction this pins: the connection is never locked,
-// but the useless replay is not repeated.
 func TestFreeTierRefusal_DoesNotCoolTheConnectionDown(t *testing.T) {
-	// The cooldown is process-global; another test may have left a live window.
-	executor.ResetOpenCodeRetryCooldownForTesting()
-	t.Cleanup(executor.ResetOpenCodeRetryCooldownForTesting)
 	var calls int32
 	up := refusingGate(t, &calls)
 	env := newEnv(t)
@@ -101,10 +90,8 @@ func TestFreeTierRefusal_DoesNotCoolTheConnectionDown(t *testing.T) {
 		"stream":   false,
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
 	}
-	// The first request spends the full retry budget (an initial attempt plus
-	// one replay). The second still dials, but its replay is suppressed by the
-	// cooldown the first one armed.
-	const firstRequest, secondRequest = 2, 1
+	// Each request spends the retry budget: one initial attempt plus one retry.
+	const perRequest = 2
 	for i := 1; i <= 2; i++ {
 		res := env.Post(t, "/v1/chat/completions", body)
 		t.Logf("request %d: status=%d upstream_attempts=%d", i, res.Status, atomic.LoadInt32(&calls))
@@ -112,9 +99,8 @@ func TestFreeTierRefusal_DoesNotCoolTheConnectionDown(t *testing.T) {
 			t.Errorf("request %d status = %d, want 503", i, res.Status)
 		}
 	}
-	if got := atomic.LoadInt32(&calls); got != firstRequest+secondRequest {
-		t.Errorf("upstream saw %d attempts across two requests, want %d — the connection must not be locked (the second request dials), only its replay suppressed",
-			got, firstRequest+secondRequest)
+	if got := atomic.LoadInt32(&calls); got != 2*perRequest {
+		t.Errorf("upstream saw %d attempts across two requests, want %d — a refusal must not lock the connection, so the second request has to dial again", got, 2*perRequest)
 	}
 }
 

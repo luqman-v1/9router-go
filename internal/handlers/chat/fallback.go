@@ -462,14 +462,6 @@ func opencodeClosureError(provider, model string, err error) error {
 		return err
 	}
 	detail := classifyOpencodeFreeTierRefusal(provider, ue.Body)
-	// The gate announces a spent allowance's real reset in Retry-After. The
-	// classifier can only guess, so a carrier beats the guess: overwriting it
-	// with the hardcoded minute made the caller re-probe a spent egress long
-	// before the window it was told to wait for. The 2h maxResetCooldown cap
-	// still applies — this changes the source of the value, not the ceiling.
-	if real, ok := upstreamRetryAfterSec(ue); ok {
-		detail.RetryAfter = real
-	}
 	body, _ := json.Marshal(map[string]any{
 		"error": map[string]any{
 			"message": detail.Message,
@@ -478,8 +470,7 @@ func opencodeClosureError(provider, model string, err error) error {
 		},
 	})
 	log.Warn("fallback", "opencode free tier refused after retries; reporting classified failure",
-		"provider", provider, "model", model, "type", detail.ErrorType, "status", detail.StatusCode,
-		"retry_after_s", detail.RetryAfter)
+		"provider", provider, "model", model, "type", detail.ErrorType, "status", detail.StatusCode)
 	header := http.Header{
 		"Content-Type": []string{"application/json"},
 	}
@@ -491,19 +482,6 @@ func opencodeClosureError(provider, model string, err error) error {
 		Body:       body,
 		Header:     header,
 	}
-}
-
-// upstreamRetryAfterSec reads the wait the upstream named, clamped like every
-// other announced cooldown. It reads the Retry-After header plus the body
-// carriers retryAfterWait already knows, so a gate that announces the window in
-// prose is honoured too. A missing or unparseable carrier reports false and the
-// caller keeps the classifier's own estimate.
-func upstreamRetryAfterSec(ue *upstreamError) (int, bool) {
-	wait, ok := retryAfterWait(ue)
-	if !ok || wait <= 0 {
-		return 0, false
-	}
-	return ceilSeconds(min(wait, maxCooldownFor("opencode"))), true
 }
 
 // tryForwardWithConnection attempts a single upstream request using the given connection data.
