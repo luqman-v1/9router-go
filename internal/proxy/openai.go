@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/providers"
 )
 
@@ -32,7 +33,7 @@ func ForwardOpenAI(ctx context.Context, client *http.Client, cfg *providers.Prov
 	// Match Node's undici global fetch (user-agent "node", accept "*/*").
 	// An operator StaticHeaders value always wins, whatever its casing.
 	if !hasHeaderFold(headers, "User-Agent") {
-		headers["User-Agent"] = "node"
+		headers["User-Agent"] = constants.DefaultClientUserAgent
 	}
 	if !hasHeaderFold(headers, "Accept") {
 		headers["Accept"] = "*/*"
