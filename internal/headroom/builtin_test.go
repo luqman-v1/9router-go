@@ -321,3 +321,92 @@ func jsonEqual(a, b any) bool {
 		return a == b
 	}
 }
+
+// sessionTurn builds one turn of a conversation: an assistant tool call plus its
+// foldable tool result, tagged with the given call id so successive turns carry
+// distinct ids (a real agent conversation appends new ids every turn).
+func sessionTurn(callID, filler string) []any {
+	return []any{
+		map[string]any{"role": "assistant", "content": "", "tool_calls": []any{
+			map[string]any{"id": callID, "type": "function", "function": map[string]any{"name": "shell", "arguments": "{}"}},
+		}},
+		map[string]any{"role": "tool", "tool_call_id": callID, "content": strings.Repeat(filler, 200)},
+	}
+}
+
+// TestCompressMessagesWithSessionReplaysPrefix is the memory-path proof: a
+// second turn that reuses the first turn's messages as its prefix replays the
+// cached compression and produces the same folded output a full re-fold would.
+// The replay is the whole point of the cache — it is what keeps a long agent run
+// from re-folding already-seen history on a 1-vCPU box.
+func TestCompressMessagesWithSessionReplaysPrefix(t *testing.T) {
+	engine := NewBuiltinEngine()
+	const session = "sess-replay"
+
+	// Turn one: a foldable tool result under the session. This seeds the cache.
+	turn1 := sessionTurn("call_1", "log line here\n")
+	first, ok := engine.CompressMessagesWithSession(session, turn1)
+	if !ok {
+		t.Fatal("expected the first turn to compress")
+	}
+	if !validateMessagesPreserved(turn1, first.Messages) {
+		t.Fatal("first turn output must preserve structure")
+	}
+
+	// Turn two: the same leading messages plus a new foldable tail. The head
+	// must hit the cache, so only the tail runs through the fold.
+	turn2 := append(append([]any{}, turn1...), sessionTurn("call_2", "second log line\n")...)
+	second, ok := engine.CompressMessagesWithSession(session, turn2)
+	if !ok {
+		t.Fatal("expected the replayed turn to compress")
+	}
+	if len(second.Messages) != len(turn2) {
+		t.Fatalf("message count changed across the replay: %d != %d", len(second.Messages), len(turn2))
+	}
+	if !validateMessagesPreserved(turn2, second.Messages) {
+		t.Error("replayed output must preserve the structural invariants")
+	}
+	if second.TokensSaved <= 0 {
+		t.Errorf("a committed replay must report positive savings, got %d", second.TokensSaved)
+	}
+
+	// The replayed output must equal a from-scratch fold of the same input,
+	// because the fold is per message and the prefix's folded form does not
+	// depend on the tail. Any divergence would be a correctness bug.
+	fresh, ok := NewBuiltinEngine().compressFromScratch(turn2)
+	if !ok {
+		t.Fatal("expected a from-scratch fold of the same conversation to compress")
+	}
+	if len(fresh.Messages) != len(second.Messages) {
+		t.Fatalf("replay and full fold disagree on message count: %d != %d", len(second.Messages), len(fresh.Messages))
+	}
+	for i := range fresh.Messages {
+		if !jsonEqual(second.Messages[i], fresh.Messages[i]) {
+			t.Errorf("replayed message %d differs from a full fold:\nreplay: %v\nfull:   %v", i, second.Messages[i], fresh.Messages[i])
+		}
+	}
+}
+
+// TestCompressMessagesWithSessionEmptySkipsCache pins the fail-open: an empty
+// session id (the native path, and any caller without a session identity) must
+// behave exactly as before — compress from scratch and touch no cache.
+func TestCompressMessagesWithSessionEmptySkipsCache(t *testing.T) {
+	engine := NewBuiltinEngine()
+	msgs := sessionTurn("call_1", "log line here\n")
+	res, ok := engine.CompressMessagesWithSession("", msgs)
+	if !ok {
+		t.Fatal("expected the unkeyed path to compress")
+	}
+	// Nothing may have been cached, so a later keyed lookup misses.
+	if _, cached := builtinMemory.Lookup("", msgs); cached {
+		t.Error("an empty session id must not populate the cache")
+	}
+	// A distinct fresh engine (same package singleton) still misses for a
+	// different session, proving no cross-session leakage.
+	if _, cached := builtinMemory.Lookup("some-other-session", msgs); cached {
+		t.Error("a result cached under one session must not be visible to another")
+	}
+	if res.TokensSaved <= 0 {
+		t.Error("expected positive savings on the unkeyed path")
+	}
+}
