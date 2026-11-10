@@ -359,7 +359,7 @@ func (h *MediaHandler) tryCodexImageConn(w http.ResponseWriter, r *http.Request,
 
 		if resp.StatusCode != http.StatusOK {
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusBadRequest && strings.HasPrefix(currentResponsesModel, "gpt-6-sol") && isCodexGpt6SolUnsupported(respBody) {
 				log.Warn("media", "codex image gpt-6-sol unsupported, falling back to gpt-5.6-terra", "conn", conn.ID)
 				currentResponsesModel = codexImagesFallbackModel
@@ -369,7 +369,7 @@ func (h *MediaHandler) tryCodexImageConn(w http.ResponseWriter, r *http.Request,
 		}
 
 		image, usage := parseCodexImageStream(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if image == "" {
 			return fmt.Errorf("codex did not return an image: the account may not be entitled (paid ChatGPT plan required)")
 		}
