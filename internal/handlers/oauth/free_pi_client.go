@@ -96,7 +96,7 @@ func freePiPost(ctx context.Context, path string, payload any, bearer string) (i
 	if err != nil {
 		return 0, nil, fmt.Errorf("%s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -231,7 +231,7 @@ func freePiFetchClientVersion(ctx context.Context) (freePiClientVersion, error) 
 	if err != nil {
 		return freePiClientVersion{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return freePiClientVersion{}, fmt.Errorf("client-version: HTTP %d", resp.StatusCode)
 	}

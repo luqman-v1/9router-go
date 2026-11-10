@@ -150,7 +150,7 @@ func freePiFetchAd(ctx context.Context, token, baseURL string) (*freePiAd, error
 	if err != nil {
 		return nil, fmt.Errorf("free-pi ad: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNoContent {
 		return nil, nil
@@ -250,7 +250,7 @@ func freePiReportImpression(ctx context.Context, token, baseURL string, ad freeP
 	if err != nil {
 		return fmt.Errorf("free-pi ad: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 		return fmt.Errorf("free-pi ad: impression HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
@@ -268,7 +268,7 @@ func freePiFirePixel(ctx context.Context, impURL string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 	return nil
 }

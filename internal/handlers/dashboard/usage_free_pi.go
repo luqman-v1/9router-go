@@ -77,7 +77,7 @@ func fetchFreePiUsage(ctx context.Context, apiKey, baseURL string) usageResult {
 	if err != nil {
 		return usageResult{message: fmt.Sprintf("free-pi: %v", err)}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -197,7 +197,7 @@ func freePiFetchModelsFromClientVersion(ctx context.Context, apiKey string, psd 
 	if err != nil {
 		return nil, fmt.Errorf("free-pi models: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("free-pi models: HTTP %d", resp.StatusCode)

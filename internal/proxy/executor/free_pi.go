@@ -97,11 +97,11 @@ func ForwardFreePi(w http.ResponseWriter, req *Request) error {
 
 	if req.IsStream {
 		stallReader := proxy.NewStallReaderWithContext(ctx, resp.Body, 0, "free-pi")
-		defer stallReader.Close()
+		defer func() { _ = stallReader.Close() }()
 		return execSSEStream(w, stallReader, req)
 	}
 
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return jsonResponse(ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
 }
 
@@ -198,7 +198,7 @@ func freePiResetSession(ctx context.Context, client *http.Client, cfg *providers
 	if err != nil {
 		return fmt.Errorf("reset request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
 		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: body, Header: resp.Header}
