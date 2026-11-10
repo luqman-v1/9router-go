@@ -13,6 +13,8 @@ type ComboStrategy struct {
 	Strategy    string `json:"strategy,omitempty"`
 	StickyLimit int    `json:"stickyLimit,omitempty"`
 	JudgeModel  string `json:"judgeModel,omitempty"`
+	// Weights holds optional per-model weights for round-robin rotation.
+	Weights map[string]int `json:"weights,omitempty"`
 	// FirstTokenTimeoutMs bounds every combo candidate except the last until
 	// its first usable response; zero disables it. The last candidate keeps
 	// the global deadline, so the setting never makes a combo fail sooner.

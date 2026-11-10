@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"9router/proxy/internal/combos/smart"
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
@@ -372,10 +373,13 @@ func comboModels(v any) ([]string, error) {
 			return nil, nil
 		}
 		var arr []string
-		if err := json.Unmarshal([]byte(m), &arr); err != nil {
-			return nil, fmt.Errorf("combo models not a JSON array: %w", err)
+		if err := json.Unmarshal([]byte(m), &arr); err == nil {
+			return arr, nil
 		}
-		return arr, nil
+		if names, err := db.ParseComboModelNames(m); err == nil {
+			return names, nil
+		}
+		return nil, fmt.Errorf("combo models not a JSON array")
 	case []string:
 		return m, nil
 	default:
@@ -384,10 +388,13 @@ func comboModels(v any) ([]string, error) {
 			return nil, fmt.Errorf("combo models invalid: %w", err)
 		}
 		var arr []string
-		if err := json.Unmarshal(b, &arr); err != nil {
-			return nil, fmt.Errorf("combo models not a JSON array: %w", err)
+		if err := json.Unmarshal(b, &arr); err == nil {
+			return arr, nil
 		}
-		return arr, nil
+		if names, err := db.ParseComboModelNames(string(b)); err == nil {
+			return names, nil
+		}
+		return nil, fmt.Errorf("combo models not a JSON array")
 	}
 }
 
@@ -461,6 +468,9 @@ func comboModelID(entry any) (string, bool) {
 		model, mok := e["model"].(string)
 		if pok && mok && strings.TrimSpace(provider) != "" && strings.TrimSpace(model) != "" {
 			return provider + "/" + model, true
+		}
+		if mok && strings.Contains(model, "/") && strings.TrimSpace(model) != "" {
+			return strings.TrimSpace(model), true
 		}
 	}
 	return "", false
