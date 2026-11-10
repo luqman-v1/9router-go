@@ -2142,6 +2142,53 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ provider, device_code: deviceCode, session }),
     }),
+  // Free-pi sign-in is a GitHub device flow behind a consent gate, so it gets
+  // its own three calls rather than the generic deviceStart/devicePoll pair:
+  // initiate refuses to contact upstream until the caller asserts that this
+  // user accepted this consent version.
+  freePiConsent: () =>
+    request<{ provider: string; version: string; text: string }>('/api/oauth/free-pi/consent'),
+  freePiInitiate: (consentVersion: string) =>
+    request<{
+      sessionId: string
+      userCode: string
+      verificationUri: string
+      verificationUriComplete?: string
+      interval: number
+      expiresIn: number
+      consentVersion: string
+    }>('/api/oauth/free-pi/initiate', {
+      method: 'POST',
+      body: JSON.stringify({ consentAccepted: true, consentVersion }),
+    }),
+  freePiPoll: (sessionId: string) =>
+    request<{ status: string; connectionId?: string; retryAfter?: number; message?: string }>(
+      '/api/oauth/free-pi/poll',
+      { method: 'POST', body: JSON.stringify({ sessionId }) }
+    ),
+  // The dashboard equivalent of free-pi-cli's /close-other-session.
+  freePiResetSession: (connectionId: string) =>
+    request<{ released: boolean }>('/api/oauth/free-pi/session/reset', {
+      method: 'POST',
+      body: JSON.stringify({ connectionId }),
+    }),
+  // The banner creative. Serving it does not report an impression: that only
+  // happens after the component paints it, via freePiImpression.
+  freePiAd: (connectionId: string) =>
+    request<{
+      ad: {
+        adId: string
+        clickUrl?: string
+        source?: string
+        creative: { title?: string; body?: string; cta?: string; imageUrl?: string }
+      } | null
+    }>(`/api/free-pi/ad?connectionId=${encodeURIComponent(connectionId)}`),
+  freePiImpression: (connectionId: string, adId: string) =>
+    request<{ recorded: boolean }>('/api/free-pi/ad/impression', {
+      method: 'POST',
+      body: JSON.stringify({ connectionId, adId }),
+    }),
+
   kiroImport: (refreshToken: string) =>
     request<{ success: boolean; id?: string; error?: string }>('/api/oauth/kiro/import', {
       method: 'POST',

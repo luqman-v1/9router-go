@@ -38,8 +38,9 @@ const TransientCooldownMs = 30 * 1000 // 30 seconds
 
 // cooldown durations (ms) used by ERROR_RULES
 const (
-	cooldownLong  = 2 * 60 * 1000 // 2 minutes
-	cooldownShort = 5 * 1000      // 5 seconds
+	cooldownLong     = 2 * 60 * 1000  // 2 minutes
+	cooldownShort    = 5 * 1000       // 5 seconds
+	cooldownAuthDead = 60 * 60 * 1000 // 1 hour
 
 	// cooldownBannedAccount parks a deepseek-web account whose credential the
 	// site refuses (40012 USER_IS_BANNED). The ban names the account, not a
@@ -118,6 +119,14 @@ var ErrorRules = []ErrorRule{
 	// into an error) must not park a healthy connection. The real Google
 	// ban carries the "disabled in this account" sentence above plus the
 	// cloudcode-pa domain, which is what parks the account for 24h.
+	{Text: "rate_limit_exceeded", CooldownMs: cooldownShort},
+	{Text: "creditlimitexceeded", CooldownMs: cooldownLong},
+	{Text: "insufficient_quota", CooldownMs: cooldownLong},
+	{Text: "billing_error", CooldownMs: cooldownLong},
+	{Text: "budgetlimiterror", CooldownMs: cooldownLong},
+	{Text: "gousagelimiterror", CooldownMs: cooldownLong},
+	{Text: "free_pi_token_expired", CooldownMs: cooldownAuthDead},
+
 	{Text: "no credentials", CooldownMs: cooldownLong},
 	{Text: "request not allowed", CooldownMs: cooldownShort},
 	{Text: "rate limit", Backoff: true},

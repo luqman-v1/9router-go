@@ -1,0 +1,56 @@
+name: Publish container
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tag rules:
+      #   push to main  -> latest + short commit sha
+      #   push a v* tag -> the version without the leading v (e.g. tag
+      #                    v1.9.12-sleepy.1 publishes 1.9.12-sleepy.1); a
+      #                    tag push never rewrites latest
+      #   dispatch      -> latest + sha (manual rebuild of main)
+      # The versioned tag is the immutable pin for deployments; latest stays
+      # the floating convenience tag.
+      - name: Set image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/tahsinarafat/9router-go-sleepy
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=short
+            type=match,pattern=v(.*),group=0
+
+      - name: Build and publish multi-platform image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

@@ -91,6 +91,8 @@
   import Toggle from '../../lib/ui/Toggle.svelte'
   import { PauseCircle } from 'lucide-svelte'
   import ProviderHeaderOverridesModal from './ProviderHeaderOverridesModal.svelte'
+  import FreePiConnectModal from './FreePiConnectModal.svelte'
+  import FreePiAdBanner from './FreePiAdBanner.svelte'
   import EditCompatibleNodeModal from './EditCompatibleNodeModal.svelte'
   import ExportKeysModal from './ExportKeysModal.svelte'
   import ShareProviderModal from './ShareProviderModal.svelte'
@@ -792,6 +794,13 @@
     return out
   })
   let showHeaderOverrides = $state(false)
+  let showFreePiConnect = $state(false)
+  let isFreePi = $derived(providerId === 'free-pi' || storageAlias === 'fp' || storageAlias === 'free-pi')
+  let freePiConn = $derived(
+    providerConnections.find((c) => c.isActive === 1) ?? providerConnections[0] ?? null
+  )
+  let freePiResetBusy = $state(false)
+  let freePiResetResult = $state<string>('')
   // Freebuff specific state & session tracking
   let isFreebuff = $derived(
     providerId === 'freebuff' || storageAlias === 'fb' || storageAlias === 'freebuff'
@@ -1588,6 +1597,8 @@
       openAuthCodeOAuth()
     } else if (isCustomOAuth) {
       openCustomOAuth()
+    } else if (providerId === 'free-pi') {
+      showFreePiConnect = true
     } else if (providerId === 'kiro') {
       openKiroOAuth()
     } else if (isDeviceOAuth) {
@@ -1973,6 +1984,22 @@
 
 
   let isPollingDevice = $state(false)
+
+  async function clearFreePiSession() {
+    if (!freePiConn || freePiResetBusy) return
+    freePiResetBusy = true
+    freePiResetResult = ''
+    try {
+      const res = await api.freePiResetSession(freePiConn.id)
+      freePiResetResult = res.released
+        ? 'Cleared your other sessions — you can start a new one now.'
+        : 'No other session was running.'
+    } catch (err) {
+      freePiResetResult = err instanceof Error ? err.message : String(err)
+    } finally {
+      freePiResetBusy = false
+    }
+  }
 
   async function openDeviceOAuth() {
     oauthError = null
@@ -4699,6 +4726,22 @@
         </button>
       </div>
     {/if}
+    {#if isFreePi && freePiConn}
+      <div class="mb-4">
+        <FreePiAdBanner connectionId={freePiConn.id} />
+        <div class="flex flex-wrap items-center gap-2 rounded-[10px] border border-border-subtle bg-surface-2 px-3 py-2">
+          <span class="material-symbols-outlined text-[16px] text-text-muted" aria-hidden="true">layers_clear</span>
+          <span class="text-[11px] text-text-muted">Clear this account's other sessions if a stale one blocks a request.</span>
+          <button type="button" onclick={clearFreePiSession} disabled={freePiResetBusy}
+            class="ml-auto shrink-0 rounded-lg border border-border px-2.5 py-1 text-[11px] font-medium text-text-main hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50">
+            {freePiResetBusy ? 'Clearing…' : 'Clear session'}
+          </button>
+        </div>
+        {#if freePiResetResult}
+          <p class="mt-1 text-[11px] text-text-muted">{freePiResetResult}</p>
+        {/if}
+      </div>
+    {/if}
     {#if isFreebuff}
       <div class="mb-4">
         <FreebuffSessionBanner
@@ -5555,6 +5598,12 @@
   isOpen={showHeaderOverrides}
   providerId={providerId}
   onClose={() => (showHeaderOverrides = false)}
+/>
+
+<FreePiConnectModal
+  isOpen={showFreePiConnect}
+  onClose={() => (showFreePiConnect = false)}
+  onConnected={onRefresh}
 />
 
 <!-- 5b. Edit Compatible Node Modal (upstream EditCompatibleNodeModal parity) -->
