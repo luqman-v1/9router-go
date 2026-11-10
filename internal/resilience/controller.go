@@ -23,11 +23,16 @@ import (
 type Controller struct {
 	Breaker   BreakerOptions
 	Semaphore SemaphoreOptions
+	ToolLoop  *StalledToolLoopDetector
 }
 
 // NewController returns a Controller with the given options.
 func NewController(breaker BreakerOptions, semaphore SemaphoreOptions) *Controller {
-	return &Controller{Breaker: breaker, Semaphore: semaphore}
+	return &Controller{
+		Breaker:   breaker,
+		Semaphore: semaphore,
+		ToolLoop:  NewStalledToolLoopDetector(StalledToolLoopOptions{}),
+	}
 }
 
 // DefaultController returns a Controller with the package defaults.
@@ -129,6 +134,9 @@ func (c *Controller) BreakerStatus(provider string) BreakerStatus {
 func (c *Controller) Reset() {
 	ResetAllBreakers()
 	ResetSemaphores()
+	if c.ToolLoop != nil {
+		c.ToolLoop = NewStalledToolLoopDetector(StalledToolLoopOptions{})
+	}
 }
 
 // Statuses returns every breaker snapshot plus every semaphore gate, for the

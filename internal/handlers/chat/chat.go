@@ -79,6 +79,20 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Pre-filter on raw body bytes: only decode/inspect conversation history
+	// for stalled tool loops when the request actually carries tool calls.
+	// Keeps every non-tool request zero-cost (per §4.A, §4.G).
+	if bytes.Contains(body, []byte(`"tool_calls"`)) || bytes.Contains(body, []byte(`"tool_use"`)) {
+		var msgBody struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &msgBody); err == nil {
+			if h.CheckStalledToolLoopOpenAI(w, msgBody.Messages, reqBody.Model, reqBody.Stream) {
+				return
+			}
+		}
+	}
+
 	// Per-key model policy runs after the bypass path — synthetic warmup and
 	// keepalive traffic never reaches a provider, so it is not an access
 	// request — and before resolveModel, so a denied model never reaches
@@ -354,6 +368,20 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	// selection.
 	if !h.enforceModelAccess(w, r, modelName) {
 		return
+	}
+
+	// Pre-filter on raw body bytes: only decode/inspect conversation history
+	// for stalled tool loops when the request actually carries tool calls.
+	// Keeps every non-tool request zero-cost (per §4.A, §4.G).
+	if bytes.Contains(body, []byte(`"tool_calls"`)) || bytes.Contains(body, []byte(`"tool_use"`)) {
+		var msgBody struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &msgBody); err == nil {
+			if h.CheckStalledToolLoopClaude(w, msgBody.Messages, reqBody.Model, reqBody.Stream) {
+				return
+			}
+		}
 	}
 
 	modelInfo, err := h.resolveModel(modelName)
