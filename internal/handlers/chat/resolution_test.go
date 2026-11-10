@@ -3,6 +3,7 @@ package chat
 import (
 	json "encoding/json/v2"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
@@ -669,5 +670,59 @@ func TestIsCopilotResponsesModel(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("isCopilotResponsesModel(github, %q) = %v, want %v", tc.model, got, tc.want)
 		}
+	}
+}
+
+func TestResolveModelEntry_ConnectionNameAndIDPrefix(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	connData, _ := json.Marshal(map[string]any{"apiKey": "vibe-key-123"})
+	_, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-mistral-vibe', 'mistral', 'apikey', 'Mistral Vibe', 1, 1, ?, ?, ?)`, string(connData), now, now)
+	if err != nil {
+		t.Fatalf("seed vibe connection: %v", err)
+	}
+
+	apiConnData, _ := json.Marshal(map[string]any{"apiKey": "api-key-456"})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-mistral-api', 'mistral', 'apikey', 'Mistral API', 2, 1, ?, ?, ?)`, string(apiConnData), now, now)
+	if err != nil {
+		t.Fatalf("seed api connection: %v", err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+
+	tests := []struct {
+		entry          string
+		wantProvider   string
+		wantModel      string
+		wantConnection string
+	}{
+		{"Mistral Vibe/codestral-latest", "mistral", "codestral-latest", "conn-mistral-vibe"},
+		{"mistral-vibe/codestral-latest", "mistral", "codestral-latest", "conn-mistral-vibe"},
+		{"conn-mistral-vibe/codestral-latest", "mistral", "codestral-latest", "conn-mistral-vibe"},
+		{"Mistral API/codestral-latest", "mistral", "codestral-latest", "conn-mistral-api"},
+		{"mistral-api/codestral-latest", "mistral", "codestral-latest", "conn-mistral-api"},
+		{"mistral/codestral-latest", "mistral", "codestral-latest", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.entry, func(t *testing.T) {
+			got := h.resolveModelEntry(tc.entry)
+			if got == nil {
+				t.Fatalf("resolveModelEntry(%q) = nil, want provider %s", tc.entry, tc.wantProvider)
+			}
+			if got.Provider != tc.wantProvider {
+				t.Errorf("Provider = %q, want %q", got.Provider, tc.wantProvider)
+			}
+			if got.Model != tc.wantModel {
+				t.Errorf("Model = %q, want %q", got.Model, tc.wantModel)
+			}
+			if got.ConnectionID != tc.wantConnection {
+				t.Errorf("ConnectionID = %q, want %q", got.ConnectionID, tc.wantConnection)
+			}
+		})
 	}
 }
