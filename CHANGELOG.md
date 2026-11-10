@@ -1,5 +1,42 @@
 # Changelog
 
+## [v1.9.16-exp.10] - 2026-11-10
+
+### fix(proxy): stream upstream responses as identity so gzip edges stop bursting tokens
+
+- Streaming requests (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`, Gemini native/Antigravity, Azure, Vertex, CommandCode, and every `DoRequest` lane that asks for an event stream) now send `Accept-Encoding: identity` upstream instead of letting Go's transport advertise `gzip`. A provider edge that honours gzip with a buffered compressor releases the whole turn at once — the "terputus-putus" a client sees — instead of streaming token by token. An operator `StaticHeaders` / Custom Header that names an encoding still wins.
+- A request pinned to identity is no longer auto-decompressed by Go's transport, so a non-compliant upstream that still answers `Content-Encoding: gzip` is transparently unwrapped (`proxy.UnwrapIdentityGzip`) instead of breaking the stream with compressed bytes.
+- Browser-parity lanes that set their own `Accept-Encoding` for stealth (deepseek-web, gemini-web, grok-web, opencode stealth) are intentionally unchanged.
+- Verified: a fake upstream at 80ms cadence reaches the client at 81ms median in the chat/messages/responses lanes; a buffered-gzip upstream arrives as one `0s` burst before the fix and as a smooth stream after. Pinned by `TestStreamAdvertisesIdentityEncoding`, `TestForwardOpenAI_defaultHeadersMatchNode`, and the unit tests beside `proxy.UnwrapIdentityGzip`.
+
+### fix(translator): carry response_format onto Gemini native structured output
+- An OpenAI-format client sending `response_format` (`json_object` /
+  `json_schema`) to a Gemini native upstream got **free text instead of the
+  JSON it asked for**, with no error. The Gemini request translator
+  (`TranslateOpenAIToGeminiWithSession`) rebuilds the body field by field, and
+  a field the parse struct does not name is a field the upstream never sees —
+  so `response_format` was dropped on the way.
+- The client's schema is now carried onto Gemini's native structured output:
+  `generationConfig.responseMimeType` (`application/json`) plus
+  `responseJsonSchema` for `json_schema`, with OpenAPI-style type names
+  lowercased so the schema passes Gemini's validator. A `json_schema` with no
+  schema degrades to plain JSON mode; a missing, null, or non-JSON
+  `response_format` sets nothing, so a client that did not ask for structured
+  output is untouched.
+- No response-side change is needed: Gemini answers a request with
+  `responseMimeType` as `part.text`, which the existing Gemini→OpenAI response
+  translators already surface as `content`.
+- Scoped to the one lane that genuinely dropped the field. The OpenAI-compatible
+  and `claude` (`ForwardOpenAI`) lanes forward the body raw (so
+  `response_format` already passes through), the Codex/Responses lane already
+  maps it to `text.format` (#2896), and the Claude Messages lane is reached by
+  native Claude clients who send `output_config` themselves.
+- Verified with table-driven decode tests (absent / null / `json_object` /
+  `json_schema` with uppercase + nested types / schema-less / unknown type /
+  malformed / non-object) plus end-to-end assertions on the built Gemini body.
+  `go test ./internal/translator/` green; `go build ./...` and
+  `golangci-lint --new-from-rev` clean.
+
 ## [v1.9.16-exp.9] - 2026-11-10
 
 - **fix(media):** format xAI video start frame as `{ url }` object and forward `reference_images` ([#1037](https://github.com/luqman-v1/9router-go/pull/1037), closes [#1035](https://github.com/luqman-v1/9router-go/issues/1035)) — ports OmniRoute #19286
