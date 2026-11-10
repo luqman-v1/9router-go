@@ -183,3 +183,37 @@ func TestPeriodBudgetPlanAppliesToKey(t *testing.T) {
 		t.Fatalf("status = %d, want 402 (the plan's ceiling governs)", res.Status)
 	}
 }
+
+// budgetReadResponse is the shape GET /api/keys/{id}/budget answers with. The
+// one field the test depends on is status; the rest is decoded and discarded.
+type budgetReadResponse struct {
+	Status string `json:"status"`
+}
+
+// TestGetApiKeyBudgetRouteIsRegistered drives the real production router and
+// proves GET /api/keys/{id}/budget is mounted on it — not only on the
+// tests-only dashboard.RegisterRoutes table.
+//
+// This is a regression guard for a specific reviewer finding: the handler and
+// its unit tests existed, but the route was registered only in the table that
+// test helpers mount, so the endpoint 404'd in the shipped binary and the budget
+// modal always read "Could not load period spend." The unit tests passed because
+// they mount that table; nothing exercised the production registration. A GET
+// here that lands on the real router is the only thing that catches it.
+func TestGetApiKeyBudgetRouteIsRegistered(t *testing.T) {
+	env := newEnv(t)
+	id, _ := createKey(t, env, "budget-route-key")
+
+	res := env.Get(t, "/api/keys/"+id+"/budget")
+	if res.Status == http.StatusNotFound {
+		t.Fatalf("GET /api/keys/%s/budget = 404: the route is not registered on the production router (it 404s in the shipped binary)", id)
+	}
+	if res.Status != http.StatusOK {
+		t.Fatalf("GET /api/keys/%s/budget = %d, want 200 (body: %s)", id, res.Status, truncate(res.Body))
+	}
+	var out budgetReadResponse
+	res.Decode(t, &out)
+	if out.Status != "ok" {
+		t.Errorf("status = %q, want ok (body: %s)", out.Status, truncate(res.Body))
+	}
+}
