@@ -304,16 +304,17 @@ func kiroUpstreamBody(req *Request) ([]byte, error) {
 	// plane; fold them onto the dotted upstream alias.
 	model = normalizeKiroUpstreamModelId(model)
 
-	profileArn := ""
+	profileArn, authMethod := "", ""
 	if req.ConnData != nil {
 		if s, ok := req.ConnData["profileArn"].(string); ok {
 			profileArn = strings.TrimSpace(s)
 		}
+		authMethod, _ = req.ConnData["authMethod"].(string)
 	}
 
 	out, err := translator.OpenAIToKiro(req.Body, translator.KiroTranslateOptions{
 		Model:      model,
-		ProfileArn: profileArn,
+		ProfileArn: providers.KiroEffectiveProfileARN(authMethod, profileArn),
 	})
 	if err != nil {
 		log.Error("executor", "kiro translation failed", "model", model, "error", err)

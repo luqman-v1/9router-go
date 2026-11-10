@@ -212,7 +212,7 @@ func TestOpenAIToKiro_ProfileArnOnlyWhenProvided(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, ok := decodeKiro(t, out2)["profileArn"]; ok {
-		t.Error("profileArn must be omitted when empty (shared placeholder belongs to another account)")
+		t.Error("profileArn must be omitted when the caller passes none; the default is resolved by the executor")
 	}
 }
 
