@@ -8,6 +8,7 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/usagetracker"
@@ -72,8 +73,57 @@ func mediaConnectionError(err error, provider string) string {
 	return fmt.Sprintf("no active connections for provider: %s", provider)
 }
 
+// kindFromEndpoint infers the media serviceKind from the API endpoint.
+func kindFromEndpoint(endpoint string) string {
+	switch {
+	case strings.HasPrefix(endpoint, "/v1/images/") || strings.HasPrefix(endpoint, "/images/"):
+		return "image"
+	case strings.HasPrefix(endpoint, "/v1/videos/") || strings.HasPrefix(endpoint, "/videos/"):
+		return "video"
+	case endpoint == "/v1/audio/speech" || endpoint == "/audio/speech":
+		return "tts"
+	case strings.HasPrefix(endpoint, "/v1/audio/") || strings.HasPrefix(endpoint, "/audio/"):
+		return "stt"
+	case endpoint == "/v1/embeddings" || endpoint == "/embeddings":
+		return "embedding"
+	case endpoint == "/v1/search" || endpoint == "/search":
+		return "webSearch"
+	case endpoint == "/v1/web/fetch" || endpoint == "/v1/scrape" || endpoint == "/scrape":
+		return "webFetch"
+	default:
+		return "media"
+	}
+}
+
+// IsConnectionMediaEligible checks if a connection is active and eligible for media routing.
+func IsConnectionMediaEligible(conn *models.ProviderConnection, serviceKind ...string) bool {
+	if conn == nil || conn.IsActive != 1 {
+		return false
+	}
+	return conn.IsMediaActive(serviceKind...)
+}
+
+// SelectMediaConnections returns all active connections for provider eligible for media routing.
+func (h *MediaHandler) SelectMediaConnections(provider string, serviceKind ...string) ([]*models.ProviderConnection, error) {
+	if h.Repo == nil {
+		return nil, nil
+	}
+	conns, err := h.Repo.GetProviderConnections(provider, true)
+	if err != nil {
+		return nil, err
+	}
+	var eligible []*models.ProviderConnection
+	for _, c := range conns {
+		if IsConnectionMediaEligible(c, serviceKind...) {
+			eligible = append(eligible, c)
+		}
+	}
+	return eligible, nil
+}
+
 // HandleEmbeddings forwards /v1/embeddings requests to upstream providers.
 func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "embedding"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
@@ -205,6 +255,7 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 // same way buildEmbeddingsURL does, because a rerank lane lives on the same
 // OpenAI-compatible host as the embeddings one.
 func (h *MediaHandler) HandleRerank(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "embedding"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read request body")
@@ -304,6 +355,7 @@ func buildRerankURL(baseURL string) string {
 
 // HandleImages handles /v1/images/generations.
 func (h *MediaHandler) HandleImages(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "image"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
@@ -315,6 +367,7 @@ func (h *MediaHandler) HandleImages(w http.ResponseWriter, r *http.Request) {
 
 // HandleAudioSpeech handles /v1/audio/speech.
 func (h *MediaHandler) HandleAudioSpeech(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "tts"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
@@ -338,6 +391,7 @@ func (h *MediaHandler) HandleAudioSpeech(w http.ResponseWriter, r *http.Request)
 // Body: {"model":"<provider>/<model>","state":"...","questions":{...}}.
 // Target URL from ProviderConfig.SystemoneURL, else swap /chat/completions.
 func (h *MediaHandler) HandleSystemone(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "systemone"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
@@ -677,6 +731,7 @@ func (h *MediaHandler) forwardMiMoSpeech(w http.ResponseWriter, r *http.Request,
 
 // HandleAudioTranscriptions handles /v1/audio/transcriptions.
 func (h *MediaHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "stt"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		middleware.WriteBodyReadError(w, r, err)
@@ -688,6 +743,7 @@ func (h *MediaHandler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.
 
 // HandleVideoGenerations handles /v1/videos/generations.
 func (h *MediaHandler) HandleVideoGenerations(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "video"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		middleware.WriteBodyReadError(w, r, err)
@@ -699,6 +755,7 @@ func (h *MediaHandler) HandleVideoGenerations(w http.ResponseWriter, r *http.Req
 
 // HandleVideoEdits handles /v1/videos/edits.
 func (h *MediaHandler) HandleVideoEdits(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "video"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		middleware.WriteBodyReadError(w, r, err)
@@ -710,6 +767,7 @@ func (h *MediaHandler) HandleVideoEdits(w http.ResponseWriter, r *http.Request) 
 
 // HandleVideoExtensions handles /v1/videos/extensions.
 func (h *MediaHandler) HandleVideoExtensions(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "video"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		middleware.WriteBodyReadError(w, r, err)
@@ -768,6 +826,7 @@ func (h *MediaHandler) defaultWebFetchModel() string {
 
 // HandleSearch handles /v1/search.
 func (h *MediaHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "webSearch"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
@@ -779,6 +838,7 @@ func (h *MediaHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 
 // HandleScrape handles /v1/scrape.
 func (h *MediaHandler) HandleScrape(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "webFetch"))
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
@@ -790,6 +850,7 @@ func (h *MediaHandler) HandleScrape(w http.ResponseWriter, r *http.Request) {
 
 // HandleWebFetch handles /v1/web/fetch.
 func (h *MediaHandler) HandleWebFetch(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "webFetch"))
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
@@ -871,6 +932,9 @@ func targetPrivate(ctx context.Context, host string) bool {
 }
 
 func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Request, body []byte, defaultModel, endpoint string) {
+	if handlerutil.GetServiceKind(r.Context()) == "" {
+		r = r.WithContext(handlerutil.WithServiceKind(r.Context(), kindFromEndpoint(endpoint)))
+	}
 	model := defaultModel
 	var reqBody struct {
 		Model string `json:"model"`

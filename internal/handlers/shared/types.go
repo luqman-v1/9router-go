@@ -2,6 +2,8 @@ package shared
 
 import (
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +36,9 @@ type ConnectionData struct {
 	ConnectionNoProxy      string         `json:"connectionNoProxy,omitempty"`
 	StrictProxy            bool           `json:"strictProxy,omitempty"`
 	AllowPrivateNetworking bool           `json:"allowPrivateNetworking,omitempty"`
+	MediaEnabled           *bool          `json:"mediaEnabled,omitempty"`
+	IsMediaActiveField     *bool          `json:"isMediaActive,omitempty"`
+	DisabledKinds          []string       `json:"disabledKinds,omitempty"`
 	ProviderSpecificData   map[string]any `json:"providerSpecificData,omitempty"`
 
 	// ResolvedProxyPool is the egress label for this request's pool — the name an
@@ -42,6 +47,51 @@ type ConnectionData struct {
 	// instead of printing a UUID nobody recognises. Set per request rather than
 	// persisted, so a rename shows up in the next log line.
 	ResolvedProxyPool string `json:"-"`
+}
+
+// IsMediaActive reports whether the connection data permits media routing for the service kind.
+// Defaults to true when unspecified for backward compatibility.
+func (c *ConnectionData) IsMediaActive(serviceKind ...string) bool {
+	if c == nil {
+		return false
+	}
+	if c.MediaEnabled != nil && !*c.MediaEnabled {
+		return false
+	}
+	if c.IsMediaActiveField != nil && !*c.IsMediaActiveField {
+		return false
+	}
+	kind := ""
+	if len(serviceKind) > 0 {
+		kind = strings.TrimSpace(serviceKind[0])
+	}
+	if slices.Contains(c.DisabledKinds, "media") || (kind != "" && slices.Contains(c.DisabledKinds, kind)) {
+		return false
+	}
+	if c.ProviderSpecificData != nil {
+		if v, ok := c.ProviderSpecificData["mediaEnabled"]; ok {
+			if b, ok := v.(bool); ok && !b {
+				return false
+			}
+		}
+		if v, ok := c.ProviderSpecificData["isMediaActive"]; ok {
+			if b, ok := v.(bool); ok && !b {
+				return false
+			}
+		}
+		if dk, ok := c.ProviderSpecificData["disabledKinds"].([]string); ok {
+			if slices.Contains(dk, "media") || (kind != "" && slices.Contains(dk, kind)) {
+				return false
+			}
+		} else if dkRaw, ok := c.ProviderSpecificData["disabledKinds"].([]any); ok {
+			for _, item := range dkRaw {
+				if s, ok := item.(string); ok && (s == "media" || (kind != "" && s == kind)) {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 // UsageLogInfo holds request context needed to log a usage record. ConnName and

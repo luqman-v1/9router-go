@@ -120,12 +120,36 @@
   // Non-null while a reorder request is in flight.
   let reorderingConnId = $state<string | null>(null)
 
+  function isConnKindActive(conn: ProviderConnection): boolean {
+    if (conn.isActive !== 1) return false
+    if (conn.mediaEnabled === false || conn.isMediaActive === false) return false
+    const psd = (conn.providerSpecificData || {}) as Record<string, any>
+    if (psd.mediaEnabled === false || psd.isMediaActive === false) return false
+    const disabled = (Array.isArray(psd.disabledKinds) ? psd.disabledKinds : (conn.disabledKinds || [])) as string[]
+    return !disabled.includes(kind) && !disabled.includes('media')
+  }
+
   async function handleToggleConnActive(conn: ProviderConnection) {
+    if (conn.isActive !== 1) {
+      // Locked: connection was disabled globally on Providers page
+      return
+    }
+    const currentActive = isConnKindActive(conn)
+    const psd = (conn.providerSpecificData || {}) as Record<string, any>
+    const currentDisabled = (Array.isArray(psd.disabledKinds) ? [...psd.disabledKinds] : [...(conn.disabledKinds || [])]) as string[]
+    const nextDisabled = currentActive
+      ? Array.from(new Set([...currentDisabled, kind]))
+      : currentDisabled.filter((k) => k !== kind)
     try {
-      await api.updateConnection(conn.id, { isActive: conn.isActive === 1 ? 0 : 1 })
+      await api.updateConnection(conn.id, {
+        providerSpecificData: {
+          ...psd,
+          disabledKinds: nextDisabled
+        }
+      })
       onRefresh()
     } catch (e) {
-      console.error('Failed to toggle connection active', e)
+      console.error('Failed to toggle connection media active', e)
     }
   }
 
@@ -739,6 +763,8 @@
       {:else}
         <div class="flex flex-col gap-2">
           {#each providerConns as conn, idx (conn.id)}
+            {@const isLocked = conn.isActive !== 1}
+            {@const isKindActive = isConnKindActive(conn)}
             <div class="flex flex-col gap-2 p-3 rounded-lg border border-border bg-sidebar/50 sm:flex-row sm:items-center sm:justify-between">
               <div class="flex items-center gap-2 min-w-0">
                 <div class="flex flex-col items-center gap-0.5 shrink-0">
@@ -765,10 +791,12 @@
                 <span class="text-sm font-medium text-text-main truncate">{formatEmailLabel(conn.displayName || conn.name || conn.email || conn.id, $emailPrivacy)}</span>
                 <button
                   type="button"
+                  disabled={isLocked}
                   onclick={() => handleToggleConnActive(conn)}
-                  class="px-2 py-0.5 rounded text-[11px] font-semibold cursor-pointer transition-colors {conn.isActive === 1 ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' : 'bg-surface-2 text-text-muted border border-border'}"
+                  title={isLocked ? 'Disabled for all services on the Providers page' : isKindActive ? `Disable for ${kindTitle}` : `Enable for ${kindTitle}`}
+                  class="px-2 py-0.5 rounded text-[11px] font-semibold cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed {isLocked ? 'bg-surface-2 text-text-muted border border-border' : isKindActive ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' : 'bg-surface-2 text-text-muted border border-border'}"
                 >
-                  {conn.isActive === 1 ? 'active' : 'disabled'}
+                  {isLocked ? 'locked' : isKindActive ? 'active' : 'disabled'}
                 </button>
                 <span class="text-xs text-text-muted font-mono">#{idx + 1}</span>
               </div>

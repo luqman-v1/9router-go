@@ -21,6 +21,9 @@ import (
 // handleAntigravityImage handles image generation requests for Antigravity,
 // executing via CloudCode's v1internal:generateContent and translating the response to OpenAI image format.
 func (h *MediaHandler) handleAntigravityImage(w http.ResponseWriter, r *http.Request, body []byte, modelInfo *chat.ModelInfo) error {
+	if handlerutil.GetServiceKind(r.Context()) == "" {
+		r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "image"))
+	}
 	var reqBody struct {
 		Prompt string   `json:"prompt"`
 		Size   string   `json:"size"`

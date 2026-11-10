@@ -279,3 +279,76 @@ func (r *Repo) listProviderConnections(query string, args []any) ([]*models.Prov
 	}
 	return connections, nil
 }
+
+// IsConnectionMediaActive reports whether a connection payload permits media routing.
+// When serviceKind is provided, it also checks against disabledKinds.
+func IsConnectionMediaActive(dataJSON string, serviceKind ...string) bool {
+	return models.IsConnectionMediaActive(dataJSON, serviceKind...)
+}
+
+// SetConnectionMediaEnabled updates the mediaEnabled flag in the connection's data JSON blob.
+func (r *Repo) SetConnectionMediaEnabled(id string, mediaEnabled bool) error {
+	conn, err := r.GetProviderConnectionByID(id)
+	if err != nil {
+		return err
+	}
+	if conn == nil {
+		return fmt.Errorf("connection %s not found", id)
+	}
+	dataMap := make(map[string]any)
+	if conn.Data != "" {
+		_ = json.Unmarshal([]byte(conn.Data), &dataMap)
+	}
+	dataMap["mediaEnabled"] = mediaEnabled
+	dataMap["isMediaActive"] = mediaEnabled
+	encoded, err := json.Marshal(dataMap)
+	if err != nil {
+		return fmt.Errorf("marshal connection data: %w", err)
+	}
+	now := nowUTC()
+	_, err = r.db.Exec(`UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?`, string(encoded), now, id)
+	return err
+}
+
+// SetConnectionDisabledKinds updates providerSpecificData.disabledKinds in the connection's data JSON blob.
+func (r *Repo) SetConnectionDisabledKinds(id string, disabledKinds []string) error {
+	conn, err := r.GetProviderConnectionByID(id)
+	if err != nil {
+		return err
+	}
+	if conn == nil {
+		return fmt.Errorf("connection %s not found", id)
+	}
+	dataMap := make(map[string]any)
+	if conn.Data != "" {
+		_ = json.Unmarshal([]byte(conn.Data), &dataMap)
+	}
+	psd := make(map[string]any)
+	if existingPSD, ok := dataMap["providerSpecificData"].(map[string]any); ok && existingPSD != nil {
+		psd = existingPSD
+	}
+	psd["disabledKinds"] = disabledKinds
+	dataMap["providerSpecificData"] = psd
+	encoded, err := json.Marshal(dataMap)
+	if err != nil {
+		return fmt.Errorf("marshal connection data: %w", err)
+	}
+	now := nowUTC()
+	_, err = r.db.Exec(`UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?`, string(encoded), now, id)
+	return err
+}
+
+// GetMediaConnections retrieves provider connections eligible for media requests.
+func (r *Repo) GetMediaConnections(provider string, activeOnly bool, serviceKind ...string) ([]*models.ProviderConnection, error) {
+	conns, err := r.GetProviderConnections(provider, activeOnly)
+	if err != nil {
+		return nil, err
+	}
+	var eligible []*models.ProviderConnection
+	for _, c := range conns {
+		if c != nil && c.IsMediaActive(serviceKind...) {
+			eligible = append(eligible, c)
+		}
+	}
+	return eligible, nil
+}

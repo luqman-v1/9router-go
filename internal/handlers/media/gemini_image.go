@@ -41,6 +41,9 @@ func resolveGeminiImageInput(input string) map[string]any {
 }
 
 func (h *MediaHandler) handleGeminiImage(w http.ResponseWriter, r *http.Request, body []byte, modelInfo *chat.ModelInfo) error {
+	if handlerutil.GetServiceKind(r.Context()) == "" {
+		r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "image"))
+	}
 	var reqBody struct {
 		Prompt string   `json:"prompt"`
 		Model  string   `json:"model"`
