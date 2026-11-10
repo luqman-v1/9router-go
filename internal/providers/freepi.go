@@ -41,7 +41,7 @@ const (
 	// server enforces a minimum (GET /client-version → `min`, currently 0.6.2)
 	// and refuses older clients outright, so this must stay at or above that
 	// floor; at login we replace it with the server-reported `latest`.
-	FreePiClientVersion = "0.6.15"
+	FreePiClientVersion = "0.7"
 
 	// FreePiDefaultModel is the id free-pi-cli's own provider config defaults to
 	// (MODEL_ID in src/provider.ts). Seeded into the static catalog only so a

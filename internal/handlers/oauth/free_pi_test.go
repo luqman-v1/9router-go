@@ -78,7 +78,7 @@ func newFakeFreePiAuth(t *testing.T) *fakeFreePiAuth {
 				_, _ = w.Write([]byte(f.versionResp))
 				return
 			}
-			_, _ = w.Write([]byte(`{"min":"0.6.2","latest":"0.6.15","model":"deepseek/deepseek-v4-flash","models":[{"id":"deepseek/deepseek-v4-flash","name":"Flash"},{"id":"deepseek/deepseek-v4-pro","name":"Pro"}]}`))
+			_, _ = w.Write([]byte(`{"min":"0.6.2","latest":"0.7","model":"deepseek/deepseek-v4-flash","models":[{"id":"deepseek/deepseek-v4-flash","name":"Flash"},{"id":"deepseek/deepseek-v4-pro","name":"Pro"}]}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"not found"}`))
