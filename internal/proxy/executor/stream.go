@@ -415,7 +415,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 					idx, ok = state.ToolCallIdx[callID]
 				}
 				if !ok {
-					idx, ok = state.toolIndexForOutput(event)
+					idx, _ = state.toolIndexForOutput(event)
 				}
 				fullArgs, _ := item["arguments"].(string)
 				if fullArgs != "" {

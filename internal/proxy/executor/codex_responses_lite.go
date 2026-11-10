@@ -175,7 +175,7 @@ func shapeCodexResponsesBody(body []byte, requested bool) ([]byte, bool, error) 
 	}
 	if lite {
 		if !applyCodexResponsesLite(req) {
-			return nil, false, fmt.Errorf("Lite requires an input array")
+			return nil, false, fmt.Errorf("codex lite requires an input array")
 		}
 		applyCodexLiteReasoning(req)
 	}
