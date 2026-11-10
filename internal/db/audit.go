@@ -84,7 +84,7 @@ func (r *AuditRepo) BatchInsert(ctx context.Context, entries []audit.Entry) erro
 	if err != nil {
 		return fmt.Errorf("audit: prepare batch insert: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 	for _, e := range entries {
 		if _, err := stmt.ExecContext(ctx, auditArgs(e)...); err != nil {
 			return fmt.Errorf("audit: batch insert: %w", err)
@@ -188,7 +188,7 @@ func (r *AuditRepo) ChainIDs(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("audit: list chains: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []string
 	for rows.Next() {
 		var id string
@@ -215,7 +215,7 @@ func (r *AuditRepo) query(ctx context.Context, q string, args ...any) ([]audit.E
 	if err != nil {
 		return nil, fmt.Errorf("audit: list: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []audit.Entry
 	for rows.Next() {
 		var e audit.Entry

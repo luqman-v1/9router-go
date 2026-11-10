@@ -421,7 +421,9 @@ func (h *DashboardHandler) HandleAuditExport(w http.ResponseWriter, r *http.Requ
 		last := rows[len(rows)-1]
 		f.BeforeTime, f.BeforeID = last.CreatedAt, last.ID
 	}
-	bw.Flush()
+	// Headers are already on the wire by here, so a flush error can only mean
+	// the client went away mid-download: nothing left to report.
+	_ = bw.Flush()
 }
 
 // HandleAuditVerify recomputes every writer's hash chain and reports the

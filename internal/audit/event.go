@@ -199,9 +199,8 @@ func toEntry(ev Event, tenantID string) Entry {
 		TraceID:      ev.TraceID,
 		SpanID:       ev.SpanID,
 		Detail:       detail,
-	// Stored with microsecond precision so the chain hash matches the row
-	// read back.
+		// Stored with microsecond precision so the chain hash matches the row
+		// read back.
 		CreatedAt: now.UTC().Truncate(time.Microsecond),
 	}
 }
-

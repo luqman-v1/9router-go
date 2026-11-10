@@ -37,7 +37,7 @@ type Config struct {
 	InstanceID string
 	// DefaultTenantID fills events recorded without a tenant.
 	DefaultTenantID string
-	Logger *slog.Logger
+	Logger          *slog.Logger
 }
 
 // Recorder queues audit events and writes them in batches from one goroutine.

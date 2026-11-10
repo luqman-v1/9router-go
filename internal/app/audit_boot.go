@@ -15,10 +15,6 @@ import (
 	"9router/proxy/internal/vault"
 )
 
-// auditChainKeySetting is the settings-table key that holds this install's
-// persisted chain-signing key for installs without ROUTER_MASTER_KEY.
-const auditChainKeySetting = "audit_chain_key"
-
 // auditStop stops the retention sweeper and the recorder (which drains its
 // queue). Bounded: a stuck batch insert must not hold the whole shutdown.
 type auditStop func()

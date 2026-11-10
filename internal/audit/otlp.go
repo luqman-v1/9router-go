@@ -381,7 +381,7 @@ func (e *OTLPExporter) post(body []byte) (time.Duration, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
@@ -467,10 +467,6 @@ type otlpAnyValue struct {
 }
 
 func strVal(s string) otlpAnyValue { return otlpAnyValue{StringValue: &s} }
-func boolVal(b bool) otlpAnyValue  { return otlpAnyValue{BoolValue: &b} }
-func doubleVal(f float64) otlpAnyValue {
-	return otlpAnyValue{DoubleValue: &f}
-}
 func intVal(n int64) otlpAnyValue {
 	s := strconv.FormatInt(n, 10)
 	return otlpAnyValue{IntValue: &s}

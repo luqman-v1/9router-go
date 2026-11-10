@@ -12,9 +12,9 @@ import (
 // recorder and Verify can be exercised without SQLite. Rows are appended in
 // write order; the chain columns are whatever the recorder set on them.
 type fakeStore struct {
-	mu    sync.Mutex
-	rows  []Entry
-	fail  bool // when set, BatchInsert fails (fail-open test)
+	mu   sync.Mutex
+	rows []Entry
+	fail bool // when set, BatchInsert fails (fail-open test)
 }
 
 func (f *fakeStore) BatchInsert(_ context.Context, entries []Entry) error {
