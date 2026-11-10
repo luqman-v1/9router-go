@@ -99,3 +99,75 @@ func seedLedgerRowFull(t *testing.T, repo *Repo, id int64, apiKey, provider, mod
 		t.Fatalf("seed usageHistory full: %v", err)
 	}
 }
+
+// TestRollupUsageHistoryBeforeDate_DoesNotDoubleExistingDaily asserts that the
+// rollup pass does not re-aggregate raw usageHistory rows into a date whose
+// usageDaily summary already exists (written live by the request path), so a
+// retention prune cannot double-count tokens and requests for existing days.
+func TestRollupUsageHistoryBeforeDate_DoesNotDoubleExistingDaily(t *testing.T) {
+	t.Parallel()
+	repo := retentionTestRepo(t)
+	ctx := context.Background()
+
+	date1 := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+	date2 := time.Date(2026, 1, 16, 14, 0, 0, 0, time.UTC)
+
+	// The request path already wrote this date's daily summary live; the rollup
+	// must not touch it again.
+	if err := repo.UpsertUsageDaily("2026-01-15", `{"requests":5,"promptTokens":100,"completionTokens":40,"cachedTokens":10,"cost":0.01}`); err != nil {
+		t.Fatalf("UpsertUsageDaily: %v", err)
+	}
+
+	// Two raw rows on date1 (must be ignored: summary already exists),
+	// one raw row on date2 (no summary yet: must be backfilled).
+	seedLedgerRowFull(t, repo, 1, "sk-test", "openai", "gpt-4o", "conn-1", "/v1/chat/completions",
+		100, 50, 0.002, "success", `{"prompt_tokens":100,"completion_tokens":50,"cached_tokens":20}`, date1)
+	seedLedgerRowFull(t, repo, 2, "sk-test", "anthropic", "claude-3-5-sonnet", "conn-2", "/v1/chat/completions",
+		200, 100, 0.005, "success", `{"prompt_tokens":200,"completion_tokens":100,"cached_tokens":0}`, date1)
+	seedLedgerRowFull(t, repo, 3, "sk-test", "openai", "gpt-4o", "conn-1", "/v1/chat/completions",
+		300, 150, 0.006, "success", `{"prompt_tokens":300,"completion_tokens":150,"cached_tokens":50}`, date2)
+
+	res, err := repo.PruneUsageHistory(ctx, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("PruneUsageHistory failed: %v", err)
+	}
+	if res.Rows != 3 {
+		t.Errorf("pruned rows = %d, want 3", res.Rows)
+	}
+
+	// date1 summary must be exactly as it was before prune — not doubled.
+	d1Raw, err := repo.GetUsageDaily("2026-01-15")
+	if err != nil {
+		t.Fatalf("GetUsageDaily 2026-01-15: %v", err)
+	}
+	var d1 map[string]any
+	if err := json.Unmarshal([]byte(d1Raw), &d1); err != nil {
+		t.Fatalf("unmarshal d1: %v", err)
+	}
+	if reqs, ok := d1["requests"].(float64); !ok || int(reqs) != 5 {
+		t.Errorf("date1 requests = %v, want 5 (not doubled by rollup)", d1["requests"])
+	}
+	if pt, ok := d1["promptTokens"].(float64); !ok || int(pt) != 100 {
+		t.Errorf("date1 promptTokens = %v, want 100 (not doubled by rollup)", d1["promptTokens"])
+	}
+
+	// date2 had no prior summary, so it is backfilled from raw rows.
+	d2Raw, err := repo.GetUsageDaily("2026-01-16")
+	if err != nil {
+		t.Fatalf("GetUsageDaily 2026-01-16: %v", err)
+	}
+	var d2 map[string]any
+	if err := json.Unmarshal([]byte(d2Raw), &d2); err != nil {
+		t.Fatalf("unmarshal d2: %v", err)
+	}
+	if reqs, ok := d2["requests"].(float64); !ok || int(reqs) != 1 {
+		t.Errorf("date2 requests = %v, want 1", d2["requests"])
+	}
+	if pt, ok := d2["promptTokens"].(float64); !ok || int(pt) != 300 {
+		t.Errorf("date2 promptTokens = %v, want 300", d2["promptTokens"])
+	}
+
+	if got := countRows(t, repo, "usageHistory"); got != 0 {
+		t.Errorf("surviving usageHistory rows = %d, want 0", got)
+	}
+}

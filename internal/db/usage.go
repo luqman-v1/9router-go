@@ -951,12 +951,18 @@ func (r *Repo) RollupUsageHistoryBeforeDate(ctx context.Context, cutoff string) 
 	if err != nil {
 		return 0, fmt.Errorf("query usageHistory before cutoff %s: %w", cutoff, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type dailyAgg struct {
 		data map[string]any
 	}
 	dailyMap := make(map[string]*dailyAgg)
+	// skipDaily holds date keys that already have a live usageDaily summary.
+	// The request path writes usageDaily in real time on every live request
+	// (upsertDailyUsage), so rolling raw usageHistory rows into it again would
+	// double-count tokens and requests. Rollup backfills only dates that were
+	// missed while the gateway was offline.
+	skipDaily := make(map[string]bool)
 
 	for rows.Next() {
 		var ts, provider, model, connID, apiKey, endpoint, tokensJSON string
@@ -977,12 +983,20 @@ func (r *Repo) RollupUsageHistoryBeforeDate(ctx context.Context, cutoff string) 
 			dateKey = parsed.UTC().Format("2006-01-02")
 		}
 
+		if skipDaily[dateKey] {
+			continue
+		}
 		agg := dailyMap[dateKey]
 		if agg == nil {
-			existingJSON, _ := r.GetUsageDaily(dateKey)
-			agg = &dailyAgg{
-				data: parseDailyJSONMap(existingJSON),
+			existingJSON, err := r.GetUsageDaily(dateKey)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return 0, fmt.Errorf("get daily usage %s before rollup: %w", dateKey, err)
 			}
+			if existingJSON != "" {
+				skipDaily[dateKey] = true
+				continue
+			}
+			agg = &dailyAgg{data: make(map[string]any)}
 			dailyMap[dateKey] = agg
 		}
 
@@ -1046,17 +1060,6 @@ func extractCachedTokens(raw string) int {
 		}
 	}
 	return 0
-}
-
-func parseDailyJSONMap(raw string) map[string]any {
-	if raw == "" {
-		return make(map[string]any)
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil || m == nil {
-		return make(map[string]any)
-	}
-	return m
 }
 
 func getMapIntVal(m map[string]any, key string) int {
