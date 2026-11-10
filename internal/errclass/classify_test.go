@@ -92,6 +92,7 @@ func TestStreamErrorFrame(t *testing.T) {
 		{"gemini unavailable", `{"error":{"code":503,"message":"The model is overloaded.","status":"UNAVAILABLE"}}`, KindUpstream, ScopeProvider, 503},
 		{"string error model gone", `{"error":"model not found: foo"}`, KindModelUnavailable, ScopeModel, 0},
 		{"auth", `{"error":{"message":"invalid x-api-key","type":"authentication_error"}}`, KindAuth, ScopeAccount, 0},
+		{"auth message only, no type or status", `{"error":{"message":"Invalid API key provided."}}`, KindAuth, ScopeAccount, 0},
 		{"content filter", `{"error":{"message":"Your request was rejected as a result of our safety system"}}`, KindContentFilter, ScopeRequest, 0},
 	}
 	for _, tc := range cases {
@@ -146,6 +147,8 @@ func TestClassifyDetailPrecedence(t *testing.T) {
 		{"overloaded type carries no code gets 529", "overloaded_error", 0, "", "", KindUpstream, ScopeProvider, 529},
 		{"message beats status", "", 400, "", "your request was rejected as a result of our safety system", KindContentFilter, ScopeRequest, 400},
 		{"context window message beats 400", "", 400, "", "prompt is too long", KindContextWindow, ScopeModel, 400},
+		{"auth message only, no type or status", "", 0, "", "Invalid API key provided.", KindAuth, ScopeAccount, 0},
+		{"auth message beats a misfiring 429", "", 429, "", "invalid api key", KindAuth, ScopeAccount, 429},
 		{"status-only 429", "", 429, "", "", KindRateLimit, ScopeAccount, 429},
 		{"status-only 404", "", 404, "", "", KindModelUnavailable, ScopeModel, 404},
 		{"status-only 504", "", 504, "", "", KindTimeout, ScopeProvider, 504},

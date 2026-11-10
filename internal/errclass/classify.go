@@ -80,6 +80,14 @@ func classifyMessage(lowerMsg string) (Kind, Scope, bool) {
 		return KindContextWindow, ScopeModel, true
 	case LooksLikeContentFilter(lowerMsg):
 		return KindContentFilter, ScopeRequest, true
+	case LooksLikeAuthError(lowerMsg):
+		// A rejected credential, regardless of the status it arrived with: a
+		// provider misfiring a 429 or a 502 can still reject the key in prose,
+		// and only a body verdict sees that. Without this the message-only
+		// credential failure (no error type, no useful status) falls through to
+		// the status map and lands in the upstream/retry bucket, rotating a dead
+		// key back in instead of retiring it.
+		return KindAuth, ScopeAccount, true
 	case containsAny(lowerMsg, []string{
 		"rate limit", "rate_limit", "tokens per min", "too many requests",
 		"resource exhausted", "quota exceeded",
