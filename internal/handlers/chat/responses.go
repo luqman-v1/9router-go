@@ -273,6 +273,15 @@ func (h *ChatHandler) handleResponsesSingleModel(ctx context.Context, w http.Res
 				}
 			}
 		}
+		// Forward only Retry-After, for the same reason /v1/chat/completions
+		// does: it is the one header a caller needs to know when to come back
+		// after a temporary condition. Copying ue.Header wholesale would carry
+		// the failed upstream's framing headers (Content-Length,
+		// Transfer-Encoding) and make the reply advertise a body length that
+		// does not match what is written.
+		if ra := ue.Header.Get("Retry-After"); ra != "" {
+			cw.Header().Set("Retry-After", ra)
+		}
 		cw.Header().Set("Content-Type", "application/json")
 		cw.WriteHeader(ue.StatusCode)
 		cw.Write(ue.Body)
