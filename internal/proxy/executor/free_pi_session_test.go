@@ -325,6 +325,14 @@ func TestFreePiResetCooldownIsBounded(t *testing.T) {
 		t.Errorf("cooldown map grew to %d entries, cap is %d", size, freePiCooldownEntries)
 	}
 
+	// The two halves are independent assertions, so the map is emptied between
+	// them. Leaving it full made this half non-deterministic: every entry above
+	// carries the same `at`, so when the prune at the cap has to evict the
+	// oldest it is choosing arbitrarily among ties, and "acct-fresh" could be
+	// the one evicted by the prune inside the very call that asserts on it. The
+	// lookup then misses, the attempt is allowed, and the test fails.
+	resetFreePiCooldownsForTest()
+
 	// ...and a repeat inside the window is refused.
 	if !freePiResetAllowed("acct-fresh", now) {
 		t.Error("first attempt should be allowed")
