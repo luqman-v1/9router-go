@@ -34,7 +34,8 @@ const (
 	codexImageRefDetail   = "high"
 	// The gpt-image-* ids name the tool's own model, so the Responses call is
 	// answered by the main model and the id travels in the tool definition.
-	codexImagesMainModel = providers.CodexImagesMainModel
+	codexImagesMainModel     = providers.CodexImagesMainModel
+	codexImagesFallbackModel = providers.CodexImagesFallbackModel
 )
 
 var codexToolImageModels = map[string]bool{
@@ -300,6 +301,13 @@ func codexImageBody(req *codexImageRequest, responsesModel, toolModel string) ([
 	return out, nil
 }
 
+// isCodexGpt6SolUnsupported reports whether an upstream 400 response indicates
+// that the ChatGPT account rejects gpt-6-sol. Upstream PR #5546.
+func isCodexGpt6SolUnsupported(body []byte) bool {
+	text := strings.ToLower(string(body))
+	return strings.Contains(text, "gpt-6-sol") && (strings.Contains(text, "not supported") || strings.Contains(text, "unsupported"))
+}
+
 // tryCodexImageConn performs one Codex image attempt and writes the response.
 func (h *MediaHandler) tryCodexImageConn(w http.ResponseWriter, r *http.Request, req *codexImageRequest, cleanModel, responsesModel, toolModel string, conn *models.ProviderConnection, connData *chat.ConnectionData) error {
 	apiKey := chat.ExtractAPIKey(connData)
@@ -323,45 +331,55 @@ func (h *MediaHandler) tryCodexImageConn(w http.ResponseWriter, r *http.Request,
 		return fmt.Errorf("no Codex responses endpoint configured")
 	}
 
-	payload, err := codexImageBody(req, responsesModel, toolModel)
-	if err != nil {
-		return err
-	}
-
-	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("create codex image request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream, application/json")
-	for k, v := range providerCfg.StaticHeaders {
-		httpReq.Header.Set(k, v)
-	}
-	handlerutil.SetAuthHeader(httpReq, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
-
 	client, clientErr := h.ChatH.GetClientForConnection(connData)
 	if clientErr != nil {
 		return clientErr
 	}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("codex image request failed: %w", err)
-	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return h.codexImageUpstreamError(r, resp.StatusCode, respBody, conn, cleanModel)
-	}
+	currentResponsesModel := responsesModel
+	for {
+		payload, err := codexImageBody(req, currentResponsesModel, toolModel)
+		if err != nil {
+			return err
+		}
 
-	image, usage := parseCodexImageStream(resp.Body)
-	if image == "" {
-		return fmt.Errorf("codex did not return an image: the account may not be entitled (paid ChatGPT plan required)")
-	}
+		httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(payload))
+		if err != nil {
+			return fmt.Errorf("create codex image request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream, application/json")
+		for k, v := range providerCfg.StaticHeaders {
+			httpReq.Header.Set(k, v)
+		}
+		handlerutil.SetAuthHeader(httpReq, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 
-	h.recordCodexImageUsage(usage, cleanModel, conn, connData)
-	h.finishCodexImageConn(conn, cleanModel)
-	return writeCodexImageJSON(w, image)
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			return fmt.Errorf("codex image request failed: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusBadRequest && strings.HasPrefix(currentResponsesModel, "gpt-6-sol") && isCodexGpt6SolUnsupported(respBody) {
+				log.Warn("media", "codex image gpt-6-sol unsupported, falling back to gpt-5.6-terra", "conn", conn.ID)
+				currentResponsesModel = codexImagesFallbackModel
+				continue
+			}
+			return h.codexImageUpstreamError(r, resp.StatusCode, respBody, conn, cleanModel)
+		}
+
+		image, usage := parseCodexImageStream(resp.Body)
+		_ = resp.Body.Close()
+		if image == "" {
+			return fmt.Errorf("codex did not return an image: the account may not be entitled (paid ChatGPT plan required)")
+		}
+
+		h.recordCodexImageUsage(usage, cleanModel, conn, connData)
+		h.finishCodexImageConn(conn, cleanModel)
+		return writeCodexImageJSON(w, image)
+	}
 }
 
 // codexImageUpstreamError classifies a failed upstream response and locks the

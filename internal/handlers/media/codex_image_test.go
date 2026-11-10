@@ -532,3 +532,226 @@ func TestCodexImageBody_SuffixedModelCarriesNoTool(t *testing.T) {
 		t.Errorf("no tool model means no reasoning object: %v", payload)
 	}
 }
+
+func TestIsCodexGpt6SolUnsupported(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "exact ChatGPT rejection message",
+			body: `400 The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account.`,
+			want: true,
+		},
+		{
+			name: "json wrapped rejection message",
+			body: `{"error":{"message":"The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account.","type":"invalid_request_error","code":"model_not_supported"}}`,
+			want: true,
+		},
+		{
+			name: "short not supported message",
+			body: `{"error":{"message":"The 'gpt-6-sol' model is not supported"}}`,
+			want: true,
+		},
+		{
+			name: "unsupported wording variant",
+			body: `{"error":{"message":"Model 'gpt-6-sol' is unsupported for this account"}}`,
+			want: true,
+		},
+		{
+			name: "other model unsupported",
+			body: `{"error":{"message":"The 'gpt-5.6-terra' model is not supported when using Codex with a ChatGPT account."}}`,
+			want: false,
+		},
+		{
+			name: "rate limit error for gpt-6-sol",
+			body: `{"error":{"message":"Rate limit exceeded for model gpt-6-sol"}}`,
+			want: false,
+		},
+		{
+			name: "missing tools parameter error",
+			body: `{"error":{"message":"Tool choice 'image_generation' must be specified with 'tools' parameter"}}`,
+			want: false,
+		},
+		{
+			name: "invalid size error",
+			body: `{"error":{"message":"Invalid size parameter"}}`,
+			want: false,
+		},
+		{
+			name: "empty error body",
+			body: ``,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isCodexGpt6SolUnsupported([]byte(tt.body))
+			if got != tt.want {
+				t.Errorf("isCodexGpt6SolUnsupported(%q) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleImages_Codex_Gpt6SolFallback(t *testing.T) {
+	const usage = `{"input_tokens":100,"output_tokens":50,"total_tokens":150}`
+	validStream := codexImageStream("ZmFsbGJhY2tfaW1hZ2U=", usage)
+
+	tests := []struct {
+		name              string
+		requestModel      string
+		firstStatus       int
+		firstBody         string
+		secondStatus      int
+		secondBody        string
+		wantStatusCode    int
+		wantCalls         int
+		wantModels        []string
+		wantImageReturned bool
+	}{
+		{
+			name:              "gpt-6-sol unsupported 400 retries with gpt-5.6-terra and succeeds",
+			requestModel:      "codex/gpt-image-2.5",
+			firstStatus:       http.StatusBadRequest,
+			firstBody:         `{"error":{"message":"The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account."}}`,
+			secondStatus:      http.StatusOK,
+			secondBody:        validStream,
+			wantStatusCode:    http.StatusOK,
+			wantCalls:         2,
+			wantModels:        []string{"gpt-6-sol", "gpt-5.6-terra"},
+			wantImageReturned: true,
+		},
+		{
+			name:              "explicit gpt-6-sol-image unsupported 400 retries with gpt-5.6-terra and succeeds",
+			requestModel:      "codex/gpt-6-sol-image",
+			firstStatus:       http.StatusBadRequest,
+			firstBody:         `The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account.`,
+			secondStatus:      http.StatusOK,
+			secondBody:        validStream,
+			wantStatusCode:    http.StatusOK,
+			wantCalls:         2,
+			wantModels:        []string{"gpt-6-sol", "gpt-5.6-terra"},
+			wantImageReturned: true,
+		},
+		{
+			name:              "other 400 error does not trigger fallback",
+			requestModel:      "codex/gpt-image-2.5",
+			firstStatus:       http.StatusBadRequest,
+			firstBody:         `{"error":{"message":"Invalid parameter: size must be square"}}`,
+			wantStatusCode:    http.StatusBadGateway,
+			wantCalls:         1,
+			wantModels:        []string{"gpt-6-sol"},
+			wantImageReturned: false,
+		},
+		{
+			name:              "400 tools error does not trigger fallback",
+			requestModel:      "codex/gpt-image-2.5",
+			firstStatus:       http.StatusBadRequest,
+			firstBody:         `{"error":{"message":"Tool choice 'image_generation' must be specified with 'tools' parameter"}}`,
+			wantStatusCode:    http.StatusBadGateway,
+			wantCalls:         1,
+			wantModels:        []string{"gpt-6-sol"},
+			wantImageReturned: false,
+		},
+		{
+			name:              "500 error does not trigger fallback",
+			requestModel:      "codex/gpt-image-2.5",
+			firstStatus:       http.StatusInternalServerError,
+			firstBody:         `{"error":{"message":"The 'gpt-6-sol' model is not supported"}}`,
+			wantStatusCode:    http.StatusBadGateway,
+			wantCalls:         1,
+			wantModels:        []string{"gpt-6-sol"},
+			wantImageReturned: false,
+		},
+		{
+			name:              "gpt-6-sol unsupported 400 retries with gpt-5.6-terra but second attempt also fails",
+			requestModel:      "codex/gpt-image-2.5",
+			firstStatus:       http.StatusBadRequest,
+			firstBody:         `{"error":{"message":"The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account."}}`,
+			secondStatus:      http.StatusBadRequest,
+			secondBody:        `{"error":{"message":"The 'gpt-5.6-terra' model is not supported"}}`,
+			wantStatusCode:    http.StatusBadGateway,
+			wantCalls:         2,
+			wantModels:        []string{"gpt-6-sol", "gpt-5.6-terra"},
+			wantImageReturned: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var recordedModels []string
+			var calls int
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				raw, _ := io.ReadAll(r.Body)
+				var reqMap map[string]any
+				_ = json.Unmarshal(raw, &reqMap)
+				if m, ok := reqMap["model"].(string); ok {
+					recordedModels = append(recordedModels, m)
+				}
+
+				if calls == 1 {
+					w.WriteHeader(tt.firstStatus)
+					if tt.firstStatus == http.StatusOK {
+						w.Header().Set("Content-Type", "text/event-stream")
+					}
+					_, _ = w.Write([]byte(tt.firstBody))
+					return
+				}
+
+				w.WriteHeader(tt.secondStatus)
+				if tt.secondStatus == http.StatusOK {
+					w.Header().Set("Content-Type", "text/event-stream")
+				}
+				_, _ = w.Write([]byte(tt.secondBody))
+			}))
+			defer server.Close()
+
+			overrideCodexProvider(t, providers.ProviderConfig{
+				BaseURL:    server.URL + "/backend-api/codex/responses",
+				AuthHeader: "Authorization",
+				AuthScheme: "bearer",
+			})
+
+			handler, _ := newCodexImageHandler(t)
+			reqBody := fmt.Sprintf(`{"model":%q,"prompt":"a sunset over mountains"}`, tt.requestModel)
+			req := httptest.NewRequest("POST", "/v1/images/generations", strings.NewReader(reqBody))
+			rec := httptest.NewRecorder()
+
+			handler.HandleImages(rec, req)
+
+			if rec.Code != tt.wantStatusCode {
+				t.Errorf("status code = %d, want %d; body: %s", rec.Code, tt.wantStatusCode, rec.Body.String())
+			}
+			if calls != tt.wantCalls {
+				t.Errorf("calls = %d, want %d", calls, tt.wantCalls)
+			}
+			if len(recordedModels) != len(tt.wantModels) {
+				t.Fatalf("recorded models = %v, want %v", recordedModels, tt.wantModels)
+			}
+			for i, wantM := range tt.wantModels {
+				if recordedModels[i] != wantM {
+					t.Errorf("call %d model = %q, want %q", i+1, recordedModels[i], wantM)
+				}
+			}
+			if tt.wantImageReturned {
+				var resp map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("parse response: %v", err)
+				}
+				data, _ := resp["data"].([]any)
+				if len(data) == 0 {
+					t.Fatal("expected image data in response, got none")
+				}
+				b64, _ := data[0].(map[string]any)["b64_json"].(string)
+				if b64 != "ZmFsbGJhY2tfaW1hZ2U=" {
+					t.Errorf("image b64 = %q, want ZmFsbGJhY2tfaW1hZ2U=", b64)
+				}
+			}
+		})
+	}
+}

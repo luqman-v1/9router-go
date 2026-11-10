@@ -6,10 +6,13 @@ import "strings"
 const CodexAutoPingModel = "gpt-5.6-terra"
 
 // CodexImagesMainModel is the main model answering Codex tool-call image
-// requests. It only drives the image_generation tool call: gpt-5.6-sol is
-// rejected for ChatGPT Go accounts ("model is not supported when using Codex
-// with a ChatGPT account"); gpt-5.6-terra is accepted (upstream b08f12d5).
-const CodexImagesMainModel = "gpt-5.6-terra"
+// requests. It hosts the image_generation tool (gpt-6-sol); if rejected by a
+// ChatGPT account, it falls back to gpt-5.6-terra (upstream PR #5546).
+const CodexImagesMainModel = "gpt-6-sol"
+
+// CodexImagesFallbackModel is the model used when a ChatGPT account rejects
+// gpt-6-sol for image tool hosting (upstream PR #5546).
+const CodexImagesFallbackModel = "gpt-5.6-terra"
 
 // ProviderModels maps provider aliases/IDs to their supported models in 9router.
 // Ported verbatim from open-sse/providers/registry (registry/{id}.js models arrays,
