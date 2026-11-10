@@ -145,7 +145,7 @@ func (s *MCPServer) HandlePOST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Body != nil {
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 	}
 
 	body, err := io.ReadAll(r.Body)
