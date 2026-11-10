@@ -61,7 +61,17 @@ func hasSSEContentLine(s string) bool {
 			return true
 		}
 	}
-	if strings.Contains(s, `"type":"content_block_start"`) && strings.Contains(s, `"type":"tool_use"`) {
+	if strings.Contains(s, `"type":"content_block_delta"`) && strings.Contains(s, `"signature_delta"`) {
+		return true
+	}
+	if strings.Contains(s, `"type":"content_block_start"`) {
+		if strings.Contains(s, `"type":"tool_use"`) ||
+			strings.Contains(s, `"type":"thinking"`) ||
+			strings.Contains(s, `"type":"redacted_thinking"`) {
+			return true
+		}
+	}
+	if strings.Contains(s, `"redacted_thinking"`) {
 		return true
 	}
 	// Responses API
