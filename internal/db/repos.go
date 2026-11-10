@@ -41,6 +41,12 @@ type Repo struct {
 	// reader that already captured a *Repo. A nil value means "no vault", which
 	// is every install that never set ROUTER_MASTER_KEY.
 	vault atomic.Value // *vault.Vault
+	// auditRecorder is the running tamper-evident audit recorder, or nil when
+	// auditing is off. It is stored rather than held by value for the same
+	// reason as vault: the router is built before the boot hook starts the
+	// recorder, so a handler reads it per request instead of snapshotting a
+	// nil at construction. See audit_recorder.go.
+	auditRecorder atomic.Value // *audit.Recorder
 	// budgetColsOnce/budgetCols cache whether the apiKeys table carries the
 	// F-2 budget columns. The answer is a property of the schema, which does
 	// not change while the process runs, and the probe sits on the dashboard's
