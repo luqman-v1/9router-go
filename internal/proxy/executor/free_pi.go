@@ -57,6 +57,11 @@ func ForwardFreePi(w http.ResponseWriter, req *Request) error {
 	}
 
 	state := newFreePiSessionState(token, req.ConnData)
+	// The stored snapshot is what the connection recorded at login and is never
+	// refreshed, so resolve it against the server's current floor here. Without
+	// this a server-side `min` raise breaks every request from a container that
+	// is already current (see providers/freepi_version.go).
+	state.ClientVersion = providers.ResolveFreePiClientVersion(ctx, client, state.ClientVersion)
 
 	// Claim the account for this process. Failing to acquire is not an error:
 	// it only means a sibling holds reset rights, so this request must not
@@ -74,23 +79,38 @@ func ForwardFreePi(w http.ResponseWriter, req *Request) error {
 		// status would never be inspected and a 409 would reach the client as a
 		// successful turn carrying an error body.
 		var ue *proxy.UpstreamError
-		if !errors.As(err, &ue) || ue.StatusCode != http.StatusConflict {
+		if !errors.As(err, &ue) {
 			freePiNoteAdGate(err)
 			return err
 		}
 
-		code, _ := freePiErrorCode(ue.Body)
-		retried, retryErr := freePiResetAndRetry(ctx, client, req, state, code)
-		if retryErr != nil {
-			return retryErr
+		switch ue.StatusCode {
+		case http.StatusUpgradeRequired:
+			// 426 is the forced-update gate: the version we sent is below the
+			// server's `min`. The cached snapshot is stale by definition at this
+			// point, so refresh it and retry once.
+			retried := freePiVersionRetry(ctx, client, req, state)
+			if retried == nil {
+				return err
+			}
+			resp = retried
+		case http.StatusConflict:
+			code, _ := freePiErrorCode(ue.Body)
+			retried, retryErr := freePiResetAndRetry(ctx, client, req, state, code)
+			if retryErr != nil {
+				return retryErr
+			}
+			if retried == nil {
+				// Reset suppressed (sibling in flight, cooldown, opt-out) or the
+				// reset itself failed: report the real conflict, unchanged, rather
+				// than a synthetic error the client cannot act on.
+				return ue
+			}
+			resp = retried
+		default:
+			freePiNoteAdGate(err)
+			return err
 		}
-		if retried == nil {
-			// Reset suppressed (sibling in flight, cooldown, opt-out) or the
-			// reset itself failed: report the real conflict, unchanged, rather
-			// than a synthetic error the client cannot act on.
-			return ue
-		}
-		resp = retried
 	}
 
 	forwardUpstreamResponseHeaders(w, resp.Header)
@@ -150,6 +170,39 @@ func freePiResetAndRetry(ctx context.Context, client *http.Client, req *Request,
 		return nil, fmt.Errorf("free-pi upstream retry: %w", err)
 	}
 	return resp, nil
+}
+
+// freePiVersionRetry handles a 426: the server rejected x-client-version as
+// below its published `min`. It refreshes the snapshot, re-resolves the header
+// and retries exactly once.
+//
+// It returns nil when the retry cannot help — the refresh failed, or the
+// published floor did not advance past what we already sent — and the caller
+// then reports the original 426. Replaying an unchanged header would only draw
+// the same answer.
+func freePiVersionRetry(ctx context.Context, client *http.Client, req *Request, state freePiSessionState) *http.Response {
+	if err := providers.RefreshFreePiClientVersion(ctx, client); err != nil {
+		log.Warn("free-pi", "client-version refresh failed after 426",
+			"account", state.AccountKey, "sent", state.ClientVersion, "error", err)
+		return nil
+	}
+
+	next := providers.ResolveFreePiClientVersion(ctx, client, state.ClientVersion)
+	if next == state.ClientVersion {
+		log.Warn("free-pi", "426 but the published version floor did not advance past what we sent",
+			"account", state.AccountKey, "sent", state.ClientVersion)
+		return nil
+	}
+
+	log.Info("free-pi", "retrying once with the refreshed client version after 426",
+		"account", state.AccountKey, "from", state.ClientVersion, "to", next)
+	state.ClientVersion = next
+
+	resp, err := freePiDoChat(ctx, client, req, state)
+	if err != nil {
+		return nil
+	}
+	return resp
 }
 
 // freePiResetPermitted is the reset gate: lease ownership, then cooldown.
