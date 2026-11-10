@@ -264,6 +264,9 @@ func (h *ChatHandler) handleResponsesSingleModel(ctx context.Context, w http.Res
 			if err := json.Unmarshal(ue.Body, &errBody); err == nil && errBody.Error != nil {
 				if code, _ := errBody.Error["code"].(string); code == "context_length_exceeded" {
 					cw.Header().Set("Content-Type", "text/event-stream")
+					cw.Header().Set("Cache-Control", "no-cache, no-transform")
+					cw.Header().Set("Connection", "keep-alive")
+					cw.Header().Set("X-Accel-Buffering", "no")
 					cw.WriteHeader(http.StatusOK)
 					_, _ = cw.Write([]byte(translator.FormatResponsesFailedSSE(errBody.Error)))
 					if f, ok := cw.ResponseWriter.(http.Flusher); ok {

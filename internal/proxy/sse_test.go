@@ -497,3 +497,30 @@ func TestSSECopy_QuotedTerminalInsideContentIsNotATerminal(t *testing.T) {
 		t.Errorf("expected exactly 1 injected terminal, got %d in %q", got, out)
 	}
 }
+
+func TestWriteSSEHeaders(t *testing.T) {
+	rec := &mockResponseWriter{}
+	f := WriteSSEHeaders(rec)
+
+	if f == nil {
+		t.Fatal("expected non-nil Flusher")
+	}
+	if rec.code != http.StatusOK {
+		t.Errorf("status code = %d, want %d", rec.code, http.StatusOK)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want %q", ct, "text/event-stream")
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache, no-transform" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "no-cache, no-transform")
+	}
+	if conn := rec.Header().Get("Connection"); conn != "keep-alive" {
+		t.Errorf("Connection = %q, want %q", conn, "keep-alive")
+	}
+	if xab := rec.Header().Get("X-Accel-Buffering"); xab != "no" {
+		t.Errorf("X-Accel-Buffering = %q, want %q", xab, "no")
+	}
+	if !rec.wasFlushed() {
+		t.Error("expected initial flush to be called")
+	}
+}

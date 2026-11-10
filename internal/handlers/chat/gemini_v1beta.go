@@ -231,8 +231,9 @@ func (s *geminiStreamWriter) WriteHeader(status int) {
 	}
 	if status == http.StatusOK && !s.headersSent {
 		s.w.Header().Set("Content-Type", "text/event-stream")
-		s.w.Header().Set("Cache-Control", "no-cache")
+		s.w.Header().Set("Cache-Control", "no-cache, no-transform")
 		s.w.Header().Set("Connection", "keep-alive")
+		s.w.Header().Set("X-Accel-Buffering", "no")
 		s.w.WriteHeader(http.StatusOK)
 		s.headersSent = true
 		if s.flusher != nil {
