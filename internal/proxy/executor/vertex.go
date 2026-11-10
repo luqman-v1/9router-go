@@ -336,6 +336,9 @@ func ForwardVertex(w http.ResponseWriter, req *Request) error {
 	if req.IsStream {
 		httpReq.Header.Set("Accept", "text/event-stream")
 	}
+	if req.IsStream && httpReq.Header.Get("Accept-Encoding") == "" {
+		httpReq.Header.Set("Accept-Encoding", "identity")
+	}
 	client := req.Client
 	if client == nil {
 		client = http.DefaultClient
@@ -344,6 +347,7 @@ func ForwardVertex(w http.ResponseWriter, req *Request) error {
 	if err != nil {
 		return fmt.Errorf("ForwardVertex: upstream request: %w", err)
 	}
+	proxy.UnwrapIdentityGzip(httpReq, resp)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))

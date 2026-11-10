@@ -129,6 +129,9 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		"User-Agent":    providers.AntigravityCLIUserAgent,
 		"Accept":        accept,
 	}
+	if isStream {
+		headers["Accept-Encoding"] = "identity"
+	}
 	if cfg.Format == "gemini-cli" {
 		// Cloud Code Assist identifies the CLI in two more headers and answers
 		// 403 without them.
@@ -154,6 +157,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		}
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
+	UnwrapIdentityGzip(req, resp)
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
 		resp.Body.Close()
@@ -192,6 +196,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 						req2.Header.Set(k, v)
 					}
 					if resp2, err := client.Do(req2); err == nil {
+						UnwrapIdentityGzip(req2, resp2)
 						if resp2.StatusCode == http.StatusOK {
 							if sessID := handlerutil.GetSessionID(ctx); sessID != "" {
 								translator.PurgeSessionThoughtSignatures(sessID)
@@ -212,6 +217,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 										req3.Header.Set(k, v)
 									}
 									if resp3, err := client.Do(req3); err == nil {
+										UnwrapIdentityGzip(req3, resp3)
 										if resp3.StatusCode == http.StatusOK {
 											if sessID := handlerutil.GetSessionID(ctx); sessID != "" {
 												translator.PurgeSessionThoughtSignatures(sessID)

@@ -169,6 +169,12 @@ func newJSONRequest(ctx context.Context, method, url string, headers map[string]
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	// A streaming lane asks for an event stream. Pin identity so an edge or
+	// provider cannot answer with a buffered gzip stream that arrives as one
+	// burst instead of token by token. An explicit encoding always wins.
+	if req.Header.Get("Accept-Encoding") == "" && strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream") {
+		req.Header.Set("Accept-Encoding", "identity")
+	}
 	return req, nil
 }
 
@@ -360,6 +366,7 @@ func doRequestOnce(ctx context.Context, client *http.Client, method, url string,
 	if err != nil {
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
+	UnwrapIdentityGzip(req, resp)
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		resp.Body.Close()
