@@ -137,6 +137,11 @@ var ProviderModels = map[string][]string{
 	"featherless": {"deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Flash", "zai-org/GLM-5.2", "zai-org/GLM-5.1", "moonshotai/Kimi-K2.7-Code", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.5"},
 	"fireworks":   {"accounts/fireworks/models/deepseek-v3p1", "accounts/fireworks/models/llama-v3p3-70b-instruct", "accounts/fireworks/models/qwen3-235b-a22b", "nomic-ai/nomic-embed-text-v1.5"},
 	"fl":          {"deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Flash", "zai-org/GLM-5.2", "zai-org/GLM-5.1", "moonshotai/Kimi-K2.7-Code", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.5"},
+	// Free-pi seeds exactly one id — the one its CLI defaults to
+	// (MODEL_ID in free-pi-cli src/provider.ts).
+	"free-pi": {"deepseek/deepseek-v4-flash"},
+	"fp":      {"deepseek/deepseek-v4-flash"},
+	"freepi":  {"deepseek/deepseek-v4-flash"},
 	// ElevenLabs declares one catalogue for both service kinds, so the STT ids
 	// sit beside the TTS ones (open-sse/providers/registry/elevenlabs.js models[]).
 	"elevenlabs": {"eleven_multilingual_v2", "eleven_turbo_v2_5", "scribe_v1", "scribe_v2"},

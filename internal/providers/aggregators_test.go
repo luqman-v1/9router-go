@@ -101,6 +101,12 @@ func TestAggregatorProviders(t *testing.T) {
 			aliases:    []string{"nous-portal", "nous-research", "ns"},
 			modelsList: "https://inference-api.nousresearch.com/v1/models", wantFetcher: true,
 		},
+		{
+			id: "free-pi", baseURL: "https://api.freepi.ai/v1/chat/completions",
+			models:     []string{"deepseek/deepseek-v4-flash"},
+			aliases:    []string{"fp", "freepi"},
+			modelsList: "https://api.freepi.ai/client-version", wantFetcher: true,
+		},
 	}
 
 	for _, tt := range tests {

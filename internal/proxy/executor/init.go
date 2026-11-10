@@ -104,6 +104,12 @@ func RegisterAll() {
 	// so the passthrough cannot serve it.
 	Register("perplexity-web", func() Executor { return ForwardPerplexityWeb })
 	Register("freebuff", func() Executor { return ForwardFreebuff })
+	// free-pi cannot ride the shared passthrough: it must set two per-account
+	// headers (x-session-id, x-client-version) that the registry's static map
+	// cannot carry, and it must inspect the upstream status so a 409
+	// concurrent_session stays a 409 instead of being written out as a 200
+	// carrying an error body.
+	Register("free-pi", func() Executor { return ForwardFreePi })
 	Register("kilo-gateway", func() Executor { return ForwardOpenAI })
 	Register("llm7", func() Executor { return ForwardOpenAI })
 	Register("morph", func() Executor { return ForwardOpenAI })

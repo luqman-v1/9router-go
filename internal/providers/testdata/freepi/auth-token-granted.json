@@ -1,0 +1,6 @@
+{
+  "_source": "dennisonbertram/free-pi-cli src/auth-flow.ts pollForToken (AuthTokenResponseSchema union); observed shape",
+  "_note": "The granted branch. This JWT is the ONLY credential we ever hold. It is long-lived (~90 days) and there is NO refresh token anywhere in the flow, so expiry means re-login, never a silent refresh.",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzAxSjhWUTCIsImV4cCI6MTc2NzIyNTYwMH0.5vR9kQ2sN0mXbYpL8aT3wZcF6hJ4dG1eK7nU0iOr",
+  "_decoded_payload": { "sub": "user_01J8WTZ4Q9V6B3N7M1K5T8RD", "exp": 1767225600 }
+}

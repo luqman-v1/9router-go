@@ -1,0 +1,12 @@
+{
+  "_source": "dennisonbertram/free-pi-cli src/error-notice.ts ParsedEnvelope ; hungkevin/free-pi-cli-proxy server.mjs:958,1082",
+  "_note": "The universal upstream error envelope. `code` is the field to branch on -- never the message text. For 409 the code is `concurrent_session`, and its real meaning is a COUNT problem: the account already holds the maximum number of live sessions, NOT that someone else is mid-request.",
+  "status": 409,
+  "concurrent_session": {
+    "code": "concurrent_session",
+    "message": "You've already got 4 free-pi CLI sessions running. Run /close-other-session to clear them, then retry."
+  },
+  "_session_cap": 4,
+  "_session_cap_source": "hungkevin/free-pi-cli-proxy server.mjs:958 — 'free-pi.ai limits each account to at most 4 concurrent sessions'",
+  "_note_on_cap": "We deliberately occupy ONE of these four (see plan section 2): the session id is derived from account identity, so every connection and every process converges on the same session. The other three stay unspent headroom."
+}

@@ -1,0 +1,9 @@
+{
+  "_source": "dennisonbertram/free-pi-cli src/auth-flow.ts startDeviceFlow -> POST /auth/github/device",
+  "_note": "Step 1 of login. Returns a device-flow session. `session_id` is the handle used for BOTH the consent call and every subsequent /auth/token poll.",
+  "session_id": "sess_01J8Z0F2X4Q9V6B3N7M1K5T8RD",
+  "user_code": "ABCD-1234",
+  "verification_uri": "https://github.com/login/device",
+  "interval": 5,
+  "expires_in": 900
+}

@@ -316,6 +316,8 @@ func HandleSuggestedModels(w http.ResponseWriter, r *http.Request) {
 		filter = filterCommandCodeFree
 	case "vercel-free":
 		filter = filterVercelFree
+	case "free-pi":
+		filter = filterFreePi
 	default:
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Unknown filter type")
 		return
@@ -364,4 +366,20 @@ func HandleSuggestedModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"data": filter(models)})
+}
+
+func filterFreePi(models []map[string]any) []suggestedModel {
+	out := make([]suggestedModel, 0, len(models))
+	for _, m := range models {
+		id := getString(m, "id")
+		if id == "" {
+			continue
+		}
+		name := getString(m, "name")
+		if name == "" {
+			name = id
+		}
+		out = append(out, suggestedModel{ID: id, Name: name})
+	}
+	return out
 }

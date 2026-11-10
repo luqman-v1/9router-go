@@ -445,6 +445,18 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Icon:         "bolt",
 		ServiceKinds: []string{"llm"},
 	},
+	"free-pi": {
+		ID:            "free-pi",
+		Name:          "Free Pi",
+		Alias:         "fp",
+		Category:      CategoryOAuth,
+		Color:         "#7c3aed",
+		Icon:          "terminal",
+		ServiceKinds:  []string{"llm"},
+		Website:       "https://freepi.ai",
+		Usage:         true,
+		ModelsFetcher: &Fetcher{URL: "https://api.freepi.ai/client-version", Type: "free-pi"},
+	},
 	"gemini-cli": {
 		ID:           "gemini-cli",
 		Name:         "Gemini CLI",

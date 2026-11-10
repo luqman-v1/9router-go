@@ -96,6 +96,11 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 		return fetchGeminiWebUsage(ctx, apiKey), true
 	case "opencode-zen":
 		return fetchOpenCodeZenUsage(ctx, apiKey, connectionBaseURL(data)), true
+	case "free-pi":
+		// GET {origin}/me/stats — the same endpoint the CLI's free_pi_usage
+		// tool reads. free-pi reports credits, not dollars, so the handler maps
+		// credits and tokens and leaves cost out rather than inventing a figure.
+		return fetchFreePiUsage(ctx, firstNonEmptyStr(accessToken, apiKey), connectionBaseURL(data)), true
 	case "minimax-code", "minimax-code-global":
 		return fetchMiniMaxCodeUsage(ctx, provider, accessToken, psdStr(psd, "realUserID")), true
 	case "zcode":
