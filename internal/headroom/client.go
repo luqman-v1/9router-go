@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/proxy"
 )
@@ -748,7 +749,7 @@ func (c *HeadroomClient) compressBuiltin(ctx context.Context, rawMessages []any,
 	if ctx.Err() != nil {
 		return nil, false
 	}
-	res, ok := c.builtin.CompressMessages(rawMessages)
+	res, ok := c.builtin.CompressMessagesWithSession(handlerutil.GetSessionID(ctx), rawMessages)
 	if !ok || res == nil {
 		return nil, false
 	}

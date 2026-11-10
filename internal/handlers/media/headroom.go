@@ -32,11 +32,13 @@ var hopByHopHeaders = map[string]bool{
 var proxyLoopbackHosts = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
 
 // HeadroomHandler manages the external Headroom (token compression) proxy
-// process and reverse-proxies its dashboard.
+// process and reverse-proxies its dashboard. It also serves the MCP endpoint
+// for the built-in engine (POST /mcp), which needs no external process.
 type HeadroomHandler struct {
 	Repo    *db.Repo
 	DataDir string
 	Client  *http.Client
+	mcp     *headroom.MCPServer
 }
 
 // NewHeadroomHandler creates a HeadroomHandler bound to the app data dir.
@@ -49,6 +51,7 @@ func NewHeadroomHandler(repo *db.Repo) *HeadroomHandler {
 				return http.ErrUseLastResponse // redirect: "manual"
 			},
 		},
+		mcp: headroom.NewMCPServer(headroom.NewBuiltinEngine()),
 	}
 }
 
@@ -59,6 +62,12 @@ func writeHeadroomError(w http.ResponseWriter, status int, message, code string)
 		body["code"] = code
 	}
 	handlerutil.WriteJSON(w, status, body)
+}
+
+// HandleMCP serves the built-in headroom engine's MCP endpoint (POST /mcp):
+// JSON-RPC 2.0 tools for compression and stats.
+func (h *HeadroomHandler) HandleMCP(w http.ResponseWriter, r *http.Request) {
+	h.mcp.HandlePOST(w, r)
 }
 
 func (h *HeadroomHandler) headroomURL() string {

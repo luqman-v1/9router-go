@@ -38,6 +38,15 @@ func NewBuiltinEngine() *BuiltinEngine {
 	return &BuiltinEngine{Config: tokensaver.DefaultRTKConfig()}
 }
 
+// builtinMemory is the process-level prefix-replay cache shared by every
+// BuiltinEngine. It is a package singleton on purpose: the gateway builds a
+// fresh client (and therefore a fresh engine) per request in its only
+// production call path (internal/handlers/chat/fallback.go), so a store owned by
+// an engine would be rebuilt empty every turn and never learn a prefix. Bound
+// at NewMemoryStore's defaults (500 sessions, 50 entries per session, 24h TTL)
+// under a mutex, so it cannot grow without bound on the small deployment target.
+var builtinMemory = NewMemoryStore(0, 0, 0)
+
 // BuiltinCompressResult is the engine's answer, in the shape the external proxy
 // returns for /v1/compress.
 //
@@ -61,6 +70,73 @@ type BuiltinCompressResult struct {
 // the result means nothing was safely compressible, which the caller treats as
 // fail-open.
 func (e *BuiltinEngine) CompressMessages(messages []any) (*BuiltinCompressResult, bool) {
+	return e.CompressMessagesWithSession("", messages)
+}
+
+// CompressMessagesWithSession is CompressMessages plus prefix replay: when
+// sessionID is non-empty, a compression decision made on an earlier turn's
+// leading messages is replayed instead of re-folding that already-seen history.
+//
+// The replay is safe because the RTK fold is per message and the engine does no
+// cross-message work (no deduplication, no semantic rewriting): a message's
+// folded form depends only on that message, never on its neighbours. So the
+// cached compression of a matching prefix is byte-identical to what a full
+// re-fold would produce, and splicing it onto a freshly compressed tail yields
+// exactly the full-compress result. The caller's validateMessagesPreserved gate
+// and byte-gain check still run on the spliced output, so a divergence fails
+// open rather than committing a wrong body.
+//
+// A empty sessionID (the native path, and any caller without a stable session
+// identity) skips the cache and compresses from scratch every time.
+func (e *BuiltinEngine) CompressMessagesWithSession(sessionID string, messages []any) (*BuiltinCompressResult, bool) {
+	if sessionID == "" || len(messages) == 0 {
+		return e.compressFromScratch(messages)
+	}
+
+	// Replay the longest cached prefix that is a true head of this request.
+	if entry, ok := builtinMemory.Lookup(sessionID, messages); ok {
+		if res, ok := e.replayPrefix(entry, messages); ok {
+			return res, true
+		}
+		// An unusable entry (stale shape, count drift) falls through to a full
+		// fold rather than committing a spliced body the gate would reject.
+	}
+
+	res, ok := e.compressFromScratch(messages)
+	if ok && res != nil {
+		builtinMemory.Store(sessionID, messages, res.Messages, res.TokensSaved)
+	}
+	return res, ok
+}
+
+// replayPrefix splices a cached prefix compression onto a freshly compressed
+// tail. The cached entry already holds the folded prefix messages, so only the
+// unseen tail runs through the RTK pipeline.
+func (e *BuiltinEngine) replayPrefix(entry *MemoryEntry, messages []any) (*BuiltinCompressResult, bool) {
+	if entry == nil || entry.Length <= 0 || entry.Length > len(messages) || len(entry.CompressedMessages) == 0 {
+		return nil, false
+	}
+	tail := messages[entry.Length:]
+	tailCompressed := tail
+	if len(tail) > 0 {
+		if tailRes, ok := e.compressFromScratch(tail); ok && tailRes != nil {
+			tailCompressed = tailRes.Messages
+		}
+	}
+	combined := make([]any, 0, len(entry.CompressedMessages)+len(tailCompressed))
+	combined = append(combined, entry.CompressedMessages...)
+	combined = append(combined, tailCompressed...)
+	// Message count must survive the splice; if it did not, defer to a full
+	// fold rather than hand the caller a body its gate would reject.
+	if len(combined) != len(messages) {
+		return nil, false
+	}
+	return e.resultFromCompressed(messages, combined)
+}
+
+// compressFromScratch runs the RTK pipeline over the whole message list with no
+// cache consultation. It is CompressMessages' original body.
+func (e *BuiltinEngine) compressFromScratch(messages []any) (*BuiltinCompressResult, bool) {
 	if len(messages) == 0 {
 		return nil, false
 	}
@@ -113,6 +189,40 @@ func (e *BuiltinEngine) CompressMessages(messages []any) (*BuiltinCompressResult
 			CcrHashes: nil,
 		}, true
 	}
+}
+
+// resultFromCompressed builds the result for an already-folded message list,
+// applying the same token accounting compressFromScratch uses. It reports false
+// when the fold produced no saving, so a replay that bought nothing is treated
+// as "no compression" like any other.
+func (e *BuiltinEngine) resultFromCompressed(messages, compressed []any) (*BuiltinCompressResult, bool) {
+	before := messageListTokens(messages)
+	after := messageListTokens(compressed)
+	saved := before - after
+	if before <= 0 || after <= 0 || saved <= 0 {
+		return nil, false
+	}
+	return &BuiltinCompressResult{
+		Messages:          compressed,
+		TokensBefore:      before,
+		TokensAfter:       after,
+		TokensSaved:       saved,
+		CompressionRatio:  float64(after) / float64(before),
+		TransformsApplied: []string{"rtk-tool-output"},
+		TransformsSummary: summarizeTransforms(messages, compressed),
+		CcrHashes:         nil,
+	}, true
+}
+
+// messageListTokens estimates the prompt tokens of a message list using the
+// gateway-wide (len+3)/4 estimator over the same {"messages": ...} envelope
+// compressFromScratch marshals, so replay accounting matches a full fold.
+func messageListTokens(messages []any) int {
+	b, err := json.Marshal(map[string]any{"messages": messages}, json.Deterministic(true))
+	if err != nil {
+		return 0
+	}
+	return estimateBodyTokens(b)
 }
 
 // CompressText compresses one text leaf and reports whether it shrank. It is
