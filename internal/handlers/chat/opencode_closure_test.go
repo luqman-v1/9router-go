@@ -262,12 +262,20 @@ func TestOpencodeClosureError_PrefersUpstreamRetryAfter(t *testing.T) {
 			}
 			// An http-date resolves to a delta; assert it is the ~90m the carrier
 			// named rather than the 60s estimate.
+			//
+			// Not an exact second: http.TimeFormat carries second granularity, so
+			// formatting a time with sub-second precision truncates it, and the
+			// time elapsed between building the header and parsing it can cost one
+			// more. The floor sat at 5399s for exactly that reason and failed CI in
+			// the window where the truncation and the elapsed time together cross a
+			// second. The property under test is "the carrier wins over the
+			// estimate", which a range states honestly.
 			secs, err := strconv.Atoi(got)
 			if err != nil {
 				t.Fatalf("Retry-After = %q, want delta-seconds", got)
 			}
-			if secs != 5400 {
-				t.Errorf("Retry-After = %ds, want 5400s from the date carrier", secs)
+			if secs < 5395 || secs > 5400 {
+				t.Errorf("Retry-After = %ds, want ~5400s from the date carrier", secs)
 			}
 		})
 	}
