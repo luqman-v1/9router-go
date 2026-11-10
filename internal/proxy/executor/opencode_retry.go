@@ -47,9 +47,87 @@ func isOpenCodeRefusal(ue *proxy.UpstreamError) bool {
 	return bytes.Contains(ue.Body, []byte(openCodeRefusalToken))
 }
 
+// openCodeAbusePhrases are the wordings upstream uses when the refusal is a
+// network-level flag on this egress rather than a request-shape verdict.
+//
+// The list is deliberately narrow. The gate answers ONE 403 FreeTierError body
+// for at least five unrelated causes — a refused egress, an abuse-flagged
+// egress, tool declarations that are not the CLI built-ins, a User-Agent that
+// is not the CLI shape, and a missing session header — and ours cannot tell
+// them apart beyond this token. Only the abuse flag is made worse by a retry:
+// no header, session or body change clears it, so replaying the request only
+// extends the penalty. The other four fail identically on a replay anyway, so
+// they stay on the single-retry path where a transient case still recovers.
+//
+// Do NOT widen this to the handler's bare "abuse" match
+// (internal/handlers/chat/fallback.go classifyOpencodeFreeTierRefusal). That
+// prefix would make any body mentioning "anti-abuse" terminal and discard a
+// legitimate recovery. The two layers answer different questions: this one
+// asks "will a replay help?", the handler asks "how do I report it?".
+var openCodeAbusePhrases = []string{
+	"detected abusive traffic",
+	"abuse traffic",
+	"abuse of traffic",
+}
+
+// isOpenCodeTerminalRefusal reports whether a gate refusal is the egress-level
+// abuse flag, which no client-side change can clear.
+func isOpenCodeTerminalRefusal(ue *proxy.UpstreamError) bool {
+	if !isOpenCodeRefusal(ue) {
+		return false
+	}
+	for _, phrase := range openCodeAbusePhrases {
+		if containsFoldASCII(ue.Body, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsFoldASCII reports whether b contains s, comparing ASCII
+// case-insensitively.
+//
+// It exists instead of bytes.ToLower because the refusal body is capped at
+// constants.UpstreamErrLimit (1 MiB): lowercasing that much on every refusal
+// allocates a megabyte on the 1 vCPU box this gateway is sized for (AGENTS.md
+// §4.A/§4.G). This scan allocates nothing.
+func containsFoldASCII(b []byte, s string) bool {
+	if s == "" {
+		return true
+	}
+	if len(s) > len(b) {
+		return false
+	}
+	for i := 0; i+len(s) <= len(b); i++ {
+		if matchesFoldASCII(b[i:], s) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesFoldASCII compares the first len(s) bytes of b against s.
+func matchesFoldASCII(b []byte, s string) bool {
+	for j := range len(s) {
+		if lowerASCII(b[j]) != lowerASCII(s[j]) {
+			return false
+		}
+	}
+	return true
+}
+
+// lowerASCII folds one ASCII byte to lower case; every other byte is returned
+// unchanged, so multi-byte UTF-8 is compared byte-for-byte.
+func lowerASCII(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
 // openCodeUsageLimitToken is the error type the gate answers with when the
-// budget accounted to the upstream session is spent. Matched as a token for
-// the same reason as the refusal above: the prose is not stable.
+// budget accounted to the upstream session is spent. Matched as a token for the
+// same reason as the refusal above: the prose is not stable.
 const openCodeUsageLimitToken = "FreeUsageLimitError"
 
 // isOpencodeUsageLimit reports whether the gate answered 429 because the
@@ -66,13 +144,19 @@ func isOpencodeUsageLimit(ue *proxy.UpstreamError) bool {
 // error position — without this lift a 403 FreeTierError or a 429
 // FreeUsageLimitError would sail past every retry untouched. The body is read
 // here (capped) because the token lives in it; the response is consumed.
+//
+// The response headers travel with the error because Retry-After lives only
+// there: a spent free-tier allowance announces its reset in that header, and
+// dropping it left the caller waiting the hardcoded minute instead of the real
+// window. The plain-HTTP path (proxy.doRequestOnce) already keeps this header,
+// so carrying it here stops the two transports from disagreeing.
 func refusedResponseToError(resp *http.Response) *proxy.UpstreamError {
 	if resp == nil || (resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests) {
 		return nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
 	_ = resp.Body.Close()
-	return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: body}
+	return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: body, Header: resp.Header}
 }
 
 // forwardOpenCode issues the request and returns the settled result: the
@@ -103,9 +187,23 @@ func forwardOpenCode(ctx context.Context, send, sendDirect func() (*http.Respons
 	if !errors.As(err, &ue) || !isOpenCodeRefusal(ue) {
 		return nil, err
 	}
+	// The egress-level abuse flag is terminal: no header, session or body change
+	// clears it, so a replay only extends the penalty. Answer with the refusal
+	// itself, before the strict-proxy check and before the retry sleep — this is
+	// a property of the refusal, not of the caller's egress policy.
+	if isOpenCodeTerminalRefusal(ue) {
+		return nil, ue
+	}
 	// The caller forbade routing around its proxy; report the refusal instead.
 	if proxy.StrictProxy(ctx) {
 		return nil, err
+	}
+	// A replay that was itself refused says this egress is out, not that the
+	// request shape was stale. Replaying again within the cooldown cannot
+	// succeed; skip it (and its sleep) rather than amplify the penalty. Placed
+	// after the strict-proxy check because that path never replays at all.
+	if openCodeRetryCoolingDown(time.Now()) {
+		return nil, ue
 	}
 
 	select {
@@ -120,13 +218,29 @@ func forwardOpenCode(ctx context.Context, send, sendDirect func() (*http.Respons
 	if directErr != nil {
 		// The replay failed too. The gate's refusal is the actionable answer, so
 		// report it rather than the replay's follow-on error.
+		noteRefusedReplay(directErr)
 		return nil, ue
 	}
 	if replayUe := refusedResponseToError(directResp); replayUe != nil {
 		// The replay was refused as well; the original refusal is the answer.
+		noteRefusedReplay(replayUe)
 		return nil, ue
 	}
 	return directResp, nil
+}
+
+// noteRefusedReplay arms the cooldown when a replay came back refused.
+//
+// It reads both positions a refusal can arrive in: sendDirect is
+// proxy.ForwardOpenAI on the plain lanes, which converts a non-200 into an
+// error, while the stealth forward returns it as a plain response. Recording
+// only the response position would leave the common lane without a cooldown at
+// all.
+func noteRefusedReplay(err error) {
+	var ue *proxy.UpstreamError
+	if errors.As(err, &ue) && isOpenCodeRefusal(ue) {
+		noteOpenCodeRetryRefused(time.Now())
+	}
 }
 
 // forwardOpenCodeRotating extends the free-lane forward with one session
