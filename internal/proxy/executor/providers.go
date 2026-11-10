@@ -368,11 +368,15 @@ func ForwardAzure(w http.ResponseWriter, req *Request) error {
 	if req.IsStream {
 		r.Header.Set("Accept", "text/event-stream")
 	}
+	if req.IsStream && r.Header.Get("Accept-Encoding") == "" {
+		r.Header.Set("Accept-Encoding", "identity")
+	}
 
 	resp, err := req.Client.Do(r)
 	if err != nil {
 		return fmt.Errorf("upstream request failed: %w", err)
 	}
+	proxy.UnwrapIdentityGzip(r, resp)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -657,11 +661,15 @@ func forwardCommandcodeOnce(ctx context.Context, w http.ResponseWriter, req *Req
 			r.Header.Set(k, v)
 		}
 	}
+	if r.Header.Get("Accept-Encoding") == "" {
+		r.Header.Set("Accept-Encoding", "identity")
+	}
 	resp, err := req.Client.Do(r)
 	if err != nil {
 		return fmt.Errorf("upstream request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	proxy.UnwrapIdentityGzip(r, resp)
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
