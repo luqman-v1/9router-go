@@ -918,6 +918,7 @@ var patternCapabilities = []patternCapability{
 	{pattern: "*llama*", caps: Capabilities{Tools: true}},
 
 	{pattern: "*codestral*", caps: Capabilities{Tools: true}},
+	{pattern: "*devstral*", caps: Capabilities{Vision: true, Tools: true}},
 	{pattern: "*mistral-large*", caps: Capabilities{Vision: true, Tools: true}},
 	{pattern: "*mistral*", caps: Capabilities{Tools: true}},
 

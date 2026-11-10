@@ -171,6 +171,28 @@ export function resolveModelPickerGroups(
         color: catItem.color,
         models: visible,
       })
+
+      // When a provider has multiple named connections, surface connection-specific groups
+      // so operators can 1-click pick a specific connection slot without manually editing strings.
+      const provConns = connections.filter((c) => c.provider === catItem.id && c.name && c.isActive === 1)
+      if (provConns.length > 1) {
+        for (const c of provConns) {
+          const cName = c.name!
+          const cModels: PickerModel[] = visible.map((m) => ({
+            id: m.id,
+            name: `${m.name} (${cName})`,
+            value: `${cName}/${m.id}`,
+            caps: m.caps,
+            deprecated: m.deprecated,
+          }))
+          groups.push({
+            id: `${catItem.id}-${c.id}`,
+            name: `${catItem.name || catItem.id} · ${cName}`,
+            color: catItem.color,
+            models: cModels,
+          })
+        }
+      }
     }
   }
 
