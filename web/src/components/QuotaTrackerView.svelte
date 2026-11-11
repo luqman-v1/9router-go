@@ -50,6 +50,7 @@
     getConnectionsEmptyMessage,
     getConnectionsPaginationSummary,
     getHiddenQuotaRows,
+    groupConnectionsByProvider,
     getProviderOptions,
     getQuotaCache,
     getQuotaVisibilityKey,
@@ -863,6 +864,24 @@
     ) as ProviderConnection[],
   )
 
+  // Group the sorted rows by provider so the tracker reads as collapsible
+  // sections instead of one long flat list. Until the operator toggles a
+  // section, the first provider opens and the rest start collapsed.
+  let groupedConnections = $derived(groupConnectionsByProvider(sortedConnections))
+  let collapsedProviders = $state<Record<string, boolean> | null>(null)
+  let groupCollapsed = $derived.by<Record<string, boolean>>(() => {
+    if (collapsedProviders !== null) return collapsedProviders
+    const initial: Record<string, boolean> = {}
+    groupedConnections.forEach((group, index) => {
+      initial[group.provider] = index !== 0
+    })
+    return initial
+  })
+  function toggleProviderGroup(provider: string): void {
+    const base = groupCollapsed
+    collapsedProviders = { ...base, [provider]: !base[provider] }
+  }
+
   let hasEligibleConnections = $derived(totals.eligibleConnections > 0)
   let hasVisibleConnections = $derived(sortedConnections.length > 0)
   let emptyState = $derived(getConnectionsEmptyMessage(totals, providerFilter, accountFilter))
@@ -1268,9 +1287,36 @@
       <p class="mx-auto mt-2 max-w-md text-sm text-text-muted">{emptyState.description}</p>
     </div>
   {:else}
-    <!-- Provider cards: 2 columns, compact -->
-    <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-      {#each sortedConnections as conn (conn.id)}
+    <!-- Provider groups: collapsible sections, two columns per section -->
+    <div class="space-y-5">
+      {#each groupedConnections as group (group.provider)}
+        <section>
+          <button
+            type="button"
+            onclick={() => toggleProviderGroup(group.provider)}
+            aria-expanded={!groupCollapsed[group.provider]}
+            class="mb-3 flex w-full items-center gap-2 rounded-lg px-1 py-1 text-left transition-colors hover:text-primary"
+          >
+            <span
+              class="material-symbols-outlined text-lg text-text-muted transition-transform {groupCollapsed[
+                group.provider
+              ]
+                ? ''
+                : 'rotate-90'}"
+            >
+              chevron_right
+            </span>
+            <img src={getIconPath(group.provider)} alt="" class="h-5 w-5 rounded" />
+            <span class="text-sm font-semibold text-text-main">{providerLabel(group.provider)}</span>
+            <span
+              class="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-muted"
+            >
+              {group.connections.length}
+            </span>
+          </button>
+          {#if !groupCollapsed[group.provider]}
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {#each group.connections as conn (conn.id)}
         {@const isActive = isActiveConn(conn)}
         {@const quota = quotaData[conn.id]}
         {@const isLoading = quotaLoading[conn.id]}
@@ -1531,6 +1577,10 @@
             {/if}
           </div>
         </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
       {/each}
     </div>
 

@@ -101,6 +101,26 @@ function groupByProviderStable<T extends ProviderConnectionLike>(connections: T[
   return Array.from(seen.values()).flat()
 }
 
+export interface ProviderConnectionGroup<T> {
+  provider: string
+  connections: T[]
+}
+
+// Fold a sorted connection list into per-provider groups. Order within a group
+// follows the input order (the caller's sort), and providers keep first-seen
+// order, so a grouped list reads the same way as the flat one.
+export function groupConnectionsByProvider<T extends { provider: string }>(
+  connections: T[],
+): ProviderConnectionGroup<T>[] {
+  const groups = new Map<string, T[]>()
+  for (const conn of connections) {
+    const key = conn.provider || ''
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(conn)
+  }
+  return Array.from(groups, ([provider, list]) => ({ provider, connections: list }))
+}
+
 // Upstream emits Codex quota rows in this order. Unknown keys sort last but
 // keep a stable relative position, so a new window never displaces the known
 // ones.
