@@ -134,7 +134,7 @@ func (r *Repo) connectionOAuthState(connID string) (time.Time, int) {
 		return time.Time{}, 0
 	}
 	var rawData string
-	if err := r.db.QueryRow("SELECT data FROM providerConnections WHERE id = ?", connID).Scan(&rawData); err != nil {
+	if err := r.db.QueryRowContext(context.Background(), "SELECT data FROM providerConnections WHERE id = ?", connID).Scan(&rawData); err != nil {
 		return time.Time{}, 0
 	}
 	raw, ok := parseConnData(rawData)
