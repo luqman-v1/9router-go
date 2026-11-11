@@ -89,6 +89,17 @@ const netlifyRelayCode = `exports.handler = async (event) => {
     }
   }
 
+  // Ensure client IP is available for IP-gated upstreams (e.g. OpenCode free tier).
+  const clientIP = headers["x-nf-client-connection-ip"] || headers["client-ip"] || headers["x-forwarded-for"] || headers["x-real-ip"];
+  if (clientIP) {
+    if (!forwardHeaders["x-forwarded-for"] && !forwardHeaders["X-Forwarded-For"]) {
+      forwardHeaders["x-forwarded-for"] = clientIP;
+    }
+    if (!forwardHeaders["x-real-ip"] && !forwardHeaders["X-Real-IP"]) {
+      forwardHeaders["x-real-ip"] = clientIP;
+    }
+  }
+
   try {
     const upstream = await fetch(targetUrl, {
       method: event.httpMethod,

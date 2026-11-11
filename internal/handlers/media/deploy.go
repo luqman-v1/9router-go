@@ -54,6 +54,14 @@ export default async function handler(req) {
   delete rawHeaders["x-relay-target"];
   delete rawHeaders["x-relay-path"];
   delete rawHeaders["host"];
+
+  // Ensure client IP is available for IP-gated upstreams (e.g. OpenCode free tier).
+  const clientIP = req.headers.get("x-vercel-forwarded-for") || req.headers.get("x-real-ip") || req.headers.get("x-forwarded-for");
+  if (clientIP) {
+    if (!rawHeaders["x-forwarded-for"]) rawHeaders["x-forwarded-for"] = clientIP;
+    if (!rawHeaders["x-real-ip"]) rawHeaders["x-real-ip"] = clientIP;
+  }
+
   const headers = rawHeaders;
 
   const response = await fetch(targetUrl, {
