@@ -306,7 +306,7 @@ func (r *Repo) SetConnectionMediaEnabled(id string, mediaEnabled bool) error {
 		return fmt.Errorf("marshal connection data: %w", err)
 	}
 	now := nowUTC()
-	_, err = r.db.Exec(`UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?`, string(encoded), now, id)
+	_, err = r.db.ExecContext(context.Background(), `UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?`, string(encoded), now, id)
 	return err
 }
 
@@ -334,7 +334,7 @@ func (r *Repo) SetConnectionDisabledKinds(id string, disabledKinds []string) err
 		return fmt.Errorf("marshal connection data: %w", err)
 	}
 	now := nowUTC()
-	_, err = r.db.Exec(`UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?`, string(encoded), now, id)
+	_, err = r.db.ExecContext(context.Background(), `UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?`, string(encoded), now, id)
 	return err
 }
 
