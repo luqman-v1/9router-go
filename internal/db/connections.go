@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	json "encoding/json/v2"
 	"fmt"
+	"strings"
 
 	"9router/proxy/internal/models"
 )
@@ -164,6 +165,38 @@ func (r *Repo) GetProviderConnectionByID(id string) (*models.ProviderConnection,
 	}
 	r.hydrate(&conn)
 	return &conn, nil
+}
+
+// ResolveConnectionRoutingByPrefix looks up an active provider connection by primary key (id)
+// or name (case-insensitive and space/dash normalized) returning (provider, id, ok).
+// It does not select data or perform vault decryption / hydration, keeping resolution fast.
+func (r *Repo) ResolveConnectionRoutingByPrefix(prefix string) (provider string, connID string, ok bool) {
+	if r == nil || r.db == nil || prefix == "" {
+		return "", "", false
+	}
+	normPrefix := strings.ToLower(strings.ReplaceAll(prefix, " ", "-"))
+	var p, id string
+	// 1. Direct ID lookup
+	err := r.db.QueryRowContext(
+		context.Background(),
+		`SELECT provider, id FROM providerConnections WHERE id = ? AND isActive = 1 LIMIT 1`,
+		prefix,
+	).Scan(&p, &id)
+	if err == nil && id != "" {
+		return p, id, true
+	}
+	// 2. Name lookup (case-insensitive, exact or space-to-dash normalized)
+	err = r.db.QueryRowContext(
+		context.Background(),
+		`SELECT provider, id FROM providerConnections
+		 WHERE isActive = 1 AND (name = ? COLLATE NOCASE OR replace(name, ' ', '-') = ? COLLATE NOCASE)
+		 LIMIT 1`,
+		prefix, normPrefix,
+	).Scan(&p, &id)
+	if err == nil && id != "" {
+		return p, id, true
+	}
+	return "", "", false
 }
 
 // ReplaceProviderConnectionPayload rewrites an existing connection's name and
