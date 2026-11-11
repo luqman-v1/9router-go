@@ -95,6 +95,19 @@ export default {
       newRequestInit.duplex = "half";
     }
 
+    // Preserve client IP for upstreams that enforce IP rate-limits (e.g. OpenCode
+    // free tier: "Client IP address is required for free usage"). Cloudflare strips
+    // cf-connecting-ip on outbound subrequests, so map it to standard headers.
+    const clientIP = request.headers.get("cf-connecting-ip") || request.headers.get("x-real-ip") || request.headers.get("x-forwarded-for");
+    if (clientIP) {
+      if (!newRequestInit.headers.has("x-forwarded-for")) {
+        newRequestInit.headers.set("x-forwarded-for", clientIP);
+      }
+      if (!newRequestInit.headers.has("x-real-ip")) {
+        newRequestInit.headers.set("x-real-ip", clientIP);
+      }
+    }
+
     newRequestInit.headers.delete("x-relay-target");
     newRequestInit.headers.delete("x-relay-path");
     newRequestInit.headers.delete("host");
@@ -129,6 +142,17 @@ const denoRelayCode = `Deno.serve(async (request) => {
 
   const targetUrl = target.replace(/\/$/, "") + relayPath;
   const newHeaders = new Headers(request.headers);
+
+  const clientIP = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip");
+  if (clientIP) {
+    if (!newHeaders.has("x-forwarded-for")) {
+      newHeaders.set("x-forwarded-for", clientIP);
+    }
+    if (!newHeaders.has("x-real-ip")) {
+      newHeaders.set("x-real-ip", clientIP);
+    }
+  }
+
   newHeaders.delete("x-relay-target");
   newHeaders.delete("x-relay-path");
   newHeaders.delete("host");
