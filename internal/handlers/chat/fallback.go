@@ -748,7 +748,12 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 					pipedBody = out
 				}
 			}
+			pipedBody = translator.AnchorClaudeCache(pipedBody)
 		}
+	}
+
+	if isAnthropic || upstreamClaude {
+		pipedBody = executor.SanitizeClaudeThinkingBody(pipedBody)
 	}
 
 	// A body that asked for thinking summaries must not also carry the
