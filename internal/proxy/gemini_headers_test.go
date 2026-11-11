@@ -14,22 +14,24 @@ import (
 func TestForwardGemini_Headers_Injection(t *testing.T) {
 	tests := []struct {
 		name       string
+		format     string
 		projectID  string
 		sessionCtx context.Context
 		want       map[string]string // header -> expected value (empty string means just present)
 		wantAbsent []string          // headers that must NOT be present
 	}{
 		{
-			name:      "no project, no session",
+			name:      "plain gemini without project: headers absent",
 			projectID: "",
-			want: map[string]string{
-				"X-Client-Name":    "antigravity",
-				"X-Client-Version": providers.AntigravityCLIVersion,
+			wantAbsent: []string{
+				"X-Goog-User-Project",
+				"X-Machine-Session-Id",
+				"X-Client-Name",
+				"X-Client-Version",
 			},
-			wantAbsent: []string{"X-Goog-User-Project", "X-Machine-Session-Id"},
 		},
 		{
-			name:      "project set, no session",
+			name:      "antigravity lane with project: headers injected",
 			projectID: "my-proj",
 			want: map[string]string{
 				"X-Goog-User-Project": "my-proj",
@@ -39,7 +41,7 @@ func TestForwardGemini_Headers_Injection(t *testing.T) {
 			wantAbsent: []string{"X-Machine-Session-Id"},
 		},
 		{
-			name:       "project set with session",
+			name:       "antigravity lane with project and session: all injected",
 			projectID:  "my-proj",
 			sessionCtx: handlerutil.WithSessionID(context.Background(), "sess-123"),
 			want: map[string]string{
@@ -50,15 +52,19 @@ func TestForwardGemini_Headers_Injection(t *testing.T) {
 			},
 		},
 		{
-			name:       "no project with session",
-			projectID:  "",
-			sessionCtx: handlerutil.WithSessionID(context.Background(), "sess-456"),
+			name:       "gemini-cli lane: never leaks antigravity client identity",
+			format:     "gemini-cli",
+			projectID:  "cli-proj",
+			sessionCtx: handlerutil.WithSessionID(context.Background(), "sess-cli"),
 			want: map[string]string{
-				"X-Machine-Session-Id": "sess-456",
-				"X-Client-Name":        "antigravity",
-				"X-Client-Version":     providers.AntigravityCLIVersion,
+				"X-Goog-Api-Client": "google-genai-sdk/1.41.0 gl-node/v22.19.0",
 			},
-			wantAbsent: []string{"X-Goog-User-Project"},
+			wantAbsent: []string{
+				"X-Client-Name",
+				"X-Client-Version",
+				"X-Machine-Session-Id",
+				"X-Goog-User-Project",
+			},
 		},
 	}
 
@@ -76,7 +82,11 @@ func TestForwardGemini_Headers_Injection(t *testing.T) {
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			cfg := &providers.ProviderConfig{BaseURL: srv.URL}
+			baseURL := srv.URL
+			if tt.format == "gemini-cli" {
+				baseURL += "/v1internal"
+			}
+			cfg := &providers.ProviderConfig{BaseURL: baseURL, Format: tt.format}
 			body := `{"model":"gemini-3.8-flash-medium","messages":[{"role":"user","content":"hi"}]}`
 			_, err := ForwardGemini(ctx, srv.Client(), cfg, "ya29.fake", body, false, tt.projectID, "gemini-3.8-flash-medium")
 			if err != nil {
