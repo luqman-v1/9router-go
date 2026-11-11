@@ -318,3 +318,8 @@ var commandcodeGoatContextWindows = map[string]int{
 	"zai-org/GLM-5.2-Fast":                   1000000,
 	"zai-org/GLM-5.3":                        1000000,
 }
+
+func init() {
+	ProviderModels["commandcode-goat"] = commandcodeGoatModels
+	ProviderModels["cmc-goat"] = commandcodeGoatModels
+}
