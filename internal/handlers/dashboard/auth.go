@@ -85,6 +85,9 @@ func (h *DashboardHandler) HandleAuthLogin(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		auth.SetCookie(w, r, token)
+		// Attribute the success to the session it just created, so an operator's
+		// later actions trace back to this login in the audit log.
+		h.RecordLogin(r, http.StatusOK, token)
 		noStore(w)
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"success":            true,
@@ -95,9 +98,11 @@ func (h *DashboardHandler) HandleAuthLogin(w http.ResponseWriter, r *http.Reques
 
 	remaining := auth.RecordLoginFail(ip)
 	if locked, retryAfter := auth.LoginLocked(ip); locked {
+		h.RecordLogin(r, http.StatusTooManyRequests, "")
 		writeLoginLocked(w, retryAfter)
 		return
 	}
+	h.RecordLogin(r, http.StatusUnauthorized, "")
 	noStore(w)
 	handlerutil.WriteJSON(w, http.StatusUnauthorized, map[string]any{
 		"error":               "Invalid password. " + strconv.Itoa(remaining) + " attempt(s) left before lockout.",
@@ -106,7 +111,10 @@ func (h *DashboardHandler) HandleAuthLogin(w http.ResponseWriter, r *http.Reques
 }
 
 // HandleAuthLogout handles POST /api/auth/logout: clear the session cookie.
-func (h *DashboardHandler) HandleAuthLogout(w http.ResponseWriter, _ *http.Request) {
+func (h *DashboardHandler) HandleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	// Audit the logout before clearing the cookie: the actor is read from the
+	// session that is about to disappear.
+	h.RecordLogout(r)
 	auth.ClearCookie(w)
 	noStore(w)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"success": true})

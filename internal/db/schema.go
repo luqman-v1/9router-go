@@ -511,6 +511,44 @@ var keiRouterTables = []tableDef{
 			"CREATE INDEX IF NOT EXISTS idx_grl_ts ON guardrail_logs(created_at DESC)",
 		},
 	},
+	{
+		// The tamper-evident admin audit trail. created_at is a microsecond
+		// integer, not the RFC3339 text the other tables use, because the row
+		// hash chain covers the exact timestamp: second-precision text would
+		// make a later Verify recompute a different hash than the one stored,
+		// and report every row as modified. The divergence is deliberate and
+		// load-bearing; see the package doc in internal/audit.
+		name: "audit_log",
+		columns: [][2]string{
+			{"id", "TEXT PRIMARY KEY"},
+			{"tenant_id", "TEXT NOT NULL"},
+			{"actor", "TEXT NOT NULL DEFAULT ''"},
+			{"actor_type", "TEXT NOT NULL DEFAULT ''"},
+			{"action", "TEXT NOT NULL DEFAULT ''"},
+			{"target", "TEXT NOT NULL DEFAULT ''"},
+			{"resource_type", "TEXT NOT NULL DEFAULT ''"},
+			{"outcome", "TEXT NOT NULL DEFAULT ''"},
+			{"severity", "TEXT NOT NULL DEFAULT 'INFO'"},
+			{"client_ip", "TEXT NOT NULL DEFAULT ''"},
+			{"user_agent", "TEXT NOT NULL DEFAULT ''"},
+			{"http_method", "TEXT NOT NULL DEFAULT ''"},
+			{"http_route", "TEXT NOT NULL DEFAULT ''"},
+			{"status_code", "INTEGER NOT NULL DEFAULT 0"},
+			{"request_id", "TEXT NOT NULL DEFAULT ''"},
+			{"trace_id", "TEXT NOT NULL DEFAULT ''"},
+			{"span_id", "TEXT NOT NULL DEFAULT ''"},
+			{"detail", "TEXT NOT NULL DEFAULT '{}'"},
+			{"chain_id", "TEXT NOT NULL DEFAULT ''"},
+			{"chain_seq", "INTEGER NOT NULL DEFAULT 0"},
+			{"prev_hash", "TEXT NOT NULL DEFAULT ''"},
+			{"hash", "TEXT NOT NULL DEFAULT ''"},
+			{"created_at", "INTEGER NOT NULL DEFAULT 0"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_audit_tenant_action_time ON audit_log(tenant_id, action, created_at)",
+			"CREATE INDEX IF NOT EXISTS idx_audit_chain_seq ON audit_log(chain_id, chain_seq)",
+		},
+	},
 }
 
 // usageLedgerTables are Go-only tables backing the ledger retention in
