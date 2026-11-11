@@ -375,6 +375,10 @@ func sanitizeProviderConnection(c *models.ProviderConnection) map[string]any {
 			"username", "firstName", "lastName", "authMethod", "authKind",
 			"profileArn", "accessKeyId", "profile",
 			"disabledKinds", "mediaEnabled", "isMediaActive",
+			// The edit form's per-account model allowlist. Model ids are not
+			// secret, and without them the Codex model-scope editor reopens with
+			// every box unchecked even though the pin was saved.
+			"enabledModels",
 		} {
 			if v, ok := psd[f]; ok && v != nil {
 				out[f] = v
