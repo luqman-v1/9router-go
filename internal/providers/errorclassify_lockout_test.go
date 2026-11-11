@@ -7,9 +7,9 @@ import (
 
 func TestGetEscalatingLockoutCooldown(t *testing.T) {
 	tests := []struct {
-		name     string
-		streak   int
-		want     time.Duration
+		name   string
+		streak int
+		want   time.Duration
 	}{
 		{"zero streak means no lockout", 0, 0},
 		{"negative streak means no lockout", -3, 0},
