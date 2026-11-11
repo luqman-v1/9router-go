@@ -53,7 +53,7 @@ func TestHandleModels_Bug2_EnabledModelsPinNotBypassedByCustomModels(t *testing.
 
 	// Model alias pointing to this provider but outside the pin.
 	if _, err := database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('modelAliases', 'ec-alias', ?)`, prefix+"/alias-extra"); err != nil {
-		// table might not fail or err is ignored
+		t.Fatalf("seed alias: %v", err)
 	}
 
 	// Connection with enabledModels pinning ONLY pinned-1.
