@@ -166,23 +166,9 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 		if connInfo, ok := connMap[prefix]; ok && connInfo != nil {
 			return &ModelInfo{Provider: connInfo.Provider, Model: model, ConnectionID: connInfo.ConnectionID}
 		}
-	} else if h.Repo != nil {
-		if conns, err := h.Repo.GetProviderConnections("", false); err == nil {
-			normPrefix := strings.ToLower(strings.ReplaceAll(prefix, " ", "-"))
-			for _, conn := range conns {
-				if conn == nil {
-					continue
-				}
-				if conn.ID == prefix {
-					return &ModelInfo{Provider: conn.Provider, Model: model, ConnectionID: conn.ID}
-				}
-				if conn.Name != nil && *conn.Name != "" {
-					normName := strings.ToLower(strings.ReplaceAll(*conn.Name, " ", "-"))
-					if normName == normPrefix || strings.EqualFold(*conn.Name, prefix) {
-						return &ModelInfo{Provider: conn.Provider, Model: model, ConnectionID: conn.ID}
-					}
-				}
-			}
+		normPrefix := strings.ToLower(strings.ReplaceAll(prefix, " ", "-"))
+		if connInfo, ok := connMap[normPrefix]; ok && connInfo != nil {
+			return &ModelInfo{Provider: connInfo.Provider, Model: model, ConnectionID: connInfo.ConnectionID}
 		}
 	}
 
@@ -198,6 +184,17 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 					return &ModelInfo{Provider: node.ID, Model: model}
 				}
 			}
+		}
+		return &ModelInfo{Provider: provider, Model: model}
+	}
+
+	if _, ok := providers.KnownProviders[prefix]; ok {
+		return &ModelInfo{Provider: prefix, Model: model}
+	}
+
+	if connMap == nil && h.Repo != nil {
+		if prov, connID, ok := h.Repo.ResolveConnectionRoutingByPrefix(prefix); ok {
+			return &ModelInfo{Provider: prov, Model: model, ConnectionID: connID}
 		}
 	}
 

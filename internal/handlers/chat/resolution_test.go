@@ -2,6 +2,7 @@ package chat
 
 import (
 	json "encoding/json/v2"
+	"fmt"
 	"testing"
 	"time"
 
@@ -708,6 +709,23 @@ func TestResolveModelEntry_ConnectionNameAndIDPrefix(t *testing.T) {
 		{"mistral/codestral-latest", "mistral", "codestral-latest", ""},
 	}
 
+	// Verify connection name cannot shadow a provider or alias (e.g. connection named "deepseek")
+	dsConnData, _ := json.Marshal(map[string]any{"apiKey": "ds-key"})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-ds', 'openai', 'apikey', 'deepseek', 3, 1, ?, ?, ?)`, string(dsConnData), now, now)
+	if err != nil {
+		t.Fatalf("seed deepseek connection: %v", err)
+	}
+
+	tests = append(tests, struct {
+		entry          string
+		wantProvider   string
+		wantModel      string
+		wantConnection string
+	}{
+		"deepseek/deepseek-chat", "deepseek", "deepseek-chat", "",
+	})
+
 	for _, tc := range tests {
 		t.Run(tc.entry, func(t *testing.T) {
 			got := h.resolveModelEntry(tc.entry)
@@ -724,5 +742,22 @@ func TestResolveModelEntry_ConnectionNameAndIDPrefix(t *testing.T) {
 				t.Errorf("ConnectionID = %q, want %q", got.ConnectionID, tc.wantConnection)
 			}
 		})
+	}
+}
+
+func BenchmarkResolveModelEntry(b *testing.B) {
+	database, cleanup := setupChatTestDB(b)
+	defer cleanup()
+	now := time.Now().UTC().Format(time.RFC3339)
+	connData, _ := json.Marshal(map[string]any{"apiKey": "key-123"})
+	for i := 0; i < 60; i++ {
+		_, _ = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES (?, 'mistral', 'apikey', ?, ?, 1, ?, ?, ?)`,
+			fmt.Sprintf("conn-%d", i), fmt.Sprintf("Mistral Conn %d", i), i+1, string(connData), now, now)
+	}
+	h := NewChatHandler(db.NewRepo(database))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = h.resolveModelEntry("mistral/codestral-latest")
 	}
 }

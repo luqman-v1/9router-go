@@ -3984,14 +3984,16 @@
                       <p class="text-sm font-medium truncate">
                         {formatEmailLabel(conn.name || conn.email || (conn.authType === 'oauth' ? 'OAuth Account' : 'API Key Slot'), $emailPrivacy)}
                       </p>
-                      {#if specificData?.usageLane === 'vibe' || (conn.name && conn.name.toLowerCase().includes('vibe'))}
-                        <span class="inline-flex items-center gap-1 rounded font-semibold bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 px-1.5 py-0.5 text-[10px]">
-                          VIBE CODE
-                        </span>
-                      {:else if specificData?.usageLane === 'api' || (conn.name && conn.name.toLowerCase().includes('api'))}
-                        <span class="inline-flex items-center gap-1 rounded font-semibold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 px-1.5 py-0.5 text-[10px]">
-                          API PAYG
-                        </span>
+                      {#if providerId === 'mistral'}
+                        {#if specificData?.usageLane === 'vibe' || (conn.name && conn.name.toLowerCase().includes('vibe'))}
+                          <span class="inline-flex items-center gap-1 rounded font-semibold bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 px-1.5 py-0.5 text-[10px]">
+                            VIBE CODE
+                          </span>
+                        {:else if specificData?.usageLane === 'api' || (conn.name && conn.name.toLowerCase().includes('api'))}
+                          <span class="inline-flex items-center gap-1 rounded font-semibold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 px-1.5 py-0.5 text-[10px]">
+                            API PAYG
+                          </span>
+                        {/if}
                       {/if}
                     </div>
                     <!-- Secondary label: upstream ConnectionRow shows the email

@@ -1097,7 +1097,7 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 	}
 	var connMap map[string]*ModelInfo
 	if conns, err := h.Repo.GetProviderConnections("", false); err == nil {
-		connMap = make(map[string]*ModelInfo, len(conns)*2)
+		connMap = make(map[string]*ModelInfo, len(conns)*4)
 		for _, conn := range conns {
 			if conn == nil || conn.Provider == "" {
 				continue
@@ -1106,6 +1106,9 @@ func (h *ChatHandler) appendCombos(data []ModelInfoObject, seen map[string]bool)
 			connMap[conn.ID] = info
 			if conn.Name != nil && *conn.Name != "" {
 				connMap[*conn.Name] = info
+				normName := strings.ToLower(strings.ReplaceAll(*conn.Name, " ", "-"))
+				connMap[normName] = info
+				connMap[strings.ToLower(*conn.Name)] = info
 			}
 		}
 	}

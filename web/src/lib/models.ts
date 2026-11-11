@@ -3554,24 +3554,12 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "Z.ai GLM 5.3"
     },
     {
-      "id": "zai-glm-5-2",
-      "name": "Z.ai GLM 5.2"
-    },
-    {
       "id": "glm-5-2",
       "name": "GLM 5.2"
     },
     {
       "id": "devstral-latest",
       "name": "Devstral 2"
-    },
-    {
-      "id": "devstral-2512",
-      "name": "Devstral 2 (2512)"
-    },
-    {
-      "id": "labs-devstral-small-2512",
-      "name": "Devstral Small 2"
     },
     {
       "id": "codestral-latest",
