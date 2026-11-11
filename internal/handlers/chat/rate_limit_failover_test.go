@@ -45,7 +45,17 @@ func deltaRetryAfterBody(d time.Duration) string {
 // UpstreamError carried no headers at all, and retryDelay sits on the detail
 // rather than in the ErrorInfo metadata extractResetDuration reads.
 func TestRetryAfterWait_Extraction(t *testing.T) {
-	httpDate := time.Now().Add(45 * time.Second).UTC().Format(http.TimeFormat)
+	// An HTTP-date carries no sub-second part: a date written from a
+	// mid-second instant is up to a second behind the wait it names once
+	// formatted, and the router reads the wait against its own (later)
+	// clock. Round the instant UP to the next second boundary first, so
+	// the formatting truncation always moves the date AWAY from the wait
+	// it names — never toward it. Written as now+45s truncated at a
+	// mid-second instant (the old construction), the named wait decays to
+	// 45s − (sub-second part + read latency), which can exceed the ±1s
+	// slack below and fail the run on machine speed, not on behaviour —
+	// seen once on CI (run 42957731619, subtest "header http date").
+	httpDate := time.Now().Add(46 * time.Second).Truncate(time.Second).UTC().Format(http.TimeFormat)
 	pastDate := time.Now().Add(-time.Minute).UTC().Format(http.TimeFormat)
 
 	tests := []struct {
