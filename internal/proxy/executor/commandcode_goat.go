@@ -147,7 +147,7 @@ func forwardCommandcodeGoatChat(w http.ResponseWriter, req *Request, cleanModel 
 	if err != nil {
 		return fmt.Errorf("ForwardCommandcodeGoat (chat): %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := upstreamStatusError(resp); err != nil {
 		return err
 	}
@@ -177,14 +177,14 @@ func forwardCommandcodeGoatResponses(w http.ResponseWriter, req *Request, cleanM
 	if err != nil {
 		return fmt.Errorf("ForwardCommandcodeGoat (responses): %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := upstreamStatusError(resp); err != nil {
 		return err
 	}
 	if req.IsStream {
 		stallReader := proxy.NewStallReaderWithContext(reqCtx(req), resp.Body,
 			req.Config.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "commandcode-goat-responses")
-		defer stallReader.Close()
+		defer func() { _ = stallReader.Close() }()
 		return handleCodexStream(w, req, stallReader)
 	}
 	return handleCodexStream(w, req, resp.Body)
@@ -215,7 +215,7 @@ func forwardCommandcodeGoatMessages(w http.ResponseWriter, req *Request, cleanMo
 	if err != nil {
 		return fmt.Errorf("ForwardCommandcodeGoat (messages): %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := upstreamStatusError(resp); err != nil {
 		return err
 	}
