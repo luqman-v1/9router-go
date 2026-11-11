@@ -105,7 +105,14 @@ func fetchClaudeUsage(ctx context.Context, accessToken string) usageResult {
 		return claudeUsageFallback(entry, "Claude connected. Usage API is rate-limited, try again shortly.")
 	}
 
-	status, hdr, body, err := usageDo(ctx, http.MethodGet, claudeUsageURL, map[string]string{
+	fetchURL := claudeUsageURL
+	if strings.Contains(fetchURL, "?") {
+		fetchURL += "&cedar_ember=1&skip_spend=1"
+	} else {
+		fetchURL += "?cedar_ember=1&skip_spend=1"
+	}
+
+	status, hdr, body, err := usageDo(ctx, http.MethodGet, fetchURL, map[string]string{
 		"Authorization":     "Bearer " + accessToken,
 		"Accept":            "application/json",
 		"anthropic-beta":    claudeUsageBeta,
@@ -209,10 +216,49 @@ func parseClaudeUsage(data map[string]any) usageResult {
 		}
 	}
 
-	if len(quotas) == 0 {
-		return usageResult{plan: "Claude Code", message: "Claude connected, but no usage windows were returned."}
+	var extra map[string]any
+	if ce, ok := data["cedar_ember"].(map[string]any); ok {
+		availableCount := parseClaudeAvailableResetCredits(ce)
+		extra = map[string]any{
+			"resetCredits": map[string]any{
+				"availableCount": availableCount,
+			},
+		}
 	}
-	return usageResult{plan: "Claude Code", quotas: quotas}
+
+	if len(quotas) == 0 {
+		return usageResult{plan: "Claude Code", message: "Claude connected, but no usage windows were returned.", extra: extra}
+	}
+	return usageResult{plan: "Claude Code", quotas: quotas, extra: extra}
+}
+
+func parseClaudeAvailableResetCredits(ce map[string]any) int {
+	if ce == nil {
+		return 0
+	}
+	grants, ok := ce["grants"].([]any)
+	if !ok || len(grants) == 0 {
+		return 0
+	}
+	total := 0
+	for _, g := range grants {
+		gm, ok := g.(map[string]any)
+		if !ok {
+			continue
+		}
+		if usable, ok := gm["usable_now"].(bool); ok && !usable {
+			continue
+		}
+		if paused, ok := gm["paused"].(bool); ok && paused {
+			continue
+		}
+		if left, ok := gm["resets_left"].(float64); ok && left > 0 {
+			total += int(left)
+		} else if leftInt, ok := gm["resets_left"].(int); ok && leftInt > 0 {
+			total += leftInt
+		}
+	}
+	return total
 }
 
 func claudeUtilization(v any) *float64 {

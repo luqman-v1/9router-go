@@ -445,3 +445,56 @@ func TestApplyClaudeThinkingDisplayDialectKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeClaudeThinking(t *testing.T) {
+	tests := []struct {
+		name string
+		in   map[string]any
+		want map[string]any
+	}{
+		{
+			name: "updates display is clamped to summarized",
+			in:   map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "updates"}},
+			want: map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "summarized"}},
+		},
+		{
+			name: "highlights display is clamped to summarized",
+			in:   map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "highlights"}},
+			want: map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "summarized"}},
+		},
+		{
+			name: "none display is clamped to omitted",
+			in:   map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "none"}},
+			want: map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "omitted"}},
+		},
+		{
+			name: "summarized display is preserved",
+			in:   map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "summarized"}},
+			want: map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "summarized"}},
+		},
+		{
+			name: "omitted display is preserved",
+			in:   map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "omitted"}},
+			want: map[string]any{"thinking": map[string]any{"type": "adaptive", "display": "omitted"}},
+		},
+		{
+			name: "disabled thinking strips display",
+			in:   map[string]any{"thinking": map[string]any{"type": "disabled", "display": "summarized"}},
+			want: map[string]any{"thinking": map[string]any{"type": "disabled"}},
+		},
+		{
+			name: "no thinking object leaves body alone",
+			in:   map[string]any{"model": "claude-opus-5-5"},
+			want: map[string]any{"model": "claude-opus-5-5"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			SanitizeClaudeThinking(tt.in)
+			if !reflect.DeepEqual(tt.in, tt.want) {
+				t.Errorf("got %+v, want %+v", tt.in, tt.want)
+			}
+		})
+	}
+}

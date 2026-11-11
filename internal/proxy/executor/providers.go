@@ -1070,6 +1070,7 @@ func ensureMessagesFor(body []byte, provider, model string) []byte {
 	// (upstream thinkingUnified captureThinking)
 	applyClaudeThinkingDisplay(reqMap)
 	applyClaudeThinkingType(reqMap, provider, model)
+	SanitizeClaudeThinking(reqMap)
 	enforceClaudeThinkingSampling(reqMap)
 	delete(reqMap, "stream_options")
 	delete(reqMap, "store")

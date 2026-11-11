@@ -88,7 +88,15 @@ func levelFor(level string, supported []string) string {
 
 func withDisplay(thinking map[string]any, display string) map[string]any {
 	if display != "" {
-		thinking["display"] = display
+		norm := strings.ToLower(strings.TrimSpace(display))
+		switch norm {
+		case "summarized", "omitted":
+			thinking["display"] = norm
+		case "none", "off", "hidden", "false":
+			thinking["display"] = "omitted"
+		default:
+			thinking["display"] = "summarized"
+		}
 	}
 	return thinking
 }

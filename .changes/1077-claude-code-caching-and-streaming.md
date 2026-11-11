@@ -1,0 +1,8 @@
+### feat(claude): optimize Claude Code provider with stable prompt caching, native SSE streaming, and adaptive display sanitization
+
+- **Prompt Caching Prefix Stability**: Stabilized `x-anthropic-billing-header` attribution generation to be deterministic per session instead of mutating on every request with random bytes and body hashes, preserving Anthropic prompt caching prefix across conversation turns and eliminating 0% cache hit rates.
+- **Post-Cloaking Cache Re-Anchoring**: Re-anchored prompt caching breakpoints after tool and billing cloaking so `cache_control` (`ttl: 1h`) accurately anchors on the true final tool and system prompt.
+- **Adaptive Thinking Display Normalization**: Added `SanitizeClaudeThinking` to clamp experimental/unsupported `thinking.display` values (e.g. `updates`, `highlights`, `none`) to standard Anthropic `'summarized'` or `'omitted'`, preventing HTTP 400 errors (`thinking.adaptive.display: Input should be 'summarized', 'omitted'`) and zero-content combo fallbacks.
+- **Native SSE Event Stream Fidelity**: Updated `handleClaudeMessagesStream` to use `proxy.ScanStreamEvents` and write exact `event: <eventType>` lines (`content_block_start`, `content_block_delta`, `message_delta`, etc.) alongside `data:`, providing full event stream parity with direct Anthropic API.
+- **Extended Beta Headers**: Added `extended-cache-ttl-2025-04-11` and `thinking-display-updates-2026-08-18` to Claude provider static beta headers.
+- **Claude Reset Credits (cedar_ember parity)**: Added support for checking and redeeming Claude Code reset grants (`cedar_ember`) in Quota Tracker, with interactive two-step confirmation modal and quota refreshing matching Codex and GLM parity.

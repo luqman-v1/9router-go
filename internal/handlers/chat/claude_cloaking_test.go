@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 )
 
 func TestIsAnthropicUpstream(t *testing.T) {
@@ -123,6 +124,25 @@ func TestApplyClaudeCloaking(t *testing.T) {
 	s := string(out)
 	if !strings.Contains(s, "x-anthropic-billing-header:") || !strings.Contains(s, "metadata") {
 		t.Fatalf("missing cloaked headers in cloaked request: %s", s)
+	}
+}
+
+func TestApplyClaudeCloaking_StableAcrossTurnsForPromptCaching(t *testing.T) {
+	turn1Body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"turn 1"}]}`)
+	turn2Body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"turn 1"},{"role":"assistant","content":"reply 1"},{"role":"user","content":"turn 2"}]}`)
+
+	out1 := applyClaudeCloaking(turn1Body, "sk-ant-oat-token", "sess-fixed-123")
+	out2 := applyClaudeCloaking(turn2Body, "sk-ant-oat-token", "sess-fixed-123")
+
+	var m1, m2 map[string]any
+	_ = json.Unmarshal(out1, &m1)
+	_ = json.Unmarshal(out2, &m2)
+
+	sys1 := m1["system"].([]any)[0].(map[string]any)["text"].(string)
+	sys2 := m2["system"].([]any)[0].(map[string]any)["text"].(string)
+
+	if sys1 != sys2 {
+		t.Fatalf("billing header mutated across turns, breaking prompt cache:\nTurn 1: %s\nTurn 2: %s", sys1, sys2)
 	}
 }
 
@@ -406,5 +426,18 @@ func TestAdoptRequiredClaudeCodeVersion(t *testing.T) {
 	}
 	if got := ClaudeCLIVersion(); got != "2.1.300" {
 		t.Errorf("version downgraded: %q", got)
+	}
+}
+
+func TestSanitizeClaudeThinkingBody_AdaptiveUpdatesClamped(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-5-5","thinking":{"type":"adaptive","display":"updates"},"messages":[{"role":"user","content":"hi"}]}`)
+	out := executor.SanitizeClaudeThinkingBody(body)
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	th, _ := m["thinking"].(map[string]any)
+	if th["display"] != "summarized" {
+		t.Fatalf("thinking.display = %v, want summarized", th["display"])
 	}
 }

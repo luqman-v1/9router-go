@@ -34,9 +34,14 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 		hw := proxy.NewHeartbeatWriter(req.Ctx, w, 0)
 		defer hw.Close()
 		flusher := proxy.WriteSSEHeaders(hw)
-		writeFrame := func(payload []byte) {
+		writeFrame := func(evType string, payload []byte) {
 			markTTFT(req, startTime)
-			frame := append([]byte("data: "), payload...)
+			var frame []byte
+			if evType != "" {
+				frame = append([]byte("event: "+evType+"\ndata: "), payload...)
+			} else {
+				frame = append([]byte("data: "), payload...)
+			}
 			frame = append(frame, '\n', '\n')
 			if req.ResponseBuf != nil {
 				_, _ = req.ResponseBuf.Write(frame)
@@ -51,14 +56,22 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 				translator.SetUsage(req.Ctx, usage)
 			}
 		}
-		return proxy.ScanStream(upstream, func(payload []byte) {
-			if decloaker != nil {
-				for _, ev := range decloaker.Events(payload) {
-					writeFrame(ev.Payload)
-				}
-				return
+		return proxy.ScanStreamEvents(upstream, func(upstreamEv proxy.SSEEvent) bool {
+			if len(upstreamEv.Data) == 0 {
+				return true
 			}
-			writeFrame(payload)
+			if decloaker != nil {
+				for _, ev := range decloaker.Events(upstreamEv.Data) {
+					evType := ev.Type
+					if evType == "" {
+						evType = upstreamEv.Event
+					}
+					writeFrame(evType, ev.Payload)
+				}
+				return true
+			}
+			writeFrame(upstreamEv.Event, upstreamEv.Data)
+			return true
 		})
 	}
 

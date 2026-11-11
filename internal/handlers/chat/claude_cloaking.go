@@ -163,15 +163,19 @@ func applyClaudeCloaking(body []byte, apiKey, sessionID string) []byte {
 		return body
 	}
 
-	// cch: first 5 hex chars of sha256 over the pre-injection body.
-	cchSum := sha256.Sum256(body)
-	cch := hex.EncodeToString(cchSum[:])[:5]
-	build := make([]byte, 2)
-	if _, err := rand.Read(build); err != nil {
-		build = []byte{0, 0}
+	// cch and build: derived stably from apiKey and sessionID rather than body and rand.Read.
+	// If the billing header text changes on every turn, system[0] mutates, busting Anthropic's
+	// prefix prompt cache and driving cache_read_input_tokens to zero.
+	salt := apiKey
+	if sessionID != "" {
+		salt += ":" + sessionID
 	}
+	h := sha256.Sum256([]byte(salt))
+	build := hex.EncodeToString(h[16:18])[:3]
+	cch := hex.EncodeToString(h[:4])[:5]
+
 	billingText := fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=sdk-cli; cch=%s;",
-		ClaudeCLIVersion(), hex.EncodeToString(build)[:3], cch)
+		ClaudeCLIVersion(), build, cch)
 	billingBlock := map[string]any{"type": "text", "text": billingText}
 
 	switch sys := req["system"].(type) {

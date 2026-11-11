@@ -390,7 +390,9 @@
     resetCreditIdempotencyKey = newResetCreditIdempotencyKey()
     resetCreditLoading = true
     try {
-      const res = await api.listCodexResetCredits(conn.id)
+      const res = conn.provider === 'claude'
+        ? await api.listClaudeResetCredits(conn.id)
+        : await api.listCodexResetCredits(conn.id)
       if (res?.error) {
         resetCreditError = res.error
         resetCreditList = []
@@ -419,7 +421,9 @@
     resetCreditConsuming = true
     resetCreditError = ''
     try {
-      const res = await api.consumeCodexResetCredit(conn.id, credit.selectionToken, resetCreditIdempotencyKey)
+      const res = conn.provider === 'claude'
+        ? await api.consumeClaudeResetCredit(conn.id, credit.selectionToken, resetCreditIdempotencyKey)
+        : await api.consumeCodexResetCredit(conn.id, credit.selectionToken, resetCreditIdempotencyKey)
       if (res?.error) {
         resetCreditError = res.error
         return
@@ -1350,16 +1354,16 @@
               </div>
 
               <div class="flex shrink-0 items-center gap-1">
-                {#if conn.provider === 'codex'}
+                {#if conn.provider === 'codex' || conn.provider === 'claude'}
                   {@const resetCreditCount = getCodexResetCreditCount(quota)}
                   <button
                     type="button"
                     disabled={isLoading || rowBusy || resetCreditConsuming}
                     onclick={() => openResetCredits(conn)}
-                    aria-label="Redeem a Codex reset credit"
+                    aria-label="Redeem a {conn.provider === 'claude' ? 'Claude' : 'Codex'} reset credit"
                     title={resetCreditCount > 0
-                      ? `Redeem a Codex reset credit (${resetCreditCount} available)`
-                      : 'Check Codex reset credits'}
+                      ? `Redeem a ${conn.provider === 'claude' ? 'Claude' : 'Codex'} reset credit (${resetCreditCount} available)`
+                      : `Check ${conn.provider === 'claude' ? 'Claude' : 'Codex'} reset credits`}
                     class="flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {resetCreditCount > 0 ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10' : 'border-border-subtle bg-surface-2 text-text-muted'}"
                   >
                     <span class="material-symbols-outlined text-[15px]">restart_alt</span>
@@ -1642,7 +1646,7 @@
     ></div>
     <div class="relative w-full max-w-md bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-elev)] p-6">
       <div class="flex items-center justify-between pb-3 border-b border-border-subtle mb-4">
-        <h2 class="text-lg font-semibold text-text-main">Redeem a reset credit</h2>
+        <h2 class="text-lg font-semibold text-text-main">Redeem a {resetCreditConn?.provider === 'claude' ? 'Claude' : 'Codex'} reset credit</h2>
         <button
           type="button"
           onclick={closeResetCredits}
@@ -1677,7 +1681,7 @@
         {/if}
       {:else}
       <p class="text-xs text-text-muted mb-4">
-        Redeeming a credit resets the Codex usage window immediately instead of waiting for the
+        Redeeming a credit resets the {resetCreditConn?.provider === 'claude' ? 'Claude' : 'Codex'} usage window immediately instead of waiting for the
         countdown to run out.
       </p>
 
