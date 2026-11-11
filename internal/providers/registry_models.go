@@ -602,7 +602,9 @@ var ProviderModelKinds = map[string]map[string]string{
 	},
 	"nvidia": {
 		"fastpitch":                    "tts",
+		"nv-embedqa-e5-v5":             "embedding",
 		"nvidia/nv-embedqa-e5-v5":      "embedding",
+		"parakeet-ctc-1.1b-asr":        "stt",
 		"nvidia/parakeet-ctc-1.1b-asr": "stt",
 		"tacotron2":                    "tts",
 	},
@@ -778,16 +780,33 @@ var ProviderModelKinds = map[string]map[string]string{
 const serviceKindTTS = "tts"
 
 func GetProviderModelKind(aliasOrID, modelID string) string {
-	if byModel, ok := ProviderModelKinds[aliasOrID]; ok {
+	lookup := func(providerKey string) string {
+		byModel, ok := ProviderModelKinds[providerKey]
+		if !ok {
+			return ""
+		}
 		if kind, ok := byModel[modelID]; ok {
 			return kind
 		}
-	}
-	if canon, ok := ProviderAliasMap[aliasOrID]; ok {
-		if byModel, ok := ProviderModelKinds[canon]; ok {
-			if kind, ok := byModel[modelID]; ok {
+		// Try stripped form if modelID carried provider prefix
+		if stripped := strings.TrimPrefix(modelID, providerKey+"/"); stripped != modelID {
+			if kind, ok := byModel[stripped]; ok {
 				return kind
 			}
+		}
+		// Try prefixed form if entry in map carries provider prefix
+		if kind, ok := byModel[providerKey+"/"+modelID]; ok {
+			return kind
+		}
+		return ""
+	}
+
+	if kind := lookup(aliasOrID); kind != "" {
+		return kind
+	}
+	if canon, ok := ProviderAliasMap[aliasOrID]; ok {
+		if kind := lookup(canon); kind != "" {
+			return kind
 		}
 	}
 	return ""

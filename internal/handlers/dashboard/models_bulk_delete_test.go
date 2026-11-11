@@ -104,6 +104,23 @@ func TestHandleDeleteProviderModels_RemovesOnlyThatNodesRows(t *testing.T) {
 	if _, ok := aliases["nara-fast"]; ok {
 		t.Errorf("alias of the swept node survived: %v", aliases)
 	}
+
+	// Verify disabledModels now records the deleted models so compatible / live catalogs do not re-publish them.
+	disabledRaw, err := repo.GetKV("disabledModels", nodeID)
+	if err != nil {
+		t.Fatalf("read disabledModels: %v", err)
+	}
+	var disabledList []string
+	if err := json.Unmarshal([]byte(disabledRaw), &disabledList); err != nil {
+		t.Fatalf("unmarshal disabledModels: %v", err)
+	}
+	disabledSet := make(map[string]bool)
+	for _, id := range disabledList {
+		disabledSet[id] = true
+	}
+	if !disabledSet["alpha"] || !disabledSet["beta"] {
+		t.Errorf("expected alpha and beta in disabledModels, got: %v", disabledList)
+	}
 }
 
 // A second sweep of the same node is a no-op rather than an error, so a button

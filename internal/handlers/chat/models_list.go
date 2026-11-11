@@ -222,19 +222,41 @@ func (h *ChatHandler) disabledModelIndex() map[string]map[string]bool {
 		if perr := json.Unmarshal([]byte(raw), &ids); perr != nil {
 			continue
 		}
-		set := make(map[string]bool, len(ids))
+		set := make(map[string]bool, len(ids)*2)
+		canon := providers.ResolveAlias(prov)
+		alias := providers.GetProviderAlias(prov)
 		for _, id := range ids {
 			if id = strings.TrimSpace(id); id != "" {
 				set[id] = true
+				// Also index stripped variant if stored with provider prefix:
+				// e.g. "nvidia/parakeet-ctc-1.1b-asr" -> "parakeet-ctc-1.1b-asr"
+				if stripped := strings.TrimPrefix(id, prov+"/"); stripped != id && stripped != "" {
+					set[stripped] = true
+				}
+				if canon != "" && canon != prov {
+					if stripped := strings.TrimPrefix(id, canon+"/"); stripped != id && stripped != "" {
+						set[stripped] = true
+					}
+				}
+				if alias != "" && alias != prov {
+					if stripped := strings.TrimPrefix(id, alias+"/"); stripped != id && stripped != "" {
+						set[stripped] = true
+					}
+				}
 			}
 		}
 		if len(set) == 0 {
 			continue
 		}
 		disabled[prov] = set
-		if canon := providers.ResolveAlias(prov); canon != "" {
+		if canon != "" {
 			if _, ok := disabled[canon]; !ok {
 				disabled[canon] = set
+			}
+		}
+		if alias != "" {
+			if _, ok := disabled[alias]; !ok {
+				disabled[alias] = set
 			}
 		}
 	}
@@ -416,7 +438,22 @@ func (h *ChatHandler) buildModelsListForMode(
 	seen := make(map[string]bool)
 	disabled := h.disabledModelIndex()
 	isDisabled := func(provider, modelID string) bool {
-		return disabled[provider][modelID]
+		set := disabled[provider]
+		if set == nil {
+			return false
+		}
+		if set[modelID] {
+			return true
+		}
+		if set[provider+"/"+modelID] {
+			return true
+		}
+		if slash := strings.IndexByte(modelID, '/'); slash != -1 {
+			if set[modelID[slash+1:]] {
+				return true
+			}
+		}
+		return false
 	}
 	filterConnected := mode == modeListConnected && usable != nil
 
@@ -550,6 +587,24 @@ func (h *ChatHandler) appendConnectionModels(
 	}
 
 	ids := connData.EnabledModels()
+	hasExplicitEnabledModels := len(ids) > 0
+	var pinnedSet map[string]bool
+	if hasExplicitEnabledModels {
+		pinnedSet = make(map[string]bool, len(ids)*4)
+		for _, raw := range ids {
+			trimmed := strings.TrimSpace(raw)
+			if trimmed == "" {
+				continue
+			}
+			pinnedSet[trimmed] = true
+			bare := stripModelPrefix(trimmed, outputAlias, staticAlias, providerID)
+			pinnedSet[bare] = true
+			pinnedSet[outputAlias+"/"+bare] = true
+			pinnedSet[staticAlias+"/"+bare] = true
+			pinnedSet[providerID+"/"+bare] = true
+		}
+	}
+
 	// Upstream: a live catalog replaces the static one only when the operator
 	// has not pinned enabledModels on the connection.
 	liveByID := make(map[string]LiveModel)
@@ -600,6 +655,15 @@ func (h *ChatHandler) appendConnectionModels(
 			if !isLLMCustomModel(cm.Type) {
 				continue
 			}
+			// When connection explicitly pins enabledModels, custom models outside
+			// the pin must not bypass the whitelist.
+			if hasExplicitEnabledModels {
+				cmID := strings.TrimSpace(cm.ID)
+				bare := stripModelPrefix(cmID, outputAlias, staticAlias, providerID)
+				if !pinnedSet[cmID] && !pinnedSet[bare] && !pinnedSet[key+"/"+bare] {
+					continue
+				}
+			}
 			// Upstream resolves custom-model capabilities from the saved caps,
 			// so publish them before the capability lookup below.
 			h.registerCustomModelCaps(outputAlias, key, cm)
@@ -613,12 +677,19 @@ func (h *ChatHandler) appendConnectionModels(
 		if strings.HasPrefix(target, outputAlias+"/") ||
 			strings.HasPrefix(target, staticAlias+"/") ||
 			strings.HasPrefix(target, providerID+"/") {
+			if hasExplicitEnabledModels {
+				targetTrimmed := strings.TrimSpace(target)
+				bare := stripModelPrefix(targetTrimmed, outputAlias, staticAlias, providerID)
+				if !pinnedSet[targetTrimmed] && !pinnedSet[bare] {
+					continue
+				}
+			}
 			add(target, false)
 		}
 	}
 
 	for _, modelID := range merged {
-		if isDisabled(outputAlias, modelID) || isDisabled(staticAlias, modelID) {
+		if isDisabled(outputAlias, modelID) || isDisabled(staticAlias, modelID) || isDisabled(providerID, modelID) {
 			continue
 		}
 		// Upstream resolves kind from the custom row's own type, then the

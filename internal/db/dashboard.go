@@ -514,6 +514,20 @@ func (r *Repo) GetKVScope(scope string) (map[string]string, error) {
 	return result, nil
 }
 
+// GetKV retrieves a single key-value pair for a given scope and key.
+// Returns an empty string and nil error if the key does not exist.
+func (r *Repo) GetKV(scope, key string) (string, error) {
+	var val string
+	err := r.db.QueryRow(`SELECT value FROM kv WHERE scope = ? AND key = ?`, scope, key).Scan(&val)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("get kv [%s] %s: %w", scope, key, err)
+	}
+	return val, nil
+}
+
 // SetKV inserts or updates a key-value pair for a given scope.
 func (r *Repo) SetKV(scope, key, value string) error {
 	_, err := r.db.Exec(

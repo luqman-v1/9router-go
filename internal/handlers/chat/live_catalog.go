@@ -269,6 +269,23 @@ func liveCatalogStoreNegative(key string) {
 	liveCatalogStore.entries[key] = liveCatalogEntry{expiresAt: time.Now().Add(liveCatalogNegTTL)}
 }
 
+// InvalidateLiveCatalog purges cached live catalog entries for a provider.
+// If providerID is empty, it purges all cached entries.
+func InvalidateLiveCatalog(providerID string) {
+	liveCatalogStore.mu.Lock()
+	defer liveCatalogStore.mu.Unlock()
+	if providerID == "" {
+		liveCatalogStore.entries = make(map[string]liveCatalogEntry)
+		return
+	}
+	prefix := providerID + "|"
+	for k := range liveCatalogStore.entries {
+		if k == providerID || strings.HasPrefix(k, prefix) {
+			delete(liveCatalogStore.entries, k)
+		}
+	}
+}
+
 // ---- Kiro (AWS CodeWhisperer ListAvailableModels) ----
 
 // kiroFingerprintHeaders mirrors upstream buildKiroFingerprintHeaders: the

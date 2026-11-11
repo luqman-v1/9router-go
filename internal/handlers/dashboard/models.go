@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/modelhealth"
 )
@@ -153,10 +154,23 @@ func (h *DashboardHandler) HandleDeleteCustomModel(w http.ResponseWriter, r *htt
 		return
 	}
 
+	var removedProv, removedModelID string
+	if val, err := h.Repo.GetKV("customModels", key); err == nil && val != "" {
+		removedProv, removedModelID = extractModelInfoFromCustomRow(key, val)
+	} else {
+		removedProv, removedModelID = extractModelInfoFromCustomRow(key, "")
+	}
+
 	if err := h.Repo.DeleteKV("customModels", key); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	if removedModelID != "" && removedProv != "" {
+		h.appendDisabledModels(removedProv, []string{removedModelID})
+		chat.InvalidateLiveCatalog(removedProv)
+	}
+
 	// The model is gone, so every combo a rule put it into must drop it. This
 	// runs after the delete is answered: the operator's write already
 	// succeeded, and a membership update must never turn it into a retry.
@@ -194,6 +208,7 @@ func (h *DashboardHandler) HandleDeleteProviderModels(w http.ResponseWriter, r *
 	}
 
 	removedModels := make([]string, 0, len(kv))
+	disabledIDs := make([]string, 0, len(kv))
 	for key, value := range kv {
 		if !customModelBelongsToProvider(key, value, provider) {
 			continue
@@ -203,6 +218,10 @@ func (h *DashboardHandler) HandleDeleteProviderModels(w http.ResponseWriter, r *
 			return
 		}
 		removedModels = append(removedModels, key)
+		_, mID := extractModelInfoFromCustomRow(key, value)
+		if mID != "" {
+			disabledIDs = append(disabledIDs, mID)
+		}
 	}
 
 	// Aliases are resolved from the same kv table but a different scope, so they
@@ -224,6 +243,10 @@ func (h *DashboardHandler) HandleDeleteProviderModels(w http.ResponseWriter, r *
 		}
 	}
 
+	// Persist to disabledModels so compatible nodes / live catalogs do not keep advertising them.
+	h.appendDisabledModels(provider, disabledIDs)
+	chat.InvalidateLiveCatalog(provider)
+
 	sort.Strings(removedModels)
 	sort.Strings(removedAliases)
 	// A whole node's models just stopped existing, so every combo a rule put
@@ -237,6 +260,54 @@ func (h *DashboardHandler) HandleDeleteProviderModels(w http.ResponseWriter, r *
 		"removedAliases": removedAliases,
 		"count":          len(removedModels) + len(removedAliases),
 	})
+}
+
+func extractModelInfoFromCustomRow(key, value string) (provider string, modelID string) {
+	parts := strings.Split(key, "|")
+	if len(parts) >= 2 {
+		provider = parts[0]
+		modelID = parts[1]
+		return
+	}
+	if value != "" {
+		var cm db.CustomModel
+		if err := json.Unmarshal([]byte(value), &cm); err == nil {
+			provider = cm.ProviderAlias
+			modelID = cm.ID
+			return
+		}
+	}
+	modelID = key
+	return
+}
+
+func (h *DashboardHandler) appendDisabledModels(provider string, modelIDs []string) {
+	if provider == "" || len(modelIDs) == 0 || h.Repo == nil {
+		return
+	}
+	existing := []string{}
+	seen := make(map[string]bool)
+	if raw, err := h.Repo.GetKV("disabledModels", provider); err == nil && raw != "" {
+		if err := json.Unmarshal([]byte(raw), &existing); err == nil {
+			for _, id := range existing {
+				seen[id] = true
+			}
+		}
+	}
+	added := false
+	for _, id := range modelIDs {
+		trimmed := strings.TrimSpace(id)
+		if trimmed != "" && !seen[trimmed] {
+			seen[trimmed] = true
+			existing = append(existing, trimmed)
+			added = true
+		}
+	}
+	if added {
+		if b, err := json.Marshal(existing); err == nil {
+			_ = h.Repo.SetKV("disabledModels", provider, string(b))
+		}
+	}
 }
 
 // customModelBelongsToProvider decides whether one kv customModels row belongs to
