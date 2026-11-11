@@ -78,6 +78,89 @@ func TestParseRulesDefaults(t *testing.T) {
 	}
 }
 
+func TestParseRules(t *testing.T) {
+	tests := []struct {
+		name       string
+		raw        string
+		wantLen    int
+		wantPrefix string
+		wantErr    bool
+	}{
+		{
+			name:    "empty string defaults to no rules",
+			raw:     "",
+			wantLen: 0,
+		},
+		{
+			name:    "empty array defaults to no rules",
+			raw:     "[]",
+			wantLen: 0,
+		},
+		{
+			name:    "null defaults to no rules",
+			raw:     "null",
+			wantLen: 0,
+		},
+		{
+			name:    "plain JSON array string",
+			raw:     `[{"pattern":"deepseek"}]`,
+			wantLen: 1,
+		},
+		{
+			name:    "double-encoded JSON string of an array",
+			raw:     `"[{\"pattern\":\"deepseek\"}]"`,
+			wantLen: 1,
+		},
+		{
+			name:    "double-encoded empty array string",
+			raw:     `"[]"`,
+			wantLen: 0,
+		},
+		{
+			name:       "garbage syntax error",
+			raw:        `{not-valid-json`,
+			wantErr:    true,
+			wantPrefix: "smart: stored rules unreadable: ",
+		},
+		{
+			name:       "garbage array structure",
+			raw:        `[123]`,
+			wantErr:    true,
+			wantPrefix: "smart: stored rules unreadable: ",
+		},
+		{
+			name:       "double-encoded garbage",
+			raw:        `"invalid-inner-json"`,
+			wantErr:    true,
+			wantPrefix: "smart: stored rules unreadable: ",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rules, err := ParseRules(tt.raw)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ParseRules(%q) expected error, got nil", tt.raw)
+				}
+				if !strings.HasPrefix(err.Error(), tt.wantPrefix) {
+					t.Errorf("ParseRules(%q) error = %q, want prefix %q", tt.raw, err.Error(), tt.wantPrefix)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseRules(%q) unexpected error: %v", tt.raw, err)
+			}
+			if len(rules) != tt.wantLen {
+				t.Fatalf("ParseRules(%q) len = %d, want %d", tt.raw, len(rules), tt.wantLen)
+			}
+			if tt.wantLen > 0 && rules[0].Pattern != "deepseek" {
+				t.Errorf("rule[0].Pattern = %q, want deepseek", rules[0].Pattern)
+			}
+		})
+	}
+}
+
 func TestEncodeRulesRoundTrip(t *testing.T) {
 	if got, err := EncodeRules(nil); err != nil || got != "[]" {
 		t.Fatalf("EncodeRules(nil) = %q, %v; want \"[]\"", got, err)

@@ -893,6 +893,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			filtered, filterErr := translator.FilterToOpenAIFormatJSON(pipedBody, translator.FilterOptions{
 				PreserveCacheControl:    providers.PreservesCacheControl(provider),
 				StrictReasoningRemoving: providers.StrictReasoningRemoving(provider),
+				FlattenContent:          provider == "cloudflare-ai",
 			})
 			if filterErr != nil {
 				// The request lost every message. The upstream answers an

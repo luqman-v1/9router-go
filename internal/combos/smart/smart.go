@@ -268,13 +268,28 @@ func DecodeRules(v any) ([]Rule, error) {
 
 // ParseRules reads the stored column. A blank column, "[]" and "null" all mean
 // no rules, which is what every combo written before this feature holds.
+// Older rows stored the rules column as a double-encoded JSON string;
+// when direct unmarshaling fails, unquoting is attempted recursively up to 3 levels.
 func ParseRules(raw string) ([]Rule, error) {
+	return parseRules(raw, 0)
+}
+
+func parseRules(raw string, depth int) ([]Rule, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" || trimmed == "[]" || trimmed == "null" {
 		return nil, nil
 	}
 	var wire []ruleWire
 	if err := json.Unmarshal([]byte(trimmed), &wire); err != nil {
+		if depth < 3 {
+			var inner string
+			if strErr := json.Unmarshal([]byte(trimmed), &inner); strErr == nil {
+				if innerTrimmed := strings.TrimSpace(inner); innerTrimmed != "" {
+					return parseRules(innerTrimmed, depth+1)
+				}
+				return nil, nil
+			}
+		}
 		return nil, fmt.Errorf("smart: stored rules unreadable: %w", err)
 	}
 	out := make([]Rule, 0, len(wire))
