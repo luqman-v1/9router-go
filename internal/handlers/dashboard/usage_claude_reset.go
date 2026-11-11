@@ -139,7 +139,7 @@ func (h *DashboardHandler) HandleListClaudeResetCredits(w http.ResponseWriter, r
 		return
 	}
 	if status != http.StatusOK {
-		writeResetCreditError(w, fmt.Errorf("Claude usage returned status %d", status))
+		writeResetCreditError(w, fmt.Errorf("claude usage returned status %d", status))
 		return
 	}
 
@@ -273,7 +273,7 @@ func (h *DashboardHandler) HandleConsumeClaudeResetCredit(w http.ResponseWriter,
 		if msg == "" {
 			msg = string(respBody)
 		}
-		writeResetCreditError(w, fmt.Errorf("Anthropic rejected reset credit redemption (%d): %s", status, msg))
+		writeResetCreditError(w, fmt.Errorf("anthropic rejected reset credit redemption (%d): %s", status, msg))
 		return
 	}
 
