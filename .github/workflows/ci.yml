@@ -301,7 +301,15 @@ jobs:
 
       - name: Install Chromium
         working-directory: web
-        run: bunx playwright install --with-deps chromium
+        run: |
+          # The browser binary comes from the Playwright CDN. `--with-deps`
+          # adds an apt pass for fonts and libraries, and a runner whose DNS
+          # cannot reach archive.ubuntu.com fails the whole suite on
+          # infrastructure rather than a code change. The ubuntu-latest image
+          # already ships Chromium's runtime libraries, so install the browser
+          # directly and treat the apt pass as best-effort.
+          bunx playwright install chromium
+          bunx playwright install-deps chromium || true
 
       - name: Dashboard E2E
         working-directory: web
