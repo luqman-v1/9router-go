@@ -258,6 +258,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Get("/usage/{connectionId}/glm-reset-cards", h.HandleGetGLMResetCards)
 		r.Post("/usage/{connectionId}/glm-reset-cards", h.HandleRedeemGLMResetCard)
 
+		// Claude reset credits (cedar_ember grants).
+		r.Get("/usage/{connectionId}/claude-reset-credits", h.HandleListClaudeResetCredits)
+		r.Post("/usage/{connectionId}/claude-reset-credits/consume", h.HandleConsumeClaudeResetCredit)
+
 		// Cache Analytics & Management
 		r.Get("/resilience", h.HandleGetResilience)
 		r.Post("/resilience/reset", h.HandleResetResilience)

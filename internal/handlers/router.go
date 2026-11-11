@@ -210,6 +210,9 @@ func SetupRoutes(r interface {
 	// GLM Reset Cards (Z.ai international)
 	r.Get("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleGetGLMResetCards)
 	r.Post("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleRedeemGLMResetCard)
+	// Claude reset credits (cedar_ember grants)
+	r.Get("/api/usage/{connectionId}/claude-reset-credits", dashH.HandleListClaudeResetCredits)
+	r.Post("/api/usage/{connectionId}/claude-reset-credits/consume", dashH.HandleConsumeClaudeResetCredit)
 
 	// Free-pi ad surface. The creative is served to the dashboard, and the
 	// impression is reported only from the client's render event — an
@@ -291,6 +294,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	// GLM Reset Cards (Z.ai international)
 	r.Get("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleGetGLMResetCards)
 	r.Post("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleRedeemGLMResetCard)
+	// Claude reset credits (cedar_ember grants)
+	r.Get("/api/usage/{connectionId}/claude-reset-credits", dashH.HandleListClaudeResetCredits)
+	r.Post("/api/usage/{connectionId}/claude-reset-credits/consume", dashH.HandleConsumeClaudeResetCredit)
 
 	// Free-pi ad surface. The creative is served to the dashboard, and the
 	// impression is reported only from the client's render event — an
