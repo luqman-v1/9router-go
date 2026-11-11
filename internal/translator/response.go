@@ -185,7 +185,9 @@ func ParseResponseUsage(body []byte) *OpenAIUsage {
 }
 
 // AccumulateClaudeStreamUsage parses usage from Claude SSE chunks (message_start, message_delta).
-// It returns an updated OpenAIUsage holding the combined prompt, cached, and completion tokens.
+// It returns a NEW OpenAIUsage on a recognised event (a copy of curr with the
+// event's fields applied), and curr unchanged otherwise. The new pointer is what
+// lets callers tell "this chunk changed the usage" apart from a no-op by identity.
 func AccumulateClaudeStreamUsage(curr *OpenAIUsage, chunk []byte) *OpenAIUsage {
 	var raw struct {
 		Type    string `json:"type"`
@@ -206,24 +208,25 @@ func AccumulateClaudeStreamUsage(curr *OpenAIUsage, chunk []byte) *OpenAIUsage {
 	if raw.Type != "message_start" && raw.Type != "message_delta" {
 		return curr
 	}
-	if curr == nil {
-		curr = &OpenAIUsage{PromptCacheIncluded: true}
+	next := OpenAIUsage{PromptCacheIncluded: true}
+	if curr != nil {
+		next = *curr
+		next.PromptCacheIncluded = true
 	}
 	switch raw.Type {
 	case "message_start":
 		if raw.Message != nil && raw.Message.Usage != nil {
 			u := raw.Message.Usage
-			curr.CachedTokens = u.CacheReadInputTokens
-			curr.CacheCreationInputTokens = u.CacheCreationInputTokens
-			curr.PromptTokens = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
-			curr.PromptCacheIncluded = true
+			next.CachedTokens = u.CacheReadInputTokens
+			next.CacheCreationInputTokens = u.CacheCreationInputTokens
+			next.PromptTokens = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 		}
 	case "message_delta":
 		if raw.Usage != nil {
-			curr.CompletionTokens = raw.Usage.OutputTokens
+			next.CompletionTokens = raw.Usage.OutputTokens
 		}
 	}
-	return curr
+	return &next
 }
 
 // ParseOllamaUsage extracts usage from an Ollama native response body, whose
