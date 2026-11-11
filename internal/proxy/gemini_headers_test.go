@@ -23,8 +23,8 @@ func TestForwardGemini_Headers_Injection(t *testing.T) {
 			name:      "no project, no session",
 			projectID: "",
 			want: map[string]string{
-				"X-Client-Name":     "antigravity",
-				"X-Client-Version":  providers.AntigravityCLIVersion,
+				"X-Client-Name":    "antigravity",
+				"X-Client-Version": providers.AntigravityCLIVersion,
 			},
 			wantAbsent: []string{"X-Goog-User-Project", "X-Machine-Session-Id"},
 		},
@@ -43,10 +43,10 @@ func TestForwardGemini_Headers_Injection(t *testing.T) {
 			projectID:  "my-proj",
 			sessionCtx: handlerutil.WithSessionID(context.Background(), "sess-123"),
 			want: map[string]string{
-				"X-Goog-User-Project": "my-proj",
+				"X-Goog-User-Project":  "my-proj",
 				"X-Machine-Session-Id": "sess-123",
-				"X-Client-Name":       "antigravity",
-				"X-Client-Version":    providers.AntigravityCLIVersion,
+				"X-Client-Name":        "antigravity",
+				"X-Client-Version":     providers.AntigravityCLIVersion,
 			},
 		},
 		{
