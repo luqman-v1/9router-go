@@ -22,6 +22,12 @@ type comboStickyState struct {
 	// requests reuse it so a tool-use sequence stays on the same provider,
 	// even after Index has advanced for the next turn.
 	ServingIndex int
+
+	// Weighted round-robin state
+	Sig            string
+	CurrentWeights map[string]int
+	LastSeat       string
+	ServingRotated []string
 }
 
 // smartStickyEntry is one session's pinned model in the smart strategy.

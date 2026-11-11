@@ -2,6 +2,8 @@ package db
 
 import (
 	"database/sql"
+	json "encoding/json/v2"
+	"strings"
 
 	"9router/proxy/internal/models"
 )
@@ -105,4 +107,54 @@ func (r *Repo) GetCombos() ([]*models.Combo, error) {
 		resolveComboStrategy(combo, settings)
 	}
 	return combos, nil
+}
+
+// ParseComboModels parses a combo's Models JSON string into a list of models.ComboModel.
+// Supports both string arrays and object arrays. Models without an explicit weight default to 1.
+func ParseComboModels(modelsJSON string) ([]models.ComboModel, error) {
+	if strings.TrimSpace(modelsJSON) == "" {
+		return nil, nil
+	}
+	var cms []models.ComboModel
+	if err := json.Unmarshal([]byte(modelsJSON), &cms); err != nil {
+		return nil, err
+	}
+	return cms, nil
+}
+
+// ParseComboModelNames parses a combo's Models JSON string and returns just the model name strings.
+func ParseComboModelNames(modelsJSON string) ([]string, error) {
+	cms, err := ParseComboModels(modelsJSON)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(cms))
+	for i, m := range cms {
+		names[i] = m.Model
+	}
+	return names, nil
+}
+
+// ParseComboModelWeights parses a combo's Models JSON string and returns a map of model name to weight.
+func ParseComboModelWeights(modelsJSON string) (map[string]int, error) {
+	cms, err := ParseComboModels(modelsJSON)
+	if err != nil {
+		return nil, err
+	}
+	weights := make(map[string]int, len(cms))
+	for _, m := range cms {
+		if m.Model != "" {
+			weights[m.Model] = m.Weight
+		}
+	}
+	return weights, nil
+}
+
+// GetComboModels retrieves a combo by name and returns its parsed models with weights.
+func (r *Repo) GetComboModels(name string) ([]models.ComboModel, error) {
+	combo, err := r.GetComboByName(name)
+	if err != nil || combo == nil {
+		return nil, err
+	}
+	return ParseComboModels(combo.Models)
 }
