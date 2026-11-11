@@ -1,6 +1,0 @@
-### feat(mistral): support Mistral Vibe Code usage, connection-level routing, and expanded model catalog
-
-- **Dedicated Vibe Key UI**: Adds a first-class key type selector in `AddConnectionModal` for Mistral, allowing operators to choose between standard API Key (PAYG) and Vibe API Key (`chat.mistral.ai/code/extensions` for Le Chat Pro with $300/mo quota) with direct links and automated naming.
-- **Connection Lane Badges**: Displays `VIBE CODE` and `API PAYG` badges on Mistral connection cards in `ProviderDetailView` for transparent account inspection.
-- **Connection-Specific Combo Routing**: Surfaces connection-scoped model groups in the combo model picker when a provider has multiple active connections. Resolves `<Connection_Name>/<model>` and `<connection_id>/<model>` directly in `resolveModelEntryGuarded`, allowing operators to target specific connection lanes or use provider-level fallback across multiple keys.
-- **Expanded Mistral Models Catalog**: Adds Mistral-hosted open models (`deepseek-v4-1-flash-1017`, `zai-glm-5-3-flash`, `zai-glm-5-3`, `zai-glm-5-2`, `glm-5-2`), Devstral coding models (`devstral-latest`, `devstral-2512`, `labs-devstral-small-2512`), and latest release variants (`mistral-large-4`, `mistral-small-4`, `mistral-medium-2604`, `codestral-2508`, `ministral-14b-2512`, `magistral-medium-latest`, `labs-leanstral-1-5-1`).

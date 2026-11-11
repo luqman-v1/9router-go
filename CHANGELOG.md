@@ -1,5 +1,483 @@
 # Changelog
 
+## [v1.9.16-exp.12] - 2026-11-11
+
+### OpenCode free tier: stop amplifying IP penalties, widen small output budgets, report usage
+
+Four defects on the keyless `opencode` free lane, each measured against the live
+gate and cross-checked with the findings in
+[`azrinaldi/opencode-free-bridge`](https://github.com/azrinaldi/opencode-free-bridge).
+That project is a sibling shim, not this repo's upstream — the port is of the
+*findings*, not the code.
+
+**An egress flagged for abuse is no longer retried.** The gate answers one
+`403 FreeTierError` body for at least five unrelated causes, and only the
+egress-level abuse flag is made worse by a replay: no header, session or body
+change clears it. `isOpenCodeTerminalRefusal` now matches the three abuse
+phrasings (case-insensitively, without allocating — the body is capped at 1 MiB
+and this runs on a 1 vCPU box) and short-circuits before the retry sleep and the
+direct replay. A failed replay also arms a 30s cooldown that suppresses the
+*replay* only; the first attempt of every request still runs, and session
+rotation on a 429 is unaffected.
+
+**A spent daily allowance now parks its egress for the window upstream names.**
+`Retry-After` was dropped in three places: the refusal lift discarded
+`resp.Header`, both free-lane error sites built the error without it, and
+`opencodeClosureError` then overwrote whatever survived with a hardcoded 60s (or
+30s). The header now travels end to end and the classifier prefers it over its own
+estimate, clamped by the existing `maxResetCooldown` ceiling. `/v1/responses` also
+forwards it now, which it previously did not.
+
+**A small `max_tokens` no longer returns an empty answer.** Every free OpenCode id
+reasons, and a reasoning model spends the same output ceiling on its
+chain-of-thought as on the visible text — so `max_tokens: 50` came back as `200`
+with empty content and `finish_reason: "length"`. `output_budget.go` adds a floor
+driven by `GetCapabilitiesForModel`: 5120 (1024 answer + 4096 thinking) for a
+reasoning model, 512 otherwise, capped at the model's declared `MaxOutput`. It is
+a floor, not an addition, so a caller's deliberate 128k budget is left exactly as
+written. Applied to the free chat lane, the go-free lane, and — replacing the
+hardcoded 512 constant — the muse-spark responses lane, so one upstream no longer
+has two different floors.
+
+**Token counts reach the dashboard on non-streaming calls.** The free lanes force
+`stream: true` and re-aggregate for non-streaming callers, but never asked for
+`stream_options.include_usage`, so the body carried no `usage` at all and the
+ledger billed the turn at zero. Setting the flag alone would have fixed nothing:
+`sseToOpenAIJSON` read `usage` *inside* its `len(choices) == 0 { continue }`
+guard, and the usage-bearing chunk upstream appends has an empty `choices` array.
+Both halves are fixed; a caller that set `stream_options` itself keeps its own
+setting.
+
+Verified with 14 new table-driven tests across
+`opencode_retry_test.go`, `output_budget_test.go` and `opencode_closure_test.go`,
+the existing opencode gate-simulation and free-tier closure integration suites,
+and `go test ./...` (four unrelated macOS-environmental packages fail
+identically on a clean tree: `browserlogin`, `daemon`, `proc`, `mcodelease`).
+
+Known gap, deliberately out of scope: upstream's real free-tier reset is ~21.5h,
+which the 2h `maxResetCooldown` still clamps. Raising that ceiling is
+cross-provider policy, not an OpenCode fix.
+
+### fix(tests): stop two time- and eviction-dependent tests from flaking CI
+
+Both failures were seen on the Race detector and `test` jobs, on commits that
+could not have caused them (one changed only a markdown file), which is what
+showed they were pre-existing flakes rather than regressions.
+
+**`TestOpencodeClosureError_PrefersUpstreamRetryAfter/http-date_is_honoured`**
+asserted an exact `5400s` for a carrier built from
+`time.Now().Add(90 * time.Minute)`. `http.TimeFormat` carries only second
+granularity, so formatting a sub-second time truncates it, and the elapsed time
+between building the header (in the table literal) and parsing it (inside the
+subtest) can cost one more second. When the truncation and that elapsed time
+together cross a second the resolved value is `5399s` and the case fails:
+
+```
+Retry-After = 5399s, want 5400s from the date carrier
+```
+
+The assertion is now a range (`5395..5400`) around the ~90 minutes the carrier
+names. That is the property under test — the carrier beats the classifier's own
+60s estimate — and it is what the exact-second form was trying to say. `5399`
+is the honest answer for a date that was truncated, so no production code
+changes.
+
+**`TestFreePiResetCooldownIsBounded`** filled the cooldown map to its 256-entry
+cap with a single shared timestamp, then asserted that a later-inserted account
+was still present on the next call. Every entry carries the same `at`, so when
+the prune at the cap has to evict the oldest it is choosing arbitrarily among
+ties — and `acct-fresh` could be the one evicted by the prune inside the very
+call that asserts on it. The lookup then misses, the attempt is allowed, and the
+case fails at `free_pi_session_test.go:333`.
+
+Measured at 2 in 500 (≈0.4%, matching the predicted 1-in-257), which is why 300
+local runs missed it and CI hit it. The two halves of the test are independent
+assertions, so the map is now emptied between them.
+
+Covered by stressing both cases under `-race` (`TestFreePi` ×300, closure ×3).
+No production code changes in either fix.
+
+### fix(free-pi): resolve `x-client-version` against the live floor so a stale login pin stops answering 426
+
+Every request answered `HTTP 426: your free-pi-cli is below the required
+minimum (0.6.16)` from a container that was already current.
+
+`x-client-version` is free-pi's forced-update gate: `GET /client-version`
+publishes a `min` floor and refuses anything older. The value sent was
+`cv.Latest` captured **once**, at login, and persisted onto the connection
+(`saveFreePiConnection` → `providerSpecific["freePiClientVersion"]`).
+`freePiClientVersionFor` then returned that stored string unconditionally —
+nothing refreshed it, and nothing compared it with the published `min`. When
+the server raised the floor past a snapshot taken earlier, the pin kept
+winning, and raising the compiled-in fallback could not help because a
+non-empty stored value outranks the constant.
+
+- **Resolve per request.** `ResolveFreePiClientVersion` sends the highest of the
+  stored snapshot, the server's published `latest`, and the compiled-in floor,
+  and never below the published `min`. A stale pin can no longer beat a current
+  server value, so existing connections heal on their first request after
+  upgrading — no re-login.
+- **Cache the snapshot behind a 15-minute TTL** with at most one fetch in
+  flight, so a burst past the TTL reuses the last snapshot rather than queueing
+  on the mutex or stampeding the endpoint. One snapshot, one flag, no map, no
+  goroutine (§4.G). A failed refresh keeps the previous snapshot and never fails
+  the request.
+- **Heal a 426 once.** A server-side raise inside the TTL is the case the cache
+  cannot predict, so a 426 forces a refresh, re-resolves the header, and retries
+  exactly once — mirroring the existing 409 `concurrent_session` self-heal. The
+  retry is skipped when the published floor did not advance, because replaying
+  an unchanged header only draws the same answer.
+- **Local comparator.** `internal/updater` owns this repo's release-tag
+  semantics (pre-release precedence, build metadata); this compares a vendor's
+  plain dotted numbers, where `0.7` must beat `0.6.16` — which a naive string
+  comparison gets backwards.
+
+Covered by 13 table-driven cases in `freepi_version_test.go` (comparator
+ordering, stale-pin lifting, `min` outranking a lower `latest`, TTL caching, a
+failed refresh falling back to the highest value known) and 3 executor cases in
+`free_pi_version_test.go` (426 recovers with exactly one retry; a known floor
+prevents the 426 entirely; a non-advancing floor does not spend a retry).
+`golangci-lint --new-from-rev` reports 0 issues and `gofmt` is clean.
+
+### Fix Responses API parallel tool calls
+
+- Keep streamed function arguments isolated by tool index when Responses events identify calls by `item_id` rather than `call_id`. Treat completed argument snapshots as snapshots, not additional deltas, so parallel Codex calls no longer concatenate duplicate JSON. Correlate events by `output_index` when the item ID is absent; do not append an incompatible snapshot to bytes already sent to the client.
+- The Responses event contract follows upstream decolua/9router's parallel tool-call translator (`1339107e624d`); the tool-argument fix does not rewrite direct Responses events.
+- Prefer classic Codex Responses for ordinary requests so clients can receive multiple tool calls for models otherwise marked Responses Lite; preserve explicit Lite requests. This deliberately differs from upstream decolua/9router's model-based Lite default (`1339107e624d`): Codex CLI disables top-level parallel calls in Lite (openai/codex#26487), while classic mode supports them in live testing.
+- Verified with offline executor and production-router integration tests covering parallel calls, interleaved argument fragments, snapshots, classic/Lite request shapes and non-streaming responses. Live OpenCode runs exercised parallel reads and file editing via Chat and Responses with GPT-5.6 Luna/Sol and GPT-6 Luna/6.1 Sol; live Lite requests retained correct tool calls.
+
+### README: centered logo, standalone title & subtitle
+
+The README opened with the logo and the tagline folded into one long `#`
+heading and showed no mark at all. It now leads with the 9r GO mark centred
+above a `9router-go` title and a separate `FREE AI Router & Token Saver with
+Single Binary` subtitle, so the top of the README reads like the product.
+
+- `README.md`: centred logo, then the title and subtitle on their own lines.
+- `docs/logo.svg`: display-size (200px) copy of the 9r GO mark, referenced by
+  the README. Markdown image syntax (not raw `<img>`) so `tools/sitegen` copies
+  it when it renders the README into the project page.
+
+Verified by rendering the README header in a browser (centred mark, title and
+subtitle all show) and confirming `tools/sitegen` copies `docs/logo.svg` into
+the generated site output.
+
+### Fixed
+
+- **Model sync on Nous Research no longer fails with Cloudflare's `Attention Required!` page.** Nous's inference API sits behind Cloudflare, which answers a request carrying Go's default identity (`Go-http-client/…`, what an `http.Client` sends when the header is absent) with HTTP 403 `text/html`, while the same request with a normal client identity is served. The chat path already presented one — `internal/proxy/openai.go` defaults the User-Agent to `node`, matching upstream's Node/undici fetch — but the gateway's own catalogue fetches never did: `validateProbeDo`, `connectionProbeDo` and the *Suggested free models* feed built their requests with no User-Agent at all. Sync, the connection *Test* button and the suggested-models list were therefore the only requests Nous's edge refused.
+  - `handlerutil.WithDefaultUserAgent` now supplies `constants.DefaultClientUserAgent` (`node`) whenever a caller leaves the header unset, in any casing, without mutating the shared probe header maps. A provider-specific identity (`antigravity/cli/…`, `grok-shell/…`, `kiro-ide/…`) still wins, so the probes Google and xAI validate by User-Agent are unchanged. The chat path now reads the same constant instead of a second `"node"` literal.
+  - The same default covers the other two catalogue surfaces that had no identity: the live model list for **OpenAI-/Anthropic-compatible provider nodes** (`fetchCompatibleNodeModels`) and the Anthropic catalogue fetch (`fetchAnthropicLiveCatalog`), both of which serve the dashboard's model list for those connections. Every catalogue and model-list request the gateway makes now presents a client identity.
+  - The *Suggested free models* feed also propagates the request context now that it builds a request explicitly, so a client that gives up aborts the fetch.
+  - A sweep of all 23 registered catalogue endpoints plus 18 probe endpoints (Go client, both identities) found **Nous as the only UA-gated host**: every other endpoint answers the same status with or without the header, and the two that return HTML (`api.cast.ai` 401, `cli-chat-proxy.grok.com` 404 on a path that does not exist) return it identically for both. The fix is provider-wide by construction — it sits at the shared outbound choke points rather than in a per-provider branch.
+  - Verified against the live upstream through the production header construction: without the default the catalogue answers `403 text/html` (`<!DOCTYPE html> … class="no-js ie6 oldie"`, byte-identical to the alert an operator sees), with it `200 application/json` and the full catalogue. `TestProbePathsSendNonDefaultUserAgent`, `TestSuggestedModelsNousFree` and the compatible-node catalogue test pin the outbound identity on the real request-construction paths; `TestWithDefaultUserAgent` pins the merge rule (explicit identity wins, caller map untouched).
+
+### Rebrand: replace the "network hub" logo and icons with the 9r GO mark
+
+The dashboard favicon, the PWA icons, and every logo the generated project page
+and wiki draw were still the old terracotta "network hub" plate - a mark that no
+longer matches the product. This replaces the whole set with the new 9r GO
+wordmark (orange plate, white "9r GO" glyph) generated from a single 512px
+source, so the tab, the installed app, the login page, the sidebar, and the
+public docs all show the same mark.
+
+- `web/public/favicon.svg`, `favicon.ico`, `icons/icon-{192,512}.png|.svg`: all
+  six brand assets regenerated from the new mark. The `.svg` files keep their
+  filenames (so `Sidebar`'s `/favicon.svg` default, `LoginView`, and
+  `manifest.webmanifest` references stay valid) and embed the optimized artwork
+  as a data URI, so they render identically to the source everywhere.
+- `tools/sitegen`: the project page and wiki drew the old hub in five places -
+  two favicons and three inline wordmark glyphs. The mark now lives in one
+  shared `brandMarkPNG` constant (`brand.go`) referenced by both templates, so
+  the tab icon and every inline glyph can never drift back to drawing their own.
+- Updated the `sitegen` tests that pinned the old hub core (`#FF5C35`) to pin
+  the shared brand mark instead, keeping the original contract: the pages must
+  draw the product's own icon, not a stand-in.
+
+Verified by rendering the generated favicon/PWA icons and the generated wiki
+page in a real browser (the new mark shows in the masthead), plus
+`go build ./...` and `go test ./tools/sitegen`.
+
+### fix(usage): roll usage up before the boot retention pass deletes it
+
+- Roll usage up into daily summaries for un-aggregated dates before retention purge deletes raw usage_history records.
+
+### feat(images): add OpenAI-compatible /v1/images/edits endpoint
+
+- `POST /v1/images/edits` now accepts both standard `multipart/form-data` and `application/json` payloads, bringing full compatibility with OpenAI SDKs and third-party tooling.
+- Parses `image` (file upload or URL/base64 Data URI), optional `mask`, `prompt`, `model`, `size`, `response_format`, `background`, `quality`, and `n`.
+- Forwards parsed requests to configured image edit providers (Codex, Cloudflare, or OpenAI-compatible backends) via the media forwarding pipeline.
+- Verified with table-driven tests for multipart parsing, JSON parsing, error validation on missing required fields, and provider routing.
+
+### feat(resilience): detect stalled agentic tool loops and prevent runaway retries
+- Autonomous coding agents (Claude Code, Cline, Roo, OpenClaw) can enter repetitive "stalled tool loops" where the agent issues the identical tool call (same tool name and identical arguments hash) repeatedly without making state progress or changing context. This wastes upstream tokens, depletes quotas, and risks automated abuse bans.
+- Added `StalledToolLoopDetector` and conversation history inspector `InspectHistoryTurns` in `internal/resilience/` to track consecutive repeated tool calls.
+- Integrated detection into chat handlers (`HandleChatCompletions` and `HandleMessages`) to intercept requests before dispatching upstream when consecutive tool turns match the loop threshold (default 3).
+- Added structured, client-compatible interventions for OpenAI and Claude clients (both streaming SSE chunks and non-streaming JSON) prompting agents to alter their strategy.
+- Verified with unit tests covering threshold triggering, non-identical arguments/tools resetting, user message reset, and SSE/JSON framing.
+
+### Features
+
+- **Tamper-evident admin audit trail** (port of KeiRouter `backend/internal/audit`, MIT). Every mutating
+  dashboard request, plus the sensitive reads that hand out secrets (`/api/settings/database`,
+  `/api/usage/export`, `/api/providers/{id}/export-keys`, `/api/audit/export`) and login/logout
+  attempts, is recorded into a new Go-only `audit_log` table with a per-writer hash chain
+  (`chain_id` / `chain_seq` / `prev_hash` / `hash`, HMAC-SHA256). The chain key comes from
+  `ROUTER_MASTER_KEY` when set, else a random 32-byte key persisted in settings on first boot, so
+  rows stay verifiable across restarts. Auditing is on by default; `Record` never blocks (bounded
+  queue, drop-and-count), so it cannot slow down or fail an admin request.
+- **Admin endpoints**: `GET /api/audit` (cursor-paginated list with action/actor/outcome/resource/
+  q/since/until filters), `GET /api/audit/export` (JSON Lines, SIEM-ready, capped at 200k rows per
+  request), `GET /api/audit/verify` (recomputes every hash chain; a break means a row was modified,
+  deleted, or re-linked), `GET /api/audit/status` (recorder counters, retention, OTLP exporter
+  counters).
+- **Optional OTLP/HTTP export** (pure stdlib, no new dependency): when
+  `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT` is set, committed rows are
+  also shipped to the collector in the standard OTel logs JSON shape (gzip, bounded queue,
+  Retry-After-aware retries, `keirouter.audit.*` attribute namespaces kept for SIEM parity with
+  upstream KeiRouter).
+- **Retention**: `audit_retention_days` in settings (default 0 = keep forever); an hourly sweeper
+  deletes rows past the window when a window is configured.
+
+Why: an operator who can read the SQLite file could previously rewrite the admin history. The hash
+chain makes any such edit visible through `/api/audit/verify` without leaving the gateway.
+
+Verified: `go test ./...` (incl. `internal/audit` chain/tampering, `internal/handlers/dashboard`
+middleware + endpoint, OTLP exporter wire-shape tests) and `make test-integration` (real fx boot:
+recorder starts in `ServerModule.OnStart`, drains in `OnStop`). No cgo, no new `go.mod` entries
+(`go mod tidy` clean); `web` bundle unchanged.
+
+### feat(mistral): support Mistral Vibe Code usage, connection-level routing, and expanded model catalog
+
+- **Dedicated Vibe Key UI**: Adds a first-class key type selector in `AddConnectionModal` for Mistral, allowing operators to choose between standard API Key (PAYG) and Vibe API Key (`chat.mistral.ai/code/extensions` for Le Chat Pro with $300/mo quota) with direct links and automated naming.
+- **Connection Lane Badges**: Displays `VIBE CODE` and `API PAYG` badges on Mistral connection cards in `ProviderDetailView` for transparent account inspection.
+- **Connection-Specific Combo Routing**: Surfaces connection-scoped model groups in the combo model picker when a provider has multiple active connections. Resolves `<Connection_Name>/<model>` and `<connection_id>/<model>` directly in `resolveModelEntryGuarded`, allowing operators to target specific connection lanes or use provider-level fallback across multiple keys.
+- **Expanded Mistral Models Catalog**: Adds Mistral-hosted open models (`deepseek-v4-1-flash-1017`, `zai-glm-5-3-flash`, `zai-glm-5-3`, `zai-glm-5-2`, `glm-5-2`), Devstral coding models (`devstral-latest`, `devstral-2512`, `labs-devstral-small-2512`), and latest release variants (`mistral-large-4`, `mistral-small-4`, `mistral-medium-2604`, `codestral-2508`, `ministral-14b-2512`, `magistral-medium-latest`, `labs-leanstral-1-5-1`).
+
+### Kiro: Builder ID / social connections without profileArn get the public default
+
+- Kiro answered `400 profileArn is required for this request.` for OAuth connections (Builder ID, Google/GitHub) that had no `profileArn` in `providerSpecificData`. The executor sent the request without the field.
+- OAuth/social connections without a stored ARN now get the public default profile for their sign-in method: Builder ID for `builder-id`, the social profile for `google`/`github`. An explicitly stored `profileArn` still wins.
+- Account-bound auth (`idc`, `external_idp`, `api_key`) still sends no default: that ARN belongs to another account there and returns 403.
+- The selection lives in `internal/providers/kiro_profile.go` (`KiroEffectiveProfileARN`), ported from upstream `decolua/9router` v0.5.109 (`open-sse/config/kiroConstants.js`, `open-sse/translator/request/openai-to-kiro.js`).
+- Verified with a table test over auth method and explicit ARN (`kiro_profile_test.go`), envelope tests (`kiro_profile_arn_test.go`), and `go vet` / `go test` for `providers`, `translator`, `proxy/executor`.
+- The usage path (`usage_providers.go`) is unchanged: it already falls back to the default for `idc`/`external_idp`, as upstream `services/usage/kiro.js` does.
+
+### The built-in headroom engine over MCP, and a conversation that stops re-folding its seen history
+
+Builds on the in-process headroom engine (#979). Two additions: an MCP surface
+for the engine, and a prefix-replay cache that keeps a long agent run from
+re-folding already-seen history every turn.
+
+- **`POST /mcp` exposes the built-in engine over MCP** (Model Context
+  Protocol, JSON-RPC 2.0), so an MCP-capable client can drive compression
+  without the dashboard. The JSON-RPC envelope is hand-rolled rather than
+  pulled from an SDK on purpose: the gateway runs with no external
+  dependencies, and MCP's wire format is small enough that a focused
+  implementation is easier to audit than a dependency. It exposes two tools —
+  `headroom_compress` (fold a conversation in-process, fail-open when nothing
+  is compressible) and `headroom_stats` (compression counters) — plus a
+  `headroom://stats` resource mirroring the stats tool, and answers
+  `initialize` / `tools/list` / `tools/call` / `resources/*` with the standard
+  JSON-RPC error codes (parse −32700, invalid request −32600, method not found
+  −32601, invalid params −32602, internal −32603, unknown resource −32002).
+  The endpoint needs no external process, so it works whenever the built-in
+  engine is selected.
+- **A long conversation no longer re-folds its already-seen history every
+  turn.** The in-process engine keeps a session-scoped prefix-replay cache: a
+  request whose leading messages match a turn already compressed replays that
+  folded prefix and runs the RTK pipeline over only the new tail. The replay is
+  sound because the fold is per message and the engine does no cross-message
+  work, so a cached prefix's folded form is byte-identical to a full re-fold and
+  the spliced output is exactly what a from-scratch fold would produce — and the
+  caller's structural gate and byte-gain check still run on it, so a divergence
+  fails open. The cache is keyed by session id and bounded (500 sessions, 50
+  prefixes per session, 24h TTL) under a mutex, so it cannot grow without bound
+  on the small deployment target. It lives at process scope because the gateway
+  builds a fresh engine per request in its only production call path
+  (`internal/handlers/chat/fallback.go`); a store owned by the engine would be
+  rebuilt empty every turn and never learn a prefix.
+- **Sessions are ordered for eviction by a monotonic access stamp, not
+  wall-clock time.** Sessions touched within one clock tick share an idle
+  timestamp, so ordering the LRU eviction on it let Go's random map iteration
+  pick the victim — which made the bounded-session test fail intermittently.
+  The monotonic stamp is a total order, so the eviction is deterministic
+  regardless of timing or map ordering.
+- **The engine has no retrieval endpoint, and says so.** It never emits a
+  context-compression marker it cannot later expand: the gateway is a stateless
+  hop, so storing a blob behind a hash and handing the model a marker to call
+  back for would either need a retrieval surface this binary deliberately does
+  not run, or leave the model reading a marker with nothing behind it. The
+  guards that reject such markers on a compressed response stay active on the
+  built-in path too.
+
+Verified: `go build ./...`, `go vet` and `gofmt -l` clean. Unit tests in
+`internal/headroom` cover the MCP surface (tools/list, compress, compress
+fail-open, stats + `headroom://stats` resource, parse error and the full
+JSON-RPC error-code matrix) and the prefix-replay path — a second turn that
+reuses the first turn's messages replays the cached prefix, and its output is
+compared message-for-message against a from-scratch fold of the same
+conversation; a further test pins that an empty session id populates no cache
+and no result leaks across sessions. The bounded-session LRU test, flaky before
+the access-stamp fix, runs clean across 30 repeated runs. The
+`internal/handlers/chat` (141s) and `internal/handlers/media` suites pass
+against the rebased base.
+
+### feat(errclass): provider-agnostic upstream error classification
+
+- New `internal/errclass` package classifies an upstream LLM error deterministically into a `Kind` (auth, rate limit, quota exhausted, context window, content filter, model unavailable, timeout, bad request, upstream) and a `Scope` (request, model, account, provider): `ClassifyDetail` applies strict precedence (provider error type, then body phrase, then numeric status), so the same status code and body always land in the same bucket.
+- Helpers for the shapes providers actually emit: `BodyErrorCode` (JSON-enveloped 429 — numeric code, numeric string, or Google status strings like `RESOURCE_EXHAUSTED`), `LooksLikeRateLimitWrapped`, `CapRetryAfter` (Retry-After capped at one hour), and `StreamErrorFrame` for in-band SSE error envelopes in the OpenAI, Anthropic, Gemini and generic shapes.
+- A rejected credential is classified from its prose regardless of the status it arrived with: `LooksLikeAuthError` runs in the body-phrase phase of the precedence chain, so a credential failure that carries no error type and no useful status (the exact case the detector exists for — a provider misfiring a 429 or a 502 can still reject the key) lands in `auth`/account rather than the `upstream`/retry bucket that would rotate a dead key back in.
+- Deliberately standalone: nothing in the request path calls into it yet. The existing classifier answers "how long to back off", not "which routing verb"; the package doc names the intended consumers (chain/failover policy, observability) and the call sites to wire first.
+- Ported from KeiRouter (S-7 errclass); all upstream table cases carry over, plus precedence-pinning and scope-default cases.
+
+### feat(dashboard): operator read for per-period budget
+- New `GET /api/keys/{id}/budget`: the key's effective per-period budget (plan first, then the key's own columns — the same precedence the request path enforces), spend in the open window, remaining headroom, status (`ok`/`approaching`/`exhausted`) and when the window rolls. The spend read is the same statement the middleware runs per request, so what the dashboard shows and what triggers a 402 are the same number. A key whose secret was hashed away (#199) gets a note instead of an invented zero.
+- The API-key policy modal can now set the key's own budget columns — cost ceiling (USD), token ceiling, period, alert %, hard cutoff — and shows the open-window spend with a status chip. The server accepted these fields on PUT but the UI had no way to set or see them.
+- Pinned the query plan of the per-request budget spend read: it must stay on the two ledger indexes (multi-index OR), never a SCAN of usageHistory.
+- Note: the budget engine itself (402 hard cutoff, alert headers, window resolution) is pre-existing; this PR adds the operator surface and the plan pin, and changes no request-path behavior.
+
+### fix(codex-image): fall back to gpt-5.6-terra when the account rejects gpt-6-sol (#1036)
+
+Codex image generation requests using `gpt-6-sol` as the `image_generation`
+tool host can be rejected by certain ChatGPT accounts with HTTP 400 "The
+'gpt-6-sol' model is not supported when using Codex with a ChatGPT account."
+
+- Detect HTTP 400 with message containing "The 'gpt-6-sol' model is not supported"
+  or similar ChatGPT rejection and automatically retry with `gpt-5.6-terra`.
+- Preserve other 400 and 5xx error responses without triggering fallback.
+- Mirrors upstream decolua/9router PR #5546.
+- Tests: `TestIsCodexGpt6SolUnsupported` and `TestHandleImages_Codex_Gpt6SolFallback`
+  in `internal/handlers/media/codex_image_test.go`.
+
+### fix(combo): treat Claude redacted thinking as first output in target budget gate (#1028)
+
+Recognize Claude `redacted_thinking`, `thinking`, and `signature_delta` chunks as valid stream output activity in the combo first-output gate.
+
+- Treat Claude adaptive thinking frames (`redacted_thinking`, `thinking`, `signature_delta`) as stream activity in `internal/proxy/stream_peeker.go`.
+- Prevent combo model response timeouts and zero-content failovers from prematurely aborting or cycling away from deep-thinking Claude streams.
+- Add unit tests verifying thinking chunks satisfy the first-output gate and allow subsequent stream tokens to pass while silent streams time out as expected.
+
+### feat(providers): free-pi — session-as-API for the ad-funded `pi` agent
+
+New provider `free-pi` (`fp`), turning free-pi's CLI-only account into a
+multi-client API behind this gateway. Upstream is plain [OI] Chat Completions at
+`https://api.freepi.ai/v1/chat/completions` behind a Bearer JWT, so the transport
+is ordinary; what is not ordinary is **session identity** and **advertising**.
+
+**Session identity.** Every completion must carry a stable `x-session-id`, and the
+account tolerates a bounded number of concurrent sessions (4, per
+`hungkevin/free-pi-cli-proxy` `server.mjs:958`). Exceeding it yields
+`409 concurrent_session`. This builds for the tightest reading of that limit —
+**one session per account** — and leaves the other three unspent:
+
+- The id is *derived*, not minted: `uuid.NewSHA1(namespace, accountKey)` where
+  `accountKey` is the JWT `sub`. Two dashboard connections for one account, a
+  restarted process, and a second gateway instance therefore all converge on the
+  same upstream session, so nothing has to be remembered for that to hold.
+- A lease in the existing `upstream_leases` table (`LeaseScopeFreePiSession`)
+  records which process is currently driving the account. Its value is a
+  **per-process epoch**, deliberately not the session id: every holder derives
+  the same session id, so a session-id value would match for everybody and make
+  the compare-and-delete that guards releases a no-op.
+- On 409 the gateway resets once (`POST /session/reset`, the CLI's
+  `/close-other-session`) and retries once — but only when no sibling holds the
+  lease, at most once per per-account cooldown, and not at all when
+  `freePiAutoReset: false` is set on the connection. The same reset can end a
+  human's running `free-pi-cli`, so the opt-out exists for exactly that case.
+
+**Advertising.** Upstream checks ad *impression records*, and the reference proxy
+satisfies that by posting `imp_fired: true` every ten minutes for ads nobody saw.
+That misreports to the advertiser whose spend funds the inference, so it is not
+implemented that way here. Instead:
+
+- `GET /api/free-pi/ad` serves a banner creative and records what it handed out;
+  serving an ad does **not** report an impression.
+- The dashboard renders it (`FreePiAdBanner.svelte`) and, once the creative is
+  actually painted, calls `POST /api/free-pi/ad/impression`. That endpoint only
+  accepts the id of an ad this gateway served, and **consumes** it — one serving,
+  one impression, no re-reporting, no timer.
+- A `204` from the ad network is "nothing to show", not an error: the banner is
+  simply absent, and no impression follows.
+- An `imp_url` outside `trygravity.ai|com` is refused before it is fetched. The
+  URL is upstream-supplied and fetched server-side, so an unvalidated host is an
+  SSRF primitive; the reference applies the same check.
+
+Deliberate, documented limitation: free-pi's protocol also carries an
+`x-gravity-context` header, built by the npm `@gravity-ai/api` SDK from *browser*
+signals (user-agent, screen size, timezone, locale) plus a Gravity pixel session.
+It has no Go port, and a server cannot observe a screen size or a browser locale,
+so generating it here would mean inventing exactly the signals this design
+refuses to fake. It is therefore omitted from chat requests, which means whether
+upstream still *attributes* an impression without it is unverified. The gate
+itself is honoured; that attribution question is not answered, and the gap is
+stated in `free_pi_ads.go` rather than hidden.
+
+**Login** is free-pi's own GitHub device flow, so the CLI need not be installed:
+`POST /api/oauth/free-pi/initiate` → `/auth/consent` → `/auth/token`. Consent is
+never recorded on the user's behalf — the screen discloses training on prompts,
+code and responses with no opt-out, so `initiate` refuses to contact upstream at
+all until the request asserts this user accepted this exact version, and the text
+itself is served from `GET /api/oauth/free-pi/consent` so the wording the user
+reads cannot drift from the version recorded.
+
+Also added:
+
+- A **Clear session** action in the dashboard, wired to
+  `POST /api/oauth/free-pi/session/reset` — the same operation free-pi-cli exposes
+  as `/close-other-session`, surfaced as an explicit button because the same call
+  also ends a human's running CLI session on that account.
+- `GET /me/stats` quota mapping (credits, refill time, token counters). free-pi
+  reports credits rather than dollars, so nothing is converted into a spend
+  figure upstream does not disclose.
+- 429 taxonomy, adopted from the reference proxy and mapped onto the existing
+  rules: `rate_limit_exceeded` is an hourly cap (short fixed cooldown, rotation
+  eligible) while `creditlimitexceeded` / `insufficient_quota` / `billing_error` /
+  `budgetlimiterror` / `gousagelimiterror` mean the day is spent (long fixed
+  cooldown, never retried on the same account).
+- A dead credential is refused **before** the request goes out. free-pi issues a
+  ~90-day JWT with **no refresh token**, so expiry is terminal; without this the
+  generic 401 rule cooled the connection for two minutes and retried a
+  permanently dead credential forever while the dashboard showed it healthy.
+- The executor checks the upstream status itself and returns a real
+  `*proxy.UpstreamError`. Registering on the default passthrough would have
+  turned the 409 into an HTTP 200 carrying an error body, recorded in
+  `usageHistory` as a served turn.
+
+The wire contract is recorded in `internal/providers/testdata/freepi/`, one
+fixture per response with its upstream source named, and pinned by
+`TestFreePiContractInvariants` so a fixture cannot silently disagree with the
+constants the code branches on.
+
+A sign-in could hang forever, found on the first live run and fixed here:
+
+- The real `POST /auth/token` answers `{"status":"pending"}` — no `code`, no
+  `retry_after` — which is now parsed and pinned by a test against the three
+  shapes actually observed upstream (`status: pending`, `403 consent_required`,
+  and a token grant). An unparseable body is an error rather than "pending": that
+  is how a stall becomes a spinner with no diagnostic.
+- The pending window was 15 minutes, the *same* as the device code's own ~899s
+  lifetime, so a first-time GitHub sign-in with 2FA could outlive it. It now
+  honours the server's `expires_in` plus a minute, and is bounded at 20 minutes.
+- An expired or unknown login answers **410 Gone**, not a bare 400, so the client
+  can tell "start again" from "retry".
+- The dashboard no longer swallows poll failures. It previously ignored every
+  error, so any 410/502 rendered as an indefinite "Waiting for authorisation…"
+  with no way out; it now shows the message, stops on 410 and offers the consent
+  step again, and gives up after three consecutive transient failures.
+- Each poll logs its outcome, so a stalled sign-in is visible in the terminal
+  instead of looking like a dead endpoint.
+
+Incidental: `internal/handlers/usage_chart_test.go` seeded a hardcoded
+`2026-10-16` and then asked for a trailing 7-day window, so it began failing on
+the calendar rather than on the code once real time passed it. The seed and the
+all-period test's clock are now relative. Pre-existing rot, fixed here because it
+made the surrounding suite unreadable.
+
+Verified with `go test ./...`, `make test-integration` (including 409
+reset-and-retry against the real router and database), `make vet-svelte`,
+`bun run build`, and a dashboard parity check that the seeded model id appears in
+both the Go catalog and `web/src/lib/models.ts`.
+
 ## [v1.9.16-exp.10] - 2026-11-10
 
 ### fix(proxy): stream upstream responses as identity so gzip edges stop bursting tokens
