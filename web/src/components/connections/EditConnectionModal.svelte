@@ -18,12 +18,15 @@
     formatEmailLabel,
     submittedConnectionName
   } from '../../lib/privacy'
+  import { getModelsByProviderId } from '../../lib/models'
 
   export interface ConnectionUpdate {
     name?: string
     priority?: number
     apiKey?: string
     testStatus?: string
+    /** Partial provider-specific data; the backend merges it into the row. */
+    providerSpecificData?: Record<string, unknown>
   }
 
   type TestStatus = 'ok' | 'error' | null
@@ -97,6 +100,27 @@
 
   const isOAuth = $derived(connection.authType === 'oauth')
 
+  // Codex accounts are subscribed to a subset of the catalogue, and asking one
+  // for a model it was not granted answers 400. The backend already skips an
+  // account whose providerSpecificData.enabledModels does not contain the
+  // requested model; this is the editor for that list. An empty list leaves the
+  // account unrestricted.
+  const isCodex = $derived(connection.provider === 'codex')
+  const codexCatalog = $derived(
+    isCodex ? getModelsByProviderId('codex').map((model) => model.id) : [],
+  )
+  function seededCodexModels(): string[] {
+    const raw = connection.providerSpecificData?.enabledModels
+    return Array.isArray(raw) ? raw.filter((m): m is string => typeof m === 'string') : []
+  }
+  let enabledModels = $state<string[]>(seededCodexModels())
+  const seededEnabledModels = seededCodexModels()
+  function toggleCodexModel(id: string) {
+    enabledModels = enabledModels.includes(id)
+      ? enabledModels.filter((model) => model !== id)
+      : [...enabledModels, id]
+  }
+
   /** On-demand probe of the typed key, for the Check button beside the field. */
   async function checkReplacementKey() {
     if (!apiKey.trim()) return
@@ -151,6 +175,13 @@
       // recreating the un-reorderable pair the reorder endpoint repairs.
       if (priority !== seededPriority) {
         payload.priority = priority
+      }
+      if (isCodex) {
+        const next = [...enabledModels].sort()
+        const prev = [...seededEnabledModels].sort()
+        if (next.length !== prev.length || next.some((model, i) => model !== prev[i])) {
+          payload.providerSpecificData = { enabledModels }
+        }
       }
       const rotation = credentialUpdate(apiKey)
       if (rotation) {
@@ -260,6 +291,32 @@
           class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-background text-text-main focus:outline-none focus:border-primary"
         />
       </div>
+
+      {#if isCodex && codexCatalog.length > 0}
+        <div>
+          <span class="mb-1 block text-xs font-medium text-text-muted">
+            Models this account may serve
+          </span>
+          <p class="mb-2 text-[11px] text-text-subtle">
+            Leave every box unchecked to let this account serve the whole catalogue.
+          </p>
+          <div
+            class="max-h-40 space-y-1 overflow-y-auto rounded-md border border-border bg-background p-2"
+          >
+            {#each codexCatalog as id (id)}
+              <label class="flex items-center gap-2 text-xs text-text-main">
+                <input
+                  type="checkbox"
+                  checked={enabledModels.includes(id)}
+                  onchange={() => toggleCodexModel(id)}
+                  class="accent-primary"
+                />
+                <span class="font-mono">{id}</span>
+              </label>
+            {/each}
+          </div>
+        </div>
+      {/if}
 
       {#if testStatus}
         <div class="text-xs {testStatus === 'ok' ? 'text-green-500' : 'text-red-500'}">
