@@ -278,6 +278,16 @@ const proxyResolutionFailureTTL = 30 * time.Second
 // unresolvable at boot would be retried on every dial. Caching the error
 // ourselves bounds that retry cost while still letting a transient failure
 // recover at proxyResolutionFailureTTL.
+//
+// The lookup runs detached from the caller's context. A shared flight
+// inherits its FIRST caller's context, and this resolver serves every dial
+// through the same proxy: one client hanging up mid-lookup would cancel the
+// lookup for all concurrent waiters and, worse, cache the cancellation as a
+// failure — refusing every proxied dial for the failure TTL and
+// re-introducing the #1078 symptom from an unrelated aborted request. The
+// same reasoning as live_catalog.go and codex_proxy.go. The lookup itself is
+// still bounded by the stdlib resolver's per-attempt timeouts; a hung
+// answer recovers at the success/failure TTLs.
 func resolveProxyIPs(ctx context.Context, name string) []net.IP {
 	resolverMu.RLock()
 	hit, ok := resolverCache[name]
@@ -291,10 +301,7 @@ func resolveProxyIPs(ctx context.Context, name string) []net.IP {
 		return nil
 	}
 	v, _, _ := resolverInFlight.Do(name, func() (any, error) {
-		// The dial path has no deadline of its own to honor here and a hung
-		// resolver would stall every proxied dial; the stdlib resolver bounds
-		// each attempt in practice.
-		addrs, err := lookupIPAddr(ctx, name)
+		addrs, err := lookupIPAddr(context.WithoutCancel(ctx), name)
 		now := time.Now()
 		if err != nil {
 			resolverMu.Lock()

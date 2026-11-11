@@ -394,3 +394,37 @@ func TestRequestThroughAHostnameProxyReachesIt(t *testing.T) {
 		t.Errorf("proxy saw path %q, want /v1/models", seenPath)
 	}
 }
+
+// TestCancelledLookupDoesNotPoisonTheResolutionCache pins the concurrency
+// property a shared singleflight flight has to keep: the lookup serves every
+// dial through the same proxy, so one client hanging up mid-lookup must not
+// cancel it for the others or cache the cancellation as a failure — that
+// would refuse every proxied dial for the failure TTL and re-introduce the
+// #1078 symptom from an unrelated aborted request. Verified owner finding.
+func TestCancelledLookupDoesNotPoisonTheResolutionCache(t *testing.T) {
+	withProxyNameResolution(t, map[string]string{"proxy-internal": "198.19.0.1"})
+
+	orig := lookupIPAddr
+	lookupIPAddr = func(ctx context.Context, name string) ([]net.IPAddr, error) {
+		// Deliberately does NOT observe ctx before sleeping: the cancellation
+		// has to land mid-lookup, the way a real client hangup does.
+		time.Sleep(80 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		return []net.IPAddr{{IP: net.ParseIP("198.19.0.1")}}, nil
+	}
+	t.Cleanup(func() { lookupIPAddr = orig })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	resolveProxyIPs(ctx, "proxy-internal")
+
+	// A healthy caller immediately after must still get the real answer.
+	got := resolveProxyIPs(context.Background(), "proxy-internal")
+	if len(got) == 0 {
+		t.Error("healthy caller after a cancelled lookup got no addresses; the failure cache was poisoned by a caller hangup")
+	}
+}
