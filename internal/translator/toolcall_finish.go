@@ -6,11 +6,13 @@ import (
 	"9router/proxy/internal/fastjson"
 )
 
-// NormalizeToolCallFinish repairs a non-streaming OpenAI chat-completion body
-// whose assistant turn ended with tool calls but whose finish_reason says
+// NormalizeToolCallFinish repairs a non-streaming (unary) OpenAI chat-completion
+// body whose assistant turn ended with tool calls but whose finish_reason says
 // "stop" or is empty. vLLM reports a plain stop for a named tool_choice, and
 // agent loops key off the finish reason, so they treat the tool call as the
-// final answer and the turn ends (upstream mydisha/keirouter e340784).
+// final answer and the turn ends (upstream mydisha/keirouter e340784, whose
+// stream-side counterpart — a trailing stop must not override tool_calls — is
+// a separate concern of the passthrough lane and intentionally not ported).
 //
 // The fix is applied to the body the gateway writes, so every client dialect
 // benefits: an OpenAI client reads tool_calls, the Responses bridge emits a
