@@ -264,3 +264,43 @@ func TestTranslateClaudeChunkToOpenAI_ModelEcho(t *testing.T) {
 		})
 	}
 }
+
+func TestAccumulateClaudeStreamUsage(t *testing.T) {
+	startPayload := []byte(`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","usage":{"input_tokens":1200,"cache_creation_input_tokens":500,"cache_read_input_tokens":45000}}}`)
+	deltaPayload := []byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":85}}`)
+	textPayload := []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`)
+
+	var u *OpenAIUsage
+	u = AccumulateClaudeStreamUsage(u, textPayload)
+	if u != nil {
+		t.Fatalf("expected nil for non-usage payload, got %+v", u)
+	}
+
+	u = AccumulateClaudeStreamUsage(u, startPayload)
+	if u == nil {
+		t.Fatal("expected non-nil usage after message_start")
+	}
+	if u.CachedTokens != 45000 {
+		t.Errorf("CachedTokens = %d, want 45000", u.CachedTokens)
+	}
+	if u.CacheCreationInputTokens != 500 {
+		t.Errorf("CacheCreationInputTokens = %d, want 500", u.CacheCreationInputTokens)
+	}
+	if u.PromptTokens != 46700 {
+		t.Errorf("PromptTokens = %d, want 46700 (1200 + 45000 + 500)", u.PromptTokens)
+	}
+	if u.CompletionTokens != 0 {
+		t.Errorf("CompletionTokens = %d, want 0", u.CompletionTokens)
+	}
+
+	u = AccumulateClaudeStreamUsage(u, deltaPayload)
+	if u.CompletionTokens != 85 {
+		t.Errorf("CompletionTokens = %d, want 85", u.CompletionTokens)
+	}
+	if u.CachedTokens != 45000 {
+		t.Errorf("CachedTokens = %d, want 45000", u.CachedTokens)
+	}
+	if u.PromptTokens != 46700 {
+		t.Errorf("PromptTokens = %d, want 46700", u.PromptTokens)
+	}
+}
