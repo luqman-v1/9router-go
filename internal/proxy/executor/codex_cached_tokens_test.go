@@ -48,7 +48,7 @@ func TestCaptureUsageFromSSEChunk_ClaudeEvents(t *testing.T) {
 	delta := []byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":25}}\n\n")
 
 	acc := captureUsageFromSSEChunk(ctx, nil, start)
-	acc = captureUsageFromSSEChunk(ctx, acc, delta)
+	_ = captureUsageFromSSEChunk(ctx, acc, delta)
 
 	usage := translator.GetAndClearUsage(ctx)
 	if usage == nil {
