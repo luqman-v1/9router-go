@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -164,8 +165,9 @@ func TestAntigravityProbe_HeadersAndMetadata(t *testing.T) {
 	if gotBodyMeta["ideType"] != float64(9) {
 		t.Errorf("body metadata ideType = %v, want 9", gotBodyMeta["ideType"])
 	}
-	if gotBodyMeta["platform"] != float64(5) {
-		t.Errorf("body metadata platform = %v, want 5", gotBodyMeta["platform"])
+	wantPlatform := float64(GetAntigravityPlatformEnum(runtime.GOOS, runtime.GOARCH))
+	if gotBodyMeta["platform"] != wantPlatform {
+		t.Errorf("body metadata platform = %v, want %d", gotBodyMeta["platform"], int(wantPlatform))
 	}
 	if gotBodyMeta["pluginType"] != float64(2) {
 		t.Errorf("body metadata pluginType = %v, want 2", gotBodyMeta["pluginType"])
@@ -297,5 +299,32 @@ func TestAntigravityProjectDiscovery_UsesConnectionProfile(t *testing.T) {
 	}
 	if want := providers.AntigravityUserAgentFor(providers.AntigravityProfileIDE); gotUA != want {
 		t.Errorf("User-Agent on the wire = %q, want the IDE shape %q", gotUA, want)
+	}
+}
+
+// TestAntigravityProject_PlatformEnum covers the host platform enum mapping used
+// in lcaMetadata, for every OS/arch pair Google's Cloud Code enum recognizes.
+func TestAntigravityProject_PlatformEnum(t *testing.T) {
+	tests := []struct {
+		name   string
+		goos   string
+		goarch string
+		want   int
+	}{
+		{name: "darwin/arm64", goos: "darwin", goarch: "arm64", want: 2},
+		{name: "darwin/amd64", goos: "darwin", goarch: "amd64", want: 1},
+		{name: "linux/amd64", goos: "linux", goarch: "amd64", want: 3},
+		{name: "linux/arm64", goos: "linux", goarch: "arm64", want: 4},
+		{name: "windows/amd64", goos: "windows", goarch: "amd64", want: 5},
+		{name: "unknown OS", goos: "plan9", goarch: "amd64", want: 0},
+		{name: "unknown arch", goos: "darwin", goarch: "riscv64", want: 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := GetAntigravityPlatformEnum(tc.goos, tc.goarch); got != tc.want {
+				t.Errorf("GetAntigravityPlatformEnum(%q, %q) = %d, want %d", tc.goos, tc.goarch, got, tc.want)
+			}
+		})
 	}
 }
