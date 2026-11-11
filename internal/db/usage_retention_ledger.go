@@ -99,6 +99,12 @@ func (r *Repo) PruneUsageHistory(ctx context.Context, retention time.Duration) (
 	cutoff := ledgerCutoff(retention)
 	result.Cutoff = cutoff
 
+	// Roll usage up into daily summaries before the deletion pass deletes raw rows.
+	// This ensures historical analytics are preserved even when raw usageHistory rows are purged.
+	if _, err := r.RollupUsageHistoryBeforeDate(ctx, cutoff); err != nil {
+		return result, fmt.Errorf("rollup usageHistory before prune: %w", err)
+	}
+
 	watched, err := r.ledgerWatchedKeys(ctx)
 	if err != nil {
 		return result, err

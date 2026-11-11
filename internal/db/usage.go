@@ -3,10 +3,13 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"time"
+
+	"9router/proxy/internal/handlerutil"
 )
 
 // usageHistoryColumns is the projection every usageHistory reader shares.
@@ -926,4 +929,285 @@ func (r *Repo) GetRequestDetailsErrorCountSince(ctx context.Context, since strin
 		return 0, fmt.Errorf("count requestDetails errors since %s: %w", since, err)
 	}
 	return count, nil
+}
+
+// RollupUsageHistoryBeforeDate scans all usageHistory rows strictly older than cutoff,
+// aggregates their metrics grouped by calendar day (UTC date), and merges them into
+// usageDaily. This guarantees historical metrics are safely captured in daily summaries
+// before retention purge deletes the raw rows.
+func (r *Repo) RollupUsageHistoryBeforeDate(ctx context.Context, cutoff string) (int, error) {
+	if r == nil || r.db == nil {
+		return 0, fmt.Errorf("rollup usageHistory: nil repo")
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT timestamp, COALESCE(provider, ''), COALESCE(model, ''), COALESCE(connectionId, ''),
+		       COALESCE(apiKey, ''), COALESCE(endpoint, ''), COALESCE(promptTokens, 0),
+		       COALESCE(completionTokens, 0), COALESCE(cost, 0.0), COALESCE(tokens, '{}')
+		  FROM usageHistory
+		 WHERE timestamp < ?
+		 ORDER BY timestamp ASC
+	`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("query usageHistory before cutoff %s: %w", cutoff, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type dailyAgg struct {
+		data map[string]any
+	}
+	dailyMap := make(map[string]*dailyAgg)
+	// skipDaily holds date keys that already have a live usageDaily summary.
+	// The request path writes usageDaily in real time on every live request
+	// (upsertDailyUsage), so rolling raw usageHistory rows into it again would
+	// double-count tokens and requests. Rollup backfills only dates that were
+	// missed while the gateway was offline.
+	skipDaily := make(map[string]bool)
+
+	for rows.Next() {
+		var ts, provider, model, connID, apiKey, endpoint, tokensJSON string
+		var prompt, compl int
+		var cost float64
+		if err := rows.Scan(&ts, &provider, &model, &connID, &apiKey, &endpoint, &prompt, &compl, &cost, &tokensJSON); err != nil {
+			return 0, fmt.Errorf("scan usageHistory for rollup: %w", err)
+		}
+
+		dateKey := ""
+		if len(ts) >= 10 {
+			dateKey = ts[:10]
+		} else {
+			parsed, pErr := time.Parse(time.RFC3339, ts)
+			if pErr != nil {
+				continue
+			}
+			dateKey = parsed.UTC().Format("2006-01-02")
+		}
+
+		if skipDaily[dateKey] {
+			continue
+		}
+		agg := dailyMap[dateKey]
+		if agg == nil {
+			existingJSON, err := r.GetUsageDaily(dateKey)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return 0, fmt.Errorf("get daily usage %s before rollup: %w", dateKey, err)
+			}
+			if existingJSON != "" {
+				skipDaily[dateKey] = true
+				continue
+			}
+			agg = &dailyAgg{data: make(map[string]any)}
+			dailyMap[dateKey] = agg
+		}
+
+		cached := extractCachedTokens(tokensJSON)
+		mergeDailyUsageItem(agg.data, provider, model, endpoint, connID, apiKey, prompt, compl, cached, cost)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate usageHistory for rollup: %w", err)
+	}
+
+	for dateKey, agg := range dailyMap {
+		b, err := json.Marshal(agg.data)
+		if err != nil {
+			return 0, fmt.Errorf("marshal rollup daily %s: %w", dateKey, err)
+		}
+		if err := r.UpsertUsageDaily(dateKey, string(b)); err != nil {
+			return 0, fmt.Errorf("save rollup daily %s: %w", dateKey, err)
+		}
+	}
+
+	return len(dailyMap), nil
+}
+
+// extractCachedTokens reads cached prompt tokens from the raw tokens JSON payload,
+// matching translator.CachedTokensFromJSON precedence without introducing a package cycle.
+func extractCachedTokens(raw string) int {
+	if raw == "" {
+		return 0
+	}
+	var usage struct {
+		CachedTokens          *float64 `json:"cached_tokens"`
+		CacheReadInputTokens  *float64 `json:"cache_read_input_tokens"`
+		PromptEvalCachedCount *float64 `json:"prompt_eval_cached_count"`
+		PromptTokensDetails   *struct {
+			CachedTokens *float64 `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+		InputTokensDetails *struct {
+			CachedTokens *float64 `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
+	}
+	if json.Unmarshal([]byte(raw), &usage) != nil {
+		return 0
+	}
+	var promptCached *float64
+	if usage.PromptTokensDetails != nil {
+		promptCached = usage.PromptTokensDetails.CachedTokens
+	}
+	var inputCached *float64
+	if usage.InputTokensDetails != nil {
+		inputCached = usage.InputTokensDetails.CachedTokens
+	}
+	for _, candidate := range []*float64{
+		usage.CachedTokens,
+		usage.CacheReadInputTokens,
+		promptCached,
+		inputCached,
+		usage.PromptEvalCachedCount,
+	} {
+		if candidate != nil && *candidate >= 0 {
+			return int(*candidate)
+		}
+	}
+	return 0
+}
+
+func getMapIntVal(m map[string]any, key string) int {
+	if v, ok := m[key]; ok {
+		if n, ok := v.(float64); ok {
+			return int(n)
+		}
+		if n, ok := v.(int); ok {
+			return n
+		}
+	}
+	return 0
+}
+
+func getMapFloatVal(m map[string]any, key string) float64 {
+	if v, ok := m[key]; ok {
+		if n, ok := v.(float64); ok {
+			return n
+		}
+		if n, ok := v.(int); ok {
+			return float64(n)
+		}
+	}
+	return 0
+}
+
+func getNestedMap(m map[string]any, key string) map[string]any {
+	if v, ok := m[key]; ok {
+		if sub, ok := v.(map[string]any); ok {
+			return sub
+		}
+	}
+	return make(map[string]any)
+}
+
+func mergeDailyUsageItem(data map[string]any, provider, model, endpoint, connectionID, apiKey string, promptTokens, completionTokens, cachedTokens int, cost float64) {
+	data["requests"] = getMapIntVal(data, "requests") + 1
+	data["promptTokens"] = getMapIntVal(data, "promptTokens") + promptTokens
+	data["completionTokens"] = getMapIntVal(data, "completionTokens") + completionTokens
+	data["cachedTokens"] = getMapIntVal(data, "cachedTokens") + cachedTokens
+	data["cost"] = getMapFloatVal(data, "cost") + cost
+
+	data["totalPromptTokens"] = getMapIntVal(data, "totalPromptTokens") + promptTokens
+	data["totalCompletionTokens"] = getMapIntVal(data, "totalCompletionTokens") + completionTokens
+	data["totalRequests"] = getMapIntVal(data, "totalRequests") + 1
+
+	// byProvider
+	byProvider := getNestedMap(data, "byProvider")
+	pp := getNestedMap(byProvider, provider)
+	pp["requests"] = getMapIntVal(pp, "requests") + 1
+	pp["promptTokens"] = getMapIntVal(pp, "promptTokens") + promptTokens
+	pp["completionTokens"] = getMapIntVal(pp, "completionTokens") + completionTokens
+	pp["cachedTokens"] = getMapIntVal(pp, "cachedTokens") + cachedTokens
+	pp["cost"] = getMapFloatVal(pp, "cost") + cost
+	byProvider[provider] = pp
+	data["byProvider"] = byProvider
+
+	// byModel
+	modelKey := model + "|" + provider
+	byModel := getNestedMap(data, "byModel")
+	mm := getNestedMap(byModel, modelKey)
+	mm["requests"] = getMapIntVal(mm, "requests") + 1
+	mm["promptTokens"] = getMapIntVal(mm, "promptTokens") + promptTokens
+	mm["completionTokens"] = getMapIntVal(mm, "completionTokens") + completionTokens
+	mm["cachedTokens"] = getMapIntVal(mm, "cachedTokens") + cachedTokens
+	mm["cost"] = getMapFloatVal(mm, "cost") + cost
+	if mm["rawModel"] == nil {
+		mm["rawModel"] = model
+	}
+	if mm["provider"] == nil {
+		mm["provider"] = provider
+	}
+	byModel[modelKey] = mm
+	data["byModel"] = byModel
+
+	// byApiKey
+	apiKeyVal := handlerutil.MaskAPIKey(apiKey)
+	if apiKeyVal == "" {
+		apiKeyVal = "local-no-key"
+	}
+	akKey := apiKeyVal + "|" + model + "|" + provider
+	byApiKey := getNestedMap(data, "byApiKey")
+	ak := getNestedMap(byApiKey, akKey)
+	ak["requests"] = getMapIntVal(ak, "requests") + 1
+	ak["promptTokens"] = getMapIntVal(ak, "promptTokens") + promptTokens
+	ak["completionTokens"] = getMapIntVal(ak, "completionTokens") + completionTokens
+	ak["cachedTokens"] = getMapIntVal(ak, "cachedTokens") + cachedTokens
+	ak["cost"] = getMapFloatVal(ak, "cost") + cost
+	ak["rawModel"] = model
+	ak["provider"] = provider
+	ak["apiKey"] = apiKeyVal
+	byApiKey[akKey] = ak
+	data["byApiKey"] = byApiKey
+
+	// byEndpoint
+	epKey := endpoint + "|" + model + "|" + provider
+	byEndpoint := getNestedMap(data, "byEndpoint")
+	ep := getNestedMap(byEndpoint, epKey)
+	ep["requests"] = getMapIntVal(ep, "requests") + 1
+	ep["promptTokens"] = getMapIntVal(ep, "promptTokens") + promptTokens
+	ep["completionTokens"] = getMapIntVal(ep, "completionTokens") + completionTokens
+	ep["cachedTokens"] = getMapIntVal(ep, "cachedTokens") + cachedTokens
+	ep["cost"] = getMapFloatVal(ep, "cost") + cost
+	if ep["endpoint"] == nil {
+		ep["endpoint"] = endpoint
+	}
+	if ep["rawModel"] == nil {
+		ep["rawModel"] = model
+	}
+	if ep["provider"] == nil {
+		ep["provider"] = provider
+	}
+	byEndpoint[epKey] = ep
+	data["byEndpoint"] = byEndpoint
+
+	// byAccount
+	if connectionID != "" {
+		byAccount := getNestedMap(data, "byAccount")
+		acc := getNestedMap(byAccount, connectionID)
+		acc["requests"] = getMapIntVal(acc, "requests") + 1
+		acc["promptTokens"] = getMapIntVal(acc, "promptTokens") + promptTokens
+		acc["completionTokens"] = getMapIntVal(acc, "completionTokens") + completionTokens
+		acc["cachedTokens"] = getMapIntVal(acc, "cachedTokens") + cachedTokens
+		acc["cost"] = getMapFloatVal(acc, "cost") + cost
+		if acc["rawModel"] == nil {
+			acc["rawModel"] = model
+		}
+		if acc["provider"] == nil {
+			acc["provider"] = provider
+		}
+		byAccount[connectionID] = acc
+		data["byAccount"] = byAccount
+	}
+
+	// providers (legacy nested format)
+	providers := getNestedMap(data, "providers")
+	pd := getNestedMap(providers, provider)
+	pd["promptTokens"] = getMapIntVal(pd, "promptTokens") + promptTokens
+	pd["completionTokens"] = getMapIntVal(pd, "completionTokens") + completionTokens
+	pd["requests"] = getMapIntVal(pd, "requests") + 1
+
+	models := getNestedMap(pd, "models")
+	md := getNestedMap(models, model)
+	md["promptTokens"] = getMapIntVal(md, "promptTokens") + promptTokens
+	md["completionTokens"] = getMapIntVal(md, "completionTokens") + completionTokens
+	md["requests"] = getMapIntVal(md, "requests") + 1
+	models[model] = md
+	pd["models"] = models
+	providers[provider] = pd
+	data["providers"] = providers
 }
