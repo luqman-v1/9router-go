@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,8 +54,41 @@ func antigravityProjectUserAgent(connData *shared.ConnectionData) string {
 
 var lcaMetadata = map[string]any{
 	"ideType":    9, // ANTIGRAVITY
-	"platform":   5, // WINDOWS_AMD64 (matches AntigravityCLIUserAgent os_type=windows; arch=amd64)
+	"platform":   GetAntigravityPlatformEnum(runtime.GOOS, runtime.GOARCH),
 	"pluginType": 2, // GEMINI
+}
+
+// GetAntigravityPlatformEnum maps the host (GOOS, GOARCH) to the Google Cloud
+// Code client platform enum sent in loadCodeAssist/onboardUser metadata.
+//
+//	darwin/arm64 -> 2 (PLATFORM_DARWIN_ARM64)
+//	darwin/amd64 -> 1 (PLATFORM_DARWIN_AMD64)
+//	linux/amd64  -> 3 (PLATFORM_LINUX_AMD64)
+//	linux/arm64  -> 4 (PLATFORM_LINUX_ARM64)
+//	windows/amd64 -> 5 (PLATFORM_WINDOWS_AMD64)
+//	otherwise    -> 0 (PLATFORM_UNSPECIFIED)
+func GetAntigravityPlatformEnum(goos, goarch string) int {
+	switch goos {
+	case "darwin":
+		switch goarch {
+		case "arm64":
+			return 2 // PLATFORM_DARWIN_ARM64
+		case "amd64":
+			return 1 // PLATFORM_DARWIN_AMD64
+		}
+	case "linux":
+		switch goarch {
+		case "amd64":
+			return 3 // PLATFORM_LINUX_AMD64
+		case "arm64":
+			return 4 // PLATFORM_LINUX_ARM64
+		}
+	case "windows":
+		if goarch == "amd64" {
+			return 5 // PLATFORM_WINDOWS_AMD64
+		}
+	}
+	return 0 // PLATFORM_UNSPECIFIED
 }
 
 // projectNoCache short-circuits re-probing the onboarding RPCs for a token whose
