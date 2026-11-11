@@ -108,7 +108,12 @@ func ForwardFreePi(w http.ResponseWriter, req *Request) error {
 	// refusal, so the completion path would relay it as the model's answer. Read
 	// the body here, where it is whole and nothing has been written yet, so the
 	// refusal can still become a real status.
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
+	// MaxUpstreamBodyBytes, not UpstreamErrLimit: this is a successful 200 whose
+	// body is the answer about to be relayed, and jsonResponse caps its own read
+	// at the same 10 MiB. Peeking with the 1 MiB error limit would truncate a
+	// legitimate large completion right here and hand corrupt JSON onward — a
+	// truncation no later stage can detect.
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
 	if readErr != nil {
 		return fmt.Errorf("free-pi: read response: %w", readErr)
 	}
@@ -127,8 +132,11 @@ func ForwardFreePi(w http.ResponseWriter, req *Request) error {
 // tokens with non-empty content cannot — a model that emitted text spent
 // tokens producing it. Requiring both keeps a genuine answer safe.
 func freePiInbandGateError(body []byte) error {
-	if len(body) == 0 || !bytes.Contains(bytes.ToLower(body), []byte("ad")) {
-		// Cheap reject: no mention of ads at all cannot be the gate.
+	// Cheap reject before any parsing: a body that never mentions ads cannot be
+	// the gate. containsFoldASCII rather than bytes.ToLower because this runs on
+	// every non-streaming completion and lowercasing the whole body would copy
+	// up to 10 MiB on the 1 vCPU target (AGENTS.md §4.A/§4.G).
+	if !containsFoldASCII(body, "ad") {
 		return nil
 	}
 	var probe struct {
@@ -158,10 +166,9 @@ func freePiInbandGateError(body []byte) error {
 	if text == "" {
 		return nil
 	}
-	lower := strings.ToLower(text)
 	matched := false
 	for _, marker := range providers.FreePiInbandGateMarkers {
-		if strings.Contains(lower, marker) {
+		if containsFoldASCII([]byte(text), marker) {
 			matched = true
 			break
 		}

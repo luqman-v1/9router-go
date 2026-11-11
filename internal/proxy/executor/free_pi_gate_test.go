@@ -147,3 +147,26 @@ func quietGateServer(t *testing.T, body string) *httptest.Server {
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+// A large legitimate completion must survive the peek. The gate check reads the
+// body before jsonResponse sees it, so capping that read at the 1 MiB error
+// limit would truncate a real answer into unparseable JSON — silently, because
+// nothing downstream can tell a short body from a cut one.
+func TestFreePiForward_LargeCompletionIsNotTruncated(t *testing.T) {
+	// ~2 MiB of content: over UpstreamErrLimit, under MaxUpstreamBodyBytes.
+	big := strings.Repeat("a", 2<<20)
+	body := `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"m",` +
+		`"choices":[{"index":0,"message":{"role":"assistant","content":"` + big + `"},"finish_reason":"stop"}],` +
+		`"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`
+
+	upstream := quietGateServer(t, body)
+	req := freePiTestRequest(t, upstream, freePiTestToken("user_big"), nil, false)
+	rec := httptest.NewRecorder()
+
+	if err := ForwardFreePi(rec, req); err != nil {
+		t.Fatalf("a 2 MiB completion must be relayed, got %v", err)
+	}
+	if got := rec.Body.Len(); got < 2<<20 {
+		t.Errorf("relayed body = %d bytes, want at least 2 MiB: the peek truncated it", got)
+	}
+}
