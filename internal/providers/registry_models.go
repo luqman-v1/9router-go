@@ -67,18 +67,14 @@ var ProviderModels = map[string][]string{
 	// absent from backend-api/codex/models for ChatGPT accounts, so they answer HTTP 400 (#4202, #4848).
 	// gpt-daybreak-blue-latest and gpt-reserve replaced them, confirmed live on the same endpoint. The [1m] ids
 	// are the extended-context variants; they map to their base id upstream via `upstreamModelId`.
-	"codex":       {"gpt-6.1-sol", "gpt-6-astra", "gpt-6-astra[1m]", "gpt-6-sol", "gpt-6-sol[1m]", "gpt-6-luna", "gpt-6-luna[1m]", "gpt-5.6-sol", "gpt-5.6-sol[1m]", "gpt-5.6-sol-review", "gpt-5.6-terra", "gpt-5.6-terra[1m]", "gpt-5.6-terra-review", "gpt-5.6-luna", "gpt-5.6-luna[1m]", "gpt-5.6-luna-review", "gpt-daybreak-blue-latest", "gpt-reserve", "codex-auto-review", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5", "gpt-5.6-sol-image", "gpt-5.6-terra-image", "gpt-5.6-luna-image", "transcribe"},
-	"cohere":      {"command-r-plus-08-2024", "command-r-08-2024", "command-a-03-2025"},
-	"comfyui":     {"flux-dev", "sdxl"},
-	"tokenharbor": {"claude-opus-5.5", "claude-sonnet-5", "gpt-6-astra", "gpt-6-sol", "grok-4.7", "mimo-v2.6-flash:free", "mimo-v2.5:free", "qwen3.8-flash:free", "deepseek-v4.1-flash:free", "deepseek-v4-flash:free"},
-	"dahl":        {"zai-org/GLM-5.3-Flash", "deepseek-ai/DeepSeek-V4-Flash-0731", "MiniMaxAI/MiniMax-M2.7"},
-	"daoxe":       {"claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5-20251001", "gpt-5.5", "gpt-5.4", "gemini-3.1-pro-preview", "grok-4.5", "grok-4.3", "kimi-k2.5"},
-	"dx":          {"claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5-20251001", "gpt-5.5", "gpt-5.4", "gemini-3.1-pro-preview", "grok-4.5", "grok-4.3", "kimi-k2.5"},
-	"atria":       {"Atria-Dawn-Preview"},
-	// commandcode-goat is the documented Provider API surface. Its catalogue is
-	// the live feed (commandcode_goat_catalog.go), not a hand-kept snapshot, so
-	// it is referenced rather than copied: 97 ids that change whenever the
-	// provider ships a model.
+	"codex":            {"gpt-6.1-sol", "gpt-6-astra", "gpt-6-astra[1m]", "gpt-6-sol", "gpt-6-sol[1m]", "gpt-6-luna", "gpt-6-luna[1m]", "gpt-5.6-sol", "gpt-5.6-sol[1m]", "gpt-5.6-sol-review", "gpt-5.6-terra", "gpt-5.6-terra[1m]", "gpt-5.6-terra-review", "gpt-5.6-luna", "gpt-5.6-luna[1m]", "gpt-5.6-luna-review", "gpt-daybreak-blue-latest", "gpt-reserve", "codex-auto-review", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5", "gpt-5.6-sol-image", "gpt-5.6-terra-image", "gpt-5.6-luna-image", "transcribe"},
+	"cohere":           {"command-r-plus-08-2024", "command-r-08-2024", "command-a-03-2025"},
+	"comfyui":          {"flux-dev", "sdxl"},
+	"tokenharbor":      {"claude-opus-5.5", "claude-sonnet-5", "gpt-6-astra", "gpt-6-sol", "grok-4.7", "mimo-v2.6-flash:free", "mimo-v2.5:free", "qwen3.8-flash:free", "deepseek-v4.1-flash:free", "deepseek-v4-flash:free"},
+	"dahl":             {"zai-org/GLM-5.3-Flash", "deepseek-ai/DeepSeek-V4-Flash-0731", "MiniMaxAI/MiniMax-M2.7"},
+	"daoxe":            {"claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5-20251001", "gpt-5.5", "gpt-5.4", "gemini-3.1-pro-preview", "grok-4.5", "grok-4.3", "kimi-k2.5"},
+	"dx":               {"claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5-20251001", "gpt-5.5", "gpt-5.4", "gemini-3.1-pro-preview", "grok-4.5", "grok-4.3", "kimi-k2.5"},
+	"atria":            {"Atria-Dawn-Preview"},
 	"commandcode-goat": commandcodeGoatModels,
 	"cmc-goat":         commandcodeGoatModels,
 	"commandcode":      {"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "moonshotai/Kimi-K3.1-Pro", "moonshotai/Kimi-K2.7-Code", "moonshotai/Kimi-K2.7-Code-Highspeed", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.5", "zai-org/GLM-5.2", "zai-org/GLM-5.2-Fast", "zai-org/GLM-5.1", "zai-org/GLM-5", "MiniMaxAI/MiniMax-M3", "MiniMaxAI/MiniMax-M2.7", "MiniMaxAI/MiniMax-M2.5", "xiaomi/mimo-v2.5-pro", "xiaomi/mimo-v2.5", "Qwen/Qwen3.6-Max-Preview", "Qwen/Qwen3.6-Plus", "Qwen/Qwen3.7-Max", "Qwen/Qwen3.7-Plus", "stepfun/Step-3.7-Flash", "stepfun/Step-3.5-Flash", "nvidia/nemotron-3-ultra-550b-a55b"},
