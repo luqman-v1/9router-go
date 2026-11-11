@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/connlimit"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 )
 
@@ -59,7 +60,9 @@ func admitAntigravity(ctx context.Context, connectionID string) (release func(),
 // recordAntigravityOutcome charges the attempt's result to the per-connection
 // backoff and breaker. A 2xx resets everything (only a real successful response
 // releases the breaker — never a token refresh). 403/429 widen the backoff and
-// may open the breaker; a 403 TOS_VIOLATION bypasses both entirely (#996).
+// may open the breaker; a 403 TOS_VIOLATION bypasses both entirely (#996) and
+// triggers the pool-wide protective pause so the remaining Antigravity
+// accounts are not burned by a ban sweep.
 func recordAntigravityOutcome(connectionID string, status int, body []byte) {
 	if connectionID == "" {
 		return
@@ -69,6 +72,11 @@ func recordAntigravityOutcome(connectionID string, status int, body []byte) {
 		return
 	}
 	if status == http.StatusForbidden || status == http.StatusTooManyRequests {
+		// First observed TOS_VIOLATION across the pool activates the
+		// protective pause so healthy accounts are not rotated into a ban sweep.
+		if providers.IsAntigravityTOSViolation(status, body) {
+			providers.TriggerProtectivePause(providers.DefaultProtectivePauseDuration)
+		}
 		connlimit.RecordFailure(connectionID, status, body)
 	}
 }

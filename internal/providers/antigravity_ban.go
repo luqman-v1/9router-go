@@ -18,6 +18,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
 
 // allowedAppealHosts are the only hosts Google's appeal link may live on.
@@ -180,4 +182,58 @@ func RedactAppealURLs(text string) string {
 	return redactURLRegexp.ReplaceAllStringFunc(text, func(string) string {
 		return "[verification-url]"
 	})
+}
+
+// DefaultProtectivePauseDuration is the default pool-wide protective pause
+// length: once Google sweeps the Antigravity pool with a TOS_VIOLATION ban,
+// stop routing to Antigravity for this window so the remaining accounts are
+// not burned one after another.
+const DefaultProtectivePauseDuration = 6 * time.Hour
+
+var (
+	protectivePauseMu     sync.RWMutex
+	protectivePauseActive bool
+	protectivePauseUntil  time.Time
+)
+
+// TriggerProtectivePause activates the pool-wide protective pause for the
+// given duration. A subsequent call while a pause is active extends the
+// deadline only if the new deadline is later than the current one (the pause
+// is never shortened by a later trigger).
+func TriggerProtectivePause(duration time.Duration) {
+	if duration <= 0 {
+		duration = DefaultProtectivePauseDuration
+	}
+	protectivePauseMu.Lock()
+	defer protectivePauseMu.Unlock()
+	until := time.Now().UTC().Add(duration)
+	if !protectivePauseActive || until.After(protectivePauseUntil) {
+		protectivePauseActive = true
+		protectivePauseUntil = until
+	}
+}
+
+// IsProtectivePauseActive reports whether the pool-wide protective pause is
+// currently active and how long remains on it. Returns false, 0 when no pause
+// is in effect.
+func IsProtectivePauseActive() (bool, time.Duration) {
+	protectivePauseMu.RLock()
+	defer protectivePauseMu.RUnlock()
+	if !protectivePauseActive {
+		return false, 0
+	}
+	if now := time.Now().UTC(); now.After(protectivePauseUntil) {
+		return false, 0
+	} else {
+		return true, protectivePauseUntil.Sub(now)
+	}
+}
+
+// ResetProtectivePause clears the protective pause state immediately, allowing
+// Antigravity routing to resume. Intended for tests and operator reset.
+func ResetProtectivePause() {
+	protectivePauseMu.Lock()
+	defer protectivePauseMu.Unlock()
+	protectivePauseActive = false
+	protectivePauseUntil = time.Time{}
 }
