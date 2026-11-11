@@ -132,6 +132,17 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 	if isStream {
 		headers["Accept-Encoding"] = "identity"
 	}
+	// Antigravity official session & project headers.
+	sessID := handlerutil.GetSessionID(ctx)
+	if projectID != "" {
+		headers["X-Goog-User-Project"] = projectID
+	}
+	if sessID != "" {
+		headers["X-Machine-Session-Id"] = sessID
+	}
+	// Official Antigravity client identity.
+	headers["X-Client-Name"] = "antigravity"
+	headers["X-Client-Version"] = providers.AntigravityCLIVersion
 	if cfg.Format == "gemini-cli" {
 		// Cloud Code Assist identifies the CLI in two more headers and answers
 		// 403 without them.
