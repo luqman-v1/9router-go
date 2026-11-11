@@ -117,7 +117,7 @@ func TestCustomJSON_ComboResponseTimeoutDoesNotReplay(t *testing.T) {
 			if err := repo.CreateProviderConnectionFull("c2", "provider2", "apikey", "c2", &p, `{"apiKey":"sk-p2","baseUrl":"`+next.URL+`"}`); err != nil {
 				t.Fatal(err)
 			}
-			if err := repo.CreateCombo("biz-combo", "biz-combo", "chat", `["`+customJSONProvider+`/custom-model", "provider2/m2"]`, "fallback"); err != nil {
+			if err := repo.CreateCombo("biz-combo", "biz-combo", "chat", `["`+customJSONProvider+`/custom-model", "provider2/m2"]`, "fallback", ""); err != nil {
 				t.Fatal(err)
 			}
 			if err := repo.SetComboStrategy("biz-combo", db.ComboStrategy{Strategy: "fallback", FirstTokenTimeoutMs: 50}); err != nil {

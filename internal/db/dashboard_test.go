@@ -166,7 +166,7 @@ func TestCombosCRUD(t *testing.T) {
 	defer cleanup()
 
 	// Test CreateCombo
-	err := repo.CreateCombo("combo-1", "fast-models", "chat", `["openai/gpt-4o-mini"]`, "fallback")
+	err := repo.CreateCombo("combo-1", "fast-models", "chat", `["openai/gpt-4o-mini"]`, "fallback", "")
 	if err != nil {
 		t.Fatalf("CreateCombo failed: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestCombosCRUD(t *testing.T) {
 	}
 
 	// Test UpdateCombo
-	err = repo.UpdateCombo("combo-1", "fast-models-v2", "chat", `["openai/gpt-4o","anthropic/claude-3-5-sonnet"]`, "round-robin")
+	err = repo.UpdateCombo("combo-1", "fast-models-v2", "chat", `["openai/gpt-4o","anthropic/claude-3-5-sonnet"]`, "round-robin", "")
 	if err != nil {
 		t.Fatalf("UpdateCombo failed: %v", err)
 	}
@@ -394,3 +394,4 @@ func TestSettingsRaw(t *testing.T) {
 		t.Errorf("expected capacityAdapter added as cloud, got %v", raw["capacityAdapter"])
 	}
 }
+

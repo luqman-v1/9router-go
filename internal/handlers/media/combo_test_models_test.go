@@ -37,7 +37,7 @@ func TestHandleComboTestModels(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := database.CreateCombo("test-combo", "test-combo", "llm", `["testprov/good-model", "testprov/bad-model"]`, "fallback"); err != nil {
+	if err := database.CreateCombo("test-combo", "test-combo", "llm", `["testprov/good-model", "testprov/bad-model"]`, "fallback", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,7 +116,7 @@ func TestHandleComboTestModels(t *testing.T) {
 	})
 
 	t.Run("returns 400 when no models in request or combo", func(t *testing.T) {
-		_ = database.CreateCombo("empty-combo", "empty-combo", "llm", `[]`, "fallback")
+		_ = database.CreateCombo("empty-combo", "empty-combo", "llm", `[]`, "fallback", "")
 		req := httptest.NewRequest(http.MethodPost, "/api/combos/empty-combo/test-models", strings.NewReader(`{}`))
 		rec := httptest.NewRecorder()
 

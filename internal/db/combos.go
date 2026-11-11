@@ -9,7 +9,7 @@ import (
 )
 
 // comboColumns is the shared column list for every combos read.
-const comboColumns = `id, name, kind, models, createdAt, updatedAt`
+const comboColumns = `id, name, kind, models, customPrompt, createdAt, updatedAt`
 
 // defaultComboStrategy is what a combo gets when neither a per-combo override
 // nor the global setting names one.
@@ -17,7 +17,7 @@ const defaultComboStrategy = "fallback"
 
 // scanCombo fills a combo from a row shaped like comboColumns.
 func scanCombo(scan func(dest ...any) error, combo *models.Combo) error {
-	return scan(&combo.ID, &combo.Name, &combo.Kind, &combo.Models, &combo.CreatedAt, &combo.UpdatedAt)
+	return scan(&combo.ID, &combo.Name, &combo.Kind, &combo.Models, &combo.CustomPrompt, &combo.CreatedAt, &combo.UpdatedAt)
 }
 
 // resolveComboStrategy picks the strategy for one combo: a per-combo override

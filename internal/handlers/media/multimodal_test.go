@@ -736,7 +736,7 @@ func TestHandleImages_CloudflareFluxSchnellComboStripsDimensions(t *testing.T) {
 		t.Fatalf("seed cloudflare connection: %v", err)
 	}
 
-	if err := repo.CreateCombo("flux-combo", "flux-combo", "image", `["cf/@cf/black-forest-labs/flux-1-schnell"]`, "fallback"); err != nil {
+	if err := repo.CreateCombo("flux-combo", "flux-combo", "image", `["cf/@cf/black-forest-labs/flux-1-schnell"]`, "fallback", ""); err != nil {
 		t.Fatalf("seed flux combo: %v", err)
 	}
 

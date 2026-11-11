@@ -20,6 +20,7 @@ import (
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 	internalproxy "9router/proxy/internal/proxy"
+	"9router/proxy/internal/tokensaver"
 	"9router/proxy/internal/translator"
 )
 
@@ -919,6 +920,20 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	if FallbackAttemptRecorderFrom(ctx) == nil {
 		ctx = WithFallbackAttemptRecorder(ctx, NewFallbackAttemptRecorder())
 	}
+	// Inject the combo's own custom system prompt before any model attempt, so
+	// every member of the combo carries the same operator instructions. When
+	// set, the global system prompt prefix/suffix is skipped for this request
+	// (the combo prompt replaces it, it does not stack on top).
+	// handleComboFallback serves /v1/chat/completions, so the body is OpenAI
+	// format: inject into messages[] with claudeNative=false.
+	if h.Repo != nil && comboName != "" {
+		if combo, err := h.Repo.GetComboByName(comboName); err == nil && combo != nil && combo.CustomPrompt != "" {
+			if next, did := tokensaver.InjectPrefixSystemPrompt(body, combo.CustomPrompt, false); did {
+				body = next
+				ctx = WithComboCustomPrompt(ctx)
+			}
+		}
+	}
 	cw := newCommittedResponseWriter(w)
 	cw.stream = isStream
 	cw.responsesClient = translator.IsResponsesClient(ctx)
@@ -1411,6 +1426,24 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int, adapterModels ...string) {
 	if FallbackAttemptRecorderFrom(ctx) == nil {
 		ctx = WithFallbackAttemptRecorder(ctx, NewFallbackAttemptRecorder())
+	}
+	// Inject the combo's own custom system prompt before any model attempt, so
+	// every member of the combo carries the same operator instructions. When
+	// set, the global system prompt prefix/suffix is skipped for this request
+	// (the combo prompt replaces it, it does not stack on top).
+	// Messages-endpoint bodies may be Claude-native (top-level system field)
+	// or OpenAI-format (messages array), so detect from the body shape.
+	claudeNative := translatedReq["system"] != nil
+	if h.Repo != nil && comboName != "" {
+		if combo, err := h.Repo.GetComboByName(comboName); err == nil && combo != nil && combo.CustomPrompt != "" {
+			body, err := json.Marshal(translatedReq)
+			if err == nil {
+				if next, did := tokensaver.InjectPrefixSystemPrompt(body, combo.CustomPrompt, claudeNative); did {
+					_ = json.Unmarshal(next, &translatedReq)
+					ctx = WithComboCustomPrompt(ctx)
+				}
+			}
+		}
 	}
 	cw := newCommittedResponseWriter(w)
 	cw.stream = isStream
