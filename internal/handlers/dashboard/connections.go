@@ -145,7 +145,7 @@ const (
 // (registry features.usage).
 var usageSupportedProviders = []string{
 	"antigravity", "claude", "codebuddy-cn", "codebuddy-intl", "codex",
-	"commandcode", "deepseek", "gemini-cli", "gemini-web", "github", "glm", "glm-cn",
+	"commandcode", "commandcode-goat", "deepseek", "gemini-cli", "gemini-web", "github", "glm", "glm-cn",
 	"grok-cli", "groq", "kimi", "kiro", "minimax", "minimax-cn", "minimax-code",
 	"minimax-code-global", "ollama",
 	"free-pi", "opencode-go", "opencode-zen", "qoder", "qoder-cn", "trae",
@@ -156,7 +156,7 @@ var usageSupportedProviders = []string{
 // usageApikeyProviders mirrors upstream USAGE_APIKEY_PROVIDERS
 // (registry features.usageApikey).
 var usageApikeyProviders = []string{
-	"codebuddy-cn", "codebuddy-intl", "commandcode", "deepseek", "gemini-web", "glm",
+	"codebuddy-cn", "codebuddy-intl", "commandcode", "commandcode-goat", "deepseek", "gemini-web", "glm",
 	"glm-cn", "groq", "kimi", "kiro", "minimax", "minimax-cn", "ollama",
 	"free-pi", "opencode-go", "opencode-zen", "qoder", "qoder-cn",
 	"vercel-ai-gateway", "xiaomi-mimo",
@@ -172,10 +172,11 @@ func strSliceContains(list []string, v string) bool {
 }
 
 func isUsageEligibleConnection(c *models.ProviderConnection) bool {
-	if !strSliceContains(usageSupportedProviders, c.Provider) {
+	p := providers.ResolveAlias(c.Provider)
+	if !strSliceContains(usageSupportedProviders, c.Provider) && !strSliceContains(usageSupportedProviders, p) {
 		return false
 	}
-	return c.AuthType == "oauth" || strSliceContains(usageApikeyProviders, c.Provider)
+	return c.AuthType == "oauth" || strSliceContains(usageApikeyProviders, c.Provider) || strSliceContains(usageApikeyProviders, p)
 }
 
 func uniqueSortedProviders(conns []*models.ProviderConnection) []string {

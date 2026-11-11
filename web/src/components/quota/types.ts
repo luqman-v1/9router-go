@@ -992,6 +992,19 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
     return normalizedQuotas
   }
 
+  const pLower = provider?.toLowerCase()
+  if (pLower === 'commandcode' || pLower === 'commandcode-goat' || pLower === 'cmc' || pLower === 'cmc-goat') {
+    const COMMANDCODE_QUOTA_ORDER: Record<string, number> = {
+      '5-hour limit': 0,
+      'Weekly limit': 1,
+      'Monthly': 2,
+    }
+    normalizedQuotas.sort(
+      (a, b) => (COMMANDCODE_QUOTA_ORDER[a.name] ?? 99) - (COMMANDCODE_QUOTA_ORDER[b.name] ?? 99),
+    )
+    return normalizedQuotas
+  }
+
   // Sort quotas according to PROVIDER_MODELS order
   const modelOrder = getModelsByProviderId(provider)
   if (modelOrder.length > 0) {

@@ -6,4 +6,5 @@
 - Added per-model context window declarations from the live catalog (spanning 200k to 1.05M).
 - Added `x-cmd-zdr: 1` support when requested via `connData["zdr"]`.
 - Added `typesafe/jev` decision model support via `/systemone`.
-- Added unit tests covering capability resolution, multi-lane routing, and prefix stripping.
+- Added quota tracker and dashboard usage support (`usageSupportedProviders`, `usageApikeyProviders`, and window normalization for 5-hour rolling limit, weekly limit, and monthly credits).
+- Added unit tests covering capability resolution, multi-lane routing, quota tracking, and prefix stripping.

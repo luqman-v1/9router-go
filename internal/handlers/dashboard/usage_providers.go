@@ -74,7 +74,7 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 		return fetchDeepseekUsage(ctx, apiKey), true
 	case "groq":
 		return fetchGroqUsage(ctx, apiKey), true
-	case "commandcode":
+	case "commandcode", "commandcode-goat", "cmc-goat":
 		return fetchCommandCodeUsage(ctx, apiKey), true
 	case "ollama":
 		return fetchOllamaUsage(ctx, apiKey), true
