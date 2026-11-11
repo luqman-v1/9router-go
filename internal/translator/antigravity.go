@@ -42,12 +42,13 @@ var antigravityRequestBlacklist = []string{
 // is present, causing false 429 RESOURCE_EXHAUSTED on OMP harness payloads
 // even with quota remaining. So the agent path omits the field entirely.
 type AntigravityRequest struct {
-	Project     string         `json:"project"`
-	Model       string         `json:"model"`
-	UserAgent   string         `json:"userAgent"`
-	RequestType string         `json:"requestType,omitempty"`
-	RequestID   string         `json:"requestId"`
-	Request     jsontext.Value `json:"request"`
+	Project            string         `json:"project"`
+	Model              string         `json:"model"`
+	UserAgent          string         `json:"userAgent"`
+	EnabledCreditTypes []string       `json:"enabledCreditTypes,omitempty"`
+	RequestType        string         `json:"requestType,omitempty"`
+	RequestID          string         `json:"requestId"`
+	Request            jsontext.Value `json:"request"`
 }
 
 // AntigravityNativeToolNames are tool names preserved without suffix.
@@ -860,9 +861,10 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string, sessionI
 	}
 
 	wrapper := AntigravityRequest{
-		Project:   projectID,
-		Model:     modelName,
-		UserAgent: "antigravity",
+		Project:            projectID,
+		Model:              modelName,
+		UserAgent:          "antigravity",
+		EnabledCreditTypes: []string{"GOOGLE_ONE_AI"},
 		// Omit RequestType (was "agent"): parity with decolua/9router#3986.
 		// Google rejects agent-bucketed requests with false 429s; requestId
 		// keeps its existing agent/<...>/<...>/<...>/<step> shape.

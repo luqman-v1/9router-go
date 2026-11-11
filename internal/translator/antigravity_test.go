@@ -1,6 +1,7 @@
 package translator_test
 
 import (
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"regexp"
 	"strings"
@@ -977,5 +978,82 @@ func TestStripCompetitivePrompts_RewritesOpenCodeBrandInSystemInstruction(t *tes
 				t.Errorf("user turn = %q, want it unchanged (%q)", userText, tt.in)
 			}
 		})
+	}
+}
+
+// TestWrapForAntigravity_InjectsEnabledCreditTypes verifies the wrapper payload
+// advertises GOOGLE_ONE_AI so the Cloud Code backend entitles the request to
+// the user's Google One AI subscription benefits (decolua/9router#1138).
+func TestWrapForAntigravity_InjectsEnabledCreditTypes(t *testing.T) {
+	geminiBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+	wrapped, err := translator.WrapForAntigravity(geminiBody, "proj-1", "gemini-3.8-flash-medium")
+	if err != nil {
+		t.Fatalf("WrapForAntigravity failed: %v", err)
+	}
+
+	enabled := `"enabledCreditTypes":["GOOGLE_ONE_AI"]`
+	if !strings.Contains(string(wrapped), enabled) {
+		t.Errorf("expected wrapper JSON to contain %q, got %s", enabled, string(wrapped))
+	}
+
+	var req translator.AntigravityRequest
+	if err := json.Unmarshal(wrapped, &req); err != nil {
+		t.Fatalf("unmarshal wrapper: %v", err)
+	}
+	if len(req.EnabledCreditTypes) != 1 || req.EnabledCreditTypes[0] != "GOOGLE_ONE_AI" {
+		t.Errorf("expected EnabledCreditTypes=[GOOGLE_ONE_AI], got %v", req.EnabledCreditTypes)
+	}
+}
+
+// TestWrapForAntigravity_EnabledCreditTypesBackwardCompat verifies that the new
+// field round-trips, is omitted when empty, and that an envelope lacking the
+// field still unmarshals cleanly (older clients / cached payloads).
+func TestWrapForAntigravity_EnabledCreditTypesBackwardCompat(t *testing.T) {
+	tests := []struct {
+		name        string
+		enabled     []string
+		wantPresent bool
+	}{
+		{name: "populated", enabled: []string{"GOOGLE_ONE_AI"}, wantPresent: true},
+		{name: "empty slice is omitted", enabled: nil, wantPresent: false},
+		{name: "empty slice is omitted", enabled: []string{}, wantPresent: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wrapper := translator.AntigravityRequest{
+				Project:            "proj-1",
+				Model:              "gemini-3.8-flash-medium",
+				UserAgent:          "antigravity",
+				EnabledCreditTypes: tt.enabled,
+				RequestID:          "agent/conv/123/traj/1",
+				Request:            jsontext.Value([]byte(`{"contents":[]}`)),
+			}
+			raw, err := json.Marshal(wrapper, json.Deterministic(true))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(raw), `"enabledCreditTypes"`) != tt.wantPresent {
+				t.Errorf("expected enabledCreditTypes present=%v, got %s", tt.wantPresent, string(raw))
+			}
+
+			var roundtrip translator.AntigravityRequest
+			if err := json.Unmarshal(raw, &roundtrip); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if len(roundtrip.EnabledCreditTypes) != len(tt.enabled) {
+				t.Errorf("roundtrip EnabledCreditTypes = %v, want %v", roundtrip.EnabledCreditTypes, tt.enabled)
+			}
+		})
+	}
+
+	// Backward compatibility: an envelope without the field still unmarshals.
+	legacy := []byte(`{"project":"proj-1","model":"gemini-3.8-flash-medium","userAgent":"antigravity","requestId":"agent/conv/123/traj/1","request":{}}`)
+	var legacyReq translator.AntigravityRequest
+	if err := json.Unmarshal(legacy, &legacyReq); err != nil {
+		t.Fatalf("legacy envelope without enabledCreditTypes should unmarshal: %v", err)
+	}
+	if legacyReq.EnabledCreditTypes != nil {
+		t.Errorf("legacy EnabledCreditTypes should be nil, got %v", legacyReq.EnabledCreditTypes)
 	}
 }
