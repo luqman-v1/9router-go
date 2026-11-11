@@ -1,5 +1,136 @@
 # Changelog
 
+## [v1.9.16-exp.13] - 2026-11-11
+
+### feat(antigravity): global protective pause on first TOS_VIOLATION detection
+
+- Add 6-hour pool-wide protective pause when observing the first TOS_VIOLATION so sweep waves do not burn sibling accounts.
+
+feat(antigravity): dynamically compute client platform enum for loadCodeAssist onboarding
+
+Replace the hardcoded `platform: 5` (WINDOWS_AMD64) in lcaMetadata with `GetAntigravityPlatformEnum(runtime.GOOS, runtime.GOARCH)`, mapping darwin/amd64=1, darwin/arm64=2, linux/amd64=3, linux/arm64=4, windows/amd64=5, otherwise=0. Prevents fingerprint contradictions that trigger Google's anti-abuse scanner on non-Windows hosts. Adds table-driven unit tests.
+
+Closes #1083
+
+### fix(combo): disable TranslateResponse when upstream is already Claude-native on /messages
+
+- When dispatching streaming combo requests via `handleMessagesComboFallback` on `/v1/messages`, `TranslateResponse` was unconditionally evaluated as `!translator.IsResponsesClient(ctx)` (evaluating to `true`).
+- When the selected combo member was already Claude-native (`provider == "claude"`, `"anthropic"`, or `FormatClaude`), setting `TranslateResponse: true` caused 9router to run the Claude SSE stream through `TranslateOpenAIToClaudeStreamSession` as if the upstream were sending OpenAI chat completion chunks.
+- The mismatched translator yielded zero parsed chunks, causing `StreamContentPeeker` to fail with `ErrStreamingZeroContent` (`streaming zero content, falling back to next model`) and erroneously skipping healthy Claude upstream members (falling back to secondary models like Codex) with 0% prompt cache hit rates.
+- Set `TranslateResponse` to `false` when the combo member's provider is already Claude-native on the messages endpoint.
+- Add unit test `TestHandleMessagesCombo_ClaudeStreamingPassthrough`.
+
+### Fixed
+
+- **chat:** `TestRetryAfterWait_Extraction`'s HTTP-date header is now built from an instant rounded up to the
+  next second boundary. An HTTP-date carries no sub-second part, so a date written from a mid-second instant
+  was up to a second behind the wait it named once formatted, and the test's ±1s slack could be exceeded by
+  that truncation plus read latency — a one-off CI failure on `main` (run 42957731619, subtest
+  "header http date"), proven deterministically with a pinned-clock probe (old construction diff −1.005s,
+  new −5ms). Test-only; no production behavior change.
+
+### Bug Fixes
+
+- **chat:** Normalize a unary OpenAI completion's `finish_reason` from `stop` (or empty) to `tool_calls`
+  when the assistant turn actually ended with a tool call. vLLM reports a plain `stop` for a named
+  `tool_choice`, and agent loops key off the finish reason — they treated the tool call as the final
+  answer and the turn ended. The patch is applied to the body the gateway writes, before any client
+  dialect is rendered, so the OpenAI, Responses-bridge and Claude-translation (`stop_reason: tool_use`)
+  paths all send the corrected reason. Bodies that do not need the patch keep their exact bytes
+  (zero-copy fast path); a body that does not parse is relayed untouched.
+  (Port of upstream `mydisha/keirouter` `e340784`, MIT — the unary half of that commit's fix
+  "gateway: client-compatible errors, usage, created and finish reasons".)
+
+### fix(proxy): a hostname-named egress proxy is exempt from the SSRF guard by resolution
+
+- **A proxy named by hostname was always refused when it resolved into a
+  reserved range.** An install whose connections egress through
+  `connectionProxyUrl: http://hatch-egress-proxy:3128` — a Podman-internal
+  proxy that resolves to `198.19.0.1`, inside the RFC 2544 range the dial
+  guard blocks — saw every upstream call fail with
+  `proxyconnect tcp: dial tcp 198.19.0.1:3128: request to private/reserved IP
+  blocked by SSRF protection` and, under `strictProxy`, no way out at all
+  (#1078). The same setup worked on 1.9.14: that version's private-IP
+  predicate did not yet know the RFC 2544 range. The proxy-exemption half of
+  the existing guard matched only literal dial addresses, so the exemption
+  never found the proxy — the code comment documented this as a limitation.
+- **The allowlist now matches by resolution.** When a dial to a private
+  address does not match the allowlist verbatim, the remembered proxy names
+  are resolved and their addresses compared against the dial target. The DNS
+  answer is cached (`golang.org/x/sync/singleflight` collapses concurrent
+  dials into one lookup, 5 min TTL for answers, 30 s for failures), so the
+  hot path keeps paying no lookup. The exemption stays the proxy itself, not
+  its range: a dial to `198.19.0.1:9000` or to any other host on the same
+  address is still refused, and the reserved ranges remain blocked as request
+  targets — including Alibaba's metadata endpoint at `100.100.100.200`,
+  which is why they were added.
+- The shared lookup runs detached from the caller's context
+  (`context.WithoutCancel`, the same pattern as `live_catalog.go` and
+  `codex_proxy.go`): a singleflight flight inherits its first caller's
+  context, so an unrelated client hangup mid-lookup would otherwise cancel
+  the lookup for every concurrent waiter and cache the cancellation as a
+  failure — refusing every proxied dial for the failure TTL and
+  re-introducing this symptom from an aborted request.
+- Verified in `internal/proxy`: resolved-match exempts the configured proxy
+  while an unrelated port on the same address and a proxy resolving elsewhere
+  stay blocked, a real request through a `localhost:3128` proxy reaches it
+  end-to-end (`TestSafeDialerMatchesAProxyWrittenAsALiteralAddress`,
+  `TestRequestThroughAHostnameProxyReachesIt`), and a cancelled lookup does
+  not poison the shared failure cache
+  (`TestCancelledLookupDoesNotPoisonTheResolutionCache`).
+
+### feat(claude): optimize Claude Code provider with stable prompt caching, native SSE streaming, and adaptive display sanitization
+
+- **Prompt Caching Prefix Stability**: Stabilized `x-anthropic-billing-header` attribution generation to be deterministic per session instead of mutating on every request with random bytes and body hashes, preserving Anthropic prompt caching prefix across conversation turns and eliminating 0% cache hit rates.
+- **Post-Cloaking Cache Re-Anchoring**: Re-anchored prompt caching breakpoints after tool and billing cloaking so `cache_control` (`ttl: 1h`) accurately anchors on the true final tool and system prompt.
+- **Adaptive Thinking Display Normalization**: Added `SanitizeClaudeThinking` to clamp experimental/unsupported `thinking.display` values (e.g. `updates`, `highlights`, `none`) to standard Anthropic `'summarized'` or `'omitted'`, preventing HTTP 400 errors (`thinking.adaptive.display: Input should be 'summarized', 'omitted'`) and zero-content combo fallbacks.
+- **Native SSE Event Stream Fidelity**: Updated `handleClaudeMessagesStream` to use `proxy.ScanStreamEvents` and write exact `event: <eventType>` lines (`content_block_start`, `content_block_delta`, `message_delta`, etc.) alongside `data:`, providing full event stream parity with direct Anthropic API.
+- **Extended Beta Headers**: Added `extended-cache-ttl-2025-04-11` and `thinking-display-updates-2026-08-18` to Claude provider static beta headers.
+- **Claude Reset Credits (cedar_ember parity)**: Added support for checking and redeeming Claude Code reset grants (`cedar_ember`) in Quota Tracker, with interactive two-step confirmation modal and quota refreshing matching Codex and GLM parity.
+
+### perf(chat): eliminate connection table scan on hot resolution path (#1047 follow-up)
+
+- **Connection Routing Fast Path**: Moved connection ID and name resolution behind provider alias and `KnownProviders` checks so standard `provider/model` requests bypass the DB entirely, matching baseline performance (25 allocs/op, 888 B/op).
+- **Targeted Connection Lookup**: Replaced `GetProviderConnections("", false)` with lightweight `Repo.ResolveConnectionRoutingByPrefix` querying only `provider, id` without credential hydration or JSON parsing.
+- **Provider Alias Shadowing Guard**: Ensured connection names cannot shadow real provider aliases (e.g. connection named `deepseek`).
+- **Scoped Mistral Badges**: Limited `VIBE CODE` and `API PAYG` badge display in `ProviderDetailView` strictly to Mistral.
+- **Catalog Cleanup**: Pruned retired Mistral models (`zai-glm-5-2`, `devstral-2512`, `labs-devstral-small-2512`).
+
+### feat(connections): separate media pools from the LLM pool per connection
+
+- Allow connections to be toggled independently for media generation (image, audio, video) without disabling text chat routing.
+- Media routing checks `isMediaActive` / `disabledKinds` to select candidate connections.
+- Dashboard media views update media pool eligibility independently.
+
+### feat(combos): per-model weights for round robin
+- Add support for per-model integer weights in combo routing configuration so traffic is routed proportionally using smooth weighted round-robin (Nginx algorithm) instead of an even split.
+- Models in `combo.Models` list can carry an optional integer `weight` property (defaulting to 1 if unset), as well as via `comboStrategies[name].weights` in settings.
+- Handles zero-weight models safely by excluding them from the rotation head while preserving them at the tail of the fallback chain as last-resort fallbacks.
+- When all weights are zero or unset, rotation defaults to legacy uniform round-robin distribution with zero regression.
+- Supports capacity adapter prepending without disrupting or shifting the weighted rotation cycle.
+- Verified with comprehensive unit tests covering proportional distribution, legacy parity, zero weights, sticky limits, mid-turn reuse, and database persistence.
+
+### feat(tokensaver): compact agentic context by model budget
+
+- Compact intermediate conversation tool results when estimated tokens exceed the target model context window threshold or explicit request budget.
+- Truncate large tool outputs into structured summaries (`[output compacted: ... bytes]`) while strictly preserving system instructions, initial task objectives, error tool results, and the most recent N turns.
+- Use UTF-8 rune-boundary slicing for preview content to ensure clean JSON serialization without character splitting on CJK or emoji text.
+
+### fix(translator+combos): flatten content for cloudflare-ai; accept double-encoded smart rules
+
+- **cloudflare-ai**: forward content as plain strings — Cloudflare Workers AI
+  rejects array content with `400 AiError: Bad input: oneOf at '/' not met ...
+  Type mismatch of '/messages/0/content', 'array' not in 'string'` (code 5006).
+  Port of upstream `decolua/9router` paramSupport `STRIP_RULES`
+  `{ provider: "cloudflare-ai", flattenContent: true }`: text blocks are
+  concatenated in order; other block kinds contribute nothing.
+- **smart-combo**: `ParseRules` now unquotes rows whose rules column holds a
+  double-encoded JSON string (`"[{\"pattern\":...}]"`) instead of failing every
+  dashboard load with `stored rules unreadable`. Bounded at 3 unquote levels;
+  the error text for genuinely unreadable rows is unchanged.
+- Unit tests lock both: `TestFilterToOpenAIFormatFlattenContent` (on/off/JSON
+  entry) and the table-driven `TestParseRules`.
+
 ## [v1.9.16-exp.12] - 2026-11-11
 
 ### OpenCode free tier: stop amplifying IP penalties, widen small output budgets, report usage
