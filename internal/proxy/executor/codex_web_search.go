@@ -1,7 +1,6 @@
 package executor
 
 import (
-	json "encoding/json/v2"
 	"fmt"
 	"strings"
 )
@@ -68,8 +67,7 @@ func codexToolKey(tool any) string {
 // tool was appended — either answer leaves the marker deleted, because it is
 // ours and the Codex backend would reject the unknown field.
 //
-// Only the Lite models resolve the marker: applyCodexModelShape is reached by
-// every Responses-shaped provider, and hosted search is a codex capability.
+// This runs only on the Codex execution path.
 func registerCodexHostedWebSearch(req map[string]any) bool {
 	flag, _ := req[codexAutoWebSearchFlag].(bool)
 	delete(req, codexAutoWebSearchFlag)
@@ -169,21 +167,6 @@ func dropCodexLitePrefix(input []any) []any {
 		return input
 	}
 	return rest
-}
-
-// codexResponsesLiteBody reports whether a forwarded Codex body travels in the
-// Lite shape, so the caller can send the header that tells the backend to
-// serve it. Hosted search answers false: Lite cannot execute it.
-func codexResponsesLiteBody(body []byte) bool {
-	var req map[string]any
-	if err := json.Unmarshal(body, &req); err != nil {
-		return false
-	}
-	model, _ := req["model"].(string)
-	if !isCodexResponsesLiteModel(model) {
-		return false
-	}
-	return !toolListWebSearch(req["tools"])
 }
 
 // codexClaudeWebSearchTool is Claude Code's hosted web search tool name. The

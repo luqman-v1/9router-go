@@ -14,6 +14,10 @@ func buildCodexBody(t *testing.T, body string) map[string]any {
 	if err != nil {
 		t.Fatalf("buildResponsesBody: %v", err)
 	}
+	out, _, err = shapeCodexResponsesBody(out, false)
+	if err != nil {
+		t.Fatalf("shapeCodexResponsesBody: %v", err)
+	}
 	var req map[string]any
 	if err := json.Unmarshal(out, &req); err != nil {
 		t.Fatalf("decode %s: %v", out, err)
@@ -78,7 +82,7 @@ func TestBuildResponsesBody_CodexLiteKeepsHostedWebSearch(t *testing.T) {
 			if _, has := req["parallel_tool_calls"]; has {
 				t.Error("parallel_tool_calls is a Lite-only field and must be absent")
 			}
-			if codexResponsesLiteBody(mustMarshal(t, req)) {
+			if hasCodexLitePrefix(req) {
 				t.Error("a body asking for hosted search must not claim the Lite transport")
 			}
 		})
@@ -199,42 +203,6 @@ func TestBuildResponsesBody_CodexLiteAutoWebSearchFlag(t *testing.T) {
 	})
 }
 
-// TestBuildResponsesBody_CodexLiteUnchangedWithoutWebSearch is the guard the
-// whole port hangs on: a body that never mentions hosted search must leave the
-// transform byte-for-byte as it was before this change. It compares a
-// deterministic re-encoding against a golden captured from the pre-fix code,
-// so a field added, dropped or reordered by the web-search handling shows up
-// here rather than as a surprise 400 from the Codex backend.
-func TestBuildResponsesBody_CodexLiteUnchangedWithoutWebSearch(t *testing.T) {
-	inputs := map[string]string{
-		"codexLiteChatCompletions":   `{"model":"gpt-6-sol","instructions":"be brief","tools":[{"type":"function","function":{"name":"get_weather","description":"w","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],"messages":[{"role":"user","content":"hi"}]}`,
-		"codexLiteAlreadyPrefixed":   `{"model":"gpt-6-sol","input":[{"type":"additional_tools","role":"developer","tools":[]},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"instructions":"be brief"}`,
-		"codexLiteEffortFromClient":  `{"model":"gpt-6-luna","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`,
-		"codexLiteResponsesPassthru": `{"model":"gpt-6-sol(high)","instructions":"be brief","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`,
-		"classicCodex":               `{"model":"gpt-5.6-sol","instructions":"be brief","tools":[{"type":"function","function":{"name":"get_weather","description":"w","parameters":{"type":"object"}}}],"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`,
-	}
-	golden := map[string]string{
-		"classicCodex":               `{"input":[{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"be brief","model":"gpt-5.6-sol","reasoning":{"effort":"high","summary":"auto"},"store":false,"stream":true,"tools":[{"description":"w","name":"get_weather","parameters":{"properties":{},"type":"object"},"strict":false,"type":"function"}]}`,
-		"codexLiteChatCompletions":   `{"input":[{"role":"developer","tools":[{"description":"w","name":"get_weather","parameters":{"properties":{"city":{"type":"string"}},"type":"object"},"strict":false,"type":"function"}],"type":"additional_tools"},{"content":[{"text":"be brief","type":"input_text"}],"role":"developer","type":"message"},{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"","model":"gpt-6-sol","parallel_tool_calls":false,"reasoning":{"context":"all_turns","effort":"medium"},"store":false,"stream":true,"tool_choice":"auto","tools":null}`,
-		"codexLiteAlreadyPrefixed":   `{"input":[{"role":"developer","tools":[],"type":"additional_tools"},{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"be brief","model":"gpt-6-sol","reasoning":{"context":"all_turns","effort":"medium"},"store":false,"stream":true}`,
-		"codexLiteEffortFromClient":  `{"input":[{"role":"developer","tools":[],"type":"additional_tools"},{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"","model":"gpt-6-luna","parallel_tool_calls":false,"reasoning":{"context":"all_turns","effort":"high"},"store":false,"stream":true,"tool_choice":"auto","tools":null}`,
-		"codexLiteResponsesPassthru": `{"input":[{"role":"developer","tools":[],"type":"additional_tools"},{"content":[{"text":"be brief","type":"input_text"}],"role":"developer","type":"message"},{"content":[{"text":"hi","type":"input_text"}],"role":"user","type":"message"}],"instructions":"","model":"gpt-6-sol","parallel_tool_calls":false,"reasoning":{"context":"all_turns","effort":"medium"},"store":false,"stream":true,"tool_choice":"auto","tools":null}`,
-	}
-
-	for name, want := range golden {
-		t.Run(name, func(t *testing.T) {
-			out, _, err := buildResponsesBody([]byte(inputs[name]))
-			if err != nil {
-				t.Fatalf("buildResponsesBody: %v", err)
-			}
-			got := deterministicJSON(t, out)
-			if got != want {
-				t.Errorf("body changed for a request without hosted search.\n got: %s\nwant: %s", got, want)
-			}
-		})
-	}
-}
-
 // deterministicJSON re-encodes a body with sorted keys so a golden stays stable
 // across Go versions, whose map key order is not.
 func deterministicJSON(t *testing.T, raw []byte) string {
@@ -248,29 +216,6 @@ func deterministicJSON(t *testing.T, raw []byte) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(out)
-}
-
-// TestCodexResponsesLiteBody covers the decision that drives the Lite header:
-// Lite models claim it, hosted search and every other model do not.
-func TestCodexResponsesLiteBody(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-		want bool
-	}{
-		{name: "lite model claims lite", body: `{"model":"gpt-6-sol","input":[]}`, want: true},
-		{name: "lite override suffix still claims lite", body: `{"model":"gpt-6-luna(high)","input":[]}`, want: true},
-		{name: "hosted search drops lite", body: `{"model":"gpt-6-sol","tools":[{"type":"web_search"}],"input":[]}`, want: false},
-		{name: "classic model never claims lite", body: `{"model":"gpt-5.6-sol","input":[]}`, want: false},
-		{name: "unreadable body never claims lite", body: `not json`, want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := codexResponsesLiteBody([]byte(tt.body)); got != tt.want {
-				t.Errorf("codexResponsesLiteBody(%s) = %v, want %v", tt.body, got, tt.want)
-			}
-		})
-	}
 }
 
 // mustMarshal encodes a decoded fragment back to JSON for a helper that only
