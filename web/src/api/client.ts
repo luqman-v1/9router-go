@@ -36,7 +36,16 @@ export interface ProviderConnection {
   lastErrorSource?: 'chat' | null
   displayName?: string | null
   assignedModel?: string | null
-  providerSpecificData?: { assignedModel?: string | null; [key: string]: unknown }
+  mediaEnabled?: boolean
+  isMediaActive?: boolean
+  disabledKinds?: string[]
+  providerSpecificData?: {
+    assignedModel?: string | null
+    disabledKinds?: string[]
+    mediaEnabled?: boolean
+    isMediaActive?: boolean
+    [key: string]: unknown
+  }
 }
 
 export interface Combo {

@@ -20,6 +20,9 @@ import (
 )
 
 func (h *MediaHandler) forwardTTSRequest(w http.ResponseWriter, r *http.Request, body []byte) {
+	if handlerutil.GetServiceKind(r.Context()) == "" {
+		r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "tts"))
+	}
 	var req struct {
 		Model          string `json:"model"`
 		Input          string `json:"input"`

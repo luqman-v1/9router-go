@@ -81,6 +81,9 @@ type codexImageUsage struct {
 // Responses API, rotating accounts in the same shape as the Antigravity image
 // lane.
 func (h *MediaHandler) handleCodexImage(w http.ResponseWriter, r *http.Request, body []byte, modelInfo *chat.ModelInfo) error {
+	if handlerutil.GetServiceKind(r.Context()) == "" {
+		r = r.WithContext(handlerutil.WithServiceKind(r.Context(), "image"))
+	}
 	var req codexImageRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("parse codex image request: %w", err)
