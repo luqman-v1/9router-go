@@ -48,8 +48,11 @@ func levelFor(level string, supported []string) string {
 		return NormalizeOpenAILevel(level, supported)
 	}
 	if level == "auto" {
-		// "auto" asks the upstream to decide; it is not a level to clamp.
-		return level
+		// "auto" asks the upstream to decide, but strict OpenAI-compatible
+		// upstreams reject the literal "auto" (400 invalid_reasoning_effort):
+		// they accept none|low|medium|high only. Resolve it to "high" so the
+		// OpenAI and OpenAI Responses writers never ship "auto" on the wire.
+		return "high"
 	}
 	if !KnownEffort(level) {
 		level = "medium"

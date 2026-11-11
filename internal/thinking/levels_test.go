@@ -168,6 +168,34 @@ func TestNormalizeOpenAILevelUnknown(t *testing.T) {
 	}
 }
 
+// TestLevelForResolvesAutoToHigh pins that "auto" never reaches an OpenAI
+// wire verbatim: it resolves to "high" (the only sensible concrete level a
+// strict OpenAI-compatible upstream accepts instead of rejecting "auto").
+func TestLevelForResolvesAutoToHigh(t *testing.T) {
+	cases := []struct {
+		level    string
+		supported []string
+		want     string
+	}{
+		{"auto", nil, "high"},
+		{"auto", []string{"none", "minimal", "low", "medium", "high", "xhigh"}, "high"},
+		{"auto", []string{"none", "low", "medium", "high"}, "high"},
+		{"low", nil, "low"},
+		{"low", []string{"none", "low", "medium", "high", "xhigh"}, "low"},
+		{"medium", nil, "medium"},
+		{"high", nil, "high"},
+		{"max", nil, "xhigh"},
+		{"ultra", []string{"max"}, "max"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.level, func(t *testing.T) {
+			if got := levelFor(tt.level, tt.supported); got != tt.want {
+				t.Errorf("levelFor(%q, %v) = %q, want %q", tt.level, tt.supported, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestWriterLevelsStayInsideTheProviderVocabulary pins that a level the client
 // made up never reaches a provider: each writer must emit a level from the
 // known vocabulary.
