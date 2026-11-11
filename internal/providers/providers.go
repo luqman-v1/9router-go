@@ -219,6 +219,12 @@ var modelsListURL = map[string]string{
 	// registry catalog is a fixed 22-model list, so without this entry the
 	// dashboard cannot discover anything the snapshot predates.
 	"commandcode": "https://api.commandcode.ai/provider/v1/models",
+	// The documented Provider API entry reads the same keyless feed. It lists
+	// every id the provider serves (97 at the 2026-11-11 snapshot), which is
+	// what the generated catalogue in commandcode_goat_catalog.go was built
+	// from; the live fetch is what keeps a new release discoverable.
+	"commandcode-goat": "https://api.commandcode.ai/provider/v1/models",
+	"cmc-goat":         "https://api.commandcode.ai/provider/v1/models",
 	// Five more providers whose catalogue is reachable without a valid
 	// credential, so the discovery path that fixed commandcode covers them
 	// unchanged: "Check Latest Models", "Import from /models" and "Sync Models"
@@ -891,6 +897,20 @@ var KnownProviders = map[string]ProviderConfig{
 			"x-cli-surface":          "cli",
 			"x-taste-learning":       "false",
 		},
+	},
+	// Command Code's documented Provider API (commandcode.ai/docs/provider):
+	// standard OpenAI Chat/Responses and Anthropic Messages lanes on one bearer,
+	// no CLI identity spoofing. It is a separate entry from `commandcode`
+	// because both product surfaces exist on the same host and key, but only
+	// this one follows the published schemas. The executor picks the lane from
+	// the model's supported_endpoints (commandcode_goat_catalog.go); BaseURL is
+	// the shared /provider/v1 prefix.
+	"commandcode-goat": {
+		BaseURL:       "https://api.commandcode.ai/provider/v1/chat/completions",
+		AuthHeader:    "Authorization",
+		AuthScheme:    "bearer",
+		SystemoneURL:  "https://api.commandcode.ai/provider/v1/systemone",
+		SystemonePath: "/systemone",
 	},
 	"ollama-local": {
 		BaseURL:       "http://localhost:11434/v1/chat/completions",

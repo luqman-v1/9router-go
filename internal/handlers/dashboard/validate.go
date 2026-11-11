@@ -504,10 +504,10 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validateV1M(ctx, apiKey)
 	case "nace":
 		return validateSystemOneLane(ctx, apiKey, naceProbeURL, naceProbeModel)
-	case "commandcode":
-		// The registry's /alpha/generate consumes credits and needs a
-		// conversation id, so only whoami can validate a key against this
-		// upstream.
+	case "commandcode", "commandcode-goat":
+		// Command Code uses the same user_... key across the CLI (/alpha/generate)
+		// and the documented Provider API. whoami validates the key without
+		// spending credits on either lane.
 		headers := validateAuthHeaders(cfg, apiKey)
 		headers["Accept"] = "application/json"
 		status, _, err := validateProbeDo(ctx, http.MethodGet,

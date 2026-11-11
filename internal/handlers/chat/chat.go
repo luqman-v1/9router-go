@@ -408,6 +408,13 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 			claudeNative = cfg != nil && cfg.Format == providers.FormatClaude
 		}
 	}
+	// A multi-lane provider (opencode-zen, kimi, commandcode-goat, …) has no
+	// single Format, so the model's own declaration decides: converting this
+	// body to OpenAI here would hand a Messages-lane model a shape its endpoint
+	// rejects. Same rule tryForwardWithConnection applies below.
+	if !claudeNative {
+		claudeNative = executor.ServesMessagesEndpoint(modelInfo.Provider, modelInfo.Model)
+	}
 	if claudeNative {
 		translateResponse = false
 		body = translator.SanitizeClaudePassthrough(body, translator.ClaudeIntentionalPrefill(body))

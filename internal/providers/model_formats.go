@@ -25,6 +25,11 @@ var ProviderModelFormats = map[string]map[string]ModelFormats{
 	"opencode-zen": openCodeZenModelFormats,
 	"ocg":          openCodeGoModelFormats,
 	"opencode-go":  openCodeGoModelFormats,
+	// Command Code's Provider API publishes the lane per model in the feed's
+	// supported_endpoints, so the table is generated from it rather than guessed
+	// from the model family.
+	"commandcode-goat": commandcodeGoatModelFormats,
+	"cmc-goat":         commandcodeGoatModelFormats,
 }
 
 // museModelFormats mirrors open-sse/providers/registry/muse.js models[]: Meta

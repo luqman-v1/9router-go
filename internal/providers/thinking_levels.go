@@ -54,10 +54,14 @@ var formatLevels = map[string][]string{
 	"kimi":            levelMax,
 	"deepseek":        levelHiMax,
 	"commandcode":     levelCMDCode,
-	"minimax":         levelOnOff,
-	"hunyuan":         levelBase,
-	"step":            levelBase,
-	"nous":            levelBase,
+	// Same level set: the Provider API's chat lane carries the identical
+	// reasoning_effort vocabulary, and its Messages lane resolves through the
+	// claude-adaptive capability the way every Anthropic wire does.
+	"commandcode-goat": levelCMDCode,
+	"minimax":          levelOnOff,
+	"hunyuan":          levelBase,
+	"step":             levelBase,
+	"nous":             levelBase,
 }
 
 // thinkingPattern is a model-name override, more precise than the format

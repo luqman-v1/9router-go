@@ -1093,6 +1093,19 @@ func GetCapabilitiesForModel(provider, model string) Capabilities {
 	// per-family patterns below (deepseek-v4 → vision:false, thinkingFormat
 	// deepseek, …) must not win here. Upstream short-circuits the same way
 	// (open-sse/providers/capabilities.js:570).
+	// The goat entry is the documented Provider API: three lanes, per-model
+	// windows from the live feed, and a thinking shape that follows the lane the
+	// model is declared on. It must not inherit the /alpha/generate block below,
+	// whose single-lane assumptions (1M window for everything, the CLI thinking
+	// writer) are exactly what this provider exists to correct.
+	if isCommandCodeGoatProvider(provider) {
+		res := commandCodeGoatCapabilities(model)
+		capsCacheMu.Lock()
+		capsCache[key] = res
+		capsCacheMu.Unlock()
+		return res
+	}
+
 	if isCommandCodeProvider(provider) {
 		res := commandCodeCapabilities(model)
 		capsCacheMu.Lock()
