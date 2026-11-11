@@ -332,6 +332,78 @@ func flushDeferredTerminal(sessionKey string) []byte {
 	return buf.Bytes()
 }
 
+// flushDSML appends any DeepSeek DSML tool calls accumulated in the stream's
+// content buffer as Claude tool_use blocks, and streams the cleaned prose as a
+// text block. Called once per stream: at the finish chunk and, if the finish
+// never arrived, from EnsureStreamClosed. Idempotent via DSMLBuffered.
+func flushDSML(state *StreamState, results *[]map[string]any) {
+	if !state.DSMLBuffered || state.DSMLBuffer == "" {
+		return
+	}
+	cleaned, calls := ExtractDSMLToolCalls(state.DSMLBuffer, nil)
+
+	if cleaned != "" {
+		if !state.TextBlockStarted {
+			state.TextBlockIndex = state.NextBlockIndex
+			state.NextBlockIndex++
+			state.TextBlockStarted = true
+			state.TextBlockClosed = false
+			*results = append(*results, map[string]any{
+				"type":          "content_block_start",
+				"index":         state.TextBlockIndex,
+				"content_block": map[string]any{"type": "text", "text": ""},
+			})
+		}
+		*results = append(*results, map[string]any{
+			"type":  "content_block_delta",
+			"index": state.TextBlockIndex,
+			"delta": map[string]any{"type": "text_delta", "text": cleaned},
+		})
+		state.TextBlockClosed = true
+		*results = append(*results, map[string]any{
+			"type":  "content_block_stop",
+			"index": state.TextBlockIndex,
+		})
+		state.TextBlockStarted = false
+	}
+
+	for _, call := range calls {
+		toolBlockIndex := state.NextBlockIndex
+		state.NextBlockIndex++
+		id := call.ID
+		if id == "" {
+			id = fmt.Sprintf("dsml-%d", toolBlockIndex)
+		}
+		stopThinkingBlock(state, results)
+		stopTextBlock(state, results)
+		*results = append(*results, map[string]any{
+			"type":  "content_block_start",
+			"index": toolBlockIndex,
+			"content_block": map[string]any{
+				"type":  "tool_use",
+				"id":    id,
+				"name":  call.Name,
+				"input": map[string]any{},
+			},
+		})
+		if call.Arguments != "" {
+			*results = append(*results, map[string]any{
+				"type":  "content_block_delta",
+				"index": toolBlockIndex,
+				"delta": map[string]any{
+					"type":         "input_json_delta",
+					"partial_json": call.Arguments,
+				},
+			})
+		}
+		*results = append(*results, map[string]any{
+			"type":  "content_block_stop",
+			"index": toolBlockIndex,
+		})
+	}
+	state.DSMLBuffered = false
+}
+
 // IsClaudeMessageBody reports whether the body is already an Anthropic
 // Messages response (`type:"message"`, `role:"assistant"`). A Chat Completions
 // body never carries that pair — its discriminator is `object:"chat.completion"`
@@ -403,12 +475,23 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 		})
 	}
 
-	// Text content
-	if msg.Content != "" {
-		contentBlocks = append(contentBlocks, map[string]any{
-			"type": "text",
-			"text": msg.Content,
-		})
+	// DSML tool calls parsed from inline content (DeepSeek-family upstreams
+	// emit <|DSML| invoke ...> blocks instead of structured tool_calls).
+	var dsmlToolCalls []DSMLToolRequest
+
+	// Text content — strip DeepSeek DSML tool invocation blocks out of it so
+	// clients never see raw markup, and promote any invokes to tool_use blocks.
+	textContent := msg.Content
+	if textContent != "" {
+		cleaned, dsmlCalls := extractDSMLFromContent(textContent, nil)
+		if cleaned != "" {
+			contentBlocks = append(contentBlocks, map[string]any{
+				"type": "text",
+				"text": cleaned,
+			})
+		}
+		msg.Content = cleaned
+		dsmlToolCalls = append(dsmlToolCalls, dsmlCalls...)
 	}
 
 	// Tool calls — don't fallback to ID when Function.Name is empty (see decolua/9router#2077, #3685)
@@ -432,6 +515,23 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 			"type":  "tool_use",
 			"id":    tc.ID,
 			"name":  toolName,
+			"input": input,
+		})
+	}
+
+	// DSML tool calls parsed from inline content (DeepSeek-family upstreams emit
+	// <|DSML| invoke ...> blocks instead of structured tool_calls).
+	for _, call := range dsmlToolCalls {
+		var input jsontext.Value
+		if call.Arguments != "" {
+			input = SafeToolCallInput(call.Arguments)
+		} else {
+			input = jsontext.Value("{}")
+		}
+		contentBlocks = append(contentBlocks, map[string]any{
+			"type":  "tool_use",
+			"id":    call.ID,
+			"name":  call.Name,
 			"input": input,
 		})
 	}
@@ -712,31 +812,38 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 		})
 	}
 
-	// 3. Content
+	// 3. Content — buffer once a DeepSeek DSML marker appears so raw markup is
+	// never streamed to the client; cleaned text and DSML tool calls are emitted
+	// at finish instead.
 	if delta.Content != "" {
-		stopThinkingBlock(state, &results)
-		if !state.TextBlockStarted {
-			state.TextBlockIndex = state.NextBlockIndex
-			state.NextBlockIndex++
-			state.TextBlockStarted = true
-			state.TextBlockClosed = false
+		state.DSMLBuffer += delta.Content
+		if !state.DSMLBuffered && !dsMLMarker.MatchString(state.DSMLBuffer) {
+			stopThinkingBlock(state, &results)
+			if !state.TextBlockStarted {
+				state.TextBlockIndex = state.NextBlockIndex
+				state.NextBlockIndex++
+				state.TextBlockStarted = true
+				state.TextBlockClosed = false
+				results = append(results, map[string]any{
+					"type":  "content_block_start",
+					"index": state.TextBlockIndex,
+					"content_block": map[string]any{
+						"type": "text",
+						"text": "",
+					},
+				})
+			}
 			results = append(results, map[string]any{
-				"type":  "content_block_start",
+				"type":  "content_block_delta",
 				"index": state.TextBlockIndex,
-				"content_block": map[string]any{
-					"type": "text",
-					"text": "",
+				"delta": map[string]any{
+					"type": "text_delta",
+					"text": delta.Content,
 				},
 			})
+		} else {
+			state.DSMLBuffered = true
 		}
-		results = append(results, map[string]any{
-			"type":  "content_block_delta",
-			"index": state.TextBlockIndex,
-			"delta": map[string]any{
-				"type": "text_delta",
-				"text": delta.Content,
-			},
-		})
 	}
 
 	// 4. Tool calls
@@ -788,6 +895,7 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 	if choice.FinishReason != nil {
 		stopThinkingBlock(state, &results)
 		stopTextBlock(state, &results)
+		flushDSML(state, &results)
 		for idx, toolInfo := range state.ToolCalls {
 			buffered := state.ToolArgBuffers[idx]
 			sanitized := sanitizeToolArgs(toolInfo.Name, buffered)
@@ -875,6 +983,7 @@ func EnsureStreamClosed(sessionKey string) []byte {
 	}
 
 	stopThinkingBlock(state, &results)
+	flushDSML(state, &results)
 	stopTextBlock(state, &results)
 
 	for idx, toolInfo := range state.ToolCalls {

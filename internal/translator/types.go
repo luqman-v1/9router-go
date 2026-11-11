@@ -21,8 +21,20 @@ type StreamState struct {
 	ThinkingBlockIndex   int
 	ToolCalls            map[int]ToolCallState
 	ToolArgBuffers       map[int]string
-	FinishReason         string
-	Usage                *OpenAIUsage
+	// DSMLBuffer accumulates response content that may contain DeepSeek DSML
+	// tool invocation blocks across stream chunks.
+	DSMLBuffer string
+	// DSMLBuffered records that a DSML marker was seen and buffered content is
+	// being held back until finish rather than streamed as raw text.
+	DSMLBuffered bool
+	// DSMLEmitted is the number of DSML tool calls already emitted as tool_use
+	// blocks, so a re-parse of the growing buffer does not re-emit them.
+	DSMLEmitted int
+	// DSMLCleanedLen is how many bytes of the cleaned buffer have already been
+	// streamed as text, so cleaned text is never streamed twice.
+	DSMLCleanedLen int
+	FinishReason   string
+	Usage          *OpenAIUsage
 	// TerminalSent records that the terminal message_delta + message_stop
 	// pair actually went out. FinishReason alone does not imply it: with
 	// stream_options.include_usage the usage chunk arrives AFTER the finish
