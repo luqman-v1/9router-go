@@ -799,8 +799,8 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 			}
 
 			// Skip Antigravity while the pool-wide protective pause is active:
-            // a TOS_VIOLATION ban sweep must not rotate through every remaining
-            // account. Fall back to other combo members instead.
+			// a TOS_VIOLATION ban sweep must not rotate through every remaining
+			// account. Fall back to other combo members instead.
 			if active, _ := providers.IsProtectivePauseActive(); modelInfo.Provider == "antigravity" && active {
 				log.Warn("combo", "skip antigravity during protective pause", "provider", modelInfo.Provider, "model", modelInfo.Model)
 				continue

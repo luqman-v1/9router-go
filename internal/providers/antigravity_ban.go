@@ -191,9 +191,9 @@ func RedactAppealURLs(text string) string {
 const DefaultProtectivePauseDuration = 6 * time.Hour
 
 var (
-	protectivePauseMu      sync.RWMutex
-	protectivePauseActive  bool
-	protectivePauseUntil   time.Time
+	protectivePauseMu     sync.RWMutex
+	protectivePauseActive bool
+	protectivePauseUntil  time.Time
 )
 
 // TriggerProtectivePause activates the pool-wide protective pause for the
