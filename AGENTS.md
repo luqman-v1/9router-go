@@ -12,16 +12,21 @@ Whenever you implement features, fix bugs, add providers, update routing logic, 
 - **Local Clone Path**: `/Users/luqmannul.hakim/htdocs/9router`
 
 ### Parity Protocol
-1. **Always Inspect Local Upstream First**:
+1. **Merged-Only Upstream Mandate (Strictly No Speculative Ports)**:
+   - **Port ONLY what is already merged** into upstream's default branch (`main`/`master`) or published in an upstream release tag.
+   - **STRICTLY FORBIDDEN**: Never port from open pull requests, draft PRs, speculative feature proposals, or unverified discussion issues (e.g. open feature threads or experimental detection-evasion ideas).
+   - **Why**: Unmerged upstream PRs and open proposals are unproven in production, frequently rejected upstream, or carry speculative headers/payloads that trigger provider WAF bans (such as GCP 403 on Antigravity or ad-gate lockouts on Free-Pi).
+   - If an issue or contributor requests a feature citing an open upstream PR/issue, refuse or defer it until upstream formally merges, tests, and verifies the change in production.
+2. **Always Inspect Local Upstream First**:
    - Before writing or modifying logic, inspect the corresponding code in `/Users/luqmannul.hakim/htdocs/9router`.
-   - Check upstream git history, PRs, issues, and vitest unit tests in `/Users/luqmannul.hakim/htdocs/9router/tests/` to understand edge cases, headers, and protocol nuances.
-2. **Behavioral Compatibility (100% Contract Match)**:
+   - Check upstream git history, PRs, issues, and vitest unit tests in `/Users/luqmannul.hakim/htdocs/9router/tests/` to understand edge cases, headers, and protocol nuances. Confirm that the reference commit is genuinely part of upstream `main` history (`git -C /Users/luqmannul.hakim/htdocs/9router branch --contains <commit>`).
+3. **Behavioral Compatibility (100% Contract Match)**:
    - Request and response schemas for `/v1/*` (Chat Completions, Messages, Embeddings, Audio, Models).
    - Dashboard endpoints `/api/*` (Connections, Combos, ProxyPools, Settings, ProviderNodes, Usage, Auth).
    - Combo expansion, model fallback, account rotation, and strike-breaker quota handling.
    - SQLite database compatibility (`~/.9router/db/data.sqlite`).
-3. **Changelog Tracking**:
-   - When porting features or fixes, reference the upstream commit/issue/PR in
+4. **Changelog Tracking**:
+   - When porting features or fixes, reference the upstream merged commit/PR in
      your `.changes/<pr-number>-<slug>.md` fragment (e.g. `upstream
      decolua/9router#4197 parity`). **Never write it into `CHANGELOG.md`** — see
      §7.6 for the rule and the reason behind it.
@@ -481,9 +486,10 @@ The screen stays for as long as the boot requests take, and the boot requests ar
 
 When tasked with syncing a feature, bugfix, or provider from upstream:
 
-1. **Investigate Upstream**:
+1. **Investigate Upstream (Merged Code Only)**:
+   - Verify that the commit or feature is **already merged into upstream's main branch** (`git -C /Users/luqmannul.hakim/htdocs/9router branch --contains <commit>`). Never sync from open PRs, draft PRs, or open proposal issues (§1).
    ```bash
-   # Check recent upstream commits, tags, or file changes
+   # Check recent upstream commits on main
    git -C /Users/luqmannul.hakim/htdocs/9router log -n 5 --oneline
    # Inspect specific upstream file or test
    cat /Users/luqmannul.hakim/htdocs/9router/open-sse/...
