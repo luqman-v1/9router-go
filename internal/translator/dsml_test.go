@@ -263,3 +263,115 @@ func TestTranslateOpenAIToClaudeStreamDSML(t *testing.T) {
 		t.Errorf("expected message_stop in terminal, got: %s", tail)
 	}
 }
+
+// Leading prose streamed before a DSML block must not be re-emitted at
+// finish (no duplicated prose), and no DSML markup may leak.
+func TestTranslateOpenAIToClaudeStreamDSMLLeadingProseNoDup(t *testing.T) {
+	session := "stream-dsml-leading-prose"
+	defer ClearStreamState(session)
+
+	// Chunk 1: leading prose streamed immediately (not buffered).
+	c1 := []byte(`{"id":"chatcmpl-dsml-lp","model":"deepseek-chat","choices":[{"index":0,"delta":{"role":"assistant","content":"Please run the command. "},"finish_reason":null}]}`)
+	out1, err := TranslateOpenAIToClaudeStreamSession(session, c1)
+	if err != nil {
+		t.Fatalf("chunk1: %v", err)
+	}
+	out1s := string(out1)
+	if !strings.Contains(out1s, "Please run the command.") {
+		t.Errorf("expected leading prose streamed in chunk1, got: %s", out1s)
+	}
+	if strings.Contains(out1s, "DSML") {
+		t.Errorf("DSML markup in chunk1: %s", out1s)
+	}
+
+	// Chunk 2: DSML block followed by trailing prose. The leading prose must
+	// not be re-emitted, and no DSML markup may leak.
+	c2 := []byte(`{"id":"chatcmpl-dsml-lp","model":"deepseek-chat","choices":[{"index":0,"delta":{"content":"<|DSML| invoke name=\"run_command\"><|DSML| parameter name=\"command\" string=\"true\">ls -la</|DSML| parameter></|DSML| invoke> All done."},"finish_reason":null}]}`)
+	out2, err := TranslateOpenAIToClaudeStreamSession(session, c2)
+	if err != nil {
+		t.Fatalf("chunk2: %v", err)
+	}
+	out2s := string(out2)
+	if strings.Contains(out2s, "DSML") {
+		t.Errorf("DSML markup leaked in chunk2: %s", out2s)
+	}
+	if strings.Contains(out2s, "Please run the command.") {
+		t.Errorf("leading prose re-emitted (duplication) in chunk2: %s", out2s)
+	}
+
+	// Chunk 3: finish flushes the tool call and trailing prose.
+	c3 := []byte(`{"id":"chatcmpl-dsml-lp","model":"deepseek-chat","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)
+	out3, err := TranslateOpenAIToClaudeStreamSession(session, c3)
+	if err != nil {
+		t.Fatalf("chunk3: %v", err)
+	}
+	out3s := string(out3)
+	if !strings.Contains(out3s, `"name":"run_command"`) {
+		t.Errorf("expected run_command tool_use, got: %s", out3s)
+	}
+	if !strings.Contains(out3s, "All done.") {
+		t.Errorf("expected trailing prose, got: %s", out3s)
+	}
+	if strings.Count(out3s, "Please run the command.") > 1 {
+		t.Errorf("leading prose duplicated in output: %s", out3s)
+	}
+	if strings.Contains(out3s, "DSML") {
+		t.Errorf("DSML markup leaked into final output: %s", out3s)
+	}
+
+	tail := EnsureStreamClosed(session)
+	if !strings.Contains(string(tail), `"stop_reason":"tool_use"`) {
+		t.Errorf("expected stop_reason tool_use in terminal, got: %s", tail)
+	}
+}
+
+// A '<' at a chunk boundary must be held back until the next chunk decides
+// whether it starts a DSML tag; it must never leak into streamed text.
+func TestTranslateOpenAIToClaudeStreamDSMLSplitTag(t *testing.T) {
+	session := "stream-dsml-split"
+	defer ClearStreamState(session)
+
+	// Chunk 1 ends with '<' which must be held back (not leaked as text).
+	c1 := []byte(`{"id":"chatcmpl-dsml-split","model":"deepseek-chat","choices":[{"index":0,"delta":{"content":"Check <"},"finish_reason":null}]}`)
+	out1, err := TranslateOpenAIToClaudeStreamSession(session, c1)
+	if err != nil {
+		t.Fatalf("chunk1: %v", err)
+	}
+	out1s := string(out1)
+	if strings.Contains(out1s, "<") {
+		t.Errorf("split '<' leaked into streamed output in chunk1: %s", out1s)
+	}
+	if !strings.Contains(out1s, "Check ") {
+		t.Errorf("expected 'Check ' streamed in chunk1, got: %s", out1s)
+	}
+
+	// Chunk 2 completes the DSML tag.
+	c2 := []byte(`{"id":"chatcmpl-dsml-split","model":"deepseek-chat","choices":[{"index":0,"delta":{"content":"|DSML| invoke name=\"read\"><|DSML| parameter name=\"path\" string=\"true\">/tmp/x</|DSML| parameter></|DSML| invoke>"},"finish_reason":null}]}`)
+	out2, err := TranslateOpenAIToClaudeStreamSession(session, c2)
+	if err != nil {
+		t.Fatalf("chunk2: %v", err)
+	}
+	out2s := string(out2)
+	if strings.Contains(out2s, "DSML") {
+		t.Errorf("DSML markup leaked in chunk2: %s", out2s)
+	}
+
+	// Chunk 3: finish flushes the tool call.
+	c3 := []byte(`{"id":"chatcmpl-dsml-split","model":"deepseek-chat","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)
+	out3, err := TranslateOpenAIToClaudeStreamSession(session, c3)
+	if err != nil {
+		t.Fatalf("chunk3: %v", err)
+	}
+	out3s := string(out3)
+	if !strings.Contains(out3s, `"name":"read"`) {
+		t.Errorf("expected read tool_use, got: %s", out3s)
+	}
+	if strings.Contains(out3s, "DSML") {
+		t.Errorf("DSML markup leaked into final output: %s", out3s)
+	}
+
+	tail := EnsureStreamClosed(session)
+	if !strings.Contains(string(tail), `"stop_reason":"tool_use"`) {
+		t.Errorf("expected stop_reason tool_use in terminal, got: %s", tail)
+	}
+}

@@ -404,6 +404,48 @@ func flushDSML(state *StreamState, results *[]map[string]any) {
 	state.DSMLBuffered = false
 }
 
+// streamText appends text_delta events for text, creating a text content block
+// on first use and stopping any in-progress thinking block first.
+func streamText(state *StreamState, results *[]map[string]any, text string) {
+	if text == "" {
+		return
+	}
+	stopThinkingBlock(state, results)
+	if !state.TextBlockStarted {
+		state.TextBlockIndex = state.NextBlockIndex
+		state.NextBlockIndex++
+		state.TextBlockStarted = true
+		state.TextBlockClosed = false
+		*results = append(*results, map[string]any{
+			"type":          "content_block_start",
+			"index":         state.TextBlockIndex,
+			"content_block": map[string]any{"type": "text", "text": ""},
+		})
+	}
+	*results = append(*results, map[string]any{
+		"type":  "content_block_delta",
+		"index": state.TextBlockIndex,
+		"delta": map[string]any{"type": "text_delta", "text": text},
+	})
+}
+
+// dsmlStreamSplit splits buf into (safe-to-stream text, tail to hold back).
+// It holds back a trailing '<' that could begin a DSML tag in the next chunk
+// (split-tag boundary), since the tag is not decidable until the following
+// bytes arrive. Everything before the held-back tail cannot be the start of a
+// DSML tag and is safe to stream immediately.
+func dsmlStreamSplit(buf string) (stream, hold string) {
+	lt := strings.LastIndexByte(buf, '<')
+	if lt < 0 {
+		return buf, ""
+	}
+	tail := buf[lt:]
+	if dsmlTagPrefix(tail) {
+		return buf[:lt], tail
+	}
+	return buf, ""
+}
+
 // IsClaudeMessageBody reports whether the body is already an Anthropic
 // Messages response (`type:"message"`, `role:"assistant"`). A Chat Completions
 // body never carries that pair — its discriminator is `object:"chat.completion"`
@@ -815,34 +857,36 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 	// 3. Content — buffer once a DeepSeek DSML marker appears so raw markup is
 	// never streamed to the client; cleaned text and DSML tool calls are emitted
 	// at finish instead.
+	//
+	// To avoid O(N^2) buffer scans on non-DSML streams, text is streamed as it
+	// arrives. Only a trailing '<' that might begin a DSML tag (split across
+	// chunk boundaries) is held back until the next chunk decides. Once a DSML
+	// open tag is confirmed, the remainder is buffered and cleaned at finish.
+	// Text already streamed is never re-emitted, so there is no duplicated
+	// prose.
 	if delta.Content != "" {
-		state.DSMLBuffer += delta.Content
-		if !state.DSMLBuffered && !dsMLMarker.MatchString(state.DSMLBuffer) {
-			stopThinkingBlock(state, &results)
-			if !state.TextBlockStarted {
-				state.TextBlockIndex = state.NextBlockIndex
-				state.NextBlockIndex++
-				state.TextBlockStarted = true
-				state.TextBlockClosed = false
-				results = append(results, map[string]any{
-					"type":  "content_block_start",
-					"index": state.TextBlockIndex,
-					"content_block": map[string]any{
-						"type": "text",
-						"text": "",
-					},
-				})
-			}
-			results = append(results, map[string]any{
-				"type":  "content_block_delta",
-				"index": state.TextBlockIndex,
-				"delta": map[string]any{
-					"type": "text_delta",
-					"text": delta.Content,
-				},
-			})
+		if state.DSMLBuffered {
+			// Already in DSML mode: hold everything for finish-time cleanup.
+			state.DSMLBuffer += delta.Content
 		} else {
-			state.DSMLBuffered = true
+			combined := state.DSMLBuffer + delta.Content
+			if loc := dsmlAnyOpen.FindStringIndex(combined); loc != nil {
+				// A DSML open tag starts at loc[0]. Stream the prose before it,
+				// then hold the tag and everything after for finish-time cleanup.
+				if loc[0] > 0 {
+					streamText(state, &results, combined[:loc[0]])
+				}
+				state.DSMLBuffer = combined[loc[0]:]
+				state.DSMLBuffered = true
+			} else {
+				// No DSML tag yet. Stream everything except a trailing '<' that
+				// could begin a DSML tag in the next chunk (split boundary).
+				stream, hold := dsmlStreamSplit(combined)
+				if stream != "" {
+					streamText(state, &results, stream)
+				}
+				state.DSMLBuffer = hold
+			}
 		}
 	}
 

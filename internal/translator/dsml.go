@@ -18,7 +18,6 @@ var (
 	dsmlInvokeClose    = regexp.MustCompile(`</?[｜|‖]{1,2}\s*DSML\s*[｜|‖]{1,2}\s*invoke\s*>`)
 	dsmlParameterOpen  = regexp.MustCompile(`<[｜|‖]{1,2}\s*DSML\s*[｜|‖]{1,2}\s*parameter\b`)
 	dsmlParameterClose = regexp.MustCompile(`</?[｜|‖]{1,2}\s*DSML\s*[｜|‖]{1,2}\s*parameter\s*>`)
-	dsmlCallsClose     = regexp.MustCompile(`</?[｜|‖]{1,2}\s*DSML\s*[｜|‖]{1,2}\s*calls\s*>`)
 
 	dsmlAnyOpen  = regexp.MustCompile(`<[｜|‖]{1,2}\s*DSML\s*[｜|‖]{1,2}`)
 	dsmlAnyClose = regexp.MustCompile(`</[｜|‖]{1,2}\s*DSML\s*[｜|‖]{1,2}`)
@@ -228,16 +227,6 @@ func sortStrings(names []string) {
 func extractDSMLFromContent(content string, toolNames []string) (string, []DSMLToolRequest) {
 	prose, calls := ExtractDSMLToolCalls(content, toolNames)
 	return prose, calls
-}
-
-// deepSeekSurroundingText returns the text of text with every occurrence of
-// each raw removed, keeping the prose around the blocks.
-func deepSeekSurroundingText(text string, raws ...string) string {
-	out := text
-	for _, raw := range raws {
-		out = strings.ReplaceAll(out, raw, "")
-	}
-	return strings.TrimSpace(out)
 }
 
 // deepSeekStripDSML removes every DSML element from an answer. Used wherever
