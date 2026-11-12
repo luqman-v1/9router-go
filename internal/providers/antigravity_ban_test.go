@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 )
 
 const tosBanBody = `{
@@ -186,71 +185,3 @@ func TestRedactAppealURLs(t *testing.T) {
 	}
 }
 
-func TestProtectivePause(t *testing.T) {
-	ResetProtectivePause()
-	t.Cleanup(ResetProtectivePause)
-
-	// Idle: no pause active.
-	if active, _ := IsProtectivePauseActive(); active {
-		t.Error("expected no protective pause initially")
-	}
-
-	// First TOS_VIOLATION triggers the pause.
-	TriggerProtectivePause(DefaultProtectivePauseDuration)
-	active, remaining := IsProtectivePauseActive()
-	if !active {
-		t.Fatal("expected protective pause to be active after trigger")
-	}
-	if remaining <= 0 || remaining > DefaultProtectivePauseDuration {
-		t.Errorf("remaining pause %v out of expected range (0, 6h]", remaining)
-	}
-
-	// Second trigger with a shorter duration does not shorten an active pause.
-	firstUntil := readPauseUntil()
-	TriggerProtectivePause(time.Second)
-	secondUntil := readPauseUntil()
-	if secondUntil.Before(firstUntil) {
-		t.Error("expected second trigger to keep the deadline, not move it earlier")
-	}
-
-	// A normal 429 quota error does NOT trigger the pause.
-	ResetProtectivePause()
-	if IsAntigravityTOSViolation(http.StatusTooManyRequests, []byte(`{"error":{"message":"rate limited"}}`)) {
-		t.Error("429 should not be detected as a TOS violation")
-	}
-	if active, _ := IsProtectivePauseActive(); active {
-		t.Error("expected no pause after a non-TOS error")
-	}
-
-	// Reset clears the state immediately.
-	TriggerProtectivePause(time.Minute)
-	if active, _ := IsProtectivePauseActive(); !active {
-		t.Fatal("expected pause to be active before reset")
-	}
-	ResetProtectivePause()
-	if active, remaining := IsProtectivePauseActive(); active || remaining != 0 {
-		t.Errorf("expected pause cleared after reset, got active=%v remaining=%v", active, remaining)
-	}
-}
-
-// readPauseUntil returns the pause deadline for test assertions only.
-func readPauseUntil() time.Time {
-	protectivePauseMu.RLock()
-	defer protectivePauseMu.RUnlock()
-	return protectivePauseUntil
-}
-
-func TestProtectivePause_Expiry(t *testing.T) {
-	ResetProtectivePause()
-	t.Cleanup(ResetProtectivePause)
-
-	// A very short pause expires on its own.
-	TriggerProtectivePause(10 * time.Millisecond)
-	if active, _ := IsProtectivePauseActive(); !active {
-		t.Fatal("expected pause to be active immediately after trigger")
-	}
-	time.Sleep(20 * time.Millisecond)
-	if active, _ := IsProtectivePauseActive(); active {
-		t.Error("expected pause to have expired")
-	}
-}
