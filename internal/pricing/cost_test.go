@@ -256,3 +256,26 @@ func TestCommandCodePricing_OMPParity(t *testing.T) {
 		t.Errorf("cmc alias failed to resolve pricing")
 	}
 }
+
+// TestCalculateCost_OneHourCacheWritePricesHigher pins the per-window split: a
+// 1h write costs 2x input against the 5m window's 1.25x, so moving the same
+// total between the two windows must change the bill by exactly 1.6x on that
+// share — and an unreported split must keep pricing the whole write at 5m.
+func TestCalculateCost_OneHourCacheWritePricesHigher(t *testing.T) {
+	p, ok := GetPricing("anthropic", "claude-opus-5-5")
+	if !ok {
+		t.Fatal("opus pricing missing")
+	}
+	const write = 1_000_000
+	allFive := CalculateCost(TokenCounts{CacheCreationTokens: write}, p)
+	allHour := CalculateCost(TokenCounts{CacheCreationTokens: write, CacheCreation1hTokens: write}, p)
+
+	if want := allFive * 8 / 5; math.Abs(allHour-want) > 1e-9 {
+		t.Errorf("1h write = %v, want %v (1.6x of %v)", allHour, want, allFive)
+	}
+	// A split larger than the total cannot bill more than the total.
+	over := CalculateCost(TokenCounts{CacheCreationTokens: write, CacheCreation1hTokens: write * 3}, p)
+	if math.Abs(over-allHour) > 1e-9 {
+		t.Errorf("clamped 1h = %v, want %v", over, allHour)
+	}
+}

@@ -324,11 +324,12 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 	// charges them at their own, cheaper rate. The provider matters because
 	// gateways can price the same model differently.
 	cost := pricing.EstimateCost(info.Provider, info.Model, pricing.TokenCounts{
-		PromptTokens:        usage.PromptTokens,
-		CompletionTokens:    usage.CompletionTokens,
-		CachedTokens:        cachedTokens,
-		CacheCreationTokens: cacheCreationTokens,
-		ReasoningTokens:     usage.ReasoningTokens(),
+		PromptTokens:          usage.PromptTokens,
+		CompletionTokens:      usage.CompletionTokens,
+		CachedTokens:          cachedTokens,
+		CacheCreationTokens:   cacheCreationTokens,
+		CacheCreation1hTokens: usage.CacheCreation1hInputTokens,
+		ReasoningTokens:       usage.ReasoningTokens(),
 	})
 	metaJSON := fmt.Sprintf(`{"provider":"%s","model":"%s","connectionId":"%s"}`, info.Provider, info.Model, info.ConnectionID)
 
