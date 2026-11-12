@@ -116,10 +116,7 @@ func ForwardTrae(w http.ResponseWriter, req *Request) error {
 	}
 
 	if req.IsStream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		flusher, _ := w.(http.Flusher)
+		flusher := proxy.WriteSSEHeaders(w)
 		emit := func(chunk map[string]any) error {
 			markTTFT(req, req.StartTime)
 			b, jerr := json.Marshal(chunk)

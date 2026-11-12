@@ -906,12 +906,7 @@ func writeSSE(w io.Writer, data any) error {
 }
 
 func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-
-	flusher, _ := w.(http.Flusher)
+	flusher := proxy.WriteSSEHeaders(w)
 	esr := providers.NewEventStreamReader(upstream)
 
 	responseID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
@@ -1261,6 +1256,7 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
 
 	var headersWritten bool
+	var flusher http.Flusher
 	// semanticToken reports whether a chunk carries a real content or
 	// reasoning delta, rather than an empty role-only or finish frame.
 	semanticToken := func(chunk string) bool {
@@ -1302,15 +1298,13 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 				"error": map[string]any{"message": msg, "type": "upstream_error", "code": code},
 			})
 			if !headersWritten {
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.Header().Set("Cache-Control", "no-cache")
-				w.Header().Set("Connection", "keep-alive")
-				w.WriteHeader(http.StatusOK)
+				flusher = proxy.WriteSSEHeaders(w)
+				headersWritten = true
 			}
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", frame); err != nil {
 				return err
 			}
-			if flusher, ok := w.(http.Flusher); ok {
+			if flusher != nil {
 				flusher.Flush()
 			}
 			log.Warn("executor", "commandcode mid-stream error", "code", code, "message", msg)
@@ -1321,14 +1315,10 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 		}
 
 		if !headersWritten {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Connection", "keep-alive")
-			w.WriteHeader(http.StatusOK)
+			flusher = proxy.WriteSSEHeaders(w)
 			headersWritten = true
 		}
 
-		flusher, _ := w.(http.Flusher)
 		for _, chunk := range chunks {
 			if semanticToken(chunk) {
 				markTTFT(req, req.StartTime)
@@ -1346,14 +1336,13 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 	}
 
 	if !headersWritten {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.WriteHeader(http.StatusOK)
+		flusher = proxy.WriteSSEHeaders(w)
 		headersWritten = true
 	}
 
-	flusher, _ := w.(http.Flusher)
+	if flusher == nil {
+		flusher, _ = w.(http.Flusher)
+	}
 	if !state.Finished {
 		finishChunk := BuildCommandcodeChunk(state, map[string]any{}, "stop")
 		if _, err := w.Write([]byte(fmt.Sprintf("data: %s\n\n", finishChunk))); err != nil {

@@ -45,7 +45,9 @@ func FetchRouter(ctx context.Context, body []byte, endpoint string, headers http
 // PipeSSE copies streaming SSE chunks from upstream to the mitm client response.
 func PipeSSE(upstream *http.Response, w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(upstream.StatusCode)
 
 	flusher, _ := w.(http.Flusher)

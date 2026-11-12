@@ -9,11 +9,14 @@ import (
 )
 
 // WriteSSEHeaders sets standard SSE headers on the response and writes HTTP 200.
+// It sets anti-buffering headers (X-Accel-Buffering: no, Cache-Control: no-cache, no-transform)
+// so reverse proxies, local sidecars, and HTTP clients do not hold back or coalesce chunks.
 // Returns the http.Flusher if the ResponseWriter supports it.
 func WriteSSEHeaders(w http.ResponseWriter) http.Flusher {
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	f, _ := w.(http.Flusher)
 	if f != nil {
