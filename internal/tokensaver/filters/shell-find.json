@@ -5,13 +5,21 @@
   "category": "shell",
   "priority": 80,
   "match": {
-    "outputTypes": ["shell-find"],
-    "commands": ["^find\\b"],
-    "patterns": ["^(?:\\./|/|[A-Za-z0-9_.-]+/)"]
+    "outputTypes": [
+      "shell-find"
+    ],
+    "commands": [
+      "^find\\b"
+    ],
+    "patterns": [
+      "^(?:\\./|/|[A-Za-z]:[\\\\/]|[A-Za-z0-9_.-]+[\\\\/])"
+    ]
   },
   "rules": {
     "stripAnsi": true,
-    "dropPatterns": ["^\\s*$"],
+    "dropPatterns": [
+      "^\\s*$"
+    ],
     "collapsePatterns": [],
     "deduplicate": true,
     "maxLines": 120,
@@ -19,7 +27,10 @@
     "tailLines": 40
   },
   "preserve": {
-    "errorPatterns": ["Permission denied", "No such file"],
+    "errorPatterns": [
+      "Permission denied",
+      "No such file"
+    ],
     "summaryPatterns": []
   },
   "tests": [
@@ -28,6 +39,12 @@
       "command": "find",
       "input": "./src/a.ts\n./src/b.ts\n./node_modules/pkg/index.js\n",
       "expected": "./src/a.ts\n./src/b.ts\n./node_modules/pkg/index.js"
+    },
+    {
+      "name": "windows find output",
+      "command": "find",
+      "input": ".\\src\\a.ts\n.\\src\\b.ts\n.\\node_modules\\pkg\\index.js\n",
+      "expected": ".\\src\\a.ts\n.\\src\\b.ts\n.\\node_modules\\pkg\\index.js"
     }
   ]
 }
