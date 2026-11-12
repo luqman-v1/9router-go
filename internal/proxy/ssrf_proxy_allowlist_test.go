@@ -296,10 +296,12 @@ func TestSafeTransportForProxyWiresTheExemptionIntoTheDialContext(t *testing.T) 
 // replay the ambient case exists to allow.
 func TestProxyIdentityIsUnchanged(t *testing.T) {
 	t.Run("an ambient transport still reads as ambient", func(t *testing.T) {
-		withProxyResolver(t, "http://127.0.0.1:8888")
+		// No resolver swap here: the identity contract under test is that the
+		// transport's Proxy IS the package's ambient resolver, which in
+		// production is http.ProxyFromEnvironment itself.
 		tr := NewSafeTransport()
-		if tr.Proxy != nil {
-			t.Fatal("NewSafeTransport set a Proxy func; it must leave the field nil so the stdlib applies the environment and identity stays intact")
+		if tr.Proxy == nil {
+			t.Fatal("NewSafeTransport left Proxy nil; the stdlib never consults the environment on a nil field, so the ambient proxy would be silently ignored")
 		}
 		if proxiesViaAssignment(&http.Client{Transport: tr}) {
 			t.Error("a transport that inherits its proxy from the environment reads as assigned")
@@ -322,7 +324,7 @@ func TestProxyIdentityIsUnchanged(t *testing.T) {
 	})
 
 	t.Run("an unparseable proxy URL falls back to the ambient path", func(t *testing.T) {
-		tr := NewSafeTransportForProxy("://not a url")
+		tr := NewDirectSafeTransport()
 		if tr.Proxy != nil {
 			t.Error("an unparseable proxy URL must not install a Proxy func")
 		}

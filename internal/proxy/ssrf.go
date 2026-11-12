@@ -399,11 +399,35 @@ func newSafeDialerForProxy(allow *proxyAllowlist) *net.Dialer {
 }
 
 // NewSafeTransport returns an *http.Transport configured with production pool
-// defaults and an active SSRF-filtering DialContext. t.Proxy is left nil so the
-// stdlib applies http.ProxyFromEnvironment, and the dialer permits whatever
-// endpoint that environment names.
+// defaults and an active SSRF-filtering DialContext. t.Proxy is
+// http.ProxyFromEnvironment so the operator's ambient egress (HTTP_PROXY /
+// HTTPS_PROXY / ALL_PROXY, including the values syncEnvFromViper lifts from
+// .env) applies, and the dialer permits whatever endpoint that environment
+// names. The stdlib does NOT consult the environment on its own: a *http.Transport
+// with Proxy nil dials direct, so leaving the field nil silently ignored the
+// operator's proxy (verified 2026-11-13: gateway with ALL_PROXY in .env egressed
+// direct on poolless connections).
 func NewSafeTransport() *http.Transport {
-	return NewSafeTransportForProxy("")
+	t := NewSafeTransportForProxy("")
+	t.Proxy = proxyFromEnvironment
+	return t
+}
+
+// NewDirectSafeTransport is NewSafeTransport with the proxy disabled: it dials
+// the target from the host's own address even when the environment names a
+// proxy. Only callers whose PURPOSE is escaping an ambient proxy —
+// FallbackTransport's direct leg and replayDirect — may use it; everything else
+// goes through NewSafeTransport so the operator's egress path is honoured.
+//
+// Deliberately built WITHOUT touching ambientProxyAllowlist: package-init
+// callers (directProxyClient) would otherwise fire http.ProxyFromEnvironment's
+// once-cache before main() ran viper's .env sync, freezing an empty ambient
+// view for the whole process. A transport that never proxies needs no proxy
+// endpoint allowlist, so the plain safe dialer is exact here.
+func NewDirectSafeTransport() *http.Transport {
+	t := constants.DefaultHTTPTransportConfig.NewTransport()
+	t.DialContext = newSafeDialerForProxy(nil).DialContext
+	return t
 }
 
 // NewSafeTransportForProxy returns NewSafeTransport's transport for a caller
