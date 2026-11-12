@@ -1,7 +1,4 @@
----
-"tokensaver": patch
-"headroom": patch
----
+### feat(tokensaver): sync doctrine and protocol with upstream token savers
 
 Sync token savers with upstream canonical releases:
 - **Caveman**: align system doctrine with upstream v4.1.0 (`JuliusBrussee/caveman`), adopting ASD-STE100 guidelines (20 words max per sentence, active voice, short word preference, bounded tool run status).

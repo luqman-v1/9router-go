@@ -1,6 +1,4 @@
----
-"9router": patch
----
+### fix(models): resolve model publishing, prefix matching, and unpublishing bugs
 
 Fix model publishing, unpublishing, and prefix matching across catalog endpoints:
 - Persist deleted models to `disabledModels` and invalidate live catalog cache in `HandleDeleteProviderModels` and `HandleDeleteCustomModel` so compatible live nodes stop re-publishing deleted models.
