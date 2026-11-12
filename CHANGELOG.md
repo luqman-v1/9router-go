@@ -1,5 +1,17 @@
 # Changelog
 
+## [v1.9.16] - 2026-11-12
+
+### Highlights
+
+Stable release graduating the v1.9.16 release cycle, bringing comprehensive improvements across model publishing, quota tracking, token saver fidelity, translator robustness, and provider resilience:
+
+- **Model Publishing & Prefix Matching**: Fix unpublishing on model deletion by persisting deleted models to `disabledModels` and clearing the live catalog cache. Enforce pinned `enabledModels` allowlists against custom models/aliases. Support bidirectional prefix matching in `disabledModels` and normalize STT/embedding model kinds (e.g. Parakeet CTC and NV-EmbedQA) to prevent non-LLMs from being advertised as LLMs (#1100).
+- **Token Saver Modernization**: Align Caveman doctrine with upstream v4.1.0 (ASD-STE100 guidelines), Ponytail with v5.3.3 (all 3 levels), Headroom session isolation with upstream v0.44.0, and extend RTK filters for path handling (#1115).
+- **Translator & Upstream Parity**: Extract DeepSeek DSML XML tool calls into native `tool_calls` (#1108), sanitize foreign tool IDs for Anthropic Messages (#1114), and normalize adaptive/auto thinking intents on OpenAI-compatible transports (#1106).
+- **Quota Tracking & Providers**: Add auto-ping for Command Code Provider API (`commandcode-goat`) (#1113), group Quota Tracker rows by provider with per-account model scope (#1103), and update Kiro IDE client fingerprint to pass AWS version gates (#1117).
+- **Pool Resilience & Routing**: Revert intrusive inband ad-gate and protective pause behaviors to keep pool and account fallback intact across provider combos (#1116, #1118).
+
 ## [v1.9.16-exp.15] - 2026-11-12
 
 ### fix(antigravity): revert global protective pause to restore account fallback in combos
