@@ -182,7 +182,8 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 		return h.Client, nil
 	}
 
-	if proxyType == "http" || proxyType == "" {
+	if proxyType == "http" || proxyType == "socks5" || proxyType == "socks" || proxyType == "" ||
+		strings.HasPrefix(parsedURL.Scheme, "http") || strings.HasPrefix(parsedURL.Scheme, "socks") {
 		cacheKey := proxyURLStr
 		if strictProxy {
 			cacheKey = strictCachePrefix + proxyURLStr

@@ -62,9 +62,47 @@ func NewViperWithFile(configFile string) *viper.Viper {
 				log.Warn("config", "read config file failed", "file", configFile, "error", err)
 			}
 		}
+		syncEnvFromViper(v)
 	}
 
 	return v
+}
+
+// syncEnvFromViper populates environment variables that Go's runtime or
+// standard library (such as net/http's ProxyFromEnvironment) reads directly
+// from os.Getenv rather than from Viper. Values already present in the OS
+// environment take precedence.
+func syncEnvFromViper(v *viper.Viper) {
+	if v == nil {
+		return
+	}
+	proxyKeys := []string{
+		"HTTP_PROXY", "http_proxy",
+		"HTTPS_PROXY", "https_proxy",
+		"ALL_PROXY", "all_proxy",
+		"NO_PROXY", "no_proxy",
+		"STRICT_SSL",
+		"FORCE_FALLBACK_ON_ALL_UNAVAILABLE",
+	}
+	for _, key := range proxyKeys {
+		if os.Getenv(key) == "" {
+			if val := strings.TrimSpace(v.GetString(key)); val != "" {
+				_ = os.Setenv(key, val)
+			}
+		}
+	}
+	allProxy := os.Getenv("ALL_PROXY")
+	if allProxy == "" {
+		allProxy = os.Getenv("all_proxy")
+	}
+	if allProxy != "" {
+		if os.Getenv("HTTP_PROXY") == "" && os.Getenv("http_proxy") == "" {
+			_ = os.Setenv("HTTP_PROXY", allProxy)
+		}
+		if os.Getenv("HTTPS_PROXY") == "" && os.Getenv("https_proxy") == "" {
+			_ = os.Setenv("HTTPS_PROXY", allProxy)
+		}
+	}
 }
 
 // ProvideViper returns a configured Viper instance for dependency injection.
