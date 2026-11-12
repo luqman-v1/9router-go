@@ -150,12 +150,18 @@ Every upstream provider in this repository (`antigravity`, `opencode`, `claude`,
 - **Clean JSON Serialization**:
   - Use accurate struct tags (`json:"fieldName,omitempty"`). Omit zero-value fields when required by upstream provider specs.
 
-### D. Code Style, Modularity & Cognitive Complexity
+### D. Code Style, Modularity & Concise Go (`github.com/samber/lo`)
+- **Concise & Expressive Functional Patterns (`github.com/samber/lo`)**:
+  - Always prefer [`github.com/samber/lo`](https://github.com/samber/lo) to eliminate verbose, handwritten loop boilerplate and multi-line conditional assignments. `samber/lo` is already a direct dependency in `go.mod`.
+  - **Slices & Collections**: Use `lo.Map`, `lo.Filter`, `lo.FilterMap`, `lo.FlatMap`, `lo.Contains`, `lo.Find`, `lo.Uniq`, `lo.GroupBy`, and `lo.KeyBy` instead of manual accumulator loops (`var out []T; for ... if ... out = append(out, ...)`).
+  - **Ternary & Defaults**: Use `lo.Ternary(cond, a, b)` instead of multi-line `if/else` variable assignments. Use `lo.Coalesce(val, fallback)` instead of cascading `if val != ""` fallback chains.
+  - **Pointers & References**: Use `lo.ToPtr(v)` and `lo.FromPtr(p)` (or `lo.FromPtrOr(p, defaultVal)`) instead of declaring temporary variables just to take their address (`tmp := v; &tmp`).
+  - **Maps & Sets**: Use `lo.Keys(m)`, `lo.Values(m)`, `lo.PickBy(m, predicate)`, `lo.Invert(m)`, and `lo.Assign(m1, m2)` instead of manual iteration to extract keys or merge maps.
+  - **Batching & Partitioning**: Use `lo.Chunk(slice, size)` and `lo.PartitionBy(slice, predicate)` for cleanly chunking or splitting items.
 - **Cognitive Complexity**: Maintain SonarQube cognitive complexity $\le 15$ per function/method.
 - **Guard Clauses**: Keep the happy path left-aligned using early returns. Avoid nested `if/else` ladders (3+ levels forbidden). Decompose branching into focused private helper functions.
 - **File Size Discipline**: Target files $\le 300$ LoC (modularize files $>400$ LoC into focused files or subpackages).
 - **Dependency Injection**: Use Uber Fx (`go.uber.org/fx`) in `internal/app/` for clean wiring. Usecases and handlers must never perform defensive `nil` checks on injected dependencies—fail fast during startup container initialization.
-- **Functional Helpers**: Prefer [`github.com/samber/lo`](https://github.com/samber/lo) (`lo.Map`, `lo.Filter`, `lo.Contains`, `lo.Ternary`, `lo.ToPtr`) for clean slice operations instead of handwritten boilerplate loops.
 
 ### E. Error Handling
 - **Wrap Errors with `%w`**: Always provide caller context: `fmt.Errorf("receiver.MethodName: %w", err)` or `fmt.Errorf("op: %w", err)`.
