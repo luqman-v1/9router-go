@@ -375,3 +375,58 @@ func TestTranslateOpenAIToClaudeStreamDSMLSplitTag(t *testing.T) {
 		t.Errorf("expected stop_reason tool_use in terminal, got: %s", tail)
 	}
 }
+
+// A held-back split-tag probe (trailing "<", "<|", "<|DSML") must be emitted
+// as text when the stream ends before the next chunk decides whether it
+// starts a DSML tag, instead of being silently dropped by flushDSML.
+func TestTranslateOpenAIToClaudeStreamDSMLSplitTagFlushedAtClose(t *testing.T) {
+	cases := []struct {
+		name string
+		hold string // tail dsmlStreamSplit must hold back
+		want string // tail that must be emitted as text at stream end
+	}{
+		{name: "trailing '<'", hold: "<", want: "<"},
+		{name: "partial '<|'", hold: "<|", want: "<|"},
+		{name: "partial '<|DSML'", hold: "<|DSML", want: "<|DSML"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			session := "stream-dsml-flush-" + strings.ReplaceAll(tc.name, " ", "-")
+			defer ClearStreamState(session)
+
+			// Prose before the held-back tail streams immediately; the tail itself is held.
+			c1 := []byte(`{"id":"chatcmpl-dsml-flush","model":"deepseek-chat","choices":[{"index":0,"delta":{"content":"Probe ` + tc.hold + `"},"finish_reason":null}]}`)
+			out1, err := TranslateOpenAIToClaudeStreamSession(session, c1)
+			if err != nil {
+				t.Fatalf("chunk1: %v", err)
+			}
+			out1s := string(out1)
+			if !strings.Contains(out1s, "Probe ") {
+				t.Errorf("expected leading prose streamed in chunk1, got: %s", out1s)
+			}
+			if strings.Contains(out1s, tc.hold) {
+				t.Errorf("held-back tail %q leaked into chunk1 output: %s", tc.hold, out1s)
+			}
+
+			// Stream ends while the split-tag probe is unresolved.
+			c2 := []byte(`{"id":"chatcmpl-dsml-flush","model":"deepseek-chat","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+			out2, err := TranslateOpenAIToClaudeStreamSession(session, c2)
+			if err != nil {
+				t.Fatalf("chunk2: %v", err)
+			}
+			out2s := string(out2)
+			if !strings.Contains(out2s, `"text":"`+tc.want+`"`) {
+				t.Errorf("held-back tail %q lost at stream end, got: %s", tc.want, out2s)
+			}
+
+			tail := EnsureStreamClosed(session)
+			if !strings.Contains(string(tail), `"stop_reason":"end_turn"`) {
+				t.Errorf("expected end_turn terminal, got: %s", tail)
+			}
+			if !strings.Contains(string(tail), `"type":"message_stop"`) {
+				t.Errorf("expected message_stop in terminal, got: %s", tail)
+			}
+		})
+	}
+}

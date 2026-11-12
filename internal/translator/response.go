@@ -337,7 +337,15 @@ func flushDeferredTerminal(sessionKey string) []byte {
 // text block. Called once per stream: at the finish chunk and, if the finish
 // never arrived, from EnsureStreamClosed. Idempotent via DSMLBuffered.
 func flushDSML(state *StreamState, results *[]map[string]any) {
-	if !state.DSMLBuffered || state.DSMLBuffer == "" {
+	if !state.DSMLBuffered {
+		// Stream ended while DSMLBuffer held a deferred split-tag probe
+		// (trailing "<", "<|", "<|DSML", ...) that never completed into a
+		// DSML tag: emit the held-back bytes as plain text instead of
+		// dropping them at stream termination.
+		if state.DSMLBuffer != "" {
+			streamText(state, results, state.DSMLBuffer)
+			state.DSMLBuffer = ""
+		}
 		return
 	}
 	cleaned, calls := ExtractDSMLToolCalls(state.DSMLBuffer, nil)
