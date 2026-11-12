@@ -194,11 +194,12 @@ func TestApplyOpenAI(t *testing.T) {
 	}
 }
 
-func TestApplyOpenAIKeepsAuto(t *testing.T) {
-	// "auto" asks the upstream to decide — it is not a level to clamp.
+func TestApplyOpenAIResolvesAutoToHigh(t *testing.T) {
+	// "auto" asks the upstream to decide, but strict OpenAI-compatible
+	// upstreams reject the literal "auto", so it resolves to "high".
 	out := apply(t, "openai", "openai", "gpt-5.3-codex",
 		map[string]any{"reasoning": map[string]any{"enabled": true}}, nil)
-	if out["reasoning_effort"] != "auto" {
+	if out["reasoning_effort"] != "high" {
 		t.Fatalf("auto → %+v", out)
 	}
 }

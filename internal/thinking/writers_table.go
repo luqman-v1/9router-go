@@ -48,7 +48,7 @@ func writeOpenAI(c *writerCtx) {
 	}
 	lvl := ToLevel(c.eff)
 	if lvl != "" {
-		c.body["reasoning_effort"] = levelFor(lvl, c.supported)
+		c.body["reasoning_effort"] = openAILevelFor(lvl, c.supported)
 	}
 	applyOpenAIOutputFloor(c, lvl)
 }
@@ -105,7 +105,7 @@ func writeOpenAIResponses(c *writerCtx) {
 		if cur == nil {
 			cur = map[string]any{}
 		}
-		cur["effort"] = levelFor(lvl, c.supported)
+		cur["effort"] = openAILevelFor(lvl, c.supported)
 		if _, ok := cur["summary"]; !ok {
 			cur["summary"] = "auto"
 		}
