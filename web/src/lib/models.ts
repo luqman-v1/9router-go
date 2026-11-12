@@ -6371,42 +6371,35 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   ],
   "xiaomi-tokenplan": [
     {
-      "id": "mimo-v2.5-pro",
-      "name": "MiMo V2.5 Pro"
+      "id": "mimo-v2.6-pro",
+      "name": "MiMo V2.6 Pro"
     },
     {
-      "id": "mimo-v2.5-pro-claude",
-      "name": "MiMo V2.5 Pro (Claude Native)",
-      "targetFormat": "claude",
-      "upstreamModelId": "mimo-v2.5-pro"
+      "id": "mimo-v2.6-flash",
+      "name": "MiMo V2.6 Flash"
     },
     {
-      "id": "mimo-v2.5",
-      "name": "MiMo V2.5"
-    },
-    {
-      "id": "mimo-v2-pro",
-      "name": "MiMo V2 Pro"
-    },
-    {
-      "id": "mimo-v2-omni",
-      "name": "MiMo V2 Omni"
-    },
-    {
-      "id": "mimo-v2-tts",
-      "name": "MiMo V2 TTS"
+      "id": "mimo-v2.5-asr",
+      "name": "MiMo V2.5 ASR",
+      "params": [
+        "language"
+      ],
+      "kind": "stt"
     },
     {
       "id": "mimo-v2.5-tts",
-      "name": "MiMo V2.5 TTS"
+      "name": "MiMo V2.5 TTS",
+      "kind": "tts"
     },
     {
       "id": "mimo-v2.5-tts-voiceclone",
-      "name": "MiMo V2.5 TTS Voice Clone"
+      "name": "MiMo V2.5 TTS Voice Clone",
+      "kind": "tts"
     },
     {
       "id": "mimo-v2.5-tts-voicedesign",
-      "name": "MiMo V2.5 TTS Voice Design"
+      "name": "MiMo V2.5 TTS Voice Design",
+      "kind": "tts"
     }
   ],
   "alims-intl": [
