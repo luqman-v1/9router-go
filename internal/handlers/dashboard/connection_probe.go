@@ -920,7 +920,6 @@ func probeCloudCodeAssist(ctx context.Context, client *http.Client, provider, ac
 	}
 	message := providers.RedactAppealURLs(probeProviderErrorMessage(body, fmt.Sprintf("API returned %d", status)))
 	if providers.IsAntigravityTOSViolation(status, body) {
-		providers.TriggerProtectivePause(providers.DefaultProtectivePauseDuration)
 		if appealURL, _ := providers.ExtractAppealURL(body); appealURL != "" {
 			return oauthProbeAttempt{status: status, message: message, appealURL: appealURL}
 		}
