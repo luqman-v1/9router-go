@@ -454,6 +454,8 @@
         {#if selectedDetail.tokens}
           {@const promptTokens = selectedDetail.tokens.prompt_tokens ?? 0}
           {@const cacheRead = cachedTokensFor(selectedDetail)}
+          {@const cacheWrite5m = selectedDetail.tokens.cache_creation_5m_input_tokens ?? 0}
+          {@const cacheWrite1h = selectedDetail.tokens.cache_creation_1h_input_tokens ?? 0}
           {@const savedTokens = selectedDetail.tokens.saved_tokens ?? 0}
           {@const fromTokens = savedTokens > 0 ? (promptTokens + savedTokens) : promptTokens}
           {@const savedPct = fromTokens > 0 ? Math.round((savedTokens / fromTokens) * 100) : 0}
@@ -478,6 +480,11 @@
               {/if}
               <span class="px-2 py-0.5 rounded bg-surface-3 text-text-muted text-xs">
                 Cache Write: {selectedDetail.tokens.cache_creation_input_tokens ? fmt(selectedDetail.tokens.cache_creation_input_tokens) : 'N/A'}
+                {#if cacheWrite5m > 0 || cacheWrite1h > 0}
+                  <span class="font-normal opacity-85 font-sans text-[11px]">
+                    (5m: {fmt(cacheWrite5m)} &middot; 1h: {fmt(cacheWrite1h)})
+                  </span>
+                {/if}
               </span>
               {#if savedTokens > 0}
                 <span class="px-2 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 text-xs font-bold">

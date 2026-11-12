@@ -103,10 +103,13 @@ func TranslateClaudeChunkToOpenAI(payload []byte, state *ClaudeToOpenAIStreamSta
 				if err == nil {
 					cached := CachedTokensFromJSON(rawUsage)
 					cacheCreate := usageInt(u["cache_creation_input_tokens"])
+					cache5m, cache1h := claudeCacheCreationFromMap(u["cache_creation"])
 					state.Usage = NormalizeClaudeUsage(&OpenAIUsage{
-						PromptTokens:             usageInt(u["input_tokens"]),
-						CachedTokens:             cached,
-						CacheCreationInputTokens: cacheCreate,
+						PromptTokens:               usageInt(u["input_tokens"]),
+						CachedTokens:               cached,
+						CacheCreationInputTokens:   cacheCreate,
+						CacheCreation5mInputTokens: cache5m,
+						CacheCreation1hInputTokens: cache1h,
 					})
 				}
 			}
@@ -251,6 +254,17 @@ func TranslateClaudeChunkToOpenAI(payload []byte, state *ClaudeToOpenAIStreamSta
 	return buf.Bytes(), nil
 }
 
+// claudeCacheCreationFromMap reads the per-window cache-write split out of a
+// decoded usage map. A chunk without the object yields (0, 0), which the
+// dashboard renders as "not reported" rather than "no 5-minute write".
+func claudeCacheCreationFromMap(raw any) (int, int) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return 0, 0
+	}
+	return usageInt(m["ephemeral_5m_input_tokens"]), usageInt(m["ephemeral_1h_input_tokens"])
+}
+
 func usageInt(value any) int {
 	switch n := value.(type) {
 	case float64:
@@ -281,10 +295,11 @@ func TranslateClaudeResponseToOpenAI(claudeBody []byte) ([]byte, error) {
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 		Usage      struct {
-			InputTokens              int `json:"input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			InputTokens              int                  `json:"input_tokens"`
+			OutputTokens             int                  `json:"output_tokens"`
+			CacheReadInputTokens     int                  `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int                  `json:"cache_creation_input_tokens"`
+			CacheCreation            *claudeCacheCreation `json:"cache_creation"`
 		} `json:"usage"`
 	}
 
@@ -348,6 +363,7 @@ func TranslateClaudeResponseToOpenAI(claudeBody []byte) ([]byte, error) {
 		CachedTokens:             raw.Usage.CacheReadInputTokens,
 		CacheCreationInputTokens: raw.Usage.CacheCreationInputTokens,
 	})
+	raw.Usage.CacheCreation.apply(usage)
 	respObj := map[string]any{
 		"id":      "chatcmpl-" + raw.ID,
 		"object":  "chat.completion",

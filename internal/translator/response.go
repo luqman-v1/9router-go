@@ -149,19 +149,22 @@ func ParseClaudeUsage(body []byte) *OpenAIUsage {
 		return nil
 	}
 	var u struct {
-		InputTokens              int `json:"input_tokens"`
-		OutputTokens             int `json:"output_tokens"`
-		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		InputTokens              int                  `json:"input_tokens"`
+		OutputTokens             int                  `json:"output_tokens"`
+		CacheCreationInputTokens int                  `json:"cache_creation_input_tokens"`
+		CacheCreation            *claudeCacheCreation `json:"cache_creation"`
 	}
 	if err := json.Unmarshal(raw.Usage, &u); err != nil {
 		return nil
 	}
-	return NormalizeClaudeUsage(&OpenAIUsage{
+	usage := NormalizeClaudeUsage(&OpenAIUsage{
 		PromptTokens:             u.InputTokens,
 		CompletionTokens:         u.OutputTokens,
 		CachedTokens:             CachedTokensFromJSON(raw.Usage),
 		CacheCreationInputTokens: u.CacheCreationInputTokens,
 	})
+	u.CacheCreation.apply(usage)
+	return usage
 }
 
 // ParseResponseUsage extracts usage from an OpenAI or Claude response body.
@@ -193,9 +196,10 @@ func AccumulateClaudeStreamUsage(curr *OpenAIUsage, chunk []byte) *OpenAIUsage {
 		Type    string `json:"type"`
 		Message *struct {
 			Usage *struct {
-				InputTokens              int `json:"input_tokens"`
-				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+				InputTokens              int                  `json:"input_tokens"`
+				CacheCreationInputTokens int                  `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int                  `json:"cache_read_input_tokens"`
+				CacheCreation            *claudeCacheCreation `json:"cache_creation"`
 			} `json:"usage"`
 		} `json:"message"`
 		Usage *struct {
@@ -220,6 +224,7 @@ func AccumulateClaudeStreamUsage(curr *OpenAIUsage, chunk []byte) *OpenAIUsage {
 			next.CachedTokens = u.CacheReadInputTokens
 			next.CacheCreationInputTokens = u.CacheCreationInputTokens
 			next.PromptTokens = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+			u.CacheCreation.apply(&next)
 		}
 	case "message_delta":
 		if raw.Usage != nil {
