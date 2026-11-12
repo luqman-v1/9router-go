@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -151,20 +153,25 @@ func ForwardKiro(ctx context.Context, client *http.Client, cfg *providers.Provid
 		last := idx == len(endpoints)-1
 		invocationID := fmt.Sprintf("%d-%d", time.Now().UnixMilli(), time.Now().UnixNano())
 		headers := map[string]string{
-			"X-Amz-Target":                    "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
 			"Amz-Sdk-Request":                 "attempt=1; max=3",
 			"Amz-Sdk-Invocation-Id":           invocationID,
 			"Accept":                          "application/vnd.amazon.eventstream",
-			"User-Agent":                      "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
-			"X-Amz-User-Agent":                "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
 			"x-amzn-kiro-agent-mode":          "spec",
 			"x-amzn-codewhisperer-machine-id": "kiro-desktop",
 		}
+		if strings.Contains(endpoint, "://codewhisperer.") {
+			headers["X-Amz-Target"] = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
+		}
+		ua, amzUA := kiroServiceUserAgent(psd, apiKey)
+		headers["User-Agent"] = ua
+		headers["X-Amz-User-Agent"] = amzUA
 		if apiKey != "" {
 			headers["x-amz-sso-bearer"] = apiKey
 		}
-		if profileArn, ok := psd["profileArn"].(string); ok && profileArn != "" {
-			headers["x-amzn-codewhisperer-profile-arn"] = profileArn
+		authMethod, _ := psd["authMethod"].(string)
+		rawProfileArn, _ := psd["profileArn"].(string)
+		if effectiveArn := providers.KiroEffectiveProfileARN(authMethod, strings.TrimSpace(rawProfileArn)); effectiveArn != "" {
+			headers["x-amzn-codewhisperer-profile-arn"] = effectiveArn
 		}
 		if tokenType := kiroTokenType(psd); tokenType != "" {
 			headers["TokenType"] = tokenType
@@ -190,6 +197,43 @@ func ForwardKiro(ctx context.Context, client *http.Client, cfg *providers.Provid
 		lastErr = fmt.Errorf("kiro: no endpoint available")
 	}
 	return nil, lastErr
+}
+
+const (
+	KiroRuntimeSDKVersion = "1.0.0"
+	KiroIDEVersion        = "1.4.121"
+	KiroAgentOS           = "windows"
+	KiroAgentOSVersion    = "10.0.26200"
+	KiroNodeVersion       = "22.21.1"
+)
+
+func resolveKiroMachineID(psd map[string]any, accessToken string) string {
+	seed := ""
+	if psd != nil {
+		if s, _ := psd["clientId"].(string); strings.TrimSpace(s) != "" {
+			seed = strings.TrimSpace(s)
+		} else if s, _ := psd["profileArn"].(string); strings.TrimSpace(s) != "" {
+			seed = strings.TrimSpace(s)
+		}
+	}
+	if seed == "" && strings.TrimSpace(accessToken) != "" {
+		seed = strings.TrimSpace(accessToken)
+	}
+	if seed == "" {
+		seed = "kiro-anonymous"
+	}
+	sum := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(sum[:])
+}
+
+func kiroServiceUserAgent(psd map[string]any, accessToken string) (string, string) {
+	machineID := resolveKiroMachineID(psd, accessToken)
+	ua := fmt.Sprintf(
+		"aws-sdk-js/%s ua/2.1 os/%s#%s lang/js md/nodejs#%s api/codewhispererstreaming#%s m/E KiroIDE-%s-%s",
+		KiroRuntimeSDKVersion, KiroAgentOS, KiroAgentOSVersion, KiroNodeVersion, KiroRuntimeSDKVersion, KiroIDEVersion, machineID,
+	)
+	amzUA := fmt.Sprintf("aws-sdk-js/%s KiroIDE-%s-%s", KiroRuntimeSDKVersion, KiroIDEVersion, machineID)
+	return ua, amzUA
 }
 
 // kiroTokenType mirrors upstream buildHeaders: API-key connections announce
