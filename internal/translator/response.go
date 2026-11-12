@@ -430,7 +430,7 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 		}
 		contentBlocks = append(contentBlocks, map[string]any{
 			"type":  "tool_use",
-			"id":    tc.ID,
+			"id":    SanitizeClaudeToolID(tc.ID),
 			"name":  toolName,
 			"input": input,
 		})
@@ -763,7 +763,7 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 				toolBlockIndex := state.NextBlockIndex
 				state.NextBlockIndex++
 				state.ToolCalls[idx] = ToolCallState{
-					ID:         tc.ID,
+					ID:         SanitizeClaudeToolID(tc.ID),
 					Name:       toolName,
 					BlockIndex: toolBlockIndex,
 				}
@@ -772,7 +772,7 @@ func TranslateOpenAIToClaudeStreamSession(sessionKey string, openaiChunk []byte)
 					"index": toolBlockIndex,
 					"content_block": map[string]any{
 						"type":  "tool_use",
-						"id":    tc.ID,
+						"id":    SanitizeClaudeToolID(tc.ID),
 						"name":  toolName,
 						"input": map[string]any{},
 					},

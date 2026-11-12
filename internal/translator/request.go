@@ -3,6 +3,8 @@ package translator
 import (
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/thinking"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
@@ -506,6 +508,65 @@ func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 // client asked for and must survive untouched.
 var serverToolUseIDRegex = regexp.MustCompile(`^srvtoolu_[a-zA-Z0-9_]+$`)
 
+// claudeToolIDPattern is the Messages API's accepted tool id alphabet. Anthropic
+// answers 400 "tool_use.id: String should match pattern" for any id outside it.
+var claudeToolIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// SanitizeClaudeToolID rewrites an id to the Messages API alphabet.
+//
+// A tool call that came from another upstream — Codex, DeepSeek, Gemini, a
+// custom node — can carry '.', ':', '/' or spaces in its id. 9router used to
+// forward that id verbatim when translating the answer to Claude, the client
+// stored it in its transcript, and every later turn routed to Anthropic was
+// rejected with 400 until the turn aged out. The rewrite is deterministic
+// (sha256 of the original), so a tool_use and its tool_result still pair.
+func SanitizeClaudeToolID(id string) string {
+	if id == "" || claudeToolIDPattern.MatchString(id) {
+		return id
+	}
+	sum := sha256.Sum256([]byte(id))
+	return "toolu_" + hex.EncodeToString(sum[:])[:24]
+}
+
+// sanitizeClaudeToolIDs rewrites foreign tool ids in a Claude message array and
+// reports whether anything changed.
+func sanitizeClaudeToolIDs(messages []any) bool {
+	changed := false
+	for _, mRaw := range messages {
+		msg, ok := mRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, ok := msg["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, bRaw := range blocks {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			bType, _ := block["type"].(string)
+			field := ""
+			switch bType {
+			case "tool_use", "server_tool_use":
+				field = "id"
+			case "tool_result", "web_search_tool_result":
+				field = "tool_use_id"
+			}
+			if field == "" {
+				continue
+			}
+			id, _ := block[field].(string)
+			if next := SanitizeClaudeToolID(id); next != id {
+				block[field] = next
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
 func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -641,6 +702,9 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 		}
 	}
 
+	if sanitizeClaudeToolIDs(messagesRaw) {
+		changed = true
+	}
 	if !changed {
 		return body
 	}
