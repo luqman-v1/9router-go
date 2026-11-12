@@ -168,14 +168,42 @@ func TestNormalizeOpenAILevelUnknown(t *testing.T) {
 	}
 }
 
-// TestLevelForResolvesAutoToHigh pins that "auto" never reaches an OpenAI
-// wire verbatim: it resolves to "high" (the only sensible concrete level a
-// strict OpenAI-compatible upstream accepts instead of rejecting "auto").
-func TestLevelForResolvesAutoToHigh(t *testing.T) {
+// TestLevelForPreservesAuto pins that levelFor leaves "auto" verbatim: the
+// step writer relies on this to ship reasoning_effort:"auto" unchanged.
+func TestLevelForPreservesAuto(t *testing.T) {
 	cases := []struct {
-		level    string
+		level     string
 		supported []string
-		want     string
+		want      string
+	}{
+		{"auto", nil, "auto"},
+		{"auto", []string{"none", "minimal", "low", "medium", "high", "xhigh"}, "auto"},
+		{"auto", []string{"none", "low", "medium", "high"}, "auto"},
+		{"low", nil, "low"},
+		{"low", []string{"none", "low", "medium", "high", "xhigh"}, "low"},
+		{"medium", nil, "medium"},
+		{"high", nil, "high"},
+		{"max", nil, "xhigh"},
+		{"ultra", []string{"max"}, "max"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.level, func(t *testing.T) {
+			if got := levelFor(tt.level, tt.supported); got != tt.want {
+				t.Errorf("levelFor(%q, %v) = %q, want %q", tt.level, tt.supported, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestOpenAILevelForResolvesAutoToHigh pins that "auto" never reaches an OpenAI
+// wire verbatim: openAILevelFor resolves it to "high" (the only sensible
+// concrete level a strict OpenAI-compatible upstream accepts instead of
+// rejecting "auto").
+func TestOpenAILevelForResolvesAutoToHigh(t *testing.T) {
+	cases := []struct {
+		level     string
+		supported []string
+		want      string
 	}{
 		{"auto", nil, "high"},
 		{"auto", []string{"none", "minimal", "low", "medium", "high", "xhigh"}, "high"},
@@ -189,8 +217,8 @@ func TestLevelForResolvesAutoToHigh(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.level, func(t *testing.T) {
-			if got := levelFor(tt.level, tt.supported); got != tt.want {
-				t.Errorf("levelFor(%q, %v) = %q, want %q", tt.level, tt.supported, got, tt.want)
+			if got := openAILevelFor(tt.level, tt.supported); got != tt.want {
+				t.Errorf("openAILevelFor(%q, %v) = %q, want %q", tt.level, tt.supported, got, tt.want)
 			}
 		})
 	}

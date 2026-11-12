@@ -48,11 +48,8 @@ func levelFor(level string, supported []string) string {
 		return NormalizeOpenAILevel(level, supported)
 	}
 	if level == "auto" {
-		// "auto" asks the upstream to decide, but strict OpenAI-compatible
-		// upstreams reject the literal "auto" (400 invalid_reasoning_effort):
-		// they accept none|low|medium|high only. Resolve it to "high" so the
-		// OpenAI and OpenAI Responses writers never ship "auto" on the wire.
-		return "high"
+		// Preserved verbatim: the step writer must ship "auto" unchanged.
+		return "auto"
 	}
 	if !KnownEffort(level) {
 		level = "medium"
@@ -111,4 +108,14 @@ func containsLevel(levels []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// openAILevelFor resolves a level for the OpenAI and OpenAI Responses wires,
+// which reject the literal "auto". "auto" resolves to "high"; every other
+// level is handled by levelFor.
+func openAILevelFor(level string, supported []string) string {
+	if level == "auto" {
+		return "high"
+	}
+	return levelFor(level, supported)
 }
