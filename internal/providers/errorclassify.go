@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // ErrorRule classifies an upstream error by text match or status code.
@@ -402,6 +403,36 @@ func GetQuotaCooldown(backoffLevel int) int {
 	level := max(backoffLevel-1, 0)
 	cooldown := int(float64(BackoffConfig.BaseMs) * math.Pow(2, float64(level)))
 	return min(cooldown, BackoffConfig.MaxMs)
+}
+
+// GetEscalatingLockoutCooldown returns the cooldown for the nth consecutive
+// account-level lockout (1-based, failureStreak >= 1):
+//
+//	streak 1 -> 24h, streak 2 -> 48h, streak 3 -> 96h (4 days),
+//	streak 4 -> 168h (7 days), streak 5+ -> 336h (14 days).
+//
+// A streak of 0 (or a reset after a successful probe / manual re-test) means no
+// lockout: returns 0.
+//
+// This replaces the flat cooldownBannedAccount for repeated account-level
+// failures: once 24 hours lapse without the operator resolving the account, the
+// next failure parks it longer instead of immediately re-dialling a dead
+// account and inviting another WAF flag.
+func GetEscalatingLockoutCooldown(failureStreak int) time.Duration {
+	switch {
+	case failureStreak <= 0:
+		return 0
+	case failureStreak == 1:
+		return 24 * time.Hour
+	case failureStreak == 2:
+		return 48 * time.Hour
+	case failureStreak == 3:
+		return 96 * time.Hour
+	case failureStreak == 4:
+		return 168 * time.Hour
+	default:
+		return 336 * time.Hour
+	}
 }
 
 // ErrorClassification holds the result of ClassifyError.
