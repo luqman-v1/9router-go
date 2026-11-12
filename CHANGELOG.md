@@ -1,5 +1,164 @@
 # Changelog
 
+## [v1.9.16-exp.14] - 2026-11-12
+
+### feat(tokensaver): sync doctrine and protocol with upstream token savers
+
+Sync token savers with upstream canonical releases:
+- **Caveman**: align system doctrine with upstream v4.1.0 (`JuliusBrussee/caveman`), adopting ASD-STE100 guidelines (20 words max per sentence, active voice, short word preference, bounded tool run status).
+- **Ponytail**: align all three levels (lite/full/ultra) with upstream v5.3.3 (`DietrichGebert/ponytail`), adding the scope vs extra features distinction and the `shortcut: <limit>, <when to upgrade>` notation.
+- **Headroom**: forward `x-headroom-session-id` on `/v1/compress` calls to isolate prefix cache trackers across parallel Claude Code subagent lineages as expected by upstream Headroom v0.44.0.
+- **RTK Filters**: expand `shell-find` match patterns to handle Windows drive letters and backslash path separators (`C:\...`, `.\...`); keep `Author:`/`Date:` lines in `git-log` output as upstream's JS-native filter does.
+
+### fix(translator): rewrite foreign tool ids to the Anthropic alphabet
+
+- Anthropic rejects a Messages request with `400 messages.N.content.0.tool_use.id: String should match pattern '^[a-zA-Z0-9_-]+$'`. A tool call from another upstream (Codex, DeepSeek, Gemini, a custom node) can carry `.`, `:`, `/` or spaces in its id; 9router forwarded that id verbatim when translating the answer to Claude, the client stored it in its transcript, and every later turn routed to Anthropic failed until the turn aged out.
+- `translator.SanitizeClaudeToolID` rewrites such an id to `toolu_<sha256[:24]>`, deterministically, so a `tool_use` and its `tool_result` still pair. Applied on the Claude-native request body (`SanitizeClaudePassthrough`) and on the OpenAI→Claude response translation (stream and non-stream).
+
+### feat(quota): auto-ping for the Command Code Provider API
+
+- The Quota Tracker offered auto-ping only for `claude` and `codex`. Command Code publishes the same rolling 5h window (`windowLimits.fiveHour`), so `commandcode-goat` is now in the scheduler's provider set: `commandcode-goatAutoPing` holds its switches and schedules, and the row shows the bolt/schedule controls without requiring an OAuth credential (Command Code authenticates with a bearer key).
+- The ping sends the cheap OpenAI-lane model `deepseek/deepseek-v4.1-flash` with the plain one-token body, so it starts the window rather than spending it.
+
+### fix(translator): parse DeepSeek DSML text into tool_calls
+
+DeepSeek-family upstreams sometimes emit tool calls as inline DSML XML
+(`<|DSML| invoke name="...">`) instead of structured `tool_calls` blocks, so
+AI coding agents see no invocation and agent loops stall.
+
+Adds `ExtractDSMLToolCalls` in `internal/translator/` that detects DSML blocks
+in all marker spellings, extracts the function name and parameters, builds
+valid JSON for `function.arguments`, and strips the raw markup from content.
+Wired into `TranslateOpenAIToClaude` (non-streaming) and
+`TranslateOpenAIToClaudeStreamSession` (streaming), so it works for DeepSeek
+and any DeepSeek-family upstream reached through combo aliases.
+
+Port of decolua/9router PR #5563. Closes #1107.
+
+Verified with `gofmt`, `go vet`, and table-driven unit tests covering single
+and multi-parameter calls, surrounding-text preservation, undeclared-tool
+rejection, both pipe spellings, and truncated blocks.
+
+### fix(translator): resolve the auto thinking intent on OpenAI wires
+
+- An adaptive/auto thinking intent (`thinking: {type:"adaptive"}`, `output_config: {effort:"auto"}`, or `reasoning_effort: "auto"`) reaching an OpenAI or OpenAI Responses transport was shipped as the literal `"reasoning_effort": "auto"`, which strict OpenAI-compatible upstreams reject with `HTTP 400 invalid_reasoning_effort` (they accept `none|low|medium|high` only).
+- `levelFor` (the OpenAI effort clamp used by both the `openai` and `openai-responses` writers) now resolves `"auto"` to `"high"` instead of forwarding the literal string. Explicit `low|medium|high|none` levels are preserved.
+- Add table-driven unit tests for `levelFor` and the OpenAI wire.
+
+Closes #1105.
+
+### fix(free-pi): stop relaying the ad gate as if it were the model's answer
+
+free-pi's ad gate does not always arrive as an error. Measured live, a gated
+account received:
+
+```
+200 {"id":"chatcmpl-freepi-…",
+     "choices":[{"message":{"content":"free-pi is free because it shows ads,
+       and this session hasn't loaded any. Requests stay paused until ads load…
+       Your free-pi-cli is out of date: update with `npx free-pi-cli@latest`."}}],
+     "usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+```
+
+We relayed that verbatim, so an API client read upstream's upgrade notice as
+the model's reply. Nothing caught it: the existing gate handling keys on a 403
+carrying `Ads aren't showing for this account` (`providers/freepi.go`), and the
+generic 200-body guard (`proxy.EmptyUpstreamError`) accepts any body with
+non-empty content — verified, not assumed.
+
+Two signals now identify the gate together: one of its own phrases, and a
+completion that consumed **zero** tokens. The wording alone could in principle
+appear in a real answer discussing free-pi's business model; zero completion
+tokens alongside non-empty content cannot — a model that emitted text spent
+tokens producing it. Requiring both keeps genuine answers safe, and the marker
+list is deliberately narrow (a bare `"ads"` would flag any answer about
+advertising).
+
+A detected gate becomes a real `403` naming `free_pi_ad_gate`, with a message
+that tells the client what actually clears it. It is not retried: no retry can
+fix a gate that is genuinely closed, and `403` is already in
+`providers.RetryableStatusCodes` so a combo advances to the next member.
+
+**This does not make gated requests succeed, and it must not.** The gate is
+upstream's real policy, and this change only stops us from misreporting it as
+an answer. What clears it is a genuine ad impression: open the free-pi
+connection page in the dashboard, which renders a creative this gateway served
+and reports the impression once the client confirms it painted. Fabricating
+impressions — as the reference proxy does — is still deliberately not
+implemented; a false impression is a false claim to the advertiser whose spend
+funds the inference.
+
+Covered by 10 new cases in `free_pi_gate_test.go`, including the measured body,
+an SSE `delta`-shaped gate, and two negative controls proving a real answer
+that mentions ads is preserved (and one proving gate wording with non-zero
+token spend is preserved too), plus an end-to-end pair through `ForwardFreePi`.
+
+### feat(quota): group the Quota Tracker rows by provider, scope models per account
+
+- The tracker rendered every connection as one flat list. Rows are now folded into collapsible provider sections (icon, label, account count); the first provider opens by default and the rest start collapsed. The provider/account filters, sorting and pagination are unchanged.
+- `groupConnectionsByProvider` keeps the caller's row order inside each section and the first-seen provider order, so a grouped list reads the same way as the flat one.
+- Edit Connection now shows a Codex-only "Models this account may serve" list, written to `providerSpecificData.enabledModels`. The backend already skips an account whose list omits the requested model, so a free Codex account can be pinned to one model while a Plus account keeps the rest — no more 400 from picking the wrong account and no Plus quota spent on a model the free tier could serve.
+
+### fix(usage): record Claude prompt-cache usage on streamed turns
+
+- The Claude-native passthrough paths read usage with `ParseClaudeUsage`, which only understands a top-level `usage` object. Streamed Claude frames carry it at `message.usage` (`message_start`) and top level (`message_delta`), so every streamed turn logged `cached_tokens = 0` and a prompt count that fell back to the character estimate. The request detail therefore showed 0 cache for every Claude turn even when Anthropic reported a near-complete cache read.
+- Added `translator.AccumulateClaudeStreamUsage`, which folds `message_start` (input, cache read, cache creation) and `message_delta` (output) into one running `OpenAIUsage`.
+- Wired it into all three streamed paths: `handleClaudeMessagesStream`, the `sseStream` passthrough with a decloaker tool map, and `captureUsageFromSSEChunk` (the `SSECopy` passthrough).
+- `AccumulateClaudeStreamUsage` returns a new usage on every recognised event so callers can tell a real update from a no-op by identity, and a `message_delta` no longer clobbers the prompt/cache figures set at `message_start`.
+
+### feat(providers): add `commandcode-goat` (`cmc-goat`) provider backed by official Provider API
+
+- Command Code's documented Provider API (`commandcode.ai/docs/provider`) publishes three dedicated standard lanes on a single bearer key (`/provider/v1/chat/completions`, `/provider/v1/responses`, `/provider/v1/messages`), plus a decision-model endpoint (`/provider/v1/systemone` for `typesafe/jev`).
+- The existing `commandcode` (`cmc`) provider continues to speak the internal CLI `/alpha/generate` envelope with spoofed CLI identity headers.
+- Added `commandcode-goat` (alias `cmc-goat`) to route each model to its declared lane based on the live catalogue's `supported_endpoints` (`commandcode_goat_catalog.go`): Claude models route to `/messages`, OpenAI and open models route to `/chat/completions` (or `/responses`).
+- Added per-model context window declarations from the live catalog (spanning 200k to 1.05M).
+- Added `x-cmd-zdr: 1` support when requested via `connData["zdr"]`.
+- Added `typesafe/jev` decision model support via `/systemone`.
+- Added quota tracker and dashboard usage support (`usageSupportedProviders`, `usageApikeyProviders`, and window normalization for 5-hour rolling limit, weekly limit, and monthly credits).
+- Added unit tests covering capability resolution, multi-lane routing, quota tracking, and prefix stripping.
+
+### fix(models): resolve model publishing, prefix matching, and unpublishing bugs
+
+Fix model publishing, unpublishing, and prefix matching across catalog endpoints:
+- Persist deleted models to `disabledModels` and invalidate live catalog cache in `HandleDeleteProviderModels` and `HandleDeleteCustomModel` so compatible live nodes stop re-publishing deleted models.
+- Enforce strict `enabledModels` pinning in `appendConnectionModels` to prevent unpinned `customModels` and legacy `modelAliases` from bypassing the connection allowlist.
+- Support bidirectional prefix matching in `disabledModelIndex` and `isDisabled` so prefixed entries (e.g. `nvidia/...`, `cl/...`) match stripped candidates.
+- Add bare entries in `ProviderModelKinds["nvidia"]` and dual-lookup support in `GetProviderModelKind` to prevent non-LLM models (e.g. `parakeet-ctc-1.1b-asr` STT) from publishing as LLMs.
+
+### Fixed
+- Raw Responses API streams (`/v1/responses`) that end after `response.completed`, `response.done` or `response.incomplete` are now treated as terminal, so the gateway no longer appends a Chat Completions `network_error` frame to a completed stream (#1073).
+
+### feat(resilience): escalating lockout ladder for repeated account failures
+
+Replaces the flat 24h `cooldownBannedAccount` with an escalating lockout
+ladder for consecutive account-level failures (e.g. Antigravity TOS bans):
+
+- `GetEscalatingLockoutCooldown(failureStreak)`: streak 1 -> 24h, 2 -> 48h,
+  3 -> 96h (4 days), 4 -> 168h (7 days), 5+ -> 336h (14 days); streak 0 or a
+  reset -> 0 (no lockout).
+- Account-level permanent/severe failures (e.g. `LooksLikeAccountDeactivated`)
+  now park using the connection's consecutive failure streak instead of a flat
+  24h cooldown, so a dead account is not immediately re-dialled once the first
+  window lapses.
+- A successful request or a successful test connection clears the streak, so
+  the next ban starts from the base cooldown.
+
+Verified with `go vet` and `go test` on `internal/providers` and `internal/db`.
+
+### feat(antigravity): inject official session and project headers
+
+- Inject \X-Goog-User-Project\, \X-Machine-Session-Id\, \X-Client-Name\, and \X-Client-Version\ when forwarding Antigravity requests.
+
+### fix(antigravity): strip Claude billing header and sanitize prompt rewrites
+
+- Add table-driven unit test coverage in \internal/translator/antigravity_test.go\ asserting that \x-anthropic-billing-header:\ lines and competing Claude SDK boilerplate are stripped from system prompts (behavior implemented on main via #444).
+
+### fix(translator): sanitize Agent tool arguments for Claude Code subagent compatibility
+
+- Non-Anthropic models (such as Codex, GPT, and Gemini) proxying for Claude Code frequently call the `Agent` tool without the schema-required `description` parameter, or pass alias fields like `task`, `instruction`, or `summary`.
+- Missing `description` causes Claude Code client-side validation to fail with `InputValidationError: The required parameter description is missing` (`Initializing… Invalid tool parameters`), triggering repetitive retry loops and rapid quota depletion.
+- Added `sanitizeAgentArgs` to `internal/translator/sanitize.go` to normalize prompt aliases and automatically synthesize a fallback `description` from the prompt prefix when absent.
+
 ## [v1.9.16-exp.13] - 2026-11-11
 
 ### feat(antigravity): global protective pause on first TOS_VIOLATION detection
