@@ -4966,7 +4966,7 @@
         Add Model
       </button>
 
-      {#if (providerId === 'cline' || providerId === 'clinepass' || providerId === 'qoder' || providerId === 'qoder-cn' || providerId === 'commandcode' || providerId === 'vercel-ai-gateway' || providerId === 'chutes' || providerId === 'nvidia' || providerId === 'ollama' || providerId === 'openrouter') && providerConnections.some((c) => c.isActive !== 0)}
+      {#if (providerId === 'cline' || providerId === 'clinepass' || providerId === 'qoder' || providerId === 'qoder-cn' || providerId === 'commandcode' || providerId === 'commandcode-goat' || providerId === 'vercel-ai-gateway' || providerId === 'chutes' || providerId === 'nvidia' || providerId === 'ollama' || providerId === 'openrouter') && providerConnections.some((c) => c.isActive !== 0)}
         <button
           type="button"
           onclick={handleImportLiveCatalogModels}

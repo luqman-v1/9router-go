@@ -243,6 +243,35 @@ func filterCommandCodeFree(models []map[string]any) []suggestedModel {
 	return out
 }
 
+// filterCommandCodeAll keeps every id the Provider API serves, free and paid.
+//
+// The commandcode-goat provider routes per model — Claude ids to /messages,
+// open and OpenAI ids to /chat/completions or /responses — so the whole
+// catalogue is importable, not only the zero-credit tiers the older
+// `commandcode-free` filter keeps. Importing a subset would leave the operator
+// unable to reach the lanes this provider exists to expose.
+func filterCommandCodeAll(models []map[string]any) []suggestedModel {
+	out := make([]suggestedModel, 0, len(models))
+	for _, m := range models {
+		id := getString(m, "id")
+		if id == "" {
+			continue
+		}
+		name := getString(m, "name")
+		if name == "" {
+			name = id
+		}
+		sm := suggestedModel{ID: id, Name: name}
+		if clen, ok := getFloat(m, "context_length"); ok {
+			n := int64(clen)
+			sm.ContextLength = &n
+		}
+		out = append(out, sm)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 // filterVercelFree keeps Vercel AI Gateway's zero-priced chat models. Its
 // catalogue spells the price keys input/output rather than openrouter's
 // prompt/completion, and the window context_window rather than context_length,
@@ -315,6 +344,8 @@ func HandleSuggestedModels(w http.ResponseWriter, r *http.Request) {
 		filter = filterNousFree
 	case "commandcode-free":
 		filter = filterCommandCodeFree
+	case "commandcode-all":
+		filter = filterCommandCodeAll
 	case "vercel-free":
 		filter = filterVercelFree
 	case "free-pi":

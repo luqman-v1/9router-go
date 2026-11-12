@@ -63,6 +63,13 @@ func UpstreamSpeaksResponses(provider, model string, cfg *providers.ProviderConf
 		// model pins the Responses one, so a /v1/responses client is relayed
 		// without a round trip through Chat Completions.
 		return true
+	case "commandcode-goat", "cmc-goat":
+		// The documented Provider API publishes supported_endpoints per model;
+		// the Responses lane is served by every OpenAI/open model that lists
+		// it, so a /v1/responses client is relayed untouched. Claude ids do
+		// not list it and keep the translation bridge.
+		formats, declared := providers.GetModelFormats(provider, model)
+		return declared && formats.SupportsFormat(providers.FormatOpenAIResponses)
 	default:
 		return false
 	}

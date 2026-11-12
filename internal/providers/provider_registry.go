@@ -1028,6 +1028,24 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Notice:        &Notice{Text: "Use your CommandCode CLI API key (starts with user_...) from ~/.commandcode/auth.json or commandcode.ai/studio.", APIKeyURL: "https://commandcode.ai/studio"},
 		ModelsFetcher: &Fetcher{URL: "https://api.commandcode.ai/provider/v1/models", Type: "commandcode-free"},
 	},
+	// Command Code's documented Provider API (commandcode.ai/docs/provider) —
+	// a separate entry from `commandcode` above, which speaks the CLI's
+	// internal /alpha/generate envelope. This one is standard OpenAI
+	// Chat/Responses plus Anthropic Messages on one bearer, with the lane
+	// chosen per model from the live catalogue's supported_endpoints.
+	"commandcode-goat": {
+		ID:            "commandcode-goat",
+		Name:          "Command Code (Provider API)",
+		Alias:         "cmc-goat",
+		Category:      CategoryAPIKey,
+		AuthType:      "apikey",
+		Color:         "#000000",
+		Icon:          "smart_toy",
+		ServiceKinds:  []string{"llm", "systemone"},
+		Website:       "https://commandcode.ai/docs/provider",
+		Notice:        &Notice{Text: "Use your Command Code API key (starts with user_...) from Studio. OpenAI- and Anthropic-compatible endpoints on one key; Claude models answer /messages only, everything else /chat/completions.", APIKeyURL: "https://commandcode.ai/studio"},
+		ModelsFetcher: &Fetcher{URL: "https://api.commandcode.ai/provider/v1/models", Type: "commandcode-all"},
+	},
 	"deepgram": {
 		ID:           "deepgram",
 		Name:         "Deepgram",
