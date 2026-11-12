@@ -296,6 +296,7 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 		// opening a new tool-call index without an id aborts strict
 		// OpenAI-compatible clients mid-turn (upstream 95c9d03e).
 		toolFill := internalproxy.NewStreamToolCallIDFill()
+		var streamUsage *translator.OpenAIUsage
 		err := internalproxy.ScanStream(upstream, func(payload []byte) {
 			if patched, changed := toolFill.Fill(payload); changed {
 				payload = patched
@@ -313,6 +314,9 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 			}
 			if usage := translator.ParseResponseUsage(payload); usage != nil {
 				translator.SetUsage(ctx, usage)
+			} else if acc := translator.AccumulateClaudeStreamUsage(streamUsage, payload); acc != nil {
+				streamUsage = acc
+				translator.SetUsage(ctx, streamUsage)
 			}
 		})
 		if err != nil {

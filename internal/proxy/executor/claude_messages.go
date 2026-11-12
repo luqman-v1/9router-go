@@ -34,6 +34,7 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 		hw := proxy.NewHeartbeatWriter(req.Ctx, w, 0)
 		defer hw.Close()
 		flusher := proxy.WriteSSEHeaders(hw)
+		var streamUsage *translator.OpenAIUsage
 		writeFrame := func(evType string, payload []byte) {
 			markTTFT(req, startTime)
 			var frame []byte
@@ -50,10 +51,9 @@ func handleClaudeMessagesStream(w http.ResponseWriter, req *Request, upstream io
 			if flusher != nil {
 				flusher.Flush()
 			}
-			raw := append([]byte(`{"message":`), payload...)
-			raw = append(raw, '}')
-			if usage := translator.ParseClaudeUsage(raw); usage != nil {
-				translator.SetUsage(req.Ctx, usage)
+			if acc := translator.AccumulateClaudeStreamUsage(streamUsage, payload); acc != nil {
+				streamUsage = acc
+				translator.SetUsage(req.Ctx, streamUsage)
 			}
 		}
 		return proxy.ScanStreamEvents(upstream, func(upstreamEv proxy.SSEEvent) bool {
