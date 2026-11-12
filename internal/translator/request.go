@@ -975,10 +975,31 @@ func capCacheControlBlocks(req map[string]any) {
 	}
 }
 
-// AnchorClaudeCache ensures prompt-caching breakpoints land on system/tool head anchors,
+// Claude prompt-cache TTL choices for the head anchors.
+const (
+	ClaudeCacheTTL5m = "5m"
+	ClaudeCacheTTL1h = "1h"
+)
+
+// claudeCacheAnchor builds the head-anchor marker for one TTL. An unknown or
+// empty TTL keeps the default 5-minute window.
+func claudeCacheAnchor(ttl string) map[string]any {
+	if ttl == ClaudeCacheTTL1h {
+		return map[string]any{"type": "ephemeral", "ttl": ClaudeCacheTTL1h}
+	}
+	return map[string]any{"type": "ephemeral"}
+}
+
+// AnchorClaudeCache is AnchorClaudeCacheWithTTL at the default 5-minute window.
+func AnchorClaudeCache(body []byte) []byte { return AnchorClaudeCacheWithTTL(body, "") }
+
+// AnchorClaudeCacheWithTTL ensures prompt-caching breakpoints land on system/tool head anchors,
 // the tool loop's final tool results, and at most 4 cache_control markers are dispatched
 // (parity with #3567 / #8a81085a / upstream #49c761cd).
-func AnchorClaudeCache(body []byte) []byte {
+// ttl picks the head-anchor window: ClaudeCacheTTL1h costs 2x per written token but
+// survives an idle gap up to an hour; the empty string and ClaudeCacheTTL5m both use
+// the default 5-minute ephemeral marker.
+func AnchorClaudeCacheWithTTL(body []byte, ttl string) []byte {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
 		return body
@@ -1002,8 +1023,8 @@ func AnchorClaudeCache(body []byte) []byte {
 					delete(m, "cache_control")
 				}
 				if i == last {
-					want := map[string]any{"type": "ephemeral", "ttl": "1h"}
-					if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != "1h" {
+					want := claudeCacheAnchor(ttl)
+					if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != want["ttl"] {
 						m["cache_control"] = want
 					}
 				} else if _, had := m["cache_control"]; had {
@@ -1019,8 +1040,8 @@ func AnchorClaudeCache(body []byte) []byte {
 		for i, sb := range sys {
 			if m, ok := sb.(map[string]any); ok {
 				if i == lastSys {
-					want := map[string]any{"type": "ephemeral", "ttl": "1h"}
-					if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != "1h" {
+					want := claudeCacheAnchor(ttl)
+					if cur, ok := m["cache_control"].(map[string]any); !ok || cur["type"] != "ephemeral" || cur["ttl"] != want["ttl"] {
 						m["cache_control"] = want
 					}
 				} else {

@@ -6,6 +6,7 @@
   // bulk turn off empty / on available, quota hide/show via settings,
   // and per-connection refresh/toggle/delete actions.
   import { onMount } from 'svelte'
+  import ClaudeCacheTtl from './quota/ClaudeCacheTtl.svelte'
   import {
     api,
     type CodexResetCredit,
@@ -1329,6 +1330,11 @@
             </span>
           </button>
           {#if !groupCollapsed[group.provider]}
+            {#if group.provider === 'claude'}
+              <div class="mb-3">
+                <ClaudeCacheTtl />
+              </div>
+            {/if}
             <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
               {#each group.connections as conn (conn.id)}
         {@const isActive = isActiveConn(conn)}

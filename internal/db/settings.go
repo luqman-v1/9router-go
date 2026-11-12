@@ -151,13 +151,19 @@ type SettingsData struct {
 	// with no dependency, "external" posts to HeadroomUrl. Empty means "builtin",
 	// so an existing settings row that never set the field gets the in-process
 	// engine rather than a proxy nobody installed.
-	HeadroomEngine             string                          `json:"headroomEngine,omitempty"`
-	HeadroomCodeAware          bool                            `json:"headroomCodeAware"`
-	HeadroomKompress           bool                            `json:"headroomKompress"`
-	HeadroomTimeoutMs          int                             `json:"headroomTimeoutMs"`
-	SemanticCacheEnabled       bool                            `json:"semanticCacheEnabled"`
-	SemanticCacheTTL           int                             `json:"semanticCacheTTL,omitempty"`
-	SemanticCacheMaxEntries    int                             `json:"semanticCacheMaxEntries,omitempty"`
+	HeadroomEngine          string `json:"headroomEngine,omitempty"`
+	HeadroomCodeAware       bool   `json:"headroomCodeAware"`
+	HeadroomKompress        bool   `json:"headroomKompress"`
+	HeadroomTimeoutMs       int    `json:"headroomTimeoutMs"`
+	SemanticCacheEnabled    bool   `json:"semanticCacheEnabled"`
+	SemanticCacheTTL        int    `json:"semanticCacheTTL,omitempty"`
+	SemanticCacheMaxEntries int    `json:"semanticCacheMaxEntries,omitempty"`
+	// ClaudeCacheTTL picks the prompt-cache window for the head anchors 9router
+	// writes onto Claude requests: "5m" (default) or "1h". The two are billed
+	// differently — a cache write costs 1.25x at 5m and 2x at 1h — and which is
+	// cheaper depends on how long the operator's sessions pause between turns.
+	// Empty means "5m", so a row that never set it keeps the default.
+	ClaudeCacheTTL             string                          `json:"claudeCacheTtl,omitempty"`
 	AutoUpdate                 bool                            `json:"autoUpdate"`
 	FallbackStrategy           string                          `json:"fallbackStrategy,omitempty"`
 	StickyRoundRobinLimit      int                             `json:"stickyRoundRobinLimit,omitempty"`

@@ -6,6 +6,7 @@ import (
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/headroom"
 	"9router/proxy/internal/tokensaver"
+	"9router/proxy/internal/translator"
 )
 
 // TokenSaverConfig holds runtime-configurable token saver flags and levels.
@@ -39,6 +40,9 @@ type TokenSaverConfig struct {
 	semanticCacheEnabled    bool
 	semanticCacheTTL        int
 	semanticCacheMaxEntries int
+	// claudeCacheTTL is the head-anchor prompt-cache window for Claude requests:
+	// "5m" or "1h". Empty means "5m".
+	claudeCacheTTL string
 
 	// Headroom in-flight compression. Kept apart from the other savers because
 	// it is the only one that talks to another process: the flag, the endpoint
@@ -400,6 +404,7 @@ func (c *TokenSaverConfig) UpdateFromSettings(s *db.SettingsData) {
 	if s.SemanticCacheMaxEntries > 0 {
 		c.semanticCacheMaxEntries = s.SemanticCacheMaxEntries
 	}
+	c.claudeCacheTTL = s.ClaudeCacheTTL
 	c.headroomEnabled = s.HeadroomEnabled
 	if s.HeadroomUrl != "" {
 		c.headroomURL = s.HeadroomUrl
@@ -408,6 +413,17 @@ func (c *TokenSaverConfig) UpdateFromSettings(s *db.SettingsData) {
 	if s.HeadroomTimeoutMs > 0 {
 		c.headroomTimeoutMs = s.HeadroomTimeoutMs
 	}
+}
+
+// ClaudeCacheTTL returns the head-anchor prompt-cache window for Claude
+// requests. An unknown or unset value reads as "5m" (the default marker).
+func (c *TokenSaverConfig) ClaudeCacheTTL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.claudeCacheTTL == translator.ClaudeCacheTTL1h {
+		return translator.ClaudeCacheTTL1h
+	}
+	return translator.ClaudeCacheTTL5m
 }
 
 // HeadroomEnabled reports whether in-flight compression is switched on.
