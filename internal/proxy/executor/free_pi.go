@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"9router/proxy/internal/constants"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
@@ -124,92 +122,7 @@ func ForwardFreePi(w http.ResponseWriter, req *Request) error {
 	}
 
 	defer func() { _ = resp.Body.Close() }()
-	// The ad gate also arrives as an ordinary 200 whose content is upstream's
-	// refusal, so the completion path would relay it as the model's answer. Read
-	// the body here, where it is whole and nothing has been written yet, so the
-	// refusal can still become a real status.
-	// MaxUpstreamBodyBytes, not UpstreamErrLimit: this is a successful 200 whose
-	// body is the answer about to be relayed, and jsonResponse caps its own read
-	// at the same 10 MiB. Peeking with the 1 MiB error limit would truncate a
-	// legitimate large completion right here and hand corrupt JSON onward — a
-	// truncation no later stage can detect.
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
-	if readErr != nil {
-		return fmt.Errorf("free-pi: read response: %w", readErr)
-	}
-	if gateErr := freePiInbandGateError(body); gateErr != nil {
-		return gateErr
-	}
-	return jsonResponse(ctx, w, bytes.NewReader(body), req.TranslateResp, req.ResponseBuf)
-}
-
-// freePiInbandGateError reports the ad gate when upstream delivers it inside a
-// 200 rather than as a 403.
-//
-// Two signals must agree before this fires: one of the gate's own phrases, and
-// a completion that consumed no tokens. The wording alone could in principle
-// appear in a real answer discussing free-pi's business model; zero completion
-// tokens with non-empty content cannot — a model that emitted text spent
-// tokens producing it. Requiring both keeps a genuine answer safe.
-func freePiInbandGateError(body []byte) error {
-	// Cheap reject before any parsing: a body that never mentions ads cannot be
-	// the gate. containsFoldASCII rather than bytes.ToLower because this runs on
-	// every non-streaming completion and lowercasing the whole body would copy
-	// up to 10 MiB on the 1 vCPU target (AGENTS.md §4.A/§4.G).
-	if !containsFoldASCII(body, "ad") {
-		return nil
-	}
-	var probe struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-			// A stream-shaped chunk carries the text under delta instead.
-			Delta struct {
-				Content string `json:"content"`
-			} `json:"delta"`
-		} `json:"choices"`
-		Usage struct {
-			CompletionTokens int `json:"completion_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(body, &probe); err != nil {
-		return nil
-	}
-	if probe.Usage.CompletionTokens != 0 {
-		return nil // a real completion spent tokens; never the gate
-	}
-	text := ""
-	for _, c := range probe.Choices {
-		text += c.Message.Content + c.Delta.Content
-	}
-	if text == "" {
-		return nil
-	}
-	matched := false
-	for _, marker := range providers.FreePiInbandGateMarkers {
-		if containsFoldASCII([]byte(text), marker) {
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		return nil
-	}
-
-	log.Warn("free-pi", "ad gate arrived as a 200 body; reporting it as an error, not as content")
-	// 403 with the gate's own type: the condition is "this account may not be
-	// served yet", which is what the 403 shape already means to callers, and
-	// providers.RetryableStatusCodes counts it so a combo advances.
-	payload, _ := json.Marshal(map[string]any{
-		"error": map[string]any{
-			"message": "free-pi refused this request pending an ad impression. " +
-				"Open the free-pi connection page in the dashboard so an ad renders and the impression is recorded for this account.",
-			"type": "free_pi_ad_gate",
-			"code": http.StatusForbidden,
-		},
-	})
-	return &proxy.UpstreamError{StatusCode: http.StatusForbidden, Body: payload}
+	return jsonResponse(ctx, w, resp.Body, req.TranslateResp, req.ResponseBuf)
 }
 
 // freePiDoChat performs one upstream attempt with the free-pi header set.

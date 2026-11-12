@@ -110,28 +110,3 @@ var FreePiImpressionHosts = []string{"trygravity.ai", "trygravity.com"}
 // serve completions because no ad has been shown. We surface it verbatim rather
 // than inventing an impression to clear it.
 const FreePiAdGateMessage = "Ads aren't showing for this account"
-
-// FreePiInbandGateMarkers are the phrases upstream puts in an ordinary 200's
-// message content when it refuses to serve a completion without saying so with
-// a status code.
-//
-// Measured live: a gated request answered
-//
-//	200 {"id":"chatcmpl-freepi-…",
-//	     "choices":[{"message":{"content":"free-pi is free because it shows
-//	       ads, and this session hasn't loaded any. Requests stay paused until
-//	       ads load …"}}],
-//	     "usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
-//
-// That body is indistinguishable from an answer without these markers, and
-// relaying it makes a client read the gate as the model's reply. Two signals
-// together identify it: the wording, and the all-zero usage — no completion
-// tokens means no inference happened, which no genuine answer can claim.
-//
-// The phrases are deliberately narrow. Matching a bare "ads" would flag a real
-// answer that happens to discuss advertising.
-var FreePiInbandGateMarkers = []string{
-	"free-pi is free because it shows ads",
-	"requests stay paused until ads load",
-	"session hasn't loaded any",
-}
