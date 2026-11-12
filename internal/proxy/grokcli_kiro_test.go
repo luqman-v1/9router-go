@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -99,5 +102,73 @@ func TestKiroEndpointFallbackStatus(t *testing.T) {
 		if kiroEndpointFallbackStatus(status) {
 			t.Errorf("expected %d to be terminal for kiro", status)
 		}
+	}
+}
+func TestKiroIdentity_FingerprintAndMachineID(t *testing.T) {
+	t.Run("stable machine id per clientId", func(t *testing.T) {
+		psd := map[string]any{"clientId": "client-12345"}
+		id1 := resolveKiroMachineID(psd, "")
+		id2 := resolveKiroMachineID(psd, "different-token")
+		if id1 != id2 {
+			t.Errorf("machine ID must be stable across token refreshes: %q != %q", id1, id2)
+		}
+		if len(id1) != 64 {
+			t.Errorf("expected 64-hex sha256 machine ID, got %d chars: %q", len(id1), id1)
+		}
+	})
+
+	t.Run("user agent carries KiroIDE version and machine id", func(t *testing.T) {
+		psd := map[string]any{"clientId": "client-test"}
+		ua, amzUA := kiroServiceUserAgent(psd, "token")
+		machineID := resolveKiroMachineID(psd, "token")
+
+		expectedSuffix := "KiroIDE-" + KiroIDEVersion + "-" + machineID
+		if !strings.HasSuffix(ua, expectedSuffix) {
+			t.Errorf("User-Agent must end with %q, got %q", expectedSuffix, ua)
+		}
+		if !strings.Contains(ua, "api/codewhispererstreaming#1.0.0") {
+			t.Errorf("User-Agent missing codewhispererstreaming surface, got %q", ua)
+		}
+		if amzUA != "aws-sdk-js/1.0.0 "+expectedSuffix {
+			t.Errorf("X-Amz-User-Agent = %q, want %q", amzUA, "aws-sdk-js/1.0.0 "+expectedSuffix)
+		}
+	})
+}
+
+func TestForwardKiro_TargetAndProfileArn(t *testing.T) {
+	var receivedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
+	psd := map[string]any{
+		"authMethod": "builder-id",
+		"clientId":   "test-client-id",
+	}
+
+	resp, err := ForwardKiro(context.Background(), srv.Client(), cfg, "sso-token", []byte(`{}`), false, psd)
+	if err != nil {
+		t.Fatalf("ForwardKiro failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// BaseURL does not contain codewhisperer -> X-Amz-Target must NOT be sent
+	if target := receivedHeaders.Get("X-Amz-Target"); target != "" {
+		t.Errorf("X-Amz-Target must not be sent for non-codewhisperer endpoints, got %q", target)
+	}
+
+	// Effective profileArn for builder-id must fall back to the default builder ID ARN
+	expectedArn := providers.KiroDefaultProfileARNBuilderID
+	if arn := receivedHeaders.Get("x-amzn-codewhisperer-profile-arn"); arn != expectedArn {
+		t.Errorf("x-amzn-codewhisperer-profile-arn = %q, want %q", arn, expectedArn)
+	}
+
+	// User-Agent must carry KiroIDE version
+	ua := receivedHeaders.Get("User-Agent")
+	if !strings.Contains(ua, "KiroIDE-"+KiroIDEVersion) {
+		t.Errorf("User-Agent missing KiroIDE version, got %q", ua)
 	}
 }

@@ -1,0 +1,3 @@
+### Fixes
+
+- **Kiro: update client identity to Kiro IDE fingerprint to pass AWS version gate**: Since 2026-11-09, AWS CodeWhisperer and Amazon Q endpoints reject older client identities (`kiro-ide/1.0.0`) with `400/403 This version of Kiro is no longer supported` (kirodotdev/Kiro#11335). Update `User-Agent` and `X-Amz-User-Agent` to the modern Kiro IDE fingerprint (`KiroIDE-1.4.121-<machineId>`) and only send `X-Amz-Target` to `codewhisperer.*` endpoints per upstream specification. Also ensure effective profile ARN defaults (e.g. Builder ID / social) are injected into `x-amzn-codewhisperer-profile-arn`.
