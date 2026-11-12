@@ -1,0 +1,4 @@
+### fix(translator): rewrite foreign tool ids to the Anthropic alphabet
+
+- Anthropic rejects a Messages request with `400 messages.N.content.0.tool_use.id: String should match pattern '^[a-zA-Z0-9_-]+$'`. A tool call from another upstream (Codex, DeepSeek, Gemini, a custom node) can carry `.`, `:`, `/` or spaces in its id; 9router forwarded that id verbatim when translating the answer to Claude, the client stored it in its transcript, and every later turn routed to Anthropic failed until the turn aged out.
+- `translator.SanitizeClaudeToolID` rewrites such an id to `toolu_<sha256[:24]>`, deterministically, so a `tool_use` and its `tool_result` still pair. Applied on the Claude-native request body (`SanitizeClaudePassthrough`) and on the OpenAI→Claude response translation (stream and non-stream).
