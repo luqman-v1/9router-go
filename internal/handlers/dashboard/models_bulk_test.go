@@ -207,5 +207,3 @@ func TestSaveCustomModel_SingleBodyStillWorks(t *testing.T) {
 		}
 	}
 }
-
-

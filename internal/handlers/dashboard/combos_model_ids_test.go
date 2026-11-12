@@ -240,4 +240,3 @@ func TestComboUpdateOmitsModelsKeepsStoredSet(t *testing.T) {
 		t.Errorf("models = %s, want the stored set untouched", stored.Models)
 	}
 }
-

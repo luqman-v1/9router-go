@@ -340,4 +340,3 @@ func TestComboWeighted_FromSettings(t *testing.T) {
 		t.Errorf("settings combo 4 requests: got %v, want modelX: 3, modelY: 1", counts)
 	}
 }
-

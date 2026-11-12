@@ -264,4 +264,3 @@ func TestGuardNameCollision(t *testing.T) {
 		}
 	})
 }
-

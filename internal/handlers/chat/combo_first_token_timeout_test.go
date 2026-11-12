@@ -193,4 +193,3 @@ func TestComboChat_FirstTokenArrivesBeforeTimeoutLetsStreamComplete(t *testing.T
 		t.Errorf("expected full stream completed with [DONE], got: %s", out)
 	}
 }
-

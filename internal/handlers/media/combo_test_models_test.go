@@ -138,7 +138,8 @@ func setupMediaTestDB(t testing.TB) (*db.Repo, func()) {
 		strategy TEXT DEFAULT 'fallback',
 		createdAt TEXT NOT NULL,
 		updatedAt TEXT NOT NULL,
-		matchRules TEXT DEFAULT ''
+		matchRules TEXT DEFAULT '',
+		customPrompt TEXT DEFAULT ''
 	)`)
 	if err != nil {
 		t.Fatalf("failed to create combos table: %v", err)

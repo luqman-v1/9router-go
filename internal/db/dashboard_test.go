@@ -394,4 +394,3 @@ func TestSettingsRaw(t *testing.T) {
 		t.Errorf("expected capacityAdapter added as cloud, got %v", raw["capacityAdapter"])
 	}
 }
-
