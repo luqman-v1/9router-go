@@ -78,6 +78,15 @@ if [[ "$VER" == *-* ]]; then
   CHANNEL="experimental"
 fi
 
+has_pending_fragments() {
+  local f
+  for f in .changes/*.md; do
+    [ -e "$f" ] || return 1
+    [ "$(basename "$f")" != "README.md" ] && return 0
+  done
+  return 1
+}
+
 echo "Release plan:"
 echo "  version:  $VER ($CHANNEL channel)"
 echo "  tag:      $TAG"
@@ -88,7 +97,7 @@ if [ "$IS_PRERELEASE" = true ]; then
 else
   echo "  files:    VERSION, version.json, internal/updater/updater.go"
 fi
-echo "  changelog: $(compgen -G '.changes/*.md' >/dev/null && echo 'fold pending fragments' || echo 'no pending fragments, skipped')"
+echo "  changelog: $(has_pending_fragments && echo 'fold pending fragments' || echo 'no pending fragments, skipped')"
 echo "  commit:    chore: bump to $VER"
 echo "  push:      origin $BRANCH, then $TAG (triggers release.yml)"
 echo ""
@@ -118,14 +127,14 @@ fi
 
 # 2. Changelog: fold pending fragments under "## [$TAG]". Skipped when there is
 #    nothing to fold — release.yml falls back to [Unreleased] or git log.
-if compgen -G '.changes/*.md' >/dev/null; then
+if has_pending_fragments; then
   make changelog-merge TAG="$TAG"
 else
   echo "No pending .changes/ fragments — skipping changelog-merge."
 fi
 
 # 3. Commit exactly the release files. -A so cleared fragments stage as deletions.
-git add -A -- VERSION version.json internal/updater/updater.go CHANGELOG.md .changes/
+git add -A -- VERSION version.json internal/updater/updater.go CHANGELOG.md .changes/ scripts/release.sh
 git commit -m "chore: bump to $VER"
 
 # 4. Tag.
