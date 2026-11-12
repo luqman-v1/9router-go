@@ -18,7 +18,11 @@ import (
 // replacing it, so a client that only knows one half cannot wipe the other.
 
 // Providers are the providers carrying an auto-ping configuration.
-var Providers = []string{"claude", "codex"}
+//
+// commandcode-goat is the documented Command Code Provider API: it publishes a
+// rolling 5h window in the same shape claude and codex do, so a ping that
+// starts that window on time has the same value there.
+var Providers = []string{"claude", "codex", "commandcode-goat"}
 
 // SettingsKey is the settings row key one provider's configuration lives under
 // (the existing dashboard contract: claudeAutoPing / codexAutoPing).
