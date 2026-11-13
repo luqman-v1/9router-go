@@ -948,3 +948,40 @@ func TestHandleValidateProvider_OpencodeQuotaLimit(t *testing.T) {
 		t.Errorf("expected error %q, got %q", errMsg, out["error"])
 	}
 }
+
+func TestHandleValidateProvider_KenariUsesGenericProbe(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, out := postValidate(t, `{"provider":"kenari","apiKey":"kenari-key"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != true {
+		t.Errorf("expected valid=true, got %v", out["valid"])
+	}
+	if out["supported"] != true {
+		t.Errorf("expected supported=true, got %v", out["supported"])
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected exactly one probe, got %d", len(*calls))
+	}
+	probe := (*calls)[0]
+	if probe.method != http.MethodGet || probe.url != "https://kenari.id/v1/models" {
+		t.Errorf("unexpected probe %s %s", probe.method, probe.url)
+	}
+	if got := probe.headers.Get("Authorization"); got != "Bearer kenari-key" {
+		t.Errorf("expected bearer auth header, got %q", got)
+	}
+}
+
+func TestHandleValidateProvider_KenariAliasResolves(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, _ := postValidate(t, `{"provider":"ki","apiKey":"kenari-key"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(*calls) != 1 || (*calls)[0].url != "https://kenari.id/v1/models" {
+		t.Fatalf("alias ki did not resolve to kenari: %+v", *calls)
+	}
+}

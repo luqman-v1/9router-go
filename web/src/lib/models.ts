@@ -82,6 +82,7 @@ export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
   "iflow": "if",
   "inworld": "inworld",
   "jina-ai": "jina-ai",
+  "kenari": "ki",
   "kilo-gateway": "kgw",
   "kilocode": "kc",
   "kimchi": "kimchi",
@@ -3356,6 +3357,19 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "Jina Embeddings V2 Base Code",
       "kind": "embedding"
     }
+  ],
+  "kenari": [
+    { "id": "nvidia/nemotron-3-ultra-550b-a55b:free", "name": "Nemotron 3 Ultra 550B (Free)" },
+    { "id": "nvidia/nemotron-3.5-super-vl:free", "name": "Nemotron 3.5 Super VL (Free)" },
+    { "id": "nemotron-3-5-super-vl:free", "name": "Nemotron 3.5 Super VL (Free)" },
+    { "id": "qwen3-8-omni-flash:free", "name": "Qwen3 8 Omni Flash (Free)" },
+    { "id": "glm-4-7-flash:free", "name": "GLM 4.7 Flash (Free)" },
+    { "id": "llama-3-3-70b-instruct:free", "name": "Llama 3.3 70B Instruct (Free)" },
+    { "id": "dots-3-note-preview:free", "name": "Dots 3 Note Preview (Free)" },
+    { "id": "solar-mini4:free", "name": "Solar Mini4 (Free)" },
+    { "id": "deepseek-v4", "name": "DeepSeek V4" },
+    { "id": "deepseek-v4-1-flash", "name": "DeepSeek V4.1 Flash" },
+    { "id": "glm-5-3-flash", "name": "GLM 5.3 Flash" }
   ],
   "kc": [
     {

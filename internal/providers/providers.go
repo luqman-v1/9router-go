@@ -837,6 +837,11 @@ var KnownProviders = map[string]ProviderConfig{
 		ThinkingFormat: "openai",
 		Hidden:         true,
 	},
+	"kenari": {
+		BaseURL:    "https://kenari.id/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"alitp-intl": {
 		// Token Plan is served from the .maas host under the compatible-mode
 		// path, not the bare /v1 path (upstream registry/alitp-intl.js:23).
