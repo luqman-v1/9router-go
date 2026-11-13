@@ -70,7 +70,7 @@ func TestGemini4ArgonWiring(t *testing.T) {
 			OutputPer1M:        10,
 			CachedPer1M:        0.1,
 			ReasoningPer1M:     10,
-			CacheCreationPer1M: 2,
+			CacheCreationPer1M: 0.1875,
 		}
 		if p != want {
 			t.Errorf("pricing = %+v, want %+v", p, want)
