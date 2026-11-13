@@ -2,7 +2,7 @@ module 9router/proxy
 
 go 1.27
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
