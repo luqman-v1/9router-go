@@ -380,4 +380,45 @@ describe('pickerData', () => {
     assert.strictEqual(filtered.length, 1)
     assert.strictEqual(filtered[0].name, 'combo-sonnet')
   })
+
+  it('groups models purely by provider without duplicating connection accounts', () => {
+    const connections: ProviderConnection[] = [
+      {
+        id: 'conn-oai-1',
+        provider: 'openai',
+        authType: 'apikey',
+        name: 'Work Account',
+        email: 'work@corp.com',
+        priority: 1,
+        isActive: 1,
+        data: '{}',
+        createdAt: '',
+        updatedAt: '',
+      },
+      {
+        id: 'conn-oai-2',
+        provider: 'openai',
+        authType: 'apikey',
+        name: 'Personal Account',
+        email: 'me@gmail.com',
+        priority: 2,
+        isActive: 1,
+        data: '{}',
+        createdAt: '',
+        updatedAt: '',
+      },
+    ]
+
+    const groups = resolveModelPickerGroups(connections, [])
+    const oaiGroup = groups.find((g) => g.id === 'openai')
+    assert.ok(oaiGroup, 'OpenAI catalog group should exist')
+    assert.strictEqual(oaiGroup.name, 'OpenAI')
+    assert.ok(oaiGroup.models.length > 0)
+    assert.ok(oaiGroup.models.every((m) => m.value.startsWith('openai/')))
+    assert.ok(oaiGroup.models.every((m) => !m.name.includes('Account')))
+
+    // Verify no connection-specific duplicate groups exist
+    const accountGroups = groups.filter((g) => g.id.startsWith('openai-'))
+    assert.strictEqual(accountGroups.length, 0, 'No account-specific groups should be generated')
+  })
 })
