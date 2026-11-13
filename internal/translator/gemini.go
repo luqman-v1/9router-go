@@ -97,6 +97,27 @@ type GeminiFunctionResp struct {
 
 type GeminiFuncResp struct {
 	Result any `json:"result,omitempty"`
+	// raw holds the verbatim response object bytes, captured on unmarshal.
+	// The client request direction stringifies `result` when it is truthy and
+	// falls back to the whole response object otherwise (upstream
+	// `response?.result || response || {}`), so keys beside "result" must
+	// survive the decode.
+	raw jsontext.Value
+}
+
+// UnmarshalJSON decodes the known result field and keeps the verbatim object
+// for the whole-response fallback.
+func (r *GeminiFuncResp) UnmarshalJSON(data []byte) error {
+	type alias GeminiFuncResp
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*r = GeminiFuncResp(a)
+	if len(data) > 0 {
+		r.raw = append(jsontext.Value(nil), data...)
+	}
+	return nil
 }
 
 // remoteImageMimeType maps a remote image URL extension to a concrete MIME
