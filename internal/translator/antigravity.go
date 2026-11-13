@@ -372,6 +372,11 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 // this value, so it must stay family-shaped. Only AntigravityUpstreamModel
 // applies the effort suffix the backend actually needs.
 var AntigravityModelSynonyms = map[string]string{
+	// Gemini 4 Carbon serves one backend id per tier; the bare catalog id is medium tier.
+	"gemini-4-carbon":        "gemini-4-carbon-medium",
+	"gemini-4-carbon-high":   "gemini-4-carbon-high",
+	"gemini-4-carbon-medium": "gemini-4-carbon-medium",
+	"gemini-4-carbon-low":    "gemini-4-carbon-low",
 	// Gemini 4 Argon serves one backend id per tier; the bare catalog id is medium tier.
 	"gemini-4-argon":        "gemini-4-argon-medium",
 	"gemini-4-argon-high":   "gemini-4-argon-high",
@@ -412,6 +417,11 @@ var AntigravityModelSynonyms = map[string]string{
 	"gemini-3.6-flash-high":   "gemini-3.6-flash-tiered",
 	"gemini-3.6-flash-medium": "gemini-3.6-flash-tiered",
 	"gemini-3.6-flash-low":    "gemini-3.6-flash-tiered",
+	// Claude 5.5: bare model maps to high tier in synonyms for quota/lock lookups.
+	"claude-sonnet-5-5": "claude-sonnet-5-5-high",
+	"claude-opus-5-5":   "claude-opus-5-5-high",
+	"claude-sonnet-5.5": "claude-sonnet-5-5-high",
+	"claude-opus-5.5":   "claude-opus-5-5-high",
 }
 
 // NormalizeAntigravityModel maps known aliases/synonyms to Antigravity internal backend model names.
@@ -443,6 +453,11 @@ func NormalizeAntigravityModel(model string) string {
 // decolua/9router#a07ed95b, refreshed by #24034f69). Every value was probed
 // live against daily-cloudcode-pa.googleapis.com on 2026-10-09.
 var antigravityUpstreamModelIDs = map[string]string{
+	// Gemini 4 Carbon serves one backend id per tier; the bare catalog id is medium tier.
+	"gemini-4-carbon":        "gemini-4-carbon-medium",
+	"gemini-4-carbon-high":   "gemini-4-carbon-high",
+	"gemini-4-carbon-medium": "gemini-4-carbon-medium",
+	"gemini-4-carbon-low":    "gemini-4-carbon-low",
 	// Gemini 4 Argon serves one backend id per tier; the bare catalog id is medium tier.
 	"gemini-4-argon":        "gemini-4-argon-medium",
 	"gemini-4-argon-high":   "gemini-4-argon-high",

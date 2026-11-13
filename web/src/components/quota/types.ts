@@ -476,8 +476,8 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
       case 'antigravity':
         if (d.quotas) {
           const entries = Object.entries(d.quotas)
-          const weeklyKeys = new Set(['gemini_weekly', 'claude_gpt_weekly', 'argon_weekly'])
-          const sessionKeys = new Set(['gemini_session', 'claude_gpt_session', 'argon_session'])
+          const weeklyKeys = new Set(['gemini_weekly', 'claude_gpt_weekly', 'gemini_argon_weekly', 'argon_weekly'])
+          const sessionKeys = new Set(['gemini_session', 'claude_gpt_session', 'gemini_argon_session', 'argon_session'])
           const summaryKeys = new Set([...weeklyKeys, ...sessionKeys])
           const geminiModels = entries.filter(([k]) => k.startsWith('gemini-') && !k.includes('image') && !k.includes('argon'))
           const argonModels = entries.filter(([k]) => k.includes('argon'))
@@ -495,8 +495,8 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
 
           const hasGeminiWeekly = Boolean(d.quotas.gemini_weekly)
           const hasGeminiSession = Boolean(d.quotas.gemini_session)
-          const hasArgonWeekly = Boolean(d.quotas.argon_weekly)
-          const hasArgonSession = Boolean(d.quotas.argon_session)
+          const hasArgonWeekly = Boolean(d.quotas.gemini_argon_weekly || d.quotas.argon_weekly)
+          const hasArgonSession = Boolean(d.quotas.gemini_argon_session || d.quotas.argon_session)
           const hasClaudeWeekly = Boolean(d.quotas.claude_gpt_weekly)
           const hasClaudeSession = Boolean(d.quotas.claude_gpt_session)
 
@@ -554,7 +554,7 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
           // 2. Gemini 4 Argon Family
           if (hasArgonSession) {
             summaryModels
-              .filter(([k]) => k === 'argon_session')
+              .filter(([k]) => k === 'gemini_argon_session' || (k === 'argon_session' && !d.quotas?.gemini_argon_session))
               .forEach(([modelKey, quota]) => {
                 normalizedQuotas.push({
                   name: (quota.displayName as string) || modelKey,
@@ -566,14 +566,19 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
                   window: (quota.window as string) || (modelKey.includes('weekly') ? 'weekly' : '5h'),
                 })
               })
-          } else if (argonModels.length > 0) {
+          } else if (!hasArgonWeekly && argonModels.length > 0) {
             const rep = argonModels.reduce((min, cur) =>
               (cur[1].remainingPercentage as number ?? 100) < (min[1].remainingPercentage as number ?? 100) ? cur : min,
             )[1]
-            const weeklyResetAt = d.quotas.argon_weekly?.resetAt
-            const isDuplicateOfWeekly =
-              hasArgonWeekly && rep.resetAt === weeklyResetAt && (rep.remainingPercentage ?? 0) === 0
-            if (!isDuplicateOfWeekly) {
+            const geminiSession = d.quotas.gemini_session as Record<string, any> | undefined
+            const geminiWeekly = d.quotas.gemini_weekly as Record<string, any> | undefined
+            const geminiSessionResetAt = geminiSession?.resetAt
+            const geminiWeeklyResetAt = geminiWeekly?.resetAt
+            const sharesMainGeminiPool =
+              (hasGeminiSession && rep.resetAt === geminiSessionResetAt && rep.remainingPercentage === geminiSession?.remainingPercentage) ||
+              (hasGeminiWeekly && rep.resetAt === geminiWeeklyResetAt && rep.remainingPercentage === geminiWeekly?.remainingPercentage)
+
+            if (!sharesMainGeminiPool) {
               normalizedQuotas.push({
                 name: 'Gemini 4 Argon',
                 modelKey: 'gemini-4-argon',
@@ -588,7 +593,7 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
           // Show Argon weekly row if present
           if (hasArgonWeekly) {
             summaryModels
-              .filter(([k]) => k === 'argon_weekly')
+              .filter(([k]) => k === 'gemini_argon_weekly' || (k === 'argon_weekly' && !d.quotas?.gemini_argon_weekly))
               .forEach(([modelKey, quota]) => {
                 normalizedQuotas.push({
                   name: (quota.displayName as string) || modelKey,
