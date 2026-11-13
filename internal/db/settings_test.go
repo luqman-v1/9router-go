@@ -633,3 +633,23 @@ func TestSettings_HeadroomAutostart(t *testing.T) {
 		t.Errorf("expected HeadroomAutostart to be true, got %v", s.HeadroomAutostart)
 	}
 }
+
+// TestParseSettings_ClaudeCacheTTL pins the operator knob: only the two known
+// windows survive a parse, and a row that never set it reads as the default 5m.
+func TestParseSettings_ClaudeCacheTTL(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{`{}`, ""},
+		{`{"claudeCacheTtl":"1h"}`, "1h"},
+		{`{"claudeCacheTtl":"5m"}`, "5m"},
+		{`{"claudeCacheTtl":"bogus"}`, ""},
+		{`{"claudeCacheTtl":42}`, ""},
+	} {
+		s, ok := parseSettings(tc.raw)
+		if !ok {
+			t.Fatalf("parse failed for %s", tc.raw)
+		}
+		if s.ClaudeCacheTTL != tc.want {
+			t.Errorf("%s: ClaudeCacheTTL = %q, want %q", tc.raw, s.ClaudeCacheTTL, tc.want)
+		}
+	}
+}

@@ -109,6 +109,10 @@ export interface RequestDetailItem {
     cached_tokens?: number
     cache_read_input_tokens?: number
     cache_creation_input_tokens?: number
+    // Anthropic reports the cache-write split per window; absent when the
+    // upstream does not send the cache_creation object.
+    cache_creation_5m_input_tokens?: number
+    cache_creation_1h_input_tokens?: number
     reasoning_tokens?: number
     original_input_tokens?: number
     compressed_input_tokens?: number

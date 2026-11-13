@@ -77,6 +77,7 @@ func (h *ChatHandler) LogFailure(
 		"cached_tokens":               usage.GetCachedTokens(),
 		"cache_creation_input_tokens": usage.CacheCreationInputTokens,
 	}
+	addCacheCreationSplit(tokens, usage)
 	if info.SavedTokens > 0 {
 		tokens["original_input_tokens"] = info.OriginalInputTokens
 		tokens["compressed_input_tokens"] = info.OriginalInputTokens - info.SavedTokens
@@ -259,6 +260,31 @@ func (h *ChatHandler) LogUsage(ctx context.Context, info *UsageLogInfo, usage *t
 }
 
 // logUsage persists a usage record and updates connection metadata.
+// addCacheCreationSplit records Anthropic's per-window split of a cache write
+// beside the total. An upstream that does not report it leaves both at zero, so
+// a row that never carried the split stays distinguishable from a 5m-only write.
+func addCacheCreationSplit(tokens map[string]int, usage *translator.OpenAIUsage) {
+	if usage.CacheCreation5mInputTokens > 0 {
+		tokens["cache_creation_5m_input_tokens"] = usage.CacheCreation5mInputTokens
+	}
+	if usage.CacheCreation1hInputTokens > 0 {
+		tokens["cache_creation_1h_input_tokens"] = usage.CacheCreation1hInputTokens
+	}
+}
+
+// cacheCreationSplitJSON renders the split as trailing JSON fields, or "" when
+// the upstream never reported it.
+func cacheCreationSplitJSON(usage *translator.OpenAIUsage) string {
+	out := ""
+	if usage.CacheCreation5mInputTokens > 0 {
+		out += fmt.Sprintf(`,"cache_creation_5m_input_tokens":%d`, usage.CacheCreation5mInputTokens)
+	}
+	if usage.CacheCreation1hInputTokens > 0 {
+		out += fmt.Sprintf(`,"cache_creation_1h_input_tokens":%d`, usage.CacheCreation1hInputTokens)
+	}
+	return out
+}
+
 func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *translator.OpenAIUsage, latencyMs int64, requestBody []byte, metrics *streamMetrics) {
 	if usage == nil {
 		usage = &translator.OpenAIUsage{}
@@ -298,18 +324,21 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 	// charges them at their own, cheaper rate. The provider matters because
 	// gateways can price the same model differently.
 	cost := pricing.EstimateCost(info.Provider, info.Model, pricing.TokenCounts{
-		PromptTokens:        usage.PromptTokens,
-		CompletionTokens:    usage.CompletionTokens,
-		CachedTokens:        cachedTokens,
-		CacheCreationTokens: cacheCreationTokens,
-		ReasoningTokens:     usage.ReasoningTokens(),
+		PromptTokens:          usage.PromptTokens,
+		CompletionTokens:      usage.CompletionTokens,
+		CachedTokens:          cachedTokens,
+		CacheCreationTokens:   cacheCreationTokens,
+		CacheCreation1hTokens: usage.CacheCreation1hInputTokens,
+		ReasoningTokens:       usage.ReasoningTokens(),
 	})
 	metaJSON := fmt.Sprintf(`{"provider":"%s","model":"%s","connectionId":"%s"}`, info.Provider, info.Model, info.ConnectionID)
 
 	usageKVs := []any{
 		"provider", info.Provider, "model", info.Model,
 		"prompt", usage.PromptTokens, "completion", usage.CompletionTokens, "cached", cachedTokens,
-		"cache_creation", cacheCreationTokens, "ttft_ms", ttftMs, "latency_ms", latencyMs, "cost", cost,
+		"cache_creation", cacheCreationTokens, "cache_creation_5m", usage.CacheCreation5mInputTokens,
+		"cache_creation_1h", usage.CacheCreation1hInputTokens,
+		"ttft_ms", ttftMs, "latency_ms", latencyMs, "cost", cost,
 	}
 	if metrics != nil {
 		usageKVs = append(usageKVs, "tok_per_sec", metrics.TokPerSec(), "max_gap_ms", metrics.MaxGapMs)
@@ -332,7 +361,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 	// reasoning_tokens belongs here for the same reason as the cache figures:
 	// the stored row is what the dashboard bills and charts from, so omitting
 	// it makes every reasoning turn look cheaper than it was.
-	tokensJSON := fmt.Sprintf(`{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d,"cached_tokens":%d,"cache_creation_input_tokens":%d,"reasoning_tokens":%d}`, usage.PromptTokens, usage.CompletionTokens, totalTokens, cachedTokens, cacheCreationTokens, usage.ReasoningTokens())
+	tokensJSON := fmt.Sprintf(`{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d,"cached_tokens":%d,"cache_creation_input_tokens":%d,"reasoning_tokens":%d%s}`, usage.PromptTokens, usage.CompletionTokens, totalTokens, cachedTokens, cacheCreationTokens, usage.ReasoningTokens(), cacheCreationSplitJSON(usage))
 	// The caller is recorded beside the upstream credential (#365). A per-key
 	// token budget is measured from what THAT client spent, and
 	// usageHistory.apiKey holds the provider credential — which attributed every
@@ -415,6 +444,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		"cache_creation_input_tokens": cacheCreationTokens,
 		"reasoning_tokens":            usage.ReasoningTokens(),
 	}
+	addCacheCreationSplit(tokensMap, usage)
 	if info.SavedTokens > 0 {
 		tokensMap["original_input_tokens"] = info.OriginalInputTokens
 		tokensMap["compressed_input_tokens"] = info.OriginalInputTokens - info.SavedTokens

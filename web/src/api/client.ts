@@ -342,6 +342,8 @@ export interface Settings {
   headroomKompress?: boolean
   semanticCacheEnabled?: boolean
   semanticCacheTTL?: number
+  // Prompt-cache window 9router pins on Claude head anchors: "5m" (default) or "1h".
+  claudeCacheTtl?: '5m' | '1h'
   semanticCacheMaxEntries?: number
   autoUpdate?: boolean
   /** Dashboard security & SSO (profile page, Next parity). */

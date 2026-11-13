@@ -421,7 +421,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		if providerCfg != nil && providerCfg.RequireClaudeToolType {
 			body = translator.DefaultClaudeToolType(body)
 		}
-		body = translator.AnchorClaudeCache(body)
+		body = translator.AnchorClaudeCacheWithTTL(body, h.claudeCacheTTL())
 		if err := json.Unmarshal(body, &workingBody); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 			return

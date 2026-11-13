@@ -758,7 +758,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 					pipedBody = out
 				}
 			}
-			pipedBody = translator.AnchorClaudeCache(pipedBody)
+			pipedBody = translator.AnchorClaudeCacheWithTTL(pipedBody, h.claudeCacheTTL())
 		}
 	}
 
@@ -1465,6 +1465,16 @@ func recordPersonaInjection(origTokens, savedTokens *int, beforeLen, afterLen in
 	if *savedTokens < 0 {
 		*savedTokens = 0
 	}
+}
+
+// claudeCacheTTL is the operator's head-anchor prompt-cache window. It reads
+// through TokenSaver because that config is already the per-request settings
+// snapshot the chat handler refreshes after every dashboard save.
+func (h *ChatHandler) claudeCacheTTL() string {
+	if h.TokenSaver == nil {
+		return translator.ClaudeCacheTTL5m
+	}
+	return h.TokenSaver.ClaudeCacheTTL()
 }
 
 func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeNative bool) ([]byte, int, int, int) {

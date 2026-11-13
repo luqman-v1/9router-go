@@ -13,6 +13,7 @@
     type Settings
   } from '../../api/client'
   import { PROVIDER_CATALOG, PROVIDER_CATALOG_MAP, type ProviderCatalogItem } from '../../lib/providers'
+  import ClaudeCacheTtl from '../quota/ClaudeCacheTtl.svelte'
   import {
     clearCallback,
     CODEX_REDIRECT_URI,
@@ -3470,6 +3471,11 @@
       {/if}
     </div>
   </div>
+
+  <!-- Claude prompt-cache window: a billing knob that belongs on the provider page. -->
+  {#if providerId === 'claude'}
+    <ClaudeCacheTtl />
+  {/if}
 
   <!-- 1. Risk Notice (for OAuth / subscription providers) -->
   {#if hasRiskNotice}

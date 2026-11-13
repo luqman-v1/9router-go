@@ -53,8 +53,8 @@ func TestAnchorClaudeCache_MovesFromDeferredTail(t *testing.T) {
 		t.Error("deferred tail should not have cache_control")
 	}
 	mid, _ := tools[1].(map[string]any)
-	if cc, has := mid["cache_control"].(map[string]any); !has || cc["type"] != "ephemeral" || cc["ttl"] != "1h" {
-		t.Errorf("middle tool should have 1h cache, got %v", mid["cache_control"])
+	if cc, has := mid["cache_control"].(map[string]any); !has || cc["type"] != "ephemeral" || cc["ttl"] != nil {
+		t.Errorf("middle tool should have the 5m cache, got %v", mid["cache_control"])
 	}
 	first, _ := tools[0].(map[string]any)
 	if _, has := first["cache_control"]; has {
@@ -96,8 +96,8 @@ func TestAnchorClaudeCache_Normal_NoDefer(t *testing.T) {
 	_ = json.Unmarshal(out, &req)
 	tools, _ := req["tools"].([]any)
 	last, _ := tools[1].(map[string]any)
-	if cc, has := last["cache_control"].(map[string]any); !has || cc["ttl"] != "1h" {
-		t.Errorf("last tool should have 1h cache, got %v", last["cache_control"])
+	if cc, has := last["cache_control"].(map[string]any); !has || cc["ttl"] != nil {
+		t.Errorf("last tool should have the 5m cache, got %v", last["cache_control"])
 	}
 	first, _ := tools[0].(map[string]any)
 	if _, has := first["cache_control"]; has {
@@ -129,17 +129,17 @@ func TestAnchorClaudeCache_CapsAt4Markers(t *testing.T) {
 		t.Fatalf("expected exactly 4 cache_control blocks, got %d", total)
 	}
 
-	// Head anchors preserved with 1h
+	// Head anchors preserved at the 5m default
 	sys := req["system"].([]any)
 	sysBlock := sys[0].(map[string]any)
-	if cc, ok := sysBlock["cache_control"].(map[string]any); !ok || cc["ttl"] != "1h" {
-		t.Errorf("system head anchor missing or not 1h: %v", sysBlock["cache_control"])
+	if cc, ok := sysBlock["cache_control"].(map[string]any); !ok || cc["ttl"] != nil {
+		t.Errorf("system head anchor missing or not 5m: %v", sysBlock["cache_control"])
 	}
 
 	tools := req["tools"].([]any)
 	toolBlock := tools[0].(map[string]any)
-	if cc, ok := toolBlock["cache_control"].(map[string]any); !ok || cc["ttl"] != "1h" {
-		t.Errorf("tool head anchor missing or not 1h: %v", toolBlock["cache_control"])
+	if cc, ok := toolBlock["cache_control"].(map[string]any); !ok || cc["ttl"] != nil {
+		t.Errorf("tool head anchor missing or not 5m: %v", toolBlock["cache_control"])
 	}
 
 	// In messages, u1 and a1 (first 2) should have had cache_control deleted, u2 and a2 (tail 2) kept
