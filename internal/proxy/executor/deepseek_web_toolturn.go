@@ -26,33 +26,81 @@ import (
 // request carried a `tools[]` array, and an answer that is not a declared tool
 // call is passed through as ordinary content rather than being coerced into one.
 
+// deepSeekToolReissue re-runs the completion on a fresh upstream session and
+// drains its answer into a fresh accumulator.
+//
+// A malformed tool envelope is not an answer the client can act on, and the
+// model that produced it is told so exactly once: the session the envelope
+// arrived on is abandoned and the repair prompt is completed on a new one. The
+// returned accumulator is the fresh turn's — its sawFinished, enforcement and
+// message id are the ones settlement must see, and the caller's pointer is
+// replaced by what this returns. Owning the drain inside the closure keeps the
+// body's lifetime local: it is closed before this returns, success or not.
+type deepSeekToolReissue func(repairPrompt string) (*deepSeekStreamAccumulator, error)
+
 // deepSeekToolTurnToClient reads the turn and writes either a tool call or the
 // model's plain answer.
 //
 // The accumulator is the caller's: what the stream said about the answer — the
 // upstream's message id, whether it signed off, whether it refused — outlives
 // this read, because it decides whether the conversation can be continued.
-func deepSeekToolTurnToClient(w http.ResponseWriter, req *Request, upstream io.Reader, envelope deepSeekRequestEnvelope, accumulator *deepSeekStreamAccumulator) error {
+// When a repair ran, the returned accumulator is the repaired turn's and the
+// caller must adopt it.
+func deepSeekToolTurnToClient(
+	w http.ResponseWriter,
+	req *Request,
+	upstream io.Reader,
+	envelope deepSeekRequestEnvelope,
+	accumulator *deepSeekStreamAccumulator,
+	nonce string,
+	reissue deepSeekToolReissue,
+) (*deepSeekStreamAccumulator, error) {
 	if err := deepSeekDrain(upstream, accumulator); err != nil {
-		return deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+err.Error())
+		return accumulator, deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+err.Error())
 	}
 	// A refusal the upstream streamed instead of answering reaches the client as
 	// the status it is. Nothing has been written yet on this path — it buffers
 	// the whole turn so a tool call's arguments arrive whole — so the failure
 	// travels as a status rather than as an in-band chunk.
 	if enforcement := accumulator.enforcement; enforcement != nil {
-		return enforcement.error()
+		return accumulator, enforcement.error()
 	}
 	if !accumulator.sawFinished {
 		// The same rule as the streaming path: a turn the upstream never signed
 		// off is a cut-off session, not an answer. Reporting it as an empty tool
 		// result would have the client retry a call that may have been made.
-		return deepSeekFailure(http.StatusBadGateway,
+		return accumulator, deepSeekFailure(http.StatusBadGateway,
 			"deepseek-web: stream ended before completion — the upstream session was cut off")
 	}
 
 	text := accumulator.contentText()
-	calls := deepSeekExtractToolCalls(text, envelope.Tools)
+	calls := deepSeekExtractToolCalls(text, envelope.Tools, nonce)
+	if len(calls) == 0 && nonce != "" && reissue != nil &&
+		deepSeekHasMalformedToolIntent(text, envelope.Tools) {
+		// The model expressed a tool call the parser could not bind: markup, or
+		// an envelope quoting a tool the client declared. Upstream retries the
+		// turn once on a fresh session with the contract restated, and so does
+		// this — one retry, because a second one only adds another request to
+		// the account the site is already challenging.
+		repaired, err := reissue(deepSeekRepairPrompt(text))
+		if err != nil {
+			return accumulator, deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+err.Error())
+		}
+		accumulator = repaired
+		if enforcement := accumulator.enforcement; enforcement != nil {
+			return accumulator, enforcement.error()
+		}
+		if !accumulator.sawFinished {
+			return accumulator, deepSeekFailure(http.StatusBadGateway,
+				"deepseek-web: stream ended before completion — the upstream session was cut off")
+		}
+		text = accumulator.contentText()
+		calls = deepSeekExtractToolCalls(text, envelope.Tools, nonce)
+		if len(calls) == 0 && deepSeekHasMalformedToolMarkup(text) {
+			return accumulator, deepSeekFailure(http.StatusBadGateway,
+				"deepseek-web: the model emitted an invalid tool call after repair")
+		}
+	}
 	if len(calls) > 0 {
 		// Anything the model wrote around the calls is real content and belongs
 		// to the client. Dropping it produces a message with null content, which
@@ -70,9 +118,9 @@ func deepSeekToolTurnToClient(w http.ResponseWriter, req *Request, upstream io.R
 		preamble := deepSeekSurroundingText(text, raws...)
 
 		if !req.IsStream {
-			return deepSeekWriteToolCalls(w, req, envelope.Model, calls, preamble)
+			return accumulator, deepSeekWriteToolCalls(w, req, envelope.Model, calls, preamble)
 		}
-		return deepSeekWriteStreamedToolCalls(w, req, envelope.Model, calls, preamble)
+		return accumulator, deepSeekWriteStreamedToolCalls(w, req, envelope.Model, calls, preamble)
 	}
 	// A DSML block that named a tool the client never declared, or that named one
 	// at all, is markup rather than an answer. Leaving it in shows the user a wall
@@ -84,17 +132,40 @@ func deepSeekToolTurnToClient(w http.ResponseWriter, req *Request, upstream io.R
 	}
 
 	if !req.IsStream {
-		return deepSeekWritePlainAnswer(w, req, envelope.Model, accumulator, text)
+		return accumulator, deepSeekWritePlainAnswer(w, req, envelope.Model, accumulator, text)
 	}
-	return deepSeekWriteStreamedAnswer(w, req, envelope.Model, accumulator, text)
+	return accumulator, deepSeekWriteStreamedAnswer(w, req, envelope.Model, accumulator, text)
+}
+
+// deepSeekRepairPrompt is the instruction the repair turn carries, restating
+// the contract the first answer violated. Upstream words it the same way; the
+// first paragraph is the model's own rejected answer, so the retry sees what
+// was wrong with it.
+func deepSeekRepairPrompt(rejected string) string {
+	return strings.Join([]string{
+		rejected,
+		"Your previous response used an invalid tool envelope and was rejected.",
+		"Retry the requested next action from scratch. Follow the client tool contract exactly, " +
+			"including its _nonce binding and argument schema. Do not emit bare JSON or unbound DSML.",
+	}, "\n\n")
 }
 
 // deepSeekAccumulate drains the upstream body into a fresh accumulator, for the
 // callers that only need the text.
 func deepSeekAccumulate(upstream io.Reader) (*deepSeekStreamAccumulator, error) {
 	accumulator := newDeepSeekStreamAccumulator("")
+	if _, err := deepSeekAccumulateInto(accumulator, upstream); err != nil {
+		return nil, err
+	}
+	return accumulator, nil
+}
+
+// deepSeekAccumulateInto drains the upstream body into a caller's accumulator —
+// the same read as deepSeekAccumulate, for the callers that need the state in an
+// accumulator they already hold.
+func deepSeekAccumulateInto(accumulator *deepSeekStreamAccumulator, upstream io.Reader) (*deepSeekStreamAccumulator, error) {
 	if err := deepSeekDrain(upstream, accumulator); err != nil {
-		return nil, deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+err.Error())
+		return accumulator, deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+err.Error())
 	}
 	return accumulator, nil
 }

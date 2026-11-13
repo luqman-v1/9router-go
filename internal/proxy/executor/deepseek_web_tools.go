@@ -4,6 +4,7 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -121,12 +122,59 @@ func deepSeekSchemaText(raw jsontext.Value) string {
 	return `{"type":"object","properties":{}}`
 }
 
+// deepSeekBoundSchemaText renders a declared schema with the request's nonce
+// bound into it as a const property, mirroring upstream's
+// serializeDeepSeekToolPrompt.
+//
+// The binding is injected into the schema rather than only described in prose:
+// a model reproducing the schema it was shown reproduces the binding, and one
+// that copies a schema from an earlier turn copies a nonce that no longer
+// matches. With no nonce the schema is rendered unchanged, which is the
+// backward-compatible path for a caller that has not minted one.
+func deepSeekBoundSchemaText(raw jsontext.Value, nonce ...string) string {
+	rendered := deepSeekSchemaText(raw)
+	if len(nonce) == 0 || nonce[0] == "" {
+		return rendered
+	}
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(rendered), &schema); err != nil {
+		return rendered
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	if properties == nil {
+		properties = map[string]any{}
+	}
+	properties["_nonce"] = map[string]any{"type": "string", "const": nonce[0]}
+	required, _ := schema["required"].([]any)
+	names := make([]string, 0, len(required)+1)
+	for _, value := range required {
+		if name, ok := value.(string); ok {
+			names = append(names, name)
+		}
+	}
+	names = append(names, "_nonce")
+	slices.Sort(names)
+	schema["properties"] = properties
+	schema["required"] = names
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		return rendered
+	}
+	return string(encoded)
+}
+
 // deepSeekRenderTools folds the declared tools into prompt text.
 //
 // The schema is emitted as JSON rather than prose because a model reproducing a
 // schema it has only seen in prose returns a differently-shaped object more often
 // than not.
-func deepSeekRenderTools(tools []deepSeekToolSpec) string {
+//
+// Every schema carries a `_nonce` property bound to this request's nonce, and the
+// instructions require it in the reply. The binding is the difference between a
+// tool call and a quoted one: a client that pastes an example envelope into the
+// chat has shown the model a shape it must not repeat, and only a value the
+// client never sees tells the parser which envelope is the model's own.
+func deepSeekRenderTools(tools []deepSeekToolSpec, nonce ...string) string {
 	var b strings.Builder
 	b.WriteString("You have access to the following tools.\n\n<tools>\n")
 	for _, tool := range tools {
@@ -135,7 +183,7 @@ func deepSeekRenderTools(tools []deepSeekToolSpec) string {
 		}
 		fmt.Fprintf(&b, "{\"name\": %q, \"description\": %q, \"parameters\": %s}\n",
 			tool.Function.Name, tool.Function.Description,
-			deepSeekSchemaText(tool.Function.Parameters))
+			deepSeekBoundSchemaText(tool.Function.Parameters, nonce...))
 	}
 	b.WriteString("</tools>\n\n")
 	b.WriteString("To use a tool, reply with a single JSON object and nothing else: " +
@@ -145,6 +193,11 @@ func deepSeekRenderTools(tools []deepSeekToolSpec) string {
 		"Native markup is not transmitted: a reply made of `invoke`, `parameter` or " +
 		"`calls` elements — including any spelled with a DSML namespace — is discarded " +
 		"unread, and you will appear to have answered nothing.\n")
+	if len(nonce) > 0 && nonce[0] != "" {
+		b.WriteString("\n\nEvery tool call must carry the secret binding " +
+			`"_nonce": "` + nonce[0] + `" inside its arguments object, exactly as shown. ` +
+			"A call without it, or with a different value, is rejected and the turn is lost.\n")
+	}
 	b.WriteString("\n\nRules for using tools:\n")
 	// Without this a model reads its own tool list as a description of what it
 	// lacks and refuses the request — "I cannot check live weather, I have no
@@ -199,10 +252,14 @@ func deepSeekRenderTools(tools []deepSeekToolSpec) string {
 // malformed JSON — returns nothing and reaches the client as ordinary content.
 // Guessing here would turn a failed parse into an invocation the client then
 // acts on.
-func deepSeekExtractToolCalls(text string, tools []deepSeekToolSpec) []deepSeekToolRequest {
+func deepSeekExtractToolCalls(text string, tools []deepSeekToolSpec, nonce ...string) []deepSeekToolRequest {
+	binding := ""
+	if len(nonce) > 0 {
+		binding = nonce[0]
+	}
 	raw := strings.TrimSpace(text)
 	if deepSeekHasDSML(raw) {
-		return deepSeekExtractDSML(raw, tools)
+		return deepSeekExtractDSML(raw, tools, binding)
 	}
 
 	// Every call in the answer, not just the first. A model told two cities are
@@ -212,7 +269,16 @@ func deepSeekExtractToolCalls(text string, tools []deepSeekToolSpec) []deepSeekT
 	if len(calls) == 0 {
 		return nil
 	}
-	return calls
+	// The binding contract: a call that carries `_nonce` must carry this
+	// request's, and must satisfy the schema it was declared with. Upstream
+	// applies it to every call in the answer and rejects the answer wholesale on
+	// the first failure, so one copied envelope cannot cost the client the rest
+	// of its calls.
+	cleaned, ok := deepSeekFinalizeBoundCalls(calls, tools, binding)
+	if !ok {
+		return nil
+	}
+	return cleaned
 }
 
 // deepSeekJSONToolCalls reads every JSON object in the answer as a tool call.
@@ -339,6 +405,7 @@ func deepSeekSurroundingText(answer string, raws ...string) string {
 	surrounding += remaining
 
 	surrounding = strings.TrimSpace(deepSeekDsmlStripped(surrounding))
+	surrounding = deepSeekStripStrayToolTags(surrounding)
 	surrounding = strings.TrimSpace(strings.Trim(surrounding, "`"))
 	return strings.TrimSpace(strings.TrimPrefix(surrounding, "json"))
 }

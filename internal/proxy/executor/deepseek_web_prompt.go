@@ -3,6 +3,7 @@ package executor
 import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -192,7 +193,7 @@ func deepSeekMessagesToPrompt(messages []deepSeekMessage, historyWindow int, tra
 	// turn's prompt shorter than the last and unusable as an extension of it.
 	if transcript {
 		parts = append(parts, deepSeekRenderTranscript(conversation))
-		return strings.Join(parts, "\n\n")
+		return deepSeekStripImages(strings.Join(parts, "\n\n"))
 	}
 
 	window := historyWindow
@@ -210,7 +211,18 @@ func deepSeekMessagesToPrompt(messages []deepSeekMessage, historyWindow int, tra
 		parts = append(parts, lastUser)
 	}
 
-	return strings.Join(parts, "\n\n")
+	return deepSeekStripImages(strings.Join(parts, "\n\n"))
+}
+
+// deepSeekMarkdownImage is a markdown image reference, which this upstream's
+// prompt format has no way to render — the model reads the link syntax as
+// noise around the alt text.
+var deepSeekMarkdownImage = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
+
+// deepSeekStripImages removes markdown image references from prompt text,
+// mirroring upstream's `replace(/!\[.*?\]\(.*?\)/g, "")` in messagesToPrompt.
+func deepSeekStripImages(text string) string {
+	return deepSeekMarkdownImage.ReplaceAllString(text, "")
 }
 
 // deepSeekRenderTranscript renders replayed turns with the role labels the web

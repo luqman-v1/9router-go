@@ -185,9 +185,55 @@ func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 	// session, same completion. The branch exists below the shared preamble so
 	// that a request without tools cannot be affected by any of it.
 	var runErr error
+	var settled *deepSeekStreamAccumulator
 	switch {
 	case len(envelope.Tools) > 0:
-		runErr = deepSeekToolTurnToClient(w, req, response.Body, envelope, accumulator)
+		// One nonce per request, minted once: the prompt carries it and the
+		// parser compares against it, so a second mint would reject every call
+		// the prompt asked for.
+		nonce := deepSeekToolNonce(envelope.Tools)
+		settled, runErr = deepSeekToolTurnToClient(w, req, response.Body, envelope, accumulator, nonce,
+			func(repairPrompt string) (*deepSeekStreamAccumulator, error) {
+				// The session the malformed envelope arrived on is not one the
+				// next turn can continue: its transcript ends in a rejected
+				// answer. The repair runs on a fresh upstream session carrying
+				// the whole prompt again, and that session is the one this turn
+				// settles.
+				deepSeekAbandonSession(session, ctx, turn, userToken, accessToken)
+				deepSeekCloseSession(ctx, turn, userToken, accessToken, session.id)
+				freshID, err := turn.createSession(ctx, accessToken)
+				if err != nil {
+					return nil, err
+				}
+				retry, err := turn.completion(ctx, accessToken, deepSeekCompletionRequest{
+					ChatSessionID:   freshID,
+					ParentMessageID: nil,
+					ModelType:       options.modelType,
+					Prompt:          repairPrompt,
+					RefFileIDs:      []string{},
+					ThinkingEnabled: options.thinking,
+					SearchEnabled:   options.search,
+					Stream:          true,
+				})
+				if err != nil {
+					return nil, err
+				}
+				// The body is drained and closed here, inside the scope that
+				// opened it: the tool path buffers the whole answer anyway, so
+				// there is nothing left to stream once the read returns. The
+				// close error after a complete read carries nothing the client
+				// could act on.
+				repaired := newDeepSeekStreamAccumulator(envelope.Model)
+				if err := deepSeekDrain(retry.Body, repaired); err != nil {
+					_ = retry.Body.Close()
+					return nil, err
+				}
+				_ = retry.Body.Close()
+				session.id = freshID
+				session.createdHere = true
+				session.claim = deepSeekSessionClaim{tail: repairPrompt, pin: true}
+				return repaired, nil
+			})
 	default:
 		forwardUpstreamResponseHeaders(w, response.Header)
 		if req.IsStream {
@@ -195,6 +241,9 @@ func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 		} else {
 			runErr = deepSeekCollectToClient(w, req, response.Body, envelope.Model, accumulator)
 		}
+	}
+	if settled != nil {
+		accumulator = settled
 	}
 
 	if !deepSeekSettleSession(session, prompt, accumulator, runErr, ctx, turn, accessToken) {
@@ -358,6 +407,14 @@ func deepSeekHistoryWindow(connData map[string]any) int {
 	return 0
 }
 
+// deepSeekFinishedDrain is how long the upstream is given, after it has said
+// FINISHED, to send the last of its answer. DeepSeek sometimes holds the
+// completion body open past FINISHED — most often while the search_results
+// event is still coming — and a reader that waits for that close hangs the
+// client on a stream that has already said everything. Upstream's
+// done-terminator waits the same 750ms and then closes the body itself.
+const deepSeekFinishedDrain = 750 * time.Millisecond
+
 // deepSeekStreamToClient relays the upstream event stream as OpenAI chunks.
 //
 // The stream is only complete when the upstream says so. A body that closes
@@ -421,7 +478,14 @@ func deepSeekStreamToClient(w http.ResponseWriter, req *Request, upstream io.Rea
 	// and never the tags.
 	var scrubber deepSeekDSMLScrubber
 	thinkingSent, contentSent, roleAnnounced := 0, 0, false
-	scanErr := proxy.ScanStream(upstream, func(payload []byte) {
+	// The stream is not over when the upstream says FINISHED: search results
+	// can still follow it. The scan is bounded past that point instead of
+	// waiting for the body to close, matching upstream's done-terminator —
+	// 750ms after FINISHED the reader is closed and the turn is answered,
+	// so a client never hangs on a body the site left open.
+	scanErr := proxy.ScanStreamWithDeadline(req.Ctx, upstream, deepSeekFinishedDrain, func() bool {
+		return accumulator.sawFinished
+	}, func(payload []byte) {
 		if emitErr != nil {
 			return
 		}

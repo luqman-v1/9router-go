@@ -3,6 +3,8 @@ package executor
 import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -73,6 +75,10 @@ type deepSeekStreamAccumulator struct {
 	// channel, which is where upstream sends untyped fragments for those ids.
 	thinkingOnly bool
 
+	// model is the requested model id, kept for the search-dialect content rules
+	// (citation markers, the trailing citation block) that are keyed off it.
+	model string
+
 	channel  string
 	content  strings.Builder
 	thinking strings.Builder
@@ -94,7 +100,10 @@ type deepSeekStreamAccumulator struct {
 
 // newDeepSeekStreamAccumulator returns an accumulator for one requested model.
 func newDeepSeekStreamAccumulator(model string) *deepSeekStreamAccumulator {
-	return &deepSeekStreamAccumulator{thinkingOnly: deepSeekIsThinkingModel(model)}
+	return &deepSeekStreamAccumulator{
+		model:        model,
+		thinkingOnly: deepSeekIsThinkingModel(model),
+	}
 }
 
 // deepSeekIsThinkingModel reports whether a requested model id asks for
@@ -105,6 +114,49 @@ func deepSeekIsThinkingModel(model string) bool {
 	return strings.Contains(name, "r1") ||
 		strings.Contains(name, "think") ||
 		strings.Contains(name, "reason")
+}
+
+// deepSeekIsSearchModel reports whether a requested model id is a search-capable
+// one. Upstream's isSearchModel matches "search" and also "fold": the fold ids
+// are search models that do not carry the word.
+func deepSeekIsSearchModel(model string) bool {
+	name := strings.ToLower(model)
+	return strings.Contains(name, "search") || strings.Contains(name, "fold")
+}
+
+// deepSeekIsSearchSilent reports whether a search model suppresses citation
+// markers and the trailing citation block (upstream "search-silent").
+func deepSeekIsSearchSilent(model string) bool {
+	return strings.Contains(strings.ToLower(model), "search-silent")
+}
+
+// deepSeekCleanToken mirrors upstream's cleanDeepSeekToken: the web client
+// sometimes attaches a FINISHED token or opens a search turn with a SEARCH /
+// WEB_SEARCH / SEARCHING marker, and neither belongs in the answer.
+func deepSeekCleanToken(text string) string {
+	text = strings.ReplaceAll(text, "FINISHED", "")
+	return deepSeekSearchPrefix.ReplaceAllString(text, "")
+}
+
+// deepSeekSearchPrefix is the transport marker a search turn opens with. It is
+// anchored at the start of one piece, matching upstream's ^ anchor.
+var deepSeekSearchPrefix = regexp.MustCompile(`(?i)^(SEARCH|WEB_SEARCH|SEARCHING)\s*`)
+
+// deepSeekCitationMarker is the inline marker a search model writes in place of
+// the citation number, which this upstream's clients rewrite to [N].
+var deepSeekCitationMarker = regexp.MustCompile(`\[citation:(\d+)\]`)
+
+// deepSeekFormatStreamContent mirrors upstream's formatStreamContent: clean the
+// transport tokens, then rewrite the inline citation markers of a search model.
+func deepSeekFormatStreamContent(raw, model string) string {
+	text := deepSeekCleanToken(raw)
+	if !deepSeekIsSearchModel(model) {
+		return text
+	}
+	if deepSeekIsSearchSilent(model) {
+		return deepSeekCitationMarker.ReplaceAllString(text, "")
+	}
+	return deepSeekCitationMarker.ReplaceAllString(text, "[$1]")
 }
 
 // consume reads one raw `data:` payload, recording a refusal before folding the
@@ -261,6 +313,7 @@ func (a *deepSeekStreamAccumulator) appendFragment(fragment deepSeekFragment) {
 
 // append routes one piece of text to the active channel.
 func (a *deepSeekStreamAccumulator) append(text string) {
+	text = deepSeekFormatStreamContent(text, a.model)
 	switch a.channel {
 	case deepSeekChannelThinking:
 		a.thinking.WriteString(text)
@@ -320,30 +373,32 @@ func deepSeekParseCiteIndex(path string) (int, bool) {
 }
 
 // citations renders the accumulated search results as a trailing block.
+//
 // Upstream appends these to the answer rather than inventing a field, because
-// this upstream's clients have nowhere else to look for them.
+// this upstream's clients have nowhere else to look for them. The block is
+// `[N]: [title](url)` lines in ascending cite order, preceded by a blank line;
+// a search-silent model gets none, and neither does an answer that cited
+// nothing.
 func (a *deepSeekStreamAccumulator) citations() string {
-	var b strings.Builder
-	for _, cite := range a.cites {
-		title := cite.Title
-		if title == "" {
-			title = cite.URL
-		}
-		if title == "" {
-			continue
-		}
-		b.WriteString("\n[")
-		b.WriteString(strconv.Itoa(cite.CiteIndex))
-		b.WriteString("] ")
-		b.WriteString(title)
-		if cite.URL != "" && cite.URL != title {
-			b.WriteString(" (")
-			b.WriteString(cite.URL)
-			b.WriteString(")")
-		}
-		b.WriteString("\n")
+	if len(a.cites) == 0 || deepSeekIsSearchSilent(a.model) {
+		return ""
 	}
-	return b.String()
+	ordered := make([]deepSeekSearchResult, 0, len(a.cites))
+	for _, cite := range a.cites {
+		if cite.CiteIndex > 0 {
+			ordered = append(ordered, cite)
+		}
+	}
+	if len(ordered) == 0 {
+		return ""
+	}
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].CiteIndex < ordered[j].CiteIndex })
+	lines := make([]string, 0, len(ordered))
+	for _, cite := range ordered {
+		lines = append(lines,
+			"["+strconv.Itoa(cite.CiteIndex)+"]: ["+cite.Title+"]("+cite.URL+")")
+	}
+	return "\n\n" + strings.Join(lines, "\n")
 }
 
 // contentText is the visible answer with any citations appended.
