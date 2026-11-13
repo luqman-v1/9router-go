@@ -22,7 +22,7 @@ func TestClientIdentitiesMeetUpstreamMinimums(t *testing.T) {
 		minimum string
 	}{
 		{name: "grok-cli", version: GrokCLIVersion, minimum: GrokCLIMinimumVersion},
-		{name: "codex", version: CodexCLIVersion, minimum: "0.155.0"},
+		{name: "codex", version: CodexCLIVersion, minimum: "0.167.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
