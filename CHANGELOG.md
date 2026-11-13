@@ -1,5 +1,41 @@
 # Changelog
 
+## [v1.9.17-exp.1] - 2026-11-13
+
+### Changed
+
+- Claude prompt-cache head anchors now use the 5-minute ephemeral window instead of a
+  hardcoded 1-hour one. A 1h write is billed at 2x input against 1.25x for 5m, and the
+  longer window only pays off across idle gaps it rarely sees, so the default was
+  charging every instance 60% more per written token for nothing.
+- New `claudeCacheTtl` setting (`"5m"` | `"1h"`, empty = 5m) restores the old behaviour
+  and applies live, without a restart. It is exposed on the Claude provider page and in
+  the Claude quota tracker with the billing tradeoff written next to the control.
+
+### Added
+
+- Cache writes are recorded per window: `cache_creation.ephemeral_5m_input_tokens` and
+  `ephemeral_1h_input_tokens` are parsed on all four usage paths, stored on the usage
+  row, logged, and shown in the request detail badge as `5m: N · 1h: N`.
+
+### Fixed
+
+- 1-hour cache writes are priced at 2x input instead of the 5-minute rate, so a request
+  that wrote its prefix at 1h no longer records a bill ~40% below what Anthropic charges.
+
+### Fixes
+
+- **Proxy: support SOCKS5/SOCKS5h proxy pool types and sync outbound proxy settings from .env**:
+  - `internal/handlers/chat/connections_proxy.go`: allow `socks5`, `socks`, and `socks5h` scheme pools to route through `NewSafeTransportForProxy` instead of mistakenly falling through to the direct connection client.
+  - `internal/handlers/dashboard/connection_probe.go`: use `NewSafeTransportForProxy` for dialable proxy probe clients and proxy pre-checks so private-IP proxy endpoints are exempted by the safe dialer's allowlist.
+  - `internal/config/config.go`: synchronize `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `STRICT_SSL`, and `FORCE_FALLBACK_ON_ALL_UNAVAILABLE` from `.env` to `os.Setenv` when unset in the OS environment, mapping `ALL_PROXY` onto `HTTP_PROXY`/`HTTPS_PROXY` so standard library Go `net/http` respects ambient proxies configured via `.env`.
+  - `internal/proxy/ssrf.go`: `NewSafeTransport` now installs the ambient resolver on `t.Proxy` — a `*http.Transport` with `Proxy: nil` never consults the environment, so the values `syncEnvFromViper` lifted from `.env` were set but silently ignored on every poolless connection. The new `NewDirectSafeTransport` keeps the escape legs (`FallbackTransport`'s direct fallback, `replayDirect`) truly proxy-free, and the direct leg is built lazily so package init cannot fire `http.ProxyFromEnvironment`'s once-cache before viper syncs `.env`.
+  - `internal/proxy/executor/opencode_stealth.go`: `opencodeProxyFrom` unwraps `*FallbackTransport` to its `Base` before the `*http.Transport` assert, so the OpenCode free-lane stealth TLS client honors the operator's ambient proxy instead of silently dialing opencode.ai direct (verified with a logging SOCKS5 hop: `CONNECT opencode.ai:443` now arrives for both the pool lane and the poolless ambient lane).
+
+### Fixes
+
+- **Xiaomi Token Plan catalog**: sync `xiaomi-tokenplan` (and `xmtp`) models with current upstream Token Plan catalog (upstream decolua/9router@5e54377 parity). Retired dead models (`mimo-v2.5-pro`, `mimo-v2.5`, `mimo-v2-pro`, `mimo-v2-omni`, `mimo-v2-tts`, `mimo-v2.5-pro-claude`) and registered current models (`mimo-v2.6-pro`, `mimo-v2.6-flash`, `mimo-v2.5-asr`, `mimo-v2.5-tts`, `mimo-v2.5-tts-voiceclone`, `mimo-v2.5-tts-voicedesign`).
+
 ## [v1.9.16] - 2026-11-12
 
 ### Highlights
