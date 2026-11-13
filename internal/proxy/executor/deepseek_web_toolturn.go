@@ -26,15 +26,17 @@ import (
 // request carried a `tools[]` array, and an answer that is not a declared tool
 // call is passed through as ordinary content rather than being coerced into one.
 
-// deepSeekToolReissue re-runs the completion on a fresh upstream session.
+// deepSeekToolReissue re-runs the completion on a fresh upstream session and
+// drains its answer into a fresh accumulator.
 //
 // A malformed tool envelope is not an answer the client can act on, and the
 // model that produced it is told so exactly once: the session the envelope
 // arrived on is abandoned and the repair prompt is completed on a new one. The
 // returned accumulator is the fresh turn's — its sawFinished, enforcement and
 // message id are the ones settlement must see, and the caller's pointer is
-// replaced by what this returns.
-type deepSeekToolReissue func(repairPrompt string) (*deepSeekStreamAccumulator, io.Reader, error)
+// replaced by what this returns. Owning the drain inside the closure keeps the
+// body's lifetime local: it is closed before this returns, success or not.
+type deepSeekToolReissue func(repairPrompt string) (*deepSeekStreamAccumulator, error)
 
 // deepSeekToolTurnToClient reads the turn and writes either a tool call or the
 // model's plain answer.
@@ -80,12 +82,9 @@ func deepSeekToolTurnToClient(
 		// turn once on a fresh session with the contract restated, and so does
 		// this — one retry, because a second one only adds another request to
 		// the account the site is already challenging.
-		repaired, body, err := reissue(deepSeekRepairPrompt(text))
+		repaired, err := reissue(deepSeekRepairPrompt(text))
 		if err != nil {
 			return accumulator, deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+err.Error())
-		}
-		if drainErr := deepSeekDrain(body, repaired); drainErr != nil {
-			return repaired, deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+drainErr.Error())
 		}
 		accumulator = repaired
 		if enforcement := accumulator.enforcement; enforcement != nil {
@@ -155,8 +154,18 @@ func deepSeekRepairPrompt(rejected string) string {
 // callers that only need the text.
 func deepSeekAccumulate(upstream io.Reader) (*deepSeekStreamAccumulator, error) {
 	accumulator := newDeepSeekStreamAccumulator("")
+	if _, err := deepSeekAccumulateInto(accumulator, upstream); err != nil {
+		return nil, err
+	}
+	return accumulator, nil
+}
+
+// deepSeekAccumulateInto drains the upstream body into a caller's accumulator —
+// the same read as deepSeekAccumulate, for the callers that need the state in an
+// accumulator they already hold.
+func deepSeekAccumulateInto(accumulator *deepSeekStreamAccumulator, upstream io.Reader) (*deepSeekStreamAccumulator, error) {
 	if err := deepSeekDrain(upstream, accumulator); err != nil {
-		return nil, deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+err.Error())
+		return accumulator, deepSeekFailure(http.StatusBadGateway, "deepseek-web: "+err.Error())
 	}
 	return accumulator, nil
 }

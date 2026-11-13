@@ -7,7 +7,6 @@ package executor
 import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
-	"io"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -359,9 +358,13 @@ func TestDeepSeekToolTurnRepairsMalformedEnvelope(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	repairs := 0
-	reissue := func(string) (*deepSeekStreamAccumulator, io.Reader, error) {
+	reissue := func(string) (*deepSeekStreamAccumulator, error) {
 		repairs++
-		return newDeepSeekStreamAccumulator(env.Model), newSignedOffTurn(t, `{"name":"get_weather","arguments":{"city":"Jakarta"}}`), nil
+		repaired := newDeepSeekStreamAccumulator(env.Model)
+		if _, err := deepSeekAccumulateInto(repaired, newSignedOffTurn(t, `{"name":"get_weather","arguments":{"city":"Jakarta"}}`)); err != nil {
+			return nil, err
+		}
+		return repaired, nil
 	}
 
 	nonce := deepSeekToolNonce(env.Tools)
@@ -411,9 +414,13 @@ func TestDeepSeekToolTurnGivesUpAfterOneBadRepair(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	repairs := 0
-	reissue := func(string) (*deepSeekStreamAccumulator, io.Reader, error) {
+	reissue := func(string) (*deepSeekStreamAccumulator, error) {
 		repairs++
-		return newDeepSeekStreamAccumulator(env.Model), newSignedOffTurn(t, `<tool_call>{"name":"get_weather","arguments":{"ci`), nil
+		repaired := newDeepSeekStreamAccumulator(env.Model)
+		if _, err := deepSeekAccumulateInto(repaired, newSignedOffTurn(t, `<tool_call>{"name":"get_weather","arguments":{"ci`)); err != nil {
+			return nil, err
+		}
+		return repaired, nil
 	}
 
 	_, err := deepSeekToolTurnToClient(rec, req,
@@ -437,9 +444,9 @@ func TestDeepSeekToolTurnWithoutNonceNeverRepairs(t *testing.T) {
 	req := &Request{IsStream: false, Ctx: t.Context()}
 	rec := httptest.NewRecorder()
 
-	reissue := func(string) (*deepSeekStreamAccumulator, io.Reader, error) {
+	reissue := func(string) (*deepSeekStreamAccumulator, error) {
 		t.Fatal("a turn without a nonce must not issue a repair")
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	_, err := deepSeekToolTurnToClient(rec, req,

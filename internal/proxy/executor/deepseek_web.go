@@ -185,15 +185,15 @@ func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 	// session, same completion. The branch exists below the shared preamble so
 	// that a request without tools cannot be affected by any of it.
 	var runErr error
+	var settled *deepSeekStreamAccumulator
 	switch {
 	case len(envelope.Tools) > 0:
 		// One nonce per request, minted once: the prompt carries it and the
 		// parser compares against it, so a second mint would reject every call
 		// the prompt asked for.
 		nonce := deepSeekToolNonce(envelope.Tools)
-		var settled *deepSeekStreamAccumulator
 		settled, runErr = deepSeekToolTurnToClient(w, req, response.Body, envelope, accumulator, nonce,
-			func(repairPrompt string) (*deepSeekStreamAccumulator, io.Reader, error) {
+			func(repairPrompt string) (*deepSeekStreamAccumulator, error) {
 				// The session the malformed envelope arrived on is not one the
 				// next turn can continue: its transcript ends in a rejected
 				// answer. The repair runs on a fresh upstream session carrying
@@ -203,7 +203,7 @@ func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 				deepSeekCloseSession(ctx, turn, userToken, accessToken, session.id)
 				freshID, err := turn.createSession(ctx, accessToken)
 				if err != nil {
-					return nil, nil, err
+					return nil, err
 				}
 				retry, err := turn.completion(ctx, accessToken, deepSeekCompletionRequest{
 					ChatSessionID:   freshID,
@@ -216,16 +216,24 @@ func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 					Stream:          true,
 				})
 				if err != nil {
-					return nil, nil, err
+					return nil, err
 				}
+				// The body is drained and closed here, inside the scope that
+				// opened it: the tool path buffers the whole answer anyway, so
+				// there is nothing left to stream once the read returns. The
+				// close error after a complete read carries nothing the client
+				// could act on.
+				repaired := newDeepSeekStreamAccumulator(envelope.Model)
+				if err := deepSeekDrain(retry.Body, repaired); err != nil {
+					_ = retry.Body.Close()
+					return nil, err
+				}
+				_ = retry.Body.Close()
 				session.id = freshID
 				session.createdHere = true
 				session.claim = deepSeekSessionClaim{tail: repairPrompt, pin: true}
-				return newDeepSeekStreamAccumulator(envelope.Model), retry.Body, nil
+				return repaired, nil
 			})
-		if settled != nil {
-			accumulator = settled
-		}
 	default:
 		forwardUpstreamResponseHeaders(w, response.Header)
 		if req.IsStream {
@@ -233,6 +241,9 @@ func ForwardDeepSeekWeb(w http.ResponseWriter, req *Request) error {
 		} else {
 			runErr = deepSeekCollectToClient(w, req, response.Body, envelope.Model, accumulator)
 		}
+	}
+	if settled != nil {
+		accumulator = settled
 	}
 
 	if !deepSeekSettleSession(session, prompt, accumulator, runErr, ctx, turn, accessToken) {
