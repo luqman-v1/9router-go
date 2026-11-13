@@ -840,7 +840,7 @@ func validateGrokWeb(ctx context.Context, apiKey string) validateOutcome {
 	})
 	headers := map[string]string{
 		"Accept":             "*/*",
-		"Accept-Encoding":    "gzip, deflate, br, zstd",
+		"Accept-Encoding":    "gzip, deflate",
 		"Accept-Language":    "en-US,en;q=0.9",
 		"Cache-Control":      "no-cache",
 		"Content-Type":       "application/json",
