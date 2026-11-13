@@ -202,6 +202,85 @@ func TestFilterToOpenAIFormat(t *testing.T) {
 	})
 }
 
+func TestNormalizeToolChoiceFlatFunction(t *testing.T) {
+	tests := []struct {
+		name string
+		in   map[string]any
+		want any // expected tool_choice value after filtering
+	}{
+		{
+			name: "flat function tool_choice normalized to nested",
+			in: map[string]any{
+				"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+				"tool_choice": map[string]any{"type": "function", "name": "search"},
+			},
+			want: map[string]any{
+				"type":     "function",
+				"function": map[string]any{"name": "search"},
+			},
+		},
+		{
+			name: "flat tool (Claude-shaped) tool_choice normalized to nested",
+			in: map[string]any{
+				"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+				"tool_choice": map[string]any{"type": "tool", "name": "search"},
+			},
+			want: map[string]any{
+				"type":     "function",
+				"function": map[string]any{"name": "search"},
+			},
+		},
+		{
+			name: "nested function tool_choice preserved",
+			in: map[string]any{
+				"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+				"tool_choice": map[string]any{
+					"type":     "function",
+					"function": map[string]any{"name": "search"},
+				},
+			},
+			want: map[string]any{
+				"type":     "function",
+				"function": map[string]any{"name": "search"},
+			},
+		},
+		{
+			name: "flat function with missing name left unchanged",
+			in: map[string]any{
+				"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+				"tool_choice": map[string]any{"type": "function"},
+			},
+			want: map[string]any{"type": "function"},
+		},
+		{
+			name: "flat function with empty name left unchanged",
+			in: map[string]any{
+				"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+				"tool_choice": map[string]any{"type": "function", "name": ""},
+			},
+			want: map[string]any{"type": "function", "name": ""},
+		},
+	}
+
+	enc := json.Deterministic(true)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := filterBody(t, tt.in)
+			gotJSON, err := json.Marshal(out["tool_choice"], enc)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			wantJSON, err := json.Marshal(tt.want, enc)
+			if err != nil {
+				t.Fatalf("marshal want: %v", err)
+			}
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("tool_choice = %s, want %s", gotJSON, wantJSON)
+			}
+		})
+	}
+}
+
 func TestStripContentTypes(t *testing.T) {
 	body := func() map[string]any {
 		return map[string]any{"messages": []any{

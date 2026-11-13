@@ -338,7 +338,14 @@ func normalizeToolChoice(body map[string]any) bool {
 	case "any":
 		body["tool_choice"] = "required"
 		return true
-	case "tool":
+	case "tool", openaiBlockFunction:
+		// Flat Responses API shape: {"type": "function", "name": "search"}
+		// (or Claude-shaped {"type": "tool", "name": ...}). OpenAI Chat wants
+		// the nested {"type": "function", "function": {"name": ...}}. A choice
+		// that already carries a "function" map is left untouched.
+		if _, ok := choice["function"].(map[string]any); ok {
+			return false
+		}
 		if name, _ := choice["name"].(string); name != "" {
 			body["tool_choice"] = map[string]any{
 				"type":     openaiBlockFunction,
