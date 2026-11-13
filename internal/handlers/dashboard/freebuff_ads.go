@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	freebuffAdTTL     = 15 * time.Minute
-	freebuffAdEntries = 64
+	freebuffAdTTL      = 15 * time.Minute
+	freebuffAdEntries  = 64
 	freebuffAdsTimeout = 8 * time.Second
 )
 
@@ -99,7 +99,7 @@ func freebuffFetchAd(ctx context.Context, token, baseURL string) (*freebuffAd, e
 	if err != nil {
 		return nil, fmt.Errorf("freebuff ad: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNoContent {
 		return nil, nil
@@ -186,7 +186,7 @@ func freebuffReportImpression(ctx context.Context, token, baseURL string, ad fre
 	if err != nil {
 		return fmt.Errorf("freebuff ad: impression %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))

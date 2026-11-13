@@ -49,7 +49,7 @@ func fetchFreebuffUsage(ctx context.Context, token, baseURL string) usageResult 
 	if err != nil {
 		return usageResult{message: fmt.Sprintf("freebuff: %v", err)}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return usageResult{message: "freebuff: credential expired — sign in again"}
