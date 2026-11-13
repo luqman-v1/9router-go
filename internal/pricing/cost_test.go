@@ -52,6 +52,21 @@ func TestGetPricingForModel_Parity(t *testing.T) {
 			found: true,
 		},
 		{
+			name: "gemini-4 pattern (carbon)", provider: "commandcode", model: "google/gemini-4-carbon",
+			want:  ModelPricing{InputPer1M: 2, OutputPer1M: 10, CachedPer1M: 0.1, ReasoningPer1M: 10, CacheCreationPer1M: 0.1875},
+			found: true,
+		},
+		{
+			name: "gemini-4 pattern (carbon tier)", provider: "antigravity", model: "gemini-4-carbon-medium",
+			want:  ModelPricing{InputPer1M: 2, OutputPer1M: 10, CachedPer1M: 0.1, ReasoningPer1M: 10, CacheCreationPer1M: 0.1875},
+			found: true,
+		},
+		{
+			name: "gemini-4 argon explicit pricing", provider: "vertex", model: "gemini-4-argon",
+			want:  ModelPricing{InputPer1M: 2, OutputPer1M: 10, CachedPer1M: 0.1, ReasoningPer1M: 10, CacheCreationPer1M: 0.1875},
+			found: true,
+		},
+		{
 			// The vendor prefix is stripped before the canonical lookup.
 			name: "vendor-prefixed id", provider: "cline", model: "deepseek/deepseek-v4.1-flash",
 			want:  ModelPricing{InputPer1M: 0.14, OutputPer1M: 0.28, CachedPer1M: 0.0028, ReasoningPer1M: 0.28, CacheCreationPer1M: 0.14},
