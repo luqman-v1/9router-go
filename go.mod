@@ -20,6 +20,7 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/russellhaering/goxmldsig v1.6.1
 	github.com/samber/lo v1.53.0
+	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/spf13/viper v1.21.0
 	github.com/urfave/cli/v2 v2.27.7
 	github.com/yuin/goldmark v1.7.17
