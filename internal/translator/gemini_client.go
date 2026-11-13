@@ -47,7 +47,6 @@ func GeminiClientToChatRequest(body []byte, model string, stream bool) ([]byte, 
 		"stream": stream,
 	}
 	msgs := make([]any, 0, len(in.Contents)+1)
-
 	if in.SystemInstruction != nil {
 		if text := geminiPartsText(in.SystemInstruction.Parts); strings.TrimSpace(text) != "" {
 			msgs = append(msgs, map[string]any{"role": "system", "content": text})
@@ -55,98 +54,7 @@ func GeminiClientToChatRequest(body []byte, model string, stream bool) ([]byte, 
 	}
 
 	for _, content := range in.Contents {
-		if len(content.Parts) == 0 {
-			continue
-		}
-		role := "assistant"
-		if content.Role == "user" || content.Role == "" {
-			role = "user"
-		}
-
-		var texts []string
-		var images []any
-		var toolCalls []any
-		var toolMsg map[string]any
-
-		for _, part := range content.Parts {
-			switch {
-			case part.Text != "":
-				texts = append(texts, part.Text)
-			case part.InlineData != nil && part.InlineData.Data != "":
-				images = append(images, map[string]any{
-					"type": "image_url",
-					"image_url": map[string]any{
-						"url": "data:" + part.InlineData.MimeType + ";base64," + part.InlineData.Data,
-					},
-				})
-			case part.FunctionCall != nil:
-				// Gemini has no native call id, so derive one from the name. The
-				// matching functionResponse derives the same id, and providers
-				// require the pair to line up.
-				id := part.FunctionCall.ID
-				if id == "" {
-					id = "call_" + part.FunctionCall.Name
-				}
-				args := "{}"
-				if len(part.FunctionCall.Args) > 0 {
-					if raw, err := json.Marshal(part.FunctionCall.Args); err == nil {
-						args = string(raw)
-					}
-				}
-				toolCalls = append(toolCalls, map[string]any{
-					"id":   id,
-					"type": "function",
-					"function": map[string]any{
-						"name":      part.FunctionCall.Name,
-						"arguments": args,
-					},
-				})
-			case part.FunctionResponse != nil:
-				id := part.FunctionResponse.ID
-				if id == "" {
-					id = "call_" + part.FunctionResponse.Name
-				}
-				body := "{}"
-				if part.FunctionResponse.Response != nil {
-					if raw, err := json.Marshal(part.FunctionResponse.Response); err == nil {
-						body = string(raw)
-					}
-				}
-				toolMsg = map[string]any{
-					"role":         "tool",
-					"tool_call_id": id,
-					"content":      body,
-				}
-			}
-		}
-
-		// A functionResponse is its own turn: the OpenAI shape pairs it with the
-		// call by id, not by role.
-		if toolMsg != nil {
-			msgs = append(msgs, toolMsg)
-			continue
-		}
-
-		msg := map[string]any{"role": role}
-		switch {
-		case len(images) > 0:
-			blocks := make([]any, 0, len(texts)+len(images))
-			if len(texts) > 0 {
-				blocks = append(blocks, map[string]any{"type": "text", "text": strings.Join(texts, "\n")})
-			}
-			blocks = append(blocks, images...)
-			msg["content"] = blocks
-		case len(texts) == 1:
-			msg["content"] = texts[0]
-		case len(texts) > 1:
-			msg["content"] = strings.Join(texts, "\n")
-		default:
-			msg["content"] = ""
-		}
-		if len(toolCalls) > 0 {
-			msg["tool_calls"] = toolCalls
-		}
-		msgs = append(msgs, msg)
+		msgs = append(msgs, convertGeminiClientContent(content)...)
 	}
 
 	out["messages"] = msgs
@@ -192,6 +100,179 @@ func GeminiClientToChatRequest(body []byte, model string, stream bool) ([]byte, 
 		return nil, fmt.Errorf("gemini client: marshal chat body: %w", err)
 	}
 	return raw, nil
+}
+
+// convertGeminiClientContent converts one Gemini content turn into OpenAI
+// messages. Upstream reference: convertGeminiContent in
+// open-sse/translator/request/gemini-to-openai.js (ef2af4def).
+//
+// Every functionResponse becomes its own role:"tool" message, and all of them
+// are emitted before any co-located follow-up text or functionCall message: a
+// parallel-tool turn carries several results in one content block, and keeping
+// only the last one (or interleaving them after the assistant message) leaves
+// the other tool_call ids unanswered, which providers reject.
+func convertGeminiClientContent(content GeminiContent) []any {
+	if len(content.Parts) == 0 {
+		return nil
+	}
+	role := "assistant"
+	if content.Role == "user" || content.Role == "" {
+		role = "user"
+	}
+
+	var texts []string
+	var images []any
+	var toolCalls []any
+	var toolResults []any
+
+	for _, part := range content.Parts {
+		switch {
+		case part.Text != "":
+			texts = append(texts, part.Text)
+		case part.InlineData != nil && part.InlineData.Data != "":
+			images = append(images, map[string]any{
+				"type": "image_url",
+				"image_url": map[string]any{
+					"url": "data:" + part.InlineData.MimeType + ";base64," + part.InlineData.Data,
+				},
+			})
+		case part.FunctionCall != nil:
+			// Gemini has no native call id, so derive one from the name. The
+			// matching functionResponse derives the same id, and providers
+			// require the pair to line up.
+			id := part.FunctionCall.ID
+			if id == "" {
+				id = "call_" + part.FunctionCall.Name
+			}
+			args := "{}"
+			if len(part.FunctionCall.Args) > 0 {
+				if raw, err := json.Marshal(part.FunctionCall.Args); err == nil {
+					args = string(raw)
+				}
+			}
+			toolCalls = append(toolCalls, map[string]any{
+				"id":   id,
+				"type": "function",
+				"function": map[string]any{
+					"name":      part.FunctionCall.Name,
+					"arguments": args,
+				},
+			})
+		case part.FunctionResponse != nil:
+			id := part.FunctionResponse.ID
+			if id == "" {
+				id = "call_" + part.FunctionResponse.Name
+			}
+			body := toolResultBody(part.FunctionResponse)
+			toolResults = append(toolResults, map[string]any{
+				"role":         "tool",
+				"tool_call_id": id,
+				"content":      body,
+			})
+		}
+	}
+
+	// A functionResponse is its own turn: the OpenAI shape pairs it with the
+	// call by id, not by role.
+	var msg map[string]any
+	switch {
+	case len(toolCalls) > 0:
+		msg = map[string]any{"role": "assistant"}
+		switch {
+		case len(images) > 0:
+			blocks := make([]any, 0, len(texts)+len(images))
+			if len(texts) > 0 {
+				blocks = append(blocks, map[string]any{"type": "text", "text": strings.Join(texts, "\n")})
+			}
+			blocks = append(blocks, images...)
+			msg["content"] = blocks
+		case len(texts) == 1:
+			msg["content"] = texts[0]
+		case len(texts) > 1:
+			msg["content"] = strings.Join(texts, "\n")
+		}
+		msg["tool_calls"] = toolCalls
+	case len(images) > 0 || len(texts) > 0:
+		msg = map[string]any{"role": role}
+		switch {
+		case len(images) > 0:
+			blocks := make([]any, 0, len(texts)+len(images))
+			if len(texts) > 0 {
+				blocks = append(blocks, map[string]any{"type": "text", "text": strings.Join(texts, "\n")})
+			}
+			blocks = append(blocks, images...)
+			msg["content"] = blocks
+		case len(texts) == 1:
+			msg["content"] = texts[0]
+		default:
+			msg["content"] = strings.Join(texts, "\n")
+		}
+	}
+
+	if len(toolResults) > 0 {
+		if msg != nil {
+			return append(toolResults, msg)
+		}
+		return toolResults
+	}
+	if msg == nil {
+		return nil
+	}
+	return []any{msg}
+}
+
+// toolResultBody renders a functionResponse payload the way the upstream
+// client-request direction does: `response?.result || response || {}`. A truthy
+// result is stringified as-is (a JSON string keeps its quotes); a response
+// without a usable result falls back to the whole response object; nothing at
+// all degrades to an empty object.
+func toolResultBody(resp *GeminiFunctionResp) string {
+	if resp == nil {
+		return "{}"
+	}
+	if r := resp.Response; r != nil {
+		if truthyJSON(r.Result) {
+			// Re-emit the verbatim bytes the client sent. Marshalling the
+			// decoded value back would reorder object members (json/v2
+			// marshals decoded maps in unstable order), which changes the
+			// tool payload byte for byte.
+			if len(r.resultRaw) > 0 {
+				return string(r.resultRaw)
+			}
+			if raw, err := json.Marshal(r.Result); err == nil {
+				return string(raw)
+			}
+		}
+		if len(r.raw) > 0 {
+			return string(r.raw)
+		}
+		if raw, err := json.Marshal(r); err == nil {
+			return string(raw)
+		}
+	}
+	return "{}"
+}
+
+// truthyJSON mirrors JavaScript truthiness for the decoded `result` value:
+// null, false, zero, empty string, empty array and empty object are falsy.
+func truthyJSON(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return t
+	case string:
+		return t != ""
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	case []any:
+		return len(t) > 0
+	case map[string]any:
+		return len(t) > 0
+	}
+	return true
 }
 
 // geminiPartsText joins the text parts of a turn.

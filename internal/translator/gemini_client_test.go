@@ -52,6 +52,116 @@ func TestGeminiClientToChatRequest(t *testing.T) {
 
 // Gemini has no native call id, so a call and its response derive the same one
 // from the name. A pair that did not line up would be rejected upstream.
+// A parallel-tool turn carries every functionResponse in one content block
+// (upstream ef2af4def): all of them must survive as separate role:"tool"
+// messages, ordered before any co-located follow-up text or calls, or the
+// unanswered tool_call ids get the request rejected upstream.
+func TestGeminiClientPreservesAllToolResults(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want []map[string]any // role + optional tool_call_id/content/tool_calls, in order
+	}{
+		{
+			name: "two parallel tool results become two tool messages",
+			body: `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"get_weather","id":"call_w","response":{"result":"sunny"}}},{"functionResponse":{"name":"get_time","id":"call_t","response":{"result":"noon"}}}]}]}`,
+			want: []map[string]any{
+				{"role": "tool", "tool_call_id": "call_w", "content": `"sunny"`},
+				{"role": "tool", "tool_call_id": "call_t", "content": `"noon"`},
+			},
+		},
+		{
+			name: "results without ids derive call_ from the name",
+			body: `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"get_weather","response":{"result":"sunny"}}}]}]}`,
+			want: []map[string]any{
+				{"role": "tool", "tool_call_id": "call_get_weather", "content": `"sunny"`},
+			},
+		},
+		{
+			name: "results precede co-located follow-up text",
+			body: `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"get_weather","id":"call_w","response":{"result":"sunny"}}},{"text":"now plan my day"}]}]}`,
+			want: []map[string]any{
+				{"role": "tool", "tool_call_id": "call_w", "content": `"sunny"`},
+				{"role": "user", "content": "now plan my day"},
+			},
+		},
+		{
+			name: "results precede co-located follow-up calls",
+			body: `{"contents":[{"role":"model","parts":[{"functionResponse":{"name":"get_weather","id":"call_w","response":{"result":"sunny"}}},{"functionCall":{"name":"get_time","args":{}}}]}]}`,
+			want: []map[string]any{
+				{"role": "tool", "tool_call_id": "call_w", "content": `"sunny"`},
+				{"role": "assistant", "tool_calls": "present"},
+			},
+		},
+		{
+			name: "object result stringifies as the object itself",
+			body: `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"read_file","id":"call_f","response":{"result":{"path":"/x","size":12}}}}]}]}`,
+			want: []map[string]any{
+				{"role": "tool", "tool_call_id": "call_f", "content": `{"path":"/x","size":12}`},
+			},
+		},
+		{
+			name: "response without result falls back to the whole object",
+			body: `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"get_weather","id":"call_w","response":{"report":"rain"}}}]}]}`,
+			want: []map[string]any{
+				{"role": "tool", "tool_call_id": "call_w", "content": `{"report":"rain"}`},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := GeminiClientToChatRequest([]byte(tt.body), "m", false)
+			if err != nil {
+				t.Fatalf("convert: %v", err)
+			}
+			var chat map[string]any
+			if err := json.Unmarshal(out, &chat); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			msgs, _ := chat["messages"].([]any)
+			if len(msgs) != len(tt.want) {
+				t.Fatalf("messages = %d, want %d: %s", len(msgs), len(tt.want), string(out))
+			}
+			for i, want := range tt.want {
+				got, _ := msgs[i].(map[string]any)
+				if got["role"] != want["role"] {
+					t.Errorf("msg[%d] role = %v, want %v", i, got["role"], want["role"])
+				}
+				if id, ok := want["tool_call_id"]; ok && got["tool_call_id"] != id {
+					t.Errorf("msg[%d] tool_call_id = %v, want %v", i, got["tool_call_id"], id)
+				}
+				if content, ok := want["content"]; ok {
+					// Compare structurally: a map round-trips through the
+					// decoder, and key order inside a marshalled object is
+					// not part of the contract.
+					if !jsonEqual(want["content"], got["content"]) {
+						t.Errorf("msg[%d] content = %v, want %v", i, got["content"], content)
+					}
+				}
+				if _, ok := want["tool_calls"]; ok {
+					if _, present := got["tool_calls"]; !present {
+						t.Errorf("msg[%d] missing tool_calls", i)
+					}
+				}
+			}
+		})
+	}
+}
+
+// A response missing its result key degrades to an empty JSON object, matching
+// upstream's `|| {}` fallback, rather than marshalling a null.
+func TestGeminiClientToolResultWithoutResponse(t *testing.T) {
+	out, err := GeminiClientToChatRequest([]byte(
+		`{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"get_weather","id":"call_w"}}]}]}`), "m", false)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if !strings.Contains(string(out), `"content":"{}"`) {
+		t.Errorf("content = %s, want empty JSON object", string(out))
+	}
+}
+
 func TestGeminiClientToolCallAndResponsePair(t *testing.T) {
 	body := []byte(`{"contents":[
 		{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"/x"}}}]},
@@ -220,5 +330,40 @@ func TestChatChunkToGeminiFinalChunkCarriesUsage(t *testing.T) {
 	usage, _ := parsed["usageMetadata"].(map[string]any)
 	if usage["totalTokenCount"] != float64(8) {
 		t.Errorf("usageMetadata missing or wrong: %v", parsed["usageMetadata"])
+	}
+}
+
+// The tool-result payload is what the provider parses, so it must be
+// byte-stable: json/v2 re-marshals decoded maps in unstable member order, and
+// a payload that shifts between runs would make provider-side caching and
+// fixture comparisons non-deterministic. The converter therefore re-emits the
+// verbatim result bytes the client sent (upstream's JSON.stringify also
+// preserves member order).
+func TestGeminiClientToolResultPayloadByteStable(t *testing.T) {
+	body := []byte(`{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"read_file","id":"call_f","response":{"result":{"path":"/x","size":12,"alpha":1,"beta":2,"gamma":3}}}}]}]}`)
+	seen := map[string]bool{}
+	for range 300 {
+		out, err := GeminiClientToChatRequest(body, "m", false)
+		if err != nil {
+			t.Fatalf("convert: %v", err)
+		}
+		var chat struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(out, &chat); err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if len(chat.Messages) != 1 {
+			t.Fatalf("messages = %d, want 1", len(chat.Messages))
+		}
+		seen[chat.Messages[0].Content] = true
+	}
+	if len(seen) != 1 {
+		for s := range seen {
+			t.Errorf("distinct payload: %s", s)
+		}
+		t.Fatalf("payload unstable: %d distinct bodies across 300 runs", len(seen))
 	}
 }

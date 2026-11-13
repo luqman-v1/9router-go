@@ -17,15 +17,21 @@ import type { Page } from '@playwright/test'
 
 import { startDashboard, type Dashboard } from './harness'
 
+// The whole beforeAll boots the gateway binary, launches Chromium and logs in
+// — well over bun's 5s default hook timeout on a loaded CI runner.
+const SLOW = 60_000
+
 let app: Dashboard
 let page: Page
 beforeAll(async () => {
   app = await startDashboard(20412)
   page = app.page
-})
+}, SLOW)
 
 afterAll(async () => {
-  await app.stop()
+  // A timed-out beforeAll leaves app undefined; without the guard the
+  // afterAll TypeError would bury the real hook timeout.
+  await app?.stop()
 })
 
 /**

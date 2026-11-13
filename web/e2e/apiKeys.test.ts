@@ -15,15 +15,22 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 
 import { createKey, keyRow, openRowMenu, startDashboard, type Dashboard } from './harness'
 
+// The whole beforeAll boots the gateway binary, launches Chromium and logs in
+// — well over bun's 5s default hook timeout on a loaded CI runner.
+const SLOW = 60_000
+
 let app: Dashboard
 let page: Dashboard['page']
 
 beforeAll(async () => {
   app = await startDashboard(20411)
   page = app.page
-})
+}, SLOW)
+
 afterAll(async () => {
-  await app.stop()
+  // A timed-out beforeAll leaves app undefined; without the guard the
+  // afterAll TypeError would bury the real hook timeout.
+  await app?.stop()
 })
 
 describe('api key row menu', () => {
