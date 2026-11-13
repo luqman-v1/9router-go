@@ -1700,6 +1700,8 @@ var antigravityDailyBaseURL = "https://daily-cloudcode-pa.googleapis.com"
 const antigravityDashboardUA = providers.AntigravityCLIUserAgent
 
 var antigravityImportantModels = map[string]bool{
+	"gemini-4-carbon-high": true, "gemini-4-carbon-medium": true, "gemini-4-carbon-low": true,
+	"gemini-4-carbon":     true,
 	"gemini-4-argon-high": true, "gemini-4-argon-medium": true, "gemini-4-argon-low": true,
 	"gemini-4-argon":        true,
 	"gemini-3.8-flash-high": true, "gemini-3.8-flash-medium": true, "gemini-3.8-flash-low": true,
@@ -1822,7 +1824,7 @@ func fetchAntigravityDashboardUsage(ctx context.Context, accessToken, projectID 
 		for key, wq := range weekly {
 			if key == "gemini_weekly" {
 				antigravityReconcileFamily(quotas, "gemini-", "image", wq)
-			} else if key == "argon_weekly" {
+			} else if key == "gemini_argon_weekly" || key == "argon_weekly" {
 				antigravityReconcileFamily(quotas, "gemini-4-argon", "", wq)
 			} else if key == "claude_gpt_weekly" {
 				antigravityReconcileFamily(quotas, "claude-", "", wq)
@@ -1895,8 +1897,8 @@ func fetchAntigravityDashboardWeekly(ctx context.Context, accessToken, projectID
 	configs := []familyConfig{
 		{
 			pattern: "argon",
-			weekly:  familyTarget{"argon_weekly", "Gemini 4 Argon (Weekly)", "weekly"},
-			session: familyTarget{"argon_session", "Gemini 4 Argon (5h)", "5h"},
+			weekly:  familyTarget{"gemini_argon_weekly", "Gemini 4 Argon (Weekly)", "weekly"},
+			session: familyTarget{"gemini_argon_session", "Gemini 4 Argon (5h)", "5h"},
 		},
 		{
 			pattern: "gemini",
@@ -1956,7 +1958,7 @@ func fetchAntigravityDashboardWeekly(ctx context.Context, accessToken, projectID
 					total := 100.0
 					remPct := math.Round(frac * 100)
 					used := math.Max(0, math.Round((1.0-frac)*100))
-					result[target.key] = map[string]any{
+					entry := map[string]any{
 						"used":                used,
 						"total":               total,
 						"resetAt":             usageResetTime(b["resetTime"]),
@@ -1964,6 +1966,13 @@ func fetchAntigravityDashboardWeekly(ctx context.Context, accessToken, projectID
 						"unlimited":           false,
 						"displayName":         target.displayName,
 						"window":              target.window,
+					}
+					result[target.key] = entry
+					switch target.key {
+					case "gemini_argon_weekly":
+						result["argon_weekly"] = entry
+					case "gemini_argon_session":
+						result["argon_session"] = entry
 					}
 					break
 				}

@@ -393,6 +393,13 @@ func TestParseWeeklyQuotaSummary_Argon(t *testing.T) {
 	if aw.Used != 20 || aw.Total != 1000 || aw.RemainingPercentage != 98.0 {
 		t.Errorf("unexpected argon_weekly: %+v", aw)
 	}
+	gaw, ok := parsed["gemini_argon_weekly"]
+	if !ok {
+		t.Fatal("expected gemini_argon_weekly to be parsed")
+	}
+	if gaw.Used != 20 || gaw.Total != 1000 || gaw.RemainingPercentage != 98.0 {
+		t.Errorf("unexpected gemini_argon_weekly: %+v", gaw)
+	}
 
 	gw, ok := parsed["gemini_weekly"]
 	if !ok {
@@ -432,6 +439,55 @@ func TestAntigravityQuota_ArgonIsolation(t *testing.T) {
 	// standard gemini models must NOT be blocked because gemini_weekly is 100%
 	if IsAntigravityModelBlocked(connID, "gemini-3.8-flash-high") {
 		t.Errorf("gemini-3.8-flash-high should NOT be blocked by argon_weekly")
+	}
+}
+func TestAntigravityQuota_ArgonUltraPlanFallback(t *testing.T) {
+	connID := "test-conn-argon-ultra"
+	ClearAntigravityQuotaCache()
+
+	futureReset := time.Now().UTC().Add(1 * time.Hour)
+	agQuotaMu.Lock()
+	agQuotaCache[connID] = map[string]AntigravityModelQuota{
+		// No argon_weekly / gemini_argon_weekly present (e.g. Ultra plan)
+		"gemini_weekly": {
+			RemainingPercentage: 0,
+			ResetAt:             futureReset,
+		},
+	}
+	agQuotaMu.Unlock()
+
+	// Argon must fall back to gemini_weekly and be blocked
+	if !IsAntigravityModelBlocked(connID, "gemini-4-argon") {
+		t.Errorf("gemini-4-argon should be blocked by fallback gemini_weekly on Ultra plan")
+	}
+	if !IsAntigravityModelBlocked(connID, "gemini-4-argon-high") {
+		t.Errorf("gemini-4-argon-high should be blocked by fallback gemini_weekly on Ultra plan")
+	}
+}
+
+func TestAntigravityQuota_Claude55AndCarbonAliases(t *testing.T) {
+	connID := "test-conn-aliases"
+	ClearAntigravityQuotaCache()
+
+	futureReset := time.Now().UTC().Add(1 * time.Hour)
+	agQuotaMu.Lock()
+	agQuotaCache[connID] = map[string]AntigravityModelQuota{
+		"claude-sonnet-5-5-high": {
+			RemainingPercentage: 0,
+			ResetAt:             futureReset,
+		},
+		"gemini-4-carbon-high": {
+			RemainingPercentage: 0,
+			ResetAt:             futureReset,
+		},
+	}
+	agQuotaMu.Unlock()
+
+	if !IsAntigravityModelBlocked(connID, "claude-sonnet-5-5") {
+		t.Errorf("claude-sonnet-5-5 should be blocked when claude-sonnet-5-5-high is exhausted")
+	}
+	if !IsAntigravityModelBlocked(connID, "gemini-4-carbon") {
+		t.Errorf("gemini-4-carbon should be blocked when gemini-4-carbon-high is exhausted")
 	}
 }
 

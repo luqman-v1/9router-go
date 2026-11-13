@@ -195,6 +195,15 @@ func IsAntigravityModelBlocked(connectionID, model string) bool {
 	if model == "gemini-4-argon" {
 		checkModels = append(checkModels, "gemini-4-argon-high", "gemini-4-argon-medium")
 	}
+	if model == "gemini-4-carbon" {
+		checkModels = append(checkModels, "gemini-4-carbon-high", "gemini-4-carbon-medium")
+	}
+	if model == "claude-sonnet-5-5" {
+		checkModels = append(checkModels, "claude-sonnet-5-5-high")
+	}
+	if model == "claude-opus-5-5" {
+		checkModels = append(checkModels, "claude-opus-5-5-high")
+	}
 
 	now := time.Now().UTC()
 	for _, m := range checkModels {
@@ -210,11 +219,25 @@ func IsAntigravityModelBlocked(connectionID, model string) bool {
 	// decolua/9router#4209: session exhaustion blocks the family even when
 	// weekly remains).
 	if strings.Contains(model, "argon") {
-		for _, key := range []string{"argon_weekly", "argon_session"} {
+		hasArgonSummary := false
+		for _, key := range []string{"gemini_argon_weekly", "argon_weekly", "gemini_argon_session", "argon_session"} {
 			if wq, exists := modelsMap[key]; exists {
+				hasArgonSummary = true
 				if quotaEntryExhausted(wq, now) {
 					agQuotaMu.RUnlock()
 					return true
+				}
+			}
+		}
+		// On Ultra plans where Argon shares the main Gemini bucket (no separate argon summary),
+		// fall back to the shared Gemini summary buckets (parity with upstream decolua/9router#8a833631).
+		if !hasArgonSummary {
+			for _, key := range []string{"gemini_weekly", "gemini_session"} {
+				if wq, exists := modelsMap[key]; exists {
+					if quotaEntryExhausted(wq, now) {
+						agQuotaMu.RUnlock()
+						return true
+					}
 				}
 			}
 		}
@@ -634,7 +657,7 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 			key := "gemini_weekly"
 			dName := "Gemini (Weekly)"
 			if isArgon {
-				key = "argon_weekly"
+				key = "gemini_argon_weekly"
 				dName = "Gemini 4 Argon (Weekly)"
 			} else if isClaudeGPT {
 				key = "claude_gpt_weekly"
@@ -642,7 +665,7 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 			}
 			if !isWeekly {
 				if isArgon {
-					key = "argon_session"
+					key = "gemini_argon_session"
 					dName = "Gemini 4 Argon (5h)"
 				} else if strings.HasPrefix(key, "gemini") {
 					key = "gemini_session"
@@ -656,12 +679,19 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 			// First matching bucket per type wins (no break: one group can
 			// yield both a weekly and a session bucket).
 			if _, exists := result[key]; !exists {
-				result[key] = AntigravityWeeklyQuota{
+				entry := AntigravityWeeklyQuota{
 					Used:                used,
 					Total:               total,
 					RemainingPercentage: frac * 100,
 					ResetAt:             resetAt,
 					DisplayName:         dName,
+				}
+				result[key] = entry
+				switch key {
+				case "gemini_argon_weekly":
+					result["argon_weekly"] = entry
+				case "gemini_argon_session":
+					result["argon_session"] = entry
 				}
 			}
 		}
