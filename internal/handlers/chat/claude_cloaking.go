@@ -355,11 +355,22 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 		}
 	}
 
-	// Forced tool_choice must point at the suffixed name.
+	// Forced tool_choice must point at the suffixed name. It arrives in the
+	// Claude flat shape ({"type":"tool","name"}) or the OpenAI nested shape
+	// ({"type":"function","function":{"name"}}); both force a tool by name, so
+	// both must follow the cloak or upstream rejects the request HTTP 400
+	// because the forced choice names no declared tool.
 	if tc, ok := req["tool_choice"].(map[string]any); ok {
 		if tc["type"] == "tool" {
 			if name, ok := tc["name"].(string); ok && clientToolNames[name] {
 				tc["name"] = suffixClaudeToolName(name)
+			}
+		}
+		if tc["type"] == "function" {
+			if fn, ok := tc["function"].(map[string]any); ok {
+				if name, ok := fn["name"].(string); ok && clientToolNames[name] {
+					fn["name"] = suffixClaudeToolName(name)
+				}
 			}
 		}
 	}

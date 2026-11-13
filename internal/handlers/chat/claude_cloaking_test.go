@@ -2,6 +2,7 @@ package chat
 
 import (
 	json "encoding/json/v2"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -439,5 +440,84 @@ func TestSanitizeClaudeThinkingBody_AdaptiveUpdatesClamped(t *testing.T) {
 	th, _ := m["thinking"].(map[string]any)
 	if th["display"] != "summarized" {
 		t.Fatalf("thinking.display = %v, want summarized", th["display"])
+	}
+}
+
+func TestCloakClaudeTools_RetargetsForcedToolChoice(t *testing.T) {
+	// An OAuth Claude request cloaks client tools with the _ide suffix; a
+	// forced tool_choice naming a cloaked tool must be retargeted to the
+	// suffixed name, or Anthropic answers HTTP 400 ("tool not found").
+	tools := `[
+		{"name": "todo_write", "description": "write todos", "input_schema": {"type": "object", "properties": {}}},
+		{"name": "read", "description": "read files", "input_schema": {"type": "object", "properties": {}}}
+	]`
+	tests := []struct {
+		name       string
+		toolChoice string
+		wantChoice string
+	}{
+		{
+			name:       "claude flat forced choice follows the cloak",
+			toolChoice: `{"type":"tool","name":"todo_write"}`,
+			wantChoice: `{"type":"tool","name":"todo_write_ide"}`,
+		},
+		{
+			name:       "openai nested forced choice follows the cloak",
+			toolChoice: `{"type":"function","function":{"name":"todo_write"}}`,
+			wantChoice: `{"type":"function","function":{"name":"todo_write_ide"}}`,
+		},
+		{
+			name:       "auto is not corrupted",
+			toolChoice: `"auto"`,
+			wantChoice: `"auto"`,
+		},
+		{
+			name:       "none is not corrupted",
+			toolChoice: `"none"`,
+			wantChoice: `"none"`,
+		},
+		{
+			name:       "required is not corrupted",
+			toolChoice: `"required"`,
+			wantChoice: `"required"`,
+		},
+		{
+			name:       "{type:auto} is not corrupted",
+			toolChoice: `{"type":"auto"}`,
+			wantChoice: `{"type":"auto"}`,
+		},
+		{
+			name:       "tool choice naming an undeclared tool is not rewritten",
+			toolChoice: `{"type":"tool","name":"missing_tool"}`,
+			wantChoice: `{"type":"tool","name":"missing_tool"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"tools":` + tools + `,"tool_choice":` + tt.toolChoice + `}`)
+			var req map[string]any
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Fatalf("bad fixture: %v", err)
+			}
+			toolMap := cloakClaudeTools(req)
+			if toolMap == nil || toolMap["todo_write_ide"] != "todo_write" {
+				t.Fatalf("expected todo_write -> todo_write_ide cloak, got %v", toolMap)
+			}
+			got, err := json.Marshal(req["tool_choice"])
+			if err != nil {
+				t.Fatalf("marshal tool_choice: %v", err)
+			}
+			var gotAny, wantAny any
+			if err := json.Unmarshal(got, &gotAny); err != nil {
+				t.Fatalf("unmarshal got: %v", err)
+			}
+			if err := json.Unmarshal([]byte(tt.wantChoice), &wantAny); err != nil {
+				t.Fatalf("bad expected: %v", err)
+			}
+			if !reflect.DeepEqual(gotAny, wantAny) {
+				t.Errorf("tool_choice = %s, want %s", got, tt.wantChoice)
+			}
+		})
 	}
 }
