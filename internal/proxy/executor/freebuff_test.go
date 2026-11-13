@@ -123,19 +123,25 @@ func TestFreebuff_EnsureEndTurnTool(t *testing.T) {
 func TestFreebuff_RootAgentIdForModel(t *testing.T) {
 	cases := map[string]string{
 		"deepseek/deepseek-v4-flash":      "base3-free-deepseek-flash",
+		"deepseek/deepseek-v4-pro":        "base3-free-deepseek",
+		"deepseek/deepseek-v4-flash-fast": "base3-fast",
+		"z-ai/glm-5.2":                    "base3-free-glm",
 		"z-ai/glm-5.3-flash":              "base3-free-glm-5-3-flash",
-		"openai/gpt-5.6-luna":             "base3-free-luna",
 		"mimo/mimo-v2.5":                  "base3-free-mimo",
+		"openai/gpt-5.6-luna":             "base3-free-luna",
+		"openai/gpt-6-luna":               "base3-free-luna-6",
+		"google/gemini-3.8-flash":         "base3-free-gemini-3-8-flash",
 		"upstage/solar-pro4":              "base3-free-solar-pro4",
+		"upstage/solar-mini4":             "base3-free-solar-mini4",
 		"meta/muse-spark-1.2-contributor": "base3-free-muse-spark",
-		"anthropic/claude-fable-5":        "base3-free-fable",
-		"unknown/random-model":            "base2-free",
+		"anthropic/claude-fable-5":        "base2-free-fable",
+		"unknown-model":                   "base3-free-deepseek-flash",
 	}
 
 	for m, expected := range cases {
 		got := rootAgentIdForModel(m)
 		if got != expected {
-			t.Errorf("rootAgentIdForModel(%q) = %q, want %q", m, got, expected)
+			t.Errorf("model %q: expected %q, got %q", m, expected, got)
 		}
 	}
 }
@@ -153,6 +159,12 @@ func TestForwardFreebuff_FullCycle(t *testing.T) {
 			if r.Header.Get("Authorization") != "Bearer test-fb-token" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
+			}
+			if got := r.Header.Get("x-freebuff-wallet-spend-limit"); got != "session" {
+				t.Errorf("expected x-freebuff-wallet-spend-limit=session, got %q", got)
+			}
+			if got := r.Header.Get("x-freebuff-multi-session"); got != "1" {
+				t.Errorf("expected x-freebuff-multi-session=1, got %q", got)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.MarshalWrite(w, map[string]any{
@@ -195,6 +207,12 @@ func TestForwardFreebuff_FullCycle(t *testing.T) {
 				}
 				if meta["freebuff_instance_id"] != "fb-inst-999" {
 					t.Errorf("expected freebuff_instance_id fb-inst-999, got %v", meta["freebuff_instance_id"])
+				}
+				if meta["surface"] != "cli" {
+					t.Errorf("expected surface cli, got %v", meta["surface"])
+				}
+				if meta["freebuff_multi_session"] != "1" {
+					t.Errorf("expected freebuff_multi_session 1, got %v", meta["freebuff_multi_session"])
 				}
 				// client_id cloaking: bare "9router-" branding must never leak
 				// upstream; default requests carry an unbranded random id.

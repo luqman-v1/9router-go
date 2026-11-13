@@ -2262,6 +2262,26 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ connectionId, adId }),
     }),
+  freebuffAd: (connectionId: string) =>
+    request<{
+      ad: {
+        adId: string
+        clickUrl?: string
+        creative: {
+          title?: string
+          body?: string
+          cta?: string
+          imageUrl?: string
+          sponsorName?: string
+          brandColor?: string
+        }
+      } | null
+    }>(`/api/freebuff/ad?connectionId=${encodeURIComponent(connectionId)}`),
+  freebuffImpression: (connectionId: string, adId: string) =>
+    request<{ recorded: boolean }>('/api/freebuff/ad/impression', {
+      method: 'POST',
+      body: JSON.stringify({ connectionId, adId }),
+    }),
 
   kiroImport: (refreshToken: string) =>
     request<{ success: boolean; id?: string; error?: string }>('/api/oauth/kiro/import', {

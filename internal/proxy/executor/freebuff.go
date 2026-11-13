@@ -3,6 +3,8 @@ package executor
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -25,29 +27,51 @@ const (
 )
 
 var freebuffRootAgentByModel = map[string]string{
+	"deepseek/deepseek-v4-pro":        "base3-free-deepseek",
 	"deepseek/deepseek-v4-flash":      "base3-free-deepseek-flash",
+	"deepseek/deepseek-v4-flash-fast": "base3-fast",
+	"mimo/mimo-v2.5":                  "base3-free-mimo",
+	"mimo/mimo-v2.6-pro":              "base3-free-mimo-2-6-pro",
+	"minimax/minimax-m3":              "base3-free-minimax-m3",
+	"openai/gpt-5.6-luna":             "base3-free-luna",
+	"openai/gpt-6-luna":               "base3-free-luna-6",
+	"openai/gpt-6.1-sol":              "base3-free-gpt-6-1-sol",
+	"openai/gpt-6.1-terra":            "base3-free-gpt-6-1-terra",
+	"google/gemini-4-argon":           "base3-free-gemini-4-argon",
+	"google/gemini-3.8-flash":         "base3-free-gemini-3-8-flash",
 	"z-ai/glm-5.2":                    "base3-free-glm",
 	"z-ai/glm-5.3-flash":              "base3-free-glm-5-3-flash",
-	"mimo/mimo-v2.5":                  "base3-free-mimo",
-	"openai/gpt-5.6-luna":             "base3-free-luna",
 	"upstage/solar-pro4":              "base3-free-solar-pro4",
+	"upstage/solar-mini4":             "base3-free-solar-mini4",
 	"meta/muse-spark-1.2-contributor": "base3-free-muse-spark",
-	"anthropic/claude-fable-5":        "base3-free-fable",
+	"meta/muse-spark-1.3-contributor": "base3-free-muse-spark-1-3",
+	"anthropic/claude-fable-5":        "base2-free-fable",
+	"anthropic/claude-fable-5.1":      "base2-free-fable",
+	"space-bunny/space-bunny-alpha":   "base3-free-space-bunny-alpha",
+	"ox/ox-alpha":                     "base3-free-ox-alpha",
 }
 
 var freebuffRootOpenings = []string{
 	"You are Buffy, the strategic coding assistant.",
+	"You are Buffy, the coding agent behind Codebuff.",
 	"You are Buffy, the Freebuff Cloud project planner.",
+	"You are Buffy, the auto-run agent behind Freebuff Desktop.",
+	"You are Buffy, the project-understanding agent behind Freebuff.",
 	"You are Buffy, a strategic assistant that orchestrates complex coding tasks through specialized sub-agents.",
+}
+
+func generateFreebuffCliFingerprint() string {
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	return "codebuff-cli-" + base64.RawURLEncoding.EncodeToString(b)
 }
 
 func rootAgentIdForModel(model string) string {
 	if root, ok := freebuffRootAgentByModel[model]; ok {
 		return root
 	}
-	return "base2-free"
+	return "base3-free-deepseek-flash"
 }
-
 func freebuffOrigin(baseURL string) string {
 	if baseURL != "" {
 		if u, err := url.Parse(baseURL); err == nil && u.Scheme != "" && u.Host != "" {
@@ -269,13 +293,15 @@ func ForwardFreebuff(w http.ResponseWriter, req *Request) error {
 		clientID, _ = req.ConnData["fingerprintId"].(string)
 	}
 	if clientID == "" {
-		clientID = uuid.New().String()
+		clientID = generateFreebuffCliFingerprint()
 	}
 	codebuffMeta := map[string]any{
-		"client_id":        clientID,
-		"cost_mode":        "free",
-		"run_id":           runID,
-		"trace_session_id": uuid.New().String(),
+		"client_id":              clientID,
+		"cost_mode":              "free",
+		"run_id":                 runID,
+		"trace_session_id":       uuid.New().String(),
+		"surface":                "cli",
+		"freebuff_multi_session": "1",
 	}
 	if sess != nil && sess.InstanceID != "" {
 		codebuffMeta["freebuff_instance_id"] = sess.InstanceID

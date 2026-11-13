@@ -220,6 +220,9 @@ func SetupRoutes(r interface {
 	// spend funds the inference (see free_pi_ads.go).
 	r.Get("/api/free-pi/ad", dashH.HandleGetFreePiAd)
 	r.Post("/api/free-pi/ad/impression", dashH.HandleFreePiImpression)
+	// Freebuff ad surface.
+	r.Get("/api/freebuff/ad", dashH.HandleGetFreebuffAd)
+	r.Post("/api/freebuff/ad/impression", dashH.HandleFreebuffImpression)
 
 	// Debug Tracing Domain (p50/p95 latency per provider+model)
 	r.Get("/debug/traces", HandleDebugTraces)
@@ -304,6 +307,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	// spend funds the inference (see free_pi_ads.go).
 	r.Get("/api/free-pi/ad", dashH.HandleGetFreePiAd)
 	r.Post("/api/free-pi/ad/impression", dashH.HandleFreePiImpression)
+	// Freebuff ad surface.
+	r.Get("/api/freebuff/ad", dashH.HandleGetFreebuffAd)
+	r.Post("/api/freebuff/ad/impression", dashH.HandleFreebuffImpression)
 
 	// Cache Analytics & Management
 	r.Get("/api/cache", dashH.HandleGetCache)
