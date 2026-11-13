@@ -229,6 +229,13 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 							pendingCallIDs = append(pendingCallIDs, cid)
 						case "function_call_output", "custom_tool_call_output":
 							cid, _ := itemMap["call_id"].(string)
+							// Codex also accepts function results addressed by name,
+							// without a preceding call. An invented id makes it
+							// require a matching call that does not exist.
+							name, _ := itemMap["name"].(string)
+							if itemType == "function_call_output" && cid == "" && strings.TrimSpace(name) != "" {
+								continue
+							}
 							if cid != "" {
 								for idx, p := range pendingCallIDs {
 									if p == cid {
