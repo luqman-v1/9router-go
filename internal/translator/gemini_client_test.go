@@ -131,8 +131,13 @@ func TestGeminiClientPreservesAllToolResults(t *testing.T) {
 				if id, ok := want["tool_call_id"]; ok && got["tool_call_id"] != id {
 					t.Errorf("msg[%d] tool_call_id = %v, want %v", i, got["tool_call_id"], id)
 				}
-				if content, ok := want["content"]; ok && got["content"] != content {
-					t.Errorf("msg[%d] content = %v, want %v", i, got["content"], content)
+				if content, ok := want["content"]; ok {
+					// Compare structurally: a map round-trips through the
+					// decoder, and key order inside a marshalled object is
+					// not part of the contract.
+					if !jsonEqual(want["content"], got["content"]) {
+						t.Errorf("msg[%d] content = %v, want %v", i, got["content"], content)
+					}
 				}
 				if _, ok := want["tool_calls"]; ok {
 					if _, present := got["tool_calls"]; !present {
