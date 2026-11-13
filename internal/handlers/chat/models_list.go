@@ -32,9 +32,15 @@ type ModelInfoObject struct {
 	// the client would read as a real limit. Upstream emits them on combo
 	// entries too (comboSeatLimits in src/app/api/v1/models/route.js), taking
 	// the smallest window in the combo's seat tree.
-	ContextLength       *int                       `json:"context_length,omitempty"`
-	MaxCompletionTokens *int                       `json:"max_completion_tokens,omitempty"`
-	Pricing             *pricing.OpenRouterPricing `json:"pricing,omitempty"`
+	ContextLength       *int `json:"context_length,omitempty"`
+	MaxCompletionTokens *int `json:"max_completion_tokens,omitempty"`
+	// ThinkingLevels is the selectable reasoning-level set the dashboard
+	// picker shows ("none,low,…"), emitted so clients can build an effort
+	// selector from the gateway instead of a per-model table. Omitted when the
+	// model has no reasoning. Upstream 7abc190d added the same field to
+	// buildModelsList (getThinkingLevels → model.thinking_levels).
+	ThinkingLevels []string                   `json:"thinking_levels,omitempty"`
+	Pricing        *pricing.OpenRouterPricing `json:"pricing,omitempty"`
 }
 
 // ConnectionHasCredential reports whether a provider connection carries auth
@@ -766,6 +772,7 @@ func (h *ChatHandler) appendConnectionModels(
 			Capabilities:        &caps,
 			ContextLength:       optionalTokenLimit(ctxLen),
 			MaxCompletionTokens: optionalTokenLimit(maxOut),
+			ThinkingLevels:      providers.GetThinkingLevels(providerID, modelID),
 			Pricing:             pricing.BuildOpenRouterPricing(outputAlias, modelID),
 		})
 	}
@@ -852,6 +859,7 @@ func appendStaticModel(data []ModelInfoObject, seen map[string]bool, alias, mode
 		Capabilities:        &caps,
 		ContextLength:       optionalTokenLimit(ctxLen),
 		MaxCompletionTokens: optionalTokenLimit(maxOut),
+		ThinkingLevels:      providers.GetThinkingLevels(alias, modelID),
 		Pricing:             pricing.BuildOpenRouterPricing(alias, modelID),
 	})
 }
@@ -925,6 +933,7 @@ func (h *ChatHandler) appendLooseCustomModels(
 				Capabilities:        &caps,
 				ContextLength:       optionalTokenLimit(ctxLen),
 				MaxCompletionTokens: optionalTokenLimit(maxOut),
+				ThinkingLevels:      providers.GetThinkingLevels(prefix, cm.ID),
 				Pricing:             pricing.BuildOpenRouterPricing(prefix, cm.ID),
 			})
 		}
