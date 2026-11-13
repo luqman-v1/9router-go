@@ -37,7 +37,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.27"
+          go-version: "1.27.4"
           cache: true
 
       # golangci-lint reports an absent web/dist as `pattern dist/*: no matching
@@ -262,7 +262,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.27"
+          go-version: "1.27.4"
           cache: true
 
       - name: Vet
@@ -348,7 +348,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.27"
+          go-version: "1.27.4"
           cache: true
 
       - name: Test service package
@@ -399,7 +399,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.27"
+          go-version: "1.27.4"
           cache: true
 
       - name: Test with race detector
@@ -430,7 +430,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.27"
+          go-version: "1.27.4"
           cache: true
       # `-covermode=atomic` even without -race: the default `set` mode is
       # undefined under concurrent execution, and several packages run tests in
@@ -483,7 +483,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.27"
+          go-version: "1.27.4"
           cache: true
 
       # `go vet ./...` skips the suite: its files are behind the "integration"
@@ -560,7 +560,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.27"
+          go-version: "1.27.4"
           cache: true
 
       # `make cross` starts five go builds, and Go fills the module cache as it

@@ -439,3 +439,33 @@ func TestNewProvidersRegistry_v062(t *testing.T) {
 		}
 	}
 }
+
+func TestKnownProviders_Kenari(t *testing.T) {
+	cfg, ok := KnownProviders["kenari"]
+	if !ok {
+		t.Fatal("expected KnownProviders to contain kenari")
+	}
+	if cfg.BaseURL != "https://kenari.id/v1/chat/completions" {
+		t.Errorf("kenari expected BaseURL https://kenari.id/v1/chat/completions, got %s", cfg.BaseURL)
+	}
+	if cfg.AuthScheme != "bearer" || cfg.AuthHeader != "Authorization" {
+		t.Errorf("kenari expected bearer/Authorization, got %s/%s", cfg.AuthScheme, cfg.AuthHeader)
+	}
+	if got := ResolveAlias("ki"); got != "kenari" {
+		t.Errorf("ResolveAlias(ki) = %q, want kenari", got)
+	}
+	if got := RegistryAliases["kenari"]; got != "ki" {
+		t.Errorf("RegistryAliases[kenari] = %q, want ki", got)
+	}
+	models := GetProviderModels("kenari")
+	if len(models) == 0 {
+		t.Error("GetProviderModels(kenari) returned empty list")
+	}
+	for _, m := range models {
+		if m == "deepseek-v4" {
+			goto found
+		}
+	}
+	t.Error("GetProviderModels(kenari) missing deepseek-v4")
+found:
+}

@@ -11,7 +11,7 @@ RUN bun run build
 # Stage 2: Build Go Binary with Embedded Assets
 # Build on BUILDPLATFORM using Go's native cross-compiler (CGO_ENABLED=0 GOOS/GOARCH)
 # instead of running the Go toolchain inside slow QEMU software emulation.
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download

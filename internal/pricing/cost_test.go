@@ -67,6 +67,26 @@ func TestGetPricingForModel_Parity(t *testing.T) {
 			found: true,
 		},
 		{
+			name: "claude-fable-5-2 canonical", provider: "anthropic", model: "claude-fable-5-2",
+			want:  ModelPricing{InputPer1M: 8, OutputPer1M: 40, CachedPer1M: 0.2, ReasoningPer1M: 40, CacheCreationPer1M: 10},
+			found: true,
+		},
+		{
+			name: "claude-fable-5-1 canonical", provider: "anthropic", model: "claude-fable-5-1",
+			want:  ModelPricing{InputPer1M: 10, OutputPer1M: 50, CachedPer1M: 1, ReasoningPer1M: 50, CacheCreationPer1M: 12.5},
+			found: true,
+		},
+		{
+			name: "claude-haiku-5-5 canonical", provider: "anthropic", model: "claude-haiku-5-5",
+			want:  ModelPricing{InputPer1M: 0.1, OutputPer1M: 0.5, CachedPer1M: 0.01, ReasoningPer1M: 0.5, CacheCreationPer1M: 0.125},
+			found: true,
+		},
+		{
+			name: "gpt-6.1-terra canonical", provider: "openai", model: "gpt-6.1-terra",
+			want:  ModelPricing{InputPer1M: 1, OutputPer1M: 5, CachedPer1M: 0.05, ReasoningPer1M: 5, CacheCreationPer1M: 1.25},
+			found: true,
+		},
+		{
 			// The vendor prefix is stripped before the canonical lookup.
 			name: "vendor-prefixed id", provider: "cline", model: "deepseek/deepseek-v4.1-flash",
 			want:  ModelPricing{InputPer1M: 0.14, OutputPer1M: 0.28, CachedPer1M: 0.0028, ReasoningPer1M: 0.28, CacheCreationPer1M: 0.14},

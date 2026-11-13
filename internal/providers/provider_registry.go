@@ -626,6 +626,18 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Website:      "https://kilo.ai",
 		Notice:       &Notice{APIKeyURL: "https://kilo.ai/dashboard?tab=apiKeys"},
 	},
+	"kenari": {
+		ID:           "kenari",
+		Name:         "Kenari",
+		Alias:        "ki",
+		Category:     CategoryAPIKey,
+		AuthType:     "apikey",
+		Color:        "#F59E0B",
+		Icon:         "smart_toy",
+		ServiceKinds: []string{"llm"},
+		Website:      "https://kenari.id",
+		Notice:       &Notice{APIKeyURL: "https://kenari.id/dashboard"},
+	},
 	"nan": {
 		ID:           "nan",
 		Name:         "NaN.Builders",

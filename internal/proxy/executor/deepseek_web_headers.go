@@ -78,7 +78,7 @@ var deepSeekAPIHeaderOrder = []string{
 func deepSeekAPIBaseHeaders(origin string) map[string]string {
 	return map[string]string{
 		"accept":          "*/*",
-		"accept-encoding": "gzip, deflate, br, zstd",
+		"accept-encoding": "gzip, deflate",
 		// The value Chrome itself serializes. The duplicated `;q=0.9;q=0.9`
 		// this provider used to send is the constant every scripted client
 		// copied from the same reference implementation — Chrome cannot even
