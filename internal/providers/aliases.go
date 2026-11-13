@@ -155,6 +155,35 @@ func ResolveAlias(alias string) string {
 	return alias
 }
 
+// ModelAliasResolution is the resolved form of a 9router model alias: the base
+// model id the request must be sent as plus the thinking config to attach.
+// A zero value means the id is not an alias and should be forwarded unchanged.
+type ModelAliasResolution struct {
+	Model           string // base model id to forward to the provider
+	ThinkingType    string // "enabled"|"disabled"|"" for top-level thinking.type
+	ReasoningEffort string // reasoning_effort value; "" deletes the field
+}
+
+// deepSeekV4ProModelAlias maps the 9router-only deepseek-v4-pro catalog aliases
+// to the base wire model plus the thinking config the request must carry. These
+// ids are not wire ids: deepseek-v4-pro-max asks for maximum reasoning effort,
+// deepseek-v4-pro-none asks for thinking to be disabled. Upstream forwards them
+// as the base model with thinking.type and reasoning_effort at top level
+// (never extra_body).
+var deepSeekV4ProModelAlias = map[string]ModelAliasResolution{
+	"deepseek-v4-pro-max":  {Model: "deepseek-v4-pro", ThinkingType: "enabled", ReasoningEffort: "max"},
+	"deepseek-v4-pro-none": {Model: "deepseek-v4-pro", ThinkingType: "disabled", ReasoningEffort: ""},
+}
+
+// ResolveModelAlias resolves a 9router model alias (e.g. deepseek-v4-pro-max,
+// deepseek-v4-pro-none) to the base model id plus the thinking config the
+// request must carry. Returns ok=false for ids that are not aliases, so the
+// caller forwards the id unchanged.
+func ResolveModelAlias(model string) (ModelAliasResolution, bool) {
+	r, ok := deepSeekV4ProModelAlias[model]
+	return r, ok
+}
+
 // IsNoAuthProvider reports whether a provider is marked noAuth in the registry,
 // i.e. it is usable without any configured credential. Aliases resolve to their
 // canonical id first, so callers may pass either form.
