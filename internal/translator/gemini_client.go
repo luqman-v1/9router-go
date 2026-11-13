@@ -232,6 +232,13 @@ func toolResultBody(resp *GeminiFunctionResp) string {
 	}
 	if r := resp.Response; r != nil {
 		if truthyJSON(r.Result) {
+			// Re-emit the verbatim bytes the client sent. Marshalling the
+			// decoded value back would reorder object members (json/v2
+			// marshals decoded maps in unstable order), which changes the
+			// tool payload byte for byte.
+			if len(r.resultRaw) > 0 {
+				return string(r.resultRaw)
+			}
 			if raw, err := json.Marshal(r.Result); err == nil {
 				return string(raw)
 			}

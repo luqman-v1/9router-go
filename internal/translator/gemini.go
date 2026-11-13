@@ -103,6 +103,11 @@ type GeminiFuncResp struct {
 	// `response?.result || response || {}`), so keys beside "result" must
 	// survive the decode.
 	raw jsontext.Value
+	// resultRaw holds the verbatim `result` value bytes. Re-emitting them
+	// verbatim matters: decoding result into a map loses the member order,
+	// and json/v2 re-marshals decoded maps in unstable order, which would
+	// make the tool payload non-deterministic byte for byte.
+	resultRaw jsontext.Value
 }
 
 // UnmarshalJSON decodes the known result field and keeps the verbatim object
@@ -116,6 +121,12 @@ func (r *GeminiFuncResp) UnmarshalJSON(data []byte) error {
 	*r = GeminiFuncResp(a)
 	if len(data) > 0 {
 		r.raw = append(jsontext.Value(nil), data...)
+	}
+	var fields struct {
+		Result jsontext.Value `json:"result"`
+	}
+	if err := json.Unmarshal(data, &fields); err == nil && len(fields.Result) > 0 {
+		r.resultRaw = append(jsontext.Value(nil), fields.Result...)
 	}
 	return nil
 }

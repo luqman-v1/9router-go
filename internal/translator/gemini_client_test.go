@@ -332,3 +332,38 @@ func TestChatChunkToGeminiFinalChunkCarriesUsage(t *testing.T) {
 		t.Errorf("usageMetadata missing or wrong: %v", parsed["usageMetadata"])
 	}
 }
+
+// The tool-result payload is what the provider parses, so it must be
+// byte-stable: json/v2 re-marshals decoded maps in unstable member order, and
+// a payload that shifts between runs would make provider-side caching and
+// fixture comparisons non-deterministic. The converter therefore re-emits the
+// verbatim result bytes the client sent (upstream's JSON.stringify also
+// preserves member order).
+func TestGeminiClientToolResultPayloadByteStable(t *testing.T) {
+	body := []byte(`{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"read_file","id":"call_f","response":{"result":{"path":"/x","size":12,"alpha":1,"beta":2,"gamma":3}}}}]}]}`)
+	seen := map[string]bool{}
+	for range 300 {
+		out, err := GeminiClientToChatRequest(body, "m", false)
+		if err != nil {
+			t.Fatalf("convert: %v", err)
+		}
+		var chat struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(out, &chat); err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if len(chat.Messages) != 1 {
+			t.Fatalf("messages = %d, want 1", len(chat.Messages))
+		}
+		seen[chat.Messages[0].Content] = true
+	}
+	if len(seen) != 1 {
+		for s := range seen {
+			t.Errorf("distinct payload: %s", s)
+		}
+		t.Fatalf("payload unstable: %d distinct bodies across 300 runs", len(seen))
+	}
+}
