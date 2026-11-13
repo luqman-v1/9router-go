@@ -687,9 +687,10 @@ func ParseWeeklyQuotaSummary(raw []byte) map[string]AntigravityWeeklyQuota {
 					DisplayName:         dName,
 				}
 				result[key] = entry
-				if key == "gemini_argon_weekly" {
+				switch key {
+				case "gemini_argon_weekly":
 					result["argon_weekly"] = entry
-				} else if key == "gemini_argon_session" {
+				case "gemini_argon_session":
 					result["argon_session"] = entry
 				}
 			}

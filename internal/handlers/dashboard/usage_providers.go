@@ -1701,7 +1701,7 @@ const antigravityDashboardUA = providers.AntigravityCLIUserAgent
 
 var antigravityImportantModels = map[string]bool{
 	"gemini-4-carbon-high": true, "gemini-4-carbon-medium": true, "gemini-4-carbon-low": true,
-	"gemini-4-carbon":        true,
+	"gemini-4-carbon":     true,
 	"gemini-4-argon-high": true, "gemini-4-argon-medium": true, "gemini-4-argon-low": true,
 	"gemini-4-argon":        true,
 	"gemini-3.8-flash-high": true, "gemini-3.8-flash-medium": true, "gemini-3.8-flash-low": true,
@@ -1968,9 +1968,10 @@ func fetchAntigravityDashboardWeekly(ctx context.Context, accessToken, projectID
 						"window":              target.window,
 					}
 					result[target.key] = entry
-					if target.key == "gemini_argon_weekly" {
+					switch target.key {
+					case "gemini_argon_weekly":
 						result["argon_weekly"] = entry
-					} else if target.key == "gemini_argon_session" {
+					case "gemini_argon_session":
 						result["argon_session"] = entry
 					}
 					break
