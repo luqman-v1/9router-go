@@ -20,7 +20,7 @@ import (
 const (
 	freebuffSessionPath  = "/api/v1/freebuff/session"
 	freebuffSessionTTL   = 60 * time.Minute
-	freebuffCLIUserAgent = "codebuff-cli/0.0.138"
+	freebuffCLIUserAgent = "Freebuff-CLI/0.2.36"
 
 	// freebuffInstanceHeader names the session a release (DELETE) targets. The
 	// CLI sends the same header only on GET and DELETE — POST takes the model.
@@ -410,7 +410,9 @@ func postFreebuffSession(ctx context.Context, client *http.Client, baseURL, toke
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", freebuffCLIUserAgent)
 	req.Header.Set("x-freebuff-model", model)
-
+	req.Header.Set("x-freebuff-wallet-spend-limit", "session")
+	req.Header.Set("x-freebuff-multi-session", "1")
+	req.Header.Set("x-freebuff-purchase-continuity", "1")
 	resp, err := DoFreebuffHTTP(ctx, client, req)
 	if err != nil {
 		return nil, fmt.Errorf("freebuff session request failed: %w", err)

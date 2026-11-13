@@ -787,7 +787,7 @@ func (h *DashboardHandler) probeFreebuff(ctx context.Context, conn *models.Provi
 		return probeOutcome{message: fmt.Sprintf("create probe request failed: %v", err)}
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("User-Agent", "codebuff-cli/0.0.138")
+	req.Header.Set("User-Agent", "Freebuff-CLI/0.2.36")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := executor.DoFreebuffHTTP(ctx, client, req)

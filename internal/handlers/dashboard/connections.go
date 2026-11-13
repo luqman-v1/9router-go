@@ -148,7 +148,7 @@ var usageSupportedProviders = []string{
 	"commandcode", "commandcode-goat", "deepseek", "gemini-cli", "gemini-web", "github", "glm", "glm-cn",
 	"grok-cli", "groq", "kimi", "kiro", "minimax", "minimax-cn", "minimax-code",
 	"minimax-code-global", "ollama",
-	"free-pi", "opencode-go", "opencode-zen", "qoder", "qoder-cn", "trae",
+	"free-pi", "freebuff", "opencode-go", "opencode-zen", "qoder", "qoder-cn", "trae",
 	"vercel-ai-gateway", "xiaomi-mimo", "zed",
 	"zcode",
 }
@@ -158,7 +158,7 @@ var usageSupportedProviders = []string{
 var usageApikeyProviders = []string{
 	"codebuddy-cn", "codebuddy-intl", "commandcode", "commandcode-goat", "deepseek", "gemini-web", "glm",
 	"glm-cn", "groq", "kimi", "kiro", "minimax", "minimax-cn", "ollama",
-	"free-pi", "opencode-go", "opencode-zen", "qoder", "qoder-cn",
+	"free-pi", "freebuff", "opencode-go", "opencode-zen", "qoder", "qoder-cn",
 	"vercel-ai-gateway", "xiaomi-mimo",
 }
 

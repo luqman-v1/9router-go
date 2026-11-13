@@ -101,6 +101,8 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 		// tool reads. free-pi reports credits, not dollars, so the handler maps
 		// credits and tokens and leaves cost out rather than inventing a figure.
 		return fetchFreePiUsage(ctx, firstNonEmptyStr(accessToken, apiKey), connectionBaseURL(data)), true
+	case "freebuff":
+		return fetchFreebuffUsage(ctx, firstNonEmptyStr(accessToken, apiKey, psdStr(psd, "authToken")), connectionBaseURL(data)), true
 	case "minimax-code", "minimax-code-global":
 		return fetchMiniMaxCodeUsage(ctx, provider, accessToken, psdStr(psd, "realUserID")), true
 	case "zcode":
