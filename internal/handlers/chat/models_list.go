@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -538,6 +539,41 @@ func (h *ChatHandler) buildModelsListForMode(
 	aliases := h.modelAliasTargets()
 	nodePrefixes := h.providerNodePrefixMap()
 
+	// Upstream injects a fake "noauth" connection for every noAuth provider
+	// that has no active connection row, in every mode (route.js:379-386:
+	// "Include no-auth free providers (e.g. opencode) so their models are
+	// exposed in /v1/models"). The per-provider loop then publishes that
+	// provider's static catalog (+ custom models) exactly like a connected
+	// one, so `oc/muse-spark-…` is listed whether or not the operator created
+	// a connection. Without this, modeListAll and modeListConnected answered
+	// with zero noAuth entries the moment any other connection existed.
+	//
+	// Sorted ids: the registry map iterates in random order and the response
+	// must be byte-stable across calls (TestHandleModels_StableKeyOrder).
+	noAuthIDs := make([]string, 0, 8)
+	for id, cfg := range providers.KnownProviders {
+		if cfg.NoAuth && !cfg.Hidden {
+			noAuthIDs = append(noAuthIDs, id)
+		}
+	}
+	slices.Sort(noAuthIDs)
+	for _, id := range noAuthIDs {
+		if _, ok := firstPerProvider[id]; ok {
+			continue
+		}
+		// The static dump published the alias spelling (e.g. "oc"); publish
+		// the same one here so ids stay consistent across modes.
+		alias := providers.GetProviderAlias(id)
+		if alias == "" || alias == id {
+			alias = id
+		}
+		if _, ok := firstPerProvider[alias]; ok {
+			continue
+		}
+		firstPerProvider[alias] = nil
+		order = append(order, alias)
+	}
+
 	for _, provID := range order {
 		conn := firstPerProvider[provID]
 		data = h.appendConnectionModels(ctx, data, seen, conn, provID, customs, aliases, nodePrefixes, isDisabled)
@@ -612,9 +648,11 @@ func (h *ChatHandler) appendConnectionModels(
 	}
 
 	// Upstream: a live catalog replaces the static one only when the operator
-	// has not pinned enabledModels on the connection.
+	// has not pinned enabledModels on the connection. A nil conn is the
+	// noAuth fake connection (upstream's {id: "noauth"} placeholder): it has
+	// no data to parse and no credentials, so it goes straight to static.
 	liveByID := make(map[string]LiveModel)
-	if len(ids) == 0 {
+	if len(ids) == 0 && conn != nil {
 		var sharedData shared.ConnectionData
 		if conn.Data != "" {
 			_ = json.Unmarshal([]byte(conn.Data), &sharedData)

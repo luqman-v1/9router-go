@@ -4679,7 +4679,7 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "id": "mimo-v2.5-free",
       "name": "mimo-v2.5-free",
       "supportedFormats": ["openai"],
-      "capabilities": ["vision"]
+      "capabilities": ["reasoning"]
     },
     {
       "id": "nemotron-3-ultra-free",
@@ -4691,6 +4691,11 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "id": "big-pickle",
       "name": "big-pickle",
       "supportedFormats": ["openai"]
+    },
+    {
+      "id": "union-alpha",
+      "name": "union-alpha",
+      "supportedFormats": ["claude"]
     },
     {
       "id": "nemotron-3.5-lightning-free",
