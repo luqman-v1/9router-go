@@ -86,3 +86,82 @@ func TestTranslateOpenAIToGemini_StripsMCPAnnotationKeywords(t *testing.T) {
 		}
 	}
 }
+
+// Upstream #5573 (cdcd09cc): Google Antigravity rejects tool schemas carrying
+// `~optional` with HTTP 400 INVALID_ARGUMENT: Unknown name "~optional": Cannot find field.
+// cleanGeminiSchema must strip `~optional` recursively at root, nested properties, and items.
+func TestTranslateOpenAIToGemini_StripsTildeOptional(t *testing.T) {
+	body := []byte(`{
+		"model": "gemini-3.5-flash",
+		"messages": [{"role": "user", "content": "search files"}],
+		"tools": [{
+			"type": "function",
+			"function": {
+				"name": "search",
+				"description": "Search codebase",
+				"parameters": {
+					"type": "object",
+					"~optional": true,
+					"properties": {
+						"query": {
+							"type": "string",
+							"description": "Search query",
+							"optional": true,
+							"~optional": true
+						},
+						"options": {
+							"type": "object",
+							"~optional": true,
+							"properties": {
+								"tags": {
+									"type": "array",
+									"~optional": true,
+									"items": {
+										"type": "object",
+										"~optional": true,
+										"properties": {
+											"key": {"type": "string", "~optional": false},
+											"val": {"type": "string", "~optional": true}
+										}
+									}
+								}
+							}
+						}
+					},
+					"required": ["query"]
+				}
+			}
+		}]
+	}`)
+
+	out, err := TranslateOpenAIToGemini(body)
+	if err != nil {
+		t.Fatalf("TranslateOpenAIToGemini: %v", err)
+	}
+
+	s := string(out)
+	if strings.Contains(s, `"~optional"`) {
+		t.Fatalf("~optional reached Gemini payload (upstream #5573): %s", s)
+	}
+	if strings.Contains(s, `"optional"`) {
+		t.Fatalf("optional reached Gemini payload: %s", s)
+	}
+
+	var req GeminiRequest
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal gemini request: %v", err)
+	}
+	if len(req.Tools) != 1 || len(req.Tools[0].FunctionDeclarations) != 1 {
+		t.Fatalf("tool declarations lost: %s", out)
+	}
+	params, err := json.Marshal(req.Tools[0].FunctionDeclarations[0].Parameters)
+	if err != nil {
+		t.Fatalf("marshal declaration parameters: %v", err)
+	}
+	schema := string(params)
+	for _, want := range []string{`"query"`, `"options"`, `"tags"`, `"key"`, `"val"`, `"required"`} {
+		if !strings.Contains(schema, want) {
+			t.Errorf("parameter schema lost %s after ~optional stripping: %s", want, schema)
+		}
+	}
+}
