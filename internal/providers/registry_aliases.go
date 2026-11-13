@@ -50,6 +50,7 @@ var RegistryAliases = map[string]string{
 	"hyperbolic":        "hyp",
 	"iflow":             "if",
 	"jina-ai":           "jina",
+	"kenari":            "ki",
 	"kilo-gateway":      "kgw",
 	"kilocode":          "kc",
 	"kiro":              "kr",
