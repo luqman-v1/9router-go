@@ -178,11 +178,21 @@ func newOpencodeStealthClient(reference *http.Client) (*opencodeStealthClient, e
 }
 
 // opencodeProxyFrom recovers the proxy configured in reference.Transport.
+// A plain pool client carries a *http.Transport; the poolless client wraps a
+// safe transport in a *FallbackTransport, so its Base — the leg the request
+// actually travels — is the one to inspect. Missing either means the dial is
+// ambient: the stealth client then builds without a proxy and Go's ambient
+// egress never applies to it (it does not use net/http), which silently
+// bypassed an operator's HTTP_PROXY/ALL_PROXY on the free lane.
 func opencodeProxyFrom(reference *http.Client) string {
 	if reference == nil {
 		return ""
 	}
-	transport, ok := reference.Transport.(*http.Transport)
+	rt := reference.Transport
+	if fb, ok := rt.(*proxy.FallbackTransport); ok {
+		rt = fb.Base
+	}
+	transport, ok := rt.(*http.Transport)
 	if !ok || transport.Proxy == nil {
 		return ""
 	}

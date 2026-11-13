@@ -69,7 +69,10 @@ func (e *UpstreamError) Error() string {
 var ErrStrictProxyRequired = errors.New("proxy required but failed (strictProxy=true)")
 
 var directProxyClient = &http.Client{
-	Transport: NewSafeTransport(),
+	// Truly direct: this client exists to replay a failed proxied attempt from
+	// the host's own address, so it must never route through the ambient proxy
+	// NewSafeTransport would install.
+	Transport: NewDirectSafeTransport(),
 }
 
 // insecureClientCache memoises one InsecureSkipVerify client per proxy URL,
