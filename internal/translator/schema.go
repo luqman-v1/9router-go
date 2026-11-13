@@ -33,7 +33,7 @@ func cleanGeminiSchema(schema map[string]any) {
 		"additionalItems", "additionalProperties", "propertyNames", "patternProperties", "enumDescriptions",
 		"allOf", "not",
 		"dependencies", "dependentSchemas", "dependentRequired",
-		"title", "optional", "if", "then", "else", "contentMediaType", "contentEncoding",
+		"title", "optional", "~optional", "if", "then", "else", "contentMediaType", "contentEncoding",
 		"cornerRadius", "fillColor", "fontFamily", "fontSize", "fontWeight",
 		"gap", "padding", "strokeColor", "strokeThickness", "textColor",
 		// Non-standard annotation/error keywords some MCP tool schemas emit
