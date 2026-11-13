@@ -1,5 +1,146 @@
 # Changelog
 
+## [v1.9.17-exp.2] - 2026-11-13
+
+### deepseek-web parity with upstream (nonce binding, schema validation, citations, done-terminator)
+
+Closes the behavioural gaps between the Go deepseek-web executor and upstream
+`decolua/9router` (`open-sse/executors/deepseek-web.js`,
+`open-sse/translator/deepseekWebTools.js` / `deepseekWebToolBinding.js`).
+
+**Tool calls**
+
+- Per-request `_nonce` binding: the tool prompt now renders every schema with a
+  `_nonce` const property (plus `required`) and requires the binding in the
+  reply; the parser rejects a call whose binding mismatches and never forwards
+  the `_nonce` argument to the client. The nonce is minted once per request in
+  `ForwardDeepSeekWeb` and threaded through prompt + parser, matching
+  `serializeDeepSeekToolPrompt` / `getToolNonce` (`_nonce` upstream).
+- JSON-Schema argument validation via `github.com/santhosh-tekuri/jsonschema/v5`
+  (pure Go, draft 2020-12, mirrors upstream's Ajv2020 with `strict:false`,
+  `validateFormats:false`). A bound call violating its declared schema is
+  rejected; DSML invokes are always schema-validated, matching
+  `finalizeParsedToolCalls`; the JSON envelope path validates calls that carry
+  `_nonce` (missing binding tolerated, as upstream).
+- Malformed-envelope repair retry once: an answer that carries tool markup or a
+  declared-tool envelope that failed to parse triggers one fresh-session
+  completion with the contract restated (upstream's
+  `hasMalformedDeepSeekToolIntent` → repair flow). A second malformed answer
+  fails the turn with 502. `deepSeekToolTurnToClient` now returns the
+  accumulator to settle with, so a repaired turn settles against the fresh
+  session.
+
+**Search/citations**
+
+- Citation block rewritten to upstream's format: `[N]: [title](url)` lines
+  ascending by `cite_index`, blank-line separated (was `\n[N] title (url)`).
+  Results without a `cite_index` are filtered.
+- `[citation:N]` markers rewritten to `[N]` on search models, removed entirely
+  on `search-silent` models; `FINISHED` and a leading `SEARCH|WEB_SEARCH|SEARCHING`
+  transport token are stripped from content (`formatStreamContent` /
+  `cleanDeepSeekToken`).
+- `fold` model ids are treated as search models (`isSearchModel`).
+
+**Stream / prompt**
+
+- 750ms post-FINISHED drain: the upstream sometimes holds the completion body
+  open past `FINISHED` (search results still in flight) and clients hung on it.
+  The stream scan now bounds the tail like upstream's done-terminator and
+  answers the turn instead of waiting for the close.
+- Markdown image references (`![alt](url)`) are stripped from the rendered
+  prompt — the web API has no image slot and the syntax degrades the model's
+  answer.
+
+**Verification**
+
+- `go test ./internal/proxy/executor/` (new `deepseek_web_parity_test.go` pins
+  every behaviour above: citation format/silent/filter, marker rewrite, fold,
+  token cleaning, image strip, nonce mint/bind/reject/strip, schema rejection,
+  DSML binding, malformed detection, repair once/give-up/no-nonce).
+- Portability gate: all five `CROSS_TARGETS` build with `CGO_ENABLED=0` after
+  the new dependency.
+
+### Gemini parity (upstream decolua/9router ef2af4def, 60a1b3657)
+
+- Gemini SDK client requests: every `functionResponse` in one content block now becomes its own `role:"tool"` message, and all of them are emitted before any co-located follow-up text or `functionCall` message. Previously only the last result survived and follow-up parts were dropped, leaving parallel tool_call ids unanswered — providers reject that with a 400. Port of upstream `open-sse/translator/request/gemini-to-openai.js` (ef2af4def).
+- Tool result payloads now unwrap `response.result` like upstream (`response?.result || response || {}`): a truthy result is stringified as-is, a response without a usable result falls back to the whole response object, and a missing response degrades to `{}`. Keys beside `result` survive the decode (verbatim `raw` capture on `GeminiFuncResp`).
+- Command Code (CLI lane, `commandcode`/`cmc`): added `google/gemini-4-carbon` and `claude-fable-5-2` to the static model catalog (upstream 60a1b3657). Pricing for `google/gemini-4-carbon` already resolves through the `gemini-4-*` pattern; `claude-fable-5-2` already had Fable-tier pricing. The `commandcode-goat` feed catalog already carried both ids.
+- Covered by `TestGeminiClientPreservesAllToolResults` (table-driven, mirrors upstream `tests/unit/gemini-request-tool-results.test.js` cases) and `TestGeminiClientToolResultWithoutResponse`.
+
+### Features & Improvements
+
+- **Antigravity**: Add Gemini 4 Carbon models (`gemini-4-carbon`, `gemini-4-carbon-high`, `gemini-4-carbon-medium`, `gemini-4-carbon-low`) with reasoning effort tier resolution and dashboard quota tracking (upstream `decolua/9router#8aef7480` parity).
+- **Antigravity**: Bump IDE / Hub version to 2.24.0 across client identity and MITM handlers (upstream `decolua/9router#f172c3c4` parity).
+- **Antigravity**: Support Gemini 4 Argon quota fallback to shared Gemini weekly/session pools for Ultra plans without dedicated Argon quota summary buckets (upstream `decolua/9router#8a833631` parity).
+- **Antigravity**: Resolve Claude 5.5 and Gemini 4 Carbon models in quota checks to inspect tiered variants (`claude-sonnet-5-5-high`, `gemini-4-carbon-high`).
+- **Antigravity**: Harmonize Argon weekly and session quota keys (`gemini_argon_weekly` and `gemini_argon_session`) with legacy alias backward compatibility across backend and UI.
+
+### Fixed
+- Preserve name-addressed native Responses function results without inventing a `call_id`. The Codex backend accepts these results by name; adding an ID makes it reject them with `No tool call found for function call output with call_id call_0`.
+- Verified against merged decolua/9router master at `1855aa44473e88feac9d3f131b9c0c5fc9706b68`, which passes native input arrays through unchanged; regression coverage includes the body converter and production router in classic and Lite modes.
+
+### feat(freebuff): full Freebuff CLI spoofing and dashboard ad banner integration
+
+- Upgrade Freebuff CLI spoofing to modern `Freebuff-CLI/0.2.36` parity:
+  - Update User-Agent across session, OAuth, probe, and run calls from legacy `codebuff-cli/0.0.138` to `Freebuff-CLI/0.2.36`.
+  - Expand model-to-root-agent mapping to `base3` harness models (`base3-free-deepseek`, `base3-free-deepseek-flash`, `base3-fast`, `base3-free-luna-6`, `base3-free-solar-mini4`, `base3-free-muse-spark-1-3`, `base3-free-gemini-3-8-flash`, etc.).
+  - Add all 6 canonical system prompt openings from upstream Freebuff catalog models.
+  - Send `surface: "cli"` and `freebuff_multi_session: "1"` in `codebuff_metadata`, and generate CLI-shaped `codebuff-cli-<8char>` fallback fingerprints.
+  - Send `x-freebuff-wallet-spend-limit: session`, `x-freebuff-multi-session: 1`, and `x-freebuff-purchase-continuity: 1` on session requests.
+- Add Freebuff ad surface matching the `free-pi` model:
+  - Serve Freebuff ads via `GET /api/freebuff/ad` and report paint impressions via `POST /api/freebuff/ad/impression` (`internal/handlers/dashboard/freebuff_ads*.go`).
+  - Add `FreebuffAdBanner.svelte` in dashboard connection view, reporting impressions only once the banner is painted on screen.
+- Integrate Freebuff quota into Quota Tracker (`/api/usage/connections` and `/api/usage/{connectionId}`):
+  - Register `freebuff` in `usageSupportedProviders` and `usageApikeyProviders`.
+  - Fetch account quotas from `/api/v1/freebuff/session`, mapping daily Freebucks (spent, total, remaining, refill time), wallet balance, and active session countdown to the Quota Tracker table.
+- Verified with unit tests (`freebuff_ads_test.go`, `usage_freebuff_test.go`, `freebuff_test.go`, `freebuff_session_test.go`), `bun run build`, and `make vet-svelte`.
+
+### fix(claude): upstream flow parity for bare model resolution, live catalog, and CLI fingerprint
+
+- Route bare `claude-*` model requests to Claude OAuth connection when no Anthropic API key connection is active (upstream `decolua/9router` commit `29f3db11` parity).
+- Add live `/models` catalog enumeration for `claude` and `anthropic` connections in dashboard with OAuth beta header and display name parsing (upstream commit `43bc940e` parity).
+- Update base Claude CLI fingerprint floor from `2.1.280` to `2.1.322` and update static model catalogs to include `claude-fable-5-2`, `claude-sonnet-5-5`, and `claude-haiku-5-5` (upstream commits `12e7930e` and `8aef7480` parity).
+
+### fix(combo): remove duplicate connection accounts from model picker list
+
+- Clean up model picker groups in Combo creator to list only genuine catalog providers and provider nodes (`provider/model`), eliminating redundant duplicate groups for each active connection account (`connectionName/model`).
+- Account management, rotation, and priority remain configured via the provider detail settings.
+
+### feat(providers): add Kenari provider support (kenari.id)
+
+- Adds built-in support for Kenari (`kenari.id`, alias `ki`) with standard OpenAI-compatible API endpoints, model catalog, and dashboard artwork.
+
+### chore(deps): bump Go toolchain to 1.27.4
+
+- `go.mod` pins `toolchain go1.27.4` (was `go1.27.3`), the latest patch release of the 1.27 line. The `go 1.27` language directive is unchanged, so no source change is needed.
+- CI, the release workflow and the site generator now set `go-version: "1.27.4"` instead of the floating `1.27`, so every job runs the exact pinned toolchain rather than whatever the floating tag currently resolves to.
+- The Docker builder stage uses `golang:1.27.4-alpine`, so release images are built with the same pinned toolchain.
+
+### Bug Fixes
+
+- Stop advertising `br, zstd` in `Accept-Encoding` headers across DeepSeek Web executor, attest, and Grok dashboard validation to prevent receiving compressed payloads the runtime cannot decode (upstream `decolua/9router#5539` commit `97b2c545` parity).
+
+### Chores
+
+- Bump Codex CLI advertised client identity from `0.159.0` to `0.167.1` in `internal/providers/client_identity.go` (upstream `decolua/9router` commit `aaf9b65f` parity).
+
+### Bug Fixes
+
+- Add missing flat canonical pricing rows for `claude-fable-5-2`, `claude-fable-5-1`, `claude-haiku-5-5`, and `gpt-6.1-terra`, and reconcile `commandcode` / `commandcode-goat` `claude-fable-5-1` cached rate with upstream (upstream `decolua/9router` commits `8aef7480` and `acb3c080` parity).
+
+### Bug Fixes
+
+- Add `gemini-4-*` pattern pricing ($2.00 input, $10.00 output, $0.10 cached, $10.00 reasoning, $0.1875 cache creation) and correct `gemini-4-argon*` cache creation pricing from $2.00 to $0.1875 (upstream `decolua/9router` commit `4c7804ef` parity).
+
+### Bug Fixes
+
+- Strip `~optional` from tool parameters schemas during Gemini and Antigravity translation, preventing HTTP 400 `INVALID_ARGUMENT: Unknown name "~optional"` from Google Protobuf validation (upstream `decolua/9router#5573` parity).
+
+### feat(providers): add DeepSeek V4 Pro effort aliases (-max and -none)
+
+- Adds Cursor-friendly `deepseek-v4-pro-max` and `deepseek-v4-pro-none` model aliases, mapping to `deepseek-v4-pro` with explicit max or disabled thinking configuration.
+- Parity with upstream `decolua/9router#950` (closes `#926`).
+
 ## [v1.9.17-exp.1] - 2026-11-13
 
 ### Changed
