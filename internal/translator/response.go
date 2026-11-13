@@ -10,10 +10,13 @@ import (
 )
 
 // extractReasoningText pulls reasoning out of a Chat delta across the three
-// shapes vendors use: reasoning_content, reasoning, and reasoning_details.
+// shapes vendors use: reasoning_content, reason_result, and reasoning_details.
 func extractReasoningText(delta OpenAIDelta) string {
 	if delta.ReasoningContent != "" {
 		return delta.ReasoningContent
+	}
+	if delta.ReasonResult != "" {
+		return delta.ReasonResult
 	}
 	if delta.Reasoning != "" {
 		return delta.Reasoning
@@ -565,6 +568,9 @@ func TranslateOpenAIToClaude(openaiResp []byte) ([]byte, *OpenAIUsage, error) {
 
 	// Reasoning
 	reasoning := msg.ReasoningContent
+	if reasoning == "" {
+		reasoning = msg.ReasonResult
+	}
 	if reasoning == "" {
 		reasoning = msg.Reasoning
 	}

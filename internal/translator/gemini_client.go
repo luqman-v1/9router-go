@@ -121,12 +121,17 @@ func convertGeminiClientContent(content GeminiContent) []any {
 	}
 
 	var texts []string
+	var reasoningParts []string
 	var images []any
 	var toolCalls []any
 	var toolResults []any
 
 	for _, part := range content.Parts {
 		switch {
+		case part.Thought != nil && *part.Thought:
+			if part.Text != "" {
+				reasoningParts = append(reasoningParts, part.Text)
+			}
 		case part.Text != "":
 			texts = append(texts, part.Text)
 		case part.InlineData != nil && part.InlineData.Data != "":
@@ -192,7 +197,7 @@ func convertGeminiClientContent(content GeminiContent) []any {
 			msg["content"] = strings.Join(texts, "\n")
 		}
 		msg["tool_calls"] = toolCalls
-	case len(images) > 0 || len(texts) > 0:
+	case len(images) > 0 || len(texts) > 0 || len(reasoningParts) > 0:
 		msg = map[string]any{"role": role}
 		switch {
 		case len(images) > 0:
@@ -204,9 +209,18 @@ func convertGeminiClientContent(content GeminiContent) []any {
 			msg["content"] = blocks
 		case len(texts) == 1:
 			msg["content"] = texts[0]
-		default:
+		case len(texts) > 1:
 			msg["content"] = strings.Join(texts, "\n")
+		default:
+			msg["content"] = ""
 		}
+	}
+
+	if len(reasoningParts) > 0 {
+		if msg == nil {
+			msg = map[string]any{"role": role, "content": ""}
+		}
+		msg["reasoning_content"] = strings.Join(reasoningParts, "\n")
 	}
 
 	if len(toolResults) > 0 {
