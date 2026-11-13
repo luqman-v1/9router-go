@@ -21,7 +21,7 @@ import (
 // block as system[0] and a metadata.user_id. Without them the API returns
 // 429 rate_limit_error ("Error") even though auth and the body are valid.
 
-const defaultClaudeCLIVersion = "2.1.280"
+const defaultClaudeCLIVersion = "2.1.322"
 
 var (
 	claudeVersionMu      sync.RWMutex

@@ -745,6 +745,64 @@ func TestResolveModelEntry_ConnectionNameAndIDPrefix(t *testing.T) {
 	}
 }
 
+func TestResolveModel_BareClaudeFallbackToOAuth(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	// 1. Keeps provider anthropic when nothing is connected
+	info, err := h.resolveModel("claude-sonnet-5-5")
+	if err != nil {
+		t.Fatalf("resolveModel error: %v", err)
+	}
+	if info.Provider != "anthropic" || info.Model != "claude-sonnet-5-5" {
+		t.Errorf("got %s/%s, want anthropic/claude-sonnet-5-5", info.Provider, info.Model)
+	}
+
+	// 2. Uses Claude OAuth connection when no anthropic connection is active
+	now := time.Now().UTC().Format(time.RFC3339)
+	claudeData, _ := json.Marshal(map[string]any{"accessToken": "sk-ant-oat-test"})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('c1', 'claude', 'oauth', 'Claude OAuth', 1, 1, ?, ?, ?)`, string(claudeData), now, now)
+	if err != nil {
+		t.Fatalf("seed claude connection: %v", err)
+	}
+
+	info, err = h.resolveModel("claude-sonnet-5-5")
+	if err != nil {
+		t.Fatalf("resolveModel error: %v", err)
+	}
+	if info.Provider != "claude" || info.Model != "claude-sonnet-5-5" {
+		t.Errorf("got %s/%s, want claude/claude-sonnet-5-5", info.Provider, info.Model)
+	}
+
+	// 3. Keeps anthropic when an anthropic connection is active
+	anthropicData, _ := json.Marshal(map[string]any{"apiKey": "sk-ant-api-test"})
+	_, err = database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('a1', 'anthropic', 'apikey', 'Anthropic API', 1, 1, ?, ?, ?)`, string(anthropicData), now, now)
+	if err != nil {
+		t.Fatalf("seed anthropic connection: %v", err)
+	}
+
+	info, err = h.resolveModel("claude-sonnet-5-5")
+	if err != nil {
+		t.Fatalf("resolveModel error: %v", err)
+	}
+	if info.Provider != "anthropic" || info.Model != "claude-sonnet-5-5" {
+		t.Errorf("got %s/%s, want anthropic/claude-sonnet-5-5", info.Provider, info.Model)
+	}
+
+	// 4. Does not touch an explicit provider prefix
+	info, err = h.resolveModel("anthropic/claude-sonnet-5-5")
+	if err != nil {
+		t.Fatalf("resolveModel error: %v", err)
+	}
+	if info.Provider != "anthropic" || info.Model != "claude-sonnet-5-5" {
+		t.Errorf("got %s/%s, want anthropic/claude-sonnet-5-5", info.Provider, info.Model)
+	}
+}
+
 func BenchmarkResolveModelEntry(b *testing.B) {
 	database, cleanup := setupChatTestDB(b)
 	defer cleanup()

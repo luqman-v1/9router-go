@@ -303,3 +303,105 @@ func TestHandleGetConnectionModels_Antigravity(t *testing.T) {
 		t.Fatalf("expected 1 probe call, got %d", len(*calls))
 	}
 }
+
+func TestHandleGetConnectionModels_Claude(t *testing.T) {
+	repo, cleanup := setupNodeTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	if _, err := repo.RawDB().Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-claude-test', 'claude', 'oauth', 'Claude', 1, 1, '{"accessToken":"sk-ant-oat-test"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	calls := withProbeStub(t, func(_ int, p capturedProbe) (int, []byte, error) {
+		if !strings.Contains(p.url, "api.anthropic.com/v1/models?limit=1000") {
+			t.Errorf("unexpected probe url %q", p.url)
+		}
+		if p.headers.Get("Authorization") != "Bearer sk-ant-oat-test" {
+			t.Errorf("unexpected auth %q", p.headers.Get("Authorization"))
+		}
+		if p.headers.Get("Anthropic-Beta") != "oauth-2025-04-20" {
+			t.Errorf("unexpected beta %q", p.headers.Get("Anthropic-Beta"))
+		}
+		fakeResp := `{
+			"data": [
+				{"id": "claude-opus-5-5", "display_name": "Claude Opus 5.5"},
+				{"id": "claude-fable-5-2", "display_name": "Claude Fable 5.2"}
+			]
+		}`
+		return http.StatusOK, []byte(fakeResp), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/providers/conn-claude-test/models", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Provider string              `json:"provider"`
+		Models   []map[string]string `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Provider != "claude" {
+		t.Errorf("expected claude, got %s", out.Provider)
+	}
+	if len(out.Models) != 2 || out.Models[0]["id"] != "claude-opus-5-5" || out.Models[0]["name"] != "Claude Opus 5.5" {
+		t.Fatalf("unexpected models: %v", out.Models)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 probe call, got %d", len(*calls))
+	}
+}
+
+func TestHandleGetConnectionModels_Anthropic(t *testing.T) {
+	repo, cleanup := setupNodeTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	if _, err := repo.RawDB().Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-anthropic-test', 'anthropic', 'apikey', 'Anthropic', 1, 1, '{"apiKey":"sk-ant-api-test"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	calls := withProbeStub(t, func(_ int, p capturedProbe) (int, []byte, error) {
+		if !strings.Contains(p.url, "api.anthropic.com/v1/models") {
+			t.Errorf("unexpected probe url %q", p.url)
+		}
+		if p.headers.Get("x-api-key") != "sk-ant-api-test" {
+			t.Errorf("unexpected auth %q", p.headers.Get("x-api-key"))
+		}
+		fakeResp := `{
+			"data": [
+				{"id": "claude-sonnet-4-20250514", "display_name": "Claude Sonnet 4"}
+			]
+		}`
+		return http.StatusOK, []byte(fakeResp), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/providers/conn-anthropic-test/models", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Provider string              `json:"provider"`
+		Models   []map[string]string `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Provider != "anthropic" {
+		t.Errorf("expected anthropic, got %s", out.Provider)
+	}
+	if len(out.Models) != 1 || out.Models[0]["id"] != "claude-sonnet-4-20250514" || out.Models[0]["name"] != "Claude Sonnet 4" {
+		t.Fatalf("unexpected models: %v", out.Models)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 probe call, got %d", len(*calls))
+	}
+}

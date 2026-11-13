@@ -410,13 +410,13 @@ func TestAdoptRequiredClaudeCodeVersion(t *testing.T) {
 	}
 
 	// 400 rejection with claude_code_version_too_old adopts the newer version
-	rejection := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"claude_code_version_too_old: version 2.1.300 or newer is required to access this model"}}`)
+	rejection := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"claude_code_version_too_old: version 2.1.350 or newer is required to access this model"}}`)
 	if !AdoptRequiredClaudeCodeVersion(rejection) {
 		t.Fatalf("expected version adopt")
 	}
 
-	if got := ClaudeCLIVersion(); got != "2.1.300" {
-		t.Errorf("ClaudeCLIVersion = %q, want 2.1.300 (bumped from %s)", got, oldVer)
+	if got := ClaudeCLIVersion(); got != "2.1.350" {
+		t.Errorf("ClaudeCLIVersion = %q, want 2.1.350 (bumped from %s)", got, oldVer)
 	}
 
 	// Older version in rejection does not downgrade
@@ -424,7 +424,7 @@ func TestAdoptRequiredClaudeCodeVersion(t *testing.T) {
 	if AdoptRequiredClaudeCodeVersion(rejectionOlder) {
 		t.Errorf("unexpected downgrade from older rejection")
 	}
-	if got := ClaudeCLIVersion(); got != "2.1.300" {
+	if got := ClaudeCLIVersion(); got != "2.1.350" {
 		t.Errorf("version downgraded: %q", got)
 	}
 }
