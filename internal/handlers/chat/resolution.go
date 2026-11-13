@@ -432,6 +432,24 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		return &ModelInfo{Provider: "codex", Model: modelStr}, nil
 	}
 
+	// A bare `claude-*` id infers provider "anthropic" (API key). When no
+	// anthropic connection is active but a Claude OAuth connection is, switch to
+	// "claude" instead of failing with "No active credentials for provider:
+	// anthropic" (upstream 29f3db11 parity, src/sse/services/model.js fallbackToClaudeOAuth).
+	if strings.HasPrefix(strings.ToLower(modelStr), "claude-") {
+		provider := "anthropic"
+		if h.Repo != nil {
+			anthropicConns, _ := h.Repo.GetProviderConnections("anthropic", true)
+			if len(anthropicConns) == 0 {
+				claudeConns, _ := h.Repo.GetProviderConnections("claude", true)
+				if len(claudeConns) > 0 {
+					provider = "claude"
+				}
+			}
+		}
+		return &ModelInfo{Provider: provider, Model: modelStr}, nil
+	}
+
 	// 3.5 Check if it's a bare provider alias (e.g., "ag" -> "antigravity")
 	// Check custom prefix provider nodes first for bare alias
 	if info := h.resolvePrefixProvider(modelStr, ""); info != nil {

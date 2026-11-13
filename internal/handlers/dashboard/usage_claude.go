@@ -30,7 +30,7 @@ const (
 	// identity; the beta flag and UA are what the CLI sends.
 	claudeUsageBeta      = "oauth-2025-04-20"
 	claudeUsageVersion   = "2023-06-01"
-	claudeUsageUserAgent = "claude-cli/2.1.280 (external, cli)"
+	claudeUsageUserAgent = "claude-cli/2.1.322 (external, cli)"
 
 	// A successful read is reused for this long. The tracker polls every visible
 	// connection in one tick and several tabs can be open; the endpoint answers

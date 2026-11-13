@@ -10,8 +10,8 @@ func TestClaudeFingerprint_21258(t *testing.T) {
 	if !ok {
 		t.Fatal("claude provider not found")
 	}
-	if got := cfg.StaticHeaders["User-Agent"]; got != "claude-cli/2.1.280 (external, sdk-cli)" {
-		t.Errorf("expected User-Agent claude-cli/2.1.280, got %q", got)
+	if got := cfg.StaticHeaders["User-Agent"]; got != "claude-cli/2.1.322 (external, sdk-cli)" {
+		t.Errorf("expected User-Agent claude-cli/2.1.322, got %q", got)
 	}
 	if got := cfg.StaticHeaders["Anthropic-Beta"]; !strings.Contains(got, "prompt-caching-scope-2026-01-05") || !strings.Contains(got, "claude-code-20250219") {
 		t.Errorf("Anthropic-Beta should contain full v0.5.65 beta list, got %q", got)

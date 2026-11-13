@@ -737,6 +737,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   ],
   "cc": [
     {
+      "id": "claude-fable-5-2",
+      "name": "Claude Fable 5.2"
+    },
+    {
       "id": "claude-opus-5-5",
       "name": "Claude Opus 5.5"
     },
@@ -745,16 +749,20 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "Claude Opus 5"
     },
     {
-      "id": "claude-fable-5-1",
-      "name": "Claude Fable 5.1"
-    },
-    {
       "id": "claude-fable-5",
       "name": "Claude Fable 5"
     },
     {
+      "id": "claude-sonnet-5-5",
+      "name": "Claude Sonnet 5.5"
+    },
+    {
       "id": "claude-sonnet-5",
       "name": "Claude Sonnet 5"
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "name": "Claude Haiku 5.5"
     },
     {
       "id": "claude-haiku-4-5-20251001",
