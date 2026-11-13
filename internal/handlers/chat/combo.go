@@ -1193,7 +1193,19 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 						// do not fail over to the next combo member.
 						log.Warn("combo", "in-band upstream error, stopping chain, no failover",
 							"provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
-						lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fwdErr.Error())}
+						var ue *upstreamError
+						if !errors.As(fwdErr, &ue) {
+							ue = &upstreamError{
+								StatusCode: http.StatusBadGateway,
+								Body:       upstreamErrorBody(fwdErr.Error()),
+							}
+						}
+						h.recordModelCooldown(ctx, modelInfo.Provider, modelInfo.Model, connID, ue)
+						if providers.RetryableStatusCodes[ue.StatusCode] {
+							h.comboLockRetryable(ctx, &excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
+						}
+						retry.note(ue)
+						lastErr = ue
 						inbandError = true
 						break
 					}
@@ -1664,7 +1676,19 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 						// do not fail over to the next combo member.
 						log.Warn("combo", "in-band upstream error, stopping chain, no failover",
 							"provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
-						lastErr = &upstreamError{StatusCode: http.StatusBadGateway, Body: []byte(fwdErr.Error())}
+						var ue *upstreamError
+						if !errors.As(fwdErr, &ue) {
+							ue = &upstreamError{
+								StatusCode: http.StatusBadGateway,
+								Body:       upstreamErrorBody(fwdErr.Error()),
+							}
+						}
+						h.recordModelCooldown(ctx, modelInfo.Provider, modelInfo.Model, connID, ue)
+						if providers.RetryableStatusCodes[ue.StatusCode] {
+							h.comboLockRetryable(ctx, &excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
+						}
+						retry.note(ue)
+						lastErr = ue
 						inbandError = true
 						break
 					}

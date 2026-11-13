@@ -89,6 +89,29 @@ func TestStreamContentPeeker_InbandErrorCommitsAndFinishReturnsInbandError(t *te
 	}
 }
 
+func TestStreamContentPeeker_ErrorNullDoesNotTriggerInbandError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	peeker := NewStreamContentPeeker(rec)
+	peeker.Header().Set("Content-Type", "text/event-stream")
+
+	chunk := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}],\"error\":null}\n\n")
+	_, err := peeker.Write(chunk)
+	if err != nil {
+		t.Fatalf("unexpected write error: %v", err)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatalf("peeker should have committed real content")
+	}
+
+	finishErr := peeker.Finish()
+	if finishErr != nil {
+		t.Fatalf("expected Finish() = nil for real content with error:null, got %v", finishErr)
+	}
+	if errors.Is(finishErr, ErrStreamingInbandError) {
+		t.Fatalf("Finish() must not return ErrStreamingInbandError when error is null")
+	}
+}
+
 func TestStreamContentPeeker_ReasoningContentCommits(t *testing.T) {
 	tests := []struct {
 		name         string
