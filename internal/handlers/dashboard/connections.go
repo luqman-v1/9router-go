@@ -1551,7 +1551,7 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			return
 		}
 		headers := map[string]string{
-			"Authorization":    "Bearer " + token,
+			"Authorization":     "Bearer " + token,
 			"Anthropic-Version": "2023-06-01",
 			"Anthropic-Beta":    "oauth-2025-04-20",
 			"Content-Type":      "application/json",
