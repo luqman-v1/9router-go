@@ -338,6 +338,9 @@ func normalizeToolChoice(body map[string]any) bool {
 	case "any":
 		body["tool_choice"] = "required"
 		return true
+	case "none":
+		body["tool_choice"] = "none"
+		return true
 	case "tool":
 		if name, _ := choice["name"].(string); name != "" {
 			body["tool_choice"] = map[string]any{

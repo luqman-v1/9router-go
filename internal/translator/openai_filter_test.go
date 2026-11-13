@@ -244,3 +244,42 @@ func TestStripContentTypes(t *testing.T) {
 		t.Fatalf("emptied = %+v", b["messages"])
 	}
 }
+
+// normalizeToolChoice is exercised through FilterToOpenAIFormat, which is the
+// entry point that translates Claude tool_choice into the OpenAI dialect.
+func TestFilterToOpenAIFormat_ToolChoiceNone(t *testing.T) {
+	tests := []struct {
+		name  string
+		choice any
+		want  any
+	}{
+		{"none object becomes none string", map[string]any{"type": "none"}, "none"},
+		{"auto passes through", map[string]any{"type": "auto"}, "auto"},
+		{"any becomes required", map[string]any{"type": "any"}, "required"},
+		{"named tool keeps its name", map[string]any{"type": "tool", "name": "probe"}, map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": "probe"},
+		}},
+		{"string choice is left untouched", "required", "required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := filterBody(t, map[string]any{
+				"messages":  []any{map[string]any{"role": "user", "content": "hi"}},
+				"tool_choice": tt.choice,
+			})
+			enc := json.Deterministic(true)
+			got, err := json.Marshal(out["tool_choice"], enc)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			want, err := json.Marshal(tt.want, enc)
+			if err != nil {
+				t.Fatalf("marshal want: %v", err)
+			}
+			if string(got) != string(want) {
+				t.Errorf("tool_choice = %s, want %s", got, want)
+			}
+		})
+	}
+}
