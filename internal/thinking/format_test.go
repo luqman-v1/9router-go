@@ -261,3 +261,59 @@ func sameValue(a, b any) bool {
 	}
 	return string(ab) == string(bb)
 }
+
+// TestApplyOpenAIResponsesOnOpenAICompatibleNode pins the Responses dialect for
+// an OpenAI-compatible node on the /responses lane. A strict Responses upstream
+// rejects a top-level reasoning_effort with HTTP 400
+// ("this parameter has moved to 'reasoning.effort'"), so the effort nests under
+// reasoning:{effort,summary} and the top-level field is deleted. Off that lane
+// the same compatible node keeps the top-level Chat field.
+func TestApplyOpenAIResponsesOnOpenAICompatibleNode(t *testing.T) {
+	tests := []struct {
+		name          string
+		target        string
+		body          map[string]any
+		wantReasoning map[string]any
+		wantEffort    any
+	}{
+		{
+			name:          "responses wire nests reasoning_effort",
+			target:        "openai-responses",
+			body:          map[string]any{"reasoning_effort": "high"},
+			wantReasoning: map[string]any{"effort": "high", "summary": "auto"},
+		},
+		{
+			name:          "client reasoning.effort stays nested",
+			target:        "openai-responses",
+			body:          map[string]any{"reasoning": map[string]any{"effort": "high"}},
+			wantReasoning: map[string]any{"effort": "high", "summary": "auto"},
+		},
+		{
+			name:       "chat wire keeps top-level reasoning_effort",
+			target:     "openai",
+			body:       map[string]any{"reasoning_effort": "high"},
+			wantEffort: "high",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := apply(t, tc.target, "openai-compatible-sglang", "deepseek-v4-pro", tc.body, nil)
+			if tc.wantReasoning != nil {
+				r, ok := out["reasoning"].(map[string]any)
+				if !ok {
+					t.Fatalf("reasoning missing: %+v", out)
+				}
+				if !reflect.DeepEqual(r, tc.wantReasoning) {
+					t.Fatalf("reasoning = %+v, want %+v (full: %+v)", r, tc.wantReasoning, out)
+				}
+			}
+			if tc.wantEffort == nil {
+				if _, has := out["reasoning_effort"]; has {
+					t.Fatalf("reasoning_effort must not appear on the Responses wire: %+v", out)
+				}
+			} else if out["reasoning_effort"] != tc.wantEffort {
+				t.Fatalf("reasoning_effort = %v, want %v (full: %+v)", out["reasoning_effort"], tc.wantEffort, out)
+			}
+		})
+	}
+}
