@@ -331,7 +331,7 @@
 
   {#if activeView === 'prompt'}
     <!-- Hero StatCards -->
-    <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+    <div class="grid grid-cols-2 gap-3 sm:gap-4 sm:grid-cols-3 lg:grid-cols-5">
       <!-- Cache Rate -->
       <div class="rounded-2xl border border-border bg-surface p-4 shadow-sm flex flex-col justify-between">
         <div class="flex items-center justify-between text-text-muted">

@@ -1417,7 +1417,7 @@
                 role="tab"
                 aria-selected={formTab === tab.value}
                 onclick={() => (formTab = tab.value as 'single' | 'bulk')}
-                class="flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors {formTab ===
+                class="flex-1 rounded-md px-3 py-2.5 sm:py-1.5 text-xs font-medium transition-colors {formTab ===
                 tab.value
                   ? 'bg-brand-500 text-white shadow-sm'
                   : 'text-text-muted hover:text-text-main'}"

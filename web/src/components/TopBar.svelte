@@ -241,13 +241,13 @@
           <button
             type="button"
             onclick={onBackToProviders}
-            class="text-text-muted hover:text-primary transition-colors cursor-pointer text-sm font-normal"
+            class="hidden sm:block text-text-muted hover:text-primary transition-colors cursor-pointer text-sm font-normal"
           >
             Providers
           </button>
         </div>
         <div class="flex items-center gap-2 min-w-0">
-          <span class="material-symbols-outlined text-text-muted text-base">chevron_right</span>
+          <span class="hidden sm:inline material-symbols-outlined text-text-muted text-base">chevron_right</span>
           <div class="flex items-center gap-2 min-w-0">
             <ProviderIcon id={selectedProvider.id} size="sm" />
             <h1 class="text-base lg:text-2xl font-semibold text-text-main tracking-tight truncate">
@@ -258,7 +258,7 @@
       </div>
     {:else}
       <div class="flex items-center gap-2.5 min-w-0">
-        <span class="material-symbols-outlined text-primary text-xl lg:text-2xl flex-shrink-0">
+        <span class="hidden sm:block material-symbols-outlined text-primary text-xl lg:text-2xl flex-shrink-0">
           {currentMeta.icon}
         </span>
         <div class="min-w-0">

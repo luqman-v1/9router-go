@@ -865,13 +865,13 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
 <div class="space-y-6 p-6">
   <!-- Optimal Configuration & Synergy Guide -->
   <div class="rounded-xl border border-primary/25 bg-gradient-to-r from-primary/5 via-surface-2 to-surface-2 p-4 text-text-main shadow-sm">
-    <div class="flex items-center justify-between gap-4">
-      <div class="flex items-center gap-3">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div class="flex items-center gap-3 min-w-0">
         <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
           <span class="material-symbols-outlined text-xl">recommend</span>
         </span>
-        <div>
-          <h3 class="text-sm font-semibold flex items-center gap-2">
+        <div class="min-w-0">
+          <h3 class="text-sm font-semibold flex flex-wrap items-center gap-x-2 gap-y-1">
             Optimal Setup: The Developer Stack
             <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
               Recommended Synergy
@@ -882,10 +882,10 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
           </p>
         </div>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2 shrink-0">
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors cursor-pointer shadow-sm disabled:opacity-50"
+          class="inline-flex items-center gap-1.5 px-3 py-2 sm:py-1.5 text-xs font-medium rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors cursor-pointer shadow-sm disabled:opacity-50"
           onclick={applyRecommendedPreset}
         >
           <span class="material-symbols-outlined text-sm">
@@ -895,7 +895,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
         </button>
         <button
           type="button"
-          class="inline-flex items-center justify-center h-8 w-8 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-3 transition-colors cursor-pointer"
+          class="inline-flex items-center justify-center h-9 w-9 shrink-0 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-3 transition-colors cursor-pointer"
           onclick={() => showRecommendedGuide = !showRecommendedGuide}
           aria-label="Toggle details"
         >
@@ -1009,7 +1009,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
       <div class="py-4 border-b border-border space-y-4">
         <!-- Sub-tabs: Simple | Advance -->
         <div class="flex items-center justify-between flex-wrap gap-2">
-          <div class="inline-flex p-1 rounded-lg bg-surface-2 border border-border">
+          <div class="inline-flex p-1.5 sm:p-1 rounded-lg bg-surface-2 border border-border">
             <button
               type="button"
               onclick={() => handleSetRtkMode('simple')}
@@ -1547,7 +1547,7 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
       <div class="pt-2 pb-4 border-b border-border space-y-4">
         <!-- Sub-tabs: Simple | Advance -->
         <div class="flex items-center justify-between flex-wrap gap-2">
-          <div class="inline-flex p-1 rounded-lg bg-surface-2 border border-border">
+          <div class="inline-flex p-1.5 sm:p-1 rounded-lg bg-surface-2 border border-border">
             <button
               type="button"
               onclick={() => handleSetCavemanMode('simple')}

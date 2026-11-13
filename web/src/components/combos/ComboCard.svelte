@@ -167,7 +167,7 @@
         type="checkbox"
         checked={isSelected}
         onchange={handleToggleSelect}
-        class="mt-1 size-4 shrink-0 cursor-pointer accent-brand-500"
+        class="tap-target mt-1 size-[18px] shrink-0 cursor-pointer accent-brand-500"
         title="Select for bulk delete"
       />
       <div class="size-8 rounded-lg bg-brand-500/10 flex items-center justify-center shrink-0">
@@ -309,7 +309,7 @@
         <select
           value={currentStrategy}
           onchange={(e) => onSetStrategy(combo, e.currentTarget.value)}
-          class="w-full bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 text-xs text-text-main focus:outline-none focus:border-brand-500 cursor-pointer font-body"
+          class="w-full bg-surface-2 border border-border rounded-lg px-2.5 py-2.5 sm:py-1.5 text-xs text-text-main focus:outline-none focus:border-brand-500 cursor-pointer font-body"
         >
           {#each strategyOptions as strategy (strategy.value)}
             <option value={strategy.value}>{strategy.label}</option>
@@ -327,7 +327,7 @@
               type="checkbox"
               checked={strategyInfo.respectStoredOrder === true}
               onchange={(e) => onToggleStoredOrder(combo, e.currentTarget.checked)}
-              class="size-3 shrink-0 cursor-pointer accent-brand-500"
+              class="tap-target size-3 shrink-0 cursor-pointer accent-brand-500"
             />
             <span>Respect stored order</span>
           </label>
@@ -409,7 +409,7 @@
           type="button"
           onclick={() => onTest?.(combo)}
           disabled={isTesting || modelsList.length === 0}
-          class="flex flex-col items-center justify-center rounded px-2.5 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 hover:text-brand-500 cursor-pointer {isTesting ? 'text-brand-500 cursor-wait' : modelsList.length === 0 ? 'opacity-40 cursor-not-allowed text-text-muted' : 'text-text-muted'}"
+          class="flex flex-col items-center justify-center rounded px-2.5 py-2.5 sm:py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 hover:text-brand-500 cursor-pointer {isTesting ? 'text-brand-500 cursor-wait' : modelsList.length === 0 ? 'opacity-40 cursor-not-allowed text-text-muted' : 'text-text-muted'}"
           title={modelsList.length === 0 ? 'No models to test' : isTesting ? 'Testing models...' : 'Test all models in combo (Dead/Alive check)'}
         >
           <span class="material-symbols-outlined text-[18px] {isTesting ? 'animate-spin' : ''}">
@@ -421,7 +421,7 @@
         <button
           type="button"
           onclick={() => onCopy(combo.name, combo.id)}
-          class="flex flex-col items-center justify-center rounded px-2.5 py-1 text-text-muted transition-colors hover:bg-black/5 dark:hover:bg-white/5 hover:text-brand-500 cursor-pointer"
+          class="flex flex-col items-center justify-center rounded px-2.5 py-2.5 sm:py-1 text-text-muted transition-colors hover:bg-black/5 dark:hover:bg-white/5 hover:text-brand-500 cursor-pointer"
           title="Copy combo name"
         >
           {#if copiedId === combo.id}
@@ -436,7 +436,7 @@
         <button
           type="button"
           onclick={() => onEdit(combo)}
-          class="flex flex-col items-center justify-center rounded px-2.5 py-1 text-text-muted transition-colors hover:bg-black/5 dark:hover:bg-white/5 hover:text-brand-500 cursor-pointer"
+          class="flex flex-col items-center justify-center rounded px-2.5 py-2.5 sm:py-1 text-text-muted transition-colors hover:bg-black/5 dark:hover:bg-white/5 hover:text-brand-500 cursor-pointer"
           title="Edit"
         >
           <Pencil class="w-4 h-4" />
@@ -446,7 +446,7 @@
         <button
           type="button"
           onclick={() => onDelete(combo)}
-          class="flex flex-col items-center justify-center rounded px-2.5 py-1 text-red-500 transition-colors hover:bg-red-500/10 cursor-pointer"
+          class="flex flex-col items-center justify-center rounded px-2.5 py-2.5 sm:py-1 text-red-500 transition-colors hover:bg-red-500/10 cursor-pointer"
           title="Delete"
         >
           <Trash2 class="w-4 h-4" />

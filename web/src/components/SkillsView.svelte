@@ -117,7 +117,7 @@
     <div
       class="px-3.5 py-2.5 rounded-lg bg-surface-2 border border-border-subtle font-mono text-[12px] text-text-main flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap"
     >
-      <span class="truncate">{promptInstruction}</span>
+      <span class="min-w-0 sm:truncate break-all">{promptInstruction}</span>
       <button
         type="button"
         onclick={() => handleCopy('main', promptInstruction)}

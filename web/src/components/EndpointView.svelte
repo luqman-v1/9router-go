@@ -1526,7 +1526,7 @@
               {result.name}{result.machineId ? ` · ${result.machineId}` : ''}
             </p>
             <div class="flex items-center gap-2">
-              <code class="flex-1 font-mono text-[11px] text-text-main truncate">{result.key}</code>
+              <code class="flex-1 min-w-0 font-mono text-[11px] text-text-main break-all sm:truncate">{result.key}</code>
               <button
                 type="button"
                 onclick={() => copy(result.key, `bulk_${result.key}`)}
@@ -1720,7 +1720,7 @@
                   <p class="text-xs font-semibold text-text-main">Connected</p>
                 </div>
                 <div class="flex items-center gap-2">
-                  <code class="flex-1 min-w-0 font-mono text-xs bg-bg border border-border rounded-lg px-3 py-2 text-text-main truncate">
+                  <code class="flex-1 min-w-0 font-mono text-xs bg-bg border border-border rounded-lg px-3 py-2 text-text-main break-all sm:truncate">
                     {publicUrl || tunnelUrl}
                   </code>
                   <button
@@ -1987,7 +1987,7 @@
                   In Cloudflare Zero Trust → Networks → Tunnels → your tunnel → Public Hostname, set the service to:
                 </p>
                 <div class="flex items-center gap-2">
-                  <code class="flex-1 min-w-0 font-mono text-xs bg-bg border border-border rounded-lg px-3 py-2 text-text-main truncate">
+                  <code class="flex-1 min-w-0 font-mono text-xs bg-bg border border-border rounded-lg px-3 py-2 text-text-main break-all sm:truncate">
                     {localOrigin}
                   </code>
                   <button
@@ -2180,7 +2180,7 @@
                   <p class="text-xs font-semibold text-text-main">Funnel connected</p>
                 </div>
                 <div class="flex items-center gap-2">
-                  <code class="flex-1 min-w-0 font-mono text-xs bg-bg border border-border rounded-lg px-3 py-2 text-text-main truncate">
+                  <code class="flex-1 min-w-0 font-mono text-xs bg-bg border border-border rounded-lg px-3 py-2 text-text-main break-all sm:truncate">
                     {tailscaleUrl}
                   </code>
                   <button

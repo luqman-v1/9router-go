@@ -1119,7 +1119,7 @@
         <button
           type="button"
           onclick={() => (providerMenuOpen = !providerMenuOpen)}
-          class="flex h-8 items-center justify-between gap-1 rounded-lg border border-border-subtle bg-surface-2 px-2 text-xs text-text-main transition-colors hover:bg-surface-3"
+          class="flex h-11 sm:h-8 items-center justify-between gap-1 rounded-lg border border-border-subtle bg-surface-2 px-2 text-xs text-text-main transition-colors hover:bg-surface-3"
           aria-haspopup="menu"
           aria-expanded={providerMenuOpen}
           title="Filter quota providers"
@@ -1200,7 +1200,7 @@
       <select
         bind:value={accountFilter}
         onchange={handleAccountFilterChange}
-        class="h-8 rounded-lg border border-border-subtle bg-surface-2 px-2 text-xs text-text-main outline-none transition-colors hover:bg-surface-3"
+        class="h-11 sm:h-8 rounded-lg border border-border-subtle bg-surface-2 px-2 text-xs text-text-main outline-none transition-colors hover:bg-surface-3"
         aria-label="Filter accounts by status"
       >
         {#each ACCOUNT_FILTER_OPTIONS as option (option.value)}
@@ -1212,7 +1212,7 @@
       {#if providerFilter === 'codex'}
         <select
           bind:value={quotaSortMode}
-          class="h-8 rounded-lg border border-border-subtle bg-surface-2 px-2 text-xs text-text-main outline-none transition-colors hover:bg-surface-3"
+          class="h-11 sm:h-8 rounded-lg border border-border-subtle bg-surface-2 px-2 text-xs text-text-main outline-none transition-colors hover:bg-surface-3"
           aria-label="Sort Codex quotas by remaining"
         >
           {#each QUOTA_SORT_OPTIONS as option (option.value)}
@@ -1406,7 +1406,7 @@
                           type="button"
                           onclick={() => copyArn(profileArn, conn.id)}
                           title={profileArn}
-                          class="inline-flex max-w-full items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-[10px] text-text-muted transition-colors hover:text-primary cursor-pointer"
+                          class="inline-flex max-w-full items-center gap-1 rounded-full border border-border-subtle px-2.5 py-2 sm:py-0.5 text-[10px] text-text-muted transition-colors hover:text-primary cursor-pointer"
                         >
                           <span class="material-symbols-outlined text-[12px]">
                             {copiedArnId === conn.id ? 'check' : 'content_copy'}
@@ -1430,7 +1430,7 @@
                     title={resetCreditCount > 0
                       ? `Redeem a ${conn.provider === 'claude' ? 'Claude' : 'Codex'} reset credit (${resetCreditCount} available)`
                       : `Check ${conn.provider === 'claude' ? 'Claude' : 'Codex'} reset credits`}
-                    class="flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {resetCreditCount > 0 ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10' : 'border-border-subtle bg-surface-2 text-text-muted'}"
+                    class="flex h-11 sm:h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {resetCreditCount > 0 ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10' : 'border-border-subtle bg-surface-2 text-text-muted'}"
                   >
                     <span class="material-symbols-outlined text-[15px]">restart_alt</span>
                     <span>{resetCreditCount}</span>
@@ -1448,7 +1448,7 @@
                     title={resetCardCount > 0
                       ? `Redeem a GLM reset card (${resetCardCount} available)`
                       : 'Check GLM reset cards'}
-                    class="flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {resetCardCount > 0 ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10' : 'border-border-subtle bg-surface-2 text-text-muted'}"
+                    class="flex h-11 sm:h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-60 {resetCardCount > 0 ? 'border-primary/30 bg-primary/5 text-primary hover:bg-primary/10' : 'border-border-subtle bg-surface-2 text-text-muted'}"
                   >
                     <span class="material-symbols-outlined text-[15px]">restart_alt</span>
                     <span>{resetCardCount}</span>
@@ -1469,7 +1469,7 @@
                     onclick={() => toggleAutoPing(conn.id, conn.provider, !isAutoPingActive)}
                     title={AUTO_PING_TOOLTIPS[conn.provider]}
                     aria-label="Toggle auto-ping"
-                    class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {isAutoPingActive ? 'text-primary' : 'text-text-muted'}"
+                    class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {isAutoPingActive ? 'text-primary' : 'text-text-muted'}"
                   >
                     <span class="material-symbols-outlined text-[18px]">bolt</span>
                   </button>
@@ -1478,7 +1478,7 @@
                     onclick={() => (autoPingEditing = conn)}
                     title="Auto-ping schedule"
                     aria-label="Configure auto-ping schedule"
-                    class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {hasSchedule
+                    class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {hasSchedule
                       ? 'text-primary'
                       : 'text-text-muted'}"
                   >
@@ -1493,7 +1493,7 @@
                   disabled={isLoading || rowBusy}
                   aria-label="Refresh quota"
                   title="Refresh quota"
-                  class="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main disabled:opacity-50 cursor-pointer"
+                  class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main disabled:opacity-50 cursor-pointer"
                 >
                   <span
                     class="material-symbols-outlined text-[18px] {isLoading
@@ -1509,7 +1509,7 @@
                   disabled={rowBusy}
                   aria-label="Edit connection"
                   title="Edit connection"
-                  class="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-3 hover:text-primary disabled:opacity-50 cursor-pointer"
+                  class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-3 hover:text-primary disabled:opacity-50 cursor-pointer"
                 >
                   <span class="material-symbols-outlined text-[18px]">edit</span>
                 </button>
@@ -1521,7 +1521,7 @@
                   disabled={rowBusy}
                   aria-label="Delete connection"
                   title="Delete connection"
-                  class="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50 cursor-pointer"
+                  class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50 cursor-pointer"
                 >
                   <span
                     class="material-symbols-outlined text-[18px] {deletingId === conn.id
@@ -1650,7 +1650,7 @@
             type="button"
             onclick={() => (page = 1)}
             disabled={pagination.page <= 1 || connectionsLoading || refreshingAll}
-            class="flex h-8 items-center rounded-lg border border-border-subtle px-3 text-xs text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+            class="flex h-11 sm:h-8 items-center rounded-lg border border-border-subtle px-3 text-xs text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
           >
             First Page
           </button>
@@ -1659,7 +1659,7 @@
             onclick={() => (page = Math.max(1, page - 1))}
             disabled={pagination.page <= 1 || connectionsLoading || refreshingAll}
             aria-label="Previous accounts page"
-            class="flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+            class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <span class="material-symbols-outlined text-[16px]">chevron_left</span>
           </button>
@@ -1668,7 +1668,7 @@
             onclick={() => (page = Math.min(pagination.totalPages, page + 1))}
             disabled={pagination.page >= pagination.totalPages || connectionsLoading || refreshingAll}
             aria-label="Next accounts page"
-            class="flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+            class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <span class="material-symbols-outlined text-[16px]">chevron_right</span>
           </button>
@@ -1676,7 +1676,7 @@
             type="button"
             onclick={() => (page = pagination.totalPages)}
             disabled={pagination.page >= pagination.totalPages || connectionsLoading || refreshingAll}
-            class="flex h-8 items-center rounded-lg border border-border-subtle px-3 text-xs text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+            class="flex h-11 sm:h-8 items-center rounded-lg border border-border-subtle px-3 text-xs text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Last Page
           </button>

@@ -129,7 +129,7 @@
           aria-pressed={!muted}
           title={muted ? `Show ${meta.label} lines` : `Hide ${meta.label} lines`}
           onclick={() => toggleLevel(level)}
-          class="inline-flex h-6 items-center gap-1.5 rounded-full border px-2 text-[11px] font-semibold transition-colors duration-150 {meta.chip} {muted
+          class="inline-flex h-11 sm:h-6 items-center gap-1.5 rounded-full border px-3 sm:px-2 text-[11px] font-semibold transition-colors duration-150 {meta.chip} {muted
             ? 'opacity-40'
             : ''}"
         >
@@ -166,7 +166,7 @@
       aria-pressed={wrap}
       title={wrap ? 'Disable line wrap' : 'Wrap long lines'}
       onclick={() => (wrap = !wrap)}
-      class="h-7 cursor-pointer rounded-[8px] border border-border px-2.5 text-xs text-text-main transition-colors duration-150 hover:bg-surface-2 {wrap
+      class="h-11 sm:h-7 cursor-pointer rounded-[8px] border border-border px-3 sm:px-2.5 text-xs text-text-main transition-colors duration-150 hover:bg-surface-2 {wrap
         ? 'border-brand-500/40 bg-brand-500/10 text-brand-600 dark:text-brand-400'
         : ''}"
     >
