@@ -9,7 +9,7 @@ package providers
 // HTTP 426 once cli-chat-proxy required 1.0.13.
 const (
 	// CodexCLIVersion is the codex CLI identity OpenAI's backend sees.
-	CodexCLIVersion = "0.159.0"
+	CodexCLIVersion = "0.167.1"
 	// CodexCLIUserAgent is the User-Agent header the codex backend expects.
 	CodexCLIUserAgent = "codex_cli_rs/" + CodexCLIVersion
 	// CodexCLIVersionHeader carries the same value in the `version` header,
