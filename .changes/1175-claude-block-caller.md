@@ -1,0 +1,3 @@
+### fix(claude): drop caller from blocks that do not define it
+- Claude Code attaches `caller` (agent attribution) to content blocks, and Anthropic defines it on the `tool_use` block only. On a `text` block — or a `text` nested in a `tool_result` — the API answers `messages.<n>.content.<m>.text.caller: Extra inputs are not permitted` and refuses the whole request, so the turn stays in history and every later turn fails too.
+- `SanitizeClaudePassthrough` now drops `caller` from every block that is not a `tool_use`, walking into the blocks nested in a `tool_result`. The valid `tool_use` field is preserved, and a body with nothing to clean is still forwarded byte for byte.
