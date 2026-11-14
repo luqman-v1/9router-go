@@ -14,8 +14,10 @@ import (
 // accepted while private networking is on (the default) and refused only when
 // the operator sets ALLOW_PRIVATE_NETWORKING=false.
 //
-// The socket-level guard in proxy.NewSafeTransport still backs the write path
-// up (chat/resolution.go builds its client from it).
+// The dial-time socket guard does not back this up while private networking is
+// on: chat/resolution.go builds its client from proxy.NewSafeTransport, whose
+// ControlContext returns before examining any address, so this write gate is
+// the only check a node's base URL passes.
 
 func createProviderNodeStatus(t *testing.T, baseURL string) int {
 	t.Helper()
