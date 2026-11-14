@@ -1419,7 +1419,7 @@
                 </div>
               </div>
 
-              <div class="flex shrink-0 items-center gap-1">
+              <div class="flex shrink-0 items-center gap-2 sm:gap-1">
                 {#if conn.provider === 'codex' || conn.provider === 'claude'}
                   {@const resetCreditCount = getCodexResetCreditCount(quota)}
                   <button
@@ -1469,7 +1469,7 @@
                     onclick={() => toggleAutoPing(conn.id, conn.provider, !isAutoPingActive)}
                     title={AUTO_PING_TOOLTIPS[conn.provider]}
                     aria-label="Toggle auto-ping"
-                    class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {isAutoPingActive ? 'text-primary' : 'text-text-muted'}"
+                    class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {isAutoPingActive ? 'text-primary' : 'text-text-muted'}"
                   >
                     <span class="material-symbols-outlined text-[18px]">bolt</span>
                   </button>
@@ -1478,7 +1478,7 @@
                     onclick={() => (autoPingEditing = conn)}
                     title="Auto-ping schedule"
                     aria-label="Configure auto-ping schedule"
-                    class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {hasSchedule
+                    class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {hasSchedule
                       ? 'text-primary'
                       : 'text-text-muted'}"
                   >
@@ -1493,7 +1493,7 @@
                   disabled={isLoading || rowBusy}
                   aria-label="Refresh quota"
                   title="Refresh quota"
-                  class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main disabled:opacity-50 cursor-pointer"
+                  class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main disabled:opacity-50 cursor-pointer"
                 >
                   <span
                     class="material-symbols-outlined text-[18px] {isLoading
@@ -1509,7 +1509,7 @@
                   disabled={rowBusy}
                   aria-label="Edit connection"
                   title="Edit connection"
-                  class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-3 hover:text-primary disabled:opacity-50 cursor-pointer"
+                  class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-3 hover:text-primary disabled:opacity-50 cursor-pointer"
                 >
                   <span class="material-symbols-outlined text-[18px]">edit</span>
                 </button>
@@ -1521,7 +1521,7 @@
                   disabled={rowBusy}
                   aria-label="Delete connection"
                   title="Delete connection"
-                  class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50 cursor-pointer"
+                  class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50 cursor-pointer"
                 >
                   <span
                     class="material-symbols-outlined text-[18px] {deletingId === conn.id
@@ -1659,7 +1659,7 @@
             onclick={() => (page = Math.max(1, page - 1))}
             disabled={pagination.page <= 1 || connectionsLoading || refreshingAll}
             aria-label="Previous accounts page"
-            class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+            class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <span class="material-symbols-outlined text-[16px]">chevron_left</span>
           </button>
@@ -1668,7 +1668,7 @@
             onclick={() => (page = Math.min(pagination.totalPages, page + 1))}
             disabled={pagination.page >= pagination.totalPages || connectionsLoading || refreshingAll}
             aria-label="Next accounts page"
-            class="flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+            class="tap-target flex h-11 sm:h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <span class="material-symbols-outlined text-[16px]">chevron_right</span>
           </button>
