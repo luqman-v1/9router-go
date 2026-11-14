@@ -963,9 +963,9 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     </div>
 
     <!-- 1. Compress tool output (RTK) -->
-    <div class="flex items-center justify-between pt-2 pb-4 border-b border-border gap-4 flex-wrap">
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2 flex-wrap">
+    <div class="pt-2 pb-4 border-b border-border">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
           <p class="font-medium">
             Compress tool output{' '}
             <a
@@ -981,28 +981,30 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             {rtkEnabled ? 'Active' : 'Disabled'}
           </span>
         </div>
-        <p class="text-sm text-text-muted">
-          git/grep/ls/tree/logs → 60-90% fewer input tokens ({rtkFiltersList.length || 55} OmniRoute filters)
-        </p>
+        <div class="flex shrink-0 items-center gap-2">
+          {#if rtkEnabled}
+            <button
+              type="button"
+              onclick={() => (rtkExpanded = !rtkExpanded)}
+              class="tap-target p-1.5 -m-1 rounded text-text-muted hover:text-text-main cursor-pointer transition-colors"
+              title={rtkExpanded ? 'Hide settings' : 'Configure'}
+              aria-label={rtkExpanded ? 'Hide RTK settings' : 'Configure RTK'}
+              aria-expanded={rtkExpanded}
+            >
+              <span class="material-symbols-outlined text-base transition-transform {rtkExpanded ? 'rotate-180' : ''}">
+                expand_more
+              </span>
+            </button>
+          {/if}
+          <Toggle
+            checked={rtkEnabled}
+            onChange={() => handleToggleRTK(!rtkEnabled)}
+          />
+        </div>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
-        {#if rtkEnabled}
-          <button
-            type="button"
-            onclick={() => (rtkExpanded = !rtkExpanded)}
-            class="px-2.5 py-1 rounded text-xs font-medium border border-border bg-surface-1 hover:bg-surface-2 text-text-main flex items-center gap-1 cursor-pointer transition-colors"
-          >
-            <span>{rtkExpanded ? 'Hide Settings' : 'Configure'}</span>
-            <span class="material-symbols-outlined text-sm transition-transform {rtkExpanded ? 'rotate-180' : ''}">
-              expand_more
-            </span>
-          </button>
-        {/if}
-        <Toggle
-          checked={rtkEnabled}
-          onChange={() => handleToggleRTK(!rtkEnabled)}
-        />
-      </div>
+      <p class="text-sm text-text-muted mt-1">
+        git/grep/ls/tree/logs → 60-90% fewer input tokens ({rtkFiltersList.length || 55} OmniRoute filters)
+      </p>
     </div>
 
     {#if rtkEnabled && rtkExpanded}
@@ -1353,9 +1355,9 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     {/if}
 
     <!-- 2. Compress context (Headroom) -->
-    <div class="flex items-center justify-between py-4 border-t border-border gap-4 flex-wrap">
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-3 flex-wrap">
+    <div class="py-4 border-t border-border">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
           <p class="font-medium">
             Compress context{' '}
             <a
@@ -1380,28 +1382,30 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             {headroomActive ? 'Manage' : 'Setup'}
           </button>
         </div>
-        <p class="text-sm text-text-muted mt-1">
-          Compress prompts via /v1/compress before routing to the model
-        </p>
+        <div class="flex shrink-0 items-center gap-2">
+          {#if headroomStatus.installed}
+            <button
+              type="button"
+              onclick={() => (headroomExpanded = !headroomExpanded)}
+              class="tap-target p-1.5 -m-1 rounded text-text-muted hover:text-text-main cursor-pointer transition-colors"
+              title={headroomExpanded ? 'Hide settings' : 'Configure'}
+              aria-label={headroomExpanded ? 'Hide Headroom settings' : 'Configure Headroom'}
+              aria-expanded={headroomExpanded}
+            >
+              <span class="material-symbols-outlined text-base transition-transform {headroomExpanded ? 'rotate-180' : ''}">
+                expand_more
+              </span>
+            </button>
+          {/if}
+          <Toggle
+            checked={headroomEnabled}
+            onChange={() => handleToggleHeadroom(!headroomEnabled)}
+          />
+        </div>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
-        {#if headroomStatus.installed}
-          <button
-            type="button"
-            onclick={() => (headroomExpanded = !headroomExpanded)}
-            class="px-2.5 py-1 rounded text-xs font-medium border border-border bg-surface-1 hover:bg-surface-2 text-text-main flex items-center gap-1 cursor-pointer transition-colors"
-          >
-            <span>{headroomExpanded ? 'Hide Settings' : 'Configure'}</span>
-            <span class="material-symbols-outlined text-sm transition-transform {headroomExpanded ? 'rotate-180' : ''}">
-              expand_more
-            </span>
-          </button>
-        {/if}
-        <Toggle
-          checked={headroomEnabled}
-          onChange={() => handleToggleHeadroom(!headroomEnabled)}
-        />
-      </div>
+      <p class="text-sm text-text-muted mt-1">
+        Compress prompts via /v1/compress before routing to the model
+      </p>
     </div>
 
     {#if headroomStatus.installed && headroomExpanded}
@@ -1501,9 +1505,9 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     {/if}
 
     <!-- 3. Compress LLM output (Caveman) -->
-    <div class="flex items-center justify-between pt-4 border-t border-border gap-4 flex-wrap">
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2 flex-wrap">
+    <div class="pt-4 border-t border-border">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
           <p class="font-medium">
             Compress LLM output{' '}
             <a
@@ -1519,28 +1523,30 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             {cavemanEnabled ? `Active (${cavemanLevel})` : 'Disabled'}
           </span>
         </div>
-        <p class="text-sm text-text-muted">
-          Terse-style system prompt → ~65% fewer output tokens (up to 87%)
-        </p>
+        <div class="flex shrink-0 items-center gap-2">
+          {#if cavemanEnabled}
+            <button
+              type="button"
+              onclick={() => (cavemanExpanded = !cavemanExpanded)}
+              class="tap-target p-1.5 -m-1 rounded text-text-muted hover:text-text-main cursor-pointer transition-colors"
+              title={cavemanExpanded ? 'Hide settings' : 'Configure'}
+              aria-label={cavemanExpanded ? 'Hide Caveman settings' : 'Configure Caveman'}
+              aria-expanded={cavemanExpanded}
+            >
+              <span class="material-symbols-outlined text-base transition-transform {cavemanExpanded ? 'rotate-180' : ''}">
+                expand_more
+              </span>
+            </button>
+          {/if}
+          <Toggle
+            checked={cavemanEnabled}
+            onChange={() => handleToggleCaveman(!cavemanEnabled)}
+          />
+        </div>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
-        {#if cavemanEnabled}
-          <button
-            type="button"
-            onclick={() => (cavemanExpanded = !cavemanExpanded)}
-            class="px-2.5 py-1 rounded text-xs font-medium border border-border bg-surface-1 hover:bg-surface-2 text-text-main flex items-center gap-1 cursor-pointer transition-colors"
-          >
-            <span>{cavemanExpanded ? 'Hide Settings' : 'Configure'}</span>
-            <span class="material-symbols-outlined text-sm transition-transform {cavemanExpanded ? 'rotate-180' : ''}">
-              expand_more
-            </span>
-          </button>
-        {/if}
-        <Toggle
-          checked={cavemanEnabled}
-          onChange={() => handleToggleCaveman(!cavemanEnabled)}
-        />
-      </div>
+      <p class="text-sm text-text-muted mt-1">
+        Terse-style system prompt → ~65% fewer output tokens (up to 87%)
+      </p>
     </div>
 
     {#if cavemanEnabled && cavemanExpanded}
@@ -1800,9 +1806,9 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     {/if}
 
     <!-- 4. Lazy senior dev (Ponytail) -->
-    <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2 flex-wrap">
+    <div class="pt-4 mt-4 border-t border-border">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
           <p class="font-medium">
             Lazy senior dev{' '}
             <a
@@ -1818,28 +1824,30 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             {ponytailEnabled ? `Active (${ponytailLevel})` : 'Disabled'}
           </span>
         </div>
-        <p class="text-sm text-text-muted">
-          Bias the model toward minimal code: YAGNI, reuse stdlib, deletion over addition
-        </p>
+        <div class="flex shrink-0 items-center gap-2">
+          {#if ponytailEnabled}
+            <button
+              type="button"
+              onclick={() => (ponytailExpanded = !ponytailExpanded)}
+              class="tap-target p-1.5 -m-1 rounded text-text-muted hover:text-text-main cursor-pointer transition-colors"
+              title={ponytailExpanded ? 'Hide settings' : 'Configure'}
+              aria-label={ponytailExpanded ? 'Hide Ponytail settings' : 'Configure Ponytail'}
+              aria-expanded={ponytailExpanded}
+            >
+              <span class="material-symbols-outlined text-base transition-transform {ponytailExpanded ? 'rotate-180' : ''}">
+                expand_more
+              </span>
+            </button>
+          {/if}
+          <Toggle
+            checked={ponytailEnabled}
+            onChange={() => handleTogglePonytail(!ponytailEnabled)}
+          />
+        </div>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
-        {#if ponytailEnabled}
-          <button
-            type="button"
-            onclick={() => (ponytailExpanded = !ponytailExpanded)}
-            class="px-2.5 py-1 rounded text-xs font-medium border border-border bg-surface-1 hover:bg-surface-2 text-text-main flex items-center gap-1 cursor-pointer transition-colors"
-          >
-            <span>{ponytailExpanded ? 'Hide Settings' : 'Configure'}</span>
-            <span class="material-symbols-outlined text-sm transition-transform {ponytailExpanded ? 'rotate-180' : ''}">
-              expand_more
-            </span>
-          </button>
-        {/if}
-        <Toggle
-          checked={ponytailEnabled}
-          onChange={() => handleTogglePonytail(!ponytailEnabled)}
-        />
-      </div>
+      <p class="text-sm text-text-muted mt-1">
+        Bias the model toward minimal code: YAGNI, reuse stdlib, deletion over addition
+      </p>
     </div>
 
     {#if ponytailEnabled && ponytailExpanded}
@@ -1868,9 +1876,9 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     {/if}
 
     <!-- 5. Action-first output (I have ADHD) -->
-    <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2 flex-wrap">
+    <div class="pt-4 mt-4 border-t border-border">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
           <p class="font-medium">
             I have ADHD{' '}
             <a
@@ -1886,28 +1894,30 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
             {adhdEnabled ? `Active (${adhdLevel})` : 'Disabled'}
           </span>
         </div>
-        <p class="text-sm text-text-muted">
-          Action-first output style: lead with command/code, numbered bounded steps, one concrete next step under 2 mins, no fluff/preamble.
-        </p>
+        <div class="flex shrink-0 items-center gap-2">
+          {#if adhdEnabled}
+            <button
+              type="button"
+              onclick={() => (adhdExpanded = !adhdExpanded)}
+              class="tap-target p-1.5 -m-1 rounded text-text-muted hover:text-text-main cursor-pointer transition-colors"
+              title={adhdExpanded ? 'Hide settings' : 'Configure'}
+              aria-label={adhdExpanded ? 'Hide ADHD settings' : 'Configure ADHD'}
+              aria-expanded={adhdExpanded}
+            >
+              <span class="material-symbols-outlined text-base transition-transform {adhdExpanded ? 'rotate-180' : ''}">
+                expand_more
+              </span>
+            </button>
+          {/if}
+          <Toggle
+            checked={adhdEnabled}
+            onChange={() => handleToggleADHD(!adhdEnabled)}
+          />
+        </div>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
-        {#if adhdEnabled}
-          <button
-            type="button"
-            onclick={() => (adhdExpanded = !adhdExpanded)}
-            class="px-2.5 py-1 rounded text-xs font-medium border border-border bg-surface-1 hover:bg-surface-2 text-text-main flex items-center gap-1 cursor-pointer transition-colors"
-          >
-            <span>{adhdExpanded ? 'Hide Settings' : 'Configure'}</span>
-            <span class="material-symbols-outlined text-sm transition-transform {adhdExpanded ? 'rotate-180' : ''}">
-              expand_more
-            </span>
-          </button>
-        {/if}
-        <Toggle
-          checked={adhdEnabled}
-          onChange={() => handleToggleADHD(!adhdEnabled)}
-        />
-      </div>
+      <p class="text-sm text-text-muted mt-1">
+        Action-first output style: lead with command/code, numbered bounded steps, one concrete next step under 2 mins, no fluff/preamble.
+      </p>
     </div>
 
     {#if adhdEnabled && adhdExpanded}
@@ -1936,25 +1946,25 @@ f6e5d4c3b2a1   redis:7-alpine "docker-entrypoint.s…"   2 hours ago     Up 2 ho
     {/if}
 
     <!-- 6. Custom system prompt -->
-    <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2 flex-wrap">
+    <div class="pt-4 mt-4 border-t border-border">
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
           <p class="font-medium">Custom system prompt</p>
           <span class="text-xs px-2 py-0.5 rounded font-medium {systemPromptEnabled ? 'bg-success/15 text-success' : 'bg-surface-3 text-text-muted'}">
             {systemPromptEnabled ? 'Active' : 'Disabled'}
           </span>
         </div>
-        <p class="text-sm text-text-muted">
-          Inject your own instruction into every request. The prefix leads the system prompt; the suffix lands after it, where
-          it survives a turn of untrusted content.
-        </p>
+        <div class="flex shrink-0 items-center gap-2">
+          <Toggle
+            checked={systemPromptEnabled}
+            onChange={() => handleToggleSystemPrompt(!systemPromptEnabled)}
+          />
+        </div>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
-        <Toggle
-          checked={systemPromptEnabled}
-          onChange={() => handleToggleSystemPrompt(!systemPromptEnabled)}
-        />
-      </div>
+      <p class="text-sm text-text-muted mt-1">
+        Inject your own instruction into every request. The prefix leads the system prompt; the suffix lands after it, where
+        it survives a turn of untrusted content.
+      </p>
     </div>
 
     {#if systemPromptEnabled}

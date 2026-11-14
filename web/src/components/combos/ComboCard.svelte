@@ -1,18 +1,15 @@
 <script lang="ts">
   import {
-    Check,
-    Copy,
     Eye,
     Gavel,
     Layers,
-    Pencil,
     Sparkles,
-    Trash2,
     Wand2,
     X
   } from 'lucide-svelte'
   import type { Combo } from '../../api/client'
   import Card from '../../lib/ui/Card.svelte'
+  import ComboActionsMenu from './ComboActionsMenu.svelte'
   import {
     BUDGET_CALLS_HELP,
     BUDGET_WINDOW_HELP,
@@ -403,56 +400,17 @@
         {/if}
       </div>
 
-      <!-- Icon buttons with labels -->
-      <div class="grid grid-cols-4 gap-1 sm:flex sm:items-center">
-        <button
-          type="button"
-          onclick={() => onTest?.(combo)}
-          disabled={isTesting || modelsList.length === 0}
-          class="flex flex-col items-center justify-center rounded px-2.5 py-2.5 sm:py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 hover:text-brand-500 cursor-pointer {isTesting ? 'text-brand-500 cursor-wait' : modelsList.length === 0 ? 'opacity-40 cursor-not-allowed text-text-muted' : 'text-text-muted'}"
-          title={modelsList.length === 0 ? 'No models to test' : isTesting ? 'Testing models...' : 'Test all models in combo (Dead/Alive check)'}
-        >
-          <span class="material-symbols-outlined text-[18px] {isTesting ? 'animate-spin' : ''}">
-            {isTesting ? 'progress_activity' : 'science'}
-          </span>
-          <span class="text-[10px] leading-tight">Test</span>
-        </button>
-
-        <button
-          type="button"
-          onclick={() => onCopy(combo.name, combo.id)}
-          class="flex flex-col items-center justify-center rounded px-2.5 py-2.5 sm:py-1 text-text-muted transition-colors hover:bg-black/5 dark:hover:bg-white/5 hover:text-brand-500 cursor-pointer"
-          title="Copy combo name"
-        >
-          {#if copiedId === combo.id}
-            <Check class="w-4 h-4 text-success" />
-            <span class="text-[10px] leading-tight text-success font-medium">Copied</span>
-          {:else}
-            <Copy class="w-4 h-4" />
-            <span class="text-[10px] leading-tight">Copy</span>
-          {/if}
-        </button>
-
-        <button
-          type="button"
-          onclick={() => onEdit(combo)}
-          class="flex flex-col items-center justify-center rounded px-2.5 py-2.5 sm:py-1 text-text-muted transition-colors hover:bg-black/5 dark:hover:bg-white/5 hover:text-brand-500 cursor-pointer"
-          title="Edit"
-        >
-          <Pencil class="w-4 h-4" />
-          <span class="text-[10px] leading-tight">Edit</span>
-        </button>
-
-        <button
-          type="button"
-          onclick={() => onDelete(combo)}
-          class="flex flex-col items-center justify-center rounded px-2.5 py-2.5 sm:py-1 text-red-500 transition-colors hover:bg-red-500/10 cursor-pointer"
-          title="Delete"
-        >
-          <Trash2 class="w-4 h-4" />
-          <span class="text-[10px] leading-tight">Delete</span>
-        </button>
-      </div>
+      <!-- Actions menu: Test/Copy/Edit/Delete merged into one overflow menu -->
+      <ComboActionsMenu
+        {combo}
+        {copiedId}
+        {isTesting}
+        hasModels={modelsList.length > 0}
+        {onTest}
+        {onCopy}
+        {onEdit}
+        {onDelete}
+      />
     </div>
   </div>
 </Card>
