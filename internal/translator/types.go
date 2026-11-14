@@ -152,6 +152,7 @@ type OpenAIRespMsg struct {
 	Role             string                 `json:"role"`
 	Content          string                 `json:"content"`
 	ReasoningContent string                 `json:"reasoning_content"`
+	ReasonResult     string                 `json:"reason_result"`
 	Reasoning        string                 `json:"reasoning"`
 	ToolCalls        []OpenAIToolCallStream `json:"tool_calls"`
 }
@@ -193,6 +194,7 @@ type OpenAIDelta struct {
 	Role             string                  `json:"role"`
 	Content          string                  `json:"content"`
 	ReasoningContent string                  `json:"reasoning_content"`
+	ReasonResult     string                  `json:"reason_result"`
 	Reasoning        string                  `json:"reasoning"`
 	ReasoningDetails []OpenAIReasoningDetail `json:"reasoning_details,omitempty"`
 	ToolCalls        []OpenAIToolCallStream  `json:"tool_calls"`
