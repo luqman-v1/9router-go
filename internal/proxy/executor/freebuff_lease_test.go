@@ -63,7 +63,7 @@ func TestFreebuffLease_TwoClaimersConverge(t *testing.T) {
 	var posts int
 	var mu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != freebuffSessionPath {
+		if r.URL.Path != freebuffAdmissionPath {
 			http.NotFound(w, r)
 			return
 		}
@@ -116,7 +116,7 @@ func TestFreebuffLease_TwoClaimersConverge(t *testing.T) {
 func TestFreebuffLease_FollowerReadsNoPost(t *testing.T) {
 	var posts int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != freebuffSessionPath {
+		if r.URL.Path != freebuffAdmissionPath {
 			http.NotFound(w, r)
 			return
 		}
@@ -259,7 +259,7 @@ func TestForwardFreebuff_UsesLeaseStore(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case freebuffSessionPath:
+		case freebuffAdmissionPath:
 			posts++
 			_, _ = w.Write([]byte(`{"status":"active","instanceId":"inst-ls","expiresAt":"2099-01-01T00:00:00Z"}`))
 		case freebuffRunPath:
