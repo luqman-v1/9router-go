@@ -3,11 +3,13 @@ import type { ProxyPool } from '../../api/client'
 import {
   filterProxyPools,
   getLatencyBadge,
+  getVisibleProxyPoolSelection,
   getStatusVariant,
   hasMeasuredLatency,
   isFailedStatus,
   poolStatusCounts,
-  sortProxyPools
+  sortProxyPools,
+  updateProxyPoolSelection
 } from './helpers'
 
 function pool(over: Partial<ProxyPool> = {}): ProxyPool {
@@ -186,5 +188,88 @@ describe('poolStatusCounts', () => {
 
   test('an empty list counts zero everywhere', () => {
     expect(poolStatusCounts([])).toEqual({ active: 0, passed: 0, failed: 0 })
+  })
+})
+
+describe('updateProxyPoolSelection', () => {
+  const pools = [
+    pool({ id: '1' }),
+    pool({ id: '2' }),
+    pool({ id: '3' }),
+    pool({ id: '4' })
+  ]
+
+  test('a plain click selects just the clicked row', () => {
+    expect(
+      updateProxyPoolSelection(pools, [], { id: '2', checked: true })
+    ).toEqual(['2'])
+  })
+
+  test('a plain click deselects the clicked row without touching others', () => {
+    expect(
+      updateProxyPoolSelection(pools, ['2', '3'], { id: '2', checked: false })
+    ).toEqual(['3'])
+  })
+
+  test('shift-click selects the whole range from the anchor', () => {
+    expect(
+      updateProxyPoolSelection(pools, ['1'], {
+        id: '3',
+        anchorId: '1',
+        checked: true,
+        shiftKey: true
+      })
+    ).toEqual(['1', '2', '3'])
+  })
+
+  test('shift-click ranges run in either direction', () => {
+    expect(
+      updateProxyPoolSelection(pools, [], {
+        id: '1',
+        anchorId: '3',
+        checked: true,
+        shiftKey: true
+      })
+    ).toEqual(['1', '2', '3'])
+  })
+
+  test('shift-click clears the range when the anchor row was checked off', () => {
+    expect(
+      updateProxyPoolSelection(pools, ['1', '2', '3'], {
+        id: '3',
+        anchorId: '1',
+        checked: false,
+        shiftKey: true
+      })
+    ).toEqual([])
+  })
+
+  test('rows hidden by the current filter never join the selection', () => {
+    const visible = [pool({ id: '1' }), pool({ id: '3' })]
+    expect(
+      updateProxyPoolSelection(visible, ['4'], {
+        id: '3',
+        anchorId: '1',
+        checked: true,
+        shiftKey: true
+      })
+    ).toEqual(['1', '3'])
+  })
+
+  test('a shift-click with no anchor row acts on the clicked row alone', () => {
+    expect(
+      updateProxyPoolSelection(pools, ['1'], {
+        id: '3',
+        anchorId: 'gone',
+        checked: true,
+        shiftKey: true
+      })
+    ).toEqual(['1', '3'])
+  })
+})
+
+describe('getVisibleProxyPoolSelection', () => {
+  test('drops selected ids the filter has hidden', () => {
+    expect(getVisibleProxyPoolSelection([pool({ id: '1' }), pool({ id: '3' })], ['1', '2', '3'])).toEqual(['1', '3'])
   })
 })

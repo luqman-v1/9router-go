@@ -659,6 +659,22 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 		ImageURL:   "https://token.sensenova.cn/v1/images/generations",
 	},
+	"sensenova-intl": {
+		// International site host (upstream registry/sensenova-intl.js
+		// transport + imageConfig). China keys answer 401 here and vice versa.
+		BaseURL:    "https://token.sensenova.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		ImageURL:   "https://token.sensenova.ai/v1/images/generations",
+	},
+	"synthetic": {
+		// Upstream registry/synthetic.js transport. /openai/v1/models is public,
+		// so validation must hit /v2/quotas (validate.go case "synthetic"), not
+		// the derived /models URL.
+		BaseURL:    "https://api.synthetic.new/openai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"cloudflare-ai": {
 		BaseURL:        "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1/chat/completions",
 		AuthHeader:     "Authorization",

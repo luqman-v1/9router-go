@@ -48,6 +48,50 @@ export function filterProxyPools(pools: ProxyPool[], filter: PoolStatusFilter): 
   return pools
 }
 
+// Bulk actions must never include rows hidden by the current filter — the
+// selection set can hold ids that the active status filter has taken off the
+// table, and acting on those would surprise the operator who only sees half
+// the list. Port of upstream src/shared/utils/proxyPoolSelection.js
+// getVisibleProxyPoolSelection (12256f72).
+export function getVisibleProxyPoolSelection(pools: ProxyPool[], selectedIds: string[]): string[] {
+  const selected = new Set(selectedIds)
+  return pools.filter((pool) => selected.has(pool.id)).map((pool) => pool.id)
+}
+
+export interface ProxyPoolSelectionChange {
+  id: string
+  anchorId?: string
+  checked: boolean
+  shiftKey?: boolean
+}
+
+// updateProxyPoolSelection applies one checkbox change; with shiftKey and an
+// anchorId it selects (or clears) the whole visible range between anchor and
+// clicked row, mirroring the file-manager convention. The result is ordered by
+// the pools array so re-selecting a range never reshuffles existing ids.
+// Port of upstream src/shared/utils/proxyPoolSelection.js
+// updateProxyPoolSelection (12256f72).
+export function updateProxyPoolSelection(
+  pools: ProxyPool[],
+  selectedIds: string[],
+  change: ProxyPoolSelectionChange
+): string[] {
+  const selected = new Set(getVisibleProxyPoolSelection(pools, selectedIds))
+  const ids = pools.map((pool) => pool.id)
+  const index = ids.indexOf(change.id)
+  if (index === -1) return [...selected]
+  const anchor = change.shiftKey && change.anchorId ? ids.indexOf(change.anchorId) : -1
+  const range =
+    anchor === -1
+      ? [change.id]
+      : ids.slice(Math.min(anchor, index), Math.max(anchor, index) + 1)
+  for (const target of range) {
+    if (change.checked) selected.add(target)
+    else selected.delete(target)
+  }
+  return ids.filter((target) => selected.has(target))
+}
+
 // Every comparator falls back to the same tie-break so equal keys keep a
 // stable, predictable row order instead of whatever sort happened to produce.
 const tieBreakByName = (a: ProxyPool, b: ProxyPool) => (a.name || '').localeCompare(b.name || '')
