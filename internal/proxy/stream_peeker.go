@@ -11,6 +11,28 @@ import (
 // ErrStreamingZeroContent indicates that an upstream SSE stream completed without producing usable content.
 var ErrStreamingZeroContent = errors.New("streaming upstream finished without content")
 
+// ErrStreamingInbandError is returned by Finish when the stream carried a
+// provider-injected error event (e.g. Anthropic `event: error` or OpenAI
+// `data: {"error":...}`). The peeker commits the error frame to the client
+// before returning this error, so the caller must stop the chain and must not
+// fail over to the next combo member.
+var ErrStreamingInbandError = errors.New("streaming upstream carried an in-band error")
+
+// inbandFinishError wraps ErrStreamingInbandError while keeping the provider's
+// message for logging. errors.Is against ErrStreamingInbandError reports true.
+type inbandFinishError struct {
+	msg string
+}
+
+func (e *inbandFinishError) Error() string {
+	if e.msg != "" {
+		return ErrStreamingInbandError.Error() + ": " + e.msg
+	}
+	return ErrStreamingInbandError.Error()
+}
+
+func (e *inbandFinishError) Unwrap() error { return ErrStreamingInbandError }
+
 // HasSSEContent reports whether an SSE chunk carries client-visible assistant content
 // (visible text, reasoning/thinking, or tool calls).
 // Delta role, empty reasoning/thinking, and empty finish frames do not count as content.
@@ -91,13 +113,15 @@ func hasSSEContentLine(s string) bool {
 // StreamContentPeeker buffers initial SSE frames until content is observed.
 type StreamContentPeeker struct {
 	http.ResponseWriter
-	flusher    http.Flusher
-	mu         sync.Mutex
-	committed  bool
-	sawContent bool
-	buf        bytes.Buffer
-	header     http.Header
-	statusCode int
+	flusher        http.Flusher
+	mu             sync.Mutex
+	committed      bool
+	sawContent     bool
+	sawInbandError bool
+	inbandMsg      string
+	buf            bytes.Buffer
+	header         http.Header
+	statusCode     int
 }
 
 func NewStreamContentPeeker(w http.ResponseWriter) *StreamContentPeeker {
@@ -138,10 +162,14 @@ func (p *StreamContentPeeker) Write(b []byte) (int, error) {
 
 	// An in-band error frame is an explicit failure signal; commit and emit it directly
 	// so the caller/client receives the in-band error frame as intended (e.g. TestComboSkipsInbandErrorOnRetry).
-	if _, _, isErr := DetectInbandSSEError(b); isErr || bytes.Contains(b, []byte(`"error":`)) {
-		p.sawContent = true
-		p.commitLocked()
-		return p.ResponseWriter.Write(b)
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		if _, msg, isErr := DetectInbandSSEError(line); isErr {
+			p.sawContent = true
+			p.sawInbandError = true
+			p.inbandMsg = msg
+			p.commitLocked()
+			return p.ResponseWriter.Write(b)
+		}
 	}
 
 	if HasSSEContent(b) {
@@ -179,6 +207,9 @@ func (p *StreamContentPeeker) Finish() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if p.sawInbandError {
+		return &inbandFinishError{msg: p.inbandMsg}
+	}
 	if !p.sawContent {
 		return ErrStreamingZeroContent
 	}

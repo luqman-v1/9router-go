@@ -930,6 +930,10 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 	// noReplay ends the turn after a custom JSON business attempt, whose
 	// operation must never be repeated against another connection or model.
 	var noReplay bool
+	// inbandError records that the current candidate committed a
+	// provider-injected in-band error frame. The chain must stop: no failover
+	// to subsequent models, no retry pass.
+	var inbandError bool
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
 	modelTimedOut := false
@@ -1157,9 +1161,11 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 				if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
 					fwdErr = context.DeadlineExceeded
 				}
-				if streamPeeker != nil && fwdErr == nil {
+				if streamPeeker != nil {
 					if finishErr := streamPeeker.Finish(); finishErr != nil {
-						fwdErr = finishErr
+						if fwdErr == nil || errors.Is(finishErr, internalproxy.ErrStreamingInbandError) {
+							fwdErr = finishErr
+						}
 					}
 				}
 				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
@@ -1171,6 +1177,29 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 					if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
 						log.Warn("combo", "model response timeout, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
 						lastErr = comboTimeoutError()
+						break
+					}
+					if errors.Is(fwdErr, internalproxy.ErrStreamingInbandError) {
+						// A provider-injected in-band error is an explicit
+						// failure signal. The peeker already committed the
+						// error frame to the client, so stop the chain and
+						// do not fail over to the next combo member.
+						log.Warn("combo", "in-band upstream error, stopping chain, no failover",
+							"provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
+						var ue *upstreamError
+						if !errors.As(fwdErr, &ue) {
+							ue = &upstreamError{
+								StatusCode: http.StatusBadGateway,
+								Body:       upstreamErrorBody(fwdErr.Error()),
+							}
+						}
+						h.recordModelCooldown(ctx, modelInfo.Provider, modelInfo.Model, connID, ue)
+						if providers.RetryableStatusCodes[ue.StatusCode] {
+							h.comboLockRetryable(ctx, &excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
+						}
+						retry.note(ue)
+						lastErr = ue
+						inbandError = true
 						break
 					}
 					if errors.Is(fwdErr, internalproxy.ErrStreamingZeroContent) {
@@ -1300,6 +1329,9 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 			if !entrySuccess {
 				h.clearFailedSmartSticky(ctx, entry)
 			}
+			if inbandError {
+				break
+			}
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}
@@ -1316,7 +1348,7 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 
 		// All entries failed. Retry once only if a bounded wait is available;
 		// otherwise fall through to the error response below.
-		if lastErr == nil || ctx.Err() != nil || attempt == 1 || modelTimedOut {
+		if lastErr == nil || ctx.Err() != nil || attempt == 1 || modelTimedOut || inbandError {
 			break
 		}
 	}
@@ -1416,6 +1448,10 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 	// noReplay ends the turn after a custom JSON business attempt, whose
 	// operation must never be repeated against another connection or model.
 	var noReplay bool
+	// inbandError records that the current candidate committed a
+	// provider-injected in-band error frame. The chain must stop: no failover
+	// to subsequent models, no retry pass.
+	var inbandError bool
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
 	modelTimedOut := false
@@ -1601,9 +1637,11 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 				if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
 					fwdErr = context.DeadlineExceeded
 				}
-				if streamPeeker != nil && fwdErr == nil {
+				if streamPeeker != nil {
 					if finishErr := streamPeeker.Finish(); finishErr != nil {
-						fwdErr = finishErr
+						if fwdErr == nil || errors.Is(finishErr, internalproxy.ErrStreamingInbandError) {
+							fwdErr = finishErr
+						}
 					}
 				}
 				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
@@ -1615,6 +1653,29 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 					if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
 						log.Warn("combo", "model response timeout, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
 						lastErr = comboTimeoutError()
+						break
+					}
+					if errors.Is(fwdErr, internalproxy.ErrStreamingInbandError) {
+						// A provider-injected in-band error is an explicit
+						// failure signal. The peeker already committed the
+						// error frame to the client, so stop the chain and
+						// do not fail over to the next combo member.
+						log.Warn("combo", "in-band upstream error, stopping chain, no failover",
+							"provider", modelInfo.Provider, "model", modelInfo.Model, "conn", connID)
+						var ue *upstreamError
+						if !errors.As(fwdErr, &ue) {
+							ue = &upstreamError{
+								StatusCode: http.StatusBadGateway,
+								Body:       upstreamErrorBody(fwdErr.Error()),
+							}
+						}
+						h.recordModelCooldown(ctx, modelInfo.Provider, modelInfo.Model, connID, ue)
+						if providers.RetryableStatusCodes[ue.StatusCode] {
+							h.comboLockRetryable(ctx, &excludeIDs, connID, modelInfo.Provider, modelInfo.Model, ue)
+						}
+						retry.note(ue)
+						lastErr = ue
+						inbandError = true
 						break
 					}
 					if errors.Is(fwdErr, internalproxy.ErrStreamingZeroContent) {
@@ -1735,6 +1796,9 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 			if !entrySuccess {
 				h.clearFailedSmartSticky(ctx, entry)
 			}
+			if inbandError {
+				break
+			}
 			if entrySuccess || ctx.Err() != nil {
 				return
 			}
@@ -1749,7 +1813,7 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 
 		// All entries failed. Retry once only if a bounded wait is available;
 		// otherwise fall through to the error response below.
-		if lastErr == nil || ctx.Err() != nil || attempt == 1 || modelTimedOut {
+		if lastErr == nil || ctx.Err() != nil || attempt == 1 || modelTimedOut || inbandError {
 			break
 		}
 	}
