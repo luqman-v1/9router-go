@@ -20,6 +20,7 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy"
 )
 
 // ProviderNodeResponse is the JSON representation of a provider node with unpacked data fields.
@@ -203,15 +204,12 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 	}
 	// The same URL gate HandleValidateProviderNode applies, and it runs after the
 	// default is filled in so a body that omits baseUrl (which means "the
-	// provider's own endpoint") is not refused for having none. Without it a node
-	// pointing at a cloud-metadata or RFC1918 address is stored and only refused
-	// later, when a chat request dials it — the write succeeds, the operator sees
-	// a working provider row, and the first request fails with a dial error naming
-	// an address the operator never typed. A share link can carry an arbitrary
-	// url=, so this is the one path where an untrusted string reaches the node
-	// table. The socket-level guard still backs it up (chat/resolution.go builds
-	// its client from proxy.NewSafeTransport), but a refusal at write time is the
-	// one the operator can act on.
+	// provider's own endpoint") is not refused for having none. Cloud metadata
+	// is always refused. A private/LAN base URL is refused only while the
+	// operator has switched private networking off
+	// (ALLOW_PRIVATE_NETWORKING=false): with it on — the default — a self-hosted
+	// or LAN provider is a normal upstream, and the socket-level guard in the
+	// dial path is the backstop rather than the write path.
 	if !isValidHTTPURL(req.BaseURL) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Base URL must be an absolute http(s) URL")
 		return
@@ -220,7 +218,7 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Base URL is not allowed")
 		return
 	}
-	if !nodeRequestIsLocal(r) {
+	if !nodeRequestIsLocal(r) && !proxy.IsPrivateNetworkingAllowed() {
 		if err := handlerutil.AssertPublicURL(req.BaseURL); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, "Base URL is not allowed")
 			return
@@ -535,8 +533,11 @@ func (h *DashboardHandler) HandleValidateProviderNode(w http.ResponseWriter, r *
 	}
 
 	// SSRF guard for remote callers; loopback peers keep self-hosted nodes
-	// (e.g. ollama-local) reachable, mirroring upstream isLocalRequest.
-	if !nodeRequestIsLocal(r) {
+	// (e.g. ollama-local) reachable, mirroring upstream isLocalRequest. The
+	// guard is skipped when the operator has private networking on (the
+	// default) — a LAN/self-hosted endpoint is a normal upstream then, and the
+	// dial-time socket guard is the backstop rather than the write path.
+	if !nodeRequestIsLocal(r) && !proxy.IsPrivateNetworkingAllowed() {
 		if err := handlerutil.AssertPublicURL(baseURL); err != nil {
 			writeNodeValidation(w, map[string]any{"valid": false, "error": "URL not allowed"})
 			return
