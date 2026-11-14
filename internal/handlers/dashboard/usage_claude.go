@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"9router/proxy/internal/handlers/chat"
 )
 
 // Claude usage fetcher — port of open-sse/services/usage/claude.js
@@ -28,8 +30,11 @@ var claudeUsageURL = "https://api.anthropic.com/api/oauth/usage"
 const (
 	// The OAuth usage endpoint is only honoured for Claude Code's own client
 	// identity; the beta flag and UA are what the CLI sends.
-	claudeUsageBeta      = "oauth-2025-04-20"
-	claudeUsageVersion   = "2023-06-01"
+	claudeUsageBeta    = "oauth-2025-04-20"
+	claudeUsageVersion = "2023-06-01"
+	// Base spelling; the version is refreshed per fetch through
+	// chat.ApplyClaudeCLIVersionHeader (upstream applyClaudeCliVersion),
+	// so a stale literal here never drifts from the chat lane's fingerprint.
 	claudeUsageUserAgent = "claude-cli/2.1.322 (external, cli)"
 
 	// A successful read is reused for this long. The tracker polls every visible
@@ -117,7 +122,7 @@ func fetchClaudeUsage(ctx context.Context, accessToken string) usageResult {
 		"Accept":            "application/json",
 		"anthropic-beta":    claudeUsageBeta,
 		"anthropic-version": claudeUsageVersion,
-		"User-Agent":        claudeUsageUserAgent,
+		"User-Agent":        chat.ApplyClaudeCLIVersionHeader(claudeUsageUserAgent),
 	}, nil)
 	if err != nil {
 		return claudeUsageFallback(entry, fmt.Sprintf("Claude connected. Unable to fetch usage: %v", err))

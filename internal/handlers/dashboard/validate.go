@@ -530,6 +530,40 @@ func validateProviderKey(ctx context.Context, provider string, cfg providers.Pro
 		return validateOutcome{valid: valid, supported: true, message: message}
 	case "nous":
 		return validateNous(ctx, apiKey)
+	case "fal-ai":
+		// Match saved-connection tests: check auth against the model catalog
+		// without queueing a paid image generation (upstream 0cf07ccf).
+		// fal's auth header is "Key <key>", not the registry's bearer scheme.
+		status, _, err := validateProbeDo(ctx, http.MethodGet,
+			"https://api.fal.ai/v1/models?limit=1",
+			map[string]string{"Authorization": "Key " + apiKey}, nil)
+		if err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return validateOutcome{supported: true, message: "Invalid API key"}
+		}
+		if status < 200 || status >= 300 {
+			return validateOutcome{supported: true, message: fmt.Sprintf("Unable to verify API key (Fal returned %d)", status)}
+		}
+		return validateOutcome{valid: true, supported: true}
+	case "synthetic":
+		// /openai/v1/models is public and answers 200 for any Bearer value, so
+		// it cannot tell a bad key from a good one; quotas can (upstream
+		// registry/synthetic.js validateUrl, wired by 402230ed).
+		status, _, err := validateProbeDo(ctx, http.MethodGet,
+			"https://api.synthetic.new/v2/quotas",
+			map[string]string{"Authorization": "Bearer " + apiKey, "Accept": "application/json"}, nil)
+		if err != nil {
+			return validateOutcome{supported: true, message: err.Error()}
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return validateOutcome{supported: true, message: "Invalid API key"}
+		}
+		if status < 200 || status >= 300 {
+			return validateOutcome{supported: true, message: fmt.Sprintf("Unable to verify API key (Synthetic returned %d)", status)}
+		}
+		return validateOutcome{valid: true, supported: true}
 	}
 
 	if isAnthropicProbe(cfg) {

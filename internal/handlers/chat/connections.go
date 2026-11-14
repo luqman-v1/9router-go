@@ -858,7 +858,7 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		cloned.ProxyPoolID = connData.ProxyPoolID
 		baseCfg = &cloned
 	}
-	return h.applyProviderOverrides(provider, h.withClineIdentity(provider, baseCfg)), nil
+	return h.applyProviderOverrides(provider, h.withClaudeIdentity(provider, h.withClineIdentity(provider, baseCfg))), nil
 }
 
 // resolveEdgeRelay returns the edge relay an assigned pool puts in front of a

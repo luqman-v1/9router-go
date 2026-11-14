@@ -21,6 +21,7 @@
     isFailedStatus,
     poolStatusCounts,
     sortProxyPools,
+    updateProxyPoolSelection,
     type PoolSortOption,
     type PoolStatusFilter
   } from './proxypools/helpers'
@@ -80,6 +81,12 @@
   let deploying = $state(false)
   let testingId = $state<string | null>(null)
   let selectedIds = $state<string[]>([])
+  // Anchor for shift-click range selection: the last row clicked without
+  // shift (upstream proxyPoolSelection.js anchorId).
+  let lastSelectedId = $state<string | null>(null)
+  // MouseEvent.shiftKey stashed by the checkbox's onclick for the change
+  // handler that fires in the same interaction (change carries no modifiers).
+  let lastShiftKey = $state(false)
   let healthChecking = $state(false)
   let healthProgress = $state({ current: 0, total: 0 })
   let bulkBusy = $state(false)
@@ -162,10 +169,17 @@
     displayedPools.length > 0 && displayedPools.every((p) => selectedIds.includes(p.id))
   )
 
-  function toggleSelect(id: string) {
-    selectedIds = selectedIds.includes(id)
-      ? selectedIds.filter((x) => x !== id)
-      : [...selectedIds, id]
+  function toggleSelect(id: string, shiftKey = false) {
+    selectedIds = updateProxyPoolSelection(proxyPools, selectedIds, {
+      id,
+      // The anchor is the last row clicked without shift; shift-clicks
+      // themselves never move it, so extend-from-anchor keeps working across
+      // consecutive shift-clicks.
+      anchorId: shiftKey ? lastSelectedId ?? undefined : id,
+      checked: !selectedIds.includes(id) || shiftKey,
+      shiftKey,
+    })
+    if (!shiftKey) lastSelectedId = id
   }
 
   function toggleSelectAll() {
@@ -1027,7 +1041,16 @@
                 <input
                   type="checkbox"
                   checked={selectedIds.includes(pool.id)}
-                  onchange={() => toggleSelect(pool.id)}
+                  onclick={(e) => {
+                    // shiftKey lives on MouseEvent; change does not carry it.
+                    // Stash it here and read it from the change handler that
+                    // fires next for the same interaction.
+                    lastShiftKey = e.shiftKey
+                  }}
+                  onchange={() => {
+                    toggleSelect(pool.id, lastShiftKey)
+                    lastShiftKey = false
+                  }}
                   class="mt-1 size-4 shrink-0 rounded border-black/20 dark:border-white/20 cursor-pointer"
                 />
                 <div class="min-w-0 flex-1">

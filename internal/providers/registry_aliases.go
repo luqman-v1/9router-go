@@ -78,6 +78,7 @@ var RegistryAliases = map[string]string{
 	"runwayml":            "runway",
 	"sambanova":           "samba",
 	"stability-ai":        "stability",
+	"synthetic":           "syn",
 	"tencent":             "hunyuan",
 	"tinyfish":            "tinyfish",
 	"v1m":                 "v1m",

@@ -111,6 +111,8 @@ var ProviderAliasMap = map[string]string{
 	"qdcn":           "qoder-cn",
 	"runway":         "runwayml",
 	"stability":      "stability-ai",
+	"syn":            "synthetic",
+	"synthetic-new":  "synthetic",
 	"tg":             "together",
 	"vali":           "volcengine-ark",
 	"vercel":         "vercel-ai-gateway",

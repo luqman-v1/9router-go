@@ -109,6 +109,8 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 		return fetchZcodeUsage(ctx, firstNonEmptyStr(accessToken, apiKey), psdStr(psd, "deviceId")), true
 	case "glm", "glm-cn":
 		return fetchGLMUsage(ctx, provider, firstNonEmptyStr(apiKey, accessToken)), true
+	case "synthetic":
+		return fetchSyntheticUsage(ctx, apiKey), true
 	default:
 		return usageResult{}, false
 	}
@@ -422,6 +424,58 @@ func firstNonEmptyAny(vals ...any) any {
 		}
 	}
 	return nil
+}
+
+// ---------- synthetic: subscription quota on GET /v2/quotas ----------
+
+// fetchSyntheticUsage ports upstream open-sse/services/usage/synthetic.js:
+// GET https://api.synthetic.new/v2/quotas with Bearer auth; the call itself
+// does not count against the quota. Response shape:
+// { subscription: { limit, requests, renewsAt } }.
+func fetchSyntheticUsage(ctx context.Context, apiKey string) usageResult {
+	if strings.TrimSpace(apiKey) == "" {
+		return usageResult{message: "Synthetic API key not available. Add a key to view usage."}
+	}
+	status, _, out, err := usageGet(ctx, "https://api.synthetic.new/v2/quotas", map[string]string{
+		"Authorization": "Bearer " + strings.TrimSpace(apiKey),
+		"Accept":        "application/json",
+	})
+	if err != nil {
+		return usageResult{plan: "Synthetic", message: fmt.Sprintf("Synthetic error: %v", err)}
+	}
+	if status == 401 || status == 403 {
+		return usageResult{plan: "Synthetic", message: "Synthetic authentication failed. Check the API key."}
+	}
+	if status < 200 || status >= 300 {
+		return usageResult{plan: "Synthetic", message: fmt.Sprintf("Synthetic usage API error (%d)", status)}
+	}
+	data := usageJSON(out)
+	if data == nil {
+		return usageResult{plan: "Synthetic", message: "Synthetic returned no subscription quota."}
+	}
+	sub, _ := data["subscription"].(map[string]any)
+	if sub == nil {
+		return usageResult{plan: "Synthetic", message: "Synthetic returned no subscription quota."}
+	}
+	total := usageNum(sub["limit"], 0)
+	if total <= 0 {
+		return usageResult{plan: "Synthetic", message: "No Synthetic subscription quota found for this key."}
+	}
+	used := math.Max(0, usageNum(sub["requests"], 0))
+	remaining := math.Max(0, total-used)
+	return usageResult{plan: "Synthetic", quotas: map[string]any{
+		"Requests": map[string]any{
+			"name":             "Subscription requests",
+			"used":             used,
+			"total":            total,
+			"remaining":        remaining,
+			"percentage":       math.Round(used / total * 100),
+			"colorPercentage":  math.Round(remaining / total * 100),
+			"percentageIsUsed": true,
+			"unlimited":        false,
+			"resetAt":          usageResetTime(sub["renewsAt"]),
+		},
+	}}
 }
 
 // ---------- groq: rate-limit headers on GET /openai/v1/models ----------

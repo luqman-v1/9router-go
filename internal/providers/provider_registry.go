@@ -1630,6 +1630,39 @@ var ProviderRegistry = map[string]ProviderMeta{
 		Website:      "https://token.sensenova.cn",
 		Notice:       &Notice{APIKeyURL: "https://token.sensenova.cn"},
 	},
+	"sensenova-intl": {
+		// International platform (platform.sensenova.ai). Same OpenAI-compatible
+		// wire as the China entry, different host: keys are per-site, and
+		// token.sensenova.cn rejects international keys (401 "Forbidden"), so each
+		// site is its own provider with its own model catalog — same split as
+		// alicode/alicode-intl (upstream registry/sensenova-intl.js, 14b27dc7).
+		ID:           "sensenova-intl",
+		Name:         "SenseNova (Intl)",
+		Alias:        "sensenova-intl",
+		Category:     CategoryAPIKey,
+		Color:        "#5B5CE2",
+		Icon:         "auto_awesome",
+		ServiceKinds: []string{"llm", "image", "imageToText"},
+		Website:      "https://platform.sensenova.ai",
+		Notice:       &Notice{APIKeyURL: "https://platform.sensenova.ai"},
+	},
+	"synthetic": {
+		// synthetic.new — OpenAI-compatible inference over Hugging Face-hosted
+		// open models (upstream registry/synthetic.js, ebe398a9). The chat base
+		// is /openai/v1; key validation and the quota tracker both read
+		// /v2/quotas, because /openai/v1/models is public and answers 200 for
+		// any Bearer value.
+		ID:           "synthetic",
+		Name:         "Synthetic",
+		Alias:        "synthetic",
+		Category:     CategoryAPIKey,
+		AuthType:     "apikey",
+		Color:        "#111827",
+		Icon:         "hub",
+		ServiceKinds: []string{"llm"},
+		Website:      "https://synthetic.new",
+		Notice:       &Notice{APIKeyURL: "https://synthetic.new/user-settings/api"},
+	},
 	"siliconflow": {
 		ID:           "siliconflow",
 		Name:         "SiliconFlow",
