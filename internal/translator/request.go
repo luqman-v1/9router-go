@@ -567,6 +567,52 @@ func sanitizeClaudeToolIDs(messages []any) bool {
 	return changed
 }
 
+// dropForeignBlockKeys removes `caller` from content blocks Anthropic does not
+// accept it on. `caller` is agent attribution and only the tool_use block
+// defines it; on a text block (or a text nested in a tool_result) the API
+// answers "messages.<n>.content.<m>.text.caller: Extra inputs are not
+// permitted" and refuses the whole request, so the turn poisons every later
+// one. tool_use keeps it — the field is valid there.
+func dropForeignBlockKeys(messages []any) bool {
+	changed := false
+	for _, mRaw := range messages {
+		msg, ok := mRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if scrubBlockCallers(msg["content"]) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+// scrubBlockCallers walks one message's content array, including the blocks
+// nested in a tool_result, and reports whether a caller was removed.
+func scrubBlockCallers(content any) bool {
+	blocks, ok := content.([]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	for _, bRaw := range blocks {
+		block, ok := bRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if bType, _ := block["type"].(string); bType != "tool_use" {
+			if _, has := block["caller"]; has {
+				delete(block, "caller")
+				changed = true
+			}
+		}
+		if scrubBlockCallers(block["content"]) {
+			changed = true
+		}
+	}
+	return changed
+}
+
 func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -703,6 +749,9 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	}
 
 	if sanitizeClaudeToolIDs(messagesRaw) {
+		changed = true
+	}
+	if dropForeignBlockKeys(messagesRaw) {
 		changed = true
 	}
 	if !changed {
