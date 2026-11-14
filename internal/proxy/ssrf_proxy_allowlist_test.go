@@ -24,6 +24,16 @@ import (
 // These tests cover both halves: the guard must still refuse a private *target*,
 // and must stop refusing the proxy itself.
 
+// strictPrivateNetworking pins ALLOW_PRIVATE_NETWORKING=false for one test.
+// The guard is default-on for the operator's own LAN/self-hosted upstreams, so
+// a test that exercises the guard itself has to switch it back off explicitly;
+// otherwise the dials under test are permitted and the assertions about
+// ErrSSRFBlocked are meaningless.
+func strictPrivateNetworking(t *testing.T) {
+	t.Helper()
+	t.Setenv("ALLOW_PRIVATE_NETWORKING", "false")
+}
+
 // withProxyResolver swaps the environment proxy resolution for one test. The
 // stdlib caches the process environment on first use, so the real function
 // cannot be driven from a test that also has to stay independent of what the
@@ -87,6 +97,7 @@ func proxyDialerFor(tr *http.Transport) func(context.Context, string, string) (n
 }
 
 func TestSafeDialerStillBlocksPrivateTargets(t *testing.T) {
+	strictPrivateNetworking(t)
 	tests := []struct {
 		name    string
 		address string
@@ -113,6 +124,7 @@ func TestSafeDialerStillBlocksPrivateTargets(t *testing.T) {
 }
 
 func TestSafeDialerAllowsTheOperatorsProxyAndNothingElse(t *testing.T) {
+	strictPrivateNetworking(t)
 	withProxyResolver(t, "")
 	dialer := newSafeDialerForProxy(newProxyAllowlist("127.0.0.1:8888"))
 
@@ -141,6 +153,7 @@ func TestSafeDialerAllowsTheOperatorsProxyAndNothingElse(t *testing.T) {
 // reaches ControlContext, so the guard compares the resolved IP against what
 // the configured proxy name answers with (see withProxyNameResolution).
 func TestSafeDialerMatchesAProxyWrittenAsALiteralAddress(t *testing.T) {
+	strictPrivateNetworking(t)
 	withProxyResolver(t, "")
 
 	t.Run("a portless proxy URL exempts its host on any port", func(t *testing.T) {
@@ -191,6 +204,7 @@ func TestSafeDialerMatchesAProxyWrittenAsALiteralAddress(t *testing.T) {
 // The reported case: the proxy comes from the environment, and the environment
 // names a loopback address.
 func TestAmbientEnvironmentProxyIsExemptFromTheGuard(t *testing.T) {
+	strictPrivateNetworking(t)
 	withProxyResolver(t, "http://127.0.0.1:8888")
 
 	dialer := NewSafeDialer()
@@ -204,6 +218,7 @@ func TestAmbientEnvironmentProxyIsExemptFromTheGuard(t *testing.T) {
 }
 
 func TestAmbientEnvironmentWithoutAProxyExemptsNothing(t *testing.T) {
+	strictPrivateNetworking(t)
 	withProxyResolver(t, "")
 
 	if allow := ambientProxyAllowlist(); allow != nil {
@@ -252,6 +267,7 @@ func TestRequestThroughALoopbackProxyReachesIt(t *testing.T) {
 // transport the callers actually build, rather than the dialer in isolation: the
 // proxy's own listener must be reachable through tr.DialContext.
 func TestSafeTransportForProxyWiresTheExemptionIntoTheDialContext(t *testing.T) {
+	strictPrivateNetworking(t)
 	fakeProxy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer fakeProxy.Close()
 

@@ -84,8 +84,9 @@ completion and its answer is served. Upstream error statuses are passed
 through. An empty reply is served as the answer rather than treated as an empty
 upstream. Separate client requests still call the endpoint independently.
 
-Like every compatible node, a private or loopback endpoint is refused by the
-gateway's SSRF guard unless `ALLOW_PRIVATE_NETWORKING=true` is set.
+Like every compatible node, a private or loopback endpoint is allowed while
+private networking is on (the default); set `ALLOW_PRIVATE_NETWORKING=false`
+to restore the strict refusal.
 
 ## Provider configuration API
 

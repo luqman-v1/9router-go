@@ -85,13 +85,26 @@ func IsPrivateIP(ip net.IP) bool {
 }
 
 // IsPrivateNetworkingAllowed reports whether connections to private/local IPs
-// are globally permitted via ALLOW_PRIVATE_NETWORKING=true/1.
+// are globally permitted via ALLOW_PRIVATE_NETWORKING.
+//
+// It defaults to TRUE: a gateway is normally run by an operator who controls
+// its upstreams, and self-hosted/LAN providers (ollama on loopback, a second
+// gateway on the LAN, a Tailscale peer) are a normal deployment rather than an
+// anomaly. Set ALLOW_PRIVATE_NETWORKING=false to restore the strict default,
+// which refuses private/reserved targets unless a request carries the
+// per-connection opt-in (WithAllowPrivateNetworking).
 func IsPrivateNetworkingAllowed() bool {
-	v := strings.TrimSpace(os.Getenv("ALLOW_PRIVATE_NETWORKING"))
-	if b, err := strconv.ParseBool(v); err == nil {
-		return b
+	v, ok := os.LookupEnv("ALLOW_PRIVATE_NETWORKING")
+	if !ok {
+		return true
 	}
-	return false
+	b, err := strconv.ParseBool(strings.TrimSpace(v))
+	if err != nil {
+		// An unparseable value is a configuration error; fail closed rather
+		// than silently re-enabling private dials.
+		return false
+	}
+	return b
 }
 
 // NewSafeDialer returns a *net.Dialer equipped with an active socket ControlContext

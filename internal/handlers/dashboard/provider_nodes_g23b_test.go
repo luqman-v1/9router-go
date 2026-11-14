@@ -134,9 +134,9 @@ func TestKnownProviders_MMFIsHidden(t *testing.T) {
 
 // TestValidateProviderNode_SpecAcceptanceMatrix walks the acceptance matrix in
 // §6 of the G23b spec one row at a time. The rows that already had a test above
-// are the metadata carve-out; these are the remaining two: a local caller may
-// point a node at a LAN address, and no caller may use a scheme outside
-// http/https.
+// are the metadata carve-out; these are the remaining two: a caller may point a
+// node at a LAN address while private networking is on (the default), and no
+// caller may use a scheme outside http/https.
 func TestValidateProviderNode_SpecAcceptanceMatrix(t *testing.T) {
 	t.Run("local_caller_allows_lan_private_ip", func(t *testing.T) {
 		for _, target := range []string{
@@ -154,7 +154,24 @@ func TestValidateProviderNode_SpecAcceptanceMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("remote_caller_blocked_from_lan_private_ip", func(t *testing.T) {
+	t.Run("remote_caller_allows_lan_private_ip_by_default", func(t *testing.T) {
+		for _, target := range []string{
+			"http://192.168.1.50:11434",
+			"http://10.0.0.7:8000/v1",
+		} {
+			calls := staticProbeStub(t, http.StatusOK)
+			rec, out := postValidateNode(t, `{"baseUrl":"`+target+`","apiKey":"k","type":"openai-compatible"}`, false)
+			if !nodeValid(t, out) {
+				t.Errorf("remote caller refused LAN node %s: %s", target, rec.Body.String())
+			}
+			if len(*calls) == 0 {
+				t.Errorf("no probe ran for LAN node %s", target)
+			}
+		}
+	})
+
+	t.Run("strict_mode_blocks_lan_private_ip_for_remote_caller", func(t *testing.T) {
+		t.Setenv("ALLOW_PRIVATE_NETWORKING", "false")
 		for _, target := range []string{
 			"http://192.168.1.50:11434",
 			"http://10.0.0.7:8000/v1",
@@ -162,10 +179,10 @@ func TestValidateProviderNode_SpecAcceptanceMatrix(t *testing.T) {
 			calls := staticProbeStub(t, http.StatusOK)
 			_, out := postValidateNode(t, `{"baseUrl":"`+target+`","apiKey":"k","type":"openai-compatible"}`, false)
 			if got := nodeOut(t, out, "error"); got != "URL not allowed" {
-				t.Errorf("remote caller reached LAN node %s: error = %q", target, got)
+				t.Errorf("strict mode: remote caller reached LAN node %s: error = %q", target, got)
 			}
 			if len(*calls) != 0 {
-				t.Errorf("the gateway probed LAN node %s for a remote caller", target)
+				t.Errorf("strict mode: the gateway probed LAN node %s for a remote caller", target)
 			}
 		}
 	})
