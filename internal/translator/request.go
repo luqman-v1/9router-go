@@ -387,6 +387,122 @@ func claudeDisablesParallelToolUse(choiceRaw jsontext.Value) bool {
 	return choiceObj.DisableParallelToolUse
 }
 
+// ExtractSystemMessages promotes in-body `role: "system"` and `role:
+// "developer"` turns into the top-level `system` parameter of a Claude
+// Messages request. Anthropic rejects system-role messages inside
+// messages[] with HTTP 400 ("role: 'system' not supported in messages").
+//
+// Extracted text is appended to any existing top-level system prompt,
+// separated by a newline, and the source turns are removed from messages[].
+// A body without system/developer turns is returned byte-identical.
+func ExtractSystemMessages(body []byte) []byte {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body
+	}
+	messages, ok := req["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		return body
+	}
+
+	var parts []string
+	if sys := systemText(req["system"]); sys != "" {
+		parts = append(parts, sys)
+	}
+
+	kept := make([]any, 0, len(messages))
+	changed := false
+	for _, mRaw := range messages {
+		msg, ok := mRaw.(map[string]any)
+		if !ok {
+			kept = append(kept, mRaw)
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if _, isSystem := systemRoles[role]; isSystem {
+			changed = true
+			if text := messageTextContent(msg["content"]); text != "" {
+				parts = append(parts, text)
+			}
+			continue
+		}
+		kept = append(kept, msg)
+	}
+	if !changed {
+		return body
+	}
+
+	if len(parts) > 0 {
+		req["system"] = strings.Join(parts, "\n")
+	} else {
+		delete(req, "system")
+	}
+	req["messages"] = kept
+
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// systemRoles are the OpenAI message roles Anthropic forbids inside
+// messages[] of a Claude Messages request.
+var systemRoles = map[string]struct{}{"system": {}, "developer": {}}
+
+// systemText returns the text of a top-level `system` value: a bare string
+// or an array of {type,text} blocks joined by newlines.
+func systemText(system any) string {
+	switch s := system.(type) {
+	case string:
+		return strings.TrimSpace(s)
+	case []any:
+		var parts []string
+		for _, bRaw := range s {
+			b, ok := bRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := b["type"].(string); t != "" && t != "text" {
+				continue
+			}
+			if text, _ := b["text"].(string); strings.TrimSpace(text) != "" {
+				parts = append(parts, strings.TrimSpace(text))
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
+}
+
+// messageTextContent returns the text content of one message: a bare
+// string, or the text blocks of a content array joined by newlines.
+func messageTextContent(content any) string {
+	switch c := content.(type) {
+	case string:
+		return strings.TrimSpace(c)
+	case []any:
+		var parts []string
+		for _, bRaw := range c {
+			b, ok := bRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := b["type"].(string); t != "" && t != "text" {
+				continue
+			}
+			if text, _ := b["text"].(string); strings.TrimSpace(text) != "" {
+				parts = append(parts, strings.TrimSpace(text))
+			}
+		}
+		return strings.Join(parts, "\n")
+	case map[string]any:
+		text, _ := c["text"].(string)
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
+
 // TranslateClaudeToOpenAI converts a Claude request payload to an OpenAI request payload.
 func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
 	var creq ClaudeRequest
