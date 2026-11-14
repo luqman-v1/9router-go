@@ -249,9 +249,9 @@ func TestStripContentTypes(t *testing.T) {
 // entry point that translates Claude tool_choice into the OpenAI dialect.
 func TestFilterToOpenAIFormat_ToolChoiceNone(t *testing.T) {
 	tests := []struct {
-		name  string
+		name   string
 		choice any
-		want  any
+		want   any
 	}{
 		{"none object becomes none string", map[string]any{"type": "none"}, "none"},
 		{"auto passes through", map[string]any{"type": "auto"}, "auto"},
@@ -265,7 +265,7 @@ func TestFilterToOpenAIFormat_ToolChoiceNone(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			out := filterBody(t, map[string]any{
-				"messages":  []any{map[string]any{"role": "user", "content": "hi"}},
+				"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
 				"tool_choice": tt.choice,
 			})
 			enc := json.Deterministic(true)

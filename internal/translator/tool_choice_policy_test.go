@@ -151,9 +151,9 @@ func TestTranslateClaudeToOpenAI_NoToolChoiceAddsNoPolicy(t *testing.T) {
 // TranslateClaudeToOpenAI, including "none" which forbids tool calls.
 func TestTranslateClaudeToOpenAI_ToolChoice(t *testing.T) {
 	tests := []struct {
-		name  string
+		name   string
 		choice string
-		want  any
+		want   any
 	}{
 		{"none", `{"type":"none"}`, "none"},
 		{"auto", `{"type":"auto"}`, "auto"},
