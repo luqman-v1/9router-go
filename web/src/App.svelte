@@ -533,7 +533,12 @@
         onOpenSearch={() => (isPaletteOpen = true)}
       />
 
-      <main class="flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-10">
+      <!-- Canvas padding steps down on a phone: p-6/p-10 is a desktop
+           register, a 390px viewport gets half of it, and the bottom inset
+           keeps the iOS home indicator off the last control. -->
+      <main
+        class="flex-1 overflow-y-auto custom-scrollbar px-4 py-4 sm:p-6 lg:p-10 pb-safe"
+      >
         <div class="max-w-7xl mx-auto">
           {#if isLoading}
             <div class="flex flex-col items-center justify-center h-[70vh] gap-3 text-text-muted">

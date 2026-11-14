@@ -577,7 +577,7 @@
           type="button"
           onclick={() => (searchQuery = '')}
           aria-label="Clear search"
-          class="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-text-muted transition-colors hover:text-text-main"
+          class="absolute right-2 top-1/2 -translate-y-1/2 rounded p-2.5 sm:p-1 text-text-muted transition-colors hover:text-text-main"
         >
           <X class="h-4 w-4" />
         </button>

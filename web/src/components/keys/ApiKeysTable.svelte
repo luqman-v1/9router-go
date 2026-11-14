@@ -693,7 +693,7 @@
             type="button"
             disabled={isBatchBusy(batchBusy, selectedIds)}
             onclick={() => runBatchAction('enabled', (id) => api.setApiKeyActive(id, true))}
-            class="flex items-center gap-1 rounded-lg border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-600 transition-colors hover:bg-emerald-500/10 disabled:opacity-50 dark:text-emerald-400"
+            class="flex items-center gap-1 rounded-lg border border-emerald-500/30 px-2.5 py-2 sm:py-1 text-[11px] text-emerald-600 transition-colors hover:bg-emerald-500/10 disabled:opacity-50 dark:text-emerald-400"
           >
             <span class="material-symbols-outlined text-[14px]">check_circle</span>
             Enable
@@ -702,7 +702,7 @@
             type="button"
             disabled={isBatchBusy(batchBusy, selectedIds)}
             onclick={() => runBatchAction('paused', (id) => api.setApiKeyActive(id, false))}
-            class="flex items-center gap-1 rounded-lg border border-amber-500/30 px-2 py-1 text-[11px] text-amber-600 transition-colors hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-400"
+            class="flex items-center gap-1 rounded-lg border border-amber-500/30 px-2.5 py-2 sm:py-1 text-[11px] text-amber-600 transition-colors hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-400"
           >
             <span class="material-symbols-outlined text-[14px]">pause</span>
             Pause
@@ -711,7 +711,7 @@
             type="button"
             disabled={isBatchBusy(batchBusy, selectedIds)}
             onclick={batchDelete}
-            class="flex items-center gap-1 rounded-lg border border-red-500/30 px-2 py-1 text-[11px] text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+            class="flex items-center gap-1 rounded-lg border border-red-500/30 px-2.5 py-2 sm:py-1 text-[11px] text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
           >
             <Trash2 class="w-3 h-3" />
             Delete
@@ -828,14 +828,14 @@
       <div
         class="flex items-center gap-1.5 min-w-0 bg-bg border border-border rounded-lg pl-2.5 pr-1 py-1 {chipWidth ? '' : 'w-full'}" style={chipWidth ? `width:${chipWidth}` : ''}
       >
-        <code class="font-mono text-[11px] text-text-main truncate select-all min-w-0 flex-1">
+        <code class="font-mono text-[11px] text-text-main break-all sm:truncate select-all min-w-0 flex-1">
           {shown ? renderedKey(k) : maskSecret(renderedKey(k))}
         </code>
         {#if isRevealable(k)}
           <button
             type="button"
             onclick={() => toggleShow(k.id)}
-            class="shrink-0 ml-auto p-1 rounded-md text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
+            class="shrink-0 ml-auto p-2.5 sm:p-1 rounded-md text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
             aria-label={shown ? `Hide key ${keyLabel(k)}` : `Show key ${keyLabel(k)}`}
             title={shown ? 'Hide key' : 'Show key'}
           >
@@ -849,7 +849,7 @@
         <button
           type="button"
           onclick={() => handleCopy(k)}
-          class="shrink-0 p-1 rounded-md text-text-muted hover:text-brand-500 hover:bg-surface-2 transition-colors cursor-pointer"
+          class="shrink-0 p-2.5 sm:p-1 rounded-md text-text-muted hover:text-brand-500 hover:bg-surface-2 transition-colors cursor-pointer"
           aria-label={`Copy key ${keyLabel(k)}`}
           title="Copy key"
         >

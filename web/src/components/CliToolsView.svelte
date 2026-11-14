@@ -736,10 +736,14 @@
         </div>
 
         <div class="flex items-center justify-between pt-2 border-t border-border/40 text-xs">
-          <span class="text-[11px] text-brand-500 font-semibold flex items-center gap-1">
+          <button
+            type="button"
+            onclick={() => (selectedTool = tool)}
+            class="inline-flex h-10 sm:h-7 items-center gap-1.5 px-3 rounded-lg border border-brand-500/40 bg-brand-500/10 text-[11px] font-semibold text-brand-600 transition-colors hover:bg-brand-500/20 dark:text-brand-400 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50"
+          >
             <span>Configure</span>
             <ExternalLink class="w-3 h-3" />
-          </span>
+          </button>
 
           <span class="text-[10px] font-mono text-text-subtle">
             {tool.configType === 'env' ? 'Environment' : tool.configType === 'mitm' ? 'Transparent' : 'Settings UI'}

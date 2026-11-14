@@ -107,6 +107,25 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Tap target: brings a control's hit area to the 44x44px thumb minimum
+ * without changing its drawn size (R-03, antislop-layoutmobile). An icon
+ * button at 16px is pixel-accurate for a cursor, not for a thumb. */
+@utility tap-target {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: -8px;
+  }
+}
+
+/* iOS safe areas: the dashboard is a PWA and can run fullscreen where the
+ * home-indicator overlaps content. Padding, not margin, so the background
+ * colour extends behind the inset. */
+@utility pb-safe {
+  padding-bottom: max(env(safe-area-inset-bottom), 0.5rem);
+}
+
 /* Upstream landing grid background */
 .landing-grid {
   background-image: linear-gradient(

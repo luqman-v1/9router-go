@@ -45,7 +45,10 @@
   }
 
   const sizes: Record<Size, string> = {
-    sm: 'h-7 px-3 text-xs rounded-[8px]',
+    // sm sits at 40px on a phone (thumb minimum is 44 with the visual button
+    // plus its shadow/rounding budget) and keeps the compact desktop register
+    // from sm: up; h-7 read as a chip, not a control, on a 390px viewport.
+    sm: 'h-10 sm:h-7 px-3 text-xs rounded-[8px]',
     md: 'h-9 px-4 text-sm rounded-[10px]',
     lg: 'h-11 px-6 text-sm rounded-[10px]',
   }
