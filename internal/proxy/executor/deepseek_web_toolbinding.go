@@ -148,7 +148,7 @@ func deepSeekWithoutNonce(args map[string]any) (string, bool) {
 		}
 		trimmed[key] = value
 	}
-	encoded, err := json.Marshal(trimmed)
+	encoded, err := marshalStable(trimmed)
 	if err != nil {
 		return "", false
 	}

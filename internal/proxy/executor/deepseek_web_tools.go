@@ -156,7 +156,7 @@ func deepSeekBoundSchemaText(raw jsontext.Value, nonce ...string) string {
 	slices.Sort(names)
 	schema["properties"] = properties
 	schema["required"] = names
-	encoded, err := json.Marshal(schema)
+	encoded, err := marshalStable(schema)
 	if err != nil {
 		return rendered
 	}
