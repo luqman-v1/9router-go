@@ -1,5 +1,145 @@
 # Changelog
 
+## [v1.9.17-exp.3] - 2026-11-15
+
+### Parity: upstream decolua/9router v0.5.116..v0.5.119 (issue #1139)
+
+- fix(claude): retire `claude-fable-5.1` from the GitHub Copilot catalogs and `claude-fable-5-1` from `ocz`/`opencode-zen` (upstream 12e7930e); pin `claude-haiku-5-5` to claude-adaptive on the opencode-go and github lanes and to the commandcode format on commandcode (8aef7480).
+- feat(claude): resolve the Claude Code CLI fingerprint from the npm feed (`@anthropic-ai/claude-code/latest`, 6 h TTL, CLAUDE_CODE_VERSION pin, never below the bundled fallback) and rewrite `claude-cli/x.y.z` header values per request — chat lane and the usage tracker (upstream 43bc940e).
+- feat(provider): add `sensenova-intl` (token.sensenova.ai) registry entry, transport, image lane, and model catalog (upstream 14b27dc7).
+- feat(provider): add `synthetic` (synthetic.new) registry entry, transport, model catalog, key validation through `/v2/quotas` (the public `/models` cannot reject a bad key), and a subscription-quota usage handler (upstream ebe398a9 + 402230ed).
+- fix(dashboard): validate new fal-ai keys through `GET /v1/models?limit=1` with `Key <key>` auth instead of a paid generation (upstream 0cf07ccf).
+- feat(opencode): write effort `variants` built from `GetThinkingLevels` into `~/.config/opencode/opencode.json`, keeping variants the user already tuned; expose `thinking_levels` on `/v1/models` entries (upstream 7abc190d).
+- feat(dashboard): shift-click range selection on the proxy-pool list, filtered to visible rows (upstream 12256f72).
+
+Verified: `go build ./internal/...`, targeted `go test` suites (providers, pricing, translator, clientconfig, media, dashboard, chat), `bun test src` (827 pass), `bun run build`, and the svelte-check ratchet at baseline (74, 0 unresolved identifiers). Two pre-existing failures on clean main (`TestLoadConfigFromDotEnv`, `TestRecordConnectionAccountBanFailure_EscalatesAndClears`) are unrelated.
+
+## [v1.9.17-exp.3] - 2026-11-15
+
+### fix(claude): drop caller from blocks that do not define it
+- Claude Code attaches `caller` (agent attribution) to content blocks, and Anthropic defines it on the `tool_use` block only. On a `text` block — or a `text` nested in a `tool_result` — the API answers `messages.<n>.content.<m>.text.caller: Extra inputs are not permitted` and refuses the whole request, so the turn stays in history and every later turn fails too.
+- `SanitizeClaudePassthrough` now drops `caller` from every block that is not a `tool_use`, walking into the blocks nested in a `tool_result`. The valid `tool_use` field is preserved, and a body with nothing to clean is still forwarded byte for byte.
+
+### Documentation
+
+- **scope:** two web-fetch comments (`internal/handlers/media/media.go`, `internal/handlers/media/webfetch_ssrf_test.go`) that called the dialer's socket-level guard the thing that actually stops a private-address fetch. That guard is skipped while `ALLOW_PRIVATE_NETWORKING` is on (the default), so the `targetPrivate` pre-flight is the only check on that path; both comments now say so. Comment-only, no behaviour change.
+
+### docs(ssrf): correct the dial-guard record left by #1171
+
+- The dial-time socket guard is skipped while `ALLOW_PRIVATE_NETWORKING` is on (the default), so it refuses no address class on any dial. The provider-node write-gate comments, the create-gate test comment, and the provider-share-url spec no longer describe it as a backstop.
+- `.env.example` documents `ALLOW_PRIVATE_NETWORKING`, the strict opt-out.
+
+### feat(ssrf): allow private/LAN upstreams by default
+
+- `ALLOW_PRIVATE_NETWORKING` now defaults to on: a self-hosted or LAN provider (ollama on loopback, a second gateway on the LAN, a Tailscale peer) is a normal deployment, so the SSRF guard no longer refuses it out of the box. Set `ALLOW_PRIVATE_NETWORKING=false` to restore the strict refusal.
+- Creating a provider node from a LAN dashboard peer no longer fails with `Base URL is not allowed` when the node points at a private/LAN host. Cloud-metadata URLs are still refused at the provider-node write gate.
+- The media web-fetch pre-flight follows the same switch, so `/v1/web/fetch` dials private targets while private networking is on.
+
+### Fixed
+
+- DeepSeek web tool rendering is now byte-stable: the bound schema text and the nonce-stripped arguments use the deterministic marshaling helper, so identical requests produce identical bytes and keep prefix-cache hits (#1167).
+
+### Mobile dashboard layout: thumb-sized targets, readable values, tighter shell
+
+Dashboard on a phone kept the desktop register: 16px toggle switches, 28px
+buttons, and every long value (API keys, skill URLs, model ids) truncated
+mid-glyph. The changes below make the narrow viewport a designed state, not a
+squeezed desktop.
+
+**Shell**
+- `TopBar`: the breadcrumb crumb ("Providers ›") and the page icon only render
+  from `sm:` up; on a 390px screen the title now gets the whole row instead of
+  wrapping into the truncated "Providers & En…" the before screenshots show.
+- `Sidebar`: the three fake macOS traffic-light dots are hidden below `lg:` —
+  a drawer on a phone has no window around it, so the dots read as broken UI.
+- `App.svelte`: canvas padding steps `px-4 py-4 sm:p-6 lg:p-10`, and the
+  scroll canvas carries `pb-safe`; `index.html` gets `viewport-fit=cover` so
+  the iOS home indicator never covers the last control.
+- Group accordions in the sidebar are full-height tap rows on mobile.
+
+**Tap targets (44px thumb minimum, antislop-layoutmobile R-03)**
+- `ui/Toggle.svelte`: every switch in the app (settings, providers, quota)
+  keeps its 28×16 visual but gains an 8px invisible halo via a new
+  `tap-target` utility (`index.css`), hit-tested in the browser.
+- `ui/Button.svelte`: `size="sm"` is 40px tall below `sm:`, 28px from `sm:` up.
+  This lifts the Wrap/Copy/Export console toolbar, Reconcile rules, and every
+  modal footer button at once.
+- `QuotaTrackerView`: the 13 `h-8` filter/stepper controls are `h-11 sm:h-8`;
+  the per-connection ARN copy pill gets `py-2 sm:py-0.5`.
+- `ApiKeysTable`: reveal/copy icon buttons and the enable/disable/expire pills
+  reach 44px on a phone.
+- `ComboCard`: the Test/Copy/Edit/Delete icon grid rows are 44px, the strategy
+  select is taller, and the two checkboxes carry the `tap-target` halo.
+- `ConsoleLogStream`: level-filter chips are `h-11 sm:h-6`.
+- `Sidebar` drawer nav rows: `py-2.5 sm:py-1.5`.
+
+**Readable values (truncation where the value is the point)**
+- Skills prompt instruction and skill URLs wrap (`break-all`) on mobile.
+- API key tokens (`ApiKeysTable`), bulk-created keys, and the tunnel URL in
+  `EndpointView` wrap on mobile, truncate from `sm:` up.
+- Model ids and proxy URLs in `ProviderDetailView` likewise.
+
+**KPI grids**
+- Usage summary and `SummaryKpiCards` drop from a 1-column phone stack (6 cards
+  ≈ 700px of scrolling) to 2 columns; Cache/Compression analytics keep their
+  existing 2-col base with a tightened gap.
+
+**Token Saver**
+- The "Optimal Setup" header stacks on mobile (icon row, then buttons), so the
+  previously cut-off "Apply Recommended" button and the squeezed title render
+  in full; the guide-toggle chevron no longer overflows the viewport.
+
+**Verification**
+- Before/after screenshots at 390×844 across all 16 dashboard routes
+  (endpoint, providers, combos, usage, quota, token-saver, cli-tools,
+  proxy-pools, plans, persona, security, settings, skills, console, media);
+  DOM audit before: 155+ sub-34px controls, one off-viewport icon; after:
+  zero horizontal overflow on every route and every remaining small control
+  carries the tap-target halo (hit-test verified).
+- `bun run build`, `bun run ratchet:svelte -- --tsconfig tsconfig.app.json`
+  (74 = baseline, 0 unresolved), `bun test src scripts` (835 pass),
+  `go test ./web/...`, `bunx oxlint --deny-warnings`, CGO-disabled builds for
+  all `CROSS_TARGETS` pairs.
+
+### fix(combo): stop failover on in-band error frames while maintaining connection lockout
+
+- In combo streaming, treat verified in-band SSE error frames (`event: error` or non-null `error` payloads) as immediate failure signals: stop the combo chain to avoid masking upstream errors, while recording the connection cooldown/lockout so subsequent client retries route to healthy candidates.
+- Fixes false-positive in-band detection by requiring authoritative `DetectInbandSSEError` match rather than substring matching `"error":null`.
+
+### fix(translator): preserve DeepSeek reasoning_content across message conversions
+
+- Preserves `reasoning_content` on assistant message turns across request translations and Gemini thought mappings, preventing DeepSeek HTTP 400 multi-turn errors.
+- Parity with upstream `decolua/9router#1099`.
+
+### Combos: per-combo custom system prompt with global fallback
+
+Add a `customPrompt` field to combos, letting operators set a combo-specific
+system prompt that overrides the global custom prompt prefix/suffix when set.
+When unset, requests routed through the combo fall back to the global custom
+prompt settings unchanged.
+
+Port of upstream decolua/9router PR #5433 / Issue #5376.
+
+**Backend:**
+- `Combo` model gains `CustomPrompt` (`json:"customPrompt,omitempty"`).
+- `combos` table gains an additive `customPrompt TEXT DEFAULT ''` column.
+- Combo execution injects the combo's custom prompt as the system prompt before
+  any model attempt; when unset, the global prompt prefix/suffix applies.
+- When set, the global prompt is not stacked on top — the combo prompt replaces
+  it.
+
+**Dashboard:**
+- `CreateComboModal` gains an optional "Custom System Prompt" textarea for
+  create and edit.
+- `customPrompt` is threaded through `createCombo`/`updateCombo`.
+
+**Verification:**
+- `go test ./internal/handlers/chat/ -run "Combo" -count=1` — green
+- `go vet ./internal/...` — clean
+- `gofmt -l internal/models internal/db internal/handlers/chat` — clean
+
+Closes #1109
+
 ## [v1.9.17-exp.2] - 2026-11-13
 
 ### deepseek-web parity with upstream (nonce binding, schema validation, citations, done-terminator)
