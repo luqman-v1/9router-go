@@ -111,7 +111,7 @@ func TestSaveCustomModelsBatch_MatchesTheSingleSaveOnCustomIds(t *testing.T) {
 	defer cleanup()
 	router := setupTestRouter(repo)
 
-	if err := repo.CreateCombo("combo-wombo", "combo-wombo", "llm", `["nara/glm-5.3"]`, "fallback"); err != nil {
+	if err := repo.CreateCombo("combo-wombo", "combo-wombo", "llm", `["nara/glm-5.3"]`, "fallback", ""); err != nil {
 		t.Fatalf("seed combo: %v", err)
 	}
 

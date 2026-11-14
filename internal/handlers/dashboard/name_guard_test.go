@@ -39,11 +39,11 @@ func TestGuardNameCollision(t *testing.T) {
 		t.Helper()
 		repo, cleanup := setupTestDB(t)
 
-		if err := repo.CreateCombo("c1", comboName, "", `["oc/space-bunny-free"]`, "round-robin"); err != nil {
+		if err := repo.CreateCombo("c1", comboName, "", `["oc/space-bunny-free"]`, "round-robin", ""); err != nil {
 			cleanup()
 			t.Fatalf("seed combo %s: %v", comboName, err)
 		}
-		if err := repo.CreateCombo("c2", otherCombo, "", `["clinepass/deepseek/deepseek-v4-flash"]`, "fallback"); err != nil {
+		if err := repo.CreateCombo("c2", otherCombo, "", `["clinepass/deepseek/deepseek-v4-flash"]`, "fallback", ""); err != nil {
 			cleanup()
 			t.Fatalf("seed combo %s: %v", otherCombo, err)
 		}

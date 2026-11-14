@@ -275,7 +275,7 @@ func TestComboWeighted_FromDatabaseComboModels(t *testing.T) {
 
 	// Create a combo with weights in models JSON: modelA has weight 3, modelB has weight 1
 	comboModelsJSON := `[{"model":"fast/modelA","weight":3},{"model":"slow/modelB","weight":1}]`
-	err := repo.CreateCombo("c-weighted", "my-weighted-combo", "chat", comboModelsJSON, "round-robin")
+	err := repo.CreateCombo("c-weighted", "my-weighted-combo", "chat", comboModelsJSON, "round-robin", "")
 	if err != nil {
 		t.Fatalf("failed to create combo: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestComboWeighted_FromSettings(t *testing.T) {
 	h := NewChatHandler(repo)
 
 	comboModelsJSON := `["modelX", "modelY"]`
-	err := repo.CreateCombo("c-settings", "settings-combo", "chat", comboModelsJSON, "round-robin")
+	err := repo.CreateCombo("c-settings", "settings-combo", "chat", comboModelsJSON, "round-robin", "")
 	if err != nil {
 		t.Fatalf("failed to create combo: %v", err)
 	}

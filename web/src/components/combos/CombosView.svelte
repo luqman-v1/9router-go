@@ -382,15 +382,16 @@
     models: string[],
     matchRules: SmartRule[],
     timeoutMs: number,
-    graceMs: number | undefined
+    graceMs: number | undefined,
+    customPrompt: string
   ) {
     isSavingCombo = true
     comboSaveError = ''
     try {
       if (editingCombo) {
-        await api.updateCombo(editingCombo.id, { name, models, matchRules })
+        await api.updateCombo(editingCombo.id, { name, models, matchRules, customPrompt })
       } else {
-        await api.createCombo({ name, models, strategy: 'fallback', matchRules })
+        await api.createCombo({ name, models, strategy: 'fallback', matchRules, customPrompt })
       }
       // Strategies are keyed by combo name, so the timeout and grace are
       // written under the saved name, in one patch, and only when they differ

@@ -1617,8 +1617,9 @@ func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeN
 	}
 	// Global system prompt, last in the chain so the prefix stays the first
 	// thing the model reads and the suffix its last word — after every style
-	// prompt has been appended in between.
-	if h.TokenSaver.SystemPromptEnabled() {
+	// prompt has been appended in between. Skipped when a combo's own custom
+	// prompt was already injected (the combo prompt replaces the global one).
+	if h.TokenSaver.SystemPromptEnabled() && !ComboCustomPromptInjected(ctx) {
 		if prefix := h.TokenSaver.SystemPromptPrefix(); prefix != "" {
 			if next, did := tokensaver.InjectPrefixSystemPrompt(out, prefix, claudeNative); did {
 				out = next
@@ -1648,6 +1649,27 @@ func TokenSaverBypassEnabled(ctx context.Context) bool {
 		return false
 	}
 	v, ok := ctx.Value(tokenSaverBypassKey{}).(bool)
+	return ok && v
+}
+
+// comboCustomPromptKey carries the fact that a combo's own custom system prompt
+// was already injected into the body, so the global system prompt prefix/suffix
+// must not be added on top of it.
+type comboCustomPromptKey struct{}
+
+// WithComboCustomPrompt marks ctx as having received the combo's custom system
+// prompt, so applyTokenSavers skips the global system prompt injection.
+func WithComboCustomPrompt(ctx context.Context) context.Context {
+	return context.WithValue(ctx, comboCustomPromptKey{}, true)
+}
+
+// ComboCustomPromptInjected reports whether a combo custom prompt was already
+// injected into the request body.
+func ComboCustomPromptInjected(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, ok := ctx.Value(comboCustomPromptKey{}).(bool)
 	return ok && v
 }
 

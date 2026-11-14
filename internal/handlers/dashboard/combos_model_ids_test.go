@@ -178,7 +178,7 @@ func TestComboWriteRejectsMalformedModels(t *testing.T) {
 			defer cleanup()
 			router := setupTestRouter(repo)
 			// Seed the combo the update cases write to.
-			if err := repo.CreateCombo("legacy-combo", "legacy", "", `["ag/claude-sonnet-4-6"]`, "fallback"); err != nil {
+			if err := repo.CreateCombo("legacy-combo", "legacy", "", `["ag/claude-sonnet-4-6"]`, "fallback", ""); err != nil {
 				t.Fatalf("seed combo: %v", err)
 			}
 
@@ -224,7 +224,7 @@ func TestComboUpdateOmitsModelsKeepsStoredSet(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()
 	router := setupTestRouter(repo)
-	if err := repo.CreateCombo("keep-models", "keep", "", `["ag/claude-sonnet-4-6"]`, "fallback"); err != nil {
+	if err := repo.CreateCombo("keep-models", "keep", "", `["ag/claude-sonnet-4-6"]`, "fallback", ""); err != nil {
 		t.Fatalf("seed combo: %v", err)
 	}
 

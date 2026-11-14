@@ -433,6 +433,9 @@ var goOnlyColumns = [][3]string{
 	// models column stays the wire contract — so upstream, which declares
 	// neither the column nor the concept, ignores it.
 	{"combos", "matchRules", "TEXT DEFAULT '[]'"},
+	// Custom system prompt per combo, with fallback to the global custom
+	// prompt when unset. Added additively; upstream ignores unknown columns.
+	{"combos", "customPrompt", "TEXT DEFAULT ''"},
 }
 
 // keiRouterTables are Go-only tables for KeiRouter port features.

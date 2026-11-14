@@ -212,7 +212,7 @@ func (e *Env) AddCombo(t *testing.T, id, name string, models []string) {
 	if err != nil {
 		t.Fatalf("encode combo models: %v", err)
 	}
-	if err := e.Repo.CreateCombo(id, name, "llm", string(encoded), "fallback"); err != nil {
+	if err := e.Repo.CreateCombo(id, name, "llm", string(encoded), "fallback", ""); err != nil {
 		t.Fatalf("create combo %s: %v", name, err)
 	}
 }

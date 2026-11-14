@@ -238,6 +238,10 @@ type Combo struct {
 	// MatchRules is the raw JSON of the combo's smart rules. Empty means the
 	// combo has none, which is every combo written before the feature.
 	MatchRules string `json:"matchRules,omitempty"`
+	// CustomPrompt is the combo's own system prompt. When set it overrides the
+	// global custom prompt for requests routed through this combo. Empty means
+	// unset, in which case the global system prompt prefix/suffix applies.
+	CustomPrompt string `json:"customPrompt,omitempty"`
 	// AutoMembers is derived, never stored: the models the rules currently
 	// own. The dashboard badges them so an operator can tell a managed member
 	// from one they pinned by hand.

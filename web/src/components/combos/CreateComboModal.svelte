@@ -51,7 +51,8 @@
       models: string[],
       matchRules: SmartRule[],
       timeoutMs: number,
-      graceMs: number | undefined
+      graceMs: number | undefined,
+      customPrompt: string
     ) => Promise<void> | void
     onOpenModelPicker: () => void
     onUpdateModels: (models: string[]) => void
@@ -78,6 +79,7 @@
   let timeoutMs = $derived(secondsToTimeoutMs(timeoutInput))
   let graceInput = $state<string | number | null>(graceMsToSeconds(responseGraceMs))
   let graceMs = $derived(graceSecondsToMs(graceInput))
+  let customPrompt = $state(editingCombo?.customPrompt || '')
   let graceError = $derived(
     graceMs === null
       ? `Enter 0–${MAX_FIRST_TOKEN_TIMEOUT_SECONDS} seconds, or leave empty for the default`
@@ -340,7 +342,7 @@
   function handleSave() {
     if (!validateModalName(modalName)) return
     if (timeoutMs === null || graceMs === null) return
-    onSave(modalName.trim(), models, rules, timeoutMs, graceMs)
+    onSave(modalName.trim(), models, rules, timeoutMs, graceMs, customPrompt.trim())
   }
 
   function moveModel(idx: number, delta: number) {
@@ -391,6 +393,21 @@
       />
       <p class="text-[10px] text-text-muted mt-0.5">
         Only letters, numbers, -, _ and . allowed
+      </p>
+    </div>
+
+    <!-- Custom system prompt: optional per-combo override of the global system prompt. -->
+    <div>
+      <label class="text-sm font-medium text-text-main">Custom System Prompt</label>
+      <textarea
+        bind:value={customPrompt}
+        placeholder="Leave empty to use the global system prompt"
+        rows={3}
+        class="w-full min-h-[80px] rounded border border-border bg-surface px-2.5 py-1.5 text-sm text-text-main focus:outline-none focus:border-brand-500"
+      />
+      <p class="text-[10px] text-text-muted mt-0.5">
+        Optional system prompt used only by this combo. When set, it replaces the
+        global custom prompt prefix/suffix for requests routed through this combo.
       </p>
     </div>
 

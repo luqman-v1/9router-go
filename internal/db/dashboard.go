@@ -166,15 +166,15 @@ func (r *Repo) ReorderProviderConnections(provider, id string, direction int) er
 }
 
 // CreateCombo inserts a new combo routing configuration.
-func (r *Repo) CreateCombo(id, name, kind, modelsJSON, strategy string) error {
+func (r *Repo) CreateCombo(id, name, kind, modelsJSON, strategy, customPrompt string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	var kindVal any
 	if kind != "" {
 		kindVal = kind
 	}
 	_, err := r.db.Exec(
-		`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, name, kindVal, modelsJSON, now, now,
+		`INSERT INTO combos (id, name, kind, models, customPrompt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, name, kindVal, modelsJSON, customPrompt, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create combo %s: %w", id, err)
@@ -187,15 +187,15 @@ func (r *Repo) CreateCombo(id, name, kind, modelsJSON, strategy string) error {
 }
 
 // UpdateCombo updates an existing combo routing configuration.
-func (r *Repo) UpdateCombo(id, name, kind, modelsJSON, strategy string) error {
+func (r *Repo) UpdateCombo(id, name, kind, modelsJSON, strategy, customPrompt string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	var kindVal any
 	if kind != "" {
 		kindVal = kind
 	}
 	_, err := r.db.Exec(
-		`UPDATE combos SET name = ?, kind = ?, models = ?, updatedAt = ? WHERE id = ?`,
-		name, kindVal, modelsJSON, now, id,
+		`UPDATE combos SET name = ?, kind = ?, models = ?, customPrompt = ?, updatedAt = ? WHERE id = ?`,
+		name, kindVal, modelsJSON, customPrompt, now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("update combo %s: %w", id, err)
