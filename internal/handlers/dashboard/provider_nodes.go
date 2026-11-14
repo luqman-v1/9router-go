@@ -208,8 +208,10 @@ func (h *DashboardHandler) HandleCreateProviderNode(w http.ResponseWriter, r *ht
 	// is always refused. A private/LAN base URL is refused only while the
 	// operator has switched private networking off
 	// (ALLOW_PRIVATE_NETWORKING=false): with it on — the default — a self-hosted
-	// or LAN provider is a normal upstream, and the socket-level guard in the
-	// dial path is the backstop rather than the write path.
+	// or LAN provider is a normal upstream and this write gate is the only check
+	// its base URL passes. The dial-time socket guard is NOT a backstop while the
+	// switch is on: proxy.NewSafeTransport's ControlContext returns before it
+	// examines any address, so it refuses nothing on this path.
 	if !isValidHTTPURL(req.BaseURL) {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Base URL must be an absolute http(s) URL")
 		return
@@ -535,8 +537,9 @@ func (h *DashboardHandler) HandleValidateProviderNode(w http.ResponseWriter, r *
 	// SSRF guard for remote callers; loopback peers keep self-hosted nodes
 	// (e.g. ollama-local) reachable, mirroring upstream isLocalRequest. The
 	// guard is skipped when the operator has private networking on (the
-	// default) — a LAN/self-hosted endpoint is a normal upstream then, and the
-	// dial-time socket guard is the backstop rather than the write path.
+	// default) — a LAN/self-hosted endpoint is a normal upstream then, and this
+	// write gate is the only check it passes. The dial-time socket guard is
+	// inactive while the switch is on, so it re-checks nothing here.
 	if !nodeRequestIsLocal(r) && !proxy.IsPrivateNetworkingAllowed() {
 		if err := handlerutil.AssertPublicURL(baseURL); err != nil {
 			writeNodeValidation(w, map[string]any{"valid": false, "error": "URL not allowed"})
