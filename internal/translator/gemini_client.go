@@ -214,6 +214,10 @@ func convertGeminiClientContent(content GeminiContent) []any {
 		default:
 			msg["content"] = ""
 		}
+	default:
+		if len(toolResults) == 0 {
+			msg = map[string]any{"role": role, "content": ""}
+		}
 	}
 
 	if len(reasoningParts) > 0 {
