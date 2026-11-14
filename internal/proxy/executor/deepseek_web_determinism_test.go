@@ -36,7 +36,7 @@ func TestDeepSeekBoundSchemaTextIsByteStable(t *testing.T) {
 func TestDeepSeekWithoutNonceIsByteStable(t *testing.T) {
 	args := map[string]any{
 		"alpha": "a", "bravo": 2.0, "charlie": true, "delta": []any{"x", "y"},
-		"echo": map[string]any{"nested": "value", "other": 1.0},
+		"echo":    map[string]any{"nested": "value", "other": 1.0},
 		"foxtrot": "f", "golf": nil, "hotel": 3.5,
 		"_nonce": "nonce-123",
 	}
