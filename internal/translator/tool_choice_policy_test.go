@@ -146,3 +146,51 @@ func TestTranslateClaudeToOpenAI_NoToolChoiceAddsNoPolicy(t *testing.T) {
 		t.Errorf("parallel_tool_calls = %v, want absent without a tool_choice", *req.ParallelToolCalls)
 	}
 }
+
+// End-to-end: Claude tool_choice objects map to OpenAI wire values through
+// TranslateClaudeToOpenAI, including "none" which forbids tool calls.
+func TestTranslateClaudeToOpenAI_ToolChoice(t *testing.T) {
+	tests := []struct {
+		name   string
+		choice string
+		want   any
+	}{
+		{"none", `{"type":"none"}`, "none"},
+		{"auto", `{"type":"auto"}`, "auto"},
+		{"any", `{"type":"any"}`, "required"},
+		{"tool", `{"type":"tool","name":"probe"}`, map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": "probe"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{
+				"model": "gpt-5.5",
+				"messages": [{"role": "user", "content": "hi"}],
+				"tools": [{"name": "probe", "input_schema": {"type": "object"}}],
+				"tool_choice": ` + tt.choice + `
+			}`)
+			out, err := TranslateClaudeToOpenAI(body)
+			if err != nil {
+				t.Fatalf("TranslateClaudeToOpenAI: %v", err)
+			}
+			var req OpenAIRequest
+			if err := json.Unmarshal(out, &req); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			enc := json.Deterministic(true)
+			got, err := json.Marshal(req.ToolChoice, enc)
+			if err != nil {
+				t.Fatalf("marshal choice: %v", err)
+			}
+			want, err := json.Marshal(tt.want, enc)
+			if err != nil {
+				t.Fatalf("marshal want choice: %v", err)
+			}
+			if string(got) != string(want) {
+				t.Errorf("tool_choice = %s, want %s", got, want)
+			}
+		})
+	}
+}
