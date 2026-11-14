@@ -902,11 +902,13 @@ func (h *MediaHandler) HandleWebFetch(w http.ResponseWriter, r *http.Request) {
 // own switch and is answered first, so both branches agree: a literal IP and a
 // name that resolves to the same address get the same verdict.
 //
-// This check is a refusal the caller can see, not the boundary itself: the
-// dialer's socket-level guard is what actually stops the connection, and it
-// also covers the rebind between this lookup and the dial. Checking here means
-// the common case answers 403 with a reason instead of surfacing as a transport
-// error from a provider several layers down.
+// This check is a refusal the caller can see, not the boundary itself: while
+// ALLOW_PRIVATE_NETWORKING=false the dialer's socket-level guard is what
+// actually stops the connection, and it also covers the rebind between this
+// lookup and the dial. With the default (on) that guard is skipped, so this
+// pre-flight is the only check. Checking here means the common case answers
+// 403 with a reason instead of surfacing as a transport error from a provider
+// several layers down.
 func targetPrivate(ctx context.Context, host string) bool {
 	if host == "" {
 		return true
