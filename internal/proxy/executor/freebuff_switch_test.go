@@ -20,7 +20,10 @@ func TestSwitchFreebuffModel_ReleasesHeldSessionThenAdmitsNewModel(t *testing.T)
 	var calls []string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != freebuffSessionPath {
+		// Release stays on the session route; admission moved to its own.
+		allowed := (r.Method == http.MethodDelete && r.URL.Path == freebuffSessionPath) ||
+			(r.Method == http.MethodPost && r.URL.Path == freebuffAdmissionPath)
+		if !allowed {
 			http.NotFound(w, r)
 			return
 		}
