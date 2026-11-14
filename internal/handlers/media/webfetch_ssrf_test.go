@@ -11,9 +11,11 @@ import (
 )
 
 // A web-fetch URL that names an internal address must be refused before the
-// gateway dials it. The dialer has its own socket-level guard, but that
-// surfaces as an opaque transport error from whatever provider is in front;
-// the caller should be told the address was refused.
+// gateway dials it. While ALLOW_PRIVATE_NETWORKING=false the dialer has its
+// own socket-level guard, but that surfaces as an opaque transport error from
+// whatever provider is in front; with the default (on) the guard is skipped,
+// so this pre-flight is the only refusal. The caller should be told the
+// address was refused.
 func TestHandleWebFetch_RejectsPrivateTargets(t *testing.T) {
 	// The package's TestMain turns private networking on so the fixtures can
 	// reach httptest servers on loopback; this test is about the refusal.
