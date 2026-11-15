@@ -1,4 +1,4 @@
-### fix(thinking): nest reasoning effort for OpenAI-compatible /responses nodes
+### test(thinking): add regression guard for reasoning.effort nesting on OpenAI-compatible /responses nodes
 
-- Nests `reasoning.effort` and removes top-level `reasoning_effort` for OpenAI-compatible nodes using the Responses wire, preventing upstream HTTP 400 parameter errors.
-- Parity with upstream `decolua/9router#5611`.
+- Adds table-driven regression test `TestApplyOpenAIResponsesOnOpenAICompatibleNode` pinning `reasoning.effort` nesting and top-level `reasoning_effort` omission for OpenAI-compatible nodes on the Responses wire.
+- Aligns with merged upstream `open-sse/translator/concerns/thinkingUnified.js:138-139,251`.
