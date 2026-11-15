@@ -71,6 +71,10 @@
   // silently left every later AWS entry with no way to enter a profile at all.
   let usesAwsCredentialForm = $derived(catalogItem?.credentialForm === 'aws')
   let providerRegions = $derived(catalogItem?.regions || null)
+  // opendesign pairs a runtime key with a separate account sign-in (control key)
+  // for the Design Plan allowance; the control key is sealed into providerSpecificData.
+  let isOpenDesign = $derived(providerId === 'opendesign')
+  let formOpenDesignControlKey = $state('')
 
   // DeepSeek's credential is a userToken, not a cookie, so it gets its own
   // label — the field holds a token and calling it a cookie would send the
@@ -232,6 +236,12 @@
       // The site's own session cookie. It is a credential: the WAF reads it,
       // and the server seals it with the rest.
       return { deepSeekCookie: formDeepSeekCookie.trim() }
+    }
+    if (isOpenDesign && formOpenDesignControlKey.trim()) {
+      // Dual-key auth: the runtime key lives in apiKey; the account sign-in
+      // control key (vela_ctrl_…) goes into providerSpecificData so the usage
+      // plane can read the Design Plan allowance without touching model traffic.
+      return { controlKey: formOpenDesignControlKey.trim() }
     }
     return undefined
   }
@@ -891,6 +901,24 @@
                 <p class="text-xs text-text-muted mt-1">
                   The WAF reads this cookie, so a request without it is a request the site does not
                   recognise. It is sealed with the rest of the credential.
+                </p>
+              </div>
+            {/if}
+            {#if isOpenDesign}
+              <div>
+                <label for="connOpenDesignControlKey" class={labelCls}>
+                  Control key <span class="text-text-muted text-xs font-normal">(vela_ctrl_…)</span>
+                </label>
+                <input
+                  id="connOpenDesignControlKey"
+                  type="text"
+                  bind:value={formOpenDesignControlKey}
+                  placeholder="vela_ctrl_live_…"
+                  class="{inputCls} font-mono"
+                />
+                <p class="text-xs text-text-muted mt-1">
+                  Account sign-in key for the Design Plan allowance read. It never touches model
+                  traffic; it is stored in provider-specific data only.
                 </p>
               </div>
             {/if}

@@ -97,6 +97,7 @@ var ProviderAliasMap = map[string]string{
 	"ns":             "nous",
 	"nv":             "nvidia",
 	"oa":             "openai",
+	"od":             "opendesign",
 	"oc":             "opencode",
 	"ocg":            "opencode-go",
 	"ocz":            "opencode-zen",

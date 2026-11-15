@@ -567,6 +567,27 @@ var KnownProviders = map[string]ProviderConfig{
 			"User-Agent":        "opencode/1.19.4",
 		},
 	},
+	// Open Design OpenDesign Cloud (open-design.ai) / AMR:
+	// https://open-design.ai/amr. Two planes on two hosts: model traffic rides
+	// the runtime key (`sk-amr-…`) at https://amr-link.open-design.ai/v1 on the
+	// lane each model declares (chat completions default; Responses for
+	// claude-haiku-5.5 / deepseek-v4-pro; Claude Messages for glm-5.3-flash),
+	// while plan/wallet/allowance read from https://amr-api.open-design.ai on the
+	// control key (`vela_ctrl_…`). ConnectionData.APIKey holds whichever
+	// credential was pasted; a pasted `vela_ctrl_…` value is a control key and
+	// rides no model request. The control key (PSD `controlKey`) and the read
+	// workspace id travel in ProviderSpecificData.
+	"opendesign": {
+		BaseURL:    "https://amr-link.open-design.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		// Quota reads live on the control plane, not the model plane: the
+		// dashboard fetcher builds it from the control host explicitly (it is
+		// never derived from this BaseURL).
+		StaticHeaders: map[string]string{
+			"User-Agent": "9router-go",
+		},
+	},
 	"gemini": {
 		BaseURL:    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
 		AuthHeader: "Authorization",
