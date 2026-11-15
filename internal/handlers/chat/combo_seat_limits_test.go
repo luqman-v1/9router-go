@@ -197,24 +197,24 @@ func TestHandleModels_WebSeatDoesNotDragMinimumDown(t *testing.T) {
 }
 
 // A thinking suffix like "(max)" on a combo seat is not part of the model id:
-	// comboSeatCapabilities strips it before the capability lookup, so the seat
-	// publishes the bare model's own block instead of the floor capability.
-	func TestHandleModels_ComboSeatThinkingSuffixStrippedBeforeCaps(t *testing.T) {
-		database, cleanup := setupChatTestDB(t)
-		defer cleanup()
+// comboSeatCapabilities strips it before the capability lookup, so the seat
+// publishes the bare model's own block instead of the floor capability.
+func TestHandleModels_ComboSeatThinkingSuffixStrippedBeforeCaps(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
 
-		// deepseek/deepseek-chat: context_length 131072, max_completion_tokens 8192
-		// per the deepseek capability table. The suffixed seat must resolve to
-		// the same block.
-		if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+	// deepseek/deepseek-chat: context_length 131072, max_completion_tokens 8192
+	// per the deepseek capability table. The suffixed seat must resolve to
+	// the same block.
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
 			('c-think', 'thinking-combo', 'llm', '["deepseek/deepseek-chat(max)"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
-			t.Fatalf("seed combo: %v", err)
-		}
-
-		entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(db.NewRepo(database))), "thinking-combo")
-		wantLimit(t, "context_length", entry.ContextLength, 131072)
-		wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 8192)
+		t.Fatalf("seed combo: %v", err)
 	}
+
+	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(db.NewRepo(database))), "thinking-combo")
+	wantLimit(t, "context_length", entry.ContextLength, 131072)
+	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 8192)
+}
 
 func TestHandleModels_ComboSeatConnectionAliasResolvesCapabilities(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
