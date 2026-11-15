@@ -78,4 +78,3 @@ func BenchmarkScanStreamMultiLineData(b *testing.B) {
 	}
 	_ = sink
 }
-
