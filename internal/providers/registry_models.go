@@ -274,8 +274,8 @@ var ProviderModels = map[string][]string{
 	"runcrate":             {"deepseek-ai/DeepSeek-V4.1-Flash", "deepseek-ai/DeepSeek-V4.1-Flash-1017", "zai-org/GLM-5.3", "zai-org/GLM-5.3-Flash", "Qwen/Qwen3.8-Flash", "openai/gpt-oss-120b"},
 	"opendesign":           {"claude-haiku-5.5", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro", "deepseek-v4.1-flash", "deepseek-v4.1-flash-eco", "glm-5.3-flash", "glm-5.3-flashx", "gpt-6-luna", "kimi-k2.7-code", "mimo-v2.6-flash", "mimo-v2.6-pro"},
 	"od":                   {"claude-haiku-5.5", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro", "deepseek-v4.1-flash", "deepseek-v4.1-flash-eco", "glm-5.3-flash", "glm-5.3-flashx", "gpt-6-luna", "kimi-k2.7-code", "mimo-v2.6-flash", "mimo-v2.6-pro"},
+	"deeprelay":            {"deeprelay/deepseek-v4-pro", "deeprelay/deepseek-v4.1-flash", "deeprelay/glm-5.3", "deeprelay/kimi-k3", "deeprelay/qwen3.6-plus", "deeprelay/qwen3-embedding-8b", "deeprelay/seedream-4.0", "deeprelay/wan2.7-t2v"},
 }
-
 // ProviderModelKinds maps provider alias/ID → model id → service kind for the
 // models that are not plain chat (image, tts, stt, embedding, video, systemone).
 // Upstream carries the same `kind` field on those registry entries and /v1/models
@@ -773,6 +773,13 @@ var ProviderModelKinds = map[string]map[string]string{
 		"Qwen3-Embedding-8B": "embedding",
 		"stepaudio-2.5-asr":  "stt",
 		"stepaudio-2.5-tts":  "tts",
+	},
+	// DeepRelay declares chat, embedding, image and video on one /v1 lane;
+	// the non-chat ids are marked so /v1/models keeps them out of the LLM list.
+	"deeprelay": {
+		"deeprelay/qwen3-embedding-8b": "embedding",
+		"deeprelay/seedream-4.0":       "image",
+		"deeprelay/wan2.7-t2v":         "video",
 	},
 }
 

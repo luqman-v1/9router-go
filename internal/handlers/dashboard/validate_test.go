@@ -985,3 +985,54 @@ func TestHandleValidateProvider_KenariAliasResolves(t *testing.T) {
 		t.Fatalf("alias ki did not resolve to kenari: %+v", *calls)
 	}
 }
+
+// --- deeprelay ---
+
+func TestHandleValidateProvider_DeepRelayProbesBillingBalance(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, out := postValidate(t, `{"provider":"deeprelay","apiKey":"deeprelay_live_test"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if out["valid"] != true || out["supported"] != true {
+		t.Errorf("expected valid+supported, got %v", out)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected exactly one probe, got %d", len(*calls))
+	}
+	probe := (*calls)[0]
+	if probe.method != http.MethodGet || probe.url != "https://api.deeprelay.ai/v1/billing/balance" {
+		t.Errorf("unexpected probe %s %s", probe.method, probe.url)
+	}
+	if got := probe.headers.Get("Authorization"); got != "Bearer deeprelay_live_test" {
+		t.Errorf("expected bearer auth header, got %q", got)
+	}
+}
+
+func TestHandleValidateProvider_DeepRelayAliasResolves(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, _ := postValidate(t, `{"provider":"dr","apiKey":"k"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(*calls) != 1 || (*calls)[0].url != "https://api.deeprelay.ai/v1/billing/balance" {
+		t.Fatalf("alias dr did not resolve to deeprelay: %+v", *calls)
+	}
+}
+
+func TestHandleValidateProvider_DeepRelayInvalidKey(t *testing.T) {
+	staticProbeStub(t, http.StatusUnauthorized)
+
+	rec, out := postValidate(t, `{"provider":"deeprelay","apiKey":"nope"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid=false, got %d", rec.Code)
+	}
+	if out["valid"] != false {
+		t.Errorf("expected valid=false, got %v", out["valid"])
+	}
+	if out["error"] != "Invalid API key" {
+		t.Errorf("expected 'Invalid API key', got %v", out["error"])
+	}
+}

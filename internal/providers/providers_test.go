@@ -2,6 +2,7 @@ package providers
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -508,5 +509,39 @@ func TestWithAnthropicBeta_KeepsOneCanonicalKey(t *testing.T) {
 	}
 	if headers["Anthropic-Beta"] != "another-flag" {
 		t.Error("the input map must not be mutated")
+	}
+}
+
+func TestKnownProviders_DeepRelay(t *testing.T) {
+	cfg, ok := KnownProviders["deeprelay"]
+	if !ok {
+		t.Fatal("expected KnownProviders to contain deeprelay")
+	}
+	if cfg.BaseURL != "https://api.deeprelay.ai/v1/chat/completions" {
+		t.Errorf("deeprelay BaseURL = %q", cfg.BaseURL)
+	}
+	if cfg.AuthScheme != "bearer" || cfg.AuthHeader != "Authorization" {
+		t.Errorf("deeprelay auth = %s/%s, want bearer/Authorization", cfg.AuthScheme, cfg.AuthHeader)
+	}
+	if got := ResolveAlias("dr"); got != "deeprelay" {
+		t.Errorf("ResolveAlias(dr) = %q, want deeprelay", got)
+	}
+	if _, ok := ProviderRegistry["deeprelay"]; !ok {
+		t.Error("expected ProviderRegistry to contain deeprelay")
+	}
+	if !slices.Contains(GetProviderModels("deeprelay"), "deeprelay/deepseek-v4-pro") {
+		t.Errorf("deeprelay catalog missing deepseek-v4-pro: %v", GetProviderModels("deeprelay"))
+	}
+	if got := GetProviderModelKind("deeprelay", "deeprelay/qwen3-embedding-8b"); got != "embedding" {
+		t.Errorf("embedding kind = %q, want embedding", got)
+	}
+	if got := GetProviderModelKind("deeprelay", "deeprelay/seedream-4.0"); got != "image" {
+		t.Errorf("image kind = %q, want image", got)
+	}
+	if got := GetProviderModelKind("deeprelay", "deeprelay/wan2.7-t2v"); got != "video" {
+		t.Errorf("video kind = %q, want video", got)
+	}
+	if got := GetProviderModelKind("deeprelay", "deeprelay/deepseek-v4-pro"); got != "" {
+		t.Errorf("chat model kind = %q, want empty", got)
 	}
 }

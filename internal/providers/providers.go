@@ -1564,6 +1564,15 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	// DeepRelay — pay-per-token serverless inference (api.deeprelay.ai/v1).
+	// Chat completions, embeddings, image and video are all OpenAI-shaped on
+	// /v1, so ForwardOpenAI serves them. The wallet sits on
+	// GET /v1/billing/balance (used by the usage fetcher and the key probe).
+	"deeprelay": {
+		BaseURL:    "https://api.deeprelay.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 }
 
 // RetryableStatusCodes are HTTP status codes that trigger account fallback.

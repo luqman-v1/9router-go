@@ -2027,4 +2027,21 @@ var ProviderRegistry = map[string]ProviderMeta{
 		ServiceKinds: []string{"embedding"},
 		Website:      "https://github.com/ggml-org/llama.cpp",
 	},
+	// DeepRelay — pay-per-token inference. One /v1 lane serves chat,
+	// embeddings, image and video, and the wallet lives on
+	// GET /v1/billing/balance (see dashboard usage fetcher + key probe).
+	"deeprelay": {
+		ID:           "deeprelay",
+		Name:         "DeepRelay",
+		Alias:        "dr",
+		Category:     CategoryAPIKey,
+		AuthType:     "apikey",
+		Color:        "#6C5CE7",
+		Icon:         "relay",
+		Priority:     50,
+		Usage:        true,
+		ServiceKinds: []string{"llm"},
+		Website:      "https://deeprelay.ai",
+		Notice:       &Notice{APIKeyURL: "https://deeprelay.ai/dashboard"},
+	},
 }
