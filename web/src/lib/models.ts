@@ -2822,14 +2822,6 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "id": "gemini-4-argon",
       "name": "Gemini 4 Argon"
     },
-    {
-      "id": "gemini-hydrogen",
-      "name": "Gemini Hydrogen"
-    },
-    {
-      "id": "gemini-4-hydrogen",
-      "name": "Gemini 4 Hydrogen"
-    },
   ],
   "gh": [
     {
