@@ -1132,16 +1132,11 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			APIKey:         apiKey,
 			Body:           pipedBody,
 			IsStream:       isStream,
-			ClaudeClient:   endpoint == "/v1/v1/messages" || endpoint == "/v1/messages",
-			TranslateResp:  translateResponse,
 			ConnectionID:   connectionID,
 			AuthType:       authType,
+			APIKeyID:       func() string { if k := requestKeyFromContext(ctx); k != nil { return k.ID }; return "" }(),
 			SessionID:      sessionID,
 			ToolNameMap:    claudeToolMap,
-			UpstreamClaude: upstreamClaude && !claudeNative,
-			ResponseBuf:    &streamNoteWriter{w: &metrics.ResponseBuf, note: metrics.NoteOutput},
-			StartTime:      start,
-			TTFT:           &metrics.TTFT,
 		}
 		// client_id cloaking: hand the connection's providerSpecificData
 		// (fingerprintId) to executors that mimic an official client.

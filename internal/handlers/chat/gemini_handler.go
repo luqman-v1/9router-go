@@ -147,7 +147,12 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		defer release()
 	}
 
-	resp, err := proxy.ForwardGemini(ctx, httpClient, cfg, apiKey, string(body), isStream, projectID, modelName)
+	resp, err := proxy.ForwardGemini(ctx, httpClient, cfg, apiKey, string(body), isStream, projectID, modelName, func() string {
+		if key := requestKeyFromContext(ctx); key != nil {
+			return key.ID
+		}
+		return ""
+	}())
 	// The one number that separates "the model was thinking" from "the
 	// gateway was slow": everything this handler does before dialing is
 	// milliseconds, so a large value here is the upstream's first-token
@@ -689,7 +694,12 @@ func (h *ChatHandler) followLongDecodeContinuation(
 		}
 
 		// Forward the continuation request.
-		nextResp, fwdErr := proxy.ForwardGemini(ctx, httpClient, cfg, apiKey, contReq, false, projectID, modelName)
+		nextResp, fwdErr := proxy.ForwardGemini(ctx, httpClient, cfg, apiKey, contReq, false, projectID, modelName, func() string {
+			if key := requestKeyFromContext(ctx); key != nil {
+				return key.ID
+			}
+			return ""
+		}())
 		if fwdErr != nil {
 			log.Warn("gemini", "long-decode: forward continuation failed", "hop", hop+1, "error", fwdErr)
 			return &http.Response{
@@ -749,7 +759,7 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 	hw := proxy.NewHeartbeatWriter(ctx, w, 0)
 	defer hw.Close()
 	flusher := proxy.WriteSSEHeaders(hw)
-	geminiState := &translator.GeminiStreamState{SessionID: handlerutil.GetSessionID(ctx)}
+	geminiState := &translator.GeminiStreamState{SessionID: handlerutil.GetSessionID(ctx), APIKeyId: func() string { if k := requestKeyFromContext(ctx); k != nil { return k.ID }; return "" }()}
 	start := time.Now()
 	// A /v1/responses client is one hop further out: Gemini events become
 	// OpenAI chunks here and those chunks become Responses events, so the

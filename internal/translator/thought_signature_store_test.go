@@ -13,25 +13,25 @@ func TestThoughtSignatureStore_BasicAndSession(t *testing.T) {
 	sig := "sig_abc_xyz"
 	sessionID := "session_1"
 
-	StoreGeminiThoughtSignature(callID, sig, sessionID)
+	StoreGeminiThoughtSignature(callID, sig, sessionID, "")
 
 	// Retrieve by session + callID
-	if got := GetGeminiThoughtSignature(callID, sessionID); got != sig {
+	if got := GetGeminiThoughtSignature(callID, sessionID, ""); got != sig {
 		t.Errorf("expected %q, got %q", sig, got)
 	}
 
 	// Retrieve by callID alone (global fallback)
-	if got := GetGeminiThoughtSignature(callID, ""); got != sig {
+	if got := GetGeminiThoughtSignature(callID, "", ""); got != sig {
 		t.Errorf("expected %q, got %q", sig, got)
 	}
 
 	// Retrieve with __ts__ suffix attached
-	if got := GetGeminiThoughtSignature(callID+"__ts__dummy", sessionID); got != sig {
+	if got := GetGeminiThoughtSignature(callID+"__ts__dummy", sessionID, ""); got != sig {
 		t.Errorf("expected %q for clean lookup, got %q", sig, got)
 	}
 
 	// Unknown callID
-	if got := GetGeminiThoughtSignature("call_unknown", sessionID); got != "" {
+	if got := GetGeminiThoughtSignature("call_unknown", sessionID, ""); got != "" {
 		t.Errorf("expected empty for unknown, got %q", got)
 	}
 }
@@ -129,7 +129,7 @@ func TestThoughtSignatureStore_FamilyScoping(t *testing.T) {
 
 	// Untagged queries/entries remain backward compatible
 	untaggedCall := "call_legacy"
-	StoreGeminiThoughtSignature(untaggedCall, "LEGACY_SIG", storeSession)
+	StoreGeminiThoughtSignature(untaggedCall, "LEGACY_SIG", storeSession, "")
 	if got := GetGeminiThoughtSignature(untaggedCall, storeSession, "gemini-3.8-flash"); got != "LEGACY_SIG" {
 		t.Errorf("expected LEGACY_SIG for untagged entry, got %q", got)
 	}

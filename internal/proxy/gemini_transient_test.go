@@ -90,7 +90,7 @@ func TestForwardGemini_HeaderTimeout_ReturnsRetryable502(t *testing.T) {
 	// If translation fails the call returns before dialing, so pin the body to the
 	// OpenAI shape TranslateOpenAIToGeminiWithSession accepts.
 
-	_, err := ForwardGemini(context.Background(), client, cfg, "ya29.fake", body, false, "proj-1", "gemini-3.8-flash-medium")
+	_, err := ForwardGemini(context.Background(), client, cfg, "ya29.fake", body, false, "proj-1", "gemini-3.8-flash-medium", "")
 	if err == nil {
 		t.Fatal("ForwardGemini() error = nil, want retryable 502")
 	}
@@ -122,7 +122,7 @@ func TestForwardGemini_ClientCancelled_StaysTerminal(t *testing.T) {
 	cfg := &providers.ProviderConfig{BaseURL: srv.URL}
 	body := `{"model":"gemini-3.8-flash-medium","messages":[{"role":"user","content":"hi"}]}`
 
-	_, err := ForwardGemini(ctx, client, cfg, "ya29.fake", body, false, "proj-1", "gemini-3.8-flash-medium")
+	_, err := ForwardGemini(ctx, client, cfg, "ya29.fake", body, false, "proj-1", "gemini-3.8-flash-medium", "")
 	if err == nil {
 		t.Fatal("ForwardGemini() error = nil, want context error")
 	}

@@ -21,7 +21,8 @@ import (
 
 // ForwardGemini sends an OpenAI-format request to a Gemini-native endpoint.
 // projectID is non-empty for antigravity (cloudcode-pa.googleapis.com).
-func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey, bodyStr string, isStream bool, projectID, modelName string) (*http.Response, error) {
+// apiKeyID scopes bare-key thought signatures when no session header is sent.
+func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.ProviderConfig, apiKey, bodyStr string, isStream bool, projectID, modelName string, apiKeyID string) (*http.Response, error) {
 	body := []byte(bodyStr)
 	if projectID != "" {
 		// Body-inspecting tier resolution (upstream getModelUpstreamId): an
@@ -62,7 +63,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		sendBody = wrapped
 	} else {
 		// Translate OpenAI → Gemini native
-		geminiBody, err := translator.TranslateOpenAIToGeminiWithSession(body, handlerutil.GetSessionID(ctx))
+		geminiBody, err := translator.TranslateOpenAIToGeminiWithSession(body, handlerutil.GetSessionID(ctx), apiKeyID)
 		if err != nil {
 			return nil, fmt.Errorf("translate to Gemini: %w", err)
 		}
