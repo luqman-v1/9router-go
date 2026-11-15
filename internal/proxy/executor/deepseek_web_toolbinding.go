@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	json "encoding/json/v2"
 
@@ -148,7 +149,7 @@ func deepSeekWithoutNonce(args map[string]any) (string, bool) {
 		}
 		trimmed[key] = value
 	}
-	encoded, err := json.Marshal(trimmed)
+	encoded, err := marshalStable(trimmed)
 	if err != nil {
 		return "", false
 	}
@@ -195,39 +196,66 @@ func deepSeekValidateToolArguments(tools []deepSeekToolSpec, name string, args m
 func deepSeekCompiledSchema(raw string) (func(map[string]any) error, bool) {
 	key := raw
 	deepSeekSchemaCacheMu.RLock()
-	compiled, ok := deepSeekSchemaCache[key]
+	entry, ok := deepSeekSchemaCache[key]
 	deepSeekSchemaCacheMu.RUnlock()
 	if ok {
-		return compiled, compiled != nil
+		return entry.validate, entry.validate != nil
 	}
 
 	compiler := jsonschema.NewCompiler()
 	if err := compiler.AddResource("schema.json", strings.NewReader(key)); err != nil {
-		deepSeekSchemaCacheMu.Lock()
-		deepSeekSchemaCache[key] = nil
-		deepSeekSchemaCacheMu.Unlock()
+		deepSeekSchemaCacheStore(key, nil)
 		return nil, false
 	}
 	compiledSchema, err := compiler.Compile("schema.json")
 	if err != nil {
-		deepSeekSchemaCacheMu.Lock()
-		deepSeekSchemaCache[key] = nil
-		deepSeekSchemaCacheMu.Unlock()
+		deepSeekSchemaCacheStore(key, nil)
 		return nil, false
 	}
 	validate := func(args map[string]any) error {
 		return compiledSchema.Validate(args)
 	}
-	deepSeekSchemaCacheMu.Lock()
-	deepSeekSchemaCache[key] = validate
-	deepSeekSchemaCacheMu.Unlock()
+	deepSeekSchemaCacheStore(key, validate)
 	return validate, true
 }
 
+// deepSeekSchemaCacheMaxEntries caps the compiled-schema cache. The key is
+// the client-supplied schema bytes, so an uncapped cache grows with every
+// distinct schema a client sends (#1167 item 1). The cap and the
+// evict-the-oldest rule mirror the repo's session caches
+// (pplxSessionMaxEntries, deepSeekSessionStore.evictOldestLocked).
+const deepSeekSchemaCacheMaxEntries = 200
+
+type deepSeekSchemaCacheEntry struct {
+	validate func(map[string]any) error
+	at       time.Time
+}
+
 var (
-	deepSeekSchemaCache   = map[string]func(map[string]any) error{}
+	deepSeekSchemaCache   = map[string]deepSeekSchemaCacheEntry{}
 	deepSeekSchemaCacheMu sync.RWMutex
 )
+
+// deepSeekSchemaCacheStore records one compiled schema (a nil validator is a
+// cached compile failure) and evicts the oldest entry when the cache grows
+// past its cap.
+func deepSeekSchemaCacheStore(key string, validate func(map[string]any) error) {
+	deepSeekSchemaCacheMu.Lock()
+	defer deepSeekSchemaCacheMu.Unlock()
+	deepSeekSchemaCache[key] = deepSeekSchemaCacheEntry{validate: validate, at: time.Now()}
+	if len(deepSeekSchemaCache) > deepSeekSchemaCacheMaxEntries {
+		var oldestKey string
+		var oldest time.Time
+		for k, v := range deepSeekSchemaCache {
+			if oldest.IsZero() || v.at.Before(oldest) {
+				oldest, oldestKey = v.at, k
+			}
+		}
+		if oldestKey != "" {
+			delete(deepSeekSchemaCache, oldestKey)
+		}
+	}
+}
 
 // deepSeekDSMLMarkup matches the DSML dialect in every spelling the site emits:
 // the bars may be full-width (U+FF5C) or ASCII, padded or not, and the marker
