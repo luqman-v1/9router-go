@@ -614,6 +614,12 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	ctx, w := f.Ctx, f.W
 	provider, model := f.Provider, f.Model
 	connectionID, connData := f.ConnectionID, f.ConnData
+	// authType is a DB column, not part of the data blob; ForwardMinimaxCode
+	// needs it to tell a desktop-app lease connection from an OAuth one.
+	authType := ""
+	if connData != nil {
+		authType = connData.AuthType
+	}
 	body, isStream := f.Body, f.IsStream
 	translateResponse, endpoint := f.TranslateResponse, f.Endpoint
 	// A custom JSON business endpoint may already have performed its operation
@@ -1114,6 +1120,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			ClaudeClient:   endpoint == "/v1/v1/messages" || endpoint == "/v1/messages",
 			TranslateResp:  translateResponse,
 			ConnectionID:   connectionID,
+			AuthType:       authType,
 			SessionID:      sessionID,
 			ToolNameMap:    claudeToolMap,
 			UpstreamClaude: upstreamClaude && !claudeNative,
@@ -1168,6 +1175,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 					ClaudeClient:   endpoint == "/v1/v1/messages" || endpoint == "/v1/messages",
 					TranslateResp:  translateResponse,
 					ConnectionID:   connectionID,
+					AuthType:       authType,
 					SessionID:      sessionID,
 					ToolNameMap:    claudeToolMap,
 					UpstreamClaude: upstreamClaude && !claudeNative,

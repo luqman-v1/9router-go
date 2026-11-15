@@ -519,6 +519,7 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 			return nil, nil, fmt.Errorf("failed to parse connection data: %w", err)
 		}
 	}
+	connData.AuthType = conn.AuthType
 	// The dashboard's proxy assignment endpoint (upstream parity) stores the
 	// binding in providerSpecificData.proxyPoolId, while the top-level field is
 	// what this resolver reads. Accept both so a pool bound from either writer
