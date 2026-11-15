@@ -222,7 +222,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 			firstEventTimeout = proxy.FlashFirstEventTimeout
 		}
 		stallReader := proxy.NewStallReaderWithFirstEvent(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), firstEventTimeout, provider)
-		defer stallReader.Close()
+		defer func() { _ = stallReader.Close() }()
 		return h.handleGeminiStream(ctx, w, stallReader, translateResponse, metrics)
 	}
 	return h.handleGeminiNonStream(ctx, w, resp.Body, translateResponse, metrics)

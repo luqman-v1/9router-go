@@ -455,6 +455,7 @@ func StoreGeminiThoughtSignature(toolCallID, signature, sessionID string, model 
 	}
 	globalThoughtSigStore.enqueueSignatureWrites(queue, keys, signature, family, diskExp)
 }
+
 // GetGeminiThoughtSignature retrieves a thought signature by tool_call_id,
 // scoped to the conversation that produced it and matched against the model
 // family. When sessionID is empty and an apiKeyID is supplied, the bare keys
@@ -561,7 +562,8 @@ func signatureLookupKeys(toolCallID, cleanID, sessionID string, apiKeyID ...stri
 		keys = append(keys, sessionID+":"+cleanID)
 	}
 	return keys
-	}
+}
+
 // ClearGeminiThoughtSignatures resets the store (useful for tests).
 func ClearGeminiThoughtSignatures() {
 	globalThoughtSigStore.mu.Lock()
