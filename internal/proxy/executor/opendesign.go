@@ -113,7 +113,7 @@ func forwardOpenDesignLane(w http.ResponseWriter, req *Request, cleanModel, lane
 	if err != nil {
 		return fmt.Errorf("opendesign forward: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	for k, v := range resp.Header {
 		for _, vv := range v {

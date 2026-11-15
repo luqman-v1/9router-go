@@ -201,7 +201,7 @@ func openDesignWorkspace(ctx context.Context, controlKey string) (id string, tie
 		"User-Agent":    usageUserAgent,
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("the workspaces read answered %v", err)
+		return "", "", fmt.Errorf("the workspaces read answered: %w", err)
 	}
 	if status < 200 || status >= 300 {
 		return "", "", fmt.Errorf("the workspaces read answered %d", status)
