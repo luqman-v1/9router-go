@@ -587,6 +587,13 @@ func captureUsageFromSSEChunk(ctx context.Context, acc *translator.OpenAIUsage, 
 	if !bytes.Contains(trimmed, []byte("data:")) {
 		return acc
 	}
+	// Every parser the scan feeds requires the JSON `"usage"` key, so a chunk
+	// without the substring cannot yield usage. The check is what keeps this
+	// cheap: without it, each read pays a fresh ScanStream — a new 64KB
+	// scanner buffer per call — on content chunks that never carry usage.
+	if !bytes.Contains(trimmed, []byte(`"usage"`)) {
+		return acc
+	}
 	_ = proxy.ScanStream(bytes.NewReader(trimmed), func(payload []byte) {
 		if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
 			return

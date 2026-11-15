@@ -312,11 +312,19 @@ func (h *ChatHandler) handleStreamResponse(ctx context.Context, w http.ResponseW
 			if flusher != nil {
 				flusher.Flush()
 			}
-			if usage := translator.ParseResponseUsage(payload); usage != nil {
-				translator.SetUsage(ctx, usage)
-			} else if acc := translator.AccumulateClaudeStreamUsage(streamUsage, payload); acc != nil {
-				streamUsage = acc
-				translator.SetUsage(ctx, streamUsage)
+			// Only a chunk carrying the JSON `"usage"` key can yield usage:
+			// every parser below (ParseResponseUsage, ParseResponsesUsage,
+			// AccumulateClaudeStreamUsage) unmarshals a struct with a
+			// `json:"usage"` field. The guard skips two full unmarshals per
+			// content chunk — the vast majority of a stream — for the price
+			// of one substring search.
+			if bytes.Contains(payload, []byte(`"usage"`)) {
+				if usage := translator.ParseResponseUsage(payload); usage != nil {
+					translator.SetUsage(ctx, usage)
+				} else if acc := translator.AccumulateClaudeStreamUsage(streamUsage, payload); acc != nil {
+					streamUsage = acc
+					translator.SetUsage(ctx, streamUsage)
+				}
 			}
 		})
 		if err != nil {

@@ -159,7 +159,16 @@ func scanEvents(r io.Reader, w *idleWatch, onEvent func(SSEEvent) bool) error {
 		if len(dataLines) == 0 {
 			return true
 		}
-		payload := bytes.Join(dataLines, []byte("\n"))
+		// The overwhelmingly common event carries one `data:` line, so hand
+		// its slice through instead of paying bytes.Join for a join of one.
+		// Callers must not retain the payload past the callback — they don't
+		// (writeFrame, patchers and the peek buffer all copy first) — and the
+		// multi-line join below was already a fresh allocation, so the shared
+		// buffer contract is unchanged for anything that spans reads.
+		payload := dataLines[0]
+		if len(dataLines) > 1 {
+			payload = bytes.Join(dataLines, []byte("\n"))
+		}
 		dataLines = dataLines[:0]
 		if len(payload) == 0 {
 			return true // keep-alive: `data:` with empty payload
