@@ -116,7 +116,7 @@ func TestComboModelResponseTimeoutEndpoints(t *testing.T) {
 				if stalledCalls.Load() != 1 {
 					t.Fatalf("timed-out model retried %d times", stalledCalls.Load())
 				}
-				if !repo.IsProviderAvailable("deepseek", "deepseek-chat") {
+				if !repo.IsProviderAvailable(t.Context(), "deepseek", "deepseek-chat") {
 					t.Fatal("model timeout cooled provider")
 				}
 				if locked, _ := repo.IsConnectionModelLocked("mock-a", "deepseek-chat"); locked {

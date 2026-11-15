@@ -235,9 +235,9 @@ func (h *ChatHandler) getBestConnection(provider string, connectionID string, ex
 }
 
 func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider string, connectionID string, excludeIDs []string, model string, excludePools ...map[string]bool) (*models.ProviderConnection, *ConnectionData, error) {
-	if model != "" && !h.Repo.IsProviderAvailable(provider, model) {
-		log.Warn("health", "unhealthy provider", "provider", provider, "model", model)
-	}
+	// The combo loop health-checks every candidate before dialing here
+	// (combo.go "skip unhealthy") and logs the skip; repeating the scan
+	// inside the selector doubled the query cost and only re-logged it.
 
 	var conn *models.ProviderConnection
 	var err error
@@ -556,18 +556,20 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 // specific model — an active per-model lock or a provider quota cache. An
 // empty model means nothing model-scoped applies (upstream parity: the lock
 // filter only runs for a model-bearing request).
+//
+// The lock fields are read from the blob the rotation loop already holds in
+// memory: a row fetch per check here ran 2N queries per rotation pass on an
+// N-connection pool, each re-reading the same row the loop is iterating.
 func (h *ChatHandler) connectionModelBlocked(c *models.ProviderConnection, provider, model string) bool {
 	if model == "" {
 		return false
 	}
 	lockKey := canonicalLockModel(provider, model)
-	if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, lockKey); locked {
+	if db.ConnectionModelLockedData(c.Data, lockKey) {
 		return true
 	}
-	if lockKey != model {
-		if locked, _ := h.Repo.IsConnectionModelLocked(c.ID, model); locked {
-			return true
-		}
+	if lockKey != model && db.ConnectionModelLockedData(c.Data, model) {
+		return true
 	}
 	return quotaCacheBlocked(provider, c.ID, model)
 }
@@ -621,13 +623,11 @@ func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection
 		return false, ""
 	}
 	lockKey := canonicalLockModel(conn.Provider, model)
-	if locked, _ := h.Repo.IsConnectionModelLocked(conn.ID, lockKey); locked {
+	if db.ConnectionModelLockedData(conn.Data, lockKey) {
 		return true, "model lock " + lockKey
 	}
-	if lockKey != model {
-		if locked, _ := h.Repo.IsConnectionModelLocked(conn.ID, model); locked {
-			return true, "model lock " + model
-		}
+	if lockKey != model && db.ConnectionModelLockedData(conn.Data, model) {
+		return true, "model lock " + model
 	}
 	if quotaCacheBlocked(conn.Provider, conn.ID, model) {
 		return true, "quota cache"

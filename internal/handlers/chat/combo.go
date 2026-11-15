@@ -1034,7 +1034,7 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 			isLastModel := i == lastTried.index(excludeIDs)
 
 			// Skip unavailable (model-locked) providers
-			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
+			if !h.Repo.IsProviderAvailable(ctx, modelInfo.Provider, modelInfo.Model) {
 				log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
 				if lastErr == nil {
 					lastErr = &upstreamError{StatusCode: http.StatusTooManyRequests, Body: []byte(`{"error":{"message":"all connections for this provider are rate-limited","type":"rate_limit_error","code":429}}`)}
@@ -1108,16 +1108,18 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 					connID = picked.ID
 					connData = cData
 				}
-				// Skip a connection that is already locked for this model
-				if connID != "" {
+				// Skip a connection that is already locked for this model.
+				// picked.Data is already in memory — the repo call re-fetched
+				// and re-parsed the same row per connection attempt.
+				if picked != nil {
 					lockKey := canonicalLockModel(modelInfo.Provider, modelInfo.Model)
-					locked, _ := h.Repo.IsConnectionModelLocked(connID, lockKey)
+					locked := db.ConnectionModelLockedData(picked.Data, lockKey)
 					if !locked && lockKey != modelInfo.Model {
-						locked, _ = h.Repo.IsConnectionModelLocked(connID, modelInfo.Model)
+						locked = db.ConnectionModelLockedData(picked.Data, modelInfo.Model)
 					}
 					if locked {
-						log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "lockKey", lockKey, "conn", connID)
-						excludeIDs = append(excludeIDs, connID)
+						log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "lockKey", lockKey, "conn", picked.ID)
+						excludeIDs = append(excludeIDs, picked.ID)
 						continue
 					}
 				}
@@ -1551,7 +1553,7 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 			isLastModel := i == lastTried.index(excludeIDs)
 
 			// Skip unavailable (model-locked) providers
-			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
+			if !h.Repo.IsProviderAvailable(ctx, modelInfo.Provider, modelInfo.Model) {
 				log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
 				if lastErr == nil {
 					lastErr = &upstreamError{StatusCode: http.StatusTooManyRequests, Body: []byte(`{"error":{"message":"all connections for this provider are rate-limited","type":"rate_limit_error","code":429}}`)}
@@ -1605,15 +1607,17 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 					connID = picked.ID
 					connData = cData
 				}
-				if connID != "" {
+				// Skip a connection already locked for this model, reading the
+				// blob picked already carries — same rationale as the chat loop.
+				if picked != nil {
 					lockKey := canonicalLockModel(modelInfo.Provider, modelInfo.Model)
-					locked, _ := h.Repo.IsConnectionModelLocked(connID, lockKey)
+					locked := db.ConnectionModelLockedData(picked.Data, lockKey)
 					if !locked && lockKey != modelInfo.Model {
-						locked, _ = h.Repo.IsConnectionModelLocked(connID, modelInfo.Model)
+						locked = db.ConnectionModelLockedData(picked.Data, modelInfo.Model)
 					}
 					if locked {
-						log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "lockKey", lockKey, "conn", connID)
-						excludeIDs = append(excludeIDs, connID)
+						log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "lockKey", lockKey, "conn", picked.ID)
+						excludeIDs = append(excludeIDs, picked.ID)
 						continue
 					}
 				}
