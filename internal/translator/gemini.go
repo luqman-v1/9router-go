@@ -32,7 +32,7 @@ type GeminiStreamState struct {
 	// APIKeyId scopes bare-key thought signatures when a client sends no
 	// session header, so two keys on one account never replay each other's
 	// signature through the shared tool_call_id namespace.
-	APIKeyId        string
+	APIKeyId      string
 	ToolCallCount int
 }
 

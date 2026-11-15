@@ -196,12 +196,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		}
 		resp = contResp
 	}
-	var bodyCloser io.Closer = resp.Body
-	defer func() {
-		if bodyCloser != nil {
-			bodyCloser.Close()
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Handle response — antigravity wraps non-streaming response in {"response": {...}}
 	// For streaming (SSE), the events are NOT wrapped — pipe directly.
@@ -227,7 +222,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 			firstEventTimeout = proxy.FlashFirstEventTimeout
 		}
 		stallReader := proxy.NewStallReaderWithFirstEvent(ctx, resp.Body, cfg.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), firstEventTimeout, provider)
-		bodyCloser = stallReader
+		defer stallReader.Close()
 		return h.handleGeminiStream(ctx, w, stallReader, translateResponse, metrics)
 	}
 	return h.handleGeminiNonStream(ctx, w, resp.Body, translateResponse, metrics)
@@ -759,7 +754,12 @@ func (h *ChatHandler) handleGeminiStream(ctx context.Context, w http.ResponseWri
 	hw := proxy.NewHeartbeatWriter(ctx, w, 0)
 	defer hw.Close()
 	flusher := proxy.WriteSSEHeaders(hw)
-	geminiState := &translator.GeminiStreamState{SessionID: handlerutil.GetSessionID(ctx), APIKeyId: func() string { if k := requestKeyFromContext(ctx); k != nil { return k.ID }; return "" }()}
+	geminiState := &translator.GeminiStreamState{SessionID: handlerutil.GetSessionID(ctx), APIKeyId: func() string {
+		if k := requestKeyFromContext(ctx); k != nil {
+			return k.ID
+		}
+		return ""
+	}()}
 	start := time.Now()
 	// A /v1/responses client is one hop further out: Gemini events become
 	// OpenAI chunks here and those chunks become Responses events, so the

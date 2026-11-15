@@ -1125,18 +1125,29 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 
 	if exec := executorFor(provider, connData); exec != nil {
 		execReq := &executor.Request{
-			Ctx:            ctx,
-			Client:         httpClient,
-			Config:         providerCfg,
-			Provider:       provider,
-			APIKey:         apiKey,
-			Body:           pipedBody,
-			IsStream:       isStream,
-			ConnectionID:   connectionID,
-			AuthType:       authType,
-			APIKeyID:       func() string { if k := requestKeyFromContext(ctx); k != nil { return k.ID }; return "" }(),
+			Ctx:          ctx,
+			Client:       httpClient,
+			Config:       providerCfg,
+			Provider:     provider,
+			APIKey:       apiKey,
+			Body:         pipedBody,
+			IsStream:     isStream,
+			ConnectionID: connectionID,
+			AuthType:     authType,
+			APIKeyID: func() string {
+				if k := requestKeyFromContext(ctx); k != nil {
+					return k.ID
+				}
+				return ""
+			}(),
 			SessionID:      sessionID,
 			ToolNameMap:    claudeToolMap,
+			ClaudeClient:   endpoint == "/v1/v1/messages" || endpoint == "/v1/messages",
+			TranslateResp:  translateResponse,
+			UpstreamClaude: upstreamClaude && !claudeNative,
+			ResponseBuf:    &streamNoteWriter{w: &metrics.ResponseBuf, note: metrics.NoteOutput},
+			StartTime:      start,
+			TTFT:           &metrics.TTFT,
 		}
 		// client_id cloaking: hand the connection's providerSpecificData
 		// (fingerprintId) to executors that mimic an official client.

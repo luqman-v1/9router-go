@@ -26,7 +26,7 @@ func zedGeminiStream(w http.ResponseWriter, req *Request, upstream io.Reader) er
 	flusher := proxy.WriteSSEHeaders(hw)
 
 	state := &translator.GeminiStreamState{
-		Model:   translator.RequestedModelFromContext(req.Ctx),
+		Model: translator.RequestedModelFromContext(req.Ctx),
 		APIKeyId: func() string {
 			if k := middleware.AuthenticatedApiKeyFromContext(req.Ctx); k != nil {
 				return k.ID
