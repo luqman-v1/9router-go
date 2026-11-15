@@ -691,6 +691,8 @@ func init() {
 		"gemini-argon":          geminiWebCaps,
 		"gemini-3-pro":          geminiWebCaps,
 		"gemini-4-argon":        geminiWebCaps,
+		"gemini-hydrogen":       geminiWebCaps,
+		"gemini-4-hydrogen":     geminiWebCaps,
 	}
 
 	providerCapabilities["opencode-go"] = map[string]Capabilities{
@@ -838,6 +840,9 @@ var patternCapabilities = []patternCapability{
 	// publishes the bare id "gemini-argon" as well as the "gemini-4-argon"
 	// alias, so both spellings have to hit this row.
 	{pattern: "*gemini*argon*", caps: Capabilities{Vision: true, PDF: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
+	// Gemini 4 Hydrogen: LOW/MEDIUM/HIGH/XHIGH — adds an xhigh tier above Argon,
+	// thinking cannot be disabled. Same wire shape as Argon, higher ceiling.
+	{pattern: "*gemini*hydrogen*", caps: Capabilities{Vision: true, PDF: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
 	{pattern: "*gemini-4*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
 	{pattern: "*gemini-3.8*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
 	{pattern: "*gemini-3.7*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},

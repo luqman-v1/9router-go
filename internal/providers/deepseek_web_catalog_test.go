@@ -44,7 +44,8 @@ func TestBrowserLoginProvidersInCatalog(t *testing.T) {
 			models: []string{
 				"gemini-3.1-pro", "gemini-3.7-flash", "gemini-3.1-flash-lite",
 				"gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon",
-				"gemini-3-pro", "gemini-4-argon",
+				"gemini-hydrogen", "gemini-3-pro", "gemini-4-argon",
+				"gemini-4-hydrogen",
 			},
 		},
 	}
