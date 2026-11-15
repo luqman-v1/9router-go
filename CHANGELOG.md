@@ -1,5 +1,29 @@
 # Changelog
 
+## [v1.9.17-exp.4] - 2026-11-15
+
+### fix(deepseek-web): bound the compiled-schema cache
+
+- `deepSeekSchemaCache` was a package-level map keyed by the client-supplied schema bytes and never evicted, so a client varying its tool schemas grew it without bound (#1167 item 1).
+- The cache now caps at 200 entries — the same cap as the repo's session caches (`pplxSessionMaxEntries`) — and evicts the oldest entry on insert, mirroring `pplxSessionStore` and `deepSeekSessionStore.evictOldestLocked`. Entries carry a store timestamp; a nil validator (a cached compile failure) counts against the cap like any other entry. Lookup behaviour is unchanged.
+- New test `TestDeepSeekSchemaCacheBounded` pins the bound: cap+25 distinct schemas leave exactly the cap, the newest schema still validates, and a failed compile stays bounded. Verified with Go 1.27.4: `go build`, `go vet`, and the executor package's DeepSeek tests pass.
+
+### perf(combo): cut per-candidate health and lock queries
+
+- The combo failure loop health-checked every candidate model (`IsProviderAvailable`) and then checked the picked connection's model lock again by ID (`IsConnectionModelLocked`) — on an N-connection pool that was 1 list query + N single-row data fetches + N full-blob JSON unmarshals per candidate per pass, and the connection selector repeated the same health scan a second time just to log it. Measured: 77 µs and 225 allocations for one health check on an eight-connection pool.
+- `IsProviderAvailable` now answers from one statement over the provider's active rows, parsing the `modelLock_<model>` field in Go with the same tolerant rules as before (missing, empty, unparseable or malformed ⇒ unlocked) — not `json_extract`, which turns a malformed blob into a SQL error and would have flipped the fail-open semantics. An empty pool still reports available; a pool whose every row is locked still does not. "No connections" and "all locked" are kept distinct deliberately.
+- The rotation loop, the pinned-connection ineligibility check and both combo lock-skip sites already hold the connection's data blob in memory; they now read the lock fields from it (`db.ConnectionModelLockedData`) instead of re-fetching and re-parsing the same row from SQLite — the per-pass rotation cost drops from 2N queries to zero.
+- New permanent benchmark pins the health-check cost (`internal/handlers/chat` bench: 16 µs / 28 allocs after, from 77 µs / 225 before).
+- No schema, wire or dashboard change: the blob format, lock write path (`json_set`), and every read shared with the Next.js dashboard are untouched. Verified with the `db` and `chat` unit suites plus the integration suite.
+
+### perf(stream): skip ~99% of per-event allocations on the SSE relay path
+
+- A streamed turn used to allocate on every step of the relay: `scanEvents.emit` called `bytes.Join` even when an event carried a single `data:` line (pprof put `bytes.Join` at 99.2% of the scanner's allocations — 504 allocs for a 500-event stream), the handler path ran two full `json.Unmarshal` passes per content chunk hunting for a usage object, and the executor passthrough re-ran a complete `ScanStream` — a fresh 64 KB scanner buffer each time — on every 4 KB read to find the one chunk that reports usage.
+- All three are now gated by what the parsers actually need: every usage parser (`ParseClaudeUsage`, `ParseResponseUsage`, `ParseResponsesUsage`, `AccumulateClaudeStreamUsage`) unmarshals a struct with a `json:"usage"` field, so a chunk without the `"usage"` substring cannot yield usage. Single-line events hand their slice through instead of joining a one-element slice. Multi-line events keep the join; nothing about the wire protocol changes.
+- Measured on a 500-event (~65 KB) stream: `ScanStream` 88 µs → 52 µs, 129.6 KB → 65.6 KB per op, **504 → 3 allocs per op**. Guarded usage capture over a 200-event stream drops from a nested scan per read to one scan on the single read that carries usage. No single-turn latency change — the relay was already µs-scale between tokens — but per-stream garbage falls by ~1 MB, which cuts GC frequency on the small deployment target where several streams run concurrently.
+- New permanent benchmarks pin the paths (`internal/proxy/sse_stream_bench_test.go`, `internal/proxy/executor/usage_guard_bench_test.go`): passthrough copy, event scan, the multi-line join fallback (so a fast-path regression cannot hide the join path), the guarded usage capture, and the parser-miss fallback.
+- Verified: `go test ./internal/proxy/... ./internal/handlers/chat/` and the integration suite (`-tags=integration`, real router, real DB, fake upstreams) pass.
+
 ## [v1.9.17-exp.3] - 2026-11-15
 
 ### Parity: upstream decolua/9router v0.5.116..v0.5.119 (issue #1139)
