@@ -1034,7 +1034,7 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 			isLastModel := i == lastTried.index(excludeIDs)
 
 			// Skip unavailable (model-locked) providers
-			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
+			if !h.Repo.IsProviderAvailable(ctx, modelInfo.Provider, modelInfo.Model) {
 				log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
 				if lastErr == nil {
 					lastErr = &upstreamError{StatusCode: http.StatusTooManyRequests, Body: []byte(`{"error":{"message":"all connections for this provider are rate-limited","type":"rate_limit_error","code":429}}`)}
@@ -1553,7 +1553,7 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 			isLastModel := i == lastTried.index(excludeIDs)
 
 			// Skip unavailable (model-locked) providers
-			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
+			if !h.Repo.IsProviderAvailable(ctx, modelInfo.Provider, modelInfo.Model) {
 				log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
 				if lastErr == nil {
 					lastErr = &upstreamError{StatusCode: http.StatusTooManyRequests, Body: []byte(`{"error":{"message":"all connections for this provider are rate-limited","type":"rate_limit_error","code":429}}`)}

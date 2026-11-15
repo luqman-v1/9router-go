@@ -330,11 +330,11 @@ func ConnectionModelLockedData(rawData, model string) bool {
 // full-blob unmarshals to answer a question one scan answers. Lock fields
 // are parsed in Go — not json_extract — so a malformed blob stays "unlocked"
 // exactly as before instead of becoming a SQL error.
-func (r *Repo) IsProviderAvailable(provider, model string) bool {
+func (r *Repo) IsProviderAvailable(ctx context.Context, provider, model string) bool {
 	if provider == "" {
 		return true
 	}
-	rows, err := r.db.Query(
+	rows, err := r.db.QueryContext(ctx,
 		`SELECT data FROM providerConnections WHERE provider = ? AND isActive = 1`,
 		provider,
 	)
