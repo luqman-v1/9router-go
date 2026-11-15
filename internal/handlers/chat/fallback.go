@@ -802,18 +802,18 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		}
 	}
 
-// The caller's own anthropic-version takes precedence over the registry
-// default on Anthropic's own providers: a client that pins a version keeps it
-// instead of being rewritten to 2023-06-01. Gated on the provider id (not
-// isAnthropicUpstream, which keys off the resolved BaseURL) so the merge
-// applies even when a connection points at a non-anthropic.com upstream, and
-// so minimax-code (provider id "minimax-code", which pins its own version)
-// stays isolated.
-if provider == "claude" || provider == "anthropic" {
-	if clientVersion := handlerutil.GetClientAnthropicVersion(ctx); clientVersion != "" {
-		providerCfg.StaticHeaders = providers.WithHeader(providerCfg.StaticHeaders, "anthropic-version", clientVersion)
+	// The caller's own anthropic-version takes precedence over the registry
+	// default on Anthropic's own providers: a client that pins a version keeps it
+	// instead of being rewritten to 2023-06-01. Gated on the provider id (not
+	// isAnthropicUpstream, which keys off the resolved BaseURL) so the merge
+	// applies even when a connection points at a non-anthropic.com upstream, and
+	// so minimax-code (provider id "minimax-code", which pins its own version)
+	// stays isolated.
+	if provider == "claude" || provider == "anthropic" {
+		if clientVersion := handlerutil.GetClientAnthropicVersion(ctx); clientVersion != "" {
+			providerCfg.StaticHeaders = providers.WithHeader(providerCfg.StaticHeaders, "anthropic-version", clientVersion)
+		}
 	}
-}
 
 	// Sanitize tool schemas for all OpenAI-compatible providers (opencode, gemini-openai, etc.)
 	// Fixes misplaced `required` inside `properties` and missing `items` for arrays.
