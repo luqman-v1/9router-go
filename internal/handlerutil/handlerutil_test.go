@@ -1,6 +1,7 @@
 package handlerutil
 
 import (
+	"context"
 	json "encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -389,7 +390,8 @@ func TestContextHelpers_SessionAndBeta(t *testing.T) {
 	if got := GetClientAnthropicVersion(ctxWithVersion); got != "2024-11-05" {
 		t.Errorf("GetClientAnthropicVersion = %q, want 2024-11-05", got)
 	}
-	if got := GetClientAnthropicVersion(nil); got != "" {
+	var nilCtx context.Context
+	if got := GetClientAnthropicVersion(nilCtx); got != "" {
 		t.Errorf("nil context GetClientAnthropicVersion = %q, want empty", got)
 	}
 	// Empty string is not stored
