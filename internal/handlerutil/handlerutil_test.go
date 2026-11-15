@@ -383,4 +383,21 @@ func TestContextHelpers_SessionAndBeta(t *testing.T) {
 	if got := GetClientAnthropicBeta(nil); got != "" {
 		t.Errorf("nil context GetClientAnthropicBeta = %q, want empty", got)
 	}
+
+	// Anthropic Version
+	ctxWithVersion := WithClientAnthropicVersion(t.Context(), "2024-11-05")
+	if got := GetClientAnthropicVersion(ctxWithVersion); got != "2024-11-05" {
+		t.Errorf("GetClientAnthropicVersion = %q, want 2024-11-05", got)
+	}
+	if got := GetClientAnthropicVersion(nil); got != "" {
+		t.Errorf("nil context GetClientAnthropicVersion = %q, want empty", got)
+	}
+	// Empty string is not stored
+	ctxEmpty := WithClientAnthropicVersion(t.Context(), "")
+	if ctxEmpty != t.Context() {
+		t.Error("WithClientAnthropicVersion with empty value must return ctx unchanged")
+	}
+	if got := GetClientAnthropicVersion(ctxEmpty); got != "" {
+		t.Errorf("empty version GetClientAnthropicVersion = %q, want empty", got)
+	}
 }
