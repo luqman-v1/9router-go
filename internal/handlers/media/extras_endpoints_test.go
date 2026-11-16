@@ -677,6 +677,88 @@ func TestHandleWebFetch_firecrawl(t *testing.T) {
 	}
 }
 
+func TestHandleSearch_Keenable(t *testing.T) {
+	var receivedBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		receivedBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"results":[{"title":"Keenable result","url":"https://example.com/1"}]}`))
+	}))
+	defer upstream.Close()
+
+	origKeenable := providers.KnownProviders["keenable"]
+	custom := origKeenable
+	custom.SearchURL = upstream.URL + "/search"
+	providers.KnownProviders["keenable"] = custom
+	defer func() {
+		providers.KnownProviders["keenable"] = origKeenable
+	}()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+	seedFetchConn(t, database, "keenable", "conn-keenable", "public")
+
+	repo := db.NewRepo(database)
+	handler := newTestMediaHandler(repo)
+
+	body := `{"model":"keenable/search","query":"golang release","max_results":5}`
+	req := httptest.NewRequest("POST", "/v1/search", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleSearch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedBody != `{"query":"golang release"}` {
+		t.Errorf("expected body stripped to query only, got %q", receivedBody)
+	}
+}
+
+func TestHandleWebFetch_Keenable(t *testing.T) {
+	var receivedURL string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedURL = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"title":"Keenable fetch","content":"fetched content"}`))
+	}))
+	defer upstream.Close()
+
+	origKeenable := providers.KnownProviders["keenable"]
+	custom := origKeenable
+	custom.FetchURL = upstream.URL + "/fetch"
+	custom.FetchMethod = http.MethodGet
+	providers.KnownProviders["keenable"] = custom
+	defer func() {
+		providers.KnownProviders["keenable"] = origKeenable
+	}()
+
+	database, cleanup := setupMultimodalTestDB(t)
+	defer cleanup()
+	seedFetchConn(t, database, "keenable", "conn-keenable-fetch", "public")
+
+	repo := db.NewRepo(database)
+	handler := newTestMediaHandler(repo)
+
+	body := `{"model":"keenable/fetch","url":"https://example.com/page","format":"markdown"}`
+	req := httptest.NewRequest("POST", "/v1/web/fetch", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.HandleWebFetch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(receivedURL, "url=https%3A%2F%2Fexample.com%2Fpage") || !strings.Contains(receivedURL, "format=markdown") {
+		t.Errorf("expected url+format query, got %q", receivedURL)
+	}
+}
+
 func seedFetchConn(t *testing.T, database *sql.DB, provider, id, apiKey string) {
 	t.Helper()
 	data, _ := json.Marshal(map[string]any{"apiKey": apiKey})
