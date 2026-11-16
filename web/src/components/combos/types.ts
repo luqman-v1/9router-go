@@ -39,6 +39,7 @@ export interface ComboStrategyInfo {
    * Milliseconds the call ceiling spans. Absent means the backend default of
    * one hour; only meaningful alongside budgetCalls. A window longer than the
    * process uptime is never recycled within it.
+ */
   budgetWindowMs?: number
   /**
    * How the combo advertises its context window in /v1/models. `min`
