@@ -1,7 +1,9 @@
 package translator
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
@@ -13,9 +15,10 @@ import (
 	"9router/proxy/internal/log"
 )
 
-// maxAntigravityOutputTokens caps generationConfig.maxOutputTokens; Google's
-// Antigravity backend rejects larger values (parity with Next.js capabilities.js).
-const maxAntigravityOutputTokens = 64000
+// maxAntigravityOutputTokens caps generationConfig.maxOutputTokens. The real
+// agy 1.5.9 CLI sends 65536 on a successful request (live capture 2026-11-16),
+// so the cap is aligned with that rather than the upstream 64000 constant.
+const maxAntigravityOutputTokens = 65536
 
 // thinkingHeadroomTokens is added on top of thinkingBudget when ensuring
 // maxOutputTokens strictly exceeds it (parity across chat and image paths).
@@ -690,6 +693,34 @@ func antigravityUUIDFromSeed(seed string) string {
 	return fmt.Sprintf("%s-%s-%s-%s-%s", hex[0:8], hex[8:12], hex[12:16], hex[16:20], hex[20:32])
 }
 
+// antigravityNumericSessionID matches an id that is already an integer literal.
+var antigravityNumericSessionID = regexp.MustCompile(`^-?\d+$`)
+
+// AntigravityNumericSessionID ports upstream toNumericSessionId
+// (open-sse/utils/sessionManager.js): an id that is already integral passes
+// through unchanged, anything else becomes "-<decimal>" of the first 63 bits of
+// its SHA-256. The agent lane sends it as a JSON string, exactly as the official
+// agy CLI does ("sessionId": "-3750763034362895579", captured live from 1.5.9).
+//
+// An empty id returns "", so the caller omits the field rather than collapsing
+// every caller onto one shared session — a single bucket for the whole gateway
+// is a fingerprint the official client never produces.
+func AntigravityNumericSessionID(sessionID string) string {
+	s := strings.TrimSpace(sessionID)
+	// Upstream normalizeSessionId rejects blank and >256-char ids before
+	// hashing; keep the same bound so a hostile header cannot force an
+	// unbounded sha256 over client input.
+	if s == "" || len(s) > 256 {
+		return ""
+	}
+	if antigravityNumericSessionID.MatchString(s) {
+		return s
+	}
+	sum := sha256.Sum256([]byte(s))
+	n := binary.BigEndian.Uint64(sum[:8]) & 0x7fffffffffffffff
+	return "-" + strconv.FormatUint(n, 10)
+}
+
 // antigravityBuildRequestID builds the IDE request ID in the same shape as the
 // Next.js reference: agent/<conversationId>/<ts>/<trajectoryId>/<step>.
 func antigravityBuildRequestID(sessionID, model, requestType string, contentCount int) string {
@@ -700,6 +731,21 @@ func antigravityBuildRequestID(sessionID, model, requestType string, contentCoun
 	trajectoryID := antigravityUUIDFromSeed(fmt.Sprintf("antigravity:trajectory:%s:%s:%s", sessionID, model, requestType))
 	step := max(contentCount*2-1, 1)
 	return fmt.Sprintf("agent/%s/%d/%s/%d", conversationID, time.Now().UnixMilli(), trajectoryID, step)
+}
+
+// antigravityCanonicalThinkingLevel spells thinkingLevel with the enum casing
+// the official agy CLI uses ("HIGH", not "high"). It is a scoped byte-level
+// substitution on the JSON value only: re-marshalling the whole body here would
+// re-encode thought signatures on functionCall/thought parts and corrupt them.
+func antigravityCanonicalThinkingLevel(body []byte) []byte {
+	for _, level := range [...]string{"minimal", "low", "medium", "high"} {
+		old := []byte(`"thinkingLevel":"` + level + `"`)
+		if bytes.Contains(body, old) {
+			newValue := []byte(`"thinkingLevel":"` + strings.ToUpper(level) + `"`)
+			body = bytes.ReplaceAll(body, old, newValue)
+		}
+	}
+	return body
 }
 
 // hardenAntigravityRequest strips blacklisted thinking/reasoning fields Google
@@ -903,10 +949,22 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string, sessionI
 	// layers cannot disagree on the id that reaches Google.
 	modelName = AntigravityUpstreamModel(modelName)
 
+	rawSession := ""
+	if len(sessionID) > 0 {
+		rawSession = strings.TrimSpace(sessionID[0])
+	}
+
 	contentCount := 1
 	var geminiReq GeminiRequest
 	if err := json.Unmarshal(geminiBody, &geminiReq); err == nil {
 		contentCount = len(geminiReq.Contents)
+		// The official CLI scopes every cascade with a numeric sessionId. Set
+		// it before the copy/marshal chain below: StripCompetitivePrompts and
+		// CloakAntigravityRequest both copy the struct, so the field survives
+		// into the inner body without a second pass.
+		if numeric := AntigravityNumericSessionID(rawSession); numeric != "" {
+			geminiReq.SessionID = numeric
+		}
 		fixAntigravityContents(&geminiReq, modelName)
 		cleanedReq := StripCompetitivePrompts(&geminiReq)
 		if len(cleanedReq.Tools) > 0 {
@@ -918,10 +976,11 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string, sessionI
 		}
 	}
 	geminiBody = hardenAntigravityRequest(geminiBody)
+	geminiBody = antigravityCanonicalThinkingLevel(geminiBody)
 
 	sess := projectID
-	if len(sessionID) > 0 && sessionID[0] != "" {
-		sess = sessionID[0]
+	if rawSession != "" {
+		sess = rawSession
 	}
 
 	wrapper := AntigravityRequest{

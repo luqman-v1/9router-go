@@ -181,12 +181,23 @@ type GeminiFunctionDecl struct {
 }
 
 // GeminiRequest is the full Gemini API request body.
+//
+// The JSON member names are lowerCamelCase, which is what both the public
+// v1beta API and the Cloud Code/Antigravity envelope use on the wire. Upstream's
+// translator emits the same spelling (open-sse/translator/request/openai-to-gemini.js),
+// and the real agy 1.5.9 CLI sends `systemInstruction` — the snake_case spelling
+// this struct used before was accepted by protojson but was a fingerprint no
+// official client presents.
 type GeminiRequest struct {
-	SystemInstruction *GeminiContent  `json:"system_instruction,omitempty"`
+	SystemInstruction *GeminiContent  `json:"systemInstruction,omitempty"`
 	Contents          []GeminiContent `json:"contents"`
 	Tools             []GeminiTool    `json:"tools,omitempty"`
 	ToolConfig        any             `json:"toolConfig,omitempty"`
 	GenerationConfig  jsontext.Value  `json:"generationConfig,omitempty"`
+	// SessionID is the numeric Cloud Code conversation id the official client
+	// scopes a cascade to. It is only populated on the Antigravity lane; the
+	// public Gemini API has no such field and omitempty keeps it off that wire.
+	SessionID string `json:"sessionId,omitempty"`
 }
 
 // GeminiResponse is the Gemini API response body (non-stream).
