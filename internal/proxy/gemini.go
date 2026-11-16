@@ -167,7 +167,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 	// decolua/9router#5703).
 	if resp.StatusCode == http.StatusTooManyRequests && projectID != "" {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if isBareResourceExhausted(errBody) {
 			// Translate the OpenAI body to Gemini, move the systemInstruction,
 			// then re-wrap for Antigravity.
@@ -189,7 +189,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 									return respRetry, nil
 								}
 								errBodyRetry, _ := io.ReadAll(io.LimitReader(respRetry.Body, constants.UpstreamErrLimit))
-								respRetry.Body.Close()
+								_ = respRetry.Body.Close()
 								log.Warn("gemini", "retry with moved systemInstruction also failed", "status", respRetry.StatusCode, "body", string(errBodyRetry[:min(500, len(errBodyRetry))]))
 								// Return the original 429 so the combo loop can rotate.
 								return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
@@ -205,7 +205,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 	}
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if readErr != nil {
 			return nil, fmt.Errorf("upstream returned %d and body read failed: %w", resp.StatusCode, readErr)
 		}
@@ -249,7 +249,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 							return resp2, nil
 						}
 						errBody2, _ := io.ReadAll(io.LimitReader(resp2.Body, constants.UpstreamErrLimit))
-						resp2.Body.Close()
+						_ = resp2.Body.Close()
 						log.Warn("gemini", "retry with default thoughtSignature also failed", "status", resp2.StatusCode, "body", string(errBody2[:min(500, len(errBody2))]))
 						// Fall through to try stripping as last resort
 						if bytes.Contains(errBody2, []byte("thought signature")) || bytes.Contains(errBody2, []byte("Thought signature")) {
@@ -270,7 +270,7 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 											return resp3, nil
 										}
 										errBody3, _ := io.ReadAll(io.LimitReader(resp3.Body, constants.UpstreamErrLimit))
-										resp3.Body.Close()
+										_ = resp3.Body.Close()
 										log.Warn("gemini", "retry without thoughtSignature also failed", "status", resp3.StatusCode, "body", string(errBody3[:min(500, len(errBody3))]))
 										return nil, &UpstreamError{StatusCode: resp3.StatusCode, Body: errBody3, Header: resp3.Header}
 									}

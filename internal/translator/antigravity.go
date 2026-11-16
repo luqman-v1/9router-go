@@ -1067,30 +1067,6 @@ func UnwrapAntigravityResponse(raw []byte) []byte {
 	return []byte(envelope.Response)
 }
 
-// moveSystemInstructionToContents folds the systemInstruction into contents[0]
-// as a user-role turn and clears systemInstruction. Returns true when the
-// rewrite changed the request. Used as a 1-hop fallback retry when the
-// Antigravity backend answers 429 RESOURCE_EXHAUSTED with a bare
-// status (no QUOTA_EXHAUSTED details), because that response means the
-// backend flagged the systemInstruction shape itself (parity with
-// decolua/9router#5703).
-func moveSystemInstructionToContents(req *GeminiRequest) bool {
-	if req == nil || req.SystemInstruction == nil || len(req.SystemInstruction.Parts) == 0 {
-		return false
-	}
-	sysParts := req.SystemInstruction.Parts
-	if len(req.Contents) == 0 {
-		req.Contents = []GeminiContent{{Role: "user", Parts: sysParts}}
-	} else {
-		req.Contents[0] = GeminiContent{
-			Role:  "user",
-			Parts: append(append([]GeminiPart{}, sysParts...), req.Contents[0].Parts...),
-		}
-	}
-	req.SystemInstruction = nil
-	return true
-}
-
 // MoveSystemInstructionToContents folds the systemInstruction of a Gemini
 // request body into contents[0] as a user-role turn and clears
 // systemInstruction. Returns the rewritten body and true when the change

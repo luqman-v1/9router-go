@@ -177,13 +177,14 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	// chain requests to continue the decode until the response is complete
 	// or the hop limit is reached (decolua/9router#5703). The response body
 	// is consumed and a fresh one is obtained for each hop.
+	// Handle long-decode continuation hops
 	if isLongDecodeModel(modelName) && !isStream && projectID != "" {
-		resp, err = h.followLongDecodeContinuation(ctx, httpClient, cfg, apiKey, body, modelName, projectID, resp, translateResponse, metrics)
-		if err != nil {
-			return err
+		contResp, contErr := h.followLongDecodeContinuation(ctx, httpClient, cfg, apiKey, body, modelName, projectID, resp, translateResponse, metrics)
+		if contErr != nil {
+			return contErr
 		}
+		resp = contResp
 	}
-
 	var bodyCloser io.Closer = resp.Body
 	defer func() {
 		if bodyCloser != nil {
@@ -628,7 +629,7 @@ func (h *ChatHandler) followLongDecodeContinuation(
 	for hop := 0; hop < maxLongDecodeHops; hop++ {
 		// Read the response body.
 		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if readErr != nil {
 			return nil, fmt.Errorf("long-decode: read response body: %w", readErr)
 		}
