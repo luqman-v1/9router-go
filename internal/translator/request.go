@@ -880,25 +880,31 @@ func LastCacheableToolIndex(tools []any) int {
 
 // AnchorClaudeCache ensures prompt-caching breakpoint lands on the last non-deferred tool.
 // Port of open-sse/translator/formats/claude.js#lastCacheableToolIndex / anchorClaudeCache (#3567).
-// claudeMessageKeys are the only keys a Messages API message object accepts.
-// Anthropic answers anything else with
+// foreignMessageKeys are the message keys known not to belong to a Messages API
+// message object. Anthropic answers them with
 // "messages.<n>.<key>: Extra inputs are not permitted" and refuses the whole
-// request, so a foreign key that reaches history poisons every later turn.
-var claudeMessageKeys = map[string]struct{}{
-	"role":    {},
-	"content": {},
+// request, so one that reaches history poisons every later turn.
+//
+// This is a denylist on purpose: a key it does not name is forwarded. A newer
+// CLI adding a field must not have it deleted silently here.
+var foreignMessageKeys = map[string]struct{}{
+	"reasoning_content": {},
+	"output_config":     {},
+	"tool_calls":        {},
+	"function_call":     {},
+	"reasoning":         {},
 }
 
-// dropForeignMessageKeys removes keys Anthropic would reject from one message
-// and reports whether anything was dropped. The usual offender is
+// dropForeignMessageKeys removes the known-foreign keys from one message and
+// reports whether anything was dropped. The usual offender is
 // `reasoning_content`, which OpenAI-shaped clients echo back on assistant turns
 // and which passes through untouched when a combo mixes lanes. `output_config`
 // is another: it is a request-level field, and on a message the API answers
 // "messages.<n>.output_config: Extra inputs are not permitted".
 func dropForeignMessageKeys(msgMap map[string]any) bool {
 	dropped := false
-	for k := range msgMap {
-		if _, ok := claudeMessageKeys[k]; ok {
+	for k := range foreignMessageKeys {
+		if _, ok := msgMap[k]; !ok {
 			continue
 		}
 		delete(msgMap, k)
