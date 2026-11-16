@@ -933,6 +933,51 @@ func targetPrivate(ctx context.Context, host string) bool {
 	return false
 }
 
+// resolveSearchURL picks the search endpoint a provider dials. The provider's
+// own configured base URL (registry default) is trusted as admin-controlled;
+// anything else — a per-connection override stored by the dashboard, or a
+// client-supplied baseUrl — is client-controlled and must be public http(s)
+// only, otherwise a custom SearXNG (or any web search) base URL is an SSRF
+// primitive: an attacker points it at 127.0.0.1:11434, 169.254.169.254 or a
+// LAN host and the gateway fetches it on their behalf.
+//
+// Matches upstream resolveBaseUrl / assertPublicUrl: invalid URL, non-http(s)
+// scheme, internal/private/loopback/link-local/metadata addresses are all
+// refused. The guard runs here so a rejected override answers with a clear
+// error instead of reaching the dialer (which under ALLOW_PRIVATE_NETWORKING=1
+// — the default — lets every address class through).
+func resolveSearchURL(cfg *providers.ProviderConfig, psd map[string]any) (string, error) {
+	override := psdStr(psd, "baseUrl")
+	if override == "" {
+		return cfg.SearchURL, nil
+	}
+	u, err := url.Parse(override)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", fmt.Errorf("invalid search base URL: %q", override)
+	}
+	if u.Hostname() == "" {
+		return "", fmt.Errorf("invalid search base URL: empty host")
+	}
+	if handlerutil.AssertPublicURL(override) != nil {
+		return "", fmt.Errorf("search base URL is not allowed: %q", override)
+	}
+	return strings.TrimRight(override, "/"), nil
+}
+
+// psdStr reads a string field from provider-specific data, mirroring the
+// dashboard's copy so the media handler does not import the dashboard package.
+func psdStr(psd map[string]any, keys ...string) string {
+	if psd == nil {
+		return ""
+	}
+	for _, k := range keys {
+		if v, ok := psd[k].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
 func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Request, body []byte, defaultModel, endpoint string) {
 	if handlerutil.GetServiceKind(r.Context()) == "" {
 		r = r.WithContext(handlerutil.WithServiceKind(r.Context(), kindFromEndpoint(endpoint)))
@@ -1126,7 +1171,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			switch endpoint {
 			case "/v1/search":
 				if providerCfg.SearchURL != "" {
-					targetURL = providerCfg.SearchURL
+					targetURL, err = resolveSearchURL(providerCfg, connData.ProviderSpecificData)
+					if err != nil {
+						lastErr = err.Error()
+						continue
+					}
 					method = strings.ToUpper(providerCfg.SearchMethod)
 					if method == "" {
 						method = http.MethodPost
@@ -1487,8 +1536,13 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	method := r.Method
-	if endpoint == "/v1/search" && providerCfg.SearchURL != "" && !hasCustomBaseURL {
-		targetURL = providerCfg.SearchURL
+	if endpoint == "/v1/search" {
+		searchURL, err := resolveSearchURL(providerCfg, connData.ProviderSpecificData)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		targetURL = searchURL
 		if providerCfg.SearchMethod != "" {
 			method = strings.ToUpper(providerCfg.SearchMethod)
 		} else {
