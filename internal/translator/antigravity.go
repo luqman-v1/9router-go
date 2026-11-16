@@ -228,14 +228,40 @@ var competitivePromptBlacklist = []string{
 // the Antigravity gateway (parity with decolua/9router PR #3987). OMP-family
 // harnesses inject these XML markers in system text; normalizing them to
 // neutral tags keeps instruction bodies intact while bypassing the filter.
+//
+// The <system-conventions> wrapper is not enough to rename: OMP's RFC 2119
+// wording inside it is the fingerprint pair reported in can1357/oh-my-pi#11699,
+// and the sidecar that ships with OMP replaces the whole block so wording added
+// later inside the stable boundary cannot reintroduce it. So the block and a
+// bare RFC clause both collapse to canonical neutral text.
+const (
+	antigravityCanonicalConventions = "<guidelines>\nRequirement terminology: MUST means mandatory, SHOULD means recommended, and MAY means optional.\n</guidelines>"
+	antigravityRFCClauseReplacement = "Requirement terminology: MUST means mandatory, SHOULD means recommended, and MAY means optional."
+)
+
 var (
+	harnessConventionsBlock     = regexp.MustCompile(`(?is)<system[-_]conventions\b[^>]*>.*?</system[-_]conventions\s*>`)
+	harnessStandaloneRFCClause  = regexp.MustCompile(`(?i)\bRFC\s+(?:2119|8174)\b[^\r\n]{0,400}\b(?:MUST|REQUIRED|SHOULD|RECOMMENDED|MAY|OPTIONAL)\b[^\r\n]{0,400}(?:\.|$)`)
 	harnessTagSystemConventions = regexp.MustCompile(`(?i)<(/?)system[-_]conventions>`)
 	harnessTagSystemDirective   = regexp.MustCompile(`(?i)<(/?)system[-_]directive>`)
 	harnessTagCritical          = regexp.MustCompile(`(?i)<(/?)critical>`)
-	harnessBrandOMPFull         = regexp.MustCompile(`(?i)Oh My Pi coding harness`)
-	harnessBrandOMP             = regexp.MustCompile(`(?i)Oh My Pi`)
-	harnessBrandOMPLive         = regexp.MustCompile(`(?i)omp Live`)
-	claudeBillingHeaderRegex    = regexp.MustCompile(`(?im)^x-anthropic-billing-header:[^\n]*(?:\r?\n)*`)
+	// OMP 18.20.x identifies itself as "omp's trusted coding assistant" and
+	// references its internal xd:// URL scheme in the system prompt. Both are
+	// detected on their own: a live Antigravity request whose only remaining
+	// OMP markers were the identity sentence and xd:// still answered 429.
+	harnessBrandOMPIdentity = regexp.MustCompile(`(?i)You are omp['’]s trusted coding assistant\.`)
+	harnessSchemeOMP        = regexp.MustCompile(`(?i)\bomp://`)
+	harnessPathOMP          = regexp.MustCompile(`(?i)~?/?\.omp/`)
+	harnessSchemeXD         = regexp.MustCompile(`(?i)\bxd://`)
+	harnessBrandOMPFull     = regexp.MustCompile(`(?i)oh[-_ ]my[-_ ]pi\s+coding\s+harness`)
+	harnessBrandOMP         = regexp.MustCompile(`(?i)oh[-_ ]my[-_ ]pi`)
+	harnessBrandOMPLive     = regexp.MustCompile(`(?i)omp Live`)
+	// harnessBrandOMPToken is the last OMP row: specific identifiers and
+	// schemes are rewritten first, so only a leftover standalone brand token
+	// reaches it. Substrings such as "compiled", "complete", "OpenMP", and
+	// omp_get_thread_num() have no word boundary at the token.
+	harnessBrandOMPToken     = regexp.MustCompile(`(?i)\bomp\b`)
+	claudeBillingHeaderRegex = regexp.MustCompile(`(?im)^x-anthropic-billing-header:[^\n]*(?:\r?\n)*`)
 	// antigravityOpenCodeRegex matches the literal `opencode` provider
 	// identifier upstream rewrites in the system instruction. Upstream's rule
 	// is unbounded and case-insensitive, so `opencode-zen` and
@@ -257,14 +283,33 @@ var (
 )
 
 // normalizeHarnessMarkers neutralizes harness fingerprint tags in system text.
-// Bodies are preserved; only the marker names change.
+// OMP's conventions block is replaced whole, because the wrapper and the RFC
+// wording inside it are detected together; the other marker names change while
+// their instruction bodies stay intact.
 func normalizeHarnessMarkers(text string) string {
+	text = harnessConventionsBlock.ReplaceAllString(text, antigravityCanonicalConventions)
+	text = harnessStandaloneRFCClause.ReplaceAllString(text, antigravityRFCClauseReplacement)
 	text = harnessTagSystemConventions.ReplaceAllString(text, "<${1}conventions>")
 	text = harnessTagSystemDirective.ReplaceAllString(text, "<${1}instructions>")
 	text = harnessTagCritical.ReplaceAllString(text, "<${1}important>")
+	return normalizeHarnessBrandMarkers(text)
+}
+
+// normalizeHarnessBrandMarkers neutralizes standalone harness names and the
+// URL schemes they put in prompt text. System instructions and tool
+// descriptions both carry these tokens, while the conventions block above is
+// system-only. Rows run specific-to-generic: the identity sentence, schemes,
+// and paths are rewritten before the bare brand token, so no row can split a
+// longer match into fragments.
+func normalizeHarnessBrandMarkers(text string) string {
+	text = harnessBrandOMPIdentity.ReplaceAllString(text, "You are a trusted coding assistant.")
+	text = harnessSchemeOMP.ReplaceAllString(text, "docs://")
+	text = harnessPathOMP.ReplaceAllString(text, ".agent/")
+	text = harnessSchemeXD.ReplaceAllString(text, "internal://")
 	text = harnessBrandOMPFull.ReplaceAllString(text, "AI coding assistant")
 	text = harnessBrandOMP.ReplaceAllString(text, "coding assistant")
 	text = harnessBrandOMPLive.ReplaceAllString(text, "coding assistant live")
+	text = harnessBrandOMPToken.ReplaceAllString(text, "agent")
 	return text
 }
 
@@ -301,6 +346,10 @@ func rewriteBrandingText(text string, isSystemInstruction bool) string {
 	text = claudeBillingHeaderRegex.ReplaceAllString(text, "")
 	text = hermesIdentityRegex.ReplaceAllString(text, "You are an AI assistant.")
 	if isSystemInstruction {
+		// Hermes/OpenClaw sentences, headers, and identifiers are the
+		// fingerprints the backend answers with a false 429; tool
+		// descriptions carry the same text and are sanitized separately.
+		text = rewriteAntigravityFingerprints(text)
 		text = normalizeHarnessMarkers(text)
 		// Upstream applies this row to the system instruction only: the
 		// caller brands its own client there, and the backend flags
@@ -317,6 +366,7 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 		return nil
 	}
 	res := *req
+	res.Tools = sanitizeAntigravityToolFingerprints(res.Tools)
 	if res.SystemInstruction != nil {
 		var filtered []GeminiPart
 		for _, p := range res.SystemInstruction.Parts {
