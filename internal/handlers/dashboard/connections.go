@@ -176,7 +176,7 @@ func isUsageEligibleConnection(c *models.ProviderConnection) bool {
 	if !strSliceContains(usageSupportedProviders, c.Provider) && !strSliceContains(usageSupportedProviders, p) {
 		return false
 	}
-	return c.AuthType == "oauth" || strSliceContains(usageApikeyProviders, c.Provider) || strSliceContains(usageApikeyProviders, p)
+	return c.AuthType == "oauth" || c.AuthType == "mcode-lease" || strSliceContains(usageApikeyProviders, c.Provider) || strSliceContains(usageApikeyProviders, p)
 }
 
 func uniqueSortedProviders(conns []*models.ProviderConnection) []string {

@@ -32,6 +32,7 @@ type Request struct {
 	ClaudeClient   bool // /v1/messages client: body is Claude Messages, response must be translated back
 	TranslateResp  bool
 	ConnectionID   string            // for OAuth refresh by fallback
+	AuthType       string            // connection authType column ("oauth", "mcode-lease", ...)
 	SessionID      string            // client session / conversation id
 	ConnData       map[string]any    // connection providerSpecificData (e.g. fingerprintId for client cloaking)
 	Leases         LeaseStore        // cross-process lease backend (nil = memory only)
