@@ -630,6 +630,16 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	droppedIDs := make(map[string]bool)
 	changed := false
 
+	// A system turn is only valid at the head, or as the directive form (empty
+	// content plus output_config) which the API accepts anywhere. Clients and
+	// harnesses do inject reminders mid-history, and Anthropic then refuses the
+	// whole request — "role 'system' must precede an 'assistant' message" — so
+	// fold that text into the top-level system field instead.
+	if kept, moved := liftMidArraySystemTurns(req, messagesRaw); moved {
+		messagesRaw = kept
+		changed = true
+	}
+
 	// A tool call that carries no arguments is never answerable: the client
 	// rejects it for missing required fields and resends the whole history, so
 	// the model reads its own bare call and repeats it. Dropping it here — and
@@ -882,7 +892,9 @@ var claudeMessageKeys = map[string]struct{}{
 // dropForeignMessageKeys removes keys Anthropic would reject from one message
 // and reports whether anything was dropped. The usual offender is
 // `reasoning_content`, which OpenAI-shaped clients echo back on assistant turns
-// and which passes through untouched when a combo mixes lanes.
+// and which passes through untouched when a combo mixes lanes. `output_config`
+// is another: it is a request-level field, and on a message the API answers
+// "messages.<n>.output_config: Extra inputs are not permitted".
 func dropForeignMessageKeys(msgMap map[string]any) bool {
 	dropped := false
 	for k := range msgMap {
@@ -1257,4 +1269,93 @@ func DropArgumentlessToolCalls(body []byte) []byte {
 		return body
 	}
 	return out
+}
+
+// liftMidArraySystemTurns moves system turns that sit anywhere past the head
+// into the top-level system field, and reports whether it changed anything.
+//
+// Anthropic reads a system turn, wherever it appears, as a directive it must be
+// able to place: "role 'system' must precede an 'assistant' message or end the
+// array; the directive-only form (content: [] with output_config) is accepted
+// at any position." A harness that injects a reminder mid-history therefore
+// fails the whole request, and the turn stays in history so every later turn
+// fails too. Folding the text into the system field keeps the words and the
+// conversation.
+//
+// The directive form is left untouched — the API already places it. A turn with
+// nothing to say is dropped rather than moved.
+func liftMidArraySystemTurns(req map[string]any, messages []any) ([]any, bool) {
+	var kept []any
+	var moved []string
+	changed := false
+	for i, mRaw := range messages {
+		msg, ok := mRaw.(map[string]any)
+		if !ok {
+			kept = append(kept, mRaw)
+			continue
+		}
+		if role, _ := msg["role"].(string); role != "system" || i == 0 {
+			kept = append(kept, mRaw)
+			continue
+		}
+		if _, directive := msg["output_config"]; directive {
+			kept = append(kept, mRaw)
+			continue
+		}
+		changed = true
+		if text := claudePlainText(msg["content"]); strings.TrimSpace(text) != "" {
+			moved = append(moved, text)
+		}
+	}
+	if !changed || len(kept) == 0 {
+		return messages, false
+	}
+	if len(moved) > 0 {
+		appendClaudeSystemText(req, strings.Join(moved, "\n\n"))
+	}
+	return kept, true
+}
+
+// claudePlainText joins the text carried by a message's content, which is a
+// string or an array of blocks.
+func claudePlainText(content any) string {
+	switch c := content.(type) {
+	case string:
+		return c
+	case []any:
+		var parts []string
+		for _, bRaw := range c {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := block["type"].(string); t != "text" {
+				continue
+			}
+			if text, ok := block["text"].(string); ok {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n\n")
+	}
+	return ""
+}
+
+// appendClaudeSystemText adds text to the top-level system field whatever shape
+// the client sent it in: absent, a string, or a block array.
+func appendClaudeSystemText(req map[string]any, text string) {
+	switch system := req["system"].(type) {
+	case nil:
+		req["system"] = text
+	case string:
+		if strings.TrimSpace(system) == "" {
+			req["system"] = text
+			return
+		}
+		req["system"] = system + "\n\n" + text
+	case []any:
+		req["system"] = append(system, map[string]any{"type": "text", "text": text})
+	default:
+		req["system"] = text
+	}
 }
