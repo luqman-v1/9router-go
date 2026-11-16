@@ -468,6 +468,94 @@ func TestSetComboAndProviderStrategy_PreservesExistingSettings(t *testing.T) {
 	}
 }
 
+// SetComboStrategy persists and reads back the combo window mode fields.
+func TestSetComboStrategy_WindowModeRoundTrips(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := NewRepo(database)
+	if err := repo.SetComboStrategy("my-combo", ComboStrategy{
+		Strategy:          "fallback",
+		ContextWindowMode: ComboWindowModeMax,
+		ContextWindow:     1000000,
+	}); err != nil {
+		t.Fatalf("SetComboStrategy failed: %v", err)
+	}
+
+	s, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	cs := s.ComboStrategies["my-combo"]
+	if cs.ContextWindowMode != ComboWindowModeMax {
+		t.Errorf("ContextWindowMode = %q, want %q", cs.ContextWindowMode, ComboWindowModeMax)
+	}
+	if cs.ContextWindow != 1000000 {
+		t.Errorf("ContextWindow = %d, want 1000000", cs.ContextWindow)
+	}
+
+	// Clearing via zero-value write leaves the fields unset: a second call
+	// that only sets the strategy overwrites nothing else, so an empty mode
+	// string keeps the stored value.
+	if err := repo.SetComboStrategy("my-combo", ComboStrategy{Strategy: "round-robin"}); err != nil {
+		t.Fatalf("SetComboStrategy clear: %v", err)
+	}
+	s, err = repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+	cs = s.ComboStrategies["my-combo"]
+	if cs.Strategy != "round-robin" || cs.ContextWindowMode != ComboWindowModeMax || cs.ContextWindow != 1000000 {
+		t.Errorf("unexpected combo strategy after partial overwrite: %+v", cs)
+	}
+}
+
+// ComboStrategy parsing accepts valid modes and rejects anything else.
+func TestComboStrategies_WindowModeParsing(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := NewRepo(database)
+	if err := repo.UpdateSettingsRaw(map[string]any{
+		"comboStrategies": map[string]any{
+			"valid-max":      map[string]any{"contextWindowMode": "max", "contextWindow": 1000000},
+			"valid-min":      map[string]any{"contextWindowMode": "min"},
+			"valid-custom":   map[string]any{"contextWindowMode": "custom", "contextWindow": 2000000},
+			"invalid-mode":   map[string]any{"contextWindowMode": "bogus", "contextWindow": 1000000},
+			"invalid-window": map[string]any{"contextWindowMode": "custom", "contextWindow": -5},
+		},
+	}); err != nil {
+		t.Fatalf("UpdateSettingsRaw failed: %v", err)
+	}
+
+	s, err := repo.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings failed: %v", err)
+	}
+
+	if s.ComboStrategies["valid-max"].ContextWindowMode != ComboWindowModeMax ||
+		s.ComboStrategies["valid-max"].ContextWindow != 1000000 {
+		t.Errorf("valid-max = %+v", s.ComboStrategies["valid-max"])
+	}
+	if s.ComboStrategies["valid-min"].ContextWindowMode != ComboWindowModeMin {
+		t.Errorf("valid-min = %+v", s.ComboStrategies["valid-min"])
+	}
+	if s.ComboStrategies["valid-custom"].ContextWindowMode != ComboWindowModeCustom ||
+		s.ComboStrategies["valid-custom"].ContextWindow != 2000000 {
+		t.Errorf("valid-custom = %+v", s.ComboStrategies["valid-custom"])
+	}
+	// Bogus mode is dropped; the window is stored but inert (it only applies
+	// when mode is custom).
+	if s.ComboStrategies["invalid-mode"].ContextWindowMode != "" ||
+		s.ComboStrategies["invalid-mode"].ContextWindow != 1000000 {
+		t.Errorf("invalid-mode = %+v", s.ComboStrategies["invalid-mode"])
+	}
+	// Negative window is dropped.
+	if s.ComboStrategies["invalid-window"].ContextWindow != 0 {
+		t.Errorf("invalid-window = %+v", s.ComboStrategies["invalid-window"])
+	}
+}
+
 func TestSettings_ADHD(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	defer cleanup()

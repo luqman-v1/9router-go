@@ -88,6 +88,12 @@ func applyComboStrategies(s *SettingsData, raw map[string]any) {
 		if bw, ok := vm["budgetWindowMs"].(float64); ok && bw > 0 && bw <= float64((1<<63-1)/1000000) && bw == float64(int64(bw)) {
 			entry.BudgetWindowMs = int(bw)
 		}
+		if mode, ok := vm["contextWindowMode"].(string); ok && (mode == ComboWindowModeMin || mode == ComboWindowModeMax || mode == ComboWindowModeCustom) {
+			entry.ContextWindowMode = mode
+		}
+		if cw, ok := vm["contextWindow"].(float64); ok && cw > 0 && cw == float64(int64(cw)) {
+			entry.ContextWindow = int(cw)
+		}
 		s.ComboStrategies[k] = entry
 	}
 }

@@ -121,12 +121,19 @@ func (r *Repo) SetComboStrategy(comboName string, strat ComboStrategy) error {
 		if len(strat.FallbackCombos) > 0 {
 			entry["fallbackCombos"] = strat.FallbackCombos
 		}
+		if strat.ContextWindowMode != "" {
+			entry["contextWindowMode"] = strat.ContextWindowMode
+		}
+		if strat.ContextWindow > 0 {
+			entry["contextWindow"] = strat.ContextWindow
+		}
 
 		if strat.Strategy == "fallback" && strat.JudgeModel == "" && len(strat.FallbackCombos) == 0 && len(entry) <= 2 {
 			delete(currentMap, comboName)
 		} else {
 			currentMap[comboName] = entry
 		}
+
 		existing["comboStrategies"] = currentMap
 		return nil
 	})
