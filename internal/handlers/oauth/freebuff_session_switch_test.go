@@ -31,7 +31,20 @@ func TestHandleFreebuffSessionSwitch_ReleasesHeldSeatAndAdmitsNewModel(t *testin
 
 	var releasedInstance, admittedModel string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/freebuff/session" {
+		if r.URL.Path == "/api/v1/freebuff/device-keys" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"keyId":"k-test"}`))
+			return
+		}
+		// The 0.2.36 CLI admits through /session/admission; GET and DELETE keep
+		// the bare session path.
+		if r.Method == http.MethodPost {
+			if r.URL.Path != "/api/v1/freebuff/session/admission" {
+				t.Errorf("admission must POST to the admission path, got %s", r.URL.Path)
+				http.NotFound(w, r)
+				return
+			}
+		} else if r.URL.Path != "/api/v1/freebuff/session" {
 			http.NotFound(w, r)
 			return
 		}
