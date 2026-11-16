@@ -178,15 +178,24 @@ func sameTail(repaired, original []any) bool {
 // removal exposes; a message left with no content is dropped by the emptiness
 // pass. It reports whether it changed anything.
 func NormalizeClaudeFinalAssistantWhitespace(messages []any) bool {
+	_, changed := normalizeClaudeFinalAssistantWhitespace(messages)
+	return changed
+}
+
+// normalizeClaudeFinalAssistantWhitespace is NormalizeClaudeFinalAssistantWhitespace
+// plus the labels of the text blocks it removed. Trimming a block is a repair,
+// not a removal, so it produces no label; dropping an all-blank block does.
+func normalizeClaudeFinalAssistantWhitespace(messages []any) ([]string, bool) {
+	var removed []string
 	if len(messages) == 0 {
-		return false
+		return nil, false
 	}
 	last, ok := messages[len(messages)-1].(map[string]any)
 	if !ok {
-		return false
+		return nil, false
 	}
 	if role, _ := last["role"].(string); role != "assistant" {
-		return false
+		return nil, false
 	}
 
 	changed := false
@@ -217,10 +226,11 @@ func NormalizeClaudeFinalAssistantWhitespace(messages []any) bool {
 			}
 			content = content[:len(content)-1]
 			last["content"] = content
+			removed = append(removed, "block:text")
 			changed = true
 		}
 	}
-	return changed
+	return removed, changed
 }
 
 // DropNonContentfulClaudeMessages drops the turns Anthropic rejects for
@@ -239,8 +249,18 @@ func NormalizeClaudeFinalAssistantWhitespace(messages []any) bool {
 // and the caller decides. It reports whether anything changed, so a caller
 // holding the client's own bytes can forward them untouched.
 func DropNonContentfulClaudeMessages(messages []any, intentionalPrefill bool) ([]any, bool) {
+	kept, _, changed := dropNonContentfulClaudeMessages(messages, intentionalPrefill)
+	return kept, changed
+}
+
+// dropNonContentfulClaudeMessages is DropNonContentfulClaudeMessages plus the
+// labels of what it actually removed: "block:message" for a dropped turn,
+// "block:text" for a blank text block removed from a kept turn. Trimming
+// whitespace and replacing an emptied trailing user turn are repairs, not
+// removals, so they produce no label; changed still reports them.
+func dropNonContentfulClaudeMessages(messages []any, intentionalPrefill bool) ([]any, []string, bool) {
+	removed, changed := normalizeClaudeFinalAssistantWhitespace(messages)
 	filtered := make([]any, 0, len(messages))
-	changed := NormalizeClaudeFinalAssistantWhitespace(messages)
 	for i, mRaw := range messages {
 		msgMap, ok := mRaw.(map[string]any)
 		if !ok {
@@ -253,6 +273,7 @@ func DropNonContentfulClaudeMessages(messages []any, intentionalPrefill bool) ([
 			continue
 		}
 		if !isContentfulContent(contentRaw) && !isTrailingUserTurn(messages, i) {
+			removed = append(removed, "block:message")
 			changed = true
 			continue
 		}
@@ -263,5 +284,5 @@ func DropNonContentfulClaudeMessages(messages []any, intentionalPrefill bool) ([
 		filtered = repaired
 		changed = true
 	}
-	return filtered, changed
+	return filtered, removed, changed
 }

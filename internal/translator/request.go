@@ -578,28 +578,26 @@ func sanitizeClaudeToolIDs(messages []any) bool {
 // answers "messages.<n>.content.<m>.text.caller: Extra inputs are not
 // permitted" and refuses the whole request, so the turn poisons every later
 // one. tool_use keeps it — the field is valid there.
-func dropForeignBlockKeys(messages []any) bool {
-	changed := false
+func dropForeignBlockKeys(messages []any) int {
+	removed := 0
 	for _, mRaw := range messages {
 		msg, ok := mRaw.(map[string]any)
 		if !ok {
 			continue
 		}
-		if scrubBlockCallers(msg["content"]) {
-			changed = true
-		}
+		removed += scrubBlockCallers(msg["content"])
 	}
-	return changed
+	return removed
 }
 
 // scrubBlockCallers walks one message's content array, including the blocks
-// nested in a tool_result, and reports whether a caller was removed.
-func scrubBlockCallers(content any) bool {
+// nested in a tool_result, and reports how many callers were removed.
+func scrubBlockCallers(content any) int {
 	blocks, ok := content.([]any)
 	if !ok {
-		return false
+		return 0
 	}
-	changed := false
+	removed := 0
 	for _, bRaw := range blocks {
 		block, ok := bRaw.(map[string]any)
 		if !ok {
@@ -608,14 +606,12 @@ func scrubBlockCallers(content any) bool {
 		if bType, _ := block["type"].(string); bType != "tool_use" {
 			if _, has := block["caller"]; has {
 				delete(block, "caller")
-				changed = true
+				removed++
 			}
 		}
-		if scrubBlockCallers(block["content"]) {
-			changed = true
-		}
+		removed += scrubBlockCallers(block["content"])
 	}
-	return changed
+	return removed
 }
 
 // sanitizeDropSink, when non-nil, receives the drop line instead of log.Debug.
@@ -755,9 +751,9 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	// — see DropNonContentfulClaudeMessages for the emptiness rule and the
 	// trailing-turn repair (upstream #4316, ensureTrailingUserTurn
 	// open-sse/translator/formats/claude.js:345-349).
-	if filtered, dropped := DropNonContentfulClaudeMessages(messagesRaw, intentionalPrefill); dropped {
-		if len(filtered) <= len(messagesRaw) { // a pure trailing-turn repair removes nothing
-			drops.add("block:message")
+	if filtered, removed, dropped := dropNonContentfulClaudeMessages(messagesRaw, intentionalPrefill); dropped {
+		for _, label := range removed {
+			drops.add(label)
 		}
 		messagesRaw = filtered
 		changed = true
@@ -786,7 +782,8 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	if sanitizeClaudeToolIDs(messagesRaw) {
 		changed = true
 	}
-	if dropForeignBlockKeys(messagesRaw) {
+	if dropForeignBlockKeys(messagesRaw) > 0 {
+		drops.add("key:caller")
 		changed = true
 	}
 	if !changed {
