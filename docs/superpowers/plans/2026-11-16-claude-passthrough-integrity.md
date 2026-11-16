@@ -256,7 +256,7 @@ git commit -m "fix(resilience): log a stalled tool loop instead of replacing the
 - Create: `internal/translator/claude_cli_corpus_test.go`
 
 **Interfaces:**
-- Consumes: `SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte`; `TranslateClaudeToOpenAI([]byte) ([]byte, error)`.
+- Consumes: `SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte`. The converted lane is out of scope here: it decodes into typed structs, so an unknown message key cannot survive it by construction; D6's shared-function claim covers block emptiness, which both lanes do share.
 - Produces: nothing; the tests are the deliverable.
 
 - [ ] **Step 1: Write the corpus test**
