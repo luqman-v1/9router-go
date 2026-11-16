@@ -184,7 +184,7 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 		// plain `defer contResp.Body.Close()` would panic exactly where
 		// bodyclose wants a Close — release the connection safely instead.
 		if contResp != nil && contResp.Body != nil {
-			defer contResp.Body.Close()
+			defer func() { _ = contResp.Body.Close() }()
 		}
 		if contErr != nil {
 			return contErr
