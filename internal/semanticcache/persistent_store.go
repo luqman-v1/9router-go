@@ -209,6 +209,24 @@ func (p *PersistentLRUStore) InvalidateByModel(ctx context.Context, model string
 	return count
 }
 
+// InvalidateByModelAndPrefix deletes matching entries in both memory and SQLite.
+// The model match is case-insensitive like the LRU filter; key prefix matches
+// any key whose stored key starts with the given prefix (keys are hex digests,
+// so no LIKE escaping is needed).
+func (p *PersistentLRUStore) InvalidateByModelAndPrefix(ctx context.Context, model, keyPrefix string) int {
+	count := p.lru.InvalidateByModelAndPrefix(ctx, model, keyPrefix)
+	if p.db != nil {
+		query := `DELETE FROM semanticCacheEntries WHERE model = ?`
+		args := []any{model}
+		if keyPrefix != "" {
+			query = `DELETE FROM semanticCacheEntries WHERE model = ? AND key LIKE ?`
+			args = append(args, keyPrefix+"%")
+		}
+		_, _ = p.db.ExecContext(ctx, query, args...)
+	}
+	return count
+}
+
 // InvalidateOlderThan deletes expired entries in both memory and SQLite.
 func (p *PersistentLRUStore) InvalidateOlderThan(ctx context.Context, d time.Duration) int {
 	count := p.lru.InvalidateOlderThan(ctx, d)
