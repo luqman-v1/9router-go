@@ -289,8 +289,23 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 	if len(toolNameMap) == 0 {
 		return nil
 	}
+	// A client that is already Claude Code must keep its own tool names. The
+	// decoy set below is exactly the set this client uses, so renaming turns
+	// every real tool into "<name>_ide" while the system prompt still says
+	// "use TaskUpdate" — the model then calls the decoy of that name and the
+	// turn dies as "[Tool TaskUpdate is unavailable]".
+	if declaresClaudeCodeTools(clientToolNames) {
+		return nil
+	}
 
 	for _, name := range executor.CCDecoyTools {
+		// A client that already declares this tool — Claude Code itself, whose
+		// tools carry exactly these names — must not receive a second, identical
+		// declaration marked unusable: the model then picks the dead copy and the
+		// call comes back as "[Tool <name> is unavailable]".
+		if clientToolNames[name] {
+			continue
+		}
 		clientDeclarations = append(clientDeclarations, map[string]any{
 			"name":         name,
 			"description":  "This tool is currently unavailable.",
@@ -356,4 +371,20 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 		return nil
 	}
 	return toolNameMap
+}
+
+// declaresClaudeCodeTools reports whether the client declares enough of Claude
+// Code's own tool names to be Claude Code itself. Three is enough to tell it
+// apart from a client that happens to have one tool of the same name.
+func declaresClaudeCodeTools(names map[string]bool) bool {
+	matches := 0
+	for _, name := range executor.CCDecoyTools {
+		if names[name] {
+			matches++
+			if matches >= 3 {
+				return true
+			}
+		}
+	}
+	return false
 }
