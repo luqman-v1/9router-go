@@ -123,19 +123,28 @@ func TestParseGrokCLILiveModels(t *testing.T) {
 	}
 }
 
+// kiroRegion decides the q.* host a catalog request goes to. A region the host
+// does not serve must not reach the hostname: the host does not exist there, so
+// the request NXDOMAINs instead of answering.
 func TestKiroRegion(t *testing.T) {
 	tests := []struct {
+		name       string
 		profileArn string
 		want       string
 	}{
-		{profileArn: "arn:aws:codewhisperer:eu-west-1:123456789012:profile/ABC", want: "eu-west-1"},
-		{profileArn: "", want: kiroDefaultRegion},
-		{profileArn: "not-an-arn", want: kiroDefaultRegion},
+		{name: "served region passes through", profileArn: "arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC", want: "eu-central-1"},
+		{name: "us-east-1 passes through", profileArn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABC", want: "us-east-1"},
+		{name: "unserved ARN region falls back", profileArn: "arn:aws:codewhisperer:eu-west-1:123456789012:profile/ABC", want: kiroDefaultRegion},
+		{name: "empty ARN falls back", profileArn: "", want: kiroDefaultRegion},
+		{name: "non-ARN falls back", profileArn: "not-an-arn", want: kiroDefaultRegion},
+		{name: "hostile region cannot reach the hostname", profileArn: "arn:aws:codewhisperer:x.attacker.tld:1:profile/A", want: kiroDefaultRegion},
 	}
 	for _, tt := range tests {
-		if got := kiroRegion(tt.profileArn); got != tt.want {
-			t.Errorf("kiroRegion(%q) = %q, want %q", tt.profileArn, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			if got := kiroRegion(tt.profileArn); got != tt.want {
+				t.Errorf("kiroRegion(%q) = %q, want %q", tt.profileArn, got, tt.want)
+			}
+		})
 	}
 }
 

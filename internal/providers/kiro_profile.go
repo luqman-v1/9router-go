@@ -41,3 +41,18 @@ func KiroDefaultProfileARN(authMethod string) string {
 	}
 	return KiroDefaultProfileARNBuilderID
 }
+
+// KiroQServiceRegions are the regions the CodeWhisperer q.* host serves. A
+// region outside this set must never reach the hostname: the host does not
+// exist there, so the request NXDOMAINs and burns the retry ladder before the
+// next surface is tried (upstream KIRO_SERVICE_REGIONS).
+var KiroQServiceRegions = map[string]bool{"us-east-1": true, "eu-central-1": true}
+
+// KiroCatalogRegion folds a region onto one the q.* host serves, falling back
+// to us-east-1 for anything else.
+func KiroCatalogRegion(region string) string {
+	if KiroQServiceRegions[region] {
+		return region
+	}
+	return "us-east-1"
+}

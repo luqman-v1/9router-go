@@ -873,6 +873,7 @@ func writeSSEFinish(w http.ResponseWriter, flusher http.Flusher, req *Request, s
 type kiroToolCall struct {
 	id      string
 	name    string
+	index   int
 	inputs  strings.Builder
 	emitted bool
 }
@@ -880,6 +881,9 @@ type kiroToolCall struct {
 type kiroStreamState struct {
 	toolCallIndex int
 	tools         []*kiroToolCall
+	// gateOff streams tool fragments as they arrive instead of holding them to
+	// the end of the turn (KIRO_INTEGRITY_GATE=off).
+	gateOff bool
 }
 
 // tool returns the buffer for id, creating it on first sight.
@@ -889,9 +893,21 @@ func (s *kiroStreamState) tool(id, name string) *kiroToolCall {
 			return existing
 		}
 	}
-	call := &kiroToolCall{id: id, name: name}
+	call := &kiroToolCall{id: id, name: name, index: s.toolCallIndex}
+	s.toolCallIndex++
 	s.tools = append(s.tools, call)
 	return call
+}
+
+// hasTool reports whether id already has a buffer, which is how the caller
+// tells a first fragment (carries id and name) from a continuation.
+func (s *kiroStreamState) hasTool(id string) bool {
+	for _, existing := range s.tools {
+		if existing.id == id {
+			return true
+		}
+	}
+	return false
 }
 
 func writeSSE(w io.Writer, data any) error {
@@ -916,7 +932,7 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 
 	responseID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
-	state := &kiroStreamState{}
+	state := &kiroStreamState{gateOff: !kiroIntegrityGateEnabled()}
 
 	var accumulatedContent strings.Builder
 	var readErr error
@@ -1024,14 +1040,47 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 				if strings.TrimSpace(toolUseID) == "" {
 					toolUseID = fmt.Sprintf("call_%d_%d", created, len(state.tools)+1)
 				}
+				fresh := !state.hasTool(toolUseID)
 				call := state.tool(toolUseID, name)
+				fragment := ""
 				switch input := value["input"].(type) {
 				case string:
-					call.inputs.WriteString(input)
+					fragment = input
 				case map[string]any:
 					if encoded, err := json.Marshal(input); err == nil {
-						call.inputs.Write(encoded)
+						fragment = string(encoded)
 					}
+				}
+				call.inputs.WriteString(fragment)
+				if !state.gateOff {
+					continue
+				}
+				// Gate off: the client assembles the arguments itself by
+				// concatenating every fragment, so emit each one as it lands
+				// instead of holding the call to the end of the turn.
+				fn := map[string]any{"arguments": fragment}
+				if fresh {
+					fn["name"] = name
+				}
+				delta := map[string]any{"index": call.index, "function": fn}
+				if fresh {
+					delta["id"] = call.id
+					delta["type"] = "function"
+				}
+				call.emitted = true
+				markTTFT(req, req.StartTime)
+				if err := writeSSE(w, map[string]any{
+					"id":      responseID,
+					"object":  "chat.completion.chunk",
+					"created": created,
+					"choices": []map[string]any{{"index": 0, "delta": map[string]any{
+						"tool_calls": []map[string]any{delta},
+					}}},
+				}); err != nil {
+					return err
+				}
+				if flusher != nil {
+					flusher.Flush()
 				}
 			}
 		}
@@ -1054,7 +1103,7 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 				"index": 0,
 				"delta": map[string]any{
 					"tool_calls": []map[string]any{{
-						"index": state.toolCallIndex,
+						"index": call.index,
 						"id":    call.id,
 						"type":  "function",
 						"function": map[string]any{
@@ -1066,7 +1115,6 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 			}},
 		}
 		call.emitted = true
-		state.toolCallIndex++
 		markTTFT(req, req.StartTime)
 		if err := writeSSE(w, chunk); err != nil {
 			return err
