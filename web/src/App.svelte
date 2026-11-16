@@ -531,6 +531,7 @@
           navigate('login')
         }}
         onOpenSearch={() => (isPaletteOpen = true)}
+        requireLogin={requireLogin}
       />
 
       <!-- Canvas padding steps down on a phone: p-6/p-10 is a desktop
