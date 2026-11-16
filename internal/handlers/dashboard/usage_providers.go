@@ -109,6 +109,10 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 		return fetchZcodeUsage(ctx, firstNonEmptyStr(accessToken, apiKey), psdStr(psd, "deviceId")), true
 	case "glm", "glm-cn":
 		return fetchGLMUsage(ctx, provider, firstNonEmptyStr(apiKey, accessToken)), true
+	case "clinepass", "cline-pass", "cp":
+		// The same usage-limits route answers for a ClinePass API key (plain
+		// Bearer) and a Cline OAuth WorkOS JWT (workos: + identity headers).
+		return fetchClinePassUsage(ctx, accessToken, apiKey), true
 	case "synthetic":
 		return fetchSyntheticUsage(ctx, apiKey), true
 	default:
