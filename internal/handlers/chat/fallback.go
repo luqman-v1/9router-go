@@ -784,7 +784,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		if clientBeta := handlerutil.GetClientAnthropicBeta(ctx); clientBeta != "" {
 			merged := providers.MergeAnthropicBeta(providerCfg.StaticHeaders["Anthropic-Beta"], clientBeta)
 			if merged != "" {
-				providerCfg.StaticHeaders = providers.WithHeader(providerCfg.StaticHeaders, "Anthropic-Beta", merged)
+				providerCfg.StaticHeaders = providers.WithAnthropicBeta(providerCfg.StaticHeaders, merged)
 			}
 		}
 

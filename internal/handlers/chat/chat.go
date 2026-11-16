@@ -453,6 +453,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// A Messages client's own beta flags have to reach the upstream: the
+	// registry list is the gateway's choice of betas, not the caller's. Without
+	// this the Chat Completions handler carried them and this one dropped them,
+	// so a Claude Code feature behind a beta it asked for was still refused.
+	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
 	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
 	// every token saver; the flag travels on ctx to applyTokenSavers.
 	if isTokenSaverBypassValue(r.Header.Get("X-9Router-Token-Saver")) {

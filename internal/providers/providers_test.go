@@ -2,6 +2,7 @@ package providers
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -468,4 +469,32 @@ func TestKnownProviders_Kenari(t *testing.T) {
 	}
 	t.Error("GetProviderModels(kenari) missing deepseek-v4")
 found:
+}
+
+// The beta header must live under one key: a leftover case variant would be
+// copied into the request after the merged one and win, dropping the client's
+// own flags without a trace.
+func TestWithAnthropicBeta_KeepsOneCanonicalKey(t *testing.T) {
+	headers := map[string]string{
+		"anthropic-beta": "old-flag",
+		"Anthropic-Beta": "another-flag",
+		"x-relay-path":   "/v1/messages",
+	}
+
+	out := WithAnthropicBeta(headers, "merged-flag")
+
+	if len(out) != 2 {
+		t.Fatalf("expected the two non-beta headers plus one beta key, got %v", out)
+	}
+	if out["Anthropic-Beta"] != "merged-flag" {
+		t.Errorf("canonical key = %q", out["Anthropic-Beta"])
+	}
+	for k := range out {
+		if strings.EqualFold(k, "Anthropic-Beta") && k != "Anthropic-Beta" {
+			t.Errorf("case variant %q survived", k)
+		}
+	}
+	if headers["Anthropic-Beta"] != "another-flag" {
+		t.Error("the input map must not be mutated")
+	}
 }
