@@ -1,0 +1,3 @@
+### Fixed
+
+- A Claude Code client keeps its own tool names on an OAuth `claude` connection. The cloak used to rename every tool to `<name>_ide` and declare the plain name as an unusable decoy — correct for a foreign client, fatal for Claude Code itself, whose tools carry exactly those names: the system prompt still said "use TaskUpdate" while the only tool by that name was the dead decoy, and the turn died as `[Tool TaskUpdate is unavailable]`. The cloak is skipped when the client declares three or more of Claude Code's own tool names, and a decoy that merely collides with a declared tool is skipped too.
