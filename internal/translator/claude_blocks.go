@@ -28,6 +28,11 @@ var contentfulBlocks = map[string]struct{}{
 	"document":                 {},
 	claudeBlockContainerUpload: {},
 	"redacted_thinking":        {},
+	// Inline-tools blocks (beta inline-tools-2026-09-15). A turn whose only
+	// block is one of these is valid input; leaving them out made the turn read
+	// as empty and dropped the client's tool changes without a word.
+	"tool_addition": {},
+	"tool_removal":  {},
 }
 
 // isContentfulBlock reports whether one content block keeps its message alive.

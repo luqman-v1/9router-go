@@ -426,6 +426,10 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 			// Rotate only connections eligible for the requested model.
 			// New session distribution uses round-robin with effective stickyLimit = 1 across
 			// candidate accounts so distinct sessions alternate evenly.
+			// Same reason as the failover loop: the strategy stamps the row it
+			// picks, so a Codex account parked until its quota reset must not
+			// consume the rotation slot before this loop skips it again.
+			connections = filterCodexQuotaExhausted(provider, connections)
 			if len(connections) > 1 && hasStrat {
 				effectiveStrat := strat
 				if sessionID != "" && affinityEligible {
@@ -519,6 +523,7 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 			return nil, nil, fmt.Errorf("failed to parse connection data: %w", err)
 		}
 	}
+	connData.AuthType = conn.AuthType
 	// The dashboard's proxy assignment endpoint (upstream parity) stores the
 	// binding in providerSpecificData.proxyPoolId, while the top-level field is
 	// what this resolver reads. Accept both so a pool bound from either writer

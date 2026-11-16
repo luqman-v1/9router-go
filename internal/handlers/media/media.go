@@ -1495,6 +1495,19 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			method = http.MethodPost
 		}
 	}
+
+	if endpoint == "/v1/search" && modelInfo.Provider == "keenable" {
+		// Keenable rejects unknown params (model, mode). Forward only query.
+		var sReq struct {
+			Query string `json:"query"`
+			Mode  string `json:"mode"`
+		}
+		if err := json.Unmarshal(body, &sReq); err == nil && sReq.Query != "" {
+			if b, err := json.Marshal(map[string]string{"query": sReq.Query}); err == nil {
+				finalBody = b
+			}
+		}
+	}
 	var fetchFmt string
 	if endpoint == "/v1/web/fetch" && providerCfg.FetchURL != "" {
 		targetURL = providerCfg.FetchURL
@@ -1547,9 +1560,24 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			if b, err := json.Marshal(tBody); err == nil {
 				finalBody = b
 			}
+		case "keenable":
+			// Keenable fetch is GET /v1/fetch with url as a query parameter.
+			if method == http.MethodGet && fReq.URL != "" {
+				u, err := url.Parse(providerCfg.FetchURL)
+				if err == nil {
+					q := u.Query()
+					q.Set("url", fReq.URL)
+					if fReq.Format != "" {
+						q.Set("format", fReq.Format)
+					}
+					u.RawQuery = q.Encode()
+					targetURL = u.String()
+				}
+				finalBody = nil
+			}
 		}
 	}
-	log.Info("media", "forwarding to targetURL", "targetURL", targetURL, "method", method, "model", modelInfo.Model)
+
 	req, err := http.NewRequestWithContext(r.Context(), method, targetURL, bytes.NewReader(finalBody))
 	if err != nil {
 		log.Error("media", "create request failed", "endpoint", endpoint, "error", err)

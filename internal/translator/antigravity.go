@@ -1,7 +1,9 @@
 package translator
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
@@ -13,9 +15,10 @@ import (
 	"9router/proxy/internal/log"
 )
 
-// maxAntigravityOutputTokens caps generationConfig.maxOutputTokens; Google's
-// Antigravity backend rejects larger values (parity with Next.js capabilities.js).
-const maxAntigravityOutputTokens = 64000
+// maxAntigravityOutputTokens caps generationConfig.maxOutputTokens. The real
+// agy 1.5.9 CLI sends 65536 on a successful request (live capture 2026-11-16),
+// so the cap is aligned with that rather than the upstream 64000 constant.
+const maxAntigravityOutputTokens = 65536
 
 // maxHydrogenOutputTokens is the lifted output-token ceiling for Gemini 4
 // Hydrogen models. Hydrogen supports ~1M unified context windows and can
@@ -234,14 +237,40 @@ var competitivePromptBlacklist = []string{
 // the Antigravity gateway (parity with decolua/9router PR #3987). OMP-family
 // harnesses inject these XML markers in system text; normalizing them to
 // neutral tags keeps instruction bodies intact while bypassing the filter.
+//
+// The <system-conventions> wrapper is not enough to rename: OMP's RFC 2119
+// wording inside it is the fingerprint pair reported in can1357/oh-my-pi#11699,
+// and the sidecar that ships with OMP replaces the whole block so wording added
+// later inside the stable boundary cannot reintroduce it. So the block and a
+// bare RFC clause both collapse to canonical neutral text.
+const (
+	antigravityCanonicalConventions = "<guidelines>\nRequirement terminology: MUST means mandatory, SHOULD means recommended, and MAY means optional.\n</guidelines>"
+	antigravityRFCClauseReplacement = "Requirement terminology: MUST means mandatory, SHOULD means recommended, and MAY means optional."
+)
+
 var (
+	harnessConventionsBlock     = regexp.MustCompile(`(?is)<system[-_]conventions\b[^>]*>.*?</system[-_]conventions\s*>`)
+	harnessStandaloneRFCClause  = regexp.MustCompile(`(?i)\bRFC\s+(?:2119|8174)\b[^\r\n]{0,400}\b(?:MUST|REQUIRED|SHOULD|RECOMMENDED|MAY|OPTIONAL)\b[^\r\n]{0,400}(?:\.|$)`)
 	harnessTagSystemConventions = regexp.MustCompile(`(?i)<(/?)system[-_]conventions>`)
 	harnessTagSystemDirective   = regexp.MustCompile(`(?i)<(/?)system[-_]directive>`)
 	harnessTagCritical          = regexp.MustCompile(`(?i)<(/?)critical>`)
-	harnessBrandOMPFull         = regexp.MustCompile(`(?i)Oh My Pi coding harness`)
-	harnessBrandOMP             = regexp.MustCompile(`(?i)Oh My Pi`)
-	harnessBrandOMPLive         = regexp.MustCompile(`(?i)omp Live`)
-	claudeBillingHeaderRegex    = regexp.MustCompile(`(?im)^x-anthropic-billing-header:[^\n]*(?:\r?\n)*`)
+	// OMP 18.20.x identifies itself as "omp's trusted coding assistant" and
+	// references its internal xd:// URL scheme in the system prompt. Both are
+	// detected on their own: a live Antigravity request whose only remaining
+	// OMP markers were the identity sentence and xd:// still answered 429.
+	harnessBrandOMPIdentity = regexp.MustCompile(`(?i)You are omp['’]s trusted coding assistant\.`)
+	harnessSchemeOMP        = regexp.MustCompile(`(?i)\bomp://`)
+	harnessPathOMP          = regexp.MustCompile(`(?i)~?/?\.omp/`)
+	harnessSchemeXD         = regexp.MustCompile(`(?i)\bxd://`)
+	harnessBrandOMPFull     = regexp.MustCompile(`(?i)oh[-_ ]my[-_ ]pi\s+coding\s+harness`)
+	harnessBrandOMP         = regexp.MustCompile(`(?i)oh[-_ ]my[-_ ]pi`)
+	harnessBrandOMPLive     = regexp.MustCompile(`(?i)omp Live`)
+	// harnessBrandOMPToken is the last OMP row: specific identifiers and
+	// schemes are rewritten first, so only a leftover standalone brand token
+	// reaches it. Substrings such as "compiled", "complete", "OpenMP", and
+	// omp_get_thread_num() have no word boundary at the token.
+	harnessBrandOMPToken     = regexp.MustCompile(`(?i)\bomp\b`)
+	claudeBillingHeaderRegex = regexp.MustCompile(`(?im)^x-anthropic-billing-header:[^\n]*(?:\r?\n)*`)
 	// antigravityOpenCodeRegex matches the literal `opencode` provider
 	// identifier upstream rewrites in the system instruction. Upstream's rule
 	// is unbounded and case-insensitive, so `opencode-zen` and
@@ -268,14 +297,33 @@ var (
 )
 
 // normalizeHarnessMarkers neutralizes harness fingerprint tags in system text.
-// Bodies are preserved; only the marker names change.
+// OMP's conventions block is replaced whole, because the wrapper and the RFC
+// wording inside it are detected together; the other marker names change while
+// their instruction bodies stay intact.
 func normalizeHarnessMarkers(text string) string {
+	text = harnessConventionsBlock.ReplaceAllString(text, antigravityCanonicalConventions)
+	text = harnessStandaloneRFCClause.ReplaceAllString(text, antigravityRFCClauseReplacement)
 	text = harnessTagSystemConventions.ReplaceAllString(text, "<${1}conventions>")
 	text = harnessTagSystemDirective.ReplaceAllString(text, "<${1}instructions>")
 	text = harnessTagCritical.ReplaceAllString(text, "<${1}important>")
+	return normalizeHarnessBrandMarkers(text)
+}
+
+// normalizeHarnessBrandMarkers neutralizes standalone harness names and the
+// URL schemes they put in prompt text. System instructions and tool
+// descriptions both carry these tokens, while the conventions block above is
+// system-only. Rows run specific-to-generic: the identity sentence, schemes,
+// and paths are rewritten before the bare brand token, so no row can split a
+// longer match into fragments.
+func normalizeHarnessBrandMarkers(text string) string {
+	text = harnessBrandOMPIdentity.ReplaceAllString(text, "You are a trusted coding assistant.")
+	text = harnessSchemeOMP.ReplaceAllString(text, "docs://")
+	text = harnessPathOMP.ReplaceAllString(text, ".agent/")
+	text = harnessSchemeXD.ReplaceAllString(text, "internal://")
 	text = harnessBrandOMPFull.ReplaceAllString(text, "AI coding assistant")
 	text = harnessBrandOMP.ReplaceAllString(text, "coding assistant")
 	text = harnessBrandOMPLive.ReplaceAllString(text, "coding assistant live")
+	text = harnessBrandOMPToken.ReplaceAllString(text, "agent")
 	return text
 }
 
@@ -329,6 +377,10 @@ func rewriteBrandingText(text string, isSystemInstruction bool) string {
 	text = claudeBillingHeaderRegex.ReplaceAllString(text, "")
 	text = hermesIdentityRegex.ReplaceAllString(text, "You are an AI assistant.")
 	if isSystemInstruction {
+		// Hermes/OpenClaw sentences, headers, and identifiers are the
+		// fingerprints the backend answers with a false 429; tool
+		// descriptions carry the same text and are sanitized separately.
+		text = rewriteAntigravityFingerprints(text)
 		text = normalizeHarnessMarkers(text)
 		// Upstream applies this row to the system instruction only: the
 		// caller brands its own client there, and the backend flags
@@ -348,6 +400,7 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 		return nil
 	}
 	res := *req
+	res.Tools = sanitizeAntigravityToolFingerprints(res.Tools)
 	if res.SystemInstruction != nil {
 		var filtered []GeminiPart
 		for _, p := range res.SystemInstruction.Parts {
@@ -671,6 +724,34 @@ func antigravityUUIDFromSeed(seed string) string {
 	return fmt.Sprintf("%s-%s-%s-%s-%s", hex[0:8], hex[8:12], hex[12:16], hex[16:20], hex[20:32])
 }
 
+// antigravityNumericSessionID matches an id that is already an integer literal.
+var antigravityNumericSessionID = regexp.MustCompile(`^-?\d+$`)
+
+// AntigravityNumericSessionID ports upstream toNumericSessionId
+// (open-sse/utils/sessionManager.js): an id that is already integral passes
+// through unchanged, anything else becomes "-<decimal>" of the first 63 bits of
+// its SHA-256. The agent lane sends it as a JSON string, exactly as the official
+// agy CLI does ("sessionId": "-3750763034362895579", captured live from 1.5.9).
+//
+// An empty id returns "", so the caller omits the field rather than collapsing
+// every caller onto one shared session — a single bucket for the whole gateway
+// is a fingerprint the official client never produces.
+func AntigravityNumericSessionID(sessionID string) string {
+	s := strings.TrimSpace(sessionID)
+	// Upstream normalizeSessionId rejects blank and >256-char ids before
+	// hashing; keep the same bound so a hostile header cannot force an
+	// unbounded sha256 over client input.
+	if s == "" || len(s) > 256 {
+		return ""
+	}
+	if antigravityNumericSessionID.MatchString(s) {
+		return s
+	}
+	sum := sha256.Sum256([]byte(s))
+	n := binary.BigEndian.Uint64(sum[:8]) & 0x7fffffffffffffff
+	return "-" + strconv.FormatUint(n, 10)
+}
+
 // antigravityBuildRequestID builds the IDE request ID in the same shape as the
 // Next.js reference: agent/<conversationId>/<ts>/<trajectoryId>/<step>.
 func antigravityBuildRequestID(sessionID, model, requestType string, contentCount int) string {
@@ -685,11 +766,26 @@ func antigravityBuildRequestID(sessionID, model, requestType string, contentCoun
 
 // isHydrogenModel reports whether modelName identifies a Gemini 4 Hydrogen
 // model. Hydrogen models have a 1M unified context window and can produce
-// completions well beyond the 64k Antigravity cap, so they get a lifted
+// completions well beyond the Antigravity cap, so they get a lifted
 // output-token ceiling and long-decode continuation hops
 // (decolua/9router#5703).
 func isHydrogenModel(modelName string) bool {
 	return strings.Contains(strings.ToLower(modelName), "hydrogen")
+}
+
+// antigravityCanonicalThinkingLevel spells thinkingLevel with the enum casing
+// the official agy CLI uses ("HIGH", not "high"). It is a scoped byte-level
+// substitution on the JSON value only: re-marshalling the whole body here would
+// re-encode thought signatures on functionCall/thought parts and corrupt them.
+func antigravityCanonicalThinkingLevel(body []byte) []byte {
+	for _, level := range [...]string{"minimal", "low", "medium", "high", "xhigh"} {
+		old := []byte(`"thinkingLevel":"` + level + `"`)
+		if bytes.Contains(body, old) {
+			newValue := []byte(`"thinkingLevel":"` + strings.ToUpper(level) + `"`)
+			body = bytes.ReplaceAll(body, old, newValue)
+		}
+	}
+	return body
 }
 
 // hardenAntigravityRequest strips blacklisted thinking/reasoning fields Google
@@ -904,10 +1000,22 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string, sessionI
 	// layers cannot disagree on the id that reaches Google.
 	modelName = AntigravityUpstreamModel(modelName)
 
+	rawSession := ""
+	if len(sessionID) > 0 {
+		rawSession = strings.TrimSpace(sessionID[0])
+	}
+
 	contentCount := 1
 	var geminiReq GeminiRequest
 	if err := json.Unmarshal(geminiBody, &geminiReq); err == nil {
 		contentCount = len(geminiReq.Contents)
+		// The official CLI scopes every cascade with a numeric sessionId. Set
+		// it before the copy/marshal chain below: StripCompetitivePrompts and
+		// CloakAntigravityRequest both copy the struct, so the field survives
+		// into the inner body without a second pass.
+		if numeric := AntigravityNumericSessionID(rawSession); numeric != "" {
+			geminiReq.SessionID = numeric
+		}
 		fixAntigravityContents(&geminiReq, modelName)
 		cleanedReq := StripCompetitivePrompts(&geminiReq)
 		if len(cleanedReq.Tools) > 0 {
@@ -919,10 +1027,11 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string, sessionI
 		}
 	}
 	geminiBody = hardenAntigravityRequest(geminiBody, modelName)
+	geminiBody = antigravityCanonicalThinkingLevel(geminiBody)
 
 	sess := projectID
-	if len(sessionID) > 0 && sessionID[0] != "" {
-		sess = sessionID[0]
+	if rawSession != "" {
+		sess = rawSession
 	}
 
 	wrapper := AntigravityRequest{

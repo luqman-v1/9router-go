@@ -441,3 +441,63 @@ func TestSanitizeClaudeThinkingBody_AdaptiveUpdatesClamped(t *testing.T) {
 		t.Fatalf("thinking.display = %v, want summarized", th["display"])
 	}
 }
+
+// Claude Code declares Task*, Read, Bash and friends itself. Injecting the decoy
+// declaration of a name the client already uses leaves two entries with one name
+// in tools[], and the model picks the dead copy: the call comes back as
+// "[Tool TaskUpdate is unavailable]" and the turn is wasted.
+func TestCloakClaudeTools_SkipsDecoysTheClientDeclares(t *testing.T) {
+	req := map[string]any{
+		"tools": []any{
+			map[string]any{"name": "TaskUpdate", "input_schema": map[string]any{"type": "object"}},
+			map[string]any{"name": "Bash", "input_schema": map[string]any{"type": "object"}},
+		},
+	}
+
+	if cloakClaudeTools(req) == nil {
+		t.Fatal("client tools should still be cloaked")
+	}
+
+	names := map[string]int{}
+	for _, tRaw := range req["tools"].([]any) {
+		tool, _ := tRaw.(map[string]any)
+		name, _ := tool["name"].(string)
+		names[name]++
+		if base := strings.TrimSuffix(name, claudeToolSuffix); base == "TaskUpdate" || base == "Bash" {
+			if desc, _ := tool["description"].(string); desc == "This tool is currently unavailable." {
+				t.Errorf("%q was injected as a decoy despite the client declaring it", name)
+			}
+		}
+	}
+	if names["TaskUpdate"] != 0 || names["Bash"] != 0 {
+		t.Errorf("unsuffixed decoy of a client tool must not be declared, got %v", names)
+	}
+	if names["Read"] != 1 {
+		t.Errorf("a decoy the client does not declare should still be injected, got %v", names)
+	}
+}
+
+// A client that is already Claude Code keeps its tool names untouched: renaming
+// them leaves the system prompt naming tools that only exist as unusable decoys.
+func TestCloakClaudeTools_LeavesClaudeCodeToolsAlone(t *testing.T) {
+	tools := []any{}
+	for _, name := range []string{"Task", "TaskUpdate", "Bash", "Read", "Edit", "Write"} {
+		tools = append(tools, map[string]any{"name": name, "input_schema": map[string]any{"type": "object"}})
+	}
+	req := map[string]any{"tools": tools}
+
+	if got := cloakClaudeTools(req); got != nil {
+		t.Fatalf("a Claude Code client must not be cloaked, got map %v", got)
+	}
+	declared := req["tools"].([]any)
+	if len(declared) != len(tools) {
+		t.Fatalf("tools were reshaped: %d in, %d out", len(tools), len(declared))
+	}
+	for i, tRaw := range declared {
+		want, _ := tools[i].(map[string]any)["name"].(string)
+		got, _ := tRaw.(map[string]any)["name"].(string)
+		if got != want {
+			t.Errorf("tool %d renamed to %q, want %q", i, got, want)
+		}
+	}
+}

@@ -139,14 +139,24 @@ type endpoint struct {
 	capabilityFile string
 }
 
+// LeaseAuthType is the connections.authType a desktop-lease connection stores.
+// Auth mode lives in its own DB column, not in the data JSON blob.
+const LeaseAuthType = "mcode-lease"
+
+// IsLeaseAuthType reports whether a connection's authType column is lease mode.
+func IsLeaseAuthType(authType string) bool {
+	return authType == LeaseAuthType
+}
+
 // IsLeaseConnection reports whether a connection borrows the desktop app's
 // sign-in (authType "mcode-lease") instead of holding its own refresh token.
+// It reads providerSpecificData; prefer IsLeaseAuthType on the real column.
 func IsLeaseConnection(providerSpecificData map[string]any) bool {
 	if providerSpecificData == nil {
 		return false
 	}
 	s, _ := providerSpecificData["authType"].(string)
-	return s == "mcode-lease"
+	return IsLeaseAuthType(s)
 }
 
 // ResolveDataDir resolves the desktop install a connection borrows from.

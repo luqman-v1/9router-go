@@ -2,6 +2,7 @@ package providers
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -194,6 +195,18 @@ func TestNewProvidersRegistry_v055(t *testing.T) {
 func TestNewProvidersRegistry_v059(t *testing.T) {
 	if _, ok := KnownProviders["xquik"]; !ok {
 		t.Error("expected xquik provider registered")
+	}
+	if _, ok := KnownProviders["keenable"]; !ok {
+		t.Error("expected keenable provider registered")
+	}
+	if cfg := KnownProviders["keenable"]; !cfg.NoAuth {
+		t.Errorf("expected keenable to be NoAuth, got NoAuth=%v", cfg.NoAuth)
+	}
+	if cfg := KnownProviders["keenable"]; cfg.SearchURL != "https://api.keenable.ai/v1/search" {
+		t.Errorf("expected keenable SearchURL, got %q", cfg.SearchURL)
+	}
+	if cfg := KnownProviders["keenable"]; cfg.FetchURL != "https://api.keenable.ai/v1/fetch" {
+		t.Errorf("expected keenable FetchURL, got %q", cfg.FetchURL)
 	}
 	if _, ok := KnownProviders["ollama-search"]; !ok {
 		t.Error("expected ollama-search provider registered")
@@ -468,4 +481,32 @@ func TestKnownProviders_Kenari(t *testing.T) {
 	}
 	t.Error("GetProviderModels(kenari) missing deepseek-v4")
 found:
+}
+
+// The beta header must live under one key: a leftover case variant would be
+// copied into the request after the merged one and win, dropping the client's
+// own flags without a trace.
+func TestWithAnthropicBeta_KeepsOneCanonicalKey(t *testing.T) {
+	headers := map[string]string{
+		"anthropic-beta": "old-flag",
+		"Anthropic-Beta": "another-flag",
+		"x-relay-path":   "/v1/messages",
+	}
+
+	out := WithAnthropicBeta(headers, "merged-flag")
+
+	if len(out) != 2 {
+		t.Fatalf("expected the two non-beta headers plus one beta key, got %v", out)
+	}
+	if out["Anthropic-Beta"] != "merged-flag" {
+		t.Errorf("canonical key = %q", out["Anthropic-Beta"])
+	}
+	for k := range out {
+		if strings.EqualFold(k, "Anthropic-Beta") && k != "Anthropic-Beta" {
+			t.Errorf("case variant %q survived", k)
+		}
+	}
+	if headers["Anthropic-Beta"] != "another-flag" {
+		t.Error("the input map must not be mutated")
+	}
 }

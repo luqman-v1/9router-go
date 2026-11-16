@@ -1042,7 +1042,6 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 				continue
 			}
 
-
 			candidateCtx := ctx
 			var seatBudgetMs int
 			if settings != nil {
@@ -1560,7 +1559,6 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 				}
 				continue
 			}
-
 
 			candidateCtx := ctx
 			candidateWriter := http.ResponseWriter(cw)
