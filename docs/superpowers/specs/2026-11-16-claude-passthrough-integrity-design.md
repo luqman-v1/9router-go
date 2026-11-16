@@ -91,6 +91,13 @@ keys, tool results for dropped ids) → beta merge → upstream → decloak. The
 (OpenAI) lane applies the same content and key rules through one shared function, so
 the two lanes cannot drift.
 
+**D8 — The drop line is debug-level.**
+The sanitizer's line stays at `log.Debug` because every shape it now removes is routine
+(`caller` on Claude Code traffic, blank text, empty turns); raising it would log on most
+requests and break the no-new-noise anti-goal. A shape the gateway does not recognise is
+forwarded and shows up as a provider 400 in `requestDetails`, which is the loud signal;
+the debug line is for post-incident diagnosis with `LOG_LEVEL=debug`.
+
 ## Constraints
 
 - Go 1.27, `encoding/json/v2` with deterministic marshal, existing package boundaries

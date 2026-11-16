@@ -14,6 +14,7 @@ func TestClaudeCLICorpus(t *testing.T) {
 		body           []byte
 		wantSubstrings []string
 		wantAbsent     []string
+		wantMessages   int
 	}{
 		{
 			name: "unknown block survives",
@@ -54,6 +55,16 @@ func TestClaudeCLICorpus(t *testing.T) {
 				{"role":"user","content":"hi","reasoning_content":"x"}]}`),
 			wantAbsent: []string{"reasoning_content"},
 		},
+		{
+			name: "message-level output_config is stripped and its empty turn dropped",
+			body: []byte(`{"model":"m","max_tokens":8,"messages":[
+				{"role":"assistant","content":[{"type":"text","text":"two"}]},
+				{"role":"system","content":[],"output_config":{"format":"text"}},
+				{"role":"user","content":"three"}]}`),
+			wantSubstrings: []string{`"text":"two"`},
+			wantAbsent:     []string{"output_config", `"role":"system"`},
+			wantMessages:   2,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,6 +77,12 @@ func TestClaudeCLICorpus(t *testing.T) {
 			for _, absent := range tc.wantAbsent {
 				if strings.Contains(out, absent) {
 					t.Errorf("unexpected %q in %s", absent, out)
+				}
+			}
+			if tc.wantMessages > 0 {
+				msgs, _ := decodeBody(t, []byte(out))["messages"].([]any)
+				if len(msgs) != tc.wantMessages {
+					t.Errorf("got %d messages, want %d: %s", len(msgs), tc.wantMessages, out)
 				}
 			}
 		})

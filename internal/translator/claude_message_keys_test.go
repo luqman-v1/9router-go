@@ -33,9 +33,9 @@ func TestSanitizeClaudePassthrough_DropsForeignMessageKeys(t *testing.T) {
 	if len(decoded.Messages) != 3 {
 		t.Fatalf("messages dropped, got %d: %s", len(decoded.Messages), got)
 	}
-	for i, msgMap := range decoded.Messages {
-		for key := range msgMap {
-			if key != "role" && key != "content" {
+	for _, key := range []string{"reasoning_content", "output_config", "tool_calls", "function_call", "reasoning"} {
+		for i, msgMap := range decoded.Messages {
+			if _, ok := msgMap[key]; ok {
 				t.Errorf("messages[%d] kept the foreign key %q: %s", i, key, got)
 			}
 		}

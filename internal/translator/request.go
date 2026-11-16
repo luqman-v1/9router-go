@@ -667,7 +667,6 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	// whole request — "role 'system' must precede an 'assistant' message" — so
 	// fold that text into the top-level system field instead.
 	if kept, moved := liftMidArraySystemTurns(req, messagesRaw); moved {
-		drops.add("block:system")
 		messagesRaw = kept
 		changed = true
 	}
@@ -922,8 +921,6 @@ func LastCacheableToolIndex(tools []any) int {
 	return -1
 }
 
-// AnchorClaudeCache ensures prompt-caching breakpoint lands on the last non-deferred tool.
-// Port of open-sse/translator/formats/claude.js#lastCacheableToolIndex / anchorClaudeCache (#3567).
 // foreignMessageKeys are the message keys known not to belong to a Messages API
 // message object. Anthropic answers them with
 // "messages.<n>.<key>: Extra inputs are not permitted" and refuses the whole
@@ -1080,7 +1077,9 @@ func claudeCacheAnchor(ttl string) map[string]any {
 	return map[string]any{"type": "ephemeral"}
 }
 
-// AnchorClaudeCache is AnchorClaudeCacheWithTTL at the default 5-minute window.
+// AnchorClaudeCache ensures prompt-caching breakpoint lands on the last non-deferred tool.
+// Port of open-sse/translator/formats/claude.js#lastCacheableToolIndex / anchorClaudeCache (#3567).
+// It is AnchorClaudeCacheWithTTL at the default 5-minute window.
 func AnchorClaudeCache(body []byte) []byte { return AnchorClaudeCacheWithTTL(body, "") }
 
 // AnchorClaudeCacheWithTTL ensures prompt-caching breakpoints land on system/tool head anchors,
