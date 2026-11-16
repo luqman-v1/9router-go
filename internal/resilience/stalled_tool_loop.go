@@ -307,6 +307,10 @@ func InspectHistoryTurns(messages []map[string]any, threshold int) *StalledLoopI
 		}
 	}
 
+	if intervention := emptyToolArgumentsIntervention(extractedCalls); intervention != nil {
+		return intervention
+	}
+
 	if len(extractedCalls) < threshold {
 		return nil
 	}
@@ -335,5 +339,48 @@ func InspectHistoryTurns(messages []map[string]any, threshold int) *StalledLoopI
 		}
 	}
 
+	return nil
+}
+
+// emptyToolArguments reports whether a tool call carried no usable arguments.
+// Providers intermittently stream a bare call (arguments absent, "{}" or
+// "null"); the client then rejects it for missing required fields and retries,
+// so the identical-call threshold is never reached by a call that changes
+// nothing between attempts.
+func emptyToolArguments(args string) bool {
+	switch strings.TrimSpace(args) {
+	case "", "{}", "null":
+		return true
+	}
+	return false
+}
+
+// emptyToolArgumentsIntervention reports a tail tool call that carried no
+// arguments while earlier calls to the same tool did. A tool that never takes
+// arguments cannot match — only a tool that normally receives them — so the
+// intervention never fires for legitimately argument-free tools.
+func emptyToolArgumentsIntervention(calls []ToolCallSignature) *StalledLoopIntervention {
+	if len(calls) < 2 {
+		return nil
+	}
+	last := calls[len(calls)-1]
+	if !emptyToolArguments(last.RawArguments) {
+		return nil
+	}
+	for _, earlier := range calls[:len(calls)-1] {
+		if earlier.Name != last.Name || emptyToolArguments(earlier.RawArguments) {
+			continue
+		}
+		intervention := &StalledLoopIntervention{
+			ToolName:  last.Name,
+			CallCount: 1,
+			Message:   fmt.Sprintf("tool %q was called with no arguments after earlier calls supplied them", last.Name),
+		}
+		intervention.Intervention = fmt.Sprintf(
+			"System Intervention [EmptyToolArguments]: Your last call to tool %q carried no arguments, but earlier calls to it supplied arguments. The call cannot make progress and the client will reject it for missing required fields. Reissue the call with the arguments it needs, or summarize what you have instead of retrying it unchanged.",
+			last.Name,
+		)
+		return intervention
+	}
 	return nil
 }
