@@ -68,7 +68,7 @@ func TestResolveSearchURL_RejectsPrivateOverride(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveSearchURL(cfg, tt.psd)
+			got, err := resolveSearchURL(cfg, tt.psd, cfg.SearchURL)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("resolveSearchURL() expected error containing %q, got nil", tt.wantErr)
@@ -93,7 +93,7 @@ func TestResolveSearchURL_NilPsd_FallsBackToRegistry(t *testing.T) {
 		BaseURL:   "http://localhost:4000",
 		SearchURL: "http://localhost:4000/search",
 	}
-	got, err := resolveSearchURL(cfg, nil)
+	got, err := resolveSearchURL(cfg, nil, cfg.SearchURL)
 	if err != nil {
 		t.Fatalf("resolveSearchURL(nil) unexpected error: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestResolveSearchURL_PublicHostnameAllowed(t *testing.T) {
 	cfg := &providers.ProviderConfig{
 		SearchURL: "http://localhost:4000/search",
 	}
-	got, err := resolveSearchURL(cfg, map[string]any{"baseUrl": "https://public.searxng.example/search"})
+	got, err := resolveSearchURL(cfg, map[string]any{"baseUrl": "https://public.searxng.example/search"}, cfg.SearchURL)
 	if err != nil {
 		t.Fatalf("public hostname unexpectedly rejected: %v", err)
 	}

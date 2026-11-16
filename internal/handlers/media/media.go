@@ -946,22 +946,28 @@ func targetPrivate(ctx context.Context, host string) bool {
 // refused. The guard runs here so a rejected override answers with a clear
 // error instead of reaching the dialer (which under ALLOW_PRIVATE_NETWORKING=1
 // — the default — lets every address class through).
-func resolveSearchURL(cfg *providers.ProviderConfig, psd map[string]any) (string, error) {
+func resolveSearchURL(cfg *providers.ProviderConfig, psd map[string]any, targetURL string) (string, error) {
 	override := psdStr(psd, "baseUrl")
-	if override == "" {
+	if override != "" {
+		u, err := url.Parse(override)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			return "", fmt.Errorf("invalid search base URL: %q", override)
+		}
+		if u.Hostname() == "" {
+			return "", fmt.Errorf("invalid search base URL: empty host")
+		}
+		if handlerutil.AssertPublicURL(override) != nil {
+			return "", fmt.Errorf("search base URL is not allowed: %q", override)
+		}
+		return strings.TrimRight(override, "/"), nil
+	}
+	if cfg.SearchURL != "" {
 		return cfg.SearchURL, nil
 	}
-	u, err := url.Parse(override)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return "", fmt.Errorf("invalid search base URL: %q", override)
-	}
-	if u.Hostname() == "" {
-		return "", fmt.Errorf("invalid search base URL: empty host")
-	}
-	if handlerutil.AssertPublicURL(override) != nil {
-		return "", fmt.Errorf("search base URL is not allowed: %q", override)
-	}
-	return strings.TrimRight(override, "/"), nil
+	// No override and no configured search lane: keep the derived
+	// targetURL (baseURL + endpoint) so generic search providers still
+	// reach baseURL + /v1/search instead of an empty string.
+	return targetURL, nil
 }
 
 // psdStr reads a string field from provider-specific data, mirroring the
@@ -1170,16 +1176,14 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			method := r.Method
 			switch endpoint {
 			case "/v1/search":
-				if providerCfg.SearchURL != "" {
-					targetURL, err = resolveSearchURL(providerCfg, connData.ProviderSpecificData)
-					if err != nil {
-						lastErr = err.Error()
-						continue
-					}
-					method = strings.ToUpper(providerCfg.SearchMethod)
-					if method == "" {
-						method = http.MethodPost
-					}
+				targetURL, err = resolveSearchURL(providerCfg, connData.ProviderSpecificData, targetURL)
+				if err != nil {
+					lastErr = err.Error()
+					continue
+				}
+				method = strings.ToUpper(providerCfg.SearchMethod)
+				if method == "" {
+					method = http.MethodPost
 				}
 			case "/v1/web/fetch":
 				if providerCfg.FetchURL != "" {
@@ -1537,7 +1541,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	}
 	method := r.Method
 	if endpoint == "/v1/search" {
-		searchURL, err := resolveSearchURL(providerCfg, connData.ProviderSpecificData)
+		searchURL, err := resolveSearchURL(providerCfg, connData.ProviderSpecificData, targetURL)
 		if err != nil {
 			handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 			return
