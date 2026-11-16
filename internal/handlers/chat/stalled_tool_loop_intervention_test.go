@@ -193,7 +193,7 @@ func TestWriteStalledToolLoopClaude_Streaming(t *testing.T) {
 func TestCheckStalledToolLoop(t *testing.T) {
 	h := &ChatHandler{}
 
-	t.Run("OpenAI loop triggers intervention", func(t *testing.T) {
+	t.Run("OpenAI loop logs and passes through", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		messages := []map[string]any{
 			{
@@ -234,11 +234,11 @@ func TestCheckStalledToolLoop(t *testing.T) {
 		}
 
 		handled := h.CheckStalledToolLoopOpenAI(rec, messages, "gpt-4o", false)
-		if !handled {
-			t.Fatalf("expected CheckStalledToolLoopOpenAI to return true")
+		if handled {
+			t.Fatal("the guard must not handle the turn any more")
 		}
-		if rec.Code != http.StatusOK {
-			t.Errorf("expected 200 OK, got %d", rec.Code)
+		if rec.Body.Len() != 0 {
+			t.Errorf("the guard must write nothing, got %q", rec.Body.String())
 		}
 	})
 
@@ -276,7 +276,7 @@ func TestCheckStalledToolLoop(t *testing.T) {
 		}
 	})
 
-	t.Run("Claude loop triggers intervention", func(t *testing.T) {
+	t.Run("Claude loop logs and passes through", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		messages := []map[string]any{
 			{
@@ -330,11 +330,11 @@ func TestCheckStalledToolLoop(t *testing.T) {
 		}
 
 		handled := h.CheckStalledToolLoopClaude(rec, messages, "claude-3-7-sonnet", false)
-		if !handled {
-			t.Fatalf("expected CheckStalledToolLoopClaude to return true")
+		if handled {
+			t.Fatal("the guard must not handle the turn any more")
 		}
-		if rec.Code != http.StatusOK {
-			t.Errorf("expected 200 OK, got %d", rec.Code)
+		if rec.Body.Len() != 0 {
+			t.Errorf("the guard must write nothing, got %q", rec.Body.String())
 		}
 	})
 }

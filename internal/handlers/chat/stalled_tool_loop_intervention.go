@@ -7,31 +7,30 @@ import (
 
 	"9router/proxy/internal/constants"
 	json "9router/proxy/internal/fastjson"
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/resilience"
 )
 
-// CheckStalledToolLoopOpenAI inspects conversation turns and writes an intervention response if stalled.
-// Returns true if a stalled tool loop was detected and handled.
+// CheckStalledToolLoopOpenAI logs a stalled tool loop and always returns false:
+// the turn is left to the model, and nothing is written to w.
 func (h *ChatHandler) CheckStalledToolLoopOpenAI(w http.ResponseWriter, messages []map[string]any, model string, isStream bool) bool {
-	threshold := resilience.DefaultStalledToolLoopThreshold
-	intervention := resilience.InspectHistoryTurns(messages, threshold)
-	if intervention == nil {
+	i := resilience.InspectHistoryTurns(messages, resilience.DefaultStalledToolLoopThreshold)
+	if i == nil {
 		return false
 	}
-	writeStalledToolLoopOpenAI(w, intervention, model, isStream)
-	return true
+	log.Warn("resilience", "stalled tool loop detected", "tool", i.ToolName, "count", i.CallCount, "model", model)
+	return false
 }
 
-// CheckStalledToolLoopClaude inspects conversation turns and writes an intervention response if stalled.
-// Returns true if a stalled tool loop was detected and handled.
+// CheckStalledToolLoopClaude logs a stalled tool loop and always returns false:
+// the turn is left to the model, and nothing is written to w.
 func (h *ChatHandler) CheckStalledToolLoopClaude(w http.ResponseWriter, messages []map[string]any, model string, isStream bool) bool {
-	threshold := resilience.DefaultStalledToolLoopThreshold
-	intervention := resilience.InspectHistoryTurns(messages, threshold)
-	if intervention == nil {
+	i := resilience.InspectHistoryTurns(messages, resilience.DefaultStalledToolLoopThreshold)
+	if i == nil {
 		return false
 	}
-	writeStalledToolLoopClaude(w, intervention, model, isStream)
-	return true
+	log.Warn("resilience", "stalled tool loop detected", "tool", i.ToolName, "count", i.CallCount, "model", model)
+	return false
 }
 
 // writeStalledToolLoopOpenAI writes a safe intervention response to an OpenAI client (streaming or non-streaming).
