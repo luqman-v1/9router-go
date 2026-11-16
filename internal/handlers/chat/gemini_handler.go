@@ -180,6 +180,12 @@ func (h *ChatHandler) forwardGeminiNativeRequest(
 	// Handle long-decode continuation hops
 	if isLongDecodeModel(modelName) && !isStream && projectID != "" {
 		contResp, contErr := h.followLongDecodeContinuation(ctx, httpClient, cfg, apiKey, body, modelName, projectID, resp, translateResponse, metrics)
+		// Guard both nil checks: contResp is nil on every error path, so a
+		// plain `defer contResp.Body.Close()` would panic exactly where
+		// bodyclose wants a Close — release the connection safely instead.
+		if contResp != nil && contResp.Body != nil {
+			defer contResp.Body.Close()
+		}
 		if contErr != nil {
 			return contErr
 		}
