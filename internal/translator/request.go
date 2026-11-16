@@ -618,6 +618,40 @@ func scrubBlockCallers(content any) bool {
 	return changed
 }
 
+// sanitizeDropSink, when non-nil, receives the drop line instead of log.Debug.
+// Tests set it to see what one body lost.
+var sanitizeDropSink func(string)
+
+// sanitizeDrops collects what one sanitize pass removed, as key:<name> /
+// block:<type> tokens, and reports them once. A nil collector discards.
+type sanitizeDrops struct {
+	seen  map[string]bool
+	items []string
+}
+
+func (d *sanitizeDrops) add(item string) {
+	if d == nil || d.seen[item] {
+		return
+	}
+	if d.seen == nil {
+		d.seen = map[string]bool{}
+	}
+	d.seen[item] = true
+	d.items = append(d.items, item)
+}
+
+func (d *sanitizeDrops) report() {
+	if d == nil || len(d.items) == 0 {
+		return
+	}
+	line := strings.Join(d.items, ",")
+	if sanitizeDropSink != nil {
+		sanitizeDropSink(line)
+		return
+	}
+	log.Debug("translator", "claude sanitize removed", "items", line)
+}
+
 func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -629,6 +663,7 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	}
 	droppedIDs := make(map[string]bool)
 	changed := false
+	var drops sanitizeDrops
 
 	// A system turn is only valid at the head, or as the directive form (empty
 	// content plus output_config) which the API accepts anywhere. Clients and
@@ -636,6 +671,7 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	// whole request — "role 'system' must precede an 'assistant' message" — so
 	// fold that text into the top-level system field instead.
 	if kept, moved := liftMidArraySystemTurns(req, messagesRaw); moved {
+		drops.add("block:system")
 		messagesRaw = kept
 		changed = true
 	}
@@ -645,13 +681,18 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	// the model reads its own bare call and repeats it. Dropping it here — and
 	// the tool_result paired with it, which the second pass removes through
 	// droppedIDs — stops the pattern instead of feeding it back.
-	dropArgumentlessToolUses(messagesRaw, droppedIDs, &changed)
+	dropArgumentlessToolUses(messagesRaw, droppedIDs, &changed, &drops)
 
 	// First pass: drop foreign server_tool_use and collect their ids
 	// Wrap bare content block objects into single-element array (parity with decolua/9router v0.5.75 #8a81085)
 	for _, mRaw := range messagesRaw {
 		if msgMap, ok := mRaw.(map[string]any); ok {
 			normalizeMessageContent(msgMap)
+			for k := range foreignMessageKeys {
+				if _, ok := msgMap[k]; ok {
+					drops.add("key:" + k)
+				}
+			}
 			if dropForeignMessageKeys(msgMap) {
 				changed = true
 			}
@@ -682,6 +723,7 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 			if bType == "server_tool_use" {
 				id, _ := block["id"].(string)
 				if !serverToolUseIDRegex.MatchString(id) {
+					drops.add("block:server_tool_use")
 					droppedIDs[id] = true
 					changed = true
 					continue
@@ -691,6 +733,7 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 			// contentful rule decides whether the whole message survives below,
 			// so both read it from one place.
 			if (bType == "text" || bType == "thinking") && !isContentfulBlock(block) {
+				drops.add("block:" + bType)
 				changed = true
 				continue
 			}
@@ -702,7 +745,7 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	}
 
 	// Second pass: drop tool_result referencing dropped server_tool_use ids
-	if dropToolResultsForIDs(messagesRaw, droppedIDs) {
+	if dropToolResultsForIDs(messagesRaw, droppedIDs, &drops) {
 		changed = true
 	}
 
@@ -713,6 +756,9 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	// trailing-turn repair (upstream #4316, ensureTrailingUserTurn
 	// open-sse/translator/formats/claude.js:345-349).
 	if filtered, dropped := DropNonContentfulClaudeMessages(messagesRaw, intentionalPrefill); dropped {
+		if len(filtered) <= len(messagesRaw) { // a pure trailing-turn repair removes nothing
+			drops.add("block:message")
+		}
 		messagesRaw = filtered
 		changed = true
 	}
@@ -746,6 +792,7 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	if !changed {
 		return body
 	}
+	drops.report()
 	req["messages"] = messagesRaw
 
 	if out, err := json.Marshal(req, json.Deterministic(true)); err == nil {
@@ -1144,7 +1191,7 @@ func emptyToolInput(input any) bool {
 //
 // A tool that is only ever called bare — TodoWrite with an empty list, a
 // list-everything helper — never matches, so its calls survive untouched.
-func dropArgumentlessToolUses(messages []any, droppedIDs map[string]bool, changed *bool) {
+func dropArgumentlessToolUses(messages []any, droppedIDs map[string]bool, changed *bool, drops *sanitizeDrops) {
 	withArgs := make(map[string]bool)
 	for _, mRaw := range messages {
 		msgMap, ok := mRaw.(map[string]any)
@@ -1195,6 +1242,7 @@ func dropArgumentlessToolUses(messages []any, droppedIDs map[string]bool, change
 					if id, _ := block["id"].(string); id != "" {
 						droppedIDs[id] = true
 					}
+					drops.add("block:tool_use")
 					*changed = true
 					continue
 				}
@@ -1209,7 +1257,7 @@ func dropArgumentlessToolUses(messages []any, droppedIDs map[string]bool, change
 
 // dropToolResultsForIDs removes tool_result blocks whose tool_use_id names a
 // call that is no longer in the conversation. Returns whether anything changed.
-func dropToolResultsForIDs(messages []any, droppedIDs map[string]bool) bool {
+func dropToolResultsForIDs(messages []any, droppedIDs map[string]bool, drops *sanitizeDrops) bool {
 	if len(droppedIDs) == 0 {
 		return false
 	}
@@ -1233,6 +1281,7 @@ func dropToolResultsForIDs(messages []any, droppedIDs map[string]bool) bool {
 			if bType, _ := block["type"].(string); bType == "tool_result" || bType == "web_search_tool_result" {
 				toolUseID, _ := block["tool_use_id"].(string)
 				if droppedIDs[toolUseID] {
+					drops.add("block:" + bType)
 					changed = true
 					continue
 				}
@@ -1259,8 +1308,8 @@ func DropArgumentlessToolCalls(body []byte) []byte {
 	}
 	droppedIDs := make(map[string]bool)
 	changed := false
-	dropArgumentlessToolUses(messagesRaw, droppedIDs, &changed)
-	if dropToolResultsForIDs(messagesRaw, droppedIDs) {
+	dropArgumentlessToolUses(messagesRaw, droppedIDs, &changed, nil)
+	if dropToolResultsForIDs(messagesRaw, droppedIDs, nil) {
 		changed = true
 	}
 	if !changed {
