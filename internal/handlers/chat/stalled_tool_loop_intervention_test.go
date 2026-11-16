@@ -2,13 +2,37 @@ package chat
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/resilience"
 )
+
+// loggedStalledLoop reports whether entries contain the guard's warning for
+// this tool and model, in either the text or the JSON log format.
+func loggedStalledLoop(entries []log.ConsoleEntry, tool, model string, count int) bool {
+	for _, e := range entries {
+		l := e.Line
+		if !strings.Contains(l, "stalled tool loop detected") {
+			continue
+		}
+		if !strings.Contains(l, "tool="+tool) && !strings.Contains(l, `"tool":"`+tool+`"`) {
+			continue
+		}
+		if !strings.Contains(l, "model="+model) && !strings.Contains(l, `"model":"`+model+`"`) {
+			continue
+		}
+		if strings.Contains(l, fmt.Sprintf("count=%d", count)) ||
+			strings.Contains(l, fmt.Sprintf(`"count":%d`, count)) {
+			return true
+		}
+	}
+	return false
+}
 
 func TestWriteStalledToolLoopOpenAI_NonStreaming(t *testing.T) {
 	rec := httptest.NewRecorder()
@@ -192,6 +216,10 @@ func TestWriteStalledToolLoopClaude_Streaming(t *testing.T) {
 
 func TestCheckStalledToolLoop(t *testing.T) {
 	h := &ChatHandler{}
+	// A LOG_LEVEL=error environment must not mute the guard's only signal.
+	prevLevel := log.GetLevel()
+	log.SetLevel(log.LevelWarn)
+	defer log.SetLevel(prevLevel)
 
 	t.Run("OpenAI loop logs and passes through", func(t *testing.T) {
 		rec := httptest.NewRecorder()
@@ -233,12 +261,19 @@ func TestCheckStalledToolLoop(t *testing.T) {
 			},
 		}
 
+		log.ClearConsoleLogs()
 		handled := h.CheckStalledToolLoopOpenAI(rec, messages, "gpt-4o", false)
 		if handled {
 			t.Fatal("the guard must not handle the turn any more")
 		}
 		if rec.Body.Len() != 0 {
 			t.Errorf("the guard must write nothing, got %q", rec.Body.String())
+		}
+		if len(rec.Header()) != 0 {
+			t.Errorf("the guard must not set headers, got %v", rec.Header())
+		}
+		if !loggedStalledLoop(log.ConsoleEntries(), "bash", "gpt-4o", 3) {
+			t.Errorf("expected a stalled tool loop warning, got %v", log.ConsoleEntries())
 		}
 	})
 
@@ -329,12 +364,19 @@ func TestCheckStalledToolLoop(t *testing.T) {
 			},
 		}
 
+		log.ClearConsoleLogs()
 		handled := h.CheckStalledToolLoopClaude(rec, messages, "claude-3-7-sonnet", false)
 		if handled {
 			t.Fatal("the guard must not handle the turn any more")
 		}
 		if rec.Body.Len() != 0 {
 			t.Errorf("the guard must write nothing, got %q", rec.Body.String())
+		}
+		if len(rec.Header()) != 0 {
+			t.Errorf("the guard must not set headers, got %v", rec.Header())
+		}
+		if !loggedStalledLoop(log.ConsoleEntries(), "read_file", "claude-3-7-sonnet", 3) {
+			t.Errorf("expected a stalled tool loop warning, got %v", log.ConsoleEntries())
 		}
 	})
 }
