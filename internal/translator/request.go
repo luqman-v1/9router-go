@@ -389,6 +389,11 @@ func claudeDisablesParallelToolUse(choiceRaw jsontext.Value) bool {
 
 // TranslateClaudeToOpenAI converts a Claude request payload to an OpenAI request payload.
 func TranslateClaudeToOpenAI(claudeBody []byte) ([]byte, error) {
+	// The passthrough lane drops argumentless tool calls in
+	// SanitizeClaudePassthrough; a converted lane needs the same rule before the
+	// history is reshaped, or the model keeps reading its own bare call.
+	claudeBody = DropArgumentlessToolCalls(claudeBody)
+
 	var creq ClaudeRequest
 	if err := json.Unmarshal(claudeBody, &creq); err != nil {
 		return nil, fmt.Errorf("unmarshal Claude request body: %w", err)
@@ -625,6 +630,13 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	droppedIDs := make(map[string]bool)
 	changed := false
 
+	// A tool call that carries no arguments is never answerable: the client
+	// rejects it for missing required fields and resends the whole history, so
+	// the model reads its own bare call and repeats it. Dropping it here — and
+	// the tool_result paired with it, which the second pass removes through
+	// droppedIDs — stops the pattern instead of feeding it back.
+	dropArgumentlessToolUses(messagesRaw, droppedIDs, &changed)
+
 	// First pass: drop foreign server_tool_use and collect their ids
 	// Wrap bare content block objects into single-element array (parity with decolua/9router v0.5.75 #8a81085)
 	for _, mRaw := range messagesRaw {
@@ -680,41 +692,8 @@ func SanitizeClaudePassthrough(body []byte, intentionalPrefill bool) []byte {
 	}
 
 	// Second pass: drop tool_result referencing dropped server_tool_use ids
-	if len(droppedIDs) > 0 {
-		for _, mRaw := range messagesRaw {
-			msgMap, ok := mRaw.(map[string]any)
-			if !ok {
-				continue
-			}
-			contentRaw, ok := msgMap["content"]
-			if !ok {
-				continue
-			}
-			blocks, ok := contentRaw.([]any)
-			if !ok {
-				continue
-			}
-			var kept []any
-			for _, bRaw := range blocks {
-				block, ok := bRaw.(map[string]any)
-				if !ok {
-					kept = append(kept, bRaw)
-					continue
-				}
-				bType, _ := block["type"].(string)
-				if bType == "tool_result" || bType == "web_search_tool_result" {
-					toolUseID, _ := block["tool_use_id"].(string)
-					if droppedIDs[toolUseID] {
-						changed = true
-						continue
-					}
-				}
-				kept = append(kept, bRaw)
-			}
-			if len(kept) != len(blocks) {
-				msgMap["content"] = kept
-			}
-		}
+	if dropToolResultsForIDs(messagesRaw, droppedIDs) {
+		changed = true
 	}
 
 	// Third pass: drop messages whose content carries nothing Anthropic accepts
@@ -1117,6 +1096,163 @@ func AnchorClaudeCacheWithTTL(body []byte, ttl string) []byte {
 	capCacheControlBlocks(req)
 
 	out, err := json.Marshal(req, json.Deterministic(true))
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// emptyToolInput reports whether a tool_use block carries no arguments. A call
+// with none cannot be answered: Claude clients validate the call against the
+// tool schema and reject a missing required field.
+func emptyToolInput(input any) bool {
+	switch v := input.(type) {
+	case nil:
+		return true
+	case map[string]any:
+		return len(v) == 0
+	case string:
+		switch strings.TrimSpace(v) {
+		case "", "{}", "null":
+			return true
+		}
+	}
+	return false
+}
+
+// dropArgumentlessToolUses removes tool_use blocks that carry no arguments when
+// another call to the same tool in this conversation does carry them, recording
+// each removed id in droppedIDs so the paired tool_result goes with it.
+//
+// A tool that is only ever called bare — TodoWrite with an empty list, a
+// list-everything helper — never matches, so its calls survive untouched.
+func dropArgumentlessToolUses(messages []any, droppedIDs map[string]bool, changed *bool) {
+	withArgs := make(map[string]bool)
+	for _, mRaw := range messages {
+		msgMap, ok := mRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, ok := msgMap["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, bRaw := range blocks {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if bType, _ := block["type"].(string); bType != "tool_use" {
+				continue
+			}
+			name, _ := block["name"].(string)
+			if name != "" && !emptyToolInput(block["input"]) {
+				withArgs[name] = true
+			}
+		}
+	}
+	if len(withArgs) == 0 {
+		return
+	}
+
+	for _, mRaw := range messages {
+		msgMap, ok := mRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, ok := msgMap["content"].([]any)
+		if !ok {
+			continue
+		}
+		kept := make([]any, 0, len(blocks))
+		for _, bRaw := range blocks {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				kept = append(kept, bRaw)
+				continue
+			}
+			if bType, _ := block["type"].(string); bType == "tool_use" {
+				name, _ := block["name"].(string)
+				if withArgs[name] && emptyToolInput(block["input"]) {
+					if id, _ := block["id"].(string); id != "" {
+						droppedIDs[id] = true
+					}
+					*changed = true
+					continue
+				}
+			}
+			kept = append(kept, bRaw)
+		}
+		if len(kept) != len(blocks) {
+			msgMap["content"] = kept
+		}
+	}
+}
+
+// dropToolResultsForIDs removes tool_result blocks whose tool_use_id names a
+// call that is no longer in the conversation. Returns whether anything changed.
+func dropToolResultsForIDs(messages []any, droppedIDs map[string]bool) bool {
+	if len(droppedIDs) == 0 {
+		return false
+	}
+	changed := false
+	for _, mRaw := range messages {
+		msgMap, ok := mRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, ok := msgMap["content"].([]any)
+		if !ok {
+			continue
+		}
+		kept := make([]any, 0, len(blocks))
+		for _, bRaw := range blocks {
+			block, ok := bRaw.(map[string]any)
+			if !ok {
+				kept = append(kept, bRaw)
+				continue
+			}
+			if bType, _ := block["type"].(string); bType == "tool_result" || bType == "web_search_tool_result" {
+				toolUseID, _ := block["tool_use_id"].(string)
+				if droppedIDs[toolUseID] {
+					changed = true
+					continue
+				}
+			}
+			kept = append(kept, bRaw)
+		}
+		if len(kept) != len(blocks) {
+			msgMap["content"] = kept
+		}
+	}
+	return changed
+}
+
+// DropArgumentlessToolCalls applies the argumentless-call rule to a Claude body
+// headed for a non-Claude lane, where SanitizeClaudePassthrough does not run.
+func DropArgumentlessToolCalls(body []byte) []byte {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body
+	}
+	messagesRaw, ok := req["messages"].([]any)
+	if !ok || len(messagesRaw) == 0 {
+		return body
+	}
+	droppedIDs := make(map[string]bool)
+	changed := false
+	dropArgumentlessToolUses(messagesRaw, droppedIDs, &changed)
+	if dropToolResultsForIDs(messagesRaw, droppedIDs) {
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	if filtered, dropped := DropNonContentfulClaudeMessages(messagesRaw, ClaudeIntentionalPrefill(body)); dropped {
+		messagesRaw = filtered
+		req["messages"] = messagesRaw
+	}
+	out, err := json.Marshal(req)
 	if err != nil {
 		return body
 	}
