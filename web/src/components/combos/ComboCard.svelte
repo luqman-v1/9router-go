@@ -140,6 +140,7 @@
     const minutes = Number(raw)
     if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > MAX_BUDGET_WINDOW_MINUTES) return
     onSetBudgetWindow(combo, minutes * 60000)
+  }
   function handleContextWindowChange(e: Event) {
     const input = e.currentTarget as HTMLInputElement
     if (!input.reportValidity()) return
