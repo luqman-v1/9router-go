@@ -158,6 +158,12 @@ func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.Provi
 		fetch = func(ctx context.Context, token string) []LiveModel {
 			return h.fetchZedLiveCatalog(ctx, conn, connData, token)
 		}
+	case providers.ResolveAlias(providerID) == commandcodeCatalogProvider:
+		// The CLI feed, not the public /v1/models list: only it carries the
+		// per-model `hidden` flag and the windows the provider enforces.
+		fetch = func(ctx context.Context, token string) []LiveModel {
+			return h.fetchCommandcodeLiveCatalog(ctx, conn, token)
+		}
 	case isCompatibleProviderID(providerID):
 		// Upstream fetchCompatibleModelIds: custom nodes publish whatever their
 		// own /models endpoint reports.
