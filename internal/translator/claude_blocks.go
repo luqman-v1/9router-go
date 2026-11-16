@@ -15,44 +15,40 @@ const (
 	claudeBlockContainerUpload = "container_upload"
 )
 
-// contentfulBlocks are the block types that count as a message having content.
-// A message holding none of them is empty and gets dropped: Anthropic rejects
-// empty content, and forwarding one is worse. Anything the caller can
-// legitimately send ALONE must be listed — container_upload is exactly that:
-// a user turn whose only block is a file reference is valid input, and leaving
-// it out forwards `messages: []` to the provider.
-var contentfulBlocks = map[string]struct{}{
-	"tool_use":                 {},
-	claudeBlockToolResult:      {},
-	"image":                    {},
-	"document":                 {},
-	claudeBlockContainerUpload: {},
-	"redacted_thinking":        {},
-	// Inline-tools blocks (beta inline-tools-2026-09-15). A turn whose only
-	// block is one of these is valid input; leaving them out made the turn read
-	// as empty and dropped the client's tool changes without a word.
-	"tool_addition": {},
-	"tool_removal":  {},
+// knownEmptyBlock reports a block that carries nothing Anthropic will accept.
+// The rule is a denylist: only shapes the gateway can prove empty are dropped.
+// Anything else — container_upload, an inline-tools block, a type this release
+// has never seen — is content, because silently deleting it hides the failure
+// from both the caller and the log (design D1/D2).
+//
+// Text is empty when blank: Anthropic 400s on empty text, and a whitespace-only
+// turn carries nothing either.
+// Thinking is empty unless it carries a valid Claude signature, so unsigned
+// thinking is dropped while valid blank thinking survives.
+// A tool_result is empty only when its content is an empty array or a blank
+// string; a tool_use is never empty, whatever its input holds.
+func knownEmptyBlock(block map[string]any) bool {
+	bType, _ := block["type"].(string)
+	switch bType {
+	case claudeBlockText:
+		text, _ := block["text"].(string)
+		return strings.TrimSpace(text) == ""
+	case claudeBlockThinking:
+		sig, _ := block["signature"].(string)
+		return !IsValidClaudeSignature(sig)
+	case claudeBlockToolResult:
+		switch content := block["content"].(type) {
+		case string:
+			return strings.TrimSpace(content) == ""
+		case []any:
+			return len(content) == 0
+		}
+	}
+	return false
 }
 
 // isContentfulBlock reports whether one content block keeps its message alive.
-// Text counts only when it is not blank: an Anthropic 400s on empty text, and
-// a whitespace-only turn carries nothing either.
-// Thinking blocks count only when carrying a valid Claude signature, ensuring
-// invalid/unsigned thinking blocks are dropped while valid blank thinking survives.
-func isContentfulBlock(block map[string]any) bool {
-	bType, _ := block["type"].(string)
-	if bType == claudeBlockText {
-		text, _ := block["text"].(string)
-		return strings.TrimSpace(text) != ""
-	}
-	if bType == claudeBlockThinking {
-		sig, _ := block["signature"].(string)
-		return IsValidClaudeSignature(sig)
-	}
-	_, ok := contentfulBlocks[bType]
-	return ok
-}
+func isContentfulBlock(block map[string]any) bool { return !knownEmptyBlock(block) }
 
 // isContentfulContent reports whether a message's `content` holds anything
 // worth forwarding. Both wire shapes count: a bare string and a single content
