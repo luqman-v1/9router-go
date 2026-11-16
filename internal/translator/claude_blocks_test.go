@@ -17,7 +17,7 @@ func TestKnownEmptyBlock_UnknownTypeIsContent(t *testing.T) {
 		{"text with words is content", map[string]any{"type": "text", "text": "hi"}, true},
 		{"unsigned thinking is empty", map[string]any{"type": "thinking", "thinking": "x"}, false},
 		{"tool_use with null input is content", map[string]any{"type": "tool_use", "name": "Bash", "input": nil}, true},
-		{"empty tool_result is empty", map[string]any{"type": "tool_result", "content": []any{}}, false},
+		{"empty tool_result is content", map[string]any{"type": "tool_result", "content": []any{}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -38,20 +38,19 @@ func TestSanitizeClaudePassthrough_UnknownBlockIsUntouched(t *testing.T) {
 	}
 }
 
-// tool_result shapes: only an empty array or blank string is empty; anything
-// else it carries — including an array of blocks — is content.
-func TestKnownEmptyBlock_ToolResultShapes(t *testing.T) {
+// A tool_result is never empty, whatever its content: it answers a tool_use,
+// and dropping it would break that pairing.
+func TestKnownEmptyBlock_ToolResultIsNeverEmpty(t *testing.T) {
 	cases := []struct {
 		name    string
 		content any
-		want    bool // empty
 	}{
-		{"empty array", []any{}, true},
-		{"empty string", "", true},
-		{"blank string", "  ", true},
-		{"string output", "42", false},
-		{"block array", []any{map[string]any{"type": "text", "text": "hi"}}, false},
-		{"no content key", nil, false},
+		{"empty array", []any{}},
+		{"empty string", ""},
+		{"blank string", "  "},
+		{"string output", "42"},
+		{"block array", []any{map[string]any{"type": "text", "text": "hi"}}},
+		{"no content key", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -59,9 +58,32 @@ func TestKnownEmptyBlock_ToolResultShapes(t *testing.T) {
 			if tc.name != "no content key" {
 				block["content"] = tc.content
 			}
-			if got := knownEmptyBlock(block); got != tc.want {
-				t.Errorf("knownEmptyBlock = %v, want %v", got, tc.want)
+			if knownEmptyBlock(block) {
+				t.Errorf("tool_result counted as empty, want content")
 			}
 		})
+	}
+}
+
+// The pairing rule: an assistant tool_use is answered by a user turn whose only
+// block is an empty tool_result. Both turns must survive the sanitizer, or the
+// provider rejects the request for an unanswered tool_use.
+func TestSanitizeClaudePassthrough_EmptyToolResultKeepsPairing(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"run it"}]},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[]}]}]}`)
+
+	messages := claudeMessagesOf(t, SanitizeClaudePassthrough(body, false))
+	if len(messages) != 3 {
+		t.Fatalf("messages = %d, want 3: %v", len(messages), messages)
+	}
+	wantTypes := []string{"text", "tool_use", "tool_result"}
+	for i, want := range wantTypes {
+		blocks := contentBlocksOf(t, messages[i]["content"])
+		first, _ := blocks[0].(map[string]any)
+		if first["type"] != want {
+			t.Errorf("messages[%d] first block = %v, want %s", i, first["type"], want)
+		}
 	}
 }

@@ -25,8 +25,10 @@ const (
 // turn carries nothing either.
 // Thinking is empty unless it carries a valid Claude signature, so unsigned
 // thinking is dropped while valid blank thinking survives.
-// A tool_result is empty only when its content is an empty array or a blank
-// string; a tool_use is never empty, whatever its input holds.
+// A tool_result answers an assistant tool_use, so it keeps its turn alive
+// whatever it carries: dropping it would leave the tool_use unanswered and the
+// API rejects that pairing. A tool_use is never empty either, whatever its
+// input holds.
 func knownEmptyBlock(block map[string]any) bool {
 	bType, _ := block["type"].(string)
 	switch bType {
@@ -36,13 +38,6 @@ func knownEmptyBlock(block map[string]any) bool {
 	case claudeBlockThinking:
 		sig, _ := block["signature"].(string)
 		return !IsValidClaudeSignature(sig)
-	case claudeBlockToolResult:
-		switch content := block["content"].(type) {
-		case string:
-			return strings.TrimSpace(content) == ""
-		case []any:
-			return len(content) == 0
-		}
 	}
 	return false
 }
