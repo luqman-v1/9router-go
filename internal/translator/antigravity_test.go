@@ -1403,7 +1403,7 @@ func isBareResourceExhaustedTestHelper(body []byte) bool {
 // Antigravity cap, preventing truncation of long decode responses
 // (decolua/9router#5703).
 func TestHardenAntigravityRequest_HydrogenCapLift(t *testing.T) {
-	// Non-Hydrogen model: cap at 64000.
+	// Non-Hydrogen model: cap at 65536.
 	body := `{"generationConfig":{"maxOutputTokens":128000}}`
 	hardened := hardenAntigravityRequestForTest(t, body, "gemini-3-flash")
 	var m map[string]any
@@ -1412,8 +1412,8 @@ func TestHardenAntigravityRequest_HydrogenCapLift(t *testing.T) {
 	}
 	gc := m["generationConfig"].(map[string]any)
 	maxTokens := gc["maxOutputTokens"].(float64)
-	if maxTokens != 64000 {
-		t.Errorf("non-Hydrogen cap = %v, want 64000", maxTokens)
+	if maxTokens != 65536 {
+		t.Errorf("non-Hydrogen cap = %v, want 65536", maxTokens)
 	}
 
 	// Hydrogen model: cap at 256000.

@@ -1103,18 +1103,82 @@ func moveSystemInstructionToContents(req *GeminiRequest) bool {
 // it rejects the systemInstruction shape itself, and moving it to
 // contents[0] is the upstream fix (decolua/9router#5703).
 func MoveSystemInstructionToContents(body []byte) ([]byte, bool) {
-	var req GeminiRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	// jsontext.Value, not map[string]any: every member the rewrite does not
+	// touch keeps its original bytes, so a tool call's thought signature is
+	// never re-encoded. The member is looked up under both spellings —
+	// systemInstruction, the tag GeminiRequest marshals today, and
+	// system_instruction, the spelling the field carried before the rename
+	// that older clients and the retry's own tests still send — and whichever
+	// the body used is the key the rewrite removes.
+	var fields map[string]jsontext.Value
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
 		return body, false
 	}
-	if !moveSystemInstructionToContents(&req) {
+
+	rawSystem := fields["systemInstruction"]
+	if snake, ok := fields["system_instruction"]; ok {
+		rawSystem = snake
+	}
+	if !geminiSystemInstructionWorthMoving(rawSystem) {
 		return body, false
 	}
-	out, err := json.Marshal(req, json.Deterministic(true))
+	var sys GeminiContent
+	if err := json.Unmarshal(rawSystem, &sys); err != nil {
+		return body, false
+	}
+
+	contents := decodeGeminiContents(fields["contents"])
+	if encoded, err := json.Marshal(foldGeminiSystemInstruction(sys.Parts, contents), json.Deterministic(true)); err == nil {
+		fields["contents"] = jsontext.Value(encoded)
+	}
+	delete(fields, "systemInstruction")
+	delete(fields, "system_instruction")
+
+	out, err := json.Marshal(fields, json.Deterministic(true))
 	if err != nil {
 		return body, false
 	}
 	return out, true
+}
+
+// geminiSystemInstructionWorthMoving reports whether a raw system-instruction
+// member carries at least one part, so an absent, null or empty member leaves
+// the request alone.
+func geminiSystemInstructionWorthMoving(raw jsontext.Value) bool {
+	if len(raw) == 0 || raw.Kind() == jsontext.KindNull {
+		return false
+	}
+	var sys GeminiContent
+	if err := json.Unmarshal(raw, &sys); err != nil {
+		return false
+	}
+	return len(sys.Parts) > 0
+}
+
+// decodeGeminiContents decodes a raw contents member, treating an absent or
+// non-array member as no contents.
+func decodeGeminiContents(raw jsontext.Value) []GeminiContent {
+	if len(raw) == 0 || raw.Kind() != '[' {
+		return nil
+	}
+	var contents []GeminiContent
+	if err := json.Unmarshal(raw, &contents); err != nil {
+		return nil
+	}
+	return contents
+}
+
+// foldGeminiSystemInstruction prepends sysParts to contents[0] as a user-role
+// turn, or creates that turn when contents is empty.
+func foldGeminiSystemInstruction(sysParts []GeminiPart, contents []GeminiContent) []GeminiContent {
+	if len(contents) == 0 {
+		return []GeminiContent{{Role: "user", Parts: sysParts}}
+	}
+	contents[0] = GeminiContent{
+		Role:  "user",
+		Parts: append(append([]GeminiPart{}, sysParts...), contents[0].Parts...),
+	}
+	return contents
 }
 
 // IsAntigravityImageModel checks if the model name is an image generation model.
