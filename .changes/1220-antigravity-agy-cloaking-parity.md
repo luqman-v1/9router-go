@@ -1,0 +1,8 @@
+### Fixed
+
+- **Antigravity cloaking aligned with a live capture of the official `agy` 1.5.9 CLI.** The User-Agent now carries the captured version and `cl` (`1.5.9` / `1021519450`), the inner body uses the camelCase `systemInstruction` spelling both the public Gemini API and the real CLI emit, and a numeric-string `sessionId` is sent when the caller supplies a session (omitted otherwise, bounded to upstream's 256-character limit). These values came from a real successful `agy` request captured through a TLS MITM on 2026-11-16, not from guessing.
+- No shared session bucket: callers without a session header no longer get one fabricated id for the whole gateway.
+
+**Deliberately not changed:** `requestType:"agent"` stays omitted (upstream `decolua/9router#3986` observed false 429s with it), `toolConfig.mode="VALIDATED"` and the 64000-token output cap stay as upstream has them, and the `_ide` tool suffix / decoys, `Accept-Encoding: identity` on streams, and pinned `os_type=windows` remain. A `labels` block needs a per-model `model_enum` table that would have to be fabricated. Byte-for-byte CLI parity is not achievable behind an OpenAI-compatible proxy because tool sets and prompts come from the caller; only the transport fingerprint is matched here.
+
+**Verified:** `go test ./...`, integration tests, and a live non-stream request through the rebuilt binary to real `ag/gemini-3.8-flash-high` (HTTP 200, `"content":"OK"`). An OMP run was attempted but the whole Antigravity pool was rate-limited upstream (Google `429 RESOURCE_EXHAUSTED`); a capture of OMP's own request confirmed it sends no session header, so the new field is not on that path.
