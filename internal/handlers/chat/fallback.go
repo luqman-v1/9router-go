@@ -144,6 +144,13 @@ func (h *ChatHandler) handleAccountFallback(
 			affinityEligible = isAffinityEligibleStrategy(strat.RotateStrategy)
 		}
 	}
+	// The rotation below stamps whichever row it reaches (selectByRecency) and
+	// persists that stamp, so an account parked until its Codex quota resets
+	// took the turn's rotation slot for a request it can never serve — and the
+	// resolver then burned a second pass falling through its pin. Filter the
+	// live set first; an all-parked list is kept as-is so the existing
+	// "all excluded / all in cooldown" answer still applies.
+	allConns = filterCodexQuotaExhausted(provider, allConns)
 
 	// Apply provider connection routing strategy (round-robin, sticky, random) or session affinity
 	if len(allConns) > 1 && strat.RotateStrategy != "" && strat.RotateStrategy != "none" {

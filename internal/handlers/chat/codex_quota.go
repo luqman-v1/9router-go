@@ -12,6 +12,9 @@ import (
 
 	"9router/proxy/internal/codexquota"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/models"
+
+	"github.com/samber/lo"
 )
 
 var (
@@ -139,6 +142,26 @@ func BlockCodexConnectionUntil(connectionID string, resetAt time.Time) {
 	q.HasSession = true
 	codexQuotaCache[connectionID] = q
 	log.Warn("codex_quota", "connection blocked until reset", "conn", shortConnID(connectionID), "resetAt", resetAt.Format(time.RFC3339))
+}
+
+// filterCodexQuotaExhausted drops the Codex accounts whose cached window is
+// spent. The 429 failover rotates over the whole candidate list and the
+// least-recently-used pick stamps whichever row it reaches, so a parked
+// account consumed the rotation's stamp — and a resolver pass — for a request
+// it could never serve. An empty result keeps the input: the selector still
+// refuses those rows one by one, so the all-parked case keeps its existing
+// error path instead of turning into "no available connections".
+func filterCodexQuotaExhausted(provider string, conns []*models.ProviderConnection) []*models.ProviderConnection {
+	if provider != "codex" {
+		return conns
+	}
+	live := lo.Filter(conns, func(c *models.ProviderConnection, _ int) bool {
+		return c != nil && !IsCodexConnectionExhausted(c.ID)
+	})
+	if len(live) == 0 {
+		return conns
+	}
+	return live
 }
 
 // RefreshCodexQuota reads live quota for a connection and caches it, so the
