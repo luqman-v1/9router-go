@@ -69,7 +69,7 @@ func (h *ChatHandler) fetchCommandcodeLiveCatalog(ctx context.Context, conn *mod
 		log.Warn("models", "commandcode catalog fetch failed", "conn", conn.ID, "error", err)
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		log.Warn("models", "commandcode catalog rejected", "conn", conn.ID, "status", resp.StatusCode)
 		return nil
