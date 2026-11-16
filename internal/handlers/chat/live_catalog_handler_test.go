@@ -54,7 +54,8 @@ func TestHandleModels_KiroLiveCatalogReplacesStatic(t *testing.T) {
 	if _, err := database.Exec(`DELETE FROM kv WHERE scope='customModels'`); err != nil {
 		t.Fatalf("delete customs: %v", err)
 	}
-	connData := `{"accessToken":"ya29.kiro-test","providerSpecificData":{"profileArn":"arn:aws:codewhisperer:eu-west-1:123456789012:profile/ABC"}}`
+	// eu-central-1 is a region the q.* host serves, so the request must carry it.
+	connData := `{"accessToken":"ya29.kiro-test","providerSpecificData":{"profileArn":"arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC"}}`
 	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-kiro-live', 'kiro', 'oauth', 'Kiro Live', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, connData); err != nil {
 		t.Fatalf("seed kiro: %v", err)
@@ -81,8 +82,8 @@ func TestHandleModels_KiroLiveCatalogReplacesStatic(t *testing.T) {
 	if !strings.Contains(gotFingerprint, "KiroIDE-") {
 		t.Errorf("expected Kiro IDE fingerprint UA, got %q", gotFingerprint)
 	}
-	if !strings.Contains(gotPath, "eu-west-1") {
-		t.Errorf("expected region from profileArn in path, got %q", gotPath)
+	if !strings.Contains(gotPath, "eu-central-1") {
+		t.Errorf("expected the served profileArn region in the path, got %q", gotPath)
 	}
 }
 

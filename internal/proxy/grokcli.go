@@ -259,9 +259,10 @@ func kiroEndpointFallbackStatus(status int) bool {
 		status == http.StatusNotFound
 }
 
-// kiroServiceRegions limits regionalization to regions that AWS service host serves.
+// kiroServiceRegions limits regionalization to regions that AWS service host
+// serves. The q.* set is shared with the live catalog so the two cannot drift.
 var kiroServiceRegions = map[string]map[string]bool{
-	"q":             {"us-east-1": true, "eu-central-1": true},
+	"q":             providers.KiroQServiceRegions,
 	"runtime":       {"us-east-1": true, "eu-central-1": true},
 	"codewhisperer": {"us-east-1": true},
 }

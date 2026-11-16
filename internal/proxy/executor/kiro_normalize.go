@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"os"
 	"regexp"
 	"strings"
 )
@@ -95,4 +96,24 @@ func normalizeKiroUpstreamModelId(model string) string {
 		return model
 	}
 	return model
+}
+
+// kiroIntegrityGateEnv turns off the full-turn integrity pass.
+const kiroIntegrityGateEnv = "KIRO_INTEGRITY_GATE"
+
+// kiroIntegrityGateEnabled reports whether a Kiro turn is buffered to the end
+// before its tool calls are emitted.
+//
+// The gate exists because Kiro fragments one tool call across frames, so the
+// arguments are only complete at end of stream. Buffering costs the whole
+// turn's latency before the client sees a tool call, which a latency-critical
+// setup may prefer to trade away: KIRO_INTEGRITY_GATE=off emits what has
+// arrived instead (upstream open-sse/executors/kiro.js execute()).
+func kiroIntegrityGateEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(kiroIntegrityGateEnv))) {
+	case "off", "0", "false", "no", "disabled":
+		return false
+	default:
+		return true
+	}
 }

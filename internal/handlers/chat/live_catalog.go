@@ -309,10 +309,14 @@ func kiroFingerprintHeaders(seed, accessToken string) map[string]string {
 	}
 }
 
+// kiroRegion returns the region the q.* host is queried in. The ARN's region
+// is only used when the host actually serves it; anything else falls back to
+// us-east-1, because splicing an unserved region into the hostname makes the
+// catalog request NXDOMAIN.
 func kiroRegion(profileArn string) string {
 	parts := strings.Split(profileArn, ":")
 	if len(parts) >= 4 && parts[3] != "" {
-		return parts[3]
+		return providers.KiroCatalogRegion(parts[3])
 	}
 	return kiroDefaultRegion
 }
