@@ -1210,6 +1210,16 @@ var KnownProviders = map[string]ProviderConfig{
 		SearchURL:    "https://api.search.tinyfish.ai",
 		SearchMethod: "GET",
 	},
+	"keenable": {
+		BaseURL:      "https://api.keenable.ai",
+		AuthHeader:   "X-API-Key",
+		AuthScheme:   "raw",
+		NoAuth:       true,
+		FetchURL:     "https://api.keenable.ai/v1/fetch",
+		FetchMethod:  "GET",
+		SearchURL:    "https://api.keenable.ai/v1/search",
+		SearchMethod: "POST",
+	},
 	"runwayml": {
 		BaseURL:    "https://api.dev.runwayml.com/v1",
 		AuthHeader: "Authorization",

@@ -196,6 +196,18 @@ func TestNewProvidersRegistry_v059(t *testing.T) {
 	if _, ok := KnownProviders["xquik"]; !ok {
 		t.Error("expected xquik provider registered")
 	}
+	if _, ok := KnownProviders["keenable"]; !ok {
+		t.Error("expected keenable provider registered")
+	}
+	if cfg := KnownProviders["keenable"]; !cfg.NoAuth {
+		t.Errorf("expected keenable to be NoAuth, got NoAuth=%v", cfg.NoAuth)
+	}
+	if cfg := KnownProviders["keenable"]; cfg.SearchURL != "https://api.keenable.ai/v1/search" {
+		t.Errorf("expected keenable SearchURL, got %q", cfg.SearchURL)
+	}
+	if cfg := KnownProviders["keenable"]; cfg.FetchURL != "https://api.keenable.ai/v1/fetch" {
+		t.Errorf("expected keenable FetchURL, got %q", cfg.FetchURL)
+	}
 	if _, ok := KnownProviders["ollama-search"]; !ok {
 		t.Error("expected ollama-search provider registered")
 	}
