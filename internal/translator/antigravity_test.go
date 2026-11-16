@@ -429,7 +429,7 @@ func TestStripCompetitivePrompts(t *testing.T) {
 		t.Errorf("expected competitive prompt removed from contents, got %s", stripped.Contents[0].Parts[0].Text)
 	}
 }
-func TestStripCompetitivePrompts_NormalizesHarnessTagsInSystemOnly(t *testing.T) {
+func TestStripCompetitivePrompts_CanonicalizesOMPHarnessMarkersInSystemOnly(t *testing.T) {
 	req := &translator.GeminiRequest{
 		SystemInstruction: &translator.GeminiContent{
 			Role: "user",
@@ -449,12 +449,12 @@ func TestStripCompetitivePrompts_NormalizesHarnessTagsInSystemOnly(t *testing.T)
 
 	stripped := translator.StripCompetitivePrompts(req)
 	sys := stripped.SystemInstruction.Parts[0].Text
-	for _, want := range []string{"<conventions>", "RFC 2119 body stays", "<instructions>dir stays", "<important>crit stays", "AI coding assistant"} {
+	for _, want := range []string{"<guidelines>", "Requirement terminology: MUST means mandatory", "<instructions>dir stays", "<important>crit stays", "AI coding assistant"} {
 		if !strings.Contains(sys, want) {
 			t.Errorf("expected system text to contain %q, got %q", want, sys)
 		}
 	}
-	for _, banned := range []string{"system-conventions", "system-directive", "critical", "Oh My Pi"} {
+	for _, banned := range []string{"system-conventions", "system-directive", "critical", "Oh My Pi", "RFC 2119 body stays"} {
 		if strings.Contains(sys, banned) {
 			t.Errorf("expected system text to drop %q, got %q", banned, sys)
 		}
@@ -539,17 +539,19 @@ func TestStripCompetitivePrompts_HermesIdentityVariants(t *testing.T) {
 			want:  "You are an AI assistant.",
 		},
 		{
-			// Upstream's expression has a literal single space in "Nous
-			// Research" (open-sse/config/appConstants.js:189), so other
-			// whitespace is not a match and is left alone.
-			name:  "double space before Research is left alone",
+			// Upstream's identity expression has a literal single space in
+			// "Nous Research" (open-sse/config/appConstants.js:189), so this
+			// variant is not neutralized as an identity sentence. The Hermes
+			// catch-all still drops the brand token, because the backend
+			// rejects the fingerprint regardless of the surrounding wording.
+			name:  "double space before Research still drops brand token",
 			input: "You are Hermes Agent, built by Nous  Research.",
-			want:  "You are Hermes Agent, built by Nous  Research.",
+			want:  "You are the agent, built by Nous  Research.",
 		},
 		{
-			name:  "tab before Research is left alone",
+			name:  "tab before Research still drops brand token",
 			input: "You are Hermes Agent, built by Nous\tResearch.",
-			want:  "You are Hermes Agent, built by Nous\tResearch.",
+			want:  "You are the agent, built by Nous\tResearch.",
 		},
 		{
 			name:  "lowercase",
@@ -562,9 +564,11 @@ func TestStripCompetitivePrompts_HermesIdentityVariants(t *testing.T) {
 			want:  "You are an AI assistant.",
 		},
 		{
-			name:  "without trailing period is left alone",
+			// The identity sentence needs a trailing period to match; the
+			// brand token is still removed by the catch-all.
+			name:  "without trailing period still drops brand token",
 			input: "You are Hermes",
-			want:  "You are Hermes",
+			want:  "You are agent",
 		},
 		{
 			name:  "embedded in surrounding text",
@@ -611,8 +615,11 @@ func TestWrapForAntigravity_NormalizesTriggerSystemPrompt(t *testing.T) {
 	if strings.Contains(text, "system-conventions") {
 		t.Errorf("expected trigger tag normalized, got %q", text)
 	}
-	if !strings.Contains(text, "<conventions>") || !strings.Contains(text, "RFC 2119") {
-		t.Errorf("expected neutral tag with intact body, got %q", text)
+	if !strings.Contains(text, "<conventions>") || !strings.Contains(text, "Requirement terminology") {
+		t.Errorf("expected the RFC clause replaced with canonical wording, got %q", text)
+	}
+	if strings.Contains(text, "RFC 2119") {
+		t.Errorf("expected the RFC clause absorbed by the canonical wording, got %q", text)
 	}
 }
 
