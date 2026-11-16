@@ -158,6 +158,51 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
 	UnwrapIdentityGzip(req, resp)
+
+	// 429 fallback: when the Antigravity backend answers a bare
+	// RESOURCE_EXHAUSTED (no QUOTA_EXHAUSTED / RATE_LIMIT_EXCEEDED /
+	// "Individual quota reached" marker), the backend flagged the
+	// systemInstruction shape itself. Retry once with the
+	// systemInstruction folded into contents[0] (parity with
+	// decolua/9router#5703).
+	if resp.StatusCode == http.StatusTooManyRequests && projectID != "" {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
+		resp.Body.Close()
+		if isBareResourceExhausted(errBody) {
+			// Translate the OpenAI body to Gemini, move the systemInstruction,
+			// then re-wrap for Antigravity.
+			geminiBody, terr := translator.TranslateOpenAIToGeminiWithSession(body, handlerutil.GetSessionID(ctx))
+			if terr == nil {
+				if rewritten, ok := translator.MoveSystemInstructionToContents(geminiBody); ok {
+					sessID := handlerutil.GetSessionID(ctx)
+					rewrapped, werr := translator.WrapForAntigravity(rewritten, projectID, modelName, sessID)
+					if werr == nil {
+						log.Warn("gemini", "retrying with systemInstruction moved to contents[0]", "model", modelName)
+						reqRetry, rerr := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewReader(rewrapped))
+						if rerr == nil {
+							for k, v := range headers {
+								reqRetry.Header.Set(k, v)
+							}
+							if respRetry, derr := client.Do(reqRetry); derr == nil {
+								UnwrapIdentityGzip(reqRetry, respRetry)
+								if respRetry.StatusCode == http.StatusOK {
+									return respRetry, nil
+								}
+								errBodyRetry, _ := io.ReadAll(io.LimitReader(respRetry.Body, constants.UpstreamErrLimit))
+								respRetry.Body.Close()
+								log.Warn("gemini", "retry with moved systemInstruction also failed", "status", respRetry.StatusCode, "body", string(errBodyRetry[:min(500, len(errBodyRetry))]))
+								// Return the original 429 so the combo loop can rotate.
+								return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
+							}
+						}
+					}
+				}
+			}
+		}
+		// Not a bare 429 or retry didn't apply: re-create the body for the
+		// regular error handling below.
+		resp.Body = io.NopCloser(bytes.NewReader(errBody))
+	}
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
 		resp.Body.Close()
@@ -240,6 +285,25 @@ func ForwardGemini(ctx context.Context, client *http.Client, cfg *providers.Prov
 		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 	}
 	return resp, nil
+}
+
+// isBareResourceExhausted reports whether a 429 error body is a bare
+// RESOURCE_EXHAUSTED status with no explicit quota markers (QUOTA_EXHAUSTED,
+// RATE_LIMIT_EXCEEDED, "Individual quota reached"). Such a response means
+// the Antigravity backend flagged the request content itself — typically
+// the systemInstruction shape — and moving the systemInstruction into
+// contents[0] is the upstream fix (decolua/9router#5703).
+func isBareResourceExhausted(body []byte) bool {
+	s := string(body)
+	if !strings.Contains(s, "RESOURCE_EXHAUSTED") {
+		return false
+	}
+	for _, marker := range []string{"QUOTA_EXHAUSTED", "RATE_LIMIT_EXCEEDED", "Individual quota reached"} {
+		if strings.Contains(s, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 // isTransientGeminiTransportError reports whether a client.Do failure is a

@@ -17,6 +17,12 @@ import (
 // Antigravity backend rejects larger values (parity with Next.js capabilities.js).
 const maxAntigravityOutputTokens = 64000
 
+// maxHydrogenOutputTokens is the lifted output-token ceiling for Gemini 4
+// Hydrogen models. Hydrogen supports ~1M unified context windows and can
+// produce completions well beyond the 64k Antigravity cap, so the cap is
+// raised to 256k for long-decode continuation hops (decolua/9router#5703).
+const maxHydrogenOutputTokens = 256000
+
 // thinkingHeadroomTokens is added on top of thinkingBudget when ensuring
 // maxOutputTokens strictly exceeds it (parity across chat and image paths).
 const thinkingHeadroomTokens = 8192
@@ -254,6 +260,11 @@ var (
 	// other whitespace between the two words, and a port that accepted more
 	// would rewrite phrasings upstream leaves alone.
 	hermesIdentityRegex = regexp.MustCompile(`(?i)You are Hermes(?: Agent)?(?:,\s*(?:an intelligent AI assistant|an AI assistant|an AI agent))?(?:,?\s*(?:built|created)\s+by\s+Nous Research)?\.`)
+	// antigravityOpenClawRegex matches the literal `openclaw` client
+	// identifier upstream rewrites in the system instruction. Upstream's rule
+	// is unbounded and case-insensitive, so `OpenClaw`, `OPENCLAW` and
+	// `openclaw-go` are rewritten too (parity with decolua/9router#5703).
+	antigravityOpenClawRegex = regexp.MustCompile(`(?i)openclaw`)
 )
 
 // normalizeHarnessMarkers neutralizes harness fingerprint tags in system text.
@@ -290,6 +301,23 @@ func rewriteAntigravityBrand(text string) string {
 	})
 }
 
+// rewriteOpenClawBrand rewrites the literal `openclaw` client
+// identifier to `antigravity`, matching upstream's OpenClaw rewrite row
+// (decolua/9router#5703). Upstream's replacement preserves the
+// three capitalisations it names and lowercases everything else.
+func rewriteOpenClawBrand(text string) string {
+	return antigravityOpenClawRegex.ReplaceAllStringFunc(text, func(m string) string {
+		switch m {
+		case "OpenClaw":
+			return "Antigravity"
+		case "OPENCLAW":
+			return "ANTIGRAVITY"
+		default:
+			return "antigravity"
+		}
+	})
+}
+
 // rewriteBrandingText applies competitive-prompt rewrites. Harness markers
 // (tags + branding) are fingerprints of system-instruction text only;
 // user/model messages, tool definitions, arguments, and results keep the
@@ -307,6 +335,9 @@ func rewriteBrandingText(text string, isSystemInstruction bool) string {
 		// competing-client branding with a fake 429 Quota Exhausted. The
 		// conversation keeps the caller's vocabulary.
 		text = rewriteAntigravityBrand(text)
+		// OpenClaw rewrite row (decolua/9router#5703): competing-client
+		// branding in the system instruction.
+		text = rewriteOpenClawBrand(text)
 	}
 	return strings.TrimSpace(text)
 }
@@ -652,14 +683,34 @@ func antigravityBuildRequestID(sessionID, model, requestType string, contentCoun
 	return fmt.Sprintf("agent/%s/%d/%s/%d", conversationID, time.Now().UnixMilli(), trajectoryID, step)
 }
 
+// isHydrogenModel reports whether modelName identifies a Gemini 4 Hydrogen
+// model. Hydrogen models have a 1M unified context window and can produce
+// completions well beyond the 64k Antigravity cap, so they get a lifted
+// output-token ceiling and long-decode continuation hops
+// (decolua/9router#5703).
+func isHydrogenModel(modelName string) bool {
+	return strings.Contains(strings.ToLower(modelName), "hydrogen")
+}
+
 // hardenAntigravityRequest strips blacklisted thinking/reasoning fields Google
-// rejects and caps maxOutputTokens at maxAntigravityOutputTokens. It leaves the
-// request byte-for-byte intact when nothing needs changing so thought signatures
+// rejects and caps maxOutputTokens at the model-specific limit. For Hydrogen
+// (Gemini 4) models the cap is lifted to maxHydrogenOutputTokens to prevent
+// truncation of long decode responses (decolua/9router#5703). For all other
+// models it caps at maxAntigravityOutputTokens. It leaves the request
+// byte-for-byte intact when nothing needs changing so thought signatures
 // on functionCall/thought parts are never re-encoded (which would corrupt them).
-func hardenAntigravityRequest(geminiBody []byte) []byte {
+func hardenAntigravityRequest(geminiBody []byte, modelName string) []byte {
 	var m map[string]any
 	if err := json.Unmarshal(geminiBody, &m); err != nil {
 		return geminiBody
+	}
+
+	// Hydrogen (Gemini 4) supports output tokens well beyond 64k; lifting
+	// the Antigravity cap for Hydrogen models prevents truncation of long
+	// decode responses (decolua/9router#5703).
+	maxCap := maxAntigravityOutputTokens
+	if isHydrogenModel(modelName) {
+		maxCap = maxHydrogenOutputTokens
 	}
 
 	changed := false
@@ -672,8 +723,8 @@ func hardenAntigravityRequest(geminiBody []byte) []byte {
 
 	gc, _ := m["generationConfig"].(map[string]any)
 	if gc != nil {
-		if v, ok := gc["maxOutputTokens"].(float64); ok && v > maxAntigravityOutputTokens {
-			gc["maxOutputTokens"] = float64(maxAntigravityOutputTokens)
+		if v, ok := gc["maxOutputTokens"].(float64); ok && v > float64(maxCap) {
+			gc["maxOutputTokens"] = float64(maxCap)
 			changed = true
 		}
 		// Ensure maxOutputTokens strictly exceeds thinkingBudget to prevent 400 INVALID_ARGUMENT (PR #3981)
@@ -687,8 +738,8 @@ func hardenAntigravityRequest(geminiBody []byte) []byte {
 			curMax, hasMax := gc["maxOutputTokens"].(float64)
 			if !hasMax || curMax <= thinkingBudget {
 				newMax := thinkingBudget + thinkingHeadroomTokens
-				if newMax > maxAntigravityOutputTokens {
-					newMax = maxAntigravityOutputTokens
+				if newMax > float64(maxCap) {
+					newMax = float64(maxCap)
 				}
 				gc["maxOutputTokens"] = newMax
 				changed = true
@@ -867,7 +918,7 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string, sessionI
 			geminiBody = cloakedBytes
 		}
 	}
-	geminiBody = hardenAntigravityRequest(geminiBody)
+	geminiBody = hardenAntigravityRequest(geminiBody, modelName)
 
 	sess := projectID
 	if len(sessionID) > 0 && sessionID[0] != "" {
@@ -905,6 +956,56 @@ func UnwrapAntigravityResponse(raw []byte) []byte {
 		return raw // passthrough on failure
 	}
 	return []byte(envelope.Response)
+}
+
+// moveSystemInstructionToContents folds the systemInstruction into contents[0]
+// as a user-role turn and clears systemInstruction. Returns true when the
+// rewrite changed the request. Used as a 1-hop fallback retry when the
+// Antigravity backend answers 429 RESOURCE_EXHAUSTED with a bare
+// status (no QUOTA_EXHAUSTED details), because that response means the
+// backend flagged the systemInstruction shape itself (parity with
+// decolua/9router#5703).
+func moveSystemInstructionToContents(req *GeminiRequest) bool {
+	if req == nil || req.SystemInstruction == nil || len(req.SystemInstruction.Parts) == 0 {
+		return false
+	}
+	sysParts := req.SystemInstruction.Parts
+	if len(req.Contents) == 0 {
+		req.Contents = []GeminiContent{{Role: "user", Parts: sysParts}}
+	} else {
+		req.Contents[0] = GeminiContent{
+			Role:  "user",
+			Parts: append(append([]GeminiPart{}, sysParts...), req.Contents[0].Parts...),
+		}
+	}
+	req.SystemInstruction = nil
+	return true
+}
+
+// MoveSystemInstructionToContents folds the systemInstruction of a Gemini
+// request body into contents[0] as a user-role turn and clears
+// systemInstruction. Returns the rewritten body and true when the change
+// was applied; the input bytes are never mutated. When the body carries no
+// systemInstruction, or it is already empty, the original bytes and false
+// are returned unchanged.
+//
+// Used by ForwardGemini as a 1-hop fallback retry: the Antigravity backend
+// answers a bare 429 RESOURCE_EXHAUSTED (no QUOTA_EXHAUSTED details) when
+// it rejects the systemInstruction shape itself, and moving it to
+// contents[0] is the upstream fix (decolua/9router#5703).
+func MoveSystemInstructionToContents(body []byte) ([]byte, bool) {
+	var req GeminiRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body, false
+	}
+	if !moveSystemInstructionToContents(&req) {
+		return body, false
+	}
+	out, err := json.Marshal(req, json.Deterministic(true))
+	if err != nil {
+		return body, false
+	}
+	return out, true
 }
 
 // IsAntigravityImageModel checks if the model name is an image generation model.
