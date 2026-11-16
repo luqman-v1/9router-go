@@ -1,6 +1,7 @@
 package translator
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json/jsontext"
@@ -14,9 +15,10 @@ import (
 	"9router/proxy/internal/log"
 )
 
-// maxAntigravityOutputTokens caps generationConfig.maxOutputTokens; Google's
-// Antigravity backend rejects larger values (parity with Next.js capabilities.js).
-const maxAntigravityOutputTokens = 64000
+// maxAntigravityOutputTokens caps generationConfig.maxOutputTokens. The real
+// agy 1.5.9 CLI sends 65536 on a successful request (live capture 2026-11-16),
+// so the cap is aligned with that rather than the upstream 64000 constant.
+const maxAntigravityOutputTokens = 65536
 
 // thinkingHeadroomTokens is added on top of thinkingBudget when ensuring
 // maxOutputTokens strictly exceeds it (parity across chat and image paths).
@@ -731,6 +733,21 @@ func antigravityBuildRequestID(sessionID, model, requestType string, contentCoun
 	return fmt.Sprintf("agent/%s/%d/%s/%d", conversationID, time.Now().UnixMilli(), trajectoryID, step)
 }
 
+// antigravityCanonicalThinkingLevel spells thinkingLevel with the enum casing
+// the official agy CLI uses ("HIGH", not "high"). It is a scoped byte-level
+// substitution on the JSON value only: re-marshalling the whole body here would
+// re-encode thought signatures on functionCall/thought parts and corrupt them.
+func antigravityCanonicalThinkingLevel(body []byte) []byte {
+	for _, level := range [...]string{"minimal", "low", "medium", "high"} {
+		old := []byte(`"thinkingLevel":"` + level + `"`)
+		if bytes.Contains(body, old) {
+			newValue := []byte(`"thinkingLevel":"` + strings.ToUpper(level) + `"`)
+			body = bytes.ReplaceAll(body, old, newValue)
+		}
+	}
+	return body
+}
+
 // hardenAntigravityRequest strips blacklisted thinking/reasoning fields Google
 // rejects and caps maxOutputTokens at maxAntigravityOutputTokens. It leaves the
 // request byte-for-byte intact when nothing needs changing so thought signatures
@@ -959,6 +976,7 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string, sessionI
 		}
 	}
 	geminiBody = hardenAntigravityRequest(geminiBody)
+	geminiBody = antigravityCanonicalThinkingLevel(geminiBody)
 
 	sess := projectID
 	if rawSession != "" {

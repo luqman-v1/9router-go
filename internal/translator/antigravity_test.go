@@ -784,8 +784,8 @@ func TestWrapForAntigravity_CapAndRequestID(t *testing.T) {
 	if gc == nil {
 		t.Fatal("generationConfig missing")
 	}
-	if v, _ := gc["maxOutputTokens"].(float64); v != 64000 {
-		t.Errorf("expected maxOutputTokens capped to 64000, got %v", gc["maxOutputTokens"])
+	if v, _ := gc["maxOutputTokens"].(float64); v != 65536 {
+		t.Errorf("expected maxOutputTokens capped to 65536, got %v", gc["maxOutputTokens"])
 	}
 	// The tier must NOT be injected as a thinking config: gemini-3.7-flash-tiered
 	// is always-thinking, and injecting thinkingConfig triggers strict thought
@@ -831,6 +831,20 @@ func TestWrapForAntigravity_SessionScopesRequestID(t *testing.T) {
 	}
 	if !strings.HasPrefix(inner1.SessionID, "-") {
 		t.Errorf("non-numeric session id should be hashed to a negative decimal, got %q", inner1.SessionID)
+	}
+}
+
+func TestWrapForAntigravity_ThinkingLevelUsesCLICasing(t *testing.T) {
+	geminiBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"includeThoughts":true,"thinkingLevel":"high"}}}`)
+	wrapped, err := translator.WrapForAntigravity(geminiBody, "aicode-consumers", "gemini-3.8-flash-high")
+	if err != nil {
+		t.Fatalf("WrapForAntigravity failed: %v", err)
+	}
+	inner := unwrapInnerRequest(t, wrapped)
+	gc, _ := inner["generationConfig"].(map[string]any)
+	tc, _ := gc["thinkingConfig"].(map[string]any)
+	if got := tc["thinkingLevel"]; got != "HIGH" {
+		t.Errorf("thinkingLevel = %v, want the CLI's uppercase HIGH", got)
 	}
 }
 
