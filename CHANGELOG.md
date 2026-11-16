@@ -1,5 +1,214 @@
 # Changelog
 
+## [v1.9.17-exp.5] - 2026-11-16
+
+### Fixed
+
+- **Antigravity cloaking aligned with a live capture of the official `agy` 1.5.9 CLI.** The User-Agent now carries the captured version and `cl` (`1.5.9` / `1021519450`), the inner body uses the camelCase `systemInstruction` spelling both the public Gemini API and the real CLI emit, a numeric-string `sessionId` is sent when the caller supplies a session (omitted otherwise, bounded to upstream's 256-character limit), `thinkingLevel` now uses the CLI's uppercase enum casing (`HIGH`), and `maxOutputTokens` is capped at the CLI's 65536 instead of the upstream 64000. These values came from a real successful `agy` request captured through a TLS MITM on 2026-11-16, not from guessing.
+- No shared session bucket: callers without a session header no longer get one fabricated id for the whole gateway.
+
+**Deliberately not changed:** `requestType:"agent"` stays omitted (upstream `decolua/9router#3986` observed false 429s with it), `toolConfig.mode="VALIDATED"` stays as upstream has it, and the `_ide` tool suffix / decoys, `Accept-Encoding: identity` on streams, and pinned `os_type=windows` remain. A `labels` block needs a per-model `model_enum` table that would have to be fabricated. The two CLI-aligning values above (`HIGH`, 65536) are a deliberate divergence from upstream's lowercase levels and 64000 cap, chosen because the live CLI capture proves the backend accepts them and they make the footprint closer to the official client. Byte-for-byte CLI parity is not achievable behind an OpenAI-compatible proxy because tool sets and prompts come from the caller; only the transport fingerprint is matched here.
+
+**Verified:** `go test ./...`, integration tests, live non-stream requests to real `ag/gemini-3.8-flash-high` and `ag/claude-sonnet-4-6` (HTTP 200, `"content":"OK"`), and a live OMP 18.20.3 request against the real Antigravity backend, which answered `200 OK` with these two additional changes applied. A capture of OMP's own request confirmed it sends no session header, so the new `sessionId` field is not on that path; OMP's earlier `429 RESOURCE_EXHAUSTED` was the harness-fingerprint false 429 fixed by #1219, not a payload or quota regression from this change. The two models that returned 404 (`ag/gemini-4-argon`, `ag/gemini-3.7-flash-high`) do so identically on the pre-tweak baseline, i.e. pre-existing.
+
+### Antigravity: rewrite Hermes/OpenClaw and OMP fingerprints that earn a false 429
+
+- Antigravity's Cloud Code backend answers system text carrying another coding
+  harness's branding with `429 RESOURCE_EXHAUSTED` even when the account still
+  has quota. The system-instruction sanitizer now neutralizes the Hermes Agent /
+  OpenClaw fingerprint rows: the pair-programming and tool-output sentences,
+  `Be direct.`, `is your authoritative reference`, the Google
+  operational-directives header, Hermes section headers and environment
+  identifiers, and the OpenClaw identity sentence.
+- OMP coverage is completed. The `<system-conventions>` block is now replaced
+  whole with canonical neutral wording instead of only renaming its tag, because
+  the RFC 2119 text inside is the fingerprint pair reported in
+  `can1357/oh-my-pi#11699`. A standalone RFC 2119/8174 clause is collapsed too,
+  and OMP brand matching accepts hyphen and underscore separators
+  (`oh-my-pi`, `oh_my_pi`) in addition to `Oh My Pi`.
+- A live OMP 18.20.3 request against `ag/gemini-3.8-flash-high` still answered
+  429 after those rewrites. Bisecting the captured system prompt showed two more
+  standalone triggers: the identity sentence
+  `You are omp's trusted coding assistant.` and the internal `xd://` URL scheme.
+  Both are neutralized now, along with the `omp://` scheme, the `~/.omp/` home
+  path, and a leftover standalone `omp` token. The same request then returned
+  `200 OK` from the real backend, and the captured upstream payload no longer
+  contains any of those markers.
+- Tool descriptions are prompt text the backend scans the same way, so they go
+  through the Hermes fingerprint rewrite and the OMP brand/scheme rows.
+  Conversation turns are left alone: the caller's own vocabulary is not harness
+  text.
+- Ported from ag-shield `0ffb051` (issues #5697, #5701, #5703) and the OMP
+  masking sidecar's block canonicalization. Two rows are deliberately not
+  ported: the self-brand rewrites (`antigravity` → …, `9router` → …) would fight
+  the upstream `opencode` → `antigravity` rewrite, and the reference's 429 retry
+  loop replays against the same exhausted quota window that
+  `proxy.transientRetryPolicy` leaves to the account-fallback path.
+- Verified with `go test ./internal/translator/...` and
+  `go test ./internal/proxy/...`; the tables cover every row, idempotence,
+  system-only scope, and tool-description copying. The live OMP run used a
+  temporary provider entry in the OMP config pointed at a local build of this
+  branch; the config was restored afterwards.
+
+### Fixed
+
+- A Claude Code client keeps its own tool names on an OAuth `claude` connection. The cloak used to rename every tool to `<name>_ide` and declare the plain name as an unusable decoy — correct for a foreign client, fatal for Claude Code itself, whose tools carry exactly those names: the system prompt still said "use TaskUpdate" while the only tool by that name was the dead decoy, and the turn died as `[Tool TaskUpdate is unavailable]`. The cloak is skipped when the client declares three or more of Claude Code's own tool names, and a decoy that merely collides with a declared tool is skipped too.
+
+### Fixed
+
+- The Claude registry now sends every public beta flag the Claude Code CLI gates its features on (2.1.325: 45 gates, 14 were sent). A block behind a flag the gateway never sent was refused by the API — `tool_addition blocks require anthropic-beta: inline-tools-2026-09-15`, `role 'system' must precede an 'assistant' message` — and since the turn stays in the history, every later turn failed too. Client-side `x-cc-internal-*` latches are excluded.
+- `tool_addition` and `tool_removal` count as content, so a turn whose only block is one of them is no longer read as empty and dropped before it reaches the API.
+- The caller's own `anthropic-beta` flags are merged under one canonical header key; a case variant left beside `Anthropic-Beta` could win at header-application time and silently discard the merged value.
+
+### keenable provider: free web search and web fetch
+
+Register the keenable provider (`keenable`) with `SearchURL` (`POST https://api.keenable.ai/v1/search`) and `FetchURL` (`GET https://api.keenable.ai/v1/fetch`), marked `NoAuth` so it works keyless.
+
+- `/v1/search` lane forwards only `query` (strips `model`/`mode`, which keenable rejects as unknown params).
+- `/v1/web/fetch` lane rebuilds `GET /v1/fetch` with `url` (and optional `format`) as query parameters.
+- Alias `keenable` → `keenable` and registry metadata (free tier, apikey auth, `webSearch`+`webFetch` service kinds).
+
+### Fixed
+
+- A tool call that arrives with no arguments (absent, `{}` or `null`) is now removed from the history sent upstream when another call to the same tool in the conversation does carry arguments, together with the `tool_result` paired with it. Clients validate the call against the tool schema and reject it, then resend the full history — so the model used to read its own bare call and repeat it every turn. Tools that are only ever called without arguments are untouched. Applied on both the Claude passthrough lane and the Claude-to-OpenAI conversion lane.
+
+### Kiro: only the official service regions reach a hostname, and a toggle for the whole-turn integrity pass
+
+- **A region the `q.*` host does not serve can no longer reach the hostname.** The live catalog
+  (`internal/handlers/chat/live_catalog.go`) took the region straight out of the profile ARN and
+  spliced it into `https://q.<region>.amazonaws.com/ListAvailableModels`. A `eu-west-1` profile —
+  a real ARN shape, not a hostile one — therefore queried a host that does not exist, so the
+  catalog request NXDOMAIN'd instead of answering. `providers.KiroCatalogRegion` now folds the
+  region onto the set the host actually serves (`us-east-1`, `eu-central-1`) and falls back to
+  `us-east-1` for anything else. The runtime surface order in `internal/proxy/grokcli.go` already
+  guarded this; it now reads the same `providers.KiroQServiceRegions` set, so the two paths cannot
+  drift apart.
+- **`KIRO_INTEGRITY_GATE=off`** (`internal/proxy/executor/kiro_normalize.go`,
+  `internal/proxy/executor/stream.go`). Kiro fragments one tool call across frames, so the
+  arguments are only complete at the end of the stream; the default path assembles them and emits
+  one complete call. That costs the whole turn's latency before the client sees anything. With the
+  gate off each fragment is emitted as it arrives — the OpenAI streaming contract, where the client
+  concatenates the argument fragments itself — which a latency-critical setup can prefer. The
+  default is unchanged, and the `-thinking`/`-agentic`/model-id handling is untouched.
+- Tool-call indices are now assigned per call when its buffer is created (`kiroToolCall.index`)
+  instead of from a counter advanced at flush time. With the gate off the flush loop emits nothing,
+  so a counter advanced only there would have reported every call at index 0.
+
+Verified: `go test ./internal/proxy/executor/ -run 'TestKiro|TestHandleKiroStream|TestForwardKiro'`
+and `go test ./internal/handlers/chat/ -run 'TestKiro'`, plus `go build ./...` and `go vet` on the
+touched packages. New tests pin the region fallback (served region, unserved ARN region, empty,
+non-ARN, hostile string), the toggle's accepted off-values, and both stream shapes — with the gate
+off two fragments arrive as two `tool_calls` chunks, with it on one reassembled call carrying
+`finish_reason: tool_calls`.
+
+### Command Code publishes its live catalogue in `/v1/models`
+
+`commandcode` now resolves its model list from the CLI feed,
+`GET https://api.commandcode.ai/provider/v1/models?view=client`, instead of the
+23-row static snapshot. The surface cursor in the dashboard picker is what
+operators noticed: a model Command Code ships after the snapshot was reachable
+by asking for it by name but never appeared in `/v1/models`, so combos and the
+model picker could not see it.
+
+Two properties of that endpoint decided the implementation:
+
+- **The query string is load-bearing.** Without `view=client` the same URL
+  answers the public list, which carries no `hidden` flag. `parseCommandcodeLiveModels`
+  drops every entry whose `hidden` is true — 16 of the 114 rows probed on
+  2026-11-16, including `reflection/beam:free`, `poolside/laguna-s-2.1-free` and
+  the `stealth/*` canaries. Publishing them would offer models the provider has
+  withdrawn.
+- **The endpoint validates CLI identity, not the key.** No `User-Agent: cli`
+  answers 403 with or without a bearer; `Bearer user_fake` answers 200. The
+  header set therefore comes from the registry's `commandcode` entry — the same
+  `StaticHeaders` the chat lane dials with — so a CLI version bump cannot reach
+  one path and miss the other. A connection whose key was revoked still lists
+  the catalogue instead of reporting a failed fetch.
+
+`context_length` from the feed is marked `LimitsAuthoritative`, because it is the
+provider's enforced window and spans 200k–1.05M while the static table answers
+1M for the whole catalogue. `maxOutput` is deliberately left to the static cap:
+`/alpha/generate` rejects `params.max_tokens` above 200k regardless of what the
+feed advertises per model.
+
+The resolver is keyed on `providers.ResolveAlias(providerID)`, so `cmc` and
+`commandcode` both reach it while `commandcode-goat`/`cmc-goat` keep their own
+generated catalogue — no cross-provider aliasing.
+
+Files: `internal/handlers/chat/live_catalog_commandcode.go` (new),
+`internal/handlers/chat/live_catalog.go` (dispatch branch),
+`internal/handlers/chat/live_catalog_commandcode_test.go` (new).
+
+**Verification**: `go test ./internal/handlers/chat/ -run 'LiveCatalog|Commandcode|HandleModels|Models'`
+passes, including a handler-level case that seeds a `commandcode` connection
+against a fake feed and asserts the live ids publish, the `hidden` id does not,
+and the static `moonshotai/Kimi-K2.5` row disappears. Feed shape was probed live:
+`view=client` + `User-Agent: cli` → 200/114 rows/16 hidden; same URL without the
+CLI UA → 403.
+
+### fix(chat): skip quota-exhausted Codex accounts during 429 failover rotation
+
+- The Codex 429 path already caches the reset instant for the account
+  (`NoteCodexQuotaError` → `BlockCodexConnectionUntil`), and the connection
+  pre-filter already refuses to *serve* a request on a parked row. The rotation
+  still reached it first: `selectByRecency` stamps whichever row its strategy
+  sweep lands on and persists that stamp, so an account parked until its 5h/7d
+  window resets consumed the turn's rotation slot. The failover loop then
+  re-resolved that pin, was told `quota cache`, and fell through to the next
+  account — one wasted resolver pass and a mis-advanced rotation per request.
+- `filterCodexQuotaExhausted` drops the parked Codex accounts from the candidate
+  list before the strategy runs, in both places that rotate
+  (`handleAccountFallback` and `getBestConnectionWithContext`). An all-parked
+  list is returned unchanged so the existing `all excluded` / `all in cooldown`
+  answers still apply — the filter must not turn "everything is parked" into a
+  different error.
+- Scope is Codex only, and it reuses the account-level cache
+  `IsCodexConnectionExhausted` already exposed. No new state, no new query, no
+  cross-provider aliasing (AGENTS.md §3.A).
+- Verified: `TestHandleAccountFallback_CodexRotationSkipsQuotaExhausted` fails on
+  `main` (parked account stamped, resolver logged `pinned connection
+  ineligible ... quota cache`) and passes with the filter, with two live accounts
+  alternating and the parked one never dialled nor stamped. Full
+  `go test ./internal/handlers/chat/` passes.
+
+### Dashboard: track ClinePass plan usage in Provider Limits
+
+Add quota tracking for `clinepass` (`cline-pass`, `cp`) connections in the dashboard Provider Limits view, mapping the upstream plan limits response into percentage quota cards.
+
+- Query `GET https://api.cline.bot/api/v1/users/me/plan/usage-limits`.
+- Authenticate via WorkOS Bearer token with Cline identity headers for OAuth connections, or plain Bearer token for API keys.
+- Map `five_hour` / `session`, `weekly`, and `monthly` windows into `Session (5h)`, `Weekly (7d)`, and `Monthly` quota rows with reset timestamps.
+- Add `clinepass` to `usageSupportedProviders` and `usageApikeyProviders`.
+- Unit tests in `internal/handlers/dashboard/usage_clinepass_test.go` covering window mapping, auth headers, error paths, and eligibility.
+
+### mcode-lease: forward authType through chat dispatch and open usage gate
+
+A `minimax-code` / `minimax-code-global` connection created with `authType:
+"mcode-lease"` was being rejected by the usage eligibility gate
+(`isUsageEligibleConnection`) because only `oauth` and apikey-providers passed,
+and lease detection in `ForwardMinimaxCode` never matched because `authType` is
+a separate `connections` column, not a field in the `data` JSON blob, so
+`mcodelease.IsLeaseConnection(req.ConnData)` always returned `false`.
+
+Changes:
+
+* Add `AuthType string` to `ConnectionData` (`internal/handlers/shared/types.go`)
+  and populate `connData.AuthType = conn.AuthType` from the DB row in
+  `getBestConnection` (`internal/handlers/chat/connections.go`).
+* Add `AuthType string` to `executor.Request` and forward it on `execReq` and
+  `retryReq` in `tryForwardWithConnection` (`internal/handlers/chat/fallback.go`).
+* `ForwardMinimaxCode` now detects lease mode via `req.AuthType == "mcode-lease"`
+  (new `mcodelease.IsLeaseAuthType` / `LeaseAuthType` helper), keeping
+  `IsLeaseConnection(req.ConnData)` as a fallback for callers that populate the
+  data blob.
+* `isUsageEligibleConnection` now allows `c.AuthType == "mcode-lease"` for
+  `minimax-code` / `minimax-code-global`, which are already in
+  `usageSupportedProviders` (`internal/handlers/dashboard/connections.go`).
+* Add `mcode-lease` and `apikey` cases for both minimax-code lanes to
+  `TestIsUsageEligibleConnection`.
+
+Upstream parity: port of the `mcode-lease` lease connection behaviour.
+
 ## [v1.9.17-exp.4] - 2026-11-15
 
 ### fix(deepseek-web): bound the compiled-schema cache
