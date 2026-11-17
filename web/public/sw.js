@@ -30,6 +30,8 @@ self.addEventListener('fetch', (event) => {
     url.pathname.startsWith('/v1') ||
     url.pathname.startsWith('/usage') ||
     url.pathname.startsWith('/translator') ||
+    url.pathname.startsWith('/login') ||
+    url.pathname.startsWith('/dashboard') ||
     url.pathname.startsWith('/debug')
   ) {
     return
