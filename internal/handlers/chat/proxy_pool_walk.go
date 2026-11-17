@@ -29,6 +29,15 @@ import (
 // returned, so the caller's own handling — pool exclusion, then direct — is
 // unchanged.
 func (h *ChatHandler) walkPoolOnFreeTierRefusal(f forwardRequestParams, connObj *models.ProviderConnection, first error) error {
+	return h.walkPoolOnFreeTierRefusalFor(f, connObj.ID, connObjName(connObj), connObjEmail(connObj), first)
+}
+
+// walkPoolOnFreeTierRefusalFor is the walk without a *models.ProviderConnection,
+// for the synthesized no-auth lane (ConnectionID "default"), which has no stored
+// row to pass. That lane is what the keyless OpenCode free tier uses, so leaving
+// it out of the walk meant the operator's pool was walked on the stored-
+// connection path and not on the one they were actually calling.
+func (h *ChatHandler) walkPoolOnFreeTierRefusalFor(f forwardRequestParams, connID, connName, connEmail string, first error) error {
 	if first == nil || f.ConnData == nil || h.Repo == nil {
 		return first
 	}
@@ -64,7 +73,7 @@ func (h *ChatHandler) walkPoolOnFreeTierRefusal(f forwardRequestParams, connObj 
 
 		walked++
 		log.Warn("fallback", "opencode free tier refused this proxy, trying the next",
-			"conn", connObj.ID, "provider", provider, "model", model,
+			"conn", connID, "provider", provider, "model", model,
 			"pool", connData.ProxyPoolID,
 			"proxy", redactProxyURL(connData.ResolvedProxyURL),
 			"refused", len(connData.RefusedProxies[connData.ProxyPoolID]), "of", len(pool.URLs))
@@ -86,7 +95,7 @@ func (h *ChatHandler) walkPoolOnFreeTierRefusal(f forwardRequestParams, connObj 
 
 	if walked > 0 {
 		log.Warn("fallback", "opencode free tier refused every proxy it tried in the pool",
-			"conn", connObj.ID, "provider", provider, "model", model,
+			"conn", connID, "provider", provider, "model", model,
 			"pool", connData.ProxyPoolID, "tried", walked, "poolSize", len(pool.URLs))
 	}
 	return err
