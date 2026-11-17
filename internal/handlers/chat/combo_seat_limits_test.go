@@ -203,17 +203,19 @@ func TestHandleModels_ComboSeatThinkingSuffixStrippedBeforeCaps(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 
-	// deepseek/deepseek-chat: context_length 131072, max_completion_tokens 8192
-	// per the deepseek capability table. The suffixed seat must resolve to
-	// the same block.
+	// opencode's deepseek-v4.1-flash-free declares 330000 context_length and
+	// 128000 max_completion_tokens (providerCapabilities["opencode"]). A seat
+	// that kept the "(max)" suffix missed that row and fell through to the
+	// pattern-table default, so the suffixed seat must publish the bare
+	// model's own block.
 	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
-			('c-think', 'thinking-combo', 'llm', '["deepseek/deepseek-chat(max)"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+			('c-think', 'thinking-combo', 'llm', '["oc/deepseek-v4.1-flash-free(max)"]', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
 		t.Fatalf("seed combo: %v", err)
 	}
 
 	entry := comboEntry(t, comboModelsResponse(t, NewChatHandler(db.NewRepo(database))), "thinking-combo")
-	wantLimit(t, "context_length", entry.ContextLength, 131072)
-	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 8192)
+	wantLimit(t, "context_length", entry.ContextLength, 330000)
+	wantLimit(t, "max_completion_tokens", entry.MaxCompletionTokens, 128000)
 }
 
 func TestHandleModels_ComboSeatConnectionAliasResolvesCapabilities(t *testing.T) {
