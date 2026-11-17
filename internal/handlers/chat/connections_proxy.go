@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 
+	"9router/proxy/internal/db"
+
 	"9router/proxy/internal/log"
 	internalproxy "9router/proxy/internal/proxy"
 )
@@ -96,7 +98,7 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 			log.Warn("proxy", "assigned pool is inactive", "pool", connData.ProxyPoolID)
 			return nil, fmt.Errorf("proxy pool %q is assigned but inactive", connData.ProxyPoolID)
 		}
-		proxyURLStr = pool.NextURL()
+		proxyURLStr = nextProxyURL(connData, pool)
 		if proxyURLStr == "" {
 			log.Warn("proxy", "assigned pool has no url", "pool", connData.ProxyPoolID)
 			return nil, fmt.Errorf("proxy pool %q is assigned but carries no url", connData.ProxyPoolID)
@@ -106,6 +108,10 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 		// Name the pool for the log line. The lookup already happened, so this
 		// costs nothing, and "Vercel Relay" answers a question a UUID cannot.
 		connData.ResolvedProxyPool = pool.Name
+		// The specific URL rotation chose. A refusal must name the egress that
+		// earned it: with a hundred proxies behind one pool, the pool name says
+		// nothing about which one served the turn.
+		connData.ResolvedProxyURL = proxyURLStr
 
 		if pool.IsEdgeRelay() {
 			// A relay is an HTTPS endpoint that forwards on x-relay-target /
@@ -266,4 +272,93 @@ func (h *ChatHandler) relayClient(relayURL string) *http.Client {
 	clone.Transport = internalproxy.RelayTransport(relayURL, base.Transport)
 	proxyClients[cacheKey] = &clone
 	return &clone
+}
+
+// nextProxyURL picks the pool URL this request should dial, skipping proxies the
+// turn has already refused.
+//
+// The pool is many egresses behind one connection, but the fallback loop only
+// advances over connections. Without this, a provider with one connection and a
+// hundred proxies got exactly one attempt per request — the log showed three dead
+// sockets and a 429, then gave up, while ninety-six egresses had never been
+// tried.
+//
+// It returns "" when every proxy in the pool has been refused this turn. The
+// caller answers that with the last upstream refusal rather than an internal
+// error, so the operator sees what the gate actually said.
+//
+// Falling back to the pool's own rotation when the set is empty keeps every
+// existing caller unchanged: no refused proxies means the old behaviour exactly.
+func nextProxyURL(connData *ConnectionData, pool *db.ProxyPool) string {
+	refused := connData.RefusedProxies[connData.ProxyPoolID]
+	if len(refused) == 0 {
+		return pool.NextURL()
+	}
+
+	// Bounded by the pool size: a pool with thousands of URLs must not turn one
+	// selection into thousands of lookups (AGENTS.md §4.G).
+	//
+	// The extra pass matters. NextURL advances an atomic cursor BEFORE reading,
+	// so a pool of N returns each URL once per N calls but starts mid-cycle: a
+	// loop of exactly N draws can revisit a URL and never reach another, and
+	// would then report the pool exhausted while untried proxies remained. One
+	// extra draw guarantees every slot is offered at least once.
+	urls := pool.URLs
+	for i := 0; i <= len(urls); i++ {
+		candidate := pool.NextURL()
+		if !refused[candidate] {
+			return candidate
+		}
+	}
+
+	// Every proxy spent. Reporting "" lets the caller distinguish "this pool is
+	// exhausted for the turn" from "this request could not be routed", which a
+	// non-empty URL would blur.
+	return ""
+}
+
+// refuseProxy records that the turn's current proxy answered with a free-tier
+// refusal, so the next selection moves to a different egress.
+//
+// Only a free-tier refusal belongs here. The gate has said "not this egress",
+// which is a fact about the proxy for this request. A dead socket or a 5xx is
+// deliberately not recorded: it may be the upstream's fault, and skipping a
+// healthy proxy over it would walk a good pool on someone else's bad afternoon.
+//
+// The map is the caller's, shared across the retry loop's iterations: connData
+// is rebuilt per attempt, so a set allocated here would be thrown away by the
+// retry that needs it.
+func refuseProxy(connData *ConnectionData) {
+	if connData == nil || connData.ResolvedProxyURL == "" || connData.ProxyPoolID == "" {
+		return
+	}
+	if connData.RefusedProxies == nil {
+		connData.RefusedProxies = make(map[string]map[string]bool)
+	}
+	set, ok := connData.RefusedProxies[connData.ProxyPoolID]
+	if !ok {
+		set = make(map[string]bool)
+		connData.RefusedProxies[connData.ProxyPoolID] = set
+	}
+	set[connData.ResolvedProxyURL] = true
+}
+
+// redactProxyURL removes the userinfo from a proxy URL so it can be logged.
+// Proxy credentials are secrets in practice — a pool of a hundred proxies
+// carries a hundred passwords — and this value lands in fallback log lines and
+// the egress label on every usage row.
+func redactProxyURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	schemeEnd := strings.Index(raw, "://")
+	if schemeEnd < 0 {
+		return raw
+	}
+	at := strings.LastIndex(raw, "@")
+	if at < schemeEnd {
+		return raw
+	}
+	return raw[:schemeEnd+3] + "***" + raw[at:]
 }

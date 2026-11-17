@@ -232,12 +232,24 @@ func (h *ChatHandler) handleAccountFallback(
 		// and the exclusion below must all name the account that was dialled.
 		log.Debug("fallback", "connection", "conn", connObj.ID, "candidate", c.ID)
 		attemptStart := time.Now()
-		if err := h.tryForwardWithConnection(forwardRequestParams{
+		params := forwardRequestParams{
 			Ctx: ctx, W: w, Provider: provider, Model: model,
 			ConnectionID: connObj.ID, ConnName: connObjName(connObj), ConnEmail: connObjEmail(connObj),
 			ConnData: connData, Body: body, Attempts: attemptCount(ctx),
 			IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
-		}); err == nil {
+		}
+		err = h.tryForwardWithConnection(params)
+		// A pool is many egresses behind ONE connection, but this loop advances
+		// over connections. Without this walk a provider with one connection and
+		// a hundred proxies got exactly one attempt per request, and the turn
+		// failed while ninety-six egresses had never been tried.
+		//
+		// Each pass re-enters the forward, so the resolver's rotation hands back
+		// a different proxy and the refused one is skipped. The bound is the pool
+		// size: a hundred proxies is a hundred attempts, which is what the
+		// operator asked for by assigning a hundred.
+		err = h.walkPoolOnFreeTierRefusal(params, connObj, err)
+		if err == nil {
 			RecordAttemptFromContext(ctx, connObj.ID, connObjName(connObj), provider, model, 200, nil, time.Since(attemptStart).Milliseconds())
 			if sessionID := handlerutil.GetSessionID(ctx); sessionID != "" && affinityEligible {
 				h.getSessionAffinity().Bind(provider, model, sessionID, connObj.ID)
